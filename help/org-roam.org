@@ -1,0 +1,54 @@
+#+TITLE: Org-roam
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="120">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Notes that link to each other
+
+Org-roam is the Zettelkasten pattern: many small notes, each with a stable
+id, linked densely. The value is in the links -- you find a note by
+following a trail rather than by remembering where you filed it.
+
+| Key / command                 | Does                                |
+|-------------------------------+-------------------------------------|
+| =<leader>ora=                 | add a note                          |
+| =<leader>orr=                 | find a note                         |
+| =<leader>ors=                 | sync the note index                 |
+| =:MepOrgRoamNewNote=          | new note                            |
+| =:MepOrgRoamFindNotes=        | search notes by title               |
+| =:MepOrgRoamInsertLink=       | link to another note                |
+| =:MepOrgRoamBacklinks=        | what links *here*                   |
+| =:MepOrgRoamDaily=            | today's daily note                  |
+| =:MepOrgRoamEnsureId=         | give this heading an id             |
+| =:MepOrgRoamSync=             | rebuild the index                   |
+
+* Backlinks
+
+The Backlinks sidebar shows every note that links to the one you are
+reading. This is the half that makes the method work: forward links you
+made deliberately, backlinks you get for free.
+
+* The graph
+
+=:MepRoamGraph= draws the note graph -- clusters of linked notes, and the
+orphans that nothing points at.
+
+* Daily notes
+
+=:MepOrgRoamDaily= opens today's note, creating it if needed. A running log
+that needs no filing decision.
+
+* Ids
+
+Links are by id rather than by filename, so renaming a note or moving it
+between files does not break anything pointing at it.
+=:MepOrgRoamEnsureId= adds one to a heading that has none.
+
+=:MepOrgDrillReview= is a neighbour worth knowing: it reviews notes as
+spaced-repetition cards, using the same =:DRILL_*:= properties the
+[[file:learn-games.html][learning games]] write.
+
+* See also
+
+- [[file:org-links.html][Links, footnotes and citations]] -- ordinary org links.
+- [[file:org-capture.html][Capture]] -- getting a note started quickly.

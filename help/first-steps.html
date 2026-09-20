@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your first ten minutes</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Getting started">
+<meta name="help-order" content="20">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Your first ten minutes</h1>
+<h1>Modes</h1>
+<p>mep starts in <b>Normal</b> mode, where the letter keys are commands rather than
+text. This is the single thing to understand first: in Normal mode, pressing
+<code>d</code> does not type a "d", it starts a delete.</p>
+<table>
+<tr><th>Mode</th><th>You get there with</th><th>You leave with</th></tr>
+<tr><td>Normal</td><td><code>Esc</code>, from anywhere</td><td></td></tr>
+<tr><td>Insert</td><td><code>i</code>, <code>a</code>, <code>o</code> and friends</td><td><code>Esc</code></td></tr>
+<tr><td>Replace</td><td><code>R</code></td><td><code>Esc</code></td></tr>
+<tr><td>Visual</td><td><code>v</code> (<code>V</code> lines, <code>Ctrl-V</code> block)</td><td><code>Esc</code></td></tr>
+<tr><td>Command line</td><td><code>:</code></td><td><code>Esc</code></td></tr>
+<tr><td>Terminal</td><td>clicking into a terminal</td><td><code>Ctrl-\ Ctrl-n</code></td></tr>
+</table>
+<p>The current mode is shown at the left of the status line along the bottom.</p>
+<h1>Moving</h1>
+<p>Use <code>h</code>, <code>j</code>, <code>k</code> and <code>l</code> to move left, down, up and right. They are where
+your fingers already are, which is the whole argument for them.</p>
+<table>
+<tr><th>Key</th><th>Moves to</th></tr>
+<tr><td><code>w</code> / <code>b</code></td><td>start of the next / previous word</td></tr>
+<tr><td><code>0</code> / <code>$</code></td><td>start / end of the line</td></tr>
+<tr><td><code>^</code></td><td>first non-blank character of the line</td></tr>
+<tr><td><code>gg</code> / <code>G</code></td><td>first / last line of the file</td></tr>
+<tr><td><code>5j</code></td><td>down five lines -- any motion takes a count</td></tr>
+<tr><td><code>:42</code></td><td>line 42</td></tr>
+</table>
+<p>To get somewhere visible on screen fast, press <code>s</code> and start typing what you
+are aiming at. Every match across every visible pane gets a one-key label;
+press that key to jump. Press <code>Esc</code> to give up.</p>
+<h1>Editing</h1>
+<p>Press <code>i</code> to start typing at the cursor, or <code>a</code> to start just after it. <code>o</code>
+opens a new line below and starts typing there. <code>Esc</code> gets you back to Normal
+mode.</p>
+<p>In Normal mode, an operator combines with a motion:</p>
+<table>
+<tr><th>Keys</th><th>Effect</th></tr>
+<tr><td><code>dw</code></td><td>delete to the start of the next word</td></tr>
+<tr><td><code>dd</code></td><td>delete the whole line</td></tr>
+<tr><td><code>3dd</code></td><td>delete three lines</td></tr>
+<tr><td><code>cw</code></td><td>change a word (delete it, then Insert)</td></tr>
+<tr><td><code>yy</code></td><td>yank (copy) a line</td></tr>
+<tr><td><code>p</code></td><td>put (paste) what you last yanked or deleted</td></tr>
+<tr><td><code>x</code></td><td>delete the character under the cursor</td></tr>
+<tr><td><code>u</code></td><td>undo; <code>Ctrl-r</code> redo</td></tr>
+</table>
+<p>Yanking and deleting put the text on the system clipboard, so <code>p</code> pastes what
+you copied in any other application too, and vice versa.</p>
+<h1>Saving and quitting</h1>
+<p>Everything here starts with <code>:</code>, which opens the command line at the bottom.</p>
+<table>
+<tr><th>Command</th><th>Effect</th></tr>
+<tr><td><code>:w</code></td><td>write the current buffer to its file</td></tr>
+<tr><td><code>:e path</code></td><td>open <code>path</code> -- a path that does not exist yet starts a new file</td></tr>
+<tr><td><code>:q</code></td><td>close the current pane, quitting once it is the last</td></tr>
+<tr><td><code>:q!</code></td><td>close it, discarding unsaved changes</td></tr>
+<tr><td><code>:wq</code></td><td>write, then close</td></tr>
+<tr><td><code>:qa</code></td><td>quit everything, refusing if anything is unsaved</td></tr>
+</table>
+<p>If <code>:q</code> refuses, something is unsaved. <code>:wa</code> writes every modified buffer.</p>
+<h1>When you forget a key</h1>
+<p>Press <code>&lt;Space&gt;</code> and wait. The which-key popup lists every binding available
+under the leader key, grouped by what it does -- <code>f</code> for files, <code>g</code> for git,
+<code>o</code> for org, and so on. Keep pressing keys to walk into a group; press <code>Esc</code>
+to back out.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="vim-differences.html">What is and isn't Vim</a> -- if these keys already look familiar.</li>
+<li><a href="editing.html">Editing basics</a> -- buffers and panes.</li>
+<li><a href="key-index.html">Key index</a> -- every leader binding, and where it is documented.</li>
+</ul>
+</body>
+</html>

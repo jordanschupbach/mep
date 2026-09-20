@@ -1,0 +1,87 @@
+#+TITLE: Branch-per-workspace
+#+HTML_HEAD: <meta name="help-section" content="Git">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* The idea
+
+Instead of switching branches in one checkout, give each branch its own
+[[file:workspaces.html][workspace]] -- a real git worktree, with its own open files, terminals and
+language servers. Switching branches becomes switching workspaces, which is
+instant and loses no state.
+
+The usual reason to want this: a review or a hotfix arrives while you are
+mid-change. You do not have to stash, and you do not have to wait for a
+rebuild, because the other branch is already checked out somewhere else.
+
+* Start a branch
+
+#+begin_example
+:wsnew fix-crash
+#+end_example
+
+Creates the branch, the worktree and the workspace together. The tab-bar
+label shows =[fix-crash...]= while git works, then becomes a normal label.
+
+To pick up a branch that already exists -- a colleague's, or one you pushed
+earlier:
+
+#+begin_example
+:wsnew! their-feature
+#+end_example
+
+* See where everything stands
+
+=<leader>gw= (=:MepGitWorkspaces=) lists every workspace with its branch and
+its ahead/behind counts against its upstream. It is the one view that
+answers "what have I got going, and what have I not pushed" across all of
+them at once.
+
+The git panel's head section does the same for the workspace you are in,
+whichever of its five views is showing.
+
+* Merge and rebase from the panel
+
+Both live in the Branches view (=<leader>gb=), and both act on the *current*
+branch:
+
+| Key | Does                                     |
+|-----+------------------------------------------|
+| =m= | merge the highlighted branch into the current one |
+| =r= | rebase the current branch onto the highlighted one |
+
+So to merge =fix-crash= into =main=: switch to the =main= workspace, open
+Branches, put the cursor on =fix-crash=, press =m=.
+
+* Finishing up
+
+#+begin_example
+:wsdelete fix-crash
+#+end_example
+
+Removes the worktree and closes the workspace. *The branch is kept* -- mep
+says so in the confirmation -- so this is safe to run as soon as you are
+done with the checkout, whether or not the work has been merged.
+
+Without =!=, git refuses on a dirty tree and mep shows git's own message.
+=:wsprune= cleans up workspaces whose directory has vanished, which is what
+you want after removing a worktree outside mep.
+
+* Things that follow the workspace
+
+Because the working directory tracks the active workspace, each branch gets
+its own:
+
+- file search and live grep results;
+- language server, one per language per workspace root;
+- terminals, opened in that worktree;
+- buffer list.
+
+=:wa= and the =:qa= unsaved-changes guard stay global, so nothing in another
+branch's workspace is lost silently.
+
+* See also
+
+- [[file:workspaces.html][Workspaces]] -- creating, switching and deleting, in full.
+- [[file:git-panel.html][The git panel]] -- the Branches view.
+- [[file:sessions.html][Sessions]] -- how the set of workspaces survives a restart.

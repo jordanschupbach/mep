@@ -1,0 +1,66 @@
+#+TITLE: Configuration
+#+HTML_HEAD: <meta name="help-section" content="Configuration">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* init.lua
+
+On startup mep runs =~/.config/mep/init.lua= if it exists. It is ordinary
+Lua with the whole =mep.*= API available.
+
+It runs *before* any saved session is restored, which is why options that
+affect restoring -- =mep.opt.restore_workspaces=,
+=mep.opt.worktree_dir= -- take effect from that file.
+
+#+begin_src lua
+-- ~/.config/mep/init.lua
+mep.colorscheme('everforest-dark')
+mep.cmd('set textwidth=72')
+
+mep.leader_map('xr', 'Reload config', function()
+  mep.cmd('source ' .. os.getenv('HOME') .. '/.config/mep/init.lua')
+end)
+#+end_src
+
+The wasm build has no host filesystem, so it loads no =init.lua=.
+
+* Trying something first
+
+| Command            | Does                        |
+|--------------------+-----------------------------|
+| =:lua <code>=      | run one line of Lua         |
+| =:source <file>=   | run a Lua file              |
+
+=print()= is routed through =mep.notify=, so =:lua print(mep.line_count())=
+shows a toast -- a perfectly good way to poke at the API before committing
+anything to a file.
+
+* Options
+
+Two families, which is a common source of confusion:
+
+*=:set= options* are Vim-style and affect the editing model -- =number=,
+=wrap=, =ignorecase=, =textwidth=. See [[file:command-line.html][The command line]].
+
+*=mep.opt.*= options* are Lua values configuring features -- kernels,
+terminal sizes, runner order. See [[file:options.html][Options]].
+
+#+begin_src lua
+mep.cmd('set nowrap')                -- a :set option
+mep.opt.tab_terminal_share = 0.4     -- a mep.opt option
+#+end_src
+
+* Where things live
+
+| Path                                       | Holds                    |
+|--------------------------------------------+--------------------------|
+| =~/.config/mep/init.lua=                   | your configuration       |
+| =$XDG_DATA_HOME/mep/workspaces/=           | per-project session state |
+| =~/.config/github-copilot/=                | Copilot credentials, shared with other editors |
+| =~/.local/share/mep/agent-sockets/=        | one socket per running mep |
+
+* See also
+
+- [[file:options.html][Options]] -- every option, with defaults.
+- [[file:keymaps.html][Remapping keys]] -- changing the bindings.
+- [[file:recipes.html][Configuration recipes]] -- worked examples.

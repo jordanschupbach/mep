@@ -1,0 +1,63 @@
+#+TITLE: REPL and send-to-terminal
+#+HTML_HEAD: <meta name="help-section" content="Running code">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Two different things
+
+*The Run/REPL pane* is mep's own output buffer: it starts an interpreter and
+renders its output into a pane, with ANSI colours.
+
+*Send-to-terminal* is the vim-slime approach: you keep a real =:terminal=
+running whatever you like, and send lines to it from a buffer.
+
+Use the second when you want a real shell; use the first when you want
+output you can search and scroll like any other buffer.
+
+* The Run/REPL pane
+
+| Command                | Does                              |
+|------------------------+-----------------------------------|
+| =:MepReplStart=        | start a REPL for this filetype    |
+| =:MepReplSendLine=     | send the current line             |
+| =:MepReplSendBuffer=   | send the whole buffer             |
+| =:MepRun=              | run the current file into the pane |
+| =<leader>rj=           | jump to the pane, or back out of it |
+
+=<leader>rj= is a toggle: from a source buffer it moves you to the pane,
+and from inside the pane it moves you back.
+
+* What the pane is, and is not
+
+It parses ANSI colour codes into real decorations, so coloured output looks
+right. Every *other* escape sequence -- cursor movement, clear-screen -- is
+discarded rather than interpreted.
+
+So this is genuinely "run code and read the output", not a terminal
+emulator. A full-screen program -- =vim=, =htop=, an interactive Python
+prompt with a fancy banner -- renders as garbled scrolling text. Run those
+in a real [[file:terminals.html][terminal]] instead.
+
+Interaction is line-oriented: there is no keystroke-by-keystroke forwarding.
+You send lines, selections or buffers; you do not type into it.
+
+* Send-to-terminal
+
+| Command                | Sends                     |
+|------------------------+---------------------------|
+| =:MepTermSendLine=     | the current line          |
+| =:MepTermSendRegister= | a register                |
+| =:MepTermJump=         | jump to the target terminal |
+
+The first send from a buffer asks which terminal to target, pre-filled with
+the first one in the active tab. Each buffer remembers its own target, so
+several source files can drive several terminals at once.
+
+"Terminal" here means a real =:terminal=. The Run/REPL pane above is a plain
+buffer mep renders into, not a terminal, so it is not a valid target.
+
+* See also
+
+- [[file:terminals.html][Terminals]] -- the real thing.
+- [[file:notebooks.html][Jupyter notebooks]] -- a persistent kernel with inline results.
+- [[file:run-button.html][Running the current file]] -- one key, no pane to manage.

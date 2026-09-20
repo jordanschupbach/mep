@@ -1,0 +1,52 @@
+#+TITLE: Running a relay
+#+HTML_HEAD: <meta name="help-section" content="Collaboration">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* mep-collabd
+
+The relay is a native C++ binary with *no* runtime dependency on Deno, Node
+or a WebSocket framework -- the protocol framing is implemented in mep
+itself. It is built alongside mep.
+
+#+begin_example
+MEP_COLLAB_ADMIN_TOKEN=replace-with-a-long-secret \
+MEP_COLLAB_PUBLIC_URL=wss://collab.example.com \
+./build/native/mep-collabd --port 8787
+#+end_example
+
+* Creating a session
+
+#+begin_example
+curl -X POST http://127.0.0.1:8787/v1/sessions \
+  -H "Authorization: Bearer replace-with-a-long-secret"
+#+end_example
+
+The response carries =id=, =secret=, and -- when =MEP_COLLAB_PUBLIC_URL= is
+set -- a ready-to-share =link=. That link is what participants pass to
+=:CollabJoin=.
+
+* Deploying it
+
+Terminate TLS at Caddy, nginx or Apache and proxy WebSocket upgrade requests
+to =127.0.0.1:8787=. Native mep validates =wss://= certificates and
+hostnames, so a self-signed certificate will be rejected rather than
+silently accepted.
+
+* What it stores
+
+Transient rooms and presence. It forwards opaque CRDT operations and never
+inspects document contents, so the relay never holds your text -- but it
+also cannot replay history to a room where every participant has left.
+
+* Security
+
+| Point                          | Consequence                          |
+|--------------------------------+--------------------------------------|
+| the capability link is the credential | anyone with it can join       |
+| =MEP_COLLAB_ADMIN_TOKEN= creates sessions | keep it off shared machines |
+| the relay is internet-facing   | put TLS in front of it               |
+
+* See also
+
+- [[file:collab.html][Collaborative editing]] -- using a session.

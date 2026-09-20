@@ -1,0 +1,41 @@
+#+TITLE: Images, LaTeX and tables
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="100">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Inline images
+
+| Key / command              | Does                             |
+|----------------------------+----------------------------------|
+| =<leader>oti=              | toggle inline images             |
+| =:MepOrgImagesToggle=      | the same                         |
+| =:MepOrgImageScan=         | rescan the buffer for images     |
+
+A link to an image file is drawn in place, in the buffer:
+
+#+begin_example
+[[file:diagram.png]]
+#+end_example
+
+* LaTeX and maths
+
+| Key / command             | Does                              |
+|---------------------------+-----------------------------------|
+| =<leader>otl=             | toggle the maths preview          |
+| =:MepOrgLatexToggle=      | the same                          |
+| =:MepOrgLatexScan=        | rescan for fragments              |
+
+Fragments written =\(...\)=, =\[...\]=, =$...$= or =$$...$$= are rendered
+and drawn in place of the source. It works in =.tex= files as well as org.
+
+* Tables
+
+=:MepOrgTableAlign= aligns the columns on their pipes.
+
+A literal pipe inside a cell must be escaped as =\vert= or =\|=, or it will
+be read as a column separator.
+
+* See also
+
+- [[file:org-basics.html][Org files in mep]] -- the rest of the rendering.
+- [[file:org-export.html][Exporting]] -- what images and maths become in the output.

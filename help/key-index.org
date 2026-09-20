@@ -1,0 +1,118 @@
+#+TITLE: Key index
+#+HTML_HEAD: <meta name="help-section" content="Reference">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Leader bindings
+
+All 95 =<leader>= sequences registered at startup. Press
+=<Space>= for the same list as a popup, or =<leader>hk= for every
+binding including your own.
+
+Motions, operators and the other Normal-mode keys are on the pages in
+the Editing section; this index covers the leader layer, which is where
+the features live.
+
+| Key | Does | Documented in |
+|-----+------+---------------|
+| =<leader>/= | search | [[file:pickers.html][Pickers]] |
+| =<leader><CR>= | terminal | [[file:terminals.html][Terminals]] |
+| =<leader><Space>= | Command runner (just > make > ninja > cmake) | [[file:runners.html][The command runner]] |
+| =<leader>a<CR>= | AI: Claude Code terminal below | [[file:ai-terminal.html][Claude Code in a pane]] |
+| =<leader>aa= | Toggle AI agents pane | [[file:ai-agents.html][The AI Agents sidebar]] |
+| =<leader>ai= | AI: context picker | [[file:ai-commands.html][Ask the model]] |
+| =<leader>al= | Toggle AI agents pane | [[file:ai-agents.html][The AI Agents sidebar]] |
+| =<leader>bB= | Toggle buffers sidebar | [[file:sidebars.html][Sidebars]] |
+| =<leader>bO= | Browse (external window) | [[file:browser.html][The browser pane]] |
+| =<leader>bb= | Buffers | [[file:files.html][Files and buffers]] |
+| =<leader>bh= | Host (serve) this directory and browse it | [[file:local-server.html][Serving a directory]] |
+| =<leader>bo= | Browse | [[file:browser.html][The browser pane]] |
+| =<leader>bs= | Scratch buffer | [[file:files.html][Files and buffers]] |
+| =<leader>ca= | LSP: code action | [[file:lsp.html][Language servers]] |
+| =<leader>db= | Debug: toggle breakpoint | [[file:debugging.html][Debugging]] |
+| =<leader>dc= | Debug: clear breakpoints in file | [[file:debugging.html][Debugging]] |
+| =<leader>dd= | Debug: start/continue | [[file:debugging.html][Debugging]] |
+| =<leader>di= | Debug: step into | [[file:debugging.html][Debugging]] |
+| =<leader>dn= | Debug: step over | [[file:debugging.html][Debugging]] |
+| =<leader>do= | Debug: step out | [[file:debugging.html][Debugging]] |
+| =<leader>dr= | Debug: restart | [[file:debugging.html][Debugging]] |
+| =<leader>dt= | Debug: terminate | [[file:debugging.html][Debugging]] |
+| =<leader>du= | Debug: toggle UI | [[file:debugging.html][Debugging]] |
+| =<leader>dv= | Debug: evaluate under cursor | [[file:debugging.html][Debugging]] |
+| =<leader>ff= | Toggle file tree | [[file:file-tree.html][The file tree]] |
+| =<leader>fh= | Toggle hidden files in tree | [[file:file-tree.html][The file tree]] |
+| =<leader>fo= | Open file (native dialog) | [[file:file-tree.html][The file tree]] |
+| =<leader>fr= | Refresh file tree | [[file:file-tree.html][The file tree]] |
+| =<leader>gG= | Toggle git sidebar | [[file:git-panel.html][The git panel]] |
+| =<leader>gL= | Git graph (popout) | [[file:git-panel.html][The git panel]] |
+| =<leader>ga= | Git stage hunk at cursor | [[file:git-gutter.html][The git gutter]] |
+| =<leader>gb= | Git branches (popout) | [[file:git-panel.html][The git panel]] |
+| =<leader>gc= | Git commit | [[file:git-hunks.html][Working with hunks]] |
+| =<leader>gd= | Toggle git gutter | [[file:git-gutter.html][The git gutter]] |
+| =<leader>gg= | Toggle git popup | [[file:git-panel.html][The git panel]] |
+| =<leader>gl= | Git log (popout) | [[file:git-panel.html][The git panel]] |
+| =<leader>gp= | Git push | [[file:git-panel.html][The git panel]] |
+| =<leader>gr= | Git reset hunk at cursor | [[file:git-hunks.html][Working with hunks]] |
+| =<leader>gs= | Git stash (popout) | [[file:git-panel.html][The git panel]] |
+| =<leader>gt= | Git status (paneable, stacks with the file tree) | [[file:git-panel.html][The git panel]] |
+| =<leader>gv= | Git preview hunk at cursor | [[file:git-hunks.html][Working with hunks]] |
+| =<leader>gw= | Git workspaces | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =<leader>hf= | Help: search the manual | [[file:intro.html][mep Help]] |
+| =<leader>hh= | Open help | [[file:intro.html][mep Help]] |
+| =<leader>hk= | Help: keymaps | [[file:command-line.html][The command line]] |
+| =<leader>hs= | Help: symbol under the cursor (gh) | [[file:language-ui.html][Language UI modes]] |
+| =<leader>jv= | Runner: variable inspector | [[file:runners.html][The command runner]] |
+| =<leader>jw= | Runner: workspaces | [[file:runners.html][The command runner]] |
+| =<leader>li= | LSP: goto implementation | [[file:lsp.html][Language servers]] |
+| =<leader>lk= | LSP: signature help | [[file:lsp.html][Language servers]] |
+| =<leader>lt= | LSP: goto type definition | [[file:lsp.html][Language servers]] |
+| =<leader>lu= | Language UI mode (toggle) | [[file:c-mode.html][C and C++ mode]] |
+| =<leader>nn= | Toggle notifications pane | [[file:notifications.html][Notifications]] |
+| =<leader>oea= | Org: export to ASCII | [[file:org-export.html][Exporting]] |
+| =<leader>oeh= | Org: export to HTML | [[file:org-export.html][Exporting]] |
+| =<leader>oem= | Org: export to Markdown | [[file:org-export.html][Exporting]] |
+| =<leader>oeo= | Org: export to ODT | [[file:office.html][Word processor documents]] |
+| =<leader>oep= | Org: export to PDF | [[file:org-export.html][Exporting]] |
+| =<leader>ol= | Learn: pick a game for this deck | [[file:learn-games.html][Playing]] |
+| =<leader>ora= | Org-roam: add note | [[file:org-roam.html][Org-roam]] |
+| =<leader>orr= | Org-roam: find note | [[file:org-roam.html][Org-roam]] |
+| =<leader>ors= | Org-roam: sync notes | [[file:org-roam.html][Org-roam]] |
+| =<leader>oti= | Org: toggle inline images | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =<leader>otl= | Toggle LaTeX/math preview (org/tex) | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =<leader>pc= | Clear project (default layout) | [[file:projects.html][Projects]] |
+| =<leader>pf= | Find files | [[file:pickers.html][Pickers]] |
+| =<leader>po= | Projects | [[file:projects.html][Projects]] |
+| =<leader>pp= | Loaded projects | [[file:pickers.html][Pickers]] |
+| =<leader>pr= | Live grep | [[file:pickers.html][Pickers]] |
+| =<leader>rj= | Jump to/from Run/REPL pane | [[file:repl.html][REPL and send-to-terminal]] |
+| =<leader>rn= | LSP: rename | [[file:lsp.html][Language servers]] |
+| =<leader>rr= | Run button: run/compile current file | [[file:run-button.html][Running the current file]] |
+| =<leader>rs= | Run button: setup current filetype | [[file:run-button.html][Running the current file]] |
+| =<leader>sS= | Toggle structure split (buffer-local) | [[file:structure-symbols.html][Structure and symbols]] |
+| =<leader>ss= | Open structure pane (treesitter) | [[file:sidebars.html][Sidebars]] |
+| =<leader>tT= | Toggle tests pane | [[file:sidebars.html][Sidebars]] |
+| =<leader>tt= | Toggle todo pane | [[file:org-clock.html][Clocking and the Todo panel]] |
+| =<leader>ut= | Theme picker | [[file:pickers.html][Pickers]] |
+| =<leader>uu= | Language UI mode (toggle) | [[file:language-ui.html][Language UI modes]] |
+| =<leader>vv= | Speech-to-text: toggle live transcription | -- |
+| =<leader>wd= | Delete workspace | [[file:workspaces.html][Workspaces]] |
+| =<leader>wh= | Previous workspace | [[file:workspaces.html][Workspaces]] |
+| =<leader>wl= | Next workspace | [[file:workspaces.html][Workspaces]] |
+| =<leader>wn= | New workspace | [[file:workspaces.html][Workspaces]] |
+| =<leader>wr= | Rename workspace | [[file:workspaces.html][Workspaces]] |
+| =<leader>ww= | Workspaces | [[file:pickers.html][Pickers]] |
+| =<leader>yy= | Snippets picker | [[file:pickers.html][Pickers]] |
+| =<leader>zf= | Spell: fix | [[file:spell.html][Spell checking]] |
+| =<leader>zg= | Spell: add word to dictionary | [[file:spell.html][Spell checking]] |
+| =<leader>zn= | Spell: next misspelled | [[file:spell.html][Spell checking]] |
+| =<leader>zp= | Spell: previous misspelled | [[file:spell.html][Spell checking]] |
+| =<leader>zs= | Spell: suggestions | [[file:spell.html][Spell checking]] |
+| =<leader>zt= | Spell: toggle | [[file:spell.html][Spell checking]] |
+| =<leader>zw= | Spell: mark word wrong | [[file:spell.html][Spell checking]] |
+| =<leader>zz= | Toggle pane zoom (fullscreen current pane) | [[file:layouts-zen.html][Layouts, zoom and zen]] |
+
+* See also
+
+- [[file:command-index.html][Command index]] -- the same, for commands.
+- [[file:which-key.html][Leader and which-key]] -- the groups.
+- [[file:keymaps.html][Remapping keys]] -- changing them.

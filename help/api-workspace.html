@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workspaces, files and processes</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Lua API">
+<meta name="help-order" content="30">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Workspaces, files and processes</h1>
+<h1>What is here</h1>
+<p>Workspaces and projects, the filesystem, subprocesses, HTTP and the environment mep runs in.</p>
+<p>This page is generated from mep's own binding table, so it lists what
+the running editor actually exposes. Call any of these from
+<code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
+<h1>The bindings (63)</h1>
+<p>A dash means that binding has no doc comment in the source yet, not
+that it does nothing.</p>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>mep.bundled_help_root</code></td><td>the installed rendered help directory</td></tr>
+<tr><td><code>mep.chdir</code></td><td>changes the process's current working directory (native builds only)</td></tr>
+<tr><td><code>mep.direnv_set_active</code></td><td>sets the status bar's direnv chip state</td></tr>
+<tr><td><code>mep.fs_copy</code></td><td>recursively copies a file or directory (native builds only)</td></tr>
+<tr><td><code>mep.fs_create_file</code></td><td>creates an empty file if it doesn't already exist (native builds only)</td></tr>
+<tr><td><code>mep.fs_delete</code></td><td>recursively deletes a file or directory (native builds only), closing any open buffers under it</td></tr>
+<tr><td><code>mep.fs_mkdir</code></td><td>creates a directory (native builds only)</td></tr>
+<tr><td><code>mep.fs_rename</code></td><td>renames/moves a file or directory (native builds only), retargeting any open buffers under `from`</td></tr>
+<tr><td><code>mep.fuzzy_score</code></td><td>score (-1 if no match), positions (1-indexed array)</td></tr>
+<tr><td><code>mep.getcwd</code></td><td>returns the process's current working directory (native builds only)</td></tr>
+<tr><td><code>mep.http_get</code></td><td>performs a blocking HTTP GET</td></tr>
+<tr><td><code>mep.http_serve</code></td><td>starts an in-process static file server on 127.0.0.1</td></tr>
+<tr><td><code>mep.http_servers</code></td><td>lists the running static servers</td></tr>
+<tr><td><code>mep.http_stop</code></td><td>stops the server on `port`, or every server when omitted/0</td></tr>
+<tr><td><code>mep.job_close_stdin</code></td><td>closes a running job's stdin pipe</td></tr>
+<tr><td><code>mep.job_is_running</code></td><td>reports whether a job is still running</td></tr>
+<tr><td><code>mep.job_kill</code></td><td>terminates a running job</td></tr>
+<tr><td><code>mep.job_start</code></td><td>-&gt; id: spawns a subprocess and wires its stdout/stderr/exit to optional Lua callbacks</td></tr>
+<tr><td><code>mep.job_write</code></td><td>writes text to a running job's stdin</td></tr>
+<tr><td><code>mep.list_dir</code></td><td>lists a directory's entries, directories first then alphabetically</td></tr>
+<tr><td><code>mep.list_urls_scan</code></td><td>scans the current buffer for URLs</td></tr>
+<tr><td><code>mep.now</code></td><td>wall-clock seconds since program start (see Editor::Now()</td></tr>
+<tr><td><code>mep.open</code></td><td>opens a file in its default view (e.g. the rendered viewer for HTML rather than plain text)</td></tr>
+<tr><td><code>mep.participant_clear</code></td><td>removes a previously-added synthetic local participant</td></tr>
+<tr><td><code>mep.participant_set</code></td><td>upserts a synthetic local participant's tab-bar chip and in-buffer cursor</td></tr>
+<tr><td><code>mep.participants</code></td><td>lists every current participant (human collaborators, connected agents, synthetic locals)</td></tr>
+<tr><td><code>mep.platform</code></td><td>"linux"/"macos"/"windows"/"wasm" (Phase 13 URL open)</td></tr>
+<tr><td><code>mep.project_add</code></td><td>adds a path to the persisted project-root list</td></tr>
+<tr><td><code>mep.project_close</code></td><td>--</td></tr>
+<tr><td><code>mep.project_current</code></td><td>--</td></tr>
+<tr><td><code>mep.project_list</code></td><td>lists the persisted project-root paths</td></tr>
+<tr><td><code>mep.project_load</code></td><td>Pushes one project as {id, name, root, is_git, git_toplevel, workspace_count, active, index}. */ void PushProjectTable(lua_State *L, const Project...</td></tr>
+<tr><td><code>mep.project_loaded_list</code></td><td>--</td></tr>
+<tr><td><code>mep.project_next</code></td><td>--</td></tr>
+<tr><td><code>mep.project_previous</code></td><td>--</td></tr>
+<tr><td><code>mep.project_readme_path</code></td><td>finds a directory's README file, if any</td></tr>
+<tr><td><code>mep.project_remove</code></td><td>removes a path from the persisted project-root list</td></tr>
+<tr><td><code>mep.project_switch</code></td><td>--</td></tr>
+<tr><td><code>mep.quit</code></td><td>requests that the editor exit</td></tr>
+<tr><td><code>mep.read_lines</code></td><td>returns a file's lines, preferring an open buffer's live contents</td></tr>
+<tr><td><code>mep.run_config_load</code></td><td>loads the persisted Run button config from disk</td></tr>
+<tr><td><code>mep.run_config_save</code></td><td>persists the Run button config to disk (a no-op on the wasm build)</td></tr>
+<tr><td><code>mep.scratch</code></td><td>/ mep.toggle_zen() (Phase 12)</td></tr>
+<tr><td><code>mep.setenv</code></td><td>sets a variable in this process's environment</td></tr>
+<tr><td><code>mep.unsetenv</code></td><td>clears a variable from this process's environment</td></tr>
+<tr><td><code>mep.workspace_adopt</code></td><td>--</td></tr>
+<tr><td><code>mep.workspace_change_epoch</code></td><td>--</td></tr>
+<tr><td><code>mep.workspace_current</code></td><td>the active workspace's table</td></tr>
+<tr><td><code>mep.workspace_delete</code></td><td>`:wsdelete[!]`</td></tr>
+<tr><td><code>mep.workspace_list</code></td><td>every workspace of the active project, in bar order</td></tr>
+<tr><td><code>mep.workspace_new</code></td><td>`:wsnew[!] name`</td></tr>
+<tr><td><code>mep.workspace_next</code></td><td>/ mep.workspace_previous()</td></tr>
+<tr><td><code>mep.workspace_previous</code></td><td>--</td></tr>
+<tr><td><code>mep.workspace_prune</code></td><td>--</td></tr>
+<tr><td><code>mep.workspace_rename</code></td><td>--</td></tr>
+<tr><td><code>mep.workspace_reset</code></td><td>-&gt; ok, err: empties the active workspace back to one fresh pane</td></tr>
+<tr><td><code>mep.workspace_root</code></td><td>the active workspace's root directory ( mep.getcwd() by decision 4)</td></tr>
+<tr><td><code>mep.workspace_set_git_dirty</code></td><td>--</td></tr>
+<tr><td><code>mep.workspace_set_restore</code></td><td>--</td></tr>
+<tr><td><code>mep.workspace_set_worktree_dir</code></td><td>--</td></tr>
+<tr><td><code>mep.workspace_state_restore</code></td><td>--</td></tr>
+<tr><td><code>mep.workspace_state_save</code></td><td>--</td></tr>
+<tr><td><code>mep.workspace_switch</code></td><td>activates a workspace</td></tr>
+</table>
+<h1>See also</h1>
+<ul>
+<li><a href="config.html">Configuration</a> -- where to call these from.</li>
+<li><a href="recipes.html">Configuration recipes</a> -- worked examples.</li>
+</ul>
+</body>
+</html>

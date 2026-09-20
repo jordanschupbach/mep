@@ -1,0 +1,67 @@
+#+TITLE: Syntax highlighting
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Two engines
+
+*Treesitter*, where a grammar is available: a real parse tree, reparsed
+incrementally as you type, giving accurate highlighting that does not fall
+apart inside strings or nested constructs.
+
+*A per-line lexer* for everything else: comment prefixes, quoted strings,
+numbers and a keyword list. Less accurate, but it means no file is ever
+unhighlighted.
+
+Both render through the same [[file:highlight-groups.html][decoration]] pipeline, so both follow your theme.
+
+* Grammars compiled in
+
+=c=, =cpp=, =javascript=, =lua=, =markdown=, =org=, =python=, =r=.
+
+* Grammars you can add
+
+mep ships highlight queries for about fifty more languages without
+compiling in their parsers. One command builds them:
+
+#+begin_example
+just fetch-grammars
+#+end_example
+
+They land in =.ts-grammars/lib/=, and =just run= picks them up from there
+automatically. It is safe to re-run -- already-built grammars are skipped --
+and =just fetch-grammars --force= rebuilds everything.
+
+=$MEP_TS_PARSER_PATH= is the variable behind this, and it composes: the
+recipe *prepends* to whatever a Nix devShell may already have set rather
+than replacing it.
+
+* When it runs
+
+Automatically: on buffer switch, and on a debounce as you edit.
+
+| Command            | Does                                  |
+|--------------------+---------------------------------------|
+| =:MepSyntax=       | re-highlight the buffer now           |
+| =:MepSyntaxFold=   | build folds from the parse tree       |
+| =:MepColorize=     | draw swatches beside colour literals  |
+
+#+begin_src lua
+mep.syntax_auto = false   -- stop the automatic re-highlight
+#+end_src
+
+* Changing the colours
+
+Captures map to colour groups through =mep.ts_capture_hl=, an ordinary Lua
+table -- see [[file:highlight-groups.html][Highlight groups]].
+
+* Colour swatches
+
+=:MepColorize= finds colour literals -- =#ff8800=, =rgb(...)= -- and draws
+the actual colour beside them. Useful in a stylesheet or a theme file.
+
+* See also
+
+- [[file:highlight-groups.html][Highlight groups]] -- what the captures resolve to.
+- [[file:folding.html][Folds]] -- the other thing the parse tree feeds.
+- [[file:structure-symbols.html][Structure and symbols]] -- an outline from the same tree.

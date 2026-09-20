@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leader and which-key</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Interface">
+<meta name="help-order" content="40">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Leader and which-key</h1>
+<h1>Press Space and wait</h1>
+<p>The leader key is <code>&lt;Space&gt;</code>. Press it in Normal mode and a popup lists every
+binding available, grouped and named. Keep pressing keys to walk into a
+group; <code>Esc</code> backs out.</p>
+<p>This is the discovery mechanism for most of mep. There are over two hundred
+commands, and almost none of them are worth memorising -- <code>&lt;Space&gt;</code> and a
+letter gets you there.</p>
+<p>It works in Visual mode too, so the spell and format groups are reachable
+with a selection active.</p>
+<h1>The groups</h1>
+<table>
+<tr><th>Key</th><th>Group</th><th>Holds</th></tr>
+<tr><td><code>a</code></td><td>ai</td><td>AI terminal, agents, context picker</td></tr>
+<tr><td><code>b</code></td><td>buffers/browse</td><td>buffer picker, scratch, browser, serve</td></tr>
+<tr><td><code>c</code></td><td>code</td><td>LSP code actions</td></tr>
+<tr><td><code>d</code></td><td>debug</td><td>breakpoints, stepping, the debug UI</td></tr>
+<tr><td><code>f</code></td><td>file</td><td>find files, the tree, hidden files</td></tr>
+<tr><td><code>g</code></td><td>git</td><td>status, log, hunks, commit, push</td></tr>
+<tr><td><code>h</code></td><td>help</td><td>this manual, keymaps, symbol docs</td></tr>
+<tr><td><code>j</code></td><td>jobs/jupyter</td><td>notebook cells, the runner's tabs</td></tr>
+<tr><td><code>l</code></td><td>lsp/lang</td><td>goto, signature help, language UI</td></tr>
+<tr><td><code>n</code></td><td>notifications</td><td>the notification panel</td></tr>
+<tr><td><code>o</code></td><td>org</td><td>org editing, export, roam, learn games</td></tr>
+<tr><td><code>p</code></td><td>project</td><td>projects, find files, live grep</td></tr>
+<tr><td><code>r</code></td><td>run</td><td>run the file, the REPL pane, rename</td></tr>
+<tr><td><code>s</code></td><td>structure</td><td>the treesitter structure pane</td></tr>
+<tr><td><code>t</code></td><td>todo/tests</td><td>the todo and test panels</td></tr>
+<tr><td><code>u</code></td><td>ui</td><td>theme picker, language UI mode</td></tr>
+<tr><td><code>v</code></td><td>Vocal</td><td>speech-to-text</td></tr>
+<tr><td><code>w</code></td><td>workspace</td><td>new, rename, delete, switch</td></tr>
+<tr><td><code>y</code></td><td>snippets</td><td>the snippet picker</td></tr>
+<tr><td><code>z</code></td><td>spell</td><td>toggle, suggest, fix, add word</td></tr>
+</table>
+<p>Three subgroups hang off <code>o</code>: <code>oe</code> export, <code>ot</code> toggle, <code>or</code> roam.</p>
+<p>A few leader keys are not groups but actions in their own right:
+<code>&lt;leader&gt;/</code> searches the current buffer, <code>&lt;leader&gt;&lt;Space&gt;</code> opens the command
+runner, and <code>&lt;leader&gt;&lt;CR&gt;</code> toggles this tab's terminal.</p>
+<h1>Seeing what is bound</h1>
+<p><code>&lt;leader&gt;hk</code> (<code>:MepKeymaps</code>) opens a searchable list of every binding
+currently in effect, including anything your <code>init.lua</code> added. It is the
+authoritative answer when the popup and your memory disagree.</p>
+<p>From Lua, <code>mep.leader_bindings()</code> returns every leader mapping as
+<code>{seq</code>, desc=}=, and <code>mep.mapping_descriptions()</code> covers the rest.</p>
+<h1>Adding your own</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.leader_map(<span class="tok-green">'xr'</span>, <span class="tok-green">'Reload config'</span>, <span class="tok-purple">function</span>()
+  mep.<span class="tok-blue">cmd</span>(<span class="tok-green">'source '</span> .. os.<span class="tok-blue">getenv</span>(<span class="tok-green">'HOME'</span>) .. <span class="tok-green">'/.config/mep/init.lua'</span>)
+<span class="tok-purple">end</span>)
+
+mep.leader_group(<span class="tok-green">'x'</span>, <span class="tok-green">'extras'</span>, <span class="tok-cyan">0xf013</span>, <span class="tok-green">'Purple'</span>)</code></pre></div>
+<p><code>mep.leader_map(seq, desc, fn, icon?, icon_hl?)</code> binds a sequence; the
+description is what the popup shows, so write it as a label rather than a
+sentence. <code>mep.leader_group(prefix, label, icon?, icon_hl?)</code> names a group
+so your keys appear under a heading instead of loose at the top level.</p>
+<p><code>icon</code> is a Nerd Font codepoint drawn before the key, and <code>icon_hl</code> names
+the highlight group that colours it. The icon is drawn <b>before</b> the key
+rather than embedded in the label, which is what keeps the key column
+aligned.</p>
+<p><code>seq</code> is one character per key, with Enter spelled <code>&lt;CR&gt;</code>:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.leader_map(<span class="tok-green">'a&lt;CR&gt;'</span>, <span class="tok-green">'AI terminal'</span>, mep.ai_terminal_open)</code></pre></div>
+<p><code>&lt;Return&gt;</code> and <code>&lt;Enter&gt;</code> are accepted as the same thing.</p>
+<h1>Changing the leader</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.set_leader(<span class="tok-green">','</span>)</code></pre></div>
+<h1>See also</h1>
+<ul>
+<li><a href="command-line.html">The command line</a> -- the other way to reach a command.</li>
+<li><a href="installing.html">Installing and running</a> -- <code>init.lua</code>, where your bindings go.</li>
+<li><a href="modes.html">Modes</a> -- why the popup only appears in Normal and Visual.</li>
+</ul>
+</body>
+</html>

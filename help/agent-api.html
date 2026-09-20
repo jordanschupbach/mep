@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Driving mep from an agent</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="AI">
+<meta name="help-order" content="50">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Driving mep from an agent</h1>
+<h1>The socket</h1>
+<p>Every running mep binds a Unix socket at</p>
+<pre>~/.local/share/mep/agent-sockets/&lt;pid&gt;.sock</pre>
+<p>speaking JSON-RPC 2.0 with <code>Content-Length</code> framing. No handshake: connect
+and send a request.</p>
+<p><code>mep-mcp</code> is the MCP server in front of it -- a dependency-free C++ binary
+-- which is what an agent normally talks to. A script can speak to the
+socket directly instead.</p>
+<h1>What an agent can do</h1>
+<table>
+<tr><th>Family</th><th>Covers</th></tr>
+<tr><td><code>session.*</code></td><td>identify, info, status, participants</td></tr>
+<tr><td><code>buffer.*</code></td><td>list, read, write, create, switch</td></tr>
+<tr><td><code>cursor.*</code></td><td>get and set the agent's own cursor</td></tr>
+<tr><td><code>pane.*</code></td><td>split, close, focus, resize</td></tr>
+<tr><td><code>workspace.*</code></td><td>list, create, switch, delete</td></tr>
+<tr><td><code>project.*</code></td><td>list, open, switch, close</td></tr>
+<tr><td><code>file.*</code></td><td>open, save</td></tr>
+<tr><td><code>command.run</code></td><td>any ex command, including <code>lua ...</code></td></tr>
+<tr><td><code>ui.*</code></td><td>screenshots, synthetic mouse and keyboard</td></tr>
+<tr><td><code>image.*</code></td><td>headless image generation</td></tr>
+<tr><td><code>model.*</code></td><td>the 3D modeler, in full</td></tr>
+</table>
+<h1>Conventions</h1>
+<ul>
+<li>Rows and columns are <b>0-indexed</b>, and line ranges are <code>[start, end)</code> with the end exclusive. This differs from the Lua API, which is 1-indexed.</li>
+<li>An agent has its <b>own</b> virtual cursor, drawn in the human's panes under its name. Moving it never moves the human's cursor or changes what their panes show.</li>
+<li><code>command.run</code> takes <code>cmd</code>, not <code>command</code>. A wrong key silently runs an empty command and returns success.</li>
+</ul>
+<h1>The rule that matters</h1>
+<p><b>Edit open files through mep's buffer tools, not by writing to disk.</b></p>
+<p>mep does not watch files for external changes, so a disk write will not
+appear in an open buffer -- and when the human next saves that buffer, their
+stale copy overwrites the agent's work silently.</p>
+<h1>Being visible</h1>
+<p>Agents appear as participant chips in the <a href="tab-bar.html">tab bar</a> and in the
+<a href="ai-agents.html">AI Agents sidebar</a>, with a status they set themselves. An agent that reports
+its status is one the human can supervise without interrupting.</p>
+<p><code>mep.participants()</code> exposes the same snapshot to Lua.</p>
+<h1>Full reference</h1>
+<p><code>MEP_AGENT_API.md</code> in mep's source tree has every method, its parameters,
+the pivot table for 3D primitives, and a worked example.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="ai-terminal.html">Claude Code in a pane</a> -- the usual way an agent is launched.</li>
+<li><a href="model3d.html">The 3D modeler</a> -- the largest scriptable surface.</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,63 @@
+#+TITLE: Insert and Replace
+#+HTML_HEAD: <meta name="help-section" content="Editing">
+#+HTML_HEAD: <meta name="help-order" content="50">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Getting in
+
+| Key | Starts typing                             |
+|-----+-------------------------------------------|
+| =i= | before the cursor                         |
+| =a= | after the cursor                          |
+| =I= | at the first non-blank of the line        |
+| =A= | at the end of the line                    |
+| =o= | on a new line below                       |
+| =O= | on a new line above                       |
+| =c= | after deleting whatever its motion covered |
+
+=Esc= returns to Normal mode.
+
+* Replace mode
+
+=R= enters Replace mode, where each character you type overwrites the one
+under the cursor instead of pushing it along. Backspace puts back what was
+overwritten rather than deleting, so you can retreat through a replacement
+without losing the original text. =Esc= leaves.
+
+* Keys that work while typing
+
+| Key              | Does                                            |
+|------------------+-------------------------------------------------|
+| =Ctrl-W=         | delete the word before the cursor               |
+| =Ctrl-U=         | delete back to the start of the line            |
+| =Ctrl-R {reg}=   | insert a register's text, as if typed           |
+| =Ctrl-Shift-V=   | paste the system clipboard directly             |
+| =Tab=            | accept an inline AI suggestion, or the completion popup's selection |
+
+=Ctrl-R= takes any register name: ="= or =+= for the clipboard, =a= for
+register =a=, and so on. It also works on the =:= command line and the =/=
+search prompt, where the inserted text is kept to one printable line.
+
+* Completion
+
+A completion popup appears as you type, merging buffer words, snippet
+triggers, filesystem paths and -- when a language server is attached --
+its suggestions, into one list with duplicates collapsed.
+
+While the popup is open =Tab= belongs to it. Inline AI suggestions (the
+dimmed text that appears ahead of the cursor) also use =Tab=, but only when
+the popup is closed, so the two never compete for the key.
+
+* Indentation and snippets
+
+A snippet trigger followed by =Tab= expands it. After expanding, =:MepSnippetNext=
+and =:MepSnippetPrev= move between its tabstops. Jumping between tabstops
+immediately after expansion is reliable; editing heavily before jumping to a
+later tabstop can leave it stale, because positions are computed once at
+expansion time.
+
+* See also
+
+- [[file:modes.html][Modes]] -- how Insert relates to everything else.
+- [[file:registers-marks.html][Registers, marks and jumps]] -- what =Ctrl-R= can reach.
+- [[file:operators.html][Operators and text objects]] -- =c= and its motions.

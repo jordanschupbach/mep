@@ -1,0 +1,69 @@
+#+TITLE: Registers, marks and jumps
+#+HTML_HEAD: <meta name="help-section" content="Editing">
+#+HTML_HEAD: <meta name="help-order" content="70">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* The unnamed register is the clipboard
+
+This is the one thing to know. Every yank and every delete lands on the
+*system clipboard*, and =p= pastes whatever was copied last -- in mep or in
+any other application. There is no setting to enable; it is how mep behaves.
+(Vim calls this =clipboard=unnamedplus=.)
+
+="+= and ="*= are accepted as other spellings of the same register, so
+muscle memory from Vim works.
+
+Text that ends in a newline pastes linewise, on its own lines; anything else
+pastes inline at the cursor.
+
+*On X11*, the clipboard is owned by the mep window, as with any X
+application. Its contents disappear when mep exits unless a clipboard
+manager is running. That is X's design, not mep's.
+
+* Named registers
+
+Prefix an operator or a put with ="= and a letter:
+
+| Typed  | Does                                    |
+|--------+-----------------------------------------|
+| ="ayy= | yank this line into register =a=        |
+| ="ap=  | put register =a=                        |
+| ="Ayy= | *append* this line to register =a=      |
+
+A capital letter appends rather than replaces, which is how you collect
+several scattered lines into one register before putting them all at once.
+
+From Lua, =mep.clipboard_get()= and =mep.clipboard_set(text)= reach the
+system clipboard directly, independent of the registers.
+
+* Marks
+
+| Typed     | Does                                                 |
+|-----------+------------------------------------------------------|
+| =m{a-z}=  | set a mark at the cursor                             |
+| =`{a-z}=  | jump to that exact position                          |
+| ='{a-z}=  | jump to that line's first non-blank                  |
+| =``=      | jump back to where you were before the last big jump |
+| ='''=     | the same, to the line's first non-blank              |
+| =gv=      | reselect the last Visual selection                   |
+
+Marks work as operator targets too, so =d`a= deletes from the cursor to mark
+=a=, and =y'a= yanks the lines between.
+
+"Big jump" means a mark jump, =gg= or =G=, or a search -- the movements
+where you are likely to want to get back.
+
+* The jumplist
+
+=Ctrl-O= goes back through the positions you jumped from, =Ctrl-I= forward
+again. Searches, =gg=/=G= and mark jumps all record an entry.
+
+The jumplist is per-pane and can span buffers, so =Ctrl-O= will return you to
+a different file if that is where you came from. It is a separate mechanism
+from the single-slot =``=.
+
+* See also
+
+- [[file:motions.html][Motions]] -- what counts as a jump.
+- [[file:operators.html][Operators and text objects]] -- yanking and putting.
+- [[file:insert-mode.html][Insert and Replace]] -- =Ctrl-R= to insert a register while typing.

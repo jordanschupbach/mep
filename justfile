@@ -91,6 +91,42 @@ run: build-native
 run-wasm: build-web
     LD_LIBRARY_PATH="${MEP_WEBVIEW_LD_LIBRARY_PATH:-}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" deno task launch
 
+# Re-render the built-in help workspace: every help/*.org through mep's own
+# Org exporter (`mep --export-org`, src/main.cpp's RunHeadlessOrgExport) to
+# the help/*.html the Help sidebar actually lists and ships. Needs no
+# display -- the export path branches off before InitWindow -- so this is
+# equally usable from CI and over ssh. The .html files are checked in
+# (CMakeLists.txt installs help/ wholesale), so run this and commit the
+# result whenever a help source changes; `mep-help-test` fails when they
+# have drifted apart.
+help: build-native
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob
+    # The Lua API reference is generated from src/lua_env.cpp's own binding
+    # table -- ~445 entries is not something to hand-maintain -- so refresh
+    # those sources before exporting anything.
+    python3 scripts/gen_reference_pages.py
+    for src in help/*.org; do
+        # _-prefixed sources are not pages: help/_template.org is the
+        # starting point a new page is copied from, and would otherwise
+        # export to a _template.html the Help sidebar would then list.
+        case "$(basename "$src")" in _*) continue ;; esac
+        out="${src%.org}.html"
+        ./{{native_build_dir}}/mep --export-org "$src" "$out"
+        echo "  $src -> $out"
+    done
+
+# Check the built-in help workspace: that every help/*.html is exactly what
+# its .org source exports today (re-exported and compared, not an mtime
+# check -- git does not preserve mtimes), that every page declares the title
+# and section the sidebar places it by, that internal links resolve, and how
+# much of mep's command/<leader> surface the manual actually mentions.
+# Coverage is reported but only enforced with --strict, since the manual is
+# being written incrementally (plans/HELP_DOCS_PLAN.md).
+help-check *ARGS: build-native
+    python3 scripts/check_help.py {{native_build_dir}}/mep {{ARGS}}
+
 # Remove all build output.
 clean:
     rm -rf build
@@ -108,6 +144,12 @@ clean:
 test: build-native
     #!/usr/bin/env bash
     set -euo pipefail
+    # Runs before the C++ binaries below: `mep-collab-session-test` in that
+    # list requires a ws:// URL and exits 2 without one, which aborts the
+    # recipe under `set -e` -- a pre-existing failure, but one that would
+    # otherwise mean this check never ran at all.
+    echo "== check_help"
+    python3 scripts/check_help.py {{native_build_dir}}/mep --strict
     targets=(mep-html-doc-test mep-web-ladder-test mep-org-doc-test mep-vterm-test mep-spell-test mep-notebook-doc-test mep-workspace-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do

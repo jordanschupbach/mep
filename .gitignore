@@ -12,3 +12,4 @@ tmp_assets/
 *.pdf
 README.html
 ./tmp
+.scratch/

@@ -1,0 +1,64 @@
+#+TITLE: Org files in mep
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What you get
+
+Open a =.org= file and you get a rendered outline: headings styled by level,
+emphasis shown, links live, tables aligned. It is still an ordinary text
+buffer underneath -- every motion, operator and undo works as usual.
+
+=:Org= and =:Text= leave a rendered view and show the raw text.
+
+* Headings
+
+| Command                       | Does                              |
+|-------------------------------+-----------------------------------|
+| =:MepOrgCycle=                | cycle this heading's folding      |
+| =:MepOrgFold=                 | fold                              |
+| =:MepOrgInsertHeading=        | new heading at this level         |
+| =:MepOrgInsertTodoHeading=    | new TODO heading                  |
+| =:MepOrgPromote= / =Demote=   | change this heading's level       |
+| =:MepOrgPromoteSubtree= / =DemoteSubtree= | move the whole subtree |
+| =:MepOrgNext= / =Prev=        | next / previous heading           |
+| =:MepOrgMatch=                | jump to the matching structure    |
+
+* Narrowing
+
+=:MepOrgNarrow= restricts the buffer to the subtree under the cursor, so
+everything -- search, substitute, export -- acts only on that. =:MepOrgWiden=
+returns.
+
+This is the tool for working in one section of a large file without the rest
+getting in the way.
+
+* Emphasis
+
+Org's markers work as you would expect: =*bold*=, =/italic/=, =_underline_=,
+=+strikethrough+=, ==verbatim== and =~code~=.
+
+mep leaves the markers *visible*, as Emacs org-mode does by default, and
+styles the whole span including them.
+
+* Lists
+
+| Command                    | Does                            |
+|----------------------------+---------------------------------|
+| =:MepOrgListNewItem=       | new item at this level          |
+| =:MepOrgListIndent=        | indent the item                 |
+| =:MepOrgListOutdent=       | outdent it                      |
+| =:MepOrgListRenumber=      | renumber an ordered list        |
+| =:MepOrgCheckbox=          | toggle a checkbox               |
+
+* Tables
+
+=:MepOrgTableAlign= aligns a table's columns on the pipes.
+
+A literal =|= inside a cell is written =\vert= or escaped as =\|=.
+
+* See also
+
+- [[file:org-todo.html][TODO keywords and tags]] -- turning headings into tasks.
+- [[file:org-export.html][Exporting]] -- turning the file into something else.
+- [[file:folding.html][Folds]] -- the generic folding keys.

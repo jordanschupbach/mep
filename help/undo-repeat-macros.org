@@ -1,0 +1,55 @@
+#+TITLE: Undo, repeat and macros
+#+HTML_HEAD: <meta name="help-section" content="Editing">
+#+HTML_HEAD: <meta name="help-order" content="80">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Undo
+
+=u= undoes, =Ctrl-r= redoes. Undo history is *per buffer*, so undoing in one
+file never disturbs another.
+
+Two panes showing the same buffer share one undo history, because they share
+the buffer. Undoing in either affects both, which is what you want: there is
+only one set of contents to undo.
+
+* Repeat
+
+=.= replays the last change. It is the highest-value key on this page:
+make a change once, move somewhere else, press =.=.
+
+A count before =.= overrides the original count rather than multiplying it.
+If you typed =2dd= and then press =3.=, you delete three lines, not six.
+
+* Macros
+
+When =.= is not enough because the thing to repeat is several commands:
+
+| Typed     | Does                                             |
+|-----------+--------------------------------------------------|
+| =q{a-z}=  | start recording into that register               |
+| =q{A-Z}=  | start recording, *appending* to that register    |
+| =q=       | stop recording                                   |
+| =@{a-z}=  | replay that register                             |
+| =@@=      | replay whichever was played last                 |
+| =5@a=     | replay register =a= five times                   |
+
+A macro is just text in a register, which means everything on the
+[[file:registers-marks.html][registers]] page applies: you can yank a line of keystrokes into a register and
+run it, or put a recorded macro into the buffer with ="ap= to see what it
+captured.
+
+* The Visual-mode gap
+
+Changes made from Visual mode are not captured by =.= or by macro recording.
+This is a known gap, not a design decision.
+
+In practice: when you want a change to be repeatable, express it as an
+operator with a motion or text object (=ciw=) rather than as a selection
+followed by an operator (=viwc=). The two do the same thing, but only the
+first repeats.
+
+* See also
+
+- [[file:operators.html][Operators and text objects]] -- the repeatable form of a change.
+- [[file:visual-mode.html][Visual modes]] -- where the gap applies.
+- [[file:registers-marks.html][Registers, marks and jumps]] -- macros are registers.

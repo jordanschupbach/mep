@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Measuring the engine</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Web">
+<meta name="help-order" content="30">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Measuring the engine</h1>
+<h1>Twelve self-checking sites</h1>
+<p>"How much of a browser is it?" is a question mep answers with a test rather
+than a claim. <code>examples/web/</code> is a ladder of twelve self-checking JavaScript
+sites, from a static page up to a bundled React application -- all of which
+pass in real Chromium, so the ladder measures mep against a real browser
+rather than against itself.</p>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:WebLadder</code></td><td>serve the ladder and open it</td></tr>
+<tr><td><code>:WebLadderRun</code></td><td>score every level</td></tr>
+</table>
+<p>Headlessly:</p>
+<pre>build/native/mep-web-ladder-test
+build/native/mep-web-ladder-test --strict
+build/native/mep-web-ladder-test --eval file.js</pre>
+<h1>The levels</h1>
+<p>Static page, DOM, events, timers, external resources, language features,
+<code>fetch</code>, a todo app, a router, ES modules, React via UMD, and a bundled
+React application.</p>
+<p>All twelve currently pass, which is why <code>--strict</code> works as a regression
+gate: it fails the build if any level stops passing.</p>
+<h1>Reading a failure</h1>
+<p>A failing level names the browser feature it needed. That is the point of
+the ladder -- it turns "the page does not work" into a specific missing
+capability, which is a thing you can go and implement.</p>
+<p><code>--eval file.js</code> runs one script and reports what the engine makes of it,
+which is the quickest way to check whether a particular construct is
+supported.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="browser.html">The browser pane</a> -- the engine being measured.</li>
+<li><a href="local-server.html">Serving a directory</a> -- how the ladder is hosted.</li>
+</ul>
+</body>
+</html>

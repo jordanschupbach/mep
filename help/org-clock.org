@@ -1,0 +1,70 @@
+#+TITLE: Clocking and the Todo panel
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="50">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Clocking time
+
+| Command                | Does                                      |
+|------------------------+-------------------------------------------|
+| =:MepOrgClockIn=       | start the clock on this heading           |
+| =:MepOrgClockOut=      | stop it                                   |
+| =:MepOrgClockTable=    | a table of time clocked                   |
+
+A clock is a =CLOCK:= line in a =:LOGBOOK:= drawer under the heading:
+
+#+begin_example
+:LOGBOOK:
+CLOCK: [2026-09-20 Sat 10:00]--[2026-09-20 Sat 11:30] =>  1:30
+:END:
+#+end_example
+
+Only *one* clock runs at a time, so clocking in somewhere else stops the
+previous one.
+
+* The Todo panel
+
+=<leader>tt= (=:MepActivityTodoPanel=, or the Todo button in the tab bar)
+lists every keyworded heading in the project's =TODO.org= and edits it in
+place.
+
+| Key     | Does                                                    |
+|---------+---------------------------------------------------------|
+| =a=     | add a todo -- a new =* TODO= heading at the end of the file |
+| =e=     | open =TODO.org= in a float, cursor on this heading      |
+| =d=     | mark done, or not done again                            |
+| =x=     | delete it and its subtree, after a confirm              |
+| =Enter= | start or stop this heading's clock                      |
+| =o=     | open the file                                           |
+| =R=     | re-read it                                              |
+| =?=     | list these keys                                         |
+
+=e= is the escape hatch: the panel edits titles and states, but the float
+gives you the whole heading -- body, properties, logbook -- in a real
+editable buffer.
+
+#+begin_src lua
+mep.activity_todo_file = '~/notes/tasks.org'   -- override the path
+#+end_src
+
+* The file is the source of truth
+
+The panel does not hold state. Rows and the running clock are re-read from
+the file on every render, and the panel re-renders whenever =TODO.org= is
+edited in a buffer or any buffer is saved.
+
+So edits made in the editor and keys pressed in the panel always agree, and
+a clock started by typing a =CLOCK:= line by hand counts exactly the same.
+
+* The status-line chip
+
+The clocked-in todo appears at the right of the [[file:status-line.html][status line]] -- green, with
+its title and a live timer, or a red =[No active TODO]=. Clicking it toggles
+the panel.
+
+Marking a clocked-in todo done stops its clock.
+
+* See also
+
+- [[file:org-todo.html][TODO keywords and tags]] -- what the panel lists.
+- [[file:status-line.html][The status line]] -- the chip.

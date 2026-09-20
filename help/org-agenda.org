@@ -1,0 +1,30 @@
+#+TITLE: Agenda
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* The views
+
+| Command                    | Shows                                   |
+|----------------------------+-----------------------------------------|
+| =:MepOrgAgendaToday=       | today                                   |
+| =:MepOrgAgendaWeek=        | the coming week                         |
+| =:MepOrgAgendaTodo=        | every open TODO, whatever its date      |
+| =:MepOrgAgendaOverdue=     | everything past its deadline            |
+| =:MepOrgAgendaSearch=      | search across the agenda files          |
+
+Each collects across *all* your agenda files, which is the point: the
+agenda is the view that does not care which file something lives in.
+
+* Agenda files
+
+=:MepOrgAgendaAddFile= adds the current file to the set the agenda scans.
+
+Globs are expanded, so one entry can cover a directory of notes rather than
+being listed file by file.
+
+* See also
+
+- [[file:org-dates.html][Timestamps and scheduling]] -- what puts an entry here.
+- [[file:org-capture.html][Capture]] -- getting something into a file quickly.
+- [[file:org-clock.html][Clocking and the Todo panel]] -- the in-editor task list.

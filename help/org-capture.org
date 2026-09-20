@@ -1,0 +1,31 @@
+#+TITLE: Capture
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="60">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Getting a thought out of your head
+
+=:MepOrgCapture= opens a small buffer, you write, and the result lands in
+the right place in the right file -- without you navigating there and losing
+what you were doing.
+
+| Command                   | Does                       |
+|---------------------------+----------------------------|
+| =:MepOrgCapture=          | start a capture            |
+| =:MepOrgCaptureCommit=    | file it                    |
+| =:MepOrgCaptureAbort=     | throw it away              |
+| =:MepOrgTemplate=         | insert a template          |
+
+* Templates
+
+A template says where a capture goes and what shape it has. Expansion fills
+in the parts that depend on the moment -- the date, the file you were in,
+the cursor's location -- so a captured note carries its context.
+
+=mep.org_capture_expand_template(text)= is the expansion, callable directly
+if you are building something of your own.
+
+* See also
+
+- [[file:org-links.html][Links and footnotes]] -- =:MepOrgStoreLink= before capturing gives the note a way back.
+- [[file:org-agenda.html][Agenda]] -- where captured tasks turn up.

@@ -1,0 +1,84 @@
+#+TITLE: Pickers
+#+HTML_HEAD: <meta name="help-section" content="Files and windows">
+#+HTML_HEAD: <meta name="help-order" content="60">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What a picker is
+
+A centred list you filter by typing, with a preview beside it. Most of the
+ways to find something in mep are one.
+
+Every picker shares the same shape: type to filter, Up/Down or =Ctrl-P=/
+=Ctrl-N= to move, =Enter= to accept, =Esc= to cancel. Each one lists its own
+extra keys along its bottom edge, so you never have to remember them.
+
+* The main ones
+
+| Key           | Picker                                        |
+|---------------+-----------------------------------------------|
+| =<leader>ff=  | find files under the workspace root           |
+| =<leader>pf=  | find files (the same thing)                   |
+| =<leader>pr=  | live grep across the project                  |
+| =<leader>/=   | fuzzy find within the current buffer          |
+| =<leader>bb=  | open buffers                                  |
+| =<leader>ut=  | colorscheme, with live preview                |
+| =<leader>hk=  | every key binding currently in effect         |
+| =<leader>yy=  | snippets                                      |
+| =<leader>pp=  | loaded projects                               |
+| =<leader>ww=  | workspaces                                    |
+
+The tab bar's three search buttons are the first, second and fourth of
+these.
+
+* The buffer picker
+
+=<leader>bb= previews the highlighted buffer's *live* contents -- unsaved
+edits included -- around its cursor position.
+
+| Key     | Does                                    |
+|---------+-----------------------------------------|
+| =Enter= | show it in the focused pane             |
+| =C-v=   | open in a new vertical split            |
+| =C-s=   | open in a new horizontal split          |
+| =C-t=   | open in a new tab                       |
+| =C-i=   | open as a buffer tab of the focused pane |
+| =C-d=   | delete the buffer, confirming if unsaved |
+
+=mep.buffer_open_with(id, how)= is the scriptable form, where =how= is
+=switch=, =vsplit=, =split=, =tab= or =pane_tab=.
+
+* The theme picker
+
+=<leader>ut= is worth singling out because it previews live: every change of
+the highlighted row re-tints the whole interface immediately, before you
+commit. =Enter= keeps the theme, =Esc= restores the one you started with.
+There are 62 to look through.
+
+* Live grep
+
+=<leader>pr= searches every file under the workspace root and lists matching
+lines. Because the working directory follows the active workspace, this
+searches that worktree and not the others.
+
+* Writing your own
+
+Pickers are ordinary Lua, and the built-in ones are defined the same way
+yours would be:
+
+#+begin_src lua
+mep.picker_open('Pick a colour', {'red', 'green', 'blue'}, function(item)
+  if item then mep.notify('you chose ' .. item) end
+end)
+#+end_src
+
+The callback receives =nil= when cancelled. Further arguments add a preview
+and a per-row callback for live-preview behaviour like the theme picker's.
+=mep.picker_set_hint(text)= writes the key list along the bottom edge, and
+=mep.picker_set_tabs= gives a picker several tabbed sources, as the command
+runner does.
+
+* See also
+
+- [[file:file-tree.html][The file tree]] -- browsing instead of typing.
+- [[file:files.html][Files and buffers]] -- what happens once a file is open.
+- [[file:search.html][Searching]] -- searching within one buffer.

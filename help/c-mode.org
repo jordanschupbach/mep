@@ -1,0 +1,67 @@
+#+TITLE: C and C++ mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+=<leader>lu= in a C or C++ file. The panels here are built around compiling
+rather than around a session, because that is what the language gives you.
+
+* The panels
+
+| Panel    | Shows                                            |
+|----------+--------------------------------------------------|
+| Assembly | the compiler's output for the current file       |
+| Build    | the build's diagnostics                          |
+| Hex      | a hex view of a compiled binary                  |
+| Help     | =man= for the symbol under the cursor            |
+
+* Assembly
+
+The Assembly panel compiles the current file and shows the generated
+assembly -- the "what did the compiler actually do with this" view, without
+leaving the editor.
+
+It uses the *same* compiler and flags as the [[file:run-button.html][run button]], taken from the same
+per-project configuration, so what you see is what your build produces
+rather than a default-flags approximation.
+
+#+begin_src lua
+mep.opt.c_ui_filter_directives = true   -- hide .cfi/.size and friends
+#+end_src
+
+Assembler directives are noise for most reading, so filtering them is
+usually what you want.
+
+* Hex
+
+A paged hex dump of a binary.
+
+| Key | Does              |
+|-----+-------------------|
+| =n= | next page         |
+| =p= | previous page     |
+| =r= | reload the binary |
+
+#+begin_src lua
+mep.opt.c_ui_hex_page = 1024   -- bytes per page
+#+end_src
+
+* Help
+
+=gh= on a symbol opens its =man= page in the Help tab.
+
+* Options
+
+#+begin_src lua
+mep.opt.c_ui_info_share = 0.3
+mep.opt.c_ui_bottom_share = 0.35
+mep.opt.c_ui_bottom_info_share = 0.4
+#+end_src
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the shared machinery.
+- [[file:run-button.html][Running the current file]] -- where the compiler and flags come from.
+- [[file:debugging.html][Debugging]] -- stepping through the result.

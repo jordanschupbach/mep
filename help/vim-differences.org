@@ -1,0 +1,86 @@
+#+TITLE: What is and isn't Vim
+#+HTML_HEAD: <meta name="help-section" content="Getting started">
+#+HTML_HEAD: <meta name="help-order" content="50">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Read this first if you know Vim
+
+mep is not a Vim clone and does not aim to be one. Most of what your fingers
+already know works: modes, counted motions, operators and text objects,
+registers, marks, the jumplist, search, =.=-repeat, macros, buffers, splits
+and tabs. The list below is the part that will surprise you, so it is worth
+two minutes now rather than a confusing hour later.
+
+* The regex flavour is not Vim's
+
+=/=, =?= and =:s= do take regular expressions, but an ECMAScript/PCRE-style
+subset rather than Vim's own magic/=\v=/=\zs= system. Write =\d+= and
+=(foo|bar)=, not =\d\+= and =\(foo\|bar\)=.
+
+There are no backreferences *inside* a pattern, no lookaround, no
+=\p{...}=, and no POSIX =[:alpha:]= classes. A pattern that fails to
+compile is not an error -- it is matched literally instead, which is why a
+stray =(= searches for a parenthesis rather than complaining.
+
+=:g= and =:v= are the exception: their pattern is always a plain substring,
+never a regex.
+
+See [[file:search.html][Searching]] and [[file:substitute.html][Substitute and global]] for the detail.
+
+* =s= is a jump, not a substitute
+
+In Vim, =s= substitutes the character under the cursor. In mep, =s= starts a
+typed-query jump: keep typing and every match across every visible pane gets
+a one-key label to jump to. Vim's =s= was never implemented, so nothing is
+shadowed -- and =cl= does the same job if you want it.
+
+It is bound in ordinary Lua, so =mep.map('n', 's', ...)= rebinds it like
+anything else.
+
+* Window navigation is directional
+
+=Ctrl-W h=, =j=, =k= and =l= move focus to the pane spatially left, below,
+above or right of the current one, rather than cycling. =Ctrl-W w= and =W=
+still cycle. The same directional heuristic is on =mod1+hjkl= (=Alt= by
+default), along with a whole =mod1= layer for splitting, resizing, moving
+buffers between panes and maximizing.
+
+* Pane resizing is a boundary drag
+
+=mod1+Shift+hjkl= moves the split boundary between the current pane and its
+neighbour, growing against a neighbour on that side if there is one and
+shrinking against the other side if there is not. It is a two-way boundary
+drag, not Vim's full window-layout resize algorithm, so opposite keys always
+do opposite things and a pane alone on an axis simply does not move.
+
+* Visual-mode changes do not repeat
+
+=.= replays the last change, and macros record and replay, but a change made
+from Visual mode is not currently captured by either. This is a known gap
+rather than a design decision.
+
+* The unnamed register is the system clipboard
+
+Every yank and every delete lands on the system clipboard, and =p= pastes
+whatever was copied last in any application -- Vim's =clipboard=unnamedplus=
+behaviour, without the setting. ="+= and ="*= are accepted as other spellings
+of the same register.
+
+On X11 the clipboard is owned by the mep window, so its contents are gone
+once mep exits unless a clipboard manager is running. That is how X works,
+not a mep limitation.
+
+* Smaller differences
+
+- Line numbers are on by default, in Vim's hybrid style: the cursor's line
+  shows its real number, every other row its distance. =:set nonumber
+  norelativenumber= turns them off.
+- Soft wrap is on by default. A wrapped line is still one buffer line, so it
+  gets one line number and =j= moves past the whole thing.
+- =:q= closes the current pane and only quits once it is the last one, which
+  matches Vim; =:qa= refuses when anything anywhere is unsaved.
+
+* See also
+
+- [[file:first-steps.html][Your first ten minutes]] -- the basics, if you want them anyway.
+- [[file:key-index.html][Key index]] -- what is bound out of the box.

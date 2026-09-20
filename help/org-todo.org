@@ -1,0 +1,42 @@
+#+TITLE: TODO keywords and tags
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Marking work
+
+| Command              | Does                                  |
+|----------------------+---------------------------------------|
+| =:MepOrgTodo=        | cycle this heading's TODO keyword     |
+| =:MepOrgPriority=    | set a priority                        |
+| =:MepOrgTags=        | edit this heading's tags              |
+| =:MepOrgTagsPicker=  | pick from the tags already in the file |
+| =:MepOrgCheckbox=    | toggle a checkbox                     |
+
+A keyworded heading is what the [[file:org-clock.html][Todo panel]] and the [[file:org-agenda.html][agenda]] pick up, so this
+is the entry point to most of the org tooling.
+
+* Sorting and filtering
+
+| Command                   | Does                                 |
+|---------------------------+--------------------------------------|
+| =:MepOrgSortTodo=         | sort a subtree by TODO state         |
+| =:MepOrgSortPriority=     | sort by priority                     |
+| =:MepOrgSortAlpha=        | sort alphabetically                  |
+| =:MepOrgSparseTodo=       | show only the TODO headings          |
+
+A sparse tree is the quickest way to see what is outstanding in a long file
+without leaving it.
+
+* Moving things
+
+| Command            | Does                                            |
+|--------------------+-------------------------------------------------|
+| =:MepOrgRefile=    | move this subtree under another heading         |
+| =:MepOrgArchive=   | move it to the archive                          |
+
+* See also
+
+- [[file:org-dates.html][Timestamps and scheduling]] -- dates on a task.
+- [[file:org-clock.html][Clocking and the Todo panel]] -- tracking time against one.
+- [[file:org-agenda.html][Agenda]] -- everything due, across files.

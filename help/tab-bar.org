@@ -1,0 +1,74 @@
+#+TITLE: The tab bar
+#+HTML_HEAD: <meta name="help-section" content="Interface">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* One row, four jobs
+
+#+begin_example
+[project] [ws1] [ws2*] | ● ○ + x            chips  search  panels
+#+end_example
+
+Reading left to right: which project you are in, which workspaces it has,
+which tabs the active workspace has, and then -- docked right -- who else is
+here, the searches, and the panel toggles.
+
+* The project label
+
+The leftmost item is the active project's name. Clicking it opens the
+loaded-projects switcher, the same thing =<leader>pp= opens.
+
+* Workspace labels
+
+One label per workspace in the project.
+
+| You see          | It means                                          |
+|------------------+---------------------------------------------------|
+| highlighted      | this is the active workspace                      |
+| =*= after a name | that workspace has unsaved buffers                |
+| dimmed, =...=    | its git worktree is still being created           |
+| =+= after a name | uncommitted changes (only with =workspace_git_dirty=) |
+
+| Action        | Does                              |
+|---------------+-----------------------------------|
+| click         | switch to that workspace          |
+| middle-click  | close it                          |
+| hover         | show its directory and branch     |
+
+The =*= marker is worth watching: it is how you notice unsaved work in a
+workspace you are not currently looking at, which is exactly the work =:qa=
+will refuse to discard.
+
+* Tabs
+
+The active workspace's tabs, drawn as circles -- filled for the current one
+-- followed by a =+= to add a tab and an =x= to close the current one.
+
+Each tab has its own split layout. See [[file:panes-tabs.html][Panes and tabs]].
+
+* Docked right
+
+*Participant chips* show anyone else connected: other humans in a
+collaboration session, and AI agents running in this window. Clicking a chip
+jumps to that participant's cursor.
+
+*Three search buttons*, which are the same pickers as:
+
+| Button                  | Key          |
+|-------------------------+--------------|
+| fuzzy find in this buffer | =<leader>/= |
+| project-wide live grep  | =<leader>pr= |
+| open buffers            | =<leader>bb= |
+
+*Panel toggles* for Files, Git, Symbols, Structure, Todo, Tests,
+Notifications and AI Agents. Each is lit while its panel is open; click to
+open or close.
+
+A speech-to-text microphone indicator appears here while live transcription
+is recording.
+
+* See also
+
+- [[file:status-line.html][The status line]] -- the row at the other end of the window.
+- [[file:sidebars.html][Sidebars]] -- what the panel toggles open.
+- [[file:workspaces.html][Workspaces]] -- what the labels represent.

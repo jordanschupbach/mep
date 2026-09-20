@@ -1,0 +1,109 @@
+#+TITLE: Sidebars
+#+HTML_HEAD: <meta name="help-section" content="Interface">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* The panels
+
+| Panel         | Opens with                    |
+|---------------+-------------------------------|
+| Files         | =<leader>ff=                  |
+| Git           | =<leader>gG= docked, =gg= popped out |
+| Symbols       | =:MepSymbols=                 |
+| Structure     | =<leader>ss=                  |
+| Todo          | =<leader>tt=                  |
+| Tests         | =<leader>tT=                  |
+| Notifications | =<leader>nn=                  |
+| AI Agents     | =<leader>al=                  |
+| Buffers       | =<leader>bB=                  |
+| Debug         | =<leader>du=                  |
+| Help          | =<leader>hh=                  |
+
+Each also has a toggle button in the tab bar.
+
+* Stacking
+
+Sidebars docked on the *same* edge share one column, split vertically
+between them. Opening Git Status while the file tree is open stacks it below
+rather than beside -- one column, two panels.
+
+| Key                 | Does                                         |
+|---------------------+----------------------------------------------|
+| drag the divider    | resize two stacked sidebars                  |
+| =mod1+Shift+j= =k=  | the same, from the keyboard                  |
+| =mod1+j= =mod1+k=   | step focus between stacked sidebars          |
+| =mod1+Ctrl+j= =k=   | swap this sidebar with the one above/below   |
+
+Swapping keeps the sidebar focused, so the cursor travels with it.
+
+* Popping one out
+
+=mod1+m= from inside a focused sidebar pops it into a large centred float
+with a *preview column* beside the list. The rows and keys are unchanged, so
+=j=/=k=, Enter and the panel's own bindings all still work.
+
+What the preview shows depends on the panel:
+
+| Panel      | Preview                                        |
+|------------+------------------------------------------------|
+| Files      | the file under the cursor, or a directory listing |
+| Git Status | =git diff HEAD= for the entry                  |
+| Todo       | the headline's org subtree                     |
+| Structure  | the definition's source                        |
+
+Each is syntax-highlighted where a grammar is available. =mod1+j=/=k=
+scroll the preview. =Esc=, =q=, =mod1+m= again, or a click outside drop back
+to the docked panel; anything that moves focus out of the sidebar ends the
+popout too.
+
+* The =?= key
+
+Every sidebar's bottom row hints =?: help=. Pressing =?= swaps the panel's
+rows for a list of its key bindings, and the footer changes to
+=Esc: back to ...=. =Esc=, =?= or =q= return.
+
+This is the fastest way to learn any panel: open it and press =?=. The file
+tree works the same way, even though it is a pane rather than a sidebar.
+
+* Following the cursor
+
+A row marked as current -- the Structure outline's "you are here", the
+buffer list's active buffer -- is scrolled into view automatically whenever
+it moves while the sidebar is *not* focused. So a panel you are not looking
+at still tracks what you are doing.
+
+* Tab strips
+
+A sidebar can carry a tab strip, drawn under its title. =Tab= and
+=Shift-Tab= switch views while it is focused, as do the number keys and a
+click. The git panel is built on this -- Status, Log, Graph, Branches and
+Stash are five views of one sidebar.
+
+* Writing your own
+
+#+begin_src lua
+local id = mep.sidebar_create('Notes', 'left', 30)
+mep.sidebar_set_sections(id, {{
+  id = 'main', title = 'Notes', collapsed = false,
+  widgets = {
+    {id = 'one', text = 'First note', on_click = function() mep.notify('one') end},
+    {id = 'two', text = 'Second note'},
+  },
+}})
+mep.sidebar_open(id)
+#+end_src
+
+=mep.sidebar_set_help(id, {{key, description}, ...})= fills in the =?=
+overlay, =mep.sidebar_set_on_key(id, fn)= handles keys, and
+=mep.sidebar_set_tabs= adds a tab strip. To give it a popout preview,
+register =mep.sidebar_set_on_preview(id, fn)= and answer with
+=mep.sidebar_set_preview(...)= or one of the helpers the built-in panels
+use: =sidebar_preview_code=, =sidebar_preview_diff=, =sidebar_preview_path=.
+
+The Help sidebar you are reading this in is one of these.
+
+* See also
+
+- [[file:mod1-keys.html][The mod1 layer]] -- the keys above, in full.
+- [[file:file-tree.html][The file tree]] -- the panel you will use most.
+- [[file:tab-bar.html][The tab bar]] -- the toggle buttons.

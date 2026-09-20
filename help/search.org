@@ -1,0 +1,79 @@
+#+TITLE: Searching
+#+HTML_HEAD: <meta name="help-section" content="Editing">
+#+HTML_HEAD: <meta name="help-order" content="100">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* The keys
+
+| Key   | Does                                             |
+|-------+--------------------------------------------------|
+| =/=   | search forward                                   |
+| =?=   | search backward                                  |
+| =n=   | repeat, in the same direction                    |
+| =N=   | repeat, in the opposite direction                |
+| =*=   | search forward for the word under the cursor     |
+| =#=   | search backward for the word under the cursor    |
+
+Up and Down at the =/= prompt walk through previous searches, the same way
+the =:= command line remembers commands.
+
+* Patterns are regular expressions
+
+A search pattern is a regular expression -- an ECMAScript/PCRE-flavoured
+subset, *not* Vim's magic/=\v= system.
+
+| Supported                          | Example            |
+|------------------------------------+--------------------|
+| literals and =.=                   | =f.o=              |
+| =*= =+= =?= ={n}= ={n,}= ={n,m}=   | =ab{2,4}=          |
+| non-greedy =*?= =+?= =??=          | =<.+?>=            |
+| classes =[a-z]= =[^0-9]=           | =[A-Fa-f0-9]+=     |
+| shorthands =\d \w \s \D \W \S=     | =\w+\d=            |
+| word boundaries =\b= =\B=          | =\bword\b=         |
+| groups =( )= and =(?: )=           | =(foo)(bar)=       |
+| alternation =\|=                   | =cat\|dog=         |
+| anchors =^= =$=                    | =^end$=            |
+| escapes =\.= =\*= =\(= =\\=        | =3\.14=            |
+
+Deliberately not implemented: backreferences inside a pattern, lookaround
+(=(?=...)=), Unicode property classes (=\p{...}=), and POSIX classes
+(=[:alpha:]=).
+
+* A pattern that will not compile is used literally
+
+This is worth knowing, because it turns a whole class of errors into quiet
+surprises. If the pattern is not valid, mep does not report an error -- it
+searches for the text literally instead.
+
+So =/(= finds a literal opening parenthesis, and =/a{= finds =a{=. Most of
+the time that is exactly what you wanted. When it is not, the symptom is a
+search that matches too little rather than a message.
+
+* Case and wrapping
+
+| Command              | Effect                                          |
+|----------------------+-------------------------------------------------|
+| =:set ignorecase=    | match case-insensitively                        |
+| =:set noignorecase=  | match case-sensitively (the default)            |
+| =:set wrapscan=      | wrap around the end of the buffer (the default) |
+| =:set nowrapscan=    | stop at the end instead                         |
+
+When a search wraps, the status line says so:
+
+#+begin_example
+search hit BOTTOM, continuing at TOP
+#+end_example
+
+=ignorecase= applies to =:s= as well, since both compile the same pattern.
+
+* Searching across files
+
+=/= searches the current buffer. To search the project, use live grep
+(=<leader>pr=), which lists matching lines from every file under the
+workspace root and opens the one you pick.
+
+* See also
+
+- [[file:substitute.html][Substitute and global]] -- acting on what you find.
+- [[file:quick-jump.html][Quick jump]] -- for somewhere already on screen, which is usually faster.
+- [[file:pickers.html][Pickers]] -- live grep and the rest.

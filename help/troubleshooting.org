@@ -1,0 +1,90 @@
+#+TITLE: Troubleshooting
+#+HTML_HEAD: <meta name="help-section" content="Reference">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* A key seems to do nothing
+
+Check the right of the status line. A half-typed command -- a count, a
+pending operator, a register prefix, =g=, =z= -- waits there for its next
+key. =Esc= discards it.
+
+If the key is one you bound yourself, =<leader>hk= says what is actually
+bound.
+
+* No completion, no diagnostics, no =gd=
+
+The language server for that filetype is probably not installed. mep starts
+one only if its command is on =$PATH=, and a missing server is not an error
+-- the file just opens without one.
+
+=:CopilotStatus= covers Copilot; for LSP, check that the command from the
+[[file:lsp.html][server table]] runs in your shell. Remember that mep's terminals inherit your
+*login* environment, so a server installed only inside a project shell may
+not be visible.
+
+* =gf= says there is no formatter
+
+Only C/C++, Python and R have dedicated formatters. Everything else falls
+back to the language server, so with no server attached there is nothing to
+format with. See [[file:formatting.html][Formatting]] for adding one.
+
+* The git gutter shows nothing
+
+- The file may not be in a repository.
+- The gutter may be off: =<leader>gd= toggles it and reports which way it
+  went.
+- The base may be set somewhere unexpected: =:MepGitGutter base= reports it.
+
+If marks vanished right after staging, the base is =index=; the default
+=HEAD= is what keeps them visible. See [[file:git-gutter.html][The git gutter]].
+
+* A notebook cell will not run
+
+The kernel's command has to be on =$PATH=. Python 3 is built in; R, Node,
+Ruby and Bash are offered only when found. =<leader>jK= shows which kernel
+a cell is set to.
+
+* A =.blend= file opens empty
+
+It is still converting. mep runs Blender's own command line on a background
+job, so the pane switches immediately and fills in when the conversion
+finishes. If Blender is not on =$PATH=, it never will -- that is the one
+3D format that needs an external tool.
+
+* The wasm build cannot open files
+
+Correct, and expected. Opening =build/web/mep.html= in a plain browser tab
+has no file bridge behind it, so =:e=, =:w= and =:source= fail with an
+ordinary read/write error, and no =init.lua= is loaded. Use =just run-wasm=,
+which starts the bridge, or the native build.
+
+* The clipboard is empty after mep exits
+
+On X11 the clipboard is owned by the window that set it, so its contents go
+when mep does unless a clipboard manager is running. That is how X works.
+See [[file:registers-marks.html][Registers, marks and jumps]].
+
+* My session did not come back
+
+- =--no-session= skips both saving and restoring.
+- =mep.opt.restore_workspaces = false= does the same permanently.
+- A missing file is skipped with a message, a vanished worktree is pruned,
+  and a corrupt state file is ignored in favour of a fresh start.
+
+=:wsrestore= restores by hand. See [[file:sessions.html][Sessions]].
+
+* A workspace will not delete
+
+=git worktree remove= refuses on a dirty tree, and mep shows git's own
+message. =:wsdelete!= forces it. The branch is kept either way.
+
+* Help pages look out of date
+
+They are generated. Run =just help= to re-export, and =just help-check= to
+find out what has drifted. See [[file:writing-help.html][Writing help pages]].
+
+* See also
+
+- [[file:installing.html][Installing and running]] -- build and launch options.
+- [[file:platform-notes.html][Platform notes]] -- what differs per platform.

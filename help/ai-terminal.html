@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code in a pane</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="AI">
+<meta name="help-order" content="30">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Claude Code in a pane</h1>
+<h1>Opening one</h1>
+<p><code>&lt;leader&gt;a&lt;CR&gt;</code> (<code>:aiterminal</code>, <code>:aiterm</code>, <code>:MepAiTerminal</code>) splits the
+current pane and runs Claude Code in a terminal below it, focused.</p>
+<p>It is a real terminal, so everything on the <a href="terminals.html">Terminals</a> page applies --
+including <code>Ctrl-\ Ctrl-n</code> to get back to Normal mode.</p>
+<h1>What makes it different from a plain terminal</h1>
+<p>The agent is launched with an appended system prompt explaining that it is
+running inside <b>this</b> mep window and how to drive it through the <code>mep-agent</code>
+MCP server. So it can read your buffers, edit them, split panes and run
+commands, rather than only seeing files on disk.</p>
+<p>Every <code>:terminal</code> exports <code>$MEP_AGENT_SOCKET</code> -- this window's own agent
+socket -- which the MCP server honours ahead of its directory scan. That is
+what makes the agent land on the window it was launched from even with
+several mep instances open.</p>
+<h1>Setting it up</h1>
+<p>The MCP server is expected to be registered with Claude Code already:</p>
+<pre>claude mcp add mep-agent -- /path/to/mep/build/native/mep-mcp</pre>
+<p>Alternatively, point mep at it and it will be passed inline with
+<code>--mcp-config</code>:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.ai_terminal_mcp_server = <span class="tok-green">'/path/to/mep-mcp'</span></code></pre></div>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.ai_terminal_cmd = {<span class="tok-green">'claude'</span>, <span class="tok-green">'--model'</span>, <span class="tok-green">'opus'</span><span class="tok-blue">}</span>  <span class="tok-comment">-- default {'claude'}</span>
+mep.opt.ai_terminal_share = <span class="tok-cyan">0.4</span>        <span class="tok-comment">-- the terminal's height fraction</span>
+mep.opt.ai_terminal_instructions = <span class="tok-green">''</span>  <span class="tok-comment">-- '' sends no appended prompt</span></code></pre></div>
+<h1>See also</h1>
+<ul>
+<li><a href="ai-agents.html">The AI Agents sidebar</a> -- keeping track of several at once.</li>
+<li><a href="agent-api.html">Driving mep from an agent</a> -- what the agent can actually do.</li>
+<li><a href="terminals.html">Terminals</a> -- the pane it runs in.</li>
+</ul>
+</body>
+</html>

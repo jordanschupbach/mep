@@ -1,0 +1,171 @@
+#+TITLE: Documents and formats
+#+HTML_HEAD: <meta name="help-section" content="Lua API">
+#+HTML_HEAD: <meta name="help-order" content="50">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What is here
+
+Org, Markdown, HTML, PDF, office, spreadsheet, notebook, image, 3D model and learning-deck bindings -- everything that drives one of mep's document viewers or editors.
+
+This page is generated from mep's own binding table, so it lists what
+the running editor actually exposes. Call any of these from
+=init.lua=, from =:lua=, or from a =mep-lua= org block.
+
+* The bindings (146)
+
+A dash means that binding has no doc comment in the source yet, not
+that it does nothing.
+
+| Function | Does |
+|----------+------|
+| =mep.ansi_render= | parses raw terminal output into plain lines and SGR color-highlight spans |
+| =mep.babel_cache_load= | loads the persisted babel result cache from disk |
+| =mep.babel_cache_save= | persists the babel result cache to disk (a no-op on the wasm build) |
+| =mep.buf_add_latex_inline= | appends one inline-math span for a line of the current buffer |
+| =mep.buf_clear_image_rows= | clears the current buffer's whole inline-image row registry |
+| =mep.buf_clear_latex_inline= | clears the current buffer's whole inline-LaTeX span registry |
+| =mep.buf_clear_latex_rows= | clears the current buffer's whole rendered-LaTeX row registry |
+| =mep.buf_set_image_row= | registers an inline-image target for a line of the current buffer |
+| =mep.buf_set_latex_row= | registers a rendered LaTeX fragment for a source-line span of the current buffer |
+| =mep.doc_export_html_to_latex= | thin |
+| =mep.doc_export_html_to_odt= | -- |
+| =mep.html_current_origin= | the current pane's HtmlSession::origin, or |
+| =mep.html_navigate= | is html_reload's history-recording |
+| =mep.html_omnibar_edit= | puts the focused html pane's omnibar into edit mode |
+| =mep.html_open= | opens `path` (a real local .html file's |
+| =mep.html_reload= | re-reads local file `path` and |
+| =mep.html_settle= | runs the focused html pane's page (timers, promises, animation frames) until it goes idle or the budget is spent |
+| =mep.html_title= | the focused html pane's document title (what a page's script last set) |
+| =mep.image_get_theme= | gets an image buffer's current theme-colors state |
+| =mep.image_set_nav= | sets or clears an image buffer's "<"/">" nav-header click callbacks |
+| =mep.image_set_return= | sets or clears an image buffer's Shift+I callback |
+| =mep.image_set_theme= | sets an image buffer's default theme_colors state |
+| =mep.image_size= | reads a PNG's pixel dimensions from just its signature + IHDR chunk, without a full decode |
+| =mep.is_image_path= | checks whether a path's extension is a recognized image format |
+| =mep.is_pdf_buffer= | bool: whether `buffer_id` is a PDF |
+| =mep.md_conceal_scan= | runs the link/emphasis concealment scan over the current buffer |
+| =mep.md_fold= | computes Markdown heading-based folds for the current buffer |
+| =mep.md_table_align= | reflows the GFM table under the cursor into aligned columns |
+| =mep.md_table_insert_col= | inserts a new column into the GFM table under the cursor |
+| =mep.md_table_insert_row= | inserts a new row into the GFM table under the cursor |
+| =mep.md_toggle_checkbox= | toggles the Markdown checkbox on the current line |
+| =mep.model_add_primitive= | object_id |
+| =mep.model_add_vertex= | vertex_index (-1 on failure) |
+| =mep.model_camera_get= | {target, yaw, pitch, distance, fov} |
+| =mep.model_camera_set= | each field |
+| =mep.model_delete_object= | bool |
+| =mep.model_delete_objects= | count actually deleted |
+| =mep.model_delete_vertices= | bool |
+| =mep.model_dissolve_vertex= | bool |
+| =mep.model_duplicate_mirrored= | new_object_id (-1 on failure). axis is |
+| =mep.model_duplicate_object= | new_object_id (-1 on failure). cascade |
+| =mep.model_extrude_faces= | table of new "cap" vertex |
+| =mep.model_flip_normals= | bool |
+| =mep.model_frame_all= | reframes the orbit camera to fit the whole scene |
+| =mep.model_get_selection= | array of currently selected object ids |
+| =mep.model_group_objects= | new group_id (-1 on failure) |
+| =mep.model_inset_faces= | table of new cap vertex |
+| =mep.model_list_objects= | array of object tables (see PushObject3DTable) |
+| =mep.model_list_triangles= | array of {index, a, b, c} (vertex-unit indices of |
+| =mep.model_list_vertices= | array of {index, x, y, z} (local mesh space, |
+| =mep.model_make_face= | bool |
+| =mep.model_merge_by_distance= | removed_count |
+| =mep.model_merge_vertices= | bool |
+| =mep.model_new= | buffer_id |
+| =mep.model_primitive_info= | table |
+| =mep.model_radial_array= | array of the `count - 1` new object |
+| =mep.model_recalculate_normals= | bool |
+| =mep.model_redo= | -- |
+| =mep.model_rename_object= | bool |
+| =mep.model_scene_stats= | {object_count, triangle_count} |
+| =mep.model_select= | replaces the current selection, silently |
+| =mep.model_set_material= | bool. r/g/b/a are 0..1 floats; |
+| =mep.model_set_materials= | count actually applied |
+| =mep.model_set_parent= | bool. parent_id may be -1/nil to clear |
+| =mep.model_set_texture= | bool. `path` is an image file |
+| =mep.model_set_transform= | bool |
+| =mep.model_set_transforms= | count |
+| =mep.model_set_vertex_position= | bool |
+| =mep.model_set_view= | each |
+| =mep.model_set_visible= | bool |
+| =mep.model_subdivide_faces= | table of new centroid vertex |
+| =mep.model_undo= | / mep.model_redo(buffer_id) |
+| =mep.notebook_cell_count= | how many cells the current notebook buffer's text has |
+| =mep.notebook_cell_index= | the 0-based index of the cell under the cursor, or -1 |
+| =mep.notebook_cell_kernel= | the kernel name a cell effectively runs on (its own or the default) |
+| =mep.notebook_cell_language= | the treesitter filetype for the cell containing a 1-based buffer row |
+| =mep.notebook_cell_outputs= | array of {kind, name, text, has_image, execution_count} for a cell's outputs (cell_type/execution_count/source on the table too), or nil -- what... |
+| =mep.notebook_clear_outputs= | -- |
+| =mep.notebook_default_kernel= | the kernel name cells run on when they pick none |
+| =mep.notebook_delete_cell= | deletes a cell (default: the cursor's). */ int l_notebook_delete_cell(lua_State *L) { GetEditor(L)->NotebookDeleteCell(NotebookIndexArg(L, 1));... |
+| =mep.notebook_goto_cell= | moves the cursor to a cell's first body row (index clamped) |
+| =mep.notebook_insert_cell= | inserts an empty cell above/below the cursor's cell and moves into it |
+| =mep.notebook_interrupt= | -- |
+| =mep.notebook_is_buffer= | whether a buffer (default: the current one) is an open .ipynb notebook |
+| =mep.notebook_kernels= | array of {name, display_name, language} for every registered kernel |
+| =mep.notebook_lsp_context= | -- |
+| =mep.notebook_move_cell= | swaps the cursor's cell with its neighbor (-1 up, +1 down) |
+| =mep.notebook_restart_kernel= | -- |
+| =mep.notebook_run_all= | queues every code cell of the current notebook in order. */ int l_notebook_run_all(lua_State *L) { Editor *ed  GetEditor(L);... |
+| =mep.notebook_run_and_advance= | -- |
+| =mep.notebook_run_and_insert= | -- |
+| =mep.notebook_run_cell= | queues a code cell (default: the one under the cursor) on the kernel |
+| =mep.notebook_set_cell_kernel= | sets which kernel a cell runs on |
+| =mep.notebook_set_cell_type= | -- |
+| =mep.notebook_set_kernels= | replaces the code-cell kernel registry |
+| =mep.notebook_set_python= | sets the interpreter notebook kernels launch with (default "python3") |
+| =mep.notebook_status= | {status, python, cells, running, queued} for the current notebook, or nil |
+| =mep.office_reload= | re-reads local file `path` (docx or odt) and |
+| =mep.org_agenda_expand_glob= | expands a glob pattern into matching agenda file paths |
+| =mep.org_agenda_scan_lines= | scans a set of lines for org agenda entries (headlines with TODO/scheduling info) |
+| =mep.org_babel_format_literal= | formats a raw babel result value as a literal-example string |
+| =mep.org_bib_parse_files= | parses BibTeX-style file contents into bibliography entries |
+| =mep.org_capture_expand_template= | expands %-escapes in an org capture template string |
+| =mep.org_clock_in= | starts an org clock entry at the current headline |
+| =mep.org_clock_out= | stops the currently running org clock entry |
+| =mep.org_clock_table_items= | builds the list of clocked-time entries for the buffer |
+| =mep.org_collect_macros= | collects #+MACRO: definitions from a set of lines |
+| =mep.org_drill_grade= | records a spaced-repetition drill grade against a headline |
+| =mep.org_expand_macro_line= | expands {{{macro(...)}}} references in a line using a table of macro definitions |
+| =mep.org_export_heading= | formats a heading string for the given export format |
+| =mep.org_footnote_jump= | jumps between an org footnote reference and its definition |
+| =mep.org_highlight_emphasis= | highlights org emphasis markup over the current buffer |
+| =mep.org_html_escape= | HTML-escapes a string for org HTML export |
+| =mep.org_image_invalidate= | forces the next render of an inline org image to reload from disk, bypassing the mtime cache |
+| =mep.org_image_scan= | scans the current org buffer for image links to render inline |
+| =mep.org_images_toggle= | toggles inline org image rendering on/off |
+| =mep.org_latex_scan_fragments= | scans the buffer for LaTeX fragments (block and inline) |
+| =mep.org_latex_toggle= | toggles inline org LaTeX rendering on/off |
+| =mep.org_latex_visible= | reports whether inline org LaTeX rendering is currently on |
+| =mep.org_link_at_cursor= | reads the org link under the cursor, if any |
+| =mep.org_parse_results= | parses a babel header args string's :results modes |
+| =mep.org_parse_vars= | parses a babel header args string's :var entries |
+| =mep.org_property_get= | reads an org property drawer value from a headline |
+| =mep.org_property_remove= | removes a property from a headline's property drawer |
+| =mep.org_property_set= | writes an org property drawer value on a headline |
+| =mep.org_refile_move= | moves the current subtree under a target headline |
+| =mep.org_roam_ensure_id= | ensures the current org-roam note has an :ID:, generating one if missing |
+| =mep.org_roam_files_in= | lists org-roam note files under the given directories |
+| =mep.org_roam_find_backlink_lines= | finds lines linking to a given org-roam ID |
+| =mep.org_roam_parse_file_index= | extracts an org-roam file's ID, title, and outgoing links for index-building |
+| =mep.org_roam_slugify= | converts a note title into a filesystem-safe slug |
+| =mep.org_roam_title_of= | extracts an org-roam note's title from its file lines |
+| =mep.org_set_planning= | sets/updates a SCHEDULED or DEADLINE planning line on the current headline |
+| =mep.org_subtree_end_lines= | finds the last row of the subtree rooted at row, given a plain line array instead of a buffer |
+| =mep.org_table_align= | reformats the org table under the cursor to align its columns |
+| =mep.org_timestamp_at= | finds an org timestamp overlapping a given column in a line |
+| =mep.org_timestamp_insert= | inserts an org timestamp at the cursor |
+| =mep.org_timestamp_shift= | shifts the org timestamp under/near the cursor by a number of days |
+| =mep.pdf_current_page= | 1-indexed current page, or 0 if |
+| =mep.pdf_goto_page= | jumps buffer_id's own PDF viewer |
+| =mep.pdf_outline= | array of {title, page, depth}, or nil if |
+| =mep.pdf_reload= | re-reads local file `path` and re-decodes it INTO |
+| =mep.roam_graph_close= | closes the Roam graph overlay without invoking its on_select callback |
+| =mep.roam_graph_open= | opens the Roam backlink-graph overlay |
+| =mep.sheet_next= | / mep.sheet_prev() -- Lua-reachable equivalent of the |
+| =mep.sheet_prev= | -- |
+
+* See also
+
+- [[file:config.html][Configuration]] -- where to call these from.
+- [[file:recipes.html][Configuration recipes]] -- worked examples.

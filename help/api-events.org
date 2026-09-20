@@ -1,0 +1,61 @@
+#+TITLE: Commands, keys and events
+#+HTML_HEAD: <meta name="help-section" content="Lua API">
+#+HTML_HEAD: <meta name="help-order" content="60">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What is here
+
+Defining commands and key bindings, and reacting to what happens in the editor.
+
+This page is generated from mep's own binding table, so it lists what
+the running editor actually exposes. Call any of these from
+=init.lua=, from =:lua=, or from a =mep-lua= org block.
+
+* The bindings (36)
+
+A dash means that binding has no doc comment in the source yet, not
+that it does nothing.
+
+| Function | Does |
+|----------+------|
+| =mep.active_todo_set= | sets (or, with nil, clears) the status bar's active-todo chip |
+| =mep.activity_test_failure_lines= | scans test-runner output lines for failure locations |
+| =mep.activity_todo_archive= | archives a headline of an org todo file |
+| =mep.activity_todo_clock_start= | starts a clock under a headline of an org todo file |
+| =mep.activity_todo_clock_status= | reports the running clock in an org todo file |
+| =mep.activity_todo_clock_stop= | closes the running clock in an org todo file |
+| =mep.activity_todo_load= | loads an activity todo list from a file |
+| =mep.activity_todo_move= | reorders a headline of an org todo file among its siblings |
+| =mep.activity_todo_retitle= | retitles a headline of an org todo file |
+| =mep.activity_todo_save= | writes an activity todo list back to a file |
+| =mep.cmd= | runs str as if typed after ":" and Enter were pressed |
+| =mep.command= | registers a Lua function as a ":name" ex-command |
+| =mep.command_names= | lists the names of every command registered with mep.command() |
+| =mep.enter_insert= | pushes an undo checkpoint and enters Insert mode, like pressing "i" |
+| =mep.enter_normal= | returns to Normal mode from Insert or Visual, like pressing Escape |
+| =mep.is_insert_mode= | reports whether Insert mode is currently active |
+| =mep.is_terminal_buffer= | reports whether a buffer is a real `:terminal` buffer |
+| =mep.leader_bindings= | lists every mep.leader_map() registration, unfiltered by any currently-typed prefix |
+| =mep.leader_group= | names a group of leader.map bindings |
+| =mep.leader_map= | binds a key |
+| =mep.map= | binds a key in Normal or Visual mode to a Lua function, optionally recording a description for the help picker |
+| =mep.map_bracket_next= | binds a Lua callback to a key following a leading "]" in Normal mode |
+| =mep.map_bracket_prev= | binds a Lua callback to a key following a leading "[" in Normal mode |
+| =mep.map_g= | binds a Lua callback to a key following a leading "g" in Normal mode |
+| =mep.map_g_visual= | binds a Lua callback to a key following a leading "g" in Visual mode |
+| =mep.map_mod1= | binds a single letter key (or "Tab"/"S-Tab"/"CR"/"S-CR") under the mod1 modifier, globally across all modes |
+| =mep.mapping_descriptions= | lists every mep.map() binding that was given an opts.desc |
+| =mep.on_frame= | fn runs once per frame -- the polling-based building |
+| =mep.set_leader= | single-char string, the whichkey trigger (Phase 11) |
+| =mep.set_mod1= | selects which physical modifier key acts as "mod1" for mep.map_mod1 bindings |
+| =mep.set_on_directory_open= | fn(path) |
+| =mep.stt_set_recording= | sets the tab bar's speech-to-text recording indicator |
+| =mep.terminal_here= | attaches a shell to the currently active pane rather than splitting |
+| =mep.terminal_here_argv= | attaches a terminal running `argv` directly (no shell) to the active pane |
+| =mep.terminal_info= | live title and exit state of a `:terminal` buffer |
+| =mep.terminal_write= | writes text verbatim into a live `:terminal` buffer's PTY |
+
+* See also
+
+- [[file:config.html][Configuration]] -- where to call these from.
+- [[file:recipes.html][Configuration recipes]] -- worked examples.

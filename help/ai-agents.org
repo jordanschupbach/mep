@@ -1,0 +1,53 @@
+#+TITLE: The AI Agents sidebar
+#+HTML_HEAD: <meta name="help-section" content="AI">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Every agent in this window
+
+| Key / command             | Does                        |
+|---------------------------+-----------------------------|
+| =<leader>al=              | open the sidebar            |
+| =<leader>aa=              | toggle it                   |
+| =:aiagents=               | open it                     |
+| =:MepAiAgents=            | the same                    |
+| =:MepAiAgentsToggle=      | toggle                      |
+| the AI Agents tab-bar button | toggle                   |
+
+Agents are grouped by workspace. Each row shows the agent's name, a status
+badge -- =thinking=, =writing=, =needs input=, =done=, =starting= -- and, on
+a dimmed second row, what it is currently doing.
+
+That second row is the terminal's live OSC title, which Claude Code keeps
+set to a summary of its current task. So the sidebar answers "which of these
+needs me" without visiting each pane.
+
+* Keys
+
+| Key     | Does                                                     |
+|---------+----------------------------------------------------------|
+| =Enter= | jump to that agent's terminal                            |
+| =n=     | open a new AI terminal                                   |
+| =r=     | force a re-scan                                          |
+
+Jumping switches workspace, tab and pane as needed, and activates a hidden
+buffer tab if that is where the terminal lives. The list polls twice a
+second on its own.
+
+An agent whose process has exited disappears from the list automatically.
+Its pane stays open until you close it.
+
+* Agents from outside mep
+
+An agent that connected from a terminal mep did not open is listed under
+=outside mep=. Enter on one jumps to its cursor's buffer instead of to a
+terminal.
+
+Pairing works because every =:terminal= exports =$MEP_TERMINAL_BUFFER=, and
+the MCP server reports it as =terminal_buffer_id= when it identifies itself.
+
+* See also
+
+- [[file:ai-terminal.html][Claude Code in a pane]] -- starting one.
+- [[file:agent-api.html][Driving mep from an agent]] -- what they can do.
+- [[file:tab-bar.html][The tab bar]] -- participant chips show agents too.

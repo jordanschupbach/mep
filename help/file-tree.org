@@ -1,0 +1,79 @@
+#+TITLE: The file tree
+#+HTML_HEAD: <meta name="help-section" content="Files and windows">
+#+HTML_HEAD: <meta name="help-order" content="50">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+=<leader>ff= toggles the file tree (=:MepFileTree=, or the Files button in
+the tab bar). It opens on the left, rooted at the active workspace, with a
+Nerd Font icon per file type.
+
+It is a pane rather than a sidebar, so the usual pane keys work on it.
+
+* Keys
+
+| Key       | Does                                            |
+|-----------+-------------------------------------------------|
+| =Enter=   | open the file, or expand/collapse the directory |
+| =a=       | add a file -- end the name with =/= for a directory |
+| =r=       | rename                                          |
+| =d=       | delete                                          |
+| =c=       | copy                                            |
+| =Y=       | copy the path to the clipboard                  |
+| =e=       | edit the directory as text (oil-style)          |
+| =o=       | open with the operating system                  |
+| =-=       | move the root up one directory                  |
+| =C=       | make the directory under the cursor the root    |
+| =R=       | refresh                                         |
+| =H=       | show or hide hidden files                       |
+| =I=       | open the directory in the image viewer          |
+| =q=       | close the tree                                  |
+
+Navigation keys:
+
+| Key        | Does                       |
+|------------+----------------------------|
+| =j= =k=    | move down / up             |
+| =gg= =G=   | first / last row           |
+| =/=        | search within the tree     |
+| =?=        | show or hide the key list  |
+
+The bottom row always hints =?: help=. Pressing =?= swaps the tree for its
+key list; =Esc=, =?= or =q= go back.
+
+* Editing a directory as text
+
+=e= turns the directory into a text buffer, one entry per line
+(=:MepOil=). Rename by editing a line, delete by deleting a line, create by
+adding one. Write the buffer and the changes are applied to disk.
+
+This is much the fastest way to make several changes at once.
+
+* Dragging onto a pane
+
+A file row can be dragged onto any pane. A drop-zone pinwheel appears under
+the pointer: the centre opens the file in that pane, an edge splits the pane
+that way and opens it in the new half.
+
+* Related commands
+
+| Command / key   | Does                                        |
+|-----------------+---------------------------------------------|
+| =<leader>fh=    | toggle hidden files                         |
+| =<leader>fr=    | refresh the tree                            |
+| =<leader>fo=    | open a file through the native dialog        |
+| =<leader>ff=    | also the "find files" picker, when no tree is focused |
+
+* Stacking with other panels
+
+Sidebars docked on the same edge share one column, split vertically. Opening
+Git Status next to the tree stacks it below rather than beside. Drag the
+divider between them, or use =mod1+Shift+j/k= from inside one, to change the
+split; =mod1+j/k= steps focus between them.
+
+* See also
+
+- [[file:pickers.html][Pickers]] -- finding a file by typing rather than browsing.
+- [[file:panes-tabs.html][Panes and tabs]] -- where an opened file lands.
+- [[file:mod1-keys.html][The mod1 layer]] -- managing stacked sidebars.

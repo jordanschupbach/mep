@@ -1,0 +1,92 @@
+#+TITLE: Operators and text objects
+#+HTML_HEAD: <meta name="help-section" content="Editing">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* The shape of a change
+
+#+begin_example
+[count] operator [count] motion-or-text-object
+#+end_example
+
+=d= is delete, =w= is "to the next word", so =dw= deletes to the next word.
+=2d3w= deletes six words. Doubling an operator applies it to the current
+line: =dd=, =yy=, =cc=.
+
+* The operators
+
+| Keys  | Does                                              |
+|-------+---------------------------------------------------|
+| =d=   | delete                                            |
+| =c=   | change -- delete, then enter Insert mode          |
+| =y=   | yank (copy)                                       |
+| =gu= =gU= | lowercase, uppercase                          |
+| =gq=  | reflow to =textwidth=                             |
+| =>= =<= | indent, outdent                                 |
+
+=D=, =C= and =Y= are shorthand for the same thing to the end of the line.
+The doubled forms of the =g= operators are =guu=, =gUU= and =gqq= -- so
+=gqq= reflows the current paragraph. (Vim also accepts =gugu= and friends;
+mep does not.)
+
+* Text objects
+
+Instead of a motion, an operator can take a text object: =i= for "inner" or
+=a= for "around", then what.
+
+| Object      | Is                                          |
+|-------------+---------------------------------------------|
+| =w= =W=     | a word (=W=: whitespace-separated)          |
+| =p=         | a paragraph                                 |
+| ="= ='= =`= | a quoted string                             |
+| =(= =)= =b= | a parenthesised group                       |
+| ={= =}= =B= | a braced block                              |
+| =[= =]=     | a bracketed group                           |
+| =<= =>=     | an angle-bracketed group                    |
+
+=i= takes the contents, =a= takes the delimiters too: =di(= empties the
+parentheses, =da(= removes them as well.
+
+The value of text objects is that they do not depend on where in the thing
+the cursor is. =ciw= changes the word you are on whether the cursor sits at
+its start, middle or end -- unlike =cw=, which only changes from the cursor
+onward.
+
+There is no sentence (=is=) or tag (=it=) object.
+
+* Smaller changes
+
+| Key       | Does                                             |
+|-----------+--------------------------------------------------|
+| =x=       | delete the character under the cursor            |
+| =r{char}= | replace that one character, staying in Normal mode |
+| =p= =P=   | put the last yank or delete after / before the cursor |
+| =J= =gJ=  | join the next line on, with / without a space    |
+| =~=       | toggle the case of the character under the cursor, and advance |
+
+These all take counts -- =5~= toggles five characters, =3p= puts three
+copies. Text that ends in a newline is put linewise, on its own lines;
+anything else is put inline.
+
+Note that =~= is not an operator: it acts on characters directly rather than
+taking a motion, so there is no =~w=. In Visual mode it does apply to the
+whole selection.
+
+* Reflowing text
+
+=gq= wraps to =textwidth=, which defaults to 80. =:set textwidth=72= (or
+=:set tw=72=) changes it. =gqq= is the current paragraph, =gqap= the
+paragraph around the cursor including its blank line, and =gqG= everything
+to the end of the file.
+
+* Indenting
+
+=>= and =<= shift by one indent step. In Visual mode they keep the selection
+active, so pressing =>= repeatedly keeps indenting the same block -- the same
+behaviour as Vim.
+
+* See also
+
+- [[file:motions.html][Motions]] -- everything an operator can take as its range.
+- [[file:visual-mode.html][Visual modes]] -- selecting first and operating second.
+- [[file:registers-marks.html][Registers, marks and jumps]] -- where deleted and yanked text goes.

@@ -1,0 +1,59 @@
+#+TITLE: Formatting
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="70">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Formatting a buffer
+
+=gf=, or =:MepFormat=. It formats the buffer's *current text*, including
+unsaved changes -- it never needs the file written first and never formats a
+stale copy from disk.
+
+* What runs
+
+| Filetype             | Formatter      |
+|----------------------+----------------|
+| C, C++ and friends   | =clang-format= |
+| Python               | =black=        |
+| R                    | =styler=       |
+| anything else        | =mep.lsp_format=, if a server is attached |
+
+That is a deliberately short table. Most languages already have a formatter
+behind their language server, so the table only carries the cases where a
+dedicated tool is clearly better.
+
+* Adding one
+
+#+begin_src lua
+mep.format_languages.js = {'prettier', '--stdin-filepath', '{}'}
+mep.format_languages.ts = mep.format_languages.js
+#+end_src
+
+The entry is an argv array. =\{\}= anywhere in it is replaced by a path.
+
+Two modes:
+
+- *filter* (the default): the buffer is written to the formatter's stdin and
+  its stdout replaces the buffer. =\{\}= is the buffer's real absolute
+  filename.
+- *file*: add =mode = 'file'=, and =\{\}= is a temporary file the formatter
+  edits in place.
+
+Entries are looked up by *bare extension*, so every extension of a language
+needs its own key -- which is why the built-in table aliases =.h=, =.cc=,
+=.hpp= and the rest onto the C entry.
+
+* Why the placeholder matters
+
+A formatter reading stdin has no idea what file it is looking at. Both
+=clang-format= and =black= have to be told -- =--assume-filename= and
+=--stdin-filename= -- or they cannot find the =.clang-format= or
+=pyproject.toml= the project configures them with, and they silently format
+to their own defaults instead.
+
+So a filter-mode entry should almost always pass =\{\}= somewhere.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the fallback formatter.
+- [[file:operators.html][Operators and text objects]] -- =gq= reflows prose, which is a different job.

@@ -39,11 +39,21 @@ implement them. The more the better.
   should use pydoc, and in C/C++ it should use man pages. Can you implement
   these?
 
-* TODO Add a 'gr' binding for 'go run' to run the current file in the language's
+* DONE Add a 'gr' binding for 'go run' to run the current file in the language's
   interpreter or compiler. This should be language specific, and should use the
   language's interpreter or compiler (e.g. for R, it should use Rscript to run
   the current file). Can you implement this? In python it should use python, and
   in C/C++ it should use gcc or clang. Can you implement these?
+  - Landed as a mep.map_g('r', mep.run_button_run) binding in kBuiltinRunButton
+    (main.cpp), i.e. the same per-language run the pane Run button and <leader>rr
+    already do: Rscript for .R, python3 for .py, cc/c++ compile-to-temp-then-run
+    for .c/.cpp (all overridable per project via the button's Setup popup, or
+    globally via mep.opt.run_button_defaults), plus the document pipelines
+    (org export, tectonic, rmarkdown/knitr, notebook run-all) and, when a
+    language UI mode is open on the tab, sourcing into its live console instead
+    of a second process. Verified against a spawned instance over its agent
+    socket (:normal gr on a .py file wrote the buffer, opened the tab terminal
+    and actually ran the script), with gg/G/bare-r left unaffected.
 
 * TODO Add a 'gd' binding for 'go debug' to start a debugging session for the current file
   in the language's debugger. This should be language specific, and should use

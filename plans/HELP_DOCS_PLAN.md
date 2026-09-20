@@ -188,23 +188,23 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 6 — The interface (5 pages)
 
-- [ ] **6.1 `tab-bar` — The tab bar.** `[project] [ws1] [ws2*] │ ● ○ + x`;
+- [x] **6.1 `tab-bar` — The tab bar.** `[project] [ws1] [ws2*] │ ● ○ + x`;
   clicking, middle-clicking and hovering a workspace label; participant
   chips; the three search buttons; the sidebar toggle row (Files, Git,
   Symbols, Structure, Todo, Tests, Notifications, AI Agent).
-- [ ] **6.2 `status-line` — The status line.** Mode, filename, Ln/Col, the
+- [x] **6.2 `status-line` — The status line.** Mode, filename, Ln/Col, the
   direnv chip, the Pomodoro chip, the active-todo chip with its live timer,
   collaborator chips, pending count/register display,
   `mep.set_statusline`, `mep.active_todo_set`.
-- [ ] **6.3 `sidebars` — Sidebars.** Docking and stacking on one edge,
+- [x] **6.3 `sidebars` — Sidebars.** Docking and stacking on one edge,
   dragging the divider, `mod1+Shift+j/k` re-split, `mod1+j/k` focus,
   `mod1+Ctrl+j/k` swap, `mod1+m` popout with its preview column, the shared
   `?: help` footer, `current = true` auto-scroll, tab strips.
-- [ ] **6.4 `which-key` — Leader and which-key.** `<Space>` as leader, the
+- [x] **6.4 `which-key` — Leader and which-key.** `<Space>` as leader, the
   group hierarchy (a/b/c/d/f/g/h/j/l/n/o/p/r/s/t/u/v/w/y/z and the `oe`/
   `ot`/`or` subgroups), icons and highlight groups, `mep.leader_map` /
   `mep.leader_group`, `<CR>` in a sequence, `mep.set_leader`.
-- [ ] **6.5 `notifications` — Notifications.** Toasts, the history panel
+- [x] **6.5 `notifications` — Notifications.** Toasts, the history panel
   (`<leader>nn`, `:MepNotifyPanel`), `:MepNotifyClear`, `:MepNotifyDismiss`,
   `mep.notify` and Lua `print()` routing, severity levels.
 

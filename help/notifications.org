@@ -1,0 +1,58 @@
+#+TITLE: Notifications
+#+HTML_HEAD: <meta name="help-section" content="Interface">
+#+HTML_HEAD: <meta name="help-order" content="50">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Toasts
+
+Most things mep wants to tell you arrive as a toast in the corner: a git
+push finishing, a formatter failing, a language server attaching. Toasts
+dismiss themselves after a few seconds, the more serious ones sticking
+around longer.
+
+| Level | Dismisses after |
+|-------+-----------------|
+| error | 8 seconds       |
+| warn  | 6 seconds       |
+| info  | 4 seconds       |
+| debug | 3 seconds       |
+
+* When you missed one
+
+That is what the history panel is for. =<leader>nn= (=:MepNotifyPanel=, or
+the Notifications button in the tab bar) lists everything that has been
+raised this session, including toasts that have already faded.
+
+| Command             | Does                                |
+|---------------------+-------------------------------------|
+| =:MepNotifyPanel=   | open the history panel              |
+| =:MepNotifyDismiss= | clear the toasts currently on screen |
+| =:MepNotifyClear=   | empty the history                   |
+
+=:MepNotifyDismiss= is the one you want when a stack of toasts is covering
+what you are reading; it leaves the history intact.
+
+* From Lua
+
+#+begin_src lua
+mep.notify('Build finished')
+mep.notify('No formatter for this filetype', 'warn')
+mep.notify('Could not reach the server', 'error')
+#+end_src
+
+Lua's own =print()= is routed through =mep.notify= as well, so a =print= in
+your config or in a =:lua= one-liner shows up as a toast rather than
+vanishing into a terminal mep does not have.
+
+#+begin_src lua
+:lua print(mep.line_count())
+#+end_src
+
+That makes =print= a perfectly good debugging tool here -- and it means a
+chatty =print= in a frame hook will bury you in toasts, so keep those out of
+=mep.on_frame=.
+
+* See also
+
+- [[file:status-line.html][The status line]] -- where one-off command messages appear instead.
+- [[file:sidebars.html][Sidebars]] -- the history panel is one.

@@ -1,0 +1,81 @@
+#+TITLE: The status line
+#+HTML_HEAD: <meta name="help-section" content="Interface">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What is on it
+
+The bottom row. On the left, what you are editing; on the right, a set of
+chips reporting state you would otherwise have to go and check.
+
+| Position | Shows                                              |
+|----------+----------------------------------------------------|
+| far left | the current mode, or the filetype                  |
+| left     | the file being edited                              |
+| right    | =Ln=, =Col= -- the cursor position                 |
+| right    | the direnv chip                                    |
+| right    | the Pomodoro chip                                  |
+| far right | the active-todo chip                              |
+
+Any message from a command -- a write confirmation, an error, "search hit
+BOTTOM" -- appears along this row too.
+
+* Pending keys
+
+When a command is half-typed, the status line shows what mep is waiting for:
+a count, a pending operator, a register prefix. If a key seems to have done
+nothing, look here first -- the usual answer is that it is waiting for the
+rest of the command. =Esc= discards it.
+
+* The direnv chip
+
+Shows whether the active project's =.envrc= has been loaded into mep's own
+environment. Click it to toggle.
+
+It activates automatically when you open a project that has an =.envrc=, so
+terminals, language servers and anything else mep spawns inherit the same
+environment your shell would have in that directory.
+
+* The Pomodoro chip
+
+A work/break countdown: 25 minutes of work, then 5 of break. Click it to
+start, pause or resume. It is idle until you click it.
+
+* The active-todo chip
+
+The most useful chip once you are clocking work. It is green with the
+clocked-in todo's title and a live elapsed timer, or a red
+=[No active TODO]= when nothing is running. Clicking it toggles the Todo
+sidebar.
+
+It follows the *file*, not the panel: a clock started by editing =TODO.org=
+directly counts just the same as one started from the sidebar. Only one
+clock runs at a time.
+
+From Lua, =mep.active_todo_set(text, start_unix_seconds)= drives the chip
+directly, and =mep.active_todo_set(nil)= clears it -- the hook for anyone
+tracking time from their own code.
+
+* Collaborator chips
+
+In a collaboration session, each connected participant gets a chip showing
+their name and cursor position, like =Ada @12:4=. Clicking one jumps to that
+participant's cursor.
+
+* Replacing it
+
+#+begin_src lua
+mep.set_statusline(function()
+  return mep.filename() .. '  ' .. (mep.git_gutter_summary() or '')
+end)
+#+end_src
+
+The function is called each frame and its string is drawn as the status
+line. The Ln/Col readout and the chips are kept either way, so a custom
+statusline replaces the text, not the whole row.
+
+* See also
+
+- [[file:tab-bar.html][The tab bar]] -- the row at the top.
+- [[file:notifications.html][Notifications]] -- messages that outlive the status line.
+- [[file:modes.html][Modes]] -- what the leftmost segment is telling you.

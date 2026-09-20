@@ -31030,24 +31030,37 @@ void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const Htm
     for (float width : widths) total += width;
     if (total > available) for (float &width : widths) width *= available / total;
     else for (float &width : widths) width += (available - total) / static_cast<float>(columns);
+    // A row is as tall as its cells actually lay out, measured by laying
+    // them out -- not by re-deriving it. The estimate this replaces
+    // re-implemented word wrapping here using the *cell's* own font and
+    // size, which stops being right the moment a cell contains anything
+    // styled differently from the cell itself: a <code> span, a link, or
+    // simply a font-family or line-height inherited from the page. It then
+    // under-reserved the row, so the cell's border box came out shorter
+    // than the text inside it and the grid line was drawn straight through
+    // the row -- every entry in a key-reference table read as struck out.
+    //
+    // Measured against the built-in help pages, the old estimate was short
+    // by ~7px on a plain table and by ~20px (a full line) once the page
+    // carried a stylesheet, which is what made the artifact so
+    // inconsistent. Measuring costs one extra layout pass per cell, into a
+    // scratch HtmlLayout that is discarded; HtmlLayoutBlock only reads from
+    // its node and appends to the layout it is handed, so running it twice
+    // is safe and side-effect free.
     std::vector<float> row_heights(row_count, HtmlLineHeight(ctx.base_font_size) + 8.0f);
     for (const TableCell &cell : cells) {
-        float cell_w = 0.0f; for (size_t i = 0; i < cell.colspan; ++i) cell_w += widths[cell.column + i];
-        std::string text; HtmlCollectRawText(cell.node, text);
-        const float font_size = ctx.base_font_size * cell.node->style.font_scale;
-        const gfx::Font &font = HtmlFontFor(cell.node->style);
-        float used = 0.0f; size_t lines = 1, pos = 0;
-        const float space = gfx::MeasureTextEx(font, " ", font_size, 0).x;
-        while (pos < text.size()) {
-            while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
-            size_t start = pos; while (pos < text.size() && !std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
-            if (start == pos) continue;
-            const float word_w = gfx::MeasureTextEx(font, text.substr(start, pos - start).c_str(), font_size, 0).x;
-            if (used > 0.0f && used + space + word_w > cell_w - 12.0f) { ++lines; used = 0.0f; }
-            used += (used > 0.0f ? space : 0.0f) + word_w;
-        }
-        const float wanted = static_cast<float>(lines) * HtmlLineHeight(font_size) + 8.0f;
-        float have = 0.0f; for (size_t rr = cell.row; rr < cell.row + cell.rowspan; ++rr) have += row_heights[rr];
+        float cell_w = 0.0f;
+        for (size_t i = 0; i < cell.colspan; ++i) cell_w += widths[cell.column + i];
+        // Same geometry as the real pass below: content is indented 6px and
+        // wraps at the cell's right edge, so the probe wraps identically.
+        HtmlLayoutCtx probe_ctx = ctx;
+        probe_ctx.layout_width = cell_w;
+        HtmlLayout scratch;
+        float probe_y = 0.0f;
+        HtmlLayoutBlock(cell.node, 6.0f, probe_y, probe_ctx, scratch);
+        const float wanted = probe_y + 8.0f;  // the 4px above the content, and as much below
+        float have = 0.0f;
+        for (size_t rr = cell.row; rr < cell.row + cell.rowspan; ++rr) have += row_heights[rr];
         if (wanted > have) row_heights[cell.row + cell.rowspan - 1] += wanted - have;
     }
     std::vector<float> row_tops(row_count);

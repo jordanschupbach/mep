@@ -3344,6 +3344,14 @@ int l_sidebar_set_sections(lua_State *L) {
                 lua_getfield(L, -1, "trailing_icon");
                 if (lua_isstring(L, -1)) w.trailing_icon = lua_tostring(L, -1);
                 lua_pop(L, 1);
+                // `drag_buffer` (SidebarWidget::drag_buffer_id): the
+                // already-open buffer this row stands for, making the row
+                // draggable onto a pane even when it names no file --
+                // mep.sidebar_set_sections' only field that is a buffer
+                // id rather than presentation.
+                lua_getfield(L, -1, "drag_buffer");
+                if (lua_isnumber(L, -1)) w.drag_buffer_id = static_cast<int>(lua_tointeger(L, -1));
+                lua_pop(L, 1);
                 w.trailing_on_click_ref = RefField(L, -1, "trailing_on_click");
                 w.on_click_ref = RefField(L, -1, "on_click");
                 // Optional `spans` (SidebarWidget::spans): mep.ts_captures'
@@ -3368,6 +3376,23 @@ int l_sidebar_set_sections(lua_State *L) {
         sections.push_back(std::move(sec));
     }
     GetEditor(L)->SetSidebarSections(id, std::move(sections));
+    return 0;
+}
+
+// mep.sidebar_set_double_click(id, enabled): makes this sidebar's rows
+// need a *double* click to activate when it's hosted in a pane
+// (mep.sidebar_open_pane), a single one only moving the row cursor --
+// the behavior a docked sidebar's rows already have. Opt-in per sidebar;
+// see SidebarInstance::activate_on_double_click (editor.h) for why it
+// isn't simply the default everywhere.
+/**
+ * @brief Implements mep.sidebar_set_double_click(id, enabled): requires a double click to activate this sidebar's pane-hosted rows.
+ * @param L Lua state; arg 1 is the sidebar id, arg 2 whether to require a double click.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_set_double_click(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    GetEditor(L)->SetSidebarDoubleClickActivate(id, lua_toboolean(L, 2) != 0);
     return 0;
 }
 
@@ -4325,6 +4350,26 @@ int l_buffer_switch(lua_State *L) {
     int id = static_cast<int>(luaL_checkinteger(L, 1));
     GetEditor(L)->SwitchToBufferForLua(id);
     return 0;
+}
+
+// mep.buffer_open_beside(id, direction?) -> pane id: shows buffer `id`
+// in the focused pane when that's an ordinary document pane -- plain
+// mep.buffer_switch -- but in the nearest non-navigator pane in
+// `direction` ('right' by default, else 'left'/'up'/'down') when the
+// focused pane is itself a list you pick things from: the Buffers
+// sidebar opened as a pane, the file tree, git status. Splits that way
+// when there's no such neighbor. This is what keeps the Buffers
+// sidebar's own rows from opening *over* the sidebar you clicked in.
+/**
+ * @brief Implements mep.buffer_open_beside(id, direction?): shows a buffer in a pane that isn't a navigator, splitting if need be.
+ * @param L Lua state; arg 1 is the buffer id, optional arg 2 the direction to look in (default "right").
+ * @return Number of values pushed (1: the pane id it landed in, or -1).
+ */
+int l_buffer_open_beside(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char *dir = luaL_optstring(L, 2, "right");
+    lua_pushinteger(L, GetEditor(L)->OpenBufferBeside(id, dir));
+    return 1;
 }
 
 // mep.buffer_filename(id) -> raw path, '' for a terminal/unsaved buffer.
@@ -9847,6 +9892,7 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_on_screen", l_buffer_on_screen},
     {"sidebar_set_on_key", l_sidebar_set_on_key},
     {"sidebar_set_help", l_sidebar_set_help},
+    {"sidebar_set_double_click", l_sidebar_set_double_click},
     {"sidebar_toggle_help", l_sidebar_toggle_help},
     {"sidebar_help_open", l_sidebar_help_open},
     {"sidebar_set_tabs", l_sidebar_set_tabs},
@@ -9879,6 +9925,7 @@ const luaL_Reg kMepFuncs[] = {
     {"fuzzy_score", l_fuzzy_score},
     {"buffer_list", l_buffer_list},
     {"buffer_switch", l_buffer_switch},
+    {"buffer_open_beside", l_buffer_open_beside},
     {"buffer_filename", l_buffer_filename},
     {"buffer_count", l_buffer_count},
     {"pane_buffers", l_pane_buffers},

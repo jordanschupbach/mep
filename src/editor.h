@@ -543,6 +543,16 @@ struct SidebarWidget {
     // behavior every other sidebar keeps unchanged.
     std::string trailing_icon;
     int trailing_on_click_ref = 0;
+    // The already-open buffer this row stands for, when it stands for one
+    // (the Buffers sidebar's rows; -1 everywhere else). Purely a drag
+    // payload: it makes the row draggable onto a pane the same way a row
+    // whose `id` happens to name a real file on disk already is
+    // (main.cpp's UpdatePaneMouseInteraction), except the drop shows that
+    // exact buffer (Editor::OpenBufferInPane) instead of re-opening a
+    // path -- so a terminal, a scratch buffer or any other pathless
+    // buffer drags just as well as a file-backed one, and dropping a
+    // modified buffer can't be confused with re-reading its file.
+    int drag_buffer_id = -1;
     // Optional per-byte syntax coloring over `text` (PickerHlSpan; `row`
     // unused), layered over `hl` the way a PickerItem's own spans are
     // (mep.sidebar_set_sections' widget `spans` field). Ignored for a
@@ -654,6 +664,17 @@ struct SidebarInstance {
     // to it only when it moves.
     int last_current_row = -1;
     int scroll_offset = 0;
+    // Pane-hosted rows (DrawSidebarPaneContent) activate on a *double*
+    // click, selecting only on a single one -- the docked path's
+    // behavior (main.cpp's UpdatePaneMouseInteraction) instead of this
+    // path's default "a row is an ordinary button, one click both selects
+    // and fires it". Opt-in per sidebar because it only earns its extra
+    // click where activating is destructive or navigational enough that
+    // doing it by accident hurts: the Buffers sidebar, whose rows open a
+    // whole other buffer somewhere else in the layout. Every other
+    // pane-hosted sidebar (git's Status/Log, the R UI's tabs, Help)
+    // leaves this false and keeps single-click activation.
+    bool activate_on_double_click = false;
 };
 
 // One flattened, renderable/navigable line of a sidebar: either a section
@@ -6635,6 +6656,33 @@ public:
     // so images/PDFs/HTML/office files get their viewers exactly as `:e`
     // would; the new pane becomes the active one.
     void OpenFileInPane(int dest_pane_id, const std::string &path, bool split, SplitDir dir, bool before);
+    // OpenFileInPane's counterpart for a buffer that is already open: the
+    // drop target for a row dragged out of the Buffers sidebar
+    // (SidebarWidget::drag_buffer_id). Shows `buffer_id` in
+    // `dest_pane_id` -- appended to that pane's own tab strip, like
+    // MoveBufferTabToPane's destination half, except nothing is removed
+    // from a source pane since a sidebar row was never a tab in the first
+    // place -- or, with `split`, in a fresh `dir`/`before` leaf split off
+    // it. Unlike routing through the path (LoadFile), this needs no file
+    // at all, so terminals and scratch buffers drop like any other.
+    void OpenBufferInPane(int dest_pane_id, int buffer_id, bool split, SplitDir dir, bool before);
+    // "Show this buffer somewhere that isn't a navigator": opens
+    // `buffer_id` in the active pane when that's an ordinary document
+    // pane, and otherwise -- the active pane being the Buffers sidebar
+    // itself, the file tree, git status, any other list you activate rows
+    // in -- in the nearest non-navigator pane in `direction`
+    // (FindNeighborPaneId's "left"/"right"/"up"/"down"), splitting the
+    // active pane that way when there is no such neighbor. Without this,
+    // a pane-hosted Buffers sidebar's own rows open *over* the sidebar,
+    // replacing the list you were clicking in. Returns the pane the
+    // buffer ended up in, or -1 if `buffer_id` isn't a live buffer.
+    int OpenBufferBeside(int buffer_id, const std::string &direction);
+    // Whether a pane showing `buffer_id` is a navigator rather than a
+    // document: a sidebar rendered as a pane (Mode::SidebarPane), or a
+    // list buffer that publishes a row->path drag resolver (the file
+    // tree). Both are places you pick things *from*, never places to open
+    // a picked thing *into* -- see OpenBufferBeside.
+    bool IsNavigatorPaneBuffer(int buffer_id) const;
     // Border-drag resize: sets node->shares[child_index] to `new_share`
     // (clamped so both it and shares[child_index+1] stay >= kMinPaneShare),
     // taking the difference out of shares[child_index+1] so their combined
@@ -7714,6 +7762,16 @@ public:
     // sidebars use the file path as the id, which is what main.cpp's
     // drag-a-file-onto-a-pane gesture keys off.
     std::string SidebarLineWidgetId(int id, int line_index) const;
+    // SidebarWidget::drag_buffer_id of that same line -- -1 for a section
+    // header, an out-of-range line, or a widget that doesn't stand for an
+    // already-open buffer. A row carrying one is draggable onto a pane
+    // whether or not it also names a file on disk.
+    int SidebarLineDragBufferId(int id, int line_index) const;
+    // SidebarInstance::activate_on_double_click (see its own comment):
+    // whether this sidebar's pane-hosted rows want the docked path's
+    // select-then-double-click-activates behavior.
+    void SetSidebarDoubleClickActivate(int id, bool enabled);
+    bool SidebarActivatesOnDoubleClick(int id) const;
     // Generic "drag a row out of this ordinary buffer onto a pane" hook
     // (PANE_DRAG_RESTORE: restores the drag-and-drop file open gesture for
     // the file tree now that it's a real Buffer instead of a SidebarInstance

@@ -46,9 +46,11 @@ These block the page work, or make it much worse if skipped. Do them first.
   the exporter now emits *after* its own `<style>` block so a page can
   override it. Tuned against mep's renderer, whose quirks are documented in
   the stylesheet: block margins are added to its own line-based defaults
-  rather than replacing them, it ignores `@media` entirely (so browser-only
-  rules live there), and table cell `padding` is excluded from the cell's
-  box height, which draws the cell border through the text.
+  rather than replacing them, and it ignores `@media` entirely (so
+  browser-only rules live there). A third apparent quirk — tables rendering
+  with the cell grid line drawn through each row's text — turned out to be a
+  real renderer bug, and was fixed rather than designed around (see
+  `HtmlLayoutTable`).
   Hand-maintained prev/next links are dropped: they cannot scale to 109
   pages and duplicate the sidebar. Pages close with "See also" instead.
 - [x] **0.4 Headless export pipeline.** `mep --export-org <in> <out>` renders

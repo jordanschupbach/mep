@@ -168,18 +168,18 @@ These block the page work, or make it much worse if skipped. Do them first.
 
 ## Part 5 — Projects and workspaces (3 pages)
 
-- [ ] **5.1 `projects` — Projects.** What a project is; `mep --project`,
+- [x] **5.1 `projects` — Projects.** What a project is; `mep --project`,
   `$MEP_PROJECT`, `:project`, `mep.project_open`; `:projects` /
   `<leader>pp`; `:projectclose`/`next`/`previous`; the first-open default
   layout (README + terminal + file tree); `:projectclear` / `<leader>pc`.
-- [ ] **5.2 `workspaces` — Workspaces as git worktrees.** `:wsnew` (and
+- [x] **5.2 `workspaces` — Workspaces as git worktrees.** `:wsnew` (and
   `:wsnew!` onto an existing branch), the async `[name...]` label, cwd
   following the active workspace, per-workspace LSP clients and buffers,
   `:ws`/`:wsnext`/`:wsprevious`/`Ctrl-Alt-[`/`]`/`Alt-1..9`, `:wslist` /
   `<leader>ww`, `:wsrename`, `:wsdelete` (branch is kept), `:wsadopt`,
   `:wsprune`, `<leader>gw`, `mep.opt.worktree_dir`,
   `mep.opt.workspace_git_dirty`, non-git projects.
-- [ ] **5.3 `sessions` — Session save and restore.** What is persisted
+- [x] **5.3 `sessions` — Session save and restore.** What is persisted
   (workspaces, tabs, split trees, open files relative to the workspace root,
   cursors, terminals), where (`$XDG_DATA_HOME/mep/workspaces/<name>-<hash>.json`),
   when (500ms debounce + on quit), `--no-session`,

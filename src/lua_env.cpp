@@ -3100,6 +3100,31 @@ int l_org_latex_toggle(lua_State *L) {
     return 1;
 }
 
+// mep.org_block_cards_toggle() -> new visibility (bool). Bound to
+// <leader>otb via kBuiltinOrgImages' own mep.leader_map call. Unlike the
+// two toggles above there's no scan to (re)run on the way in -- the
+// renderer parses the blocks itself, per frame (Editor::OrgBlockCards).
+/**
+ * @brief Implements mep.org_block_cards_toggle(): toggles org block-card rendering on/off.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new visibility state).
+ */
+int l_org_block_cards_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleOrgBlockCards());
+    return 1;
+}
+
+// mep.org_block_cards_visible() -> bool.
+/**
+ * @brief Implements mep.org_block_cards_visible(): reports whether org block-card rendering is on.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the current visibility state).
+ */
+int l_org_block_cards_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->OrgBlockCardsVisible());
+    return 1;
+}
+
 // mep.org_latex_visible() -> bool. Lua-side readable state (unlike
 // OrgImagesVisible(), org_latex_scan itself needs to consult this -- see
 // Buffer::org_latex_rows' own comment for why the two toggles' scan
@@ -9941,6 +9966,8 @@ const luaL_Reg kMepFuncs[] = {
     {"buf_set_latex_row", l_buf_set_latex_row},
     {"buf_clear_latex_rows", l_buf_clear_latex_rows},
     {"org_latex_toggle", l_org_latex_toggle},
+    {"org_block_cards_toggle", l_org_block_cards_toggle},
+    {"org_block_cards_visible", l_org_block_cards_visible},
     {"org_latex_visible", l_org_latex_visible},
     {"buf_add_latex_inline", l_buf_add_latex_inline},
     {"buf_clear_latex_inline", l_buf_clear_latex_inline},

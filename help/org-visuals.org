@@ -17,6 +17,39 @@ A link to an image file is drawn in place, in the buffer:
 [[file:diagram.png]]
 #+end_example
 
+* Block cards
+
+| Key / command                | Does                          |
+|------------------------------+-------------------------------|
+| =<leader>otb=                | toggle block cards            |
+| =:MepOrgBlockCardsToggle=    | the same                      |
+
+Every =#+begin_.../#+end_...= block is drawn as a rounded card: a tinted
+background, an outline in the theme's accent colour for a =src= code
+chunk (muted for =example=, =quote=, =export= and the rest), and a title
+bar in place of the header lines.
+
+The bar carries the block's language, its name and its header arguments,
+each in its own box, however they were written:
+
+#+begin_example
+#+HEADER: :var x=1
+#+NAME: read-config
+#+begin_src python :tangle "my file.py" :results output
+#+end_src
+#+end_example
+
+reads as =python= | =read-config= | =:var x=1= | =:tangle my file.py= |
+=:results output=. Quoted values keep their spaces, a bare flag such as
+=:cache= shows on its own, =:var= is listed once per variable, and a long
+value is shortened from the front. A =#+CAPTION:= stands in as the title
+when there is no =#+NAME:=, and a =:title= header argument does too.
+
+Nothing is rewritten: put the cursor on the header (or select across it)
+and the raw =#+begin_src ...= line comes straight back to edit. The card
+also steps aside for a folded block, and for a block holding an image or
+a maths fragment that is being previewed in place.
+
 * LaTeX and maths
 
 | Key / command             | Does                              |

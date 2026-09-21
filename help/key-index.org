@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 95 =<leader>= sequences registered at startup. Press
+All 96 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -77,6 +77,7 @@ the features live.
 | =<leader>ora= | Org-roam: add note | [[file:org-roam.html][Org-roam]] |
 | =<leader>orr= | Org-roam: find note | [[file:org-roam.html][Org-roam]] |
 | =<leader>ors= | Org-roam: sync notes | [[file:org-roam.html][Org-roam]] |
+| =<leader>otb= | Org: toggle block cards | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>oti= | Org: toggle inline images | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otl= | Toggle LaTeX/math preview (org/tex) | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>pc= | Clear project (default layout) | [[file:projects.html][Projects]] |

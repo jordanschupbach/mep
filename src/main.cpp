@@ -13356,7 +13356,17 @@ const char *kBuiltinOrgImages =
     "  if visible then mep.org_image_scan() end\n"
     "end\n"
     "mep.command('MepOrgImagesToggle', mep.org_images_toggle_ui)\n"
-    "mep.leader_map('oti', 'Org: toggle inline images', mep.org_images_toggle_ui)\n";
+    "mep.leader_map('oti', 'Org: toggle inline images', mep.org_images_toggle_ui)\n"
+    // Block cards (<leader>otb): `#+begin_.../#+end_...` drawn as a
+    // rounded card with its header concealed behind a rendered title bar
+    // -- see DrawPane's own org_card_boxes comment. On by default, so
+    // this toggle exists mainly to get the raw markup back.
+    "function mep.org_block_cards_toggle_ui()\n"
+    "  local visible = mep.org_block_cards_toggle()\n"
+    "  mep.notify('Org block cards: ' .. (visible and 'on' or 'off'))\n"
+    "end\n"
+    "mep.command('MepOrgBlockCardsToggle', mep.org_block_cards_toggle_ui)\n"
+    "mep.leader_map('otb', 'Org: toggle block cards', mep.org_block_cards_toggle_ui)\n";
 
 // Org-mode C: capture, refile, archive (Phase 31). Capture reuses
 // mep.ui_input for %^{PROMPT} placeholders and mep.picker_open for the
@@ -38005,6 +38015,186 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         g_editor.VisualRange(sel_start, sel_end);
     }
 
+    // Org block cards (<leader>otb / Editor::OrgBlockCardsVisible, on by
+    // default): every `#+begin_X ... #+end_X` block draws as a rounded
+    // card -- a tinted background, an outline in the theme's accent for a
+    // `src` code chunk (muted for example/quote/export/...), and its
+    // header concealed behind a rendered title bar carrying the block's
+    // title, language and header args. The raw `#+begin_src python
+    // :tangle yes` line comes back the instant the cursor enters it (or a
+    // Visual selection covers it), so editing header args works exactly
+    // as it did -- the rendering is only what you *read* when you aren't
+    // editing it, org-modern's own bargain.
+    //
+    // Fills are drawn here, under the row loop's text; the title bar and
+    // the outline are drawn in a post-pass just before EndScissorMode --
+    // the bar has to paint *over* the raw header text it stands in for,
+    // which is the same cover-then-draw a virt_overlay decoration does
+    // (see the decoration loop below), just with several differently
+    // colored pieces instead of one run of text.
+    struct OrgCardBox {
+        gfx::Rectangle rect;
+        gfx::Rectangle header;  // the meta/`#+begin_` band the title bar replaces
+        gfx::Rectangle footer;  // the `#+end_` row, blanked to the card's floor
+        bool conceal_header = false;
+        bool conceal_footer = false;
+        bool active = false;  // the cursor is somewhere inside this block
+        bool is_src = false;
+        const OrgBlockCard *card = nullptr;
+    };
+    std::vector<OrgCardBox> org_card_boxes;
+    if (g_editor.OrgBlockCardsVisible() && LspFiletype(buf.filename) == "org") {
+        // Row -> its first visual slot, and how many slots it claims,
+        // walked exactly the way the draw loop below walks (a closed fold
+        // collapses to one slot, an org image/LaTeX row claims its own
+        // count, a soft-wrapped row claims one per visual piece) so a
+        // card's edges land on the rows they actually belong to.
+        std::unordered_map<int, int> slot_start, slot_count;
+        {
+            int vslot = 0;
+            for (int r = pane.scroll_row; r < buf.LineCount() && vslot < visible_lines;) {
+                const Fold *f = nullptr;
+                for (const Fold &fold : buf.folds) {
+                    if (fold.closed && fold.start_row == r && (!f || fold.end_row > f->end_row)) f = &fold;
+                }
+                slot_start[r] = vslot;
+                auto latex_it = buf.org_latex_rows.find(r);
+                int slots = 1;
+                int next = r + 1;
+                if (f) {
+                    next = f->end_row + 1;
+                } else if (g_editor.OrgImagesVisible() && buf.org_image_rows.count(r) != 0) {
+                    slots = kOrgInlineImageSlots;
+                } else if (g_editor.OrgLatexVisible() && latex_it != buf.org_latex_rows.end()) {
+                    slots = latex_it->second.slots;
+                    next = latex_it->second.end_row + 1;
+                } else {
+                    if (wrap_cols > 0) {
+                        int len = static_cast<int>(buf.lines[static_cast<size_t>(r)].size());
+                        slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
+                    }
+                    slots += nb_sess ? g_editor.NotebookTrailingSlots(pane.buffer_id, r) : 0;
+                }
+                slot_count[r] = slots;
+                vslot += slots;
+                r = next;
+            }
+        }
+        // A Visual selection reveals the header the same way the cursor
+        // does: a selection you can see the ends of but not the middle of
+        // would be its own small mystery.
+        int sel_lo = -1, sel_hi = -1;
+        if (block_selection) {
+            sel_lo = block_top;
+            sel_hi = block_bottom;
+        } else if (has_selection) {
+            sel_lo = sel_start.row;
+            sel_hi = sel_end.row;
+        }
+        // Same horizontal placement as a notebook cell card: just right of
+        // the line-number gutter, and short of the pane border on the right.
+        const float card_left = std::min(text_x + g_char_width * 2.0f, std::max(x + 3.0f, text_x - g_char_width * 0.5f));
+        const float card_right = x + w - static_cast<float>(kMarginX + 4);
+        for (const OrgBlockCard &card : g_editor.OrgBlockCards(pane.buffer_id)) {
+            // An unterminated block (still being typed) runs to the end of
+            // the buffer rather than not drawing at all.
+            const int last_row = card.end_row >= 0 ? card.end_row : buf.LineCount() - 1;
+            if (last_row < pane.scroll_row) continue;
+            // A closed fold anywhere across the block collapses rows this
+            // geometry assumes are on screen -- and its summary line is
+            // the one thing the user asked to see in their place. An org
+            // image or LaTeX row inside the block renders a texture this
+            // would paint over. Both cases leave the block as plain text.
+            bool skip = false;
+            for (const Fold &fold : buf.folds) {
+                if (fold.closed && fold.start_row <= last_row && fold.end_row >= card.meta_row) {
+                    skip = true;
+                    break;
+                }
+            }
+            if (!skip && (g_editor.OrgImagesVisible() || g_editor.OrgLatexVisible())) {
+                for (int r = card.meta_row; r <= last_row && !skip; r++) {
+                    if (g_editor.OrgImagesVisible() && buf.org_image_rows.count(r) != 0) skip = true;
+                    if (g_editor.OrgLatexVisible() && buf.org_latex_rows.count(r) != 0) skip = true;
+                }
+            }
+            if (skip) continue;
+            /**
+             * @brief Looks up the y of a row's top edge within this pane's visible slots.
+             * @param r The buffer row.
+             * @param out Set to the row's top y when it is on screen.
+             * @return True if the row is within the walked (visible) range.
+             */
+            auto row_top = [&](int r, float *out) {
+                auto it = slot_start.find(r);
+                if (it == slot_start.end()) return false;
+                *out = content_y + static_cast<float>(it->second * line_height);
+                return true;
+            };
+            /**
+             * @brief Looks up the y just past a row's bottom edge within this pane's visible slots.
+             * @param r The buffer row.
+             * @param out Set to the row's bottom y when it is on screen.
+             * @return True if the row is within the walked (visible) range.
+             */
+            auto row_bottom = [&](int r, float *out) {
+                auto it = slot_start.find(r);
+                if (it == slot_start.end()) return false;
+                auto cit = slot_count.find(r);
+                const int slots = cit == slot_count.end() ? 1 : cit->second;
+                *out = content_y + static_cast<float>((it->second + slots) * line_height);
+                return true;
+            };
+            float top = 0.0f;
+            if (!row_top(card.meta_row, &top)) {
+                // Not in the walked range: either it starts above the
+                // viewport (the card continues past the top edge, drawn
+                // from just off-screen so the scissor clips its corner
+                // away) or the whole block is below it.
+                if (card.meta_row < pane.scroll_row) top = content_y - static_cast<float>(line_height);
+                else continue;
+            }
+            float bottom = 0.0f;
+            if (!row_bottom(last_row, &bottom)) bottom = content_y + content_h + static_cast<float>(line_height);
+            top += 1.0f;
+            bottom -= 1.0f;
+            if (bottom <= top + 2.0f) continue;
+            OrgCardBox box;
+            box.card = &card;
+            box.is_src = card.is_src;
+            box.rect = gfx::Rectangle{card_left, top, card_right - card_left, bottom - top};
+            box.active = is_active && pane.cursor.row >= card.meta_row && pane.cursor.row <= last_row;
+            // Keyed off the card's own top rather than the meta row's,
+            // so a block whose `#+NAME:` has scrolled off the top edge
+            // still hides the `#+begin_` line under its title bar.
+            float header_bottom = 0.0f;
+            if (row_bottom(card.begin_row, &header_bottom)) {
+                const bool cursor_in_header = is_active && pane.cursor.row >= card.meta_row && pane.cursor.row <= card.begin_row;
+                const bool sel_in_header = sel_lo >= 0 && sel_lo <= card.begin_row && sel_hi >= card.meta_row;
+                box.header = gfx::Rectangle{card_left, box.rect.y, box.rect.width, header_bottom - box.rect.y - 1.0f};
+                box.conceal_header = box.header.height > 1.0f && !cursor_in_header && !sel_in_header;
+            }
+            float footer_top = 0.0f, footer_bottom = 0.0f;
+            if (card.end_row >= 0 && row_top(card.end_row, &footer_top) && row_bottom(card.end_row, &footer_bottom)) {
+                const bool cursor_on_end = is_active && pane.cursor.row == card.end_row;
+                const bool sel_on_end = sel_lo >= 0 && sel_lo <= card.end_row && sel_hi >= card.end_row;
+                box.footer = gfx::Rectangle{card_left, footer_top, box.rect.width, footer_bottom - footer_top - 1.0f};
+                box.conceal_footer = box.footer.height > 1.0f && !cursor_on_end && !sel_on_end;
+            }
+            // A wash, not a fill: an alpha tint over whatever the pane's
+            // background already is, so the card reads as "slightly
+            // different paper" in both light and dark themes instead of
+            // as a colored slab the code has to compete with. (The
+            // theme's own AccentTint group is 82% accent -- right for an
+            // active toolbar control, far too loud behind a page of code.)
+            const float rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(box.rect.width, box.rect.height)));
+            gfx::DrawRectangleRounded(box.rect, rr, 6,
+                                  card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                              : gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+            org_card_boxes.push_back(box);
+        }
+    }
+
     // buf.decorations is keyed by namespace, not by row -- scanning every
     // decoration in every namespace for every visible row (as this used
     // to, inline in the row loop below) is O(total_decorations ×
@@ -39308,6 +39498,149 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             text_draw_x += label_icon_w;
         }
         gfx::DrawTextEx(g_font, label_text.c_str(), gfx::Vector2{text_draw_x, p_label_y + (label_h - g_font_size) / 2.0f}, g_font_size, 0, gfx::White);
+    }
+
+    // Org block cards (see org_card_boxes above): the title bar that
+    // stands in for the concealed header, then the card outline -- both
+    // after the row text, so the bar covers the raw `#+begin_src ...`
+    // line underneath it and the rounded outline stays crisp on top.
+    for (const OrgCardBox &cb : org_card_boxes) {
+        const OrgBlockCard &card = *cb.card;
+        const gfx::Color accent = ResolveHlGroup("Accent");
+        // The same washes the fill pass used, plus the opaque background
+        // they sit on: a concealing band has to cover the raw header text
+        // outright, so it paints NormalBg first and the wash over it,
+        // landing on exactly the color the card body already shows.
+        const gfx::Color card_wash = cb.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                                : gfx::Fade(ResolveHlGroup("Comment"), 0.08f);
+        const gfx::Color header_wash = cb.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.20f)
+                                                  : gfx::Fade(ResolveHlGroup("Comment"), 0.16f);
+        const gfx::Color opaque_bg = ResolveHlGroup("NormalBg");
+        const float card_rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(cb.rect.width, cb.rect.height)));
+        // The band only spans as far right as the card does, but a header
+        // line longer than the card is clipped by the pane (not the card),
+        // so its tail would keep showing past the card's right edge --
+        // painted out with the pane's own background rather than more card
+        // fill, which outside the rounded outline would read as a bite
+        // taken out of the card.
+        /**
+         * @brief Paints out the sliver of raw row text between the card's right edge and the pane's.
+         * @param band The concealed band whose row(s) to clear beyond the card.
+         */
+        auto clear_overflow = [&](const gfx::Rectangle &band) {
+            const float from = cb.rect.x + cb.rect.width;
+            const float to = x + w - 2.0f;
+            if (to <= from) return;
+            gfx::DrawRectangle(static_cast<int>(from), static_cast<int>(band.y), static_cast<int>(to - from),
+                          static_cast<int>(band.height), ResolveHlGroup("NormalBg"));
+        };
+        if (cb.conceal_header) {
+            clear_overflow(cb.header);
+            gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y),
+                          static_cast<int>(cb.header.width), static_cast<int>(cb.header.height), opaque_bg);
+            // A touch more tint than the body, so the bar reads as the
+            // card's header rather than as part of the code.
+            gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y),
+                          static_cast<int>(cb.header.width), static_cast<int>(cb.header.height), header_wash);
+            gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y + cb.header.height - 1.0f),
+                          static_cast<int>(cb.header.width), 1, gfx::Fade(accent, cb.is_src ? 0.45f : 0.25f));
+            // Laid out on the band's *first* line. The band is one row tall
+            // in the common case, but a stack of `#+HEADER:`/`#+NAME:`
+            // lines -- or a single header long enough to soft-wrap --
+            // makes it taller, and a title bar belongs against the card's
+            // top edge with the slack below it, not floating with a gap
+            // above.
+            const float bar_y = cb.header.y;
+            const float text_y = bar_y + (static_cast<float>(line_height) - g_font_size) / 2.0f;
+            const float chip_h = std::max(8.0f, static_cast<float>(line_height) - 5.0f);
+            const float chip_y = bar_y + (static_cast<float>(line_height) - chip_h) / 2.0f;
+            const float right_limit = cb.header.x + cb.header.width - 8.0f;
+            float cx = cb.header.x + 9.0f;
+            /**
+             * @brief Checks whether a bar element of the given width still fits before the card's right edge.
+             * @param width The element's width in pixels.
+             * @return True if it fits; otherwise an ellipsis is drawn and the bar ends.
+             */
+            auto fits = [&](float width) {
+                if (cx + width <= right_limit) return true;
+                // Pulled back against the right edge when the run of chips
+                // has already reached it, so the ellipsis marking "there's
+                // more here" can't itself spill over the card's border.
+                const float ell_w = g_char_width * 3.0f;
+                const float ell_x = std::min(cx, right_limit - ell_w);
+                if (ell_x >= cb.header.x) {
+                    gfx::DrawTextEx(g_font, "...", gfx::Vector2{ell_x, text_y}, g_font_size, 0, ResolveHlGroup("MutedFg"));
+                }
+                return false;
+            };
+            // The language (or, for a non-src block, the block word) as a
+            // filled chip -- the one piece that is always there, and the
+            // block's identity at a glance.
+            const std::string kind_text = card.is_src ? (card.lang.empty() ? std::string("src") : card.lang) : card.kind;
+            const float kind_w = gfx::MeasureTextEx(g_font, kind_text.c_str(), g_font_size, 0).x + 14.0f;
+            if (fits(kind_w)) {
+                const gfx::Rectangle chip{cx, chip_y, kind_w, chip_h};
+                gfx::DrawRectangleRounded(chip, 0.5f, 6, cb.is_src ? accent : ResolveHlGroup("Border"));
+                gfx::DrawTextEx(g_font, kind_text.c_str(), gfx::Vector2{cx + 7.0f, text_y}, g_font_size, 0,
+                           ResolveHlGroup("NormalBg"));
+                cx += kind_w + 8.0f;
+                // The title (#+NAME:/#+CAPTION:/:title), drawn twice one
+                // pixel apart for a bold that g_font has no real face for
+                // -- the same fake-bold a Decoration::bold span uses.
+                if (!card.title.empty()) {
+                    const float title_w = gfx::MeasureTextEx(g_font, card.title.c_str(), g_font_size, 0).x;
+                    if (fits(title_w + 8.0f)) {
+                        const gfx::Color title_col = ResolveHlGroup("Normal");
+                        gfx::DrawTextEx(g_font, card.title.c_str(), gfx::Vector2{cx, text_y}, g_font_size, 0, title_col);
+                        gfx::DrawTextEx(g_font, card.title.c_str(), gfx::Vector2{cx + 1.0f, text_y}, g_font_size, 0, title_col);
+                        cx += title_w + 12.0f;
+                    }
+                }
+                // Every header arg as its own outlined chip -- the
+                // "border around the options" half of the card, and the
+                // reason they read as a row of cells rather than a run of
+                // colons. Keys and values are colored apart inside it.
+                for (const OrgBlockOption &opt : card.options) {
+                    const std::string key_text = ":" + opt.key;
+                    // One long value (a `:tangle` path, typically) would
+                    // otherwise eat the whole bar and push every option
+                    // after it behind the ellipsis -- elided from the
+                    // *front*, since the tail is the informative end of a
+                    // path. The full text is one cursor move away.
+                    std::string val_text = opt.value;
+                    if (val_text.size() > 24) val_text = "..." + val_text.substr(val_text.size() - 21);
+                    const float key_w = gfx::MeasureTextEx(g_font, key_text.c_str(), g_font_size, 0).x;
+                    const float val_w = val_text.empty()
+                                             ? 0.0f
+                                             : gfx::MeasureTextEx(g_font, (" " + val_text).c_str(), g_font_size, 0).x;
+                    const float opt_w = key_w + val_w + 12.0f;
+                    if (!fits(opt_w)) break;
+                    const gfx::Rectangle chip_rect{cx, chip_y, opt_w, chip_h};
+                    gfx::DrawRectangleRounded(chip_rect, 0.5f, 6, gfx::Fade(accent, 0.07f));
+                    gfx::DrawRectangleRoundedLinesEx(chip_rect, 0.5f, 6, 1.0f,
+                                                 gfx::Fade(cb.is_src ? accent : ResolveHlGroup("Border"), 0.55f));
+                    gfx::DrawTextEx(g_font, key_text.c_str(), gfx::Vector2{cx + 6.0f, text_y}, g_font_size, 0,
+                               cb.is_src ? accent : ResolveHlGroup("MutedFg"));
+                    if (!val_text.empty()) {
+                        gfx::DrawTextEx(g_font, val_text.c_str(), gfx::Vector2{cx + 6.0f + key_w + g_char_width, text_y},
+                                   g_font_size, 0, ResolveHlGroup("Normal"));
+                    }
+                    cx += opt_w + 6.0f;
+                }
+            }
+        }
+        // The `#+end_` row, blanked to plain card floor: the bottom edge
+        // of the card *is* the "end" marker once the card is drawn.
+        if (cb.conceal_footer) {
+            clear_overflow(cb.footer);
+            gfx::DrawRectangle(static_cast<int>(cb.footer.x), static_cast<int>(cb.footer.y),
+                          static_cast<int>(cb.footer.width), static_cast<int>(cb.footer.height), opaque_bg);
+            gfx::DrawRectangle(static_cast<int>(cb.footer.x), static_cast<int>(cb.footer.y),
+                          static_cast<int>(cb.footer.width), static_cast<int>(cb.footer.height), card_wash);
+        }
+        gfx::Color border = cb.is_src ? (cb.active ? accent : gfx::Fade(accent, 0.55f))
+                                       : gfx::Fade(ResolveHlGroup("Border"), cb.active ? 1.0f : 0.7f);
+        gfx::DrawRectangleRoundedLinesEx(cb.rect, card_rr, 6, cb.active ? 2.0f : 1.0f, border);
     }
 
     // Notebook cell-card borders (see nb_cell_boxes above): stroked last,

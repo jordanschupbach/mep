@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (63)</h1>
+<h1>The bindings (69)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -45,6 +45,8 @@ that it does nothing.</p>
 <tr><td><code>mep.buffer_set_on_image_toggle</code></td><td>registers a callback that replaces bare Shift+I's default Normal-mode behavior for a buffer</td></tr>
 <tr><td><code>mep.buffer_set_on_key</code></td><td>registers a buffer-scoped Normal-mode key filter</td></tr>
 <tr><td><code>mep.buffer_set_on_write</code></td><td>registers a callback that replaces a buffer's real disk write</td></tr>
+<tr><td><code>mep.buffer_set_row_cursor</code></td><td>makes a buffer's cursor select a whole row instead of a character</td></tr>
+<tr><td><code>mep.buffer_set_unlisted</code></td><td>hides a buffer from the Buffers sidebar and the buffer picker</td></tr>
 <tr><td><code>mep.buffer_set_wrap</code></td><td>opts a buffer out of :set wrap's soft-wrap</td></tr>
 <tr><td><code>mep.buffer_switch</code></td><td>switches the focused pane to show a given buffer</td></tr>
 <tr><td><code>mep.buffer_text_cols</code></td><td>returns the text column budget of the pane showing a buffer</td></tr>
@@ -63,6 +65,10 @@ that it does nothing.</p>
 <tr><td><code>mep.insert_text</code></td><td>inserts text at the cursor position</td></tr>
 <tr><td><code>mep.jump_to_buffer</code></td><td>switches workspace/tab/pane to land on a buffer wherever it lives</td></tr>
 <tr><td><code>mep.line_count</code></td><td>returns the number of lines in the current buffer</td></tr>
+<tr><td><code>mep.menubar_set_visible</code></td><td>shows or hides the top menu bar outright</td></tr>
+<tr><td><code>mep.menubar_toggle</code></td><td>shows/hides the top menu bar, the same thing tapping mod1 does</td></tr>
+<tr><td><code>mep.menubar_visible</code></td><td>returns whether the top menu bar is currently shown</td></tr>
+<tr><td><code>mep.mod1_name</code></td><td>returns the display name of whichever modifier is currently mod1</td></tr>
 <tr><td><code>mep.replace_lines</code></td><td>replaces a 1-indexed, end-exclusive line range with a new set of lines</td></tr>
 <tr><td><code>mep.set_cursor</code></td><td>moves the cursor to a 1-indexed position</td></tr>
 <tr><td><code>mep.set_line</code></td><td>replaces the content of a 1-indexed line</td></tr>

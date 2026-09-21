@@ -2479,6 +2479,43 @@ struct OrgSrcBlock {
     std::string body;
 };
 
+// --- Org block cards (org-modern style block rendering) ---------------
+//
+// One `:key value` header argument of an org block, with the row it was
+// actually written on -- the same key can come from the `#+begin_src`
+// line itself or from an affiliated `#+HEADER:` line above it, and the
+// title bar draws them all together regardless of which.
+struct OrgBlockOption {
+    std::string key;    // without the leading colon ("tangle", "exports", "var")
+    std::string value;  // "" for a bare flag key; quotes stripped
+    int row = 0;
+};
+
+// One `#+begin_X ... #+end_X` block as the renderer draws it: a rounded
+// card whose header (the affiliated keyword lines plus the `#+begin_X`
+// line) is concealed behind a title bar built from these parsed pieces,
+// and revealed again as raw text the moment the cursor enters it. See
+// DrawPane (main.cpp) for the drawing half, Editor::OrgBlockCards for
+// the scan.
+struct OrgBlockCard {
+    // First affiliated-keyword row (`#+NAME:`/`#+CAPTION:`/`#+HEADER:`/
+    // `#+ATTR_*`) attached to this block, or begin_row when it has none.
+    int meta_row = 0;
+    int begin_row = 0;
+    // The `#+end_X` row, or -1 for a block still being typed (no closer
+    // yet) -- the card then runs to the end of the buffer's last line and
+    // is drawn without a bottom edge, rather than not at all.
+    int end_row = -1;
+    // Lowercased block word: "src", "example", "quote", "export", ...
+    // Only "src" is a code chunk (drawn in the theme's accent); the rest
+    // get the same card in a muted outline.
+    std::string kind;
+    bool is_src = false;
+    std::string lang;   // src blocks only, as written ("python", "C++")
+    std::string title;  // #+NAME:/#+CAPTION:/:title value, "" when absent
+    std::vector<OrgBlockOption> options;
+};
+
 // mep_diag_wrap's own port (LUA_TO_CPP_PLAN.md Phase LSP): greedy word-
 // wrap of `text` to `width` columns (mep.float_preview itself doesn't
 // wrap). No Editor state needed. Always returns at least one line
@@ -2664,6 +2701,16 @@ public:
      * @return True if org LaTeX rendering is toggled on.
      */
     bool OrgLatexVisible() const { return org_latex_visible_; }
+    // <leader>otb / mep.org_block_cards_toggle -- whether DrawPane
+    // (main.cpp) draws `#+begin_.../#+end_...` blocks as cards with a
+    // concealed, rendered title bar. Unlike the two toggles above this
+    // defaults *on*: it needs no external renderer, no scan to have run
+    // first, and it degrades to plain text for anything it can't parse.
+    /**
+     * @brief Returns whether org blocks are drawn as cards with a rendered title bar.
+     * @return True if org block-card rendering is toggled on.
+     */
+    bool OrgBlockCardsVisible() const { return org_block_cards_visible_; }
     // Active pane/buffer -- what most of the UI (statusline, blinking
     // cursor, Visual highlight) cares about.
     /**
@@ -7424,6 +7471,27 @@ public:
      */
     bool ToggleOrgImages();
 
+    // --- Org block cards (<leader>otb / mep.org_block_cards_toggle) ---
+    // Every `#+begin_X ... #+end_X` block in `buffer_id`, parsed for the
+    // title bar DrawPane (main.cpp) draws in place of its concealed
+    // header. Rescanned on each call (a cheap `#+` line-prefix walk, the
+    // same per-frame shape NotebookRefresh and FindScopeGuides already
+    // use) and returned by reference out of a scratch vector owned here,
+    // so the renderer never has to own the parse.
+    /**
+     * @brief Scans a buffer for org `#+begin_.../#+end_...` blocks and their parsed header pieces.
+     * @param buffer_id The buffer to scan.
+     * @return The blocks found, in buffer order (empty for a non-existent buffer).
+     */
+    const std::vector<OrgBlockCard> &OrgBlockCards(int buffer_id);
+    // <leader>otb: flips org_block_cards_visible_ and returns the new
+    // state, same shape as ToggleOrgImages above.
+    /**
+     * @brief Toggles org block-card rendering.
+     * @return The new visibility state.
+     */
+    bool ToggleOrgBlockCards();
+
     // --- Org LaTeX/math-mode rendering (<leader>otl / mep.org_latex_toggle) ---
     // Registers/replaces the rendered-PNG path, slot count, and last raw
     // source row (see Buffer::OrgLatexRender) for `row` -- called once per
@@ -10381,6 +10449,12 @@ private:
     // 'latex'-provider Fold, is a real visible side effect this toggle
     // must own outright, not just gate the texture substitution).
     bool org_latex_visible_ = false;
+    // Org block cards (<leader>otb / mep.org_block_cards_toggle): see
+    // OrgBlockCardsVisible()'s own comment for why this one starts on.
+    bool org_block_cards_visible_ = true;
+    // Scratch for OrgBlockCards() -- reused across calls (one scan per
+    // pane per frame) instead of returning a fresh vector each time.
+    std::vector<OrgBlockCard> org_block_cards_;
 
     // Command-line/search history (Phase 11) -- Up/Down browse
     // command_history_/search_history_ from most-recent backward.

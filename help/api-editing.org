@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (63)
+* The bindings (69)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -41,6 +41,8 @@ that it does nothing.
 | =mep.buffer_set_on_image_toggle= | registers a callback that replaces bare Shift+I's default Normal-mode behavior for a buffer |
 | =mep.buffer_set_on_key= | registers a buffer-scoped Normal-mode key filter |
 | =mep.buffer_set_on_write= | registers a callback that replaces a buffer's real disk write |
+| =mep.buffer_set_row_cursor= | makes a buffer's cursor select a whole row instead of a character |
+| =mep.buffer_set_unlisted= | hides a buffer from the Buffers sidebar and the buffer picker |
 | =mep.buffer_set_wrap= | opts a buffer out of :set wrap's soft-wrap |
 | =mep.buffer_switch= | switches the focused pane to show a given buffer |
 | =mep.buffer_text_cols= | returns the text column budget of the pane showing a buffer |
@@ -59,6 +61,10 @@ that it does nothing.
 | =mep.insert_text= | inserts text at the cursor position |
 | =mep.jump_to_buffer= | switches workspace/tab/pane to land on a buffer wherever it lives |
 | =mep.line_count= | returns the number of lines in the current buffer |
+| =mep.menubar_set_visible= | shows or hides the top menu bar outright |
+| =mep.menubar_toggle= | shows/hides the top menu bar, the same thing tapping mod1 does |
+| =mep.menubar_visible= | returns whether the top menu bar is currently shown |
+| =mep.mod1_name= | returns the display name of whichever modifier is currently mod1 |
 | =mep.replace_lines= | replaces a 1-indexed, end-exclusive line range with a new set of lines |
 | =mep.set_cursor= | moves the cursor to a 1-indexed position |
 | =mep.set_line= | replaces the content of a 1-indexed line |

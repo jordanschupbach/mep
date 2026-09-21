@@ -21,6 +21,31 @@
 </table>
 <p>A link to an image file is drawn in place, in the buffer:</p>
 <pre>[[file:diagram.png]]</pre>
+<h1>Block cards</h1>
+<table>
+<tr><th>Key / command</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;otb</code></td><td>toggle block cards</td></tr>
+<tr><td><code>:MepOrgBlockCardsToggle</code></td><td>the same</td></tr>
+</table>
+<p>Every <code>#+begin_.../#+end_...</code> block is drawn as a rounded card: a tinted
+background, an outline in the theme's accent colour for a <code>src</code> code
+chunk (muted for <code>example</code>, <code>quote</code>, <code>export</code> and the rest), and a title
+bar in place of the header lines.</p>
+<p>The bar carries the block's language, its name and its header arguments,
+each in its own box, however they were written:</p>
+<pre>#+HEADER: :var x=1
+#+NAME: read-config
+#+begin_src python :tangle "my file.py" :results output
+#+end_src</pre>
+<p>reads as <code>python</code> | <code>read-config</code> | <code>:var x=1</code> | <code>:tangle my file.py</code> |
+<code>:results output</code>. Quoted values keep their spaces, a bare flag such as
+<code>:cache</code> shows on its own, <code>:var</code> is listed once per variable, and a long
+value is shortened from the front. A <code>#+CAPTION:</code> stands in as the title
+when there is no <code>#+NAME:</code>, and a <code>:title</code> header argument does too.</p>
+<p>Nothing is rewritten: put the cursor on the header (or select across it)
+and the raw <code>#+begin_src ...</code> line comes straight back to edit. The card
+also steps aside for a folded block, and for a block holding an image or
+a maths fragment that is being previewed in place.</p>
 <h1>LaTeX and maths</h1>
 <table>
 <tr><th>Key / command</th><th>Does</th></tr>

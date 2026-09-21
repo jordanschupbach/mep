@@ -1768,6 +1768,239 @@ std::set<std::string> OrgParseResults(const std::string &args_str) {
     return modes;
 }
 
+namespace {
+
+// --- Org block cards: the header parse behind DrawPane's title bar ----
+//
+// Deliberately its own small scanner rather than a reuse of
+// IsSrcBlockOpen/ParseSrcHeader above: those answer "is this a babel src
+// block, and what are its babel args" for *execution*, where anything
+// unrecognized should simply not run. This one is for *display*, so it
+// has the opposite bias -- it takes every `#+begin_X` shape org allows
+// (any block word, any case, any indent), and whatever it can't make
+// sense of it leaves as plain text rather than dropping.
+
+// `#+begin_<word>` / `#+end_<word>`, case- and indent-insensitively.
+// `rest` is whatever follows the word on the line (the language and
+// header args, for a src block).
+/**
+ * @brief Parses an org block marker line into its begin/end sense, block word, and trailing text.
+ * @param line The line to inspect.
+ * @param is_begin Set to true for `#+begin_`, false for `#+end_`.
+ * @param word Set to the lowercased block word ("src", "example", ...).
+ * @param rest Set to the remainder of the line after the block word.
+ * @return True if the line is an org block marker.
+ */
+bool ParseOrgBlockMarker(const std::string &line, bool *is_begin, std::string *word, std::string *rest) {
+    size_t i = SkipWs(line, 0);
+    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
+    i += 2;
+    if (MatchCiLiteral(line, i, "BEGIN_")) {
+        *is_begin = true;
+        i += 6;
+    } else if (MatchCiLiteral(line, i, "END_")) {
+        *is_begin = false;
+        i += 4;
+    } else {
+        return false;
+    }
+    size_t word_start = i;
+    while (i < line.size() && (std::isalnum(static_cast<unsigned char>(line[i])) || line[i] == '_' || line[i] == '-')) i++;
+    if (i == word_start) return false;
+    *word = line.substr(word_start, i - word_start);
+    for (char &c : *word) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    *rest = line.substr(std::min(line.size(), SkipWs(line, i)));
+    return true;
+}
+
+// An affiliated keyword line (`#+NAME: fib`, `#+header: :var x=1`) --
+// the lines org lets you stack directly above a block. `key` comes back
+// uppercased so callers can compare without caring how it was typed.
+/**
+ * @brief Parses an org affiliated keyword line (`#+KEY: value`).
+ * @param line The line to inspect.
+ * @param key Set to the uppercased keyword name.
+ * @param value Set to the text after the colon, trimmed.
+ * @return True if the line is an affiliated keyword line.
+ */
+bool ParseOrgAffiliated(const std::string &line, std::string *key, std::string *value) {
+    size_t i = SkipWs(line, 0);
+    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
+    i += 2;
+    size_t key_start = i;
+    while (i < line.size() && (std::isalnum(static_cast<unsigned char>(line[i])) || line[i] == '_' || line[i] == '-')) i++;
+    if (i == key_start || i >= line.size() || line[i] != ':') return false;
+    *key = line.substr(key_start, i - key_start);
+    for (char &c : *key) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    i = SkipWs(line, i + 1);
+    std::string v = line.substr(std::min(line.size(), i));
+    while (!v.empty() && std::isspace(static_cast<unsigned char>(v.back()))) v.pop_back();
+    *value = v;
+    return true;
+}
+
+// `:key value` header args, "regardless of how they're entered": any
+// spacing, any case, values with spaces (a value runs to the next `:key`
+// token, exactly as org itself reads them), `"quoted values"` unquoted
+// for display, and a bare `:flag` with no value at all. A colon only
+// starts a new key at a token boundary and outside quotes, so neither a
+// `https://...` in a value nor a `:` inside `"a: b"` splits one.
+/**
+ * @brief Parses an org block's `:key value` header-arg string into display options.
+ * @param args The raw header-arg text.
+ * @param row The buffer row the args were written on.
+ * @param out Options are appended/merged here (a repeated key replaces its earlier value, as org does).
+ */
+void ParseOrgHeaderArgs(const std::string &args, int row, std::vector<OrgBlockOption> *out) {
+    /**
+     * @brief Records one parsed key/value pair, replacing any earlier entry for the same key.
+     * @param key The option key without its leading colon.
+     * @param value The option's value text.
+     */
+    auto push = [&](const std::string &key, std::string value) {
+        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) value.pop_back();
+        if (value.size() >= 2 && ((value.front() == '"' && value.back() == '"') || (value.front() == '\'' && value.back() == '\''))) {
+            value = value.substr(1, value.size() - 2);
+        }
+        // `:var` is the one key org *accumulates* rather than overrides --
+        // `:var x=1 :var y=2` binds two variables, so collapsing them to
+        // the last one would silently drop a binding from the bar. Every
+        // other repeated key is a later-wins override.
+        if (key != "var") {
+            for (OrgBlockOption &existing : *out) {
+                if (existing.key == key) {
+                    existing.value = value;
+                    existing.row = row;
+                    return;
+                }
+            }
+        }
+        OrgBlockOption opt;
+        opt.key = key;
+        opt.value = value;
+        opt.row = row;
+        out->push_back(opt);
+    };
+    size_t i = 0;
+    while (i < args.size()) {
+        // Find the next `:key` starting a token.
+        while (i < args.size() && !(args[i] == ':' && (i == 0 || std::isspace(static_cast<unsigned char>(args[i - 1]))))) i++;
+        if (i >= args.size()) return;
+        size_t key_start = ++i;
+        while (i < args.size() && (std::isalnum(static_cast<unsigned char>(args[i])) || args[i] == '_' || args[i] == '-')) i++;
+        if (i == key_start) continue;  // a stray ":" -- not a key
+        std::string key = args.substr(key_start, i - key_start);
+        // The value runs to the next token-boundary colon outside quotes.
+        size_t value_start = SkipWs(args, i);
+        size_t j = value_start;
+        char quote = 0;
+        while (j < args.size()) {
+            char c = args[j];
+            if (quote != 0) {
+                if (c == quote) quote = 0;
+            } else if (c == '"' || c == '\'') {
+                quote = c;
+            } else if (c == ':' && j > 0 && std::isspace(static_cast<unsigned char>(args[j - 1]))) {
+                break;
+            }
+            j++;
+        }
+        push(key, args.substr(value_start, j - value_start));
+        i = j;
+    }
+}
+
+}  // namespace
+
+const std::vector<OrgBlockCard> &Editor::OrgBlockCards(int buffer_id) {
+    org_block_cards_.clear();
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return org_block_cards_;
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    const int n = buf.LineCount();
+    for (int row = 0; row < n; row++) {
+        bool is_begin = false;
+        std::string word, rest;
+        if (!ParseOrgBlockMarker(buf.lines[static_cast<size_t>(row)], &is_begin, &word, &rest) || !is_begin) continue;
+        OrgBlockCard card;
+        card.begin_row = row;
+        card.meta_row = row;
+        card.kind = word;
+        card.is_src = (word == "src");
+        // Affiliated keywords stacked directly above the block: they're
+        // part of its header (and so part of what the title bar stands
+        // in for), which is why the card starts at the topmost one
+        // rather than at `#+begin_`.
+        std::vector<int> meta_rows;
+        for (int r = row - 1; r >= 0; r--) {
+            std::string key, value;
+            if (!ParseOrgAffiliated(buf.lines[static_cast<size_t>(r)], &key, &value)) break;
+            if (key != "NAME" && key != "CAPTION" && key != "HEADER" && key != "HEADERS" &&
+                key.compare(0, 5, "ATTR_") != 0) {
+                break;
+            }
+            meta_rows.push_back(r);
+            card.meta_row = r;
+        }
+        // Read them back in *document* order even though they were found
+        // walking upward, so "the last one wins" (both for a repeated
+        // `#+HEADER:` key and for NAME/CAPTION) means the line closest to
+        // the block, the way org itself reads a stack of them.
+        std::string caption;
+        for (size_t mi = meta_rows.size(); mi-- > 0;) {
+            std::string key, value;
+            if (!ParseOrgAffiliated(buf.lines[static_cast<size_t>(meta_rows[mi])], &key, &value)) continue;
+            if (key == "NAME") card.title = value;
+            else if (key == "CAPTION") caption = value;
+            else if (key == "HEADER" || key == "HEADERS") ParseOrgHeaderArgs(value, meta_rows[mi], &card.options);
+        }
+        if (card.title.empty()) card.title = caption;
+        // `#+begin_src <lang> <args>`: the language is the first token
+        // that isn't itself a header arg, so a language-less block
+        // (`#+begin_src :results none`, or any non-src block) doesn't
+        // mistake its first `:key` for one.
+        size_t args_at = 0;
+        if (card.is_src) {
+            size_t k = SkipWs(rest, 0);
+            if (k < rest.size() && rest[k] != ':') {
+                size_t lang_start = k;
+                while (k < rest.size() && !std::isspace(static_cast<unsigned char>(rest[k]))) k++;
+                card.lang = rest.substr(lang_start, k - lang_start);
+            }
+            args_at = k;
+        }
+        // Header args written on the `#+begin_` line itself win over any
+        // `#+HEADER:` line above it, matching org's own precedence -- the
+        // merge in ParseOrgHeaderArgs replaces by key, and this runs last.
+        ParseOrgHeaderArgs(rest.substr(std::min(rest.size(), args_at)), row, &card.options);
+        // A `:title` header arg is a title, not an option to list twice.
+        for (size_t oi = 0; oi < card.options.size(); oi++) {
+            if (card.options[oi].key != "title") continue;
+            if (card.title.empty()) card.title = card.options[oi].value;
+            card.options.erase(card.options.begin() + static_cast<long>(oi));
+            break;
+        }
+        // The matching closer. Scanning to it (rather than continuing
+        // from the next row) also keeps a `#+begin_src` quoted *inside*
+        // an example block's body from opening a card of its own.
+        for (int r = row + 1; r < n; r++) {
+            bool end_is_begin = false;
+            std::string end_word, end_rest;
+            if (!ParseOrgBlockMarker(buf.lines[static_cast<size_t>(r)], &end_is_begin, &end_word, &end_rest)) continue;
+            if (end_is_begin || end_word != word) continue;
+            card.end_row = r;
+            break;
+        }
+        if (card.end_row >= 0) row = card.end_row;
+        org_block_cards_.push_back(card);
+    }
+    return org_block_cards_;
+}
+
+bool Editor::ToggleOrgBlockCards() {
+    org_block_cards_visible_ = !org_block_cards_visible_;
+    return org_block_cards_visible_;
+}
+
 OrgSrcBlock Editor::OrgSrcBlockAt(int row) const {
     OrgSrcBlock result;
     const int n = Buf().LineCount();
@@ -4392,6 +4625,16 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
     // it stays effectively uncapped and still lands in a single frame.
     int cap = std::max(1, cursor_delta);
     int jump = target - pane.scroll_row;
+    // Safety valve: a gap wider than the pane itself shares no content
+    // between where the view is and where it's going, so sliding through
+    // it isn't a smooth transition -- it's a long flip-book of unrelated
+    // rows at `cap` rows per frame (1, whenever the cursor itself didn't
+    // move). That only happens when something replaced the buffer under
+    // the cursor rather than when the cursor navigated, so snap instead.
+    // The org-image/LaTeX slide this smoothing exists for stays intact:
+    // it spans one tall row (kOrgInlineImageSlots), never more than a
+    // screenful.
+    if (std::abs(jump) > visible_lines) cap = std::abs(jump);
     if (jump > cap) pane.scroll_row += cap;
     else if (jump < -cap) pane.scroll_row -= cap;
     else pane.scroll_row = target;
@@ -12143,6 +12386,16 @@ void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
 
     const VTerm *term = sess.vterm.get();
     int cursor_line = 0, cursor_col = 0;
+    // Where the snapshot's viewport opens (Pane::scroll_row), in the same
+    // combined scrollback+grid line numbering the loop below builds.
+    // Without setting this explicitly the pane kept whatever scroll_row it
+    // last had -- 0 for a terminal that had never been browsed -- so the
+    // snapshot opened at the *top* of up to 5000 lines of scrollback and
+    // then had to travel all the way down to the cursor under
+    // UpdateScrollForPane's smoothing cap, which (the cursor not having
+    // moved since) is 1 row per frame: a visible, seconds-long scroll
+    // every time Ctrl-\ Ctrl-N was pressed.
+    int scroll_line = 0;
     if (term) {
         int sb_lines = term->ScrollbackLines();
         int rows = term->Rows(), cols = term->Cols();
@@ -12234,12 +12487,35 @@ void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
             buf.lines.pop_back();
         }
         cursor_col = std::clamp(term->CursorCol(), 0, static_cast<int>(buf.lines[static_cast<size_t>(cursor_line)].size()));
+        // Open on exactly the rows the live grid was showing, so the
+        // switch is seamless: DrawTerminalGrid (main.cpp) puts combined
+        // index `sb_lines - scroll_offset` at the top of the pane, and a
+        // snapshot line's index *is* that combined index. Also covers a
+        // terminal the user had scrolled back through (Shift-PageUp /
+        // wheel, TerminalSession::scroll_offset) -- browsing continues
+        // from where they were looking rather than snapping elsewhere.
+        scroll_line = std::clamp(sb_lines - sess.scroll_offset, 0, std::max(0, static_cast<int>(buf.lines.size()) - 1));
+        // Scrolled back far enough that the live cursor is below the
+        // visible window: park the cursor on the top visible row instead,
+        // so the view doesn't immediately chase it back down to the tail.
+        if (cursor_line >= scroll_line + rows) {
+            cursor_line = scroll_line;
+            cursor_col = std::clamp(cursor_col, 0, static_cast<int>(buf.lines[static_cast<size_t>(cursor_line)].size()));
+        }
     }
     if (buf.lines.empty()) buf.lines.emplace_back("");
 
-    CursorPos &cur = CurPane().cursor;
+    Pane &pane = CurPane();
+    CursorPos &cur = pane.cursor;
     cur.row = cursor_line;
     cur.col = cursor_col;
+    pane.scroll_row = std::clamp(scroll_line, 0, std::max(0, static_cast<int>(buf.lines.size()) - 1));
+    // "Just arrived here", same as a fresh buffer switch: the next
+    // UpdateScrollForPane must be free to correct this placement in one
+    // frame (its visible_lines can differ slightly from the terminal's own
+    // row count -- a footer hint, rounding) instead of creeping toward it
+    // a row at a time because the cursor didn't move.
+    pane.scroll_follow_last_cursor_row = -1;
     mode_ = Mode::Normal;
 }
 

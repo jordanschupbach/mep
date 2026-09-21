@@ -2104,9 +2104,13 @@ float DrawUiTextSpans(const std::string &text, gfx::Vector2 pos, float font_size
         const std::string glyph(s + i, static_cast<size_t>(cp_size));
         const gfx::Color color = colors[static_cast<size_t>(i)];
         i += cp_size;
+        // Same font ladder as DrawUiText, math tier included -- the
+        // cheatsheet's glyph column (Greek letters, math operators,
+        // blackboard sets) routes through here via DrawSidebarRow.
         const gfx::Font &f = IsIconCodepoint(cp)   ? g_icon_font
                              : IsSymbolCodepoint(cp) ? g_symbol_font
                              : IsEmojiCodepoint(cp)  ? g_emoji_font
+                             : IsMathCodepoint(cp)   ? g_math_font
                                                      : g_font;
         gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{x, pos.y}, font_size, 0, color);
         x += gfx::MeasureTextEx(f, glyph.c_str(), font_size, 0).x;

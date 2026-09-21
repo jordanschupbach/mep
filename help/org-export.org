@@ -1,0 +1,65 @@
+#+TITLE: Exporting
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="110">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* The formats
+
+| Key           | Command                    | Produces            |
+|---------------+----------------------------+---------------------|
+| =<leader>oeh= | =:MepOrgExportHtml=        | a standalone =.html= |
+| =<leader>oem= | =:MepOrgExportMarkdown=    | =.md=               |
+| =<leader>oea= | =:MepOrgExportAscii=       | =.txt=              |
+| =<leader>oep= | =:MepOrgExportPdf=         | =.pdf=              |
+| =<leader>oeo= | =:MepOrgExportOdt=         | =.odt=              |
+
+=:MepOrgExportSubtreeHtml= and =:MepOrgExportSubtreeMarkdown= export just
+the subtree under the cursor.
+
+* Document keywords
+
+#+begin_src org
+,#+TITLE: The document's title
+,#+AUTHOR: Your name
+,#+DATE: 2026-09-20
+,#+HTML_HEAD: <link rel="stylesheet" href="custom.css">
+#+end_src
+
+=#+HTML_HEAD:= lines are inserted into the exported =<head>=, after the
+generated stylesheet, so a page can override the defaults rather than only
+add to them. It is repeatable.
+
+* HTML
+
+A complete document: doctype, charset, title, and a readable default
+stylesheet. Code blocks are syntax-highlighted with a copy button, and
+tables become real HTML tables.
+
+This manual is built with it -- see [[file:writing-help.html][Writing help pages]].
+
+* PDF and ODT
+
+PDF goes org → HTML → LaTeX → =tectonic=, leaving the =.tex= on disk as a
+real artifact rather than scratch. ODT is written directly, with no external
+tool needed.
+
+Both carry the code-block highlighting through, so a PDF's code looks like
+the editor's.
+
+* Code blocks are executed
+
+By default, exporting *runs* the document's code blocks first and splices in
+their results -- matching real org-mode's =org-export-use-babel=.
+
+A block that should not run during export needs =:eval no=.
+
+* Escaping org syntax
+
+Inside a block, a line starting with =,#+= or =,*= has that comma stripped
+on export. That is how a document shows org syntax without the example
+ending the block.
+
+* See also
+
+- [[file:org-babel.html][Executing code blocks]] -- what export runs.
+- [[file:writing-help.html][Writing help pages]] -- this manual's own pipeline.

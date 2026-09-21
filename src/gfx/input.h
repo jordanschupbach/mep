@@ -14,6 +14,7 @@ inline bool IsKeyDown(Key key) { return GetBackends().input->IsKeyDown(key); }
 inline bool IsKeyReleased(Key key) { return GetBackends().input->IsKeyReleased(key); }
 inline Key GetKeyPressed() { return GetBackends().input->GetKeyPressed(); }
 inline int GetCharPressed() { return GetBackends().input->GetCharPressed(); }
+inline bool WindowFocusLostThisFrame() { return GetBackends().input->WindowFocusLostThisFrame(); }
 inline bool IsMouseButtonPressed(MouseButton button) {
     return GetBackends().input->IsMouseButtonPressed(button);
 }

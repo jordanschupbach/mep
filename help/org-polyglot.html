@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Language servers in code blocks</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Org mode">
+<meta name="help-order" content="90">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Language servers in code blocks</h1>
+<h1>Editing support inside a block</h1>
+<p>A <code>#+begin_src</code> block in an org file gets the same completion, diagnostics
+and hover as a real source file in that language. You write Python inside
+prose and still get a language server.</p>
+<p>It works by keeping a <b>shadow buffer</b> per block: the block's contents are
+mirrored into a scratch file of the right type, and the server sees that.</p>
+<h1>What it does not cover</h1>
+<p>Deliberate gaps, all matching the equivalent upstream implementation:</p>
+<ul>
+<li><code>:var</code> header arguments are invisible to the server. Only real execution renders them as a prelude assignment, so a variable bound by <code>:var</code> looks undefined to the language server even though the block runs fine.</li>
+<li>No code actions or symbol bridging -- those stay with the outer org buffer. Formatting <b>is</b> bridged: see below.</li>
+<li>A client, once started, runs until mep exits; it is not torn down when the buffer closes.</li>
+</ul>
+<p>The <code>:var</code> one is the gap to remember, because it shows up as a diagnostic
+that is simply wrong rather than as a missing feature.</p>
+<h1>Formatting a block</h1>
+<p><code>gf</code> inside a block with no formatter of its own asks that block's server
+for one, over the block's rows alone
+(<code>textDocument/rangeFormatting</code>). Anything the server wants to change
+outside those rows is refused rather than applied in part -- on a shared
+shadow, that is what a whole-document reformat comes back as.</p>
+<p>The first <code>gf</code> after opening a block can land before the server has
+finished starting and report that nothing came back; press it again.</p>
+<p>See <a href="formatting.html">Formatting</a> for the rest of <code>gf</code>.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="org-babel.html">Executing code blocks</a> -- running what you are editing.</li>
+<li><a href="lsp.html">Language servers</a> -- the machinery being reused.</li>
+<li><a href="formatting.html">Formatting</a> -- <code>gf</code>, and the formatter table it prefers.</li>
+</ul>
+</body>
+</html>

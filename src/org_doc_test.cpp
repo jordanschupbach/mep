@@ -353,6 +353,345 @@ int main() {
         CHECK(mins == 0 && back[2] == "  CLOCK: [2026-09-05 Sat 23:50]--[2026-09-05 Sat 23:40] =>  0:00");
     }
 
+    // --- Headline depth: strict about what a headline is, since DrawPane
+    //     draws one at a larger size and on a wider column grid.
+    {
+        CHECK(OrgHeadlineLevel("* Top") == 1);
+        CHECK(OrgHeadlineLevel("*** Third") == 3);
+        CHECK(OrgHeadlineLevel("* ") == 1);  // an empty title is still a headline
+        CHECK(OrgHeadlineLevel("*bold* opening a line") == 0);   // no space after the stars
+        CHECK(OrgHeadlineLevel("**bold** opening a line") == 0);
+        CHECK(OrgHeadlineLevel("  * an indented list bullet") == 0);  // stars must be at column 0
+        CHECK(OrgHeadlineLevel("*") == 0);   // nothing after the stars at all
+        CHECK(OrgHeadlineLevel("") == 0);
+        CHECK(OrgHeadlineLevel("plain prose") == 0);
+    }
+
+    // --- Link spans: what gets drawn in place of the markup, and what
+    //     columns a click has to hit. The edge cases are the point.
+    {
+        // A described link displays its description; the span covers the
+        // whole `[[...]]`, not just the description inside it.
+        std::vector<OrgLinkSpanInfo> one = ScanOrgLinkSpans("see [[file:notes.org][Notes]] please");
+        CHECK(one.size() == 1);
+        CHECK(one[0].col_start == 4 && one[0].col_end == 29);
+        CHECK(one[0].target == "file:notes.org");
+        CHECK(one[0].display == "Notes");
+        CHECK(one[0].bracketed);
+
+        // Undescribed links drop the scheme noise org also drops.
+        CHECK(ScanOrgLinkSpans("[[file:a/b.org]]")[0].display == "a/b.org");
+        CHECK(ScanOrgLinkSpans("[[id:9f3c]]")[0].display == "9f3c");
+        CHECK(ScanOrgLinkSpans("[[*Some heading]]")[0].display == "Some heading");
+        CHECK(ScanOrgLinkSpans("[[#custom-id]]")[0].display == "custom-id");
+        CHECK(ScanOrgLinkSpans("[[https://example.org]]")[0].display == "https://example.org");
+
+        // Two links on one line, reported in column order.
+        std::vector<OrgLinkSpanInfo> two = ScanOrgLinkSpans("[[a][A]] and [[b][B]]");
+        CHECK(two.size() == 2);
+        CHECK(two[0].col_start == 0 && two[0].display == "A");
+        CHECK(two[1].col_start == 13 && two[1].display == "B");
+
+        // A `]` that isn't followed by `[` belongs to the target.
+        CHECK(ScanOrgLinkSpans("[[a]b][c]]")[0].target == "a]b");
+
+        // Nothing to follow, nothing to conceal.
+        CHECK(ScanOrgLinkSpans("[[]]").empty());
+        CHECK(ScanOrgLinkSpans("[[][desc]]").empty());
+        CHECK(ScanOrgLinkSpans("[[unterminated").empty());
+        CHECK(ScanOrgLinkSpans("no links here at all").empty());
+    }
+
+    // --- Bare URLs: recognized in prose, but never reported twice when
+    //     one is already inside a bracket link.
+    {
+        std::vector<OrgLinkSpanInfo> bare = ScanOrgLinkSpans("go to https://example.org/a?b=1 now");
+        CHECK(bare.size() == 1);
+        CHECK(bare[0].col_start == 6 && bare[0].col_end == 31);
+        CHECK(bare[0].target == "https://example.org/a?b=1");
+        CHECK(bare[0].display == bare[0].target);
+        CHECK(!bare[0].bracketed);
+
+        // The URL inside a bracket link is the bracket link, once.
+        std::vector<OrgLinkSpanInfo> inside = ScanOrgLinkSpans("[[https://example.org][Site]]");
+        CHECK(inside.size() == 1 && inside[0].bracketed && inside[0].display == "Site");
+
+        // A bracket link and a separate bare URL on the same line: both,
+        // in column order.
+        std::vector<OrgLinkSpanInfo> mixed = ScanOrgLinkSpans("[[https://a.org][A]] vs https://b.org");
+        CHECK(mixed.size() == 2);
+        CHECK(mixed[0].bracketed && mixed[0].col_start == 0);
+        CHECK(!mixed[1].bracketed && mixed[1].target == "https://b.org");
+
+        CHECK(ScanOrgLinkSpans("http://x.test").size() == 1);
+        CHECK(ScanOrgLinkSpans("https://").empty());        // scheme with no body
+        CHECK(ScanOrgLinkSpans("httpx://example.org").empty());
+        CHECK(ScanOrgLinkSpans("mailto:me@example.org").empty());  // documented: brackets required
+        CHECK(ScanOrgLinkSpans("www.example.org").empty());        // ditto
+    }
+
+    // --- Verbatim/code runs are literal: a help page showing link syntax
+    //     must not end up with a live link in the middle of its prose.
+    {
+        CHECK(ScanOrgLinkSpans("write =[[file:notes.org]]= to link").empty());
+        CHECK(ScanOrgLinkSpans("write ~[[a][B]]~ to link").empty());
+        CHECK(ScanOrgLinkSpans("the =https://example.org= scheme").empty());
+        // ...but only what's actually inside the run.
+        std::vector<OrgLinkSpanInfo> after = ScanOrgLinkSpans("=verbatim= then [[file:x][X]]");
+        CHECK(after.size() == 1 && after[0].display == "X");
+        // An unterminated marker isn't a run, so the link still counts.
+        CHECK(ScanOrgLinkSpans("= [[file:x][X]]").size() == 1);
+        // `snake_case=value` doesn't open a run (no word boundary).
+        CHECK(ScanOrgLinkSpans("k=v [[file:x][X]]").size() == 1);
+        // A marker can only *open* after org's own PRE set, so the `=` in
+        // a URL's query string never starts a verbatim run that swallows
+        // the link that follows it (OrgEmphasisPreOk, org_doc.h).
+        CHECK(ScanOrgLinkSpans("https://a.test/?q=1 [[file:x][X]] =v= ").size() == 2);
+    }
+
+    // --- Emphasis marker boundaries: org's own PRE/POST classes, not
+    //     "any non-word character". The `/` in `//` is the case that
+    //     mattered -- see OrgEmphasisPreOk's own comment (org_doc.h).
+    {
+        CHECK(OrgEmphasisPreOk('\0'));  // start of line
+        CHECK(OrgEmphasisPreOk(' ') && OrgEmphasisPreOk('\t'));
+        CHECK(OrgEmphasisPreOk('-') && OrgEmphasisPreOk('(') && OrgEmphasisPreOk('{'));
+        CHECK(OrgEmphasisPreOk('\'') && OrgEmphasisPreOk('"'));
+        CHECK(!OrgEmphasisPreOk('/'));  // the `https://` case
+        CHECK(!OrgEmphasisPreOk(':') && !OrgEmphasisPreOk('$') && !OrgEmphasisPreOk('='));
+        CHECK(!OrgEmphasisPreOk('a') && !OrgEmphasisPreOk('7') && !OrgEmphasisPreOk(')'));
+
+        CHECK(OrgEmphasisPostOk('\0'));  // end of line
+        CHECK(OrgEmphasisPostOk(' ') && OrgEmphasisPostOk('.') && OrgEmphasisPostOk(','));
+        CHECK(OrgEmphasisPostOk(')') && OrgEmphasisPostOk('}') && OrgEmphasisPostOk('['));
+        CHECK(!OrgEmphasisPostOk('/') && !OrgEmphasisPostOk('a') && !OrgEmphasisPostOk('('));
+
+        CHECK(OrgEmphasisBorderBlank(' ') && OrgEmphasisBorderBlank('\t'));
+        CHECK(!OrgEmphasisBorderBlank('x') && !OrgEmphasisBorderBlank('\0'));
+    }
+
+    // --- Table wrap layout (PlanOrgTableWrap): the display-only
+    //     re-budgeting of a table too wide for `:set textwidth`.
+    {
+        // Codepoint widths, not bytes -- an em dash is one column wide.
+        CHECK(OrgTableDisplayWidth("abc") == 3);
+        CHECK(OrgTableDisplayWidth("a\xe2\x80\x94" "b") == 3);
+        CHECK(OrgTableDisplayWidth("") == 0);
+
+        // Word wrap breaks on spaces and keeps every line inside width.
+        std::vector<std::string> wrapped = OrgTableWrapCell("the quick brown fox jumps", 10);
+        CHECK(wrapped.size() == 3);
+        CHECK(wrapped[0] == "the quick");
+        CHECK(wrapped[1] == "brown fox");
+        CHECK(wrapped[2] == "jumps");
+        for (const std::string &l : wrapped) CHECK(OrgTableDisplayWidth(l) <= 10);
+
+        // A word wider than the column is hard-split rather than left to
+        // overflow; a blank cell still yields one (empty) line.
+        std::vector<std::string> split = OrgTableWrapCell("aaaaaaaaaaaa", 5);
+        CHECK(split.size() == 3);
+        CHECK(split[0] == "aaaaa" && split[1] == "aaaaa" && split[2] == "aa");
+        CHECK(OrgTableWrapCell("", 8).size() == 1);
+        CHECK(OrgTableWrapCell("", 8)[0].empty());
+    }
+    {
+        // A table that already fits is reported unwrapped, and its
+        // widths are exactly the natural (align-time) ones.
+        std::vector<OrgTableCells> rows;
+        OrgTableCells head;
+        head.cells.push_back("Key");
+        head.cells.push_back("Value");
+        rows.push_back(head);
+        OrgTableCells sep;
+        sep.is_sep = true;
+        rows.push_back(sep);
+        OrgTableCells body;
+        body.cells.push_back("a");
+        body.cells.push_back("b");
+        rows.push_back(body);
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 80, 0);
+        CHECK(!plan.wrapped);
+        CHECK(plan.col_widths.size() == 2);
+        CHECK(plan.col_widths[0] == 3 && plan.col_widths[1] == 5);
+        CHECK(plan.rows.size() == 3);
+        CHECK(plan.rows[0].size() == 1);
+        CHECK(plan.rows[0][0] == "| Key | Value |");
+        CHECK(plan.rows[1][0] == "|-----+-------|");
+        CHECK(plan.rows[2][0] == "| a   | b     |");
+    }
+    {
+        // A wide prose column: the short column keeps its natural width
+        // and the prose column gives up the columns, and every rendered
+        // line lands inside the budget.
+        std::vector<OrgTableCells> rows;
+        OrgTableCells head;
+        head.cells.push_back("Feature");
+        head.cells.push_back("Notes");
+        rows.push_back(head);
+        OrgTableCells sep;
+        sep.is_sep = true;
+        rows.push_back(sep);
+        OrgTableCells body;
+        body.cells.push_back("wrapping");
+        body.cells.push_back(
+            "a very long description that runs well past eighty columns in total and has to be "
+            "wrapped onto several rendered lines to fit");
+        rows.push_back(body);
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 80, 0);
+        CHECK(plan.wrapped);
+        CHECK(plan.col_widths.size() == 2);
+        CHECK(plan.col_widths[0] == 8);  // natural width of "wrapping"/"Feature"
+        // Total rendered width is exactly the budget: 2 columns cost
+        // 3 `|` plus 4 padding spaces of chrome.
+        CHECK(plan.col_widths[0] + plan.col_widths[1] + 7 == 80);
+        CHECK(plan.rows[2].size() > 1);  // the prose row draws as several lines
+        for (const std::vector<std::string> &row_lines : plan.rows) {
+            for (const std::string &l : row_lines) CHECK(OrgTableDisplayWidth(l) == 80);
+        }
+        // The first line carries the first cell, the continuation lines
+        // leave its column blank -- and every line keeps its `|` in the
+        // same display columns, which is what lets the grid draw rules.
+        CHECK(plan.rows[2][0].compare(0, 12, "| wrapping | ") != 0 ||
+              plan.rows[2][1].compare(0, 12, "|          |") == 0);
+        const std::string &first = plan.rows[2][0];
+        for (const std::string &l : plan.rows[2]) {
+            CHECK(l.size() == first.size());
+            for (size_t c = 0; c < first.size(); c++) {
+                if (first[c] == '|') CHECK(l[c] == '|');
+            }
+        }
+    }
+    {
+        // An indent is spent out of the same budget, so a nested table
+        // still renders inside the margin.
+        std::vector<OrgTableCells> rows;
+        OrgTableCells body;
+        body.cells.push_back("some reasonably long cell text here");
+        body.cells.push_back("and a second column of prose as well");
+        rows.push_back(body);
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 40, 4);
+        CHECK(plan.wrapped);
+        for (const std::vector<std::string> &row_lines : plan.rows) {
+            for (const std::string &l : row_lines) {
+                CHECK(OrgTableDisplayWidth(l) == 40);
+                CHECK(l.compare(0, 4, "    ") == 0);
+            }
+        }
+        // Both columns had to give, and neither fell below the floor.
+        CHECK(plan.col_widths[0] >= kOrgTableMinColWidth);
+        CHECK(plan.col_widths[1] >= kOrgTableMinColWidth);
+    }
+    {
+        // Ragged rows: a row with fewer cells than the widest one pads
+        // out to the full column count rather than drawing short.
+        std::vector<OrgTableCells> rows;
+        OrgTableCells wide;
+        wide.cells.push_back("a");
+        wide.cells.push_back("b");
+        wide.cells.push_back("c");
+        rows.push_back(wide);
+        OrgTableCells narrow;
+        narrow.cells.push_back("x");
+        rows.push_back(narrow);
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 80, 0);
+        CHECK(plan.col_widths.size() == 3);
+        CHECK(plan.rows[1][0] == "| x |   |   |");
+        // An empty table is a no-op rather than a crash.
+        CHECK(PlanOrgTableWrap(std::vector<OrgTableCells>(), 80, 0).col_widths.empty());
+    }
+    {
+        // A budget too small to hold even the chrome must still produce
+        // renderable lines (never a negative width or an empty row).
+        std::vector<OrgTableCells> rows;
+        OrgTableCells body;
+        body.cells.push_back("hello there");
+        body.cells.push_back("world");
+        rows.push_back(body);
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 4, 0);
+        CHECK(plan.col_widths.size() == 2);
+        for (int wv : plan.col_widths) CHECK(wv >= 1);
+        CHECK(!plan.rows[0].empty());
+    }
+
+    // --- Org inline images: the drawn figure's geometry (OrgImageLayoutFor).
+    {
+        // The default metrics of the built-in font: a 22px line height
+        // with a ~0.52 advance ratio, and a pane wider than org's own
+        // 80-column text width.
+        const float cw = 11.44f, lh = 22.0f;
+        const float text_w = 80.0f * cw;
+        const float target_w = 80.0f * kOrgImageWidthFraction * cw;
+
+        // A figure wider than the target is scaled down to exactly it,
+        // and centered in the 80-column text column -- so the gaps on
+        // either side are equal, and the one on the left is real.
+        OrgImageLayout wide = OrgImageLayoutFor(1600, 900, cw, lh, 120, 80);
+        CHECK(wide.width > target_w - 0.5f && wide.width < target_w + 0.5f);
+        CHECK(wide.height > 0.0f);
+        // Aspect preserved.
+        CHECK(wide.height > wide.width * 900.0f / 1600.0f - 0.5f);
+        CHECK(wide.height < wide.width * 900.0f / 1600.0f + 0.5f);
+        const float expect_off = (text_w - wide.width) * 0.5f;
+        CHECK(wide.offset_x > expect_off - 0.5f && wide.offset_x < expect_off + 0.5f);
+        // No dead space: the reserved band is the drawn height rounded
+        // up to whole line-heights, never more.
+        CHECK(static_cast<float>(wide.slots) * lh >= wide.height);
+        CHECK(static_cast<float>(wide.slots - 1) * lh < wide.height);
+    }
+    {
+        const float cw = 11.44f, lh = 22.0f;
+        // A figure already narrower than the target keeps its own size
+        // rather than being stretched up to fill the column.
+        OrgImageLayout small = OrgImageLayoutFor(64, 64, cw, lh, 120, 80);
+        CHECK(small.width > 63.5f && small.width < 64.5f);
+        CHECK(small.height > 63.5f && small.height < 64.5f);
+        CHECK(small.slots == 3);  // ceil(64 / 22)
+        CHECK(small.offset_x > 0.0f);
+    }
+    {
+        const float cw = 11.44f, lh = 22.0f;
+        // A very tall portrait shrinks to the height ceiling instead of
+        // claiming screenfuls -- and still reserves exactly what it draws.
+        OrgImageLayout tall = OrgImageLayoutFor(100, 100000, cw, lh, 120, 80);
+        CHECK(tall.slots == kOrgImageMaxSlots);
+        CHECK(static_cast<float>(tall.slots) * lh >= tall.height);
+        CHECK(tall.width < 100.0f);  // scaled down together with the height
+    }
+    {
+        const float cw = 11.44f, lh = 22.0f;
+        // A pane narrower than org's text width clamps both the target
+        // width and the column the figure is centered in, so nothing
+        // overflows and the offset stays non-negative.
+        OrgImageLayout narrow = OrgImageLayoutFor(1600, 900, cw, lh, 20, 80);
+        CHECK(narrow.width <= 20.0f * cw + 0.5f);
+        CHECK(narrow.offset_x >= 0.0f);
+        CHECK(narrow.offset_x + narrow.width <= 20.0f * cw + 0.5f);
+    }
+    {
+        const float cw = 11.44f, lh = 22.0f;
+        // Unknown dimensions (a header that couldn't be sniffed) fall
+        // back to a fixed, modest band rather than 0 or a screenful.
+        OrgImageLayout unknown = OrgImageLayoutFor(0, 0, cw, lh, 120, 80);
+        CHECK(unknown.slots == kOrgImageUnknownSlots);
+        // `:set textwidth` is what the figure is measured against, and
+        // `textwidth=0` falls back to org's conventional 80.
+        OrgImageLayout tw60 = OrgImageLayoutFor(1600, 900, cw, lh, 200, 60);
+        CHECK(tw60.width < OrgImageLayoutFor(1600, 900, cw, lh, 200, 80).width);
+        OrgImageLayout tw0 = OrgImageLayoutFor(1600, 900, cw, lh, 200, 0);
+        CHECK(tw0.width > OrgImageLayoutFor(1600, 900, cw, lh, 200, 80).width - 0.5f);
+        CHECK(tw0.width < OrgImageLayoutFor(1600, 900, cw, lh, 200, 80).width + 0.5f);
+        // Degenerate metrics must not divide by zero or go negative.
+        OrgImageLayout degenerate = OrgImageLayoutFor(100, 100, 0.0f, 0.0f, 0, 0);
+        CHECK(degenerate.slots >= 1);
+        CHECK(degenerate.width > 0.0f);
+        CHECK(degenerate.offset_x >= 0.0f);
+    }
+
     std::printf("org_doc_test: all checks passed\n");
     return 0;
 }

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>mep browser capability ladder</title>
+<link rel="stylesheet" href="shared/style.css">
+</head>
+<body>
+<h1>Browser capability ladder</h1>
+<p class="lead">Twelve small sites, simplest first. Each one checks itself and reports PASS or FAIL in its title and in a results box, so a failure names the browser feature that is missing. Serve this directory over http (levels 07 and 12 fetch data) and open it at http://localhost:PORT/.</p>
+<div class="card">
+<ol>
+  <li><a href="01-static/index.html">Static page</a> <span class="badge">HTML + CSS, no script</span></li>
+  <li><a href="02-dom/index.html">DOM scripting</a> <span class="badge">create / query / mutate</span></li>
+  <li><a href="03-events/index.html">Events</a> <span class="badge">listeners, bubbling, forms</span></li>
+  <li><a href="04-timers/index.html">Timers</a> <span class="badge">setTimeout, setInterval, rAF, microtasks</span></li>
+  <li><a href="05-external/index.html">External resources</a> <span class="badge">link, script src, img</span></li>
+  <li><a href="06-language/index.html">Modern JavaScript</a> <span class="badge">ES2015+ feature by feature</span></li>
+  <li><a href="07-fetch/index.html">fetch and XMLHttpRequest</a> <span class="badge">needs http://</span></li>
+  <li><a href="08-todo/index.html">Todo app</a> <span class="badge">vanilla app + localStorage</span></li>
+  <li><a href="09-router/index.html">Client-side router</a> <span class="badge">pushState, popstate, URL</span></li>
+  <li><a href="10-modules/index.html">ES modules</a> <span class="badge">import / export / import()</span></li>
+  <li><a href="11-react-umd/index.html">React (UMD)</a> <span class="badge">unmodified react + react-dom 18</span></li>
+  <li><a href="12-react-app/index.html">React application</a> <span class="badge">bundled JSX app: context, reducer, effects, router, fetch</span></li>
+</ol>
+</div>
+</body>
+</html>

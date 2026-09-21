@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The git panel</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Git">
+<meta name="help-order" content="30">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The git panel</h1>
+<h1>Opening it</h1>
+<table>
+<tr><th>Key / command</th><th>Opens</th></tr>
+<tr><td><code>&lt;leader&gt;gG</code></td><td>the panel, docked</td></tr>
+<tr><td><code>&lt;leader&gt;gg</code></td><td>the panel, popped out with a preview column</td></tr>
+<tr><td><code>&lt;leader&gt;gt</code></td><td>status as a pane, stacking with the file tree</td></tr>
+<tr><td><code>:MepGitStatus</code></td><td>the same as <code>&lt;leader&gt;gG</code></td></tr>
+<tr><td>the Git tab-bar button</td><td>the same</td></tr>
+</table>
+<h1>Five views, one panel</h1>
+<p><code>Tab</code> and <code>Shift-Tab</code> move between views, as do the keys <code>1</code> to <code>5</code> and a
+click on a view's name.</p>
+<table>
+<tr><th>Key</th><th>View</th><th>Shows</th></tr>
+<tr><td><code>1</code></td><td>Status</td><td>staged, changed and untracked files</td></tr>
+<tr><td><code>2</code></td><td>Log</td><td><code>git log</code>, the latest 300 commits</td></tr>
+<tr><td><code>3</code></td><td>Graph</td><td><code>git log --graph --all</code>, the latest 500</td></tr>
+<tr><td><code>4</code></td><td>Branches</td><td>local and remote, newest commit first</td></tr>
+<tr><td><code>5</code></td><td>Stash</td><td><code>git stash list</code></td></tr>
+</table>
+<p>Every view's head section says how far the branch is ahead of and behind its
+upstream, or that it has none -- so unpushed commits stay in sight whichever
+view you are in.</p>
+<p><code>mod1+m</code> pops the panel out with a preview column beside the list.</p>
+<h1>Keys that work everywhere</h1>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>c</code></td><td>commit -- the message opens in a float</td></tr>
+<tr><td><code>C</code></td><td>amend the last commit</td></tr>
+<tr><td><code>P</code> <code>p</code></td><td>push</td></tr>
+<tr><td><code>l</code></td><td>pull</td></tr>
+<tr><td><code>f</code></td><td>fetch, <code>--all --prune</code></td></tr>
+<tr><td><code>R</code></td><td>re-read and refresh</td></tr>
+<tr><td><code>?</code></td><td>list the keys for the current view</td></tr>
+</table>
+<p>Every action reports its result as a toast and refreshes the view.</p>
+<h1>Status</h1>
+<p>The preview is <code>git diff --cached</code> or <code>git diff</code> for the row, and the file
+itself for an untracked one.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Enter</code></td><td>open the file</td></tr>
+<tr><td><code>s</code></td><td>stage this row</td></tr>
+<tr><td><code>u</code></td><td>unstage this row</td></tr>
+<tr><td><code>S</code></td><td>stage everything</td></tr>
+<tr><td><code>U</code></td><td>unstage everything</td></tr>
+<tr><td><code>d</code></td><td>discard changes, or delete an untracked file</td></tr>
+</table>
+<p><code>d</code> asks first. It is the one destructive key in the panel.</p>
+<h1>Log and Graph</h1>
+<p>The preview is <code>git show</code> for the commit under the cursor.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Enter</code></td><td>show the commit, popped out</td></tr>
+<tr><td><code>y</code></td><td>copy the commit hash</td></tr>
+</table>
+<p>Graph draws every branch's history as coloured lanes with the refs on their
+commits, which is the view to reach for when working out how two branches
+relate.</p>
+<h1>Branches</h1>
+<p>The preview is that branch's <code>git log --oneline</code>. Rows show ahead/behind
+counts and the upstream.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Enter</code> <code>o</code></td><td>check out (a remote one as a tracking branch)</td></tr>
+<tr><td><code>n</code></td><td>new branch from HEAD</td></tr>
+<tr><td><code>x</code> <code>D</code></td><td>delete -- a remote one via <code>git push --delete</code></td></tr>
+<tr><td><code>m</code></td><td>merge it into the current branch</td></tr>
+<tr><td><code>r</code></td><td>rebase the current branch onto it</td></tr>
+</table>
+<p>Both delete forms confirm first.</p>
+<h1>Stash</h1>
+<p>The preview is <code>git stash show -p</code>.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>n</code></td><td>stash the working tree, untracked included</td></tr>
+<tr><td><code>Enter</code> <code>a</code></td><td>apply</td></tr>
+<tr><td><code>o</code></td><td>pop</td></tr>
+<tr><td><code>x</code></td><td>drop, after a confirm</td></tr>
+</table>
+<p><code>n</code> offers a message.</p>
+<h1>Committing</h1>
+<p><code>c</code> opens the repository's own <code>COMMIT_EDITMSG</code> in a floating editable pane,
+with the usual <code>#</code> status comment block below the message.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>ZZ</code> in Normal mode</td><td>commit</td></tr>
+<tr><td><code>Escape</code>, <code>:q</code>, or a click away</td><td>abort and discard the message</td></tr>
+</table>
+<p>It is a real pane over a real buffer, so every editing mode, motion and
+operator works while you write the message.</p>
+<h1>Commands and popped-out shortcuts</h1>
+<table>
+<tr><th>Key</th><th>Command</th><th>Opens</th></tr>
+<tr><td><code>&lt;leader&gt;gl</code></td><td><code>:MepGitLog</code></td><td>Log, popped out</td></tr>
+<tr><td><code>&lt;leader&gt;gL</code></td><td><code>:MepGitGraph</code></td><td>Graph, popped out</td></tr>
+<tr><td><code>&lt;leader&gt;gb</code></td><td><code>:MepGitBranches</code></td><td>Branches, popped out</td></tr>
+<tr><td><code>&lt;leader&gt;gs</code></td><td><code>:MepGitStash</code></td><td>Stash, popped out</td></tr>
+<tr><td><code>&lt;leader&gt;gc</code></td><td><code>:MepGitCommit</code></td><td>the commit editor</td></tr>
+<tr><td><code>&lt;leader&gt;gp</code></td><td><code>:MepGitPush</code></td><td>push</td></tr>
+<tr><td></td><td><code>:MepGitPull</code></td><td>pull</td></tr>
+<tr><td></td><td><code>:MepGitFetch</code></td><td>fetch</td></tr>
+</table>
+<p>Pushing a branch with no upstream offers to set one.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="git-hunks.html">Working with hunks</a> -- staging a change smaller than a file.</li>
+<li><a href="git-workspaces.html">Branch-per-workspace</a> -- several branches checked out at once.</li>
+<li><a href="sidebars.html">Sidebars</a> -- the panel's own docking and popout behaviour.</li>
+</ul>
+</body>
+</html>

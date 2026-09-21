@@ -64,6 +64,15 @@ public:
     virtual bool IsKeyReleased(Key key) = 0;
     virtual Key GetKeyPressed() = 0;    // drains one queued key-down event per call, Key::None when empty
     virtual int GetCharPressed() = 0;   // drains one queued Unicode codepoint per call, 0 when empty
+    // True on the one frame the window lost keyboard focus. Every key held
+    // at that moment is reported released on that same frame (the native
+    // backend's ReleaseAllKeys, which exists so a modifier can't get stuck
+    // down when a WM shortcut steals the keyboard) -- so a caller that acts
+    // on a key *release* rather than a press has to be able to tell a real
+    // release from that synthetic one. Alt-tab is exactly this: mep sees
+    // Alt go down, the WM grabs Tab, and the FocusOut then looks like the
+    // user tapping and releasing Alt on its own.
+    virtual bool WindowFocusLostThisFrame() = 0;
     virtual bool IsMouseButtonPressed(MouseButton button) = 0;
     virtual bool IsMouseButtonDown(MouseButton button) = 0;
     virtual bool IsMouseButtonReleased(MouseButton button) = 0;

@@ -31,9 +31,19 @@ uint32_t Crc32(uint32_t crc, const unsigned char *data, size_t len) {
 uint32_t Adler32(uint32_t adler, const unsigned char *data, size_t len) {
     uint32_t a = adler & 0xFFFF, b = (adler >> 16) & 0xFFFF;
     constexpr uint32_t kMod = 65521;
-    for (size_t i = 0; i < len; i++) {
-        a = (a + data[i]) % kMod;
-        b = (b + a) % kMod;
+    // zlib's NMAX: the most bytes that can be summed before `b` could
+    // overflow 32 bits, so the (slow) modulo runs once per chunk rather
+    // than twice per byte -- it was ~30% of decoding a large PDF page.
+    constexpr size_t kNMax = 5552;
+    while (len > 0) {
+        size_t n = std::min(len, kNMax);
+        len -= n;
+        for (; n > 0; --n) {
+            a += *data++;
+            b += a;
+        }
+        a %= kMod;
+        b %= kMod;
     }
     return (b << 16) | a;
 }
@@ -52,9 +62,14 @@ constexpr int kMaxBits = 15;
 // that length exist, symbol[] = symbols in canonical code order --
 // mirrors the well-known "puff.c" reference approach (RFC 1951's own
 // appendix describes the same algorithm).
+// `fast` resolves any code of up to kFastBits bits in one lookup, indexed
+// by the next kFastBits input bits (LSB-first, as read): entry =
+// symbol | (code length << 12), 0 = longer code (take the slow walk).
+constexpr int kFastBits = 9;
 struct HuffTable {
     std::array<int, kMaxBits + 1> count{};
     std::vector<int> symbol;
+    std::array<uint16_t, 1 << kFastBits> fast{};
 };
 
 void ConstructDecodeTable(HuffTable &h, const uint8_t *lengths, int n) {
@@ -66,6 +81,26 @@ void ConstructDecodeTable(HuffTable &h, const uint8_t *lengths, int n) {
     h.symbol.assign(static_cast<size_t>(n), 0);
     for (int i = 0; i < n; i++) {
         if (lengths[i] != 0) h.symbol[static_cast<size_t>(offs[static_cast<size_t>(lengths[i])]++)] = i;
+    }
+    // Canonical code values (RFC 1951 3.2.2), bit-reversed into the
+    // LSB-first order the stream delivers them, for the fast table.
+    h.fast.fill(0);
+    std::array<uint32_t, kMaxBits + 1> next_code{};
+    uint32_t code = 0;
+    for (size_t bits = 1; bits <= kMaxBits; bits++) {
+        code = (code + static_cast<uint32_t>(h.count[bits - 1])) << 1;
+        next_code[bits] = code;
+    }
+    for (int i = 0; i < n; i++) {
+        int len = lengths[i];
+        if (len == 0) continue;
+        uint32_t c = next_code[static_cast<size_t>(len)]++;
+        if (len > kFastBits) continue;
+        uint32_t rev = 0;
+        for (int b = 0; b < len; b++) rev |= ((c >> b) & 1u) << (len - 1 - b);
+        for (uint32_t idx = rev; idx < (1u << kFastBits); idx += 1u << len) {
+            h.fast[idx] = static_cast<uint16_t>(i | (len << 12));
+        }
     }
 }
 
@@ -132,9 +167,31 @@ public:
         return bit;
     }
 
+    // Up to the next 17 bits without consuming them (LSB-first); *avail
+    // says how many of those actually exist before the end of input.
+    uint32_t PeekBits(int *avail) const {
+        size_t left = len_ - byte_pos_;
+        uint32_t v = 0;
+        for (size_t i = 0; i < 3 && i < left; i++) v |= static_cast<uint32_t>(data_[byte_pos_ + i]) << (8 * i);
+        *avail = static_cast<int>(std::min<size_t>(left, 3) * 8) - bit_pos_;
+        return v >> bit_pos_;
+    }
+
+    void SkipBits(int n) {
+        int total = bit_pos_ + n;
+        byte_pos_ += static_cast<size_t>(total / 8);
+        bit_pos_ = total % 8;
+    }
+
     // Raw multi-bit value, LSB-first (RFC 1951 3.1.1: "packed starting
     // with the least-significant bit"). -1 on exhausted input.
     long GetBits(int n) {
+        int avail = 0;
+        uint32_t peek = PeekBits(&avail);
+        if (n <= avail && n <= 16) {
+            SkipBits(n);
+            return static_cast<long>(peek & ((1u << n) - 1u));
+        }
         long val = 0;
         for (int i = 0; i < n; i++) {
             int b = GetBit();
@@ -171,6 +228,13 @@ private:
 // DeflateRaw's BitWriter emits Huffman codes -- see its own comment).
 // Returns -1 on error/exhausted input.
 int DecodeSymbol(BitReader &br, const HuffTable &h) {
+    int avail = 0;
+    uint32_t peek = br.PeekBits(&avail);
+    uint16_t e = h.fast[peek & ((1u << kFastBits) - 1u)];
+    if (e != 0 && (e >> 12) <= avail) {
+        br.SkipBits(e >> 12);
+        return e & 0x1FF;
+    }
     int code = 0, first = 0, index = 0;
     for (int len = 1; len <= kMaxBits; len++) {
         int bit = br.GetBit();

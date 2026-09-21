@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration recipes</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Configuration">
+<meta name="help-order" content="40">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Configuration recipes</h1>
+<h1>A starting init.lua</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.colorscheme(<span class="tok-green">'everforest-dark'</span>)
+mep.cmd(<span class="tok-green">'set textwidth=88'</span>)
+mep.opt.tab_terminal_share = <span class="tok-cyan">0.35</span></code></pre></div>
+<h1>Turn Copilot off</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.copilot_enabled = <span class="tok-cyan">false</span>          <span class="tok-comment">-- entirely; no server is started</span>
+mep.copilot_filetypes[<span class="tok-green">'md'</span>] = <span class="tok-cyan">false</span>  <span class="tok-comment">-- or just for markdown</span></code></pre></div>
+<h1>Add a formatter</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.js = {<span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span>
+mep.format_languages.ts = mep.format_languages.js
+mep.format_languages.tsx = mep.format_languages.js</code></pre></div>
+<p>Entries are keyed by bare extension, so every extension needs its own key.</p>
+<h1>Add a notebook kernel</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">table.insert(mep.opt.notebook_kernels, {
+  name = <span class="tok-green">'deno'</span>, display_name = <span class="tok-green">'Deno'</span>, language = <span class="tok-green">'js'</span>,
+  mode = <span class="tok-green">'script'</span>, command = <span class="tok-blue">{</span><span class="tok-green">'deno'</span>, <span class="tok-green">'run'</span>, <span class="tok-green">'-'</span>},
+<span class="tok-blue">}</span>)</code></pre></div>
+<h1>Point a language UI mode at a virtualenv</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.py_ui_cmd = {<span class="tok-green">'.venv/bin/python'</span>, <span class="tok-green">'-i'</span>, <span class="tok-green">'-q'</span>}</code></pre></div>
+<h1>Relocate git worktrees</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.worktree_dir = <span class="tok-green">'~/worktrees'</span>   <span class="tok-comment">-- absolute, or relative to the project</span>
+mep.opt.workspace_git_dirty = <span class="tok-cyan">true</span>     <span class="tok-comment">-- mark dirty workspaces with '+'</span></code></pre></div>
+<h1>A stage-aware git gutter</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.git_gutter_base = <span class="tok-green">'index'</span>    <span class="tok-comment">-- like gitsigns; default is HEAD</span>
+mep.git_gutter_line_hl = <span class="tok-cyan">true</span>    <span class="tok-comment">-- tint the whole changed line</span></code></pre></div>
+<h1>A custom statusline</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.set_statusline(<span class="tok-purple">function</span>()
+  <span class="tok-purple">local</span> name = mep.filename()
+  <span class="tok-purple">if</span> name == <span class="tok-green">''</span> <span class="tok-purple">then</span> name = <span class="tok-green">'[No Name]'</span> <span class="tok-purple">end</span>
+  <span class="tok-purple">local</span> git = mep.git_gutter_summary()
+  <span class="tok-purple">return</span> name .. (git ~= <span class="tok-green">''</span> and (<span class="tok-green">'  '</span> .. git) or <span class="tok-green">''</span>)
+<span class="tok-purple">end</span>)</code></pre></div>
+<p>The Ln/Col readout and the chips are drawn either way -- this replaces the
+text, not the whole row.</p>
+<h1>A sidebar of your own</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-purple">local</span> id = mep.<span class="tok-blue">sidebar_create</span>(<span class="tok-green">'Notes'</span>, <span class="tok-green">'right'</span>, <span class="tok-cyan">30</span>)
+mep.sidebar_set_sections(id, <span class="tok-blue">{</span>{
+  id = <span class="tok-green">'main'</span>, title = <span class="tok-green">'Notes'</span>, collapsed = <span class="tok-cyan">false</span>,
+  widgets = <span class="tok-blue">{</span>
+    <span class="tok-blue">{</span>id = <span class="tok-green">'a'</span>, text = <span class="tok-green">'Open TODO'</span>, <span class="tok-blue">on_click</span> = <span class="tok-purple">function</span>() mep.open(<span class="tok-green">'TODO.org'</span>) <span class="tok-purple">end</span><span class="tok-blue">}</span>,
+  <span class="tok-blue">}</span>,
+}})
+mep.<span class="tok-blue">sidebar_set_help</span>(id, {{<span class="tok-green">'Enter'</span>, <span class="tok-green">'open the item'</span><span class="tok-blue">}</span><span class="tok-blue">}</span>)
+mep.<span class="tok-blue">leader_map</span>(<span class="tok-green">'xn'</span>, <span class="tok-green">'Notes panel'</span>, <span class="tok-purple">function</span>() mep.sidebar_toggle(id) <span class="tok-purple">end</span>)</code></pre></div>
+<h1>Run something on every save</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.on_buffer_saved(<span class="tok-purple">function</span>()
+  <span class="tok-purple">if</span> (mep.filename() <span class="tok-purple">or</span> <span class="tok-green">''</span>):<span class="tok-blue">match</span>(<span class="tok-green">'%.py$'</span>) <span class="tok-purple">then</span> mep.format_buffer() <span class="tok-purple">end</span>
+<span class="tok-purple">end</span>)</code></pre></div>
+<h1>A project-local config</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-comment">-- at the end of init.lua</span>
+<span class="tok-purple">local</span> per_project = mep.<span class="tok-blue">getcwd</span>() .. <span class="tok-green">'/.mep.lua'</span>
+<span class="tok-purple">local</span> f = io.open(per_project)
+<span class="tok-purple">if</span> f <span class="tok-purple">then</span> f:close() mep.cmd(<span class="tok-green">'source '</span> .. per_project) <span class="tok-purple">end</span></code></pre></div>
+<p><code>mep.on_workspace_changed(fn)</code> re-runs this when you switch workspaces.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="options.html">Options</a> -- everything settable.</li>
+<li><a href="keymaps.html">Remapping keys</a> -- the binding functions.</li>
+<li><a href="api-events.html">Events and hooks</a> -- what you can react to.</li>
+</ul>
+</body>
+</html>

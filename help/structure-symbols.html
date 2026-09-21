@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Structure and symbols</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="50">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Structure and symbols</h1>
+<h1>Two outlines</h1>
+<p>They look similar and answer the same question -- what is in this file --
+but they come from different places.</p>
+<p><b>Structure</b> is built from the Treesitter parse tree. It works offline, with
+no language server, on any file with a grammar.</p>
+<p><b>Symbols</b> comes from the language server's <code>documentSymbol</code>. It knows more
+-- inherited members, precise kinds -- but needs a server attached.</p>
+<h1>Structure</h1>
+<table>
+<tr><th>Key / command</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;ss</code></td><td>open the structure pane</td></tr>
+<tr><td><code>&lt;leader&gt;sS</code></td><td>toggle a buffer-local structure split</td></tr>
+<tr><td><code>:MepStructure</code></td><td>the same as <code>&lt;leader&gt;ss</code></td></tr>
+<tr><td><code>:MepStructureSplit</code></td><td>act on the entry under the cursor</td></tr>
+<tr><td><code>Enter</code></td><td>jump to the entry under the cursor</td></tr>
+</table>
+<p>The pane tracks where you are: the entry containing the cursor is marked
+current and scrolled into view as you move around the file.</p>
+<p>Re-invoking <code>mep.structure_split_open()</code> from inside the pane jumps to the
+entry, so the same key both opens the outline and acts on it -- the pattern
+the Run/REPL pane uses too.</p>
+<h1>Symbols</h1>
+<p><code>:MepSymbols</code> opens the LSP-backed outline in a sidebar. Click an entry, or
+press Enter on it, to jump.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="syntax.html">Syntax highlighting</a> -- the parse tree behind Structure.</li>
+<li><a href="lsp.html">Language servers</a> -- what Symbols needs.</li>
+<li><a href="folding.html">Folds</a> -- collapsing the same structure in place.</li>
+</ul>
+</body>
+</html>

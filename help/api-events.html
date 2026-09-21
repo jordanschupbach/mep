@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Commands, keys and events</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Lua API">
+<meta name="help-order" content="60">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Commands, keys and events</h1>
+<h1>What is here</h1>
+<p>Defining commands and key bindings, and reacting to what happens in the editor.</p>
+<p>This page is generated from mep's own binding table, so it lists what
+the running editor actually exposes. Call any of these from
+<code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
+<h1>The bindings (36)</h1>
+<p>A dash means that binding has no doc comment in the source yet, not
+that it does nothing.</p>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>mep.active_todo_set</code></td><td>sets (or, with nil, clears) the status bar's active-todo chip</td></tr>
+<tr><td><code>mep.activity_test_failure_lines</code></td><td>scans test-runner output lines for failure locations</td></tr>
+<tr><td><code>mep.activity_todo_archive</code></td><td>archives a headline of an org todo file</td></tr>
+<tr><td><code>mep.activity_todo_clock_start</code></td><td>starts a clock under a headline of an org todo file</td></tr>
+<tr><td><code>mep.activity_todo_clock_status</code></td><td>reports the running clock in an org todo file</td></tr>
+<tr><td><code>mep.activity_todo_clock_stop</code></td><td>closes the running clock in an org todo file</td></tr>
+<tr><td><code>mep.activity_todo_load</code></td><td>loads an activity todo list from a file</td></tr>
+<tr><td><code>mep.activity_todo_move</code></td><td>reorders a headline of an org todo file among its siblings</td></tr>
+<tr><td><code>mep.activity_todo_retitle</code></td><td>retitles a headline of an org todo file</td></tr>
+<tr><td><code>mep.activity_todo_save</code></td><td>writes an activity todo list back to a file</td></tr>
+<tr><td><code>mep.cmd</code></td><td>runs str as if typed after ":" and Enter were pressed</td></tr>
+<tr><td><code>mep.command</code></td><td>registers a Lua function as a ":name" ex-command</td></tr>
+<tr><td><code>mep.command_names</code></td><td>lists the names of every command registered with mep.command()</td></tr>
+<tr><td><code>mep.enter_insert</code></td><td>pushes an undo checkpoint and enters Insert mode, like pressing "i"</td></tr>
+<tr><td><code>mep.enter_normal</code></td><td>returns to Normal mode from Insert or Visual, like pressing Escape</td></tr>
+<tr><td><code>mep.is_insert_mode</code></td><td>reports whether Insert mode is currently active</td></tr>
+<tr><td><code>mep.is_terminal_buffer</code></td><td>reports whether a buffer is a real `:terminal` buffer</td></tr>
+<tr><td><code>mep.leader_bindings</code></td><td>lists every mep.leader_map() registration, unfiltered by any currently-typed prefix</td></tr>
+<tr><td><code>mep.leader_group</code></td><td>names a group of leader.map bindings</td></tr>
+<tr><td><code>mep.leader_map</code></td><td>binds a key</td></tr>
+<tr><td><code>mep.map</code></td><td>binds a key in Normal or Visual mode to a Lua function, optionally recording a description for the help picker</td></tr>
+<tr><td><code>mep.map_bracket_next</code></td><td>binds a Lua callback to a key following a leading "]" in Normal mode</td></tr>
+<tr><td><code>mep.map_bracket_prev</code></td><td>binds a Lua callback to a key following a leading "[" in Normal mode</td></tr>
+<tr><td><code>mep.map_g</code></td><td>binds a Lua callback to a key following a leading "g" in Normal mode</td></tr>
+<tr><td><code>mep.map_g_visual</code></td><td>binds a Lua callback to a key following a leading "g" in Visual mode</td></tr>
+<tr><td><code>mep.map_mod1</code></td><td>binds a single letter key (or "Tab"/"S-Tab"/"CR"/"S-CR") under the mod1 modifier, globally across all modes</td></tr>
+<tr><td><code>mep.mapping_descriptions</code></td><td>lists every mep.map() binding that was given an opts.desc</td></tr>
+<tr><td><code>mep.on_frame</code></td><td>fn runs once per frame -- the polling-based building</td></tr>
+<tr><td><code>mep.set_leader</code></td><td>single-char string, the whichkey trigger (Phase 11)</td></tr>
+<tr><td><code>mep.set_mod1</code></td><td>selects which physical modifier key acts as "mod1" for mep.map_mod1 bindings</td></tr>
+<tr><td><code>mep.set_on_directory_open</code></td><td>fn(path)</td></tr>
+<tr><td><code>mep.stt_set_recording</code></td><td>sets the tab bar's speech-to-text recording indicator</td></tr>
+<tr><td><code>mep.terminal_here</code></td><td>attaches a shell to the currently active pane rather than splitting</td></tr>
+<tr><td><code>mep.terminal_here_argv</code></td><td>attaches a terminal running `argv` directly (no shell) to the active pane</td></tr>
+<tr><td><code>mep.terminal_info</code></td><td>live title and exit state of a `:terminal` buffer</td></tr>
+<tr><td><code>mep.terminal_write</code></td><td>writes text verbatim into a live `:terminal` buffer's PTY</td></tr>
+</table>
+<h1>See also</h1>
+<ul>
+<li><a href="config.html">Configuration</a> -- where to call these from.</li>
+<li><a href="recipes.html">Configuration recipes</a> -- worked examples.</li>
+</ul>
+</body>
+</html>

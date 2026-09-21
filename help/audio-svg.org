@@ -1,0 +1,26 @@
+#+TITLE: Audio and vector
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="90">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Audio
+
+A =.wav= file opens as a waveform. It is a view, not an editor: useful for
+seeing what is in a file -- where the silence is, whether it clipped --
+rather than for changing it.
+
+Notebook and document views use the same decoder for embedded audio.
+
+* SVG and XML
+
+=.svg= renders as a vector image, and =.xml= renders as structured markup.
+Both go through the same engine that draws HTML, so a stylesheet on an SVG
+is honoured.
+
+To edit the markup rather than view the result, open the file as text with
+=:e=.
+
+* See also
+
+- [[file:viewers-overview.html][What mep can open]] -- the full table.
+- [[file:browser.html][The browser pane]] -- the engine behind the vector rendering.

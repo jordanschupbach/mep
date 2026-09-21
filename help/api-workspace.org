@@ -1,0 +1,88 @@
+#+TITLE: Workspaces, files and processes
+#+HTML_HEAD: <meta name="help-section" content="Lua API">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What is here
+
+Workspaces and projects, the filesystem, subprocesses, HTTP and the environment mep runs in.
+
+This page is generated from mep's own binding table, so it lists what
+the running editor actually exposes. Call any of these from
+=init.lua=, from =:lua=, or from a =mep-lua= org block.
+
+* The bindings (63)
+
+A dash means that binding has no doc comment in the source yet, not
+that it does nothing.
+
+| Function | Does |
+|----------+------|
+| =mep.bundled_help_root= | the installed rendered help directory |
+| =mep.chdir= | changes the process's current working directory (native builds only) |
+| =mep.direnv_set_active= | sets the status bar's direnv chip state |
+| =mep.fs_copy= | recursively copies a file or directory (native builds only) |
+| =mep.fs_create_file= | creates an empty file if it doesn't already exist (native builds only) |
+| =mep.fs_delete= | recursively deletes a file or directory (native builds only), closing any open buffers under it |
+| =mep.fs_mkdir= | creates a directory (native builds only) |
+| =mep.fs_rename= | renames/moves a file or directory (native builds only), retargeting any open buffers under `from` |
+| =mep.fuzzy_score= | score (-1 if no match), positions (1-indexed array) |
+| =mep.getcwd= | returns the process's current working directory (native builds only) |
+| =mep.http_get= | performs a blocking HTTP GET |
+| =mep.http_serve= | starts an in-process static file server on 127.0.0.1 |
+| =mep.http_servers= | lists the running static servers |
+| =mep.http_stop= | stops the server on `port`, or every server when omitted/0 |
+| =mep.job_close_stdin= | closes a running job's stdin pipe |
+| =mep.job_is_running= | reports whether a job is still running |
+| =mep.job_kill= | terminates a running job |
+| =mep.job_start= | -> id: spawns a subprocess and wires its stdout/stderr/exit to optional Lua callbacks |
+| =mep.job_write= | writes text to a running job's stdin |
+| =mep.list_dir= | lists a directory's entries, directories first then alphabetically |
+| =mep.list_urls_scan= | scans the current buffer for URLs |
+| =mep.now= | wall-clock seconds since program start (see Editor::Now() |
+| =mep.open= | opens a file in its default view (e.g. the rendered viewer for HTML rather than plain text) |
+| =mep.participant_clear= | removes a previously-added synthetic local participant |
+| =mep.participant_set= | upserts a synthetic local participant's tab-bar chip and in-buffer cursor |
+| =mep.participants= | lists every current participant (human collaborators, connected agents, synthetic locals) |
+| =mep.platform= | "linux"/"macos"/"windows"/"wasm" (Phase 13 URL open) |
+| =mep.project_add= | adds a path to the persisted project-root list |
+| =mep.project_close= | -- |
+| =mep.project_current= | -- |
+| =mep.project_list= | lists the persisted project-root paths |
+| =mep.project_load= | Pushes one project as {id, name, root, is_git, git_toplevel, workspace_count, active, index}. */ void PushProjectTable(lua_State *L, const Project... |
+| =mep.project_loaded_list= | -- |
+| =mep.project_next= | -- |
+| =mep.project_previous= | -- |
+| =mep.project_readme_path= | finds a directory's README file, if any |
+| =mep.project_remove= | removes a path from the persisted project-root list |
+| =mep.project_switch= | -- |
+| =mep.quit= | requests that the editor exit |
+| =mep.read_lines= | returns a file's lines, preferring an open buffer's live contents |
+| =mep.run_config_load= | loads the persisted Run button config from disk |
+| =mep.run_config_save= | persists the Run button config to disk (a no-op on the wasm build) |
+| =mep.scratch= | / mep.toggle_zen() (Phase 12) |
+| =mep.setenv= | sets a variable in this process's environment |
+| =mep.unsetenv= | clears a variable from this process's environment |
+| =mep.workspace_adopt= | -- |
+| =mep.workspace_change_epoch= | -- |
+| =mep.workspace_current= | the active workspace's table |
+| =mep.workspace_delete= | `:wsdelete[!]` |
+| =mep.workspace_list= | every workspace of the active project, in bar order |
+| =mep.workspace_new= | `:wsnew[!] name` |
+| =mep.workspace_next= | / mep.workspace_previous() |
+| =mep.workspace_previous= | -- |
+| =mep.workspace_prune= | -- |
+| =mep.workspace_rename= | -- |
+| =mep.workspace_reset= | -> ok, err: empties the active workspace back to one fresh pane |
+| =mep.workspace_root= | the active workspace's root directory ( mep.getcwd() by decision 4) |
+| =mep.workspace_set_git_dirty= | -- |
+| =mep.workspace_set_restore= | -- |
+| =mep.workspace_set_worktree_dir= | -- |
+| =mep.workspace_state_restore= | -- |
+| =mep.workspace_state_save= | -- |
+| =mep.workspace_switch= | activates a workspace |
+
+* See also
+
+- [[file:config.html][Configuration]] -- where to call these from.
+- [[file:recipes.html][Configuration recipes]] -- worked examples.

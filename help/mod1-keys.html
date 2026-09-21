@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The mod1 layer</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Files and windows">
+<meta name="help-order" content="30">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The mod1 layer</h1>
+<h1>What mod1 is</h1>
+<p><code>mod1</code> is a modifier key -- <code>Alt</code> by default -- carrying a layer of window
+management commands. Unlike <code>Ctrl-W</code>, these work in <b>every mode</b>, so you can
+move between panes without leaving Insert mode first.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.set_mod1(<span class="tok-green">'super'</span>)   <span class="tok-comment">-- 'alt' (default), 'ctrl', 'shift', 'super'/'cmd'/'meta'</span></code></pre></div>
+<h1>Splitting and focusing</h1>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>mod1+s</code></td><td>split horizontally</td></tr>
+<tr><td><code>mod1+v</code></td><td>split vertically</td></tr>
+<tr><td><code>mod1+h j k l</code></td><td>focus the pane left / down / up / right</td></tr>
+<tr><td><code>mod1+d</code></td><td>close the pane's active buffer tab</td></tr>
+<tr><td><code>mod1+Enter</code></td><td>run the cell under the cursor and insert a new one (notebooks)</td></tr>
+</table>
+<p>Focus movement is spatial, using the same overlap-then-distance heuristic as
+<code>Ctrl-W hjkl</code>. It is a no-op when there is no pane that way.</p>
+<h1>Resizing</h1>
+<p><code>mod1+Shift+h j k l</code> moves the split boundary between the current pane and
+its neighbour.</p>
+<p>It grows against a neighbour on that side if there is one, and otherwise
+shrinks against whichever neighbour it does have on that axis. That is what
+makes opposite keys always do opposite things. A pane alone on an axis does
+not move.</p>
+<p>This is a two-way boundary drag rather than Vim's full window-layout resize
+algorithm -- a deliberate simplification.</p>
+<h1>Rearranging</h1>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>mod1+Ctrl+h j k l</code></td><td>move this pane's active buffer tab into the neighbouring pane</td></tr>
+<tr><td><code>mod1+m</code></td><td>maximize this pane, or restore the previous layout</td></tr>
+</table>
+<p>Moving the last buffer tab out of a pane closes that pane.</p>
+<p><code>mod1+m</code> shrinks every other pane to the minimum the resize keys stop at.
+Pressing it again restores the layout from before; pressing it in a
+<b>different</b> pane while one is maximized maximizes that one instead.</p>
+<h1>Inside a sidebar</h1>
+<p>The same keys mean something related when a sidebar is focused:</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>mod1+j</code> <code>mod1+k</code></td><td>step focus between stacked sidebars</td></tr>
+<tr><td><code>mod1+Shift+j/k</code></td><td>re-split the boundary between two of them</td></tr>
+<tr><td><code>mod1+Ctrl+j/k</code></td><td>swap this sidebar with the one above or below</td></tr>
+<tr><td><code>mod1+m</code></td><td>pop the sidebar out into a large centred float</td></tr>
+</table>
+<p>Swapping keeps the sidebar focused, so the cursor travels with it.</p>
+<h1>Other modifiers</h1>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Ctrl-Alt-]</code> <code>Ctrl-Alt-[</code></td><td>next / previous workspace</td></tr>
+<tr><td><code>Alt-1</code> .. <code>Alt-9</code></td><td>jump to the Nth workspace</td></tr>
+<tr><td><code>Ctrl+Shift+=</code> <code>Ctrl+Shift+-</code></td><td>grow / shrink the font</td></tr>
+</table>
+<h1>Rebinding</h1>
+<p>Every default above is a <code>mep.map_mod1()</code> call made at startup, so any of
+them can be replaced or removed from <code>init.lua</code>:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.map_mod1(<span class="tok-green">'h'</span>, <span class="tok-purple">function</span>() mep.nav_pane(<span class="tok-green">'left'</span>) <span class="tok-purple">end</span>)
+mep.map_mod1(<span class="tok-green">'S-l'</span>, mep.some_function)   <span class="tok-comment">-- mod1+Shift+l</span>
+mep.map_mod1(<span class="tok-green">'C-j'</span>, mep.other_function)  <span class="tok-comment">-- mod1+Ctrl+j</span></code></pre></div>
+<p>A bare letter is <code>mod1+letter</code>; <code>S-</code> and <code>C-</code> prefixes add Shift and Ctrl.
+<code>Tab</code>, <code>S-Tab</code>, <code>CR</code> and <code>S-CR</code> are also accepted.</p>
+<p>The functions behind the defaults are callable directly:
+<code>mep.nav_pane(dir)</code>, <code>mep.resize_pane(dir, step)</code>,
+<code>mep.pane_move_buffer(dir)</code>, <code>mep.pane_close_buffer()</code> and
+<code>mep.pane_maximize_toggle()</code>.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="panes-tabs.html">Panes and tabs</a> -- the <code>Ctrl-W</code> equivalents.</li>
+<li><a href="layouts-zen.html">Layouts, zoom and zen</a> -- rearranging everything at once.</li>
+</ul>
+</body>
+</html>

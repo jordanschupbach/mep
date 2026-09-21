@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clocking and the Todo panel</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Org mode">
+<meta name="help-order" content="50">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Clocking and the Todo panel</h1>
+<h1>Clocking time</h1>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:MepOrgClockIn</code></td><td>start the clock on this heading</td></tr>
+<tr><td><code>:MepOrgClockOut</code></td><td>stop it</td></tr>
+<tr><td><code>:MepOrgClockTable</code></td><td>a table of time clocked</td></tr>
+</table>
+<p>A clock is a <code>CLOCK:</code> line in a <code>:LOGBOOK:</code> drawer under the heading:</p>
+<pre>:LOGBOOK:
+CLOCK: [2026-09-20 Sat 10:00]--[2026-09-20 Sat 11:30] =&gt;  1:30
+:END:</pre>
+<p>Only <b>one</b> clock runs at a time, so clocking in somewhere else stops the
+previous one.</p>
+<h1>The Todo panel</h1>
+<p><code>&lt;leader&gt;tt</code> (<code>:MepActivityTodoPanel</code>, or the Todo button in the tab bar)
+lists every keyworded heading in the project's <code>TODO.org</code> and edits it in
+place.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>a</code></td><td>add a todo -- a new <code>* TODO</code> heading at the end of the file</td></tr>
+<tr><td><code>e</code></td><td>open <code>TODO.org</code> in a float, cursor on this heading</td></tr>
+<tr><td><code>d</code></td><td>mark done, or not done again</td></tr>
+<tr><td><code>x</code></td><td>delete it and its subtree, after a confirm</td></tr>
+<tr><td><code>Enter</code></td><td>start or stop this heading's clock</td></tr>
+<tr><td><code>o</code></td><td>open the file</td></tr>
+<tr><td><code>R</code></td><td>re-read it</td></tr>
+<tr><td><code>?</code></td><td>list these keys</td></tr>
+</table>
+<p><code>e</code> is the escape hatch: the panel edits titles and states, but the float
+gives you the whole heading -- body, properties, logbook -- in a real
+editable buffer.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.activity_todo_file = <span class="tok-green">'~/notes/tasks.org'</span>   <span class="tok-comment">-- override the path</span></code></pre></div>
+<h1>The file is the source of truth</h1>
+<p>The panel does not hold state. Rows and the running clock are re-read from
+the file on every render, and the panel re-renders whenever <code>TODO.org</code> is
+edited in a buffer or any buffer is saved.</p>
+<p>So edits made in the editor and keys pressed in the panel always agree, and
+a clock started by typing a <code>CLOCK:</code> line by hand counts exactly the same.</p>
+<h1>The status-line chip</h1>
+<p>The clocked-in todo appears at the right of the <a href="status-line.html">status line</a> -- green, with
+its title and a live timer, or a red <code>[No active TODO]</code>. Clicking it toggles
+the panel.</p>
+<p>Marking a clocked-in todo done stops its clock.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="org-todo.html">TODO keywords and tags</a> -- what the panel lists.</li>
+<li><a href="status-line.html">The status line</a> -- the chip.</li>
+</ul>
+</body>
+</html>

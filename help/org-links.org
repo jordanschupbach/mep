@@ -1,0 +1,65 @@
+#+TITLE: Links, footnotes and citations
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="70">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Links
+
+| Key / command            | Does                                     |
+|--------------------------+------------------------------------------|
+| *click*                  | follow the link you clicked              |
+| =gx=                     | follow the link under the cursor         |
+| =<leader>oo=             | the same                                 |
+| =:MepOrgLinkFollow=      | the same                                 |
+| =:MepOrgLinkInsert=      | insert a link                            |
+| =:MepOrgStoreLink=       | remember this location as a link target  |
+| =:MepOrgLinkScan=        | rescan the buffer for links              |
+
+A link is drawn as its description, underlined, and it is clickable: the
+pointer turns into a hand over one, and clicking follows it. A =file:= link
+opens that file -- resolved against the *org file's own directory*, the way
+org resolves it, not against mep's working directory -- and jumps to the
+=::42= line or =::*Heading= it names. Everything else (a heading, an =id:=,
+a =#CUSTOM_ID=) moves the cursor there; a web link opens in your browser.
+
+Put the cursor on a link's line and the raw =[[...]]= comes straight back to
+edit. =<leader>otm= turns that concealment off for good.
+
+A bare URL written straight into the prose -- no brackets -- is underlined
+and clickable too, and =gx= follows it in any filetype, not just org.
+
+The pair to learn is =StoreLink= then =LinkInsert=: store a link where you
+are, go elsewhere, insert it. That is how you build a link to a specific
+heading without typing its path.
+
+Link syntax is org's own:
+
+#+begin_example
+[[file:notes.org][Notes]]
+[[https://example.com][A site]]
+[[file:notes.org::*Some heading][That heading]]
+#+end_example
+
+Press =f= in a rendered org buffer to label every visible link and follow
+one by typing its letter.
+
+* Footnotes
+
+=:MepOrgFootnoteJump= moves between a footnote reference and its definition,
+in either direction.
+
+* Citations
+
+| Command                         | Does                                |
+|---------------------------------+-------------------------------------|
+| =:MepOrgBibInsertCitation=      | insert a citation                   |
+| =:MepOrgBibCiteGoto=            | jump to the entry it refers to      |
+| =:MepOrgBibCitePreview=         | preview that entry                  |
+
+Entries are read from your BibTeX files; =mep.org_bib_parse_files= is the
+parser behind it.
+
+* See also
+
+- [[file:org-roam.html][Org-roam]] -- linking notes to each other as a habit.
+- [[file:org-export.html][Exporting]] -- what links become in the output.

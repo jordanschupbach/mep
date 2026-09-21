@@ -1,0 +1,115 @@
+#+TITLE: Highlight groups
+#+HTML_HEAD: <meta name="help-section" content="Interface">
+#+HTML_HEAD: <meta name="help-order" content="70">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Colours have names, not values
+
+Nothing in mep draws with a literal colour. Everything names a *highlight
+group*, and the active [[file:themes.html][theme]] resolves that name. Write code that says
+=Error= rather than red, and it stays correct across all sixty-two themes.
+
+There are two families.
+
+*Colour groups*, used by syntax highlighting and anything that wants a
+specific hue: =Red=, =Green=, =Yellow=, =Blue=, =Purple=, =Cyan=, =Orange=,
+=Comment=, =Accent=.
+
+*Interface groups*, used by the chrome: =Normal=, =NormalBg=, =Cursor=,
+=CursorLine=, =Visual=, =IncSearch=, =LineNr=, =StatusLine=,
+=StatusLineFg=, =TabBar=, =TabActive=, =TabInactive=, =Sidebar=,
+=SidebarTitle=, =Picker=, =PickerTitle=, =PickerSelected=, =PickerBorder=,
+=FloatBg=, =FloatBorder=, =Border=, =BorderActive=, =BorderInactive=,
+=MenuBar=, =MenuHighlight=, =Error=, =ErrorText=, =Warn=, =Info=, =Debug=,
+=Add=, =MutedFg=, =Overlay=, =ProjectLabel=, =WorkspaceActiveBg=,
+=WorkspaceInactive=, =AccentTint=, =OfficePage=.
+
+* Decorations
+
+A decoration is a coloured span laid over a buffer's text: a syntax token, a
+spelling squiggle, a search match, an LSP diagnostic, a git-gutter mark.
+They all go through one pipeline, which is why they compose predictably and
+why a theme change re-tints every one of them at once.
+
+#+begin_src lua
+local ns = mep.ns_create('my_feature')
+mep.buffer_deco_add(mep.current_buffer(), ns, {
+  row = 3, col_start = 1, col_end = 11,   -- the line's first 10 characters
+  hl_group = 'Error',
+  priority = 100,
+})
+#+end_src
+
+| Function                                | Does                              |
+|-----------------------------------------+-----------------------------------|
+| =mep.ns_create(name)=                   | make a namespace                  |
+| =mep.buffer_deco_add(buf, ns, deco)=    | add a span                        |
+| =mep.buffer_ns_clear(buf, ns)=          | clear that namespace's spans      |
+| =mep.deco_add(ns, deco)= / =mep.ns_clear(ns)= | the current buffer's versions |
+
+Namespaces are the whole point: your feature clears and redraws only its own
+spans, without disturbing syntax highlighting or anyone else's.
+
+Rows and columns here are 1-indexed, and =col_end= is exclusive.
+
+A decoration can do more than recolour a span:
+
+| Option            | Effect                                             |
+|-------------------+----------------------------------------------------|
+| =hl_group=        | the colour to use                                  |
+| =whole_line=      | tint the whole line rather than a span             |
+| =underline=       | draw a thin underline instead of recolouring text  |
+| =virt_text=       | text drawn after the line, not in the buffer       |
+| =virt_text_hl=    | that text's highlight group                        |
+| =virt_overlay=    | virtual text drawn *over* the line                 |
+| =sign=            | a one-character mark in the gutter                 |
+| =sign_hl=         | the sign's highlight group                         |
+| =priority=        | who wins where two decorations overlap             |
+
+=virt_text= is how an inline diagnostic message or an end-of-line hint is
+drawn without touching the buffer's real contents, and =sign= is what puts
+the git and diagnostic marks in the gutter column.
+
+* Syntax capture mapping
+
+Treesitter captures are mapped to colour groups by =mep.ts_capture_hl=, a
+plain Lua table you can read or change:
+
+#+begin_src lua
+mep.ts_capture_hl['keyword'] = 'Red'
+#+end_src
+
+A capture falls back to its own first component, so =function.call= uses
+=function='s colour when it has no entry of its own.
+
+* Per-file colours and icons
+
+| Function                  | Returns                                  |
+|---------------------------+------------------------------------------|
+| =mep.icon_for_file(path)= | the Nerd Font icon for that file type    |
+| =mep.hl_for_file(path)=   | the highlight group that colours it      |
+
+The file tree, the buffer picker and the tab strips all use these, so a
+panel of your own can match them with two calls.
+
+* Fonts
+
+mep embeds every font it uses, so both the native and wasm builds start with
+real text and no asset-fetching step:
+
+| Font              | Used for                                  |
+|-------------------+-------------------------------------------|
+| JetBrains Mono    | all editor text                           |
+| a Nerd Font set   | file-type and UI icons                    |
+| an emoji font     | colour emoji                              |
+| a symbol font     | maths and box-drawing glyphs              |
+| serif and mono faces | rendering office documents             |
+
+=Ctrl+Shift+== and =Ctrl+Shift+-= change the size in any mode. Panels,
+gutters and chrome are laid out from the same size, so everything scales
+together.
+
+* See also
+
+- [[file:themes.html][Colorschemes]] -- what resolves these names.
+- [[file:sidebars.html][Sidebars]] -- where =SidebarTitle= and friends show up.

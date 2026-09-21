@@ -1,0 +1,119 @@
+#+TITLE: mep Lua API
+
+Everything on the =mep.*= table, available to =:lua=, =:source= and
+=~/.config/mep/init.lua=.
+
+- =mep.get_line(row)= / =mep.set_line(row, text)= — 1-indexed.
+- =mep.line_count()=
+- =mep.cursor()= -> row, col / =mep.set_cursor(row, col)=
+- =mep.current_buffer()= -> the active pane's own buffer id.
+- =mep.insert_text(text)=
+- =mep.clipboard_get()= -> text / =mep.clipboard_set(text)= — the
+  system clipboard itself, bypassing the registers.
+- =mep.notify(msg)= — also what Lua's own =print()= is routed through.
+- =mep.command(name, fn)= — defines a =:name= ex-command.
+- =mep.map(mode, key, fn)= — binds a single key (mode =\"n\"= or
+  =\"v\"=/=\"V\"=), overriding the builtin for that key.
+- =mep.quick_jump(query?)= — starts the =s= quick jump, optionally
+  feeding =query= as if typed; =mep.quick_jump_matches()= -> array of
+  ={pane_id, row, col, label}= (1-indexed, active pane first) while it
+  is open; =mep.quick_jump_pick(label)= -> true if that label jumped.
+- =mep.map_mod1(key, fn)= — binds a letter under =mod1=, globally across
+  all modes: a bare letter (=\"h\"=) for =mod1+letter=, or =\"S-\"=/
+  =\"C-\"=-prefixed (=\"S-h\"=, =\"C-h\"=) for =mod1+Shift+letter= /
+  =mod1+Ctrl+letter=. Two non-letter keys also work, each their own
+  special case since neither is a letter: =\"Tab\"=/=\"S-Tab\"=, and
+  =\"CR\"=/=\"S-CR\"= (Enter). Overrides any prior mapping for that exact
+  key, including the startup defaults.
+- =mep.set_mod1(name)= — =\"alt\"= (default), =\"ctrl\"=, =\"shift\"=, or
+  =\"super\"=/=\"cmd\"=/=\"meta\"=.
+- =mep.mod1_name()= -> =\"Alt\"=/=\"Ctrl\"=/=\"Shift\"=/=\"Super\"= — whichever
+  modifier =mep.set_mod1= last selected, capitalised for display. For
+  naming the modifier in text the user reads rather than acting on it.
+- =mep.nav_pane(direction)= — =\"left\"=/=\"down\"=/=\"up\"=/=\"right\"=;
+  what the =mod1+hjkl= defaults call.
+- =mep.resize_pane(direction, step?)= — moves the split boundary between
+  the current pane and its neighbor that way by =step= (a 0..1 fraction
+  of the split's extent, 5% if omitted); what the =mod1+Shift+hjkl=
+  defaults call.
+- =mep.pane_move_buffer(direction)= — moves the current pane's active
+  buffer tab into the neighboring pane that way, closing the current pane
+  if it was its last tab; what the =mod1+Ctrl+hjkl= defaults call.
+- =mep.pane_close_buffer()= — removes the current pane's active buffer
+  tab, closing the pane once its last tab is gone; what =mod1+d= calls.
+- =mep.cmd(str)= — runs =str= as if typed after =:= and Enter pressed
+  (e.g. =mep.cmd(\"vsplit\")=); a general escape hatch for driving any
+  ex-command from Lua.
+- =mep.leader_map(seq, desc, fn, icon?, icon_hl?)= — binds a key sequence
+  after the leader (space), shown in the which-key popup; =mep.leader_group(prefix,
+  label, icon?, icon_hl?)= names a group. In either API, =icon= is an
+  optional Nerd Font codepoint displayed before its key and =icon_hl=
+  optionally names the highlight group that colors it. =seq= is one character per key, except Enter,
+  spelled =<CR>= (=<Return>=/=<Enter>= also accepted): =mep.leader_map('a<CR>', ...)=.
+- =mep.current_tab_id()= — the active tab's stable id (unchanged by
+  =:tabdelete=/=:tabnew= around it, unlike its index); =mep.current_pane_id()=
+  the focused pane's id, and =mep.pane_focus(pane_id)= -> bool focuses a
+  pane of the active tab by id. =mep.pane_split_bottom(buffer_id?, share?)=
+  opens a new full-width pane along the bottom of the tab (vim's
+  =:botright split=) showing =buffer_id= (default: the current buffer),
+  focused, taking =share= (default =0.3=) of the tab's height. The per-tab
+  terminal is built on these.
+- =mep.terminal_here(args?)= — turns the active pane into a =:terminal=
+  in place (no split); =args= runs =$SHELL -c args=.
+- =mep.terminal_here_argv(argv, title?)= — same, but runs the =argv=
+  array directly with no shell in between (for arguments that would
+  otherwise need shell quoting, like a multi-line prompt); =title=
+  labels the buffer tab (default =argv[1]=).
+- =mep.sidebar_set_tabs(id, {name, ...}, active?)= gives a sidebar a
+  tab strip (drawn under the docked title and beside the popout's);
+  =Tab=/=Shift-Tab= while focused, a click on a name or
+  =mep.sidebar_set_active_tab(id, index)= switch, each calling the
+  =mep.sidebar_set_on_tab(id, fn(index))= callback (1-based) so the
+  consumer re-renders its sections for that view;
+  =mep.sidebar_active_tab(id)= reads it. The git panel is built on it.
+- Every sidebar's bottom row hints =?: help=: =?= swaps its rows for a
+  list of its key bindings (the footer then reads =Esc: back to ...=;
+  =Escape=, =?= or =q= return). =mep.sidebar_set_help(id, {{key,
+  description}, ...})= sets the sidebar-specific keys listed above the
+  shared navigation keys (an empty key is a sub-heading);
+  =mep.sidebar_toggle_help(id)= / =mep.sidebar_help_open(id)= drive it
+  from Lua. The file tree (=<leader>ff=, a pane rather than a sidebar)
+  works the same way.
+- A sidebar widget marked =current = true= (the Structure outline's
+  "you are here" item, the Buffers list's current buffer, ...) is scrolled
+  into view whenever it moves while the sidebar isn't focused.
+  =mep.sidebar_for_buffer(buf)= -> the sidebar id a pane-hosted sidebar
+  buffer shows (or nil); =mep.buffer_on_screen(buf)= -> whether some pane
+  in the active tab shows =buf=.
+- =mep.buffer_set_footer(id, text, hl?)= draws a one-line hint along the
+  bottom row of every pane showing buffer =id= (the pane-hosted version of
+  a sidebar's =?: help= footer); an empty =text= removes it. A buffer's
+  =mep.buffer_set_on_key= hook is also offered a bare Normal-mode Escape,
+  as ="\27"= (return false to keep its usual meaning).
+- =mep.float_open(path, line?, {save_on_close=bool}?)= -> bool opens a
+  file in a floating editable pane centered over everything -- a real
+  pane over a real buffer (every editing mode, =:w=, the wheel all work
+  inside it), closed by =Escape= with nothing pending, =:q=/=:close=, or
+  a click outside the box. =save_on_close= (default true) writes the
+  buffer on close if it changed, and =on_close=fn(saved)= runs once it
+  is gone with whether that close wrote the buffer; opened from a
+  focused sidebar, closing returns focus to that sidebar row.
+  =mep.float_close()= / =mep.float_is_open()= go with it. The Todo
+  sidebar's =e= and the git panel's commit editor are built on it.
+- =mep.terminal_info(buffer_id)= -> ={title=, exited=, exit_code=}= for
+  a =:terminal= buffer (=title= is the live OSC title, falling back to
+  the launch label), =nil= otherwise.
+- =mep.participants()= -> array of ={id=, name=, kind='human'|'agent',
+  buffer_id=, row=, col=, has_location=, status=, terminal_buffer_id=}=
+  — the same snapshot the tab-bar chips draw from.
+- =mep.buffer_workspace(buffer_id)= -> the owning workspace's id, or
+  =nil= for an unscoped buffer.
+- =mep.jump_to_buffer(buffer_id)= -> bool — switches workspace, tab and
+  pane to land on a buffer wherever it lives (=mep.pane_focus_buffer=
+  only searches the active tab).
+- =mep.menubar_toggle()= / =mep.menubar_visible()= ->  bool /
+  =mep.menubar_set_visible(on)= — the top File/Edit/Window/Help bar,
+  hidden by default and summoned by tapping =mod1= on its own. Hidden,
+  its row goes to the panes below; unlike =mep.toggle_zen()= nothing
+  else about the chrome changes.
+- =mep.quit()=

@@ -34,6 +34,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -565,6 +566,124 @@ int main(int argc, char **argv) {
         Json still_alive = Call(fd, 30, "session.info", Json::Object(), &read_buf);
         CHECK(still_alive.contains("result"));
         std::filesystem::remove(tall_path, ec);
+    }
+
+    // --- File tree delete/rename vs. open buffers: deleting a file that
+    // has an open buffer (mep.fs_delete, the tree's 'd') and then creating
+    // a new file at the same path must show the new, empty file -- not the
+    // deleted file's content resurrected by FindOrCreateBuffer's dedup-by-
+    // filename. Same for a rename ('r') followed by recreating the old name.
+    {
+        std::error_code ec;
+        const std::string base = (std::filesystem::temp_directory_path(ec) / ("mep-agent-rpc-fs-" + std::to_string(static_cast<long>(getpid())))).string();
+        std::filesystem::create_directories(base, ec);
+        const std::string doomed = base + "/doomed.txt";
+        const std::string renamed = base + "/renamed.txt";
+        /**
+         * @brief Writes `text` to `path`, replacing it.
+         */
+        auto write_file = [](const std::string &path, const std::string &text) {
+            FILE *f = std::fopen(path.c_str(), "w");
+            CHECK(f != nullptr);
+            CHECK(std::fwrite(text.data(), 1, text.size(), f) == text.size());
+            std::fclose(f);
+        };
+        /**
+         * @brief Opens `path` in the active pane and returns that pane's buffer's lines.
+         */
+        auto open_and_read = [&](int id, const std::string &path) {
+            Json opened = Call(fd, id, "file.open", [&] { Json p = Json::Object(); p["path"] = path; return p; }(), &read_buf);
+            CHECK_CTX(opened.contains("result"), "file.open=[" + opened.dump() + "]");
+            Json pane = Call(fd, id + 1, "pane.get", Json::Object(), &read_buf);
+            Json lp = Json::Object();
+            lp["buffer_id"] = pane.get("result").get("buffer_id").as_int();
+            return Call(fd, id + 2, "buffer.getLines", lp, &read_buf).get("result").get("lines");
+        };
+        /**
+         * @brief Runs a one-line Lua chunk through :lua.
+         */
+        auto lua = [&](int id, const std::string &chunk) {
+            Json r = Call(fd, id, "command.run", [&] { Json p = Json::Object(); p["cmd"] = "lua " + chunk; return p; }(), &read_buf);
+            CHECK_CTX(r.contains("result"), "lua " + chunk + " -> " + r.dump());
+        };
+
+        write_file(doomed, "old content\n");
+        Json before = open_and_read(40, doomed);
+        CHECK_CTX(before.items().size() >= 1 && before.items()[0].as_string() == "old content", "before=[" + before.dump() + "]");
+        lua(43, "mep.fs_delete('" + doomed + "')");
+        CHECK(!std::filesystem::exists(doomed));
+        lua(44, "mep.fs_create_file('" + doomed + "')");
+        Json recreated = open_and_read(45, doomed);
+        CHECK_CTX(recreated.items().size() == 1 && recreated.items()[0].as_string().empty(),
+                  "recreated file after fs_delete should be empty, got lines=[" + recreated.dump() + "]");
+
+        write_file(doomed, "before rename\n");
+        lua(48, "mep.buffer_delete(mep.current_buffer(), true)");  // :bd'd buffers must also re-read from disk
+        Json reread = open_and_read(49, doomed);
+        CHECK_CTX(reread.items().size() >= 1 && reread.items()[0].as_string() == "before rename", "reread=[" + reread.dump() + "]");
+        // Rename while open: the same buffer (same id, still the pane's
+        // active buffer, unsaved edits intact) now carries the new name,
+        // and nothing in buffer.list still claims the old one.
+        const int open_id = Call(fd, 52, "pane.get", Json::Object(), &read_buf).get("result").get("buffer_id").as_int();
+        Call(fd, 53, "command.run", [] { Json p = Json::Object(); p["cmd"] = "normal Ounsaved"; return p; }(), &read_buf);
+        lua(54, "mep.fs_rename('" + doomed + "', '" + renamed + "')");
+        /**
+         * @brief Returns buffer.list's filenames as one string, for CHECK context.
+         */
+        auto list_names = [&](int id) {
+            std::vector<std::string> names;
+            const Json listed = Call(fd, id, "buffer.list", Json::Object(), &read_buf);
+            for (const Json &b : listed.get("result").items()) names.push_back(b.get("filename").as_string());
+            return names;
+        };
+        /**
+         * @brief Returns true if `names` contains `want`.
+         */
+        auto has_name = [](const std::vector<std::string> &names, const std::string &want) {
+            return std::find(names.begin(), names.end(), want) != names.end();
+        };
+        std::vector<std::string> names = list_names(55);
+        std::string names_ctx;
+        for (const std::string &n : names) names_ctx += n + ";";
+        CHECK_CTX(has_name(names, renamed) && !has_name(names, doomed), "buffer.list after rename=[" + names_ctx + "]");
+        Json pane_after = Call(fd, 56, "pane.get", Json::Object(), &read_buf).get("result");
+        CHECK_CTX(pane_after.get("buffer_id").as_int() == open_id, "pane.get after rename=[" + pane_after.dump() + "]");
+        Json at_new = open_and_read(57, renamed);
+        CHECK_CTX(at_new.items().size() == 2 && at_new.items()[0].as_string() == "unsaved" && at_new.items()[1].as_string() == "before rename",
+                  "renamed buffer should keep its unsaved edit, got lines=[" + at_new.dump() + "]");
+        CHECK(Call(fd, 60, "pane.get", Json::Object(), &read_buf).get("result").get("buffer_id").as_int() == open_id);
+        lua(61, "mep.fs_create_file('" + doomed + "')");
+        Json old_name = open_and_read(62, doomed);
+        CHECK_CTX(old_name.items().size() == 1 && old_name.items()[0].as_string().empty(),
+                  "recreated file after fs_rename should be empty, got lines=[" + old_name.dump() + "]");
+
+        // A buffer already named after the destination but with nothing on
+        // disk (an unsaved `:e fresh.txt`) must not shadow the renamed one.
+        const std::string fresh = base + "/fresh.txt";
+        open_and_read(65, fresh);
+        lua(68, "mep.fs_rename('" + renamed + "', '" + fresh + "')");
+        Json at_fresh = open_and_read(69, fresh);
+        CHECK_CTX(at_fresh.items().size() == 2 && at_fresh.items()[0].as_string() == "unsaved",
+                  "renaming onto a stale buffer's name should show the renamed buffer, got lines=[" + at_fresh.dump() + "]");
+        CHECK(Call(fd, 72, "pane.get", Json::Object(), &read_buf).get("result").get("buffer_id").as_int() == open_id);
+        names = list_names(71);  // and the stale one is gone, not merely outranked by a lower buffer id
+        CHECK_CTX(std::count(names.begin(), names.end(), fresh) == 1, "expected exactly one " + fresh + " in buffer.list");
+
+        // A buffer opened by a relative path keeps a relative name.
+        const std::string test_cwd = std::filesystem::current_path(ec).string();
+        write_file(base + "/rel.txt", "relative\n");
+        lua(73, "mep.chdir('" + base + "')");
+        open_and_read(74, "rel.txt");
+        lua(77, "mep.fs_rename('" + base + "/rel.txt', '" + base + "/sub/rel2.txt')");  // sub/ doesn't exist yet
+        CHECK(!std::filesystem::exists(base + "/sub/rel2.txt"));  // so the rename fails and nothing moves
+        std::filesystem::create_directories(base + "/sub", ec);
+        lua(78, "mep.fs_rename('" + base + "/rel.txt', '" + base + "/sub/rel2.txt')");
+        names = list_names(79);
+        names_ctx.clear();
+        for (const std::string &n : names) names_ctx += n + ";";
+        CHECK_CTX(has_name(names, "sub/rel2.txt") && !has_name(names, "rel.txt"), "buffer.list after relative rename=[" + names_ctx + "]");
+        lua(80, "mep.chdir('" + test_cwd + "')");
+        std::filesystem::remove_all(base, ec);
     }
 
     Json quit_params = Json::Object();

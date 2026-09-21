@@ -1,0 +1,92 @@
+#+TITLE: Colorschemes
+#+HTML_HEAD: <meta name="help-section" content="Interface">
+#+HTML_HEAD: <meta name="help-order" content="60">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Changing it
+
+=<leader>ut= opens the theme picker, which *previews live*: every change of
+the highlighted row re-tints the whole interface immediately, before you
+commit. =Enter= keeps the theme; =Esc= restores the one you started with.
+Browsing sixty-two themes is therefore just holding a cursor key.
+
+#+begin_example
+:colorscheme everforest-dark
+:colo nord
+#+end_example
+
+From Lua:
+
+#+begin_src lua
+mep.colorscheme('kanagawa')          -- set it
+print(mep.current_theme())           -- what is active
+for _, n in ipairs(mep.theme_names()) do print(n) end
+#+end_src
+
+To make it stick, put the =mep.colorscheme= call in =init.lua=.
+
+* What ships
+
+Sixty-two themes, in the order the picker lists them:
+
+=mep-dark= (the default), =gruvbox-dark=, =nord=, =gruvbox-light=,
+=dracula=, =tokyonight-storm=, =tokyonight-night=, =tokyonight-moon=,
+=catppuccin-mocha=, =catppuccin-macchiato=, =catppuccin-frappe=,
+=catppuccin-latte=, =everforest-dark=, =everforest-light=, =kanagawa=,
+=one-dark=, =one-light=, =solarized-dark=, =solarized-light=, =nord-light=,
+=tokyo-night=, =rose-pine=, =rose-pine-dawn=, =monokai=, =ayu-dark=,
+=ayu-mirage=, =github-dark=, =github-light=, =nightfox=, =horizon=,
+=zenburn=, =synthwave84=, =oxocarbon-dark=, =oxocarbon-light=,
+=tokyonight-day=, =ayu-light=, =rose-pine-moon=, =kanagawa-dragon=,
+=kanagawa-lotus=, =github-dark-dimmed=, =night-owl=, =material-palenight=,
+=material-darker=, =nightfly=, =moonfly=, =oceanic-next=, =iceberg-dark=,
+=iceberg-light=, =melange=, =gruvbox-material=, =sonokai=, =srcery=,
+=jellybeans=, =tomorrow-night=, =cobalt2=, =flexoki-dark=, =flexoki-light=,
+=modus-vivendi=, =modus-operandi=, =vscode-dark=, =apprentice=, =terafox=.
+
+* A theme is eleven colours
+
+Each one defines a name and eleven colours:
+
+| Colour   | Used for                                  |
+|----------+-------------------------------------------|
+| =bg=     | the canvas                                |
+| =fg=     | ordinary text                             |
+| =red=    | errors, deletions                         |
+| =green=  | strings, additions                        |
+| =yellow= | warnings, changes                         |
+| =blue=   | functions, links                          |
+| =purple= | keywords                                  |
+| =cyan=   | numbers, constants, types                 |
+| =orange= | types, parameters                         |
+| =border= | pane and panel edges                      |
+| =accent= | the active element                        |
+
+Every other colour in the interface -- the status line, sidebars, the
+picker, the cursor line, tab labels, float borders, about forty groups in
+all -- is *derived* from those eleven, by mixing and tinting. That is why
+adding a theme means writing eleven colours rather than a stylesheet, and
+why a new UI element picks up sensible colours in all sixty-two themes
+without anyone revisiting them.
+
+* Light and dark
+
+mep does not track a light/dark flag. Where it needs to know -- picking
+which mep logo to draw on the start screen, for instance -- it computes the
+perceptual luminance of the resolved background and decides from that.
+
+So a custom theme gets the right treatment automatically, with no flag to
+set and nothing to keep in sync.
+
+* Rendered documents
+
+The HTML, PDF and image viewers re-tint what they show to the active theme
+by default, rather than rendering a white page inside a dark editor. The
+pane header shows =[theme, Ctrl-R]= when it is doing this; =Ctrl-R= toggles
+back to the document's own colours, and the header then reads
+=[page colors, Ctrl-R]= or =[original, Ctrl-R]=.
+
+* See also
+
+- [[file:highlight-groups.html][Highlight groups]] -- naming and using the colours.
+- [[file:pickers.html][Pickers]] -- the live-preview mechanism.

@@ -1,0 +1,60 @@
+#+TITLE: Platform notes
+#+HTML_HEAD: <meta name="help-section" content="Reference">
+#+HTML_HEAD: <meta name="help-order" content="50">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Native and wasm
+
+mep builds two ways: a native desktop binary, and WebAssembly.
+
+| Capability          | Native | wasm                                  |
+|---------------------+--------+---------------------------------------|
+| open and save files | yes    | only through =just run-wasm='s bridge |
+| =init.lua=          | yes    | no                                    |
+| terminals           | yes    | no                                    |
+| language servers    | yes    | no                                    |
+| clipboard           | yes    | best-effort                           |
+| session save/restore | yes   | no                                    |
+
+The wasm build has no host filesystem of its own. =just run-wasm= opens it
+in a Deno-hosted window with a loopback-only HTTP bridge doing the real
+reads and writes; a plain browser tab has no such server, so file commands
+fail there with an ordinary error.
+
+* X11 and the clipboard
+
+On X11 the clipboard is owned by the window that set it, so what mep copied
+is gone once mep exits unless a clipboard manager is running. Every X
+application behaves this way.
+
+* Opening things with the system
+
+=mep.platform()= reports the platform, and the file tree's =o= key and URL
+opening use it to pick =xdg-open=, =open= or =start=.
+
+* The mod1 key
+
+=mod1= defaults to =Alt=, which some window managers claim for themselves.
+If the [[file:mod1-keys.html][mod1 layer]] seems dead, the window manager is probably eating it:
+
+#+begin_src lua
+mep.set_mod1('super')   -- or 'ctrl', 'shift', 'cmd', 'meta'
+#+end_src
+
+* Fonts
+
+Every font is embedded, so there is nothing to install and no
+platform-specific font configuration. The trade-off is that mep uses its
+own font rather than your system's.
+
+* Finding the installed help
+
+A packaged binary lives in =<prefix>/bin= and its documentation in
+=<prefix>/share/mep/help=. On Linux mep resolves this through =/proc=
+rather than the process working directory -- which follows the active
+workspace and would otherwise point somewhere unrelated.
+
+* See also
+
+- [[file:installing.html][Installing and running]] -- building each target.
+- [[file:troubleshooting.html][Troubleshooting]] -- when something does not work.

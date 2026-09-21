@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Files and buffers</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Files and windows">
+<meta name="help-order" content="10">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Files and buffers</h1>
+<h1>Buffers are not files</h1>
+<p>A <b>buffer</b> is a file's contents in memory, together with its undo history,
+cursor and modified flag. Opening a file creates a buffer; writing a buffer
+sends it back to disk. Everything in between is buffer work.</p>
+<p>A buffer does not need a file at all -- <code>:e notes.txt</code> on a path that does
+not exist gives you a buffer named <code>notes.txt</code> that appears on disk only
+when you <code>:w</code>. That is how you create a file, not an error.</p>
+<h1>Opening and writing</h1>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:e {file}</code></td><td>open a file into a buffer</td></tr>
+<tr><td><code>:e!</code></td><td>reload from disk, discarding changes</td></tr>
+<tr><td><code>:w</code></td><td>write the buffer to its file</td></tr>
+<tr><td><code>:w {file}</code></td><td>write it somewhere else</td></tr>
+<tr><td><code>:wa</code></td><td>write every modified buffer that has a name</td></tr>
+<tr><td><code>:q</code></td><td>close the pane; quit once it is the last one</td></tr>
+<tr><td><code>:q!</code></td><td>close it even with unsaved changes</td></tr>
+<tr><td><code>:wq</code> <code>:x</code></td><td>write, then close</td></tr>
+<tr><td><code>:qa</code> <code>:qa!</code></td><td>quit the whole session</td></tr>
+<tr><td><code>:wqa</code> <code>:xa</code></td><td>write everything, then quit</td></tr>
+</table>
+<p><code>:q</code> refusing means the buffer has unsaved changes. <code>:qa</code> applies that check
+across every buffer in every workspace, so quitting never loses something
+you had forgotten about in another tab.</p>
+<h1>Moving between buffers</h1>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:bnext</code> <code>:bn</code></td><td>next buffer</td></tr>
+<tr><td><code>:bprevious</code> <code>:bp</code></td><td>previous buffer</td></tr>
+<tr><td><code>:bdelete</code> <code>:bd</code> <code>:bd!</code></td><td>close a buffer</td></tr>
+<tr><td><code>&lt;leader&gt;bb</code></td><td>the buffer picker</td></tr>
+<tr><td><code>:ls</code></td><td>list buffers</td></tr>
+</table>
+<p>These cycle through the <b>current workspace's</b> buffers, not everything open
+in the process, and they include buffers that are not currently shown in any
+pane. See <a href="pickers.html">Pickers</a> for the picker's own keys.</p>
+<h1>Buffers belong to a workspace</h1>
+<p>Buffers are scoped to the workspace they were opened in. <code>:ls</code>, the buffer
+picker and <code>:bnext</code> all show that workspace's buffers.</p>
+<p>The guards are deliberately <b>not</b> scoped that way: <code>:wa</code> writes modified
+buffers everywhere, and <code>:qa</code> refuses if anything anywhere is unsaved. The
+listing is scoped so it stays useful; the safety net is global so nothing
+hidden is ever lost.</p>
+<h1>Scratch buffers</h1>
+<p><code>&lt;leader&gt;bs</code> (<code>:MepScratch</code>) opens a scratch buffer: a real, editable buffer
+with no file behind it, for notes and experiments. It is not one of the
+"pristine" buffers the <a href="dashboard.html">start screen</a> looks for, so opening one dismisses
+the dashboard.</p>
+<h1>What opens as what</h1>
+<p>mep decides how to present a file from its extension. A <code>.md</code> or <code>.org</code> file
+is text with extra rendering; a <code>.pdf</code>, <code>.docx</code>, <code>.xlsx</code>, <code>.ipynb</code>, <code>.png</code>
+or <code>.obj</code> opens in a viewer or editor built for it, in an ordinary pane.</p>
+<p>An HTML file is a special case worth knowing: <code>:e page.html</code> opens the
+<b>source</b> as text, while opening it through a link, the file tree or
+<code>:Browse</code> renders it.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="panes-tabs.html">Panes and tabs</a> -- showing buffers on screen.</li>
+<li><a href="file-tree.html">The file tree</a> -- opening files by browsing.</li>
+<li><a href="pickers.html">Pickers</a> -- opening files by typing.</li>
+</ul>
+</body>
+</html>

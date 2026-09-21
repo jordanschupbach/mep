@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pickers</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Files and windows">
+<meta name="help-order" content="60">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Pickers</h1>
+<h1>What a picker is</h1>
+<p>A centred list you filter by typing, with a preview beside it. Most of the
+ways to find something in mep are one.</p>
+<p>Every picker shares the same shape: type to filter, Up/Down or =Ctrl-P=/
+<code>Ctrl-N</code> to move, <code>Enter</code> to accept, <code>Esc</code> to cancel. Each one lists its own
+extra keys along its bottom edge, so you never have to remember them.</p>
+<h1>The main ones</h1>
+<table>
+<tr><th>Key</th><th>Picker</th></tr>
+<tr><td><code>&lt;leader&gt;ff</code></td><td>find files under the workspace root</td></tr>
+<tr><td><code>&lt;leader&gt;pf</code></td><td>find files (the same thing)</td></tr>
+<tr><td><code>&lt;leader&gt;pr</code></td><td>live grep across the project</td></tr>
+<tr><td><code>&lt;leader&gt;/</code></td><td>fuzzy find within the current buffer</td></tr>
+<tr><td><code>&lt;leader&gt;bb</code></td><td>open buffers</td></tr>
+<tr><td><code>&lt;leader&gt;ut</code></td><td>colorscheme, with live preview</td></tr>
+<tr><td><code>&lt;leader&gt;hk</code></td><td>every key binding currently in effect</td></tr>
+<tr><td><code>&lt;leader&gt;yy</code></td><td>snippets</td></tr>
+<tr><td><code>&lt;leader&gt;pp</code></td><td>loaded projects</td></tr>
+<tr><td><code>&lt;leader&gt;ww</code></td><td>workspaces</td></tr>
+</table>
+<p>The tab bar's three search buttons are the first, second and fourth of
+these.</p>
+<h1>The buffer picker</h1>
+<p><code>&lt;leader&gt;bb</code> previews the highlighted buffer's <b>live</b> contents -- unsaved
+edits included -- around its cursor position.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Enter</code></td><td>show it in the focused pane</td></tr>
+<tr><td><code>C-v</code></td><td>open in a new vertical split</td></tr>
+<tr><td><code>C-s</code></td><td>open in a new horizontal split</td></tr>
+<tr><td><code>C-t</code></td><td>open in a new tab</td></tr>
+<tr><td><code>C-i</code></td><td>open as a buffer tab of the focused pane</td></tr>
+<tr><td><code>C-d</code></td><td>delete the buffer, confirming if unsaved</td></tr>
+</table>
+<p><code>mep.buffer_open_with(id, how)</code> is the scriptable form, where <code>how</code> is
+<code>switch</code>, <code>vsplit</code>, <code>split</code>, <code>tab</code> or <code>pane_tab</code>.</p>
+<h1>The theme picker</h1>
+<p><code>&lt;leader&gt;ut</code> is worth singling out because it previews live: every change of
+the highlighted row re-tints the whole interface immediately, before you
+commit. <code>Enter</code> keeps the theme, <code>Esc</code> restores the one you started with.
+There are 62 to look through.</p>
+<h1>Live grep</h1>
+<p><code>&lt;leader&gt;pr</code> searches every file under the workspace root and lists matching
+lines. Because the working directory follows the active workspace, this
+searches that worktree and not the others.</p>
+<h1>Writing your own</h1>
+<p>Pickers are ordinary Lua, and the built-in ones are defined the same way
+yours would be:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.picker_open(<span class="tok-green">'Pick a colour'</span>, {<span class="tok-green">'red'</span>, <span class="tok-green">'green'</span>, <span class="tok-green">'blue'</span><span class="tok-blue">}</span>, <span class="tok-purple">function</span>(item)
+  <span class="tok-purple">if</span> item <span class="tok-purple">then</span> mep.notify(<span class="tok-green">'you chose '</span> .. item) <span class="tok-purple">end</span>
+<span class="tok-purple">end</span>)</code></pre></div>
+<p>The callback receives <code>nil</code> when cancelled. Further arguments add a preview
+and a per-row callback for live-preview behaviour like the theme picker's.
+<code>mep.picker_set_hint(text)</code> writes the key list along the bottom edge, and
+<code>mep.picker_set_tabs</code> gives a picker several tabbed sources, as the command
+runner does.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="file-tree.html">The file tree</a> -- browsing instead of typing.</li>
+<li><a href="files.html">Files and buffers</a> -- what happens once a file is open.</li>
+<li><a href="search.html">Searching</a> -- searching within one buffer.</li>
+</ul>
+</body>
+</html>

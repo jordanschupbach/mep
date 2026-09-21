@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sessions</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Projects">
+<meta name="help-order" content="30">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Sessions</h1>
+<h1>Your layout comes back</h1>
+<p>Close mep and reopen the project, and you get what you left: the same
+workspaces, the same tabs, the same split arrangement, the same files open
+at the same cursor positions, and your terminals.</p>
+<p>Nothing has to be enabled, and layouts are not named or managed. This is why
+there is no "save layout" command worth having -- see
+<a href="layouts-zen.html">Layouts, zoom and zen</a>.</p>
+<h1>What is saved</h1>
+<ul>
+<li>every workspace, and which one was active;</li>
+<li>every tab, and its split tree;</li>
+<li>each pane's open files, recorded <b>relative to the workspace root</b>;</li>
+<li>each buffer's cursor position;</li>
+<li>terminals.</li>
+</ul>
+<p>Paths are stored relative to the workspace root, so a project that moves --
+or a worktree created at a different path on another machine -- still
+restores.</p>
+<h1>When it is saved</h1>
+<p>Half a second after any structural change, and again on quit. The debounce
+means a burst of splitting and closing costs one write, not twenty.</p>
+<p>Closing a project saves its state on the way out, so a project you close and
+reopen within one session behaves the same as one you quit and relaunch.</p>
+<h1>Where it is saved</h1>
+<pre>$XDG_DATA_HOME/mep/workspaces/&lt;project&gt;-&lt;hash&gt;.json</pre>
+<p><code>&lt;project&gt;</code> is a filesystem-safe lowercase form of the project directory's
+name, and <code>&lt;hash&gt;</code> is a short stable hash of its full path. The hash is what
+keeps two different checkouts that happen to share a basename -- two clones
+both called <code>mep</code> -- from overwriting each other's state.</p>
+<h1>When something has changed underneath</h1>
+<p>Restoring is forgiving by design, because the world moves between sessions:</p>
+<ul>
+<li>a file that no longer exists is skipped, with a message;</li>
+<li>a worktree that has vanished is pruned;</li>
+<li>a corrupt or unreadable state file is ignored, and you get a fresh start rather than an error.</li>
+</ul>
+<p>None of these stop the rest of the session restoring.</p>
+<h1>Turning it off, or doing it by hand</h1>
+<table>
+<tr><th>How</th><th>Effect</th></tr>
+<tr><td><code>mep --no-session</code></td><td>neither restore nor save, this run</td></tr>
+<tr><td><code>mep.opt.restore_workspaces = false</code></td><td>the same, permanently</td></tr>
+<tr><td><code>:wssave</code></td><td>save now</td></tr>
+<tr><td><code>:wsrestore</code></td><td>restore now</td></tr>
+</table>
+<p><code>--no-session</code> is the one to reach for when you want to open a project
+without disturbing its saved state -- a quick look at someone else's
+checkout, or a scripted run.</p>
+<p>Because <code>init.lua</code> runs before any restore, setting
+<code>mep.opt.restore_workspaces</code> there takes effect in time.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="workspaces.html">Workspaces</a> -- what is being saved.</li>
+<li><a href="projects.html">Projects</a> -- the unit state is saved per.</li>
+<li><a href="installing.html">Installing and running</a> -- <code>--no-session</code> and the rest of the command line.</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The 3D modeler</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Documents and media">
+<meta name="help-order" content="80">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The 3D modeler</h1>
+<h1>Opening a scene</h1>
+<p><code>.obj</code>, <code>.gltf</code>, <code>.glb</code>, <code>.iqm</code>, <code>.vox</code> and <code>.m3d</code> open straight in the
+modeler. <code>:Model3DNew</code> starts an empty scene.</p>
+<p><code>.blend</code> needs a real Blender on <code>$PATH</code>: mep converts it through Blender's
+own command line, on a background job, so opening one never blocks. The pane
+shows "Converting..." until it finishes.</p>
+<h1>Building a scene</h1>
+<p>Primitives are <code>cube</code>, <code>sphere</code>, <code>cylinder</code>, <code>cone</code>, <code>plane</code>, <code>torus</code> and
+<code>wedge</code>.</p>
+<p><b>Check the pivot before stacking parts.</b> Cylinder, cone and wedge are
+base-pivoted rather than centred, so placing one at <code>y = 0</code> sits it on the
+floor while a sphere at <code>y = 0</code> is half-buried. The modeler's
+<code>primitive_info</code> reports each one's pivot and dimensions.</p>
+<p>For a turned form no primitive can express -- a bottle, a table leg, a chess
+piece -- a <b>lathe</b> revolves an ordered radius/height profile around the Y
+axis into a welded mesh with real UVs. A profile ending at radius zero needs
+no cap; it is already a point.</p>
+<h1>Materials</h1>
+<p>A material is a colour plus roughness and metallic, feeding a real if
+simplified metallic-roughness model: one fixed key light, no shadows and no
+reflections, but low roughness with high metallic genuinely reads as shiny
+metal against high roughness with low metallic for matte wood or stone.</p>
+<p>Roughness and metallic are <b>sparse</b>: omitting one leaves its current value
+rather than resetting it to zero.</p>
+<p>Textures fill the albedo, normal, roughness and metallic slots. An albedo
+texture is tinted by the object's own colour.</p>
+<h1>Editing geometry</h1>
+<p>Beyond transforms, the modeler does real mesh editing: move, delete and
+merge vertices, merge-by-distance, recalculate normals, subdivide, extrude,
+inset, dissolve, add vertices, make faces, flip normals, and list triangles
+to discover connectivity.</p>
+<p>Two things that save time:</p>
+<ul>
+<li><code>merge_by_distance</code> right after adding a primitive. The generators emit duplicate vertices at every shared corner, and unwelded faces extrude independently rather than as one surface.</li>
+<li><code>flip_normals</code> when geometry looks inside out, which is the usual result of building a face with its corners in the wrong order.</li>
+</ul>
+<p>There is no edge or face <b>selection</b>: an operation treats "the vertices
+fully covering a triangle" as a face.</p>
+<h1>Organising</h1>
+<p>Grouping and parenting are purely organisational -- a parent's transform is
+never composed into a child's. The gizmos cascade to descendants in the UI,
+but setting a transform programmatically does not.</p>
+<p>Symmetry helpers do the repetitive work: mirror a duplicate across an axis,
+or make a radial array for fins and spokes.</p>
+<h1>Animation and output</h1>
+<p>Objects and the camera take keyframes, and a scene renders to a PNG or to a
+video. <code>render_to_image</code> captures just the scene, unlike a window
+screenshot.</p>
+<p><code>:w</code> saves.</p>
+<h1>Driving it</h1>
+<p>The modeler has a full scripting surface -- <code>mep.model_*</code> from Lua, and the
+same operations over the agent protocol -- so a scene can be built,
+inspected, rendered and saved without touching the mouse. That is the
+intended way to use it for anything repetitive.</p>
+<p><code>MEP_AGENT_API.md</code> has the complete reference and a worked example.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="image-editor.html">The image editor</a> -- making textures.</li>
+<li><a href="agent-api.html">Driving mep from an agent</a> -- the other way in.</li>
+</ul>
+</body>
+</html>

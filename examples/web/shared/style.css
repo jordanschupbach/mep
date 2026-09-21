@@ -1,0 +1,20 @@
+/* Shared look for the browser-capability ladder. Kept to widely supported
+   CSS so a level's own failure is about what that level tests. */
+body { font-family: sans-serif; margin: 24px; color: #1f2933; background: #f7f9fb; }
+h1 { font-size: 24px; margin: 0 0 4px 0; }
+h2 { font-size: 18px; margin: 20px 0 8px 0; }
+p.lead { color: #52606d; margin: 0 0 16px 0; }
+a { color: #1d6fb8; }
+.card { background: #ffffff; border: 1px solid #d9e2ec; padding: 12px 16px; margin: 12px 0; }
+.row { margin: 6px 0; }
+button { padding: 4px 12px; margin-right: 6px; }
+input[type="text"] { padding: 4px 6px; }
+#results { margin-top: 16px; border: 1px solid #d9e2ec; background: #ffffff; padding: 8px 16px; }
+#results .summary { font-weight: bold; padding: 6px 0; }
+#results .pass { color: #1b7f3b; }
+#results .fail { color: #b42318; }
+#results .pending { color: #8a6d00; }
+#results li { margin: 2px 0; }
+.done { text-decoration: line-through; color: #829ab1; }
+.badge { display: inline-block; padding: 1px 8px; border: 1px solid #9fb3c8; margin-left: 6px; font-size: 12px; }
+nav a { margin-right: 12px; }

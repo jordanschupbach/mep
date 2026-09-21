@@ -81,20 +81,43 @@ constexpr int kSupersample = 4;
 }
 
 std::vector<unsigned char> Rasterize(std::vector<Edge> &edges, int width, int height, FillRule rule) {
+    return RasterizeRegion(edges, 0, 0, width, height, rule);
+}
+
+// Scanline fill with an active-edge list: edges sorted by ymin enter the
+// list as the sub-scanline reaches them and leave once it passes their
+// ymax, so each sub-scanline only tests the edges that actually span it
+// -- and only rows between the edges' own y extent are visited at all.
+// (Testing every edge on every sub-scanline of the whole output made a
+// PDF figure with thousands of path segments take minutes to render.)
+std::vector<unsigned char> RasterizeRegion(std::vector<Edge> &edges, int x0, int y0, int width, int height,
+                                           FillRule rule) {
     std::vector<unsigned char> out(static_cast<size_t>(std::max(width, 0)) * static_cast<size_t>(std::max(height, 0)),
                                     0);
     if (edges.empty() || width <= 0 || height <= 0) return out;
-    std::vector<float> row_coverage(static_cast<size_t>(width));
+    std::sort(edges.begin(), edges.end(), [](const Edge &a, const Edge &b) { return a.ymin < b.ymin; });
+    float edge_ymax = edges.front().ymax;
+    for (const Edge &e : edges) edge_ymax = std::max(edge_ymax, e.ymax);
+    const int row_lo = std::max(0, static_cast<int>(std::floor(edges.front().ymin)) - y0);
+    const int row_hi = std::min(height, static_cast<int>(std::ceil(edge_ymax)) - y0 + 1);
+    const float fx0 = static_cast<float>(x0);
+
+    std::vector<float> row_coverage(static_cast<size_t>(width), 0.0f);
     std::vector<std::pair<float, int>> crossings;  // (x, winding)
-    for (int y = 0; y < height; y++) {
-        std::fill(row_coverage.begin(), row_coverage.end(), 0.0f);
+    std::vector<const Edge *> active;
+    size_t next_edge = 0;
+    for (int y = row_lo; y < row_hi; y++) {
+        // Only [touched_lo, touched_hi) of row_coverage was written this row.
+        int touched_lo = width, touched_hi = 0;
         for (int s = 0; s < kSupersample; s++) {
-            float sy = static_cast<float>(y) + (static_cast<float>(s) + 0.5f) / static_cast<float>(kSupersample);
+            float sy = static_cast<float>(y + y0) + (static_cast<float>(s) + 0.5f) / static_cast<float>(kSupersample);
+            while (next_edge < edges.size() && edges[next_edge].ymin <= sy) active.push_back(&edges[next_edge++]);
+            active.erase(std::remove_if(active.begin(), active.end(), [sy](const Edge *e) { return e->ymax <= sy; }),
+                         active.end());
             crossings.clear();
-            for (const Edge &e : edges) {
-                if (sy < e.ymin || sy >= e.ymax) continue;
-                float x = e.x_at_ymin + (sy - e.ymin) * e.dxdy;
-                crossings.emplace_back(x, e.winding);
+            for (const Edge *e : active) {
+                if (sy < e->ymin) continue;
+                crossings.emplace_back(e->x_at_ymin + (sy - e->ymin) * e->dxdy - fx0, e->winding);
             }
             if (crossings.empty()) continue;
             std::sort(crossings.begin(), crossings.end(),
@@ -123,28 +146,31 @@ std::vector<unsigned char> Rasterize(std::vector<Edge> &edges, int width, int he
                     span_start = cr.first;
                     in_span = true;
                 } else if (inside_before && !inside_after && in_span) {
-                    float x0 = std::clamp(span_start, 0.0f, static_cast<float>(width));
-                    float x1 = std::clamp(cr.first, 0.0f, static_cast<float>(width));
-                    if (x1 > x0) {
-                        int ix0 = static_cast<int>(std::floor(x0));
-                        int ix1 = static_cast<int>(std::floor(x1));
+                    float sx0 = std::clamp(span_start, 0.0f, static_cast<float>(width));
+                    float sx1 = std::clamp(cr.first, 0.0f, static_cast<float>(width));
+                    if (sx1 > sx0) {
+                        int ix0 = static_cast<int>(std::floor(sx0));
+                        int ix1 = static_cast<int>(std::floor(sx1));
+                        touched_lo = std::min(touched_lo, ix0);
+                        touched_hi = std::max(touched_hi, std::min(width, ix1 + 1));
                         if (ix0 == ix1) {
-                            row_coverage[static_cast<size_t>(ix0)] += (x1 - x0);
+                            row_coverage[static_cast<size_t>(ix0)] += (sx1 - sx0);
                         } else {
-                            row_coverage[static_cast<size_t>(ix0)] += (static_cast<float>(ix0 + 1) - x0);
+                            row_coverage[static_cast<size_t>(ix0)] += (static_cast<float>(ix0 + 1) - sx0);
                             for (int px = ix0 + 1; px < ix1; px++) row_coverage[static_cast<size_t>(px)] += 1.0f;
-                            if (ix1 < width) row_coverage[static_cast<size_t>(ix1)] += (x1 - static_cast<float>(ix1));
+                            if (ix1 < width) row_coverage[static_cast<size_t>(ix1)] += (sx1 - static_cast<float>(ix1));
                         }
                     }
                     in_span = false;
                 }
             }
         }
-        for (int x = 0; x < width; x++) {
+        for (int x = touched_lo; x < touched_hi; x++) {
             float coverage = row_coverage[static_cast<size_t>(x)] / static_cast<float>(kSupersample);
             coverage = std::clamp(coverage, 0.0f, 1.0f);
             out[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] =
                 static_cast<unsigned char>(coverage * 255.0f + 0.5f);
+            row_coverage[static_cast<size_t>(x)] = 0.0f;
         }
     }
     return out;

@@ -71,6 +71,102 @@ struct OrgOutline {
     std::vector<OrgHeadline> headlines;      // flattened, document order
 };
 
+// --- Display-side scans (Editor::OrgLinkScan / DrawPane, main.cpp) ---
+// These answer "what should this line look like", not "what does this file
+// mean", but they live here for the same reason everything else in this
+// header does: they are pure functions over plain std::string lines, so
+// they can be tested without a GL context (org_doc_test.cpp) -- which
+// matters, because link syntax is exactly the kind of thing that breaks on
+// the edge cases (`[[a]][[b]]` on one line, an empty target, a URL sitting
+// inside a bracket link) rather than on the common path.
+
+// Headline depth: the count of leading `*` when they start at column 0 and
+// are followed by a space, else 0. Deliberately stricter than "starts with
+// a star": `*bold*` opening a line and an indented `  * item` bullet are
+// both not headlines.
+/**
+ * @brief Returns an org headline's depth (count of leading `*`), or 0 when the line isn't a headline.
+ * @param line the line to measure
+ * @return the headline level (1-based), or 0
+ */
+int OrgHeadlineLevel(const std::string &line);
+
+// --- Org emphasis marker boundaries -----------------------------------
+//
+// Org only lets `*bold*`, `/italic/`, `_under_`, `+strike+`, `=verbatim=`
+// and `~code~` open after one of a *specific* set of characters and close
+// before another (`org-emphasis-regexp-components`' PRE and POST classes,
+// reproduced exactly): PRE is start-of-line, whitespace, `-`, `(`, `'`,
+// `"` or `{`; POST is end-of-line, whitespace, `-`, `.`, `,`, `:`, `!`,
+// `?`, `;`, `'`, `"`, `)`, `}` or `[`.
+//
+// The looser "any non-alphanumeric will do" rule these scanners used
+// before let a marker open after punctuation that org never treats as a
+// boundary, and `/` in a URL is the case that bites: in
+// `see [[https://example.com][Site]] and https://example.org`, the second
+// `/` of the first `//` opened an italic run that closed on the `/` of
+// the *second* URL, so a whole stretch of prose (the bracket link's own
+// concealed markup included) was drawn as concealed italic text painted
+// over the link. Reported live as "funny rendering"; the same class of
+// over-match as `$..$` math matching inside a code block.
+/**
+ * @brief Reports whether a character may immediately precede an opening org emphasis marker.
+ * @param c the character before the marker, or '\0' for start-of-line
+ * @return true if `c` is in org's PRE class (or is start-of-line)
+ */
+bool OrgEmphasisPreOk(char c);
+/**
+ * @brief Reports whether a character may immediately follow a closing org emphasis marker.
+ * @param c the character after the marker, or '\0' for end-of-line
+ * @return true if `c` is in org's POST class (or is end-of-line)
+ */
+bool OrgEmphasisPostOk(char c);
+/**
+ * @brief Reports whether a character is org emphasis "border" whitespace, which may not sit just inside a marker pair.
+ * @param c the character to test
+ * @return true if `c` is a space or tab
+ */
+bool OrgEmphasisBorderBlank(char c);
+
+// One link found on a line. `col_start`/`col_end` bound the *raw markup*
+// (half-open, byte offsets, the same convention Decoration uses);
+// `display` is what should be drawn in its place when markup is concealed.
+struct OrgLinkSpanInfo {
+    int col_start = 0;
+    int col_end = 0;
+    std::string target;
+    std::string display;
+    // True for a `[[...]]` link, whose markup is hidden behind `display`.
+    // False for a bare URL, which is already its own display text.
+    bool bracketed = false;
+};
+
+// Every `[[target]]` / `[[target][description]]` and every bare
+// `http(s)://...` on `line`, in column order. A bare URL that falls inside
+// a bracket link's own span is not reported separately -- the bracket link
+// already covers it, and two overlapping links on the same columns would
+// give the renderer two conflicting things to draw and click.
+//
+// `display` drops the scheme noise org itself drops from a bare link's
+// display: `file:`, `id:`, and a leading `*`/`#`. A link with a
+// description always displays that description verbatim.
+//
+// Text inside a `=verbatim=` or `~code~` run is not scanned at all: org
+// treats it as literal, and a help page writing `=[[file:x]]=` to *show*
+// link syntax must not end up with a live link there.
+//
+// Scope, named rather than silently omitted: only the `http`/`https`
+// schemes are recognized unbracketed. A bare `www.example.com`, `mailto:`
+// or `ftp://` is left as plain text -- inside a bracket link every scheme
+// works, and guessing at unbracketed ones turns ordinary prose (a
+// sentence ending in a domain name) into a link.
+/**
+ * @brief Finds every org bracket link and bare http(s) URL on a line, in column order.
+ * @param line the line to scan
+ * @return the links found; empty when the line has none
+ */
+std::vector<OrgLinkSpanInfo> ScanOrgLinkSpans(const std::string &line);
+
 // Parses every headline in `lines` into a flat, document-ordered outline.
 // Never fails outright -- a file with zero headlines just yields an empty
 // `headlines` vector with the default/parsed keyword sequence.
@@ -356,6 +452,82 @@ bool OrgParseClockTimestamp(const std::string &s, int *y, int *mo, int *d, int *
  */
 OrgOpenClock OrgFindOpenClock(const std::vector<std::string> &lines);
 
+// --- Org tables: the wrapped display layout (Editor::OrgTableWrapScan) ---
+// A table whose aligned width runs past `:set textwidth` is *rendered*
+// narrower than it is stored: the columns are re-budgeted to fit the line
+// width and any cell too long for its column wraps onto continuation
+// lines, so one stored row draws as several. Display-only, deliberately:
+// wrapping in the file would be valid org (a continuation row is an
+// ordinary row with an empty first cell, which is what Emacs'
+// `org-table-wrap-region` writes) but it is a *semantic* edit -- it adds
+// rows, so spreadsheet references like `@3$2` shift under it, and a
+// continuation row can never be reliably told back apart from a row whose
+// first cell is genuinely empty, making the wrap one-way. Nothing here
+// touches a buffer; it hands back strings for the renderer to draw.
+//
+// Pure functions over already-parsed cells (the `|`-splitting itself stays
+// in editor.cpp, which had it first) so the whole width/wrap policy is
+// testable without a GL context -- org_doc_test.cpp.
+
+// One table row as the planner sees it: either a `|---+---|` rule or a
+// row of trimmed cell texts.
+struct OrgTableCells {
+    bool is_sep = false;
+    std::vector<std::string> cells;
+};
+
+struct OrgTableWrapPlan {
+    // False when the table already fits the budget, in which case the
+    // caller should leave the rows alone and render them as stored --
+    // `col_widths`/`rows` still hold the (unwrapped) layout.
+    bool wrapped = false;
+    std::vector<int> col_widths;                 // content columns, excluding each cell's ` ` padding
+    std::vector<std::vector<std::string>> rows;  // per input row, the line(s) it draws as
+};
+
+/**
+ * @brief Measures a string in display columns (one per codepoint), not bytes.
+ * @param s the text to measure
+ * @return the number of codepoints in `s`
+ */
+int OrgTableDisplayWidth(const std::string &s);
+
+// Greedy word wrap at `width` display columns: breaks on spaces, and only
+// splits a word mid-way when the word alone is wider than the column.
+// Always returns at least one (possibly empty) line, so a blank cell still
+// occupies its row.
+/**
+ * @brief Wraps text to a column width, breaking on spaces and splitting only over-wide words.
+ * @param text the cell text to wrap
+ * @param width the target width in display columns (values below 1 are treated as 1)
+ * @return the wrapped lines, never empty
+ */
+std::vector<std::string> OrgTableWrapCell(const std::string &text, int width);
+
+// Chooses column widths for a table rendered within `budget` display
+// columns (`:set textwidth`), counting the `indent` the table's leading
+// `|` sits at plus the `| ` / ` | ` chrome every row carries.
+//
+// Columns narrower than an equal share keep their natural width and only
+// the wide ones give up columns (a water-filling split, so a table of one
+// long prose column beside three short ones spends the budget on the
+// prose rather than shaving all four evenly). A column is never widened
+// past its own longest cell, and never shrunk below kOrgTableMinColWidth
+// unless the budget leaves no choice.
+/**
+ * @brief Plans a table's rendered column widths and per-row wrapped lines for a line-width budget.
+ * @param rows the table's parsed rows, in order
+ * @param budget the total rendered width to fit, in display columns (`:set textwidth`)
+ * @param indent the display column the table's leading `|` sits at
+ * @return the plan; `wrapped` is false when the table already fits
+ */
+OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int budget, int indent);
+
+// The narrowest a column is squeezed to while any wider one still has
+// columns to give up -- below this a prose cell wraps to one or two words
+// per line and reads worse than a table running past the margin.
+constexpr int kOrgTableMinColWidth = 6;
+
 // Inserts "  CLOCK: [now_ts]" under the headline at 0-based `headline_line`:
 // at the top of its existing :LOGBOOK: drawer, else in a new drawer right
 // after the headline's planning line and :PROPERTIES: drawer (if any),
@@ -384,5 +556,67 @@ std::vector<std::string> OrgClockStartLines(const std::vector<std::string> &line
  */
 std::vector<std::string> OrgClockStopLines(const std::vector<std::string> &lines, const std::string &now_ts,
                                            int *minutes);
+
+// --- Org inline images: the drawn figure's geometry -------------------
+// (Buffer::org_image_rows / Editor::OrgImagesVisible(), DrawPane in
+// main.cpp)
+//
+// An inline image is laid out against org's own text column -- `:set
+// textwidth`, the same measure a LaTeX export's \linewidth stands for
+// and the same one an org block card already sizes itself to -- not
+// against the pane, so widening a split doesn't blow every figure up to
+// fill it. Within that column a figure is drawn at
+// kOrgImageWidthFraction of it, or at its own native pixel size if that
+// is smaller (an 80px icon stays an 80px icon rather than being
+// upscaled into a blurry banner), and centered in it.
+//
+// The vertical room it claims follows from that drawn height rather than
+// being a fixed budget the image is letterboxed inside -- a wide, short
+// plot reserves a few line-heights, a tall portrait reserves many, and
+// neither leaves empty rows above or below. That makes the slot count
+// per-image data, which the four walkers that must agree on a row's
+// height -- DrawPane's row loop, its block-card slot walk, its cursor-Y
+// lookup (all main.cpp) and Editor::UpdateScrollForPane (editor.cpp) --
+// all read back through Editor::OrgImageLayoutForRow, the same
+// agreement org LaTeX fragments' own per-entry `slots` is under.
+
+// The text width assumed when `:set textwidth` is off (0) -- org's own
+// conventional measure, and this setting's own default.
+constexpr int kOrgImageLineWidthChars = 80;
+constexpr float kOrgImageWidthFraction = 0.8f;
+// Ceiling on one figure's height, in line-heights: past this the image
+// is scaled down further (not cropped or letterboxed, so "no dead space"
+// still holds) so a single very tall portrait can't claim several
+// screenfuls of scroll on its own.
+constexpr int kOrgImageMaxSlots = 40;
+// What a row claims when the image's own size isn't known yet (its
+// header couldn't be sniffed -- see image_codec::Dimensions): enough to
+// show something without punching a screen-tall hole in the buffer.
+constexpr int kOrgImageUnknownSlots = 8;
+
+// Where and how big one inline image is drawn, plus the vertical room it
+// reserves. `offset_x` is measured from the text column's left edge (the
+// same x a plain row's first character starts at).
+struct OrgImageLayout {
+    float width = 0.0f;
+    float height = 0.0f;
+    float offset_x = 0.0f;
+    int slots = 1;
+};
+
+/**
+ * @brief Lays out one org inline image: its drawn size, its centering offset, and the
+ * line-heights it reserves.
+ * @param px_w the image's native pixel width (<=0 if unknown)
+ * @param px_h the image's native pixel height (<=0 if unknown)
+ * @param char_width the renderer's monospace advance width, in pixels
+ * @param line_height the renderer's line height, in pixels
+ * @param avail_cols how many columns of text actually fit in the pane (Pane::text_cols)
+ * @param text_cols org's text width in columns (`:set textwidth`; <=0 falls back to
+ * kOrgImageLineWidthChars)
+ * @return the layout; `slots` is what every slot-counting site must reserve for the row
+ */
+OrgImageLayout OrgImageLayoutFor(int px_w, int px_h, float char_width, float line_height, int avail_cols,
+                                 int text_cols);
 
 #endif

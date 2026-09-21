@@ -1,0 +1,98 @@
+#+TITLE: The mod1 layer
+#+HTML_HEAD: <meta name="help-section" content="Files and windows">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What mod1 is
+
+=mod1= is a modifier key -- =Alt= by default -- carrying a layer of window
+management commands. Unlike =Ctrl-W=, these work in *every mode*, so you can
+move between panes without leaving Insert mode first.
+
+#+begin_src lua
+mep.set_mod1('super')   -- 'alt' (default), 'ctrl', 'shift', 'super'/'cmd'/'meta'
+#+end_src
+
+* Splitting and focusing
+
+| Key             | Does                                        |
+|-----------------+---------------------------------------------|
+| =mod1+s=        | split horizontally                          |
+| =mod1+v=        | split vertically                            |
+| =mod1+h j k l=  | focus the pane left / down / up / right     |
+| =mod1+d=        | close the pane's active buffer tab          |
+| =mod1+Enter=    | run the cell under the cursor and insert a new one (notebooks) |
+
+Focus movement is spatial, using the same overlap-then-distance heuristic as
+=Ctrl-W hjkl=. It is a no-op when there is no pane that way.
+
+* Resizing
+
+=mod1+Shift+h j k l= moves the split boundary between the current pane and
+its neighbour.
+
+It grows against a neighbour on that side if there is one, and otherwise
+shrinks against whichever neighbour it does have on that axis. That is what
+makes opposite keys always do opposite things. A pane alone on an axis does
+not move.
+
+This is a two-way boundary drag rather than Vim's full window-layout resize
+algorithm -- a deliberate simplification.
+
+* Rearranging
+
+| Key                | Does                                              |
+|--------------------+---------------------------------------------------|
+| =mod1+Ctrl+h j k l= | move this pane's active buffer tab into the neighbouring pane |
+| =mod1+m=           | maximize this pane, or restore the previous layout |
+
+Moving the last buffer tab out of a pane closes that pane.
+
+=mod1+m= shrinks every other pane to the minimum the resize keys stop at.
+Pressing it again restores the layout from before; pressing it in a
+*different* pane while one is maximized maximizes that one instead.
+
+* Inside a sidebar
+
+The same keys mean something related when a sidebar is focused:
+
+| Key                | Does                                          |
+|--------------------+-----------------------------------------------|
+| =mod1+j= =mod1+k=  | step focus between stacked sidebars           |
+| =mod1+Shift+j/k=   | re-split the boundary between two of them     |
+| =mod1+Ctrl+j/k=    | swap this sidebar with the one above or below |
+| =mod1+m=           | pop the sidebar out into a large centred float |
+
+Swapping keeps the sidebar focused, so the cursor travels with it.
+
+* Other modifiers
+
+| Key                        | Does                        |
+|----------------------------+-----------------------------|
+| =Ctrl-Alt-]= =Ctrl-Alt-[=  | next / previous workspace   |
+| =Alt-1= .. =Alt-9=         | jump to the Nth workspace   |
+| =Ctrl+Shift+== =Ctrl+Shift+-= | grow / shrink the font   |
+
+* Rebinding
+
+Every default above is a =mep.map_mod1()= call made at startup, so any of
+them can be replaced or removed from =init.lua=:
+
+#+begin_src lua
+mep.map_mod1('h', function() mep.nav_pane('left') end)
+mep.map_mod1('S-l', mep.some_function)   -- mod1+Shift+l
+mep.map_mod1('C-j', mep.other_function)  -- mod1+Ctrl+j
+#+end_src
+
+A bare letter is =mod1+letter=; =S-= and =C-= prefixes add Shift and Ctrl.
+=Tab=, =S-Tab=, =CR= and =S-CR= are also accepted.
+
+The functions behind the defaults are callable directly:
+=mep.nav_pane(dir)=, =mep.resize_pane(dir, step)=,
+=mep.pane_move_buffer(dir)=, =mep.pane_close_buffer()= and
+=mep.pane_maximize_toggle()=.
+
+* See also
+
+- [[file:panes-tabs.html][Panes and tabs]] -- the =Ctrl-W= equivalents.
+- [[file:layouts-zen.html][Layouts, zoom and zen]] -- rearranging everything at once.

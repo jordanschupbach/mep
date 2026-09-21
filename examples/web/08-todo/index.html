@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>08 - Todo app</title>
+<link rel="stylesheet" href="../shared/style.css">
+<script src="../shared/harness.js"></script>
+</head>
+<body>
+<nav><a href="../index.html">All levels</a></nav>
+<h1>08 - Todo app (no framework)</h1>
+<p class="lead">State, rendering, a form, event delegation and localStorage in one small application.</p>
+<div class="card">
+  <form id="add-form"><input type="text" id="new-todo" placeholder="What needs doing?"> <button type="submit">Add</button></form>
+  <ul id="todos"></ul>
+  <div class="row"><span id="count"></span>
+    <button id="show-all">All</button><button id="show-open">Open</button><button id="show-done">Done</button>
+    <button id="clear-done">Clear done</button></div>
+</div>
+<script src="app.js"></script>
+<script src="selftest.js"></script>
+</body>
+</html>

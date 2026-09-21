@@ -1,0 +1,66 @@
+#+TITLE: The command runner
+#+HTML_HEAD: <meta name="help-section" content="Running code">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Pick a target and run it
+
+=<leader><Space>= (=:Runner=) fuzzy-picks a target from whichever build
+system the project uses, and runs it in this tab's terminal.
+
+It looks for =just=, then =make=, then =ninja=, then =cmake=:
+
+#+begin_src lua
+mep.opt.runner_order = {'make', 'just'}   -- or your own precedence
+#+end_src
+
+* The preview
+
+The preview column beside the list shows, for the highlighted target:
+
+- the command that will run;
+- a tree of its dependency graph;
+- the recipe body.
+
+The graph comes from the build system itself -- =just --dump json=,
+=make -pRrq=, =ninja -t graph= -- so it is what will actually happen, not a
+guess. Every tool is invoked asynchronously, so a slow =make -p= never
+freezes the editor.
+
+#+begin_src lua
+mep.opt.runner_tree_depth = 8       -- how deep the dependency tree goes
+mep.opt.runner_tree_children = 40   -- how many children to show per node
+#+end_src
+
+* Three tabs
+
+=Tab= and =Shift-Tab= move between them.
+
+| Tab        | Key           | Shows                                       |
+|------------+---------------+---------------------------------------------|
+| Targets    |               | recipes and targets, with the preview above |
+| Workspaces | =<leader>jw=  | directories under the workspace root that have runner files |
+| Variables  | =<leader>jv=  | just assignments, makefile variables, ninja bindings, CMake cache entries |
+
+*Workspaces* matters in a monorepo: press Enter on a directory to make it
+this tab's runner root, and the target list becomes that subproject's.
+
+*Variables* answers "what is this set to, and where" -- Enter jumps to the
+definition.
+
+* Keys
+
+The bottom row lists them, as every picker does:
+
+| Key     | Does                        |
+|---------+-----------------------------|
+| =Enter= | run the target              |
+| =C-e=   | edit the recipe             |
+| =C-o=   | open the source file        |
+| =C-r=   | reload                      |
+| =C-b=   | next build directory        |
+
+* See also
+
+- [[file:run-button.html][Running the current file]] -- for a single file rather than a target.
+- [[file:terminals.html][Terminals]] -- where output goes.

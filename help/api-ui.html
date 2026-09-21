@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panes, panels and pickers</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Lua API">
+<meta name="help-order" content="20">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Panes, panels and pickers</h1>
+<h1>What is here</h1>
+<p>Everything that puts something on screen: panes and tabs, sidebars, pickers, floats, hovers, notifications, themes and icons.</p>
+<p>This page is generated from mep's own binding table, so it lists what
+the running editor actually exposes. Call any of these from
+<code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
+<h1>The bindings (81)</h1>
+<p>A dash means that binding has no doc comment in the source yet, not
+that it does nothing.</p>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>mep.colorscheme</code></td><td>applies a named color theme</td></tr>
+<tr><td><code>mep.current_theme</code></td><td>returns the name of the currently active color theme</td></tr>
+<tr><td><code>mep.deco_add</code></td><td>adds a decoration (highlight/virtual text/sign) under a namespace and returns its id</td></tr>
+<tr><td><code>mep.float_close</code></td><td>closes the floating editable pane if one is open</td></tr>
+<tr><td><code>mep.float_is_open</code></td><td>reports whether a floating editable pane is open</td></tr>
+<tr><td><code>mep.float_open</code></td><td>opens a file in a floating editable pane</td></tr>
+<tr><td><code>mep.float_preview</code></td><td>shows read-only text in a centered floating box, dismissed by any keypress or click</td></tr>
+<tr><td><code>mep.focus_top_left_pane</code></td><td>moves focus to the topmost, then leftmost, pane in the active tab's split layout</td></tr>
+<tr><td><code>mep.font_size</code></td><td>returns the current editor pixel font size</td></tr>
+<tr><td><code>mep.hint_jump</code></td><td>(Phase 13)</td></tr>
+<tr><td><code>mep.hl_for_file</code></td><td>a highlight-group name for coloring by file type</td></tr>
+<tr><td><code>mep.hover_close</code></td><td>dismisses an open hover tooltip</td></tr>
+<tr><td><code>mep.hover_focus_enter</code></td><td>moves the cursor into the open hover popup's text so it can be navigated/yanked; a no-op if hover isn't open</td></tr>
+<tr><td><code>mep.hover_is_open</code></td><td>reports whether a hover tooltip is currently showing</td></tr>
+<tr><td><code>mep.hover_show</code></td><td>shows a passive floating tooltip anchored near the cursor</td></tr>
+<tr><td><code>mep.icon_for_file</code></td><td>a short ASCII glyph (Phase 10)</td></tr>
+<tr><td><code>mep.layout</code></td><td>applies a named pane auto-layout</td></tr>
+<tr><td><code>mep.nav_pane</code></td><td>moves focus to the neighboring pane in the given direction, if any</td></tr>
+<tr><td><code>mep.notify</code></td><td>shows a toast and records a persistent history entry/status line message</td></tr>
+<tr><td><code>mep.notify_refresh_pane</code></td><td>ensures the Notifications sidebar exists, refreshes its content, and closes any currently-docked view</td></tr>
+<tr><td><code>mep.notify_sidebar_id</code></td><td>returns the Notifications SidebarInstance id, creating it if needed</td></tr>
+<tr><td><code>mep.ns_clear</code></td><td>removes every decoration previously added under a namespace id</td></tr>
+<tr><td><code>mep.ns_create</code></td><td>looks up (or creates) a stable decoration namespace id for a given name</td></tr>
+<tr><td><code>mep.pane_buffers</code></td><td>lists the buffer ids shown by panes in the active tab's split layout</td></tr>
+<tr><td><code>mep.pane_close_buffer</code></td><td>closes the focused pane's current buffer tab</td></tr>
+<tr><td><code>mep.pane_focus</code></td><td>focuses a pane of the active tab by id</td></tr>
+<tr><td><code>mep.pane_focus_buffer</code></td><td>focuses whichever pane in the active tab already shows a given buffer</td></tr>
+<tr><td><code>mep.pane_maximize_toggle</code></td><td>maximizes the active pane, or restores the layout from before (Editor::TogglePaneMaximize)</td></tr>
+<tr><td><code>mep.pane_move_buffer</code></td><td>moves the focused pane's current buffer tab to a neighboring pane</td></tr>
+<tr><td><code>mep.pane_next_buffer</code></td><td>switches the focused pane to its next buffer tab</td></tr>
+<tr><td><code>mep.pane_open</code></td><td>opens a file, or an existing buffer by id, as a buffer tab in the focused pane</td></tr>
+<tr><td><code>mep.pane_prev_buffer</code></td><td>switches the focused pane to its previous buffer tab</td></tr>
+<tr><td><code>mep.pane_set_share</code></td><td>sets the active pane's share of its parent split to an absolute fraction</td></tr>
+<tr><td><code>mep.pane_split_bottom</code></td><td>opens and focuses a full-width bottom pane in the active tab</td></tr>
+<tr><td><code>mep.pane_split_left</code></td><td>opens and focuses a full-height left pane in the active tab</td></tr>
+<tr><td><code>mep.pane_split_right</code></td><td>opens and focuses a full-height right pane in the active tab</td></tr>
+<tr><td><code>mep.pick_pane_open</code></td><td>opens a file, prompting for the destination window when several exist</td></tr>
+<tr><td><code>mep.picker_close</code></td><td>closes the open picker without invoking its on_select callback</td></tr>
+<tr><td><code>mep.picker_is_open</code></td><td>reports whether the picker overlay is open</td></tr>
+<tr><td><code>mep.picker_open</code></td><td>opens the fuzzy picker overlay with the given items and callbacks</td></tr>
+<tr><td><code>mep.picker_preview_file</code></td><td>loads a file's leading lines into the picker's preview column</td></tr>
+<tr><td><code>mep.picker_set_hint</code></td><td>sets the open picker's footer key hint</td></tr>
+<tr><td><code>mep.picker_set_items</code></td><td>replaces the open picker's item list in place</td></tr>
+<tr><td><code>mep.picker_set_preview</code></td><td>sets (or clears) the picker's preview-column text and optional per-span syntax highlighting</td></tr>
+<tr><td><code>mep.picker_set_tabs</code></td><td>sets the open picker's tab-strip labels and 1-indexed active tab</td></tr>
+<tr><td><code>mep.quick_jump</code></td><td>Editor::BeginQuickJump (TODO.org "quickjump</td></tr>
+<tr><td><code>mep.quick_jump_matches</code></td><td>array of {pane_id, row, col, label}</td></tr>
+<tr><td><code>mep.quick_jump_pick</code></td><td>true if a current match carried that label</td></tr>
+<tr><td><code>mep.resize_pane</code></td><td>moves the split boundary between the active pane and its neighbor</td></tr>
+<tr><td><code>mep.set_statusline</code></td><td>fn(), called each frame, returns an array of</td></tr>
+<tr><td><code>mep.set_winbar_click</code></td><td>fn(dir_path), called when a directory segment of</td></tr>
+<tr><td><code>mep.sidebar_active_tab</code></td><td>-&gt; 1-based index of the sidebar's active tab (1 when it has none)</td></tr>
+<tr><td><code>mep.sidebar_close</code></td><td>closes a sidebar</td></tr>
+<tr><td><code>mep.sidebar_create</code></td><td>creates a new sidebar panel</td></tr>
+<tr><td><code>mep.sidebar_cursor</code></td><td>returns the currently-open sidebar's cursor row</td></tr>
+<tr><td><code>mep.sidebar_cursor_widget_id</code></td><td>looks up the widget id under the cursor in a given sidebar</td></tr>
+<tr><td><code>mep.sidebar_default_cols</code></td><td>computes a character-column width equal to a fraction of the window's pixel width</td></tr>
+<tr><td><code>mep.sidebar_focus_row</code></td><td>focuses a sidebar and moves its cursor to a row</td></tr>
+<tr><td><code>mep.sidebar_for_buffer</code></td><td>the id of the sidebar a pane-hosted sidebar buffer shows, or nil</td></tr>
+<tr><td><code>mep.sidebar_help_open</code></td><td>whether a sidebar is showing its `?` key-binding view</td></tr>
+<tr><td><code>mep.sidebar_is_focused</code></td><td>reports whether a sidebar holds keyboard focus</td></tr>
+<tr><td><code>mep.sidebar_is_open</code></td><td>reports whether a sidebar is currently open</td></tr>
+<tr><td><code>mep.sidebar_is_popout</code></td><td>reports whether a sidebar (default: any) is currently popped out</td></tr>
+<tr><td><code>mep.sidebar_open</code></td><td>opens a sidebar, optionally moving focus into it</td></tr>
+<tr><td><code>mep.sidebar_open_pane</code></td><td>opens a sidebar's content as a tabbed buffer in the focused pane</td></tr>
+<tr><td><code>mep.sidebar_popout_close</code></td><td>collapses the popped-out sidebar (if any) back to its docked panel</td></tr>
+<tr><td><code>mep.sidebar_popout_open</code></td><td>opens a sidebar focused and popped out, with no docked column behind the float (closing the popout closes the sidebar)</td></tr>
+<tr><td><code>mep.sidebar_popout_toggle</code></td><td>toggles the focused sidebar's popout float</td></tr>
+<tr><td><code>mep.sidebar_set_active_tab</code></td><td>switches a sidebar to the 1-based tab (wrapping), firing its on_tab callback</td></tr>
+<tr><td><code>mep.sidebar_set_double_click</code></td><td>requires a double click to activate this sidebar's pane-hosted rows</td></tr>
+<tr><td><code>mep.sidebar_set_help</code></td><td>sets the key bindings a sidebar's `?` help view lists</td></tr>
+<tr><td><code>mep.sidebar_set_on_key</code></td><td>registers a callback for keys the sidebar's own input handler doesn't already reserve</td></tr>
+<tr><td><code>mep.sidebar_set_on_preview</code></td><td>registers the callback that supplies a sidebar's popout preview</td></tr>
+<tr><td><code>mep.sidebar_set_on_tab</code></td><td>fn(index) runs whenever the sidebar's active tab changes (1-based)</td></tr>
+<tr><td><code>mep.sidebar_set_preview</code></td><td>sets the popped-out sidebar's preview column</td></tr>
+<tr><td><code>mep.sidebar_set_sections</code></td><td>replaces a sidebar's whole content with a new set of collapsible sections of widgets</td></tr>
+<tr><td><code>mep.sidebar_set_tabs</code></td><td>sets a sidebar's tab strip</td></tr>
+<tr><td><code>mep.sidebar_toggle</code></td><td>opens a sidebar if closed, closes it if open</td></tr>
+<tr><td><code>mep.sidebar_toggle_help</code></td><td>flips a sidebar between its rows and its `?` key-binding view</td></tr>
+<tr><td><code>mep.tab_new</code></td><td>opens and focuses a new tab page showing an existing buffer</td></tr>
+<tr><td><code>mep.theme_names</code></td><td>lists the names of every registered color theme</td></tr>
+</table>
+<h1>See also</h1>
+<ul>
+<li><a href="config.html">Configuration</a> -- where to call these from.</li>
+<li><a href="recipes.html">Configuration recipes</a> -- worked examples.</li>
+</ul>
+</body>
+</html>

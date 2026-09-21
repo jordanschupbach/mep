@@ -1,0 +1,7 @@
+{"items": [
+  {"id": 1, "name": "Array", "category": "linear", "year": 1945},
+  {"id": 2, "name": "Hash table", "category": "hash", "year": 1953},
+  {"id": 3, "name": "Linked list", "category": "linear", "year": 1955},
+  {"id": 4, "name": "Trie", "category": "tree", "year": 1960},
+  {"id": 5, "name": "B-tree", "category": "tree", "year": 1970}
+]}

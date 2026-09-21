@@ -1,0 +1,53 @@
+#+TITLE: Claude Code in a pane
+#+HTML_HEAD: <meta name="help-section" content="AI">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening one
+
+=<leader>a<CR>= (=:aiterminal=, =:aiterm=, =:MepAiTerminal=) splits the
+current pane and runs Claude Code in a terminal below it, focused.
+
+It is a real terminal, so everything on the [[file:terminals.html][Terminals]] page applies --
+including =Ctrl-\ Ctrl-n= to get back to Normal mode.
+
+* What makes it different from a plain terminal
+
+The agent is launched with an appended system prompt explaining that it is
+running inside *this* mep window and how to drive it through the =mep-agent=
+MCP server. So it can read your buffers, edit them, split panes and run
+commands, rather than only seeing files on disk.
+
+Every =:terminal= exports =$MEP_AGENT_SOCKET= -- this window's own agent
+socket -- which the MCP server honours ahead of its directory scan. That is
+what makes the agent land on the window it was launched from even with
+several mep instances open.
+
+* Setting it up
+
+The MCP server is expected to be registered with Claude Code already:
+
+#+begin_example
+claude mcp add mep-agent -- /path/to/mep/build/native/mep-mcp
+#+end_example
+
+Alternatively, point mep at it and it will be passed inline with
+=--mcp-config=:
+
+#+begin_src lua
+mep.opt.ai_terminal_mcp_server = '/path/to/mep-mcp'
+#+end_src
+
+* Options
+
+#+begin_src lua
+mep.opt.ai_terminal_cmd = {'claude', '--model', 'opus'}  -- default {'claude'}
+mep.opt.ai_terminal_share = 0.4        -- the terminal's height fraction
+mep.opt.ai_terminal_instructions = ''  -- '' sends no appended prompt
+#+end_src
+
+* See also
+
+- [[file:ai-agents.html][The AI Agents sidebar]] -- keeping track of several at once.
+- [[file:agent-api.html][Driving mep from an agent]] -- what the agent can actually do.
+- [[file:terminals.html][Terminals]] -- the pane it runs in.

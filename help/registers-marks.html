@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Registers, marks and jumps</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Editing">
+<meta name="help-order" content="70">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Registers, marks and jumps</h1>
+<h1>The unnamed register is the clipboard</h1>
+<p>This is the one thing to know. Every yank and every delete lands on the
+<b>system clipboard</b>, and <code>p</code> pastes whatever was copied last -- in mep or in
+any other application. There is no setting to enable; it is how mep behaves.
+(Vim calls this <code>clipboard=unnamedplus</code>.)</p>
+<p>="+= and ="*= are accepted as other spellings of the same register, so
+muscle memory from Vim works.</p>
+<p>Text that ends in a newline pastes linewise, on its own lines; anything else
+pastes inline at the cursor.</p>
+<p><b>On X11</b>, the clipboard is owned by the mep window, as with any X
+application. Its contents disappear when mep exits unless a clipboard
+manager is running. That is X's design, not mep's.</p>
+<h1>Named registers</h1>
+<p>Prefix an operator or a put with ="= and a letter:</p>
+<table>
+<tr><th>Typed</th><th>Does</th></tr>
+<tr><td>="ayy=</td><td>yank this line into register <code>a</code></td></tr>
+<tr><td>="ap=</td><td>put register <code>a</code></td></tr>
+<tr><td>="Ayy=</td><td><b>append</b> this line to register <code>a</code></td></tr>
+</table>
+<p>A capital letter appends rather than replaces, which is how you collect
+several scattered lines into one register before putting them all at once.</p>
+<p>From Lua, <code>mep.clipboard_get()</code> and <code>mep.clipboard_set(text)</code> reach the
+system clipboard directly, independent of the registers.</p>
+<h1>Marks</h1>
+<table>
+<tr><th>Typed</th><th>Does</th></tr>
+<tr><td><code>m{a-z}</code></td><td>set a mark at the cursor</td></tr>
+<tr><td><code>`{a-z}</code></td><td>jump to that exact position</td></tr>
+<tr><td>='{a-z}=</td><td>jump to that line's first non-blank</td></tr>
+<tr><td><code>``</code></td><td>jump back to where you were before the last big jump</td></tr>
+<tr><td>='''=</td><td>the same, to the line's first non-blank</td></tr>
+<tr><td><code>gv</code></td><td>reselect the last Visual selection</td></tr>
+</table>
+<p>Marks work as operator targets too, so <code>d`a</code> deletes from the cursor to mark
+<code>a</code>, and <code>y'a</code> yanks the lines between.</p>
+<p>"Big jump" means a mark jump, <code>gg</code> or <code>G</code>, or a search -- the movements
+where you are likely to want to get back.</p>
+<h1>The jumplist</h1>
+<p><code>Ctrl-O</code> goes back through the positions you jumped from, <code>Ctrl-I</code> forward
+again. Searches, <code>gg=/=G</code> and mark jumps all record an entry.</p>
+<p>The jumplist is per-pane and can span buffers, so <code>Ctrl-O</code> will return you to
+a different file if that is where you came from. It is a separate mechanism
+from the single-slot <code>``</code>.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="motions.html">Motions</a> -- what counts as a jump.</li>
+<li><a href="operators.html">Operators and text objects</a> -- yanking and putting.</li>
+<li><a href="insert-mode.html">Insert and Replace</a> -- <code>Ctrl-R</code> to insert a register while typing.</li>
+</ul>
+</body>
+</html>

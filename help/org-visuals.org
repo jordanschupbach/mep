@@ -1,0 +1,198 @@
+#+TITLE: Images, LaTeX and tables
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="100">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Inline images
+
+| Key / command              | Does                             |
+|----------------------------+----------------------------------|
+| =<leader>oti=              | toggle inline images             |
+| =:MepOrgImagesToggle=      | the same                         |
+| =:MepOrgImageScan=         | rescan the buffer for images     |
+
+A link to an image file is drawn in place, in the buffer:
+
+#+begin_example
+[[file:diagram.png]]
+#+end_example
+
+This is *on by default*; the toggle is there to get the raw =[[file:...]]=
+markup back.
+
+A figure is drawn at 80% of the text width (=:set textwidth=, 80 columns by
+default) or at its own size, whichever is smaller -- so a small icon stays
+small instead of being blown up -- and is centred in that column. It
+reserves exactly as many lines as it is tall: no empty band above or below
+it, and widening the window doesn't stretch it. A picture tall enough to
+run past 40 lines is scaled down to fit rather than cropped.
+
+A link whose target is not on disk yet -- a plot a code block has still to
+produce -- stays plain text, and turns into the picture on the next edit
+after the file appears.
+
+* Block cards
+
+| Key / command                | Does                          |
+|------------------------------+-------------------------------|
+| =<leader>otb=                | toggle block cards            |
+| =:MepOrgBlockCardsToggle=    | the same                      |
+
+Every =#+begin_.../#+end_...= block is drawn as a rounded card: a tinted
+background, an outline in the theme's accent colour for a =src= code
+chunk (muted for =example=, =quote=, =export= and the rest), and a title
+bar in place of the header lines.
+
+The bar carries the block's language, its name and its header arguments,
+each in its own box, however they were written:
+
+#+begin_example
+#+HEADER: :var x=1
+#+NAME: read-config
+#+begin_src python :tangle "my file.py" :results output
+#+end_src
+#+end_example
+
+reads as =python= | =read-config= | =:var x=1= | =:tangle my file.py= |
+=:results output=. Quoted values keep their spaces, a bare flag such as
+=:cache= shows on its own, =:var= is listed once per variable, and a long
+value is shortened from the front. A =#+CAPTION:= stands in as the title
+when there is no =#+NAME:=, and a =:title= header argument does too.
+
+Nothing is rewritten: put the cursor on the header (or select across it)
+and the raw =#+begin_src ...= line comes straight back to edit. The card
+also steps aside for a folded block, and for a block holding an image or
+a maths fragment that is being previewed in place.
+
+** How wide a card is
+
+As wide as the *wider* of its own longest line and =textwidth= (=:set
+tw=N=, 80 by default) -- and never wider than the pane, less a small
+margin.
+
+So a page of short blocks lines its cards up on one edge at the text
+width instead of each one ending wherever its longest line happens to,
+and a block that genuinely runs wider still gets a card that contains its
+code rather than one the code hangs out of. Past the pane's own width the
+card stops there; a line that long is soft-wrapped inside it anyway.
+
+Every line the card encloses counts, including the =#+NAME:=/=#+HEADER:=
+stack and the =#+begin_= line -- so the header still fits inside the card
+on the frame the cursor moves onto it and the raw line comes back.
+
+* LaTeX and maths
+
+| Key / command             | Does                              |
+|---------------------------+-----------------------------------|
+| =<leader>otl=             | toggle the maths preview          |
+| =:MepOrgLatexToggle=      | the same                          |
+| =:MepOrgLatexScan=        | rescan for fragments              |
+
+Fragments written =\(...\)=, =\[...\]=, =$...$= or =$$...$$= are rendered
+and drawn in place of the source. It works in =.tex= files as well as org.
+
+This is *on by default* too. Rendering shells out to =tectonic= and
+=pdftoppm= (both in the flake's dev shell); without them on =PATH= the
+maths simply stays as source text, and mep says so once per session rather
+than once per fragment.
+
+* Markup concealment and heading sizes
+
+| Key / command                  | Does                            |
+|--------------------------------+---------------------------------|
+| =<leader>otm=                  | toggle markup concealment       |
+| =:MepOrgConcealToggle=         | the same                        |
+| =<leader>oth=                  | toggle scaled heading sizes     |
+| =:MepOrgHeadingScaleToggle=    | the same                        |
+| =<leader>otc=                  | toggle the plain cursor line    |
+| =:MepOrgPlainCursorLineToggle= | the same                        |
+
+Concealment is what draws =*bold*= as bold text, =[[file:x][Notes]]= as
+=Notes= and a =|---+---|= row as a line. It is on by default, and always
+steps aside for the row the cursor is on.
+
+A concealed row closes up behind what it hides. The markup is almost always
+longer than what replaces it, and the difference is *not* left behind as a
+hole: the rest of the row slides left by it, so a rendered line reads as
+prose rather than as prose with gaps punched through it. Only a rendered row
+does this -- the row the cursor is on is showing its real characters on the
+real column grid, which is the grid the caret is drawn on.
+
+Inside a table the closing-up is per cell. A table's =|= columns are what
+the grid's rules are drawn down, so the slack a concealed cell frees up is
+handed back at that cell's own end instead of pulling the rest of the row
+left: the text in the cell tightens and every pipe stays where the row above
+put it.
+
+Heading sizes are separate because they are the one piece of org rendering
+that changes a row's *height* rather than which characters it shows.
+
+The plain cursor line goes one step further than concealment's own
+step-aside: the row the cursor is on is drawn as nothing but its own raw
+characters -- no syntax colours, no emphasis faces, no link colouring, no
+inline =$...$= maths painted over it -- so what you are editing is exactly
+what is in the file. On by default, org buffers only.
+
+Whole-row substitutions are the exception: an inline image or a whole-row
+maths preview claims many screen rows, so reverting one under the cursor
+would shuffle everything below it on every cursor move. =<leader>oti= and
+=<leader>otl= get that source back instead.
+
+* Tables
+
+A table is drawn as a grid: a rule down every column, a drawn line for each
+=|---+---|= row, and a tint behind the header block. The grid follows the
+text, so a table is realigned on its pipes whenever the cursor leaves it --
+after an edit, never after a read-only visit. =:MepOrgTableAlign= does the
+same on demand, for the table under the cursor.
+
+A literal pipe inside a cell must be escaped as =\vert= or =\|=, or it will
+be read as a column separator.
+
+** Wide tables
+
+A table whose columns add up to more than =:set textwidth= (80 by default)
+is *rendered* narrower than it is stored. The columns are re-budgeted to
+fit the line width and any cell too long for its column wraps onto further
+lines, so one row of the file draws as several:
+
+| Rendering                | On                                           |
+|--------------------------+----------------------------------------------|
+| =<leader>otw=            | toggle wrapped rendering of over-wide tables |
+| =:MepOrgTableWrapToggle= | the same                                     |
+
+Narrow columns keep their natural width and only the wide ones give up
+columns, so a table of one long prose column beside three short ones spends
+the budget on the prose instead of shaving all four evenly. A column is
+never widened past its own longest cell, and a word too long for its column
+is split rather than left to overflow. =:set tw=N= re-renders every table in
+the buffer at the new width.
+
+This is rendering only: the file keeps its long lines. Wrapping them *into*
+the file would still be valid org -- a continuation row is an ordinary row
+with an empty first cell -- but it would add rows, which shifts spreadsheet
+references like =@3$2= under the table, and a continuation row can never be
+told back apart from a row whose first cell is genuinely empty, so the wrap
+would be one-way.
+
+The row the cursor is on is never wrapped: it shows its real stored
+columns, so a cell is always edited against the widths that are in the
+file. Only that one row steps aside -- the rest of the table stays wrapped
+around it, at the same column widths it already had, since those are
+planned from the whole table's stored cells and not from where the cursor
+is. Moving off the row wraps it again, and the rows a Visual selection
+covers step aside the same way (the selection is drawn against the stored
+columns too).
+
+A row showing its stored text is left out of the grid: no header tint, no
+column rules and, on a =|---+---|= row, no drawn rule over the dashes --
+the rules above and below it simply stop there, because the columns it is
+showing are not the ones the rest of the table is drawn in. Because a
+wrapped row's drawn text is not the row's own text, its syntax colouring
+and concealment are skipped for as long as it is wrapped, and it comes back
+fully decorated the moment the cursor leaves it.
+
+* See also
+
+- [[file:org-basics.html][Org files in mep]] -- the rest of the rendering.
+- [[file:org-export.html][Exporting]] -- what images and maths become in the output.

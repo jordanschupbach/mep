@@ -1,0 +1,37 @@
+#+TITLE: Browser pane, local web server and the capability ladder
+
+=:Browse <url-or-path>= (=<leader>bo=) opens a page in mep's own in-pane
+browser. A page from a URL is loaded by mep itself (plain sockets for
+=http://=, =curl= for =https://=) together with its stylesheets, scripts and
+images, and its =fetch()= calls go back to the server it came from.
+
+The pane has an omnibar across the top: back, forward and reload buttons,
+the URL, the page title. =o=, =Ctrl-L= or a click edits the URL --
+=localhost:8000=, =:8000/app=, =example.com= and file paths all work --
+=Enter= goes, =Esc= cancels; =H= / =L= / =r= are back / forward / reload from
+the keyboard, =f= shows link hints, =Ctrl-E= flips to the page source.
+
+=:Serve [dir] [port]= (=<leader>bh=) hosts a directory on
+=http://localhost:PORT/= from inside the editor (the current file's directory
+by default, a free port if none is given) and opens it in the browser pane;
+=:ServeStop [port]= and =:Servers= manage what is running. It binds
+=127.0.0.1= only, serves GET/HEAD, never leaves the directory, and sends
+=no-store= so edits show on reload. From Lua: =mep.http_serve(dir, port)=,
+=mep.http_stop(port)=, =mep.http_servers()=, =mep.http_get(url)=.
+
+How much of a browser the engine is gets measured, not guessed:
+=examples/web/= is a ladder of twelve self-checking JavaScript sites, from a
+static page to a bundled React application, all of which pass in real
+Chromium. =:WebLadder= serves and opens it, =:WebLadderRun= scores every
+level, and =build/native/mep-web-ladder-test= does the same headlessly (plus
+=--eval file.js= to see what the engine says about one script). A failing
+level names the missing browser feature; =WEBKIT_PARITY_PLAN.md= keeps the
+current score (all twelve pass, so =--strict= is a regression gate) and what
+closing each gap took.
+
+Pages stay alive after they load: the pane pumps the page's event loop every
+frame (timers, =requestAnimationFrame=, promises, =async= functions, ES
+modules), a click lands on the DOM node under the pointer as a real =click=
+event (with checkbox/submit default actions, and a cancelled click on a link
+is not followed), and clicking a text field gives it the keyboard -- typing
+raises =input=, =Enter= submits the form, =Esc= or =Tab= leaves the field.

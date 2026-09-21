@@ -1,0 +1,106 @@
+#+TITLE: Jupyter notebooks
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="50">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* A notebook is a text buffer
+
+Open a =.ipynb= and you get the notebook in the "percent" cell format that
+Jupytext, VS Code and Spyder use: every cell starts with a =# %%= marker
+(=# %% [markdown]= for markdown cells).
+
+That means all the usual motions, edits, undo and search apply to cell
+source. It is a text buffer, not a web view.
+
+What the text cannot carry -- outputs, execution counts, ids, metadata --
+is kept alongside and written back as real nbformat JSON on =:w=, with
+Jupyter's own indentation so diffs stay clean.
+
+* What you see
+
+Each cell is drawn as a rounded card, markdown cards tinted apart from code,
+and the cell under the cursor accented. A code cell shows =In [n]:= and a
+clickable =Run= chip, with its outputs underneath: stdout and stderr, the
+last expression's value, tracebacks, and inline =matplotlib= figures.
+
+A toolbar across the top has =+ Code=, =+ Markdown=, =Run All=, =Interrupt=,
+=Restart= and =Clear=.
+
+* Running cells
+
+No =jupyter_client= is required.
+
+| Key              | Does                                 |
+|------------------+--------------------------------------|
+| =Enter=          | run the cell under the cursor        |
+| =Ctrl+Enter=     | the same                             |
+| =Ctrl-C Ctrl-C=  | the same, and works in Insert mode   |
+| =Shift+Enter=    | run it and move to the next cell     |
+| =mod1+Enter=     | run it and insert a new cell below   |
+| =]j= =[j=        | next / previous cell                 |
+
+* The =<leader>j= group
+
+| Key          | Does                        |
+|--------------+-----------------------------|
+| =<leader>jr= | run this cell               |
+| =<leader>jA= | run all cells               |
+| =<leader>jo= | run this cell, insert below |
+| =<leader>ja= | insert a cell above         |
+| =<leader>jb= | insert a cell below         |
+| =<leader>jd= | delete this cell            |
+| =<leader>jy= | make this cell code         |
+| =<leader>jk= | move this cell up           |
+| =<leader>jC= | clear all outputs           |
+| =<leader>ji= | interrupt the kernel        |
+| =<leader>j0= | restart the kernels         |
+| =<leader>jK= | set this cell's kernel      |
+
+=:NotebookNew [path]= creates one, and the other actions have =:Notebook*=
+commands too.
+
+* Per-cell kernels
+
+Each code cell picks its own kernel, from the dropdown at its top right (or
+=<leader>jK=). Out of the box the list offers Python 3 plus whichever of R,
+JavaScript (Node), Ruby and Bash are on =$PATH=.
+
+Python 3 is one *persistent* process, so state and inline figures carry
+across cells. The others are stateless "script" kernels: each run is a fresh
+process fed the cell's code on stdin.
+
+A cell with no explicit choice follows the notebook default, and a new cell
+inherits the previous cell's kernel -- so a block of cells keeps running on
+whatever the one above it used. Each choice is written to that cell's
+=metadata.kernel= on =:w=.
+
+=In [n]:= counts up as one shared sequence across every kernel, and runs
+execute one at a time in order, so a mixed "run all" still goes top to
+bottom.
+
+#+begin_src lua
+mep.opt.notebook_kernels = {
+  {name='python3', display_name='Python 3', language='py', mode='python'},
+  {name='ir', display_name='R', language='r', mode='script',
+   command={'R', '--slave', '--no-save'}},
+  {name='deno', display_name='Deno', language='js', mode='script',
+   command={'deno', 'run', '-'}},
+}
+#+end_src
+
+=mode= is one of:
+
+| Mode       | Means                                              |
+|------------+----------------------------------------------------|
+| =python=   | the built-in persistent kernel; no =command=       |
+| =protocol= | your own long-lived process speaking mep's JSON-line kernel protocol |
+| =script=   | a fresh process per run, code on stdin             |
+
+=language= is the Treesitter filetype the cell body is highlighted with.
+
+=examples/notebook_example.ipynb= is a ready-made notebook to try.
+
+* See also
+
+- [[file:repl.html][REPL and send-to-terminal]] -- lighter, for a plain script.
+- [[file:python-mode.html][Python mode]] -- a session with panels instead of cells.

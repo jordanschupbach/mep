@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Formatting</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="70">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Formatting</h1>
+<h1>Formatting a buffer</h1>
+<p><code>gf</code>, or <code>:MepFormat</code>. It formats the buffer's <b>current text</b>, including
+unsaved changes -- it never needs the file written first and never formats a
+stale copy from disk.</p>
+<h1>What runs</h1>
+<table>
+<tr><th>Filetype</th><th>Formatter</th></tr>
+<tr><td>C, C++ and friends</td><td><code>clang-format</code></td></tr>
+<tr><td>Python</td><td><code>black</code></td></tr>
+<tr><td>R</td><td><code>styler</code></td></tr>
+<tr><td>anything else</td><td><code>mep.lsp_format</code>, if a server is attached</td></tr>
+</table>
+<p>That is a deliberately short table. Most languages already have a formatter
+behind their language server, so the table only carries the cases where a
+dedicated tool is clearly better.</p>
+<h1>Org code blocks</h1>
+<p>In an <code>.org</code> file <code>gf</code> formats <b>code</b>, never the prose around it.</p>
+<table>
+<tr><th>Where the cursor is</th><th>What <code>gf</code> does</th></tr>
+<tr><td>inside a <code>#+begin_src</code> block</td><td>formats that block's body</td></tr>
+<tr><td>anywhere else</td><td>formats every block that has a formatter</td></tr>
+</table>
+<p><code>:MepOrgFormatBlock</code> and <code>:MepOrgFormatBlocks</code> are the same two, by name.</p>
+<p>The block's language picks the formatter -- <code>#+begin_src python</code> is
+formatted by <code>black</code>, the same as a <code>.py</code> file, because the block's
+language name is translated through its babel file extension before the
+table above is looked up.</p>
+<p>A block indented under a heading is dedented before the formatter sees it
+and re-indented after, so the org file's own layout survives. A body whose
+lines do not share one indent (tabs on some, spaces on others) is passed
+through exactly as written.</p>
+<p>For a language with <b>no</b> entry in the table, a single-block <code>gf</code> falls back
+to that block's own language server -- the one already answering
+<a href="org-polyglot.html">hover and completion inside the block</a>. The
+whole-file sweep does not: it only runs the table, and reports those blocks
+as skipped.</p>
+<h1>Adding one</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.js = {<span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span>
+mep.format_languages.ts = mep.format_languages.js</code></pre></div>
+<p>The entry is an argv array. <code>\{\}</code> anywhere in it is replaced by a path.</p>
+<p>Two modes:</p>
+<ul>
+<li><b>filter</b> (the default): the buffer is written to the formatter's stdin and its stdout replaces the buffer. <code>\{\}</code> is the buffer's real absolute filename.</li>
+<li><b>file</b>: add <code>mode = 'file'=, and =\{\}</code> is a temporary file the formatter edits in place.</li>
+</ul>
+<p>Entries are looked up by <b>bare extension</b>, so every extension of a language
+needs its own key -- which is why the built-in table aliases <code>.h</code>, <code>.cc</code>,
+<code>.hpp</code> and the rest onto the C entry.</p>
+<h1>Why the placeholder matters</h1>
+<p>A formatter reading stdin has no idea what file it is looking at. Both
+<code>clang-format</code> and <code>black</code> have to be told -- <code>--assume-filename</code> and
+<code>--stdin-filename</code> -- or they cannot find the <code>.clang-format</code> or
+<code>pyproject.toml</code> the project configures them with, and they silently format
+to their own defaults instead.</p>
+<p>So a filter-mode entry should almost always pass <code>\{\}</code> somewhere.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the fallback formatter.</li>
+<li><a href="org-polyglot.html">Language servers in code blocks</a> -- the fallback inside a block.</li>
+<li><a href="operators.html">Operators and text objects</a> -- <code>gq</code> reflows prose, which is a different job.</li>
+</ul>
+</body>
+</html>

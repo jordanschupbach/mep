@@ -237,6 +237,30 @@ void CheckRealFixture(const std::string &path) {
 
 }  // namespace
 
+// SelectionRects is a pure function over glyph boxes -- test it directly
+// with a synthetic two-line layout (point space, y-up), no PDF needed.
+void TestSelectionRects() {
+    // Line A at y[90,100], glyphs at x = 0,10,20,30 (widths 10). Line B at
+    // y[70,80], glyphs at x = 0,10,20.
+    std::vector<pdftext::GlyphBox> g = {
+        {0, 100, 10, 90}, {10, 100, 20, 90}, {20, 100, 30, 90}, {30, 100, 40, 90},  // line A: 0..3
+        {0, 80, 10, 70},  {10, 80, 20, 70},  {20, 80, 30, 70},                       // line B: 4..6
+    };
+    // Select within line A only, from glyph 1 to glyph 2 (points inside them).
+    auto r1 = pdftext::SelectionRects(g, 12, 95, 25, 95);
+    CHECK(r1.size() == 1);
+    CHECK(r1[0].left == 10 && r1[0].right == 30 && r1[0].top == 100 && r1[0].bottom == 90);
+    // Select spanning both lines (anchor in A glyph 2, head in B glyph 1) ->
+    // two line rects, split on the vertical-center jump.
+    auto r2 = pdftext::SelectionRects(g, 22, 95, 12, 75);
+    CHECK(r2.size() == 2);
+    // Order is anchor..head by glyph index: line A tail (glyphs 2,3) then line B head (glyph 4,5).
+    CHECK(r2[0].top == 100 && r2[0].bottom == 90);   // line A run
+    CHECK(r2[1].top == 80 && r2[1].bottom == 70);    // line B run
+    // Empty glyphs -> empty selection.
+    CHECK(pdftext::SelectionRects({}, 0, 0, 1, 1).empty());
+}
+
 int main(int argc, char **argv) {
     TestSearchFindsWordCaseInsensitively();
     TestSearchMultiWordQuerySpansWordGap();
@@ -245,6 +269,7 @@ int main(int argc, char **argv) {
     TestSearchAcrossMultiplePages();
     TestMatchRectsForPageScalesWithPxPerPt();
     TestExtractPageTextContainsShownWords();
+    TestSelectionRects();
     std::printf("pdf_text_test: all checks passed\n");
 
     for (int i = 1; i < argc; ++i) CheckRealFixture(argv[i]);

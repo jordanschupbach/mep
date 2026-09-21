@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 
 namespace {
@@ -982,5 +983,536 @@ std::vector<std::string> OrgClockStopLines(const std::vector<std::string> &lines
     std::vector<std::string> out = lines;
     out[static_cast<size_t>(clock.line)] = "  CLOCK: [" + clock.start_ts + "]--[" + now_ts + "] =>  " + durbuf;
     if (minutes) *minutes = static_cast<int>(mins);
+    return out;
+}
+
+// --- Display-side scans (see org_doc.h) ---
+
+int OrgHeadlineLevel(const std::string &line) {
+    size_t stars = 0;
+    while (stars < line.size() && line[stars] == '*') stars++;
+    if (stars == 0 || stars >= line.size() || line[stars] != ' ') return 0;
+    return static_cast<int>(stars);
+}
+
+bool OrgEmphasisPreOk(char c) {
+    // '\0' is how both callers spell "there is no character here", i.e.
+    // start-of-line, which org's own regexp allows via its `^` branch.
+    if (c == '\0') return true;
+    switch (c) {
+        case ' ': case '\t': case '-': case '(': case '\'': case '"': case '{':
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool OrgEmphasisPostOk(char c) {
+    if (c == '\0') return true;  // end-of-line, org's `$` branch
+    switch (c) {
+        case ' ': case '\t': case '-': case '.': case ',': case ':': case '!':
+        case '?': case ';': case '\'': case '"': case ')': case '}': case '[':
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool OrgEmphasisBorderBlank(char c) { return c == ' ' || c == '\t'; }
+
+namespace {
+
+// The characters org's own link syntax lets a bare URL run over --
+// mep.nvim's MEP_URL_PATTERN body class, minus nothing. A trailing `.`
+// or `,` IS in this set, which is deliberate: it is part of plenty of
+// real URLs, and org's answer to "the sentence's full stop got eaten" is
+// to bracket the link, not to guess.
+/**
+ * @brief Reports whether a character may appear in the body of a bare URL.
+ * @param c the character to test
+ * @return true if `c` is a URL body character
+ */
+bool IsUrlBody(unsigned char c) {
+    if (std::isalnum(c) != 0) return true;
+    switch (c) {
+        case '-': case '.': case '_': case '~': case ':': case '/': case '?':
+        case '#': case '[': case ']': case '@': case '!': case '$': case '&':
+        case '\'': case '(': case ')': case '*': case '+': case ',': case ';':
+        case '=': case '%':
+            return true;
+        default:
+            return false;
+    }
+}
+
+// The `target][description` split inside a `[[...]]`. A `]` that isn't
+// followed by `[` is part of the target, so `[[a]b][c]]` targets `a]b`.
+/**
+ * @brief Splits an org link's inner text into a target and an optional description.
+ * @param inner the text between the outer `[[` and `]]`
+ * @param target set to the target portion
+ * @param desc set to the description, or left empty when there is none
+ */
+void SplitOrgLinkInner(const std::string &inner, std::string *target, std::string *desc) {
+    size_t rb = inner.find("][");
+    if (rb == std::string::npos) {
+        *target = inner;
+        desc->clear();
+        return;
+    }
+    // rb == 0 leaves an empty target, which ScanOrgLinkSpans rejects --
+    // `[[][desc]]` has nothing to follow, so it isn't a link yet.
+    *target = inner.substr(0, rb);
+    *desc = inner.substr(rb + 2);
+}
+
+// What a concealed link should read as when it has no description of its
+// own: the target with the scheme noise org also drops from a bare link's
+// display. An `id:` target's raw uuid says nothing, so it shows unprefixed
+// too -- there is nothing better to show, and the prefix is pure noise.
+/**
+ * @brief Chooses the text a concealed org link displays in place of its raw markup.
+ * @param target the link's target
+ * @param desc the link's description, or "" when it has none
+ * @return the display text
+ */
+std::string OrgLinkDisplay(const std::string &target, const std::string &desc) {
+    if (!desc.empty()) return desc;
+    if (target.compare(0, 5, "file:") == 0) return target.substr(5);
+    if (target.compare(0, 3, "id:") == 0) return target.substr(3);
+    if (!target.empty() && (target[0] == '*' || target[0] == '#')) return target.substr(1);
+    return target;
+}
+
+// Columns covered by a `=verbatim=` or `~code~` run, using org's own
+// marker-boundary rules (a marker only opens after line-start or a
+// non-word character and before a non-space, and only closes after a
+// non-space and before line-end or a non-word character). Text inside one
+// is literal: org does not linkify it, and neither should this -- this
+// repo's own help/*.org writes `=[[file:x]]=` precisely to *show* link
+// syntax, and treating that as a live link would both conceal the example
+// and leave a stretch of prose clickable.
+/**
+ * @brief Marks the columns of a line that sit inside a `=verbatim=` or `~code~` run.
+ * @param line the line to scan
+ * @return one flag per byte of `line`, true where that byte is inside such a run
+ */
+std::vector<bool> OrgLiteralColumns(const std::string &line) {
+    std::vector<bool> literal(line.size(), false);
+    const int len = static_cast<int>(line.size());
+    /**
+     * @brief Fetches the character at `idx`, or NUL when out of bounds.
+     * @param idx the index to read
+     * @return the character, or '\0'
+     */
+    auto at = [&](int idx) -> char { return (idx >= 0 && idx < len) ? line[static_cast<size_t>(idx)] : '\0'; };
+    int i = 0;
+    while (i < len) {
+        const char ch = line[static_cast<size_t>(i)];
+        if (ch != '=' && ch != '~') {
+            i++;
+            continue;
+        }
+        const char pre = at(i - 1), nxt = at(i + 1);
+        if (!(OrgEmphasisPreOk(pre) && nxt != '\0' && !OrgEmphasisBorderBlank(nxt) && nxt != ch)) {
+            i++;
+            continue;
+        }
+        int close = -1;
+        for (int k = i + 1; k < len; k++) {
+            if (line[static_cast<size_t>(k)] != ch) continue;
+            if (!OrgEmphasisBorderBlank(at(k - 1)) && at(k - 1) != ch && OrgEmphasisPostOk(at(k + 1))) {
+                close = k;
+                break;
+            }
+        }
+        if (close < 0) {
+            i++;
+            continue;
+        }
+        for (int c = i; c <= close; c++) literal[static_cast<size_t>(c)] = true;
+        i = close + 1;
+    }
+    return literal;
+}
+
+}  // namespace
+
+std::vector<OrgLinkSpanInfo> ScanOrgLinkSpans(const std::string &line) {
+    std::vector<OrgLinkSpanInfo> spans;
+    const int len = static_cast<int>(line.size());
+    const std::vector<bool> literal = OrgLiteralColumns(line);
+    // Columns a bracket link already covers, so the bare-URL pass below
+    // doesn't also report the `https://...` sitting inside one.
+    std::vector<bool> claimed(line.size(), false);
+
+    size_t pos = 0;
+    while (true) {
+        size_t open = line.find("[[", pos);
+        if (open == std::string::npos) break;
+        size_t close = line.find("]]", open + 2);
+        if (close == std::string::npos) break;
+        const std::string inner = line.substr(open + 2, close - (open + 2));
+        pos = close + 2;
+        std::string target, desc;
+        SplitOrgLinkInner(inner, &target, &desc);
+        // `[[]]` and `[[][desc]]` are not links: with no target there is
+        // nothing to follow, and concealing them would hide the very
+        // markup someone is in the middle of typing.
+        if (target.empty()) continue;
+        if (literal[open]) continue;  // inside `=...=`/`~...~`: shown, not followed
+        OrgLinkSpanInfo sp;
+        sp.col_start = static_cast<int>(open);
+        sp.col_end = static_cast<int>(pos);
+        sp.target = target;
+        sp.display = OrgLinkDisplay(target, desc);
+        sp.bracketed = true;
+        for (int c = sp.col_start; c < sp.col_end; c++) claimed[static_cast<size_t>(c)] = true;
+        spans.push_back(std::move(sp));
+    }
+
+    int i = 0;
+    while (i < len) {
+        if (line.compare(static_cast<size_t>(i), 4, "http") != 0) {
+            i++;
+            continue;
+        }
+        int j = i + 4;
+        if (j < len && line[static_cast<size_t>(j)] == 's') j++;
+        if (line.compare(static_cast<size_t>(j), 3, "://") != 0) {
+            i++;
+            continue;
+        }
+        int body_start = j + 3;
+        int k = body_start;
+        while (k < len && IsUrlBody(static_cast<unsigned char>(line[static_cast<size_t>(k)]))) k++;
+        if (k == body_start) {
+            i++;
+            continue;
+        }
+        if (!claimed[static_cast<size_t>(i)] && !literal[static_cast<size_t>(i)]) {
+            OrgLinkSpanInfo sp;
+            sp.col_start = i;
+            sp.col_end = k;
+            sp.target = line.substr(static_cast<size_t>(i), static_cast<size_t>(k - i));
+            sp.display = sp.target;
+            sp.bracketed = false;
+            spans.push_back(std::move(sp));
+        }
+        i = k;
+    }
+
+    std::sort(spans.begin(), spans.end(),
+              [](const OrgLinkSpanInfo &a, const OrgLinkSpanInfo &b) { return a.col_start < b.col_start; });
+    return spans;
+}
+
+// --- Org tables: the wrapped display layout (org_doc.h's own section) ---
+
+namespace {
+
+// Byte length of the UTF-8 codepoint starting at `i`, clamped so a
+// truncated or invalid sequence still advances by one byte rather than
+// running off the end (the parsers here take whatever is in the buffer,
+// which may be mid-edit and not yet valid UTF-8).
+/**
+ * @brief Returns the byte length of the UTF-8 codepoint starting at an offset, at least 1.
+ * @param s the string to read
+ * @param i the byte offset of the codepoint's first byte
+ * @return the codepoint's length in bytes, clamped to the remaining string
+ */
+int OrgUtf8Len(const std::string &s, size_t i) {
+    if (i >= s.size()) return 1;
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    int len = 1;
+    if ((c & 0x80) == 0x00) len = 1;
+    else if ((c & 0xE0) == 0xC0) len = 2;
+    else if ((c & 0xF0) == 0xE0) len = 3;
+    else if ((c & 0xF8) == 0xF0) len = 4;
+    if (i + static_cast<size_t>(len) > s.size()) len = static_cast<int>(s.size() - i);
+    return len < 1 ? 1 : len;
+}
+
+// The first `width` display columns of `s`, on a codepoint boundary.
+/**
+ * @brief Takes a prefix of a string measured in display columns rather than bytes.
+ * @param s the string to cut
+ * @param width the number of codepoints to keep
+ * @return the prefix, cut on a codepoint boundary
+ */
+std::string OrgTakeCols(const std::string &s, int width) {
+    int seen = 0;
+    size_t i = 0;
+    while (i < s.size() && seen < width) {
+        i += static_cast<size_t>(OrgUtf8Len(s, i));
+        seen++;
+    }
+    return s.substr(0, i);
+}
+
+// Pads `s` out to `width` display columns with spaces. A cell already at
+// or past its width is returned untouched -- over-wide cells are the
+// wrapper's problem, not the padder's.
+/**
+ * @brief Right-pads a string with spaces to a given display width.
+ * @param s the string to pad
+ * @param width the target width in display columns
+ * @return `s` padded to `width` columns
+ */
+std::string OrgPadCols(const std::string &s, int width) {
+    const int have = OrgTableDisplayWidth(s);
+    if (have >= width) return s;
+    return s + std::string(static_cast<size_t>(width - have), ' ');
+}
+
+}  // namespace
+
+int OrgTableDisplayWidth(const std::string &s) {
+    int width = 0;
+    for (char c : s) {
+        // Every byte that isn't a UTF-8 continuation byte starts a new
+        // codepoint, so this counts codepoints without decoding them.
+        if ((static_cast<unsigned char>(c) & 0xC0) != 0x80) width++;
+    }
+    return width;
+}
+
+std::vector<std::string> OrgTableWrapCell(const std::string &text, int width) {
+    const int w = std::max(1, width);
+    std::vector<std::string> out;
+    // Split on runs of spaces: the cell text arrives already trimmed, and
+    // interior runs collapse to one space, which is what makes a wrapped
+    // cell read as prose instead of keeping the column padding of
+    // whatever the author happened to type.
+    std::vector<std::string> words;
+    for (size_t i = 0; i < text.size();) {
+        if (text[i] == ' ' || text[i] == '\t') {
+            i++;
+            continue;
+        }
+        size_t k = i;
+        while (k < text.size() && text[k] != ' ' && text[k] != '\t') k++;
+        words.push_back(text.substr(i, k - i));
+        i = k;
+    }
+    std::string cur;
+    for (const std::string &word : words) {
+        std::string piece = word;
+        // A word wider than the whole column can't be placed by breaking
+        // on spaces: flush what we have and hard-split it across as many
+        // lines as it needs (a long URL, a path, a chemical name).
+        if (OrgTableDisplayWidth(piece) > w) {
+            if (!cur.empty()) {
+                out.push_back(cur);
+                cur.clear();
+            }
+            while (OrgTableDisplayWidth(piece) > w) {
+                std::string head = OrgTakeCols(piece, w);
+                out.push_back(head);
+                piece = piece.substr(head.size());
+            }
+            cur = piece;
+            continue;
+        }
+        const int extra = cur.empty() ? 0 : 1;
+        if (OrgTableDisplayWidth(cur) + extra + OrgTableDisplayWidth(piece) > w) {
+            out.push_back(cur);
+            cur = piece;
+        } else {
+            if (!cur.empty()) cur += " ";
+            cur += piece;
+        }
+    }
+    if (!cur.empty() || out.empty()) out.push_back(cur);
+    return out;
+}
+
+OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int budget, int indent) {
+    OrgTableWrapPlan plan;
+    size_t cols = 0;
+    for (const OrgTableCells &r : rows) {
+        if (!r.is_sep) cols = std::max(cols, r.cells.size());
+    }
+    if (cols == 0) return plan;
+
+    // Natural width: the widest cell in each column, i.e. exactly the
+    // widths :MepOrgTableAlign would write into the file.
+    std::vector<int> natural(cols, 0);
+    for (const OrgTableCells &r : rows) {
+        if (r.is_sep) continue;
+        for (size_t c = 0; c < r.cells.size(); c++) {
+            natural[c] = std::max(natural[c], OrgTableDisplayWidth(r.cells[c]));
+        }
+    }
+
+    // Every row spends `indent` columns of leading whitespace, one column
+    // per `|` (cols + 1 of them) and two spaces of padding per cell, so
+    // only what's left is available to the cell text itself.
+    const int chrome = indent + static_cast<int>(cols) + 1 + 2 * static_cast<int>(cols);
+    const int avail = budget - chrome;
+    int natural_total = 0;
+    for (int n : natural) natural_total += n;
+
+    std::vector<int> widths = natural;
+    if (avail > 0 && natural_total > avail) {
+        plan.wrapped = true;
+        // Water-filling: columns that already fit an equal share of the
+        // budget keep their natural width and leave the rest of the
+        // budget to the columns that don't, repeated until no column
+        // fits its share. The remainder is then split between the
+        // over-wide columns in proportion to how much text they hold.
+        std::vector<bool> fixed(cols, false);
+        int remaining = avail;
+        size_t unfixed = cols;
+        bool progress = true;
+        while (progress && unfixed > 0) {
+            progress = false;
+            const int fair = remaining / static_cast<int>(unfixed);
+            for (size_t c = 0; c < cols; c++) {
+                if (fixed[c] || natural[c] > fair) continue;
+                fixed[c] = true;
+                widths[c] = natural[c];
+                remaining -= natural[c];
+                unfixed--;
+                progress = true;
+            }
+            if (unfixed == 0) break;
+        }
+        if (unfixed > 0) {
+            int share_total = 0;
+            for (size_t c = 0; c < cols; c++) {
+                if (!fixed[c]) share_total += natural[c];
+            }
+            for (size_t c = 0; c < cols; c++) {
+                if (fixed[c]) continue;
+                const int share = share_total > 0
+                                      ? static_cast<int>(static_cast<long long>(remaining) * natural[c] / share_total)
+                                      : remaining / static_cast<int>(unfixed);
+                widths[c] = std::max(std::min(natural[c], kOrgTableMinColWidth), share);
+            }
+        }
+        // The proportional split floors, and the minimum-width clamp can
+        // push back over the budget, so settle the difference a column at
+        // a time: shave the widest column while over, and feed the column
+        // furthest short of its own content while under.
+        /**
+         * @brief Sums the planned column widths.
+         * @return the total content width across every column
+         */
+        auto total = [&] {
+            int t = 0;
+            for (int wv : widths) t += wv;
+            return t;
+        };
+        while (total() > avail) {
+            size_t pick = cols;
+            for (size_t c = 0; c < cols; c++) {
+                if (widths[c] > 1 && (pick == cols || widths[c] > widths[pick])) pick = c;
+            }
+            if (pick == cols) break;
+            widths[pick]--;
+        }
+        while (total() < avail) {
+            size_t pick = cols;
+            for (size_t c = 0; c < cols; c++) {
+                if (widths[c] >= natural[c]) continue;
+                if (pick == cols || natural[c] - widths[c] > natural[pick] - widths[pick]) pick = c;
+            }
+            if (pick == cols) break;
+            widths[pick]++;
+        }
+    }
+    for (int &wv : widths) wv = std::max(1, wv);
+    plan.col_widths = widths;
+
+    const std::string lead(static_cast<size_t>(std::max(0, indent)), ' ');
+    plan.rows.reserve(rows.size());
+    for (const OrgTableCells &r : rows) {
+        std::vector<std::string> out;
+        if (r.is_sep) {
+            std::string line = lead + "|";
+            for (size_t c = 0; c < cols; c++) {
+                if (c > 0) line += "+";
+                line += std::string(static_cast<size_t>(widths[c] + 2), '-');
+            }
+            line += "|";
+            out.push_back(std::move(line));
+            plan.rows.push_back(std::move(out));
+            continue;
+        }
+        // Wrap every cell first: the row draws as however many lines its
+        // tallest cell needs, with the shorter cells blank underneath.
+        std::vector<std::vector<std::string>> cell_lines(cols);
+        size_t height = 1;
+        for (size_t c = 0; c < cols; c++) {
+            const std::string &txt = c < r.cells.size() ? r.cells[c] : std::string();
+            cell_lines[c] = OrgTableWrapCell(txt, widths[c]);
+            height = std::max(height, cell_lines[c].size());
+        }
+        for (size_t l = 0; l < height; l++) {
+            std::string line = lead + "|";
+            for (size_t c = 0; c < cols; c++) {
+                if (c > 0) line += "|";
+                const std::string piece = l < cell_lines[c].size() ? cell_lines[c][l] : std::string();
+                line += " " + OrgPadCols(piece, widths[c]) + " ";
+            }
+            line += "|";
+            out.push_back(std::move(line));
+        }
+        plan.rows.push_back(std::move(out));
+    }
+    return plan;
+}
+
+// --- Org inline images: the drawn figure's geometry (org_doc.h) -------
+
+OrgImageLayout OrgImageLayoutFor(int px_w, int px_h, float char_width, float line_height, int avail_cols,
+                                 int text_cols) {
+    OrgImageLayout out;
+    if (char_width <= 0.0f) char_width = 1.0f;
+    if (line_height <= 0.0f) line_height = 1.0f;
+    // `:set textwidth=0` (wrapping off) still needs a measure to lay a
+    // figure out against; org's own conventional 80 is it.
+    if (text_cols <= 0) text_cols = kOrgImageLineWidthChars;
+    // A pane that hasn't reported its width yet (Pane::text_cols is 0
+    // until first drawn) is measured as if it were exactly as wide as
+    // the text column -- the ordinary case, and the one that makes the
+    // very first frame agree with every later one.
+    if (avail_cols <= 0) avail_cols = text_cols;
+
+    // The column the figure is centered in: the text width, or the pane
+    // if that is narrower.
+    const float box_w = static_cast<float>(avail_cols < text_cols ? avail_cols : text_cols) * char_width;
+    // ...and the widest it may be drawn within that column.
+    const float target_cols =
+        std::min(static_cast<float>(avail_cols), static_cast<float>(text_cols) * kOrgImageWidthFraction);
+    const float target_w = target_cols * char_width;
+
+    if (px_w <= 0 || px_h <= 0) {
+        out.width = target_w;
+        out.slots = kOrgImageUnknownSlots;
+        out.height = static_cast<float>(out.slots) * line_height;
+        out.offset_x = std::max(0.0f, (box_w - out.width) * 0.5f);
+        return out;
+    }
+
+    // Downscale to the target width, but never *up*: past its native
+    // size an image only gets blurrier, and a small figure sitting at
+    // its own size reads as deliberate rather than broken.
+    float scale = std::min(1.0f, target_w / static_cast<float>(px_w));
+    // A portrait tall enough to run past the height ceiling shrinks the
+    // rest of the way instead of being cropped or letterboxed.
+    scale = std::min(scale, static_cast<float>(kOrgImageMaxSlots) * line_height / static_cast<float>(px_h));
+
+    out.width = static_cast<float>(px_w) * scale;
+    out.height = static_cast<float>(px_h) * scale;
+    // Round the reserved height up to whole line-heights -- the row grid
+    // is the only granularity a slot count has. The epsilon keeps an
+    // image whose height lands exactly on a multiple (the scaled-to-the-
+    // ceiling case above, most visibly) from tipping into one extra,
+    // empty, slot on a float hair.
+    const float rows = out.height / line_height;
+    out.slots = std::max(1, static_cast<int>(std::ceil(rows - 0.001f)));
+    out.offset_x = std::max(0.0f, (box_w - out.width) * 0.5f);
     return out;
 }

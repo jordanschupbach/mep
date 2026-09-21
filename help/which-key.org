@@ -1,0 +1,97 @@
+#+TITLE: Leader and which-key
+#+HTML_HEAD: <meta name="help-section" content="Interface">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Press Space and wait
+
+The leader key is =<Space>=. Press it in Normal mode and a popup lists every
+binding available, grouped and named. Keep pressing keys to walk into a
+group; =Esc= backs out.
+
+This is the discovery mechanism for most of mep. There are over two hundred
+commands, and almost none of them are worth memorising -- =<Space>= and a
+letter gets you there.
+
+It works in Visual mode too, so the spell and format groups are reachable
+with a selection active.
+
+* The groups
+
+| Key | Group             | Holds                                  |
+|-----+-------------------+----------------------------------------|
+| =a= | ai                | AI terminal, agents, context picker    |
+| =b= | buffers/browse    | buffer picker, scratch, browser, serve |
+| =c= | code              | LSP code actions                       |
+| =d= | debug             | breakpoints, stepping, the debug UI    |
+| =f= | file              | find files, the tree, hidden files     |
+| =g= | git               | status, log, hunks, commit, push       |
+| =h= | help              | this manual, keymaps, symbol docs      |
+| =j= | jobs/jupyter      | notebook cells, the runner's tabs      |
+| =l= | lsp/lang          | goto, signature help, language UI      |
+| =n= | notifications     | the notification panel                 |
+| =o= | org               | org editing, export, roam, learn games |
+| =p= | project           | projects, find files, live grep        |
+| =r= | run               | run the file, the REPL pane, rename    |
+| =s= | structure         | the treesitter structure pane          |
+| =t= | todo/tests        | the todo and test panels               |
+| =u= | ui                | theme picker, language UI mode         |
+| =v= | Vocal             | speech-to-text                         |
+| =w= | workspace         | new, rename, delete, switch            |
+| =y= | snippets          | the snippet picker                     |
+| =z= | spell             | toggle, suggest, fix, add word         |
+
+Three subgroups hang off =o=: =oe= export, =ot= toggle, =or= roam.
+
+A few leader keys are not groups but actions in their own right:
+=<leader>/= searches the current buffer, =<leader><Space>= opens the command
+runner, and =<leader><CR>= toggles this tab's terminal.
+
+* Seeing what is bound
+
+=<leader>hk= (=:MepKeymaps=) opens a searchable list of every binding
+currently in effect, including anything your =init.lua= added. It is the
+authoritative answer when the popup and your memory disagree.
+
+From Lua, =mep.leader_bindings()= returns every leader mapping as
+={seq=, desc=}=, and =mep.mapping_descriptions()= covers the rest.
+
+* Adding your own
+
+#+begin_src lua
+mep.leader_map('xr', 'Reload config', function()
+  mep.cmd('source ' .. os.getenv('HOME') .. '/.config/mep/init.lua')
+end)
+
+mep.leader_group('x', 'extras', 0xf013, 'Purple')
+#+end_src
+
+=mep.leader_map(seq, desc, fn, icon?, icon_hl?)= binds a sequence; the
+description is what the popup shows, so write it as a label rather than a
+sentence. =mep.leader_group(prefix, label, icon?, icon_hl?)= names a group
+so your keys appear under a heading instead of loose at the top level.
+
+=icon= is a Nerd Font codepoint drawn before the key, and =icon_hl= names
+the highlight group that colours it. The icon is drawn *before* the key
+rather than embedded in the label, which is what keeps the key column
+aligned.
+
+=seq= is one character per key, with Enter spelled =<CR>=:
+
+#+begin_src lua
+mep.leader_map('a<CR>', 'AI terminal', mep.ai_terminal_open)
+#+end_src
+
+=<Return>= and =<Enter>= are accepted as the same thing.
+
+* Changing the leader
+
+#+begin_src lua
+mep.set_leader(',')
+#+end_src
+
+* See also
+
+- [[file:command-line.html][The command line]] -- the other way to reach a command.
+- [[file:installing.html][Installing and running]] -- =init.lua=, where your bindings go.
+- [[file:modes.html][Modes]] -- why the popup only appears in Normal and Visual.

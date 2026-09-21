@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motions</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Editing">
+<meta name="help-order" content="30">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Motions</h1>
+<h1>Why motions matter twice over</h1>
+<p>A motion moves the cursor. It also describes a range for an
+<a href="operators.html">operator</a>: <code>w</code> moves to the next word, and <code>dw</code> deletes as far as <code>w</code> would
+have moved. Everything on this page therefore does double duty.</p>
+<h1>Within a line</h1>
+<table>
+<tr><th>Key</th><th>Moves to</th></tr>
+<tr><td><code>h</code> <code>l</code></td><td>one character left or right</td></tr>
+<tr><td><code>0</code></td><td>column zero</td></tr>
+<tr><td><code>^</code></td><td>the first non-blank character</td></tr>
+<tr><td><code>$</code></td><td>the end of the line</td></tr>
+<tr><td><code>w</code> <code>W</code></td><td>the start of the next word (<code>W</code>: whitespace-separated)</td></tr>
+<tr><td><code>b</code> <code>B</code></td><td>the start of the previous word</td></tr>
+<tr><td><code>e</code> <code>E</code></td><td>the end of the current or next word</td></tr>
+<tr><td><code>ge</code> <code>gE</code></td><td>the end of the previous word</td></tr>
+<tr><td><code>%</code></td><td>the matching bracket</td></tr>
+</table>
+<h1>Between lines</h1>
+<table>
+<tr><th>Key</th><th>Moves to</th></tr>
+<tr><td><code>j</code> <code>k</code></td><td>one line down or up</td></tr>
+<tr><td><code>{</code> <code>}</code></td><td>the previous or next blank line (paragraph)</td></tr>
+<tr><td><code>gg</code></td><td>the first line</td></tr>
+<tr><td><code>G</code></td><td>the last line, or to a count's line</td></tr>
+<tr><td><code>H</code> <code>M</code> <code>L</code></td><td>the highest, middle or lowest visible line</td></tr>
+<tr><td><code>:42</code></td><td>line 42</td></tr>
+</table>
+<p><code>j</code> and <code>k</code> move by <b>buffer</b> line, not by visual row, so a long soft-wrapped
+line is one press either way.</p>
+<h1>Finding a character</h1>
+<p><code>f{char}</code> jumps to the next occurrence of that character on the line, <code>t{char}</code>
+to just before it; <code>F</code> and <code>T</code> are the backward versions. <code>;</code> repeats the last
+such search, =,= repeats it in the opposite direction.</p>
+<p>These are the fastest way to give an operator a precise target: <code>dt)</code> deletes
+up to the next closing parenthesis, =ct"= changes up to the next quote.</p>
+<h1>Counts</h1>
+<p>Any motion takes a leading count, meaning "do it that many times".</p>
+<table>
+<tr><th>Typed</th><th>Effect</th></tr>
+<tr><td><code>5j</code></td><td>down five lines</td></tr>
+<tr><td><code>3w</code></td><td>forward three words</td></tr>
+<tr><td><code>10G</code></td><td>go to line 10</td></tr>
+<tr><td><code>d2w</code></td><td>delete two words</td></tr>
+<tr><td><code>3dd</code></td><td>delete three lines</td></tr>
+</table>
+<p>A half-typed count appears in the status line, along with any pending
+operator or register prefix, so you can always see what mep is waiting for.</p>
+<h1>Jumping to what you can see</h1>
+<p>Press <code>s</code> and start typing the text you are aiming at. Matches across every
+visible text pane narrow as you type, everything else dims, and each match
+gets a one-key label drawn after it -- press that key to jump there, focusing
+another pane if that is where the match is.</p>
+<ul>
+<li>A query that narrows to exactly one match jumps immediately.</li>
+<li><code>Enter</code> jumps to the nearest match.</li>
+<li><code>Backspace</code> edits the query, <code>Esc</code> cancels.</li>
+<li>An all-lowercase query matches case-insensitively.</li>
+</ul>
+<p>Labels never reuse a character that could extend the query at some live
+match, so a keypress is never ambiguous. <code>Ctrl-O</code> comes back afterwards.</p>
+<h1>Coming back</h1>
+<p><code>Ctrl-O</code> and <code>Ctrl-I</code> walk backward and forward through the jumplist, which
+records searches, <code>gg=/=G</code> and mark jumps. It is per-pane and can span
+buffers. <code>``</code> returns to where you were before the last big jump.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="operators.html">Operators and text objects</a> -- what to do once you can aim.</li>
+<li><a href="registers-marks.html">Registers, marks and jumps</a> -- marks, and the jumplist in full.</li>
+<li><a href="scrolling.html">Scrolling and the view</a> -- moving the window instead of the cursor.</li>
+</ul>
+</body>
+</html>

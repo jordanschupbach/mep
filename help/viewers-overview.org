@@ -1,0 +1,45 @@
+#+TITLE: What mep can open
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Everything in a pane
+
+mep decides how to present a file from its extension. Each viewer is an
+ordinary pane, so splits, tabs, workspaces and the theme all apply.
+
+| Extensions                          | Opens as              | Page |
+|-------------------------------------+-----------------------+------|
+| any text                            | a text buffer         | [[file:files.html][Files and buffers]] |
+| =.org=                              | rendered org          | [[file:org-basics.html][Org files]] |
+| =.md=                               | rendered markdown     | [[file:markdown.html][Markdown]] |
+| =.html=, =.xml=, =.svg=             | a rendered page       | [[file:browser.html][The browser pane]] |
+| =.pdf=                              | the PDF viewer        | [[file:pdf.html][PDF]] |
+| =.docx=, =.odt=                     | a word processor view | [[file:office.html][Word processor documents]] |
+| =.xlsx=, =.ods=, =.csv=             | a spreadsheet         | [[file:sheets.html][Spreadsheets]] |
+| =.ipynb=                            | a notebook            | [[file:notebooks.html][Jupyter notebooks]] |
+| =.png=, =.jpg=, =.bmp=, =.gif=      | the image viewer      | [[file:images.html][Viewing images]] |
+| =.obj=, =.gltf=, =.glb=, =.iqm=, =.vox=, =.m3d=, =.blend= | the 3D modeler | [[file:model3d.html][The 3D modeler]] |
+| =.wav=                              | a waveform view       | [[file:audio-svg.html][Audio and vector]] |
+
+* Two things that surprise people
+
+*An HTML file opens as source.* =:e page.html= gives you the markup, because
+that is usually what you want from a file you are editing. To render it, use
+=:Browse page.html=, or open it through a link or the file tree.
+
+*Everything is editable except where noted.* The PDF, 3D and image views are
+not read-only previews -- images have a full editor behind =e=, 3D scenes
+have a scripting API, and spreadsheets and office documents write back.
+
+* Theming
+
+Rendered documents are re-tinted to the active theme by default, rather than
+showing a white page inside a dark editor. The pane header says
+=[theme, Ctrl-R]= when it is doing this, and =Ctrl-R= switches to the
+document's own colours.
+
+* See also
+
+- [[file:files.html][Files and buffers]] -- opening and saving in general.
+- [[file:themes.html][Colorschemes]] -- the re-tinting.

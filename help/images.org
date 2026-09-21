@@ -1,0 +1,43 @@
+#+TITLE: Viewing images
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="60">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* The viewer
+
+=.png=, =.jpg=, =.bmp= and =.gif= open in a pane.
+
+| Key         | Does                          |
+|-------------+-------------------------------|
+| =+= =-=     | zoom in / out                 |
+| ===         | fit to the pane               |
+| drag        | pan                           |
+| =Ctrl+scroll= | zoom                        |
+| =e=         | open the [[file:image-editor.html][image editor]]        |
+
+Transparency is drawn over a checkerboard, and scaling is nearest-neighbour
+so pixels stay crisp rather than turning to mush when you zoom in.
+
+* A directory of images
+
+The file tree's =I= key opens a directory in the viewer, so you can step
+through a folder of images rather than opening them one at a time.
+
+* From Lua
+
+#+begin_src lua
+mep.image_size(buf)        --> width, height
+mep.is_image_path(path)    --> is this an image?
+mep.image_set_theme(buf, on)
+#+end_src
+
+* Theming
+
+Images are re-tinted to the active theme by default, like other rendered
+documents. The header shows =[theme, Ctrl-R]=; press =Ctrl-R= to see the
+image's true colours -- which you want whenever the colours matter.
+
+* See also
+
+- [[file:image-editor.html][The image editor]] -- what =e= opens.
+- [[file:viewers-overview.html][What mep can open]] -- the other formats.

@@ -1,0 +1,59 @@
+#+TITLE: Completion
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* One popup, four sources
+
+As you type in Insert mode a completion popup appears, merging everything
+mep can offer into a single list:
+
+- words already in the buffer;
+- snippet trigger names;
+- filesystem paths, when what you are typing looks like one;
+- language-server suggestions, when a server is attached.
+
+Duplicates offered by more than one source collapse into one entry, and the
+list is capped so a large buffer cannot flood it.
+
+* Keys
+
+| Key       | Does                                   |
+|-----------+----------------------------------------|
+| =Tab=     | accept the selected entry              |
+| =Ctrl-N=  | next entry                             |
+| =Ctrl-P=  | previous entry                         |
+| =Esc=     | dismiss the popup                      |
+
+=Tab= belongs to the popup whenever it is open. Inline AI suggestions also
+use =Tab=, but only when the popup is closed, so the two never compete.
+
+* Why it does not lag
+
+The popup is throttled rather than recomputed on every keystroke: mep skips
+the work entirely when the prefix has not changed, and enforces a minimum
+interval between genuine prefix changes. Everything above rides that same
+throttle, so adding a source does not add latency.
+
+* Replacing the source
+
+There is one completion-source slot. Setting it replaces the built-in
+merge entirely, so a custom source should call through to whatever it still
+wants:
+
+#+begin_src lua
+mep.set_completion_source(function(prefix)
+  return {'alpha', 'beta', 'gamma'}
+end)
+#+end_src
+
+=mep.set_completion_accept_hook= and =mep.set_completion_resolve_hook= hook
+acceptance and lazy detail-fetching. =mep.completion_scan_buffer_words=,
+=mep.completion_path_prefix= and =mep.completion_rank= are the pieces the
+default source is built from, so a replacement can reuse them.
+
+* See also
+
+- [[file:snippets.html][Snippets]] -- triggers appear in this list.
+- [[file:lsp.html][Language servers]] -- where the good suggestions come from.
+- [[file:copilot.html][GitHub Copilot]] -- the other thing bound to =Tab=.

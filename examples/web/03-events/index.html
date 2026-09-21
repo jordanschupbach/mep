@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>03 - Events</title>
+<link rel="stylesheet" href="../shared/style.css">
+<script src="../shared/harness.js"></script>
+</head>
+<body>
+<nav><a href="../index.html">All levels</a></nav>
+<h1>03 - Events</h1>
+<p class="lead">Click the button and type in the field by hand; the checks below drive the same handlers with synthetic events.</p>
+<div class="card" id="outer">
+  <div class="row"><button id="inc">Count: 0</button> <button id="reset">Reset</button></div>
+  <div class="row"><input type="text" id="name" placeholder="type a name"> <span id="echo">(nothing typed)</span></div>
+  <form id="form" class="row"><input type="text" id="field" value="abc"> <button type="submit" id="submit">Submit</button> <span id="submitted"></span></form>
+  <div class="row"><input type="checkbox" id="check"> <label for="check">a checkbox</label> <span id="checked">unchecked</span></div>
+</div>
+<script>
+Harness.start('03-events', 9);
+var count = 0;
+var inc = document.getElementById('inc');
+inc.addEventListener('click', function () {
+  count++;
+  inc.textContent = 'Count: ' + count;
+});
+document.getElementById('reset').onclick = function () {
+  count = 0;
+  inc.textContent = 'Count: 0';
+};
+var nameInput = document.getElementById('name');
+nameInput.addEventListener('input', function (e) {
+  document.getElementById('echo').textContent = 'Hello, ' + e.target.value;
+});
+var formSubmitted = false;
+document.getElementById('form').addEventListener('submit', function (e) {
+  e.preventDefault();
+  formSubmitted = true;
+  document.getElementById('submitted').textContent = 'submitted: ' + document.getElementById('field').value;
+});
+document.getElementById('check').addEventListener('change', function (e) {
+  document.getElementById('checked').textContent = e.target.checked ? 'checked' : 'unchecked';
+});
+
+Harness.attempt('click() runs addEventListener handler', function () {
+  inc.click(); inc.click();
+  return count === 2 && inc.textContent === 'Count: 2';
+});
+Harness.attempt('onclick property handler', function () {
+  document.getElementById('reset').click();
+  return count === 0;
+});
+Harness.attempt('dispatchEvent(new Event) + e.target', function () {
+  nameInput.value = 'Ada';
+  nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+  return document.getElementById('echo').textContent === 'Hello, Ada';
+});
+Harness.attempt('bubbling reaches an ancestor', function () {
+  var seen = null;
+  var outer = document.getElementById('outer');
+  function onOuter(e) { seen = e.target.id; }
+  outer.addEventListener('click', onOuter);
+  inc.click();
+  outer.removeEventListener('click', onOuter);
+  return seen === 'inc';
+});
+Harness.attempt('removeEventListener stops delivery', function () {
+  var hits = 0;
+  function h() { hits++; }
+  inc.addEventListener('click', h);
+  inc.click();
+  inc.removeEventListener('click', h);
+  inc.click();
+  return hits === 1;
+});
+Harness.attempt('stopPropagation', function () {
+  var outerHits = 0;
+  var outer = document.getElementById('outer');
+  function onOuter() { outerHits++; }
+  function stopper(e) { e.stopPropagation(); }
+  outer.addEventListener('click', onOuter);
+  inc.addEventListener('click', stopper);
+  inc.click();
+  inc.removeEventListener('click', stopper);
+  outer.removeEventListener('click', onOuter);
+  return outerHits === 0;
+});
+Harness.attempt('submit event + preventDefault', function () {
+  var ev = new Event('submit', { bubbles: true, cancelable: true });
+  document.getElementById('form').dispatchEvent(ev);
+  return formSubmitted && ev.defaultPrevented;
+});
+Harness.attempt('CustomEvent detail', function () {
+  var got = null;
+  document.addEventListener('ladder', function (e) { got = e.detail.n; });
+  document.dispatchEvent(new CustomEvent('ladder', { detail: { n: 42 } }));
+  return got === 42;
+});
+Harness.attempt('checkbox change', function () {
+  var c = document.getElementById('check');
+  c.checked = true;
+  c.dispatchEvent(new Event('change', { bubbles: true }));
+  return document.getElementById('checked').textContent === 'checked';
+});
+Harness.done();
+</script>
+</body>
+</html>

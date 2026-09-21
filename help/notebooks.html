@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jupyter notebooks</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Documents and media">
+<meta name="help-order" content="50">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Jupyter notebooks</h1>
+<h1>A notebook is a text buffer</h1>
+<p>Open a <code>.ipynb</code> and you get the notebook in the "percent" cell format that
+Jupytext, VS Code and Spyder use: every cell starts with a <code># %%</code> marker
+(<code># %% [markdown]</code> for markdown cells).</p>
+<p>That means all the usual motions, edits, undo and search apply to cell
+source. It is a text buffer, not a web view.</p>
+<p>What the text cannot carry -- outputs, execution counts, ids, metadata --
+is kept alongside and written back as real nbformat JSON on <code>:w</code>, with
+Jupyter's own indentation so diffs stay clean.</p>
+<h1>What you see</h1>
+<p>Each cell is drawn as a rounded card, markdown cards tinted apart from code,
+and the cell under the cursor accented. A code cell shows <code>In [n]:</code> and a
+clickable <code>Run</code> chip, with its outputs underneath: stdout and stderr, the
+last expression's value, tracebacks, and inline <code>matplotlib</code> figures.</p>
+<p>A toolbar across the top has <code>+ Code</code>, <code>+ Markdown</code>, <code>Run All</code>, <code>Interrupt</code>,
+<code>Restart</code> and <code>Clear</code>.</p>
+<h1>Running cells</h1>
+<p>No <code>jupyter_client</code> is required.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Enter</code></td><td>run the cell under the cursor</td></tr>
+<tr><td><code>Ctrl+Enter</code></td><td>the same</td></tr>
+<tr><td><code>Ctrl-C Ctrl-C</code></td><td>the same, and works in Insert mode</td></tr>
+<tr><td><code>Shift+Enter</code></td><td>run it and move to the next cell</td></tr>
+<tr><td><code>mod1+Enter</code></td><td>run it and insert a new cell below</td></tr>
+<tr><td><code>]j</code> <code>[j</code></td><td>next / previous cell</td></tr>
+</table>
+<h1>The <code>&lt;leader&gt;j</code> group</h1>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;jr</code></td><td>run this cell</td></tr>
+<tr><td><code>&lt;leader&gt;jA</code></td><td>run all cells</td></tr>
+<tr><td><code>&lt;leader&gt;jo</code></td><td>run this cell, insert below</td></tr>
+<tr><td><code>&lt;leader&gt;ja</code></td><td>insert a cell above</td></tr>
+<tr><td><code>&lt;leader&gt;jb</code></td><td>insert a cell below</td></tr>
+<tr><td><code>&lt;leader&gt;jd</code></td><td>delete this cell</td></tr>
+<tr><td><code>&lt;leader&gt;jy</code></td><td>make this cell code</td></tr>
+<tr><td><code>&lt;leader&gt;jk</code></td><td>move this cell up</td></tr>
+<tr><td><code>&lt;leader&gt;jC</code></td><td>clear all outputs</td></tr>
+<tr><td><code>&lt;leader&gt;ji</code></td><td>interrupt the kernel</td></tr>
+<tr><td><code>&lt;leader&gt;j0</code></td><td>restart the kernels</td></tr>
+<tr><td><code>&lt;leader&gt;jK</code></td><td>set this cell's kernel</td></tr>
+</table>
+<p><code>:NotebookNew [path]</code> creates one, and the other actions have <code>:Notebook*</code>
+commands too.</p>
+<h1>Per-cell kernels</h1>
+<p>Each code cell picks its own kernel, from the dropdown at its top right (or
+<code>&lt;leader&gt;jK</code>). Out of the box the list offers Python 3 plus whichever of R,
+JavaScript (Node), Ruby and Bash are on <code>$PATH</code>.</p>
+<p>Python 3 is one <b>persistent</b> process, so state and inline figures carry
+across cells. The others are stateless "script" kernels: each run is a fresh
+process fed the cell's code on stdin.</p>
+<p>A cell with no explicit choice follows the notebook default, and a new cell
+inherits the previous cell's kernel -- so a block of cells keeps running on
+whatever the one above it used. Each choice is written to that cell's
+<code>metadata.kernel</code> on <code>:w</code>.</p>
+<p><code>In [n]:</code> counts up as one shared sequence across every kernel, and runs
+execute one at a time in order, so a mixed "run all" still goes top to
+bottom.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.notebook_kernels = {
+  <span class="tok-blue">{</span>name=<span class="tok-green">'python3'</span>, display_name=<span class="tok-green">'Python 3'</span>, language=<span class="tok-green">'py'</span>, mode=<span class="tok-green">'python'</span><span class="tok-blue">}</span>,
+  {name=<span class="tok-green">'ir'</span>, display_name=<span class="tok-green">'R'</span>, language=<span class="tok-green">'r'</span>, mode=<span class="tok-green">'script'</span>,
+   command=<span class="tok-blue">{</span><span class="tok-green">'R'</span>, <span class="tok-green">'--slave'</span>, <span class="tok-green">'--no-save'</span><span class="tok-blue">}</span>},
+  {name=<span class="tok-green">'deno'</span>, display_name=<span class="tok-green">'Deno'</span>, language=<span class="tok-green">'js'</span>, mode=<span class="tok-green">'script'</span>,
+   command=<span class="tok-blue">{</span><span class="tok-green">'deno'</span>, <span class="tok-green">'run'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span>},
+}</code></pre></div>
+<p><code>mode</code> is one of:</p>
+<table>
+<tr><th>Mode</th><th>Means</th></tr>
+<tr><td><code>python</code></td><td>the built-in persistent kernel; no <code>command</code></td></tr>
+<tr><td><code>protocol</code></td><td>your own long-lived process speaking mep's JSON-line kernel protocol</td></tr>
+<tr><td><code>script</code></td><td>a fresh process per run, code on stdin</td></tr>
+</table>
+<p><code>language</code> is the Treesitter filetype the cell body is highlighted with.</p>
+<p><code>examples/notebook_example.ipynb</code> is a ready-made notebook to try.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="repl.html">REPL and send-to-terminal</a> -- lighter, for a plain script.</li>
+<li><a href="python-mode.html">Python mode</a> -- a session with panels instead of cells.</li>
+</ul>
+</body>
+</html>

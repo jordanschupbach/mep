@@ -1,0 +1,32 @@
+#+TITLE: Credits
+#+HTML_HEAD: <meta name="help-section" content="Reference">
+#+HTML_HEAD: <meta name="help-order" content="80">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Built on
+
+*Lua* -- the embedded scripting language a great deal of mep is written in.
+
+*Treesitter* -- the incremental parsers behind syntax highlighting, folding
+and the structure outline, along with the community grammars mep ships
+queries for.
+
+*JetBrains Mono* -- the editor font, embedded so both builds start with real
+text and no asset fetch.
+
+*A Nerd Font icon set* -- the file-type and interface glyphs.
+
+*Emoji and symbol fonts* -- colour emoji, maths and box-drawing glyphs.
+
+*Serif and monospace faces* -- laying out office documents.
+
+*Deno and webview* -- the native window the wasm build is hosted in.
+
+* Licences
+
+Full licence texts for every bundled dependency are in
+=third_party_licenses/= in the source tree.
+
+* See also
+
+- [[file:architecture.html][How mep is put together]] -- where each piece is used.

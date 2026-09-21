@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operators and text objects</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Editing">
+<meta name="help-order" content="40">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Operators and text objects</h1>
+<h1>The shape of a change</h1>
+<pre>[count] operator [count] motion-or-text-object</pre>
+<p><code>d</code> is delete, <code>w</code> is "to the next word", so <code>dw</code> deletes to the next word.
+<code>2d3w</code> deletes six words. Doubling an operator applies it to the current
+line: <code>dd</code>, <code>yy</code>, <code>cc</code>.</p>
+<h1>The operators</h1>
+<table>
+<tr><th>Keys</th><th>Does</th></tr>
+<tr><td><code>d</code></td><td>delete</td></tr>
+<tr><td><code>c</code></td><td>change -- delete, then enter Insert mode</td></tr>
+<tr><td><code>y</code></td><td>yank (copy)</td></tr>
+<tr><td><code>gu</code> <code>gU</code></td><td>lowercase, uppercase</td></tr>
+<tr><td><code>gq</code></td><td>reflow to <code>textwidth</code></td></tr>
+<tr><td><code>&gt;</code> <code>&lt;</code></td><td>indent, outdent</td></tr>
+</table>
+<p><code>D</code>, <code>C</code> and <code>Y</code> are shorthand for the same thing to the end of the line.
+The doubled forms of the <code>g</code> operators are <code>guu</code>, <code>gUU</code> and <code>gqq</code> -- so
+<code>gqq</code> reflows the current paragraph. (Vim also accepts <code>gugu</code> and friends;
+mep does not.)</p>
+<h1>Text objects</h1>
+<p>Instead of a motion, an operator can take a text object: <code>i</code> for "inner" or
+<code>a</code> for "around", then what.</p>
+<table>
+<tr><th>Object</th><th>Is</th></tr>
+<tr><td><code>w</code> <code>W</code></td><td>a word (<code>W</code>: whitespace-separated)</td></tr>
+<tr><td><code>p</code></td><td>a paragraph</td></tr>
+<tr><td>="= ='= <code>`</code></td><td>a quoted string</td></tr>
+<tr><td><code>(</code> <code>)</code> <code>b</code></td><td>a parenthesised group</td></tr>
+<tr><td><code>{</code> <code>}</code> <code>B</code></td><td>a braced block</td></tr>
+<tr><td><code>[</code> <code>]</code></td><td>a bracketed group</td></tr>
+<tr><td><code>&lt;</code> <code>&gt;</code></td><td>an angle-bracketed group</td></tr>
+</table>
+<p><code>i</code> takes the contents, <code>a</code> takes the delimiters too: <code>di(</code> empties the
+parentheses, <code>da(</code> removes them as well.</p>
+<p>The value of text objects is that they do not depend on where in the thing
+the cursor is. <code>ciw</code> changes the word you are on whether the cursor sits at
+its start, middle or end -- unlike <code>cw</code>, which only changes from the cursor
+onward.</p>
+<p>There is no sentence (<code>is</code>) or tag (<code>it</code>) object.</p>
+<h1>Smaller changes</h1>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>x</code></td><td>delete the character under the cursor</td></tr>
+<tr><td><code>r{char}</code></td><td>replace that one character, staying in Normal mode</td></tr>
+<tr><td><code>p</code> <code>P</code></td><td>put the last yank or delete after / before the cursor</td></tr>
+<tr><td><code>J</code> <code>gJ</code></td><td>join the next line on, with / without a space</td></tr>
+<tr><td><code>~</code></td><td>toggle the case of the character under the cursor, and advance</td></tr>
+</table>
+<p>These all take counts -- <code>5~</code> toggles five characters, <code>3p</code> puts three
+copies. Text that ends in a newline is put linewise, on its own lines;
+anything else is put inline.</p>
+<p>Note that <code>~</code> is not an operator: it acts on characters directly rather than
+taking a motion, so there is no <code>~w</code>. In Visual mode it does apply to the
+whole selection.</p>
+<h1>Reflowing text</h1>
+<p><code>gq</code> wraps to <code>textwidth</code>, which defaults to 80. <code>:set textwidth=72</code> (or
+<code>:set tw=72</code>) changes it. <code>gqq</code> is the current paragraph, <code>gqap</code> the
+paragraph around the cursor including its blank line, and <code>gqG</code> everything
+to the end of the file.</p>
+<h1>Indenting</h1>
+<p><code>&gt;</code> and <code>&lt;</code> shift by one indent step. In Visual mode they keep the selection
+active, so pressing <code>&gt;</code> repeatedly keeps indenting the same block -- the same
+behaviour as Vim.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="motions.html">Motions</a> -- everything an operator can take as its range.</li>
+<li><a href="visual-mode.html">Visual modes</a> -- selecting first and operating second.</li>
+<li><a href="registers-marks.html">Registers, marks and jumps</a> -- where deleted and yanked text goes.</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,5 @@
+{"structures": [
+  {"name": "Array", "access": "O(1)"},
+  {"name": "Linked list", "access": "O(n)"},
+  {"name": "Hash table", "access": "O(1) average"}
+]}

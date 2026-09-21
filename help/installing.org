@@ -1,0 +1,83 @@
+#+TITLE: Installing and running
+#+HTML_HEAD: <meta name="help-section" content="Getting started">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Getting a toolchain
+
+mep builds with CMake and a C++20 compiler. The repository ships a Nix flake
+that provides everything -- cmake, the compiler, emscripten, deno, just --
+at the right versions:
+
+#+begin_example
+direnv allow      # or, per shell:
+nix develop
+#+end_example
+
+Everything below assumes you are inside that shell.
+
+* Building and running
+
+| Command             | What it does                                       |
+|---------------------+----------------------------------------------------|
+| =just run=          | build the native binary and launch it (the default) |
+| =just build-native= | build only, into =build/native=                    |
+| =just build-web=    | build the wasm target, into =build/web=            |
+| =just run-wasm=     | build wasm and open it in a Deno-hosted window     |
+| =just test=         | build and run every test that needs no display     |
+| =just clean=        | remove all build output                            |
+
+For a faster edit/test loop there is =just build-native-dev=, an =-O0= build
+in its own directory that never collides with the release one. Use it for
+iteration, not for anything performance-sensitive.
+
+* The command line
+
+#+begin_example
+mep [--project <dir>] [--no-session] [file]
+mep --export-org <in.org> <out.html>
+#+end_example
+
+| Option             | Effect                                                |
+|--------------------+-------------------------------------------------------|
+| =--project <dir>=  | open =dir= as the project instead of the current directory |
+| =--no-session=     | neither restore nor save this project's workspaces and tabs |
+| =--export-org=     | render one Org file to HTML and exit, with no window   |
+| =-h=, =--help=     | print this usage and exit                             |
+| =file=             | open =file= once the project is set up                |
+
+=$MEP_PROJECT= does the same job as =--project=, for launchers that find
+setting an environment variable easier than building an argument list.
+
+* Configuration
+
+On startup mep runs =~/.config/mep/init.lua= if it exists. That file is
+ordinary Lua with mep's whole scripting API available, and it runs before any
+saved session is restored, so options that affect restoring take effect in
+time.
+
+#+begin_src lua
+-- ~/.config/mep/init.lua
+mep.colorscheme('everforest-dark')
+mep.opt.restore_workspaces = false
+mep.leader_map('xx', 'Say hello', function() mep.notify('hello') end)
+#+end_src
+
+=:source <file>= runs another Lua file, and =:lua <code>= runs a line
+directly -- useful for trying something before committing it to =init.lua=.
+
+* The wasm build
+
+mep also compiles to WebAssembly. =just run-wasm= builds it and opens it in a
+native window via Deno and webview, with file reading and writing bridged to
+a loopback-only HTTP server on the host.
+
+Opening =build/web/mep.html= directly in a browser tab works too, but there
+is no server behind it: =:e=, =:w= and =:source= fail there with an ordinary
+read/write error, and there is no =init.lua= to load. Clipboard access in the
+browser is best-effort.
+
+* See also
+
+- [[file:dashboard.html][The start screen]] -- what you see on first launch.
+- [[file:first-steps.html][Your first ten minutes]] -- using the editor once it is up.

@@ -1,0 +1,64 @@
+#+TITLE: The start screen
+#+HTML_HEAD: <meta name="help-section" content="Getting started">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What you are looking at
+
+Start mep with nothing to open and you get the dashboard: the mep logo, a
+short about block, two actions, and a hint line. It is deliberately almost
+empty -- it is a starting point, not a control panel.
+
+* The actions
+
+| Key     | Action   | What it does                                  |
+|---------+----------+-----------------------------------------------|
+| =p=     | Projects | opens the project picker (=:MepProjects=)     |
+| =h=     | Help     | opens this manual (=:MepHelp=)                |
+| =j= / =k= | --     | move between the two rows                     |
+| =Enter= | --       | activate the selected row                     |
+
+The letter keys work directly, so =h= gets you here without selecting first.
+
+* The hint line
+
+Below the actions:
+
+#+begin_example
+i to start typing  :e to open a file  <Space> for keys  :q to quit
+#+end_example
+
+Those four cover everything you can do from a standing start: begin editing
+the empty buffer, open a file, discover the key bindings, or leave.
+
+* When it appears, and when it does not
+
+The dashboard is not a screen you navigate to -- it is what mep draws when
+there is genuinely nothing else to show. It requires all of:
+
+- exactly one project loaded, and that project untouched;
+- every buffer pristine -- unmodified, unnamed, not a scratch buffer, and
+  empty.
+
+Start typing, open a file, or restore a session and it is gone, because one
+of those conditions no longer holds. There is no command to bring it back.
+
+The "every buffer" condition matters more than it looks. mep adopts existing
+git worktrees as extra workspaces shortly after startup, each with its own
+fresh empty buffer, so a check on the number of workspaces or buffers would
+make the dashboard vanish a frame after it appeared in any repository that
+has worktrees. Asking instead whether everything is *untouched* is what keeps
+it on screen.
+
+* Opening a project instead
+
+Most sessions do not start here at all: =mep --project <dir>=, or launching
+mep inside a directory, opens that directory as a project. A project opened
+for the first time gets a default layout -- its README in the main pane, a
+terminal below, the file tree at the left -- and one that has been opened
+before is restored exactly as you left it.
+
+* See also
+
+- [[file:installing.html][Installing and running]] -- the command line and startup options.
+- [[file:first-steps.html][Your first ten minutes]] -- what to do once you are past this screen.

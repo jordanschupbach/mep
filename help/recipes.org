@@ -1,0 +1,111 @@
+#+TITLE: Configuration recipes
+#+HTML_HEAD: <meta name="help-section" content="Configuration">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* A starting init.lua
+
+#+begin_src lua
+mep.colorscheme('everforest-dark')
+mep.cmd('set textwidth=88')
+mep.opt.tab_terminal_share = 0.35
+#+end_src
+
+* Turn Copilot off
+
+#+begin_src lua
+mep.copilot_enabled = false          -- entirely; no server is started
+mep.copilot_filetypes['md'] = false  -- or just for markdown
+#+end_src
+
+* Add a formatter
+
+#+begin_src lua
+mep.format_languages.js = {'prettier', '--stdin-filepath', '{}'}
+mep.format_languages.ts = mep.format_languages.js
+mep.format_languages.tsx = mep.format_languages.js
+#+end_src
+
+Entries are keyed by bare extension, so every extension needs its own key.
+
+* Add a notebook kernel
+
+#+begin_src lua
+table.insert(mep.opt.notebook_kernels, {
+  name = 'deno', display_name = 'Deno', language = 'js',
+  mode = 'script', command = {'deno', 'run', '-'},
+})
+#+end_src
+
+* Point a language UI mode at a virtualenv
+
+#+begin_src lua
+mep.opt.py_ui_cmd = {'.venv/bin/python', '-i', '-q'}
+#+end_src
+
+* Relocate git worktrees
+
+#+begin_src lua
+mep.opt.worktree_dir = '~/worktrees'   -- absolute, or relative to the project
+mep.opt.workspace_git_dirty = true     -- mark dirty workspaces with '+'
+#+end_src
+
+* A stage-aware git gutter
+
+#+begin_src lua
+mep.git_gutter_base = 'index'    -- like gitsigns; default is HEAD
+mep.git_gutter_line_hl = true    -- tint the whole changed line
+#+end_src
+
+* A custom statusline
+
+#+begin_src lua
+mep.set_statusline(function()
+  local name = mep.filename()
+  if name == '' then name = '[No Name]' end
+  local git = mep.git_gutter_summary()
+  return name .. (git ~= '' and ('  ' .. git) or '')
+end)
+#+end_src
+
+The Ln/Col readout and the chips are drawn either way -- this replaces the
+text, not the whole row.
+
+* A sidebar of your own
+
+#+begin_src lua
+local id = mep.sidebar_create('Notes', 'right', 30)
+mep.sidebar_set_sections(id, {{
+  id = 'main', title = 'Notes', collapsed = false,
+  widgets = {
+    {id = 'a', text = 'Open TODO', on_click = function() mep.open('TODO.org') end},
+  },
+}})
+mep.sidebar_set_help(id, {{'Enter', 'open the item'}})
+mep.leader_map('xn', 'Notes panel', function() mep.sidebar_toggle(id) end)
+#+end_src
+
+* Run something on every save
+
+#+begin_src lua
+mep.on_buffer_saved(function()
+  if (mep.filename() or ''):match('%.py$') then mep.format_buffer() end
+end)
+#+end_src
+
+* A project-local config
+
+#+begin_src lua
+-- at the end of init.lua
+local per_project = mep.getcwd() .. '/.mep.lua'
+local f = io.open(per_project)
+if f then f:close() mep.cmd('source ' .. per_project) end
+#+end_src
+
+=mep.on_workspace_changed(fn)= re-runs this when you switch workspaces.
+
+* See also
+
+- [[file:options.html][Options]] -- everything settable.
+- [[file:keymaps.html][Remapping keys]] -- the binding functions.
+- [[file:api-events.html][Events and hooks]] -- what you can react to.

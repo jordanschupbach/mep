@@ -1,0 +1,52 @@
+#+TITLE: Folds
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="60">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* The keys
+
+All on the =z= prefix, as in Vim:
+
+| Key  | Does                            |
+|------+---------------------------------|
+| =za= | toggle the fold at the cursor   |
+| =zo= | open it                         |
+| =zc= | close it                        |
+| =zR= | open every fold in the buffer   |
+| =zM= | close every fold                |
+| =zr= | one fold level less             |
+| =zm= | one fold level more             |
+
+A folded region shows a marker in the gutter column, beside the line number.
+
+* Where folds come from
+
+| Source                | For                                  |
+|-----------------------+--------------------------------------|
+| Treesitter            | code, via =:MepSyntaxFold=           |
+| headline depth        | Org and Markdown                     |
+| =\{\{\{= and =\}\}\}= | marker folds, in any filetype        |
+
+Org and marker folds are recomputed lazily -- right before a fold command
+touches the buffer, rather than on every keystroke -- so they are always
+current without costing anything while you type.
+
+Org has its own cycling on =:MepOrgCycle=, which is the more natural way to
+move through an outline.
+
+* From Lua
+
+#+begin_src lua
+mep.fold_create(start_row, end_row)
+mep.fold_toggle(row)
+mep.fold_clear_provider()
+#+end_src
+
+A feature that computes its own folds registers them with =fold_create= and
+clears its previous set with =fold_clear_provider=.
+
+* See also
+
+- [[file:syntax.html][Syntax highlighting]] -- where code folds come from.
+- [[file:scrolling.html][Scrolling and the view]] -- the rest of the =z= prefix.
+- [[file:org-basics.html][Org files in mep]] -- outline cycling.

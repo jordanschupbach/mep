@@ -259,6 +259,13 @@
             runHook preInstall
             install -Dm755 mep "$out/bin/mep"
             install -Dm644 "$NIX_BUILD_TOP/$sourceRoot"/help/*.html -t "$out/share/mep/help"
+            # Keep runtime assets with the packaged executable.  The native
+            # dashboard resolves these relative to $out/bin/mep as
+            # ../share/mep/assets; omitting them here made the logos (and
+            # bundled spell-check wordlist) available in dev builds only.
+            install -Dm644 "$NIX_BUILD_TOP/$sourceRoot"/assets/mep-light.png "$out/share/mep/assets/mep-light.png"
+            install -Dm644 "$NIX_BUILD_TOP/$sourceRoot"/assets/mep-dark.png "$out/share/mep/assets/mep-dark.png"
+            install -Dm644 "$NIX_BUILD_TOP/$sourceRoot"/assets/spell/en_US.words "$out/share/mep/assets/spell/en_US.words"
             runHook postInstall
           '';
         };

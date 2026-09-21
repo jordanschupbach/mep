@@ -1,0 +1,47 @@
+#+TITLE: Language servers in code blocks
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="90">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Editing support inside a block
+
+A =#+begin_src= block in an org file gets the same completion, diagnostics
+and hover as a real source file in that language. You write Python inside
+prose and still get a language server.
+
+It works by keeping a *shadow buffer* per block: the block's contents are
+mirrored into a scratch file of the right type, and the server sees that.
+
+* What it does not cover
+
+Deliberate gaps, all matching the equivalent upstream implementation:
+
+- =:var= header arguments are invisible to the server. Only real execution
+  renders them as a prelude assignment, so a variable bound by =:var= looks
+  undefined to the language server even though the block runs fine.
+- No code actions or symbol bridging -- those stay with the outer org
+  buffer. Formatting *is* bridged: see below.
+- A client, once started, runs until mep exits; it is not torn down when the
+  buffer closes.
+
+The =:var= one is the gap to remember, because it shows up as a diagnostic
+that is simply wrong rather than as a missing feature.
+
+* Formatting a block
+
+=gf= inside a block with no formatter of its own asks that block's server
+for one, over the block's rows alone
+(=textDocument/rangeFormatting=). Anything the server wants to change
+outside those rows is refused rather than applied in part -- on a shared
+shadow, that is what a whole-document reformat comes back as.
+
+The first =gf= after opening a block can land before the server has
+finished starting and report that nothing came back; press it again.
+
+See [[file:formatting.html][Formatting]] for the rest of =gf=.
+
+* See also
+
+- [[file:org-babel.html][Executing code blocks]] -- running what you are editing.
+- [[file:lsp.html][Language servers]] -- the machinery being reused.
+- [[file:formatting.html][Formatting]] -- =gf=, and the formatter table it prefers.

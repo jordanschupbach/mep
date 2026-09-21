@@ -1,0 +1,65 @@
+#+TITLE: How mep is put together
+#+HTML_HEAD: <meta name="help-section" content="Reference">
+#+HTML_HEAD: <meta name="help-order" content="60">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* For contributors
+
+| File                          | Holds                                    |
+|-------------------------------+------------------------------------------|
+| =src/main.cpp=                | the frame loop, rendering, and every builtin Lua chunk |
+| =src/editor.h= / =.cpp=       | modes, motions, operators, buffers, panes, tabs, workspaces, projects, the =:= command line |
+| =src/lua_env.h= / =.cpp=      | the Lua state and the =mep.*= C bindings |
+| =src/gfx/=                    | the in-house GLFW/OpenGL backend         |
+| =src/html_doc.cpp=            | HTML parsing, CSS and layout             |
+| =src/*_doc.cpp=               | one document model per format -- org, pdf, office, sheet, notebook, image, model3d |
+| =src/workspace_git.cpp=       | pure helpers behind worktree-backed workspaces |
+| =src/regex.cpp=               | the regex engine behind search and =:s=  |
+| =CMakeLists.txt=              | the build                                |
+
+The document modules are deliberately free of raylib and of the editor, so
+each can be unit-tested without a display. That is why =just test= can run
+most of the suite headlessly.
+
+* The builtin Lua chunks
+
+A great deal of mep is Lua that ships inside the binary as
+=kBuiltin*= string literals in =main.cpp= -- the file tree, git panel, LSP
+client, org tooling, learning games and much else.
+
+They are loaded in order at startup. Writing one has two pitfalls worth
+knowing before you hit them:
+
+- *A chunk over 64 KB fails the build.* Split it into a =const char *parts[]=
+  joined at load time, as =kBuiltinLearnParts= does.
+- *=??= inside a chunk is a C trigraph* and trips =-Werror=. Check a chunk
+  by extracting the literal and running =luac -p= over it.
+
+Because each chunk is a separate =DoString=, they do not share locals --
+anything two chunks both need has to be a global.
+
+* Adding a feature
+
+Most features are Lua: register a command with =mep.command=, a binding with
+=mep.leader_map=, and build the UI from =mep.sidebar_*= or =mep.picker_*=.
+Reach for C++ only when you need a primitive the Lua API does not expose.
+
+* Testing
+
+=just test= builds and runs every test that needs no display, plus
+=check_help=. =just test-gui= runs the ones that drive a real window.
+=just lint= runs clang-tidy, cppcheck and include-what-you-use.
+
+* Documentation
+
+This manual lives in =help/=: Org sources, exported to the HTML that ships.
+=just help= rebuilds it, =just help-check= verifies it. The reference pages
+-- the Lua API, the command index, the key index -- are generated from the
+source by =scripts/gen_reference_pages.py=, so they cannot drift.
+
+See [[file:writing-help.html][Writing help pages]].
+
+* See also
+
+- [[file:installing.html][Installing and running]] -- the build.
+- [[file:agent-api.html][Driving mep from an agent]] -- the external control surface.

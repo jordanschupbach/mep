@@ -61,6 +61,14 @@ public:
      * @param ref Registry reference of the function to call.
      */
     void CallRef(int ref);
+
+    /**
+     * @brief Calls a global Lua function by name with two string arguments (no return value).
+     * Used by main.cpp's PDF margin-note drawing to kick off an async LaTeX render
+     * (mep_pdf_note_latex) with the note's hash key and text, injection-safely (args
+     * pushed via the C API, not string-interpolated). A no-op if the global isn't a function.
+     */
+    void CallGlobal2Strings(const char *fn, const std::string &a, const std::string &b);
     /**
      * @brief Invokes ref with a single string argument (job stdout/stderr lines, exit codes, ...),
      * reporting any error through the editor's status line. No-op if ref is LUA_NOREF (0 or -1).
@@ -161,6 +169,17 @@ public:
      * non-boolean.
      */
     bool CallRefWithBoolForBool(int ref, bool arg);
+    /**
+     * @brief Calls a Lua callback with a single string argument and reads back a boolean result.
+     *
+     * Buffer-scoped Normal-mode key hook (mep.buffer_set_on_key): the Lua side returns true when it
+     * handled the key so the C++ key handler (editor.cpp HandleNormalChar) swallows it instead of
+     * falling through to the builtin Normal-mode command for that key.
+     * @param ref Registry reference of the function to call.
+     * @param arg String argument to pass to the Lua function.
+     * @return The truthiness of ref's return value, or false if ref is unset or errors.
+     */
+    bool CallRefWithStringForBool(int ref, const std::string &arg);
     /**
      * @brief Releases a registered callback so it can be garbage-collected -- call once a callback
      * (e.g. a finished job's on_exit) will never fire again.

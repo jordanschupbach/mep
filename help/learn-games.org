@@ -1,0 +1,91 @@
+#+TITLE: Playing
+#+HTML_HEAD: <meta name="help-section" content="Learning">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Starting
+
+=:Learn= (=<leader>ol=) picks a game for the current deck. Each game also
+has its own command and key.
+
+| Game                         | Command               | Key    |
+|------------------------------+-----------------------+--------|
+| Multiple-choice flashcards   | =:LearnMCFlashCards=  | =ogf=  |
+| Matching                     | =:LearnMatching=      | =ogm=  |
+| Identify the code            | =:LearnCodeID=        | =ogc=  |
+| True or false                | =:LearnTrueFalse=     | =ogt=  |
+| Fill in the blank            | =:LearnCloze=         | =ogb=  |
+| Type the term                | =:LearnTypeTerm=      | =ogy=  |
+| Odd one out                  | =:LearnOddOneOut=     | =ogo=  |
+| Which category               | =:LearnWhichCategory= | =ogk=  |
+| Fact quiz                    | =:LearnFactQuiz=      | =oga=  |
+| Put in order                 | =:LearnPutInOrder=    | =ogs=  |
+| Jeopardy                     | =:LearnJeopardy=      | =ogj=  |
+| Hangman                      | =:LearnHangman=       | =ogh=  |
+| Complete the code            | =:LearnCompleteCode=  | =ogx=  |
+| Spot the bug                 | =:LearnSpotBug=       | =ogd=  |
+| Predict the output           | =:LearnPredictOutput= | =ogp=  |
+| Mixed practice               | =:LearnMixed=         | =ogg=  |
+| Timed mixed practice         | =:LearnTimed [secs]=  | =ogT=  |
+| Which code is it             | =:LearnCodeReverse=   | =ogv=  |
+| Sort into buckets            | =:LearnSortBuckets=   | =ogu=  |
+| Rank by fact                 | =:LearnRank=          | =ogn=  |
+| Survival                     | =:LearnSurvival=      | =ogS=  |
+| Hot-seat two player          | =:LearnHotSeat=       | =og2=  |
+| Picture quiz                 | =:LearnPictureQuiz=   | =ogi=  |
+| Crossword                    | =:LearnCrossword=     | =ogw=  |
+
+Each takes an optional deck path. A game the deck cannot feed says so in one
+line rather than starting and failing.
+
+* The keys
+
+Every game opens a Learn pane, and the last row lists its keys.
+
+| Key       | Does                                  |
+|-----------+---------------------------------------|
+| digits    | pick an answer                        |
+| letters   | pick, where a game uses letters       |
+| =t=       | type an answer instead of picking     |
+| =n= / Enter | next question                       |
+| =o=       | open the current card in the deck     |
+| =r=       | restart                               |
+| =q=       | quit                                  |
+
+* Typed answers are forgiving
+
+The matcher accepts the term and any of its =:ALIASES:=, ignores case and
+punctuation, and forgives a one-letter slip on longer answers. So a right
+answer with a typo is not marked wrong.
+
+* Identify the code
+
+Names are hidden systematically rather than randomly: top-level classes
+become =Thing=, functions become =solve=, =:HIDE:= identifiers become
+=op1=, =op2=..., and the term's own words become =thing=. Python keywords
+and builtins are left alone, so the code still reads as code. The real names
+come back once you have answered.
+
+* Spaced repetition
+
+Every summary offers =g=, which records the session into org-drill's
+=:DRILL_*:= properties -- SM-2, with Good for a right answer and Again for a
+miss.
+
+With =#+LEARN_SRS: yes= in the deck, later sessions deal due cards first.
+=:MepOrgDrillReview= reads the same properties, so the two share one record
+of what you know.
+
+* Building on it
+
+The pieces are reusable: =mep.learn_parse_deck(path)=, the question
+generators (=mep.learn_mc_questions=, =learn_tf_questions=,
+=learn_cloze_questions=, =learn_fact_questions=, =learn_match_rounds= and
+others), =mep.learn_anonymize_code(lines, card)=,
+=mep.learn_answer_matches(typed, accepted)=, and the =mep.learn_games= and
+=mep.learn_catalog= tables.
+
+* See also
+
+- [[file:learn-decks.html][Writing a deck]] -- the format.
+- [[file:org-roam.html][Org-roam]] -- =:MepOrgDrillReview= over your notes.

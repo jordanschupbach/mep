@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Colorschemes</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Interface">
+<meta name="help-order" content="60">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Colorschemes</h1>
+<h1>Changing it</h1>
+<p><code>&lt;leader&gt;ut</code> opens the theme picker, which <b>previews live</b>: every change of
+the highlighted row re-tints the whole interface immediately, before you
+commit. <code>Enter</code> keeps the theme; <code>Esc</code> restores the one you started with.
+Browsing sixty-two themes is therefore just holding a cursor key.</p>
+<pre>:colorscheme everforest-dark
+:colo nord</pre>
+<p>From Lua:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.colorscheme(<span class="tok-green">'kanagawa'</span>)          <span class="tok-comment">-- set it</span>
+<span class="tok-blue">print</span>(mep.<span class="tok-blue">current_theme</span>())           <span class="tok-comment">-- what is active</span>
+<span class="tok-purple">for</span> _, n <span class="tok-purple">in</span> <span class="tok-blue">ipairs</span>(mep.<span class="tok-blue">theme_names</span>()) <span class="tok-purple">do</span> <span class="tok-blue">print</span>(n) <span class="tok-purple">end</span></code></pre></div>
+<p>To make it stick, put the <code>mep.colorscheme</code> call in <code>init.lua</code>.</p>
+<h1>What ships</h1>
+<p>Sixty-two themes, in the order the picker lists them:</p>
+<p><code>mep-dark</code> (the default), <code>gruvbox-dark</code>, <code>nord</code>, <code>gruvbox-light</code>,
+<code>dracula</code>, <code>tokyonight-storm</code>, <code>tokyonight-night</code>, <code>tokyonight-moon</code>,
+<code>catppuccin-mocha</code>, <code>catppuccin-macchiato</code>, <code>catppuccin-frappe</code>,
+<code>catppuccin-latte</code>, <code>everforest-dark</code>, <code>everforest-light</code>, <code>kanagawa</code>,
+<code>one-dark</code>, <code>one-light</code>, <code>solarized-dark</code>, <code>solarized-light</code>, <code>nord-light</code>,
+<code>tokyo-night</code>, <code>rose-pine</code>, <code>rose-pine-dawn</code>, <code>monokai</code>, <code>ayu-dark</code>,
+<code>ayu-mirage</code>, <code>github-dark</code>, <code>github-light</code>, <code>nightfox</code>, <code>horizon</code>,
+<code>zenburn</code>, <code>synthwave84</code>, <code>oxocarbon-dark</code>, <code>oxocarbon-light</code>,
+<code>tokyonight-day</code>, <code>ayu-light</code>, <code>rose-pine-moon</code>, <code>kanagawa-dragon</code>,
+<code>kanagawa-lotus</code>, <code>github-dark-dimmed</code>, <code>night-owl</code>, <code>material-palenight</code>,
+<code>material-darker</code>, <code>nightfly</code>, <code>moonfly</code>, <code>oceanic-next</code>, <code>iceberg-dark</code>,
+<code>iceberg-light</code>, <code>melange</code>, <code>gruvbox-material</code>, <code>sonokai</code>, <code>srcery</code>,
+<code>jellybeans</code>, <code>tomorrow-night</code>, <code>cobalt2</code>, <code>flexoki-dark</code>, <code>flexoki-light</code>,
+<code>modus-vivendi</code>, <code>modus-operandi</code>, <code>vscode-dark</code>, <code>apprentice</code>, <code>terafox</code>.</p>
+<h1>A theme is eleven colours</h1>
+<p>Each one defines a name and eleven colours:</p>
+<table>
+<tr><th>Colour</th><th>Used for</th></tr>
+<tr><td><code>bg</code></td><td>the canvas</td></tr>
+<tr><td><code>fg</code></td><td>ordinary text</td></tr>
+<tr><td><code>red</code></td><td>errors, deletions</td></tr>
+<tr><td><code>green</code></td><td>strings, additions</td></tr>
+<tr><td><code>yellow</code></td><td>warnings, changes</td></tr>
+<tr><td><code>blue</code></td><td>functions, links</td></tr>
+<tr><td><code>purple</code></td><td>keywords</td></tr>
+<tr><td><code>cyan</code></td><td>numbers, constants, types</td></tr>
+<tr><td><code>orange</code></td><td>types, parameters</td></tr>
+<tr><td><code>border</code></td><td>pane and panel edges</td></tr>
+<tr><td><code>accent</code></td><td>the active element</td></tr>
+</table>
+<p>Every other colour in the interface -- the status line, sidebars, the
+picker, the cursor line, tab labels, float borders, about forty groups in
+all -- is <b>derived</b> from those eleven, by mixing and tinting. That is why
+adding a theme means writing eleven colours rather than a stylesheet, and
+why a new UI element picks up sensible colours in all sixty-two themes
+without anyone revisiting them.</p>
+<h1>Light and dark</h1>
+<p>mep does not track a light/dark flag. Where it needs to know -- picking
+which mep logo to draw on the start screen, for instance -- it computes the
+perceptual luminance of the resolved background and decides from that.</p>
+<p>So a custom theme gets the right treatment automatically, with no flag to
+set and nothing to keep in sync.</p>
+<h1>Rendered documents</h1>
+<p>The HTML, PDF and image viewers re-tint what they show to the active theme
+by default, rather than rendering a white page inside a dark editor. The
+pane header shows <code>[theme, Ctrl-R]</code> when it is doing this; <code>Ctrl-R</code> toggles
+back to the document's own colours, and the header then reads
+<code>[page colors, Ctrl-R]</code> or <code>[original, Ctrl-R]</code>.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="highlight-groups.html">Highlight groups</a> -- naming and using the colours.</li>
+<li><a href="pickers.html">Pickers</a> -- the live-preview mechanism.</li>
+</ul>
+</body>
+</html>

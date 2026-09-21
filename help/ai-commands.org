@@ -1,0 +1,38 @@
+#+TITLE: Ask the model
+#+HTML_HEAD: <meta name="help-section" content="AI">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Sending something
+
+| Command                     | Sends                            |
+|-----------------------------+----------------------------------|
+| =:MepAiSend=                | a prompt you type                |
+| =:MepAiSendBuffer=          | the whole buffer, with a prompt  |
+| =:MepAiSendSelection=       | the Visual selection             |
+| =:MepAiReplaceSelection=    | the selection, replacing it with the reply |
+| =:MepAiCancel=              | cancel a request in flight       |
+| =gl=                        | send the buffer                  |
+
+=:MepAiReplaceSelection= is the one that edits your file: select, ask for a
+rewrite, and the reply takes the selection's place.
+
+* Context
+
+=<leader>ai= (=:MepAiContextPicker=) chooses what to include alongside your
+prompt -- other buffers, files, selections -- so a question about one
+function can carry the code it depends on.
+
+* The API key
+
+mep prompts for an API key when it first needs one and keeps it *in memory
+for the session only*. It is not written to disk and not stored in your
+config, so it never lands in a dotfile backup or a synced directory.
+
+Set the usual environment variable before launching mep if you would rather
+not be prompted.
+
+* See also
+
+- [[file:ai-terminal.html][Claude Code in a pane]] -- a full agent rather than one-shot prompts.
+- [[file:copilot.html][GitHub Copilot]] -- inline completions.

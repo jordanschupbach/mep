@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The command runner</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Running code">
+<meta name="help-order" content="30">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The command runner</h1>
+<h1>Pick a target and run it</h1>
+<p><code>&lt;leader&gt;&lt;Space&gt;</code> (<code>:Runner</code>) fuzzy-picks a target from whichever build
+system the project uses, and runs it in this tab's terminal.</p>
+<p>It looks for <code>just</code>, then <code>make</code>, then <code>ninja</code>, then <code>cmake</code>:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.runner_order = {<span class="tok-green">'make'</span>, <span class="tok-green">'just'</span>}   <span class="tok-comment">-- or your own precedence</span></code></pre></div>
+<h1>The preview</h1>
+<p>The preview column beside the list shows, for the highlighted target:</p>
+<ul>
+<li>the command that will run;</li>
+<li>a tree of its dependency graph;</li>
+<li>the recipe body.</li>
+</ul>
+<p>The graph comes from the build system itself -- <code>just --dump json</code>,
+<code>make -pRrq</code>, <code>ninja -t graph</code> -- so it is what will actually happen, not a
+guess. Every tool is invoked asynchronously, so a slow <code>make -p</code> never
+freezes the editor.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.runner_tree_depth = <span class="tok-cyan">8</span>       <span class="tok-comment">-- how deep the dependency tree goes</span>
+mep.opt.runner_tree_children = <span class="tok-cyan">40</span>   <span class="tok-comment">-- how many children to show per node</span></code></pre></div>
+<h1>Three tabs</h1>
+<p><code>Tab</code> and <code>Shift-Tab</code> move between them.</p>
+<table>
+<tr><th>Tab</th><th>Key</th><th>Shows</th></tr>
+<tr><td>Targets</td><td></td><td>recipes and targets, with the preview above</td></tr>
+<tr><td>Workspaces</td><td><code>&lt;leader&gt;jw</code></td><td>directories under the workspace root that have runner files</td></tr>
+<tr><td>Variables</td><td><code>&lt;leader&gt;jv</code></td><td>just assignments, makefile variables, ninja bindings, CMake cache entries</td></tr>
+</table>
+<p><b>Workspaces</b> matters in a monorepo: press Enter on a directory to make it
+this tab's runner root, and the target list becomes that subproject's.</p>
+<p><b>Variables</b> answers "what is this set to, and where" -- Enter jumps to the
+definition.</p>
+<h1>Keys</h1>
+<p>The bottom row lists them, as every picker does:</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Enter</code></td><td>run the target</td></tr>
+<tr><td><code>C-e</code></td><td>edit the recipe</td></tr>
+<tr><td><code>C-o</code></td><td>open the source file</td></tr>
+<tr><td><code>C-r</code></td><td>reload</td></tr>
+<tr><td><code>C-b</code></td><td>next build directory</td></tr>
+</table>
+<h1>See also</h1>
+<ul>
+<li><a href="run-button.html">Running the current file</a> -- for a single file rather than a target.</li>
+<li><a href="terminals.html">Terminals</a> -- where output goes.</li>
+</ul>
+</body>
+</html>

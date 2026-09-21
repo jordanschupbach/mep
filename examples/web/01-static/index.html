@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>01 - Static page</title>
+<link rel="stylesheet" href="../shared/style.css">
+<style>
+  .swatch { display: inline-block; width: 60px; height: 24px; border: 1px solid #333; margin-right: 6px; }
+  table { border-collapse: collapse; }
+  td, th { border: 1px solid #9fb3c8; padding: 4px 10px; }
+</style>
+</head>
+<body>
+<nav><a href="../index.html">All levels</a></nav>
+<h1>01 - Static page</h1>
+<p class="lead">No JavaScript at all: parsing, the shared stylesheet, inline styles, a table, a list, a link, an image.</p>
+<div class="card">
+  <p>This paragraph has <b>bold</b>, <i>italic</i>, <code>code</code> and a <a href="../02-dom/index.html">link to level 02</a>.</p>
+  <ul><li>Unordered item one</li><li>Unordered item two</li></ul>
+  <ol><li>Ordered item one</li><li>Ordered item two</li></ol>
+  <table>
+    <tr><th>Structure</th><th>Access</th></tr>
+    <tr><td>Array</td><td>O(1)</td></tr>
+    <tr><td>Linked list</td><td>O(n)</td></tr>
+  </table>
+  <p>
+    <span class="swatch" style="background: #c0392b;"></span>
+    <span class="swatch" style="background: #1b7f3b;"></span>
+    <span class="swatch" style="background: #1d6fb8;"></span>
+  </p>
+  <p><img src="../shared/logo.png" alt="logo" width="120"></p>
+</div>
+<p id="static-verdict">If you can read this, styled, the level passes (there is no script to say so).</p>
+</body>
+</html>

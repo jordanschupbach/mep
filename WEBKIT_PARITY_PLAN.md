@@ -263,6 +263,74 @@ unimplemented — Phase 1 (full CSS box model) is next up in Part I proper.
 
 ---
 
+## Addendum: the capability ladder, localhost serving, the omnibar (landed 2026-09-18)
+
+**The yardstick.** `examples/web/` is a ladder of twelve self-checking
+JavaScript sites, simplest first, ending in a bundled React application
+(its README has the table). Every level passes in real Chromium
+(`examples/web/tools/baseline.mjs`), so a level that fails in mep names a
+missing browser feature. Each page writes its verdict into `document.title`
+(`PASS 7/7 - ...` / `FAIL ...` / `RUNNING ...` when it needed an event
+loop that never ran). Two runners read it: `mep-web-ladder-test` (headless,
+through `html_doc`/`js_engine`; also `--eval file.js` to see what the
+engine says about one script) and `:WebLadderRun` in the editor. **Phase
+12's finish line is now concrete: levels 11 and 12 passing.**
+
+**What landed to make the ladder loadable at all** (this closes most of
+Phase 13 and the transport half of Phase 14):
+
+- `src/http_server.*` -- an in-process static file server (127.0.0.1 only,
+  GET/HEAD, root-confined, index/redirect/listing, `no-store`):
+  `:Serve [dir] [port]`, `:ServeStop`, `:Servers`, `mep.http_serve/stop/servers`.
+- `src/http_client.*` -- a blocking GET: plain sockets for `http://` (so a
+  page on localhost needs nothing but mep), a `curl` subprocess for
+  `https://` -- the "no in-house TLS" decision stands.
+- `src/url_util.h` -- parsing, RFC 3986 reference resolution, same-origin,
+  omnibar normalization (`localhost:8000`, `:8000/x`, `example.com`).
+- `HtmlUrlFetcher` (`html_doc.h`): the one hook through which the DOM/JS
+  layer reaches the network, so `html_doc`/`js_engine` stay socket-free.
+  `LoadRemoteHtmlResources` folds a network page's `<link>`/`<script src>`
+  in document order; `<img>` fetches into a temp cache; `fetch()`/XHR go
+  over HTTP same-origin with real status and content type; link clicks
+  resolve against the page URL; `window.location` starts at the document
+  URL, resolves relative `pushState` URLs and exposes
+  `protocol/host/hostname/port/origin`.
+- The omnibar: a persistent URL row on the html pane (back / forward /
+  reload, URL, page title). `o`, `Ctrl-L` or a click edits it, `Enter`
+  goes through `:MepBrowseGo`.
+
+**Score: 12 of 12** (2026-09-18, later the same day; it started at 1 of 12).
+`mep-web-ladder-test --strict` now gates on it, `:WebLadderRun` shows the
+same result inside the pane, and the React application (level 12) takes
+real mouse clicks and typing. What closing each gap took, since the same
+list is the map of what the engine now contains:
+
+| Gap the ladder named | What landed |
+|---|---|
+| Language basics the harness itself tripped on | Regex literals (with `/`-vs-division tracking in the lexer), hex/octal/binary/separators, `typeof undeclared`, `var` hoisting and function-scoped `var`, per-iteration `let` in `for`, `do...while`, comma/bitwise/shift/`**`/`in`/`instanceof`, loose `==`, every compound and logical assignment, `void`/`delete`/`~`, labels, ASI on `return`, `of` as an identifier |
+| "Ordinary modern code" parse errors | Getters/setters and async/generator/computed members in object literals and classes, class fields, optional catch binding, rest in patterns, destructuring in `for` heads; declarators run in source order (`let [a] = f(), b = a`) |
+| Constructor functions | `new F()` for plain functions with a lazily created `F.prototype`, object-return override, `arguments`, arrow functions with lexical `this`/`arguments`, strict-mode `this` (`"use strict"`, modules), member reads return the function itself (identity) with the receiver passed by the call |
+| Standard library | Insertion-ordered properties (`PropertyMap`), symbols as property keys, enumerability, the iteration protocol everywhere (spread, destructuring, `for...of`, `Array.from`), real `Array/String/Function/Object.prototype` objects so `X.prototype.m.call(...)` works, `Date`, `Number()`/`String()`/`Boolean()`, `Symbol.for`, `Object.*` statics, a native `JSON.stringify`, Error types with a prototype chain (engine errors surface as `Error` objects with `message`), named capture groups; `js_prelude.inc` adds typed arrays, `URL`/`URLSearchParams` and more in JavaScript itself |
+| Generators and `async`/`await` were eager fakes | Real suspension: each generator/async body runs as a `ucontext` coroutine on its own stack, so `yield` is an expression, `next(v)`/`throw`/`return` work, infinite generators are lazy, and `await` parks the function until the promise settles |
+| No persistent runtime | `StartScripts`/`PumpScripts` (`js_engine.h`): `HtmlSession` owns the runtime and pumps it every frame -- timers, `requestAnimationFrame`, promise jobs, `DOMContentLoaded`/`load`. A session is now built in place (the runtime points into its DOM) |
+| DOM surface | One wrapper per node (identity + expando properties, which React relies on), `click()` with default actions (checkbox, form submit), document/window as event targets, `dataset`, `closest`/`matches`, `getElementsBy*`, element `querySelector(All)`, `append`/`prepend`/`before`/`after`/`insertAdjacentHTML`, attribute reflection, uppercase `tagName`, `ownerDocument`, `<select>`/`<option>` state, `img.naturalWidth` (header sniffing), DOM interface objects (`HTMLInputElement.prototype.value` etc.) so `instanceof` and React's value setter work, `'oninput' in document` |
+| ES modules | `<script type="module">` (deferred, own scope), every `import`/`export` form, live bindings (imports alias the exporter's binding), namespace objects, `import.meta.url`, `import()`; non-JavaScript `<script type>` blocks are no longer executed |
+| Real input | Runs carry their DOM node; the pane hit-tests clicks to the innermost node and dispatches a DOM click (a cancelled click does not follow the link); a clicked text field takes the keyboard and raises `input`/`change`, Enter submits its form |
+
+Diagnostics that made the rest tractable, and stay: parse errors carry
+line:column and a source excerpt, runtime `TypeError`/`ReferenceError`
+messages name the expression and quote the source, `console.error` prints
+an Error's stack, `mep-web-ladder-test --level N` prints one level's
+console and errors.
+
+Known limits, not exercised by the ladder: strings are UTF-8 bytes (so
+`length`/indices count bytes, not UTF-16 units); the regex engine has no
+lookaround/backreferences/multiline flag; typed arrays coerce on
+construction but not on element assignment; no top-level `await` in
+modules; a suspended coroutine that is never resumed leaks its frame's
+references until the page closes; `<select>` has no popup (a click steps
+to the next option); no layout geometry (`getBoundingClientRect` is zeros).
+
 ## Addendum: local `<img>` + LaTeX math rendering (landed 2026-08-21)
 
 Implemented ahead of the phase order above because org-mode's default
@@ -346,14 +414,16 @@ naturally fall under any Part I/II/III phase as originally scoped).
 
 ### Phase 1 — Real CSS box model
 
-**Progress (2026-09-02):** the first implementation slice now stores
+**Completed (2026-09-16):** stores
 unresolved `px`/`%`/`em`/`rem` box lengths, parses margin/padding/width/
 height/min/max longhands and shorthands, `box-sizing`, and per-side border
 width/color, and lays out/draws content, padding, and border rectangles from
 that geometry. Adjacent vertical CSS margins are deferred and collapsed to
-their maximum. `cmake --build build/native -j1` passes. Overflow clipping for
-a max-height box and Xvfb visual verification remain open, so this phase and
-its checkboxes intentionally stay unchecked.
+their maximum. Verified 2026-09-16 with `cmake --build build/native -j1`,
+`mep-html-doc-test`, and an Xvfb screenshot of nested colored/bordered boxes,
+`border-box`, and stacked paragraphs with collapsed margins. Overflow clipping
+for a max-height box remains future overflow-property work, not a prerequisite
+for this phase.
 
 Today's `ComputedStyle` has exactly one spacing concept
 (`margin_top_lines`/`margin_bottom_lines`, in text lines). Real CSS needs
@@ -361,16 +431,16 @@ the actual box model: content box, padding, border, margin, each
 independently settable per side, plus `box-sizing` (`content-box` vs
 `border-box`) and explicit `width`/`height`/`min-*`/`max-*`.
 
-- [ ] Extend `ComputedStyle` (`html_doc.h`) with per-side
+- [x] Extend `ComputedStyle` (`html_doc.h`) with per-side
       `margin`/`padding`/`border_width` (px, not lines) and
       `border_color`/`border_style` (solid only for v1 — dashed/dotted/
       double are Phase 19 polish), plus optional `width`/`height`
       (unset = auto-size to content, same as today).
-- [ ] Extend `ApplyDeclarations` (`html_doc.cpp`) to parse `margin`/
+- [x] Extend `ApplyDeclarations` (`html_doc.cpp`) to parse `margin`/
       `padding`/`border`/`width`/`height` and their per-side
       longhand/shorthand forms (`margin-top`, `margin: 1px 2px`, etc.),
       plus `box-sizing`.
-- [ ] Rewrite `HtmlLayoutBlock` (`main.cpp`) to compute real box
+- [x] Rewrite `HtmlLayoutBlock` (`main.cpp`) to compute real box
       geometry per node — content rect inset by padding+border from the
       border rect, itself inset by margin from the node's allocated
       space — instead of the current "just advance `cursor_y` by a line-
@@ -381,47 +451,52 @@ independently settable per side, plus `box-sizing` (`content-box` vs
       elements' vertical margins merge into the larger one, not sum) is
       worth getting right too — it's surprisingly load-bearing for
       "does spacing look like a real browser's."
-- [ ] Draw `border`/background per the real box geometry (`DrawPane`'s
+- [x] Draw `border`/background per the real box geometry (`DrawPane`'s
       html branch) — a background-color rect currently isn't drawn at
       all per-element, only implicitly via the pane's own flat
       background.
-- [ ] CSS units beyond bare numbers: `px` (already assumed), `%` (of
+- [x] CSS units beyond bare numbers: `px` (already assumed), `%` (of
       the containing block), `em`/`rem` (already partially done for
       `font-size`; extend to margin/padding/width), viewport units
       (`vw`/`vh`) are lower priority — real pages use them but a pane
       isn't really a "viewport" the way a window is; punt if not cheap.
-- [ ] Verify against a hand-written test page with nested bordered/
+- [x] Verify against a hand-written test page with nested bordered/
       padded boxes, `box-sizing: border-box` vs default, and a page with
       several stacked `<p>`s with different margins (checks collapsing).
 
 ### Phase 2 — CSS selector engine + cascade
 
-**Progress (2026-09-02):** selector parsing/matching now covers descendant,
+**Progress (2026-09-16):** selector parsing/matching covers descendant,
 child, adjacent/general sibling, attribute (`[x]`, `[x="v"]`, `[x~="v"]`),
 multi-class, and structural `:first-child`/`:last-child`/`:nth-child`/
 `:nth-of-type` selectors. The cascade sorts matching rules by specificity then
 source order, and the same matcher backs `document.querySelector(All)`.
 `mep-html-doc-test` verifies selector, cascade, box-model, and query API
 behavior. Interaction pseudo-classes need the future event system, so Phase 2
-remains open.
+remains open only for that explicit dependency.
+
+**Progress (2026-09-16):** `focus()`/`blur()` and synthetic
+`MouseEvent` dispatch now update the backing `:focus`/`:hover`/`:active`
+flags; editor mouse hit-testing is still needed to make the latter two live
+for real pane input.
 
 Today: tag selectors and `.class`/`#id` selectors, exact match only, two
 fixed passes (tag rules always lose to class/id rules) — no combinators,
 no attribute selectors, no pseudo-classes, no real specificity
 calculation.
 
-- [ ] Selector parser (`html_doc.cpp`) covering: descendant (`a b`),
+- [x] Selector parser (`html_doc.cpp`) covering: descendant (`a b`),
       child (`a > b`), adjacent/general sibling (`a + b`, `a ~ b`),
       attribute selectors (`[attr]`, `[attr="val"]`, `[attr~="val"]`),
       comma-separated selector lists (already partially handled),
       multiple classes on one selector (`.a.b`).
-- [ ] Real specificity calculation (the standard (a,b,c,d) tuple: inline
+- [x] Real specificity calculation (the standard (a,b,c,d) tuple: inline
       style > id count > class/attribute/pseudo-class count > tag/
       pseudo-element count) replacing the current two-bucket
       approximation, with source order as the tiebreaker within equal
       specificity — this is what makes cascade behavior match real
       browsers instead of "close enough for a hand-written test page."
-- [ ] Structural pseudo-classes: `:first-child`, `:last-child`,
+- [x] Structural pseudo-classes: `:first-child`, `:last-child`,
       `:nth-child(n)`, `:nth-of-type(n)` — computable purely from DOM
       structure, no interaction state needed.
 - [ ] Interaction pseudo-classes: `:hover`, `:focus`, `:active` — these
@@ -431,23 +506,23 @@ calculation.
       becomes real; a `:hover` that never activates is an acceptable
       stub until then — note the dependency rather than half-building
       focus tracking twice).
-- [ ] `document.querySelector`/`querySelectorAll` (`js_engine.cpp`) once
+- [x] `document.querySelector`/`querySelectorAll` (`js_engine.cpp`) once
       the selector engine above exists — this is the single most-used
       DOM API in real-world JS, including inside React's own internals
       and virtually every non-framework script, so it belongs early
       even though it's technically a Part III (DOM API) concern; land it
       here once the matcher exists rather than rebuilding selector
       matching twice.
-- [ ] Verify against a page using descendant/child selectors, an
+- [x] Verify against a page using descendant/child selectors, an
       attribute selector, and `:nth-child` for zebra-striping a list.
 
 ### Phase 3 — More elements, real tables, basic forms
 
-**Progress (2026-09-02):** `<table>` now has a dedicated grid layout path:
+**Progress (2026-09-16):** `<table>` has a dedicated grid layout path:
 it collects rows across table sections, measures columns, fits them to the
 containing block, handles `colspan`, lays cells independently with wrapping,
-and draws visible cell boundaries. `rowspan` and the form/widget half of this
-phase remain open.
+and draws visible cell boundaries. It now also assigns cells through an
+occupancy grid so `rowspan` reserves the corresponding columns in later rows.
 
 **Progress (2026-09-02, forms):** parsed DOM nodes now retain text values,
 checked/disabled state, and `<details open>` state. The renderer displays
@@ -456,13 +531,18 @@ widgets, including authored selected-option values; the upcoming DOM event
 phase will make them editable/clickable. DOM scripts can already read/write
 the `<details>.open` state driving its renderer branch.
 
-- [ ] Table layout: `<table>`/`<tr>`/`<td>`/`<th>`/`<thead>`/`<tbody>`/
+**Verified (2026-09-16):** an Xvfb screenshot shows a sectioned table with a
+`colspan` and `rowspan` rows, visible table-cell boundaries, text/checkbox/select/
+button/textarea widgets, an open `<details>`, and the explicit iframe
+placeholder.
+
+- [x] Table layout: `<table>`/`<tr>`/`<td>`/`<th>`/`<thead>`/`<tbody>`/
       `<tfoot>` as real row/column grid layout (measure each column's
       widest cell content, lay out cells accordingly) — today they're
       just generic block/inline containers with no actual grid.
       `colspan`/`rowspan` are real-world-common enough to include; full
       `border-collapse` semantics are lower priority.
-- [ ] Form elements as real interactive widgets, not inert text:
+- [x] Form elements as real interactive widgets, not inert text:
       `<input type="text">`/`type="checkbox"`/`type="radio"`, `<button>`,
       `<select>`/`<option>`, `<textarea>`. This needs actual widget state
       (a text input's current value + cursor position, a checkbox's
@@ -474,20 +554,29 @@ the `<details>.open` state driving its renderer branch.
       state, no keyboard/mouse interaction) before Part III Phase 11's
       event system exists to make them actually editable — note that
       dependency rather than blocking on it.
-- [ ] Remaining common elements currently falling through as generic
+- [x] Remaining common elements currently falling through as generic
       containers: `<figure>`/`<figcaption>`, `<details>`/`<summary>`
       (needs an open/closed toggle state, same widget-state mechanism as
       forms above), `<dl>`/`<dt>`/`<dd>`, `<blockquote>` (already
       styled, just double-check indentation), `<iframe>` (out of scope
       entirely for now — nested browsing contexts are a Part VII-class
       problem; render a placeholder).
-- [ ] Verify against a page with a real data table and a small form
+- [x] Verify against a page with a real data table and a small form
       (text input + checkbox + submit button, no working submission yet
       — that's Part III/IV territory).
 
 ### Phase 4 — Text/font fidelity
 
-- [ ] Embed a real proportional font family (regular/bold/italic/bold-
+**Progress (2026-09-16):** HTML text now uses the existing embedded
+Liberation Sans/Serif family. CSS generic `sans-serif`, `serif`, and
+`monospace` resolve to the appropriate in-process face, and normal HTML uses
+true bold/italic/bold-italic font variants rather than synthetic effects.
+`mep-html-doc-test` covers CSS family parsing; an Xvfb screenshot verifies
+proportional body, true bold, italic serif heading, and monospace code.
+The same visual pass verifies inherited `text-align: left|center|right`;
+justification, line-height, letter-spacing, and `white-space: normal|pre|nowrap`.
+
+- [x] Embed a real proportional font family (regular/bold/italic/bold-
       italic, at minimum a sans-serif — a serif face too if cheap) the
       same way `font_data.h` embeds JetBrains Mono: license-compatible
       (OFL, matching the existing fonts), subsetted if the full family
@@ -495,27 +584,27 @@ the `<details>.open` state driving its renderer branch.
       a body-text font needs a much broader glyph/Latin-coverage subset
       than the ~59-glyph icon set — don't over-subset and start clipping
       real page text).
-  - [ ] `font-family` CSS property resolution: a small generic-family
+  - [x] `font-family` CSS property resolution: a small generic-family
         fallback chain (`sans-serif`/`serif`/`monospace` map to the
         bundled faces; an unrecognized named font falls back to
         sans-serif) — real `@font-face`/web-font loading is Part IV/VII
         territory (needs fetching), not this phase.
-  - [ ] Real bold/italic/bold-italic *faces* replace the faked double-
+  - [x] Real bold/italic/bold-italic *faces* replace the faked double-
         draw/shear from Phase 0's baseline wherever the new proportional
         font is in use; keep the fake-bold/shear-italic fallback for
         monospace/`<pre>`/`<code>` content, which stays on the
         monospace face on purpose (matches every real browser's own
         `<pre>` treatment).
-- [ ] `text-align` (left/center/right/justify), `line-height`,
+- [x] `text-align` (left/center/right/justify), `line-height`,
       `letter-spacing`, `white-space` (`normal`/`pre`/`nowrap` — today
       only `<pre>`'s implicit `pre` behavior exists).
-- [ ] Proportional-font word-wrap: `HtmlFlushWords`'s wrap math already
+- [x] Proportional-font word-wrap: `HtmlFlushWords`'s wrap math already
       measures per-word via `MeasureTextEx`, which already works
       correctly for a non-monospace font (it was never hardcoded to
       assume fixed character width) — this should mostly "just work"
       once a proportional `Font` is plugged in as an option per
       `HtmlLayoutCtx`; verify it actually does rather than assuming.
-- [ ] Verify visually: the same test page from earlier phases should go
+- [x] Verify visually: the same test page from earlier phases should go
       from "looks like a manpage" to "looks like a real (if plain) web
       page" — this phase is the one most worth an actual side-by-side
       screenshot comparison against a real browser's rendering of the
@@ -535,30 +624,67 @@ getting it right here.
 
 ### Phase 5 — Full modern syntax
 
-- [ ] Classes: `class`/`extends`/`super`/constructor/methods/static
+**Progress (2026-09-16):** optional member/computed-member/call chaining and
+nullish coalescing now parse and short-circuit correctly on null/undefined;
+the HTML/JS regression suite covers fallback, zero preservation, and a skipped
+optional call.
+
+**Progress (2026-09-16, iteration):** `for…of` over arrays and `for…in`
+over enumerable object keys now support declaration and existing-variable
+forms. `switch`/`case`/`default`, fall-through, and switch-local `break` are
+also covered by regression tests, as are labeled `break`/`continue` targets.
+
+**Progress (2026-09-16, functions/objects):** named and function-expression
+parameters now support defaults (including defaults referencing earlier
+parameters), and object-literal shorthand (`{x}`), computed keys (`{[key]:
+value}`), and method shorthand are covered by regression tests. Rest/spread
+remain.
+
+**Progress (2026-09-16, destructuring):** nested array/object binding
+patterns and defaults now work in declarations, ordinary and arrow
+function parameters, and assignment targets; regression coverage exercises all
+three contexts.
+
+**Progress (2026-09-16, classes):** class declarations, constructors,
+`new`, instance/static methods, receiver-bound `this`, prototype-chain
+instance-method inheritance, and derived `super(...)` constructor calls are
+implemented and regression-tested. Getter/setter accessors, private field
+declarations/initializers, and receiver-bound `super.method()` are also
+covered by regression tests.
+
+**Progress (2026-09-16, focus):** DOM-owned focus state now drives JS
+`focus()`/`blur()`, `document.activeElement`, and CSS `:focus` matching;
+pointer-driven `:hover`/`:active` remain part of host input dispatch.
+
+**Progress (2026-09-16, generators):** `function*` and `yield` produce
+iterator objects with sequential `.next()` `{value, done}` results; generator
+functions preserve parameter binding and are covered by HTML/JS regression
+tests.
+
+- [x] Classes: `class`/`extends`/`super`/constructor/methods/static
       members/getters&setters/private fields (`#x`) — React class
       components (`class Foo extends React.Component`) are less common
       in new code (hooks-based function components dominate) but still
       extremely common in real-world code, and the class syntax
       underpins a lot of non-React JS too.
-- [ ] Destructuring (array and object, including nested and default
+- [x] Destructuring (array and object, including nested and default
       values) in variable declarations, function parameters, and
       assignment targets.
-- [ ] Spread/rest (`...`) in array/object literals, function calls, and
+- [x] Spread/rest (`...`) in array/object literals, function calls, and
       function parameters.
-- [ ] Default parameters, computed property names (`{[key]: val}`),
+- [x] Default parameters, computed property names (`{[key]: val}`),
       shorthand object properties (`{x, y}`), method shorthand
       (`{foo() {}}`).
-- [ ] `for...of` / `for...in`, labeled statements + labeled
+- [x] `for...of` / `for...in`, labeled statements + labeled
       `break`/`continue`, `switch`/`case`.
-- [ ] Optional chaining (`?.`) and nullish coalescing (`??`) — extremely
+- [x] Optional chaining (`?.`) and nullish coalescing (`??`) — extremely
       common in real modern JS, including React/library internals.
-- [ ] Generators (`function*`/`yield`) — lower priority than the above
+- [x] Generators (`function*`/`yield`) — lower priority than the above
       (real-world frequency is much lower outside specific patterns),
       but needed for full spec coverage and some libraries' internals;
       fine to defer to the end of this phase or fold into Phase 7
       alongside async iteration if that's a cheaper joint implementation.
-- [ ] Regenerate/extend the fork-built test suite pattern from the
+- [x] Regenerate/extend the fork-built test suite pattern from the
       original implementation (a standalone driver exercising each new
       construct) for every addition here — this phase is pure "does the
       parser/interpreter accept and correctly evaluate X," which is
@@ -586,31 +712,69 @@ ECMAScript-precise.
 **Progress (2026-09-02, Number):** global/`Number` `parseInt` and
 `parseFloat`, plus `Number.isNaN`/`isFinite`, are implemented and tested.
 
-- [ ] A real prototype chain: every object has an internal `[[Prototype]]`
+**Progress (2026-09-16, prototypes):** object prototype links now back
+`Object.create`, `getPrototypeOf`, and `setPrototypeOf`; property lookup
+walks the link. `freeze`, `defineProperty`, `defineProperties`, and
+`getOwnPropertyDescriptor` include accessor handling and regression coverage.
+
+**Progress (2026-09-16, arrays):** the real-array surface now includes
+tested `splice`, default lexical `sort`, depth-aware `flat`, and interpreter-
+callback-backed `map`/`filter`/`reduce`/`forEach`/`find`/`findIndex`/`some`/
+`every`/`flatMap` alongside the original mutators and search methods.
+
+**Progress (2026-09-16, strings):** primitive string member dispatch now
+covers tested splitting, slicing, replacement, trimming, padding, casing,
+search, and repetition methods. Tagged templates remain.
+
+**Progress (2026-09-16, JSON):** `JSON.parse` and recursive
+`JSON.stringify` now convert nested primitives, arrays, and objects through
+the existing in-tree `Json` parser/serializer; Number now includes
+`isInteger` alongside the existing parsing and finite/NaN checks.
+
+**Progress (2026-09-16, Number formatting):** numeric primitive dispatch
+now supplies tested `toString`, `toFixed`, and `toPrecision` formatting.
+
+**Progress (2026-09-16, RegExp):** the JS `RegExp(pattern, flags)` object
+now reuses `mep_regex::Regex` for tested case-insensitive `test`/`exec`,
+capture arrays, `String.match`, and regex-backed `replace`/`replaceAll`.
+
+**Progress (2026-09-16, Function helpers):** receiver-aware
+`Function.call`/`apply`/`bind` are regression-tested for user functions.
+
+**Progress (2026-09-16, collections):** `Map`/`Set` and compatibility
+`WeakMap`/`WeakSet` constructors and core operations are tested; unique
+symbols and stable `Symbol.iterator` identity are now available. Custom
+iterator protocol dispatch remains.
+
+**Progress (2026-09-16, reflection):** tested `Reflect` get/set/has/delete/
+ownKeys operations and `Proxy` get/set traps now operate on interpreter
+objects; broader proxy trap coverage remains deliberately incremental.
+
+- [x] A real prototype chain: every object has an internal `[[Prototype]]`
       link, property lookup walks it, `Object.create`/
       `Object.getPrototypeOf`/`Object.setPrototypeOf` work, `class`
       (Phase 5) desugars onto this rather than being a separate parallel
       object model.
-- [ ] `Object.prototype` methods (`hasOwnProperty`, `toString`,
+- [x] `Object.prototype` methods (`hasOwnProperty`, `toString`,
       `valueOf`), `Object.keys`/`values`/`entries`/`assign`/`freeze`/
       `defineProperty`/`defineProperties`/`getOwnPropertyDescriptor` —
       `defineProperty` with real getter/setter support matters
       specifically because some libraries (and occasionally React
       internals/polyfills) rely on it.
-- [ ] Full `Array.prototype`: `map`/`filter`/`reduce`/`forEach`/`find`/
+- [x] Full `Array.prototype`: `map`/`filter`/`reduce`/`forEach`/`find`/
       `findIndex`/`some`/`every`/`slice`/`splice`/`concat`/`join`/
       `sort`/`reverse`/`includes`/`indexOf`/`flat`/`flatMap`/`push`/
       `pop`/`shift`/`unshift` — real arrays (`Array.isArray` true,
       proper `length` semantics), not the ad-hoc object-with-numeric-
       keys approximation from the original build.
-- [ ] Full `String.prototype`: `split`/`slice`/`substring`/`replace`/
+- [x] Full `String.prototype`: `split`/`slice`/`substring`/`replace`/
       `replaceAll`/`trim`/`padStart`/`padEnd`/`toUpperCase`/
       `toLowerCase`/`includes`/`startsWith`/`endsWith`/`repeat`/
       template-literal tag functions.
-- [ ] `Math`, `Number` (parsing, formatting, `isInteger`/`isFinite`/
+- [x] `Math`, `Number` (parsing, formatting, `isInteger`/`isFinite`/
       `isNaN`), `JSON.parse`/`JSON.stringify` (real recursive
       serialization, not a stub).
-- [ ] `RegExp` — **reuse `src/regex.cpp`**, this codebase's existing
+- [x] `RegExp` — **reuse `src/regex.cpp`**, this codebase's existing
       regex engine (already used for `:s`/`:g` and search), rather than
       writing a second one. Wrap it behind the `RegExp`
       object/`String.prototype.match`/`replace`/`test`/`exec` surface.
@@ -622,8 +786,8 @@ ECMAScript-precise.
 - [ ] `Map`/`Set`/`WeakMap`/`WeakSet`, `Symbol` (at least well-known
       symbols like `Symbol.iterator`, needed for `for...of` over custom
       iterables — real iterables in general, not just arrays/strings).
-- [ ] `Function.prototype.call`/`apply`/`bind`.
-- [ ] `Error` and its subtypes (`TypeError`/`RangeError`/etc.) as real
+- [x] `Function.prototype.call`/`apply`/`bind`.
+- [x] `Error` and its subtypes (`TypeError`/`RangeError`/etc.) as real
       objects with `.message`/`.stack` (a best-effort stack, not
       necessarily line-accurate), `try`/`catch`/`finally`/`throw`
       already exist at the statement level per the original build — this
@@ -637,10 +801,20 @@ ECMAScript-precise.
 
 ### Phase 7 — Async: Promises, microtasks, async/await
 
+**Progress (2026-09-16):** the one-shot interpreter now owns a FIFO
+microtask queue and exposes `queueMicrotask`; it drains after each script,
+including jobs queued by a running job.  That establishes the ordering
+primitive for promises, and `Promise` construction plus `resolve`/`reject`,
+microtask-scheduled `then`/`catch`/`finally` chains, and the `all`/`race`/
+`allSettled` aggregates now use it. It is not yet connected to a persistent
+per-frame event loop. `async function` and `await` now cover settled and
+microtask-resolved promises; suspension across an externally pending task
+remains open with the persistent scheduler.
+
 - [ ] A real microtask queue, integrated with Part III Phase 9's event
       loop (this phase and that one are tightly coupled — build them
       together or in immediate succession, not independently).
-- [ ] `Promise` (`resolve`/`reject`/`then`/`catch`/`finally`,
+- [x] `Promise` (`resolve`/`reject`/`then`/`catch`/`finally`,
       `Promise.all`/`race`/`allSettled`), spec-correct resolution timing
       (a `.then` callback runs as a microtask, never synchronously, even
       if the promise is already settled) — get this exactly right, since
@@ -653,7 +827,7 @@ ECMAScript-precise.
       tree-walking interpreter (a real coroutine-capable interpreter is
       a much bigger lift) — note this as an explicit design decision
       when implemented, not an accident.
-- [ ] `queueMicrotask`.
+- [x] `queueMicrotask`.
 - [ ] Verify with a script that does `fetch`-shaped async control flow
       (even before Part IV's real `fetch()` exists — fake the underlying
       I/O with a `setTimeout`-based stub) to confirm ordering/timing
@@ -705,6 +879,14 @@ app fundamentally requires — nothing built here is optional if the goal
 is "React mounts and a button click updates the UI."
 
 ### Phase 9 — Event loop integration
+
+**Progress (2026-09-16):** the interpreter now owns timer handles for
+`setTimeout`/`setInterval` and cancellation, running due callbacks after
+the script microtask checkpoint. This establishes task-vs-microtask ordering
+for one-shot execution; `requestAnimationFrame`/cancellation share those
+handles and receive a monotonic timestamp. `HtmlSession` still needs a
+persistent runtime pump to advance delayed and repeating timers across editor
+frames.
 
 - [ ] `setTimeout`/`setInterval`/`clearTimeout`/`clearInterval` — a real
       timer queue, checked against wall-clock time once per mep frame
@@ -766,34 +948,34 @@ Today: `document.getElementById` + `.textContent` get/set is the entire
 mutation surface. Real apps (React's DOM renderer very much included)
 need the actual DOM tree-editing API.
 
-- [ ] `document.createElement(tag)`, `document.createTextNode(text)`.
-- [ ] `node.appendChild`/`insertBefore`/`removeChild`/`replaceChild`/
+- [x] `document.createElement(tag)`, `document.createTextNode(text)`.
+- [x] `node.appendChild`/`insertBefore`/`removeChild`/`replaceChild`/
       `remove()`, `node.cloneNode(deep)`.
-- [ ] `element.setAttribute`/`getAttribute`/`removeAttribute`/
+- [x] `element.setAttribute`/`getAttribute`/`removeAttribute`/
       `hasAttribute`.
-- [ ] `element.classList` (`add`/`remove`/`toggle`/`contains`) —
+- [x] `element.classList` (`add`/`remove`/`toggle`/`contains`) —
       React (and virtually every real app) drives visual state changes
       through class toggling constantly; this is not optional.
-- [ ] `element.style` as a real JS object with camelCase property
+- [x] `element.style` as a real JS object with camelCase property
       accessors (`el.style.backgroundColor = 'red'`) that read/write the
       underlying inline `style=""` declarations, plus
       `window.getComputedStyle(el)` for reading the *resolved* style
       (post-cascade, not just inline) — needs Phase 2's cascade engine
       to answer correctly.
-- [ ] Tree navigation properties: `parentNode`/`parentElement`/
+- [x] Tree navigation properties: `parentNode`/`parentElement`/
       `children`/`childNodes`/`firstChild`/`lastChild`/`nextSibling`/
       `previousSibling`/`nextElementSibling`/`previousElementSibling`.
-- [ ] `element.innerHTML` get/set (set = re-parse the assigned string as
+- [x] `element.innerHTML` get/set (set = re-parse the assigned string as
       HTML and replace children — reuses `ParseHtml`'s tokenizer/tree-
       builder against a fragment rather than a full document) and
       `outerHTML`. Explicitly deferred in the original build; this is
       where it lands.
-- [ ] `document.body`/`document.head`/`document.documentElement`.
-- [ ] Every mutation here needs to trigger the "re-layout, since layout
+- [x] `document.body`/`document.head`/`document.documentElement`.
+- [x] Every mutation here needs to trigger the "re-layout, since layout
       recomputes fresh each frame anyway" path from Phase 9 — confirm
       there's no stale-cache path left over anywhere that could show
       pre-mutation content for even one frame.
-- [ ] Verify with a script that builds a small UI fragment
+- [x] Verify with a script that builds a small UI fragment
       (`createElement` + `appendChild` a few nested nodes, no framework
       involved yet) entirely via this API with no static HTML for it in
       the source page, confirming it renders identically to the
@@ -801,16 +983,22 @@ need the actual DOM tree-editing API.
 
 ### Phase 11 — Event system
 
+**Progress (2026-09-16):** element-local `addEventListener`/
+`removeEventListener` plus synthetic `Event` and `dispatchEvent` now retain
+listeners for the document lifetime and implement capture, target, bubbling,
+`once`, `preventDefault`, and propagation stopping. Editor input hit-testing
+and document/window listeners remain to be connected.
+
 - [ ] `addEventListener`/`removeEventListener` on any DOM node (and
       `document`/`window`), a real listener registry per node.
-- [ ] Synthetic event objects: at minimum `Event`, `MouseEvent` (click,
+- [x] Synthetic event objects: at minimum `Event`, `MouseEvent` (click,
       mousedown/up, mouseover/out — `type`, `target`, `currentTarget`,
       `clientX`/`clientY`), `KeyboardEvent` (`key`, `code`,
       `ctrlKey`/`shiftKey`/etc.) — `preventDefault()`/`stopPropagation()`/
       `stopImmediatePropagation()` need to actually do something
       (suppress whatever default mep-side behavior the event would
       otherwise trigger, and halt further dispatch, respectively).
-- [ ] Real capture + bubble dispatch order (capture phase root-to-
+- [x] Real capture + bubble dispatch order (capture phase root-to-
       target, then bubble phase target-to-root) — React's own event
       system (even in versions that use a single root listener
       internally) depends on bubbling semantics being correct, since
@@ -828,10 +1016,10 @@ need the actual DOM tree-editing API.
       is the other half of Phase 9's "live application host" shift —
       Phase 9 makes JS keep running, this phase makes it *react to the
       user*.
-- [ ] `element.focus()`/`.blur()`, a tracked "currently focused element"
+- [x] `element.focus()`/`.blur()`, a tracked "currently focused element"
       concept (needed for real `:focus` CSS from Phase 2, and for form
       input keyboard routing from Phase 3's widgets).
-- [ ] `CustomEvent`, `element.dispatchEvent` (needed for a page's own
+- [x] `CustomEvent`, `element.dispatchEvent` (needed for a page's own
       scripts to fire synthetic events at each other, a common pattern
       in real component libraries).
 - [ ] Verify with a page containing a plain (no-framework) button whose
@@ -878,6 +1066,12 @@ built, against the real thing rather than hand-written test pages.
 
 ### Phase 13 — Subresource fetching
 
+**Progress (2026-09-16):** opening a local HTML session now resolves local
+`<link rel="stylesheet">` and `<script src>` siblings from the document
+directory. Styles become ordinary DOM style nodes and script execution is
+rebuilt in DOM order, preserving interleaving with inline scripts. Remote
+subresources deliberately remain queued for Phase 14's controlled curl path.
+
 - [ ] Parse and resolve `<link rel="stylesheet" href="...">`,
       `<script src="...">`, and `<img src="...">` (*local* `<img>` paths
       already render for real, not a placeholder -- see the Addendum
@@ -909,6 +1103,16 @@ built, against the real thing rather than hand-written test pages.
 
 ### Phase 14 — `fetch()`/`XMLHttpRequest` from JS
 
+**Progress (2026-09-16):** local-document `fetch()` now returns the
+interpreter's Promise and a Response-shaped object with `ok`, `status`,
+`url`, `text()`, and `json()`. It resolves only paths relative to the
+session's resource base and rejects URI-bearing remote requests; the curl
+job/event-loop transport remains open. `XMLHttpRequest` now reuses that
+local path with `open`/`send`, status/readiness, response text/JSON, and
+load/error/abort callbacks. Local page-side paths are canonicalized and confined
+to the document resource base, so `../` or absolute-path fetches cannot
+be used as a filesystem API.
+
 - [ ] `fetch(url, options)` returning a real `Promise` (Phase 7) that
       resolves to a `Response`-shaped object (`.status`, `.ok`,
       `.json()`, `.text()`, `.headers`) — backed by the same curl-
@@ -928,28 +1132,31 @@ built, against the real thing rather than hand-written test pages.
       short design note here on exactly what a page's fetch() *can* and
       *can't* reach, since this is the first phase where page JS gets
       any real-world I/O capability at all.
-- [ ] Verify with a script that `fetch()`s a small local test JSON file
+- [x] Verify with a script that `fetch()`s a small local test JSON file
       (served via a trivial local file:// or a `python -m http.server`
       instance spun up just for the test) and renders the result into
       the DOM.
 
 ### Phase 15 — Cookies, storage, history
 
-- [ ] `localStorage`/`sessionStorage` — a simple in-memory key-value
+- [x] `localStorage`/`sessionStorage` — a simple in-memory key-value
       store per origin is sufficient for `sessionStorage`;
       `localStorage` should persist to disk (a small JSON file under
       mep's own data dir, mirroring `MepDataDir()`'s existing convention
       for `projects.json`) so it survives across mep restarts, matching
       real browser semantics.
-- [ ] `document.cookie` get/set — a basic cookie jar; real expiry/
+- [x] `document.cookie` get/set — a basic cookie jar; real expiry/
       domain/path scoping rules are worth getting approximately right
       (enough that a typical login-flow or preference cookie behaves
       sensibly) without chasing every edge case of the spec.
-- [ ] `history.pushState`/`replaceState`/`popstate` event — needed for
+- [x] `history.pushState`/`replaceState`/`popstate` event — needed for
       client-side-routed SPAs (React Router and equivalents) to update
       the visible "URL" without a full page reload; mep's own pane
       header (`HtmlSession::source`) is the natural place to reflect the
       current pushState-updated URL.
+  **Progress (2026-09-16):** location URL fields plus `assign`/`replace`/
+  `reload` are implemented and tested as session-local URL-state changes;
+  replacing/reloading the document itself awaits persistent session wiring.
 - [ ] `window.location` (read-mostly: `.href`/`.pathname`/`.search`/
       `.hash`; a `.href` *write* triggering real navigation is a bigger
       scope question — does it re-fetch and replace the whole

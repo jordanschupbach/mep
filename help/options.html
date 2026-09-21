@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Options</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Configuration">
+<meta name="help-order" content="20">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Options</h1>
+<h1><code>:set</code> options</h1>
+<table>
+<tr><th>Option</th><th>Default</th><th>Does</th></tr>
+<tr><td><code>number</code> / <code>nu</code></td><td>on</td><td>line numbers in the gutter</td></tr>
+<tr><td><code>relativenumber</code> / <code>rnu</code></td><td>on</td><td>distances instead of numbers</td></tr>
+<tr><td><code>cursorline</code> / <code>cul</code></td><td>off</td><td>highlight the cursor's line</td></tr>
+<tr><td><code>wrap</code></td><td>on</td><td>soft-wrap long lines</td></tr>
+<tr><td><code>ignorecase</code></td><td>off</td><td>case-insensitive search and <code>:s</code></td></tr>
+<tr><td><code>wrapscan</code></td><td>on</td><td>search wraps around the buffer</td></tr>
+<tr><td><code>textwidth=N</code> / <code>tw=N</code></td><td>80</td><td>the column <code>gq</code> wraps to</td></tr>
+</table>
+<p>Prefix a boolean with <code>no</code> to turn it off: <code>:set nowrap</code>.</p>
+<h1><code>mep.opt</code> options</h1>
+<h2>Editing and session</h2>
+<table>
+<tr><th>Option</th><th>Default</th><th>Does</th></tr>
+<tr><td><code>restore_workspaces</code></td><td>true</td><td>restore a project's layout</td></tr>
+<tr><td><code>worktree_dir</code></td><td></td><td>where new worktrees go</td></tr>
+<tr><td><code>workspace_git_dirty</code></td><td>false</td><td>mark dirty workspaces with <code>+</code></td></tr>
+</table>
+<h2>Terminals and AI</h2>
+<table>
+<tr><th>Option</th><th>Default</th><th>Does</th></tr>
+<tr><td><code>tab_terminal_share</code></td><td>0.3</td><td>the tab terminal's height</td></tr>
+<tr><td><code>ai_terminal_cmd</code></td><td><code>{'claude'}</code></td><td>what the AI terminal runs</td></tr>
+<tr><td><code>ai_terminal_share</code></td><td>0.4</td><td>its height</td></tr>
+<tr><td><code>ai_terminal_instructions</code></td><td></td><td>the appended prompt; ='' = none</td></tr>
+<tr><td><code>ai_terminal_mcp_server</code></td><td></td><td>path to <code>mep-mcp</code>, passed inline</td></tr>
+</table>
+<h2>Running and testing</h2>
+<table>
+<tr><th>Option</th><th>Default</th><th>Does</th></tr>
+<tr><td><code>run_button_defaults</code></td><td>py, r, c, cpp</td><td>per-filetype run command</td></tr>
+<tr><td><code>runner_order</code></td><td>just, make, ninja, cmake</td><td>build-system precedence</td></tr>
+<tr><td><code>runner_tree_depth</code></td><td>8</td><td>dependency tree depth</td></tr>
+<tr><td><code>runner_tree_children</code></td><td>40</td><td>children shown per node</td></tr>
+<tr><td><code>runner_workspace_depth</code></td><td>5</td><td>how deep to scan for runner files</td></tr>
+<tr><td><code>lang_test_python</code></td><td></td><td>the Python test runner</td></tr>
+<tr><td><code>lang_test_build_dirs</code></td><td></td><td>where to look for a test target</td></tr>
+</table>
+<h2>Notebooks</h2>
+<table>
+<tr><th>Option</th><th>Does</th></tr>
+<tr><td><code>notebook_kernels</code></td><td>the kernel list offered per cell</td></tr>
+<tr><td><code>notebook_python</code></td><td>the interpreter for the built-in kernel</td></tr>
+</table>
+<h2>Language UI modes</h2>
+<table>
+<tr><th>Option</th><th>Does</th></tr>
+<tr><td><code>language_ui_poll_interval</code></td><td>how often panels refresh</td></tr>
+<tr><td><code>r_ui_cmd</code></td><td>the R session command</td></tr>
+<tr><td><code>py_ui_cmd</code></td><td>the Python session command</td></tr>
+<tr><td><code>r_ui_info_share</code>, <code>py_ui_info_share</code>, <code>c_ui_info_share</code></td><td>panel column width</td></tr>
+<tr><td><code>r_ui_bottom_share</code>, <code>py_ui_bottom_share</code>, <code>c_ui_bottom_share</code></td><td>console height</td></tr>
+<tr><td><code>r_ui_bottom_info_share</code>, <code>py_ui_bottom_info_share</code>, <code>c_ui_bottom_info_share</code></td><td>the split within the bottom row</td></tr>
+<tr><td><code>r_ui_poll_interval</code></td><td>R panel refresh rate</td></tr>
+<tr><td><code>c_ui_filter_directives</code></td><td>hide assembler directives</td></tr>
+<tr><td><code>c_ui_hex_page</code></td><td>bytes per hex page</td></tr>
+</table>
+<h2>Debugging</h2>
+<table>
+<tr><th>Option</th><th>Does</th></tr>
+<tr><td><code>dap_r_port</code></td><td>the port the R adapter listens on</td></tr>
+</table>
+<h1>Other settables</h1>
+<p>Not under <code>mep.opt</code>, but configured the same way:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.copilot_enabled = <span class="tok-cyan">false</span>
+mep.copilot_filetypes[<span class="tok-green">'md'</span>] = <span class="tok-cyan">false</span>
+mep.copilot_server_cmd = <span class="tok-blue">{</span><span class="tok-green">'copilot-language-server'</span>, <span class="tok-green">'--stdio'</span>}
+mep.git_gutter_base = <span class="tok-green">'index'</span>
+mep.git_gutter_line_hl = <span class="tok-cyan">true</span>
+mep.git_hunk_preview_on_jump = <span class="tok-cyan">true</span>
+mep.syntax_auto = <span class="tok-cyan">false</span>
+mep.activity_todo_file = <span class="tok-green">'~/notes/tasks.org'</span>
+mep.format_languages.js = {<span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span>}
+mep.snippets.py = {<span class="tok-blue">}</span>
+mep.ts_capture_hl[<span class="tok-green">'keyword'</span>] = <span class="tok-green">'Red'</span></code></pre></div>
+<h1>See also</h1>
+<ul>
+<li><a href="config.html">Configuration</a> -- where to put these.</li>
+<li><a href="recipes.html">Configuration recipes</a> -- worked examples.</li>
+</ul>
+</body>
+</html>

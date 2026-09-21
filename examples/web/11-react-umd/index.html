@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>11 - React (UMD)</title>
+<link rel="stylesheet" href="../shared/style.css">
+<script src="../shared/harness.js"></script>
+<script src="vendor/react.production.min.js"></script>
+<script src="vendor/react-dom.production.min.js"></script>
+</head>
+<body>
+<nav><a href="../index.html">All levels</a></nav>
+<h1>11 - React from the UMD builds</h1>
+<p class="lead">The unmodified react and react-dom 18 production builds, no JSX and no bundler: a counter with hooks.</p>
+<div class="card"><div id="root"></div></div>
+<script>
+Harness.start('11-react-umd', 7);
+Harness.check('React global loaded', typeof window.React === 'object' && typeof React.createElement === 'function', typeof window.React);
+Harness.check('ReactDOM global loaded', typeof window.ReactDOM === 'object' && typeof ReactDOM.createRoot === 'function', typeof window.ReactDOM);
+
+var e = React.createElement;
+var effectRuns = 0;
+function Counter(props) {
+  var pair = React.useState(props.start);
+  var count = pair[0], setCount = pair[1];
+  React.useEffect(function () { effectRuns++; document.title = document.title; }, [count]);
+  return e('div', null,
+    e('p', { id: 'value' }, 'Count: ' + count),
+    e('button', { id: 'plus', onClick: function () { setCount(function (c) { return c + 1; }); } }, '+1'),
+    e('button', { id: 'minus', onClick: function () { setCount(count - 1); } }, '-1'),
+    e('ul', { id: 'history' }, Array.from({ length: Math.max(0, count) }, function (_, i) {
+      return e('li', { key: i }, 'tick ' + (i + 1));
+    })));
+}
+
+try {
+  var root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(e(Counter, { start: 1 }));
+} catch (err) {
+  Harness.check('createRoot().render()', false, err.message);
+}
+
+// React 18 renders asynchronously (scheduler: MessageChannel/setTimeout), so
+// the DOM checks wait for it.
+function after(ms, fn) { setTimeout(function () { try { fn(); } catch (err) { Harness.check('self-test step', false, err.message); Harness.done(); } }, ms); }
+after(100, function () {
+  var value = document.getElementById('value');
+  Harness.check('initial render committed to the DOM', !!value && value.textContent === 'Count: 1', value ? value.textContent : 'no #value');
+  Harness.check('useEffect ran after mount', effectRuns >= 1, 'runs=' + effectRuns);
+  document.getElementById('plus').click();
+  document.getElementById('plus').click();
+  after(100, function () {
+    Harness.check('click -> setState -> re-render', document.getElementById('value').textContent === 'Count: 3', document.getElementById('value').textContent);
+    Harness.check('keyed list reconciled', document.querySelectorAll('#history li').length === 3);
+    document.getElementById('minus').click();
+    after(100, function () {
+      Harness.check('list shrinks on the next update', document.querySelectorAll('#history li').length === 2 && effectRuns >= 3, 'li=' + document.querySelectorAll('#history li').length + ' effects=' + effectRuns);
+      Harness.done();
+    });
+  });
+});
+</script>
+</body>
+</html>

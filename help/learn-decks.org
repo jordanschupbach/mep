@@ -1,0 +1,95 @@
+#+TITLE: Writing a deck
+#+HTML_HEAD: <meta name="help-section" content="Learning">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* An org file is the question bank
+
+Any org file can double as a deck. Every headline tagged =:card:= is one
+entry: its title is the term, its body the definition.
+
+#+begin_src org
+,#+LEARN_TITLE: Basic Data Structures
+,#+LEARN_FACTS: ACCESS SEARCH INSERT
+
+,* Linear structures
+,** Stack                                                     :card:
+:PROPERTIES:
+:QUESTION: Which structure returns the most recently added element first?
+:HINT: Last in, first out -- like a stack of plates.
+:ACCESS: O(n)
+:INSERT: O(1)
+:END:
+A {{last-in, first-out|LIFO}} collection supporting push and pop at one end.
+#+end_src
+
+A deck with *no* tagged headline falls back to treating every headline that
+has a body as a card -- so an ordinary glossary works untouched.
+
+=examples/learn_basic_datastructures.org= is a complete worked example.
+
+* Deck-wide keywords
+
+| Keyword               | Sets                                      |
+|-----------------------+-------------------------------------------|
+| =#+LEARN_TITLE:=      | the deck's name                           |
+| =#+LEARN_TAG:=        | which tag marks a card                    |
+| =#+LEARN_FACTS:=      | which properties count as facts           |
+| =#+LEARN_CHOICES:=    | how many options a choice question offers |
+| =#+LEARN_DIRECTION:=  | term to definition, or the reverse        |
+| =#+LEARN_ROUNDS:=     | how many rounds a session deals           |
+| =#+LEARN_MATCH_SIZE:= | pairs per matching round                  |
+| =#+LEARN_TIME_LIMIT:= | seconds, for timed mode                   |
+| =#+LEARN_MIXED:=      | which game types mixed practice draws from |
+| =#+LEARN_RANK:=       | the numeric property to rank by           |
+| =#+LEARN_SRS:=        | deal due cards first                      |
+
+* Per-card properties
+
+| Property         | Does                                              |
+|------------------+---------------------------------------------------|
+| =:CATEGORY:=     | its group; defaults to the parent headline        |
+| =:QUESTION:=     | ask this instead of the bare term                 |
+| =:HINT:=         | shown on request                                  |
+| =:DISTRACTORS:=  | specific wrong answers to offer                   |
+| =:ALIASES:=      | other spellings a typed answer accepts            |
+| =:HIDE:=         | identifiers to blank out in code                  |
+| =:POINTS:=       | its value on the Jeopardy board                   |
+
+Any *other* property is treated as a fact, which is what the fact quiz and
+the ranking game draw on.
+
+Categories matter more than they look: wrong answers are drawn from the same
+category first, which makes a multiple-choice question genuinely hard rather
+than obviously silly.
+
+* In the body
+
+| Construct                  | Becomes                                  |
+|----------------------------+------------------------------------------|
+| ={{answer\vert hint}}=     | a fill-in-the-blank                      |
+| an ordered list            | a sequence to put in order               |
+| a two-column table         | extra facts                              |
+| =[[file:...]]= on its own line | the card's picture                   |
+
+* Code blocks
+
+A plain =#+begin_src= block is the card's implementation. Tag it to drive a
+specific game:
+
+| Tag                      | Feeds                         |
+|--------------------------+-------------------------------|
+| =:learn cloze=           | complete-the-code             |
+| =:learn bug :line N=     | spot-the-bug, with the flaw on line N |
+| =:learn output=, with =#+RESULTS:= | predict-the-output  |
+
+* Launching itself
+
+A =#+begin_src mep-lua= block runs inside mep's own Lua, so a deck can end
+with one block per game that =C-c C-c= starts. The example deck does exactly
+this.
+
+* See also
+
+- [[file:learn-games.html][Playing]] -- the games, and the keys.
+- [[file:org-babel.html][Executing code blocks]] -- how =mep-lua= blocks work.

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Playing</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Learning">
+<meta name="help-order" content="20">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Playing</h1>
+<h1>Starting</h1>
+<p><code>:Learn</code> (<code>&lt;leader&gt;ol</code>) picks a game for the current deck. Each game also
+has its own command and key.</p>
+<table>
+<tr><th>Game</th><th>Command</th><th>Key</th></tr>
+<tr><td>Multiple-choice flashcards</td><td><code>:LearnMCFlashCards</code></td><td><code>ogf</code></td></tr>
+<tr><td>Matching</td><td><code>:LearnMatching</code></td><td><code>ogm</code></td></tr>
+<tr><td>Identify the code</td><td><code>:LearnCodeID</code></td><td><code>ogc</code></td></tr>
+<tr><td>True or false</td><td><code>:LearnTrueFalse</code></td><td><code>ogt</code></td></tr>
+<tr><td>Fill in the blank</td><td><code>:LearnCloze</code></td><td><code>ogb</code></td></tr>
+<tr><td>Type the term</td><td><code>:LearnTypeTerm</code></td><td><code>ogy</code></td></tr>
+<tr><td>Odd one out</td><td><code>:LearnOddOneOut</code></td><td><code>ogo</code></td></tr>
+<tr><td>Which category</td><td><code>:LearnWhichCategory</code></td><td><code>ogk</code></td></tr>
+<tr><td>Fact quiz</td><td><code>:LearnFactQuiz</code></td><td><code>oga</code></td></tr>
+<tr><td>Put in order</td><td><code>:LearnPutInOrder</code></td><td><code>ogs</code></td></tr>
+<tr><td>Jeopardy</td><td><code>:LearnJeopardy</code></td><td><code>ogj</code></td></tr>
+<tr><td>Hangman</td><td><code>:LearnHangman</code></td><td><code>ogh</code></td></tr>
+<tr><td>Complete the code</td><td><code>:LearnCompleteCode</code></td><td><code>ogx</code></td></tr>
+<tr><td>Spot the bug</td><td><code>:LearnSpotBug</code></td><td><code>ogd</code></td></tr>
+<tr><td>Predict the output</td><td><code>:LearnPredictOutput</code></td><td><code>ogp</code></td></tr>
+<tr><td>Mixed practice</td><td><code>:LearnMixed</code></td><td><code>ogg</code></td></tr>
+<tr><td>Timed mixed practice</td><td><code>:LearnTimed [secs]</code></td><td><code>ogT</code></td></tr>
+<tr><td>Which code is it</td><td><code>:LearnCodeReverse</code></td><td><code>ogv</code></td></tr>
+<tr><td>Sort into buckets</td><td><code>:LearnSortBuckets</code></td><td><code>ogu</code></td></tr>
+<tr><td>Rank by fact</td><td><code>:LearnRank</code></td><td><code>ogn</code></td></tr>
+<tr><td>Survival</td><td><code>:LearnSurvival</code></td><td><code>ogS</code></td></tr>
+<tr><td>Hot-seat two player</td><td><code>:LearnHotSeat</code></td><td><code>og2</code></td></tr>
+<tr><td>Picture quiz</td><td><code>:LearnPictureQuiz</code></td><td><code>ogi</code></td></tr>
+<tr><td>Crossword</td><td><code>:LearnCrossword</code></td><td><code>ogw</code></td></tr>
+</table>
+<p>Each takes an optional deck path. A game the deck cannot feed says so in one
+line rather than starting and failing.</p>
+<h1>The keys</h1>
+<p>Every game opens a Learn pane, and the last row lists its keys.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td>digits</td><td>pick an answer</td></tr>
+<tr><td>letters</td><td>pick, where a game uses letters</td></tr>
+<tr><td><code>t</code></td><td>type an answer instead of picking</td></tr>
+<tr><td><code>n</code> / Enter</td><td>next question</td></tr>
+<tr><td><code>o</code></td><td>open the current card in the deck</td></tr>
+<tr><td><code>r</code></td><td>restart</td></tr>
+<tr><td><code>q</code></td><td>quit</td></tr>
+</table>
+<h1>Typed answers are forgiving</h1>
+<p>The matcher accepts the term and any of its <code>:ALIASES:</code>, ignores case and
+punctuation, and forgives a one-letter slip on longer answers. So a right
+answer with a typo is not marked wrong.</p>
+<h1>Identify the code</h1>
+<p>Names are hidden systematically rather than randomly: top-level classes
+become <code>Thing</code>, functions become <code>solve</code>, <code>:HIDE:</code> identifiers become
+<code>op1</code>, <code>op2</code>..., and the term's own words become <code>thing</code>. Python keywords
+and builtins are left alone, so the code still reads as code. The real names
+come back once you have answered.</p>
+<h1>Spaced repetition</h1>
+<p>Every summary offers <code>g</code>, which records the session into org-drill's
+<code>:DRILL_*:</code> properties -- SM-2, with Good for a right answer and Again for a
+miss.</p>
+<p>With <code>#+LEARN_SRS: yes</code> in the deck, later sessions deal due cards first.
+<code>:MepOrgDrillReview</code> reads the same properties, so the two share one record
+of what you know.</p>
+<h1>Building on it</h1>
+<p>The pieces are reusable: <code>mep.learn_parse_deck(path)</code>, the question
+generators (<code>mep.learn_mc_questions</code>, <code>learn_tf_questions</code>,
+<code>learn_cloze_questions</code>, <code>learn_fact_questions</code>, <code>learn_match_rounds</code> and
+others), <code>mep.learn_anonymize_code(lines, card)</code>,
+<code>mep.learn_answer_matches(typed, accepted)</code>, and the <code>mep.learn_games</code> and
+<code>mep.learn_catalog</code> tables.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="learn-decks.html">Writing a deck</a> -- the format.</li>
+<li><a href="org-roam.html">Org-roam</a> -- <code>:MepOrgDrillReview</code> over your notes.</li>
+</ul>
+</body>
+</html>

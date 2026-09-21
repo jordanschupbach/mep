@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The tab bar</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Interface">
+<meta name="help-order" content="10">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The tab bar</h1>
+<h1>One row, four jobs</h1>
+<pre>[project] [ws1] [ws2*] | ● ○ + x            chips  search  panels</pre>
+<p>Reading left to right: which project you are in, which workspaces it has,
+which tabs the active workspace has, and then -- docked right -- who else is
+here, the searches, and the panel toggles.</p>
+<h1>The project label</h1>
+<p>The leftmost item is the active project's name. Clicking it opens the
+loaded-projects switcher, the same thing <code>&lt;leader&gt;pp</code> opens.</p>
+<h1>Workspace labels</h1>
+<p>One label per workspace in the project.</p>
+<table>
+<tr><th>You see</th><th>It means</th></tr>
+<tr><td>highlighted</td><td>this is the active workspace</td></tr>
+<tr><td><code>*</code> after a name</td><td>that workspace has unsaved buffers</td></tr>
+<tr><td>dimmed, <code>...</code></td><td>its git worktree is still being created</td></tr>
+<tr><td><code>+</code> after a name</td><td>uncommitted changes (only with <code>workspace_git_dirty</code>)</td></tr>
+</table>
+<table>
+<tr><th>Action</th><th>Does</th></tr>
+<tr><td>click</td><td>switch to that workspace</td></tr>
+<tr><td>middle-click</td><td>close it</td></tr>
+<tr><td>hover</td><td>show its directory and branch</td></tr>
+</table>
+<p>The <code>*</code> marker is worth watching: it is how you notice unsaved work in a
+workspace you are not currently looking at, which is exactly the work <code>:qa</code>
+will refuse to discard.</p>
+<h1>Tabs</h1>
+<p>The active workspace's tabs, drawn as circles -- filled for the current one
+-- followed by a <code>+</code> to add a tab and an <code>x</code> to close the current one.</p>
+<p>Each tab has its own split layout. See <a href="panes-tabs.html">Panes and tabs</a>.</p>
+<h1>Docked right</h1>
+<p><b>Participant chips</b> show anyone else connected: other humans in a
+collaboration session, and AI agents running in this window. Clicking a chip
+jumps to that participant's cursor.</p>
+<p><b>Three search buttons</b>, which are the same pickers as:</p>
+<table>
+<tr><th>Button</th><th>Key</th></tr>
+<tr><td>fuzzy find in this buffer</td><td><code>&lt;leader&gt;/</code></td></tr>
+<tr><td>project-wide live grep</td><td><code>&lt;leader&gt;pr</code></td></tr>
+<tr><td>open buffers</td><td><code>&lt;leader&gt;bb</code></td></tr>
+</table>
+<p><b>Panel toggles</b> for Files, Git, Symbols, Structure, Todo, Tests,
+Notifications and AI Agents. Each is lit while its panel is open; click to
+open or close.</p>
+<p>A speech-to-text microphone indicator appears here while live transcription
+is recording.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="status-line.html">The status line</a> -- the row at the other end of the window.</li>
+<li><a href="sidebars.html">Sidebars</a> -- what the panel toggles open.</li>
+<li><a href="workspaces.html">Workspaces</a> -- what the labels represent.</li>
+</ul>
+</body>
+</html>

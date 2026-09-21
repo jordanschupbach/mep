@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>02 - DOM scripting</title>
+<link rel="stylesheet" href="../shared/style.css">
+<script src="../shared/harness.js"></script>
+</head>
+<body>
+<nav><a href="../index.html">All levels</a></nav>
+<h1>02 - DOM scripting</h1>
+<p class="lead">An inline script that reads and rewrites the document once, at load.</p>
+<div class="card">
+  <p id="greeting">placeholder</p>
+  <ul id="list"></ul>
+  <div id="box" class="a b" data-kind="demo">box</div>
+  <div id="html-target"></div>
+</div>
+<script>
+Harness.start('02-dom', 12);
+Harness.attempt('getElementById + textContent', function () {
+  var g = document.getElementById('greeting');
+  g.textContent = 'Hello from script';
+  return g.textContent === 'Hello from script';
+});
+Harness.attempt('createElement + appendChild', function () {
+  var list = document.getElementById('list');
+  for (var i = 1; i <= 3; i++) {
+    var li = document.createElement('li');
+    li.textContent = 'item ' + i;
+    list.appendChild(li);
+  }
+  return list.children.length === 3 && list.lastChild.textContent === 'item 3';
+});
+Harness.attempt('insertBefore + removeChild', function () {
+  var list = document.getElementById('list');
+  var first = document.createElement('li');
+  first.textContent = 'item 0';
+  list.insertBefore(first, list.firstChild);
+  list.removeChild(list.lastChild);
+  return list.children.length === 3 && list.firstChild.textContent === 'item 0';
+});
+Harness.attempt('classList', function () {
+  var box = document.getElementById('box');
+  box.classList.add('c');
+  box.classList.remove('a');
+  box.classList.toggle('d');
+  return box.classList.contains('c') && !box.classList.contains('a') && box.classList.contains('d') && box.className.indexOf('b') >= 0;
+});
+Harness.attempt('attributes + dataset', function () {
+  var box = document.getElementById('box');
+  box.setAttribute('title', 'tip');
+  return box.getAttribute('title') === 'tip' && box.hasAttribute('title') && box.dataset.kind === 'demo';
+});
+Harness.attempt('style object', function () {
+  var box = document.getElementById('box');
+  box.style.backgroundColor = '#dff5e1';
+  box.style.padding = '8px';
+  return box.style.backgroundColor !== '' && box.style.padding === '8px';
+});
+Harness.attempt('innerHTML set + get', function () {
+  var t = document.getElementById('html-target');
+  t.innerHTML = '<p class="made">made <b>by</b> innerHTML</p>';
+  return t.children.length === 1 && t.firstChild.tagName === 'P' && t.innerHTML.indexOf('<b>by</b>') >= 0;
+});
+Harness.attempt('querySelector / querySelectorAll', function () {
+  var made = document.querySelector('#html-target .made b');
+  var lis = document.querySelectorAll('#list li');
+  return made && made.textContent === 'by' && lis.length === 3;
+});
+Harness.attempt('tree navigation', function () {
+  var list = document.getElementById('list');
+  var second = list.children[1];
+  return second.parentNode === list && second.previousSibling === list.firstChild && second.nextSibling === list.lastChild;
+});
+Harness.attempt('document.body / head / title', function () {
+  return document.body.tagName === 'BODY' && document.head.tagName === 'HEAD' && typeof document.title === 'string';
+});
+Harness.attempt('createTextNode + replaceChild', function () {
+  var t = document.getElementById('html-target');
+  var p = document.createElement('p');
+  p.appendChild(document.createTextNode('replaced'));
+  t.replaceChild(p, t.firstChild);
+  return t.textContent === 'replaced';
+});
+Harness.attempt('getElementsByTagName / ClassName', function () {
+  return document.getElementById('list').getElementsByTagName('li').length === 3 && document.getElementsByClassName('card').length === 1;
+});
+Harness.done();
+</script>
+</body>
+</html>

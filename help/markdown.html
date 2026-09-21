@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Markdown</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Writing">
+<meta name="help-order" content="10">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Markdown</h1>
+<h1>Rendering</h1>
+<p><code>:MepMarkdown</code> applies the whole set: heading colours with a level glyph in
+the sign column, shaded fenced code blocks, concealed link and emphasis
+markers, shaded front matter.</p>
+<p>A concealed row closes up over what it hides -- <code>**bold**</code> renders as four
+columns, not eight with four blank -- and the row the cursor is on shows its
+real markers on their real columns, so what you are editing is what is in
+the file.</p>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:MepMarkdown</code></td><td>apply all of the below</td></tr>
+<tr><td><code>:MepMdConceal</code></td><td>hide link and emphasis markers</td></tr>
+<tr><td><code>:MepMdCheckbox</code></td><td>toggle the checkbox on this line</td></tr>
+<tr><td><code>:MepMdTableAlign</code></td><td>align a pipe table's columns</td></tr>
+<tr><td><code>:MepMdTableInsertRow</code></td><td>insert a table row</td></tr>
+<tr><td><code>:MepMdTableInsertCol</code></td><td>insert a table column</td></tr>
+</table>
+<h1>Folding</h1>
+<p>Fenced code blocks fold, and so do headings by depth -- <code>zM</code> collapses a
+long document to its outline, <code>zR</code> opens it again. See <a href="folding.html">Folds</a>.</p>
+<h1>A gap worth knowing</h1>
+<p>Pipe tables are <b>not</b> redrawn as box-drawn tables. A <code>|</code>-delimited table
+renders as plain text, aligned by <code>:MepMdTableAlign</code> but not decorated.</p>
+<p>The alignment command is what makes them readable; do not wait for an
+overlay that is not there.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="writing.html">Writing prose in mep</a> -- the wider prose toolkit.</li>
+<li><a href="org-basics.html">Org files in mep</a> -- the more capable markup, if you have the choice.</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,56 @@
+#+TITLE: Jupyter notebooks in mep
+
+Opening a =.ipynb= file shows the notebook as an ordinary editable buffer in
+the "percent" cell format that Jupytext/VS Code/Spyder use: every cell starts
+with a =# %%= marker (=# %% [markdown]= for markdown cells, whose bodies stay
+raw markdown), so all the usual motions, edits, undo and search apply to cell
+sources, and each cell body is syntax-highlighted in its own language. What the
+text can't carry -- outputs, execution counts, ids, metadata -- is kept
+alongside and written back as real nbformat JSON on =:w= (with Jupyter's own
+indentation, so diffs stay clean). Each code cell draws a header
+(=In [n]:= plus a clickable =Run= chip) and its outputs directly underneath:
+stdout/stderr, the last expression's value, tracebacks, and inline
+=matplotlib= figures.
+
+Cells run without =jupyter_client=: =Enter=, =Ctrl+Enter= or the Emacs-style
+=Ctrl-C Ctrl-C= chord runs the cell under the cursor (the chord works in Insert
+mode too), =Shift+Enter= runs it and moves to the next cell, and =mod1+Enter=
+runs it and inserts a new cell below. The =<leader>j= group holds the rest --
+=jA= run all, =ja=/=jb= insert above/below, =jd= delete, =jm=/=jy= to
+markdown/code, =jk=/=jj= move, =jc=/=jC= clear outputs, =ji= interrupt, =j0=
+restart the kernels, =jK= set the cell's kernel -- with =]j=/=[j= to step
+between cells and =:Notebook*= commands (and =:NotebookNew [path]=) for all of
+it. =examples/notebook_example.ipynb= is a ready-made notebook to try.
+
+Each cell is drawn as its own rounded card so code and markdown blocks read as
+distinct blocks (markdown cards are tinted apart from code, and the cell under
+the cursor is accented). A toolbar across the top of the notebook pane has
+buttons for the common structural actions -- =+ Code=, =+ Markdown=, =Run All=,
+=Interrupt=, =Restart=, =Clear= -- alongside the =<leader>j= keys.
+
+*Per-cell kernels.* Every code cell picks its own kernel, chosen from the
+dropdown at the top-right of the cell (click it, or =jK=). The list is
+=mep.opt.notebook_kernels=; out of the box it offers Python 3 plus whichever of
+R, JavaScript (Node), Ruby and Bash are found on =PATH=. Python 3 is one
+persistent process (state and inline =matplotlib= figures carry across cells,
+driven through =mep.opt.notebook_python=); the others are stateless "script"
+kernels that get each cell's code on stdin and show its output. A cell with no
+explicit choice follows the notebook default (its =kernelspec=, else the first
+kernel); a new cell inherits the previous cell's kernel, so a block keeps
+running on whatever the one above it used. Each cell's choice is written to its
+=metadata.kernel= on =:w=, and =In [n]:= counts up as one shared sequence across
+every kernel. Runs execute one at a time in order regardless of kernel, so a
+mixed "run all" still goes top to bottom. Add or replace kernels from =init.lua=:
+
+#+begin_src lua :eval no
+mep.opt.notebook_kernels = {
+  {name='python3', display_name='Python 3', language='py', mode='python'},
+  {name='ir', display_name='R', language='r', mode='script', command={'R', '--slave', '--no-save'}},
+  {name='deno', display_name='Deno', language='js', mode='script', command={'deno', 'run', '-'}},
+}
+#+end_src
+
+=mode= is =python= (the built-in persistent kernel, no =command=), =protocol=
+(your own long-lived process speaking mep's JSON-line kernel protocol), or
+=script= (a fresh process per run, code on stdin). =language= is the Treesitter
+filetype the cell body is highlighted with.

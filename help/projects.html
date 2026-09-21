@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projects</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Projects">
+<meta name="help-order" content="10">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Projects</h1>
+<h1>What a project is</h1>
+<p>A project is a directory. Panes live in tabs, tabs live in workspaces, and
+workspaces live in a project -- so a project is the outermost thing mep
+keeps track of, and the unit whose layout gets saved and restored.</p>
+<p>Several projects can be loaded at once, each with its own workspaces, tabs
+and buffers.</p>
+<h1>Opening one</h1>
+<table>
+<tr><th>How</th><th>Does</th></tr>
+<tr><td><code>mep</code> in a directory</td><td>opens that directory as the project</td></tr>
+<tr><td><code>mep --project &lt;dir&gt;</code></td><td>opens <code>dir</code> instead</td></tr>
+<tr><td><code>$MEP_PROJECT</code></td><td>the environment-variable form of the above</td></tr>
+<tr><td><code>:project &lt;dir&gt;</code></td><td>opens another project from inside mep</td></tr>
+<tr><td><code>mep.project_open(dir)</code></td><td>the same, from Lua</td></tr>
+</table>
+<h1>Two different pickers</h1>
+<p>This catches people out, because the names are similar and they do different
+jobs.</p>
+<table>
+<tr><th>Key</th><th>Picker</th><th>Lists</th></tr>
+<tr><td><code>&lt;leader&gt;po</code></td><td><b>Projects</b></td><td>your bookmarked projects, open or not</td></tr>
+<tr><td><code>&lt;leader&gt;pp</code></td><td><b>Loaded projects</b></td><td>the projects currently open in mep</td></tr>
+</table>
+<p><b>Projects</b> (<code>:MepProjects</code>, and the <code>p</code> action on the <a href="dashboard.html">start screen</a>) is a
+bookmark list: pick one to open it. It ends with <code>+ Add current directory</code>
+and <code>- Remove a project...</code> for managing the list, and <code>:MepProjectAdd</code> adds
+the current directory without opening the picker.</p>
+<p><b>Loaded projects</b> (<code>:MepProjectsOpen</code>) switches between what is already
+open, showing each project's workspace count, whether it is a git
+repository, and its root. It ends with <code>+ Open a project...</code> and
+<code>- Close current project</code>.</p>
+<p>Clicking the <code>[project]</code> label at the left of the tab bar opens the loaded
+list too.</p>
+<h1>Moving between and closing</h1>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:projects</code></td><td>the bookmark picker</td></tr>
+<tr><td><code>:projectnext</code> <code>:projectprevious</code></td><td>cycle loaded projects</td></tr>
+<tr><td><code>:projectclose</code> <code>:projectclose!</code></td><td>close the active project</td></tr>
+</table>
+<p>Closing refuses while any buffer in the project has unsaved changes, unless
+forced with <code>!</code>. The project's layout is saved on the way out.</p>
+<h1>The default layout</h1>
+<p>A project opened for the <b>first</b> time gets a starting layout: its README in
+the main pane, a terminal below it, and the file tree down the left.</p>
+<p>A project that has been opened before is restored exactly as you left it,
+with none of that applied on top -- so the default layout never overwrites
+an arrangement you have built up.</p>
+<p><code>:projectclear</code> (<code>&lt;leader&gt;pc</code>) throws away the active workspace's tabs,
+panes, buffers and terminals and rebuilds that default layout. It refuses
+while anything is unsaved; <code>:projectclear!</code> does it anyway.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="workspaces.html">Workspaces</a> -- a branch per checkout, inside a project.</li>
+<li><a href="sessions.html">Sessions</a> -- what gets saved, and where.</li>
+<li><a href="dashboard.html">The start screen</a> -- where a session with no project begins.</li>
+</ul>
+</body>
+</html>

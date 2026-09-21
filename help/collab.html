@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Collaborative editing</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Collaboration">
+<meta name="help-order" content="10">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Collaborative editing</h1>
+<h1>Joining a session</h1>
+<p>Each participant opens the same document, then:</p>
+<pre>:CollabJoin &lt;link&gt; [display-name]</pre>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:CollabJoin</code></td><td>join a session</td></tr>
+<tr><td><code>:CollabStatus</code></td><td>who is connected</td></tr>
+<tr><td><code>:CollabLeave</code></td><td>disconnect</td></tr>
+</table>
+<h1>Seeing each other</h1>
+<p>Connected participants appear as chips on the <a href="status-line.html">status line</a>, showing name
+and cursor position -- <code>Ada @12:4</code>. Click a chip to jump to that person's
+cursor.</p>
+<p><code>mep.participants()</code> gives Lua the same snapshot, which is also what the
+tab bar draws from.</p>
+<h1>How it works</h1>
+<p>Edits are merged as CRDT operations, so two people typing in the same place
+converge rather than conflicting.</p>
+<p>The relay is <b>stateless by design</b>: it keeps transient rooms and presence
+only, and forwards opaque operations without inspecting document contents.</p>
+<p>That has one practical consequence worth planning around: *the document's
+history lives in the participants, not the server.* Keeping the document
+open in at least one participant preserves it. A reconnecting client
+exchanges operation snapshots to catch up.</p>
+<h1>The link is the credential</h1>
+<p>Treat a capability link as private. Anyone holding it can join that room.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="collab-server.html">Running a relay</a> -- hosting your own.</li>
+<li><a href="status-line.html">The status line</a> -- the participant chips.</li>
+</ul>
+</body>
+</html>

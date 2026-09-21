@@ -470,6 +470,154 @@ int main() {
         CHECK(!OrgEmphasisBorderBlank('x') && !OrgEmphasisBorderBlank('\0'));
     }
 
+    // --- Table wrap layout (PlanOrgTableWrap): the display-only
+    //     re-budgeting of a table too wide for `:set textwidth`.
+    {
+        // Codepoint widths, not bytes -- an em dash is one column wide.
+        CHECK(OrgTableDisplayWidth("abc") == 3);
+        CHECK(OrgTableDisplayWidth("a\xe2\x80\x94" "b") == 3);
+        CHECK(OrgTableDisplayWidth("") == 0);
+
+        // Word wrap breaks on spaces and keeps every line inside width.
+        std::vector<std::string> wrapped = OrgTableWrapCell("the quick brown fox jumps", 10);
+        CHECK(wrapped.size() == 3);
+        CHECK(wrapped[0] == "the quick");
+        CHECK(wrapped[1] == "brown fox");
+        CHECK(wrapped[2] == "jumps");
+        for (const std::string &l : wrapped) CHECK(OrgTableDisplayWidth(l) <= 10);
+
+        // A word wider than the column is hard-split rather than left to
+        // overflow; a blank cell still yields one (empty) line.
+        std::vector<std::string> split = OrgTableWrapCell("aaaaaaaaaaaa", 5);
+        CHECK(split.size() == 3);
+        CHECK(split[0] == "aaaaa" && split[1] == "aaaaa" && split[2] == "aa");
+        CHECK(OrgTableWrapCell("", 8).size() == 1);
+        CHECK(OrgTableWrapCell("", 8)[0].empty());
+    }
+    {
+        // A table that already fits is reported unwrapped, and its
+        // widths are exactly the natural (align-time) ones.
+        std::vector<OrgTableCells> rows;
+        OrgTableCells head;
+        head.cells.push_back("Key");
+        head.cells.push_back("Value");
+        rows.push_back(head);
+        OrgTableCells sep;
+        sep.is_sep = true;
+        rows.push_back(sep);
+        OrgTableCells body;
+        body.cells.push_back("a");
+        body.cells.push_back("b");
+        rows.push_back(body);
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 80, 0);
+        CHECK(!plan.wrapped);
+        CHECK(plan.col_widths.size() == 2);
+        CHECK(plan.col_widths[0] == 3 && plan.col_widths[1] == 5);
+        CHECK(plan.rows.size() == 3);
+        CHECK(plan.rows[0].size() == 1);
+        CHECK(plan.rows[0][0] == "| Key | Value |");
+        CHECK(plan.rows[1][0] == "|-----+-------|");
+        CHECK(plan.rows[2][0] == "| a   | b     |");
+    }
+    {
+        // A wide prose column: the short column keeps its natural width
+        // and the prose column gives up the columns, and every rendered
+        // line lands inside the budget.
+        std::vector<OrgTableCells> rows;
+        OrgTableCells head;
+        head.cells.push_back("Feature");
+        head.cells.push_back("Notes");
+        rows.push_back(head);
+        OrgTableCells sep;
+        sep.is_sep = true;
+        rows.push_back(sep);
+        OrgTableCells body;
+        body.cells.push_back("wrapping");
+        body.cells.push_back(
+            "a very long description that runs well past eighty columns in total and has to be "
+            "wrapped onto several rendered lines to fit");
+        rows.push_back(body);
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 80, 0);
+        CHECK(plan.wrapped);
+        CHECK(plan.col_widths.size() == 2);
+        CHECK(plan.col_widths[0] == 8);  // natural width of "wrapping"/"Feature"
+        // Total rendered width is exactly the budget: 2 columns cost
+        // 3 `|` plus 4 padding spaces of chrome.
+        CHECK(plan.col_widths[0] + plan.col_widths[1] + 7 == 80);
+        CHECK(plan.rows[2].size() > 1);  // the prose row draws as several lines
+        for (const std::vector<std::string> &row_lines : plan.rows) {
+            for (const std::string &l : row_lines) CHECK(OrgTableDisplayWidth(l) == 80);
+        }
+        // The first line carries the first cell, the continuation lines
+        // leave its column blank -- and every line keeps its `|` in the
+        // same display columns, which is what lets the grid draw rules.
+        CHECK(plan.rows[2][0].compare(0, 12, "| wrapping | ") != 0 ||
+              plan.rows[2][1].compare(0, 12, "|          |") == 0);
+        const std::string &first = plan.rows[2][0];
+        for (const std::string &l : plan.rows[2]) {
+            CHECK(l.size() == first.size());
+            for (size_t c = 0; c < first.size(); c++) {
+                if (first[c] == '|') CHECK(l[c] == '|');
+            }
+        }
+    }
+    {
+        // An indent is spent out of the same budget, so a nested table
+        // still renders inside the margin.
+        std::vector<OrgTableCells> rows;
+        OrgTableCells body;
+        body.cells.push_back("some reasonably long cell text here");
+        body.cells.push_back("and a second column of prose as well");
+        rows.push_back(body);
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 40, 4);
+        CHECK(plan.wrapped);
+        for (const std::vector<std::string> &row_lines : plan.rows) {
+            for (const std::string &l : row_lines) {
+                CHECK(OrgTableDisplayWidth(l) == 40);
+                CHECK(l.compare(0, 4, "    ") == 0);
+            }
+        }
+        // Both columns had to give, and neither fell below the floor.
+        CHECK(plan.col_widths[0] >= kOrgTableMinColWidth);
+        CHECK(plan.col_widths[1] >= kOrgTableMinColWidth);
+    }
+    {
+        // Ragged rows: a row with fewer cells than the widest one pads
+        // out to the full column count rather than drawing short.
+        std::vector<OrgTableCells> rows;
+        OrgTableCells wide;
+        wide.cells.push_back("a");
+        wide.cells.push_back("b");
+        wide.cells.push_back("c");
+        rows.push_back(wide);
+        OrgTableCells narrow;
+        narrow.cells.push_back("x");
+        rows.push_back(narrow);
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 80, 0);
+        CHECK(plan.col_widths.size() == 3);
+        CHECK(plan.rows[1][0] == "| x |   |   |");
+        // An empty table is a no-op rather than a crash.
+        CHECK(PlanOrgTableWrap(std::vector<OrgTableCells>(), 80, 0).col_widths.empty());
+    }
+    {
+        // A budget too small to hold even the chrome must still produce
+        // renderable lines (never a negative width or an empty row).
+        std::vector<OrgTableCells> rows;
+        OrgTableCells body;
+        body.cells.push_back("hello there");
+        body.cells.push_back("world");
+        rows.push_back(body);
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 4, 0);
+        CHECK(plan.col_widths.size() == 2);
+        for (int wv : plan.col_widths) CHECK(wv >= 1);
+        CHECK(!plan.rows[0].empty());
+    }
+
     std::printf("org_doc_test: all checks passed\n");
     return 0;
 }

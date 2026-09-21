@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Documents and formats</title>
-<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
 <script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
 <meta name="help-section" content="Lua API">
 <meta name="help-order" content="50">
@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (154)</h1>
+<h1>The bindings (157)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -165,11 +165,14 @@ that it does nothing.</p>
 <tr><td><code>mep.org_subtree_end_lines</code></td><td>finds the last row of the subtree rooted at row, given a plain line array instead of a buffer</td></tr>
 <tr><td><code>mep.org_table_align</code></td><td>reformats the org table under the cursor to align its columns</td></tr>
 <tr><td><code>mep.org_table_auto_align</code></td><td>realigns the org table the cursor just moved out of</td></tr>
+<tr><td><code>mep.org_table_wrap_scan</code></td><td>rebuilds the wrapped display layout for over-wide org tables</td></tr>
+<tr><td><code>mep.org_table_wrap_toggle</code></td><td>toggles wrapped rendering of over-wide org tables</td></tr>
 <tr><td><code>mep.org_timestamp_at</code></td><td>finds an org timestamp overlapping a given column in a line</td></tr>
 <tr><td><code>mep.org_timestamp_insert</code></td><td>inserts an org timestamp at the cursor</td></tr>
 <tr><td><code>mep.org_timestamp_shift</code></td><td>shifts the org timestamp under/near the cursor by a number of days</td></tr>
 <tr><td><code>mep.pdf_current_page</code></td><td>1-indexed current page, or 0 if</td></tr>
 <tr><td><code>mep.pdf_goto_page</code></td><td>jumps buffer_id's own PDF viewer</td></tr>
+<tr><td><code>mep.pdf_note_latex_done</code></td><td>async callback (from kBuiltinPdfAnnot's</td></tr>
 <tr><td><code>mep.pdf_outline</code></td><td>array of {title, page, depth}, or nil if</td></tr>
 <tr><td><code>mep.pdf_reload</code></td><td>re-reads local file `path` and re-decodes it INTO</td></tr>
 <tr><td><code>mep.roam_graph_close</code></td><td>closes the Roam graph overlay without invoking its on_select callback</td></tr>

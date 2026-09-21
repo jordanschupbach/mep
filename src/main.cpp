@@ -13561,7 +13561,15 @@ const char *kBuiltinOrgLinks =
     // left unconcealed (Editor::OrgLinkScan), exactly the reason
     // mep.md_conceal polls the cursor row too.
     "mep.on_buffer_changed(function()\n"
-    "  if mep_lsp_filetype(mep.filename()) == 'org' then mep.org_link_highlight() end\n"
+    "  if mep_lsp_filetype(mep.filename()) == 'org' then\n"
+    "    mep.org_link_highlight()\n"
+    // A table's own width is an edit-time property, so the wrapped
+    // layout (Editor::OrgTableWrapScan) is rebuilt here as well as on
+    // the cursor moves below -- typing into a cell is exactly what
+    // pushes a table past the margin in the first place. `true` forces
+    // the re-plan past the scan's own cursor-move early-out.
+    "    mep.org_table_wrap_scan(true)\n"
+    "  end\n"
     "end)\n"
     "local mep_org_link_last_file, mep_org_link_last_row = nil, nil\n"
     "mep.on_frame(function()\n"
@@ -13578,6 +13586,12 @@ const char *kBuiltinOrgLinks =
     "  if fname ~= mep_org_link_last_file or row ~= mep_org_link_last_row then\n"
     "    mep_org_link_last_file, mep_org_link_last_row = fname, row\n"
     "    mep.org_link_highlight()\n"
+    // Cursor-driven for the same reason the link scan is: the table the
+    // cursor is inside renders at its real stored widths, so entering or
+    // leaving one has to re-plan. Gated on the row actually having
+    // changed rather than run every frame -- it is a whole-buffer line
+    // walk, like the link scan beside it.
+    "    mep.org_table_wrap_scan()\n"
     "  end\n"
     "end)\n"
     // Follow the link under the cursor. `gx` is vim's own "open whatever
@@ -13611,6 +13625,16 @@ const char *kBuiltinOrgLinks =
     "end\n"
     "mep.command('MepOrgHeadingScaleToggle', mep.org_heading_scale_toggle_ui)\n"
     "mep.leader_map('oth', 'Org: toggle scaled heading sizes', mep.org_heading_scale_toggle_ui)\n"
+    // Wrapped tables (Editor::OrgTableWrapVisible): a table too wide for
+    // `:set textwidth` renders with re-budgeted columns and its long
+    // cells wrapped. On by default; this gets the table's real stored
+    // widths back on screen.
+    "function mep.org_table_wrap_toggle_ui()\n"
+    "  local visible = mep.org_table_wrap_toggle()\n"
+    "  mep.notify('Org table wrapping: ' .. (visible and 'on' or 'off'))\n"
+    "end\n"
+    "mep.command('MepOrgTableWrapToggle', mep.org_table_wrap_toggle_ui)\n"
+    "mep.leader_map('otw', 'Org: toggle wrapped table rendering', mep.org_table_wrap_toggle_ui)\n"
     // Plain cursor line: the row the caret is on drops every decoration
     // -- syntax colours included -- and shows its own raw characters.
     // On by default (Editor::OrgPlainCursorLineVisible); this toggle is
@@ -16674,6 +16698,18 @@ const char *kBuiltinOrgExport =
     "      close_para()\n"
     "      close_list()\n"
     "      out[#out + 1] = '<table>'\n"
+    // Org (and GFM, and org-ruby's own GitHub rendering) only has a header
+    // row when the table actually carries a `|---+---|` rule -- a table
+    // written as a plain two-column key/value list (the readme's own
+    // Documentation table) has none, and every row of it is body. Without
+    // this look-ahead `header_done` simply never flipped, so such a table
+    // exported as <th> throughout: the whole thing rendered bold and
+    // header-tinted, with no visible body at all.
+    "      local has_header = false\n"
+    "      for j = i, n do\n"
+    "        if not lines[j]:match('^%s*|.-|%s*$') then break end\n"
+    "        if lines[j]:match('^%s*|[%s%-%+]*|?%s*$') then has_header = true break end\n"
+    "      end\n"
     "      local header_done = false\n"
     "      while i <= n and lines[i]:match('^%s*|.-|%s*$') do\n"
     "        local row = lines[i]\n"
@@ -16682,7 +16718,7 @@ const char *kBuiltinOrgExport =
     "        else\n"
     "          local trimmed = row:match('^%s*|(.-)|%s*$') or ''\n"
     "          local cells = mep_org_table_cells(trimmed)\n"
-    "          local tag = header_done and 'td' or 'th'\n"
+    "          local tag = (has_header and not header_done) and 'th' or 'td'\n"
     "          local cells_html = {}\n"
     "          for _, c in ipairs(cells) do\n"
     "            cells_html[#cells_html + 1] = '<' .. tag .. '>' .. mep_org_inline_convert(mep_org_html_escape(c), marks) .. '</' .. tag .. '>'\n"
@@ -16855,6 +16891,19 @@ const char *kBuiltinOrgExport =
     "    .. 'code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}'\n"
     "    .. 'img{max-width:100%}'\n"
     "    .. 'h1,h2,h3{line-height:1.25}'\n"
+    // A <table> with no styling at all is a browser's "no borders, no cell
+    // padding" default, which runs adjacent cells straight into each other
+    // and reads as wrapped prose rather than a grid -- the one visible gap
+    // left once org tables started exporting as real tables at all. Each
+    // rule is a bare tag selector (no descendant combinators, no selector
+    // lists needing to match an element twice) so mep's own in-pane CSS
+    // matcher, html_doc.cpp's ApplyMatchingRules, honors them too -- its
+    // HtmlLayoutTable draws its own cell borders regardless, so this is
+    // really for the real-browser case.
+    "    .. 'table{border-collapse:collapse;margin:1.2em 0;width:100%}'\n"
+    "    .. 'th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;'\n"
+    "    .. 'vertical-align:top;background:#f6f8fa;font-weight:600}'\n"
+    "    .. 'td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}'\n"
     "    .. '.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;'\n"
     "    .. 'border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;'\n"
     "    .. 'overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}'\n"
@@ -38913,6 +38962,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
                 slot_start[r] = vslot;
                 auto latex_it = buf.org_latex_rows.find(r);
+                auto tw_it = buf.org_table_wrap_rows.find(r);
                 int slots = 1;
                 int next = r + 1;
                 if (f) {
@@ -38922,6 +38972,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 } else if (g_editor.OrgLatexVisible() && latex_it != buf.org_latex_rows.end()) {
                     slots = latex_it->second.slots;
                     next = latex_it->second.end_row + 1;
+                } else if (g_editor.OrgTableWrapVisible() && tw_it != buf.org_table_wrap_rows.end() &&
+                           !tw_it->second.lines.empty()) {
+                    // An over-wide table's row draws as its wrapped
+                    // layout's lines -- see Buffer::org_table_wrap_rows.
+                    slots = static_cast<int>(tw_it->second.lines.size());
                 } else {
                     if (wrap_cols > 0) {
                         int len = static_cast<int>(buf.lines[static_cast<size_t>(r)].size());
@@ -39263,17 +39318,32 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height, ResolveHlGroup("CursorLine"));
         }
 
+        // An over-wide org table's row (Buffer::org_table_wrap_rows,
+        // Editor::OrgTableWrapScan): its own text is not what gets drawn
+        // at all -- the wrapped layout's lines are, one per visual slot --
+        // so it claims its slots below and is excluded from soft-wrap the
+        // same way an image/LaTeX row is.
+        const Buffer::OrgTableWrapRow *tbl_wrap = nullptr;
+        if (!fold_here && is_org_buffer && g_editor.OrgTableWrapVisible()) {
+            auto tw_it = buf.org_table_wrap_rows.find(row);
+            if (tw_it != buf.org_table_wrap_rows.end() && !tw_it->second.lines.empty()) tbl_wrap = &tw_it->second;
+        }
+
         // :set wrap (row_wrap_cols>0) -- how many extra visual slots this
         // row's own raw text needs, mirroring row_slots in
         // Editor::UpdateScrollForPane (editor.cpp), which this must stay
-        // in exact agreement with. A closed fold, org inline image, or org
-        // LaTeX fragment never wraps (each already claims its own fixed
-        // slot count via the branches below, and `row`'s displayed content
-        // there isn't buf.lines[static_cast<size_t>(row)] itself), so those are excluded here
-        // the same way editor.cpp's row_slots excludes them.
+        // in exact agreement with. A closed fold, org inline image, org
+        // LaTeX fragment or wrapped table row never wraps (each already
+        // claims its own fixed slot count via the branches below, and
+        // `row`'s displayed content there isn't
+        // buf.lines[static_cast<size_t>(row)] itself), so those are
+        // excluded here the same way editor.cpp's row_slots excludes them.
         bool row_wraps = false;
         int row_wrap_slots = 1;
-        if (!fold_here && wrap_cols > 0) {
+        if (tbl_wrap != nullptr) {
+            row_wrap_slots = static_cast<int>(tbl_wrap->lines.size());
+            visual_slot += row_wrap_slots - 1;  // visual_slot++ above already accounted for 1
+        } else if (!fold_here && wrap_cols > 0) {
             bool is_org_image = g_editor.OrgImagesVisible() && buf.org_image_rows.count(row) != 0;
             bool is_org_latex = !is_org_image && g_editor.OrgLatexVisible() && buf.org_latex_rows.count(row) != 0;
             if (!is_org_image && !is_org_latex) {
@@ -39726,27 +39796,34 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             auto tbl_it = org_table_of_row.find(row);
             if (tbl_it != org_table_of_row.end()) {
                 const Editor::OrgTableGrid &tbl = *tbl_it->second;
-                const float tbl_x = text_x + static_cast<float>(tbl.indent) * g_char_width;
-                const float tbl_w = static_cast<float>(tbl.width) * g_char_width;
+                // A row rendered wrapped carries its own geometry: the
+                // layout's indent/width, not the stored line's, and a
+                // height covering every slot it draws on, so the wash and
+                // the column rules run the full depth of a wrapped row
+                // instead of banding only its first line.
+                const int geo_indent = tbl_wrap != nullptr ? tbl_wrap->indent : tbl.indent;
+                const int geo_width = tbl_wrap != nullptr ? tbl_wrap->width : tbl.width;
+                const float tbl_x = text_x + static_cast<float>(geo_indent) * g_char_width;
+                const float tbl_w = static_cast<float>(geo_width) * g_char_width;
+                const float tbl_h = static_cast<float>(line_height * row_wrap_slots);
                 const bool is_header = tbl.header_end_row >= 0 && row <= tbl.header_end_row;
                 const bool is_sep =
                     std::find(tbl.sep_rows.begin(), tbl.sep_rows.end(), row) != tbl.sep_rows.end();
                 gfx::Color wash = ResolveHlGroup("Accent");
-                gfx::DrawRectangle(static_cast<int>(tbl_x), static_cast<int>(ly), static_cast<int>(tbl_w), line_height,
+                gfx::DrawRectangle(static_cast<int>(tbl_x), static_cast<int>(ly), static_cast<int>(tbl_w),
+                              static_cast<int>(tbl_h),
                               gfx::Color{wash.r, wash.g, wash.b, static_cast<unsigned char>(is_header ? 34 : 14)});
                 if (is_sep) {
                     // A `|---+---|` row is drawn, not read: the post-pass
                     // covers its dashes and lays one line across the table.
-                    org_table_rules.push_back(
-                        {gfx::Rectangle{tbl_x, ly, tbl_w, static_cast<float>(line_height)}, true});
+                    org_table_rules.push_back({gfx::Rectangle{tbl_x, ly, tbl_w, tbl_h}, true});
                 } else {
                     for (int rc : tbl.rule_cols) {
                         // Centred on the `|` glyph's own column, full row
                         // height, so the per-row glyphs join into one
                         // continuous rule down the table.
                         float rx = text_x + (static_cast<float>(rc) + 0.5f) * g_char_width;
-                        org_table_rules.push_back(
-                            {gfx::Rectangle{rx, ly, 1.0f, static_cast<float>(line_height)}, false});
+                        org_table_rules.push_back({gfx::Rectangle{rx, ly, 1.0f, tbl_h}, false});
                     }
                 }
             }
@@ -39842,6 +39919,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                              text_x + static_cast<float>(a) * org_head_cw, ly, org_head_fs,
                              ResolveHlGroup(d.hl_group), org_head_cw);
             }
+        } else if (tbl_wrap != nullptr) {
+            // An over-wide table renders as its wrapped layout and
+            // nothing else: the stored row's text never reaches the
+            // screen, so the per-span decoration passes below are skipped
+            // for it (their columns index the *stored* line, which no
+            // longer maps onto what is drawn) -- the same bargain the
+            // scaled-headline branch above makes. The grid wash/rules
+            // collected above still draw, so it reads as a table; the
+            // table the cursor is in is never wrapped, so the row being
+            // edited always shows its own characters.
+            for (size_t tl = 0; tl < tbl_wrap->lines.size(); tl++) {
+                DrawLineFast(tbl_wrap->lines[tl], text_x,
+                             ly + static_cast<float>(static_cast<int>(tl) * line_height), g_font_size,
+                             ResolveHlGroup("Normal"));
+            }
         } else if (row_wrap_cols <= 0) {
             DrawLineFast(buf.lines[static_cast<size_t>(row)], text_x, ly, g_font_size, ResolveHlGroup("Normal"));
         } else {
@@ -39855,7 +39947,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // g_char_width grid, so a row already drawn at the scaled stride
         // above has had its own (recolor) decorations applied there and
         // must skip this loop entirely.
-        for (const Decoration *dp : (org_head_level > 0 ? kNoDecos : row_decos)) {
+        for (const Decoration *dp : (org_head_level > 0 || tbl_wrap != nullptr ? kNoDecos : row_decos)) {
             const Decoration &d = *dp;
             // Plain cursor line: every pass in this loop repaints or
             // covers the row's own characters, so all of it is skipped.
@@ -40481,6 +40573,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (fold.closed && fold.start_row == r) f = &fold;
             }
             auto latex_it = buf.org_latex_rows.find(r);
+            auto tw_it = buf.org_table_wrap_rows.find(r);
             // A notebook code cell's output block hangs under row r (see
             // the draw loop's notebook branch); it counts with that row.
             const int nb_trailing = nb_sess ? g_editor.NotebookTrailingSlots(pane.buffer_id, r) : 0;
@@ -40493,6 +40586,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             } else if (g_editor.OrgLatexVisible() && latex_it != buf.org_latex_rows.end()) {
                 r = latex_it->second.end_row + 1;  // skip the fragment's remaining raw source rows outright
                 slot += latex_it->second.slots + nb_trailing;
+            } else if (g_editor.OrgTableWrapVisible() && tw_it != buf.org_table_wrap_rows.end() &&
+                       !tw_it->second.lines.empty()) {
+                // An over-wide org table's row draws as its wrapped
+                // layout's lines (Buffer::org_table_wrap_rows) -- the
+                // fourth of the four walkers that has to agree on it.
+                r += 1;
+                slot += static_cast<int>(tw_it->second.lines.size()) + nb_trailing;
             } else {
                 slot += (wrap_cols > 0)
                             ? std::max(1, (static_cast<int>(buf.lines[static_cast<size_t>(r)].size()) + wrap_cols - 1) / wrap_cols)

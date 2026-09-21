@@ -1205,3 +1205,260 @@ std::vector<OrgLinkSpanInfo> ScanOrgLinkSpans(const std::string &line) {
               [](const OrgLinkSpanInfo &a, const OrgLinkSpanInfo &b) { return a.col_start < b.col_start; });
     return spans;
 }
+
+// --- Org tables: the wrapped display layout (org_doc.h's own section) ---
+
+namespace {
+
+// Byte length of the UTF-8 codepoint starting at `i`, clamped so a
+// truncated or invalid sequence still advances by one byte rather than
+// running off the end (the parsers here take whatever is in the buffer,
+// which may be mid-edit and not yet valid UTF-8).
+/**
+ * @brief Returns the byte length of the UTF-8 codepoint starting at an offset, at least 1.
+ * @param s the string to read
+ * @param i the byte offset of the codepoint's first byte
+ * @return the codepoint's length in bytes, clamped to the remaining string
+ */
+int OrgUtf8Len(const std::string &s, size_t i) {
+    if (i >= s.size()) return 1;
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    int len = 1;
+    if ((c & 0x80) == 0x00) len = 1;
+    else if ((c & 0xE0) == 0xC0) len = 2;
+    else if ((c & 0xF0) == 0xE0) len = 3;
+    else if ((c & 0xF8) == 0xF0) len = 4;
+    if (i + static_cast<size_t>(len) > s.size()) len = static_cast<int>(s.size() - i);
+    return len < 1 ? 1 : len;
+}
+
+// The first `width` display columns of `s`, on a codepoint boundary.
+/**
+ * @brief Takes a prefix of a string measured in display columns rather than bytes.
+ * @param s the string to cut
+ * @param width the number of codepoints to keep
+ * @return the prefix, cut on a codepoint boundary
+ */
+std::string OrgTakeCols(const std::string &s, int width) {
+    int seen = 0;
+    size_t i = 0;
+    while (i < s.size() && seen < width) {
+        i += static_cast<size_t>(OrgUtf8Len(s, i));
+        seen++;
+    }
+    return s.substr(0, i);
+}
+
+// Pads `s` out to `width` display columns with spaces. A cell already at
+// or past its width is returned untouched -- over-wide cells are the
+// wrapper's problem, not the padder's.
+/**
+ * @brief Right-pads a string with spaces to a given display width.
+ * @param s the string to pad
+ * @param width the target width in display columns
+ * @return `s` padded to `width` columns
+ */
+std::string OrgPadCols(const std::string &s, int width) {
+    const int have = OrgTableDisplayWidth(s);
+    if (have >= width) return s;
+    return s + std::string(static_cast<size_t>(width - have), ' ');
+}
+
+}  // namespace
+
+int OrgTableDisplayWidth(const std::string &s) {
+    int width = 0;
+    for (char c : s) {
+        // Every byte that isn't a UTF-8 continuation byte starts a new
+        // codepoint, so this counts codepoints without decoding them.
+        if ((static_cast<unsigned char>(c) & 0xC0) != 0x80) width++;
+    }
+    return width;
+}
+
+std::vector<std::string> OrgTableWrapCell(const std::string &text, int width) {
+    const int w = std::max(1, width);
+    std::vector<std::string> out;
+    // Split on runs of spaces: the cell text arrives already trimmed, and
+    // interior runs collapse to one space, which is what makes a wrapped
+    // cell read as prose instead of keeping the column padding of
+    // whatever the author happened to type.
+    std::vector<std::string> words;
+    for (size_t i = 0; i < text.size();) {
+        if (text[i] == ' ' || text[i] == '\t') {
+            i++;
+            continue;
+        }
+        size_t k = i;
+        while (k < text.size() && text[k] != ' ' && text[k] != '\t') k++;
+        words.push_back(text.substr(i, k - i));
+        i = k;
+    }
+    std::string cur;
+    for (const std::string &word : words) {
+        std::string piece = word;
+        // A word wider than the whole column can't be placed by breaking
+        // on spaces: flush what we have and hard-split it across as many
+        // lines as it needs (a long URL, a path, a chemical name).
+        if (OrgTableDisplayWidth(piece) > w) {
+            if (!cur.empty()) {
+                out.push_back(cur);
+                cur.clear();
+            }
+            while (OrgTableDisplayWidth(piece) > w) {
+                std::string head = OrgTakeCols(piece, w);
+                out.push_back(head);
+                piece = piece.substr(head.size());
+            }
+            cur = piece;
+            continue;
+        }
+        const int extra = cur.empty() ? 0 : 1;
+        if (OrgTableDisplayWidth(cur) + extra + OrgTableDisplayWidth(piece) > w) {
+            out.push_back(cur);
+            cur = piece;
+        } else {
+            if (!cur.empty()) cur += " ";
+            cur += piece;
+        }
+    }
+    if (!cur.empty() || out.empty()) out.push_back(cur);
+    return out;
+}
+
+OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int budget, int indent) {
+    OrgTableWrapPlan plan;
+    size_t cols = 0;
+    for (const OrgTableCells &r : rows) {
+        if (!r.is_sep) cols = std::max(cols, r.cells.size());
+    }
+    if (cols == 0) return plan;
+
+    // Natural width: the widest cell in each column, i.e. exactly the
+    // widths :MepOrgTableAlign would write into the file.
+    std::vector<int> natural(cols, 0);
+    for (const OrgTableCells &r : rows) {
+        if (r.is_sep) continue;
+        for (size_t c = 0; c < r.cells.size(); c++) {
+            natural[c] = std::max(natural[c], OrgTableDisplayWidth(r.cells[c]));
+        }
+    }
+
+    // Every row spends `indent` columns of leading whitespace, one column
+    // per `|` (cols + 1 of them) and two spaces of padding per cell, so
+    // only what's left is available to the cell text itself.
+    const int chrome = indent + static_cast<int>(cols) + 1 + 2 * static_cast<int>(cols);
+    const int avail = budget - chrome;
+    int natural_total = 0;
+    for (int n : natural) natural_total += n;
+
+    std::vector<int> widths = natural;
+    if (avail > 0 && natural_total > avail) {
+        plan.wrapped = true;
+        // Water-filling: columns that already fit an equal share of the
+        // budget keep their natural width and leave the rest of the
+        // budget to the columns that don't, repeated until no column
+        // fits its share. The remainder is then split between the
+        // over-wide columns in proportion to how much text they hold.
+        std::vector<bool> fixed(cols, false);
+        int remaining = avail;
+        size_t unfixed = cols;
+        bool progress = true;
+        while (progress && unfixed > 0) {
+            progress = false;
+            const int fair = remaining / static_cast<int>(unfixed);
+            for (size_t c = 0; c < cols; c++) {
+                if (fixed[c] || natural[c] > fair) continue;
+                fixed[c] = true;
+                widths[c] = natural[c];
+                remaining -= natural[c];
+                unfixed--;
+                progress = true;
+            }
+            if (unfixed == 0) break;
+        }
+        if (unfixed > 0) {
+            int share_total = 0;
+            for (size_t c = 0; c < cols; c++) {
+                if (!fixed[c]) share_total += natural[c];
+            }
+            for (size_t c = 0; c < cols; c++) {
+                if (fixed[c]) continue;
+                const int share = share_total > 0
+                                      ? static_cast<int>(static_cast<long long>(remaining) * natural[c] / share_total)
+                                      : remaining / static_cast<int>(unfixed);
+                widths[c] = std::max(std::min(natural[c], kOrgTableMinColWidth), share);
+            }
+        }
+        // The proportional split floors, and the minimum-width clamp can
+        // push back over the budget, so settle the difference a column at
+        // a time: shave the widest column while over, and feed the column
+        // furthest short of its own content while under.
+        /**
+         * @brief Sums the planned column widths.
+         * @return the total content width across every column
+         */
+        auto total = [&] {
+            int t = 0;
+            for (int wv : widths) t += wv;
+            return t;
+        };
+        while (total() > avail) {
+            size_t pick = cols;
+            for (size_t c = 0; c < cols; c++) {
+                if (widths[c] > 1 && (pick == cols || widths[c] > widths[pick])) pick = c;
+            }
+            if (pick == cols) break;
+            widths[pick]--;
+        }
+        while (total() < avail) {
+            size_t pick = cols;
+            for (size_t c = 0; c < cols; c++) {
+                if (widths[c] >= natural[c]) continue;
+                if (pick == cols || natural[c] - widths[c] > natural[pick] - widths[pick]) pick = c;
+            }
+            if (pick == cols) break;
+            widths[pick]++;
+        }
+    }
+    for (int &wv : widths) wv = std::max(1, wv);
+    plan.col_widths = widths;
+
+    const std::string lead(static_cast<size_t>(std::max(0, indent)), ' ');
+    plan.rows.reserve(rows.size());
+    for (const OrgTableCells &r : rows) {
+        std::vector<std::string> out;
+        if (r.is_sep) {
+            std::string line = lead + "|";
+            for (size_t c = 0; c < cols; c++) {
+                if (c > 0) line += "+";
+                line += std::string(static_cast<size_t>(widths[c] + 2), '-');
+            }
+            line += "|";
+            out.push_back(std::move(line));
+            plan.rows.push_back(std::move(out));
+            continue;
+        }
+        // Wrap every cell first: the row draws as however many lines its
+        // tallest cell needs, with the shorter cells blank underneath.
+        std::vector<std::vector<std::string>> cell_lines(cols);
+        size_t height = 1;
+        for (size_t c = 0; c < cols; c++) {
+            const std::string &txt = c < r.cells.size() ? r.cells[c] : std::string();
+            cell_lines[c] = OrgTableWrapCell(txt, widths[c]);
+            height = std::max(height, cell_lines[c].size());
+        }
+        for (size_t l = 0; l < height; l++) {
+            std::string line = lead + "|";
+            for (size_t c = 0; c < cols; c++) {
+                if (c > 0) line += "|";
+                const std::string piece = l < cell_lines[c].size() ? cell_lines[c][l] : std::string();
+                line += " " + OrgPadCols(piece, widths[c]) + " ";
+            }
+            line += "|";
+            out.push_back(std::move(line));
+        }
+        plan.rows.push_back(std::move(out));
+    }
+    return plan;
+}

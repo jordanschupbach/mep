@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 100 =<leader>= sequences registered at startup. Press
+All 111 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -25,6 +25,7 @@ the features live.
 | =<leader>bB= | Toggle buffers sidebar | [[file:sidebars.html][Sidebars]] |
 | =<leader>bO= | Browse (external window) | [[file:browser.html][The browser pane]] |
 | =<leader>bb= | Buffers | [[file:files.html][Files and buffers]] |
+| =<leader>bf= | Open in browser | -- |
 | =<leader>bh= | Host (serve) this directory and browse it | [[file:local-server.html][Serving a directory]] |
 | =<leader>bo= | Browse | [[file:browser.html][The browser pane]] |
 | =<leader>bs= | Scratch buffer | [[file:files.html][Files and buffers]] |
@@ -67,6 +68,15 @@ the features live.
 | =<leader>lk= | LSP: signature help | [[file:lsp.html][Language servers]] |
 | =<leader>lt= | LSP: goto type definition | [[file:lsp.html][Language servers]] |
 | =<leader>lu= | Language UI mode (toggle) | [[file:c-mode.html][C and C++ mode]] |
+| =<leader>ma= | Annotate mode | -- |
+| =<leader>mcb= | blue | -- |
+| =<leader>mcg= | green | -- |
+| =<leader>mco= | orange | -- |
+| =<leader>mcp= | pink | -- |
+| =<leader>mcy= | yellow | -- |
+| =<leader>mh= | Highlight selection/match | -- |
+| =<leader>mn= | Add note | -- |
+| =<leader>mw= | Save annotations | -- |
 | =<leader>nn= | Toggle notifications pane | [[file:notifications.html][Notifications]] |
 | =<leader>oea= | Org: export to ASCII | [[file:org-export.html][Exporting]] |
 | =<leader>oeh= | Org: export to HTML | [[file:org-export.html][Exporting]] |
@@ -84,6 +94,7 @@ the features live.
 | =<leader>oti= | Org: toggle inline images | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otl= | Toggle LaTeX/math preview (org/tex) | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otm= | Org: toggle markup concealment | [[file:org-basics.html][Org files in mep]] |
+| =<leader>otw= | Org: toggle wrapped table rendering | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>pc= | Clear project (default layout) | [[file:projects.html][Projects]] |
 | =<leader>pf= | Find files | [[file:pickers.html][Pickers]] |
 | =<leader>po= | Projects | [[file:projects.html][Projects]] |

@@ -5,7 +5,7 @@
 
 * Every command
 
-All 319 ex commands mep defines: 103 built in and 217 registered from Lua.
+All 321 ex commands mep defines: 103 built in and 219 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -133,6 +133,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepNotifyPanel= | [[file:notifications.html][Notifications]] |
 | =:MepOil= | [[file:file-tree.html][The file tree]] |
 | =:MepOpenFile= | -- |
+| =:MepOpenInFirefox= | -- |
 | =:MepOrgAgendaAddFile= | [[file:org-agenda.html][Agenda]] |
 | =:MepOrgAgendaOverdue= | [[file:org-agenda.html][Agenda]] |
 | =:MepOrgAgendaSearch= | [[file:org-agenda.html][Agenda]] |
@@ -207,6 +208,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepOrgSparseTodo= | [[file:org-todo.html][TODO keywords and tags]] |
 | =:MepOrgStoreLink= | [[file:org-capture.html][Capture]] |
 | =:MepOrgTableAlign= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgTableWrapToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgTags= | [[file:org-todo.html][TODO keywords and tags]] |
 | =:MepOrgTagsPicker= | [[file:org-todo.html][TODO keywords and tags]] |
 | =:MepOrgTemplate= | [[file:org-capture.html][Capture]] |

@@ -452,6 +452,82 @@ bool OrgParseClockTimestamp(const std::string &s, int *y, int *mo, int *d, int *
  */
 OrgOpenClock OrgFindOpenClock(const std::vector<std::string> &lines);
 
+// --- Org tables: the wrapped display layout (Editor::OrgTableWrapScan) ---
+// A table whose aligned width runs past `:set textwidth` is *rendered*
+// narrower than it is stored: the columns are re-budgeted to fit the line
+// width and any cell too long for its column wraps onto continuation
+// lines, so one stored row draws as several. Display-only, deliberately:
+// wrapping in the file would be valid org (a continuation row is an
+// ordinary row with an empty first cell, which is what Emacs'
+// `org-table-wrap-region` writes) but it is a *semantic* edit -- it adds
+// rows, so spreadsheet references like `@3$2` shift under it, and a
+// continuation row can never be reliably told back apart from a row whose
+// first cell is genuinely empty, making the wrap one-way. Nothing here
+// touches a buffer; it hands back strings for the renderer to draw.
+//
+// Pure functions over already-parsed cells (the `|`-splitting itself stays
+// in editor.cpp, which had it first) so the whole width/wrap policy is
+// testable without a GL context -- org_doc_test.cpp.
+
+// One table row as the planner sees it: either a `|---+---|` rule or a
+// row of trimmed cell texts.
+struct OrgTableCells {
+    bool is_sep = false;
+    std::vector<std::string> cells;
+};
+
+struct OrgTableWrapPlan {
+    // False when the table already fits the budget, in which case the
+    // caller should leave the rows alone and render them as stored --
+    // `col_widths`/`rows` still hold the (unwrapped) layout.
+    bool wrapped = false;
+    std::vector<int> col_widths;                 // content columns, excluding each cell's ` ` padding
+    std::vector<std::vector<std::string>> rows;  // per input row, the line(s) it draws as
+};
+
+/**
+ * @brief Measures a string in display columns (one per codepoint), not bytes.
+ * @param s the text to measure
+ * @return the number of codepoints in `s`
+ */
+int OrgTableDisplayWidth(const std::string &s);
+
+// Greedy word wrap at `width` display columns: breaks on spaces, and only
+// splits a word mid-way when the word alone is wider than the column.
+// Always returns at least one (possibly empty) line, so a blank cell still
+// occupies its row.
+/**
+ * @brief Wraps text to a column width, breaking on spaces and splitting only over-wide words.
+ * @param text the cell text to wrap
+ * @param width the target width in display columns (values below 1 are treated as 1)
+ * @return the wrapped lines, never empty
+ */
+std::vector<std::string> OrgTableWrapCell(const std::string &text, int width);
+
+// Chooses column widths for a table rendered within `budget` display
+// columns (`:set textwidth`), counting the `indent` the table's leading
+// `|` sits at plus the `| ` / ` | ` chrome every row carries.
+//
+// Columns narrower than an equal share keep their natural width and only
+// the wide ones give up columns (a water-filling split, so a table of one
+// long prose column beside three short ones spends the budget on the
+// prose rather than shaving all four evenly). A column is never widened
+// past its own longest cell, and never shrunk below kOrgTableMinColWidth
+// unless the budget leaves no choice.
+/**
+ * @brief Plans a table's rendered column widths and per-row wrapped lines for a line-width budget.
+ * @param rows the table's parsed rows, in order
+ * @param budget the total rendered width to fit, in display columns (`:set textwidth`)
+ * @param indent the display column the table's leading `|` sits at
+ * @return the plan; `wrapped` is false when the table already fits
+ */
+OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int budget, int indent);
+
+// The narrowest a column is squeezed to while any wider one still has
+// columns to give up -- below this a prose cell wraps to one or two words
+// per line and reads worse than a table running past the margin.
+constexpr int kOrgTableMinColWidth = 6;
+
 // Inserts "  CLOCK: [now_ts]" under the headline at 0-based `headline_line`:
 // at the top of its existing :LOGBOOK: drawer, else in a new drawer right
 // after the headline's planning line and :PROPERTIES: drawer (if any),

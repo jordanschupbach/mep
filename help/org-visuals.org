@@ -129,6 +129,40 @@ same on demand, for the table under the cursor.
 A literal pipe inside a cell must be escaped as =\vert= or =\|=, or it will
 be read as a column separator.
 
+** Wide tables
+
+A table whose columns add up to more than =:set textwidth= (80 by default)
+is *rendered* narrower than it is stored. The columns are re-budgeted to
+fit the line width and any cell too long for its column wraps onto further
+lines, so one row of the file draws as several:
+
+| Rendering                | On                                           |
+|--------------------------+----------------------------------------------|
+| =<leader>otw=            | toggle wrapped rendering of over-wide tables |
+| =:MepOrgTableWrapToggle= | the same                                     |
+
+Narrow columns keep their natural width and only the wide ones give up
+columns, so a table of one long prose column beside three short ones spends
+the budget on the prose instead of shaving all four evenly. A column is
+never widened past its own longest cell, and a word too long for its column
+is split rather than left to overflow. =:set tw=N= re-renders every table in
+the buffer at the new width.
+
+This is rendering only: the file keeps its long lines. Wrapping them *into*
+the file would still be valid org -- a continuation row is an ordinary row
+with an empty first cell -- but it would add rows, which shifts spreadsheet
+references like =@3$2= under the table, and a continuation row can never be
+told back apart from a row whose first cell is genuinely empty, so the wrap
+would be one-way.
+
+The table the cursor is in is never wrapped: it shows its real stored
+columns, so a cell is always edited against the widths that are in the
+file. Stepping out wraps it again. A Visual selection covering a table does
+the same. Because a wrapped row's drawn text is not the row's own text, its
+syntax colouring and concealment are skipped for as long as it is wrapped
+-- the grid, the header tint and the rules still draw, and the row comes
+back fully decorated the moment the cursor enters its table.
+
 * See also
 
 - [[file:org-basics.html][Org files in mep]] -- the rest of the rendering.

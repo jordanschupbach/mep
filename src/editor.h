@@ -990,6 +990,29 @@ struct Buffer {
     };
     std::unordered_map<int, OrgLatexRender> org_latex_rows;
 
+    // Org tables rendered wrapped (Editor::OrgTableWrapScan): a table
+    // whose aligned width runs past `:set textwidth` draws with
+    // re-budgeted columns and its long cells wrapped, so one stored row
+    // takes several screen rows. Display-only -- the file keeps its long
+    // lines (see org_doc.h's own section for why wrapping *into* the
+    // buffer was rejected), and these strings are the only thing the
+    // renderer draws for such a row.
+    //
+    // Same "one row, more than one slot" shape as org_latex_rows above,
+    // and the same four-site agreement: DrawPane's row loop, its own
+    // cursor-Y lookup (RowSlot) and its org-card slot walk (all main.cpp)
+    // plus Editor::UpdateScrollForPane (editor.cpp) all read `lines.size()`
+    // back as the row's slot count. Only ever populated while the toggle
+    // is on, and never for the table the cursor is inside -- concealment's
+    // own step-aside, one table at a time instead of one row (a per-row
+    // step-aside would reflow the table on every cursor move within it).
+    struct OrgTableWrapRow {
+        std::vector<std::string> lines;  // what this row draws as, top to bottom
+        int indent = 0;                  // display column the rendered leading `|` sits at
+        int width = 0;                   // rendered columns from `indent` to the trailing `|`
+    };
+    std::unordered_map<int, OrgTableWrapRow> org_table_wrap_rows;
+
     // Inline math (a `$x^2$`/`\(x^2\)`/etc. fragment sharing its row with
     // other prose, e.g. "the value $x^2$ matters here"): unlike
     // org_latex_rows above, this can't replace the *whole* row -- mep's
@@ -2934,6 +2957,18 @@ public:
      * @return True if plain-cursor-line rendering is on.
      */
     bool OrgPlainCursorLineVisible() const { return org_plain_cursor_line_; }
+    // <leader>otw / mep.org_table_wrap_toggle -- whether a table too
+    // wide for `:set textwidth` renders with re-budgeted columns and its
+    // long cells wrapped (Buffer::org_table_wrap_rows) instead of running
+    // off past the margin. Defaults on, like the rest of the org
+    // rendering; consulted both by Editor::OrgTableWrapScan (which
+    // clears its rows and no-ops while off, so the raw lines come back)
+    // and by every one of the four slot walkers.
+    /**
+     * @brief Returns whether over-wide org tables are rendered with wrapped cells and re-budgeted columns.
+     * @return True if wrapped table rendering is on.
+     */
+    bool OrgTableWrapVisible() const { return org_table_wrap_visible_; }
     // Active pane/buffer -- what most of the UI (statusline, blinking
     // cursor, Visual highlight) cares about.
     /**
@@ -7898,6 +7933,32 @@ public:
      * @return The new state.
      */
     bool ToggleOrgPlainCursorLine();
+    // <leader>otw: flips org_table_wrap_visible_ and returns the new
+    // state, same shape as ToggleOrgImages.
+    /**
+     * @brief Toggles wrapped rendering of over-wide org tables.
+     * @return The new state.
+     */
+    bool ToggleOrgTableWrap();
+    // Rebuilds Buffer::org_table_wrap_rows for the current buffer: every
+    // org table whose aligned width would run past `:set textwidth` gets
+    // the re-budgeted, cell-wrapped layout PlanOrgTableWrap works out
+    // (org_doc.h), stored as the lines the renderer draws in place of
+    // that row's own text. Tables that already fit register nothing, so
+    // a narrow table renders exactly as it always did.
+    //
+    // Called from the same per-frame org hook as OrgTableAutoAlign
+    // (kBuiltinOrgLinks, main.cpp) plus on_buffer_changed, because it is
+    // cursor-driven as well as edit-driven: the table the cursor is
+    // inside is deliberately left unwrapped so it can be edited against
+    // its own real columns, so entering or leaving a table has to
+    // rescan. Cheap enough for that -- one line walk plus a wrap of the
+    // tables that are actually too wide.
+    /**
+     * @brief Rescans the current buffer's org tables and rebuilds the wrapped display layout for the over-wide ones.
+     * @param force Re-plan even when nothing the layout depends on appears to have changed (pass true after an edit).
+     */
+    void OrgTableWrapScan(bool force = false);
     // Appends one inline-math span (see Buffer::OrgLatexInlineSpan) for
     // `row` -- called once per match by mep_org_latex_register_inline
     // (kBuiltinOrgLatex). Appends rather than replaces (unlike
@@ -10893,6 +10954,25 @@ private:
     // fallback there is "the math stays plain source text", not a
     // notification per fragment per keystroke.
     bool org_latex_visible_ = true;
+    // Wrapped rendering of over-wide org tables (<leader>otw,
+    // Editor::OrgTableWrapVisible()) -- same shape as the flags around
+    // it, and like org_latex_visible_ the registry it gates
+    // (Buffer::org_table_wrap_rows) is only ever populated while it is
+    // on, since those rows are the only thing standing in for the raw
+    // table text.
+    bool org_table_wrap_visible_ = true;
+    // OrgTableWrapScan's early-out state: which buffer it last planned,
+    // which table the cursor was inside (that table's first row, or -1
+    // for none) and which rows a Visual selection covered. The scan runs
+    // off a per-frame, cursor-driven hook, and re-planning every table in
+    // a long org file on every `j` would be real work done for nothing --
+    // a plain cursor move only changes the layout when it crosses into or
+    // out of a table. An edit changes the text underneath all of that, so
+    // the edit hook passes `force` instead of relying on these.
+    int org_table_wrap_buffer_ = -1;
+    int org_table_wrap_cursor_top_ = -2;  // -2 = nothing planned yet
+    int org_table_wrap_sel_lo_ = -1;
+    int org_table_wrap_sel_hi_ = -1;
     // Org markup concealment / scaled headlines (<leader>otm, <leader>oth):
     // see OrgConcealVisible()/OrgHeadingScaleVisible() for what each gates
     // and why both start on.

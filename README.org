@@ -104,17 +104,17 @@ resizable, and each one pops out into a large preview float with
 
 *Beyond text.* Every one of these opens as a pane, from mep's own code:
 
-| Open this | And you get |
-|-----------+-------------|
-| =.pdf= | a PDF viewer with real text extraction, outlines and links |
-| =.html= (or =:Browse <url>=) | a browser pane with mep's own HTML/CSS/JS engine; =:Serve= hosts a directory ([[file:docs/web.org][more]]) |
-| =.png=, =.jpg=, … | an image viewer, and =e= enters a layer-based editor with procedural fills ([[file:IMAGE_EDITOR.md][more]]) |
-| =.obj=, =.gltf=, =.glb=, =.iqm=, =.vox=, =.m3d= | a 3D modeler: mesh editing, materials, lights, animation, rendering (=.blend= too, via a local Blender) |
-| =.ipynb= | a Jupyter notebook with per-cell kernels, run without =jupyter_client= ([[file:docs/notebooks.org][more]]) |
-| =.org= | agenda, babel, roam, capture, clock, drill, LaTeX and image preview, export, plus =:Gantt= and =:Kanban= views |
-| =.docx=, =.odt=, =.xlsx=, =.ods=, =.csv= | office documents and spreadsheets, with formulas |
-| =.mov= | a video player |
-| =:terminal= | a real terminal emulator |
+| Open this                                       | And you get                                                                                                    |
+|-------------------------------------------------+----------------------------------------------------------------------------------------------------------------|
+| =.pdf=                                          | a PDF viewer with real text extraction, outlines and links                                                     |
+| =.html= (or =:Browse <url>=)                    | a browser pane with mep's own HTML/CSS/JS engine; =:Serve= hosts a directory ([[file:docs/web.org][more]])     |
+| =.png=, =.jpg=, …                               | an image viewer, and =e= enters a layer-based editor with procedural fills ([[file:IMAGE_EDITOR.md][more]])    |
+| =.obj=, =.gltf=, =.glb=, =.iqm=, =.vox=, =.m3d= | a 3D modeler: mesh editing, materials, lights, animation, rendering (=.blend= too, via a local Blender)        |
+| =.ipynb=                                        | a Jupyter notebook with per-cell kernels, run without =jupyter_client= ([[file:docs/notebooks.org][more]])     |
+| =.org=                                          | agenda, babel, roam, capture, clock, drill, LaTeX and image preview, export, plus =:Gantt= and =:Kanban= views |
+| =.docx=, =.odt=, =.xlsx=, =.ods=, =.csv=        | office documents and spreadsheets, with formulas                                                               |
+| =.mov=                                          | a video player                                                                                                 |
+| =:terminal=                                     | a real terminal emulator                                                                                       |
 
 *Collaboration and agents.* CRDT-based shared editing over a
 self-hosted relay ([[file:docs/collaboration.org][docs]]). An agent-control socket, and a =mep-mcp=
@@ -149,16 +149,16 @@ whole surface is in [[file:docs/lua-api.org][docs/lua-api.org]].
 
 * Documentation
 
-| [[file:docs/keybindings.org][Keybindings and commands]] | every key and =:= command |
-| [[file:docs/lua-api.org][Lua API]] | the =mep.*= table |
-| [[file:docs/architecture.org][Architecture]] | the source tree, for contributors |
-| [[file:docs/notebooks.org][Notebooks]] | Jupyter cells and kernels |
-| [[file:docs/web.org][Browser pane]] | the web engine, =:Serve=, the capability ladder |
-| [[file:docs/copilot.org][Copilot]] | setup, commands, what gets sent |
-| [[file:docs/collaboration.org][Collaboration]] | shared editing and running your own relay |
-| [[file:docs/learn-games.org][Learning games]] | the deck format and the games |
-| [[file:MEP_AGENT_API.md][Agent API]] | driving mep from a script or an AI agent |
-| [[file:IMAGE_EDITOR.md][Image editor]] | tools and hotkeys |
+| [[file:docs/keybindings.org][Keybindings and commands]] | every key and =:= command                       |
+| [[file:docs/lua-api.org][Lua API]]                      | the =mep.*= table                               |
+| [[file:docs/architecture.org][Architecture]]            | the source tree, for contributors               |
+| [[file:docs/notebooks.org][Notebooks]]                  | Jupyter cells and kernels                       |
+| [[file:docs/web.org][Browser pane]]                     | the web engine, =:Serve=, the capability ladder |
+| [[file:docs/copilot.org][Copilot]]                      | setup, commands, what gets sent                 |
+| [[file:docs/collaboration.org][Collaboration]]          | shared editing and running your own relay       |
+| [[file:docs/learn-games.org][Learning games]]           | the deck format and the games                   |
+| [[file:MEP_AGENT_API.md][Agent API]]                    | driving mep from a script or an AI agent        |
+| [[file:IMAGE_EDITOR.md][Image editor]]                  | tools and hotkeys                               |
 
 * Development
 

@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (154)
+* The bindings (157)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -161,11 +161,14 @@ that it does nothing.
 | =mep.org_subtree_end_lines= | finds the last row of the subtree rooted at row, given a plain line array instead of a buffer |
 | =mep.org_table_align= | reformats the org table under the cursor to align its columns |
 | =mep.org_table_auto_align= | realigns the org table the cursor just moved out of |
+| =mep.org_table_wrap_scan= | rebuilds the wrapped display layout for over-wide org tables |
+| =mep.org_table_wrap_toggle= | toggles wrapped rendering of over-wide org tables |
 | =mep.org_timestamp_at= | finds an org timestamp overlapping a given column in a line |
 | =mep.org_timestamp_insert= | inserts an org timestamp at the cursor |
 | =mep.org_timestamp_shift= | shifts the org timestamp under/near the cursor by a number of days |
 | =mep.pdf_current_page= | 1-indexed current page, or 0 if |
 | =mep.pdf_goto_page= | jumps buffer_id's own PDF viewer |
+| =mep.pdf_note_latex_done= | async callback (from kBuiltinPdfAnnot's |
 | =mep.pdf_outline= | array of {title, page, depth}, or nil if |
 | =mep.pdf_reload= | re-reads local file `path` and re-decodes it INTO |
 | =mep.roam_graph_close= | closes the Roam graph overlay without invoking its on_select callback |

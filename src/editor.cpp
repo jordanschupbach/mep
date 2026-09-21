@@ -4034,6 +4034,25 @@ OrgTableRow ParseOrgTableRowImpl(const std::string &line) {
     }
     return result;
 }
+
+// A cell's width in *display columns* (one per codepoint), not bytes.
+// Padding by std::string::size() overpads any cell holding a multi-byte
+// character -- the readme's own "…" cell, an em dash, an arrow -- by that
+// encoding's extra bytes, so that row's `|` lands short of every other
+// row's. Editor::OrgTables then drops the column rule (it only draws a
+// rule at a column *every* row agrees on), and the table renders as a run
+// of stray pipes instead of a grid.
+//
+// A forward onto org_doc.h's own OrgTableDisplayWidth, which the wrapped
+// display layout needs too -- kept as a local name because that is what
+// this file's align/geometry code has always called it, and the two must
+// not be allowed to drift apart into two different ideas of a cell's width.
+/**
+ * @brief Returns an org table cell's width in display columns (codepoints), not bytes.
+ * @param cell The cell text to measure.
+ * @return The cell's width in display columns.
+ */
+int OrgTableCellWidth(const std::string &cell) { return OrgTableDisplayWidth(cell); }
 }  // namespace
 
 void Editor::OrgTableAlign() {
@@ -4057,7 +4076,7 @@ void Editor::OrgTableAlign() {
         if (!r.is_sep) {
             for (size_t ci = 0; ci < r.cells.size(); ci++) {
                 if (ci >= widths.size()) widths.push_back(0);
-                widths[ci] = std::max(widths[ci], static_cast<int>(r.cells[ci].size()));
+                widths[ci] = std::max(widths[ci], OrgTableCellWidth(r.cells[ci]));
             }
         }
         rows.emplace_back(i, std::move(r));
@@ -4075,7 +4094,7 @@ void Editor::OrgTableAlign() {
             for (size_t ci = 0; ci < widths.size(); ci++) {
                 if (ci > 0) line += "|";
                 std::string cell = ci < r.cells.size() ? r.cells[ci] : "";
-                line += " " + cell + std::string(static_cast<size_t>(widths[ci]) - cell.size(), ' ') + " ";
+                line += " " + cell + std::string(static_cast<size_t>(widths[ci] - OrgTableCellWidth(cell)), ' ') + " ";
             }
         }
         line += "|";
@@ -4645,6 +4664,17 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
             if (org_latex_visible_) {
                 auto it = buf.org_latex_rows.find(r);
                 if (it != buf.org_latex_rows.end()) return it->second.slots + trailing;
+            }
+            // A row of an over-wide org table draws as however many
+            // lines its wrapped layout needs (Buffer::org_table_wrap_rows)
+            // -- the same "one row, N slots" shape as the two above, and
+            // like them it replaces the row's own text, so soft-wrap
+            // below must not also measure it.
+            if (org_table_wrap_visible_ && org_buffer) {
+                auto it = buf.org_table_wrap_rows.find(r);
+                if (it != buf.org_table_wrap_rows.end() && !it->second.lines.empty()) {
+                    return static_cast<int>(it->second.lines.size()) + trailing;
+                }
             }
             // Soft-wrap (:set wrap, wrap_cols>0): a row's *raw* text length
             // determines how many visual slots it claims, same "one row ->
@@ -24346,6 +24376,13 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
                     long w = std::strtol(val.c_str(), &val_end, 10);
                     if (val_end != val.c_str() && *val_end == '\0' && w > 0) {
                         text_width_ = static_cast<int>(w);
+                        // textwidth is the budget an over-wide org table
+                        // is rendered into, and nothing else re-plans on
+                        // an option change (the wrap scan rides the org
+                        // hook's cursor-row/edit triggers) -- so re-plan
+                        // here, or the table keeps the old width until
+                        // the next time the cursor happens to move.
+                        OrgTableWrapScan(true);
                     } else {
                         status_message_ = "E521: Number required after =: " + opt;
                     }
@@ -26114,6 +26151,22 @@ const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
     auto is_table_row = [&](int r) {
         return r >= 0 && r < n && ParseOrgTableRowImpl(buf.lines[static_cast<size_t>(r)]).is_row;
     };
+    // What a row actually *draws* as, which is what the grid has to be
+    // measured against: a row belonging to a table rendered wrapped
+    // (Buffer::org_table_wrap_rows) draws the layout's own lines, not its
+    // raw text, and those lines have different pipe columns. Every line
+    // of one such row carries its `|` at identical columns by
+    // construction, so the first stands in for all of them.
+    /**
+     * @brief Returns the line whose pipe columns a row's grid geometry should be measured from.
+     * @param r The row to resolve.
+     * @return The row's rendered first line when it is drawn wrapped, else its raw text.
+     */
+    auto rendered_line = [&](int r) -> const std::string & {
+        auto it = buf.org_table_wrap_rows.find(r);
+        if (it != buf.org_table_wrap_rows.end() && !it->second.lines.empty()) return it->second.lines.front();
+        return buf.lines[static_cast<size_t>(r)];
+    };
     // A `|`-heavy line inside a `#+begin_src`/`#+begin_example` block is
     // code or sample text, not a table -- drawing a grid over an ASCII
     // diagram or a shell pipeline would be worse than drawing nothing.
@@ -26142,7 +26195,7 @@ const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
         std::vector<bool> common;
         bool first_body = true;
         for (int r = row; r <= end; r++) {
-            const std::string &line = buf.lines[static_cast<size_t>(r)];
+            const std::string &line = rendered_line(r);
             if (ParseOrgTableRowImpl(line).is_sep) {
                 g.sep_rows.push_back(r);
                 continue;
@@ -26152,13 +26205,29 @@ const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
                 // row above the first rule.
                 g.header_end_row = g.sep_rows.front() - 1;
             }
-            std::vector<bool> here(line.size(), false);
-            for (size_t c = 0; c < line.size(); c++) here[c] = line[c] == '|';
+            // Indexed by *display column* (one per codepoint), not byte
+            // offset: the rules this feeds are drawn at rc * g_char_width
+            // (DrawBufferPane), and a row carrying any multi-byte
+            // character -- the readme's own "…" cell -- would otherwise
+            // report its `|` two columns right of where it is drawn, so
+            // the intersection below would drop every rule past it.
+            std::vector<bool> here;
+            here.reserve(line.size());
+            int first_bar = -1, last_bar = -1;
+            for (size_t c = 0; c < line.size(); c += static_cast<size_t>(Utf8CodepointLen(line, c))) {
+                if (line[c] == '|') {
+                    if (first_bar < 0) first_bar = static_cast<int>(here.size());
+                    last_bar = static_cast<int>(here.size());
+                    here.push_back(true);
+                } else {
+                    here.push_back(false);
+                }
+            }
             if (first_body) {
                 common = here;
                 first_body = false;
-                g.indent = static_cast<int>(line.find('|'));
-                g.width = static_cast<int>(line.find_last_of('|')) - g.indent + 1;
+                g.indent = first_bar;
+                g.width = last_bar - first_bar + 1;
             } else {
                 for (size_t c = 0; c < common.size(); c++) {
                     if (c >= here.size() || !here[c]) common[c] = false;
@@ -26194,7 +26263,7 @@ bool Editor::OrgTableAlignAt(int row) {
         if (!r.is_sep) {
             for (size_t ci = 0; ci < r.cells.size(); ci++) {
                 if (ci >= widths.size()) widths.push_back(0);
-                widths[ci] = std::max(widths[ci], static_cast<int>(r.cells[ci].size()));
+                widths[ci] = std::max(widths[ci], OrgTableCellWidth(r.cells[ci]));
             }
         }
         rows.emplace_back(i, std::move(r));
@@ -26213,7 +26282,7 @@ bool Editor::OrgTableAlignAt(int row) {
             for (size_t ci = 0; ci < widths.size(); ci++) {
                 if (ci > 0) line += "|";
                 std::string cell = ci < r.cells.size() ? r.cells[ci] : "";
-                line += " " + cell + std::string(static_cast<size_t>(widths[ci]) - cell.size(), ' ') + " ";
+                line += " " + cell + std::string(static_cast<size_t>(widths[ci] - OrgTableCellWidth(cell)), ' ') + " ";
             }
         }
         line += "|";
@@ -26295,6 +26364,141 @@ bool Editor::ToggleOrgHeadingScale() {
 bool Editor::ToggleOrgPlainCursorLine() {
     org_plain_cursor_line_ = !org_plain_cursor_line_;
     return org_plain_cursor_line_;
+}
+
+bool Editor::ToggleOrgTableWrap() {
+    org_table_wrap_visible_ = !org_table_wrap_visible_;
+    // The registry is the only thing standing in for a wrapped table's
+    // raw text, so turning the toggle off has to drop it here rather
+    // than waiting for the next frame's scan -- same reason
+    // ToggleOrgLatex clears org_latex_rows.
+    if (!org_table_wrap_visible_) Buf().org_table_wrap_rows.clear();
+    else OrgTableWrapScan(true);
+    return org_table_wrap_visible_;
+}
+
+void Editor::OrgTableWrapScan(bool force) {
+    Buffer &buf = Buf();
+    if (!org_table_wrap_visible_) {
+        buf.org_table_wrap_rows.clear();
+        return;
+    }
+    if (LspFiletype(buf.filename) != "org") {
+        buf.org_table_wrap_rows.clear();
+        return;
+    }
+    const int n = buf.LineCount();
+    const int budget = TextWidth();
+    if (budget < 8) {  // nothing sane to lay a table out in
+        buf.org_table_wrap_rows.clear();
+        return;
+    }
+    const int cursor_row = CurPane().cursor.row;
+    // A Visual selection steps the wrapping aside the same way the cursor
+    // does, and for a concrete reason beyond consistency with the block
+    // cards: the selection fill is drawn against the *stored* line's
+    // columns, so a table covered by one has to be showing those columns.
+    int sel_lo = -1, sel_hi = -1;
+    if (HasVisualSelection()) {
+        if (CurrentMode() == Mode::VisualBlock) {
+            int left = 0, right = 0;
+            VisualBlockRange(sel_lo, sel_hi, left, right);
+        } else {
+            CursorPos sel_start{}, sel_end{};
+            VisualRange(sel_start, sel_end);
+            sel_lo = sel_start.row;
+            sel_hi = sel_end.row;
+        }
+    }
+    // Nothing but a cursor move since the last plan, and one that
+    // didn't cross a table boundary: what is already in
+    // Buffer::org_table_wrap_rows is still exactly right (see the
+    // org_table_wrap_cursor_top_ group's own comment). The table the
+    // cursor is in is found by walking out from its own row, which is
+    // cheap -- the point is to skip re-wrapping every table in the file.
+    int cursor_top = -1;
+    if (cursor_row >= 0 && cursor_row < n && ParseOrgTableRowImpl(buf.lines[static_cast<size_t>(cursor_row)]).is_row) {
+        cursor_top = cursor_row;
+        while (cursor_top > 0 && ParseOrgTableRowImpl(buf.lines[static_cast<size_t>(cursor_top - 1)]).is_row) {
+            cursor_top--;
+        }
+    }
+    if (!force && org_table_wrap_buffer_ == CurrentBufferId() && org_table_wrap_cursor_top_ == cursor_top &&
+        org_table_wrap_sel_lo_ == sel_lo && org_table_wrap_sel_hi_ == sel_hi) {
+        return;
+    }
+    org_table_wrap_buffer_ = CurrentBufferId();
+    org_table_wrap_cursor_top_ = cursor_top;
+    org_table_wrap_sel_lo_ = sel_lo;
+    org_table_wrap_sel_hi_ = sel_hi;
+    buf.org_table_wrap_rows.clear();
+
+    // A `|`-heavy line inside a `#+begin_src`/`#+begin_example` block is
+    // code or sample text, not a table -- the same exclusion (and the
+    // same reason) as Editor::OrgTables.
+    bool in_block = false;
+    for (int row = 0; row < n; row++) {
+        const std::string &block_line = buf.lines[static_cast<size_t>(row)];
+        if (in_block) {
+            if (MatchesOrgBlockMarker(block_line, "end_")) in_block = false;
+            continue;
+        }
+        if (MatchesOrgBlockMarker(block_line, "begin_")) {
+            in_block = true;
+            continue;
+        }
+        OrgTableRow first = ParseOrgTableRowImpl(block_line);
+        if (!first.is_row) continue;
+        int end = row;
+        while (end + 1 < n && ParseOrgTableRowImpl(buf.lines[static_cast<size_t>(end + 1)]).is_row) end++;
+        // The table the cursor is inside keeps its real columns: this
+        // renders the *stored* text narrower, and editing a cell against
+        // a layout whose column boundaries aren't the ones in the file
+        // would put the caret somewhere other than where the character
+        // it is editing is drawn. Stepping out re-wraps it (this scan is
+        // on the per-frame org hook for exactly that reason).
+        if (cursor_row >= row && cursor_row <= end) {
+            row = end;
+            continue;
+        }
+        if (sel_lo >= 0 && sel_lo <= end && sel_hi >= row) {
+            row = end;
+            continue;
+        }
+        std::vector<OrgTableCells> parsed;
+        parsed.reserve(static_cast<size_t>(end - row + 1));
+        int indent = 0;
+        bool have_indent = false;
+        for (int r = row; r <= end; r++) {
+            const std::string &line = buf.lines[static_cast<size_t>(r)];
+            OrgTableRow pr = ParseOrgTableRowImpl(line);
+            OrgTableCells cells;
+            cells.is_sep = pr.is_sep;
+            cells.cells = pr.cells;
+            parsed.push_back(std::move(cells));
+            if (!have_indent) {
+                // In display columns, not bytes -- consistent with the
+                // rest of the table geometry (OrgTables' own rule_cols).
+                indent = OrgTableDisplayWidth(line.substr(0, line.find('|')));
+                have_indent = true;
+            }
+        }
+        OrgTableWrapPlan plan = PlanOrgTableWrap(parsed, budget, indent);
+        if (plan.wrapped) {
+            int cols = 0;
+            for (int cw : plan.col_widths) cols += cw + 3;
+            const int width = cols + 1;  // the trailing `|`
+            for (int r = row; r <= end; r++) {
+                Buffer::OrgTableWrapRow entry;
+                entry.lines = plan.rows[static_cast<size_t>(r - row)];
+                entry.indent = indent;
+                entry.width = width;
+                if (entry.lines.empty()) continue;
+                buf.org_table_wrap_rows[r] = std::move(entry);
+            }
+        }
+        row = end;
+    }
 }
 
 

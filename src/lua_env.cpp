@@ -2556,6 +2556,34 @@ int l_org_plain_cursor_line_toggle(lua_State *L) {
     return 1;
 }
 
+// mep.org_table_wrap_toggle()/mep.org_table_wrap_scan(): wrapped
+// rendering of a table too wide for `:set textwidth` (<leader>otw) --
+// see Editor::OrgTableWrapVisible/OrgTableWrapScan. The scan rides the
+// same per-frame org hook as mep.org_table_auto_align, since it is
+// cursor-driven too (the table the cursor is in stays unwrapped).
+/**
+ * @brief Implements mep.org_table_wrap_toggle(): toggles wrapped rendering of over-wide org tables.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new state).
+ */
+int l_org_table_wrap_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleOrgTableWrap());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.org_table_wrap_scan([force]): rebuilds the wrapped display layout for over-wide org tables.
+ * @param L Lua state (arg 1: optional boolean, re-plan even when only the cursor moved).
+ * @return Number of values pushed (0).
+ */
+int l_org_table_wrap_scan(lua_State *L) {
+    // An optional `force`: the edit hook passes true (the text changed
+    // under every table), the per-frame cursor hook passes nothing and
+    // lets the scan early-out when the cursor didn't cross a table.
+    GetEditor(L)->OrgTableWrapScan(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
 // mep.md_toggle_checkbox()/mep.md_fold()/mep.md_table_align()/
 // mep.md_table_insert_row()/mep.md_table_insert_col(): kBuiltinMarkdown's
 // (main.cpp) checkbox toggle, fold computation, and GFM table commands --
@@ -10062,6 +10090,8 @@ const luaL_Reg kMepFuncs[] = {
     {"org_conceal_visible", l_org_conceal_visible},
     {"org_heading_scale_toggle", l_org_heading_scale_toggle},
     {"org_plain_cursor_line_toggle", l_org_plain_cursor_line_toggle},
+    {"org_table_wrap_scan", l_org_table_wrap_scan},
+    {"org_table_wrap_toggle", l_org_table_wrap_toggle},
     {"buf_add_latex_inline", l_buf_add_latex_inline},
     {"buf_clear_latex_inline", l_buf_clear_latex_inline},
     {"font_size", l_font_size},

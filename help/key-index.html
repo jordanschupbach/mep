@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Key index</title>
-<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
 <script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
 <meta name="help-section" content="Reference">
 <meta name="help-order" content="20">
@@ -13,7 +13,7 @@
 <body>
 <h1>Key index</h1>
 <h1>Leader bindings</h1>
-<p>All 100 <code>&lt;leader&gt;</code> sequences registered at startup. Press
+<p>All 111 <code>&lt;leader&gt;</code> sequences registered at startup. Press
 <code>&lt;Space&gt;</code> for the same list as a popup, or <code>&lt;leader&gt;hk</code> for every
 binding including your own.</p>
 <p>Motions, operators and the other Normal-mode keys are on the pages in
@@ -31,6 +31,7 @@ the features live.</p>
 <tr><td><code>&lt;leader&gt;bB</code></td><td>Toggle buffers sidebar</td><td><a href="sidebars.html">Sidebars</a></td></tr>
 <tr><td><code>&lt;leader&gt;bO</code></td><td>Browse (external window)</td><td><a href="browser.html">The browser pane</a></td></tr>
 <tr><td><code>&lt;leader&gt;bb</code></td><td>Buffers</td><td><a href="files.html">Files and buffers</a></td></tr>
+<tr><td><code>&lt;leader&gt;bf</code></td><td>Open in browser</td><td>--</td></tr>
 <tr><td><code>&lt;leader&gt;bh</code></td><td>Host (serve) this directory and browse it</td><td><a href="local-server.html">Serving a directory</a></td></tr>
 <tr><td><code>&lt;leader&gt;bo</code></td><td>Browse</td><td><a href="browser.html">The browser pane</a></td></tr>
 <tr><td><code>&lt;leader&gt;bs</code></td><td>Scratch buffer</td><td><a href="files.html">Files and buffers</a></td></tr>
@@ -73,6 +74,15 @@ the features live.</p>
 <tr><td><code>&lt;leader&gt;lk</code></td><td>LSP: signature help</td><td><a href="lsp.html">Language servers</a></td></tr>
 <tr><td><code>&lt;leader&gt;lt</code></td><td>LSP: goto type definition</td><td><a href="lsp.html">Language servers</a></td></tr>
 <tr><td><code>&lt;leader&gt;lu</code></td><td>Language UI mode (toggle)</td><td><a href="c-mode.html">C and C++ mode</a></td></tr>
+<tr><td><code>&lt;leader&gt;ma</code></td><td>Annotate mode</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mcb</code></td><td>blue</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mcg</code></td><td>green</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mco</code></td><td>orange</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mcp</code></td><td>pink</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mcy</code></td><td>yellow</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mh</code></td><td>Highlight selection/match</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mn</code></td><td>Add note</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mw</code></td><td>Save annotations</td><td>--</td></tr>
 <tr><td><code>&lt;leader&gt;nn</code></td><td>Toggle notifications pane</td><td><a href="notifications.html">Notifications</a></td></tr>
 <tr><td><code>&lt;leader&gt;oea</code></td><td>Org: export to ASCII</td><td><a href="org-export.html">Exporting</a></td></tr>
 <tr><td><code>&lt;leader&gt;oeh</code></td><td>Org: export to HTML</td><td><a href="org-export.html">Exporting</a></td></tr>
@@ -90,6 +100,7 @@ the features live.</p>
 <tr><td><code>&lt;leader&gt;oti</code></td><td>Org: toggle inline images</td><td><a href="org-visuals.html">Images, LaTeX and tables</a></td></tr>
 <tr><td><code>&lt;leader&gt;otl</code></td><td>Toggle LaTeX/math preview (org/tex)</td><td><a href="org-visuals.html">Images, LaTeX and tables</a></td></tr>
 <tr><td><code>&lt;leader&gt;otm</code></td><td>Org: toggle markup concealment</td><td><a href="org-basics.html">Org files in mep</a></td></tr>
+<tr><td><code>&lt;leader&gt;otw</code></td><td>Org: toggle wrapped table rendering</td><td><a href="org-visuals.html">Images, LaTeX and tables</a></td></tr>
 <tr><td><code>&lt;leader&gt;pc</code></td><td>Clear project (default layout)</td><td><a href="projects.html">Projects</a></td></tr>
 <tr><td><code>&lt;leader&gt;pf</code></td><td>Find files</td><td><a href="pickers.html">Pickers</a></td></tr>
 <tr><td><code>&lt;leader&gt;po</code></td><td>Projects</td><td><a href="projects.html">Projects</a></td></tr>

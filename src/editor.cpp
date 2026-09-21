@@ -15733,6 +15733,30 @@ void Editor::HandleNormalInput() {
         }
     }
 
+    // Arrow keys as h/j/k/l equivalents. Unlike letter keys, GLFW/raylib
+    // never emits a char event for these, so there's no gfx::GetCharPressed()
+    // queue entry to translate below -- IsKeyPressed (initial tap) plus
+    // IsKeyPressedRepeat (OS auto-repeat while held) is the same pattern
+    // already used for arrow-key movement in every other input handler in
+    // this file (e.g. HandleOfficeNormalInput, HandleSheetNormalInput), so
+    // no need to duplicate the h/j/k/l block's own hold-fast-path above.
+    static const std::pair<gfx::Key, char> kArrowMotionKeys[] = {
+        {gfx::Key::Left, 'h'},
+        {gfx::Key::Down, 'j'},
+        {gfx::Key::Up, 'k'},
+        {gfx::Key::Right, 'l'},
+    };
+    for (const auto &arrow : kArrowMotionKeys) {
+        if (ctrl || shift) continue;
+        if (!(gfx::IsKeyPressed(arrow.first) || gfx::IsKeyPressedRepeat(arrow.first))) continue;
+        if (ShouldShowDashboard() && no_pending_state_now && (arrow.second == 'j' || arrow.second == 'k')) {
+            MoveDashboardSelection(arrow.second == 'j' ? 1 : -1);
+        } else {
+            HandleNormalChar(static_cast<int>(arrow.second), no_pending_state_now);
+        }
+        if (mode_ != Mode::Normal) return;  // key switched modes
+    }
+
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
         // Digits (as a pending count) and a pending find/g-prefix always

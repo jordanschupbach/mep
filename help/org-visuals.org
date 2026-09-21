@@ -17,6 +17,13 @@ A link to an image file is drawn in place, in the buffer:
 [[file:diagram.png]]
 #+end_example
 
+This is *on by default*; the toggle is there to get the raw =[[file:...]]=
+markup back.
+
+A link whose target is not on disk yet -- a plot a code block has still to
+produce -- stays plain text, and turns into the picture on the next edit
+after the file appears.
+
 * Block cards
 
 | Key / command                | Does                          |
@@ -50,6 +57,22 @@ and the raw =#+begin_src ...= line comes straight back to edit. The card
 also steps aside for a folded block, and for a block holding an image or
 a maths fragment that is being previewed in place.
 
+** How wide a card is
+
+As wide as the *wider* of its own longest line and =textwidth= (=:set
+tw=N=, 80 by default) -- and never wider than the pane, less a small
+margin.
+
+So a page of short blocks lines its cards up on one edge at the text
+width instead of each one ending wherever its longest line happens to,
+and a block that genuinely runs wider still gets a card that contains its
+code rather than one the code hangs out of. Past the pane's own width the
+card stops there; a line that long is soft-wrapped inside it anyway.
+
+Every line the card encloses counts, including the =#+NAME:=/=#+HEADER:=
+stack and the =#+begin_= line -- so the header still fits inside the card
+on the frame the cursor moves onto it and the raw line comes back.
+
 * LaTeX and maths
 
 | Key / command             | Does                              |
@@ -61,9 +84,47 @@ a maths fragment that is being previewed in place.
 Fragments written =\(...\)=, =\[...\]=, =$...$= or =$$...$$= are rendered
 and drawn in place of the source. It works in =.tex= files as well as org.
 
+This is *on by default* too. Rendering shells out to =tectonic= and
+=pdftoppm= (both in the flake's dev shell); without them on =PATH= the
+maths simply stays as source text, and mep says so once per session rather
+than once per fragment.
+
+* Markup concealment and heading sizes
+
+| Key / command                  | Does                            |
+|--------------------------------+---------------------------------|
+| =<leader>otm=                  | toggle markup concealment       |
+| =:MepOrgConcealToggle=         | the same                        |
+| =<leader>oth=                  | toggle scaled heading sizes     |
+| =:MepOrgHeadingScaleToggle=    | the same                        |
+| =<leader>otc=                  | toggle the plain cursor line    |
+| =:MepOrgPlainCursorLineToggle= | the same                        |
+
+Concealment is what draws =*bold*= as bold text, =[[file:x][Notes]]= as
+=Notes= and a =|---+---|= row as a line. It is on by default, and always
+steps aside for the row the cursor is on.
+
+Heading sizes are separate because they are the one piece of org rendering
+that changes a row's *height* rather than which characters it shows.
+
+The plain cursor line goes one step further than concealment's own
+step-aside: the row the cursor is on is drawn as nothing but its own raw
+characters -- no syntax colours, no emphasis faces, no link colouring, no
+inline =$...$= maths painted over it -- so what you are editing is exactly
+what is in the file. On by default, org buffers only.
+
+Whole-row substitutions are the exception: an inline image or a whole-row
+maths preview claims many screen rows, so reverting one under the cursor
+would shuffle everything below it on every cursor move. =<leader>oti= and
+=<leader>otl= get that source back instead.
+
 * Tables
 
-=:MepOrgTableAlign= aligns the columns on their pipes.
+A table is drawn as a grid: a rule down every column, a drawn line for each
+=|---+---|= row, and a tint behind the header block. The grid follows the
+text, so a table is realigned on its pipes whenever the cursor leaves it --
+after an edit, never after a read-only visit. =:MepOrgTableAlign= does the
+same on demand, for the table under the cursor.
 
 A literal pipe inside a cell must be escaped as =\vert= or =\|=, or it will
 be read as a column separator.

@@ -984,3 +984,224 @@ std::vector<std::string> OrgClockStopLines(const std::vector<std::string> &lines
     if (minutes) *minutes = static_cast<int>(mins);
     return out;
 }
+
+// --- Display-side scans (see org_doc.h) ---
+
+int OrgHeadlineLevel(const std::string &line) {
+    size_t stars = 0;
+    while (stars < line.size() && line[stars] == '*') stars++;
+    if (stars == 0 || stars >= line.size() || line[stars] != ' ') return 0;
+    return static_cast<int>(stars);
+}
+
+bool OrgEmphasisPreOk(char c) {
+    // '\0' is how both callers spell "there is no character here", i.e.
+    // start-of-line, which org's own regexp allows via its `^` branch.
+    if (c == '\0') return true;
+    switch (c) {
+        case ' ': case '\t': case '-': case '(': case '\'': case '"': case '{':
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool OrgEmphasisPostOk(char c) {
+    if (c == '\0') return true;  // end-of-line, org's `$` branch
+    switch (c) {
+        case ' ': case '\t': case '-': case '.': case ',': case ':': case '!':
+        case '?': case ';': case '\'': case '"': case ')': case '}': case '[':
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool OrgEmphasisBorderBlank(char c) { return c == ' ' || c == '\t'; }
+
+namespace {
+
+// The characters org's own link syntax lets a bare URL run over --
+// mep.nvim's MEP_URL_PATTERN body class, minus nothing. A trailing `.`
+// or `,` IS in this set, which is deliberate: it is part of plenty of
+// real URLs, and org's answer to "the sentence's full stop got eaten" is
+// to bracket the link, not to guess.
+/**
+ * @brief Reports whether a character may appear in the body of a bare URL.
+ * @param c the character to test
+ * @return true if `c` is a URL body character
+ */
+bool IsUrlBody(unsigned char c) {
+    if (std::isalnum(c) != 0) return true;
+    switch (c) {
+        case '-': case '.': case '_': case '~': case ':': case '/': case '?':
+        case '#': case '[': case ']': case '@': case '!': case '$': case '&':
+        case '\'': case '(': case ')': case '*': case '+': case ',': case ';':
+        case '=': case '%':
+            return true;
+        default:
+            return false;
+    }
+}
+
+// The `target][description` split inside a `[[...]]`. A `]` that isn't
+// followed by `[` is part of the target, so `[[a]b][c]]` targets `a]b`.
+/**
+ * @brief Splits an org link's inner text into a target and an optional description.
+ * @param inner the text between the outer `[[` and `]]`
+ * @param target set to the target portion
+ * @param desc set to the description, or left empty when there is none
+ */
+void SplitOrgLinkInner(const std::string &inner, std::string *target, std::string *desc) {
+    size_t rb = inner.find("][");
+    if (rb == std::string::npos) {
+        *target = inner;
+        desc->clear();
+        return;
+    }
+    // rb == 0 leaves an empty target, which ScanOrgLinkSpans rejects --
+    // `[[][desc]]` has nothing to follow, so it isn't a link yet.
+    *target = inner.substr(0, rb);
+    *desc = inner.substr(rb + 2);
+}
+
+// What a concealed link should read as when it has no description of its
+// own: the target with the scheme noise org also drops from a bare link's
+// display. An `id:` target's raw uuid says nothing, so it shows unprefixed
+// too -- there is nothing better to show, and the prefix is pure noise.
+/**
+ * @brief Chooses the text a concealed org link displays in place of its raw markup.
+ * @param target the link's target
+ * @param desc the link's description, or "" when it has none
+ * @return the display text
+ */
+std::string OrgLinkDisplay(const std::string &target, const std::string &desc) {
+    if (!desc.empty()) return desc;
+    if (target.compare(0, 5, "file:") == 0) return target.substr(5);
+    if (target.compare(0, 3, "id:") == 0) return target.substr(3);
+    if (!target.empty() && (target[0] == '*' || target[0] == '#')) return target.substr(1);
+    return target;
+}
+
+// Columns covered by a `=verbatim=` or `~code~` run, using org's own
+// marker-boundary rules (a marker only opens after line-start or a
+// non-word character and before a non-space, and only closes after a
+// non-space and before line-end or a non-word character). Text inside one
+// is literal: org does not linkify it, and neither should this -- this
+// repo's own help/*.org writes `=[[file:x]]=` precisely to *show* link
+// syntax, and treating that as a live link would both conceal the example
+// and leave a stretch of prose clickable.
+/**
+ * @brief Marks the columns of a line that sit inside a `=verbatim=` or `~code~` run.
+ * @param line the line to scan
+ * @return one flag per byte of `line`, true where that byte is inside such a run
+ */
+std::vector<bool> OrgLiteralColumns(const std::string &line) {
+    std::vector<bool> literal(line.size(), false);
+    const int len = static_cast<int>(line.size());
+    /**
+     * @brief Fetches the character at `idx`, or NUL when out of bounds.
+     * @param idx the index to read
+     * @return the character, or '\0'
+     */
+    auto at = [&](int idx) -> char { return (idx >= 0 && idx < len) ? line[static_cast<size_t>(idx)] : '\0'; };
+    int i = 0;
+    while (i < len) {
+        const char ch = line[static_cast<size_t>(i)];
+        if (ch != '=' && ch != '~') {
+            i++;
+            continue;
+        }
+        const char pre = at(i - 1), nxt = at(i + 1);
+        if (!(OrgEmphasisPreOk(pre) && nxt != '\0' && !OrgEmphasisBorderBlank(nxt) && nxt != ch)) {
+            i++;
+            continue;
+        }
+        int close = -1;
+        for (int k = i + 1; k < len; k++) {
+            if (line[static_cast<size_t>(k)] != ch) continue;
+            if (!OrgEmphasisBorderBlank(at(k - 1)) && at(k - 1) != ch && OrgEmphasisPostOk(at(k + 1))) {
+                close = k;
+                break;
+            }
+        }
+        if (close < 0) {
+            i++;
+            continue;
+        }
+        for (int c = i; c <= close; c++) literal[static_cast<size_t>(c)] = true;
+        i = close + 1;
+    }
+    return literal;
+}
+
+}  // namespace
+
+std::vector<OrgLinkSpanInfo> ScanOrgLinkSpans(const std::string &line) {
+    std::vector<OrgLinkSpanInfo> spans;
+    const int len = static_cast<int>(line.size());
+    const std::vector<bool> literal = OrgLiteralColumns(line);
+    // Columns a bracket link already covers, so the bare-URL pass below
+    // doesn't also report the `https://...` sitting inside one.
+    std::vector<bool> claimed(line.size(), false);
+
+    size_t pos = 0;
+    while (true) {
+        size_t open = line.find("[[", pos);
+        if (open == std::string::npos) break;
+        size_t close = line.find("]]", open + 2);
+        if (close == std::string::npos) break;
+        const std::string inner = line.substr(open + 2, close - (open + 2));
+        pos = close + 2;
+        std::string target, desc;
+        SplitOrgLinkInner(inner, &target, &desc);
+        // `[[]]` and `[[][desc]]` are not links: with no target there is
+        // nothing to follow, and concealing them would hide the very
+        // markup someone is in the middle of typing.
+        if (target.empty()) continue;
+        if (literal[open]) continue;  // inside `=...=`/`~...~`: shown, not followed
+        OrgLinkSpanInfo sp;
+        sp.col_start = static_cast<int>(open);
+        sp.col_end = static_cast<int>(pos);
+        sp.target = target;
+        sp.display = OrgLinkDisplay(target, desc);
+        sp.bracketed = true;
+        for (int c = sp.col_start; c < sp.col_end; c++) claimed[static_cast<size_t>(c)] = true;
+        spans.push_back(std::move(sp));
+    }
+
+    int i = 0;
+    while (i < len) {
+        if (line.compare(static_cast<size_t>(i), 4, "http") != 0) {
+            i++;
+            continue;
+        }
+        int j = i + 4;
+        if (j < len && line[static_cast<size_t>(j)] == 's') j++;
+        if (line.compare(static_cast<size_t>(j), 3, "://") != 0) {
+            i++;
+            continue;
+        }
+        int body_start = j + 3;
+        int k = body_start;
+        while (k < len && IsUrlBody(static_cast<unsigned char>(line[static_cast<size_t>(k)]))) k++;
+        if (k == body_start) {
+            i++;
+            continue;
+        }
+        if (!claimed[static_cast<size_t>(i)] && !literal[static_cast<size_t>(i)]) {
+            OrgLinkSpanInfo sp;
+            sp.col_start = i;
+            sp.col_end = k;
+            sp.target = line.substr(static_cast<size_t>(i), static_cast<size_t>(k - i));
+            sp.display = sp.target;
+            sp.bracketed = false;
+            spans.push_back(std::move(sp));
+        }
+        i = k;
+    }
+
+    std::sort(spans.begin(), spans.end(),
+              [](const OrgLinkSpanInfo &a, const OrgLinkSpanInfo &b) { return a.col_start < b.col_start; });
+    return spans;
+}

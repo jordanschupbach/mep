@@ -2480,6 +2480,82 @@ int l_org_highlight_emphasis(lua_State *L) {
     return 0;
 }
 
+// mep.org_link_scan(ns): rebuilds the current buffer's org link registry
+// and emits its conceal/underline decorations into `ns` -- see
+// Editor::OrgLinkScan. The registry half is what makes links clickable
+// (DrawPane, main.cpp), so this runs whether or not concealment is on.
+/**
+ * @brief Implements mep.org_link_scan(ns): rescans the current org buffer's links.
+ * @param L Lua state; arg 1 is the namespace id.
+ * @return Number of values pushed (0).
+ */
+int l_org_link_scan(lua_State *L) {
+    int ns = static_cast<int>(luaL_checkinteger(L, 1));
+    GetEditor(L)->OrgLinkScan(ns);
+    return 0;
+}
+
+// mep.org_table_auto_align(): realigns a table the cursor has just left
+// -- see Editor::OrgTableAutoAlign. Called from the org rescan frame hook.
+/**
+ * @brief Implements mep.org_table_auto_align(): realigns the org table the cursor just moved out of.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_org_table_auto_align(lua_State *L) {
+    GetEditor(L)->OrgTableAutoAlign();
+    return 0;
+}
+
+// mep.org_conceal_toggle()/mep.org_conceal_visible(): org markup
+// concealment (<leader>otm). The getter exists for the same reason
+// mep.org_latex_visible() does -- the scan itself has to consult the
+// state, and Lua has no direct field access.
+/**
+ * @brief Implements mep.org_conceal_toggle(): toggles org markup concealment.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new state).
+ */
+int l_org_conceal_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleOrgConceal());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.org_conceal_visible(): reports whether org markup concealment is on.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the current state).
+ */
+int l_org_conceal_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->OrgConcealVisible());
+    return 1;
+}
+
+// mep.org_heading_scale_toggle(): depth-scaled headline text
+// (<leader>oth) -- see Editor::OrgHeadingScaleVisible.
+/**
+ * @brief Implements mep.org_heading_scale_toggle(): toggles depth-scaled org headline text.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new state).
+ */
+int l_org_heading_scale_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleOrgHeadingScale());
+    return 1;
+}
+
+// mep.org_plain_cursor_line_toggle(): plain (undecorated) rendering of
+// the cursor's own row (<leader>otc) -- see
+// Editor::OrgPlainCursorLineVisible.
+/**
+ * @brief Implements mep.org_plain_cursor_line_toggle(): toggles plain rendering of the cursor's own row.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new state).
+ */
+int l_org_plain_cursor_line_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleOrgPlainCursorLine());
+    return 1;
+}
+
 // mep.md_toggle_checkbox()/mep.md_fold()/mep.md_table_align()/
 // mep.md_table_insert_row()/mep.md_table_insert_col(): kBuiltinMarkdown's
 // (main.cpp) checkbox toggle, fold computation, and GFM table commands --
@@ -9980,6 +10056,12 @@ const luaL_Reg kMepFuncs[] = {
     {"org_block_cards_toggle", l_org_block_cards_toggle},
     {"org_block_cards_visible", l_org_block_cards_visible},
     {"org_latex_visible", l_org_latex_visible},
+    {"org_link_scan", l_org_link_scan},
+    {"org_table_auto_align", l_org_table_auto_align},
+    {"org_conceal_toggle", l_org_conceal_toggle},
+    {"org_conceal_visible", l_org_conceal_visible},
+    {"org_heading_scale_toggle", l_org_heading_scale_toggle},
+    {"org_plain_cursor_line_toggle", l_org_plain_cursor_line_toggle},
     {"buf_add_latex_inline", l_buf_add_latex_inline},
     {"buf_clear_latex_inline", l_buf_clear_latex_inline},
     {"font_size", l_font_size},

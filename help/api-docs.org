@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (148)
+* The bindings (154)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -127,10 +127,13 @@ that it does nothing.
 | =mep.org_clock_out= | stops the currently running org clock entry |
 | =mep.org_clock_table_items= | builds the list of clocked-time entries for the buffer |
 | =mep.org_collect_macros= | collects #+MACRO: definitions from a set of lines |
+| =mep.org_conceal_toggle= | toggles org markup concealment |
+| =mep.org_conceal_visible= | reports whether org markup concealment is on |
 | =mep.org_drill_grade= | records a spaced-repetition drill grade against a headline |
 | =mep.org_expand_macro_line= | expands {{{macro(...)}}} references in a line using a table of macro definitions |
 | =mep.org_export_heading= | formats a heading string for the given export format |
 | =mep.org_footnote_jump= | jumps between an org footnote reference and its definition |
+| =mep.org_heading_scale_toggle= | toggles depth-scaled org headline text |
 | =mep.org_highlight_emphasis= | highlights org emphasis markup over the current buffer |
 | =mep.org_html_escape= | HTML-escapes a string for org HTML export |
 | =mep.org_image_invalidate= | forces the next render of an inline org image to reload from disk, bypassing the mtime cache |
@@ -140,8 +143,10 @@ that it does nothing.
 | =mep.org_latex_toggle= | toggles inline org LaTeX rendering on/off |
 | =mep.org_latex_visible= | reports whether inline org LaTeX rendering is currently on |
 | =mep.org_link_at_cursor= | reads the org link under the cursor, if any |
+| =mep.org_link_scan= | rescans the current org buffer's links |
 | =mep.org_parse_results= | parses a babel header args string's :results modes |
 | =mep.org_parse_vars= | parses a babel header args string's :var entries |
+| =mep.org_plain_cursor_line_toggle= | toggles plain rendering of the cursor's own row |
 | =mep.org_property_get= | reads an org property drawer value from a headline |
 | =mep.org_property_remove= | removes a property from a headline's property drawer |
 | =mep.org_property_set= | writes an org property drawer value on a headline |
@@ -155,6 +160,7 @@ that it does nothing.
 | =mep.org_set_planning= | sets/updates a SCHEDULED or DEADLINE planning line on the current headline |
 | =mep.org_subtree_end_lines= | finds the last row of the subtree rooted at row, given a plain line array instead of a buffer |
 | =mep.org_table_align= | reformats the org table under the cursor to align its columns |
+| =mep.org_table_auto_align= | realigns the org table the cursor just moved out of |
 | =mep.org_timestamp_at= | finds an org timestamp overlapping a given column in a line |
 | =mep.org_timestamp_insert= | inserts an org timestamp at the cursor |
 | =mep.org_timestamp_shift= | shifts the org timestamp under/near the cursor by a number of days |

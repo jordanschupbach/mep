@@ -2649,8 +2649,9 @@ std::vector<OfficeFormatRun> BuildOfficeDisplayRuns(const DocParagraph &p, int a
  * @param y Top screen y position of the line.
  * @param font_size Font size in pixels.
  * @param tint Text color.
+ * @param char_w Per-column advance; <= 0 uses the editor's own g_char_width grid.
  */
-void DrawLineFast(const std::string &line, float x, float y, float font_size, gfx::Color tint) {
+void DrawLineFast(const std::string &line, float x, float y, float font_size, gfx::Color tint, float char_w = 0.0f) {
     // Decodes by Unicode codepoint (GetCodepointNext), same as raylib's own
     // DrawTextEx -- not by byte -- so a multi-byte UTF-8 character (never
     // produced by InsertChar itself, but loaded file content isn't limited
@@ -2658,6 +2659,11 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, gf
     // draws as the one glyph it is rather than one garbled glyph per byte.
     float scale = font_size / static_cast<float>(g_font.baseSize);
     float pad = static_cast<float>(g_font.glyphPadding);
+    // char_w <= 0 means "the editor's own column grid" (g_char_width),
+    // which is every caller but the scaled org-headline renderer -- that
+    // one draws a row at a larger font size, and a larger font needs a
+    // proportionally larger advance or its glyphs pile onto each other.
+    if (char_w <= 0.0f) char_w = g_char_width;
     int col = 0;
     const char *text = line.c_str();
     int byte_len = static_cast<int>(line.size());
@@ -2665,7 +2671,7 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, gf
         int codepoint_size = 0;
         int codepoint = gfx::GetCodepointNext(&text[i], &codepoint_size);
         i += codepoint_size;
-        float cx = x + static_cast<float>(col) * g_char_width;
+        float cx = x + static_cast<float>(col) * char_w;
         col++;
         if (codepoint == ' ' || codepoint == '\t') continue;
         if (codepoint < 32 || codepoint > 126) {
@@ -11462,8 +11468,15 @@ const char *kBuiltinSyntax =
     // Org (queries/highlights.scm ships only this one example query,
     // using its own Org-prefixed capture names rather than the nvim-style
     // dotted convention every other vendored grammar's query uses).
-    "  OrgHeadlineLevel1 = 'Purple', OrgHeadlineLevel2 = 'Purple', OrgHeadlineLevel3 = 'Purple',\n"
-    "  OrgStars1 = 'Purple', OrgStars2 = 'Purple', OrgStars3 = 'Purple',\n"
+    // One colour per depth, the same ladder markdown's own text.title.1..3
+    // already uses -- with the headline sizes DrawPane now draws
+    // (kOrgHeadingStyles), colour and size carry the outline's depth
+    // together instead of three levels of identically purple text. The
+    // grammar's query only distinguishes three levels (it matches them
+    // cyclically), so level 4 reads as level 1 again, exactly as the
+    // query intends.
+    "  OrgHeadlineLevel1 = 'Purple', OrgHeadlineLevel2 = 'Blue', OrgHeadlineLevel3 = 'Cyan',\n"
+    "  OrgStars1 = 'Purple', OrgStars2 = 'Blue', OrgStars3 = 'Cyan',\n"
     "  OrgKeywordTodo = 'Red', OrgKeywordDone = 'Green',\n"
     "  OrgPriority = 'Yellow', OrgPriorityCookie = 'Yellow', OrgProgressCookie = 'Yellow',\n"
     "  OrgPercentCookie = 'Yellow', OrgCookieNum = 'Yellow', OrgCheckbox = 'Yellow', OrgCheckInProgress = 'Yellow',\n"
@@ -13477,7 +13490,12 @@ const char *kBuiltinOrgLinks =
     "  local cite_keys = mep_org_bib_cite_at_cursor and mep_org_bib_cite_at_cursor()\n"
     "  if cite_keys and #cite_keys > 0 then mep.org_bib_cite_goto() return end\n"
     "  local target = mep.org_link_at_cursor()\n"
-    "  if not target then mep.notify('No link under cursor', 'warn') return end\n"
+    // A bare `https://...` written straight into the prose is a link too
+    // -- Editor::OrgLinkScan underlines and registers one for clicking,
+    // so `gx`/<leader>oo on it has to follow it as well, or the two
+    // halves of the same feature would disagree about what a link is.
+    "  if not target then target = mep.url_under_cursor() end\n"
+    "  if not target or target == '' then mep.notify('No link under cursor', 'warn') return end\n"
     "  if target:match('^https?://') or target:match('^mailto:') then\n"
     "    mep.open_url(target:gsub('^mailto:', ''))\n"
     "  elseif target:match('^file:') then\n"
@@ -13485,6 +13503,13 @@ const char *kBuiltinOrgLinks =
     "    local path, heading = rest:match('^([^#]*)::%*(.+)$')\n"
     "    local path2, lineno = rest:match('^([^#]*)::(%d+)$')\n"
     "    path = path or path2 or rest\n"
+    // Relative to the *org file*, not to mep's working directory --
+    // org's own rule, and the only one that makes a file link portable.
+    // mep_org_resolve_path (Editor::OrgResolvePath) is the same resolver
+    // the inline-image scan already resolves [[file:plot.png]] with;
+    // without it, following [[file:notes.org]] from ~/org/index.org
+    // silently opened an empty new buffer for <cwd>/notes.org instead.
+    "    path = mep_org_resolve_path(path)\n"
     "    mep.pane_open(path)\n"
     "    if lineno then mep.set_cursor(tonumber(lineno), 1)\n"
     "    elseif heading then\n"
@@ -13515,22 +13540,87 @@ const char *kBuiltinOrgLinks =
     "  end\n"
     "end\n"
     "mep.command('MepOrgLinkFollow', mep.org_link_follow)\n"
-    // Link concealment: whole-span highlight (matches the markdown
-    // approach -- recolor rather than hide the marker characters).
+    // Link rendering: Editor::OrgLinkScan (mep.org_link_scan) does the
+    // whole job in one pass -- it registers every `[[...]]` and every
+    // bare http(s) URL in Buffer::org_link_spans (which is what DrawPane
+    // turns into click regions, main.cpp) *and* emits this namespace's
+    // decorations: a Blue underline over each, plus the virt_overlay that
+    // conceals `[[file:notes.org][Notes]]` down to `Notes` while
+    // concealment is on. The old Lua version of this only recolored the
+    // raw span and, as it happens, was never called from anywhere.
     "local mep_org_link_ns = nil\n"
     "function mep.org_link_highlight()\n"
     "  if not mep_org_link_ns then mep_org_link_ns = mep.ns_create('org-links') end\n"
     "  mep.ns_clear(mep_org_link_ns)\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    local line, pos = mep.get_line(i), 1\n"
-    "    while true do\n"
-    "      local s, e = line:find('%[%[.-%]%]', pos)\n"
-    "      if not s then break end\n"
-    "      mep.deco_add(mep_org_link_ns, {row = i, col_start = s, col_end = e + 1, hl = 'Blue'})\n"
-    "      pos = e + 1\n"
-    "    end\n"
-    "  end\n"
+    "  mep.org_link_scan(mep_org_link_ns)\n"
     "end\n"
+    "mep.command('MepOrgLinkScan', mep.org_link_highlight)\n"
+    // Two hooks, the same pair every other org rendering pass in this
+    // file uses -- except that this one also has to re-run on plain
+    // *cursor movement*, since the row the cursor sits on is the one row
+    // left unconcealed (Editor::OrgLinkScan), exactly the reason
+    // mep.md_conceal polls the cursor row too.
+    "mep.on_buffer_changed(function()\n"
+    "  if mep_lsp_filetype(mep.filename()) == 'org' then mep.org_link_highlight() end\n"
+    "end)\n"
+    "local mep_org_link_last_file, mep_org_link_last_row = nil, nil\n"
+    "mep.on_frame(function()\n"
+    "  local fname = mep.filename()\n"
+    "  if mep_lsp_filetype(fname) ~= 'org' then\n"
+    "    mep_org_link_last_file, mep_org_link_last_row = fname, nil\n"
+    "    return\n"
+    "  end\n"
+    // Realigning a table the cursor has just left is cursor-movement-
+    // driven in exactly the same way, so it rides this same hook rather
+    // than adding a second per-frame org callback.
+    "  mep.org_table_auto_align()\n"
+    "  local row = mep.cursor()\n"
+    "  if fname ~= mep_org_link_last_file or row ~= mep_org_link_last_row then\n"
+    "    mep_org_link_last_file, mep_org_link_last_row = fname, row\n"
+    "    mep.org_link_highlight()\n"
+    "  end\n"
+    "end)\n"
+    // Follow the link under the cursor. `gx` is vim's own "open whatever
+    // is under the cursor externally", which is what this is for an
+    // http(s)/mailto target and the nearest thing to it for the rest;
+    // <leader>oo is org's own C-c C-o by another name. Clicking a link
+    // goes through the same dispatcher (Editor::OrgFollowLinkAt).
+    // mep.map_g, not mep.map: Editor::TryLuaMapping is only ever consulted
+    // with a *single* key, so a two-character "gx" registered there would
+    // never fire -- a g-prefixed action is its own registry (g_mappings_,
+    // editor.cpp), which is what mep.map_g('d', ...) and friends use.
+    "mep.leader_map('oo', 'Org: follow link at point', mep.org_link_follow)\n"
+    "mep.map_g('x', function()\n"
+    "  if mep_lsp_filetype(mep.filename()) == 'org' then mep.org_link_follow() else mep.open_url_under_cursor() end\n"
+    "end)\n"
+    // Markup concealment and depth-scaled headlines, both on by default
+    // (Editor::OrgConcealVisible/OrgHeadingScaleVisible) -- these toggles
+    // exist to get the raw markup and flat text back, the same way
+    // <leader>otb does for block cards.
+    "function mep.org_conceal_toggle_ui()\n"
+    "  local visible = mep.org_conceal_toggle()\n"
+    "  mep.notify('Org markup concealment: ' .. (visible and 'on' or 'off'))\n"
+    "  mep.org_link_highlight()\n"
+    "  mep.syntax_highlight()\n"
+    "end\n"
+    "mep.command('MepOrgConcealToggle', mep.org_conceal_toggle_ui)\n"
+    "mep.leader_map('otm', 'Org: toggle markup concealment', mep.org_conceal_toggle_ui)\n"
+    "function mep.org_heading_scale_toggle_ui()\n"
+    "  local visible = mep.org_heading_scale_toggle()\n"
+    "  mep.notify('Org heading sizes: ' .. (visible and 'on' or 'off'))\n"
+    "end\n"
+    "mep.command('MepOrgHeadingScaleToggle', mep.org_heading_scale_toggle_ui)\n"
+    "mep.leader_map('oth', 'Org: toggle scaled heading sizes', mep.org_heading_scale_toggle_ui)\n"
+    // Plain cursor line: the row the caret is on drops every decoration
+    // -- syntax colours included -- and shows its own raw characters.
+    // On by default (Editor::OrgPlainCursorLineVisible); this toggle is
+    // for getting the highlighting back on the line being edited.
+    "function mep.org_plain_cursor_line_toggle_ui()\n"
+    "  local visible = mep.org_plain_cursor_line_toggle()\n"
+    "  mep.notify('Org plain cursor line: ' .. (visible and 'on' or 'off'))\n"
+    "end\n"
+    "mep.command('MepOrgPlainCursorLineToggle', mep.org_plain_cursor_line_toggle_ui)\n"
+    "mep.leader_map('otc', 'Org: toggle plain (undecorated) cursor line', mep.org_plain_cursor_line_toggle_ui)\n"
     // Footnotes: [fn:name] reference, jump to/from its `[fn:name] body`
     // definition line (or the first other reference if no definition).
     // mep.org_footnote_jump ported to Editor::OrgFootnoteJump (editor.cpp)
@@ -13707,7 +13797,9 @@ const char *kBuiltinOrgImages =
     // org_images_visible_ and returns the new state -- this wrapper just
     // adds the user-facing notify + an immediate rescan when turning on,
     // so <leader>oti shows correct images right away instead of waiting
-    // for the next debounced buffer-changed tick.
+    // for the next debounced buffer-changed tick. On by default (see
+    // org_images_visible_, editor.h), so like the block-card toggle just
+    // below this mostly exists to get the raw [[file:...]] markup back.
     "function mep.org_images_toggle_ui()\n"
     "  local visible = mep.org_images_toggle()\n"
     "  mep.notify('Org inline images: ' .. (visible and 'on' or 'off'))\n"
@@ -15894,10 +15986,35 @@ const char *kBuiltinOrgLatex =
     "  })\n"
     "end\n"
     "\n"
+    // Render failures are reported through one funnel rather than a bare
+    // mep.notify per fragment. With the preview on by default
+    // (Editor::org_latex_visible_, editor.h) every org/tex buffer scans on
+    // open and on every debounced edit, so a failure that is identical for
+    // every fragment -- above all "tectonic/pdftoppm not found on PATH" on
+    // a machine without them -- would otherwise be one notification per
+    // fragment per keystroke burst, which is what an opt-in toggle could
+    // afford and an always-on preview cannot. A missing-executable message
+    // is environmental and won't change within a session, so it shows once
+    // per session; anything else (a real error in one fragment's own maths)
+    // shows once per scan, so fixing it and breaking it again still warns.
+    "local mep_org_latex_err_seen_scan = {}\n"
+    "local mep_org_latex_err_seen_session = {}\n"
+    "local function mep_org_latex_notify_err(err)\n"
+    "  if not err then return end\n"
+    "  if err:find('not found on PATH', 1, true) then\n"
+    "    if mep_org_latex_err_seen_session[err] then return end\n"
+    "    mep_org_latex_err_seen_session[err] = true\n"
+    "  elseif mep_org_latex_err_seen_scan[err] then\n"
+    "    return\n"
+    "  end\n"
+    "  mep_org_latex_err_seen_scan[err] = true\n"
+    "  mep.notify('LaTeX: ' .. err, 'warn')\n"
+    "end\n"
+    "\n"
     "local function mep_org_latex_register(start_row, end_row, tex_body)\n"
     "  mep_org_latex_render(tex_body, function(png_path, err)\n"
     "    if not png_path then\n"
-    "      if err then mep.notify('LaTeX: ' .. err, 'warn') end\n"
+    "      mep_org_latex_notify_err(err)\n"
     "      return\n"
     "    end\n"
     "    local w, h = mep.image_size(png_path)\n"
@@ -15914,7 +16031,7 @@ const char *kBuiltinOrgLatex =
     "local function mep_org_latex_register_inline(row, col_start, col_end, tex_body)\n"
     "  mep_org_latex_render(tex_body, function(png_path, err)\n"
     "    if not png_path then\n"
-    "      if err then mep.notify('LaTeX: ' .. err, 'warn') end\n"
+    "      mep_org_latex_notify_err(err)\n"
     "      return\n"
     "    end\n"
     "    mep.buf_add_latex_inline(row, col_start, col_end, png_path)\n"
@@ -15936,6 +16053,7 @@ const char *kBuiltinOrgLatex =
     "  return ft == 'org' or ft == 'tex'\n"
     "end\n"
     "function mep.org_latex_scan()\n"
+    "  mep_org_latex_err_seen_scan = {}\n"
     "  mep.buf_clear_latex_rows()\n"
     "  mep.buf_clear_latex_inline()\n"
     "  mep.fold_clear_provider('latex')\n"
@@ -38749,7 +38867,37 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const OrgBlockCard *card = nullptr;
     };
     std::vector<OrgCardBox> org_card_boxes;
-    if (g_editor.OrgBlockCardsVisible() && LspFiletype(buf.filename) == "org") {
+    // Org tables drawn as a real grid (Editor::OrgTables): continuous
+    // column rules through the `|` glyphs, a drawn horizontal rule in
+    // place of each `|---+---|` row's dashes, and a tinted header block.
+    // The rules have to paint *over* the row text (a column rule merges
+    // with the `|` it runs through; a horizontal rule stands in for the
+    // dashes it covers), so the row loop only collects them and the pass
+    // after it draws them -- the same split org_card_boxes uses, for the
+    // same reason.
+    struct OrgTableRule {
+        gfx::Rectangle rect;
+        bool horizontal = false;
+    };
+    std::vector<OrgTableRule> org_table_rules;
+    // Row -> the table it belongs to, so the row loop can answer "is this
+    // a table row, and if so where are its rules" in one hash lookup
+    // instead of re-walking the table list per row.
+    std::unordered_map<int, const Editor::OrgTableGrid *> org_table_of_row;
+    // Shared by every org-specific render pass below (block cards, the
+    // scaled headlines and the drawn table grid), so the filetype lookup
+    // happens once per pane rather than once per row.
+    const bool is_org_buffer = LspFiletype(buf.filename) == "org";
+    if (is_org_buffer) {
+        for (const Editor::OrgTableGrid &t : g_editor.OrgTables(pane.buffer_id)) {
+            // OrgTables' returned reference is into Editor's own scratch
+            // vector, refilled on the next call -- taking addresses into
+            // it is safe only until then, and nothing between here and
+            // this function's end calls it again.
+            for (int r = t.start_row; r <= t.end_row; r++) org_table_of_row[r] = &t;
+        }
+    }
+    if (g_editor.OrgBlockCardsVisible() && is_org_buffer) {
         // Row -> its first visual slot, and how many slots it claims,
         // walked exactly the way the draw loop below walks (a closed fold
         // collapses to one slot, an org image/LaTeX row claims its own
@@ -38780,6 +38928,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
                     }
                     slots += nb_sess ? g_editor.NotebookTrailingSlots(pane.buffer_id, r) : 0;
+                    // An org headline's own extra slot (kOrgHeadingStyles)
+                    // -- one of the four walkers that has to agree on it.
+                    if (g_editor.OrgHeadingScaleVisible()) {
+                        slots += Editor::OrgHeadingExtraSlotsFor(buf.lines[static_cast<size_t>(r)]);
+                    }
                 }
                 slot_count[r] = slots;
                 vslot += slots;
@@ -38798,9 +38951,36 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             sel_hi = sel_end.row;
         }
         // Same horizontal placement as a notebook cell card: just right of
-        // the line-number gutter, and short of the pane border on the right.
+        // the line-number gutter. How far right it runs is per-card (see
+        // card_right_for below) rather than always the full pane width.
         const float card_left = std::min(text_x + g_char_width * 2.0f, std::max(x + 3.0f, text_x - g_char_width * 0.5f));
-        const float card_right = x + w - static_cast<float>(kMarginX + 4);
+        // The pane's own limit: as far right as a card may ever go, a
+        // small margin short of the border. This was the width every card
+        // used to be drawn at unconditionally.
+        const float card_limit_right = x + w - static_cast<float>(kMarginX + 4);
+        // The gap between the card's left edge and the text's own column
+        // 0, mirrored on the right so a card is inset by the same amount
+        // on both sides.
+        const float card_inset = std::max(0.0f, text_x - card_left);
+        /**
+         * @brief Computes a block card's right edge: its content width or the text width, whichever is wider, clamped to the pane.
+         * @param content_cols The block's widest line, in display columns.
+         * @return The card's right edge in screen x.
+         */
+        auto card_right_for = [&](int content_cols) {
+            // max(the block's own widest line, :set textwidth) -- so a
+            // page of short blocks lines its cards up on one edge at the
+            // text width instead of each ending wherever its longest line
+            // happens to, and a block that genuinely runs wider than that
+            // still gets a card that contains it rather than one its code
+            // hangs out of.
+            const int cols = std::max(g_editor.TextWidth(), content_cols);
+            const float want = text_x + static_cast<float>(cols) * g_char_width + card_inset;
+            // ...but never past the pane. A line wider than the pane is
+            // soft-wrapped (:set wrap, on by default) or clipped, so
+            // nothing is hidden by stopping here.
+            return std::min(card_limit_right, want);
+        };
         for (const OrgBlockCard &card : g_editor.OrgBlockCards(pane.buffer_id)) {
             // An unterminated block (still being typed) runs to the end of
             // the buffer rather than not drawing at all.
@@ -38868,6 +39048,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             OrgCardBox box;
             box.card = &card;
             box.is_src = card.is_src;
+            const float card_right = card_right_for(card.content_cols);
             box.rect = gfx::Rectangle{card_left, top, card_right - card_left, bottom - top};
             box.active = is_active && pane.cursor.row >= card.meta_row && pane.cursor.row <= last_row;
             // Keyed off the card's own top rather than the meta row's,
@@ -39041,6 +39222,23 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     for (; row < buf.LineCount() && visual_slot < visible_lines; row++) {
         float ly = content_y + static_cast<float>(visual_slot * line_height);
         visual_slot++;
+
+        // Plain cursor line (<leader>otc, Editor::OrgPlainCursorLineVisible):
+        // the row the cursor is on renders as nothing but its own raw
+        // characters in the Normal foreground -- no syntax colors, no org
+        // emphasis/link faces, no concealment overlay standing in for
+        // markup, no inline `$..$` math texture painted over it. Org
+        // buffers and the focused pane only: a background split has no
+        // caret to edit with, so nothing there needs revealing, and this
+        // way the draw loop agrees with the headline-scale reveal just
+        // below (which is gated the same way).
+        //
+        // Deliberately does *not* cover whole-row substitutions (an
+        // inline image, a whole-row LaTeX preview) -- see
+        // OrgPlainCursorLineVisible()'s own comment (editor.h) for why
+        // those stay put.
+        const bool plain_row =
+            is_org_buffer && g_editor.OrgPlainCursorLineVisible() && is_active && row == pane.cursor.row;
 
         // Closed fold starting here: render a one-line summary in its
         // place and skip straight past its hidden rows (Phase 5) -- a row
@@ -39518,6 +39716,42 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 sign_priority = d.priority;
             }
         }
+        // Org table: the row's own background wash, drawn under the text
+        // the same way a whole-line decoration tint is -- a touch of the
+        // theme's accent behind the header block, a fainter one behind
+        // the body, so a table reads as one object instead of a run of
+        // pipe characters. The rules that finish the grid are collected
+        // here and drawn over the text afterwards (org_table_rules).
+        if (!org_table_of_row.empty()) {
+            auto tbl_it = org_table_of_row.find(row);
+            if (tbl_it != org_table_of_row.end()) {
+                const Editor::OrgTableGrid &tbl = *tbl_it->second;
+                const float tbl_x = text_x + static_cast<float>(tbl.indent) * g_char_width;
+                const float tbl_w = static_cast<float>(tbl.width) * g_char_width;
+                const bool is_header = tbl.header_end_row >= 0 && row <= tbl.header_end_row;
+                const bool is_sep =
+                    std::find(tbl.sep_rows.begin(), tbl.sep_rows.end(), row) != tbl.sep_rows.end();
+                gfx::Color wash = ResolveHlGroup("Accent");
+                gfx::DrawRectangle(static_cast<int>(tbl_x), static_cast<int>(ly), static_cast<int>(tbl_w), line_height,
+                              gfx::Color{wash.r, wash.g, wash.b, static_cast<unsigned char>(is_header ? 34 : 14)});
+                if (is_sep) {
+                    // A `|---+---|` row is drawn, not read: the post-pass
+                    // covers its dashes and lays one line across the table.
+                    org_table_rules.push_back(
+                        {gfx::Rectangle{tbl_x, ly, tbl_w, static_cast<float>(line_height)}, true});
+                } else {
+                    for (int rc : tbl.rule_cols) {
+                        // Centred on the `|` glyph's own column, full row
+                        // height, so the per-row glyphs join into one
+                        // continuous rule down the table.
+                        float rx = text_x + (static_cast<float>(rc) + 0.5f) * g_char_width;
+                        org_table_rules.push_back(
+                            {gfx::Rectangle{rx, ly, 1.0f, static_cast<float>(line_height)}, false});
+                    }
+                }
+            }
+        }
+
         // PANE_DRAG_RESTORE: this row's hit-rect for the generic buffer-row
         // drag-to-open gesture (mep.buffer_set_drag_resolver), gated on
         // BufferHasDragResolver so every ordinary source buffer (no
@@ -39527,7 +39761,88 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             g_buffer_drag_row_rects.push_back(
                 {pane.buffer_id, row, gfx::Rectangle{x, ly, w, static_cast<float>(line_height * row_wrap_slots)}});
         }
-        if (row_wrap_cols <= 0) {
+        // Org headlines drawn at a size scaled to their depth
+        // (kOrgHeadingStyles, editor.h): `* Top` largest, each level
+        // below it smaller, level 4 and deeper at plain body size.
+        int org_head_level = 0;
+        if (g_editor.OrgHeadingScaleVisible() && is_org_buffer) {
+            org_head_level = Editor::OrgHeadlineLevelOf(buf.lines[static_cast<size_t>(row)]);
+        }
+        // The extra slots come first and unconditionally -- they are what
+        // the other three walkers counted for this row, whatever the
+        // cursor happens to be doing. Claimed here, before the decision
+        // below about *how* to draw the row, so the two can never
+        // disagree.
+        if (org_head_level > 0) visual_slot += Editor::OrgHeadingExtraSlotsFor(buf.lines[static_cast<size_t>(row)]);
+        float org_head_fs = g_font_size, org_head_cw = g_char_width;
+        if (org_head_level > 0) {
+            // Reveal-to-edit: a headline under the cursor or inside a
+            // selection is drawn as ordinary text on the ordinary column
+            // grid, because that is the grid the caret and the selection
+            // fill are drawn on. It keeps its extra slots either way.
+            const bool row_selected = has_selection && row >= sel_start.row && row <= sel_end.row;
+            const bool row_block_selected = block_selection && row >= block_top && row <= block_bottom;
+            // A row that *actually* wraps (:set wrap is on by default, so
+            // row_wrap_cols alone says nothing) is excluded rather than
+            // reconciled: its column->visual-sub-row mapping comes from
+            // that same fixed grid. A headline short enough to fit on one
+            // visual line has nothing to reconcile.
+            if ((is_active && row == pane.cursor.row) || row_selected || row_block_selected || row_wrap_slots > 1) {
+                org_head_level = 0;
+            }
+        }
+        if (org_head_level > 0) {
+            constexpr int kStyleCount = static_cast<int>(sizeof(kOrgHeadingStyles) / sizeof(kOrgHeadingStyles[0]));
+            const OrgHeadingStyle &style = kOrgHeadingStyles[std::min(org_head_level, kStyleCount) - 1];
+            // Never taller than the slots the row actually claims, less
+            // 2px so a descender can't clip into the row below.
+            float scale = std::min(style.scale,
+                                    (static_cast<float>(line_height * style.slots) - 2.0f) / g_font_size);
+            // ...and no wider than the pane: the scaled advance makes a
+            // headline that fitted unscaled up to 1.6x longer, and a
+            // title running off the right edge reads far worse than one
+            // drawn at body size.
+            const float head_avail_w = std::max(1.0f, w - (text_x - x) - static_cast<float>(kMarginX));
+            const float head_cols = static_cast<float>(buf.lines[static_cast<size_t>(row)].size());
+            if (head_cols > 0.0f) {
+                scale = std::min(scale, head_avail_w / (head_cols * g_char_width));
+            }
+            if (scale <= 1.001f) {
+                org_head_level = 0;  // nothing to gain -- take the ordinary path
+            } else {
+                org_head_fs = g_font_size * scale;
+                org_head_cw = g_char_width * scale;
+            }
+        }
+        if (org_head_level > 0) {
+            const std::string &hline = buf.lines[static_cast<size_t>(row)];
+            // Level colour comes from the same theme groups the org
+            // grammar's own headline captures use (OrgHeadlineLevel1..3),
+            // so a themed headline keeps its colour at any size.
+            const char *level_hl = org_head_level == 1   ? "OrgHeadlineLevel1"
+                                    : org_head_level == 2 ? "OrgHeadlineLevel2"
+                                                          : "OrgHeadlineLevel3";
+            DrawLineFast(hline, text_x, ly, org_head_fs, ResolveHlGroup(level_hl), org_head_cw);
+            // The row's own recolor decorations (the TODO keyword's red,
+            // a `[#A]` cookie's yellow, `:tags:` cyan -- all from the org
+            // grammar's query) redrawn over the scaled text at the scaled
+            // stride. Without this the headline would come out one flat
+            // colour, losing exactly the information those captures
+            // exist to carry. Spans that would need a *different* glyph
+            // layout than the base pass -- concealment overlays, italic's
+            // shear -- are skipped: a headline is structure, not prose.
+            for (const Decoration *dp : row_decos) {
+                const Decoration &d = *dp;
+                if (d.whole_line || d.virt_overlay || d.hl_group.empty() || d.has_fg_color) continue;
+                if (d.col_end <= d.col_start) continue;
+                int a = std::min(static_cast<int>(hline.size()), d.col_start);
+                int b = std::min(static_cast<int>(hline.size()), d.col_end);
+                if (b <= a) continue;
+                DrawLineFast(hline.substr(static_cast<size_t>(a), static_cast<size_t>(b - a)),
+                             text_x + static_cast<float>(a) * org_head_cw, ly, org_head_fs,
+                             ResolveHlGroup(d.hl_group), org_head_cw);
+            }
+        } else if (row_wrap_cols <= 0) {
             DrawLineFast(buf.lines[static_cast<size_t>(row)], text_x, ly, g_font_size, ResolveHlGroup("Normal"));
         } else {
             const std::string &wline = buf.lines[static_cast<size_t>(row)];
@@ -39536,8 +39851,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                              ResolveHlGroup("Normal"));
             }
         }
-        for (const Decoration *dp : row_decos) {
+        // Every per-span decoration pass below lays out on the fixed
+        // g_char_width grid, so a row already drawn at the scaled stride
+        // above has had its own (recolor) decorations applied there and
+        // must skip this loop entirely.
+        for (const Decoration *dp : (org_head_level > 0 ? kNoDecos : row_decos)) {
             const Decoration &d = *dp;
+            // Plain cursor line: every pass in this loop repaints or
+            // covers the row's own characters, so all of it is skipped.
+            // Three things are kept, none of which is formatting of the
+            // document: a whole-line tint (the cursorline/diff
+            // background), end-of-line virtual text (git blame, a
+            // diagnostic message), and the current search match -- `n`
+            // lands the cursor *on* its hit, so that is exactly the row
+            // whose highlight there is most reason to keep.
+            if (plain_row && !d.whole_line && !d.virt_text_eol && d.hl_group != "IncSearch") continue;
             if (!d.whole_line && !d.underline && !d.bold && !d.italic && (!d.hl_group.empty() || d.has_fg_color) &&
                 d.col_end > d.col_start) {
                 const std::string &line = buf.lines[static_cast<size_t>(row)];
@@ -39632,12 +39960,24 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                       });
                 }
             }
+            // A virt_overlay decoration with replacement text (org/
+            // markdown concealment) is about to paint over this span
+            // entirely, so styling the raw buffer text underneath it
+            // would be drawn and then immediately hidden -- and its
+            // underline/strikethrough would be drawn at the *markup's*
+            // width, overhanging the shorter text that replaces it. The
+            // four style passes below therefore stand down for such a
+            // decoration, and the virt_text block further down applies
+            // the same four styles to the replacement text instead. That
+            // is what lets `*bold*` conceal to a `bold` that is still
+            // actually bold.
+            const bool overlay_replaces = d.virt_overlay && !d.virt_text.empty();
             // Per-span underline (Phase 21 gap): a 1px DrawRectangle at
             // the text baseline, mirroring how VTermCell::underline is
             // rendered elsewhere (see the `cell->underline` block in
             // DrawTerminalGrid) -- same visual, but keyed off a column
             // range instead of a terminal cell.
-            if (!d.whole_line && d.underline && d.col_end > d.col_start) {
+            if (!d.whole_line && d.underline && !overlay_replaces && d.col_end > d.col_start) {
                 const std::string &line = buf.lines[static_cast<size_t>(row)];
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
@@ -39654,7 +39994,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // Per-span strikethrough (org emphasis +strike+, kBuiltinOrg):
             // same primitive as underline just at the span's own vertical
             // middle instead of its baseline.
-            if (!d.whole_line && d.strikethrough && d.col_end > d.col_start) {
+            if (!d.whole_line && d.strikethrough && !overlay_replaces && d.col_end > d.col_start) {
                 const std::string &line = buf.lines[static_cast<size_t>(row)];
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
@@ -39674,7 +40014,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // terminal emulators/GUI toolkits do for a font family lacking
             // a true bold face -- draw the span twice, the second copy
             // offset 1px right, thickening every stroke slightly.
-            if (!d.whole_line && d.bold && d.col_end > d.col_start) {
+            if (!d.whole_line && d.bold && !overlay_replaces && d.col_end > d.col_start) {
                 const std::string &line = buf.lines[static_cast<size_t>(row)];
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
@@ -39700,7 +40040,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // baseline (translate there, shear, translate back) rather
             // than the world origin, so the glyphs lean without also
             // drifting away from their own line.
-            if (!d.whole_line && d.italic && d.col_end > d.col_start) {
+            if (!d.whole_line && d.italic && !overlay_replaces && d.col_end > d.col_start) {
                 const std::string &line = buf.lines[static_cast<size_t>(row)];
                 int a = std::min(static_cast<int>(line.size()), d.col_start);
                 int b = std::min(static_cast<int>(line.size()), d.col_end);
@@ -39760,24 +40100,133 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int vcol = d.virt_text_eol ? static_cast<int>(buf.lines[static_cast<size_t>(row)].size()) + 1 : d.col_start;
                 gfx::Vector2 vpos = WrapPos(vcol, row_wrap_cols, text_x, ly, line_height);
                 float vx = vpos.x, vy = vpos.y;
+                gfx::Color vc = ResolveHlGroup(d.virt_text_hl);
+                float vw = gfx::MeasureTextEx(g_font, d.virt_text.c_str(), g_font_size, 0).x;
+                // Display columns the replacement text itself occupies --
+                // what the wrap grid measures everything in. Codepoints,
+                // not bytes, exactly like DrawLineFast's own column walk.
+                const int vtext_cols = ByteOffsetToColumn(d.virt_text, static_cast<int>(d.virt_text.size()));
+                /**
+                 * @brief Draws one run of the replacement text at a position, applying the decoration's italic shear and fake bold.
+                 * @param piece The substring to draw.
+                 * @param px Screen x to draw it at.
+                 * @param py Screen y to draw it at.
+                 */
+                auto draw_virt_run = [&](const std::string &piece, float px, float py) {
+                    if (piece.empty()) return;
+                    if (d.italic && d.virt_overlay) {
+                        // Sheared exactly like the per-span italic pass
+                        // above -- around this text's own baseline, with
+                        // no cover-first step needed since the overlay
+                        // rectangle already cleared everything underneath.
+                        float baseline_y = py + static_cast<float>(line_height);
+                        gfx::PushMatrix();
+                        gfx::TranslateMatrix(px, baseline_y, 0);
+                        // clang-format off
+                        const float vshear[16] = {
+                            1.0f,  0.0f, 0.0f, 0.0f,
+                            -0.22f, 1.0f, 0.0f, 0.0f,
+                            0.0f,  0.0f, 1.0f, 0.0f,
+                            0.0f,  0.0f, 0.0f, 1.0f,
+                        };
+                        // clang-format on
+                        gfx::MultMatrix(vshear);
+                        gfx::TranslateMatrix(-px, -baseline_y, 0);
+                        gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, vc);
+                        gfx::PopMatrix();
+                        return;
+                    }
+                    gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, vc);
+                    // Same 1px double-draw fake bold the per-span pass uses.
+                    if (d.bold && d.virt_overlay) {
+                        gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px + 1, py}, g_font_size, 0, vc);
+                    }
+                };
                 if (d.virt_overlay) {
                     // Cover whichever is wider: the replacement text, or
                     // the original [col_start, col_end) span it's
                     // standing in for. A caller concealing markup down to
                     // shorter text (markdown's "**bold**" -> "bold", or a
                     // whole link down to its link text) sets col_end to
-                    // the *original* markup's end -- using only the
-                    // replacement's own measured width here would leave
-                    // the original span's tail end (anything past the
-                    // replacement's width) undrawn-over and still
-                    // visible, defeating the conceal.
-                    float span_w = (d.col_end > d.col_start) ? static_cast<float>(d.col_end - d.col_start) * g_char_width : 0.0f;
-                    float overlay_w = std::max(span_w, gfx::MeasureTextEx(g_font, d.virt_text.c_str(), g_font_size, 0).x);
-                    gfx::DrawRectangle(static_cast<int>(vx), static_cast<int>(vy), static_cast<int>(overlay_w),
-                                  line_height, ResolveHlGroup("NormalBg"));
+                    // the *original* markup's end -- covering only the
+                    // replacement's own width would leave the original
+                    // span's tail end still visible, defeating the
+                    // conceal.
+                    //
+                    // Split across wrap boundaries (ForEachWrapPiece)
+                    // rather than drawn as one flat rectangle: a markup
+                    // span straddling a soft-wrap boundary continues on
+                    // the *next* visual row, where a single rectangle
+                    // anchored on the first row never reaches. That left
+                    // the tail of the markup on screen next to its own
+                    // concealed form -- `=tectonic=` in this repo's own
+                    // help/org-visuals.org rendered as `tectonic` plus a
+                    // stray `ic=` on the row below.
+                    const int cover_end = std::max(d.col_end, vcol + vtext_cols);
+                    bool first_piece = true;
+                    ForEachWrapPiece(vcol, cover_end, row_wrap_cols, text_x, ly, line_height,
+                                      [&](float py, float px0, float px1, int, int) {
+                                          // A proportional/icon glyph can measure wider than the
+                                          // column count it was budgeted, so the piece holding the
+                                          // replacement text is widened to its measured width.
+                                          float piece_w = px1 - px0;
+                                          if (first_piece) piece_w = std::max(piece_w, vw);
+                                          first_piece = false;
+                                          gfx::DrawRectangle(static_cast<int>(px0), static_cast<int>(py),
+                                                             static_cast<int>(piece_w), line_height,
+                                                             ResolveHlGroup("NormalBg"));
+                                      });
                 }
-                gfx::DrawTextEx(g_font, d.virt_text.c_str(), gfx::Vector2{vx, vy}, g_font_size, 0,
-                           ResolveHlGroup(d.virt_text_hl));
+                // Does the replacement text itself run past the wrap
+                // boundary the row's own text wraps at? Only then does it
+                // need splitting; everything that fits on one visual row
+                // -- which is nearly every conceal, since a replacement
+                // is shorter than the markup it stands in for -- keeps
+                // drawing as the single run it always did, measured the
+                // way it always was.
+                const bool virt_straddles_wrap =
+                    d.virt_overlay && row_wrap_cols > 0 &&
+                    vcol + vtext_cols > ((vcol / row_wrap_cols) + 1) * row_wrap_cols;
+                // End-of-line virtual text (git blame, a diagnostic) is
+                // never split either way: it is an annotation hanging off
+                // the row's end, not text sitting on the column grid.
+                if (virt_straddles_wrap) {
+                    ForEachWrapPiece(vcol, vcol + vtext_cols, row_wrap_cols, text_x, ly, line_height,
+                                      [&](float py, float px0, float, int pa, int pb) {
+                                          size_t ba = ColumnToByteOffset(d.virt_text, pa - vcol);
+                                          size_t bb = ColumnToByteOffset(d.virt_text, pb - vcol);
+                                          if (bb > ba) draw_virt_run(d.virt_text.substr(ba, bb - ba), px0, py);
+                                      });
+                } else {
+                    draw_virt_run(d.virt_text, vx, vy);
+                }
+                // Underline/strikethrough sized to the replacement text,
+                // not to the markup span it stands in for -- split at the
+                // wrap boundary the same way the text itself just was.
+                if (d.virt_overlay && vw > 0.0f) {
+                    /**
+                     * @brief Draws the decoration's underline and/or strikethrough rules for one run of replacement text.
+                     * @param py Screen y of the run.
+                     * @param px Screen x of the run.
+                     * @param rule_w Width of the rules.
+                     */
+                    auto draw_virt_rules = [&](float py, float px, float rule_w) {
+                        if (d.underline) {
+                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(py + static_cast<float>(line_height) - 2),
+                                               static_cast<int>(rule_w), 1, vc);
+                        }
+                        if (d.strikethrough) {
+                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(py + static_cast<float>(line_height) / 2),
+                                               static_cast<int>(rule_w), 1, vc);
+                        }
+                    };
+                    if (virt_straddles_wrap) {
+                        ForEachWrapPiece(vcol, vcol + vtext_cols, row_wrap_cols, text_x, ly, line_height,
+                                          [&](float py, float px0, float px1, int, int) { draw_virt_rules(py, px0, px1 - px0); });
+                    } else {
+                        draw_virt_rules(vy, vx, vw);
+                    }
+                }
             }
             // Colorizer swatch (Phase 13): a small filled square in the
             // literal parsed color, drawn just before col_start.
@@ -39789,6 +40238,51 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                               gfx::Color{d.swatch_color.r, d.swatch_color.g, d.swatch_color.b, 255});
             }
         }
+        // Org links, made clickable (Buffer::org_link_spans, filled by
+        // Editor::OrgLinkScan): one region per link over whatever it
+        // actually draws as -- its concealed display text, or the raw
+        // `[[...]]`/bare-URL span when nothing is concealing it. Wider of
+        // the two, matching the overlay's own cover width, so no part of
+        // a link is drawn without being clickable.
+        //
+        // RegisterClickRegionOnTop, not RegisterClickRegion: this pane's
+        // own catch-all focus region covers the whole content area and was
+        // registered long before the row loop got here, and
+        // g_click_regions is first-match-wins by registration order -- a
+        // plainly-registered region inside the text area could never win a
+        // click (the same shadowing the fold-marker gutter region
+        // documents). Hover already reads as a link: UpdatePaneMouseInteraction
+        // gives every registered region the pointing-hand cursor.
+        //
+        // row_wrap_slots, not row_wrap_cols: :set wrap is on by default, so
+        // row_wrap_cols is non-zero for nearly every row and says nothing
+        // about whether this one actually broke across visual lines. Only
+        // a row that really did is skipped, since a link split over two
+        // sub-rows isn't one rectangle.
+        if (is_org_buffer && row_wrap_slots <= 1) {
+            if (const std::vector<Buffer::OrgLinkSpan> *link_spans =
+                    g_editor.OrgLinkSpansForRow(pane.buffer_id, row)) {
+                for (const Buffer::OrgLinkSpan &lsp : *link_spans) {
+                    const float lx = text_x + static_cast<float>(lsp.col_start) * g_char_width;
+                    const int raw_cols = lsp.col_end - lsp.col_start;
+                    const int shown_cols = static_cast<int>(lsp.display.size());
+                    const float lw = static_cast<float>(std::max(raw_cols, shown_cols)) * g_char_width;
+                    const int click_row = row;
+                    const int click_col = lsp.col_start;
+                    const int click_pane = pane.id;
+                    RegisterClickRegionOnTop(gfx::Rectangle{lx, ly, lw, static_cast<float>(line_height)},
+                                             [click_pane, click_row, click_col] {
+                                                 // Focus first: OrgFollowLinkAt works on the
+                                                 // active buffer, so a click in a background
+                                                 // split would otherwise follow a link out of
+                                                 // whichever buffer happened to be focused.
+                                                 g_editor.FocusPaneById(click_pane);
+                                                 g_editor.OrgFollowLinkAt(click_row, click_col);
+                                             });
+                }
+            }
+        }
+
         // Org inline math (<leader>otl, Editor::OrgLatexVisible()):
         // Buffer::org_latex_inline's own comment explains why this can't
         // reuse the whole-row org_latex_rows path -- a fragment here
@@ -39820,7 +40314,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // past the original col_end to fit it -- still a "bleeds into
         // whatever comes next" risk with no reflow to prevent it, but the
         // narrower, common direction is now handled cleanly.
-        if (g_editor.OrgLatexVisible()) {
+        if (g_editor.OrgLatexVisible() && !plain_row) {
             auto inline_it = buf.org_latex_inline.find(row);
             if (inline_it != buf.org_latex_inline.end()) {
                 for (const Buffer::OrgLatexInlineSpan &span : inline_it->second) {
@@ -40004,6 +40498,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             ? std::max(1, (static_cast<int>(buf.lines[static_cast<size_t>(r)].size()) + wrap_cols - 1) / wrap_cols)
                             : 1;
                 slot += nb_trailing;
+                // An org headline's own extra slot (kOrgHeadingStyles) --
+                // the third of the four walkers that has to agree on it.
+                if (is_org_buffer && g_editor.OrgHeadingScaleVisible()) {
+                    slot += Editor::OrgHeadingExtraSlotsFor(buf.lines[static_cast<size_t>(r)]);
+                }
                 r += 1;
             }
         }
@@ -40072,8 +40571,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // without this check moving the cursor onto a "$...$" fragment
             // exposed the very markup it's supposed to stay concealed
             // behind.
+            // The plain-cursor-line rule (<leader>otc) already stopped
+            // that texture from being drawn on this row, so the markup
+            // under the caret is real, visible text again and does need
+            // punching back through.
+            const bool plain_cursor_row = is_org_buffer && g_editor.OrgPlainCursorLineVisible();
             bool cursor_in_concealed_latex = false;
-            if (g_editor.OrgLatexVisible()) {
+            if (g_editor.OrgLatexVisible() && !plain_cursor_row) {
                 auto it = buf.org_latex_inline.find(pane.cursor.row);
                 if (it != buf.org_latex_inline.end()) {
                     for (const Buffer::OrgLatexInlineSpan &span : it->second) {
@@ -40204,6 +40708,27 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             text_draw_x += label_icon_w;
         }
         gfx::DrawTextEx(g_font, label_text.c_str(), gfx::Vector2{text_draw_x, p_label_y + (label_h - g_font_size) / 2.0f}, g_font_size, 0, gfx::White);
+    }
+
+    // Org table grid (see org_table_rules above): drawn after the row
+    // text so a column rule merges with the `|` glyphs it runs through,
+    // and a horizontal rule covers the `|---+---|` dashes it stands in
+    // for rather than being drawn underneath them.
+    if (!org_table_rules.empty()) {
+        const gfx::Color rule_c = ResolveHlGroup("Comment");
+        for (const OrgTableRule &tr : org_table_rules) {
+            if (tr.horizontal) {
+                gfx::DrawRectangle(static_cast<int>(tr.rect.x), static_cast<int>(tr.rect.y),
+                              static_cast<int>(tr.rect.width), static_cast<int>(tr.rect.height),
+                              ResolveHlGroup("NormalBg"));
+                gfx::DrawRectangle(static_cast<int>(tr.rect.x),
+                              static_cast<int>(tr.rect.y + tr.rect.height / 2.0f),
+                              static_cast<int>(tr.rect.width), 1, rule_c);
+            } else {
+                gfx::DrawRectangle(static_cast<int>(tr.rect.x), static_cast<int>(tr.rect.y), 1,
+                              static_cast<int>(tr.rect.height), rule_c);
+            }
+        }
     }
 
     // Org block cards (see org_card_boxes above): the title bar that

@@ -71,6 +71,102 @@ struct OrgOutline {
     std::vector<OrgHeadline> headlines;      // flattened, document order
 };
 
+// --- Display-side scans (Editor::OrgLinkScan / DrawPane, main.cpp) ---
+// These answer "what should this line look like", not "what does this file
+// mean", but they live here for the same reason everything else in this
+// header does: they are pure functions over plain std::string lines, so
+// they can be tested without a GL context (org_doc_test.cpp) -- which
+// matters, because link syntax is exactly the kind of thing that breaks on
+// the edge cases (`[[a]][[b]]` on one line, an empty target, a URL sitting
+// inside a bracket link) rather than on the common path.
+
+// Headline depth: the count of leading `*` when they start at column 0 and
+// are followed by a space, else 0. Deliberately stricter than "starts with
+// a star": `*bold*` opening a line and an indented `  * item` bullet are
+// both not headlines.
+/**
+ * @brief Returns an org headline's depth (count of leading `*`), or 0 when the line isn't a headline.
+ * @param line the line to measure
+ * @return the headline level (1-based), or 0
+ */
+int OrgHeadlineLevel(const std::string &line);
+
+// --- Org emphasis marker boundaries -----------------------------------
+//
+// Org only lets `*bold*`, `/italic/`, `_under_`, `+strike+`, `=verbatim=`
+// and `~code~` open after one of a *specific* set of characters and close
+// before another (`org-emphasis-regexp-components`' PRE and POST classes,
+// reproduced exactly): PRE is start-of-line, whitespace, `-`, `(`, `'`,
+// `"` or `{`; POST is end-of-line, whitespace, `-`, `.`, `,`, `:`, `!`,
+// `?`, `;`, `'`, `"`, `)`, `}` or `[`.
+//
+// The looser "any non-alphanumeric will do" rule these scanners used
+// before let a marker open after punctuation that org never treats as a
+// boundary, and `/` in a URL is the case that bites: in
+// `see [[https://example.com][Site]] and https://example.org`, the second
+// `/` of the first `//` opened an italic run that closed on the `/` of
+// the *second* URL, so a whole stretch of prose (the bracket link's own
+// concealed markup included) was drawn as concealed italic text painted
+// over the link. Reported live as "funny rendering"; the same class of
+// over-match as `$..$` math matching inside a code block.
+/**
+ * @brief Reports whether a character may immediately precede an opening org emphasis marker.
+ * @param c the character before the marker, or '\0' for start-of-line
+ * @return true if `c` is in org's PRE class (or is start-of-line)
+ */
+bool OrgEmphasisPreOk(char c);
+/**
+ * @brief Reports whether a character may immediately follow a closing org emphasis marker.
+ * @param c the character after the marker, or '\0' for end-of-line
+ * @return true if `c` is in org's POST class (or is end-of-line)
+ */
+bool OrgEmphasisPostOk(char c);
+/**
+ * @brief Reports whether a character is org emphasis "border" whitespace, which may not sit just inside a marker pair.
+ * @param c the character to test
+ * @return true if `c` is a space or tab
+ */
+bool OrgEmphasisBorderBlank(char c);
+
+// One link found on a line. `col_start`/`col_end` bound the *raw markup*
+// (half-open, byte offsets, the same convention Decoration uses);
+// `display` is what should be drawn in its place when markup is concealed.
+struct OrgLinkSpanInfo {
+    int col_start = 0;
+    int col_end = 0;
+    std::string target;
+    std::string display;
+    // True for a `[[...]]` link, whose markup is hidden behind `display`.
+    // False for a bare URL, which is already its own display text.
+    bool bracketed = false;
+};
+
+// Every `[[target]]` / `[[target][description]]` and every bare
+// `http(s)://...` on `line`, in column order. A bare URL that falls inside
+// a bracket link's own span is not reported separately -- the bracket link
+// already covers it, and two overlapping links on the same columns would
+// give the renderer two conflicting things to draw and click.
+//
+// `display` drops the scheme noise org itself drops from a bare link's
+// display: `file:`, `id:`, and a leading `*`/`#`. A link with a
+// description always displays that description verbatim.
+//
+// Text inside a `=verbatim=` or `~code~` run is not scanned at all: org
+// treats it as literal, and a help page writing `=[[file:x]]=` to *show*
+// link syntax must not end up with a live link there.
+//
+// Scope, named rather than silently omitted: only the `http`/`https`
+// schemes are recognized unbracketed. A bare `www.example.com`, `mailto:`
+// or `ftp://` is left as plain text -- inside a bracket link every scheme
+// works, and guessing at unbracketed ones turns ordinary prose (a
+// sentence ending in a domain name) into a link.
+/**
+ * @brief Finds every org bracket link and bare http(s) URL on a line, in column order.
+ * @param line the line to scan
+ * @return the links found; empty when the line has none
+ */
+std::vector<OrgLinkSpanInfo> ScanOrgLinkSpans(const std::string &line);
+
 // Parses every headline in `lines` into a flat, document-ordered outline.
 // Never fails outright -- a file with zero headlines just yields an empty
 // `headlines` vector with the default/parsed keyword sequence.

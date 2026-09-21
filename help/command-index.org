@@ -5,7 +5,7 @@
 
 * Every command
 
-All 315 ex commands mep defines: 103 built in and 213 registered from Lua.
+All 319 ex commands mep defines: 103 built in and 217 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -153,6 +153,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepOrgClockIn= | [[file:org-clock.html][Clocking and the Todo panel]] |
 | =:MepOrgClockOut= | [[file:org-clock.html][Clocking and the Todo panel]] |
 | =:MepOrgClockTable= | [[file:org-clock.html][Clocking and the Todo panel]] |
+| =:MepOrgConcealToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgCycle= | [[file:folding.html][Folds]] |
 | =:MepOrgDeadline= | [[file:org-dates.html][Timestamps and scheduling]] |
 | =:MepOrgDemote= | -- |
@@ -169,6 +170,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepOrgFootnoteJump= | [[file:org-links.html][Links, footnotes and citations]] |
 | =:MepOrgFormatBlock= | [[file:formatting.html][Formatting]] |
 | =:MepOrgFormatBlocks= | [[file:formatting.html][Formatting]] |
+| =:MepOrgHeadingScaleToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgImageScan= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgImagesToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgInsertHeading= | [[file:org-basics.html][Org files in mep]] |
@@ -177,6 +179,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepOrgLatexToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgLinkFollow= | [[file:org-links.html][Links, footnotes and citations]] |
 | =:MepOrgLinkInsert= | [[file:org-links.html][Links, footnotes and citations]] |
+| =:MepOrgLinkScan= | [[file:org-links.html][Links, footnotes and citations]] |
 | =:MepOrgListIndent= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgListNewItem= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgListOutdent= | [[file:org-basics.html][Org files in mep]] |
@@ -184,6 +187,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepOrgMatch= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgNarrow= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgNext= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgPlainCursorLineToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgPrev= | -- |
 | =:MepOrgPriority= | [[file:org-todo.html][TODO keywords and tags]] |
 | =:MepOrgPromote= | [[file:org-basics.html][Org files in mep]] |

@@ -1922,6 +1922,27 @@ void ParseOrgHeaderArgs(const std::string &args, int row, std::vector<OrgBlockOp
 
 }  // namespace
 
+namespace {
+// Display columns of a line: one per Unicode codepoint, which is exactly
+// the unit DrawLineFast (main.cpp) advances its fixed column grid by --
+// a byte count would over-measure any non-ASCII line and give it a card
+// wider than the text actually drawn in it.
+/**
+ * @brief Counts a line's width in display columns (one per UTF-8 codepoint).
+ * @param line The line to measure.
+ * @return The column count.
+ */
+int DisplayColumnsOf(const std::string &line) {
+    int cols = 0;
+    for (char c : line) {
+        // Continuation bytes (10xxxxxx) are part of the codepoint before
+        // them, so only a lead byte starts a new column.
+        if ((static_cast<unsigned char>(c) & 0xC0) != 0x80) cols++;
+    }
+    return cols;
+}
+}  // namespace
+
 const std::vector<OrgBlockCard> &Editor::OrgBlockCards(int buffer_id) {
     org_block_cards_.clear();
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return org_block_cards_;
@@ -2001,6 +2022,13 @@ const std::vector<OrgBlockCard> &Editor::OrgBlockCards(int buffer_id) {
             break;
         }
         if (card.end_row >= 0) row = card.end_row;
+        // The widest row the card encloses, in display columns. An
+        // unterminated block (no closer yet) is measured to the end of
+        // the buffer, matching the card DrawPane draws for it.
+        const int measure_end = card.end_row >= 0 ? card.end_row : n - 1;
+        for (int r = card.meta_row; r <= measure_end && r < n; r++) {
+            card.content_cols = std::max(card.content_cols, DisplayColumnsOf(buf.lines[static_cast<size_t>(r)]));
+        }
         org_block_cards_.push_back(card);
     }
     return org_block_cards_;
@@ -2809,7 +2837,20 @@ void Editor::OrgImageScan() {
                 size_t hash = rest.find('#');
                 std::string path = hash == std::string::npos ? rest : rest.substr(0, hash);
                 if (IsOrgImageExtension(path)) {
-                    SetOrgImageRow(i - 1, OrgResolvePath(path));
+                    // Only a link whose target actually exists becomes an
+                    // image row. A registered row costs kOrgInlineImageSlots
+                    // (25) line-heights whether or not there's a texture to
+                    // put in them, so with the preview on by default (see
+                    // org_images_visible_, editor.h) a link to a plot a
+                    // babel block hasn't produced yet would otherwise punch
+                    // a screen-tall hole into the buffer. Unresolvable links
+                    // read as their ordinary [[file:...]] text instead, and
+                    // the next rescan (the results insert is a buffer
+                    // change, kBuiltinOrgImages' on_buffer_changed hook)
+                    // picks the image up the moment it lands on disk.
+                    std::string resolved = OrgResolvePath(path);
+                    std::error_code ec;
+                    if (std::filesystem::exists(resolved, ec)) SetOrgImageRow(i - 1, resolved);
                 }
             }
         }
@@ -3050,6 +3091,28 @@ bool MatchCiLiteral(const std::string &s, size_t pos, const std::string &lit) {
     return true;
 }
 
+// ^\s*#\+KEYWORD\a+ (case-insensitive on KEYWORD), matching kBuiltinSyntax's
+// own '^%s*#%+[Bb][Ee][Gg][Ii][Nn]_%a+'/'^%s*#%+[Ee][Nn][Dd]_%a+' patterns --
+// `keyword` must already be lowercase ("begin_"/"end_").
+/**
+ * @brief Checks whether a line matches an org-mode "#+KEYWORD..." block marker (case-insensitive on keyword).
+ * @param line The line of text to test.
+ * @param keyword The lowercase marker keyword to match (e.g. "begin_" or "end_").
+ * @return True if the line, after leading whitespace, starts with "#+" followed by `keyword` and at least one more letter.
+ */
+bool MatchesOrgBlockMarker(const std::string &line, const char *keyword) {
+    size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
+    i += 2;
+    size_t klen = std::strlen(keyword);
+    if (i + klen > line.size()) return false;
+    for (size_t k = 0; k < klen; k++) {
+        if (std::tolower(static_cast<unsigned char>(line[i + k])) != keyword[k]) return false;
+    }
+    i += klen;
+    return i < line.size() && std::isalpha(static_cast<unsigned char>(line[i]));
+}
 /**
  * @brief Advances an index past any whitespace characters in a string.
  * @param s The string to scan.
@@ -3246,6 +3309,27 @@ Editor::OrgLatexScanResult Editor::OrgLatexScanFragments() const {
         std::string trimmed = LatexTrim(line);
         std::string body;
         int end_row = 0;
+
+        // A `#+begin_X ... #+end_X` block that isn't itself LaTeX is
+        // literal text, so nothing inside it is a math fragment -- the
+        // same skip Editor::OrgHighlightEmphasis and OrgLinkScan make,
+        // for the same reason. Without it a `$` anywhere in a code block
+        // opens an inline-math span: `plot(iris$Sepal.Length, iris$Sepal.
+        // Width)` in an R block had `$Sepal.Length, iris$` typeset as
+        // math and painted over the source (reported live), and every
+        // `$var`/`$1` in a shell block, `$_` in perl, or `$` in a
+        // `#+begin_example` of shell output was the same bug waiting.
+        // The two LaTeX-bearing block forms are excluded from the skip:
+        // they are handled as whole fragments by the branches below.
+        if (!IsLatexBlockOpen(line) && !IsSrcLatexOpen(line) && MatchesOrgBlockMarker(line, "begin_")) {
+            int j = i + 1;
+            while (j <= n && !MatchesOrgBlockMarker(Buf().lines[static_cast<size_t>(j - 1)], "end_")) j++;
+            // An unterminated block runs to the end of the buffer (j ==
+            // n + 1 here), which ends the walk -- matching what the two
+            // scans above do with their own `in_block` flag.
+            i = j + 1;
+            continue;
+        }
 
         if (IsLatexBlockOpen(line)) {
             std::vector<std::string> lines;
@@ -4532,8 +4616,11 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
         // must stay in exact agreement with DrawPane's row loop and its
         // cursor-Y lookup (main.cpp), the same three-way constraint the
         // comment above already calls out for folds.
+        // Hoisted out of row_slots: the filetype lookup is a per-buffer
+        // answer, and row_slots runs once per row walked.
+        const bool org_buffer = LspFiletype(buf.filename) == "org";
         /**
-         * @brief Computes how many visual scroll "slots" a given buffer row occupies (folds/org images/LaTeX fragments expand or collapse a row; soft-wrap can expand it too).
+         * @brief Computes how many visual scroll "slots" a given buffer row occupies (folds/org images/LaTeX fragments expand or collapse a row; org headlines and soft-wrap can expand it too).
          * @param r The buffer row to measure.
          * @return The number of visual slots the row contributes.
          */
@@ -4545,6 +4632,15 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
             // output into view the same way stepping onto an org image
             // brings the whole image up.
             int trailing = NotebookTrailingSlots(pane.buffer_id, r);
+            // An org headline claims an extra slot at the shallower
+            // depths (kOrgHeadingStyles) -- the room its larger text is
+            // drawn in. Same "one row, more than one slot" shape as an
+            // image, just by one instead of twenty-five, and unlike an
+            // image it doesn't replace the row's own text, so it adds to
+            // whatever the branches below work out rather than
+            // short-circuiting them.
+            const int heading_extra =
+                (org_heading_scale_visible_ && org_buffer) ? OrgHeadingExtraSlotsFor(buf.lines[static_cast<size_t>(r)]) : 0;
             if (org_images_visible_ && buf.org_image_rows.count(r)) return kOrgInlineImageSlots + trailing;
             if (org_latex_visible_) {
                 auto it = buf.org_latex_rows.find(r);
@@ -4567,10 +4663,10 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
                 }
                 if (!fold_start) {
                     int len = static_cast<int>(buf.lines[static_cast<size_t>(r)].size());
-                    return std::max(1, (len + wrap_cols - 1) / wrap_cols) + trailing;
+                    return std::max(1, (len + wrap_cols - 1) / wrap_cols) + trailing + heading_extra;
                 }
             }
-            return 1 + trailing;
+            return 1 + trailing + heading_extra;
         };
         int slots = row_slots(pane.cursor.row);  // the cursor's own row (with any output block) is the first slot(s)
         int row = pane.cursor.row;
@@ -24806,31 +24902,6 @@ void Editor::SyntaxHighlightFallback(int ns, const std::vector<std::string> &key
     }
 }
 
-namespace {
-// ^\s*#\+KEYWORD\a+ (case-insensitive on KEYWORD), matching kBuiltinSyntax's
-// own '^%s*#%+[Bb][Ee][Gg][Ii][Nn]_%a+'/'^%s*#%+[Ee][Nn][Dd]_%a+' patterns --
-// `keyword` must already be lowercase ("begin_"/"end_").
-/**
- * @brief Checks whether a line matches an org-mode "#+KEYWORD..." block marker (case-insensitive on keyword).
- * @param line The line of text to test.
- * @param keyword The lowercase marker keyword to match (e.g. "begin_" or "end_").
- * @return True if the line, after leading whitespace, starts with "#+" followed by `keyword` and at least one more letter.
- */
-bool MatchesOrgBlockMarker(const std::string &line, const char *keyword) {
-    size_t i = 0;
-    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
-    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
-    i += 2;
-    size_t klen = std::strlen(keyword);
-    if (i + klen > line.size()) return false;
-    for (size_t k = 0; k < klen; k++) {
-        if (std::tolower(static_cast<unsigned char>(line[i + k])) != keyword[k]) return false;
-    }
-    i += klen;
-    return i < line.size() && std::isalpha(static_cast<unsigned char>(line[i]));
-}
-}  // namespace
-
 void Editor::OrgHighlightEmphasis(int ns) {
     static const std::unordered_map<char, char> kMarkerKind = {
         {'*', 'b'}, {'/', 'i'}, {'_', 'u'}, {'+', 's'}, {'=', 'v'}, {'~', 'c'},
@@ -24844,13 +24915,13 @@ void Editor::OrgHighlightEmphasis(int ns) {
     auto at = [](const std::string &s, int idx) -> char {
         return (idx >= 0 && idx < static_cast<int>(s.size())) ? s[static_cast<size_t>(idx)] : '\0';
     };
-    /**
-     * @brief Checks whether a character is a non-NUL alphanumeric "word" character.
-     * @param c The character to test.
-     * @return True if `c` is alphanumeric.
-     */
-    auto is_word = [](char c) { return c != '\0' && std::isalnum(static_cast<unsigned char>(c)); };
 
+    // The cursor's own row keeps its markers visible even while
+    // concealment is on -- the same reveal-to-edit rule Editor::MdConceal
+    // and OrgLinkScan follow, so `*bold*` is always editable as the six
+    // characters it really is by putting the cursor on its line.
+    int cur_row = 0, cur_col = 0;
+    GetCursorForLua(&cur_row, &cur_col);
     bool in_block = false;
     const int n = Buf().LineCount();
     for (int row = 0; row < n; row++) {
@@ -24863,6 +24934,15 @@ void Editor::OrgHighlightEmphasis(int ns) {
             in_block = true;
             continue;
         }
+        // A headline's own leading stars are its structure, not emphasis
+        // -- and DrawPane may be drawing this whole row at a scaled size
+        // (kOrgHeadingStyles), where a column-anchored overlay would land
+        // in the wrong place anyway. The marker rules below already reject
+        // the stars themselves (a space always follows them); this skips
+        // concealing a headline's *title* markup too, so the two renderers
+        // never both claim the same row.
+        const bool is_headline = OrgHeadlineLevelOf(line) > 0;
+        const bool conceal_row = org_conceal_visible_ && row != cur_row && !is_headline;
         int i = 0;
         const int len = static_cast<int>(line.size());
         while (i < len) {
@@ -24872,9 +24952,16 @@ void Editor::OrgHighlightEmphasis(int ns) {
                 i++;
                 continue;
             }
+            // Org's own PRE/border rules (OrgEmphasisPreOk, org_doc.h):
+            // a marker only opens after start-of-line, whitespace, or one
+            // of `-('"{`, and only with a non-blank character just inside
+            // it. The `/` in `https://...` is the reason this is org's
+            // exact set rather than "any non-word character" -- see
+            // OrgEmphasisPreOk's own comment.
             char pre = at(line, i - 1);
             char nxt = at(line, i + 1);
-            bool boundary_ok = (i == 0 || !is_word(pre)) && nxt != '\0' && nxt != ' ' && nxt != ch;
+            bool boundary_ok = OrgEmphasisPreOk(pre) && nxt != '\0' &&
+                               !OrgEmphasisBorderBlank(nxt) && nxt != ch;
             if (!boundary_ok) {
                 i++;
                 continue;
@@ -24886,7 +24973,7 @@ void Editor::OrgHighlightEmphasis(int ns) {
                 if (s == std::string::npos) break;
                 char prev_char = at(line, static_cast<int>(s) - 1);
                 char after_char = at(line, static_cast<int>(s) + 1);
-                if (prev_char != ' ' && prev_char != ch && !is_word(after_char)) {
+                if (!OrgEmphasisBorderBlank(prev_char) && prev_char != ch && OrgEmphasisPostOk(after_char)) {
                     found_end = static_cast<int>(s);
                     break;
                 }
@@ -24908,6 +24995,20 @@ void Editor::OrgHighlightEmphasis(int ns) {
                 case 'v': d.hl_group = "Green"; break;
                 case 'c': d.hl_group = "Cyan"; break;
                 default: break;
+            }
+            if (conceal_row) {
+                // Hide the two markers by drawing the text *between* them
+                // over the whole `*bold*` span (the virt_overlay
+                // primitive, same as Editor::MdConceal). The style flags
+                // set above still apply: DrawPane draws a virt_overlay's
+                // own replacement text bold/italic/struck the same way it
+                // would the buffer text it stands in for -- without that,
+                // concealing the markers would also throw away the very
+                // styling they asked for.
+                d.virt_text = line.substr(static_cast<size_t>(i) + 1, static_cast<size_t>(found_end - i - 1));
+                d.virt_text_hl = d.hl_group;
+                d.virt_overlay = true;
+                d.priority = 10;
             }
             AddDecoration(ns, d);
             i = found_end + 1;
@@ -25901,6 +26002,301 @@ std::vector<std::string> Editor::ListUrls() const {
     }
     return urls;
 }
+
+// Both of these are thin forwards onto org_doc.cpp's own pure scans --
+// see org_doc.h for why the parsing half lives there (it is testable
+// without a GL context; org_doc_test.cpp covers it) and only the
+// editor-state half is here.
+int Editor::OrgHeadlineLevelOf(const std::string &line) { return OrgHeadlineLevel(line); }
+
+int Editor::OrgHeadingExtraSlotsFor(const std::string &line) {
+    const int level = OrgHeadlineLevelOf(line);
+    if (level <= 0) return 0;
+    constexpr int kCount = static_cast<int>(sizeof(kOrgHeadingStyles) / sizeof(kOrgHeadingStyles[0]));
+    return kOrgHeadingStyles[std::min(level, kCount) - 1].slots - 1;
+}
+
+void Editor::OrgLinkScan(int ns) {
+    Buf().org_link_spans.clear();
+    if (LspFiletype(CurrentBuffer().filename) != "org") return;
+    int cur_row = 0, cur_col = 0;
+    GetCursorForLua(&cur_row, &cur_col);
+    const bool conceal = org_conceal_visible_;
+    const int n = Buf().LineCount();
+    // `#+begin_.../#+end_...` interiors are literal text -- example
+    // blocks in this repo's own help/*.org document `[[file:...]]` syntax
+    // by writing it out, and concealing those would hide the very thing
+    // the example is showing. Same skip Editor::OrgHighlightEmphasis
+    // makes, for the same reason.
+    bool in_block = false;
+    for (int row = 0; row < n; row++) {
+        const std::string &line = Buf().lines[static_cast<size_t>(row)];
+        if (in_block) {
+            if (MatchesOrgBlockMarker(line, "end_")) in_block = false;
+            continue;
+        }
+        if (MatchesOrgBlockMarker(line, "begin_")) {
+            in_block = true;
+            continue;
+        }
+        std::vector<OrgLinkSpanInfo> found = ScanOrgLinkSpans(line);
+        if (found.empty()) continue;
+        std::vector<Buffer::OrgLinkSpan> spans;
+        spans.reserve(found.size());
+        for (OrgLinkSpanInfo &f : found) {
+            spans.push_back(Buffer::OrgLinkSpan{f.col_start, f.col_end, std::move(f.target), std::move(f.display),
+                                                 f.bracketed});
+        }
+        for (const Buffer::OrgLinkSpan &sp : spans) {
+            Decoration d;
+            d.row = row;
+            d.col_start = sp.col_start;
+            d.col_end = sp.col_end;
+            d.hl_group = "Blue";
+            if (conceal && sp.bracketed && row != cur_row) {
+                d.virt_text = sp.display;
+                d.virt_text_hl = "Blue";
+                d.virt_overlay = true;
+                d.underline = false;
+            } else {
+                // Not concealed (a bare URL, the cursor's own row, or
+                // concealment off): underline the raw span in place. The
+                // underline is what makes a link look clickable, which it
+                // is either way -- OrgFollowLinkAt works off the registry,
+                // not off whether the markup happens to be hidden.
+                d.underline = true;
+            }
+            d.priority = 10;
+            AddDecoration(ns, d);
+        }
+        Buf().org_link_spans[row] = std::move(spans);
+    }
+}
+
+const std::vector<Buffer::OrgLinkSpan> *Editor::OrgLinkSpansForRow(int buffer_id, int row) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return nullptr;
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    auto it = buf.org_link_spans.find(row);
+    if (it == buf.org_link_spans.end() || it->second.empty()) return nullptr;
+    return &it->second;
+}
+
+bool Editor::OrgFollowLinkAt(int row, int col) {
+    const std::vector<Buffer::OrgLinkSpan> *spans = OrgLinkSpansForRow(CurrentBufferId(), row);
+    if (!spans) return false;
+    for (const Buffer::OrgLinkSpan &sp : *spans) {
+        if (col < sp.col_start || col >= sp.col_end) continue;
+        // Move the cursor onto the link and hand off to the one dispatcher
+        // that already knows every target form -- http/mailto, `file:`
+        // with its `::line`/`::*heading` suffixes, `id:`, `#custom_id`, a
+        // bare `*Heading`, and citations (kBuiltinOrgLinks'
+        // mep.org_link_follow). Re-implementing that dispatch here to
+        // avoid the round trip would mean two copies of it that have to
+        // stay in agreement, for a path that runs once per click.
+        SetCursorForLua(row, sp.col_start);
+        RunCommand("MepOrgLinkFollow");
+        return true;
+    }
+    return false;
+}
+
+const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
+    org_tables_.clear();
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return org_tables_;
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (LspFiletype(buf.filename) != "org") return org_tables_;
+    const int n = buf.LineCount();
+    /**
+     * @brief Reports whether a line is an org table row (a `|` after optional leading whitespace).
+     * @param r The row to test.
+     * @return True if the row is part of a table.
+     */
+    auto is_table_row = [&](int r) {
+        return r >= 0 && r < n && ParseOrgTableRowImpl(buf.lines[static_cast<size_t>(r)]).is_row;
+    };
+    // A `|`-heavy line inside a `#+begin_src`/`#+begin_example` block is
+    // code or sample text, not a table -- drawing a grid over an ASCII
+    // diagram or a shell pipeline would be worse than drawing nothing.
+    bool in_block = false;
+    for (int row = 0; row < n; row++) {
+        const std::string &block_line = buf.lines[static_cast<size_t>(row)];
+        if (in_block) {
+            if (MatchesOrgBlockMarker(block_line, "end_")) in_block = false;
+            continue;
+        }
+        if (MatchesOrgBlockMarker(block_line, "begin_")) {
+            in_block = true;
+            continue;
+        }
+        if (!is_table_row(row)) continue;
+        int end = row;
+        while (is_table_row(end + 1)) end++;
+        OrgTableGrid g;
+        g.start_row = row;
+        g.end_row = end;
+        // Every column that carries a `|` on *every* body row is a column
+        // rule. An intersection rather than any one row's own pipes, so a
+        // table whose rows aren't aligned to each other (one still being
+        // typed, say) simply draws fewer rules instead of drawing them
+        // through the middle of cell text.
+        std::vector<bool> common;
+        bool first_body = true;
+        for (int r = row; r <= end; r++) {
+            const std::string &line = buf.lines[static_cast<size_t>(r)];
+            if (ParseOrgTableRowImpl(line).is_sep) {
+                g.sep_rows.push_back(r);
+                continue;
+            }
+            if (g.header_end_row < 0 && !g.sep_rows.empty()) {
+                // Body rows have started, so the header block ended at the
+                // row above the first rule.
+                g.header_end_row = g.sep_rows.front() - 1;
+            }
+            std::vector<bool> here(line.size(), false);
+            for (size_t c = 0; c < line.size(); c++) here[c] = line[c] == '|';
+            if (first_body) {
+                common = here;
+                first_body = false;
+                g.indent = static_cast<int>(line.find('|'));
+                g.width = static_cast<int>(line.find_last_of('|')) - g.indent + 1;
+            } else {
+                for (size_t c = 0; c < common.size(); c++) {
+                    if (c >= here.size() || !here[c]) common[c] = false;
+                }
+            }
+        }
+        // A table with a rule but nothing after it is all header; one with
+        // no rule at all has no header block to tint.
+        if (g.header_end_row < 0 && !g.sep_rows.empty() && g.sep_rows.front() > row) {
+            g.header_end_row = g.sep_rows.front() - 1;
+        }
+        for (size_t c = 0; c < common.size(); c++) {
+            if (common[c]) g.rule_cols.push_back(static_cast<int>(c));
+        }
+        if (!g.rule_cols.empty()) org_tables_.push_back(std::move(g));
+        row = end;
+    }
+    return org_tables_;
+}
+
+bool Editor::OrgTableAlignAt(int row) {
+    const int n = Buf().LineCount();
+    if (row < 0 || row >= n || !ParseOrgTableRowImpl(Buf().lines[static_cast<size_t>(row)]).is_row) return false;
+    int top = row;
+    while (top > 0 && ParseOrgTableRowImpl(Buf().lines[static_cast<size_t>(top - 1)]).is_row) top--;
+    int bot = row;
+    while (bot + 1 < n && ParseOrgTableRowImpl(Buf().lines[static_cast<size_t>(bot + 1)]).is_row) bot++;
+
+    std::vector<int> widths;
+    std::vector<std::pair<int, OrgTableRow>> rows;
+    for (int i = top; i <= bot; i++) {
+        OrgTableRow r = ParseOrgTableRowImpl(Buf().lines[static_cast<size_t>(i)]);
+        if (!r.is_sep) {
+            for (size_t ci = 0; ci < r.cells.size(); ci++) {
+                if (ci >= widths.size()) widths.push_back(0);
+                widths[ci] = std::max(widths[ci], static_cast<int>(r.cells[ci].size()));
+            }
+        }
+        rows.emplace_back(i, std::move(r));
+    }
+    bool changed = false;
+    for (const std::pair<int, OrgTableRow> &entry : rows) {
+        const int i = entry.first;
+        const OrgTableRow &r = entry.second;
+        std::string line = "|";
+        if (r.is_sep) {
+            for (size_t wi = 0; wi < widths.size(); wi++) {
+                if (wi > 0) line += "+";
+                line += std::string(static_cast<size_t>(widths[wi] + 2), '-');
+            }
+        } else {
+            for (size_t ci = 0; ci < widths.size(); ci++) {
+                if (ci > 0) line += "|";
+                std::string cell = ci < r.cells.size() ? r.cells[ci] : "";
+                line += " " + cell + std::string(static_cast<size_t>(widths[ci]) - cell.size(), ' ') + " ";
+            }
+        }
+        line += "|";
+        // Only touch rows that actually change: an already-aligned table
+        // must not mark the buffer modified every time the cursor leaves
+        // it (the auto-align hook, kBuiltinOrgLinks, runs on every such
+        // move).
+        if (Buf().lines[static_cast<size_t>(i)] != line) {
+            SetLineForLua(i, line);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+void Editor::OrgTableAutoAlign() {
+    const int buffer_id = CurrentBufferId();
+    if (buffer_id != org_table_last_buffer_) {
+        org_table_last_buffer_ = buffer_id;
+        org_table_last_row_ = -1;
+    }
+    if (LspFiletype(CurrentBuffer().filename) != "org") {
+        org_table_last_row_ = -1;
+        return;
+    }
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    const int n = Buf().LineCount();
+    /**
+     * @brief Reports whether a row index names a table row in the current buffer.
+     * @param r The 0-based row to test.
+     * @return True if `r` is in range and is an org table row.
+     */
+    auto is_table_row = [&](int r) {
+        return r >= 0 && r < n && ParseOrgTableRowImpl(Buf().lines[static_cast<size_t>(r)]).is_row;
+    };
+    const int prev = org_table_last_row_;
+    org_table_last_row_ = row;
+    const bool now_in_table = is_table_row(row);
+    // Entering a table: remember how many edits the buffer had made by
+    // then. Realigning is a *write*, so it has to be earned -- without
+    // this, merely scrolling the cursor through a ragged table in a file
+    // you only opened to read would silently mark it modified.
+    if (now_in_table && !is_table_row(prev)) {
+        org_table_entry_undo_depth_ = static_cast<int>(Buf().undo_stack.size());
+        return;
+    }
+    if (prev < 0 || prev == row || !is_table_row(prev)) return;
+    // Still inside the same table (moved between its own rows): nothing to
+    // do yet, the alignment is only settled once the cursor is out of it.
+    if (now_in_table) {
+        const int step = prev < row ? 1 : -1;
+        bool same_table = true;
+        for (int r = prev; r != row; r += step) {
+            if (!is_table_row(r)) {
+                same_table = false;
+                break;
+            }
+        }
+        if (same_table) return;
+        // Stepped straight from one table into another: the one just left
+        // gets aligned, and the one just entered starts its own watch.
+        org_table_entry_undo_depth_ = static_cast<int>(Buf().undo_stack.size());
+    }
+    if (static_cast<int>(Buf().undo_stack.size()) == org_table_entry_undo_depth_) return;  // read-only visit
+    OrgTableAlignAt(prev);
+}
+
+bool Editor::ToggleOrgConceal() {
+    org_conceal_visible_ = !org_conceal_visible_;
+    return org_conceal_visible_;
+}
+
+bool Editor::ToggleOrgHeadingScale() {
+    org_heading_scale_visible_ = !org_heading_scale_visible_;
+    return org_heading_scale_visible_;
+}
+
+bool Editor::ToggleOrgPlainCursorLine() {
+    org_plain_cursor_line_ = !org_plain_cursor_line_;
+    return org_plain_cursor_line_;
+}
+
 
 namespace {
 // Where a hunk's mark sits, and which row counts as "on" it -- shared by

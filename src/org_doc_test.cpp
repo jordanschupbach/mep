@@ -353,6 +353,123 @@ int main() {
         CHECK(mins == 0 && back[2] == "  CLOCK: [2026-09-05 Sat 23:50]--[2026-09-05 Sat 23:40] =>  0:00");
     }
 
+    // --- Headline depth: strict about what a headline is, since DrawPane
+    //     draws one at a larger size and on a wider column grid.
+    {
+        CHECK(OrgHeadlineLevel("* Top") == 1);
+        CHECK(OrgHeadlineLevel("*** Third") == 3);
+        CHECK(OrgHeadlineLevel("* ") == 1);  // an empty title is still a headline
+        CHECK(OrgHeadlineLevel("*bold* opening a line") == 0);   // no space after the stars
+        CHECK(OrgHeadlineLevel("**bold** opening a line") == 0);
+        CHECK(OrgHeadlineLevel("  * an indented list bullet") == 0);  // stars must be at column 0
+        CHECK(OrgHeadlineLevel("*") == 0);   // nothing after the stars at all
+        CHECK(OrgHeadlineLevel("") == 0);
+        CHECK(OrgHeadlineLevel("plain prose") == 0);
+    }
+
+    // --- Link spans: what gets drawn in place of the markup, and what
+    //     columns a click has to hit. The edge cases are the point.
+    {
+        // A described link displays its description; the span covers the
+        // whole `[[...]]`, not just the description inside it.
+        std::vector<OrgLinkSpanInfo> one = ScanOrgLinkSpans("see [[file:notes.org][Notes]] please");
+        CHECK(one.size() == 1);
+        CHECK(one[0].col_start == 4 && one[0].col_end == 29);
+        CHECK(one[0].target == "file:notes.org");
+        CHECK(one[0].display == "Notes");
+        CHECK(one[0].bracketed);
+
+        // Undescribed links drop the scheme noise org also drops.
+        CHECK(ScanOrgLinkSpans("[[file:a/b.org]]")[0].display == "a/b.org");
+        CHECK(ScanOrgLinkSpans("[[id:9f3c]]")[0].display == "9f3c");
+        CHECK(ScanOrgLinkSpans("[[*Some heading]]")[0].display == "Some heading");
+        CHECK(ScanOrgLinkSpans("[[#custom-id]]")[0].display == "custom-id");
+        CHECK(ScanOrgLinkSpans("[[https://example.org]]")[0].display == "https://example.org");
+
+        // Two links on one line, reported in column order.
+        std::vector<OrgLinkSpanInfo> two = ScanOrgLinkSpans("[[a][A]] and [[b][B]]");
+        CHECK(two.size() == 2);
+        CHECK(two[0].col_start == 0 && two[0].display == "A");
+        CHECK(two[1].col_start == 13 && two[1].display == "B");
+
+        // A `]` that isn't followed by `[` belongs to the target.
+        CHECK(ScanOrgLinkSpans("[[a]b][c]]")[0].target == "a]b");
+
+        // Nothing to follow, nothing to conceal.
+        CHECK(ScanOrgLinkSpans("[[]]").empty());
+        CHECK(ScanOrgLinkSpans("[[][desc]]").empty());
+        CHECK(ScanOrgLinkSpans("[[unterminated").empty());
+        CHECK(ScanOrgLinkSpans("no links here at all").empty());
+    }
+
+    // --- Bare URLs: recognized in prose, but never reported twice when
+    //     one is already inside a bracket link.
+    {
+        std::vector<OrgLinkSpanInfo> bare = ScanOrgLinkSpans("go to https://example.org/a?b=1 now");
+        CHECK(bare.size() == 1);
+        CHECK(bare[0].col_start == 6 && bare[0].col_end == 31);
+        CHECK(bare[0].target == "https://example.org/a?b=1");
+        CHECK(bare[0].display == bare[0].target);
+        CHECK(!bare[0].bracketed);
+
+        // The URL inside a bracket link is the bracket link, once.
+        std::vector<OrgLinkSpanInfo> inside = ScanOrgLinkSpans("[[https://example.org][Site]]");
+        CHECK(inside.size() == 1 && inside[0].bracketed && inside[0].display == "Site");
+
+        // A bracket link and a separate bare URL on the same line: both,
+        // in column order.
+        std::vector<OrgLinkSpanInfo> mixed = ScanOrgLinkSpans("[[https://a.org][A]] vs https://b.org");
+        CHECK(mixed.size() == 2);
+        CHECK(mixed[0].bracketed && mixed[0].col_start == 0);
+        CHECK(!mixed[1].bracketed && mixed[1].target == "https://b.org");
+
+        CHECK(ScanOrgLinkSpans("http://x.test").size() == 1);
+        CHECK(ScanOrgLinkSpans("https://").empty());        // scheme with no body
+        CHECK(ScanOrgLinkSpans("httpx://example.org").empty());
+        CHECK(ScanOrgLinkSpans("mailto:me@example.org").empty());  // documented: brackets required
+        CHECK(ScanOrgLinkSpans("www.example.org").empty());        // ditto
+    }
+
+    // --- Verbatim/code runs are literal: a help page showing link syntax
+    //     must not end up with a live link in the middle of its prose.
+    {
+        CHECK(ScanOrgLinkSpans("write =[[file:notes.org]]= to link").empty());
+        CHECK(ScanOrgLinkSpans("write ~[[a][B]]~ to link").empty());
+        CHECK(ScanOrgLinkSpans("the =https://example.org= scheme").empty());
+        // ...but only what's actually inside the run.
+        std::vector<OrgLinkSpanInfo> after = ScanOrgLinkSpans("=verbatim= then [[file:x][X]]");
+        CHECK(after.size() == 1 && after[0].display == "X");
+        // An unterminated marker isn't a run, so the link still counts.
+        CHECK(ScanOrgLinkSpans("= [[file:x][X]]").size() == 1);
+        // `snake_case=value` doesn't open a run (no word boundary).
+        CHECK(ScanOrgLinkSpans("k=v [[file:x][X]]").size() == 1);
+        // A marker can only *open* after org's own PRE set, so the `=` in
+        // a URL's query string never starts a verbatim run that swallows
+        // the link that follows it (OrgEmphasisPreOk, org_doc.h).
+        CHECK(ScanOrgLinkSpans("https://a.test/?q=1 [[file:x][X]] =v= ").size() == 2);
+    }
+
+    // --- Emphasis marker boundaries: org's own PRE/POST classes, not
+    //     "any non-word character". The `/` in `//` is the case that
+    //     mattered -- see OrgEmphasisPreOk's own comment (org_doc.h).
+    {
+        CHECK(OrgEmphasisPreOk('\0'));  // start of line
+        CHECK(OrgEmphasisPreOk(' ') && OrgEmphasisPreOk('\t'));
+        CHECK(OrgEmphasisPreOk('-') && OrgEmphasisPreOk('(') && OrgEmphasisPreOk('{'));
+        CHECK(OrgEmphasisPreOk('\'') && OrgEmphasisPreOk('"'));
+        CHECK(!OrgEmphasisPreOk('/'));  // the `https://` case
+        CHECK(!OrgEmphasisPreOk(':') && !OrgEmphasisPreOk('$') && !OrgEmphasisPreOk('='));
+        CHECK(!OrgEmphasisPreOk('a') && !OrgEmphasisPreOk('7') && !OrgEmphasisPreOk(')'));
+
+        CHECK(OrgEmphasisPostOk('\0'));  // end of line
+        CHECK(OrgEmphasisPostOk(' ') && OrgEmphasisPostOk('.') && OrgEmphasisPostOk(','));
+        CHECK(OrgEmphasisPostOk(')') && OrgEmphasisPostOk('}') && OrgEmphasisPostOk('['));
+        CHECK(!OrgEmphasisPostOk('/') && !OrgEmphasisPostOk('a') && !OrgEmphasisPostOk('('));
+
+        CHECK(OrgEmphasisBorderBlank(' ') && OrgEmphasisBorderBlank('\t'));
+        CHECK(!OrgEmphasisBorderBlank('x') && !OrgEmphasisBorderBlank('\0'));
+    }
+
     std::printf("org_doc_test: all checks passed\n");
     return 0;
 }

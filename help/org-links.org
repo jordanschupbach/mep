@@ -5,11 +5,28 @@
 
 * Links
 
-| Command                  | Does                                     |
+| Key / command            | Does                                     |
 |--------------------------+------------------------------------------|
+| *click*                  | follow the link you clicked              |
+| =gx=                     | follow the link under the cursor         |
+| =<leader>oo=             | the same                                 |
+| =:MepOrgLinkFollow=      | the same                                 |
 | =:MepOrgLinkInsert=      | insert a link                            |
-| =:MepOrgLinkFollow=      | follow the link under the cursor         |
 | =:MepOrgStoreLink=       | remember this location as a link target  |
+| =:MepOrgLinkScan=        | rescan the buffer for links              |
+
+A link is drawn as its description, underlined, and it is clickable: the
+pointer turns into a hand over one, and clicking follows it. A =file:= link
+opens that file -- resolved against the *org file's own directory*, the way
+org resolves it, not against mep's working directory -- and jumps to the
+=::42= line or =::*Heading= it names. Everything else (a heading, an =id:=,
+a =#CUSTOM_ID=) moves the cursor there; a web link opens in your browser.
+
+Put the cursor on a link's line and the raw =[[...]]= comes straight back to
+edit. =<leader>otm= turns that concealment off for good.
+
+A bare URL written straight into the prose -- no brackets -- is underlined
+and clickable too, and =gx= follows it in any filetype, not just org.
 
 The pair to learn is =StoreLink= then =LinkInsert=: store a link where you
 are, go elsewhere, insert it. That is how you build a link to a specific

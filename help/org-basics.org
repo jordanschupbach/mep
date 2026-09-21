@@ -38,8 +38,24 @@ getting in the way.
 Org's markers work as you would expect: =*bold*=, =/italic/=, =_underline_=,
 =+strikethrough+=, ==verbatim== and =~code~=.
 
-mep leaves the markers *visible*, as Emacs org-mode does by default, and
-styles the whole span including them.
+The markers themselves are hidden and the text is styled in their place, so
+=*bold*= reads as bold text. Put the cursor on the line and the markers come
+straight back, so there is never a construct you can see but not edit.
+=<leader>otm= turns concealment off altogether, for every construct that
+uses it -- emphasis, links and table rules alike.
+
+* Heading sizes
+
+A heading is drawn larger the shallower it is, and in its own colour by
+level: =*= largest, =**= a little smaller, =***= smaller again, =****= and
+deeper at body size. The top two levels get a line of space under them as
+well, which is what gives the outline its shape at a glance.
+
+=<leader>oth= turns that off and draws every heading at body size.
+
+As with concealment, the heading the cursor is on -- or one inside a
+selection -- is drawn at plain body size on the ordinary column grid, so the
+caret and the selection always land where you expect.
 
 * Lists
 
@@ -53,7 +69,14 @@ styles the whole span including them.
 
 * Tables
 
-=:MepOrgTableAlign= aligns a table's columns on the pipes.
+A table is drawn as a real grid: continuous rules down the columns, a drawn
+line in place of each =|---+---|= row, and a tinted header block.
+
+It is realigned on its pipes for you whenever the cursor leaves it, provided
+you actually edited it -- typing in a cell never shifts the text under your
+caret, and the columns are square again the moment you step out. Reading
+through a ragged table changes nothing. =:MepOrgTableAlign= does it on
+demand.
 
 A literal =|= inside a cell is written =\vert= or escaped as =\|=.
 

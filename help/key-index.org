@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 96 =<leader>= sequences registered at startup. Press
+All 100 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -74,12 +74,16 @@ the features live.
 | =<leader>oeo= | Org: export to ODT | [[file:office.html][Word processor documents]] |
 | =<leader>oep= | Org: export to PDF | [[file:org-export.html][Exporting]] |
 | =<leader>ol= | Learn: pick a game for this deck | [[file:learn-games.html][Playing]] |
+| =<leader>oo= | Org: follow link at point | [[file:org-links.html][Links, footnotes and citations]] |
 | =<leader>ora= | Org-roam: add note | [[file:org-roam.html][Org-roam]] |
 | =<leader>orr= | Org-roam: find note | [[file:org-roam.html][Org-roam]] |
 | =<leader>ors= | Org-roam: sync notes | [[file:org-roam.html][Org-roam]] |
 | =<leader>otb= | Org: toggle block cards | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =<leader>otc= | Org: toggle plain (undecorated) cursor line | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =<leader>oth= | Org: toggle scaled heading sizes | [[file:org-basics.html][Org files in mep]] |
 | =<leader>oti= | Org: toggle inline images | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otl= | Toggle LaTeX/math preview (org/tex) | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =<leader>otm= | Org: toggle markup concealment | [[file:org-basics.html][Org files in mep]] |
 | =<leader>pc= | Clear project (default layout) | [[file:projects.html][Projects]] |
 | =<leader>pf= | Find files | [[file:pickers.html][Pickers]] |
 | =<leader>po= | Projects | [[file:projects.html][Projects]] |

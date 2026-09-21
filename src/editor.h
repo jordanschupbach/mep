@@ -1015,6 +1015,28 @@ struct Buffer {
     };
     std::unordered_map<int, std::vector<OrgLatexInlineSpan>> org_latex_inline;
 
+    // Org links (Editor::OrgLinkScan): every `[[target]]`/`[[target][desc]]`
+    // and every bare `http(s)://...` on a row, in column order. Two
+    // consumers, which is why this is a registry rather than just
+    // decorations: DrawPane (main.cpp) turns each span into a click
+    // region (RegisterClickRegionOnTop -> follow the link), and the scan
+    // itself also emits the conceal/underline decorations from the same
+    // walk. Rebuilt wholesale on every scan, the same "one provider
+    // replaces its own entries" convention as org_image_rows above; kept
+    // fresh regardless of whether concealment is on, since clicking a
+    // link has to work whether or not its markup is hidden.
+    struct OrgLinkSpan {
+        int col_start = 0;    // raw markup's first column
+        int col_end = 0;      // one past its last (exclusive), like Decoration
+        std::string target;   // "https://...", "file:notes.org::*Head", "*Heading", "id:..."
+        std::string display;  // what's drawn in its place: the description, or a tidied target
+        // A `[[...]]` link, whose markup is concealed down to `display`.
+        // False for a bare URL, which is already its own display text and
+        // is only ever recolored/underlined, never replaced.
+        bool bracketed = false;
+    };
+    std::unordered_map<int, std::vector<OrgLinkSpan>> org_link_spans;
+
     /**
      * @brief Returns the number of lines currently in the buffer.
      * @return The line count.
@@ -1055,6 +1077,43 @@ constexpr float kOrgImageWidthFraction = 0.6f;
 // running into this cap; a taller-than-square one is letterboxed narrower
 // than the width target instead of growing without bound.
 constexpr int kOrgInlineImageSlots = 25;
+
+// How DrawPane draws an org headline of each depth (`* ` .. `**** `);
+// anything deeper uses the last entry. `scale` multiplies both the font
+// size and the per-column advance; `slots` is how many visual slots the
+// row claims, which is what buys the room for a scale above ~1.1 --
+// LineHeight() is only the font size plus 6px, so a headline confined to
+// one slot can barely be drawn larger at all (measured: about 1.09x at
+// the default font size, a difference not worth the machinery).
+//
+// A headline's slot count depends only on its depth -- never on whether
+// the cursor is on it -- so moving the cursor through a document can't
+// make its layout jump. The extra slot shows as space under the heading,
+// which is also what gives an org file its document-like rhythm.
+//
+// Four separate walkers have to agree on any row whose slot count isn't
+// 1 (DrawPane's row loop, its RowSlot converter, its org-card slot map,
+// and Editor::UpdateScrollForPane) -- they all go through
+// Editor::OrgHeadingExtraSlotsFor so there is one definition of this to
+// keep in step, not four.
+//
+// The scaled draw also uses a *wider* advance per column, so the row's
+// columns no longer line up with the fixed g_char_width grid every other
+// per-column drawing site (the cursor, the selection, decorations) uses.
+// DrawPane therefore falls back to the ordinary unscaled text for a
+// headline the cursor is on or a selection covers -- the same
+// reveal-to-edit rule the block cards and concealment already follow.
+// The row keeps its slot count either way.
+struct OrgHeadingStyle {
+    float scale;
+    int slots;
+};
+constexpr OrgHeadingStyle kOrgHeadingStyles[] = {
+    {1.60f, 2},  // *
+    {1.32f, 2},  // **
+    {1.12f, 1},  // ***
+    {1.00f, 1},  // **** and deeper
+};
 
 // One window onto a buffer: its own cursor, scroll position, and Visual
 // selection anchor. Identified by a stable id (not a pointer) since the
@@ -2610,6 +2669,15 @@ struct OrgBlockCard {
     std::string lang;   // src blocks only, as written ("python", "C++")
     std::string title;  // #+NAME:/#+CAPTION:/:title value, "" when absent
     std::vector<OrgBlockOption> options;
+    // Display columns of the block's widest line, counted over every row
+    // the card encloses (`#+NAME:`/`#+HEADER:` stack, `#+begin_`, body,
+    // `#+end_`) -- not just the body, so a long header arg list can't
+    // spill past the card's own right edge on the frame the cursor moves
+    // onto it and reveals the raw line. DrawPane (main.cpp) sizes the card
+    // to max(this, Editor::TextWidth()), clamped to the pane -- see its
+    // own comment there. Codepoints, not bytes, since that's the unit
+    // DrawLineFast advances its column grid by.
+    int content_cols = 0;
 };
 
 // mep_diag_wrap's own port (LUA_TO_CPP_PLAN.md Phase LSP): greedy word-
@@ -2777,6 +2845,16 @@ public:
      * @return True if soft wrap is enabled (:set wrap).
      */
     bool Wrap() const { return wrap_; }
+    // :set textwidth=N / tw=N (default 80) -- gq's hard reflow width, and
+    // the width an org block card is drawn at when its own content is
+    // narrower than that (DrawPane, main.cpp), so a page of short blocks
+    // lines up on one edge instead of each card ending wherever its
+    // longest line happens to.
+    /**
+     * @brief Returns the configured text width in columns (:set textwidth=N, default 80).
+     * @return The text width in columns.
+     */
+    int TextWidth() const { return text_width_; }
     // <leader>oti / mep.org_images_toggle -- whether main.cpp's renderer
     // should substitute a rendered texture for a Buffer::org_image_rows
     // row instead of its ordinary [[file:...]] text.
@@ -2799,14 +2877,63 @@ public:
     bool OrgLatexVisible() const { return org_latex_visible_; }
     // <leader>otb / mep.org_block_cards_toggle -- whether DrawPane
     // (main.cpp) draws `#+begin_.../#+end_...` blocks as cards with a
-    // concealed, rendered title bar. Unlike the two toggles above this
-    // defaults *on*: it needs no external renderer, no scan to have run
-    // first, and it degrades to plain text for anything it can't parse.
+    // concealed, rendered title bar. Defaults on, like the two toggles
+    // above: it needs no external renderer, no scan to have run first,
+    // and it degrades to plain text for anything it can't parse.
     /**
      * @brief Returns whether org blocks are drawn as cards with a rendered title bar.
      * @return True if org block-card rendering is toggled on.
      */
     bool OrgBlockCardsVisible() const { return org_block_cards_visible_; }
+    // <leader>otm / mep.org_conceal_toggle -- whether org markup is
+    // hidden behind what it marks up: `[[file:x][Notes]]` drawn as
+    // `Notes`, `*bold*` as `bold`, a `|---+---|` rule as a drawn line.
+    // Consulted by Editor::OrgLinkScan/OrgHighlightEmphasis (which emit
+    // the virt_overlay decorations that do the hiding) and by DrawPane
+    // (main.cpp) for the table rules it draws itself.
+    //
+    // Defaults on, like the image/LaTeX previews: this is the difference
+    // between an org file that reads as a document and one that reads as
+    // its own source code. The row the cursor is on is always exempt --
+    // every scan skips it -- so the raw markup is one cursor move away
+    // and there is never a construct you can see but not edit.
+    /**
+     * @brief Returns whether org markup (links, emphasis markers, table rules) is concealed behind what it marks up.
+     * @return True if org concealment is on.
+     */
+    bool OrgConcealVisible() const { return org_conceal_visible_; }
+    // <leader>oth / mep.org_heading_scale_toggle -- whether DrawPane
+    // draws a headline's own text larger the shallower it is (see
+    // kOrgHeadingStyles). Its own toggle rather than part of
+    // OrgConcealVisible() above: size is the one piece of org rendering
+    // that changes a row's *metrics* rather than which characters it
+    // shows, so it's the one worth being able to turn off by itself.
+    /**
+     * @brief Returns whether org headlines are drawn at a size scaled to their depth.
+     * @return True if scaled headline text is on.
+     */
+    bool OrgHeadingScaleVisible() const { return org_heading_scale_visible_; }
+    // <leader>otc / mep.org_plain_cursor_line_toggle -- whether the row
+    // the cursor is on renders as *nothing but its own raw characters*
+    // in the Normal foreground: no syntax colors, no org emphasis faces
+    // or conceal overlays, no link coloring, no inline `$..$` math
+    // texture painted over it. Org buffers only, active pane only.
+    //
+    // A step past OrgConcealVisible()'s own cursor-row exemption, which
+    // only un-hides markup: this also strips the *styling*, so what you
+    // are editing is exactly what is in the file. Whole-row substitutions
+    // (an inline image, a whole-row LaTeX preview) are deliberately NOT
+    // reverted -- those rows claim many visual slots, and four separate
+    // walkers (Editor::UpdateScrollForPane's row_slots, DrawPane's card
+    // and cursor-Y walkers, and its draw loop) have to agree on that
+    // count, so flipping it per cursor row would shuffle everything below
+    // by ~25 rows on every cursor move. <leader>oti / <leader>otl still
+    // get that raw source back.
+    /**
+     * @brief Returns whether the cursor's own row renders as plain, undecorated text in org buffers.
+     * @return True if plain-cursor-line rendering is on.
+     */
+    bool OrgPlainCursorLineVisible() const { return org_plain_cursor_line_; }
     // Active pane/buffer -- what most of the UI (statusline, blinking
     // cursor, Visual highlight) cares about.
     /**
@@ -5964,11 +6091,126 @@ public:
     // current buffer's image-row registry (SetOrgImageRow/
     // ClearOrgImageRows) from its [[file:...]] links -- same
     // [[target][description]] handling as mep.org_link_at_cursor, same
-    // file:-prefix-only dispatch mep.org_link_follow uses.
+    // file:-prefix-only dispatch mep.org_link_follow uses. A link whose
+    // resolved target doesn't exist on disk is skipped outright (see the
+    // implementation's own comment, editor.cpp).
     /**
-     * @brief Rebuilds the current buffer's image-row registry from its [[file:...]] links.
+     * @brief Rebuilds the current buffer's image-row registry from its existing [[file:...]] link targets.
      */
     void OrgImageScan();
+
+    // --- Org links: conceal, recolor, click (Buffer::org_link_spans) ---
+    // One pass over the current buffer that both rebuilds
+    // Buffer::org_link_spans (what DrawPane turns into click regions) and
+    // emits this feature's decorations into `ns`: a Blue underline over
+    // every link, plus -- while OrgConcealVisible() is on -- a
+    // virt_overlay concealing `[[target][desc]]` down to just `desc`.
+    // A bare `http(s)://` URL is registered and underlined but never
+    // concealed: it already *is* its own display text.
+    //
+    // The row the cursor is on is deliberately left unconcealed (it still
+    // registers its spans, so it stays clickable) -- the same
+    // "rendered to read, raw to edit" bargain Editor::MdConceal and the
+    // org block cards already make, so a link is always editable by just
+    // putting the cursor on its line.
+    /**
+     * @brief Rebuilds the current buffer's org link registry and emits its conceal/underline decorations.
+     * @param ns The decoration namespace to add this pass's decorations to.
+     */
+    void OrgLinkScan(int ns);
+    /**
+     * @brief Returns the org link spans registered for a row, or nullptr when the row has none.
+     * @param buffer_id The buffer to look in.
+     * @param row The 0-based row to look up.
+     * @return The row's link spans in column order, or nullptr.
+     */
+    const std::vector<Buffer::OrgLinkSpan> *OrgLinkSpansForRow(int buffer_id, int row) const;
+    // Follows the link `row`/`col` lands inside, exactly as if the cursor
+    // were there and :MepOrgLinkFollow ran -- what a click on a link
+    // dispatches to (DrawPane, main.cpp). Returns false (and moves
+    // nothing) when that position isn't inside a registered link.
+    /**
+     * @brief Moves the cursor to a link at the given position and follows it.
+     * @param row The 0-based row the link is on.
+     * @param col The column that was clicked.
+     * @return True if a link was found there and followed.
+     */
+    bool OrgFollowLinkAt(int row, int col);
+
+    // --- Org tables: the drawn grid (DrawPane, main.cpp) ---
+    // A run of consecutive `|`-delimited rows, parsed into what it takes
+    // to draw a real grid over them: which columns carry a column rule,
+    // which rows are `|---+---|` horizontal rules (drawn as a line, with
+    // their dashes concealed), and where the header block ends.
+    // Rescanned per call, the same cheap per-frame line walk OrgBlockCards
+    // already does, and returned by reference out of a scratch vector
+    // owned here so the renderer never owns the parse.
+    struct OrgTableGrid {
+        int start_row = 0, end_row = 0;   // inclusive
+        int indent = 0;                    // column the leading '|' sits at
+        int width = 0;                     // columns from `indent` to the trailing '|'
+        std::vector<int> rule_cols;        // columns every body row carries a '|' at
+        std::vector<int> sep_rows;         // rows that are a `|---+---|` rule
+        int header_end_row = -1;           // last row above the first rule, -1 when the table has none
+    };
+    /**
+     * @brief Scans a buffer for org tables and the geometry needed to draw a grid over each.
+     * @param buffer_id The buffer to scan.
+     * @return The tables found, in buffer order (empty for a non-org or non-existent buffer).
+     */
+    const std::vector<OrgTableGrid> &OrgTables(int buffer_id);
+    // Aligns the table containing 0-based `row` on its pipes -- the same
+    // rewrite :MepOrgTableAlign does, but for a row that isn't
+    // necessarily the cursor's (and silently, with no "Not on a table
+    // row" notification) so the frame hook can align a table the cursor
+    // has just *left* without first having to move back into it.
+    /**
+     * @brief Aligns the org table containing a row, without moving or requiring the cursor.
+     * @param row The 0-based row inside the table to align.
+     * @return True if `row` was a table row and the table was rewritten.
+     */
+    bool OrgTableAlignAt(int row);
+    // Realigns a table the cursor has just left, the way real org-mode
+    // realigns on every move out of a field. Called once per frame (the
+    // org rescan hook, kBuiltinOrgLinks): it remembers the row the cursor
+    // was on last time and, when that row was part of a table the cursor
+    // is no longer in, aligns that table. Deliberately on *leaving*
+    // rather than on every keystroke inside the table -- realigning
+    // mid-word would move the cursor's own column out from under the
+    // text being typed.
+    //
+    // Two things keep this from writing to files nobody asked it to: the
+    // table must have been *edited* while the cursor was in it (the undo
+    // depth on the way in is compared with the depth on the way out --
+    // scrolling through a ragged table in a file you only opened to read
+    // changes nothing), and OrgTableAlignAt only rewrites the rows that
+    // actually differ.
+    /**
+     * @brief Aligns the org table the cursor has just moved out of, if any.
+     */
+    void OrgTableAutoAlign();
+
+    // Headline depth of a line: the count of leading `*` when followed by
+    // a space, else 0. A forward onto org_doc.h's own OrgHeadlineLevel,
+    // kept as an Editor member so DrawPane's row loop (main.cpp) reaches
+    // it the same way it reaches every other org display helper here.
+    /**
+     * @brief Returns an org headline's depth (count of leading `*`), or 0 when the line isn't a headline.
+     * @param line The line to measure.
+     * @return The headline level (1-based), or 0.
+     */
+    static int OrgHeadlineLevelOf(const std::string &line);
+    // Extra visual slots a headline row claims beyond the usual one, per
+    // kOrgHeadingStyles. 0 for anything that isn't a headline, and for a
+    // depth whose style asks for a single slot. Callers gate on their own
+    // "this buffer is org and OrgHeadingScaleVisible()" check, which is
+    // hoisted out of their per-row loops.
+    /**
+     * @brief Returns how many extra visual slots an org headline row claims beyond the usual one.
+     * @param line The row's text.
+     * @return 0 for a non-headline or a single-slot depth, else the extra slot count.
+     */
+    static int OrgHeadingExtraSlotsFor(const std::string &line);
     // kBuiltinOrgAgenda's own `mep_org_expand_glob` port: `*` within the
     // final path component only (no recursive `**`), matched via
     // ListDirectory -- entries without a `*` (or with no `/` at all)
@@ -7635,6 +7877,27 @@ public:
      * @return The new visibility state.
      */
     bool ToggleOrgLatex();
+    // <leader>otm: flips org_conceal_visible_ and returns the new state,
+    // same shape as ToggleOrgImages.
+    /**
+     * @brief Toggles org markup concealment.
+     * @return The new state.
+     */
+    bool ToggleOrgConceal();
+    // <leader>oth: flips org_heading_scale_visible_ and returns the new
+    // state, same shape as ToggleOrgImages.
+    /**
+     * @brief Toggles depth-scaled org headline text.
+     * @return The new state.
+     */
+    bool ToggleOrgHeadingScale();
+    // <leader>otc: flips org_plain_cursor_line_ and returns the new
+    // state, same shape as ToggleOrgImages.
+    /**
+     * @brief Toggles the plain (undecorated) rendering of the cursor's own row in org buffers.
+     * @return The new state.
+     */
+    bool ToggleOrgPlainCursorLine();
     // Appends one inline-math span (see Buffer::OrgLatexInlineSpan) for
     // `row` -- called once per match by mep_org_latex_register_inline
     // (kBuiltinOrgLatex). Appends rather than replaces (unlike
@@ -10605,17 +10868,56 @@ private:
     // (Buffer::org_image_rows) is kept fresh regardless of this flag (see
     // kBuiltinOrgImages' mep.on_buffer_changed hook) so toggling on shows
     // correct state immediately, with no edit needed first.
-    bool org_images_visible_ = false;
+    //
+    // On by default, the same reasoning as show_line_numbers_ above:
+    // rendering a figure in place is what an org file showing a figure is
+    // *for*, and real org-mode's own `org-startup-with-inline-images`
+    // being off dates from a terminal Emacs that couldn't draw one at all.
+    // Safe as a default because OrgImageScan (editor.cpp) only registers a
+    // link whose target actually exists on disk, so a file referencing a
+    // not-yet-generated plot reads as its ordinary [[file:...]] text
+    // rather than a kOrgInlineImageSlots-tall blank.
+    bool org_images_visible_ = true;
     // Org LaTeX/math-mode rendering (<leader>otl / mep.org_latex_toggle):
     // same shape as org_images_visible_ above, but Buffer::org_latex_rows
     // is only ever populated while this is true -- see that field's own
     // comment for why (a multi-line fragment's hidden raw source, via a
     // 'latex'-provider Fold, is a real visible side effect this toggle
     // must own outright, not just gate the texture substitution).
-    bool org_latex_visible_ = false;
+    //
+    // Also on by default. Unlike images this one shells out (tectonic ->
+    // pdftoppm, kBuiltinOrgLatex), so a machine without those on PATH
+    // can't render anything -- kBuiltinOrgLatex's own
+    // mep_org_latex_notify_err reports each distinct failure once per
+    // scan, and a missing-executable one only once per session, so the
+    // fallback there is "the math stays plain source text", not a
+    // notification per fragment per keystroke.
+    bool org_latex_visible_ = true;
+    // Org markup concealment / scaled headlines (<leader>otm, <leader>oth):
+    // see OrgConcealVisible()/OrgHeadingScaleVisible() for what each gates
+    // and why both start on.
+    bool org_conceal_visible_ = true;
+    bool org_heading_scale_visible_ = true;
+    // Scratch for OrgTables() -- reused across calls (one scan per pane
+    // per frame), exactly like org_block_cards_ below.
+    std::vector<OrgTableGrid> org_tables_;
+    // OrgTableAutoAlign's memory of where the cursor was on the previous
+    // frame: -1 until the first call, and reset whenever the active
+    // buffer changes so a row index from one file can't be applied to
+    // another.
+    int org_table_last_row_ = -1;
+    int org_table_last_buffer_ = -1;
+    // Buffer::undo_stack's depth when the cursor entered the table it is
+    // currently in -- compared on the way out, so a table is only ever
+    // rewritten after a real edit, never after a read-only visit.
+    int org_table_entry_undo_depth_ = 0;
     // Org block cards (<leader>otb / mep.org_block_cards_toggle): see
     // OrgBlockCardsVisible()'s own comment for why this one starts on.
     bool org_block_cards_visible_ = true;
+    // Plain cursor line (<leader>otc): see OrgPlainCursorLineVisible()'s
+    // own comment. On by default -- the raw text of the row being edited
+    // is what an editor should show.
+    bool org_plain_cursor_line_ = true;
     // Scratch for OrgBlockCards() -- reused across calls (one scan per
     // pane per frame) instead of returning a fresh vector each time.
     std::vector<OrgBlockCard> org_block_cards_;

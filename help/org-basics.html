@@ -38,8 +38,20 @@ getting in the way.</p>
 <h1>Emphasis</h1>
 <p>Org's markers work as you would expect: <code>*bold*</code>, <code>/italic/</code>, <code>_underline_</code>,
 <code>+strikethrough+</code>, <code>=verbatim=</code> and <code>~code~</code>.</p>
-<p>mep leaves the markers <b>visible</b>, as Emacs org-mode does by default, and
-styles the whole span including them.</p>
+<p>The markers themselves are hidden and the text is styled in their place, so
+<code>*bold*</code> reads as bold text. Put the cursor on the line and the markers come
+straight back, so there is never a construct you can see but not edit.
+<code>&lt;leader&gt;otm</code> turns concealment off altogether, for every construct that
+uses it -- emphasis, links and table rules alike.</p>
+<h1>Heading sizes</h1>
+<p>A heading is drawn larger the shallower it is, and in its own colour by
+level: <code>*</code> largest, <code>**</code> a little smaller, <code>***</code> smaller again, <code>****</code> and
+deeper at body size. The top two levels get a line of space under them as
+well, which is what gives the outline its shape at a glance.</p>
+<p><code>&lt;leader&gt;oth</code> turns that off and draws every heading at body size.</p>
+<p>As with concealment, the heading the cursor is on -- or one inside a
+selection -- is drawn at plain body size on the ordinary column grid, so the
+caret and the selection always land where you expect.</p>
 <h1>Lists</h1>
 <table>
 <tr><th>Command</th><th>Does</th></tr>
@@ -50,7 +62,13 @@ styles the whole span including them.</p>
 <tr><td><code>:MepOrgCheckbox</code></td><td>toggle a checkbox</td></tr>
 </table>
 <h1>Tables</h1>
-<p><code>:MepOrgTableAlign</code> aligns a table's columns on the pipes.</p>
+<p>A table is drawn as a real grid: continuous rules down the columns, a drawn
+line in place of each <code>|---+---|</code> row, and a tinted header block.</p>
+<p>It is realigned on its pipes for you whenever the cursor leaves it, provided
+you actually edited it -- typing in a cell never shifts the text under your
+caret, and the columns are square again the moment you step out. Reading
+through a ragged table changes nothing. <code>:MepOrgTableAlign</code> does it on
+demand.</p>
 <p>A literal <code>|</code> inside a cell is written <code>\vert</code> or escaped as <code>\|</code>.</p>
 <h1>See also</h1>
 <ul>

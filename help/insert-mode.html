@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Insert and Replace</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Editing">
+<meta name="help-order" content="50">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Insert and Replace</h1>
+<h1>Getting in</h1>
+<table>
+<tr><th>Key</th><th>Starts typing</th></tr>
+<tr><td><code>i</code></td><td>before the cursor</td></tr>
+<tr><td><code>a</code></td><td>after the cursor</td></tr>
+<tr><td><code>I</code></td><td>at the first non-blank of the line</td></tr>
+<tr><td><code>A</code></td><td>at the end of the line</td></tr>
+<tr><td><code>o</code></td><td>on a new line below</td></tr>
+<tr><td><code>O</code></td><td>on a new line above</td></tr>
+<tr><td><code>c</code></td><td>after deleting whatever its motion covered</td></tr>
+</table>
+<p><code>Esc</code> returns to Normal mode.</p>
+<h1>Replace mode</h1>
+<p><code>R</code> enters Replace mode, where each character you type overwrites the one
+under the cursor instead of pushing it along. Backspace puts back what was
+overwritten rather than deleting, so you can retreat through a replacement
+without losing the original text. <code>Esc</code> leaves.</p>
+<h1>Keys that work while typing</h1>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Ctrl-W</code></td><td>delete the word before the cursor</td></tr>
+<tr><td><code>Ctrl-U</code></td><td>delete back to the start of the line</td></tr>
+<tr><td><code>Ctrl-R {reg}</code></td><td>insert a register's text, as if typed</td></tr>
+<tr><td><code>Ctrl-Shift-V</code></td><td>paste the system clipboard directly</td></tr>
+<tr><td><code>Tab</code></td><td>accept an inline AI suggestion, or the completion popup's selection</td></tr>
+</table>
+<p><code>Ctrl-R</code> takes any register name: ="= or <code>+</code> for the clipboard, <code>a</code> for
+register <code>a</code>, and so on. It also works on the <code>:</code> command line and the <code>/</code>
+search prompt, where the inserted text is kept to one printable line.</p>
+<h1>Completion</h1>
+<p>A completion popup appears as you type, merging buffer words, snippet
+triggers, filesystem paths and -- when a language server is attached --
+its suggestions, into one list with duplicates collapsed.</p>
+<p>While the popup is open <code>Tab</code> belongs to it. Inline AI suggestions (the
+dimmed text that appears ahead of the cursor) also use <code>Tab</code>, but only when
+the popup is closed, so the two never compete for the key.</p>
+<h1>Indentation and snippets</h1>
+<p>A snippet trigger followed by <code>Tab</code> expands it. After expanding, <code>:MepSnippetNext</code>
+and <code>:MepSnippetPrev</code> move between its tabstops. Jumping between tabstops
+immediately after expansion is reliable; editing heavily before jumping to a
+later tabstop can leave it stale, because positions are computed once at
+expansion time.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="modes.html">Modes</a> -- how Insert relates to everything else.</li>
+<li><a href="registers-marks.html">Registers, marks and jumps</a> -- what <code>Ctrl-R</code> can reach.</li>
+<li><a href="operators.html">Operators and text objects</a> -- <code>c</code> and its motions.</li>
+</ul>
+</body>
+</html>

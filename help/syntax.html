@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Syntax highlighting</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="40">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Syntax highlighting</h1>
+<h1>Two engines</h1>
+<p><b>Treesitter</b>, where a grammar is available: a real parse tree, reparsed
+incrementally as you type, giving accurate highlighting that does not fall
+apart inside strings or nested constructs.</p>
+<p><b>A per-line lexer</b> for everything else: comment prefixes, quoted strings,
+numbers and a keyword list. Less accurate, but it means no file is ever
+unhighlighted.</p>
+<p>Both render through the same <a href="highlight-groups.html">decoration</a> pipeline, so both follow your theme.</p>
+<h1>Grammars compiled in</h1>
+<p><code>c</code>, <code>cpp</code>, <code>javascript</code>, <code>lua</code>, <code>markdown</code>, <code>org</code>, <code>python</code>, <code>r</code>.</p>
+<h1>Grammars you can add</h1>
+<p>mep ships highlight queries for about fifty more languages without
+compiling in their parsers. One command builds them:</p>
+<pre>just fetch-grammars</pre>
+<p>They land in <code>.ts-grammars/lib/</code>, and <code>just run</code> picks them up from there
+automatically. It is safe to re-run -- already-built grammars are skipped --
+and <code>just fetch-grammars --force</code> rebuilds everything.</p>
+<p><code>$MEP_TS_PARSER_PATH</code> is the variable behind this, and it composes: the
+recipe <b>prepends</b> to whatever a Nix devShell may already have set rather
+than replacing it.</p>
+<h1>When it runs</h1>
+<p>Automatically: on buffer switch, and on a debounce as you edit.</p>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:MepSyntax</code></td><td>re-highlight the buffer now</td></tr>
+<tr><td><code>:MepSyntaxFold</code></td><td>build folds from the parse tree</td></tr>
+<tr><td><code>:MepColorize</code></td><td>draw swatches beside colour literals</td></tr>
+</table>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.syntax_auto = <span class="tok-cyan">false</span>   <span class="tok-comment">-- stop the automatic re-highlight</span></code></pre></div>
+<h1>Changing the colours</h1>
+<p>Captures map to colour groups through <code>mep.ts_capture_hl</code>, an ordinary Lua
+table -- see <a href="highlight-groups.html">Highlight groups</a>.</p>
+<h1>Colour swatches</h1>
+<p><code>:MepColorize</code> finds colour literals -- <code>#ff8800</code>, <code>rgb(...)</code> -- and draws
+the actual colour beside them. Useful in a stylesheet or a theme file.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="highlight-groups.html">Highlight groups</a> -- what the captures resolve to.</li>
+<li><a href="folding.html">Folds</a> -- the other thing the parse tree feeds.</li>
+<li><a href="structure-symbols.html">Structure and symbols</a> -- an outline from the same tree.</li>
+</ul>
+</body>
+</html>

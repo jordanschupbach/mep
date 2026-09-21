@@ -187,6 +187,11 @@ struct NativeContext {
     int target_fps = 0;
     std::string clipboard_text;  // cached text we own the CLIPBOARD selection with
 
+    // Set on FocusOut, cleared at the top of the next frame's poll --
+    // see IInputBackend::WindowFocusLostThisFrame for why a caller
+    // needs to tell ReleaseAllKeys' synthetic releases from real ones.
+    bool focus_lost = false;
+
     bool key_down[kKeyCount] = {};
     bool key_pressed[kKeyCount] = {};
     bool key_repeat[kKeyCount] = {};
@@ -231,9 +236,43 @@ int MouseButtonIndex(unsigned int x11_button) {
     return -1;
 }
 
+// Releases every held key, reporting each as released this frame.
+// Called on FocusOut: a key released while another window has focus (a WM
+// shortcut, alt-tab, a screenshot tool grabbing the keyboard) never sends
+// mep its KeyRelease, and a modifier left "stuck" down that way silently
+// turns every later chord into its Shift/Ctrl variant (mod1+h resizing
+// via S-h instead of focusing, say) until that key is pressed again.
+void ReleaseAllKeys(NativeContext *ctx) {
+    for (int i = 0; i < kKeyCount; i++) {
+        if (ctx->key_down[i]) ctx->key_released[i] = true;
+        ctx->key_down[i] = false;
+    }
+}
+
+// Belt-and-braces for the same stuck-modifier problem within a focused
+// window: every key event's `state` carries the X server's own view of
+// which modifiers were held just before it, so a Shift/Control we still
+// think is down but the server says isn't gets released here. Only the
+// core Shift/Control masks are trusted -- which ModN Alt and Super land on
+// is layout-dependent, so those rely on ReleaseAllKeys alone.
+void SyncModifiersFromState(NativeContext *ctx, const XKeyEvent *xkey, gfx::Key event_key) {
+    auto sync = [&](unsigned int mask, gfx::Key left, gfx::Key right) {
+        if ((xkey->state & mask) != 0) return;
+        for (gfx::Key k : {left, right}) {
+            const int idx = static_cast<int>(k);
+            if (k == event_key || !ctx->key_down[idx]) continue;
+            ctx->key_down[idx] = false;
+            ctx->key_released[idx] = true;
+        }
+    };
+    sync(ShiftMask, gfx::Key::LeftShift, gfx::Key::RightShift);
+    sync(ControlMask, gfx::Key::LeftControl, gfx::Key::RightControl);
+}
+
 void HandleKeyPress(NativeContext *ctx, XKeyEvent *xkey) {
     KeySym sym = XLookupKeysym(xkey, 0);
     gfx::Key k = UnmapKey(sym);
+    SyncModifiersFromState(ctx, xkey, k);
     if (k != gfx::Key::None) {
         int idx = static_cast<int>(k);
         if (!ctx->key_down[idx]) {
@@ -361,6 +400,7 @@ void HandleKeyPress(NativeContext *ctx, XKeyEvent *xkey) {
 void HandleKeyRelease(NativeContext *ctx, XKeyEvent *xkey) {
     KeySym sym = XLookupKeysym(xkey, 0);
     gfx::Key k = UnmapKey(sym);
+    SyncModifiersFromState(ctx, xkey, k);
     if (k == gfx::Key::None) return;
     int idx = static_cast<int>(k);
     ctx->key_down[idx] = false;
@@ -403,6 +443,10 @@ void ProcessEvent(NativeContext *ctx, const XEvent &event) {
     switch (event.type) {
         case KeyPress: HandleKeyPress(ctx, const_cast<XKeyEvent *>(&event.xkey)); break;
         case KeyRelease: HandleKeyRelease(ctx, const_cast<XKeyEvent *>(&event.xkey)); break;
+        case FocusOut:
+            ReleaseAllKeys(ctx);
+            ctx->focus_lost = true;
+            break;
         case ButtonPress: {
             unsigned int b = event.xbutton.button;
             int idx = MouseButtonIndex(b);
@@ -502,7 +546,7 @@ public:
         XSetWindowAttributes swa{};
         swa.colormap = ctx_->colormap;
         swa.event_mask = StructureNotifyMask | ExposureMask | KeyPressMask | KeyReleaseMask | ButtonPressMask |
-                          ButtonReleaseMask | PointerMotionMask;
+                          ButtonReleaseMask | PointerMotionMask | FocusChangeMask;
         ctx_->window = XCreateWindow(ctx_->display, RootWindow(ctx_->display, vi->screen), 0, 0,
                                       static_cast<unsigned int>(width), static_cast<unsigned int>(height), 0,
                                       vi->depth, InputOutput, vi->visual, CWColormap | CWEventMask, &swa);
@@ -600,6 +644,7 @@ public:
         for (bool &b : ctx_->key_released) b = false;
         for (bool &b : ctx_->mouse_pressed) b = false;
         for (bool &b : ctx_->mouse_released) b = false;
+        ctx_->focus_lost = false;
         ctx_->scroll_x = 0.0;
         ctx_->scroll_y = 0.0;
         while (XPending(ctx_->display) > 0) {
@@ -772,6 +817,7 @@ public:
     }
     bool IsKeyDown(gfx::Key key) override { return InRange(key) && ctx_->key_down[static_cast<int>(key)]; }
     bool IsKeyReleased(gfx::Key key) override { return InRange(key) && ctx_->key_released[static_cast<int>(key)]; }
+    bool WindowFocusLostThisFrame() override { return ctx_->focus_lost; }
     gfx::Key GetKeyPressed() override {
         if (ctx_->key_queue.empty()) return gfx::Key::None;
         int idx = ctx_->key_queue.front();

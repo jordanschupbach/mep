@@ -77,4 +77,26 @@ std::vector<PdfTextMatch> Search(const unsigned char *doc_data, size_t doc_len, 
 std::vector<PdfHighlightRect> MatchRectsForPage(const pdfdoc::PdfDocument &doc, int page_index, float px_per_pt,
                                                  const std::vector<PdfTextMatch> &matches);
 
+// One extracted glyph's bounding box in PDF-point space (y-up, top >=
+// bottom), in reading order -- the geometry the viewer point-hit-tests
+// for click-drag text selection. Same convention as PdfTextRectPt.
+struct GlyphBox {
+    double left = 0, top = 0, right = 0, bottom = 0;
+};
+
+// Every glyph box on `page`, in reading order (point space) -- the raw
+// material for text selection. `doc_data`/`doc_len` must be the buffer
+// `table` was loaded from.
+std::vector<GlyphBox> PageGlyphBoxes(const unsigned char *doc_data, size_t doc_len, const pdfxref::XrefTable &table,
+                                     const pdfdoc::Page &page);
+
+// Given a page's glyph boxes (reading order) and two point-space points
+// (a selection's anchor and head, in either order), returns the selection
+// as per-line rects (point space): the union of each run of same-line
+// glyphs between the glyph nearest the anchor and the glyph nearest the
+// head. Uses the same vertical-center line-break heuristic as Search.
+// Empty if `glyphs` is empty.
+std::vector<PdfTextRectPt> SelectionRects(const std::vector<GlyphBox> &glyphs, double ax, double ay, double bx,
+                                          double by);
+
 }  // namespace pdftext

@@ -1,0 +1,76 @@
+#+TITLE: Projects
+#+HTML_HEAD: <meta name="help-section" content="Projects">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What a project is
+
+A project is a directory. Panes live in tabs, tabs live in workspaces, and
+workspaces live in a project -- so a project is the outermost thing mep
+keeps track of, and the unit whose layout gets saved and restored.
+
+Several projects can be loaded at once, each with its own workspaces, tabs
+and buffers.
+
+* Opening one
+
+| How                        | Does                                    |
+|----------------------------+-----------------------------------------|
+| =mep= in a directory       | opens that directory as the project     |
+| =mep --project <dir>=      | opens =dir= instead                     |
+| =$MEP_PROJECT=             | the environment-variable form of the above |
+| =:project <dir>=           | opens another project from inside mep   |
+| =mep.project_open(dir)=    | the same, from Lua                      |
+
+* Two different pickers
+
+This catches people out, because the names are similar and they do different
+jobs.
+
+| Key            | Picker           | Lists                                  |
+|----------------+------------------+----------------------------------------|
+| =<leader>po=   | *Projects*       | your bookmarked projects, open or not  |
+| =<leader>pp=   | *Loaded projects* | the projects currently open in mep    |
+
+*Projects* (=:MepProjects=, and the =p= action on the [[file:dashboard.html][start screen]]) is a
+bookmark list: pick one to open it. It ends with =+ Add current directory=
+and =- Remove a project...= for managing the list, and =:MepProjectAdd= adds
+the current directory without opening the picker.
+
+*Loaded projects* (=:MepProjectsOpen=) switches between what is already
+open, showing each project's workspace count, whether it is a git
+repository, and its root. It ends with =+ Open a project...= and
+=- Close current project=.
+
+Clicking the =[project]= label at the left of the tab bar opens the loaded
+list too.
+
+* Moving between and closing
+
+| Command                       | Does                                   |
+|-------------------------------+----------------------------------------|
+| =:projects=                   | the bookmark picker                    |
+| =:projectnext= =:projectprevious= | cycle loaded projects              |
+| =:projectclose= =:projectclose!= | close the active project            |
+
+Closing refuses while any buffer in the project has unsaved changes, unless
+forced with =!=. The project's layout is saved on the way out.
+
+* The default layout
+
+A project opened for the *first* time gets a starting layout: its README in
+the main pane, a terminal below it, and the file tree down the left.
+
+A project that has been opened before is restored exactly as you left it,
+with none of that applied on top -- so the default layout never overwrites
+an arrangement you have built up.
+
+=:projectclear= (=<leader>pc=) throws away the active workspace's tabs,
+panes, buffers and terminals and rebuilds that default layout. It refuses
+while anything is unsaved; =:projectclear!= does it anyway.
+
+* See also
+
+- [[file:workspaces.html][Workspaces]] -- a branch per checkout, inside a project.
+- [[file:sessions.html][Sessions]] -- what gets saved, and where.
+- [[file:dashboard.html][The start screen]] -- where a session with no project begins.

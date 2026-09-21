@@ -1,4 +1,7 @@
 #include "lua_env.h"
+#include "http_client.h"
+#include "http_server.h"
+#include "url_util.h"
 #include "doc_export.h"
 #include "editor.h"
 #include "job.h"
@@ -725,6 +728,20 @@ int l_set_mod1(lua_State *L) {
     return 0;
 }
 
+// mep.mod1_name() -> "Alt"/"Ctrl"/"Shift"/"Super", whichever mep.set_mod1
+// last selected. For anything that has to *name* the modifier in text the
+// user reads (the keymaps picker's bare-mod1-tap row) rather than act on
+// it -- hardcoding "Alt" there would lie to anyone who rebound it.
+/**
+ * @brief Implements mep.mod1_name(): returns the display name of whichever modifier is currently mod1.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the modifier's name).
+ */
+int l_mod1_name(lua_State *L) {
+    lua_pushstring(L, GetEditor(L)->Mod1Name().c_str());
+    return 1;
+}
+
 // mep.nav_pane(direction): moves focus to the pane best positioned
 // "left"/"down"/"up"/"right" of the active one; a no-op if there's none.
 /**
@@ -911,6 +928,21 @@ int l_split_below(lua_State *L) {
     return 0;
 }
 
+// mep.tab_new(buffer_id?): opens a new tab page showing an existing
+// buffer (the current one when nil) -- `:tabnew` without a path would
+// create a throwaway empty buffer first. The Buffers picker's C-t.
+/**
+ * @brief Implements mep.tab_new(buffer_id?): opens and focuses a new tab page showing an existing buffer.
+ * @param L Lua state; optional arg 1 the buffer to show (default: the current buffer).
+ * @return Number of values pushed (0).
+ */
+int l_tab_new(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int buffer_id = lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1));
+    ed->TabNewWithBuffer(buffer_id);
+    return 0;
+}
+
 // mep.cmd(str): runs str as if typed after ":" and Enter pressed. General
 // escape hatch for Lua to drive any ex-command (":vsplit", ":w", ...).
 /**
@@ -922,6 +954,16 @@ int l_cmd(lua_State *L) {
     size_t len = 0;
     const char *s = luaL_checklstring(L, 1, &len);
     GetEditor(L)->RunCommand(std::string(s, len));
+    return 0;
+}
+
+// mep.pdf_note_latex_done(key, png): async callback (from kBuiltinPdfAnnot's
+// mep_pdf_note_latex) recording that a PDF sticky-note's LaTeX has finished
+// rendering to `png`; main.cpp's margin-note draw polls Editor::PdfNoteLatexPng.
+int l_pdf_note_latex_done(lua_State *L) {
+    const char *key = luaL_checkstring(L, 1);
+    const char *png = luaL_checkstring(L, 2);
+    GetEditor(L)->SetPdfNoteLatexPng(key, png);
     return 0;
 }
 
@@ -1241,6 +1283,157 @@ int l_notebook_set_python(lua_State *L) {
     return 0;
 }
 
+namespace {
+// Reads a kernel "mode" string into the enum (default Script -- the
+// safest for an unknown value, since a stateless run can't corrupt a
+// long-lived process's namespace).
+NotebookKernelSpec::Mode NotebookModeFromString(const char *s) {
+    std::string m = s ? s : "";
+    if (m == "python") return NotebookKernelSpec::Mode::Python;
+    if (m == "protocol") return NotebookKernelSpec::Mode::Protocol;
+    return NotebookKernelSpec::Mode::Script;
+}
+}  // namespace
+
+/**
+ * @brief Implements mep.notebook_set_kernels(list): replaces the code-cell kernel registry.
+ * @param L Lua state; arg 1 is an array of {name=, display_name=, language=, command=<array>, mode=} tables.
+ * @return Number of values pushed (0).
+ */
+int l_notebook_set_kernels(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<NotebookKernelSpec> specs;
+    lua_Integer n = luaL_len(L, 1);
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        if (lua_istable(L, -1)) {
+            NotebookKernelSpec spec;
+            lua_getfield(L, -1, "name");
+            spec.name = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "display_name");
+            spec.display_name = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "language");
+            spec.language = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "mode");
+            spec.mode = NotebookModeFromString(lua_isstring(L, -1) ? lua_tostring(L, -1) : nullptr);
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "command");
+            if (lua_istable(L, -1)) {
+                lua_Integer cn = luaL_len(L, -1);
+                for (lua_Integer c = 1; c <= cn; c++) {
+                    lua_rawgeti(L, -1, c);
+                    if (lua_isstring(L, -1)) spec.command.emplace_back(lua_tostring(L, -1));
+                    lua_pop(L, 1);
+                }
+            } else if (lua_isstring(L, -1)) {
+                spec.command.emplace_back(lua_tostring(L, -1));
+            }
+            lua_pop(L, 1);
+            specs.push_back(std::move(spec));
+        }
+        lua_pop(L, 1);
+    }
+    GetEditor(L)->SetNotebookKernels(std::move(specs));
+    return 0;
+}
+
+/**
+ * @brief Implements mep.notebook_kernels(): array of {name=, display_name=, language=} for every registered kernel.
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_notebook_kernels(lua_State *L) {
+    const std::vector<NotebookKernelSpec> &specs = GetEditor(L)->NotebookKernels();
+    lua_createtable(L, static_cast<int>(specs.size()), 0);
+    for (size_t i = 0; i < specs.size(); i++) {
+        lua_newtable(L);
+        lua_pushstring(L, specs[i].name.c_str());
+        lua_setfield(L, -2, "name");
+        lua_pushstring(L, specs[i].display_name.c_str());
+        lua_setfield(L, -2, "display_name");
+        lua_pushstring(L, specs[i].language.c_str());
+        lua_setfield(L, -2, "language");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_cell_kernel(index?): the kernel name a cell effectively runs on (its own or the default).
+ * @param L Lua state; optional arg 1 is a 0-based cell index (default: the cursor's cell).
+ * @return Number of values pushed (1: string, or nil outside a notebook).
+ */
+int l_notebook_cell_kernel(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    std::string name = ed->NotebookCellKernelName(ed->CurrentBufferId(), NotebookIndexArg(L, 1));
+    if (name.empty() && !ed->IsNotebookBuffer(ed->CurrentBufferId())) {
+        lua_pushnil(L);
+    } else {
+        lua_pushstring(L, name.c_str());
+    }
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_set_cell_kernel(name, index?): sets which kernel a cell runs on.
+ * @param L Lua state; arg 1 is the kernel name (or "" to follow the notebook default), optional arg 2 a 0-based cell index.
+ * @return Number of values pushed (1: true on success).
+ */
+int l_notebook_set_cell_kernel(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const char *name = luaL_optstring(L, 1, "");
+    lua_pushboolean(L, ed->NotebookSetCellKernel(ed->CurrentBufferId(), NotebookIndexArg(L, 2), name));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_default_kernel(): the kernel name cells run on when they pick none.
+ * @param L Lua state.
+ * @return Number of values pushed (1: string, or nil outside a notebook).
+ */
+int l_notebook_default_kernel(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    std::string name = ed->NotebookDefaultKernelName(ed->CurrentBufferId());
+    if (name.empty()) lua_pushnil(L);
+    else lua_pushstring(L, name.c_str());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_cell_language(row): the treesitter filetype for the cell containing a 1-based buffer row.
+ * @param L Lua state; arg 1 is a 1-based buffer row.
+ * @return Number of values pushed (1: string like "py"/"r"/"md", or nil for none).
+ */
+int l_notebook_cell_language(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;   // Lua rows are 1-based
+    std::string lang = ed->NotebookCellLanguageAtRow(ed->CurrentBufferId(), row);
+    if (lang.empty()) lua_pushnil(L);
+    else lua_pushstring(L, lang.c_str());
+    return 1;
+}
+
+// Returns the current code cell's source bounds and its selected kernel
+// language. Bounds are 1-based and end-exclusive, matching replace_lines.
+int l_notebook_lsp_context(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    int first = 0, end = 0;
+    std::string language;
+    if (!ed->NotebookCellLspContext(ed->CurrentBufferId(), row, &first, &end, &language)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushinteger(L, first + 1); lua_setfield(L, -2, "first_row");
+    lua_pushinteger(L, end + 1); lua_setfield(L, -2, "end_row");
+    lua_pushstring(L, language.c_str()); lua_setfield(L, -2, "language");
+    return 1;
+}
+
 /**
  * @brief Implements mep.notebook_status(): {status=, python=, cells=, running=, queued=} for the current notebook, or nil.
  * @param L Lua state.
@@ -1253,18 +1446,25 @@ int l_notebook_status(lua_State *L) {
         lua_pushnil(L);
         return 1;
     }
+    // The reported status/python/error describe the notebook's default
+    // kernel (what a cell runs on unless it picks another); `running`/
+    // `queued` are notebook-wide since runs are sequential across kernels.
+    std::string default_kernel = ed->NotebookDefaultKernelName(ed->CurrentBufferId());
+    const NotebookSession::KernelProc *kp = ed->NotebookKernelState(ed->CurrentBufferId(), default_kernel);
     lua_newtable(L);
-    lua_pushstring(L, sess->status.c_str());
+    lua_pushstring(L, kp ? kp->status.c_str() : "not started");
     lua_setfield(L, -2, "status");
-    lua_pushstring(L, sess->python_version.c_str());
+    lua_pushstring(L, kp ? kp->version.c_str() : "");
     lua_setfield(L, -2, "python");
+    lua_pushstring(L, default_kernel.c_str());
+    lua_setfield(L, -2, "kernel");
     lua_pushinteger(L, static_cast<lua_Integer>(sess->doc.cells.size()));
     lua_setfield(L, -2, "cells");
     lua_pushboolean(L, sess->running_uid != 0);
     lua_setfield(L, -2, "running");
     lua_pushinteger(L, static_cast<lua_Integer>(sess->run_queue.size()));
     lua_setfield(L, -2, "queued");
-    lua_pushstring(L, sess->last_error.c_str());
+    lua_pushstring(L, kp ? kp->last_error.c_str() : "");
     lua_setfield(L, -2, "error");
     return 1;
 }
@@ -1760,6 +1960,9 @@ Decoration ReadDecorationTable(lua_State *L, int idx) {
     lua_pop(L, 1);
     lua_getfield(L, idx, "sign_hl");
     if (lua_isstring(L, -1)) d.sign_hl = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "sign_shape");
+    if (lua_isstring(L, -1)) d.sign_shape = lua_tostring(L, -1);
     lua_pop(L, 1);
     lua_getfield(L, idx, "sign_badge");
     d.sign_badge = lua_toboolean(L, -1);
@@ -2635,6 +2838,32 @@ int l_buffer_set_lines(lua_State *L) {
     return 0;
 }
 
+// mep.buffer_get_lines(buffer_id) -> array of a specific (possibly
+// background) buffer's lines, or nil for an out-of-range id --
+// mep.buffer_set_lines' read-side counterpart. kBuiltinFileTree's oil-style
+// directory buffers are the first caller: their :w hook can fire for a
+// buffer that isn't the active pane's (:wa), so mep.get_line won't do.
+/**
+ * @brief Implements mep.buffer_get_lines(buffer_id): returns a buffer's lines.
+ * @param L Lua state; arg 1 is the buffer id.
+ * @return Number of values pushed (1: the array of lines, or nil).
+ */
+int l_buffer_get_lines(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    Editor *ed = GetEditor(L);
+    if (buffer_id < 0 || buffer_id >= ed->BufferCountForLua()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const std::vector<std::string> &lines = ed->GetBuffer(buffer_id).lines;
+    lua_createtable(L, static_cast<int>(lines.size()), 0);
+    for (size_t i = 0; i < lines.size(); i++) {
+        lua_pushlstring(L, lines[i].data(), lines[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
+}
+
 /**
  * @brief Implements mep.buffer_ns_clear(buffer_id, ns): clears every decoration under a namespace in a specific (possibly background) buffer.
  * @param L Lua state; arg 1 is the buffer id, arg 2 the namespace id.
@@ -2881,6 +3110,31 @@ int l_org_latex_toggle(lua_State *L) {
     return 1;
 }
 
+// mep.org_block_cards_toggle() -> new visibility (bool). Bound to
+// <leader>otb via kBuiltinOrgImages' own mep.leader_map call. Unlike the
+// two toggles above there's no scan to (re)run on the way in -- the
+// renderer parses the blocks itself, per frame (Editor::OrgBlockCards).
+/**
+ * @brief Implements mep.org_block_cards_toggle(): toggles org block-card rendering on/off.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new visibility state).
+ */
+int l_org_block_cards_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleOrgBlockCards());
+    return 1;
+}
+
+// mep.org_block_cards_visible() -> bool.
+/**
+ * @brief Implements mep.org_block_cards_visible(): reports whether org block-card rendering is on.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the current visibility state).
+ */
+int l_org_block_cards_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->OrgBlockCardsVisible());
+    return 1;
+}
+
 // mep.org_latex_visible() -> bool. Lua-side readable state (unlike
 // OrgImagesVisible(), org_latex_scan itself needs to consult this -- see
 // Buffer::org_latex_rows' own comment for why the two toggles' scan
@@ -3063,6 +3317,8 @@ int l_image_get_theme(lua_State *L) {
     return 1;
 }
 
+std::vector<PickerHlSpan> ReadPreviewSpans(lua_State *L, int idx);  // defined below, with mep.sidebar_set_preview
+
 // mep.sidebar_create(title, position, size) -> id.
 /**
  * @brief Implements mep.sidebar_create(title, position, size, tab_group): creates a new sidebar panel.
@@ -3079,7 +3335,7 @@ int l_sidebar_create(lua_State *L) {
 }
 
 // mep.sidebar_set_sections(id, sections): sections is an array of
-// {id=, title=, collapsed=, widgets={{id=,text=,icon=,hl=,tooltip=,on_click=fn},...}}.
+// {id=, title=, collapsed=, widgets={{id=,text=,icon=,hl=,tooltip=,on_click=fn,spans={{col_start=,col_end=,hl=},...},image=path,image_rows=n},...}}.
 /**
  * @brief Implements mep.sidebar_set_sections(id, sections): replaces a sidebar's whole content with a new set of collapsible sections of widgets.
  * @param L Lua state; arg 1 is the sidebar id, arg 2 an array of section tables (each with id/title/collapsed/widgets).
@@ -3137,8 +3393,29 @@ int l_sidebar_set_sections(lua_State *L) {
                 lua_getfield(L, -1, "trailing_icon");
                 if (lua_isstring(L, -1)) w.trailing_icon = lua_tostring(L, -1);
                 lua_pop(L, 1);
+                // `drag_buffer` (SidebarWidget::drag_buffer_id): the
+                // already-open buffer this row stands for, making the row
+                // draggable onto a pane even when it names no file --
+                // mep.sidebar_set_sections' only field that is a buffer
+                // id rather than presentation.
+                lua_getfield(L, -1, "drag_buffer");
+                if (lua_isnumber(L, -1)) w.drag_buffer_id = static_cast<int>(lua_tointeger(L, -1));
+                lua_pop(L, 1);
                 w.trailing_on_click_ref = RefField(L, -1, "trailing_on_click");
                 w.on_click_ref = RefField(L, -1, "on_click");
+                // Optional `spans` (SidebarWidget::spans): mep.ts_captures'
+                // own {col_start=, col_end=, hl=} shape, 1-indexed and
+                // col_end-exclusive, read by the same helper the popout
+                // preview's spans go through (`row` is read too but unused).
+                lua_getfield(L, -1, "spans");
+                w.spans = ReadPreviewSpans(L, lua_gettop(L));
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "image");
+                if (lua_isstring(L, -1)) w.image = lua_tostring(L, -1);
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "image_rows");
+                if (lua_isinteger(L, -1)) w.image_rows = std::max(1, static_cast<int>(lua_tointeger(L, -1)));
+                lua_pop(L, 1);
                 lua_pop(L, 1);  // the widget table itself
                 sec.widgets.push_back(std::move(w));
             }
@@ -3148,6 +3425,23 @@ int l_sidebar_set_sections(lua_State *L) {
         sections.push_back(std::move(sec));
     }
     GetEditor(L)->SetSidebarSections(id, std::move(sections));
+    return 0;
+}
+
+// mep.sidebar_set_double_click(id, enabled): makes this sidebar's rows
+// need a *double* click to activate when it's hosted in a pane
+// (mep.sidebar_open_pane), a single one only moving the row cursor --
+// the behavior a docked sidebar's rows already have. Opt-in per sidebar;
+// see SidebarInstance::activate_on_double_click (editor.h) for why it
+// isn't simply the default everywhere.
+/**
+ * @brief Implements mep.sidebar_set_double_click(id, enabled): requires a double click to activate this sidebar's pane-hosted rows.
+ * @param L Lua state; arg 1 is the sidebar id, arg 2 whether to require a double click.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_set_double_click(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    GetEditor(L)->SetSidebarDoubleClickActivate(id, lua_toboolean(L, 2) != 0);
     return 0;
 }
 
@@ -3208,6 +3502,28 @@ int l_sidebar_toggle(lua_State *L) {
 }
 
 /**
+ * @brief Implements mep.sidebar_for_buffer(buffer_id): the id of the sidebar a pane-hosted sidebar buffer shows, or nil.
+ * @param L Lua state; arg 1 is the buffer id.
+ * @return Number of values pushed (1).
+ */
+int l_sidebar_for_buffer(lua_State *L) {
+    int id = GetEditor(L)->SidebarIdForPaneBuffer(static_cast<int>(luaL_checkinteger(L, 1)));
+    if (id == 0) lua_pushnil(L);
+    else lua_pushinteger(L, id);
+    return 1;
+}
+
+/**
+ * @brief Implements mep.buffer_on_screen(buffer_id): whether some pane in the active tab shows the buffer.
+ * @param L Lua state; arg 1 is the buffer id.
+ * @return Number of values pushed (1, a boolean).
+ */
+int l_buffer_on_screen(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->IsBufferOnScreen(static_cast<int>(luaL_checkinteger(L, 1))));
+    return 1;
+}
+
+/**
  * @brief Implements mep.sidebar_is_open(id): reports whether a sidebar is currently open.
  * @param L Lua state; arg 1 is the sidebar id.
  * @return Number of values pushed (1: true if open).
@@ -3232,6 +3548,56 @@ int l_sidebar_set_on_key(lua_State *L) {
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
     GetEditor(L)->SetSidebarOnKey(id, ref);
     return 0;
+}
+
+// mep.sidebar_set_help(id, {{key, description}, ...}): the sidebar-specific
+// keys its `?` view lists (above the navigation keys every sidebar shares).
+// An entry with an empty key is drawn as a sub-heading. Replaces any
+// previous list -- a tabbed sidebar re-sets it per view.
+/**
+ * @brief Implements mep.sidebar_set_help(id, entries): sets the key bindings a sidebar's `?` help view lists.
+ * @param L Lua state; arg 1 is the sidebar id, arg 2 an array of {key, description} pairs.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_set_help(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    std::vector<std::pair<std::string, std::string>> keys;
+    const lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, i);
+        if (lua_istable(L, -1)) {
+            lua_rawgeti(L, -1, 1);
+            lua_rawgeti(L, -2, 2);
+            const char *key = lua_tostring(L, -2);
+            const char *desc = lua_tostring(L, -1);
+            keys.emplace_back(key ? key : "", desc ? desc : "");
+            lua_pop(L, 2);
+        }
+        lua_pop(L, 1);
+    }
+    GetEditor(L)->SetSidebarHelp(id, std::move(keys));
+    return 0;
+}
+
+/**
+ * @brief Implements mep.sidebar_toggle_help(id): flips a sidebar between its rows and its `?` key-binding view.
+ * @param L Lua state; arg 1 is the sidebar id.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_toggle_help(lua_State *L) {
+    GetEditor(L)->ToggleSidebarHelp(static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+
+/**
+ * @brief Implements mep.sidebar_help_open(id): whether a sidebar is showing its `?` key-binding view.
+ * @param L Lua state; arg 1 is the sidebar id.
+ * @return Number of values pushed (1, a boolean).
+ */
+int l_sidebar_help_open(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->SidebarHelpOpen(static_cast<int>(luaL_checkinteger(L, 1))));
+    return 1;
 }
 
 // mep.sidebar_set_tabs(id, {name, ...}, active?): gives sidebar `id` a tab
@@ -3388,8 +3754,29 @@ int l_sidebar_set_preview(lua_State *L) {
  */
 int l_sidebar_popout_toggle(lua_State *L) {
     int id = static_cast<int>(luaL_optinteger(L, 1, 0));
-    GetEditor(L)->ToggleSidebarPopout(id);
-    return 0;
+    Editor *ed = GetEditor(L);
+    // With no id it targets the focused sidebar -- and returns false,
+    // doing nothing, when no sidebar has focus (the mod1+m binding then
+    // maximizes the active pane instead, mep.pane_maximize_toggle).
+    if (id == 0 && ed->CurrentMode() != Mode::Sidebar && !ed->SidebarPopoutActive()) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    ed->ToggleSidebarPopout(id);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/**
+ * @brief Implements mep.pane_maximize_toggle(): maximizes the active pane, or restores the layout from before (Editor::TogglePaneMaximize).
+ * @param L Lua state.
+ * @return Number of values pushed (1: whether a pane is maximized afterwards).
+ */
+int l_pane_maximize_toggle(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->TogglePaneMaximize();
+    lua_pushboolean(L, ed->IsPaneMaximized());
+    return 1;
 }
 
 // mep.notify_sidebar_id()/mep.notify_refresh_pane(): the Notifications
@@ -3418,6 +3805,17 @@ int l_notify_sidebar_id(lua_State *L) {
  */
 int l_notify_refresh_pane(lua_State *L) {
     GetEditor(L)->RefreshNotifyPane();
+    return 0;
+}
+
+/**
+ * @brief Implements mep.sidebar_popout_open(id): opens a sidebar focused and popped out, with no
+ * docked column behind the float (closing the popout closes the sidebar).
+ * @param L Lua state; arg 1 is the sidebar id.
+ * @return Number of values pushed (0).
+ */
+int l_sidebar_popout_open(lua_State *L) {
+    GetEditor(L)->OpenSidebarPopoutOnly(static_cast<int>(luaL_checkinteger(L, 1)));
     return 0;
 }
 
@@ -3471,7 +3869,7 @@ int l_read_lines(lua_State *L) {
 // mep.buffer_set_on_enter(buffer_id, fn): fn() replaces whatever bare
 // Enter/KP_Enter already does in Normal mode (nothing, by default -- see
 // SetBufferOnEnter's own comment, editor.h) while `buffer_id` is the
-// active pane's buffer. Single-slot, last-registration-wins.
+// active pane's buffer. One callback per buffer; re-registering replaces it.
 /**
  * @brief Implements mep.buffer_set_on_enter(buffer_id, fn): registers a callback that replaces bare Enter/KP_Enter's default Normal-mode behavior for a buffer.
  * @param L Lua state; arg 1 is the buffer id, arg 2 the callback function.
@@ -3506,7 +3904,7 @@ int l_buffer_set_on_write(lua_State *L) {
 // mep.buffer_set_on_image_toggle(buffer_id, fn): fn() replaces the builtin
 // Shift+I (insert at first non-blank) for `buffer_id` (Editor::
 // SetBufferOnImageToggle's own comment, editor.h) while it's the active
-// pane's buffer. Single-slot, last-registration-wins.
+// pane's buffer. One callback per buffer; re-registering replaces it.
 /**
  * @brief Implements mep.buffer_set_on_image_toggle(buffer_id, fn): registers a callback that
  * replaces bare Shift+I's default Normal-mode behavior for a buffer.
@@ -3519,6 +3917,28 @@ int l_buffer_set_on_image_toggle(lua_State *L) {
     lua_pushvalue(L, 2);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
     GetEditor(L)->SetBufferOnImageToggle(buffer_id, ref);
+    return 0;
+}
+
+// mep.buffer_set_on_key(buffer_id, fn): fn(key) is offered every plain
+// Normal-mode keypress (a one-character string) while `buffer_id` is the
+// active pane's buffer and no operator/count/prefix is pending; returning
+// true swallows the key, anything else lets the builtin command run
+// (Editor::SetBufferOnKey's own comment, editor.h). Pass nil to clear.
+/**
+ * @brief Implements mep.buffer_set_on_key(buffer_id, fn): registers a buffer-scoped Normal-mode key filter.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 the callback function (or nil to clear).
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_on_key(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    int ref = 0;
+    if (!lua_isnoneornil(L, 2)) {
+        luaL_checktype(L, 2, LUA_TFUNCTION);
+        lua_pushvalue(L, 2);
+        ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    GetEditor(L)->SetBufferOnKey(buffer_id, ref);
     return 0;
 }
 
@@ -3547,6 +3967,19 @@ int l_buffer_set_hide_line_numbers(lua_State *L) {
 }
 
 /**
+ * @brief Implements mep.buffer_set_footer(id, text, hl?): sets the key hint drawn along the bottom of panes showing a buffer.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 the hint text (nil/"" removes it), arg 3 an optional highlight group.
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_footer(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char *text = luaL_optstring(L, 2, "");
+    const char *hl = luaL_optstring(L, 3, "");
+    GetEditor(L)->SetBufferFooter(id, text, hl);
+    return 0;
+}
+
+/**
  * @brief Implements mep.buffer_set_wrap(id, wrap): opts a buffer out of :set wrap's soft-wrap.
  * @param L Lua state; arg 1 is the buffer id, arg 2 whether soft-wrap stays enabled for it.
  * @return Number of values pushed (0).
@@ -3555,6 +3988,30 @@ int l_buffer_set_wrap(lua_State *L) {
     int id = static_cast<int>(luaL_checkinteger(L, 1));
     bool wrap = lua_toboolean(L, 2) != 0;
     GetEditor(L)->SetBufferNoWrap(id, !wrap);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.buffer_set_row_cursor(id, on): makes a buffer's cursor select a whole row instead of a character.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 whether the row-cursor rendering is on.
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_row_cursor(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    bool on = lua_toboolean(L, 2) != 0;
+    GetEditor(L)->SetBufferRowCursor(id, on);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.buffer_set_unlisted(id, on): hides a buffer from the Buffers sidebar and the buffer picker.
+ * @param L Lua state; arg 1 is the buffer id, arg 2 whether the buffer is hidden from those lists.
+ * @return Number of values pushed (0).
+ */
+int l_buffer_set_unlisted(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    bool on = lua_toboolean(L, 2) != 0;
+    GetEditor(L)->SetBufferUnlisted(id, on);
     return 0;
 }
 
@@ -3667,9 +4124,11 @@ void ReadPickerHlSpans(lua_State *L, int idx, int row, std::vector<PickerHlSpan>
 }
 
 // Reads a Lua array of items (each either a plain string, or a
-// {display=, data=, hl=} table) at stack index `idx` into `out`. `hl`
+// {display=, data=, hl=, key=} table) at stack index `idx` into `out`. `hl`
 // (optional) is an array of {col_start=, col_end=, hl=} spans over
-// `display` -- see ReadPickerHlSpans above.
+// `display` -- see ReadPickerHlSpans above. `key` (optional) is the item's
+// primary match text: items whose key matches the query rank above items
+// that only match elsewhere in `display` (e.g. in a description column).
 /**
  * @brief Reads a Lua array of picker items (each a plain string, or a {display=, data=, hl=} table) into PickerItem structs.
  * @param L Lua state.
@@ -3692,6 +4151,9 @@ void ReadPickerItems(lua_State *L, int idx, std::vector<PickerItem> &out) {
             lua_pop(L, 1);
             lua_getfield(L, -1, "hl");
             if (lua_istable(L, -1)) ReadPickerHlSpans(L, lua_gettop(L), 0, item.spans);
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "key");
+            if (lua_isstring(L, -1)) item.key = lua_tostring(L, -1);
             lua_pop(L, 1);
         }
         out.push_back(std::move(item));
@@ -3783,6 +4245,42 @@ int l_picker_set_preview(lua_State *L) {
     return 0;
 }
 
+// mep.picker_is_open() -> true while the fuzzy picker overlay is up, so an
+// async source (e.g. kBuiltinRunners' target loader) can tell its own
+// picker is still showing before calling mep.picker_set_items.
+/**
+ * @brief Implements mep.picker_is_open(): reports whether the picker overlay is open.
+ * @param L Lua state.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_picker_is_open(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->IsPickerOpen());
+    return 1;
+}
+
+// mep.picker_set_tabs(names, active): shows a tab strip above the open
+// picker's prompt (names = array of labels, active = 1-indexed) -- see
+// Editor::SetPickerTabs. The caller swaps items itself (typically from
+// on_key's "<Tab>"/"<S-Tab>"); pass {} to hide the strip.
+/**
+ * @brief Implements mep.picker_set_tabs(names, active): sets the open picker's tab-strip labels and 1-indexed active tab.
+ * @param L Lua state; arg 1 array of label strings, arg 2 1-indexed active tab.
+ * @return Number of values pushed (0).
+ */
+int l_picker_set_tabs(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> tabs;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        if (lua_isstring(L, -1)) tabs.emplace_back(lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+    int active = static_cast<int>(luaL_optinteger(L, 2, 1)) - 1;
+    GetEditor(L)->SetPickerTabs(std::move(tabs), active);
+    return 0;
+}
+
 /**
  * @brief Implements mep.picker_close(): closes the open picker without invoking its on_select callback.
  * @param L Lua state.
@@ -3790,6 +4288,20 @@ int l_picker_set_preview(lua_State *L) {
  */
 int l_picker_close(lua_State *L) {
     GetEditor(L)->ClosePickerDiscardingCallbacks();
+    return 0;
+}
+
+// mep.picker_set_hint(text): the open picker's own keys (its on_key
+// Ctrl-letters, e.g. "C-a: add current dir"), drawn in the footer ahead
+// of the standard Enter/Esc/C-n/C-p hint. Call right after picker_open --
+// every open starts with no hint.
+/**
+ * @brief Implements mep.picker_set_hint(text): sets the open picker's footer key hint.
+ * @param L Lua state; arg 1 is the hint text.
+ * @return Number of values pushed (0).
+ */
+int l_picker_set_hint(lua_State *L) {
+    GetEditor(L)->SetPickerHint(luaL_checkstring(L, 1));
     return 0;
 }
 
@@ -3911,6 +4423,26 @@ int l_buffer_switch(lua_State *L) {
     int id = static_cast<int>(luaL_checkinteger(L, 1));
     GetEditor(L)->SwitchToBufferForLua(id);
     return 0;
+}
+
+// mep.buffer_open_beside(id, direction?) -> pane id: shows buffer `id`
+// in the focused pane when that's an ordinary document pane -- plain
+// mep.buffer_switch -- but in the nearest non-navigator pane in
+// `direction` ('right' by default, else 'left'/'up'/'down') when the
+// focused pane is itself a list you pick things from: the Buffers
+// sidebar opened as a pane, the file tree, git status. Splits that way
+// when there's no such neighbor. This is what keeps the Buffers
+// sidebar's own rows from opening *over* the sidebar you clicked in.
+/**
+ * @brief Implements mep.buffer_open_beside(id, direction?): shows a buffer in a pane that isn't a navigator, splitting if need be.
+ * @param L Lua state; arg 1 is the buffer id, optional arg 2 the direction to look in (default "right").
+ * @return Number of values pushed (1: the pane id it landed in, or -1).
+ */
+int l_buffer_open_beside(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char *dir = luaL_optstring(L, 2, "right");
+    lua_pushinteger(L, GetEditor(L)->OpenBufferBeside(id, dir));
+    return 1;
 }
 
 // mep.buffer_filename(id) -> raw path, '' for a terminal/unsaved buffer.
@@ -4127,12 +4659,20 @@ int l_current_theme(lua_State *L) {
 }
 
 // Per-pane buffer tabs + auto-layouts (Phase 14).
+// mep.pane_open(path_or_buffer_id): a string opens (or reuses) that
+// file's buffer; an integer adds that already-open buffer -- a terminal
+// or unsaved one included, which have no path to reopen by (the Buffers
+// picker's C-i).
 /**
- * @brief Implements mep.pane_open(path): opens a file as a buffer tab in the focused pane.
- * @param L Lua state; arg 1 is the file path.
+ * @brief Implements mep.pane_open(path_or_buffer_id): opens a file, or an existing buffer by id, as a buffer tab in the focused pane.
+ * @param L Lua state; arg 1 is the file path, or an integer buffer id.
  * @return Number of values pushed (0).
  */
 int l_pane_open(lua_State *L) {
+    if (lua_isinteger(L, 1)) {
+        GetEditor(L)->PaneOpenBufferIdInTab(static_cast<int>(lua_tointeger(L, 1)));
+        return 0;
+    }
     const char *path = luaL_checkstring(L, 1);
     GetEditor(L)->PaneOpenBufferInTab(path);
     return 0;
@@ -4279,7 +4819,7 @@ int l_fs_create_file(lua_State *L) {
 }
 
 /**
- * @brief Implements mep.fs_rename(from, to): renames/moves a file or directory (native builds only).
+ * @brief Implements mep.fs_rename(from, to): renames/moves a file or directory (native builds only), retargeting any open buffers under `from`.
  * @param L Lua state; arg 1 is the source path, arg 2 the destination path.
  * @return Number of values pushed (1: true on success, false on error or under wasm).
  */
@@ -4289,6 +4829,7 @@ int l_fs_rename(lua_State *L) {
 #if !defined(__EMSCRIPTEN__)
     std::error_code ec;
     std::filesystem::rename(from, to, ec);
+    if (!ec) GetEditor(L)->RetargetBuffersForRenamedPath(from, to);
     lua_pushboolean(L, !ec);
 #else
     lua_pushboolean(L, false);
@@ -4297,7 +4838,7 @@ int l_fs_rename(lua_State *L) {
 }
 
 /**
- * @brief Implements mep.fs_delete(path): recursively deletes a file or directory (native builds only).
+ * @brief Implements mep.fs_delete(path): recursively deletes a file or directory (native builds only), closing any open buffers under it.
  * @param L Lua state; arg 1 is the path to delete.
  * @return Number of values pushed (1: true on success, false on error or under wasm).
  */
@@ -4306,6 +4847,7 @@ int l_fs_delete(lua_State *L) {
 #if !defined(__EMSCRIPTEN__)
     std::error_code ec;
     std::filesystem::remove_all(path, ec);
+    if (!ec) GetEditor(L)->CloseBuffersForRemovedPath(path);
     lua_pushboolean(L, !ec);
 #else
     lua_pushboolean(L, false);
@@ -4763,6 +5305,15 @@ int l_chdir(lua_State *L) {
 // explicitly set to null survives the round trip distinguishably from an
 // absent field -- callers that don't care can treat it as falsy.
 void *kJsonNullSentinel = reinterpret_cast<void *>(0x1);
+// The empty JSON *array*. LuaToJson below reads "array" off a table's
+// contiguous 1..n integer key run, so an empty Lua table is
+// indistinguishable from an empty object and marshals as `{}` -- leaving
+// `[]` simply unexpressible from Lua. That is not a hypothetical: the
+// Copilot language server rejects `workspace/executeCommand` outright
+// ("Schema validation failed ... Expected tuple") when its `arguments`
+// field is `{}` *or* absent, and only accepts `[]`, so a command taking
+// no arguments could not be invoked at all without this.
+void *kJsonEmptyArraySentinel = reinterpret_cast<void *>(0x2);
 
 /**
  * @brief Recursively pushes a Json value onto the Lua stack, encoding JSON null as a unique lightuserdata sentinel rather than Lua nil so an object field explicitly set to null survives the round trip distinguishably from an absent field.
@@ -4814,6 +5365,7 @@ Json LuaToJson(lua_State *L, int idx) {
     int t = lua_type(L, idx);
     if (t == LUA_TNIL) return Json();
     if (t == LUA_TLIGHTUSERDATA && lua_touserdata(L, idx) == kJsonNullSentinel) return Json();
+    if (t == LUA_TLIGHTUSERDATA && lua_touserdata(L, idx) == kJsonEmptyArraySentinel) return Json::Array();
     if (t == LUA_TBOOLEAN) return Json(static_cast<bool>(lua_toboolean(L, idx)));
     if (t == LUA_TNUMBER) return Json(lua_tonumber(L, idx));
     if (t == LUA_TSTRING) {
@@ -6746,6 +7298,59 @@ int l_git_gutter_refresh_native(lua_State *L) {
     return 0;
 }
 
+// mep.git_gutter_tick(base, line_hl): see Editor::GitGutterTick -- the
+// per-frame driver behind mep.git_gutter_auto, cheap enough to call
+// unconditionally (it does its own staleness check and debounce).
+/**
+ * @brief Implements mep.git_gutter_tick(base, line_hl): re-diffs the current buffer only when its cached git-gutter diff is stale.
+ * @param L Lua state; arg 1 is the base ref, arg 2 whether hunk rows also get a whole-line tint.
+ * @return Number of values pushed (0).
+ */
+int l_git_gutter_tick(lua_State *L) {
+    const char *base = luaL_checkstring(L, 1);
+    GetEditor(L)->GitGutterTick(base, lua_toboolean(L, 2) != 0);
+    return 0;
+}
+
+// mep.git_gutter_invalidate(): see Editor::GitGutterInvalidate -- for
+// when the repository moved under unchanged buffer text (commit,
+// checkout, stage/unstage from the git panel).
+/**
+ * @brief Implements mep.git_gutter_invalidate(): marks every buffer's cached git-gutter diff stale.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_git_gutter_invalidate(lua_State *L) {
+    GetEditor(L)->GitGutterInvalidate();
+    return 0;
+}
+
+// mep.git_gutter_clear(): see Editor::GitGutterClear -- drops the marks
+// in *every* buffer, not just the current one, which is what turning the
+// gutter off has to do.
+/**
+ * @brief Implements mep.git_gutter_clear(): removes every buffer's git-gutter marks.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_git_gutter_clear(lua_State *L) {
+    GetEditor(L)->GitGutterClear();
+    return 0;
+}
+
+// mep.git_gutter_summary() -> "+3 ~1 -2" (or "" for a clean/undiffed
+// buffer): see Editor::GitGutterSummary, for a statusline segment.
+/**
+ * @brief Implements mep.git_gutter_summary(): the current buffer's added/changed/removed line counts as a short string.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the summary string, "" when there is nothing to report).
+ */
+int l_git_gutter_summary(lua_State *L) {
+    std::string s = GetEditor(L)->GitGutterSummary();
+    lua_pushlstring(L, s.data(), s.size());
+    return 1;
+}
+
 // mep.git_next_hunk_row()/mep.git_prev_hunk_row() -> 1-indexed row or
 // nil: see Editor::GitNextHunkRow/GitPrevHunkRow.
 /**
@@ -7479,6 +8084,75 @@ int l_set_completion_resolve_hook(lua_State *L) {
     return 0;
 }
 
+// --- Inline suggestion / "ghost text" (kBuiltinCopilot) ---------------
+// See SetInlineSuggestion's comment (editor.h). These are the whole
+// C++ surface the Copilot module needs: everything protocol-shaped
+// (which server, which request, what the response means) stays in Lua.
+
+// mep.set_inline_suggestion(text [, row, col]): show `text` dimmed at the
+// cursor, as if it were already typed. row/col (1-based row, 1-based col,
+// matching mep.cursor()) anchor it; omitted, the current cursor is used.
+// An empty/absent text clears it.
+int l_set_inline_suggestion(lua_State *L) {
+    size_t len = 0;
+    const char *text = lua_isnoneornil(L, 1) ? "" : luaL_checklstring(L, 1, &len);
+    Editor *ed = GetEditor(L);
+    int row0 = 0, col0 = 0;
+    ed->GetCursorForLua(&row0, &col0);
+    int row = row0 + 1, col = col0 + 1;
+    if (lua_isnumber(L, 2)) row = static_cast<int>(lua_tointeger(L, 2));
+    if (lua_isnumber(L, 3)) col = static_cast<int>(lua_tointeger(L, 3));
+    ed->SetInlineSuggestion(std::string(text, len), row - 1, col - 1);
+    return 0;
+}
+
+// mep.clear_inline_suggestion().
+int l_clear_inline_suggestion(lua_State *L) {
+    GetEditor(L)->ClearInlineSuggestion();
+    return 0;
+}
+
+// mep.inline_suggestion() -> text, visible. `text` is whatever is left of
+// the suggestion (a partial accept or typing through it trims the front),
+// "" if there is none; `visible` is false while it's anchored somewhere
+// the cursor no longer is.
+int l_inline_suggestion(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const std::string &text = ed->InlineSuggestionText();
+    lua_pushlstring(L, text.data(), text.size());
+    lua_pushboolean(L, ed->InlineSuggestionVisible());
+    return 2;
+}
+
+// mep.accept_inline_suggestion([what]) -> bool. `what` is 'all' (default),
+// 'word' or 'line'. Exposed for user mappings; the built-in Tab/Alt-Right
+// keys go straight to the same Editor methods (HandleInsertInput).
+int l_accept_inline_suggestion(lua_State *L) {
+    const char *what = luaL_optstring(L, 1, "all");
+    Editor *ed = GetEditor(L);
+    bool ok = false;
+    if (std::string(what) == "word") {
+        ok = ed->AcceptInlineSuggestionPartial(/*whole_line=*/false) > 0;
+    } else if (std::string(what) == "line") {
+        ok = ed->AcceptInlineSuggestionPartial(/*whole_line=*/true) > 0;
+    } else {
+        ok = ed->AcceptInlineSuggestion();
+    }
+    lua_pushboolean(L, ok);
+    return 1;
+}
+
+// mep.set_inline_suggestion_accept_hook(fn): fn(accepted_length) -- 0 for a
+// full accept, the UTF-16 prefix length for a partial one. See
+// SetInlineSuggestionAcceptHookRef's comment (editor.h).
+int l_set_inline_suggestion_accept_hook(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->SetInlineSuggestionAcceptHookRef(ref);
+    return 0;
+}
+
 // mep.set_insert_tab_hook(fn): fn(shift) -> bool. Phase 23's Tab/Shift-Tab
 // tabstop cycling -- see SetInsertTabHookRef's comment (editor.h).
 int l_set_insert_tab_hook(lua_State *L) {
@@ -7504,6 +8178,193 @@ int l_set_on_directory_open(lua_State *L) {
 int l_filename(lua_State *L) {
     lua_pushstring(L, GetEditor(L)->CurrentBuffer().filename.c_str());
     return 1;
+}
+
+// --- The browser pane's networking surface ---------------------------------
+// mep.http_get(url [, timeout_ms]) -> {ok=, status=, status_text=, url=,
+// content_type=, body=, error=}: a blocking GET (http_client.h). What
+// :Browse uses to load a page from a URL -- plain sockets for http://
+// (so a page served from localhost needs nothing but mep), curl for
+// https://. `ok` is "a response arrived", whatever its status.
+/**
+ * @brief Implements mep.http_get(url, timeout_ms): performs a blocking HTTP GET.
+ * @param L Lua state; arg 1 the URL, optional arg 2 the timeout in milliseconds (default 10000).
+ * @return Number of values pushed (1: the response table).
+ */
+int l_http_get(lua_State *L) {
+    const char *url = luaL_checkstring(L, 1);
+    const int timeout_ms = static_cast<int>(luaL_optinteger(L, 2, 10000));
+    HttpResponse response = HttpGet(url, timeout_ms);
+    lua_createtable(L, 0, 7);
+    lua_pushboolean(L, response.ok);
+    lua_setfield(L, -2, "ok");
+    lua_pushinteger(L, response.status);
+    lua_setfield(L, -2, "status");
+    lua_pushlstring(L, response.status_text.data(), response.status_text.size());
+    lua_setfield(L, -2, "status_text");
+    lua_pushlstring(L, response.url.data(), response.url.size());
+    lua_setfield(L, -2, "url");
+    const std::string content_type = response.ContentType();
+    lua_pushlstring(L, content_type.data(), content_type.size());
+    lua_setfield(L, -2, "content_type");
+    lua_pushlstring(L, response.body.data(), response.body.size());
+    lua_setfield(L, -2, "body");
+    lua_pushlstring(L, response.error.data(), response.error.size());
+    lua_setfield(L, -2, "error");
+    return 1;
+}
+
+namespace {
+// Every static server this process has started (mep.http_serve). Process
+// lifetime: a server keeps running until mep.http_stop or exit, whatever
+// buffer/workspace is active -- it serves files, it doesn't belong to a pane.
+std::vector<std::unique_ptr<HttpStaticServer>> &HttpServers() {
+    static std::vector<std::unique_ptr<HttpStaticServer>> servers;
+    return servers;
+}
+}  // namespace
+
+// mep.http_serve(dir [, port]) -> port | nil, err: serves `dir` on
+// 127.0.0.1 (http_server.h). Port 0/omitted lets the OS pick a free one;
+// asking again for a directory that is already being served returns that
+// server's port instead of starting a second one.
+/**
+ * @brief Implements mep.http_serve(dir, port): starts an in-process static file server on 127.0.0.1.
+ * @param L Lua state; arg 1 the directory, optional arg 2 the port (0 = any free port).
+ * @return Number of values pushed (1: the bound port; or 2: nil and an error message).
+ */
+int l_http_serve(lua_State *L) {
+    const char *dir = luaL_checkstring(L, 1);
+    const int port = static_cast<int>(luaL_optinteger(L, 2, 0));
+    std::error_code ec;
+    const std::string canonical = std::filesystem::weakly_canonical(std::filesystem::path(dir), ec).string();
+    for (const auto &server : HttpServers()) {
+        if (server->Running() && server->Root() == canonical && (port == 0 || port == server->Port())) {
+            lua_pushinteger(L, server->Port());
+            return 1;
+        }
+    }
+    auto server = std::make_unique<HttpStaticServer>();
+    std::string error;
+    if (!server->Start(dir, port, &error)) {
+        lua_pushnil(L);
+        lua_pushlstring(L, error.data(), error.size());
+        return 2;
+    }
+    lua_pushinteger(L, server->Port());
+    HttpServers().push_back(std::move(server));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.http_stop(port): stops the server on `port`, or every server when omitted/0.
+ * @param L Lua state; optional arg 1 the port.
+ * @return Number of values pushed (1: how many servers were stopped).
+ */
+int l_http_stop(lua_State *L) {
+    const int port = static_cast<int>(luaL_optinteger(L, 1, 0));
+    auto &servers = HttpServers();
+    int stopped = 0;
+    for (auto it = servers.begin(); it != servers.end();) {
+        if (port == 0 || (*it)->Port() == port) {
+            (*it)->Stop();
+            it = servers.erase(it);
+            stopped++;
+        } else {
+            ++it;
+        }
+    }
+    lua_pushinteger(L, stopped);
+    return 1;
+}
+
+/**
+ * @brief Implements mep.http_servers(): lists the running static servers.
+ * @param L Lua state.
+ * @return Number of values pushed (1: array of {port=, root=, requests=}).
+ */
+int l_http_servers(lua_State *L) {
+    const auto &servers = HttpServers();
+    lua_createtable(L, static_cast<int>(servers.size()), 0);
+    int index = 1;
+    for (const auto &server : servers) {
+        if (!server->Running()) continue;
+        lua_createtable(L, 0, 3);
+        lua_pushinteger(L, server->Port());
+        lua_setfield(L, -2, "port");
+        lua_pushlstring(L, server->Root().data(), server->Root().size());
+        lua_setfield(L, -2, "root");
+        lua_pushinteger(L, static_cast<lua_Integer>(server->RequestCount()));
+        lua_setfield(L, -2, "requests");
+        lua_rawseti(L, -2, index++);
+    }
+    return 1;
+}
+
+// mep.url_normalize(text) -> what the omnibar would load for `text`
+// (urlutil::NormalizeOmnibarInput): "localhost:8000" -> "http://localhost:8000",
+// ":8080/x" -> "http://localhost:8080/x", "example.com" -> "https://example.com";
+// a URL with a scheme or a local path comes back unchanged.
+/**
+ * @brief Implements mep.url_normalize(text): normalizes omnibar input into a loadable target.
+ * @param L Lua state; arg 1 the typed text.
+ * @return Number of values pushed (1: the normalized target).
+ */
+int l_url_normalize(lua_State *L) {
+    const std::string out = urlutil::NormalizeOmnibarInput(luaL_checkstring(L, 1));
+    lua_pushlstring(L, out.data(), out.size());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.url_resolve(base, ref): resolves a reference against an absolute URL.
+ * @param L Lua state; arg 1 the base URL, arg 2 the reference.
+ * @return Number of values pushed (1: the absolute URL).
+ */
+int l_url_resolve(lua_State *L) {
+    const std::string out = urlutil::ResolveUrl(luaL_checkstring(L, 1), luaL_checkstring(L, 2));
+    lua_pushlstring(L, out.data(), out.size());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.html_settle([timeout_ms]): runs the focused html pane's page (timers, promises, animation frames) until it goes idle or the budget is spent.
+ * @param L Lua state; optional arg 1 is the wall-clock budget in ms (default 3000).
+ * @return 1 (pushes whether the page went idle within the budget).
+ */
+int l_html_settle(lua_State *L) {
+    Editor *e = GetEditor(L);
+    const int budget = static_cast<int>(luaL_optinteger(L, 1, 3000));
+    lua_pushboolean(L, e->SettleHtmlScripts(e->CurrentBufferId(), budget));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.html_title(): the focused html pane's document title (what a page's script last set).
+ * @param L Lua state.
+ * @return Number of values pushed (1: the title, or nil when the focused buffer isn't an html pane).
+ */
+int l_html_title(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int buffer_id = ed->CurrentBufferId();
+    if (!ed->IsHtmlBuffer(buffer_id)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const std::string title = ed->HtmlTitle(buffer_id);
+    lua_pushlstring(L, title.data(), title.size());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.html_omnibar_edit(): puts the focused html pane's omnibar into edit mode.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_html_omnibar_edit(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->BeginHtmlOmnibarEdit(ed->CurrentBufferId());
+    return 0;
 }
 
 // mep.html_open(path [, origin]): opens `path` (a real local .html file's
@@ -7907,6 +8768,34 @@ int l_toggle_zen(lua_State *L) {
     GetEditor(L)->ToggleZenMode();
     return 0;
 }
+
+/**
+ * @brief Implements mep.menubar_toggle(): shows/hides the top menu bar, the same thing tapping mod1 does.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_menubar_toggle(lua_State *L) {
+    GetEditor(L)->ToggleMenuBar();
+    return 0;
+}
+/**
+ * @brief Implements mep.menubar_set_visible(on): shows or hides the top menu bar outright.
+ * @param L Lua state; arg 1 is whether the bar is shown.
+ * @return Number of values pushed (0).
+ */
+int l_menubar_set_visible(lua_State *L) {
+    GetEditor(L)->SetMenuBarVisible(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+/**
+ * @brief Implements mep.menubar_visible(): returns whether the top menu bar is currently shown.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the visibility flag).
+ */
+int l_menubar_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->IsMenuBarVisible() ? 1 : 0);
+    return 1;
+}
 // mep.sheet_next() / mep.sheet_prev() -- Lua-reachable equivalent of the
 // Ctrl-PageDown/Ctrl-PageUp keys HandleSheetNormalInput already binds
 // (spreadsheet-pane Phase 4), for whichkey/custom-mapping consumers.
@@ -7974,25 +8863,33 @@ int l_set_leader(lua_State *L) {
     return 0;
 }
 
-// mep.leader_map(sequence, description, fn): binds a key sequence typed
-// after the leader (e.g. mep.leader_map('ff', 'Find files', mep.find_files)).
+// mep.leader_map(sequence, description, fn[, icon[, icon_hl]]): binds a key
+// sequence typed after the leader (e.g. mep.leader_map('ff', 'Find files',
+// mep.find_files)). `icon` is an optional Nerd Font codepoint and `icon_hl`
+// names its optional highlight group in the which-key popup.
 int l_leader_map(lua_State *L) {
     const char *sequence = luaL_checkstring(L, 1);
     const char *description = luaL_checkstring(L, 2);
     luaL_checktype(L, 3, LUA_TFUNCTION);
     lua_pushvalue(L, 3);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    GetEditor(L)->RegisterWhichKey(sequence, description, ref);
+    int icon = lua_isnoneornil(L, 4) ? 0 : static_cast<int>(luaL_checkinteger(L, 4));
+    const char *icon_hl = lua_isnoneornil(L, 5) ? "" : luaL_checkstring(L, 5);
+    GetEditor(L)->RegisterWhichKey(sequence, description, ref, icon, icon_hl);
     return 0;
 }
 
-// mep.leader_group(prefix, label): names a group of leader.map bindings
+// mep.leader_group(prefix, label[, icon[, icon_hl]]): names a group of leader.map bindings
 // sharing `prefix` (e.g. mep.leader_group('o', 'org')) so the whichkey
-// popup shows one collapsed "o  +org" row instead of every leaf under it.
+// popup shows one collapsed, optionally icon-decorated row instead of every
+// leaf under it. `icon`, when supplied, is a Nerd Font codepoint; `icon_hl`
+// optionally names the highlight group used to color it.
 int l_leader_group(lua_State *L) {
     const char *prefix = luaL_checkstring(L, 1);
     const char *label = luaL_checkstring(L, 2);
-    GetEditor(L)->RegisterWhichKeyGroup(prefix, label);
+    int icon = lua_isnoneornil(L, 3) ? 0 : static_cast<int>(luaL_checkinteger(L, 3));
+    const char *icon_hl = lua_isnoneornil(L, 4) ? "" : luaL_checkstring(L, 4);
+    GetEditor(L)->RegisterWhichKeyGroup(prefix, label, icon, icon_hl);
     return 0;
 }
 
@@ -8880,6 +9777,7 @@ const luaL_Reg kMepFuncs[] = {
     {"command", l_command},
     {"map", l_map},
     {"mapping_descriptions", l_mapping_descriptions},
+    {"mod1_name", l_mod1_name},
     {"leader_bindings", l_leader_bindings},
     {"map_mod1", l_map_mod1},
     {"map_g", l_map_g},
@@ -8899,7 +9797,9 @@ const luaL_Reg kMepFuncs[] = {
     {"pane_split_right", l_pane_split_right},
     {"vsplit_right", l_vsplit_right},
     {"split_below", l_split_below},
+    {"tab_new", l_tab_new},
     {"cmd", l_cmd},
+    {"pdf_note_latex_done", l_pdf_note_latex_done},
     {"open", l_open},
     {"pick_pane_open", l_pick_pane_open},
     {"terminal_here", l_terminal_here},
@@ -8925,6 +9825,13 @@ const luaL_Reg kMepFuncs[] = {
     {"notebook_cell_count", l_notebook_cell_count},
     {"notebook_goto_cell", l_notebook_goto_cell},
     {"notebook_set_python", l_notebook_set_python},
+    {"notebook_set_kernels", l_notebook_set_kernels},
+    {"notebook_kernels", l_notebook_kernels},
+    {"notebook_cell_kernel", l_notebook_cell_kernel},
+    {"notebook_set_cell_kernel", l_notebook_set_cell_kernel},
+    {"notebook_default_kernel", l_notebook_default_kernel},
+    {"notebook_cell_language", l_notebook_cell_language},
+    {"notebook_lsp_context", l_notebook_lsp_context},
     {"notebook_status", l_notebook_status},
     {"notebook_cell_outputs", l_notebook_cell_outputs},
     {"job_write", l_job_write},
@@ -8991,6 +9898,10 @@ const luaL_Reg kMepFuncs[] = {
     {"ansi_render", l_ansi_render},
     {"leetcode_html_to_text", l_leetcode_html_to_text},
     {"git_gutter_refresh_native", l_git_gutter_refresh_native},
+    {"git_gutter_tick", l_git_gutter_tick},
+    {"git_gutter_invalidate", l_git_gutter_invalidate},
+    {"git_gutter_clear", l_git_gutter_clear},
+    {"git_gutter_summary", l_git_gutter_summary},
     {"git_next_hunk_row", l_git_next_hunk_row},
     {"git_prev_hunk_row", l_git_prev_hunk_row},
     {"git_preview_hunk_text", l_git_preview_hunk_text},
@@ -9008,9 +9919,14 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_set_on_enter", l_buffer_set_on_enter},
     {"buffer_set_on_write", l_buffer_set_on_write},
     {"buffer_set_on_image_toggle", l_buffer_set_on_image_toggle},
+    {"buffer_set_on_key", l_buffer_set_on_key},
+    {"buffer_get_lines", l_buffer_get_lines},
     {"buffer_set_filename", l_buffer_set_filename},
     {"buffer_set_hide_line_numbers", l_buffer_set_hide_line_numbers},
     {"buffer_set_wrap", l_buffer_set_wrap},
+    {"buffer_set_row_cursor", l_buffer_set_row_cursor},
+    {"buffer_set_unlisted", l_buffer_set_unlisted},
+    {"buffer_set_footer", l_buffer_set_footer},
     {"buffer_modified", l_buffer_modified},
     {"fold_create", l_fold_create},
     {"fold_clear_provider", l_fold_clear_provider},
@@ -9061,6 +9977,8 @@ const luaL_Reg kMepFuncs[] = {
     {"buf_set_latex_row", l_buf_set_latex_row},
     {"buf_clear_latex_rows", l_buf_clear_latex_rows},
     {"org_latex_toggle", l_org_latex_toggle},
+    {"org_block_cards_toggle", l_org_block_cards_toggle},
+    {"org_block_cards_visible", l_org_block_cards_visible},
     {"org_latex_visible", l_org_latex_visible},
     {"buf_add_latex_inline", l_buf_add_latex_inline},
     {"buf_clear_latex_inline", l_buf_clear_latex_inline},
@@ -9077,7 +9995,13 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_close", l_sidebar_close},
     {"sidebar_toggle", l_sidebar_toggle},
     {"sidebar_is_open", l_sidebar_is_open},
+    {"sidebar_for_buffer", l_sidebar_for_buffer},
+    {"buffer_on_screen", l_buffer_on_screen},
     {"sidebar_set_on_key", l_sidebar_set_on_key},
+    {"sidebar_set_help", l_sidebar_set_help},
+    {"sidebar_set_double_click", l_sidebar_set_double_click},
+    {"sidebar_toggle_help", l_sidebar_toggle_help},
+    {"sidebar_help_open", l_sidebar_help_open},
     {"sidebar_set_tabs", l_sidebar_set_tabs},
     {"sidebar_set_on_tab", l_sidebar_set_on_tab},
     {"sidebar_set_active_tab", l_sidebar_set_active_tab},
@@ -9085,8 +10009,10 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_set_on_preview", l_sidebar_set_on_preview},
     {"sidebar_set_preview", l_sidebar_set_preview},
     {"sidebar_popout_toggle", l_sidebar_popout_toggle},
+    {"pane_maximize_toggle", l_pane_maximize_toggle},
     {"notify_sidebar_id", l_notify_sidebar_id},
     {"notify_refresh_pane", l_notify_refresh_pane},
+    {"sidebar_popout_open", l_sidebar_popout_open},
     {"sidebar_popout_close", l_sidebar_popout_close},
     {"sidebar_is_popout", l_sidebar_is_popout},
     {"read_lines", l_read_lines},
@@ -9098,11 +10024,15 @@ const luaL_Reg kMepFuncs[] = {
     {"picker_set_items", l_picker_set_items},
     {"picker_set_preview", l_picker_set_preview},
     {"picker_close", l_picker_close},
+    {"picker_set_hint", l_picker_set_hint},
+    {"picker_set_tabs", l_picker_set_tabs},
+    {"picker_is_open", l_picker_is_open},
     {"roam_graph_open", l_roam_graph_open},
     {"roam_graph_close", l_roam_graph_close},
     {"fuzzy_score", l_fuzzy_score},
     {"buffer_list", l_buffer_list},
     {"buffer_switch", l_buffer_switch},
+    {"buffer_open_beside", l_buffer_open_beside},
     {"buffer_filename", l_buffer_filename},
     {"buffer_count", l_buffer_count},
     {"pane_buffers", l_pane_buffers},
@@ -9125,6 +10055,9 @@ const luaL_Reg kMepFuncs[] = {
     {"set_winbar_click", l_set_winbar_click},
     {"scratch", l_scratch},
     {"toggle_zen", l_toggle_zen},
+    {"menubar_toggle", l_menubar_toggle},
+    {"menubar_set_visible", l_menubar_set_visible},
+    {"menubar_visible", l_menubar_visible},
     {"sheet_next", l_sheet_next},
     {"sheet_prev", l_sheet_prev},
     {"on_frame", l_on_frame},
@@ -9176,6 +10109,15 @@ const luaL_Reg kMepFuncs[] = {
     {"diff_lines", l_diff_lines},
     {"filename", l_filename},
     {"html_open", l_html_open},
+    {"http_get", l_http_get},
+    {"http_serve", l_http_serve},
+    {"http_stop", l_http_stop},
+    {"http_servers", l_http_servers},
+    {"url_normalize", l_url_normalize},
+    {"url_resolve", l_url_resolve},
+    {"html_title", l_html_title},
+    {"html_settle", l_html_settle},
+    {"html_omnibar_edit", l_html_omnibar_edit},
     {"html_current_origin", l_html_current_origin},
     {"html_reload", l_html_reload},
     {"html_navigate", l_html_navigate},
@@ -9191,6 +10133,11 @@ const luaL_Reg kMepFuncs[] = {
     {"set_completion_accept_hook", l_set_completion_accept_hook},
     {"set_completion_resolve_hook", l_set_completion_resolve_hook},
     {"set_insert_tab_hook", l_set_insert_tab_hook},
+    {"set_inline_suggestion", l_set_inline_suggestion},
+    {"clear_inline_suggestion", l_clear_inline_suggestion},
+    {"inline_suggestion", l_inline_suggestion},
+    {"accept_inline_suggestion", l_accept_inline_suggestion},
+    {"set_inline_suggestion_accept_hook", l_set_inline_suggestion_accept_hook},
     {"set_on_directory_open", l_set_on_directory_open},
     {"lsp_start", l_lsp_start},
     {"lsp_request", l_lsp_request},
@@ -9275,6 +10222,10 @@ LuaEnv::LuaEnv(Editor *editor) : editor_(editor) {
     // that sentinel itself.
     lua_pushlightuserdata(L_, kJsonNullSentinel);
     lua_setfield(L_, -2, "json_null");
+    // ...and one for the empty JSON array, for the same reason an empty
+    // Lua table can't stand in for it -- see kJsonEmptyArraySentinel.
+    lua_pushlightuserdata(L_, kJsonEmptyArraySentinel);
+    lua_setfield(L_, -2, "json_empty_array");
     lua_setglobal(L_, "mep");
 
     lua_pushcfunction(L_, l_print);
@@ -9376,6 +10327,21 @@ void LuaEnv::CallRefWithString(int ref, const std::string &arg) {
     lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
     lua_pushlstring(L_, arg.data(), arg.size());
     if (lua_pcall(L_, 1, 0, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+    }
+}
+
+void LuaEnv::CallGlobal2Strings(const char *fn, const std::string &a, const std::string &b) {
+    lua_getglobal(L_, fn);
+    if (!lua_isfunction(L_, -1)) {
+        lua_pop(L_, 1);
+        return;
+    }
+    lua_pushlstring(L_, a.data(), a.size());
+    lua_pushlstring(L_, b.data(), b.size());
+    if (lua_pcall(L_, 2, 0, 0) != LUA_OK) {
         const char *msg = lua_tostring(L_, -1);
         if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
         lua_pop(L_, 1);
@@ -9543,6 +10509,21 @@ bool LuaEnv::CallRefWithBoolForBool(int ref, bool arg) {
     if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return false;
     lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
     lua_pushboolean(L_, arg);
+    if (lua_pcall(L_, 1, 1, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+        return false;
+    }
+    bool result = lua_toboolean(L_, -1);
+    lua_pop(L_, 1);
+    return result;
+}
+
+bool LuaEnv::CallRefWithStringForBool(int ref, const std::string &arg) {
+    if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return false;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    lua_pushlstring(L_, arg.data(), arg.size());
     if (lua_pcall(L_, 1, 1, 0) != LUA_OK) {
         const char *msg = lua_tostring(L_, -1);
         if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));

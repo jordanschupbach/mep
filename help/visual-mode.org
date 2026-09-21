@@ -1,0 +1,67 @@
+#+TITLE: Visual modes
+#+HTML_HEAD: <meta name="help-section" content="Editing">
+#+HTML_HEAD: <meta name="help-order" content="60">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Select, then act
+
+Visual mode inverts the usual order: instead of naming a range up front
+(=d2w=), you select it and watch it highlight, then press the operator.
+Useful whenever the range is easier to see than to describe.
+
+| Key      | Selects by     |
+|----------+----------------|
+| =v=      | character      |
+| =V=      | whole lines    |
+| =Ctrl-V= | rectangle      |
+
+Press the same key again, or =Esc=, to leave. Any [[file:motions.html][motion]] extends the
+selection, and a text object sets it outright: =viw= selects a word, =vi(=
+the inside of a parenthesised group.
+
+* Acting on a selection
+
+Every [[file:operators.html][operator]] works: =d= deletes it, =y= yanks it, =c= changes it, =gu=
+and =gU= change its case, =gq= reflows it, =~= toggles case.
+
+=>= and =<= indent, and they *keep the selection active* -- press =>= three
+times to indent three steps, matching Vim.
+
+* Moving the other end
+
+=o= swaps the cursor to the opposite end of the selection. Useful when you
+have selected too much in one direction and want to adjust the other end
+without starting over.
+
+* Visual Block
+
+=Ctrl-V= selects a rectangle, which is what you want for columns.
+
+| Key | In Visual Block                                       |
+|-----+-------------------------------------------------------|
+| =d= | delete the rectangle                                  |
+| =y= | yank the rectangle                                    |
+| =I= | insert on every row of the block at once              |
+| =A= | append on every row of the block at once              |
+| =$= | make the right edge ragged -- each row's own real end |
+
+=$= before =A= is the idiom for appending to the end of every line in a
+range regardless of how long each one is.
+
+* Reselecting
+
+=gv= restores the last Visual selection, including its mode. Handy after an
+operation that dropped the selection, or to repeat an action on the same
+region.
+
+* A gap worth knowing
+
+Changes made from Visual mode are not currently captured by =.= or by macro
+recording. Both work for Normal-mode changes; a Visual-mode change is simply
+not recorded. Where repetition matters, prefer the operator-plus-motion form.
+
+* See also
+
+- [[file:operators.html][Operators and text objects]] -- the operators, in full.
+- [[file:undo-repeat-macros.html][Undo, repeat and macros]] -- more on the repetition gap.
+- [[file:motions.html][Motions]] -- extending a selection.

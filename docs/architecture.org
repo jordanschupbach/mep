@@ -1,0 +1,134 @@
+#+TITLE: How mep is put together
+
+A map of the source tree, for anyone changing it. mep has no UI toolkit,
+no browser engine, no PDF library and no game engine underneath it: the
+window, the renderer, the font rasterizer, the document parsers and the
+terminal emulator are all in =src/=. The only third-party code is Lua,
+Tree-sitter (with its grammars) and a handful of small vendored parsers
+under =third_party/=.
+
+* The graphics layer
+
+=src/gfx/= is the whole platform/rendering layer, behind one backend
+interface (=backend.h=). There is no raylib, GLFW or SDL in the build.
+
+| Area | Files |
+|------+-------|
+| Window, input, GL context | =backend_native.cpp= (X11 + GLX), =backend_native_emscripten_glfw.cpp= (WebGL2 via Emscripten) |
+| 2D and 3D renderers | =backend_native_renderer2d.cpp=, =backend_native_renderer3d.cpp=, =gl_shader.cpp=, =gl_loader.cpp= |
+| Text | =backend_native_text.cpp=, =truetype.cpp=, =cff.cpp=, =type1.cpp=, =rasterizer.cpp= |
+| Model loading | =backend_native_model_{gltf,obj,iqm,m3d,vox}.cpp= |
+| Audio | =backend_native_audio.cpp= (ALSA) |
+| Math | =vecmath.h= (no backend dependency at all) |
+
+The embedded font is JetBrains Mono Regular, compiled into the binary as
+=src/font_data.h= so both builds start with a real font and no asset
+fetch or preload step (license:
+=third_party_licenses/JetBrainsMono-OFL.txt=).
+
+* The editor core
+
+- =src/editor.h= / =src/editor.cpp= — modes, motions, operators,
+  per-buffer undo, buffers, panes, tabs, workspaces and projects
+  (including per-project session save/restore), the =:= command line,
+  and the Lua-facing API surface. Deliberately kept free of any
+  rendering dependency.
+- =src/main.cpp= — window init, the frame loop, and all drawing: it
+  recursively renders the active workspace's tab's split-pane tree, the
+  =[project] [workspace]= tab bar, every sidebar and every document
+  mode's own pane. It also holds mep's built-in configuration, which is
+  Lua source embedded as =kBuiltin*= string literals (the file tree, git
+  panel, LSP client, org tooling, learning games and the rest are all
+  written in that Lua, not in C++).
+- =src/lua_env.h= / =src/lua_env.cpp= — the embedded Lua 5.4 state and
+  the =mep.*= C bindings. See [[file:lua-api.org][the Lua API]].
+- =src/workspace_git.h= / =src/workspace_git.cpp= — pure helpers behind
+  git-worktree-backed workspaces (worktree dir derivation, =git worktree
+  list --porcelain= parsing, name validation, session-file paths);
+  unit-tested by =mep-workspace-test=.
+- =src/treesitter.cpp= — syntax highlighting. A core set of grammars is
+  compiled in (see =TS_GRAMMAR_NAMES= in =CMakeLists.txt=); every other
+  language is =dlopen()=ed at runtime from =$MEP_TS_PARSER_PATH=.
+- =src/regex.cpp= — the dependency-free regex engine behind =/=, =:s=
+  and =:g=.
+
+* Document formats
+
+Each of these turns a file into a pane mode of its own, and each is
+implemented here rather than bound to a library:
+
+| Format | Files |
+|--------+-------|
+| PDF | =pdf_{object,xref,crypt,filters,document,content,font,encodings,text,outline,links,doc}.cpp= |
+| HTML/CSS/JS (the browser pane) | =html_doc.cpp=, =js_engine.cpp=, =svg_doc.cpp=, =http_client.cpp=, =http_server.cpp= |
+| Images | =image_codec.cpp=, =png_codec.cpp=, =jpeg_codec.cpp=, =gif_codec.cpp=, =bmp_codec.cpp=, =image_doc.cpp=, =image_procgen.cpp= |
+| 3D scenes | =model3d_doc.cpp=, =model3d_blend_import.cpp= |
+| Org | =org_doc.cpp= |
+| Notebooks | =notebook_doc.cpp= |
+| Office and spreadsheets | =office_doc.cpp=, =office_odt.cpp=, =sheet_doc.cpp=, =sheet_xlsx.cpp=, =sheet_ods.cpp=, =formula.cpp=, =zip_archive.cpp=, =xml_doc.cpp= |
+| Video and audio | =mov_container.cpp=, =wav_doc.cpp= |
+| Terminal | =vterm.cpp= |
+
+* Agents and collaboration
+
+- =src/agent_rpc.cpp= — the agent-control socket
+  (=~/.local/share/mep/agent-sockets/<pid>.sock=), a Content-Length-framed
+  JSON-RPC surface covering buffers, panes, workspaces, the image editor
+  and the 3D modeler. Full reference: =MEP_AGENT_API.md=.
+- =src/agent_ui_input.cpp= — synthetic mouse/keyboard input (XTest)
+  behind the socket's =ui.*= methods.
+- =src/mcp_bridge.cpp= — the =mep-mcp= binary: a dependency-free MCP
+  server that is just another client of that socket.
+- =src/collab_crdt.cpp=, =collab_session.cpp=, =collab_websocket.cpp=,
+  =collab_relay.cpp= — CRDT-based shared editing and the =mep-collabd=
+  relay. See [[file:collaboration.org][Collaboration]].
+
+* Build targets
+
+=mep= (the editor), =mep-mcp= (MCP bridge), =mep-collabd= (collab relay),
+plus around thirty =*-test= and =*-bench= binaries. Every test and
+benchmark target is =EXCLUDE_FROM_ALL=, so a plain build produces only the
+three shipped binaries; =just test= builds and runs the windowless ones,
+=just test-gui= the two that drive a real window, and =just bench= the
+performance suite.
+
+* The wasm build and its launcher
+
+=just run-wasm= builds the Emscripten target and opens it in a native
+window through Deno + [[https://github.com/webview/webview_deno][webview]]. =build/web/mep.html= is opened directly
+over =file://= rather than served: the wasm is embedded into the page
+(=-sSINGLE_FILE=1=), so there is no separate =.wasm= fetch a =file://=
+origin would have to make, and the window opens with no server setup at
+all.
+
+File I/O is the part a browser cannot do, so it goes through a bridge.
+=:e=/=:w=/=:source= in the wasm build make a synchronous
+=XMLHttpRequest= to a loopback-only HTTP server (=launcher/serve.ts=)
+that does the real read/write, from =EM_JS= calls in =src/editor.cpp=.
+Synchronous XHR rather than an awaited =fetch()= specifically so
+Emscripten's Asyncify never has to be linked — see the comment above
+=mep_js_read_file= for the full reasoning. Opening =build/web/mep.html=
+in an ordinary browser tab has no such server behind it and no
+=?bridgePort=...= in its URL, so those commands fail with a plain
+read/write error there, exactly as native file I/O is simply unavailable
+in that context.
+
+The bridge does not use =webview.bind()=, despite that being the more
+obvious choice. =webview_run()= — the call that pumps the window for as
+long as it is open — is a plain *synchronous* Deno FFI call, and it
+blocks its entire isolate's event loop for that whole duration: nothing
+async in that isolate, including a =bind()= callback's own
+=await Deno.writeTextFile(...)= settling and its reply reaching the page,
+reliably progresses while it runs. Confirmed concretely — even a =curl=
+from outside the process to an HTTP server started in the *same* script
+as =webview.run()= hung indefinitely with the window open.
+=launcher/webview_worker.ts= therefore isolates =webview.run()= in its own
+Deno Worker (a separate OS thread with its own V8 isolate), so
+=serve.ts='s HTTP server on the main thread stays entirely free of that
+block and the page's requests reach it as ordinary loopback HTTP.
+
+- =web/shell.html= — the minimal HTML shell the wasm build is embedded
+  into; also reads the file-bridge port from the page's URL query string.
+- =launcher/serve.ts= — main thread: the loopback-only file-bridge HTTP
+  server, which then hands off to =webview_worker.ts=.
+- =launcher/webview_worker.ts= — the worker that owns =webview.run()=.

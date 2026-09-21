@@ -65,6 +65,14 @@ void FlattenCubic(std::vector<Edge> &edges, float x0, float y0, float c1x, float
 std::vector<unsigned char> Rasterize(std::vector<Edge> &edges, int width, int height,
                                       FillRule rule = FillRule::kNonZero);
 
+// Same, but for just the `width`x`height` window of raster space whose
+// top-left is (x0, y0): the returned buffer's (0, 0) is raster (x0, y0).
+// Cost scales with that window and the edges' own y extent, not with
+// the whole target -- a PDF path touching a few pixels of a page
+// rasterizes just those. Reorders `edges` (sorted by ymin).
+std::vector<unsigned char> RasterizeRegion(std::vector<Edge> &edges, int x0, int y0, int width, int height,
+                                           FillRule rule = FillRule::kNonZero);
+
 // A cubic-Bezier outline contour in font units (y-up): the shared output
 // shape of the CFF/Type 2 (gfx/cff.cpp) and Type 1 (gfx/type1.cpp)
 // charstring interpreters, so both feed the one RasterizeOutline below

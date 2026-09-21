@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>10 - ES modules</title>
+<link rel="stylesheet" href="../shared/style.css">
+<script src="../shared/harness.js"></script>
+</head>
+<body>
+<nav><a href="../index.html">All levels</a></nav>
+<h1>10 - ES modules</h1>
+<p class="lead">A module graph loaded with &lt;script type="module"&gt;: static imports, re-exports, a default export, and a dynamic import().</p>
+<div class="card"><p id="out">(module has not run)</p></div>
+<script>Harness.start('10-modules', 7);</script>
+<script type="module" src="main.js"></script>
+<script>
+// Classic scripts run before deferred module scripts; if no module ever
+// runs, this timeout reports it instead of leaving the page "RUNNING".
+setTimeout(function () {
+  if (!window.__moduleRan) { Harness.check('module script executed', false, 'type=module never ran'); Harness.done(); }
+}, 1500);
+</script>
+</body>
+</html>

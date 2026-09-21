@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The command line</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Editing">
+<meta name="help-order" content="120">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The command line</h1>
+<h1>Using it</h1>
+<p><code>:</code> opens the command line at the bottom of the window. Type a command and
+press Enter; <code>Esc</code> cancels.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td>Up / Down</td><td>walk through command history</td></tr>
+<tr><td><code>Tab</code></td><td>complete the command name, or a file path</td></tr>
+<tr><td><code>Ctrl-R {reg}</code></td><td>insert a register's text</td></tr>
+<tr><td><code>Ctrl-Shift-V</code></td><td>paste the clipboard</td></tr>
+<tr><td><code>Esc</code></td><td>cancel</td></tr>
+</table>
+<p>Completion knows which commands take a path and offers directory entries
+for those, and command names everywhere else.</p>
+<p>The <code>/</code> and <code>?</code> search prompts behave the same way, with their own history.
+Text inserted at either prompt is kept to a single printable line.</p>
+<h1>Files and windows</h1>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:e {file}</code></td><td>open a file -- a path that does not exist yet starts a new buffer</td></tr>
+<tr><td><code>:w [file]</code></td><td>write, optionally to a different path</td></tr>
+<tr><td><code>:wa</code></td><td>write every modified buffer that has a name</td></tr>
+<tr><td><code>:q</code> <code>:q!</code></td><td>close the pane, discarding changes with <code>!</code></td></tr>
+<tr><td><code>:qa</code> <code>:qa!</code></td><td>quit everything</td></tr>
+<tr><td><code>:wq</code> <code>:x</code></td><td>write, then close</td></tr>
+<tr><td><code>:wqa</code> <code>:xa</code></td><td>write everything, then quit</td></tr>
+<tr><td><code>:split</code> <code>:vsplit</code></td><td>split the current pane</td></tr>
+<tr><td><code>:close</code></td><td>close the current pane</td></tr>
+<tr><td><code>:tabnew</code> <code>:tabdelete</code></td><td>manage tabs</td></tr>
+<tr><td><code>:bnext</code> <code>:bprevious</code> <code>:bdelete</code></td><td>cycle or close buffers</td></tr>
+</table>
+<p><code>:qa</code> refuses if <b>any</b> buffer anywhere has unsaved changes, so nothing
+hidden in another workspace is lost silently.</p>
+<h1>Jumping and running</h1>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:42</code></td><td>go to line 42</td></tr>
+<tr><td><code>:normal {keys}</code></td><td>run <code>keys</code> as literal Normal-mode input</td></tr>
+<tr><td><code>:lua {code}</code></td><td>run Lua</td></tr>
+<tr><td><code>:source {file}</code></td><td>run a Lua file</td></tr>
+<tr><td><code>:terminal</code></td><td>open a shell in a split below</td></tr>
+</table>
+<p><code>:normal</code> is the natural partner for <code>:g</code>: <code>:g/TODO/normal A -- done</code> appends
+to every matching line. <code>:norm</code> is the short form.</p>
+<h1>Options</h1>
+<p><code>:set</code> changes an option for the session.</p>
+<table>
+<tr><th>Option</th><th>Default</th><th>Does</th></tr>
+<tr><td><code>number</code> / <code>nu</code></td><td>on</td><td>line numbers in the gutter</td></tr>
+<tr><td><code>relativenumber</code> / <code>rnu</code></td><td>on</td><td>distances instead of numbers</td></tr>
+<tr><td><code>cursorline</code> / <code>cul</code></td><td></td><td>highlight the cursor's line</td></tr>
+<tr><td><code>wrap</code></td><td>on</td><td>soft-wrap long lines</td></tr>
+<tr><td><code>ignorecase</code></td><td>off</td><td>case-insensitive search and <code>:s</code></td></tr>
+<tr><td><code>wrapscan</code></td><td>on</td><td>search wraps around the buffer</td></tr>
+<tr><td><code>textwidth=N</code> / <code>tw=N</code></td><td>80</td><td>the column <code>gq</code> wraps to</td></tr>
+</table>
+<p>Prefix a boolean option with <code>no</code> to turn it off: <code>:set nowrap</code>,
+<code>:set nonumber norelativenumber</code>.</p>
+<p>For anything persistent, set it in <code>~/.config/mep/init.lua</code> instead.</p>
+<h1>Finding a command</h1>
+<p>Almost every feature has a <code>:Mep...</code> command, and there are over two hundred
+of them. Three ways to find the one you want:</p>
+<ul>
+<li><code>Tab</code> at the command line completes command names.</li>
+<li><code>&lt;Space&gt;</code> shows the which-key popup of leader bindings, which is how most commands are reached in practice.</li>
+<li><code>&lt;leader&gt;hk</code> lists every key binding currently in effect.</li>
+</ul>
+<h1>See also</h1>
+<ul>
+<li><a href="substitute.html">Substitute and global</a> -- ranges, <code>:s</code>, <code>:g</code>.</li>
+<li><a href="files.html">Files and buffers</a> -- what the file commands actually do.</li>
+<li><a href="installing.html">Installing and running</a> -- <code>init.lua</code>, for making an option stick.</li>
+</ul>
+</body>
+</html>

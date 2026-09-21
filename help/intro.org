@@ -1,24 +1,64 @@
 #+TITLE: mep Help
+#+HTML_HEAD: <meta name="help-section" content="Getting started">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
 
 * Welcome
 
-This is the starting point for mep's built-in help workspace. Help pages are
-rendered HTML documents, generated from Org sources maintained with the
-editor's normal Org tooling.
+mep is a modal editor. It opens with an empty buffer and expects you to press
+=i= before you can type; everything else follows from that one idea.
 
-Use the left sidebar or click a page link to move between pages.
+It is also, by now, a good deal more than a text editor: it renders and edits
+Org and Markdown, PDFs, Word documents, spreadsheets, Jupyter notebooks,
+images, 3D models and web pages, each in an ordinary pane, and it has its own
+browser, its own Lua scripting layer, and its own agent protocol.
 
-* Start here
+This is the manual. The sidebar on the left groups every page by topic; click
+a page to read it, or press =f= to label every link on screen and jump to one
+by typing its letter.
 
-- [[file:editing.html][Editing basics]] explains the normal editing model.
-- [[file:shortcuts.html][Keyboard shortcuts]] lists the initial help bindings.
-- [[file:writing-help.html][Writing help pages]] describes the document format.
+* New here
 
-* Navigation
+Read these in order. Twenty minutes gets you from nothing to comfortable.
 
-From Normal mode, press =<leader>hh= to return here at any time.  =:MepHelp=
-does the same thing.
+- [[file:first-steps.html][Your first ten minutes]] -- modes, moving, editing, saving, quitting.
+- [[file:dashboard.html][The start screen]] -- what you are looking at before you open anything.
+- [[file:installing.html][Installing and running]] -- building mep, the command line, =init.lua=.
+- [[file:vim-differences.html][What is and isn't Vim]] -- read this early if you come from Vim.
 
-* Page navigation
+* Everyday use
 
-[[file:editing.html][>]]
+- [[file:editing.html][Editing basics]] -- buffers, panes and the editing model.
+- [[file:key-index.html][Key index]] -- every leader binding, and where it is documented.
+
+* Finding your way around
+
+The manual runs to a hundred pages, so there are three ways in.
+
+| Key            | Does                                                  |
+|----------------+-------------------------------------------------------|
+| =<leader>hh=   | open the page for whatever you are looking at         |
+| =<leader>hf=   | search every page title and heading                   |
+| =:help <topic>= | jump straight to a page by name                      |
+
+=<leader>hh= is contextual: press it in a notebook and you get the notebook
+page, in an R file the R mode page, in a 3D scene the modeler page. With
+nothing in particular open it brings you here.
+
+Inside a page, =f= labels every visible link so you can follow one by typing
+its letter.
+
+* Answering "how do I..." without leaving the editor
+
+| Key         | What it gives you                                            |
+|-------------+--------------------------------------------------------------|
+| =<Space>=   | the which-key popup: every leader binding, grouped and named |
+| =<leader>hk= | a searchable list of every key binding currently in effect  |
+| =:=         | the command line, with completion over every command name    |
+
+Two generated pages list everything mep has: the [[file:command-index.html][command index]] and the
+[[file:key-index.html][key index]]. Each row says which page documents that command or key.
+
+* Contributing to this manual
+
+- [[file:writing-help.html][Writing help pages]] -- the page format, and how to add one.

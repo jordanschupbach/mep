@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glossary</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Reference">
+<meta name="help-order" content="70">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Glossary</h1>
+<h1>Terms</h1>
+<p><b>Buffer</b> -- a file's contents in memory, with its own undo history and
+modified flag. Buffers belong to the workspace they were opened in.</p>
+<p><b>Pane</b> -- a view onto a buffer. Several panes can show one buffer, sharing
+its undo history.</p>
+<p><b>Buffer tab</b> -- one of several buffers sharing a single pane, shown as a
+strip along the pane's top. Not the same as a tab.</p>
+<p><b>Tab</b> -- an independent split layout within a workspace.</p>
+<p><b>Workspace</b> -- a checkout. On a git project each workspace is its own
+worktree on its own branch. The process working directory follows the
+active one.</p>
+<p><b>Project</b> -- a directory containing workspaces. The unit whose layout is
+saved and restored.</p>
+<p><b>Sidebar</b> -- a docked panel. Sidebars on the same edge share one column,
+split vertically.</p>
+<p><b>Popout</b> -- a sidebar lifted into a large centred float with a preview
+column. <code>mod1+m</code>.</p>
+<p><b>Float</b> -- a pane drawn over everything else, over a real buffer, with all
+the usual editing available inside it.</p>
+<p><b>Picker</b> -- a centred list you filter by typing, with a preview.</p>
+<p><b>Decoration</b> -- a coloured span laid over buffer text: a syntax token, a
+squiggle, a diagnostic, a git mark.</p>
+<p><b>Namespace</b> -- a group of decorations that can be cleared together, so one
+feature's spans never disturb another's.</p>
+<p><b>Highlight group</b> -- a named colour the active theme resolves. Code names
+<code>Error</code>, not red.</p>
+<p><b>Hunk</b> -- one contiguous run of changed lines, as the git gutter sees it.</p>
+<p><b>Leader</b> -- the prefix key, <code>&lt;Space&gt;</code> by default, that opens the which-key
+popup.</p>
+<p><b>mod1</b> -- the window-management modifier, <code>Alt</code> by default, working in every
+mode.</p>
+<p><b>Language UI mode</b> -- an IDE-style layout for one language: a session plus
+panels, at most one per tab.</p>
+<p><b>Runner</b> -- a build system mep can pick targets from: just, make, ninja or
+cmake.</p>
+<p><b>Deck</b> -- an org file used as a question bank, its <code>:card:</code> headlines
+feeding the learning games.</p>
+<p><b>Card</b> -- one entry in a deck.</p>
+<p><b>Agent</b> -- an AI process driving mep through its agent socket.</p>
+<p><b>Participant</b> -- anyone present in this window: a human collaborator or an
+agent. Both appear as chips in the tab bar.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="intro.html">mep Help</a> -- the front page.</li>
+<li><a href="editing.html">Editing basics</a> -- where most of these first appear.</li>
+</ul>
+</body>
+</html>

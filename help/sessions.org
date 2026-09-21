@@ -1,0 +1,78 @@
+#+TITLE: Sessions
+#+HTML_HEAD: <meta name="help-section" content="Projects">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Your layout comes back
+
+Close mep and reopen the project, and you get what you left: the same
+workspaces, the same tabs, the same split arrangement, the same files open
+at the same cursor positions, and your terminals.
+
+Nothing has to be enabled, and layouts are not named or managed. This is why
+there is no "save layout" command worth having -- see
+[[file:layouts-zen.html][Layouts, zoom and zen]].
+
+* What is saved
+
+- every workspace, and which one was active;
+- every tab, and its split tree;
+- each pane's open files, recorded *relative to the workspace root*;
+- each buffer's cursor position;
+- terminals.
+
+Paths are stored relative to the workspace root, so a project that moves --
+or a worktree created at a different path on another machine -- still
+restores.
+
+* When it is saved
+
+Half a second after any structural change, and again on quit. The debounce
+means a burst of splitting and closing costs one write, not twenty.
+
+Closing a project saves its state on the way out, so a project you close and
+reopen within one session behaves the same as one you quit and relaunch.
+
+* Where it is saved
+
+#+begin_example
+$XDG_DATA_HOME/mep/workspaces/<project>-<hash>.json
+#+end_example
+
+=<project>= is a filesystem-safe lowercase form of the project directory's
+name, and =<hash>= is a short stable hash of its full path. The hash is what
+keeps two different checkouts that happen to share a basename -- two clones
+both called =mep= -- from overwriting each other's state.
+
+* When something has changed underneath
+
+Restoring is forgiving by design, because the world moves between sessions:
+
+- a file that no longer exists is skipped, with a message;
+- a worktree that has vanished is pruned;
+- a corrupt or unreadable state file is ignored, and you get a fresh start
+  rather than an error.
+
+None of these stop the rest of the session restoring.
+
+* Turning it off, or doing it by hand
+
+| How                                    | Effect                          |
+|----------------------------------------+---------------------------------|
+| =mep --no-session=                     | neither restore nor save, this run |
+| =mep.opt.restore_workspaces = false=   | the same, permanently           |
+| =:wssave=                              | save now                        |
+| =:wsrestore=                           | restore now                     |
+
+=--no-session= is the one to reach for when you want to open a project
+without disturbing its saved state -- a quick look at someone else's
+checkout, or a scripted run.
+
+Because =init.lua= runs before any restore, setting
+=mep.opt.restore_workspaces= there takes effect in time.
+
+* See also
+
+- [[file:workspaces.html][Workspaces]] -- what is being saved.
+- [[file:projects.html][Projects]] -- the unit state is saved per.
+- [[file:installing.html][Installing and running]] -- =--no-session= and the rest of the command line.

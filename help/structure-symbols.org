@@ -1,0 +1,43 @@
+#+TITLE: Structure and symbols
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="50">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Two outlines
+
+They look similar and answer the same question -- what is in this file --
+but they come from different places.
+
+*Structure* is built from the Treesitter parse tree. It works offline, with
+no language server, on any file with a grammar.
+
+*Symbols* comes from the language server's =documentSymbol=. It knows more
+-- inherited members, precise kinds -- but needs a server attached.
+
+* Structure
+
+| Key / command          | Does                                       |
+|------------------------+--------------------------------------------|
+| =<leader>ss=           | open the structure pane                    |
+| =<leader>sS=           | toggle a buffer-local structure split      |
+| =:MepStructure=        | the same as =<leader>ss=                   |
+| =:MepStructureSplit=   | act on the entry under the cursor          |
+| =Enter=                | jump to the entry under the cursor         |
+
+The pane tracks where you are: the entry containing the cursor is marked
+current and scrolled into view as you move around the file.
+
+Re-invoking =mep.structure_split_open()= from inside the pane jumps to the
+entry, so the same key both opens the outline and acts on it -- the pattern
+the Run/REPL pane uses too.
+
+* Symbols
+
+=:MepSymbols= opens the LSP-backed outline in a sidebar. Click an entry, or
+press Enter on it, to jump.
+
+* See also
+
+- [[file:syntax.html][Syntax highlighting]] -- the parse tree behind Structure.
+- [[file:lsp.html][Language servers]] -- what Symbols needs.
+- [[file:folding.html][Folds]] -- collapsing the same structure in place.

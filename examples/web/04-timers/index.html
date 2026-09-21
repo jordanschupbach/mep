@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>04 - Timers</title>
+<link rel="stylesheet" href="../shared/style.css">
+<script src="../shared/harness.js"></script>
+</head>
+<body>
+<nav><a href="../index.html">All levels</a></nav>
+<h1>04 - Timers and the event loop</h1>
+<p class="lead">A live clock and a moving bar; the checks need the page to keep running after load.</p>
+<div class="card">
+  <p>Ticks: <span id="ticks">0</span> &nbsp; Clock: <span id="clock">--:--:--</span></p>
+  <div style="border: 1px solid #9fb3c8; width: 300px; height: 14px;"><div id="bar" style="background: #1d6fb8; height: 14px; width: 0px;"></div></div>
+</div>
+<script>
+Harness.start('04-timers', 7);
+var order = [];
+setTimeout(function () { order.push('timeout0'); }, 0);
+Promise.resolve().then(function () { order.push('microtask'); });
+order.push('sync');
+
+setTimeout(function () {
+  Harness.check('setTimeout fires', true);
+  Harness.check('microtask runs before a 0ms timeout', order.join(',') === 'sync,microtask,timeout0', order.join(','));
+}, 30);
+
+var cancelled = true;
+var t = setTimeout(function () { cancelled = false; }, 20);
+clearTimeout(t);
+
+var ticks = 0;
+var interval = setInterval(function () {
+  ticks++;
+  document.getElementById('ticks').textContent = String(ticks);
+  var d = new Date();
+  document.getElementById('clock').textContent = d.toTimeString().slice(0, 8);
+  if (ticks === 3) {
+    clearInterval(interval);
+    Harness.check('setInterval fires repeatedly', true);
+    setTimeout(function () {
+      Harness.check('clearInterval stops it', ticks === 3, 'ticks=' + ticks);
+      Harness.check('clearTimeout cancels', cancelled === true);
+    }, 120);
+  }
+}, 25);
+
+var frames = 0;
+function frame(ts) {
+  frames++;
+  document.getElementById('bar').style.width = Math.min(300, frames * 10) + 'px';
+  if (frames < 30) requestAnimationFrame(frame);
+  if (frames === 5) Harness.check('requestAnimationFrame loops', typeof ts === 'number', 'ts=' + ts);
+}
+requestAnimationFrame(frame);
+
+var started = Date.now();
+setTimeout(function () {
+  var elapsed = Date.now() - started;
+  Harness.check('a 200ms timeout waits about 200ms', elapsed >= 150 && elapsed < 2000, elapsed + 'ms');
+}, 200);
+// Well after every other timer above, so nothing races the verdict.
+setTimeout(function () { Harness.done(); }, 700);
+</script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Debugging</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Running code">
+<meta name="help-order" content="60">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Debugging</h1>
+<h1>The keys</h1>
+<p>Everything is on the <code>&lt;leader&gt;d</code> group.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;dd</code></td><td>start, or continue</td></tr>
+<tr><td><code>&lt;leader&gt;db</code></td><td>toggle a breakpoint on this line</td></tr>
+<tr><td><code>&lt;leader&gt;dc</code></td><td>clear every breakpoint in the file</td></tr>
+<tr><td><code>&lt;leader&gt;dn</code></td><td>step over</td></tr>
+<tr><td><code>&lt;leader&gt;di</code></td><td>step into</td></tr>
+<tr><td><code>&lt;leader&gt;do</code></td><td>step out</td></tr>
+<tr><td><code>&lt;leader&gt;dv</code></td><td>evaluate the expression under the cursor</td></tr>
+<tr><td><code>&lt;leader&gt;dr</code></td><td>restart</td></tr>
+<tr><td><code>&lt;leader&gt;dt</code></td><td>terminate</td></tr>
+<tr><td><code>&lt;leader&gt;du</code></td><td>show or hide the debug UI</td></tr>
+</table>
+<p><code>&lt;leader&gt;dd</code> is the one key to remember: it starts a session if there is
+none and continues if there is.</p>
+<p>Commands: <code>:MepDapBreakpoint</code>, <code>:MepDapContinue</code>, <code>:MepDapTerminate</code>.</p>
+<h1>Breakpoints</h1>
+<p>A breakpoint shows as a sign in the gutter column, alongside git marks and
+diagnostics -- one mark per row, highest priority winning.</p>
+<p>Breakpoints are set before or during a session; <code>mep.dap_breakpoint_lines()</code>
+and <code>mep.dap_toggle_breakpoint()</code> reach them from Lua.</p>
+<h1>The debug UI</h1>
+<p><code>&lt;leader&gt;du</code> toggles a sidebar with three sections:</p>
+<table>
+<tr><th>Section</th><th>Shows</th></tr>
+<tr><td>Call Stack</td><td>frames; select one to see its scope</td></tr>
+<tr><td>Variables</td><td>locals and arguments for the selected frame</td></tr>
+<tr><td>Breakpoints</td><td>every breakpoint, across files</td></tr>
+</table>
+<p>Alongside it, a Debug Console pane shows the adapter's output and takes
+expressions to evaluate.</p>
+<h1>Adapters</h1>
+<p>mep speaks the Debug Adapter Protocol, so a language is debuggable when its
+adapter is installed and on <code>$PATH</code>.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.dap_r_port = <span class="tok-cyan">18721</span>   <span class="tok-comment">-- the port the R adapter listens on</span></code></pre></div>
+<h1>See also</h1>
+<ul>
+<li><a href="tests.html">Tests</a> -- usually the faster way to find the problem.</li>
+<li><a href="repl.html">REPL and send-to-terminal</a> -- for poking at code interactively.</li>
+<li><a href="sidebars.html">Sidebars</a> -- the debug UI is one.</li>
+</ul>
+</body>
+</html>

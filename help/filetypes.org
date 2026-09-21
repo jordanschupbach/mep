@@ -1,0 +1,42 @@
+#+TITLE: Filetypes
+#+HTML_HEAD: <meta name="help-section" content="Reference">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What each filetype gets
+
+| Filetype     | Syntax        | Language server              | Formatter      | Runs with |
+|--------------+---------------+------------------------------+----------------+-----------|
+| C, C++       | Treesitter    | =clangd=                     | =clang-format= | =cc= / =c++= |
+| Python       | Treesitter    | =pyright=, =basedpyright=    | =black=        | =python3= |
+| Lua          | Treesitter    | =lua-language-server=        | LSP            |           |
+| R            | Treesitter    | R's =languageserver=         | =styler=       | =Rscript= |
+| JavaScript   | Treesitter    | =typescript-language-server= | LSP            |           |
+| Markdown     | Treesitter    | =marksman=                   | LSP            |           |
+| Org          | Treesitter    |                              |                |           |
+| Go           | grammar via =just fetch-grammars= | =gopls=  | LSP            |           |
+| Rust         | grammar via =just fetch-grammars= | =rust-analyzer= | LSP     |           |
+| everything else | per-line lexer | see [[file:lsp.html][Language servers]]    | LSP if attached |          |
+
+Eight grammars are compiled in: =c=, =cpp=, =javascript=, =lua=,
+=markdown=, =org=, =python=, =r=. About fifty more are one
+=just fetch-grammars= away -- see [[file:syntax.html][Syntax highlighting]].
+
+* Test runners
+
+=gt= knows how to test Go, Python, R, C/C++ and Rust files. See [[file:tests.html][Tests]].
+
+* Snippets
+
+Sets ship for =c=, =cpp=, =go=, =lua=, =py=, =rs=, =nix= and =envrc=. See
+[[file:snippets.html][Snippets]].
+
+* Viewers
+
+Which extensions open in which viewer is on its own page -- see
+[[file:viewers-overview.html][What mep can open]].
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- all 36, with the command each needs.
+- [[file:formatting.html][Formatting]] -- adding a formatter.

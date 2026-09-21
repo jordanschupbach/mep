@@ -1,0 +1,98 @@
+#+TITLE: Substitute and global
+#+HTML_HEAD: <meta name="help-section" content="Editing">
+#+HTML_HEAD: <meta name="help-order" content="110">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Substitute
+
+#+begin_example
+:[range]s/pattern/replacement/[g]
+#+end_example
+
+Without a range it acts on the current line. The pattern is a regular
+expression, the same flavour [[file:search.html][search]] uses.
+
+| Typed                  | Does                                     |
+|------------------------+------------------------------------------|
+| =:s/old/new/=          | first match on this line                 |
+| =:s/old/new/g=         | every match on this line                 |
+| =:%s/old/new/g=        | every match in the buffer                |
+| =:5,10s/old/new/=      | lines 5 to 10                            |
+| =:.,+3s/old/new/=      | this line and the next three             |
+| =:'a,'bs/old/new/=     | between marks =a= and =b=                |
+
+=g= is the only flag. There is no =c= (confirm) and no =i= -- use
+=:set ignorecase= for case-insensitivity.
+
+The delimiter is whatever character follows the =s=, so when the pattern
+contains slashes another one saves escaping:
+
+#+begin_example
+:%s#/usr/local#/opt#g
+#+end_example
+
+* Referring to the match
+
+A replacement can refer back to what the pattern matched:
+
+| In the replacement | Means                         |
+|--------------------+-------------------------------|
+| =&= or =\0=        | the whole match               |
+| =\1= to =\9=       | that capture group            |
+
+#+begin_example
+:%s/(\w+)@(\w+)/\2 at \1/g
+#+end_example
+
+These only mean anything when the pattern actually compiled as a regex. If
+it did not, the substitution falls back to a literal splice and a =\1= in
+the replacement is just those two characters.
+
+* Ranges
+
+| Address  | Means                        |
+|----------+------------------------------|
+| =5=      | line 5                       |
+| =.=      | the current line             |
+| =$=      | the last line                |
+| =%=      | the whole buffer             |
+| =+3= =-2= | relative to the current line |
+| ='a=     | the line holding mark =a=    |
+
+* Global
+
+=:g= runs a command on every line matching a pattern; =:v= (also =:g!=) on
+every line that does *not* match.
+
+#+begin_example
+:g/TODO/d
+:v/^#/normal A;
+:g/error/t$
+#+end_example
+
+*Their pattern is a plain substring, not a regex.* This is the one place the
+two differ: =:s/a.c/x/= treats =a.c= as a pattern, while =:g/a.c/d= looks
+for the literal text =a.c=. It is an easy trap, so it is worth reading a
+=:g= pattern as literal text every time.
+
+=:g= pairs naturally with =:normal=, which runs Normal-mode keys on each
+matching line.
+
+* Line commands
+
+These take the same ranges and are often what you actually wanted:
+
+| Command          | Does                                   |
+|------------------+----------------------------------------|
+| =:d= =:delete=   | delete the range                       |
+| =:y= =:yank=     | yank the range                         |
+| =:m {addr}=      | move the range below =addr=            |
+| =:t= =:co {addr}= | copy the range below =addr=           |
+
+=:m 0= moves lines to the top of the file; =:t $= copies them to the end.
+
+* See also
+
+- [[file:search.html][Searching]] -- the pattern syntax in full.
+- [[file:command-line.html][The command line]] -- =:normal= and the rest.
+- [[file:operators.html][Operators and text objects]] -- the Normal-mode equivalents.

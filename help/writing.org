@@ -1,0 +1,54 @@
+#+TITLE: Writing prose in mep
+#+HTML_HEAD: <meta name="help-section" content="Writing">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Setting up
+
+A few options turn a code editor into a comfortable place to write:
+
+#+begin_src lua
+-- in ~/.config/mep/init.lua, or via :set for one session
+mep.cmd('set textwidth=72')
+mep.cmd('set nonumber norelativenumber')
+#+end_src
+
+Then =:MepZen= strips the interface back to the text -- no tab bar, no
+sidebars, no status line. Run it again to bring them back.
+
+* Reflowing
+
+=gq= wraps to =textwidth=. The forms worth knowing:
+
+| Keys    | Reflows                                |
+|---------+----------------------------------------|
+| =gqq=   | this line's paragraph                  |
+| =gqap=  | the paragraph around the cursor        |
+| =gqG=   | everything to the end of the file      |
+
+In Visual mode, =gq= reflows the selection.
+
+* Spelling
+
+=<leader>zt= turns spell checking on; =<leader>zn= and =<leader>zp= move
+between misspellings; =<leader>zf= fixes one and =<leader>zg= adds a word to
+your dictionary. See [[file:spell.html][Spell checking]].
+
+* Keeping time
+
+The Pomodoro chip on the [[file:status-line.html][status line]] runs 25 minutes of work and 5 of
+break; click it to start.
+
+For tracking effort against a piece of work, clock it: =<leader>tt= opens
+the Todo panel, =Enter= starts a heading's clock, and the status line shows
+a live timer. See [[file:org-clock.html][Clocking and the Todo panel]].
+
+* Getting it out
+
+An Org document exports to HTML, Markdown, plain text, PDF or ODT -- see
+[[file:org-export.html][Exporting]]. Markdown has [[file:markdown.html][its own page]].
+
+* See also
+
+- [[file:org-basics.html][Org files in mep]] -- the best-supported prose format.
+- [[file:layouts-zen.html][Layouts, zoom and zen]] -- getting the interface out of the way.

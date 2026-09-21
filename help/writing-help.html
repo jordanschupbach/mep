@@ -6,27 +6,95 @@
 <title>Writing help pages</title>
 <style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
 <script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Reference">
+<meta name="help-order" content="90">
+<link rel="stylesheet" href="help.css">
 </head>
 <body>
 <h1>Writing help pages</h1>
-
-<h1>Add a topic</h1>
-
-Create an exported <code>.html</code> page in the <code>help/</code> directory. Its
-<code>&lt;title&gt;</code> becomes the label in the Help sidebar.
-
-<h1>Link pages</h1>
-
-Use relative HTML links, for example:
-
-<a href="editing.html">Editing basics</a>
-
-Click a link to follow it. Link back to <a href="intro.html">mep Help</a> when a topic
-needs a natural return path.
-
-<h1>Page navigation</h1>
-
-<a href="shortcuts.html">&lt;</a>
-
+<h1>How the manual is built</h1>
+<p>Every page in this manual is an Org file in <code>help/</code>, exported to the <code>.html</code>
+beside it. The exported HTML is what ships and what the Help sidebar lists;
+the Org file is the source you edit.</p>
+<p>The export is done by mep itself, with no window involved:</p>
+<pre>mep --export-org help/topic.org help/topic.html</pre>
+<p><code>just help</code> runs that over every source in <code>help/</code>. Both the <code>.org</code> and the
+<code>.html</code> are committed, so a checkout has working documentation without
+needing to build anything first.</p>
+<h1>Adding a page</h1>
+<ol>
+<li>Copy <code>help/_template.org</code> to <code>help/&lt;topic&gt;.org</code>. Sources whose name starts with an underscore are skipped by the exporter, which is why the template never becomes a page of its own.</li>
+<li>Write it.</li>
+<li>Run <code>just help</code>.</li>
+<li>Commit both files.</li>
+</ol>
+<p>There is no index to update and nothing to register: the sidebar is built by
+scanning the directory.</p>
+<h1>The header</h1>
+<p>Four lines, and they are the whole per-page contract:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">org</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="org">#+TITLE: Page title
+#+HTML_HEAD: &lt;meta name="help-section" content="Getting started"&gt;
+#+HTML_HEAD: &lt;meta name="help-order" content="20"&gt;
+#+HTML_HEAD: &lt;link rel="stylesheet" href="help.css"&gt;</code></pre></div>
+<table>
+<tr><th>Keyword</th><th>What it controls</th></tr>
+<tr><td><code>#+TITLE:</code></td><td>the page heading, and its label in the sidebar</td></tr>
+<tr><td><code>help-section</code></td><td>which sidebar group the page appears under</td></tr>
+<tr><td><code>help-order</code></td><td>position within that group, lowest first</td></tr>
+<tr><td><code>help.css</code></td><td>the shared stylesheet; every page links it</td></tr>
+</table>
+<p>A page with no <code>help-section</code> still works -- it lands in an "Other" group at
+the bottom. A page with no <code>help-order</code> sorts by title among its group.</p>
+<p>The section names, in the order the sidebar shows them, are listed in
+<code>MEP_HELP_SECTION_ORDER</code> in <code>src/main.cpp</code>. A name that is not in that list
+still renders, sorted after the ones that are, so a project shipping its own
+<code>help/</code> can invent sections without patching mep.</p>
+<h1>Writing the body</h1>
+<p>Ordinary Org. Headlines become headings, <code>-</code> lists become bullet lists,
+<code>#+begin_src</code> blocks are syntax-highlighted with a copy button, and pipe
+tables become real HTML tables.</p>
+<p>Two conventions worth following:</p>
+<ul>
+<li>Lead with what the reader can do, not with how it is implemented. Mention the implementation only where it explains behaviour the reader would otherwise find surprising.</li>
+<li>Close with a <b>See also</b> section linking two or three neighbouring pages. The sidebar handles navigation; See also handles <b>related</b>, which the sidebar cannot express.</li>
+</ul>
+<p>Link to another page with a relative link to its exported name:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">org</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="org">[[file:first-steps.html][Your first ten minutes]]</code></pre></div>
+<p>Press <code>f</code> while reading a page to label every link on screen and follow one
+by typing its letter.</p>
+<h1>Emphasis, and the characters that fight it</h1>
+<p>Org's markers are <code>*bold*</code>, <code>/italic/</code>, <code>_underline_</code>, <code>+strikethrough+</code>,
+<code>=verbatim=</code> and <code>~code~</code>. The exporter implements org's real rules about
+where a marker may open and close, which is what stops <code>/usr/bin/env</code>,
+<code>snake_case_name</code> and <code>5+3+2</code> from turning into emphasis. You can write those
+in prose without escaping anything.</p>
+<p>Wrap anything the reader would type -- a key, a command, a path, an option --
+in <code>=verbatim=</code> markers. It is the most common markup in this manual.</p>
+<h1>Checking your work</h1>
+<pre>just help-check</pre>
+<p>It verifies that every <code>.html</code> is exactly what its <code>.org</code> exports today, that
+every page declares a title and a section, and that every internal link
+resolves. It also reports how much of mep's command and key surface the
+manual mentions. <code>just test</code> runs it too.</p>
+<p>If it says a page is stale, you edited the Org and forgot <code>just help</code>.</p>
+<h1>Generated pages</h1>
+<p>Four pages are not written by hand. <code>scripts/gen_reference_pages.py</code> builds
+the six Lua API pages from <code>src/lua_env.cpp</code>'s binding table, and the
+command and key indexes from the command and <code>leader_map</code> registrations.</p>
+<p><code>just help</code> runs the generator before exporting, so editing those <code>.org</code>
+files directly is pointless -- the next build overwrites them. Change the
+generator instead.</p>
+<p>The indexes double as a coverage map: each row names the page documenting
+that command or key, and a dash means none does yet.</p>
+<h1>Project-local help</h1>
+<p>The sidebar prefers a <code>help/</code> directory in the current workspace when that
+directory contains any <code>.html</code> pages, and falls back to mep's own installed
+documentation otherwise. A project can therefore ship its own manual, and
+<code>&lt;leader&gt;hh</code> will show that instead of this one.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="intro.html">mep Help</a> -- the front page of this manual.</li>
+<li><a href="installing.html">Installing and running</a> -- <code>just</code> recipes and the command line.</li>
+</ul>
 </body>
 </html>

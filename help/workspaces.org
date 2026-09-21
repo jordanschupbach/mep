@@ -1,0 +1,114 @@
+#+TITLE: Workspaces
+#+HTML_HEAD: <meta name="help-section" content="Projects">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* One branch, one checkout, one workspace
+
+Every project starts with a primary workspace called =main=, rooted at the
+project directory. On a git project you can add more, and each one gets its
+*own checkout on its own branch* -- a real =git worktree=, not a shared
+directory that switches branches under you.
+
+That is the point of the feature. Two workspaces means two branches checked
+out at once, each with its own open files, its own terminals and its own
+language servers, and switching between them is instant because nothing has
+to be checked out.
+
+* Creating one
+
+#+begin_example
+:wsnew feature-x
+#+end_example
+
+runs, in effect:
+
+#+begin_example
+git worktree add -b feature-x <parent>/<repo>.worktrees/feature-x HEAD
+#+end_example
+
+It runs asynchronously -- the workspace's label in the tab bar shows
+=[feature-x...]= until git finishes.
+
+=:wsnew! <name>= attaches to a branch that already exists instead of
+creating one.
+
+A workspace name is also a branch name and a directory name, so it is
+restricted to letters, digits, =.=, =_= and =-=. It may not start with =.=
+or =-=, end in =.lock=, or contain =..= -- git refuses those as branch
+names.
+
+* Switching
+
+| Key / command                 | Does                              |
+|-------------------------------+-----------------------------------|
+| =:ws <name>= or =:ws <N>=     | switch to that workspace          |
+| =:wsnext= =:wsn=              | next workspace                    |
+| =:wsprevious= =:wsp=          | previous workspace                |
+| =Ctrl-Alt-]= =Ctrl-Alt-[=     | next / previous                   |
+| =Alt-1= .. =Alt-9=            | jump to the Nth                   |
+| =:wslist= or =<leader>ww=     | pick from a list                  |
+| =<leader>wl= =<leader>wh=     | next / previous                   |
+| =<leader>gw=                  | list with branch and ahead/behind |
+
+Clicking a workspace label in the tab bar switches to it; middle-clicking
+closes it; hovering shows its directory and branch.
+
+* Managing them
+
+| Command                     | Does                                          |
+|-----------------------------+-----------------------------------------------|
+| =:wsrename <name>=          | rename it (=<leader>wr=)                      |
+| =:wsdelete [name]=          | remove the worktree and close it (=<leader>wd=) |
+| =:wsdelete! [name]=         | the same, with unsaved changes                |
+| =:wsadopt <path-or-branch>= | turn a hand-made worktree into a workspace    |
+| =:wsprune=                  | drop workspaces whose directory has vanished  |
+| =<leader>wn=                | new workspace                                 |
+
+*Deleting keeps the branch.* =:wsdelete= runs =git worktree remove= and says
+so -- "(branch kept)". Your commits are not at risk. Without =!=, git itself
+refuses on a dirty tree and mep shows git's own message.
+
+* Everything follows the active workspace
+
+The process working directory is changed to the active workspace's root.
+That one fact explains most of the behaviour:
+
+- =<leader>ff=, live grep and =:e= resolve against that worktree.
+- A language server is started per language *per workspace root*, so each
+  branch gets its own.
+- =:terminal= opens there, with =$MEP_WORKSPACE_NAME= and
+  =$MEP_PROJECT_NAME= exported.
+
+Buffers belong to the workspace they were opened in, so =:ls=, the buffer
+picker, =:bnext= and an agent's =buffer.list= show that workspace's buffers.
+The safety nets stay global, though: =:wa= writes every modified buffer
+everywhere, and =:qa= refuses if anything anywhere is unsaved.
+
+* Non-git projects
+
+Everything above works minus the worktrees: every workspace shares the
+project root. You still get separate tabs, buffers and terminals per
+workspace, just not separate checkouts.
+
+* Options
+
+#+begin_src lua
+-- Where new worktrees go. Absolute, or relative to the project root.
+-- Default: <parent-of-repo>/<repo>.worktrees/<name>
+mep.opt.worktree_dir = '~/worktrees'
+
+-- Add a '+' to the label of a workspace with uncommitted changes,
+-- from a 5-second `git status` poll. Off by default.
+mep.opt.workspace_git_dirty = true
+#+end_src
+
+From Lua: =mep.workspace_list=, =current=, =root=, =new=, =switch=,
+=delete=, =rename=, =next=, =previous=, =adopt=, =prune=, and
+=mep.on_workspace_changed(fn)=.
+
+* See also
+
+- [[file:projects.html][Projects]] -- what workspaces live inside.
+- [[file:sessions.html][Sessions]] -- how a workspace layout survives a restart.
+- [[file:files.html][Files and buffers]] -- why a buffer list is workspace-scoped.

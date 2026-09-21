@@ -1,0 +1,37 @@
+#+TITLE: Markdown
+#+HTML_HEAD: <meta name="help-section" content="Writing">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Rendering
+
+=:MepMarkdown= applies the whole set: heading colours with a level glyph in
+the sign column, shaded fenced code blocks, concealed link and emphasis
+markers, shaded front matter.
+
+| Command                  | Does                                 |
+|--------------------------+--------------------------------------|
+| =:MepMarkdown=           | apply all of the below               |
+| =:MepMdConceal=          | hide link and emphasis markers       |
+| =:MepMdCheckbox=         | toggle the checkbox on this line     |
+| =:MepMdTableAlign=       | align a pipe table's columns         |
+| =:MepMdTableInsertRow=   | insert a table row                   |
+| =:MepMdTableInsertCol=   | insert a table column                |
+
+* Folding
+
+Fenced code blocks fold, and so do headings by depth -- =zM= collapses a
+long document to its outline, =zR= opens it again. See [[file:folding.html][Folds]].
+
+* A gap worth knowing
+
+Pipe tables are *not* redrawn as box-drawn tables. A =|=-delimited table
+renders as plain text, aligned by =:MepMdTableAlign= but not decorated.
+
+The alignment command is what makes them readable; do not wait for an
+overlay that is not there.
+
+* See also
+
+- [[file:writing.html][Writing prose in mep]] -- the wider prose toolkit.
+- [[file:org-basics.html][Org files in mep]] -- the more capable markup, if you have the choice.

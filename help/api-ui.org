@@ -1,0 +1,106 @@
+#+TITLE: Panes, panels and pickers
+#+HTML_HEAD: <meta name="help-section" content="Lua API">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What is here
+
+Everything that puts something on screen: panes and tabs, sidebars, pickers, floats, hovers, notifications, themes and icons.
+
+This page is generated from mep's own binding table, so it lists what
+the running editor actually exposes. Call any of these from
+=init.lua=, from =:lua=, or from a =mep-lua= org block.
+
+* The bindings (81)
+
+A dash means that binding has no doc comment in the source yet, not
+that it does nothing.
+
+| Function | Does |
+|----------+------|
+| =mep.colorscheme= | applies a named color theme |
+| =mep.current_theme= | returns the name of the currently active color theme |
+| =mep.deco_add= | adds a decoration (highlight/virtual text/sign) under a namespace and returns its id |
+| =mep.float_close= | closes the floating editable pane if one is open |
+| =mep.float_is_open= | reports whether a floating editable pane is open |
+| =mep.float_open= | opens a file in a floating editable pane |
+| =mep.float_preview= | shows read-only text in a centered floating box, dismissed by any keypress or click |
+| =mep.focus_top_left_pane= | moves focus to the topmost, then leftmost, pane in the active tab's split layout |
+| =mep.font_size= | returns the current editor pixel font size |
+| =mep.hint_jump= | (Phase 13) |
+| =mep.hl_for_file= | a highlight-group name for coloring by file type |
+| =mep.hover_close= | dismisses an open hover tooltip |
+| =mep.hover_focus_enter= | moves the cursor into the open hover popup's text so it can be navigated/yanked; a no-op if hover isn't open |
+| =mep.hover_is_open= | reports whether a hover tooltip is currently showing |
+| =mep.hover_show= | shows a passive floating tooltip anchored near the cursor |
+| =mep.icon_for_file= | a short ASCII glyph (Phase 10) |
+| =mep.layout= | applies a named pane auto-layout |
+| =mep.nav_pane= | moves focus to the neighboring pane in the given direction, if any |
+| =mep.notify= | shows a toast and records a persistent history entry/status line message |
+| =mep.notify_refresh_pane= | ensures the Notifications sidebar exists, refreshes its content, and closes any currently-docked view |
+| =mep.notify_sidebar_id= | returns the Notifications SidebarInstance id, creating it if needed |
+| =mep.ns_clear= | removes every decoration previously added under a namespace id |
+| =mep.ns_create= | looks up (or creates) a stable decoration namespace id for a given name |
+| =mep.pane_buffers= | lists the buffer ids shown by panes in the active tab's split layout |
+| =mep.pane_close_buffer= | closes the focused pane's current buffer tab |
+| =mep.pane_focus= | focuses a pane of the active tab by id |
+| =mep.pane_focus_buffer= | focuses whichever pane in the active tab already shows a given buffer |
+| =mep.pane_maximize_toggle= | maximizes the active pane, or restores the layout from before (Editor::TogglePaneMaximize) |
+| =mep.pane_move_buffer= | moves the focused pane's current buffer tab to a neighboring pane |
+| =mep.pane_next_buffer= | switches the focused pane to its next buffer tab |
+| =mep.pane_open= | opens a file, or an existing buffer by id, as a buffer tab in the focused pane |
+| =mep.pane_prev_buffer= | switches the focused pane to its previous buffer tab |
+| =mep.pane_set_share= | sets the active pane's share of its parent split to an absolute fraction |
+| =mep.pane_split_bottom= | opens and focuses a full-width bottom pane in the active tab |
+| =mep.pane_split_left= | opens and focuses a full-height left pane in the active tab |
+| =mep.pane_split_right= | opens and focuses a full-height right pane in the active tab |
+| =mep.pick_pane_open= | opens a file, prompting for the destination window when several exist |
+| =mep.picker_close= | closes the open picker without invoking its on_select callback |
+| =mep.picker_is_open= | reports whether the picker overlay is open |
+| =mep.picker_open= | opens the fuzzy picker overlay with the given items and callbacks |
+| =mep.picker_preview_file= | loads a file's leading lines into the picker's preview column |
+| =mep.picker_set_hint= | sets the open picker's footer key hint |
+| =mep.picker_set_items= | replaces the open picker's item list in place |
+| =mep.picker_set_preview= | sets (or clears) the picker's preview-column text and optional per-span syntax highlighting |
+| =mep.picker_set_tabs= | sets the open picker's tab-strip labels and 1-indexed active tab |
+| =mep.quick_jump= | Editor::BeginQuickJump (TODO.org "quickjump |
+| =mep.quick_jump_matches= | array of {pane_id, row, col, label} |
+| =mep.quick_jump_pick= | true if a current match carried that label |
+| =mep.resize_pane= | moves the split boundary between the active pane and its neighbor |
+| =mep.set_statusline= | fn(), called each frame, returns an array of |
+| =mep.set_winbar_click= | fn(dir_path), called when a directory segment of |
+| =mep.sidebar_active_tab= | -> 1-based index of the sidebar's active tab (1 when it has none) |
+| =mep.sidebar_close= | closes a sidebar |
+| =mep.sidebar_create= | creates a new sidebar panel |
+| =mep.sidebar_cursor= | returns the currently-open sidebar's cursor row |
+| =mep.sidebar_cursor_widget_id= | looks up the widget id under the cursor in a given sidebar |
+| =mep.sidebar_default_cols= | computes a character-column width equal to a fraction of the window's pixel width |
+| =mep.sidebar_focus_row= | focuses a sidebar and moves its cursor to a row |
+| =mep.sidebar_for_buffer= | the id of the sidebar a pane-hosted sidebar buffer shows, or nil |
+| =mep.sidebar_help_open= | whether a sidebar is showing its `?` key-binding view |
+| =mep.sidebar_is_focused= | reports whether a sidebar holds keyboard focus |
+| =mep.sidebar_is_open= | reports whether a sidebar is currently open |
+| =mep.sidebar_is_popout= | reports whether a sidebar (default: any) is currently popped out |
+| =mep.sidebar_open= | opens a sidebar, optionally moving focus into it |
+| =mep.sidebar_open_pane= | opens a sidebar's content as a tabbed buffer in the focused pane |
+| =mep.sidebar_popout_close= | collapses the popped-out sidebar (if any) back to its docked panel |
+| =mep.sidebar_popout_open= | opens a sidebar focused and popped out, with no docked column behind the float (closing the popout closes the sidebar) |
+| =mep.sidebar_popout_toggle= | toggles the focused sidebar's popout float |
+| =mep.sidebar_set_active_tab= | switches a sidebar to the 1-based tab (wrapping), firing its on_tab callback |
+| =mep.sidebar_set_double_click= | requires a double click to activate this sidebar's pane-hosted rows |
+| =mep.sidebar_set_help= | sets the key bindings a sidebar's `?` help view lists |
+| =mep.sidebar_set_on_key= | registers a callback for keys the sidebar's own input handler doesn't already reserve |
+| =mep.sidebar_set_on_preview= | registers the callback that supplies a sidebar's popout preview |
+| =mep.sidebar_set_on_tab= | fn(index) runs whenever the sidebar's active tab changes (1-based) |
+| =mep.sidebar_set_preview= | sets the popped-out sidebar's preview column |
+| =mep.sidebar_set_sections= | replaces a sidebar's whole content with a new set of collapsible sections of widgets |
+| =mep.sidebar_set_tabs= | sets a sidebar's tab strip |
+| =mep.sidebar_toggle= | opens a sidebar if closed, closes it if open |
+| =mep.sidebar_toggle_help= | flips a sidebar between its rows and its `?` key-binding view |
+| =mep.tab_new= | opens and focuses a new tab page showing an existing buffer |
+| =mep.theme_names= | lists the names of every registered color theme |
+
+* See also
+
+- [[file:config.html][Configuration]] -- where to call these from.
+- [[file:recipes.html][Configuration recipes]] -- worked examples.

@@ -1,0 +1,76 @@
+#+TITLE: Executing code blocks
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="80">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Running a block
+
+Put the cursor in a =#+begin_src= block and press =C-c C-c=
+(=:MepOrgBabelExecute=). The result is written back into the file as a
+=#+RESULTS:= block below it.
+
+#+begin_src org
+,#+begin_src python
+print(40 + 2)
+,#+end_src
+
+,#+RESULTS:
+: 42
+#+end_src
+
+* Languages
+
+Twenty-seven, each used when its toolchain is on =$PATH=:
+
+=lua=, =python=, =sh= / =bash=, =javascript= / =js=, =typescript= / =ts=,
+=c=, =cpp= / =c++=, =csharp= / =cs= / =c#=, =ruby=, =elixir=, =julia=,
+=clojure=, =perl=, =r=, =php=, =rust=, =go=, =fortran=, =scala=, =zig=,
+=nim=, =crystal=, =java=, =kotlin=, =haskell=, =ocaml=, =d=.
+
+Compiled languages go through a real compile-then-run step rather than
+being interpreted.
+
+* mep-lua blocks
+
+One language is special. A =mep-lua= block runs inside *mep's own* Lua
+state, with the whole =mep.*= API available -- org-babel's =emacs-lisp=
+analogue. Every other language is a subprocess and cannot see the editor.
+
+#+begin_src org
+,#+begin_src mep-lua
+mep.notify('hello from inside the editor')
+return mep.line_count()
+,#+end_src
+#+end_src
+
+The return value becomes the block's =#+RESULTS:=, unless the block is
+marked =:results silent=.
+
+This is what lets a document drive the editor -- a deck of learning games
+launching itself, a notebook of editor commands.
+
+* Header arguments
+
+| Argument           | Does                                        |
+|--------------------+---------------------------------------------|
+| =:results value=   | the value of the last expression            |
+| =:results output=  | whatever the block printed                  |
+| =:results silent=  | run it, write nothing back                  |
+| =:var name=value=  | bind a variable for the block               |
+| =:eval no=         | never run this block, including on export   |
+
+=:eval no= matters for export: code blocks are executed as part of
+exporting, matching real org-mode's default, so a block you do not want run
+during a build needs to say so.
+
+* Tangling
+
+=:MepOrgBabelTangle= writes the code blocks out to real source files, which
+is the literate-programming direction: the org file is the source, and the
+code files are generated from it.
+
+* See also
+
+- [[file:org-polyglot.html][Language servers in code blocks]] -- editing support inside a block.
+- [[file:org-export.html][Exporting]] -- where blocks are executed by default.
+- [[file:learn-decks.html][Writing a deck]] -- a document that launches itself.

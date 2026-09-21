@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Key index</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Reference">
+<meta name="help-order" content="20">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Key index</h1>
+<h1>Leader bindings</h1>
+<p>All 96 <code>&lt;leader&gt;</code> sequences registered at startup. Press
+<code>&lt;Space&gt;</code> for the same list as a popup, or <code>&lt;leader&gt;hk</code> for every
+binding including your own.</p>
+<p>Motions, operators and the other Normal-mode keys are on the pages in
+the Editing section; this index covers the leader layer, which is where
+the features live.</p>
+<table>
+<tr><th>Key</th><th>Does</th><th>Documented in</th></tr>
+<tr><td><code>&lt;leader&gt;/</code></td><td>search</td><td><a href="pickers.html">Pickers</a></td></tr>
+<tr><td><code>&lt;leader&gt;&lt;CR&gt;</code></td><td>terminal</td><td><a href="terminals.html">Terminals</a></td></tr>
+<tr><td><code>&lt;leader&gt;&lt;Space&gt;</code></td><td>Command runner (just &gt; make &gt; ninja &gt; cmake)</td><td><a href="runners.html">The command runner</a></td></tr>
+<tr><td><code>&lt;leader&gt;a&lt;CR&gt;</code></td><td>AI: Claude Code terminal below</td><td><a href="ai-terminal.html">Claude Code in a pane</a></td></tr>
+<tr><td><code>&lt;leader&gt;aa</code></td><td>Toggle AI agents pane</td><td><a href="ai-agents.html">The AI Agents sidebar</a></td></tr>
+<tr><td><code>&lt;leader&gt;ai</code></td><td>AI: context picker</td><td><a href="ai-commands.html">Ask the model</a></td></tr>
+<tr><td><code>&lt;leader&gt;al</code></td><td>Toggle AI agents pane</td><td><a href="ai-agents.html">The AI Agents sidebar</a></td></tr>
+<tr><td><code>&lt;leader&gt;bB</code></td><td>Toggle buffers sidebar</td><td><a href="sidebars.html">Sidebars</a></td></tr>
+<tr><td><code>&lt;leader&gt;bO</code></td><td>Browse (external window)</td><td><a href="browser.html">The browser pane</a></td></tr>
+<tr><td><code>&lt;leader&gt;bb</code></td><td>Buffers</td><td><a href="files.html">Files and buffers</a></td></tr>
+<tr><td><code>&lt;leader&gt;bh</code></td><td>Host (serve) this directory and browse it</td><td><a href="local-server.html">Serving a directory</a></td></tr>
+<tr><td><code>&lt;leader&gt;bo</code></td><td>Browse</td><td><a href="browser.html">The browser pane</a></td></tr>
+<tr><td><code>&lt;leader&gt;bs</code></td><td>Scratch buffer</td><td><a href="files.html">Files and buffers</a></td></tr>
+<tr><td><code>&lt;leader&gt;ca</code></td><td>LSP: code action</td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>&lt;leader&gt;db</code></td><td>Debug: toggle breakpoint</td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>&lt;leader&gt;dc</code></td><td>Debug: clear breakpoints in file</td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>&lt;leader&gt;dd</code></td><td>Debug: start/continue</td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>&lt;leader&gt;di</code></td><td>Debug: step into</td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>&lt;leader&gt;dn</code></td><td>Debug: step over</td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>&lt;leader&gt;do</code></td><td>Debug: step out</td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>&lt;leader&gt;dr</code></td><td>Debug: restart</td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>&lt;leader&gt;dt</code></td><td>Debug: terminate</td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>&lt;leader&gt;du</code></td><td>Debug: toggle UI</td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>&lt;leader&gt;dv</code></td><td>Debug: evaluate under cursor</td><td><a href="debugging.html">Debugging</a></td></tr>
+<tr><td><code>&lt;leader&gt;ff</code></td><td>Toggle file tree</td><td><a href="file-tree.html">The file tree</a></td></tr>
+<tr><td><code>&lt;leader&gt;fh</code></td><td>Toggle hidden files in tree</td><td><a href="file-tree.html">The file tree</a></td></tr>
+<tr><td><code>&lt;leader&gt;fo</code></td><td>Open file (native dialog)</td><td><a href="file-tree.html">The file tree</a></td></tr>
+<tr><td><code>&lt;leader&gt;fr</code></td><td>Refresh file tree</td><td><a href="file-tree.html">The file tree</a></td></tr>
+<tr><td><code>&lt;leader&gt;gG</code></td><td>Toggle git sidebar</td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>&lt;leader&gt;gL</code></td><td>Git graph (popout)</td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>&lt;leader&gt;ga</code></td><td>Git stage hunk at cursor</td><td><a href="git-gutter.html">The git gutter</a></td></tr>
+<tr><td><code>&lt;leader&gt;gb</code></td><td>Git branches (popout)</td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>&lt;leader&gt;gc</code></td><td>Git commit</td><td><a href="git-hunks.html">Working with hunks</a></td></tr>
+<tr><td><code>&lt;leader&gt;gd</code></td><td>Toggle git gutter</td><td><a href="git-gutter.html">The git gutter</a></td></tr>
+<tr><td><code>&lt;leader&gt;gg</code></td><td>Toggle git popup</td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>&lt;leader&gt;gl</code></td><td>Git log (popout)</td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>&lt;leader&gt;gp</code></td><td>Git push</td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>&lt;leader&gt;gr</code></td><td>Git reset hunk at cursor</td><td><a href="git-hunks.html">Working with hunks</a></td></tr>
+<tr><td><code>&lt;leader&gt;gs</code></td><td>Git stash (popout)</td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>&lt;leader&gt;gt</code></td><td>Git status (paneable, stacks with the file tree)</td><td><a href="git-panel.html">The git panel</a></td></tr>
+<tr><td><code>&lt;leader&gt;gv</code></td><td>Git preview hunk at cursor</td><td><a href="git-hunks.html">Working with hunks</a></td></tr>
+<tr><td><code>&lt;leader&gt;gw</code></td><td>Git workspaces</td><td><a href="git-workspaces.html">Branch-per-workspace</a></td></tr>
+<tr><td><code>&lt;leader&gt;hf</code></td><td>Help: search the manual</td><td><a href="intro.html">mep Help</a></td></tr>
+<tr><td><code>&lt;leader&gt;hh</code></td><td>Open help</td><td><a href="intro.html">mep Help</a></td></tr>
+<tr><td><code>&lt;leader&gt;hk</code></td><td>Help: keymaps</td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>&lt;leader&gt;hs</code></td><td>Help: symbol under the cursor (gh)</td><td><a href="language-ui.html">Language UI modes</a></td></tr>
+<tr><td><code>&lt;leader&gt;jv</code></td><td>Runner: variable inspector</td><td><a href="runners.html">The command runner</a></td></tr>
+<tr><td><code>&lt;leader&gt;jw</code></td><td>Runner: workspaces</td><td><a href="runners.html">The command runner</a></td></tr>
+<tr><td><code>&lt;leader&gt;li</code></td><td>LSP: goto implementation</td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>&lt;leader&gt;lk</code></td><td>LSP: signature help</td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>&lt;leader&gt;lt</code></td><td>LSP: goto type definition</td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>&lt;leader&gt;lu</code></td><td>Language UI mode (toggle)</td><td><a href="c-mode.html">C and C++ mode</a></td></tr>
+<tr><td><code>&lt;leader&gt;nn</code></td><td>Toggle notifications pane</td><td><a href="notifications.html">Notifications</a></td></tr>
+<tr><td><code>&lt;leader&gt;oea</code></td><td>Org: export to ASCII</td><td><a href="org-export.html">Exporting</a></td></tr>
+<tr><td><code>&lt;leader&gt;oeh</code></td><td>Org: export to HTML</td><td><a href="org-export.html">Exporting</a></td></tr>
+<tr><td><code>&lt;leader&gt;oem</code></td><td>Org: export to Markdown</td><td><a href="org-export.html">Exporting</a></td></tr>
+<tr><td><code>&lt;leader&gt;oeo</code></td><td>Org: export to ODT</td><td><a href="office.html">Word processor documents</a></td></tr>
+<tr><td><code>&lt;leader&gt;oep</code></td><td>Org: export to PDF</td><td><a href="org-export.html">Exporting</a></td></tr>
+<tr><td><code>&lt;leader&gt;ol</code></td><td>Learn: pick a game for this deck</td><td><a href="learn-games.html">Playing</a></td></tr>
+<tr><td><code>&lt;leader&gt;ora</code></td><td>Org-roam: add note</td><td><a href="org-roam.html">Org-roam</a></td></tr>
+<tr><td><code>&lt;leader&gt;orr</code></td><td>Org-roam: find note</td><td><a href="org-roam.html">Org-roam</a></td></tr>
+<tr><td><code>&lt;leader&gt;ors</code></td><td>Org-roam: sync notes</td><td><a href="org-roam.html">Org-roam</a></td></tr>
+<tr><td><code>&lt;leader&gt;otb</code></td><td>Org: toggle block cards</td><td><a href="org-visuals.html">Images, LaTeX and tables</a></td></tr>
+<tr><td><code>&lt;leader&gt;oti</code></td><td>Org: toggle inline images</td><td><a href="org-visuals.html">Images, LaTeX and tables</a></td></tr>
+<tr><td><code>&lt;leader&gt;otl</code></td><td>Toggle LaTeX/math preview (org/tex)</td><td><a href="org-visuals.html">Images, LaTeX and tables</a></td></tr>
+<tr><td><code>&lt;leader&gt;pc</code></td><td>Clear project (default layout)</td><td><a href="projects.html">Projects</a></td></tr>
+<tr><td><code>&lt;leader&gt;pf</code></td><td>Find files</td><td><a href="pickers.html">Pickers</a></td></tr>
+<tr><td><code>&lt;leader&gt;po</code></td><td>Projects</td><td><a href="projects.html">Projects</a></td></tr>
+<tr><td><code>&lt;leader&gt;pp</code></td><td>Loaded projects</td><td><a href="pickers.html">Pickers</a></td></tr>
+<tr><td><code>&lt;leader&gt;pr</code></td><td>Live grep</td><td><a href="pickers.html">Pickers</a></td></tr>
+<tr><td><code>&lt;leader&gt;rj</code></td><td>Jump to/from Run/REPL pane</td><td><a href="repl.html">REPL and send-to-terminal</a></td></tr>
+<tr><td><code>&lt;leader&gt;rn</code></td><td>LSP: rename</td><td><a href="lsp.html">Language servers</a></td></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>Run button: run/compile current file</td><td><a href="run-button.html">Running the current file</a></td></tr>
+<tr><td><code>&lt;leader&gt;rs</code></td><td>Run button: setup current filetype</td><td><a href="run-button.html">Running the current file</a></td></tr>
+<tr><td><code>&lt;leader&gt;sS</code></td><td>Toggle structure split (buffer-local)</td><td><a href="structure-symbols.html">Structure and symbols</a></td></tr>
+<tr><td><code>&lt;leader&gt;ss</code></td><td>Open structure pane (treesitter)</td><td><a href="sidebars.html">Sidebars</a></td></tr>
+<tr><td><code>&lt;leader&gt;tT</code></td><td>Toggle tests pane</td><td><a href="sidebars.html">Sidebars</a></td></tr>
+<tr><td><code>&lt;leader&gt;tt</code></td><td>Toggle todo pane</td><td><a href="org-clock.html">Clocking and the Todo panel</a></td></tr>
+<tr><td><code>&lt;leader&gt;ut</code></td><td>Theme picker</td><td><a href="pickers.html">Pickers</a></td></tr>
+<tr><td><code>&lt;leader&gt;uu</code></td><td>Language UI mode (toggle)</td><td><a href="language-ui.html">Language UI modes</a></td></tr>
+<tr><td><code>&lt;leader&gt;vv</code></td><td>Speech-to-text: toggle live transcription</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;wd</code></td><td>Delete workspace</td><td><a href="workspaces.html">Workspaces</a></td></tr>
+<tr><td><code>&lt;leader&gt;wh</code></td><td>Previous workspace</td><td><a href="workspaces.html">Workspaces</a></td></tr>
+<tr><td><code>&lt;leader&gt;wl</code></td><td>Next workspace</td><td><a href="workspaces.html">Workspaces</a></td></tr>
+<tr><td><code>&lt;leader&gt;wn</code></td><td>New workspace</td><td><a href="workspaces.html">Workspaces</a></td></tr>
+<tr><td><code>&lt;leader&gt;wr</code></td><td>Rename workspace</td><td><a href="workspaces.html">Workspaces</a></td></tr>
+<tr><td><code>&lt;leader&gt;ww</code></td><td>Workspaces</td><td><a href="pickers.html">Pickers</a></td></tr>
+<tr><td><code>&lt;leader&gt;yy</code></td><td>Snippets picker</td><td><a href="pickers.html">Pickers</a></td></tr>
+<tr><td><code>&lt;leader&gt;zf</code></td><td>Spell: fix</td><td><a href="spell.html">Spell checking</a></td></tr>
+<tr><td><code>&lt;leader&gt;zg</code></td><td>Spell: add word to dictionary</td><td><a href="spell.html">Spell checking</a></td></tr>
+<tr><td><code>&lt;leader&gt;zn</code></td><td>Spell: next misspelled</td><td><a href="spell.html">Spell checking</a></td></tr>
+<tr><td><code>&lt;leader&gt;zp</code></td><td>Spell: previous misspelled</td><td><a href="spell.html">Spell checking</a></td></tr>
+<tr><td><code>&lt;leader&gt;zs</code></td><td>Spell: suggestions</td><td><a href="spell.html">Spell checking</a></td></tr>
+<tr><td><code>&lt;leader&gt;zt</code></td><td>Spell: toggle</td><td><a href="spell.html">Spell checking</a></td></tr>
+<tr><td><code>&lt;leader&gt;zw</code></td><td>Spell: mark word wrong</td><td><a href="spell.html">Spell checking</a></td></tr>
+<tr><td><code>&lt;leader&gt;zz</code></td><td>Toggle pane zoom (fullscreen current pane)</td><td><a href="layouts-zen.html">Layouts, zoom and zen</a></td></tr>
+</table>
+<h1>See also</h1>
+<ul>
+<li><a href="command-index.html">Command index</a> -- the same, for commands.</li>
+<li><a href="which-key.html">Leader and which-key</a> -- the groups.</li>
+<li><a href="keymaps.html">Remapping keys</a> -- changing them.</li>
+</ul>
+</body>
+</html>

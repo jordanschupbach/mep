@@ -401,6 +401,8 @@ add_library(mep_core STATIC
     src/pdf_text.cpp
     src/pdf_outline.cpp
     src/pdf_links.cpp
+    src/pdf_annots.cpp
+    src/pdf_writer.cpp
     src/gfx/cff.cpp
     src/gfx/type1.cpp
     src/formula.cpp
@@ -428,6 +430,8 @@ add_library(mep_core STATIC
     src/sheet_xlsx.cpp
     src/sheet_ods.cpp
     src/js_engine.cpp
+    src/http_client.cpp
+    src/http_server.cpp
     src/editor.cpp
     src/spell.cpp
     src/workspace_git.cpp
@@ -648,7 +652,7 @@ endif()
 
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
 # cascade behavior can be verified without opening a window.
-add_executable(mep-html-doc-test EXCLUDE_FROM_ALL src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/svg_doc.cpp src/wav_doc.cpp)
+add_executable(mep-html-doc-test EXCLUDE_FROM_ALL src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp)
 target_include_directories(mep-html-doc-test PRIVATE src)
 target_compile_options(mep-html-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-html-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -657,6 +661,19 @@ add_dependencies(tests mep-html-doc-test)
 # Org outline helpers (org_doc.cpp is dependency-free): the Todo-panel
 # <-> TODO.org sync (OrgTodoListItems/OrgTodoListApply), same windowless
 # model as mep-html-doc-test above.
+# Networking for the browser pane (url_util.h, http_client, http_server) plus
+# the examples/web capability ladder run headlessly through html_doc/js_engine.
+# The unit checks gate; the ladder is a report (pass --strict to gate on it).
+add_executable(mep-web-ladder-test EXCLUDE_FROM_ALL src/web_ladder_test.cpp src/http_client.cpp src/http_server.cpp
+               src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp)
+target_include_directories(mep-web-ladder-test PRIVATE src)
+target_compile_definitions(mep-web-ladder-test PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(mep-web-ladder-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-web-ladder-test PRIVATE ${MEP_SANITIZE_FLAGS})
+find_package(Threads REQUIRED)
+target_link_libraries(mep-web-ladder-test PRIVATE Threads::Threads)
+add_dependencies(tests mep-web-ladder-test)
+
 add_executable(mep-org-doc-test EXCLUDE_FROM_ALL src/org_doc_test.cpp src/org_doc.cpp)
 target_include_directories(mep-org-doc-test PRIVATE src)
 target_compile_options(mep-org-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
@@ -800,6 +817,23 @@ target_include_directories(mep-pdf-links-test PRIVATE src)
 target_compile_options(mep-pdf-links-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-links-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-pdf-links-test)
+
+# Markup-annotation reader (pdf_annots.cpp): /Highlight + /Text into a
+# point-space model, a fork of pdf_links.cpp -- same minimal dependency set.
+add_executable(mep-pdf-annots-test EXCLUDE_FROM_ALL src/pdf_annots_test.cpp src/pdf_annots.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+target_include_directories(mep-pdf-annots-test PRIVATE src)
+target_compile_options(mep-pdf-annots-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-annots-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-annots-test)
+
+# PDF writer (pdf_writer.cpp): object serializer + incremental-update
+# builder. Needs pdf_annots.cpp for the annotation model plus the parse/
+# xref/filter stack it round-trips against.
+add_executable(mep-pdf-writer-test EXCLUDE_FROM_ALL src/pdf_writer_test.cpp src/pdf_writer.cpp src/pdf_annots.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+target_include_directories(mep-pdf-writer-test PRIVATE src)
+target_compile_options(mep-pdf-writer-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-writer-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-writer-test)
 
 # PDFIUM_REMOVAL_PLAN.md Phase 6: gfx/rasterizer.h/.cpp's even-odd fill
 # rule and cubic Bezier flattening -- the two additions on top of the

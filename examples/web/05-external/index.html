@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>05 - External resources</title>
+<link rel="stylesheet" href="../shared/style.css">
+<link rel="stylesheet" href="level.css">
+<script src="../shared/harness.js"></script>
+<script src="first.js"></script>
+<script src="second.js"></script>
+</head>
+<body>
+<nav><a href="../index.html">All levels</a></nav>
+<h1>05 - External resources</h1>
+<p class="lead">Stylesheets, scripts and an image fetched from the server next to the page.</p>
+<div class="card">
+  <p id="styled" class="from-level-css">This line is green and bold only if level.css loaded.</p>
+  <p><img id="pic" src="../shared/logo.png" alt="logo" width="160"></p>
+</div>
+<script src="late.js"></script>
+<script>
+Harness.start('05-external', 6);
+Harness.check('first.js ran', window.__first === 'first');
+Harness.check('scripts ran in document order', window.__order === 'first,second', String(window.__order));
+Harness.check('a script after the body ran before this one', window.__late === true);
+Harness.attempt('external stylesheet applied (getComputedStyle)', function () {
+  var cs = window.getComputedStyle(document.getElementById('styled'));
+  return cs.fontWeight === 'bold' || cs.fontWeight === '700';
+});
+Harness.attempt('document.currentScript / scripts collection', function () {
+  return document.getElementsByTagName('script').length >= 5;
+});
+var pic = document.getElementById('pic');
+function imageDone() { Harness.check('image loaded with a size', pic.naturalWidth > 0, 'naturalWidth=' + pic.naturalWidth); Harness.done(); }
+if (pic.complete && pic.naturalWidth > 0) imageDone();
+else {
+  pic.addEventListener('load', imageDone);
+  pic.addEventListener('error', function () { Harness.check('image loaded with a size', false, 'error event'); Harness.done(); });
+}
+</script>
+</body>
+</html>

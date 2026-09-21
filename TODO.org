@@ -1,4 +1,11 @@
+* TODO add themes
+investigate what themes there and which ones appear to be missing and then
+implement them. The more the better.
+
 * TODO todo management
+  :LOGBOOK:
+  CLOCK: [2026-09-19 Sat 09:46]
+  :END:
 
 * TODO language modes
   We've added 'ui modes' for languages before (I think just R so far). I'd like
@@ -12,8 +19,185 @@
   to show up in (e.g. that appear when running .show() methods). Can you
   implement these?
 
+* TODO fix buffer sidebar
+  The buffer sidebar has some behavior, where, if I click on a buffer, it opens
+  that buffer within the current pane (which is the buffer sidebar). Instead,
+  I'd like that behavior on double click, except opening to a buffer to its
+  right (i.e not inside the buffer sidebar buffer). Then, I'd also like
+  click-hold and drag capabilities to drag and drop those buffers into panes
+  visible in the windows. We have this capability for the filetree, so maybe we
+  can reuse some of that logic there. Can you implement these?
 
-* TODO r help format
+* TODO fix exiting sidebar bug (specifically when exiting todo editor)
+
+* DONE Add a 'gr' binding for 'go run' to run the current file in the language's
+  interpreter or compiler. This should be language specific, and should use the
+  language's interpreter or compiler (e.g. for R, it should use Rscript to run
+  the current file). Can you implement this? In python it should use python, and
+  in C/C++ it should use gcc or clang. Can you implement these?
+  - Landed as a mep.map_g('r', mep.run_button_run) binding in kBuiltinRunButton
+    (main.cpp), i.e. the same per-language run the pane Run button and <leader>rr
+    already do: Rscript for .R, python3 for .py, cc/c++ compile-to-temp-then-run
+    for .c/.cpp (all overridable per project via the button's Setup popup, or
+    globally via mep.opt.run_button_defaults), plus the document pipelines
+    (org export, tectonic, rmarkdown/knitr, notebook run-all) and, when a
+    language UI mode is open on the tab, sourcing into its live console instead
+    of a second process. Verified against a spawned instance over its agent
+    socket (:normal gr on a .py file wrote the buffer, opened the tab terminal
+    and actually ran the script), with gg/G/bare-r left unaffected.
+
+* TODO Add a 'gd' binding for 'go debug' to start a debugging session for the current file
+  in the language's debugger. This should be language specific, and should use
+  the language's debugger (e.g. for R, it should use R's built-in debugger to
+  start a debugging session for the current file). Can you implement this? In
+  python it should use pdb, and in C/C++ it should use gdb or lldb. Can you
+  implement these?
+
+* DONE Add a 'gt' binding for 'go test' to run the tests for the current file in the
+  language's testing framework. This should be language specific, and should use
+  the language's testing framework (e.g. for R, it should use testthat to run
+  the tests for the current file). Can you implement this? In python it should
+  use unittest or pytest, and in C/C++ it should use googletest or catch2. Can
+  you implement these?
+  - Landed as kBuiltinLangTest (main.cpp): `gt` (mep.map_g, same shape as
+    gd/gh) and :MepLangTest resolve the *test* file covering the current
+    buffer, then run it in this tab's popup terminal (mep.tab_terminal_run),
+    wrapped in a `(cd <root> && ...)` subshell. Per language: go test -v on
+    the file's package, narrowed to the Test/Fuzz/Example functions in a
+    _test.go buffer (-run '^(TestA|TestB)$'); pytest when the tree has any
+    pytest marker, else `python3 -m unittest discover -p <file>`
+    (mep.opt.lang_test_python forces either); testthat::test_file() on
+    tests/testthat/test-<name>.R, falling back to test_local() over the
+    DESCRIPTION package; for C/C++ the file's own test binary -- the CMake
+    target is found via <build>/CMakeFiles/<target>.dir (present whether or
+    not it was ever built, Ninja and Make alike), built, then run, with an
+    already-built binary or `ctest -R <name>` as fallbacks and
+    mep.opt.lang_test_build_dirs as the override; plus cargo test <module>,
+    vitest/jest/mocha/npm test, busted, rspec/minitest, Pkg.test() and zig
+    test. mep.lang_test_command(path) exposes the resolution without running
+    anything. Verified in a spawned instance (xdotool key --window, no focus
+    steal): `gt` in cproj/src/pdf_text.cpp resolved pdf_text_test.cpp ->
+    mep-pdf-text-test and really executed it, and the emitted go/unittest/
+    C++ commands were each run in a shell and passed (mep's own
+    src/vterm.cpp -> `cmake --build build/native --target mep-vterm-test &&
+    .../mep-vterm-test` -> "vterm_test: all checks passed"). testthat isn't
+    installed in this sandbox, so the R command shape is unverified at
+    runtime.
+
+* DONE org code block formatting
+  I currently can show docs within code blocks, but, I'd also like formatting
+  to work (e.g. 'gf').
+  - `gf` (and `:MepFormat`) in an org buffer now means "format the code",
+    not "format the prose": with the cursor inside a `#+begin_src <lang>`
+    block it reformats that block's body, and anywhere else in the file it
+    sweeps every block that has a formatter (`:MepOrgFormatBlock` /
+    `:MepOrgFormatBlocks` are the same two by name). Added to kBuiltinFormat
+    (main.cpp), reusing what org's other per-block tooling already has:
+    mep_org_src_block_at finds the block, mep.org_babel_langs' extension
+    translates the block's *language name* into the extension key
+    mep.format_languages is keyed by (`python` -> `py` -> black, `R` ->
+    styler, `cpp` -> clang-format), and a block with no entry at all falls
+    back to its own polyglot language server -- textDocument/rangeFormatting
+    over just the block's rows, with anything the server wants to change
+    outside them refused rather than half-applied. That closes the "no
+    formatting bridging" gap polyglot shipped with. A block indented under a
+    heading is dedented before the formatter sees it and re-indented after
+    (a uniformly indented body is a syntax error to black and gets flattened
+    by the others); a body with no shared indent is passed through as
+    written. The sweep formats the *last* block first so each application
+    can't shift the rows of the blocks still to come, and runs them one at a
+    time for the same reason. Nothing is applied if the block was edited or
+    the buffer left while the formatter ran, and an already-formatted block
+    is left clean rather than rewritten.
+  - Verified in a spawned instance (real `gf` keystrokes, own agent socket):
+    styler over an indented R block (indentation preserved), clang-format
+    over a cpp block, lua-language-server's rangeFormatting over a lua block
+    with no formatter entry, the whole-file sweep ("formatted 2 of 3 blocks
+    (no formatter for lua blocks)"), plus a Lua-level harness covering the
+    failure/staleness/idempotence paths. Two real bugs were caught that way
+    and fixed: routing the server's edits through
+    mep_polyglot_translate_edits collapsed a whole-body replacement into a
+    zero-width insert (the formatted body pasted in *above* the original),
+    and asking for a range that reached the `#+end_src` row got back an edit
+    one row too long, which the safety check then refused.
+  - Also fixed, found while testing this: mep_lsp_diagnostics was a `local`
+    in kBuiltinLsp, so kBuiltinOrgPolyglot's own publish handler raised
+    "attempt to index a nil value" on every diagnostic and none ever reached
+    an org buffer. It is a bare global now, like mep_lsp_server_capabilities
+    beside it, and diagnostics render inside code blocks.
+
+* TODO Add C++ language mode
+I'd like a C++ language mode that has a terminal for running the current file's
+executable, a compiler explorer like sidebar, and a hex exploration like sidebar. Can you implement these?
+
+
+* DONE gf binding :ARCHIVE:
+  Add a 'gf' binding for 'go format' to format the current buffer. This should
+  be language specific, and should use the language's formatter (e.g. for R, it
+  should use styler::style_file() to format the current file). In python it
+  should use black, and in C/C++ it should use clang-format.
+  - Landed as kBuiltinFormat (main.cpp): `gf` is a mep.map_g binding (also
+    `:MepFormat`) calling mep.format_buffer(), which looks the buffer's
+    filetype up in a new mep.format_languages table -- clang-format for
+    C/C++ (c/h/cc/cpp/cxx/hh/hpp/hxx/ipp/inl/cu/cuh), black for Python
+    (py/pyi), styler::style_file() for R (R/r) -- the same "one filetype ->
+    argv table a config can extend" shape kBuiltinRun's mep.run_languages
+    already uses. Two formatter shapes are supported: a stdin/stdout filter
+    (the default) and an in-place file rewriter (mode = 'file', what styler
+    needs), so either way it is the *buffer's* text that gets formatted,
+    unsaved edits included, and nothing is written to the real file. '{}'
+    in an argv element expands to the buffer's absolute path (filter mode)
+    or the temp file (file mode) -- that is what lets clang-format/black
+    find the project's .clang-format/pyproject.toml even though they are
+    reading stdin. Nothing is applied if the formatter fails, is not
+    installed (its own error message), prints nothing, or if the buffer was
+    edited/left while it ran; an already-formatted buffer is left clean
+    rather than re-written. Filetypes with no entry fall back to
+    mep.lsp_format when a server is attached. Verified against a spawned
+    instance on its own Xvfb display: real clang-format (honouring a
+    fixture .clang-format's IndentWidth), real black, real styler, the gf
+    keystroke itself, unsaved-buffer text, missing/failing formatters, and
+    the LSP fallback -- which turned up a pre-existing mep.lsp_format bug
+    (it applied clangd's mid-line edits as whole-line replacements and
+    collapsed the file to a single space), fixed here by routing it through
+    mep.lsp_apply_edits_current_buffer.
+
+* DONE go help binding :ARCHIVE:
+  Add a 'gh' binding for 'go help' to open the help for the current function
+  under the cursor in the help sidebar. This should be language specific, and
+  should use the language's help system (e.g. for R, it should use help() to
+  open the help for the current function). Can you implement this? In python it
+  should use pydoc, and in C/C++ it should use man pages. Can you implement
+  these?
+  - `gh` is now a language dispatch (kBuiltinGoHelp, main.cpp) instead of the
+    R-only binding the r-help-format branch left behind: each language UI mode
+    registers a provider (mep.help_register_provider) that gates on its own
+    per-tab state and returns true once it has handled the lookup, and when
+    none claims the buffer the chain ends at mep.lsp_hover -- the same popup K
+    already gave. Also :MepGoHelp and <leader>hs (mep.map_g takes no
+    description, so the leader spelling is what makes it discoverable in the
+    keymaps picker).
+  - R: unchanged behavior (help('sym') / help('sym', package = 'pkg') into the
+    Help tab), now registered as the 'r' provider and sharing the new
+    mep.help_symbol_at_cursor scanner.
+  - Python: mep_help('sym') into the console, a new helper in the session's
+    init script that evaluates the name in the console's own namespace first
+    (so `sorted` and a dotted `os.path.join` both resolve) and falls back to
+    handing pydoc the bare string; it flows through the same overridden help()
+    -> pydoc -> help.txt -> poll path as a typed help(x), and the Help tab is
+    revealed immediately.
+  - C/C++: the mode grew a Help tab (Assembly/Build/Help top-right now), and
+    gh runs `man 3 sym || man 2 sym || man sym` (piped through `col -bx` when
+    installed) into it, MANWIDTH set to the tab's own width; the identifier
+    scan takes ':' too, so std::vector stays one topic.
+  - Verified on a spawned instance on its own Xvfb display, driving real `gh`
+    keystrokes (xdotool --window) and the agent socket: printf(3)/strcpy(3)
+    into the C mode's Help tab, "No man page for buf." for a local variable,
+    sorted + os.path.join in the Python mode, stats::lm -> help('lm', package
+    = 'stats') in the R mode, and "No LSP attached" for gh in a plain buffer
+    with no mode open.
+
+* DONE r help format :ARCHIVE:
 
   The formatting of help documentation in R help sidebar looks off. It looks
   good when in the popup though when I press 'K' over a function name in an R
@@ -65,7 +249,7 @@
     gh -> lines/plot (choice list), running the base choice with the
     termsend line sender, resize re-wrap, close cleanup.
 
-* TODO fix pdf rendering
+* DONE fix pdf rendering :ARCHIVE:
   While pdf rendering works, there are some pdfs it fails spectacularly on, in
   particular, ones with math. I think this used to work when we were using
   pdfium to do this. I'd like to fix it eventually, but in the short run, would
@@ -73,19 +257,15 @@
   inhouse pdf rendering engine with the pdfium rendering engin. Maybe we need a
   bridge pattern or something so these can be swapped in and out easily.
 
-* TODO fix buffer sidebar
-  The buffer sidebar has some behavior, where, if I click on a buffer, it opens
-  that buffer within the current pane (which is the buffer sidebar). Instead,
-  I'd like that behavior on double click, except opening to a buffer to its
-  right (i.e not inside the buffer sidebar buffer). Then, I'd also like
-  click-hold and drag capabilities to drag and drop those buffers into panes
-  visible in the windows. We have this capability for the filetree, so maybe we
-  can reuse some of that logic there. Can you implement these?
 
-* TODO git sidebar binding
+* DONE git sidebar binding :ARCHIVE:
   I'd like in the status tab in the git sidebar, for pressing P to push.
   Can you implement this?
 * TODO fix exiting sidebar bug (specifically when exiting todo editor)
+  :LOGBOOK:
+  CLOCK: [2026-09-19 Sat 09:43]--[2026-09-19 Sat 09:46] =>  0:03
+  CLOCK: [2026-09-19 Sat 09:43]--[2026-09-19 Sat 09:43] =>  0:00
+  :END:
 * DONE add jupyter notebook mode :ARCHIVE:
   I'd like the ability to edit jupiter notebook files, much like the interface
   of standard web-based jupyter interface. CAn you add these capabilities? Add a

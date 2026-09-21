@@ -11,6 +11,7 @@
 #include "editor.h"
 #include "formula.h"
 #include "html_doc.h"
+#include "url_util.h"
 #include "svg_doc.h"
 #include "job.h"
 #include "lua_env.h"
@@ -682,6 +683,17 @@ int g_office_dropdown_open = -1;
 int g_run_button_menu_pane = -1;
 gfx::Rectangle g_run_button_menu_anchor{};
 
+// Which notebook code cell's kernel dropdown is open (DrawPane's cell
+// header). buffer id + 0-based cell index identify the cell; -1/-1 = none.
+// Same single-target, no-modal-mode convention as g_run_button_menu_pane
+// above. The anchor is the kernel chip's screen rect as of the frame it
+// was opened/last redrawn, so DrawNotebookKernelMenu can drop the list
+// right below it.
+int g_notebook_kernel_menu_buffer = -1;
+int g_notebook_kernel_menu_cell = -1;
+gfx::Rectangle g_notebook_kernel_menu_anchor{};
+gfx::Rectangle g_notebook_kernel_menu_rect{};
+
 // Populated by DrawPane's office branch (a full-document wrap-height scan
 // -- see the comment where it's filled in) and consumed by that same
 // pane's own Docs-style status footer (word/page count, zoom) right after,
@@ -1050,6 +1062,14 @@ void RegisterClickRegion(gfx::Rectangle rect, std::function<void()> action) {
     g_click_regions.push_back({rect, std::move(action)});
 }
 
+// Registers a region above the ordinary pane chrome.  DispatchChromeClicks
+// visits this vector from front to back, so controls drawn after the
+// pane-wide focus fallback need this when they overlap it (notably floating
+// notebook menus and cell-header buttons).
+void RegisterClickRegionOnTop(gfx::Rectangle rect, std::function<void()> action) {
+    g_click_regions.insert(g_click_regions.begin(), {rect, std::move(action)});
+}
+
 // A multi-step gesture (the agent-control socket's ui.mouse_click's
 // down+up, ui.mouse_drag's down/move.../up -- main.cpp's
 // RegisterUiAutomationMethods) can't be played out by simply calling
@@ -1268,6 +1288,23 @@ struct BufferRowRect {
 };
 std::vector<BufferRowRect> g_buffer_drag_row_rects;
 
+// Same idea again, for the rows of a sidebar hosted in a *pane*
+// (DrawSidebarPaneContent) rather than docked to a screen edge. Those rows
+// do their own clicking through RegisterClickRegion (see that function's
+// header for why they deliberately don't share the docked path's
+// bookkeeping), but a drag has to be armed on mouse-*down* from
+// UpdatePaneMouseInteraction like every other drag gesture, which needs
+// the geometry out here. `pane_id` is the hosting pane, so a drop back
+// onto the sidebar itself can be ignored rather than replacing the list
+// you were dragging out of.
+struct SidebarPaneRowRect {
+    int sidebar_id;
+    int line_index;
+    int pane_id;
+    gfx::Rectangle rect;
+};
+std::vector<SidebarPaneRowRect> g_sidebar_pane_row_rects;
+
 // One tab-strip entry's rect this frame (SidebarInstance::tabs), captured
 // by DrawSidebarTabStrip from both the docked header and the popout's
 // title row; DispatchChromeClicks turns a click on one into
@@ -1343,6 +1380,19 @@ struct LinkHintRect {
     std::string uri;
 };
 std::vector<LinkHintRect> g_link_hint_rects;
+
+// Where each laid-out piece of an html pane's DOM landed on screen this
+// frame, so a click can be delivered to the node under the pointer as a
+// DOM event (buttons, inputs, anything with a listener). Rebuilt by
+// DrawPane's html branch every frame, like g_link_hint_rects.
+struct HtmlClickRect {
+    int pane_id;
+    int buffer_id;
+    gfx::Rectangle rect;
+    DomNode *node;
+    std::string link_href;  // the enclosing <a href>, followed unless the click is cancelled
+};
+std::vector<HtmlClickRect> g_html_click_rects;
 
 // One hint target (HINT_SYSTEM.md, see the fuller comment much further
 // down this file alongside CollectHintTargets/HandleHintModeInput/
@@ -1478,8 +1528,20 @@ struct PaneDragState {
     int target_pane_id = -1;
     PaneDropZone drop_zone = PaneDropZone::Center;
 
-    // FileDrop fields.
+    // FileDrop fields. `dragged_path` is empty when the drag carries an
+    // already-open buffer instead of a path (a Buffers sidebar row, which
+    // may stand for a terminal or a scratch buffer with no file at all):
+    // then `dragged_drop_buffer_id` is >= 0 and the drop shows that exact
+    // buffer (Editor::OpenBufferInPane) rather than opening a path.
+    // `dragged_label` is what the drag overlay captions itself with,
+    // falling back to the path's basename when empty. source_pane_id
+    // (shared with TabMove) is the pane the row was dragged out of, or -1
+    // for a docked sidebar row that belongs to no pane -- a center drop
+    // back onto that same pane is ignored, since "replace the list I'm
+    // dragging out of" is never what the gesture meant.
     std::string dragged_path;
+    int dragged_drop_buffer_id = -1;
+    std::string dragged_label;
 
     // BorderResize fields.
     SplitNode *border_node = nullptr;
@@ -1972,6 +2034,86 @@ float DrawUiText(const std::string &text, gfx::Vector2 pos, float font_size, gfx
  */
 float MeasureUiText(const std::string &text, float font_size) {
     return DrawUiText(text, gfx::Vector2{0, 0}, font_size, gfx::Blank, true);
+}
+
+// DrawUiText with per-byte coloring: `spans` (PickerHlSpan, byte offsets
+// into `text`, later spans winning where they overlap -- the same
+// "layer in order, last wins" rule DrawPickerOverlay's PickerLineColors
+// applies) override `tint` for the bytes they cover; everything else
+// draws in `tint`. A codepoint takes the color of its first byte. Used
+// for a sidebar row carrying SidebarWidget::spans (Treesitter-colored
+// code in kBuiltinLearn's identify-the-code pane); an empty `spans` is
+// exactly DrawUiText.
+/**
+ * @brief Draws UI chrome text with optional per-byte highlight spans overriding the base tint.
+ * @param text Text to draw.
+ * @param pos Top-left screen position to start drawing at.
+ * @param font_size Font size in pixels.
+ * @param tint Base text color for bytes no span covers.
+ * @param spans Highlight spans (byte ranges into `text` plus highlight group), later ones winning on overlap.
+ * @return The total width drawn, in pixels.
+ */
+float DrawUiTextSpans(const std::string &text, gfx::Vector2 pos, float font_size, gfx::Color tint,
+                      const std::vector<PickerHlSpan> &spans) {
+    if (spans.empty()) return DrawUiText(text, pos, font_size, tint);
+    std::vector<gfx::Color> colors(text.size(), tint);
+    for (const PickerHlSpan &sp : spans) {
+        const gfx::Color c = ResolveHlGroup(sp.hl_group);
+        const int cs = std::max(0, sp.col_start);
+        const int ce = std::min(static_cast<int>(text.size()), sp.col_end);
+        for (int i = cs; i < ce; i++) colors[static_cast<size_t>(i)] = c;
+    }
+    float x = pos.x;
+    const char *s = text.c_str();
+    const int len = static_cast<int>(text.size());
+    for (int i = 0; i < len;) {
+        int cp_size = 0;
+        const int cp = gfx::GetCodepointNext(&s[i], &cp_size);
+        const std::string glyph(s + i, static_cast<size_t>(cp_size));
+        const gfx::Color color = colors[static_cast<size_t>(i)];
+        i += cp_size;
+        const gfx::Font &f = IsIconCodepoint(cp)   ? g_icon_font
+                             : IsSymbolCodepoint(cp) ? g_symbol_font
+                             : IsEmojiCodepoint(cp)  ? g_emoji_font
+                                                     : g_font;
+        gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{x, pos.y}, font_size, 0, color);
+        x += gfx::MeasureTextEx(f, glyph.c_str(), font_size, 0).x;
+    }
+    return x - pos.x;
+}
+
+gfx::Texture2D *GetOrLoadOrgInlineImageTexture(const std::string &path);  // defined with the org inline-image cache below
+
+// Draws one sidebar row (SidebarLine): an image row positions the row's
+// texture from its offset within the block (so a block whose first row
+// scrolled off still shows its visible remainder under the caller's
+// scissor), scaled to fit `image_rows` rows tall and the available width;
+// a text row goes through DrawUiTextSpans. `avail_w` is the width from
+// `pos.x` to the pane's right edge, `line_h` the row height.
+/**
+ * @brief Draws a flattened sidebar row: its inline image block, or its (span-colored) text.
+ * @param line The row to draw.
+ * @param pos Top-left of this row.
+ * @param font_size Font size for a text row.
+ * @param tint Base text color.
+ * @param line_h Row height in pixels.
+ * @param avail_w Width available to the right of `pos.x`.
+ */
+void DrawSidebarRow(const SidebarLine &line, gfx::Vector2 pos, float font_size, gfx::Color tint, int line_h, float avail_w) {
+    if (line.image.empty()) {
+        DrawUiTextSpans(line.text, pos, font_size, tint, line.spans);
+        return;
+    }
+    if (line.image_index != 0) return;  // the block draws once, from its first row
+    const gfx::Texture2D *tex = GetOrLoadOrgInlineImageTexture(line.image);
+    if (!tex) {
+        DrawUiText("[image not found: " + line.image + "]", pos, font_size, ResolveHlGroup("Warn"));
+        return;
+    }
+    const float box_h = static_cast<float>(line_h * std::max(1, line.image_rows)) - 4.0f;
+    const float box_w = std::max(40.0f, avail_w - 8.0f);
+    const float scale = std::min(box_w / static_cast<float>(tex->width), box_h / static_cast<float>(tex->height));
+    gfx::DrawTextureEx(*tex, gfx::Vector2{pos.x, pos.y + 2.0f}, 0.0f, scale, gfx::White);
 }
 
 // raylib's GetGlyphIndex(font, codepoint) -- called by DrawTextEx once and
@@ -2617,6 +2759,163 @@ void ForEachWrapPiece(int col_a, int col_b, int wrap_cols, float text_x, float b
     }
 }
 
+// A delimiter pair which spans at least two buffer rows. `close_col` is a
+// byte offset: it is converted to a display column only when drawing, using
+// the same UTF-8-aware helper used by the cursor and highlight spans. The
+// closing delimiter is the guide's anchor because a scope opened at the end
+// of `if (...) {` conventionally closes under that line's first code column.
+struct ScopeGuide {
+    int open_row = 0;
+    int close_row = 0;
+    int close_col = 0;
+};
+
+// Prose filetypes: their body is English text, not code, so the lexical
+// rules below are all wrong for it -- the apostrophe in "doesn't" is not a
+// quote, an em-dash `--` is not a comment start, and a `(` opened in one
+// paragraph is never really closed by an unrelated `)` pages later.  Any
+// one of those leaves a delimiter stranded on the stack, and the stray
+// close which eventually pops it draws a guide straight down the middle of
+// a section (README.org's own "=webview_run()= (the call ... it's open)"
+// spanned 51 rows of prose that way).  These files are scanned only inside
+// a fenced code block instead -- see FindScopeGuides.
+bool IsProseGuideFiletype(const std::string &filetype) {
+    static const char *const kProseFiletypes[] = {"org", "md", "markdown", "rst", "txt", "text", "adoc", "asciidoc"};
+    for (const char *ft : kProseFiletypes) {
+        if (filetype == ft) return true;
+    }
+    return false;
+}
+
+// Case-insensitive ASCII literal match at `pos` -- org's fence keywords
+// are spelled both `#+begin_src` and `#+BEGIN_SRC` in the wild.
+bool ProseMatchAt(const std::string &s, size_t pos, const char *lit) {
+    for (size_t i = 0; lit[i] != '\0'; ++i) {
+        if (pos + i >= s.size()) return false;
+        if (std::tolower(static_cast<unsigned char>(s[pos + i])) !=
+            std::tolower(static_cast<unsigned char>(lit[i])))
+            return false;
+    }
+    return true;
+}
+
+size_t ProseFenceIndent(const std::string &line) {
+    size_t i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    return i;
+}
+
+// True if `line` opens an embedded code block in a prose `filetype`, with
+// `fence` set to the marker which closes it again.  Only the fence forms
+// that filetype actually uses are recognized, so a markdown-style ``` in
+// org *prose* stays prose.  A filetype with no fence form at all (plain
+// text, rst) simply never has code to guide, so it gets no guides.
+bool ProseFenceOpen(const std::string &filetype, const std::string &line, std::string *fence) {
+    const size_t i = ProseFenceIndent(line);
+    if (filetype == "org") {
+        if (ProseMatchAt(line, i, "#+begin_src")) {
+            *fence = "#+end_src";
+            return true;
+        }
+        return false;
+    }
+    if (filetype == "md" || filetype == "markdown") {
+        if (ProseMatchAt(line, i, "```")) {
+            *fence = "```";
+            return true;
+        }
+        if (ProseMatchAt(line, i, "~~~")) {
+            *fence = "~~~";
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ProseFenceClose(const std::string &line, const std::string &fence) {
+    return ProseMatchAt(line, ProseFenceIndent(line), fence.c_str());
+}
+
+// Collect the multi-line (), [] and {} pairs in a buffer for the editor's
+// scope guides.  This deliberately is a small lexical pass rather than a
+// language-specific parser: delimiter guides remain useful in every text
+// language we edit, including ones without a bundled tree-sitter grammar.
+// Quotes and the common line/block comment forms are skipped so braces in a
+// C/C++ string or comment do not create a misleading guide.  `filetype` is
+// LspFiletype(buffer.filename): in a prose one (IsProseGuideFiletype) only
+// the code inside a fenced block is scanned, and each fence boundary
+// restarts the scan so an unbalanced block cannot leak a guide into the
+// prose around it.
+std::vector<ScopeGuide> FindScopeGuides(const std::vector<std::string> &lines, const std::string &filetype) {
+    struct OpenDelimiter { char character; int row; int col; };
+    std::vector<OpenDelimiter> stack;
+    std::vector<ScopeGuide> guides;
+    bool in_block_comment = false;
+    char quote = 0;
+    bool escaped = false;
+    auto closing_for = [](char c) {
+        if (c == '(') return ')';
+        if (c == '[') return ']';
+        return '}';
+    };
+    const bool prose = IsProseGuideFiletype(filetype);
+    std::string fence;  // prose only: the marker closing the open block, "" when outside one
+    auto restart = [&] {
+        stack.clear();
+        in_block_comment = false;
+        quote = 0;
+        escaped = false;
+    };
+    for (int row = 0; row < static_cast<int>(lines.size()); ++row) {
+        const std::string &line = lines[static_cast<size_t>(row)];
+        if (prose) {
+            // The fence lines themselves are markup, not code, and whatever
+            // the block left open dies with it.
+            if (fence.empty()) {
+                ProseFenceOpen(filetype, line, &fence);
+                restart();
+                continue;
+            }
+            if (ProseFenceClose(line, fence)) {
+                fence.clear();
+                restart();
+                continue;
+            }
+        }
+        for (int col = 0; col < static_cast<int>(line.size()); ++col) {
+            const char c = line[static_cast<size_t>(col)];
+            const char next = col + 1 < static_cast<int>(line.size()) ? line[static_cast<size_t>(col + 1)] : '\0';
+            if (in_block_comment) {
+                if (c == '*' && next == '/') { in_block_comment = false; ++col; }
+                continue;
+            }
+            if (quote != 0) {
+                if (escaped) { escaped = false; continue; }
+                if (c == '\\') { escaped = true; continue; }
+                if (c == quote) quote = 0;
+                continue;
+            }
+            if (c == '/' && next == '*') { in_block_comment = true; ++col; continue; }
+            // //, #, and -- cover the line-comment spellings used by the
+            // bundled C-family, Python/shell, SQL/Haskell, and Lua modes.
+            if ((c == '/' && next == '/') || c == '#' || (c == '-' && next == '-')) break;
+            if (c == '\'' || c == '"' || c == '`') { quote = c; escaped = false; continue; }
+            if (c == '(' || c == '[' || c == '{') {
+                stack.push_back({c, row, col});
+            } else if (c == ')' || c == ']' || c == '}') {
+                if (stack.empty() || closing_for(stack.back().character) != c) continue;
+                OpenDelimiter open = stack.back();
+                stack.pop_back();
+                if (open.row < row) guides.push_back({open.row, row, col});
+            }
+        }
+        // Ordinary quoted strings do not cross a physical line in the
+        // languages this lightweight scanner recognizes.  Block comments do.
+        if (quote != 0 && quote != '`') { quote = 0; escaped = false; }
+    }
+    return guides;
+}
+
 // Converts a character-column index into a byte offset within `line`,
 // walking codepoint-by-codepoint the same way DrawLineFast (above) does --
 // needed wherever a column index (Decoration::col_start/col_end, e.g.
@@ -2802,6 +3101,8 @@ const char *kKeybindingsText =
     "  :close                         close current pane\n"
     "  Ctrl-W w / W                   cycle to next / previous pane\n"
     "  Ctrl-W c / s / v               close / split-h / split-v pane\n"
+    "  Alt-m                          maximize pane (others shrink to minimum) / restore layout;\n"
+    "                                 with a sidebar focused, pop it out instead\n"
     "  Ctrl-W h j k l                 move focus left / down / up / right\n"
     "  :tabnew [file]  :tabdelete     new / close tab (Ctrl-T = new)\n"
     "  :tabnext  :tabprevious         switch tabs\n"
@@ -2817,16 +3118,21 @@ const char *kKeybindingsText =
     "  Alt-1 .. Alt-9                 switch to workspace by number\n"
     "  <leader>w n/w/r/d/l/h          new / list / rename / delete / next / prev workspace\n"
     "  <leader>gw                     git workspaces picker (branch, ahead/behind)\n"
-    "  <leader>gg                     git panel (Tab / 1-4: Status, Log, Branches, Stash; ? lists keys)\n"
+    "  <leader>gg                     git popup (Tab / 1-5: Status, Log, Graph, Branches, Stash; P pushes; ? lists keys)\n"
+    "  <leader>gG                     git sidebar (docked, or stacked with the file tree)\n"
     "  <leader>gl / gb / gs           git log / branches / stash, popped out\n"
     "  <leader>gc / gp                git commit (message in a floating pane) / push\n"
-    "  :MepGitStatus :MepGitLog :MepGitBranches :MepGitStash :MepGitCommit :MepGitPush :MepGitPull :MepGitFetch\n"
+    "  :MepGitStatus :MepGitLog :MepGitGraph :MepGitBranches :MepGitStash :MepGitCommit :MepGitPush :MepGitPull :MepGitFetch\n"
     "  :project [dir]  :projects      open/switch project / loaded-projects picker\n"
     "  :projectclose[!]  :projectnext :projectprevious\n"
     "  :wssave  :wsrestore            save / restore this project's layout\n"
     "\n"
     "  Alt+s / Alt+v                  split (horizontal / vertical)\n"
     "  :tabterminal <leader><CR>      toggle this tab's own terminal along the bottom (one shell per tab)\n"
+    "  :Runner [tool] <leader><Space> command runner: just > make > ninja > cmake, runs in the tab terminal\n"
+    "               <leader>jj/jm/jn/jc  just / make / ninja / cmake tab (notebook cell keys inside .ipynb)\n"
+    "               <leader>jw / jv   runner workspaces / variable inspector (Tab / S-Tab switches tabs)\n"
+    "  gr           <leader>rr        run/compile the current file (same as the pane's Run button)\n"
     "  :aiterminal  <leader>a<CR>     Claude Code terminal below, driving this window via mep-agent\n"
     "  :aiagents    <leader>al        AI agents sidebar (status, task, workspace; Enter jumps to its terminal)\n"
     "               <leader>aa        toggle the AI agents sidebar\n"
@@ -2836,6 +3142,13 @@ const char *kKeybindingsText =
     "  Alt+d                          remove active tab (closes pane if last)\n"
     "  Alt+n / Alt+Tab                next buffer tab in pane\n"
     "  Alt+p / Alt+Shift+Tab          previous buffer tab in pane\n"
+    "\n"
+    "Language tools\n"
+    "  gd  gh                         go to definition / help (LSP hover, or the R UI's help tab)\n"
+    "  gt  :MepLangTest               run this file's tests in the tab terminal -- go test, pytest/\n"
+    "                                 unittest, testthat, the file's gtest/catch2 binary, cargo test,\n"
+    "                                 vitest/jest, busted, rspec, Pkg.test(), zig test\n"
+    "  <leader>tt                     Tests panel (the whole project's one configured test command)\n"
     "\n"
     "Global\n"
     "  Ctrl+Shift+=/-   grow / shrink font\n"
@@ -2868,10 +3181,12 @@ const char *kDefaultMod1Bindings =
     "mep.map_mod1('C-k', function() mep.pane_move_buffer('up') end)\n"
     "mep.map_mod1('C-l', function() mep.pane_move_buffer('right') end)\n"
     "mep.map_mod1('d', function() mep.pane_close_buffer() end)\n"
-    // mod1+m: pop the focused sidebar out into a large centered float with
-    // a preview column (Editor::ToggleSidebarPopout); a no-op unless a
-    // sidebar has focus, so it's safe as a global binding.
-    "mep.map_mod1('m', function() mep.sidebar_popout_toggle() end)\n"
+    // mod1+m: with a sidebar focused, pop it out into a large centered
+    // float with a preview column (Editor::ToggleSidebarPopout); otherwise
+    // maximize the active pane / restore the layout from before
+    // (Editor::TogglePaneMaximize) -- sidebar_popout_toggle returns false
+    // when no sidebar has focus.
+    "mep.map_mod1('m', function() if not mep.sidebar_popout_toggle() then mep.pane_maximize_toggle() end end)\n"
     // mod1+o: open the focused sidebar's content as an ordinary tabbed
     // buffer in the pane tree (Editor::SidebarOpenPane) -- from there it's
     // just a normal buffer, splittable/movable/closable/mergeable with
@@ -3051,70 +3366,172 @@ const char *kBuiltinTextTools =
     // Editor::OpenHtmlInPlace's dedup-by-source can't mistake a re-fetch
     // for the same stale page (see its own .cpp comment); a local path
     // just opens directly, no fetch needed.
+    // Loading a URL is a blocking mep.http_get (http_client.h: plain
+    // sockets for http://, so a page served from localhost -- :Serve --
+    // needs nothing but mep; a curl subprocess for https://). The body
+    // goes to a *fresh* temp file per load so OpenHtmlInPlace's dedup (by
+    // source path) can never serve a stale copy, and `land_fn(tmpfile,
+    // url)` gets the final URL after redirects as the page's origin --
+    // which is what its subresources, fetch() calls and links resolve
+    // against (Editor::PopulateHtmlSession / LoadRemoteHtmlResources).
+    "local function mep_browse_fetch(url, land_fn)\n"
+    "  local res = mep.http_get(url)\n"
+    "  if not res.ok then\n"
+    "    mep.notify('Browse: cannot load ' .. url .. ' (' .. res.error .. ')', 'error')\n"
+    "    return false\n"
+    "  end\n"
+    "  if res.status >= 400 then mep.notify('Browse: HTTP ' .. res.status .. ' for ' .. url, 'warn') end\n"
+    "  local tmpfile = os.tmpname()\n"
+    "  local f = io.open(tmpfile, 'wb')\n"
+    "  if not f then mep.notify('Browse: cannot write a temp file', 'error') return false end\n"
+    "  f:write(res.body)\n"
+    "  f:close()\n"
+    "  land_fn(tmpfile, res.url ~= '' and res.url or url)\n"
+    "  return true\n"
+    "end\n"
     "function mep.browse_open_in_pane(target)\n"
     "  local land_fn = mep.html_current_origin() and mep.html_navigate or mep.html_open\n"
     "  if target:match('^https?://') then\n"
-    "    local tmpfile = os.tmpname()\n"
-    "    mep.notify('Fetching ' .. target .. '...')\n"
-    "    mep.job_start({'curl', '-sL', '-o', tmpfile, target}, {\n"
-    "      on_exit = function(code)\n"
-    "        if code == 0 then land_fn(tmpfile, target)\n"
-    "        else mep.notify('mep.browse: failed to fetch ' .. target, 'error') end\n"
-    "      end,\n"
-    "    })\n"
+    "    mep_browse_fetch(target, land_fn)\n"
     "  else\n"
     "    land_fn(target)\n"
     "  end\n"
     "end\n"
-    // Fetches `target` (curl, if it looks like a remote URL) or just
-    // passes it straight through (a local path, nothing to fetch), then
-    // calls `land_fn(local_path, target)` -- shared by mep.browse_reload
-    // (same origin, fresh fetch/re-read) and mep.browse_open_bar (a new
-    // origin the user just typed), both of which pass mep.html_reload as
-    // `land_fn` so the result lands in the *current* pane's existing
-    // session (Editor::ReloadHtmlBuffer) rather than opening a new
-    // buffer the way mep.browse_open_in_pane's own mep.html_open call
-    // does -- matching a real browser's address bar, which navigates the
-    // current tab in place rather than opening a new one.
+    // Fetches `target` (if it's a URL) or just passes it straight through
+    // (a local path, nothing to fetch), then calls `land_fn(local_path,
+    // target)` -- shared by mep.browse_reload (same origin, fresh fetch/
+    // re-read) and the omnibar (a new origin the user just typed), which
+    // pass mep.html_reload / mep.html_navigate as `land_fn` so the result
+    // lands in the *current* pane's existing session rather than opening a
+    // new buffer -- matching a real browser's address bar, which navigates
+    // the current tab in place rather than opening a new one.
     "local function mep_browse_fetch_then(target, land_fn)\n"
     "  if target:match('^https?://') then\n"
-    "    local tmpfile = os.tmpname()\n"
-    "    mep.notify('Fetching ' .. target .. '...')\n"
-    "    mep.job_start({'curl', '-sL', '-o', tmpfile, target}, {\n"
-    "      on_exit = function(code)\n"
-    "        if code == 0 then land_fn(tmpfile, target)\n"
-    "        else mep.notify('mep.browse: failed to fetch ' .. target, 'error') end\n"
-    "      end,\n"
-    "    })\n"
+    "    mep_browse_fetch(target, land_fn)\n"
     "  else\n"
     "    land_fn(target, target)\n"
     "  end\n"
     "end\n"
-    // 'r' while parked on the in-pane browser (Editor::HandleHtmlInput)
-    // dispatches here via MepBrowseReload: re-fetches HtmlSession::origin
-    // if it's a remote URL, or just re-reads the local file otherwise --
-    // either way picks up whatever changed since the page was first
-    // opened. A no-op if the current pane isn't an HTML pane
-    // (mep.html_current_origin returns nil).
+    // 'r' while parked on the in-pane browser (Editor::HandleHtmlInput),
+    // or the omnibar's R button, dispatches here via MepBrowseReload:
+    // re-fetches HtmlSession::origin if it's a URL, or just re-reads the
+    // local file otherwise -- either way picks up whatever changed since
+    // the page was first opened. A no-op if the current pane isn't an HTML
+    // pane (mep.html_current_origin returns nil).
     "function mep.browse_reload()\n"
     "  local origin = mep.html_current_origin()\n"
     "  if not origin then return end\n"
     "  mep_browse_fetch_then(origin, mep.html_reload)\n"
     "end\n"
     "mep.command('MepBrowseReload', mep.browse_reload)\n"
-    // 'o' while parked on the in-pane browser dispatches here: a small
-    // address-bar-style prompt (mep.ui_input, prefilled with the current
-    // page's own origin so a quick edit -- adding a path segment, say --
-    // is a couple keystrokes) that navigates the *current* pane to
-    // whatever's entered. A no-op if the current pane isn't an HTML pane.
+    // The omnibar's Enter (Editor::HandleHtmlInput) lands here with the
+    // typed text: mep.url_normalize turns "localhost:8000" / ":8000/app" /
+    // "example.com" into a URL (a URL or a local path passes through), and
+    // the current html pane navigates there in place. Outside an html pane
+    // it behaves like :Browse.
+    "function mep.browse_go(input)\n"
+    "  if not input or input == '' then return end\n"
+    "  local target = mep.url_normalize(input)\n"
+    "  if mep.html_current_origin() then mep_browse_fetch_then(target, mep.html_navigate)\n"
+    "  else mep.browse_open_in_pane(target) end\n"
+    "end\n"
+    "mep.command('MepBrowseGo', mep.browse_go)\n"
+    // :MepBrowseOpen used to be a modal mep.ui_input prompt; the pane now
+    // has a real omnibar, so this just puts it into edit mode ('o' and
+    // Ctrl-L do the same from the keyboard, a click on the field from the
+    // mouse).
     "function mep.browse_open_bar()\n"
-    "  local current = mep.html_current_origin()\n"
-    "  if not current then return end\n"
-    "  mep.ui_input('Open:', current, function(input)\n"
-    "    if input and input ~= '' then mep_browse_fetch_then(input, mep.html_navigate) end\n"
-    "  end)\n"
+    "  if not mep.html_current_origin() then return end\n"
+    "  mep.html_omnibar_edit()\n"
     "end\n"
     "mep.command('MepBrowseOpen', mep.browse_open_bar)\n"
+    // The built-in static web server (http_server.h), so a web project can
+    // be served to http://localhost and opened in the browser pane without
+    // leaving mep:
+    //   :Serve [dir] [port]   serve `dir` (default: the current file's
+    //                         directory, else the workspace root) on
+    //                         127.0.0.1 -- port 0/omitted picks a free
+    //                         one -- and open it in the browser pane
+    //   :ServeStop [port]     stop that server (or all of them)
+    //   :Servers              list what's being served
+    "local function mep_serve_default_dir()\n"
+    "  local fname = mep.filename()\n"
+    "  if fname ~= '' and not fname:match('^sidebar/') then\n"
+    "    local dir = mep_lsp_abspath(fname):match('^(.*)/[^/]*$')\n"
+    "    if dir then return dir end\n"
+    "  end\n"
+    "  return mep.workspace_root and mep.workspace_root() or '.'\n"
+    "end\n"
+    "function mep.serve(dir, port, open)\n"
+    "  dir = (dir and dir ~= '') and dir or mep_serve_default_dir()\n"
+    "  local bound, err = mep.http_serve(dir, port or 0)\n"
+    "  if not bound then mep.notify('Serve: ' .. tostring(err), 'error') return nil end\n"
+    "  local url = 'http://localhost:' .. bound .. '/'\n"
+    "  mep.notify('Serving ' .. dir .. ' at ' .. url)\n"
+    "  if open ~= false then mep.browse_open_in_pane(url) end\n"
+    "  return bound, url\n"
+    "end\n"
+    "mep.command('Serve', function(args)\n"
+    "  local dir, port = nil, nil\n"
+    "  for word in (args or ''):gmatch('%S+') do\n"
+    "    if tonumber(word) and not port then port = tonumber(word) else dir = word end\n"
+    "  end\n"
+    "  mep.serve(dir, port)\n"
+    "end)\n"
+    "mep.command('ServeStop', function(args)\n"
+    "  local n = mep.http_stop(tonumber(args or '') or 0)\n"
+    "  mep.notify('Stopped ' .. n .. ' server(s)')\n"
+    "end)\n"
+    "mep.command('Servers', function()\n"
+    "  local list = mep.http_servers()\n"
+    "  if #list == 0 then mep.notify('No servers running (:Serve [dir] [port])') return end\n"
+    "  local lines = {}\n"
+    "  for _, srv in ipairs(list) do\n"
+    "    lines[#lines + 1] = 'http://localhost:' .. srv.port .. '/  ->  ' .. srv.root .. '  (' .. srv.requests .. ' requests)'\n"
+    "  end\n"
+    "  mep.float_preview('Servers', table.concat(lines, '\\n'))\n"
+    "end)\n"
+    "mep.leader_map('bh', 'Host (serve) this directory and browse it', function() mep.serve() end)\n"
+    // The browser-capability ladder (examples/web): twelve self-checking
+    // sites, simplest to a bundled React app. :WebLadder [dir] serves it
+    // and opens its index in the browser pane; :WebLadderRun loads every
+    // level in turn and reports each page's own verdict (its <title>:
+    // "PASS 7/7 - ..." / "FAIL ..." / "RUNNING ..." when the page needed
+    // an event loop that never ran) -- the in-editor counterpart of the
+    // headless mep-web-ladder-test binary.
+    "local function mep_web_ladder_dir(arg)\n"
+    "  if arg and arg ~= '' then return arg end\n"
+    "  local root = mep.workspace_root and mep.workspace_root() or '.'\n"
+    "  return root .. '/examples/web'\n"
+    "end\n"
+    "mep.command('WebLadder', function(args) mep.serve(mep_web_ladder_dir(args)) end)\n"
+    "function mep.web_ladder_run(dir)\n"
+    "  dir = mep_web_ladder_dir(dir)\n"
+    "  local port = mep.serve(dir, 0, false)\n"
+    "  if not port then return nil end\n"
+    "  local levels = {}\n"
+    "  for _, entry in ipairs(mep.list_dir(dir) or {}) do\n"
+    "    if entry.is_dir and entry.name:match('^%d%d%-') then levels[#levels + 1] = entry.name end\n"
+    "  end\n"
+    "  table.sort(levels)\n"
+    "  local results, passed = {}, 0\n"
+    "  for _, level in ipairs(levels) do\n"
+    "    mep.browse_open_in_pane('http://localhost:' .. port .. '/' .. level .. '/index.html')\n"
+    // Most levels finish asynchronously (timers, fetch, React's scheduler):
+    // let the page run until it is idle before reading its verdict.
+    "    mep.html_settle(8000)\n"
+    "    local title = mep.html_title() or '(did not open)'\n"
+    "    local ok = title:match('^PASS') ~= nil or level:match('^01%-') ~= nil\n"
+    "    if ok then passed = passed + 1 end\n"
+    "    results[#results + 1] = {level = level, title = title, ok = ok}\n"
+    "  end\n"
+    "  local lines = {passed .. ' of ' .. #levels .. ' levels pass', ''}\n"
+    "  for _, r in ipairs(results) do lines[#lines + 1] = (r.ok and 'ok    ' or 'FAIL  ') .. r.level .. '   ' .. r.title end\n"
+    "  mep.browse_open_in_pane('http://localhost:' .. port .. '/index.html')\n"
+    "  mep.float_preview('Web ladder', table.concat(lines, '\\n'))\n"
+    "  return results\n"
+    "end\n"
+    "mep.command('WebLadderRun', function(args) mep.web_ladder_run(args) end)\n"
     // Shared target-resolution for :Browse/:BrowseExternal alike: an
     // explicit argument wins; otherwise the URL under the cursor;
     // otherwise the current buffer's own file if it looks like an HTML
@@ -3262,46 +3679,101 @@ const char *kBuiltinRightSidebarPanes =
     "  end\n"
     "end\n";
 
-// File tree sidebar (Phase 15): built entirely in Lua atop the Phase 7
-// sidebar widget (mep.sidebar_*), Phase 10 icons, and the new
-// mep.list_dir/fs_* primitives -- the generic sidebar stays feature-free,
-// tree-specific behavior (expand/collapse/create/rename/delete/refresh/
-// toggle-hidden) all lives here via sidebar_set_on_key.
+// File tree: a docked sidebar tree with single-key file operations
+// (mep.tree_*, <leader>ff) plus oil.nvim-style editable directory buffers
+// (mep.oil_open, what :e <dir> opens), both built in Lua atop
+// mep.tree_build_rows, the Phase 10 icons, the mep.fs_* primitives and
+// the buffer-scoped hooks (mep.buffer_set_on_enter/_on_write/_on_key/
+// _on_image_toggle).
 const char *kBuiltinFileTree =
+    // Two views share the row-building/rendering code below:
+    //  * the sidebar tree (mep.tree_open/<leader>ff): a real Buffer (so it
+    //    keeps a cursor, search, pane docking, Shift+I image viewer) whose text
+    //    is NOT editable -- mep.buffer_set_on_key swallows every editing key
+    //    and file operations are single keys that prompt (a=add, r=rename,
+    //    d=delete, c=copy, ...), nvim-tree style.
+    //  * oil.nvim-style directory buffers (mep.oil_open), opened by :e/mep.open
+    //    on a directory (mep.set_on_directory_open): one ordinary, fully
+    //    editable buffer per directory; editing its lines and :w applies the
+    //    renames/moves/copies/creates/deletes (mep_oil_on_write).
+    // The recursive walk -- hidden/gitignore filtering, expand-driven
+    // recursion, dirs-first-then-alpha order -- is Editor::BuildFileTreeRows/
+    // mep.tree_build_rows for both.
     "local mep_tree_root = nil\n"
     "local mep_tree_expanded = {}\n"
     "local mep_tree_show_hidden = false\n"
     "local mep_tree_ignored = {}\n"
-    "local mep_tree_edit_buf = nil\n"
-    "local mep_tree_edit_snapshot = nil\n"
-    "local mep_tree_edit_ns = nil\n"
-    // Shift+I's image viewer (see mep_tree_toggle_image_viewer below):
-    // `mep_tree_images` is the sorted list of the tree root directory's
-    // image files, `mep_tree_image_index` the 1-based position within it
-    // currently shown -- both nil/0 until the viewer's first been opened.
-    // `mep_tree_image_step` is forward-declared here (assigned further
-    // down) purely so mep_tree_image_apply_nav, defined right below it,
-    // can already close over it as an upvalue.
+    "local mep_tree_buf = nil\n"
+    "local mep_tree_rows = nil\n"
+    "local mep_tree_ns = nil\n"
+    // Oil-style directory buffers, keyed both ways: normalized absolute dir ->
+    // state and buffer id -> state. state = {root, buf, expanded, snapshot}.
+    "local mep_oil_by_dir = {}\n"
+    "local mep_oil_by_buf = {}\n"
+    // Image viewer (Shift+I) state: `mep_tree_images` is the ordered list of
+    // image paths in the directory it was opened for, `mep_tree_image_index`
+    // the 1-based position currently shown, `mep_tree_image_return_buf` the
+    // tree/oil buffer Shift+I in the viewer goes back to. `mep_tree_image_step`
+    // is forward-declared so mep_tree_image_apply_nav can close over it.
     "local mep_tree_images = nil\n"
     "local mep_tree_image_index = 0\n"
+    "local mep_tree_image_return_buf = nil\n"
     "local mep_tree_image_step\n"
     "local function mep_tree_join(dir, name)\n"
     "  if dir:sub(-1) == '/' then return dir .. name end\n"
     "  return dir .. '/' .. name\n"
     "end\n"
-    // Re-applies the "<"/">" nav header and Shift+I-back callback to
-    // whatever image buffer mep.open just pointed the pane at -- needed
-    // every time (mep_tree_toggle_image_viewer's first open, and every
-    // mep_tree_image_step) since a different path is a different buffer id
-    // and a fresh ImageSession starts with neither set (mirrors
-    // kBuiltinLanguageUiR's own merged Plot pane, main.cpp).
+    "local function mep_tree_parent(path)\n"
+    "  local p = path:match('^(.*)/[^/]+$')\n"
+    "  if p == nil then return '.' end\n"
+    "  if p == '' then return '/' end\n"
+    "  return p\n"
+    "end\n"
+    "local function mep_tree_basename(path)\n"
+    "  return path:match('([^/]+)/*$') or path\n"
+    "end\n"
+    // Absolute, '.'/'..'-free, no trailing slash -- so ':e src', ':e ./src/'
+    // and ':e /abs/path/src' all land on the same oil buffer.
+    "local function mep_tree_normalize(path)\n"
+    "  if path:sub(1, 1) ~= '/' and not path:match('^%a:') then path = mep_tree_join(mep.getcwd(), path) end\n"
+    "  local prefix = path:match('^%a:') or ''\n"
+    "  local parts = {}\n"
+    "  for part in path:sub(#prefix + 1):gmatch('[^/]+') do\n"
+    "    if part == '..' then\n"
+    "      if #parts > 0 then parts[#parts] = nil end\n"
+    "    elseif part ~= '.' then\n"
+    "      parts[#parts + 1] = part\n"
+    "    end\n"
+    "  end\n"
+    "  return prefix .. '/' .. table.concat(parts, '/')\n"
+    "end\n"
+    "local function mep_tree_exists(path)\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if f then f:close() return true end\n"
+    "  local name = mep_tree_basename(path)\n"
+    "  for _, e in ipairs(mep.list_dir(mep_tree_parent(path))) do\n"
+    "    if e.name == name then return true end\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    // mkdir -p for everything above `path`, so a typed 'a/b/c.txt' works.
+    "local function mep_tree_mkdir_parents(path)\n"
+    "  local parent = mep_tree_parent(path)\n"
+    "  if parent == '.' or parent == '/' or mep_tree_exists(parent) then return end\n"
+    "  mep_tree_mkdir_parents(parent)\n"
+    "  mep.fs_mkdir(parent)\n"
+    "end\n"
+    // Re-applies the "<"/">" nav header and Shift+I-back callback to whatever
+    // image buffer mep.open just pointed the pane at -- needed on every open
+    // since a different path is a different buffer id and a fresh
+    // ImageSession starts with neither set.
     "local function mep_tree_image_apply_nav()\n"
     "  local buf = mep.current_buffer()\n"
+    "  local return_buf = mep_tree_image_return_buf\n"
     "  mep.image_set_nav(buf, function() mep_tree_image_step(-1) end, function() mep_tree_image_step(1) end)\n"
-    "  mep.image_set_return(buf, function() mep.buffer_switch(mep_tree_edit_buf) end)\n"
+    "  mep.image_set_return(buf, function() mep.buffer_switch(return_buf) end)\n"
     "end\n"
-    // Steps to the previous/next image in mep_tree_images, clamping at
-    // either end (a no-op past the first/last image, not a wraparound).
+    // Steps to the previous/next image, clamping at either end.
     "mep_tree_image_step = function(delta)\n"
     "  local i = mep_tree_image_index + delta\n"
     "  if not mep_tree_images or i < 1 or i > #mep_tree_images then return end\n"
@@ -3309,24 +3781,23 @@ const char *kBuiltinFileTree =
     "  mep.open(mep_tree_images[i])\n"
     "  mep_tree_image_apply_nav()\n"
     "end\n"
-    // mep.buffer_set_on_image_toggle's callback for the tree buffer (wired
-    // up in mep.tree_refresh below): opens the first image (alphabetically
-    // -- mep.list_dir already sorts that way) in the tree's root directory,
-    // scoped to that directory only (not the whole tree), matching "shows
-    // the first image in the directory" literally.
-    "local function mep_tree_toggle_image_viewer()\n"
+    // Shift+I in the tree or an oil buffer: opens the first image
+    // (alphabetically -- mep.list_dir already sorts that way) in `dir` only,
+    // not the whole expanded tree.
+    "local function mep_tree_toggle_image_viewer(dir, return_buf)\n"
     "  local images = {}\n"
-    "  for _, e in ipairs(mep.list_dir(mep_tree_root)) do\n"
+    "  for _, e in ipairs(mep.list_dir(dir)) do\n"
     "    if not e.is_dir and mep.is_image_path(e.name) then\n"
-    "      images[#images + 1] = mep_tree_join(mep_tree_root, e.name)\n"
+    "      images[#images + 1] = mep_tree_join(dir, e.name)\n"
     "    end\n"
     "  end\n"
     "  if #images == 0 then\n"
-    "    mep.notify('No images in ' .. mep_tree_root, 'warn')\n"
+    "    mep.notify('No images in ' .. dir, 'warn')\n"
     "    return\n"
     "  end\n"
     "  mep_tree_images = images\n"
     "  mep_tree_image_index = 1\n"
+    "  mep_tree_image_return_buf = return_buf\n"
     "  mep.open(images[1])\n"
     "  mep_tree_image_apply_nav()\n"
     "end\n"
@@ -3339,25 +3810,14 @@ const char *kBuiltinFileTree =
     "    on_exit = function() mep.tree_refresh() end,\n"
     "  })\n"
     "end\n"
-    // oil.nvim-style editable tree (the recursive walk -- hidden/gitignore
-    // filtering, expand-driven recursion, dirs-first-then-alpha order --
-    // is Editor::BuildFileTreeRows/mep.tree_build_rows, unchanged): the
-    // sidebar is a real, ordinary Buffer (mep.buffer_new, same idiom as
-    // kBuiltinStructure's <leader>sS split) instead of a SidebarInstance's
-    // click-widget list, so it gets a real cursor and full Normal/Insert/
-    // Visual-mode editing for free. Each row renders as plain text --
-    // `<indent><icon> <name>` -- and mep_tree_edit_on_write (below) parses
-    // that same shape back apart at `:w` time.
-    // Two spaces, not one, between the icon and the name: nerd-font icon
-    // glyphs commonly render a little wider than the monospace column
-    // their one codepoint occupies (kBuiltinFileTree's editable tree rows
-    // are the first place such a glyph sits in real, fixed-column buffer
-    // text rather than icon-font-only UI chrome), so a single space's gap
-    // can look like none at all. mep_tree_edit_parse_current (below) trims
-    // any leading whitespace off of whatever follows the first space when
-    // reading a row back, so this doesn't have to be kept in lockstep with
-    // that parser beyond "at least one space right after the icon".
-    "local function mep_tree_edit_line_for_row(row)\n"
+    // Each row renders as `<indent><icon>  <name>`. Two spaces, not one,
+    // between the icon and the name: nerd-font icon glyphs commonly render a
+    // little wider than the monospace column their one codepoint occupies, so
+    // a single space's gap can look like none at all. mep_oil_parse (below)
+    // trims any leading whitespace off of whatever follows the first space
+    // when reading a row back, so this doesn't have to be kept in lockstep
+    // with that parser beyond "at least one space right after the icon".
+    "local function mep_tree_line_for_row(row)\n"
     "  local indent = string.rep('  ', row.depth)\n"
     "  if row.is_dir then\n"
     "    local marker = row.expanded and mep.icons.dir_open or mep.icons.dir_closed\n"
@@ -3365,44 +3825,48 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  return indent .. mep.icon_for_file(row.name) .. '  ' .. row.name\n"
     "end\n"
-    "local function mep_tree_edit_apply_highlight()\n"
-    "  if not mep_tree_edit_ns then mep_tree_edit_ns = mep.ns_create('mep_tree_edit') end\n"
-    "  mep.buffer_ns_clear(mep_tree_edit_buf, mep_tree_edit_ns)\n"
-    "  for i, row in ipairs(mep_tree_edit_snapshot) do\n"
+    "local function mep_tree_build(root, expanded, ignored)\n"
+    "  local expanded_list = {}\n"
+    "  for k, v in pairs(expanded) do if v then expanded_list[#expanded_list + 1] = k end end\n"
+    "  local ignored_list = {}\n"
+    "  for k, v in pairs(ignored) do if v then ignored_list[#ignored_list + 1] = k end end\n"
+    "  return mep.tree_build_rows(root, expanded_list, mep_tree_show_hidden, ignored_list)\n"
+    "end\n"
+    "local function mep_tree_render(buf, rows)\n"
+    "  if not mep_tree_ns then mep_tree_ns = mep.ns_create('mep_tree') end\n"
+    "  local lines = {}\n"
+    "  for i, row in ipairs(rows) do lines[i] = mep_tree_line_for_row(row) end\n"
+    "  if #lines == 0 then lines = {''} end\n"
+    "  mep.buffer_set_lines(buf, lines)\n"
+    "  mep.buffer_ns_clear(buf, mep_tree_ns)\n"
+    "  for i, row in ipairs(rows) do\n"
     "    local hl = row.is_dir and 'Blue' or mep.hl_for_file(row.name)\n"
-    "    local line = mep_tree_edit_line_for_row(row)\n"
-    "    mep.buffer_deco_add(mep_tree_edit_buf, mep_tree_edit_ns, {row = i, col_start = 1, col_end = #line + 1, hl_group = hl})\n"
+    "    mep.buffer_deco_add(buf, mep_tree_ns, {row = i, col_start = 1, col_end = #lines[i] + 1, hl_group = hl})\n"
     "  end\n"
     "end\n"
-    // Expanding/collapsing a directory or refreshing rebuilds every row
-    // (and hence every line) from scratch -- refused while the buffer has
-    // unsaved edits so an in-progress rename/create/delete isn't silently
-    // discarded out from under the cursor.
-    "local function mep_tree_edit_guard_modified()\n"
-    "  if mep_tree_edit_buf and mep.buffer_modified(mep_tree_edit_buf) then\n"
-    "    mep.notify('Save (:w) or undo pending tree changes first', 'warn')\n"
-    "    return true\n"
-    "  end\n"
-    "  return false\n"
+    // Shared buffer setup for both views.
+    "local function mep_tree_new_buffer()\n"
+    "  local buf = mep.buffer_new()\n"
+    "  mep.buffer_set_hide_line_numbers(buf, true)\n"
+    "  mep.buffer_set_wrap(buf, false)\n"
+    "  return buf\n"
     "end\n"
-    // Parses the tree buffer's *current* text back into one row per
-    // non-blank line: `depth` from the leading 2-spaces-per-level indent
-    // (clamped to at most one level past the previous row's, since nothing
-    // can nest deeper than that), `name` from everything after the first
-    // space past the indent -- the icon and that one space are the only
-    // thing ever between the indent and the name, so this is the "ignore
-    // the icon" the rendering above promises, and it works unmodified even
-    // for a brand-new line typed with no icon at all (there's simply no
-    // space to split on unless the typed name itself contains one).
-    // `new_path` is computed structurally from depth plus a running stack
-    // of "current path at each depth", so it comes out right regardless of
-    // whether a row is unchanged, renamed in place, or freshly pasted
-    // somewhere else in the buffer.
-    "local function mep_tree_edit_parse_current()\n"
+    // ---- oil.nvim-style editable directory buffers ----------------------
+    "local mep_oil_refresh\n"
+    // Parses an oil buffer's *current* text back into one row per non-blank
+    // line: `depth` from the leading 2-spaces-per-level indent (clamped to at
+    // most one level past the previous row's), `name` from everything after
+    // the first space past the indent -- the icon and its spaces are the only
+    // thing ever between the indent and the name, and a brand-new line typed
+    // with no icon at all works too (there's simply no space to split on
+    // unless the typed name itself contains one). `new_path` is computed
+    // structurally from depth plus a running stack of "current path at each
+    // depth", so it comes out right whether a row is unchanged, renamed in
+    // place, or freshly pasted somewhere else in the buffer.
+    "local function mep_oil_parse(st)\n"
     "  local rows = {}\n"
-    "  local stack = {[0] = mep_tree_root}\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    local line = mep.get_line(i)\n"
+    "  local stack = {[0] = st.root}\n"
+    "  for _, line in ipairs(mep.buffer_get_lines(st.buf) or {}) do\n"
     "    local indent_len = #(line:match('^ *') or '')\n"
     "    local prev_depth = rows[#rows] and rows[#rows].depth or -1\n"
     "    local depth = math.floor(indent_len / 2)\n"
@@ -3414,7 +3878,7 @@ const char *kBuiltinFileTree =
     "    local is_new_dir_hint = false\n"
     "    if name:sub(-1) == '/' then is_new_dir_hint = true; name = name:sub(1, -2) end\n"
     "    if name ~= '' then\n"
-    "      local parent = stack[depth] or mep_tree_root\n"
+    "      local parent = stack[depth] or st.root\n"
     "      local new_path = mep_tree_join(parent, name)\n"
     "      stack[depth + 1] = new_path\n"
     "      rows[#rows + 1] = {depth = depth, name = name, new_path = new_path, is_new_dir_hint = is_new_dir_hint}\n"
@@ -3422,32 +3886,15 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  return rows\n"
     "end\n"
-    // Diffs mep_tree_edit_snapshot (the tree as of the last refresh)
-    // against the buffer's current text -- via mep.diff_lines, the same
-    // Myers-diff primitive kBuiltinGit's gutter hunks use, run over just
-    // the row *names* so a rename doesn't look like an unrelated
-    // delete+create pair -- to produce the four kinds of change a write
-    // can imply:
-    //   - a hunk replacing exactly one old name with exactly one new name
-    //     at the same slot: that entry renamed in place (and moved too, if
-    //     its computed new_path's parent differs from its old one).
-    //   - a name the diff calls "deleted" that reappears elsewhere in the
-    //     new list: a move (cut here, pasted there); otherwise a real
-    //     delete.
-    //   - a name the diff calls "inserted" that matches a name still
-    //     present elsewhere: a copy (yanked, not deleted, then pasted);
-    //     otherwise a create (a new directory if the typed name ended
-    //     with `/`, else a new empty file).
-    // Two entries swapping names in the same write, or a simultaneous
-    // rename *and* move of the same entry, aren't distinguishable from an
-    // unrelated delete+create without real per-line identity (no extmark
-    // equivalent exists here) -- a known, narrow gap; one change at a time
-    // (the user's own cut/paste-to-move workflow already is) always
-    // resolves correctly.
-    "local function mep_tree_edit_compute_ops()\n"
-    "  local current = mep_tree_edit_parse_current()\n"
+    // Diffs the snapshot's names against the parsed buffer (mep.diff_lines):
+    // a 1:1 changed hunk is a rename in place; an old row that vanished but
+    // whose name reappears elsewhere is a move; a new row whose name matches
+    // a still-present old row is a copy; anything else new is a create and
+    // anything else gone is a delete.
+    "local function mep_oil_compute_ops(st)\n"
+    "  local current = mep_oil_parse(st)\n"
     "  local old_names, new_names = {}, {}\n"
-    "  for i, e in ipairs(mep_tree_edit_snapshot) do old_names[i] = e.name end\n"
+    "  for i, e in ipairs(st.snapshot) do old_names[i] = e.name end\n"
     "  for i, r in ipairs(current) do new_names[i] = r.name end\n"
     "  local hunks = mep.diff_lines(old_names, new_names)\n"
     "  local matched_old, matched_new = {}, {}\n"
@@ -3456,23 +3903,21 @@ const char *kBuiltinFileTree =
     "      matched_old[h.old_start] = {kind = 'rename', new_index = h.new_start}\n"
     "      matched_new[h.new_start] = true\n"
     "    else\n"
-    // Anything else (a pure insert, a pure delete, or an ambiguous N:M
-    // replace) gets no individual rename pairing -- old-side positions
-    // are delete candidates (a same-named survivor elsewhere still
-    // reclaims one as a move, below); new-side positions are deliberately
-    // left unmarked here so the create/copy pass further down evaluates
-    // them, rather than treating every position a hunk merely touched as
-    // "already accounted for" and silently dropping it.
     "      for i = h.old_start, h.old_start + h.old_count - 1 do matched_old[i] = matched_old[i] or {kind = 'delete'} end\n"
     "    end\n"
     "  end\n"
+    // Snapshot rows outside every hunk are unchanged (mep.diff_lines only
+    // reports changed hunks): the rows still sitting at their paths are
+    // never a create, and never the target of a move onto them.
+    "  local unchanged_path = {}\n"
+    "  for i, e in ipairs(st.snapshot) do if not matched_old[i] then unchanged_path[e.path] = true end end\n"
     "  local new_by_name = {}\n"
     "  for i, r in ipairs(current) do\n"
     "    new_by_name[r.name] = new_by_name[r.name] or {}\n"
     "    table.insert(new_by_name[r.name], i)\n"
     "  end\n"
     "  local moves, deletes, consumed_new = {}, {}, {}\n"
-    "  for i, e in ipairs(mep_tree_edit_snapshot) do\n"
+    "  for i, e in ipairs(st.snapshot) do\n"
     "    local m = matched_old[i]\n"
     "    if m and m.kind == 'rename' then\n"
     "      local r = current[m.new_index]\n"
@@ -3481,11 +3926,13 @@ const char *kBuiltinFileTree =
     "    elseif m then\n"
     "      local moved_to = nil\n"
     "      for _, ni in ipairs(new_by_name[e.name] or {}) do\n"
-    "        if not consumed_new[ni] and not matched_new[ni] then moved_to = ni break end\n"
+    "        if not consumed_new[ni] and not matched_new[ni] and not unchanged_path[current[ni].new_path] then moved_to = ni break end\n"
     "      end\n"
     "      if moved_to then\n"
     "        consumed_new[moved_to] = true\n"
-    "        table.insert(moves, {from = e.path, to = current[moved_to].new_path, is_dir = e.is_dir})\n"
+    "        if current[moved_to].new_path ~= e.path then\n"
+    "          table.insert(moves, {from = e.path, to = current[moved_to].new_path, is_dir = e.is_dir})\n"
+    "        end\n"
     "      else\n"
     "        table.insert(deletes, {path = e.path, name = e.name, is_dir = e.is_dir})\n"
     "      end\n"
@@ -3493,9 +3940,9 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  local copies, creates = {}, {}\n"
     "  for i, r in ipairs(current) do\n"
-    "    if not matched_new[i] and not consumed_new[i] then\n"
+    "    if not matched_new[i] and not consumed_new[i] and not unchanged_path[r.new_path] then\n"
     "      local src = nil\n"
-    "      for _, e in ipairs(mep_tree_edit_snapshot) do\n"
+    "      for _, e in ipairs(st.snapshot) do\n"
     "        if e.name == r.name and e.path ~= r.new_path then src = e break end\n"
     "      end\n"
     "      if src then table.insert(copies, {from = src.path, to = r.new_path, is_dir = src.is_dir})\n"
@@ -3504,12 +3951,9 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  return {moves = moves, copies = copies, creates = creates, deletes = deletes}\n"
     "end\n"
-    // Applies moves shallowest-source-first, skipping any move whose
-    // source already sits inside another move just applied -- fs_rename-
-    // ing a directory relocates its whole subtree in one call, so a
-    // child's own (now-stale) move would otherwise fail or silently
-    // re-move an already-moved path.
-    "local function mep_tree_edit_apply_moves(moves)\n"
+    // Shortest source path first; a move whose source sits under an
+    // already-moved directory is skipped since it moved along with it.
+    "local function mep_oil_apply_moves(moves)\n"
     "  table.sort(moves, function(a, b) return #a.from < #b.from end)\n"
     "  local applied_from = {}\n"
     "  for _, mv in ipairs(moves) do\n"
@@ -3523,23 +3967,27 @@ const char *kBuiltinFileTree =
     "    end\n"
     "  end\n"
     "end\n"
-    // Creates/copies/moves apply immediately (all recoverable by hand, same
-    // as the old tree's un-confirmed 'a'/'r' actions); deletes are
-    // destructive so they wait on one confirmation summarizing all of them,
-    // matching the old tree's own 'd' handler. Either way mep.tree_refresh
-    // re-syncs the buffer (and its snapshot) to whatever the filesystem
-    // actually ended up as, including any op that failed and got skipped.
-    "local function mep_tree_edit_on_write()\n"
-    "  if not mep_tree_edit_snapshot then return end\n"
-    "  local ops = mep_tree_edit_compute_ops()\n"
+    // Refreshes the sidebar and every unmodified oil buffer after anything
+    // touched the filesystem (either view), so neither shows stale rows.
+    "local function mep_tree_after_fs_change()\n"
+    "  mep.tree_refresh()\n"
+    "  for _, st in pairs(mep_oil_by_buf) do mep_oil_refresh(st) end\n"
+    "end\n"
+    "local function mep_oil_on_write(st)\n"
+    "  if not st.snapshot then return end\n"
+    "  local ops = mep_oil_compute_ops(st)\n"
     "  for _, cr in ipairs(ops.creates) do\n"
+    "    mep_tree_mkdir_parents(cr.path)\n"
     "    local ok = cr.is_dir and mep.fs_mkdir(cr.path) or mep.fs_create_file(cr.path)\n"
     "    if not ok then mep.notify('Failed to create ' .. cr.path, 'error') end\n"
     "  end\n"
     "  for _, cp in ipairs(ops.copies) do\n"
     "    if not mep.fs_copy(cp.from, cp.to) then mep.notify('Failed to copy to ' .. cp.to, 'error') end\n"
     "  end\n"
-    "  mep_tree_edit_apply_moves(ops.moves)\n"
+    "  mep_oil_apply_moves(ops.moves)\n"
+    "  --! The buffer only gets marked unmodified once this hook returns, so the\n"
+    "  --! refresh below has to be told to rebuild anyway.\n"
+    "  st.force_refresh = true\n"
     "  if #ops.deletes > 0 then\n"
     "    local names = {}\n"
     "    for _, d in ipairs(ops.deletes) do names[#names + 1] = d.name end\n"
@@ -3549,150 +3997,358 @@ const char *kBuiltinFileTree =
     "          if not mep.fs_delete(d.path) then mep.notify('Failed to delete ' .. d.path, 'error') end\n"
     "        end\n"
     "      end\n"
-    "      mep.tree_refresh()\n"
+    "      st.force_refresh = true\n"
+    "      mep_tree_after_fs_change()\n"
     "    end)\n"
-    "  else\n"
-    "    mep.tree_refresh()\n"
     "  end\n"
+    "  mep_tree_after_fs_change()\n"
     "end\n"
-    // <CR>: expand/collapse a directory row, or open a file row in the main
-    // pane -- the tree buffer's only bespoke keybinding (mep.buffer_set_on_
-    // enter, editor.h's SetBufferOnEnter comment on why bare Enter is free
-    // to claim here). Every other keystroke is completely ordinary Normal/
-    // Insert/Visual-mode buffer editing: renaming is editing a row's name
-    // text in place, creating is typing a new line (end it with `/` for a
-    // new directory), deleting is `dd`, and moving/copying is deleting-or-
-    // yanking a row and pasting it elsewhere -- mep_tree_edit_on_write
-    // above turns whatever changed into the matching fs_* calls.\n"
-    "local function mep_tree_edit_on_enter()\n"
-    "  if mep_tree_edit_guard_modified() then return end\n"
-    "  local row = mep_tree_edit_snapshot and mep_tree_edit_snapshot[mep.cursor()]\n"
+    // Rebuilds the rows from disk -- skipped while the buffer has unsaved
+    // edits (unless `force_refresh` is set by the :w hook) so an in-progress
+    // rename/create/delete isn't silently discarded. Returns false if skipped.
+    "mep_oil_refresh = function(st)\n"
+    "  if not st.force_refresh and mep.buffer_modified(st.buf) then return false end\n"
+    "  st.force_refresh = false\n"
+    "  st.snapshot = mep_tree_build(st.root, st.expanded, {})\n"
+    "  mep_tree_render(st.buf, st.snapshot)\n"
+    "  return true\n"
+    "end\n"
+    "local function mep_oil_on_enter(st)\n"
+    "  if mep.buffer_modified(st.buf) then\n"
+    "    mep.notify('Save (:w) or undo pending changes first', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local row = st.snapshot and st.snapshot[mep.cursor()]\n"
     "  if not row then return end\n"
     "  if row.is_dir then\n"
-    "    if mep_tree_expanded[row.path] then mep_tree_expanded[row.path] = nil\n"
-    "    else mep_tree_expanded[row.path] = true end\n"
+    "    st.expanded[row.path] = not st.expanded[row.path] or nil\n"
+    "    mep_oil_refresh(st)\n"
+    "  else\n"
+    "    mep.open(row.path)\n"
+    "  end\n"
+    "end\n"
+    "local function mep_oil_on_key(st, k)\n"
+    "  if k == '-' then\n"
+    "    if st.root ~= '/' then mep.oil_open(mep_tree_parent(st.root)) end\n"
+    "    return true\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.oil_open(dir)\n"
+    "  local root = mep_tree_normalize(dir or '.')\n"
+    "  local st = mep_oil_by_dir[root]\n"
+    "  if not st then\n"
+    "    st = {root = root, expanded = {[root] = true}, buf = mep_tree_new_buffer()}\n"
+    "    mep_oil_by_dir[root] = st\n"
+    "    mep_oil_by_buf[st.buf] = st\n"
+    "    mep.buffer_set_filename(st.buf, root)\n"
+    "    mep.buffer_set_on_enter(st.buf, function() mep_oil_on_enter(st) end)\n"
+    "    mep.buffer_set_on_write(st.buf, function() mep_oil_on_write(st) end)\n"
+    "    mep.buffer_set_on_key(st.buf, function(k) return mep_oil_on_key(st, k) end)\n"
+    "    mep.buffer_set_on_image_toggle(st.buf, function() mep_tree_toggle_image_viewer(st.root, st.buf) end)\n"
+    "    mep.buffer_set_drag_resolver(st.buf, function(row)\n"
+    "      local r = mep_oil_parse(st)[row + 1]\n"
+    "      return r and r.new_path or nil\n"
+    "    end)\n"
+    "  end\n"
+    "  mep_oil_refresh(st)\n"
+    "  mep.buffer_switch(st.buf)\n"
+    "end\n"
+    "mep.set_on_directory_open(mep.oil_open)\n"
+    // Old name, kept for anything still calling it.
+    "mep.tree_open_in_pane = mep.oil_open\n"
+    "mep.command('MepOil', function(args)\n"
+    "  mep.oil_open((args and args ~= '') and args or mep.getcwd())\n"
+    "end)\n"
+    // ---- sidebar tree (read-only text, single-key file operations) -------
+    "local function mep_tree_cursor_row()\n"
+    "  return mep_tree_rows and mep_tree_rows[mep.cursor()]\n"
+    "end\n"
+    // Directory a new entry goes into: the row itself if it's a directory,
+    // else the directory containing it, else the tree's root.
+    "local function mep_tree_target_dir(row)\n"
+    "  if not row then return mep_tree_root end\n"
+    "  if row.is_dir then return row.path end\n"
+    "  return mep_tree_parent(row.path)\n"
+    "end\n"
+    "local function mep_tree_resolve(base, name)\n"
+    "  if name:sub(1, 1) == '/' then return name end\n"
+    "  return mep_tree_join(base, name)\n"
+    "end\n"
+    "local function mep_tree_add(row)\n"
+    "  local base = mep_tree_target_dir(row)\n"
+    "  mep.ui_input('New file in ' .. base .. '/ (end with / for a directory):', '', function(name)\n"
+    "    if not name or name == '' then return end\n"
+    "    local is_dir = name:sub(-1) == '/'\n"
+    "    local full = mep_tree_resolve(base, (name:gsub('/+$', '')))\n"
+    "    if mep_tree_exists(full) then\n"
+    "      mep.notify(full .. ' already exists', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    mep_tree_mkdir_parents(full)\n"
+    "    local ok\n"
+    "    if is_dir then ok = mep.fs_mkdir(full) else ok = mep.fs_create_file(full) end\n"
+    "    if not ok then mep.notify('Failed to create ' .. full, 'error') end\n"
+    "    mep_tree_expanded[base] = true\n"
+    "    mep_tree_after_fs_change()\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_tree_rename(row)\n"
+    "  if not row then return end\n"
+    "  local parent = mep_tree_parent(row.path)\n"
+    "  mep.ui_input('Rename ' .. row.name .. ' to:', row.name, function(name)\n"
+    "    if not name or name == '' or name == row.name then return end\n"
+    "    local dest = mep_tree_resolve(parent, (name:gsub('/+$', '')))\n"
+    "    if mep_tree_exists(dest) then\n"
+    "      mep.notify(dest .. ' already exists', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    mep_tree_mkdir_parents(dest)\n"
+    "    if mep.fs_rename(row.path, dest) then\n"
+    "      if mep_tree_expanded[row.path] then mep_tree_expanded[dest] = true end\n"
+    "    else\n"
+    "      mep.notify('Failed to rename ' .. row.path .. ' to ' .. dest, 'error')\n"
+    "    end\n"
+    "    mep_tree_after_fs_change()\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_tree_copy(row)\n"
+    "  if not row then return end\n"
+    "  local parent = mep_tree_parent(row.path)\n"
+    "  mep.ui_input('Copy ' .. row.name .. ' to:', row.name, function(name)\n"
+    "    if not name or name == '' or name == row.name then return end\n"
+    "    local dest = mep_tree_resolve(parent, (name:gsub('/+$', '')))\n"
+    "    if mep_tree_exists(dest) then\n"
+    "      mep.notify(dest .. ' already exists', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    mep_tree_mkdir_parents(dest)\n"
+    "    if not mep.fs_copy(row.path, dest) then mep.notify('Failed to copy to ' .. dest, 'error') end\n"
+    "    mep_tree_after_fs_change()\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_tree_delete(row)\n"
+    "  if not row then return end\n"
+    "  local what = row.is_dir and ('directory ' .. row.name .. '/ and everything in it') or row.name\n"
+    "  mep.ui_confirm('Delete ' .. what .. '?', false, function(yes)\n"
+    "    if not yes then return end\n"
+    "    if not mep.fs_delete(row.path) then mep.notify('Failed to delete ' .. row.path, 'error') end\n"
+    "    mep_tree_after_fs_change()\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_tree_set_root(dir)\n"
+    "  mep_tree_root = dir\n"
+    "  mep_tree_expanded[dir] = true\n"
+    "  mep.tree_refresh()\n"
+    "  mep_tree_refresh_ignored()\n"
+    "end\n"
+    // `?` help view, same shape as a SidebarInstance's (FlattenSidebarHelp,
+    // editor.cpp): the tree's buffer text is swapped for its key list until
+    // Escape/`?`/q swaps the tree back (restoring the cursor), and the
+    // pane's footer (mep.buffer_set_footer) says which way to go.
+    "local MEP_TREE_KEYS = {\n"
+    "  {'Enter', 'open the file / expand or collapse the directory'},\n"
+    "  {'a', 'add (end with / for a directory)'}, {'r', 'rename'}, {'d', 'delete'}, {'c', 'copy'},\n"
+    "  {'Y', 'copy the path'}, {'e', 'edit the directory as text (oil)'}, {'o', 'open with the OS'},\n"
+    "  {'-', 'root up one directory'}, {'C', 'make the directory the root'}, {'R', 'refresh'},\n"
+    "  {'H', 'show / hide hidden files'}, {'I', 'image viewer for the directory'}, {'q', 'close the tree'},\n"
+    "}\n"
+    "local MEP_TREE_NAV_KEYS = {\n"
+    "  {'j / k', 'move down / up'}, {'gg / G', 'first / last row'}, {'/', 'search'}, {'?', 'show / hide this help'},\n"
+    "}\n"
+    "local mep_tree_help_open = false\n"
+    "local mep_tree_help_saved = {1, 1}\n"
+    "local function mep_tree_set_footer()\n"
+    "  if not mep_tree_buf then return end\n"
+    "  if mep_tree_help_open then mep.buffer_set_footer(mep_tree_buf, 'Esc: back to Files', 'Yellow')\n"
+    "  else mep.buffer_set_footer(mep_tree_buf, '?: help', 'Comment') end\n"
+    "end\n"
+    "local function mep_tree_wrap(text, width)\n"
+    "  local out, cur = {}, ''\n"
+    "  for word in text:gmatch('%S+') do\n"
+    "    if cur == '' then cur = word\n"
+    "    elseif #cur + 1 + #word <= width then cur = cur .. ' ' .. word\n"
+    "    else out[#out + 1] = cur; cur = word end\n"
+    "  end\n"
+    "  out[#out + 1] = cur\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_tree_render_help()\n"
+    "  if not mep_tree_ns then mep_tree_ns = mep.ns_create('mep_tree') end\n"
+    "  local key_w = 0\n"
+    "  for _, kv in ipairs(MEP_TREE_KEYS) do key_w = math.max(key_w, #kv[1]) end\n"
+    "  for _, kv in ipairs(MEP_TREE_NAV_KEYS) do key_w = math.max(key_w, #kv[1]) end\n"
+    "  local desc_w = math.max(8, (mep.buffer_text_cols(mep_tree_buf) or 30) - key_w - 5)\n"
+    "  local lines, decos = {}, {}\n"
+    "  local function heading(text)\n"
+    "    lines[#lines + 1] = text\n"
+    "    decos[#decos + 1] = {row = #lines, col_start = 1, col_end = #text + 1, hl_group = 'SidebarTitle'}\n"
+    "  end\n"
+    "  local function add(kv)\n"
+    "    local key = kv[1] .. string.rep(' ', key_w - #kv[1])\n"
+    "    for i, part in ipairs(mep_tree_wrap(kv[2], desc_w)) do\n"
+    "      if i == 1 then\n"
+    "        lines[#lines + 1] = '  ' .. key .. '  ' .. part\n"
+    "        decos[#decos + 1] = {row = #lines, col_start = 3, col_end = 3 + #kv[1], hl_group = 'Cyan'}\n"
+    "      else\n"
+    "        lines[#lines + 1] = string.rep(' ', key_w + 4) .. part\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  heading('Files keys')\n"
+    "  for _, kv in ipairs(MEP_TREE_KEYS) do add(kv) end\n"
+    "  lines[#lines + 1] = ''\n"
+    "  heading('Navigation')\n"
+    "  for _, kv in ipairs(MEP_TREE_NAV_KEYS) do add(kv) end\n"
+    "  mep.buffer_set_lines(mep_tree_buf, lines)\n"
+    "  mep.buffer_ns_clear(mep_tree_buf, mep_tree_ns)\n"
+    "  for _, d in ipairs(decos) do mep.buffer_deco_add(mep_tree_buf, mep_tree_ns, d) end\n"
+    "end\n"
+    // Only ever called with the tree focused (its own on_key), so
+    // mep.cursor/mep.set_cursor are the tree pane's.
+    "local function mep_tree_toggle_help()\n"
+    "  if not mep_tree_help_open then\n"
+    "    mep_tree_help_saved = {mep.cursor()}\n"
+    "    mep_tree_help_open = true\n"
+    "    mep_tree_render_help()\n"
+    "    mep.set_cursor(1, 1)\n"
+    "  else\n"
+    "    mep_tree_help_open = false\n"
+    "    mep_tree_render(mep_tree_buf, mep_tree_rows or {})\n"
+    "    mep.set_cursor(math.max(1, math.min(mep_tree_help_saved[1], #(mep_tree_rows or {}))), mep_tree_help_saved[2] or 1)\n"
+    "  end\n"
+    "  mep_tree_set_footer()\n"
+    "end\n"
+    // Keys that only move/search/scroll/yank pass through to their normal
+    // Normal-mode meaning; everything else is either a tree action below or
+    // swallowed, so the tree's text can't be edited in place (edit a
+    // directory's contents as text with 'e' / :e <dir> instead).
+    "local mep_tree_passthrough = {}\n"
+    "for c in ('hjklgGwbWBE0^$HML/?nN*#zZ:\\'`m{}()%fFtT;,123456789Iy'):gmatch('.') do mep_tree_passthrough[c] = true end\n"
+    "local function mep_tree_on_key(k)\n"
+    // While the help view shows, only movement/search passes through (not
+    // I's image viewer); every tree action is swallowed.
+    "  if mep_tree_help_open then\n"
+    "    if k == '?' or k == 'q' or k == '\\27' then mep_tree_toggle_help() return true end\n"
+    "    return k == 'I' or not mep_tree_passthrough[k]\n"
+    "  end\n"
+    "  if k == '\\27' then return false end\n"
+    "  local row = mep_tree_cursor_row()\n"
+    "  if k == 'a' then mep_tree_add(row)\n"
+    "  elseif k == 'r' then mep_tree_rename(row)\n"
+    "  elseif k == 'd' then mep_tree_delete(row)\n"
+    "  elseif k == 'c' then mep_tree_copy(row)\n"
+    "  elseif k == 'Y' then\n"
+    "    if row then\n"
+    "      mep.clipboard_set(row.path)\n"
+    "      mep.notify('Copied ' .. row.path)\n"
+    "    end\n"
+    "  elseif k == 'e' then mep.pick_pane_open(mep_tree_target_dir(row))\n"
+    "  elseif k == 'o' then\n"
+    "    if row then mep.open_url('file://' .. mep_tree_normalize(row.path)) end\n"
+    "  elseif k == '-' then\n"
+    "    mep_tree_set_root(mep_tree_parent(mep_tree_normalize(mep_tree_root)))\n"
+    "  elseif k == 'C' then\n"
+    "    if row and row.is_dir then mep_tree_set_root(row.path) end\n"
+    "  elseif k == 'R' then\n"
+    "    mep.tree_refresh()\n"
+    "    mep_tree_refresh_ignored()\n"
+    "  elseif k == 'H' then\n"
+    "    mep_tree_show_hidden = not mep_tree_show_hidden\n"
+    "    mep_tree_after_fs_change()\n"
+    "  elseif k == 'q' then\n"
+    "    if mep.pane_focus_buffer(mep_tree_buf) then mep.pane_close_buffer() end\n"
+    "  elseif k == '?' then\n"
+    "    mep_tree_toggle_help()\n"
+    "  elseif mep_tree_passthrough[k] then\n"
+    "    return false\n"
+    "  end\n"
+    "  return true\n"
+    "end\n"
+    "local function mep_tree_on_enter()\n"
+    "  if mep_tree_help_open then return end\n"
+    "  local row = mep_tree_cursor_row()\n"
+    "  if not row then return end\n"
+    "  if row.is_dir then\n"
+    "    mep_tree_expanded[row.path] = not mep_tree_expanded[row.path] or nil\n"
     "    mep.tree_refresh()\n"
     "  else\n"
-    // Opening a file from the tree lands it in another pane, never
-    // replacing the tree buffer in the tree's own (top-left) pane. Rather
-    // than always defaulting to one fixed neighbor, mep.pick_pane_open lets
-    // the user choose *which* window when there's more than one candidate:
-    // each candidate pane (every pane in the tab except the tree's own) gets
-    // a big letter drawn over it and the pressed letter opens the file there
-    // (main.cpp's pane picker). With exactly one candidate it opens straight
-    // away with no prompt; with none (the tree is the tab's only pane) it
-    // falls back to opening in the tree's own pane, same as :e in Vim's last
-    // remaining window.
     "    mep.pick_pane_open(row.path)\n"
     "  end\n"
     "end\n"
     "function mep.tree_refresh()\n"
     "  if not mep_tree_root then return end\n"
-    "  if mep_tree_edit_guard_modified() then return end\n"
-    "  local expanded_list = {}\n"
-    "  for k, v in pairs(mep_tree_expanded) do if v then expanded_list[#expanded_list + 1] = k end end\n"
-    "  local ignored_list = {}\n"
-    "  for k, v in pairs(mep_tree_ignored) do if v then ignored_list[#ignored_list + 1] = k end end\n"
-    "  local rows = mep.tree_build_rows(mep_tree_root, expanded_list, mep_tree_show_hidden, ignored_list)\n"
-    "  mep_tree_edit_snapshot = rows\n"
-    "  local lines = {}\n"
-    "  for i, row in ipairs(rows) do lines[i] = mep_tree_edit_line_for_row(row) end\n"
-    "  if #lines == 0 then lines = {'(empty)'} end\n"
-    "  if not mep_tree_edit_buf then\n"
-    "    mep_tree_edit_buf = mep.buffer_new()\n"
-    "    mep.buffer_set_on_enter(mep_tree_edit_buf, mep_tree_edit_on_enter)\n"
-    "    mep.buffer_set_on_write(mep_tree_edit_buf, mep_tree_edit_on_write)\n"
-    "    mep.buffer_set_on_image_toggle(mep_tree_edit_buf, mep_tree_toggle_image_viewer)\n"
-    // A row's line number isn't a meaningful position here (unlike a real
-    // file, nothing refers to "line 7 of the tree") -- just visual noise
-    // that also eats into the pane's already-narrow width.
-    "    mep.buffer_set_hide_line_numbers(mep_tree_edit_buf, true)\n"
-    // A long path soft-wrapping onto a second visual row would read as a
-    // second, indented tree entry rather than a continuation of the
-    // first -- row-per-entry only makes sense unwrapped, same reasoning
-    // as the line numbers just above.
-    "    mep.buffer_set_wrap(mep_tree_edit_buf, false)\n"
-    // PANE_DRAG_RESTORE: restores drag-a-file-row-onto-a-pane (lost when
-    // the tree moved off SidebarInstance, see mep.buffer_set_drag_
-    // resolver's own comment, lua_env.cpp) by resolving a dragged row's
-    // buffer index straight back through the same parser :w already
-    // trusts -- `row` arrives 0-based (every buffer-row index in this
-    // codebase is), so `row + 1` is `mep.get_line`'s 1-based row. Only
-    // ever consulted at mouse-down on a row the C++ side already knows
-    // this buffer registered a resolver for, so re-parsing the whole
-    // buffer here (rather than caching) costs nothing noticeable -- a
-    // click, not a per-frame poll.
-    "    mep.buffer_set_drag_resolver(mep_tree_edit_buf, function(row)\n"
-    "      local current = mep_tree_edit_parse_current()\n"
-    "      local r = current[row + 1]\n"
-    "      return r and r.new_path or nil\n"
+    "  mep_tree_rows = mep_tree_build(mep_tree_root, mep_tree_expanded, mep_tree_ignored)\n"
+    "  if not mep_tree_buf then\n"
+    "    mep_tree_buf = mep_tree_new_buffer()\n"
+    // Row-selection cursor (Buffer::row_cursor): the tree is read-only and
+    // navigated a row at a time, so its cursor is drawn as a full-width row
+    // tint rather than a block over column 0 -- which is the row's own icon
+    // glyph for a top-level entry, and which a block cursor repaints in
+    // NormalBg (the icon appeared to change color as the cursor moved).
+    // Set here and not in mep_tree_new_buffer: the oil.nvim-style directory
+    // buffers share that helper and are genuinely editable text, so they
+    // keep an ordinary character cursor.
+    "    mep.buffer_set_row_cursor(mep_tree_buf, true)\n"
+    // Keeps the tree out of the Buffers sidebar and the <leader>bb picker
+    // (Buffer::unlisted): it is a sidebar as far as the user is concerned,
+    // and mep.buffer_set_filename below names it after the project root, so
+    // left listed it shows up among their open files as an entry called
+    // after the project itself. Set here rather than in
+    // mep_tree_new_buffer for the same reason as the row cursor above --
+    // the oil.nvim-style directory buffers share that helper and are
+    // ordinary buffers the user opened on purpose.
+    "    mep.buffer_set_unlisted(mep_tree_buf, true)\n"
+    "    mep.buffer_set_on_enter(mep_tree_buf, mep_tree_on_enter)\n"
+    "    mep.buffer_set_on_key(mep_tree_buf, mep_tree_on_key)\n"
+    "    --! :w on the (read-only) tree just re-syncs it with disk instead of\n"
+    "    --! writing its text anywhere.\n"
+    "    mep.buffer_set_on_write(mep_tree_buf, function() mep.tree_refresh() end)\n"
+    "    mep.buffer_set_on_image_toggle(mep_tree_buf, function() mep_tree_toggle_image_viewer(mep_tree_root, mep_tree_buf) end)\n"
+    "    mep.buffer_set_drag_resolver(mep_tree_buf, function(row)\n"
+    "      local r = not mep_tree_help_open and mep_tree_rows and mep_tree_rows[row + 1]\n"
+    "      return r and r.path or nil\n"
     "    end)\n"
     "  end\n"
-    "  mep.buffer_set_filename(mep_tree_edit_buf, mep_tree_root)\n"
-    "  mep.buffer_set_lines(mep_tree_edit_buf, lines)\n"
-    "  mep_tree_edit_apply_highlight()\n"
+    "  mep.buffer_set_filename(mep_tree_buf, mep_tree_root)\n"
+    // An async refresh (git-ignore scan, fs change) mustn't paint the tree
+    // over the help view -- closing the help renders the fresh rows.
+    "  if not mep_tree_help_open then mep_tree_render(mep_tree_buf, mep_tree_rows) end\n"
+    "  mep_tree_set_footer()\n"
     "end\n"
-    // mep.pane_split_left (Editor::SplitTabLeft) re-roots the *whole tab*
-    // into [tree | everything else], unlike mep.cmd('vsplit') (Editor::
-    // SplitCurrentPane), which only ever splits whichever single leaf
-    // happens to be focused -- if that leaf were some sub-pane of an
-    // already-existing split (e.g. a terminal inside a top/bottom stack),
-    // a plain vsplit there would give the tree only that sub-pane's
-    // height instead of the tab's full height.
     "function mep.tree_open(dir)\n"
+    "  mep_tree_help_open = false\n"
     "  mep_tree_root = dir or '.'\n"
     "  mep_tree_expanded[mep_tree_root] = true\n"
     "  mep.tree_refresh()\n"
-    "  if not mep.pane_focus_buffer(mep_tree_edit_buf) then\n"
-    "    mep.pane_split_left(mep_tree_edit_buf, 0.20)\n"
+    "  if not mep.pane_focus_buffer(mep_tree_buf) then\n"
+    "    mep.pane_split_left(mep_tree_buf, 0.20)\n"
     "  end\n"
     "  mep_tree_refresh_ignored()\n"
     "end\n"
-    // ":e"/"mep.open" on a directory (Editor::LoadFile's directory branch,
-    // mep.set_on_directory_open below): unlike mep.tree_open above, this
-    // opens the tree in the CURRENT pane -- mep.buffer_switch, the same
-    // primitive every other LoadFile branch uses to point the active pane
-    // at a buffer -- instead of splitting a new one off to the left, since
-    // the whole point of ":e some/dir" is to show that directory in the
-    // pane you asked for it in.
-    "function mep.tree_open_in_pane(dir)\n"
-    "  mep_tree_root = dir or '.'\n"
-    "  mep_tree_expanded[mep_tree_root] = true\n"
-    "  mep.tree_refresh()\n"
-    "  mep.buffer_switch(mep_tree_edit_buf)\n"
-    "  mep_tree_refresh_ignored()\n"
-    "end\n"
-    "mep.set_on_directory_open(mep.tree_open_in_pane)\n"
-    // Mirrors mep.structure_split_toggle's pattern for a real (non-sidebar)
-    // pane: if the tree buffer is already showing in some pane of the
-    // active tab, mep.pane_focus_buffer both finds it and focuses it, so a
-    // second press closes just that buffer tab (or the pane, if it's the
-    // only tab) via mep.pane_close_buffer -- the buffer itself is kept, so
-    // reopening reuses it and its expanded-dir state. Otherwise (re)opens
-    // or refocuses it same as before.
     "function mep.tree_toggle()\n"
-    "  if mep_tree_edit_buf and mep.pane_focus_buffer(mep_tree_edit_buf) then\n"
+    "  if mep_tree_buf and mep.pane_focus_buffer(mep_tree_buf) then\n"
     "    mep.pane_close_buffer()\n"
     "  else\n"
     "    mep.tree_open(mep_tree_root or '.')\n"
     "  end\n"
     "end\n"
-    // mep_tree_edit_buf is a chunk-local upvalue, invisible from other
+    // mep_tree_buf is a chunk-local upvalue, invisible from other
     // kBuiltin* DoString chunks (kBuiltinGit's mep.git_open_pane is the
     // first caller, checking whether the tree is already open so it can
     // stack its own pane alongside it) -- this is the read-only global
     // bridge, nil until mep.tree_refresh has created the buffer at least
     // once.
     "function mep.tree_buffer_id()\n"
-    "  return mep_tree_edit_buf\n"
+    "  return mep_tree_buf\n"
     "end\n"
     "mep.command('MepFileTree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('ff', 'Toggle file tree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('fh', 'Toggle hidden files in tree', function()\n"
     "  mep_tree_show_hidden = not mep_tree_show_hidden\n"
-    "  mep.tree_refresh()\n"
+    "  mep_tree_after_fs_change()\n"
     "end)\n"
-    "mep.leader_map('fr', 'Refresh file tree', function() mep.tree_refresh() end)\n"
+    "mep.leader_map('fr', 'Refresh file tree', function() mep_tree_after_fs_change() end)\n"
     // Native "Open File" dialog (<leader>fo / :MepOpenFile): the desktop's
     // own file picker, for browsing to a path visually instead of typing
     // one into `:e` or fuzzy-matching it via find_files (<leader>pf). No
@@ -3929,6 +4585,7 @@ const char *kBuiltinFileTree =
     "      mep.picker_close()\n"
     "    end\n"
     "  end, preview_project)\n"
+    "  mep.picker_set_hint('C-a: add current dir')\n"
     // on_select_change (just wired above) only fires once the highlighted
     // row actually *changes*, so the picker would otherwise open on the
     // first project with an empty preview pane until the user pressed an
@@ -3978,7 +4635,20 @@ const char *kBuiltinBuffers =
     "    map[wid] = id\n"
     "    widgets[#widgets + 1] = {\n"
     "      id = wid, text = item.display, hl = (id == cur) and 'Add' or nil, current = (id == cur),\n"
-    "      on_click = function() mep.buffer_switch(id) end,\n"
+    // Never mep.buffer_switch: that shows the buffer in the *focused*
+    // pane, which -- when this sidebar is itself the focused pane
+    // (mep.buffers_open_pane) -- is the sidebar, so activating a row
+    // replaced the very list being clicked in. buffer_open_beside opens
+    // into the pane to the right instead, and still switches in place
+    // for the docked sidebar, whose rows activate against whatever
+    // ordinary pane last had focus.
+    "      on_click = function() mep.buffer_open_beside(id, 'right') end,\n"
+    // Makes the row draggable onto any visible pane, the same gesture
+    // the file tree's rows have (SidebarWidget::drag_buffer_id). By
+    // buffer rather than by path, so a terminal or a scratch buffer
+    // drags too, and dropping a modified buffer shows the edits rather
+    // than re-reading the file.
+    "      drag_buffer = id,\n"
     "      trailing_icon = ' \xe2\x9c\x95 ',\n"
     "      trailing_on_click = function() mep.buffer_delete(id, false) mep.buffers_sidebar_refresh() end,\n"
     "    }\n"
@@ -3988,6 +4658,12 @@ const char *kBuiltinBuffers =
     "  if not mep_buffers_sidebar_id then\n"
     "    mep_buffers_sidebar_id = mep.sidebar_create('Buffers', 'left', 34)\n"
     "    mep.sidebar_set_on_key(mep_buffers_sidebar_id, mep.buffers_sidebar_on_key)\n"
+    // Opening a buffer moves it into another pane and takes focus with
+    // it -- too disruptive to fire off a stray single click while
+    // scrolling the list. A single click only moves the row cursor; see
+    // SidebarInstance::activate_on_double_click.
+    "    mep.sidebar_set_double_click(mep_buffers_sidebar_id, true)\n"
+    "    mep.sidebar_set_help(mep_buffers_sidebar_id, {{'Enter', 'open the buffer in the pane to the right'}, {'double-click', 'same, with the mouse'}, {'drag', 'drop the row on a pane to open it there'}, {'d', 'delete the buffer'}})\n"
     "  end\n"
     "  mep.sidebar_set_sections(mep_buffers_sidebar_id, {{id = 'buffers', title = '', collapsed = false, widgets = widgets}})\n"
     "end\n"
@@ -4051,9 +4727,34 @@ const char *kBuiltinBuffers =
     // both the docked-open and paneable-open cases -- SidebarInstance::
     // open (mep.sidebar_is_open) is never true for the paneable path, see
     // mep_buffers_pane_buf's own comment.
+    "local function mep_buffers_visible()\n"
+    "  if mep_buffers_sidebar_id and mep.sidebar_is_open(mep_buffers_sidebar_id) then return true end\n"
+    "  return mep_buffers_pane_buf ~= nil\n"
+    "end\n"
     "mep.on_buffer_saved(function()\n"
-    "  local docked_open = mep_buffers_sidebar_id and mep.sidebar_is_open(mep_buffers_sidebar_id)\n"
-    "  if docked_open or mep_buffers_pane_buf then mep.buffers_sidebar_refresh() end\n"
+    "  if mep_buffers_visible() then mep.buffers_sidebar_refresh() end\n"
+    "end)\n"
+    // on_buffer_saved alone only ever caught `:w`, leaving the "a buffer
+    // opened/closed/renamed elsewhere should show up without having to
+    // close and reopen this sidebar" above unmet: neither opening a file
+    // nor `:bd`ing one bumps the save epoch. Polled instead of hooked
+    // because there is no open/close epoch to hook, throttled to 4Hz so
+    // the one non-O(1) call here (mep.buffer_list, which builds a label
+    // per buffer -- mep.buffer_count would be the cheap per-frame poll,
+    // but it counts `:bd`'d buffers too and so can't see a close at all)
+    // costs nothing noticeable, and only while the sidebar is actually on
+    // screen. Watching the current buffer as well keeps the highlighted
+    // row following the focused pane.
+    "local mep_buffers_last_n, mep_buffers_last_cur, mep_buffers_last_poll = -1, -1, 0\n"
+    "mep.on_frame(function()\n"
+    "  if not mep_buffers_visible() then return end\n"
+    "  local now = mep.now()\n"
+    "  if now - mep_buffers_last_poll < 0.25 then return end\n"
+    "  mep_buffers_last_poll = now\n"
+    "  local n, cur = #mep.buffer_list(), mep.current_buffer()\n"
+    "  if n == mep_buffers_last_n and cur == mep_buffers_last_cur then return end\n"
+    "  mep_buffers_last_n, mep_buffers_last_cur = n, cur\n"
+    "  mep.buffers_sidebar_refresh()\n"
     "end)\n";
 
 // Git integration (Phase 17): gutter hunks (built on mep.diff_lines, the
@@ -4069,7 +4770,8 @@ const char *kBuiltinGit =
     // Lua refs entirely (JobManager::Spawn already takes real C++
     // callbacks -- see LUA_TO_CPP_PLAN.md's "async is not actually the
     // blocker" note) -- mep_git_hunks/mep_git_base_lines are now
-    // Editor-owned state (git_hunks_/git_base_lines_), not Lua locals.
+    // Editor-owned state (git_signs_, one entry per buffer), not Lua
+    // locals.
     "local mep_git_status_sidebar_id = nil\n"
     // Buffer id of the paneable git-status view (mep.git_open_pane below),
     // once opened -- lets mep.git_status_toggle refocus it instead of
@@ -4088,17 +4790,34 @@ const char *kBuiltinGit =
     // owns the latest generation before touching the sections).
     "local mep_git_status_gen = 0\n"
     // Configurable diff base (Phase 17 gap): a single global ref name,
-    // not per-buffer -- same-global convention as mep_git_hunks/
-    // mep_git_base_lines above, and simpler for the common case of
-    // reviewing one buffer's history against a moving point (a branch,
-    // HEAD~1, a SHA) rather than pinning a base per file. Overridable
-    // with `:MepGitGutter base <ref>`; `:MepGitGutter base` with no ref
+    // not per-buffer -- same-global convention as the Editor-side hunk
+    // cache above, and simpler for the common case of reviewing one
+    // buffer's history against a moving point (a branch, HEAD~1, a SHA)
+    // rather than pinning a base per file. Overridable with
+    // `:MepGitGutter base <ref>`; `:MepGitGutter base` with no ref
     // reports the current one. Every `git show <ref>:<file>` shell-out
-    // in this module reads this instead of a hardcoded 'HEAD'.
+    // in this module reads this instead of a hardcoded ref.
+    // The default is HEAD -- deliberately *not* gitsigns'/vim-gitgutter's
+    // own default of the index. Those hide a change the moment you stage
+    // it, which reads as "the gutter stopped working": `git add -A` and
+    // the git panel's own `S` are both one keystroke, and after either
+    // one an index-based gutter is empty on a file full of changes.
+    // HEAD keeps every change since the last commit marked, staged or
+    // not, which is what "show me what I've changed" means to most
+    // people. `:MepGitGutter base index` switches to the stage-aware
+    // view. Staging a hunk is unaffected either way -- GitStageHunk
+    // (editor.cpp) re-diffs against the index itself rather than
+    // trusting whatever this is set to.
     "mep.git_gutter_base = 'HEAD'\n"
+    // Display name for the base: the empty ref is the index, which has
+    // no ref name to print.
+    "function mep.git_gutter_base_label()\n"
+    "  return (mep.git_gutter_base == '') and 'index' or mep.git_gutter_base\n"
+    "end\n"
     "function mep.git_gutter_refresh() mep.git_gutter_refresh_native(mep.git_gutter_base) end\n"
-    // Opt-in (off by default, same convention as mep.git_gutter_auto/
-    // mep.colorize_auto): mep.float_preview dismisses on *any* keypress,
+    // Opt-in (off by default, same convention as mep.colorize_auto --
+    // mep.git_gutter_auto itself is the one exception, see its own
+    // comment): mep.float_preview dismisses on *any* keypress,
     // so auto-popping the hunk preview on every jump would make repeated
     // ]c/]c-style navigation need two presses per hop (one to dismiss the
     // still-open preview, one to actually jump) -- opt-in keeps that the
@@ -4131,7 +4850,7 @@ const char *kBuiltinGit =
     "function mep.git_preview_hunk()\n"
     "  local text = mep.git_preview_hunk_text()\n"
     "  if not text then mep.notify('No hunk under cursor', 'warn') return end\n"
-    "  mep.float_preview('Hunk preview  (base: ' .. mep.git_gutter_base .. ')', text)\n"
+    "  mep.float_preview('Hunk preview  (base: ' .. mep.git_gutter_base_label() .. ')', text)\n"
     "end\n"
     // Reset/stage both moved entirely to C++ -- Editor::GitResetHunk/
     // GitStageHunk (editor.cpp). GitStageHunk needs no Lua wrapper at all
@@ -4149,9 +4868,10 @@ const char *kBuiltinGit =
     "local mep_git_status_codes = {}\n"
     "local mep_git_status_preview_gen = 0\n"
     // Tabbed git panel (SidebarInstance::tabs, mep.sidebar_set_tabs):
-    // one sidebar, four views -- Status (staged / changes / untracked
+    // one sidebar, five views -- Status (staged / changes / untracked
     // sections, each row's diff as the popout preview), Log (git log,
-    // `git show` preview), Branches (local + remote, `git log` preview),
+    // `git show` preview), Graph (git log --graph --all, same preview),
+    // Branches (local + remote, `git log` preview),
     // Stash (`git stash show -p` preview). Every view is one async git
     // job re-run per refresh, generation-guarded like before, and the
     // widget-id -> row table (mep_git_rows) is what the key handler and
@@ -4166,11 +4886,45 @@ const char *kBuiltinGit =
     // commits): ZZ in Normal mode is the explicit confirm
     // (CloseFloatPane's force_write, DispatchNormalKey), running
     // `git commit -F <file> --cleanup=strip` against whatever was typed.
-    "local MEP_GIT_TABS = {'Status', 'Log', 'Branches', 'Stash'}\n"
-    "local MEP_GIT_VIEWS = {'status', 'log', 'branches', 'stash'}\n"
+    "local MEP_GIT_TABS = {'Status', 'Log', 'Graph', 'Branches', 'Stash'}\n"
+    "local MEP_GIT_VIEWS = {'status', 'log', 'graph', 'branches', 'stash'}\n"
     "local mep_git_view = 'status'\n"
     "local mep_git_rows = {}\n"
     "local mep_git_head = ''\n"
+    // Branch vs. its upstream, parsed from `git status --branch`'s `## `
+    // line (mep_git_parse_head): shown in every view's head section so a
+    // local-only commit is never out of sight -- P pushes it.
+    "local mep_git_upstream = nil\n"
+    "local mep_git_refresh_gen = 0\n"
+    "local function mep_git_parse_head(line)\n"
+    "  local h = line:sub(4)\n"
+    "  if h:match('^HEAD %(no branch%)') then return {detached = true} end\n"
+    "  if h:match('^No commits yet') or h:match('^Initial commit') then return {unborn = true} end\n"
+    "  local branch, upstream = h:match('^(.-)%.%.%.(%S+)')\n"
+    "  return {branch = branch or h:match('^(%S+)'), upstream = upstream,\n"
+    "    ahead = tonumber(h:match('ahead (%d+)')) or 0, behind = tonumber(h:match('behind (%d+)')) or 0,\n"
+    "    gone = h:find('[gone]', 1, true) ~= nil}\n"
+    "end\n"
+    "local function mep_git_plural(n, word) return n .. ' ' .. word .. ((n == 1) and '' or 's') end\n"
+    "local function mep_git_head_widgets()\n"
+    "  local u = mep_git_upstream\n"
+    "  if not u or u.detached or u.unborn or not u.branch then return {} end\n"
+    "  if not u.upstream then\n"
+    "    return {{wrap = true, id = 'head:noup', text = 'No upstream -- P pushes to origin/' .. u.branch, hl = 'Yellow'}}\n"
+    "  end\n"
+    "  if u.gone then return {{wrap = true, id = 'head:gone', text = 'Upstream ' .. u.upstream .. ' is gone', hl = 'Red'}} end\n"
+    "  local w = {}\n"
+    "  if u.ahead > 0 then\n"
+    "    w[#w + 1] = {wrap = true, id = 'head:ahead', hl = 'Yellow',\n"
+    "      text = mep_git_plural(u.ahead, 'commit') .. ' ahead of ' .. u.upstream .. ' -- P to push'}\n"
+    "  end\n"
+    "  if u.behind > 0 then\n"
+    "    w[#w + 1] = {wrap = true, id = 'head:behind', hl = 'Cyan',\n"
+    "      text = mep_git_plural(u.behind, 'commit') .. ' behind ' .. u.upstream .. ' -- l to pull'}\n"
+    "  end\n"
+    "  if #w == 0 then w[1] = {id = 'head:sync', text = 'Up to date with ' .. u.upstream, hl = 'Comment'} end\n"
+    "  return w\n"
+    "end\n"
     "local function mep_git_root() return mep.workspace_root() end\n"
     "local function mep_git_run(argv, cb)\n"
     "  local out, err = {}, {}\n"
@@ -4193,6 +4947,10 @@ const char *kBuiltinGit =
     "      mep.notify(label .. ' failed: ' .. mep_git_fail_text(code, out, err), 'error')\n"
     "    end\n"
     "    if after then after(code, out, err) end\n"
+    // A commit/checkout/stash moves HEAD under buffer text that never
+    // changed, so nothing in a buffer's own state says its cached diff
+    // is stale -- say so explicitly here.
+    "    mep.git_gutter_invalidate()\n"
     "    mep.git_refresh()\n"
     "  end)\n"
     "end\n"
@@ -4203,14 +4961,17 @@ const char *kBuiltinGit =
     "    cb((code == 0 and out[1]) or nil)\n"
     "  end)\n"
     "end\n"
+    "local mep_git_set_help\n"
     "local function mep_git_ensure()\n"
     "  if mep_git_status_sidebar_id then return end\n"
     "  mep_git_status_sidebar_id = mep.sidebar_create('Git', 'left', 44)\n"
     "  mep.sidebar_set_on_key(mep_git_status_sidebar_id, mep.git_status_on_key)\n"
     "  mep.sidebar_set_on_preview(mep_git_status_sidebar_id, mep.git_status_on_preview)\n"
     "  mep.sidebar_set_tabs(mep_git_status_sidebar_id, MEP_GIT_TABS, 1)\n"
+    "  mep_git_set_help()\n"
     "  mep.sidebar_set_on_tab(mep_git_status_sidebar_id, function(i)\n"
     "    mep_git_view = MEP_GIT_VIEWS[i] or 'status'\n"
+    "    mep_git_set_help()\n"
     "    mep.git_refresh()\n"
     "  end)\n"
     "end\n"
@@ -4236,7 +4997,7 @@ const char *kBuiltinGit =
     "  mep_git_ensure()\n"
     "  mep_git_status_gen = mep_git_status_gen + 1\n"
     "  local gen = mep_git_status_gen\n"
-    "  mep_git_run({'git', 'status', '--porcelain', '--branch'}, function(code, out)\n"
+    "  mep_git_run({'git', '--no-optional-locks', 'status', '--porcelain', '--branch'}, function(code, out)\n"
     "    if gen ~= mep_git_status_gen then return end\n"
     "    if code ~= 0 then\n"
     "      mep_git_set({{id = 'status', title = 'Not a git repository', collapsed = false,\n"
@@ -4254,6 +5015,7 @@ const char *kBuiltinGit =
     "    for _, line in ipairs(out) do\n"
     "      if line:sub(1, 2) == '##' then\n"
     "        mep_git_head = line:sub(4)\n"
+    "        mep_git_upstream = mep_git_parse_head(line)\n"
     "      elseif #line > 3 then\n"
     "        local x, y, path = line:sub(1, 1), line:sub(2, 2), line:sub(4)\n"
     "        codes[path] = x .. y\n"
@@ -4269,7 +5031,7 @@ const char *kBuiltinGit =
     "    end\n"
     "    mep_git_status_codes = codes\n"
     "    mep_git_set({\n"
-    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = mep_git_head_widgets()},\n"
     "      {id = 'staged', title = 'Staged (' .. #staged .. ')', collapsed = false,\n"
     "        widgets = (#staged > 0) and staged or mep_git_placeholder('staged-none', '(nothing staged -- s stages a change)')},\n"
     "      {id = 'unstaged', title = 'Changes (' .. #unstaged .. ')', collapsed = false,\n"
@@ -4304,8 +5066,73 @@ const char *kBuiltinGit =
     "    if code ~= 0 then widgets = mep_git_placeholder('log-none', '(git log failed)') end\n"
     "    if #widgets == 0 then widgets = mep_git_placeholder('log-none', '(no commits yet)') end\n"
     "    mep_git_set({\n"
-    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = mep_git_head_widgets()},\n"
     "      {id = 'log', title = title, collapsed = false, widgets = widgets},\n"
+    "    }, rows)\n"
+    "  end)\n"
+    "end\n"
+    // Graph: `git log --graph --all` with git's own lane coloring. The
+    // UI font is ASCII-only, so the graph stays git's `* | / \\ _`
+    // characters; --color=always colors each lane consistently from row
+    // to row, and mep.ansi_render turns those escapes into the row's
+    // spans (byte columns of the graph prefix, left as-is). The commit
+    // fields follow a \\x1f marker so they're uncolored and split off
+    // cleanly; rows with no marker are pure connector lines (merges/
+    // forks) and carry no mep_git_rows entry, so they preview nothing.
+    "local function mep_git_render_graph()\n"
+    "  mep_git_status_gen = mep_git_status_gen + 1\n"
+    "  local gen = mep_git_status_gen\n"
+    "  local argv = {'git', 'log', '--graph', '--all', '--color=always', '--date=short',\n"
+    "    '--format=%x1f%h%x1f%ad%x1f%an%x1f%D%x1f%s', '-n', '500'}\n"
+    "  mep_git_run(argv, function(code, out)\n"
+    "    if gen ~= mep_git_status_gen then return end\n"
+    "    local lines, spans = mep.ansi_render(table.concat(out, '\\n'))\n"
+    "    local row_spans = {}\n"
+    "    for _, s in ipairs(spans) do\n"
+    "      local t = row_spans[s.row] or {}\n"
+    "      t[#t + 1] = {col_start = s.col_start, col_end = s.col_end, hl = s.hl}\n"
+    "      row_spans[s.row] = t\n"
+    "    end\n"
+    "    local widgets, rows, commits = {}, {}, 0\n"
+    "    for i, line in ipairs(lines) do\n"
+    "      local mark = line:find('\\31', 1, true)\n"
+    "      local sp = row_spans[i] or {}\n"
+    "      local graph = mark and line:sub(1, mark - 1) or line\n"
+    "      local w = {id = 'g:' .. i, text = graph, spans = sp}\n"
+    "      if mark then\n"
+    "        local f = {}\n"
+    "        for part in (line:sub(mark + 1) .. '\\31'):gmatch('([^\\31]*)\\31') do f[#f + 1] = part end\n"
+    "        local hash, date, author, decor, subject = f[1] or '', f[2] or '', f[3] or '', f[4] or '', f[5] or ''\n"
+    "        if hash ~= '' then\n"
+    "          commits = commits + 1\n"
+    "          w.id = 'c:' .. hash\n"
+    "          rows[w.id] = {kind = 'commit', hash = hash, subject = subject}\n"
+    "          local function add(s, hl)\n"
+    "            local start = #w.text + 1\n"
+    "            w.text = w.text .. s\n"
+    "            sp[#sp + 1] = {col_start = start, col_end = #w.text + 1, hl = hl}\n"
+    "          end\n"
+    "          add(hash, 'Yellow')\n"
+    "          if decor ~= '' then\n"
+    "            w.text = w.text .. ' '\n"
+    "            add('(' .. decor .. ')', decor:find('HEAD') and 'Add' or 'Cyan')\n"
+    "          end\n"
+    "          w.text = w.text .. ' ' .. subject\n"
+    "          add('  ' .. date .. ' ' .. author, 'Comment')\n"
+    "          w.tooltip = author .. ', ' .. date\n"
+    "          w.on_click = function()\n"
+    "            if not mep.sidebar_is_popout(mep_git_status_sidebar_id) then mep.sidebar_popout_toggle(mep_git_status_sidebar_id) end\n"
+    "          end\n"
+    "        end\n"
+    "      end\n"
+    "      if w.text ~= '' then widgets[#widgets + 1] = w end\n"
+    "    end\n"
+    "    local title = 'Graph, all branches' .. ((commits >= 500) and ' (latest 500)' or (' (' .. commits .. ')'))\n"
+    "    if code ~= 0 then widgets = mep_git_placeholder('graph-none', '(git log --graph failed)') end\n"
+    "    if #widgets == 0 then widgets = mep_git_placeholder('graph-none', '(no commits yet)') end\n"
+    "    mep_git_set({\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = mep_git_head_widgets()},\n"
+    "      {id = 'graph', title = title, collapsed = false, widgets = widgets},\n"
     "    }, rows)\n"
     "  end)\n"
     "end\n"
@@ -4344,7 +5171,7 @@ const char *kBuiltinGit =
     "    if #locals == 0 then locals = mep_git_placeholder('br-none', '(no branches)') end\n"
     "    if #remotes == 0 then remotes = mep_git_placeholder('rb-none', '(no remote branches -- f fetches)') end\n"
     "    mep_git_set({\n"
-    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = mep_git_head_widgets()},\n"
     "      {id = 'local', title = 'Local (' .. #locals .. ')', collapsed = false, widgets = locals},\n"
     "      {id = 'remote', title = 'Remote (' .. #remotes .. ')', collapsed = false, widgets = remotes},\n"
     "    }, rows)\n"
@@ -4368,17 +5195,31 @@ const char *kBuiltinGit =
     "    if code ~= 0 then widgets = mep_git_placeholder('st-none', '(git stash list failed)') end\n"
     "    if #widgets == 0 then widgets = mep_git_placeholder('st-none', '(no stashes -- n stashes the working tree)') end\n"
     "    mep_git_set({\n"
-    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = {}},\n"
+    "      {id = 'head', title = mep_git_head_title(), collapsed = false, widgets = mep_git_head_widgets()},\n"
     "      {id = 'stash', title = 'Stashes (' .. #widgets .. ')', collapsed = false, widgets = widgets},\n"
     "    }, rows)\n"
     "  end)\n"
     "end\n"
+    // Status gets the branch/upstream line from its own `git status
+    // --branch`; the other views ask for just that line first (no
+    // untracked scan) so their head section's ahead/behind is fresh too.
+    // mep_git_refresh_gen drops a render whose upstream query a newer
+    // refresh (or a view switch) has since overtaken.
     "function mep.git_refresh()\n"
     "  mep_git_ensure()\n"
-    "  if mep_git_view == 'log' then mep_git_render_log()\n"
-    "  elseif mep_git_view == 'branches' then mep_git_render_branches()\n"
-    "  elseif mep_git_view == 'stash' then mep_git_render_stash()\n"
-    "  else mep.git_status_refresh() end\n"
+    "  mep_git_refresh_gen = mep_git_refresh_gen + 1\n"
+    "  local render = ({log = mep_git_render_log, graph = mep_git_render_graph,\n"
+    "    branches = mep_git_render_branches, stash = mep_git_render_stash})[mep_git_view]\n"
+    "  if not render then mep.git_status_refresh() return end\n"
+    "  local gen = mep_git_refresh_gen\n"
+    "  mep_git_run({'git', '--no-optional-locks', 'status', '--porcelain', '--branch', '--untracked-files=no'}, function(code, out)\n"
+    "    if gen ~= mep_git_refresh_gen then return end\n"
+    "    if code == 0 and out[1] and out[1]:sub(1, 2) == '##' then\n"
+    "      mep_git_head = out[1]:sub(4)\n"
+    "      mep_git_upstream = mep_git_parse_head(out[1])\n"
+    "    end\n"
+    "    render()\n"
+    "  end)\n"
     "end\n"
     "local function mep_git_preview_cmd(argv, title, empty_text, as_diff)\n"
     "  mep_git_status_preview_gen = mep_git_status_preview_gen + 1\n"
@@ -4487,21 +5328,37 @@ const char *kBuiltinGit =
     "function mep.git_stash_apply(ref, pop)\n"
     "  mep_git_action({'git', 'stash', pop and 'pop' or 'apply', ref}, (pop and 'Pop ' or 'Apply ') .. ref)\n"
     "end\n"
-    "local MEP_GIT_HELP = {\n"
-    "  status = 'Git status: Enter=open  s/u=stage/unstage  S/U=all  d=discard  c=commit  C=amend  p=push  l=pull  f=fetch  R=refresh  Tab/1-4=view  mod1+m=popout',\n"
-    "  log = 'Git log: Enter=show in popout  y=copy hash  c=commit  p=push  l=pull  f=fetch  R=refresh  Tab/1-4=view',\n"
-    "  branches = 'Git branches: Enter=checkout  n=new branch  x/D=delete  m=merge into current  r=rebase current onto  f=fetch  p=push  l=pull  R=refresh  Tab/1-4=view',\n"
-    "  stash = 'Git stash: Enter/a=apply  o=pop  x=drop  n=stash changes  R=refresh  Tab/1-4=view',\n"
+    // Per-view key lists for the sidebar's `?` view (mep.sidebar_set_help),
+    // swapped in by mep_git_set_help whenever the view changes.
+    "local MEP_GIT_COMMON_KEYS = {\n"
+    "  {'c', 'commit (message in a float, ZZ confirms)'}, {'C', 'amend the last commit'},\n"
+    "  {'P / p', 'push'}, {'l', 'pull'}, {'f', 'fetch --all --prune'}, {'R', 'refresh'},\n"
+    "  {'1-5', 'Status / Log / Graph / Branches / Stash'},\n"
     "}\n"
+    "local MEP_GIT_KEYS = {\n"
+    "  status = {{'Enter', 'open the file'}, {'s', 'stage'}, {'u', 'unstage'}, {'S', 'stage all'}, {'U', 'unstage all'},\n"
+    "    {'d', 'discard changes / delete untracked'}},\n"
+    "  log = {{'Enter', 'show the commit (popout)'}, {'y', 'copy the hash'}},\n"
+    "  graph = {{'Enter', 'show the commit (popout)'}, {'y', 'copy the hash'}},\n"
+    "  branches = {{'Enter / o', 'check out'}, {'n', 'new branch from HEAD'}, {'x / D', 'delete'},\n"
+    "    {'m', 'merge into the current branch'}, {'r', 'rebase the current branch onto it'}},\n"
+    "  stash = {{'Enter / a', 'apply'}, {'o', 'pop'}, {'x', 'drop'}, {'n', 'stash the working tree'}},\n"
+    "}\n"
+    "function mep_git_set_help()\n"
+    "  local keys = {}\n"
+    "  for _, kv in ipairs(MEP_GIT_KEYS[mep_git_view] or MEP_GIT_KEYS.status) do keys[#keys + 1] = kv end\n"
+    "  for _, kv in ipairs(MEP_GIT_COMMON_KEYS) do keys[#keys + 1] = kv end\n"
+    "  mep.sidebar_set_help(mep_git_status_sidebar_id, keys)\n"
+    "end\n"
+
     "function mep.git_status_on_key(k)\n"
     "  local id = mep_git_status_sidebar_id\n"
     "  local n = tonumber(k)\n"
     "  if n and MEP_GIT_VIEWS[n] then mep.sidebar_set_active_tab(id, n) return end\n"
-    "  if k == '?' then mep.notify(MEP_GIT_HELP[mep_git_view] or MEP_GIT_HELP.status) return\n"
-    "  elseif k == 'R' then mep.git_refresh() return\n"
+    "  if k == 'R' then mep.git_refresh() return\n"
     "  elseif k == 'c' then mep.git_commit(false) return\n"
     "  elseif k == 'C' then mep.git_commit(true) return\n"
-    "  elseif k == 'p' then mep.git_push() return\n"
+    "  elseif k == 'P' or k == 'p' then mep.git_push() return\n"
     "  elseif k == 'l' then mep.git_pull() return\n"
     "  elseif k == 'f' then mep.git_fetch() return\n"
     "  end\n"
@@ -4527,7 +5384,7 @@ const char *kBuiltinGit =
     "        end)\n"
     "      end\n"
     "    end\n"
-    "  elseif mep_git_view == 'log' then\n"
+    "  elseif mep_git_view == 'log' or mep_git_view == 'graph' then\n"
     "    if row and k == 'y' then mep.clipboard_set(row.hash) mep.notify('Copied ' .. row.hash) end\n"
     "  elseif mep_git_view == 'branches' then\n"
     "    if k == 'n' then\n"
@@ -4591,7 +5448,16 @@ const char *kBuiltinGit =
     "    mep.sidebar_popout_toggle(mep_git_status_sidebar_id)\n"
     "  end\n"
     "end\n"
-    // Docked (mep.git_open_view above) is still the default `<leader>gg` --
+    // The popup-only counterpart: no docked column behind the float, and
+    // collapsing it (Escape/q/mod1+m) closes the panel outright.
+    "function mep.git_open_popup(view)\n"
+    "  mep_git_ensure()\n"
+    "  local idx = 1\n"
+    "  for i, v in ipairs(MEP_GIT_VIEWS) do if v == view then idx = i end end\n"
+    "  mep.sidebar_popout_open(mep_git_status_sidebar_id)\n"
+    "  mep.sidebar_set_active_tab(mep_git_status_sidebar_id, idx)\n"
+    "end\n"
+    // Docked (mep.git_open_view above) is still the default `<leader>gG` --
     // full popout support, Tab-cycling between Status/Log/Branches/Stash,
     // and the live diff/log preview column all only exist there
     // (Mode::SidebarPane, what mep.sidebar_open_pane below lands on, is
@@ -4649,9 +5515,10 @@ const char *kBuiltinGit =
     "mep.command('MepGitStatusPane', mep.git_open_pane)\n"
     "mep.leader_map('gt', 'Git status (paneable, stacks with the file tree)', mep.git_open_pane)\n"
     "mep.command('MepGitStatus', function() mep.git_status_toggle() end)\n"
-    "mep.command('MepGitLog', function() mep.git_open_view('log', true) end)\n"
-    "mep.command('MepGitBranches', function() mep.git_open_view('branches', true) end)\n"
-    "mep.command('MepGitStash', function() mep.git_open_view('stash', true) end)\n"
+    "mep.command('MepGitLog', function() mep.git_open_popup('log') end)\n"
+    "mep.command('MepGitGraph', function() mep.git_open_popup('graph') end)\n"
+    "mep.command('MepGitBranches', function() mep.git_open_popup('branches') end)\n"
+    "mep.command('MepGitStash', function() mep.git_open_popup('stash') end)\n"
     "mep.command('MepGitCommit', function() mep.git_commit(false) end)\n"
     "mep.command('MepGitPush', mep.git_push)\n"
     "mep.command('MepGitPull', mep.git_pull)\n"
@@ -4679,16 +5546,72 @@ const char *kBuiltinGit =
     "    mep.git_open_view(mep_git_view, false)\n"
     "  end\n"
     "end\n"
-    "mep.leader_map('gg', 'Toggle git panel', mep.git_status_toggle)\n"
-    "mep.leader_map('gl', 'Git log (popout)', function() mep.git_open_view('log', true) end)\n"
-    "mep.leader_map('gb', 'Git branches (popout)', function() mep.git_open_view('branches', true) end)\n"
-    "mep.leader_map('gs', 'Git stash (popout)', function() mep.git_open_view('stash', true) end)\n"
+    // <leader>gg: the full popped-out panel (Status/Log/Branches/Stash
+    // tabs + preview column), toggled. Collapsing a popup-only panel
+    // closes it; one popped out of an already-docked <leader>gG sidebar
+    // falls back to that docked sidebar.
+    "function mep.git_popup_toggle()\n"
+    "  if mep_git_status_sidebar_id and mep.sidebar_is_popout(mep_git_status_sidebar_id) then\n"
+    "    mep.sidebar_popout_close()\n"
+    "  else\n"
+    "    mep.git_open_popup(mep_git_view)\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepGitPopup', mep.git_popup_toggle)\n"
+    "mep.leader_map('gg', 'Toggle git popup', mep.git_popup_toggle)\n"
+    "mep.leader_map('gG', 'Toggle git sidebar', mep.git_status_toggle)\n"
+    "mep.leader_map('gl', 'Git log (popout)', function() mep.git_open_popup('log') end)\n"
+    "mep.leader_map('gL', 'Git graph (popout)', function() mep.git_open_popup('graph') end)\n"
+    "mep.leader_map('gb', 'Git branches (popout)', function() mep.git_open_popup('branches') end)\n"
+    "mep.leader_map('gs', 'Git stash (popout)', function() mep.git_open_popup('stash') end)\n"
     "mep.leader_map('gc', 'Git commit', function() mep.git_commit(false) end)\n"
     "mep.leader_map('gp', 'Git push', mep.git_push)\n"
-    "mep.on_workspace_changed(function()\n"
-    "  if mep_git_status_sidebar_id and mep.sidebar_is_open(mep_git_status_sidebar_id) then\n"
-    "    mep.git_refresh()\n"
+    // Auto-refresh while the panel is visible -- docked, popped out, or
+    // as a pane (<leader>gt, or <leader>gG with the tree open; that one
+    // never reports sidebar_is_open). Changes can come from anywhere (a
+    // save here, `git commit` in a terminal, another editor), so every
+    // 2 s -- and on the next frame after any save -- a cheap fingerprint
+    // (porcelain v2 status: HEAD, upstream ahead/behind, stash count,
+    // changed paths; plus every ref's commit) is compared with the last
+    // one, and the current view re-renders only when it differs, so an
+    // idle panel never reloads its preview. --no-optional-locks keeps the
+    // background `git status` from taking index.lock and failing a git
+    // command the user runs at the same moment.
+    "local function mep_git_visible()\n"
+    "  local id = mep_git_status_sidebar_id\n"
+    "  if not id then return false end\n"
+    "  if mep.sidebar_is_open(id) or mep.sidebar_is_popout(id) then return true end\n"
+    "  if mep_git_pane_buf then\n"
+    "    for _, b in ipairs(mep.pane_buffers()) do if b == mep_git_pane_buf then return true end end\n"
     "  end\n"
+    "  return false\n"
+    "end\n"
+    "local kGitPollSec = 2\n"
+    "local mep_git_poll_last, mep_git_poll_busy, mep_git_fingerprint = 0, false, nil\n"
+    "local function mep_git_poll()\n"
+    "  if mep_git_poll_busy or not mep_git_visible() then return end\n"
+    "  mep_git_poll_busy = true\n"
+    "  mep_git_run({'git', '--no-optional-locks', 'status', '--porcelain=v2', '--branch', '--show-stash'}, function(_, status)\n"
+    "    mep_git_run({'git', 'for-each-ref', '--format=%(objectname) %(refname)'}, function(_, refs)\n"
+    "      mep_git_poll_busy = false\n"
+    "      local fp = mep_git_root() .. '\\n' .. table.concat(status, '\\n') .. '\\n' .. table.concat(refs, '\\n')\n"
+    "      if fp ~= mep_git_fingerprint then\n"
+    "        mep_git_fingerprint = fp\n"
+    "        if mep_git_visible() then mep.git_refresh() end\n"
+    "      end\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    "mep.on_frame(function()\n"
+    "  local now = mep.now()\n"
+    "  if now - mep_git_poll_last >= kGitPollSec then\n"
+    "    mep_git_poll_last = now\n"
+    "    mep_git_poll()\n"
+    "  end\n"
+    "end)\n"
+    "mep.on_buffer_saved(function() mep_git_poll_last = 0 end)\n"
+    "mep.on_workspace_changed(function()\n"
+    "  if mep_git_visible() then mep.git_refresh() end\n"
     "end)\n"
     // `:MepGitGutter` alone just recomputes against the current base
     // (unchanged default behavior); `:MepGitGutter base <ref>` (Phase
@@ -4699,15 +5622,40 @@ const char *kBuiltinGit =
     // line verbatim (Editor::ExecuteCommandLine's lua_commands_ lookup),
     // so one registration covers both forms instead of needing a
     // separate :MepGitGutterBase command.
+    // `:MepGitGutter on|off|toggle` -- turning it off clears the marks
+    // immediately rather than leaving the last computed set frozen on
+    // screen until something else redraws them.
+    "function mep.git_gutter_enable(on, quiet)\n"
+    "  mep.git_gutter_auto = on and true or false\n"
+    "  if mep.git_gutter_auto then\n"
+    "    mep.git_gutter_invalidate()\n"
+    "  else\n"
+    "    mep.git_gutter_clear()\n"
+    "  end\n"
+    // Always says which way it went: on a file whose hunks happen to be
+    // empty (everything committed, or everything staged with the index
+    // as the base) a toggle has no visible effect at all, and silence
+    // there is indistinguishable from an unbound key.
+    "  if not quiet then\n"
+    "    mep.notify('Git gutter ' .. (mep.git_gutter_auto and 'on' or 'off') ..\n"
+    "      (mep.git_gutter_auto and (' (base: ' .. mep.git_gutter_base_label() .. ')') or ''))\n"
+    "  end\n"
+    "end\n"
     "function mep.git_gutter_command(args)\n"
     "  local sub, rest = (args or ''):match('^(%S*)%s*(.*)$')\n"
-    "  if sub == 'base' then\n"
+    "  if sub == 'on' or sub == 'off' or sub == 'toggle' then\n"
+    "    local on = (sub == 'on') or (sub == 'toggle' and not mep.git_gutter_auto)\n"
+    "    mep.git_gutter_enable(on)\n"
+    "  elseif sub == 'base' then\n"
     "    local ref = rest:match('^%s*(.-)%s*$')\n"
     "    if ref == '' then\n"
-    "      mep.notify('Git diff base: ' .. mep.git_gutter_base)\n"
+    "      mep.notify('Git diff base: ' .. mep.git_gutter_base_label())\n"
     "    else\n"
-    "      mep.git_gutter_base = ref\n"
-    "      mep.notify('Git diff base set to ' .. ref)\n"
+    // 'index' is the spoken name for the empty ref -- there's no way to
+    // type the empty string as an argument.
+    "      mep.git_gutter_base = (ref == 'index') and '' or ref\n"
+    "      mep.notify('Git diff base set to ' .. mep.git_gutter_base_label())\n"
+    "      mep.git_gutter_invalidate()\n"
     "      mep.git_gutter_refresh()\n"
     "    end\n"
     "  else\n"
@@ -4716,11 +5664,44 @@ const char *kBuiltinGit =
     "end\n"
     "mep.command('MepGitGutter', mep.git_gutter_command)\n"
     "mep.command('MepGitPreviewHunk', mep.git_preview_hunk)\n"
-    // Opt-in auto-recompute; :lua mep.git_gutter_auto = true to enable.
-    // A longer default debounce interval than colorize/todo_mark since
-    // this spawns a git subprocess per recompute.
-    "mep.git_gutter_auto = false\n"
-    "mep.on_buffer_changed(function() if mep.git_gutter_auto then mep.git_gutter_refresh() end end, 0.6)\n"
+    // On by default, unlike every other mep.*_auto flag in this file: a
+    // git gutter you have to switch on is a git gutter nobody sees, and
+    // the always-reserved sign column means turning it on costs no
+    // layout shift either. The cost it *does* have -- a `git show` per
+    // recompute -- is what mep.git_gutter_tick's staleness check and
+    // debounce are for (Editor::GitGutterTick): in the steady state, a
+    // frame where nothing changed spawns nothing at all. Driven off the
+    // frame hook rather than mep.on_buffer_changed so switching buffers,
+    // opening a file, or moving the diff base refreshes too -- an
+    // edits-only hook left the gutter showing the previous buffer's
+    // hunks on every switch.
+    "mep.git_gutter_auto = true\n"
+    // vim-gitgutter's `highlight_lines`: tint the whole line as well as
+    // marking the sign column. Off by default -- see
+    // GitGutterRefreshBuffer's own comment (editor.cpp).
+    "mep.git_gutter_line_hl = false\n"
+    "mep.on_frame(function()\n"
+    "  if mep.git_gutter_auto then mep.git_gutter_tick(mep.git_gutter_base, mep.git_gutter_line_hl) end\n"
+    "end)\n"
+    // ]c / [c: vim's own diff-mode hunk motions, which vim-gitgutter and
+    // gitsigns both adopt. ]g / [g is the same jump under a mnemonic
+    // letter -- `c` reads as "change" only if you already know vim's
+    // diff mode, and `g` is the letter every other git binding here is
+    // already under. Both are bound; neither shadows anything (nothing
+    // else registers a ]/[ suffix of `c` or `g`).
+    // mep.map_bracket_next/prev is the general "key after a leading ]/["
+    // registry (Editor::RegisterBracketNextMapping).
+    "mep.map_bracket_next('c', mep.git_next_hunk)\n"
+    "mep.map_bracket_prev('c', mep.git_prev_hunk)\n"
+    "mep.map_bracket_next('g', mep.git_next_hunk)\n"
+    "mep.map_bracket_prev('g', mep.git_prev_hunk)\n"
+    // Hunk actions under the existing <leader>g (git) group -- the four
+    // letters still free there. gitsigns puts these on <leader>h, which
+    // is already mep's help group.
+    "mep.leader_map('ga', 'Git stage hunk at cursor', mep.git_stage_hunk)\n"
+    "mep.leader_map('gr', 'Git reset hunk at cursor', mep.git_reset_hunk)\n"
+    "mep.leader_map('gv', 'Git preview hunk at cursor', mep.git_preview_hunk)\n"
+    "mep.leader_map('gd', 'Toggle git gutter', function() mep.git_gutter_enable(not mep.git_gutter_auto) end)\n"
     // WORKSPACES_PLAN.md Phase 7: opt-in `+` marker per workspace label
     // (mep.opt.workspace_git_dirty = true) from a debounced `git status
     // --porcelain` per workspace -- every 5s, never per frame, and only
@@ -5080,8 +6061,16 @@ const char *kBuiltinLsp =
     // root across workspaces and so share one client.
     "local mep_lsp_clients = {}\n"
     "local function mep_lsp_key(ft) return ft .. '@' .. mep.workspace_root() end\n"
-    // filename -> array of LSP Diagnostic
-    "local mep_lsp_diagnostics = {}\n"
+    // filename -> array of LSP Diagnostic. A bare global, not a local,
+    // for the same reason mep_lsp_server_capabilities just above it is
+    // one: kBuiltinOrgPolyglot is a separate DoString chunk and writes
+    // a block's translated diagnostics straight into this table
+    // (mep_polyglot_on_diagnostics). As a local it was invisible there,
+    // so every publish from a polyglot server raised "attempt to index
+    // a nil value (global 'mep_lsp_diagnostics')" and no diagnostic
+    // inside a #+begin_src block ever reached the buffer -- seen in a
+    // live instance while adding gf's own block support.
+    "mep_lsp_diagnostics = {}\n"
     // filename -> version counter
     "local mep_lsp_doc_versions = {}\n"
     // client_id -> the server's own `initialize` response capabilities
@@ -5341,13 +6330,18 @@ const char *kBuiltinLsp =
     "  }, function(msg)\n"
     "    local edits = mep_lsp_result(msg)\n"
     "    if not edits then return end\n"
-    "    table.sort(edits, function(a, b) return a.range.start.line > b.range.start.line end)\n"
-    "    for _, e in ipairs(edits) do\n"
-    "      local lines = {}\n"
-    "      for s in (e.newText .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = s end\n"
-    "      if #lines > 0 and lines[#lines] == '' then lines[#lines] = nil end\n"
-    "      mep.replace_lines(e.range.start.line + 1, e.range['end'].line + 2, lines)\n"
-    "    end\n"
+    // Applied through mep.lsp_apply_edits_current_buffer (the same
+    // character-range-aware applier rename/code-action use, which also
+    // does the reverse-document-order sort itself) rather than the
+    // whole-line mep.replace_lines loop this used to hand-roll. That
+    // loop assumed a formatting response is always whole-line or
+    // whole-file edits; clangd's is neither -- it answers with a
+    // handful of tiny mid-line splices (delete two spaces here, insert
+    // one there), and replacing each edit's *entire line* with that
+    // fragment collapsed the file (a one-line C++ file came back as a
+    // single space). Caught by gf's own no-table-entry fallback path
+    // landing here against clangd during verification.
+    "    mep.lsp_apply_edits_current_buffer(edits)\n"
     "    mep.notify('Formatted')\n"
     "  end)\n"
     "end\n"
@@ -5438,23 +6432,20 @@ const char *kBuiltinLsp =
     "    mep.lsp_signature_help()\n"
     "  end\n"
     "end, 0.2)\n"
-    // General TextEdit application, character-range-aware -- unlike
-    // mep.lsp_format's own line-based apply above (which only works
-    // because formatting edits happen to already be whole-line/whole-
-    // file). Rename/code-action edits are typically just a few characters
-    // mid-line, so reusing replace_lines the way mep.lsp_format does would
-    // clobber the rest of the line; this splices newText between the
-    // edit's start/end *character* offsets instead. Splits newText on
-    // '\n' with an explicit pos-cursor loop rather than mep.lsp_format's
-    // own `(e.newText..'\\n'):gmatch('(.-)\\n')` + "drop a trailing empty
-    // element" trick -- that trick silently eats a genuine trailing
-    // newline (e.g. newText = "foo\\n", a whole-new-line insertion) by
-    // merging it back into the following line, which mep.lsp_format never
-    // notices only because its own edits happen to never end in '\\n'
-    // followed by more content. Caught by hand-tracing this function
-    // against a code-action edit that inserts "marker\\n" at column 0
-    // during verification (see report) -- a real bug, fixed before ever
-    // reaching the live test.
+    // General TextEdit application, character-range-aware -- what
+    // rename, code actions and (since gf, see kBuiltinFormat) formatting
+    // all apply their edits through. Such edits are typically just a few
+    // characters mid-line, so replacing each edit's whole line the way
+    // mep.lsp_format used to would clobber the rest of that line; this
+    // splices newText between the edit's start/end *character* offsets
+    // instead. Splits newText on '\n' with an explicit pos-cursor loop
+    // rather than a `(e.newText..'\\n'):gmatch('(.-)\\n')` + "drop a
+    // trailing empty element" trick -- that trick silently eats a genuine
+    // trailing newline (e.g. newText = "foo\\n", a whole-new-line
+    // insertion) by merging it back into the following line. Caught by
+    // hand-tracing this function against a code-action edit that inserts
+    // "marker\\n" at column 0 during verification (see report) -- a real
+    // bug, fixed before ever reaching the live test.
     // mep_lsp_apply_text_edit/mep_lsp_apply_edits_current_buffer ported to
     // Editor::LspApplyTextEdit/LspApplyEditsCurrentBuffer (editor.cpp) --
     // LUA_TO_CPP_PLAN.md Phase LSP, bound as mep.lsp_apply_text_edit/
@@ -5889,6 +6880,72 @@ const char *kBuiltinLanguageUi =
     // 'lu' rather than replacing it, since 'lu' predates this and other
     // muscle memory/docs may already reference it.
     "mep.leader_map('uu', 'Language UI mode (toggle)', mep.language_ui_toggle)\n";
+
+// "go help" (gh, TODO.org's own item): open the documentation for the
+// function under the cursor, in whatever surface the current language's help
+// system already has -- the R/Python modes' Help tab, `man` for C/C++, and
+// the LSP hover popup for everything else.
+//
+// Each language registers a provider here (mep.help_register_provider) rather
+// than claiming "gh" for itself, because mep.map_g -- like mep.map -- has no
+// buffer-local flavor: there is exactly one "gh" for the whole editor, so the
+// language dispatch has to happen inside that single callback. A provider
+// takes no arguments, gates on its own per-tab state, and returns true once
+// it has handled the lookup -- including the "no symbol under the cursor"
+// warning, which is that language's own answer and not a reason to fall
+// through and ask an unrelated help system. Anything false/nil means "not my
+// buffer" and the next provider gets a turn; when none claims it, the chain
+// ends at mep.lsp_hover, the generic "show me the docs for this" mep already
+// had bound to K.
+//
+// Registration order is chunk load order (R, Python, C/C++), but each
+// provider's own state check already makes them mutually exclusive -- at most
+// one language UI mode is open per tab (mep.language_ui_active) -- so the
+// order only decides who is asked first, not who wins.
+const char *kBuiltinGoHelp =
+    "mep.help_providers = mep.help_providers or {}\n"
+    // Re-registering an existing name replaces that provider in place rather
+    // than stacking a second copy, so re-running this chunk (or a user's own
+    // override of a built-in mode's provider from init.lua) doesn't leave the
+    // superseded one still ahead of it in the chain.
+    "function mep.help_register_provider(name, fn)\n"
+    "  for _, p in ipairs(mep.help_providers) do\n"
+    "    if p.name == name then p.fn = fn return end\n"
+    "  end\n"
+    "  mep.help_providers[#mep.help_providers + 1] = {name = name, fn = fn}\n"
+    "end\n"
+    // The identifier under the cursor, plus the columns it spans (1-based,
+    // inclusive -- the start is what lets a caller look at what precedes the
+    // symbol, e.g. R's `pkg::` prefix). `chars` is the Lua character class
+    // that language's identifiers are made of and defaults to [%w_.], wider
+    // than mep.lsp_word_at_cursor's [%w_] so R's na.omit and Python's
+    // os.path.join stay whole instead of splitting at the dot; C/C++ passes
+    // its own class for std::vector. nil when the cursor isn't on one.
+    "function mep.help_symbol_at_cursor(chars)\n"
+    "  chars = chars or '[%w_.]'\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row) or ''\n"
+    "  if col > #line then col = #line end\n"
+    "  local function isw(i) return i >= 1 and i <= #line and line:sub(i, i):match(chars) ~= nil end\n"
+    "  if not isw(col) then return nil end\n"
+    "  local s, e = col, col\n"
+    "  while isw(s - 1) do s = s - 1 end\n"
+    "  while isw(e + 1) do e = e + 1 end\n"
+    "  return line:sub(s, e), s, e\n"
+    "end\n"
+    "function mep.help_at_cursor()\n"
+    "  for _, p in ipairs(mep.help_providers) do\n"
+    "    if p.fn() then return true end\n"
+    "  end\n"
+    "  mep.lsp_hover()\n"
+    "  return false\n"
+    "end\n"
+    "mep.command('MepGoHelp', mep.help_at_cursor)\n"
+    "mep.map_g('h', mep.help_at_cursor)\n"
+    // mep.map_g takes no description (there is no g-mapping registry for
+    // mep.keymaps to read), so the leader spelling is what makes "go help"
+    // discoverable in the keymaps picker and the which-key overlay.
+    "mep.leader_map('hs', 'Help: symbol under the cursor (gh)', mep.help_at_cursor)\n";
 
 // R language UI mode (kBuiltinLanguageUi's first consumer): <leader>lu/uu on
 // an .R buffer lays a Console pane below the source pane, plus a right
@@ -6746,31 +7803,25 @@ const char *kBuiltinLanguageUiR =
     "    end\n"
     "  end)\n"
     "end\n"
-    // gh ("go to help"): while this tab's R UI mode is open, look up the
-    // symbol under the cursor in the Help tab -- sends help('sym') (or
-    // help('sym', package = 'pkg') for a `pkg::sym` spelling) to the
-    // session's console, so it flows through exactly the same overridden
-    // help() -> pager -> help.txt -> poll path as a typed ?topic, choice
-    // list for an ambiguous topic included -- and reveals the Help tab
-    // immediately (mep.jump_to_buffer finds it even hidden behind Data/
-    // Objects/... in top_pane's tab strip, or after the user moved it
-    // elsewhere) rather than waiting on the poll tick's own jump, which
-    // only fires on a real content CHANGE and so wouldn't fire at all for
-    // a repeat lookup of the same topic. The symbol scan is R's own
-    // identifier shape ([%w_.], so na.omit/read.csv stay whole) rather
-    // than mep.lsp_word_at_cursor's [%w_], which would split at the dot.
-    // Outside an R UI mode (any language), gh falls back to the LSP hover
-    // popup, the generic "show me the docs for this" mep already has.
+    // This mode's "go help" provider (kBuiltinGoHelp's gh): while this tab's
+    // R UI mode is open, look up the symbol under the cursor in the Help tab
+    // -- sends help('sym') (or help('sym', package = 'pkg') for a `pkg::sym`
+    // spelling) to the session's console, so it flows through exactly the
+    // same overridden help() -> pager -> help.txt -> poll path as a typed
+    // ?topic, choice list for an ambiguous topic included -- and reveals the
+    // Help tab immediately (mep.jump_to_buffer finds it even hidden behind
+    // Data/Objects/... in top_pane's tab strip, or after the user moved it
+    // elsewhere) rather than waiting on the poll tick's own jump, which only
+    // fires on a real content CHANGE and so wouldn't fire at all for a
+    // repeat lookup of the same topic. The symbol scan is R's own identifier
+    // shape ([%w_.], mep.help_symbol_at_cursor's default, so na.omit/
+    // read.csv stay whole) rather than mep.lsp_word_at_cursor's [%w_], which
+    // would split at the dot; the start column it returns is what the
+    // `pkg::` prefix is read back from.
     "local function mep_r_ui_symbol_at_cursor()\n"
-    "  local row, col = mep.cursor()\n"
-    "  local line = mep.get_line(row) or ''\n"
-    "  if col > #line then col = #line end\n"
-    "  local function isw(i) return i >= 1 and i <= #line and line:sub(i, i):match('[%w_.]') ~= nil end\n"
-    "  if not isw(col) then return nil end\n"
-    "  local s, e = col, col\n"
-    "  while isw(s - 1) do s = s - 1 end\n"
-    "  while isw(e + 1) do e = e + 1 end\n"
-    "  local sym = line:sub(s, e)\n"
+    "  local sym, s = mep.help_symbol_at_cursor()\n"
+    "  if not sym then return nil end\n"
+    "  local line = mep.get_line(mep.cursor()) or ''\n"
     "  local pkg = line:sub(1, s - 1):match('([%w.]+):::?$')\n"
     "  return sym, pkg\n"
     "end\n"
@@ -6784,7 +7835,7 @@ const char *kBuiltinLanguageUiR =
     "  if st.help_buf then mep.jump_to_buffer(st.help_buf) end\n"
     "  return true\n"
     "end\n"
-    "mep.map_g('h', function() if not mep.r_ui_help_at_cursor() then mep.lsp_hover() end end)\n";
+    "mep.help_register_provider('r', mep.r_ui_help_at_cursor)\n";
 
 const char *kBuiltinLanguageUiCommon =
     // Shared plumbing for the language UI modes (kBuiltinLanguageUi): the
@@ -6951,9 +8002,27 @@ const char *kBuiltinLanguageUiCommon =
     "    self.follow_latest = (self.findex == #self.figures)\n"
     "    local cur = mep.current_pane_id()\n"
     "    if mep.pane_focus(self.pane) then\n"
+    // Read the outgoing figure's Ctrl-R viewing mode before mep.open
+    // replaces the buffer, and carry it onto the replacement. A different
+    // figure file is a different buffer id, so the image buffer this
+    // opens is a brand-new ImageSession with theme_colors back at its
+    // default -- without this, stepping with h/l silently undid the
+    // user's Ctrl-R every time, which is exactly the bug
+    // mep.image_get_theme was added for. (kBuiltinLanguageUiR's own
+    // mep_r_ui_figure_goto already did this; the behavior was simply not
+    // carried over when this shared gallery was factored out for the
+    // Python and C modes.)
+    //
+    // nil means the pane isn't showing an image at all -- the
+    // `no_figure_yet.txt` placeholder, i.e. this is the first real
+    // figure -- which starts themed, since a plot is much closer in
+    // spirit to a PDF page (white background, colored lines) than to an
+    // arbitrary photo. See ImageSession::theme_colors (editor.h) for why
+    // that has to be opt-in per buffer rather than a global default.
+    "      local theme_colors = mep.image_get_theme(mep.current_buffer())\n"
     "      mep.open(self.figures[self.findex])\n"
     "      mep.image_set_nav(mep.current_buffer(), function() self:step(-1) end, function() self:step(1) end)\n"
-    "      mep.image_set_theme(mep.current_buffer(), true)\n"
+    "      mep.image_set_theme(mep.current_buffer(), theme_colors == nil and true or theme_colors)\n"
     "      mep.pane_focus(cur)\n"
     "    end\n"
     "  end\n"
@@ -7016,7 +8085,10 @@ const char *kBuiltinLanguageUiPython =
     //     Data tab shows it.
     //   - help(x) is overridden (builtins.help) to write pydoc's plain-text
     //     rendering into the Help tab's file instead of paging it inside the
-    //     console; help('topic') strings work too.
+    //     console; help('topic') strings work too. gh over a name (this
+    //     mode's kBuiltinGoHelp provider, below) goes through the same path
+    //     via mep_help('name'), which evaluates the name in the console's own
+    //     namespace first and falls back to handing pydoc the string.
     //   - mep_view(x) writes x (a pandas DataFrame's head().to_string(), or
     //     pprint for anything else) to the Data tab.
     //   - Plots: MPLBACKEND is pointed at a tiny custom matplotlib backend
@@ -7183,6 +8255,13 @@ const char *kBuiltinLanguageUiPython =
     "def mep_show():\n"
     "    _mep_capture_figures(force=True, close=False)\n"
     "\n"
+    "def mep_help(name):\n"
+    "    try:\n"
+    "        obj = eval(name, _MEP_NS)\n"
+    "    except Exception:\n"
+    "        obj = name\n"
+    "    help(obj)\n"
+    "\n"
     "def mep_run(path):\n"
     "    d = os.path.dirname(os.path.abspath(path))\n"
     "    if d not in sys.path:\n"
@@ -7201,7 +8280,8 @@ const char *kBuiltinLanguageUiPython =
     "_MEP_NS['mep_view'] = mep_view\n"
     "_MEP_NS['mep_show'] = mep_show\n"
     "_MEP_NS['mep_run'] = mep_run\n"
-    "_MEP_HIDDEN.update(['mep_view', 'mep_show', 'mep_run'])\n"
+    "_MEP_NS['mep_help'] = mep_help\n"
+    "_MEP_HIDDEN.update(['mep_view', 'mep_show', 'mep_run', 'mep_help'])\n"
     "if readline is not None:\n"
     "    readline.set_completer(rlcompleter.Completer(_MEP_NS).complete)\n"
     "    readline.parse_and_bind('tab: complete')\n"
@@ -7395,6 +8475,25 @@ const char *kBuiltinLanguageUiPython =
     "  }\n"
     "end\n"
     "mep.language_ui_modes.python = {open = mep.py_ui_open}\n"
+    // This mode's "go help" provider (kBuiltinGoHelp's gh): sends
+    // mep_help('sym') -- the init script's own helper -- to the console, so
+    // the lookup lands in the Help tab through exactly the same overridden
+    // help() -> pydoc -> help.txt -> poll path as a typed help(x), and
+    // reveals the tab immediately rather than waiting on the poll tick's own
+    // jump, which only fires on a real content change (so a repeat lookup of
+    // the same symbol would never reveal it). The scan is
+    // mep.help_symbol_at_cursor's default [%w_.], so a dotted os.path.join /
+    // np.mean stays whole and resolves as one name in the console namespace.
+    "function mep.py_ui_help_at_cursor()\n"
+    "  local st = mep_py_ui_state[mep.current_tab_id()]\n"
+    "  if not st or not mep.is_terminal_buffer(st.console_buf) then return false end\n"
+    "  local sym = mep.help_symbol_at_cursor()\n"
+    "  if not sym then mep.notify('gh: no Python symbol under the cursor', 'warn') return true end\n"
+    "  mep.terminal_write(st.console_buf, string.format(\"mep_help('%s')\\n\", sym))\n"
+    "  if st.help_buf then mep.jump_to_buffer(st.help_buf) end\n"
+    "  return true\n"
+    "end\n"
+    "mep.help_register_provider('python', mep.py_ui_help_at_cursor)\n"
     // Poll loop: re-lists the figures directory and re-reads the sidebar
     // files on a timer, only while a Python mode is open on the active tab.
     "do\n"
@@ -7435,8 +8534,8 @@ const char *kBuiltinLanguageUiC =
     // C/C++ language UI mode (kBuiltinLanguageUi's third consumer, built on
     // kBuiltinLanguageUiCommon): <leader>uu on a .c/.cpp/.cc/.cxx buffer lays
     // a plain shell terminal below the source pane (where the compiled
-    // program runs), plus a right column split top/bottom -- Assembly and
-    // Build tabbed together on top, Hex alone on the bottom.
+    // program runs), plus a right column split top/bottom -- Assembly, Build
+    // and Help tabbed together on top, Hex alone on the bottom.
     //   - Assembly: a Compiler-Explorer-style view of the current file.
     //     `compiler -S -g file flags -o -` (the same compiler/flags the Run
     //     button's Setup configured for this project -- mep.run_button_
@@ -7457,6 +8556,13 @@ const char *kBuiltinLanguageUiC =
     //     jumps the source cursor to its line.
     //   - Build: the compiler's own diagnostics from the last build/asm run,
     //     one row per line, file:line:col rows clickable to jump there.
+    //   - Help: the man page for the symbol under the cursor, fetched by gh
+    //     (kBuiltinGoHelp) -- section 3 (library functions) first, then 2
+    //     (syscalls), then man's own default section order, so `gh` on
+    //     printf lands on printf(3) rather than printf(1), the shell
+    //     utility. C++ names with a `::` in them are looked up verbatim, so
+    //     std::vector resolves for anyone who has the cppreference man pages
+    //     installed and simply misses for anyone who doesn't.
     //   - Hex: a paged hex dump (mep.opt.c_ui_hex_page bytes per page, 16
     //     per row) of the compiled executable, with the ELF header decoded
     //     (class/endianness/type/machine/entry point) and the section table
@@ -7488,8 +8594,10 @@ const char *kBuiltinLanguageUiC =
     "    asm = mep.sidebar_create('Assembly', 'right', 60),\n"
     "    build = mep.sidebar_create('Build', 'right', 60),\n"
     "    hex = mep.sidebar_create('Hex', 'right', 60),\n"
+    "    help = mep.sidebar_create('Help', 'right', 60),\n"
     "  }\n"
     "  mep.sidebar_set_on_key(mep_c_ui_sidebars.hex, function(k) mep.c_ui_hex_on_key(k) end)\n"
+    "  mep.sidebar_set_help(mep_c_ui_sidebars.hex, {{'n / p', 'next / previous page'}, {'r', 'reload the binary'}})\n"
     "end\n"
     "local function mep_c_ui_basename(path) return path:match('([^/]+)$') or path end\n"
     // Assembly filter + source mapping. Returns an array of {text=, line=}
@@ -7780,8 +8888,6 @@ const char *kBuiltinLanguageUiC =
     "      st.hex_page = math.floor(n / mep.opt.c_ui_hex_page) + 1\n"
     "      mep_c_ui_render_hex()\n"
     "    end)\n"
-    "  elseif k == '?' then\n"
-    "    mep.notify('Hex: n/p page, g go to offset, r reload')\n"
     "  end\n"
     "end\n"
     "function mep.c_ui_reload_hex(st)\n"
@@ -7795,11 +8901,62 @@ const char *kBuiltinLanguageUiC =
     "  end\n"
     "  mep_c_ui_render_hex()\n"
     "end\n"
+    // Help tab: whatever `man` last printed for a gh lookup, one widget row
+    // per line (wrapped, like the R/Python modes' own help text).
+    "local function mep_c_ui_render_help()\n"
+    "  local sb = mep_c_ui_sidebars\n"
+    "  if not sb then return end\n"
+    "  local st = mep_c_ui_state[mep.current_tab_id()]\n"
+    "  mep.language_ui_render_textbox(sb.help, st and st.help_text,\n"
+    "    '(no man page yet -- press gh over a function name)')\n"
+    "end\n"
     "local function mep_c_ui_render_all()\n"
     "  mep_c_ui_render_asm()\n"
     "  mep_c_ui_render_build()\n"
     "  mep_c_ui_render_hex()\n"
+    "  mep_c_ui_render_help()\n"
     "end\n"
+    // This mode's "go help" provider (kBuiltinGoHelp's gh): runs `man` for
+    // the symbol under the cursor and shows what it prints in the Help tab.
+    // Section 3 then 2 then man's own default order (see the header
+    // comment); `col -bx` (when installed, same "use it if it's on PATH"
+    // shape as the Assembly tab's c++filt) flattens the overstrike
+    // bold/underline some man implementations still emit into a pipe, and
+    // expands the tabs groff leaves in NAME/SYNOPSIS lines (-x) so the
+    // widget rows line up the way the page does in a terminal.
+    // MANWIDTH is the Help tab's own width when the pane can report one, so
+    // man's indentation matches what the tab can actually show -- the widget
+    // rows wrap either way, this only avoids re-wrapping already-wrapped
+    // prose. The identifier scan takes ':' as well ([%w_:], trimmed of any
+    // leading/trailing colons a C label or a bare `case x:` would otherwise
+    // drag in) so a C++ std::vector stays one topic.
+    "function mep.c_ui_help_at_cursor()\n"
+    "  local st = mep_c_ui_state[mep.current_tab_id()]\n"
+    "  if not st then return false end\n"
+    "  local sym = mep.help_symbol_at_cursor('[%w_:]')\n"
+    "  sym = sym and sym:gsub('^:+', ''):gsub(':+$', '')\n"
+    "  if not sym or sym == '' then mep.notify('gh: no C/C++ symbol under the cursor', 'warn') return true end\n"
+    "  st.help_text = 'man ' .. sym .. ' ...'\n"
+    "  mep_c_ui_render_help()\n"
+    "  if st.help_buf then mep.jump_to_buffer(st.help_buf) end\n"
+    "  local cols = (st.help_buf and mep.buffer_text_cols(st.help_buf)) or 80\n"
+    "  if cols < 40 then cols = 40 end\n"
+    "  local q = mep.language_ui_shq(sym)\n"
+    "  local cmd = 'export MANWIDTH=' .. cols .. '; { man 3 ' .. q .. ' || man 2 ' .. q .. ' || man ' .. q\n"
+    "    .. '; } 2>/dev/null | { command -v col >/dev/null 2>&1 && col -bx || cat; }'\n"
+    "  local out = {}\n"
+    "  mep.job_start({'sh', '-c', cmd}, {\n"
+    "    cwd = st.src_dir,\n"
+    "    on_stdout = function(line) out[#out + 1] = line end,\n"
+    "    on_exit = function()\n"
+    "      st.help_text = (#out > 0) and table.concat(out, '\\n')\n"
+    "        or ('No man page for ' .. sym .. '.')\n"
+    "      if mep_c_ui_state[mep.current_tab_id()] == st then mep_c_ui_render_help() end\n"
+    "    end,\n"
+    "  })\n"
+    "  return true\n"
+    "end\n"
+    "mep.help_register_provider('c', mep.c_ui_help_at_cursor)\n"
     // The compiler/flags for this file: the Run button's own per-project
     // Setup (mep.run_button_config_for, kBuiltinRunButton -- loaded after
     // this chunk, resolved at call time) so both features agree on how the
@@ -7926,7 +9083,8 @@ const char *kBuiltinLanguageUiC =
     "    ext = mep_lsp_filetype(fname), src_buf = mep.current_buffer(), src_abs = src_abs,\n"
     "    src_dir = src_abs:match('^(.*)/[^/]*$') or '.',\n"
     "    session_dir = session_dir, prog_path = session_dir .. '/' .. base, asm_path = session_dir .. '/' .. base .. '.s',\n"
-    "    asm_rows = {}, asm_title = '', asm_status = nil, build_lines = {}, hex_data = nil, hex_elf = nil, hex_page = 1,\n"
+    "    asm_rows = {}, asm_title = '', asm_status = nil, build_lines = {}, help_text = nil,\n"
+    "    hex_data = nil, hex_elf = nil, hex_page = 1,\n"
     "    cursor_line = nil, last_save_epoch = mep.buffer_save_epoch(), extra_term_bufs = {},\n"
     "  }\n"
     "  local layout = mep.language_ui_layout({\n"
@@ -7940,13 +9098,14 @@ const char *kBuiltinLanguageUiC =
     "  local sb = mep_c_ui_sidebars\n"
     "  mep_c_ui_state[tid] = st\n"
     "  mep_c_ui_render_all()\n"
-    "  local bufs = mep.language_ui_open_tabs(layout.top_pane, {sb.asm, sb.build})\n"
+    "  local bufs = mep.language_ui_open_tabs(layout.top_pane, {sb.asm, sb.build, sb.help})\n"
     "  st.build_buf = bufs[sb.build]\n"
     "  st.asm_buf = bufs[sb.asm]\n"
+    "  st.help_buf = bufs[sb.help]\n"
     "  mep.language_ui_open_tabs(layout.bottom_pane, {sb.hex})\n"
     "  mep.pane_focus(layout.editor_pane)\n"
     "  mep.c_ui_regen_asm(st)\n"
-    "  mep.notify('C/C++ language UI: terminal below, Assembly/Build tabbed top-right, Hex bottom-right; <leader>rr builds and runs (mod1+Tab cycles tabs)')\n"
+    "  mep.notify('C/C++ language UI: terminal below, Assembly/Build/Help tabbed top-right, Hex bottom-right; <leader>rr builds and runs, gh opens a man page (mod1+Tab cycles tabs)')\n"
     "  return {\n"
     "    run_source = function(f) mep.c_ui_build_and_run(st, f) end,\n"
     "    close = function()\n"
@@ -8992,17 +10151,16 @@ const char *kBuiltinStructure =
     // via the hand-rolled extractor above for a .tex one, everything
     // else via Treesitter -- or (nil, message) if none of those has
     // anything for it.\n"
-    "local function mep_structure_items()\n"
-    "  local buffer_id = mep.current_buffer()\n"
+    "local function mep_structure_items(buffer_id)\n"
+    "  buffer_id = buffer_id or mep.current_buffer()\n"
     "  if mep.is_pdf_buffer(buffer_id) then\n"
     "    local items = mep_structure_pdf_items(buffer_id)\n"
     "    if not items then return nil, 'This PDF has no outline/bookmarks' end\n"
     "    return items, nil\n"
     "  end\n"
-    "  local ft = mep_lsp_filetype(mep.filename())\n"
+    "  local ft = mep_lsp_filetype(mep.buffer_filename(buffer_id) or '')\n"
     "  if not ft then return nil, 'No filetype for this buffer' end\n"
-    "  local lines = {}\n"
-    "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
+    "  local lines = mep.buffer_get_lines(buffer_id) or {}\n"
     "  local items\n"
     "  if ft == 'tex' then\n"
     "    items = mep_structure_tex_items(lines)\n"
@@ -9167,7 +10325,8 @@ const char *kBuiltinStructure =
     "local mep_structure_split_last_row = nil\n"
     "mep.on_frame(function()\n"
     "  if not (mep_structure_split_buf and mep_structure_split_items and mep_structure_split_source) then return end\n"
-    "  local row = mep.buffer_cursor_row(mep_structure_split_source)\n"
+    "  local src = mep_structure_split_source\n"
+    "  local row = mep.is_pdf_buffer(src) and mep.pdf_current_page(src) or mep.buffer_cursor_row(src)\n"
     "  if row == mep_structure_split_last_row then return end\n"
     "  mep_structure_split_last_row = row\n"
     "  mep_structure_split_apply_decos()\n"
@@ -9179,8 +10338,31 @@ const char *kBuiltinStructure =
     // preview can resolve a row's index id back to its [start_row,
     // end_row] span without re-parsing the buffer per cursor move.
     "local mep_structure_sidebar_items = nil\n"
+    // The buffer the outline describes: the last focused buffer that is a
+    // real document (a file or PDF) -- not the Structure pane itself, another
+    // sidebar pane, a terminal or the <leader>sS split -- so focusing any of
+    // those keeps showing (and following) the file you were in instead of
+    // re-deriving an outline from them ("No filetype for this buffer").
+    "local mep_structure_source = nil\n"
+    "local function mep_structure_is_source(buf)\n"
+    "  if not buf or mep.sidebar_for_buffer(buf) or buf == mep_structure_split_buf then return false end\n"
+    "  if mep.is_terminal_buffer(buf) then return false end\n"
+    "  return mep.is_pdf_buffer(buf) or (mep.buffer_filename(buf) or '') ~= ''\n"
+    "end\n"
+    "local function mep_structure_update_source()\n"
+    "  local cur = mep.current_buffer()\n"
+    "  if mep_structure_is_source(cur) or not mep_structure_source then mep_structure_source = cur end\n"
+    "  return mep_structure_source\n"
+    "end\n"
+    // Where the source is: its PDF page, else its cursor row (tracked per
+    // buffer, so it's right even while the Structure pane has focus).
+    "local function mep_structure_source_pos(buf)\n"
+    "  if mep.is_pdf_buffer(buf) then return mep.pdf_current_page(buf) end\n"
+    "  return mep.buffer_cursor_row(buf)\n"
+    "end\n"
     "local function mep_structure_sidebar_render()\n"
-    "  local items, err = mep_structure_items()\n"
+    "  local source_buf = mep_structure_update_source()\n"
+    "  local items, err = mep_structure_items(source_buf)\n"
     "  mep_structure_sidebar_items = items\n"
     "  local widgets = {}\n"
     "  if not items then\n"
@@ -9188,13 +10370,12 @@ const char *kBuiltinStructure =
     "  elseif #items == 0 then\n"
     "    widgets[1] = {id = 'msg', text = '(no definitions found)'}\n"
     "  else\n"
-    "    local source_buf = mep.current_buffer()\n"
     "    local is_pdf = mep.is_pdf_buffer(source_buf)\n"
     "    local current\n"
     "    if is_pdf then\n"
     "      current = mep_structure_pdf_current_index(items, source_buf)\n"
     "    else\n"
-    "      current = mep_structure_current_index(items, mep.cursor())\n"
+    "      current = mep_structure_current_index(items, mep.buffer_cursor_row(source_buf))\n"
     "    end\n"
     "    for i, it in ipairs(items) do\n"
     "      local style = mep_structure_style(it.kind)\n"
@@ -9228,7 +10409,8 @@ const char *kBuiltinStructure =
     "      }\n"
     "    end\n"
     "  end\n"
-    "  local fname = mep.filename()\n"
+    "  local fname = mep.buffer_filename(source_buf) or ''\n"
+    "  fname = fname:match('([^/]+)$') or fname\n"
     "  mep.sidebar_set_sections(mep_structure_sidebar_id,\n"
     "    {{id = 'structure', title = (fname ~= '' and fname) or '[No Name]', collapsed = false, widgets = widgets}})\n"
     "end\n"
@@ -9246,12 +10428,13 @@ const char *kBuiltinStructure =
     // you there directly, and this feature's own PDF support was never
     // about a page-thumbnail preview.\n"
     "  if not it or it.page ~= nil then mep.sidebar_set_preview('') return end\n"
+    "  local src_lines = mep.buffer_get_lines(mep_structure_source or mep.current_buffer()) or {}\n"
     "  local first = it.start_row\n"
-    "  local last = math.min(it.end_row, first + 400, mep.line_count())\n"
+    "  local last = math.min(it.end_row, first + 400, #src_lines)\n"
     "  local lines = {}\n"
-    "  for r = first, last do lines[#lines + 1] = mep.get_line(r) end\n"
+    "  for r = first, last do lines[#lines + 1] = src_lines[r] end\n"
     "  if last < it.end_row then lines[#lines + 1] = '...' end\n"
-    "  local fname = mep.filename()\n"
+    "  local fname = mep.buffer_filename(mep_structure_source or mep.current_buffer()) or ''\n"
     "  local title = ((fname ~= '' and fname) or '[No Name]') .. ':' .. it.row\n"
     "  mep.sidebar_preview_code(lines, mep_lsp_filetype(fname), title, it.row - first + 1)\n"
     "end\n"
@@ -9345,17 +10528,27 @@ const char *kBuiltinStructure =
     // bookmark was current when the sidebar first opened, never catching
     // up as the user pages through -- track the PDF's own current page
     // instead for exactly this poll's purpose (row == "what changed").
+    // Docked, popped out, or hosted in a pane (<leader>ss / :MepStructure
+    // open the pane view, which sidebar_is_open -- docked-only -- never
+    // reported, so the outline used to stop following entirely there).
+    "local function mep_structure_visible()\n"
+    "  if not mep_structure_sidebar_id then return false end\n"
+    "  if mep.sidebar_is_open(mep_structure_sidebar_id) then return true end\n"
+    "  return mep_structure_pane_buf ~= nil and mep.buffer_on_screen(mep_structure_pane_buf)\n"
+    "end\n"
     "mep.on_frame(function()\n"
-    "  if not (mep_structure_sidebar_id and mep.sidebar_is_open(mep_structure_sidebar_id)) then return end\n"
-    "  local buf = mep.current_buffer()\n"
-    "  local row = mep.is_pdf_buffer(buf) and mep.pdf_current_page(buf) or mep.cursor()\n"
+    "  if not mep_structure_visible() then return end\n"
+    "  local cur = mep.current_buffer()\n"
+    "  local buf = mep_structure_is_source(cur) and cur or mep_structure_source\n"
+    "  if not buf then return end\n"
+    "  local row = mep_structure_source_pos(buf)\n"
     "  if buf == mep_structure_last_buf and row == mep_structure_last_row then return end\n"
     "  mep_structure_last_buf = buf\n"
     "  mep_structure_last_row = row\n"
     "  mep_structure_sidebar_render()\n"
     "end)\n"
     "mep.on_buffer_changed(function()\n"
-    "  if mep_structure_sidebar_id and mep.sidebar_is_open(mep_structure_sidebar_id) then mep_structure_sidebar_render() end\n"
+    "  if mep_structure_visible() then mep_structure_sidebar_render() end\n"
     "end)\n";
 
 // Docs (generate + lookup) and keybinding introspection (Phase 25).
@@ -9584,6 +10777,17 @@ const char *kBuiltinDocs =
     "    items[#items + 1] = string.format('%-8s %-14s %s', 'Leader', '<leader>' .. w.seq, w.desc)\n"
     "  end\n"
     "  if #items == 0 then mep.notify('No described keybindings registered', 'warn') return end\n"
+    // Neither registry knows about this one: tapping mod1 on its own to
+    // show/hide the menu bar is recognised in C++ (Editor::
+    // ConsumeMod1Tap), not registered as a mapping, so it would be
+    // missing from the one list whose whole job is "what is bound right
+    // now". Named via mep.mod1_name() rather than hardcoded "Alt", since
+    // mep.set_mod1 can move it. Described from the current state, the
+    // same way the dashboard's own hint row is. Added after the guard
+    // above so that guard still means "neither registry had anything"
+    // rather than becoming unreachable.
+    "  items[#items + 1] = string.format('%-8s %-14s %s', 'Global', mep.mod1_name() .. ' (tap)',\n"
+    "    (mep.menubar_visible() and 'Hide' or 'Show') .. ' the top menu bar (tap and release, no other key)')\n"
     "  table.sort(items)\n"
     "  mep.picker_open('Keymaps', items, function() end)\n"
     "end\n"
@@ -10405,6 +11609,11 @@ const char *kBuiltinSyntax =
     "    if t then\n"
     "      flush(i - 1)\n"
     "      mep.deco_add(ns, {row = i, col_start = 1, col_end = #lines[i] + 1, hl_group = 'Comment'})\n"
+    // A code cell is highlighted in its own kernel's language (an R cell
+    // as R, ...), asked of the notebook model per marker row; markdown/raw
+    // keep the marker's own type. Falls back to the marker's guess when
+    // the model has no answer (e.g. before the session exists).
+    "      if t == 'py' then t = mep.notebook_cell_language(i) or t end\n"
     "      start, ft = i + 1, t\n"
     "    end\n"
     "  end\n"
@@ -10839,6 +12048,546 @@ const char *kBuiltinRun =
     "mep.command('MepReplStart', function() mep.repl_start() end)\n"
     "mep.command('MepReplSendLine', mep.repl_send_line)\n"
     "mep.command('MepReplSendBuffer', mep.repl_send_buffer)\n";
+
+// "gf" ("go format"): run the current buffer's own language formatter
+// over it in place -- clang-format for C/C++, black for Python, styler
+// for R (TODO.org's own list). Modeled on kBuiltinRun's mep.run_languages
+// above: one filetype -> argv table (keyed by mep_lsp_filetype's bare
+// extension, with the usual aliases) a user's config can extend or
+// override, rather than the three commands being hardcoded in the
+// dispatch below.
+//
+// Two shapes of formatter exist and both are supported, because neither
+// covers the other: a stdin/stdout filter (the default -- clang-format,
+// black) and an in-place file rewriter (mode = 'file' -- styler's
+// style_file(), the exact call TODO.org asks for). Either way the text
+// that gets formatted is the *buffer's* current text, unsaved edits
+// included: the filter gets it on stdin, the file rewriter gets it in a
+// temp file carrying the buffer's own extension (styler::style_file
+// dispatches on that, and errors without it), so gf never needs the
+// buffer written to disk first and never formats a stale copy.
+//
+// '{}' anywhere in an argv element is replaced by a path: the buffer's
+// real (absolute) filename in filter mode, the temp file in file mode.
+// The filter case matters as much as the file one -- a formatter reading
+// stdin has no idea what file it is looking at, so both clang-format and
+// black have to be told (--assume-filename/--stdin-filename) or they
+// can't find the .clang-format / pyproject.toml the project configures
+// them with.
+//
+// Anything with no entry here falls back to mep.lsp_format (kBuiltinLsp)
+// when a server is attached, which is how every other language with a
+// formatting-capable LSP gets gf for free.
+//
+// In an org buffer gf formats *code blocks*, not the prose around them:
+// with the cursor inside a `#+begin_src <lang>` block it reformats that
+// one block's body, and outside every block it walks the whole file and
+// formats each block that has a formatter (mep.org_format_block /
+// mep.org_format_blocks, `:MepOrgFormatBlock` / `:MepOrgFormatBlocks`).
+// The same three pieces the rest of org's per-block tooling already
+// shares are reused rather than re-derived: mep_org_src_block_at
+// (editor.cpp) finds the block, mep.org_babel_langs supplies its file
+// extension -- a block header writes a language *name* ("python"),
+// mep.format_languages is keyed by extension ("py"), the exact mismatch
+// mep_polyglot_server_for documents having been bitten by -- and, when
+// no formatter is registered for the language at all, the block's own
+// polyglot language server (kBuiltinOrgPolyglot's shadow document,
+// where hover/completion inside a block already come from) is asked for
+// textDocument/formatting instead. That last path closes the "no code
+// actions, formatting or symbol bridging" gap polyglot shipped with.
+//
+// A block's body is dedented to column 0 before the formatter sees it
+// and re-indented after (mep_format_common_indent): a block written
+// under a heading is usually indented as a whole, which is a syntax
+// error to black and something clang-format/styler would silently
+// "fix" by flattening -- either way the org file's own layout would be
+// destroyed by formatting a block in place.
+const char *kBuiltinFormat =
+    "mep.format_languages = {\n"
+    "  c = {'clang-format', '--assume-filename={}'},\n"
+    "  py = {'black', '--quiet', '--stdin-filename={}', '-'},\n"
+    // Not --vanilla: an renv project keeps styler in its own per-project
+    // library, reachable only through the .Rprofile that renv writes --
+    // which --vanilla would skip, turning "styler is installed" into
+    // "there is no package called 'styler'" in exactly the projects most
+    // likely to have it. cwd is the workspace root below, so that
+    // .Rprofile is the one found.
+    "  R = {'Rscript', '-e', 'styler::style_file(\"{}\")', mode = 'file'},\n"
+    "}\n"
+    // Same aliasing as mep.run_languages': entries are looked up by bare
+    // extension, so every extension of a language needs its own key.
+    "mep.format_languages.h = mep.format_languages.c\n"
+    "mep.format_languages.cc = mep.format_languages.c\n"
+    "mep.format_languages.cpp = mep.format_languages.c\n"
+    "mep.format_languages.cxx = mep.format_languages.c\n"
+    "mep.format_languages.hh = mep.format_languages.c\n"
+    "mep.format_languages.hpp = mep.format_languages.c\n"
+    "mep.format_languages.hxx = mep.format_languages.c\n"
+    "mep.format_languages.ipp = mep.format_languages.c\n"
+    "mep.format_languages.inl = mep.format_languages.c\n"
+    "mep.format_languages.cu = mep.format_languages.c\n"
+    "mep.format_languages.cuh = mep.format_languages.c\n"
+    "mep.format_languages.pyi = mep.format_languages.py\n"
+    "mep.format_languages.r = mep.format_languages.R\n"
+    "local function mep_format_buffer_text()\n"
+    "  local lines = {}\n"
+    "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) or '' end\n"
+    "  return table.concat(lines, '\\n') .. '\\n'\n"
+    "end\n"
+    // Splits a formatter's output file back into buffer lines. The
+    // trailing element the final newline produces is dropped (a file
+    // ending in '\\n' is N lines, not N + 1) -- but only when the text
+    // really ends in one, so a formatter that omits it doesn't lose its
+    // last line. (See kBuiltinLsp's mep_lsp_apply_text_edit comment for
+    // what dropping that element unconditionally costs.)
+    "local function mep_format_split(text)\n"
+    "  local lines = {}\n"
+    "  for s in (text .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = s end\n"
+    "  if text:sub(-1) == '\\n' then lines[#lines] = nil end\n"
+    "  return lines\n"
+    "end\n"
+    // The formatter ran asynchronously, so by the time its output lands
+    // the buffer it was asked about may have been left (another pane
+    // focused) or edited -- in either case the text on screen is no
+    // longer the text that was formatted, and overwriting it would
+    // silently discard whatever the user did in between. `before` is the
+    // exact text sent to the formatter; comparing against it is a per-
+    // buffer check that an unrelated edit elsewhere can't trip (unlike
+    // mep.buffer_change_epoch, which counts every buffer's edits).
+    "local function mep_format_apply(name, buf, before, lines)\n"
+    "  if mep.current_buffer() ~= buf then\n"
+    "    mep.notify('gf: moved off the buffer being formatted -- nothing applied', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if #lines == 0 then\n"
+    "    mep.notify('gf: ' .. name .. ' produced no output -- nothing applied', 'error')\n"
+    "    return\n"
+    "  end\n"
+    "  if mep_format_buffer_text() ~= before then\n"
+    "    mep.notify('gf: buffer edited while ' .. name .. ' ran -- nothing applied', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    // An already-formatted buffer is left completely alone rather than
+    // replaced with an identical copy: mep.replace_lines pushes an undo
+    // entry and sets modified, so the no-op would otherwise turn a
+    // clean buffer dirty and put an empty change on the undo stack.
+    "  if table.concat(lines, '\\n') .. '\\n' == before then\n"
+    "    mep.notify('gf: already formatted')\n"
+    "    return\n"
+    "  end\n"
+    "  local row, col = mep.cursor()\n"
+    "  mep.replace_lines(1, mep.line_count() + 1, lines)\n"
+    // Formatting usually moves the line the cursor was on; keeping the
+    // row number (clamped -- a formatter can end up with fewer lines
+    // than it started with) is the same approximation every editor's
+    // format-on-demand makes. mep.set_cursor clamps the column itself.
+    "  mep.set_cursor(math.min(row, mep.line_count()), col)\n"
+    "  mep.notify('gf: formatted with ' .. name)\n"
+    "end\n"
+    // Spawns one mep.format_languages entry over `text` and reports back
+    // exactly once: on_done(lines, name) with the formatted lines, or
+    // on_done(nil, name, err) with a ready-to-notify message. Shared by
+    // the whole-buffer path and the org-block one below, which differ
+    // only in what text goes in, what path '{}' expands to, and where
+    // the result is written back.
+    "local function mep_format_run(spec, ft, subst, text, on_done)\n"
+    "  local tmp = nil\n"
+    "  if spec.mode == 'file' then\n"
+    // os.tmpname() creates the file it names, but with no extension --
+    // useless to a formatter that dispatches on one -- so it is removed
+    // again and only its (unique) name is kept as a stem.
+    "    local stem = os.tmpname()\n"
+    "    os.remove(stem)\n"
+    "    tmp = stem .. '.' .. ft\n"
+    "    local f = io.open(tmp, 'wb')\n"
+    "    if not f then on_done(nil, spec[1], 'gf: cannot write ' .. tmp) return end\n"
+    "    f:write(text)\n"
+    "    f:close()\n"
+    "    subst = tmp\n"
+    "  end\n"
+    // '%' is the escape character in a gsub *replacement*, so a path
+    // containing one has to be doubled or gsub errors out on it.
+    "  local escaped = subst:gsub('%%', '%%%%')\n"
+    "  local argv = {}\n"
+    "  for i, a in ipairs(spec) do argv[i] = (a:gsub('{}', escaped)) end\n"
+    "  local out, errs = {}, {}\n"
+    "  local job = mep.job_start(argv, {\n"
+    "    cwd = mep.workspace_root(),\n"
+    "    on_stdout = function(line) out[#out + 1] = line end,\n"
+    "    on_stderr = function(line) errs[#errs + 1] = line end,\n"
+    "    on_exit = function(code)\n"
+    "      local lines = out\n"
+    "      if tmp then\n"
+    "        if code == 0 then\n"
+    "          local f = io.open(tmp, 'rb')\n"
+    "          if f then lines = mep_format_split(f:read('*a')) f:close() else lines = {} end\n"
+    "        end\n"
+    "        os.remove(tmp)\n"
+    "      end\n"
+    "      if code ~= 0 then\n"
+    // 127 is what job.cpp's child _exit()s with when execvp fails, -1
+    // what JobManager reports when the fork/pipe setup itself did --
+    // i.e. both mean "that formatter isn't here", which deserves a
+    // different message from "that formatter rejected this file".
+    "        if code == 127 or code == -1 then\n"
+    "          on_done(nil, argv[1], 'gf: ' .. argv[1] .. ' is not installed (not on PATH)')\n"
+    "        else\n"
+    "          on_done(nil, argv[1], 'gf: ' .. argv[1] .. ' exited ' .. code ..\n"
+    "            (errs[1] and (': ' .. errs[1]) or ''))\n"
+    "        end\n"
+    "        return\n"
+    "      end\n"
+    "      on_done(lines, argv[1])\n"
+    "    end,\n"
+    "  })\n"
+    // Filter mode feeds the buffer in and closes stdin so the formatter
+    // sees EOF and gets to work. The write can block if the text exceeds
+    // the pipe buffer (64K) and the child is slow to drain it, but every
+    // formatter here reads its whole input before writing anything, and
+    // the job's own reader thread drains stdout meanwhile, so it can't
+    // deadlock. A missing binary makes this a no-op (EPIPE, SIGPIPE
+    // being ignored process-wide) and the 127 above reports it.
+    "  if spec.mode ~= 'file' then\n"
+    "    mep.job_write(job, text)\n"
+    "    mep.job_close_stdin(job)\n"
+    "  end\n"
+    "end\n"
+    // --- org #+begin_src blocks -------------------------------------
+    // The block under the cursor, but only in an org buffer -- every
+    // entry point below starts here, and nil means "gf's ordinary
+    // whole-buffer behavior applies".
+    "local function mep_format_org_block_at_cursor()\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return nil end\n"
+    "  local blk = mep_org_src_block_at(mep.cursor())\n"
+    "  if not blk or not blk.lang or blk.lang == '' then return nil end\n"
+    "  return blk\n"
+    "end\n"
+    // A block language's mep.format_languages key. `#+begin_src python`
+    // says "python"; the table is keyed by extension, so the language's
+    // own babel descriptor (mep.org_babel_langs, which needs the same
+    // extension to write a runnable temp file) translates between them,
+    // with the bare tag as the fallback for a language babel doesn't
+    // know. Same translation, same reason, as mep_polyglot_server_for.
+    "local function mep_format_block_ft(lang)\n"
+    "  local def = mep.org_babel_langs and mep.org_babel_langs[lang]\n"
+    "  local ext = def and def.extension and (def.extension:gsub('^%.', ''))\n"
+    "  if ext and mep.format_languages[ext] then return ext end\n"
+    "  return lang\n"
+    "end\n"
+    "local function mep_format_block_lines(blk)\n"
+    "  local lines = {}\n"
+    "  for i = blk.start_row + 1, blk.end_row - 1 do lines[#lines + 1] = mep.get_line(i) or '' end\n"
+    "  return lines\n"
+    "end\n"
+    // The longest whitespace run every non-blank body line starts with
+    // (their common prefix, not merely the shortest one -- a body mixing
+    // tabs and spaces has no shared indent at all, and must be left
+    // exactly as written rather than have a tab stripped off some lines
+    // and not others).
+    "local function mep_format_common_indent(lines)\n"
+    "  local prefix = nil\n"
+    "  for _, line in ipairs(lines) do\n"
+    "    if line:match('%S') then\n"
+    "      local w = line:match('^[ \\t]*')\n"
+    "      if not prefix then\n"
+    "        prefix = w\n"
+    "      else\n"
+    "        local n = 0\n"
+    "        while n < #prefix and n < #w and prefix:byte(n + 1) == w:byte(n + 1) do n = n + 1 end\n"
+    "        prefix = prefix:sub(1, n)\n"
+    "      end\n"
+    "      if prefix == '' then return '' end\n"
+    "    end\n"
+    "  end\n"
+    "  return prefix or ''\n"
+    "end\n"
+    // A blank line inside an indented block need not carry the indent
+    // (and usually doesn't), so it is emptied rather than left with
+    // whatever partial whitespace it had; every non-blank line is known
+    // to start with `indent` by construction.
+    "local function mep_format_dedent(lines, indent)\n"
+    "  if indent == '' then return lines end\n"
+    "  local out = {}\n"
+    "  for i, line in ipairs(lines) do\n"
+    "    if line:sub(1, #indent) == indent then\n"
+    "      out[i] = line:sub(#indent + 1)\n"
+    "    else\n"
+    "      out[i] = (line:gsub('^[ \\t]*', ''))\n"
+    "    end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_format_reindent(lines, indent)\n"
+    "  if indent == '' then return lines end\n"
+    "  local out = {}\n"
+    "  for i, line in ipairs(lines) do out[i] = line ~= '' and (indent .. line) or '' end\n"
+    "  return out\n"
+    "end\n"
+    // What a filter-mode formatter is told it is looking at ('{}'): the
+    // org file's own path with the block language's extension swapped
+    // in. No such file need exist -- what both clang-format and black
+    // actually do with the name is walk *up its directory* for a
+    // .clang-format/pyproject.toml, so a block formats under the same
+    // project configuration a real source file next to the org file
+    // would (see "Why the placeholder matters" in help/formatting.org).
+    "local function mep_format_block_subst(ft)\n"
+    "  local fname = mep.filename()\n"
+    "  if fname == '' then return mep.workspace_root() .. '/block.' .. ft end\n"
+    "  return (mep_lsp_abspath(fname):gsub('%.[^%./]*$', '')) .. '.' .. ft\n"
+    "end\n"
+    // mep_format_apply's block counterpart: the same "is this still the
+    // text that was sent" guards, narrowed to the block. The block is
+    // re-read by its start row rather than trusted from before the job
+    // ran, so an edit that moved or resized it (including the block
+    // having been deleted outright) is caught instead of overwriting
+    // whatever rows now sit there.
+    "local function mep_format_apply_block(name, buf, start_row, before, lines, indent, on_done)\n"
+    "  if mep.current_buffer() ~= buf then\n"
+    "    on_done(false, 'gf: moved off the buffer being formatted -- nothing applied', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if #lines == 0 then\n"
+    "    on_done(false, 'gf: ' .. name .. ' produced no output -- nothing applied', 'error')\n"
+    "    return\n"
+    "  end\n"
+    "  local blk = mep_org_src_block_at(start_row)\n"
+    "  if not blk or blk.start_row ~= start_row or blk.body ~= before then\n"
+    "    on_done(false, 'gf: block edited while ' .. name .. ' ran -- nothing applied', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local out = mep_format_reindent(lines, indent)\n"
+    "  if table.concat(out, '\\n') == before then\n"
+    "    on_done(false, 'gf: already formatted')\n"
+    "    return\n"
+    "  end\n"
+    "  local row, col = mep.cursor()\n"
+    "  mep.replace_lines(start_row + 1, blk.end_row, out)\n"
+    "  mep.set_cursor(math.min(row, mep.line_count()), col)\n"
+    "  on_done(true, 'gf: formatted ' .. blk.lang .. ' block with ' .. name)\n"
+    "end\n"
+    // No mep.format_languages entry for this language: ask the block's
+    // own polyglot language server (the shadow document hover and
+    // completion inside a block already come from) instead. Cursor-
+    // based, hence only ever used for the block gf was pressed in,
+    // never by mep.org_format_blocks' sweep.
+    //
+    // textDocument/rangeFormatting, narrowed to the block's own rows,
+    // whenever the server offers it (lua-language-server, gopls,
+    // rust-analyzer, clangd, ... all do). Whole-document formatting is
+    // the fallback and is usually refused below rather than applied: a
+    // *shared* shadow is one scratch file per language holding every
+    // block of that language at its real org line number with blank
+    // padding in between, so a whole-document reformat comes back as
+    // one edit spanning the padding too -- text that has no org row to
+    // land on. Confirmed against lua-language-server, which answers the
+    // whole-document request with exactly that single 0..N edit and the
+    // ranged one with an edit covering only the block.
+    //
+    // Both the request and the response are translated with the same
+    // one-line shift, read off the context's own cursor position
+    // (poly.position is where the real cursor sits *in shadow
+    // coordinates*) rather than recomputed from the shadow's internals:
+    // it is 0 for a shared shadow and the synthesized wrapper's length
+    // for a per-block one, and constant across the block either way.
+    // Deliberately not mep_polyglot_translate_edits, which maps each
+    // endpoint through the shadow's own body-only row test and drops an
+    // end position that legitimately sits *on* the `#+end_src` row --
+    // the exclusive end of a whole-body replacement. That collapsed the
+    // edit to a zero-width insert at the top of the block, i.e. the
+    // formatted body pasted in above the original rather than replacing
+    // it (seen in a live instance before this was written this way).
+    "local function mep_format_block_lsp(blk, before, on_done)\n"
+    "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
+    "  if not poly or not poly.client then\n"
+    "    on_done(false, 'gf: no formatter for ' .. blk.lang .. ' blocks', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local buf, row = mep.current_buffer(), mep.cursor()\n"
+    "  local function to_shadow(r) return poly.position.line + (r - row) end\n"
+    "  local function to_org(line) return row + (line - poly.position.line) end\n"
+    "  local method = 'textDocument/formatting'\n"
+    "  local params = {textDocument = {uri = poly.uri}, options = {tabSize = 4, insertSpaces = true}}\n"
+    // The range asked for stops at the end of the *last body line*, not
+    // at the start of the `#+end_src` row below it: a server normalizes
+    // a range to whole lines and answers with an edit reaching to the
+    // start of the row after the last one it formatted, so asking
+    // through the `#+end_src` row gets back an edit that swallows it
+    // (lua-language-server, live: end line 8 -> 9, one row past the
+    // block, which the check below then refuses). Asking for the body
+    // alone gets an edit ending exactly at the `#+end_src` row's
+    // column 0, which is the boundary that check accepts.
+    "  local caps = mep_lsp_server_capabilities and mep_lsp_server_capabilities[poly.client]\n"
+    "  if caps and caps.documentRangeFormattingProvider then\n"
+    "    method = 'textDocument/rangeFormatting'\n"
+    "    params.range = {\n"
+    "      start = {line = to_shadow(blk.start_row + 1), character = 0},\n"
+    "      ['end'] = {line = to_shadow(blk.end_row - 1),\n"
+    "                 character = #(mep.get_line(blk.end_row - 1) or '')},\n"
+    "    }\n"
+    "  end\n"
+    "  mep.lsp_request(poly.client, method, params, function(msg)\n"
+    "    local edits = mep_lsp_result(msg)\n"
+    // A server that is still starting up answers null rather than an
+    // empty edit list, which is not the same thing as "already tidy" and
+    // shouldn't be reported as it -- pressing gf again once it is up
+    // does format the block.
+    "    if not edits then\n"
+    "      on_done(false, 'gf: no formatting from the ' .. blk.lang ..\n"
+    "        ' language server (it may still be starting up)', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    if #edits == 0 then on_done(false, 'gf: already formatted') return end\n"
+    "    if mep.current_buffer() ~= buf then\n"
+    "      on_done(false, 'gf: moved off the buffer being formatted -- nothing applied', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    local now = mep_org_src_block_at(blk.start_row)\n"
+    "    if not now or now.start_row ~= blk.start_row or now.body ~= before then\n"
+    "      on_done(false, 'gf: block edited while the language server ran -- nothing applied', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    // Every endpoint has to sit on a body row, or exactly at the start
+    // of the `#+end_src` row (a whole-body replacement's exclusive end).
+    // One that doesn't means the server is reformatting something this
+    // buffer doesn't contain, so the whole response is dropped rather
+    // than applied in part.
+    "    local out = {}\n"
+    "    for _, e in ipairs(edits) do\n"
+    "      local s, last = to_org(e.range.start.line), to_org(e.range['end'].line)\n"
+    "      local ok = s > blk.start_row and last >= s and last <= blk.end_row\n"
+    "      if ok and s == blk.end_row and e.range.start.character ~= 0 then ok = false end\n"
+    "      if ok and last == blk.end_row and e.range['end'].character ~= 0 then ok = false end\n"
+    "      if not ok then\n"
+    "        on_done(false, 'gf: the language server wants to reformat outside the block -- nothing applied', 'warn')\n"
+    "        return\n"
+    "      end\n"
+    "      out[#out + 1] = {newText = e.newText, range = {\n"
+    "        start = {line = s - 1, character = e.range.start.character},\n"
+    "        ['end'] = {line = last - 1, character = e.range['end'].character},\n"
+    "      }}\n"
+    "    end\n"
+    "    mep.lsp_apply_edits_current_buffer(out)\n"
+    "    on_done(true, 'gf: formatted ' .. blk.lang .. ' block with its language server')\n"
+    "  end)\n"
+    "end\n"
+    // One block, end to end. on_done(ok, msg, level) fires exactly once
+    // -- mep.org_format_block just notifies it, mep.org_format_blocks
+    // uses it to step to the next block. `allow_lsp` is off for the
+    // sweep (see mep_format_block_lsp).
+    "local function mep_format_block_run(blk, allow_lsp, on_done)\n"
+    "  local raw = mep_format_block_lines(blk)\n"
+    "  local before = table.concat(raw, '\\n')\n"
+    "  if not before:match('%S') then on_done(false, 'gf: the block is empty', 'warn') return end\n"
+    "  local ft = mep_format_block_ft(blk.lang)\n"
+    "  local spec = mep.format_languages[ft]\n"
+    "  if not spec then\n"
+    "    if allow_lsp then mep_format_block_lsp(blk, before, on_done)\n"
+    "    else on_done(false, 'gf: no formatter for ' .. blk.lang .. ' blocks', 'warn') end\n"
+    "    return\n"
+    "  end\n"
+    "  local indent = mep_format_common_indent(raw)\n"
+    "  local text = table.concat(mep_format_dedent(raw, indent), '\\n') .. '\\n'\n"
+    "  local buf, start_row = mep.current_buffer(), blk.start_row\n"
+    "  mep_format_run(spec, ft, mep_format_block_subst(ft), text, function(lines, name, err)\n"
+    "    if err then on_done(false, err, 'error') return end\n"
+    "    mep_format_apply_block(name, buf, start_row, before, lines, indent, on_done)\n"
+    "  end)\n"
+    "end\n"
+    "function mep.org_format_block(blk)\n"
+    "  blk = blk or mep_format_org_block_at_cursor()\n"
+    "  if not blk then mep.notify('gf: not inside a #+begin_src block', 'warn') return end\n"
+    "  mep_format_block_run(blk, true, function(_, msg, level)\n"
+    "    if msg then mep.notify(msg, level) end\n"
+    "  end)\n"
+    "end\n"
+    // Every src block in the file, formatted one at a time, *last one
+    // first*: formatting a block changes how many lines it has, which
+    // shifts every row below it -- walking upward means the rows still
+    // to be visited are only ever the ones nothing has touched yet, so
+    // no rescan (and no row bookkeeping) is needed between blocks.
+    // Sequential rather than parallel for the same reason: two
+    // overlapping mep.replace_lines would each be applying to rows the
+    // other had already moved.
+    "function mep.org_format_blocks()\n"
+    "  local rows = {}\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    if (mep.get_line(i) or ''):match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then\n"
+    "      rows[#rows + 1] = i\n"
+    "    end\n"
+    "  end\n"
+    "  if #rows == 0 then mep.notify('gf: no #+begin_src blocks in this file', 'warn') return end\n"
+    "  local buf = mep.current_buffer()\n"
+    "  local formatted, skipped, last_err = 0, 0, nil\n"
+    "  local i = #rows\n"
+    "  local step\n"
+    "  step = function()\n"
+    "    if i < 1 then\n"
+    "      local msg = 'gf: formatted ' .. formatted .. ' of ' .. #rows .. ' blocks'\n"
+    "      if skipped > 0 and last_err then msg = msg .. ' (' .. last_err .. ')' end\n"
+    "      mep.notify(msg, formatted > 0 and 'info' or 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    if mep.current_buffer() ~= buf then\n"
+    "      mep.notify('gf: moved off the buffer being formatted -- stopped after ' .. formatted .. ' blocks', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    local blk = mep_org_src_block_at(rows[i])\n"
+    "    i = i - 1\n"
+    "    if not blk or not blk.lang or blk.lang == '' then\n"
+    "      skipped = skipped + 1\n"
+    "      step()\n"
+    "      return\n"
+    "    end\n"
+    "    mep_format_block_run(blk, false, function(ok, msg)\n"
+    "      if ok then\n"
+    "        formatted = formatted + 1\n"
+    "      else\n"
+    "        skipped = skipped + 1\n"
+    // The final tally is itself a 'gf: ...' message, so a skipped
+    // block's own reason goes in without repeating the prefix.
+    "        last_err = msg and (msg:gsub('^gf: ', '')) or last_err\n"
+    "      end\n"
+    "      step()\n"
+    "    end)\n"
+    "  end\n"
+    "  step()\n"
+    "end\n"
+    "function mep.format_buffer()\n"
+    // An org buffer has no formatter of its own out of the box (nothing
+    // reformats prose but the user), so what gf means there is its code
+    // blocks: the one under the cursor, or all of them when the cursor
+    // is somewhere else in the document. Checked *after* the table, not
+    // before it, so a config that does register a whole-file org
+    // formatter still gets it.
+    "  local fname = mep.filename()\n"
+    "  local ft = fname ~= '' and mep_lsp_filetype(fname) or ''\n"
+    "  local spec = mep.format_languages[ft]\n"
+    "  if not spec and ft == 'org' then\n"
+    "    local blk = mep_format_org_block_at_cursor()\n"
+    "    if blk then mep.org_format_block(blk) else mep.org_format_blocks() end\n"
+    "    return\n"
+    "  end\n"
+    "  if not spec then\n"
+    "    if mep.lsp_client_for() then mep.lsp_format() return end\n"
+    "    mep.notify('gf: no formatter for ' .. (ft ~= '' and ('.' .. ft) or 'this buffer'), 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local buf = mep.current_buffer()\n"
+    "  local text = mep_format_buffer_text()\n"
+    "  mep_format_run(spec, ft, mep_lsp_abspath(fname), text, function(lines, name, err)\n"
+    "    if err then mep.notify(err, 'error') return end\n"
+    "    mep_format_apply(name, buf, text, lines)\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepFormat', mep.format_buffer)\n"
+    "mep.command('MepOrgFormatBlock', function() mep.org_format_block() end)\n"
+    "mep.command('MepOrgFormatBlocks', mep.org_format_blocks)\n"
+    // Bound via mep.map_g, not plain mep.map: only the former can see a
+    // key typed after a pending 'g' (see mep.map_g('d', ...) in
+    // kBuiltinLsp). 'f' after 'g' is free -- mep's built-in g-motions are
+    // gg/ge/gE/gu/gU/gq/gJ/gv, and DispatchNormalKey checks this table
+    // before f/F/t/T's own pending-find prefix ever sees the key.
+    "mep.map_g('f', mep.format_buffer)\n";
 
 // vim-slime-style "send to a terminal buffer of your own choosing"
 // (distinct from mep.repl_start above, which spawns and owns one REPL
@@ -11965,7 +13714,17 @@ const char *kBuiltinOrgImages =
     "  if visible then mep.org_image_scan() end\n"
     "end\n"
     "mep.command('MepOrgImagesToggle', mep.org_images_toggle_ui)\n"
-    "mep.leader_map('oti', 'Org: toggle inline images', mep.org_images_toggle_ui)\n";
+    "mep.leader_map('oti', 'Org: toggle inline images', mep.org_images_toggle_ui)\n"
+    // Block cards (<leader>otb): `#+begin_.../#+end_...` drawn as a
+    // rounded card with its header concealed behind a rendered title bar
+    // -- see DrawPane's own org_card_boxes comment. On by default, so
+    // this toggle exists mainly to get the raw markup back.
+    "function mep.org_block_cards_toggle_ui()\n"
+    "  local visible = mep.org_block_cards_toggle()\n"
+    "  mep.notify('Org block cards: ' .. (visible and 'on' or 'off'))\n"
+    "end\n"
+    "mep.command('MepOrgBlockCardsToggle', mep.org_block_cards_toggle_ui)\n"
+    "mep.leader_map('otb', 'Org: toggle block cards', mep.org_block_cards_toggle_ui)\n";
 
 // Org-mode C: capture, refile, archive (Phase 31). Capture reuses
 // mep.ui_input for %^{PROMPT} placeholders and mep.picker_open for the
@@ -13072,9 +14831,50 @@ const char *kBuiltinOrgBabel =
     "  mep.org_babel_insert_results(blk, lines, raw)\n"
     "  mep.org_image_scan()\n"
     "end\n"
+    // In-process `mep-lua` blocks: org-babel's own `emacs-lisp` analogue.
+    // Every other language above is a subprocess with no access to the
+    // editor, so a block that needs mep's Lua API (a learning deck's own
+    // launcher block, examples/learn_basic_datastructures.org's
+    // `LearnMCFlashCards()`; any :var-free automation of the editor
+    // itself) runs here instead: the body is compiled by load() into the
+    // one live LuaEnv, its return values (tostring'd, one per line) become
+    // the #+RESULTS: unless :results silent, and a compile/runtime error
+    // surfaces as a warn toast the way a failed subprocess does. No temp
+    // file, no cache, no :var prelude -- the block already sees every
+    // mep.* global directly.
+    "local function mep_org_babel_execute_meplua(blk)\n"
+    "  local chunk, err = load(blk.body, '=mep-lua block', 't')\n"
+    "  if not chunk then mep.notify('Babel: mep-lua compile error: ' .. tostring(err), 'warn') return end\n"
+    "  local results = table.pack(pcall(chunk))\n"
+    "  if not results[1] then mep.notify('Babel: mep-lua error: ' .. tostring(results[2]), 'warn') return end\n"
+    "  if blk.results_modes.silent then return end\n"
+    "  local out_lines = {}\n"
+    "  for i = 2, results.n do out_lines[#out_lines + 1] = tostring(results[i]) end\n"
+    "  mep.org_babel_insert_results(blk, out_lines, false)\n"
+    "end\n"
     "function mep.org_babel_execute()\n"
     "  local blk = mep_org_src_block_at(mep.cursor())\n"
     "  if not blk then mep.notify('Not in a src block', 'warn') return end\n"
+    // Real org gates C-c C-c on the same `:eval` header arg exports
+    // honor (org-babel-check-evaluate), and until now this path didn't
+    // look at it at all -- so `:eval no` stopped an export from running
+    // a block but not a stray C-c C-c inside it, which is backwards:
+    // the reason that header is on a block is usually that its body is
+    // something nobody should run by accident (README.org's own install
+    // commands are exactly that). Checked before the mep-lua branch
+    // below so it covers in-process blocks too.
+    // Only `no`/`never`, deliberately, unlike mep.org_babel_run_for_
+    // export's own wider skip set further down: `no-export`/
+    // `never-export` mean "not during export" and `query`/
+    // `query-export` mean "ask first", and both of those still run when
+    // the user explicitly asks for this one block. Swallowing them here
+    // would be a silent no-op on a key the user just pressed.
+    "  local eval_arg = blk.args_str:match(':eval%s+(%S+)')\n"
+    "  if eval_arg == 'no' or eval_arg == 'never' then\n"
+    "    mep.notify('Babel: block is :eval ' .. eval_arg .. ', not running it', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if blk.lang == 'mep-lua' then mep_org_babel_execute_meplua(blk) return end\n"
     "  local lang_def, exe_or_err = mep_org_babel_resolve_lang(blk.lang)\n"
     "  if not lang_def then mep.notify(exe_or_err, 'warn') return end\n"
     "  local exe = exe_or_err\n"
@@ -13315,6 +15115,11 @@ const char *kBuiltinOrgBabel =
     "  for _, blk in ipairs(blocks) do\n"
     "    local eval_arg = blk.args_str:match(':eval%s+(%S+)')\n"
     "    local skip = eval_arg and (eval_arg == 'no' or eval_arg == 'never' or eval_arg:match('%-export$') or eval_arg:match('^query'))\n"
+    // An in-process `mep-lua` block (mep.org_babel_execute) drives the
+    // editor itself -- a deck's launcher opening its game pane, say --
+    // which an export run must never trigger; its existing #+RESULTS: (if
+    // any) are kept as-is, the same as an :eval no-export block.
+    "    if blk.lang == 'mep-lua' then skip = true end\n"
     "    if skip then\n"
     "      plan[#plan + 1] = {kind = 'skip'}\n"
     "    else\n"
@@ -13799,9 +15604,37 @@ const char *kBuiltinOrgPolyglot =
     // (every unsupported case just falls through to the caller's own
     // normal, non-polyglot behavior).
     "function mep_polyglot_context_at_cursor()\n"
+    // Notebook code cells use the same virtual-document bridge as org
+    // source blocks. Their selected kernel supplies the LSP filetype, but
+    // only a code cell body (never a # %% marker, markdown, or output) is
+    // exposed to the server. Keeping each cell as a per-block shadow avoids
+    // unrelated kernels/languages sharing one synthetic document.
+    "  local row, col = mep.cursor()\n"
+    "  if mep_lsp_filetype(mep.filename()) == 'ipynb' then\n"
+    "    local ctx = mep.notebook_lsp_context(row)\n"
+    "    if not ctx then return nil end\n"
+    "    local aliases = {python = 'py', javascript = 'js', typescript = 'ts', shell = 'sh', bash = 'sh', ['c++'] = 'cpp'}\n"
+    "    local ft = aliases[ctx.language] or ctx.language\n"
+    // Keep the notebook source verbatim (no babel wrap_main), but retain
+    // the compiler metadata needed for clangd's per-cell compile database.
+    "    local base_def = mep.org_babel_langs and mep.org_babel_langs[ft]\n"
+    "    local lang_def = {extension = '.' .. ft, executable = base_def and base_def.executable, compile_cmd = base_def and base_def.compile_cmd}\n"
+    "    local server = mep_polyglot_server_for(ft, lang_def)\n"
+    "    if not server then return nil end\n"
+    "    local notebook_abspath = mep_lsp_abspath(mep.filename())\n"
+    "    local blk = {lang = ft, start_row = ctx.first_row - 1, end_row = ctx.end_row, args_str = ''}\n"
+    "    local key = notebook_abspath .. '|notebook|' .. ft .. '|' .. ctx.first_row\n"
+    "    local shadow = mep_polyglot_shadows[key]\n"
+    "    if not shadow then\n"
+    "      shadow = mep_polyglot_create_shadow(key, notebook_abspath, blk, lang_def, server, true)\n"
+    "      if not shadow then return nil end\n"
+    "      shadow.notebook = true\n"
+    "    end\n"
+    "    return {client = shadow.client, uri = mep_lsp_uri(shadow.path),\n"
+    "            position = {line = row - blk.start_row - 1, character = col - 1}}\n"
+    "  end\n"
     "  if not mep.org_polyglot_enabled then return nil end\n"
     "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return nil end\n"
-    "  local row, col = mep.cursor()\n"
     "  local blk = mep_org_src_block_at(row)\n"
     "  if not blk or not blk.lang or blk.lang == '' then return nil end\n"
     "  local lang_def = mep.org_babel_langs[blk.lang]\n"
@@ -13893,10 +15726,28 @@ const char *kBuiltinOrgPolyglot =
     // mep.on_buffer_changed below.
     "function mep_polyglot_resync()\n"
     "  local org_file = mep.filename()\n"
-    "  if mep_lsp_filetype(org_file) ~= 'org' then return end\n"
+    "  local notebook = mep_lsp_filetype(org_file) == 'ipynb'\n"
+    "  if not notebook and mep_lsp_filetype(org_file) ~= 'org' then return end\n"
     "  local org_abspath = mep_lsp_abspath(org_file)\n"
     "  for _, key in ipairs(mep_polyglot_shadows_by_file[org_abspath] or {}) do\n"
     "    local shadow = mep_polyglot_shadows[key]\n"
+    "    if notebook and shadow and shadow.notebook then\n"
+    "      local ctx = mep.notebook_lsp_context(shadow.start_row + 1)\n"
+    "      if ctx then\n"
+    "        local lines = {}\n"
+    "        for i = ctx.first_row, ctx.end_row - 1 do lines[#lines + 1] = mep.get_line(i) end\n"
+    "        local content = table.concat(lines, '\\n')\n"
+    "        shadow.start_row, shadow.end_row = ctx.first_row - 1, ctx.end_row\n"
+    "        local f = io.open(shadow.path, 'w')\n"
+    "        if f then f:write(content) f:close() end\n"
+    "        if shadow.client and mep.lsp_is_running(shadow.client) then\n"
+    "          shadow.version = shadow.version + 1\n"
+    "          mep.lsp_notify(shadow.client, 'textDocument/didChange', {\n"
+    "            textDocument = {uri = mep_lsp_uri(shadow.path), version = shadow.version}, contentChanges = {{text = content}},\n"
+    "          })\n"
+    "        end\n"
+    "      end\n"
+    "    else\n"
     "    local lang_def = shadow and mep.org_babel_langs[shadow.lang]\n"
     "    if shadow and lang_def then\n"
     "      local content\n"
@@ -13921,6 +15772,7 @@ const char *kBuiltinOrgPolyglot =
     "          })\n"
     "        end\n"
     "      end\n"
+    "    end\n"
     "    end\n"
     "  end\n"
     "end\n"
@@ -14125,6 +15977,51 @@ const char *kBuiltinOrgLatex =
 // tokenizer -- src blocks always render literally (never executed
 // during export), matching the plan's own "ship without eval first"
 // guidance.
+// PDF markup annotations (highlights + sticky notes): a <space>m leader
+// menu mirroring the annotate-mode single keys and the :pdf* ex-commands,
+// so highlighting/noting is one chord away from a focused PDF pane. Each
+// action is a no-op with a status message outside a PDF pane, so the
+// global binding is harmless elsewhere. See Editor::PdfHighlightCurrentMatch
+// / PdfAddNote / EnterPdfAnnotateMode.
+const char *kBuiltinPdfAnnot =
+    // Async LaTeX render for a PDF sticky note: reuses the org-mode
+    // tex->PNG pipeline (mep_org_latex_render, itself content-hashed and
+    // disk-cached), reporting the result back to C++ by note-key so the
+    // margin-note draw can pick up the PNG. `tex` is the whole note text,
+    // rendered as a LaTeX document body so mixed prose + $math$ typesets.
+    "function mep_pdf_note_latex(key, tex)\n"
+    // Normalize $$...$$ display math to \[...\], which the standalone/preview
+    // LaTeX wrapper captures reliably (bare $$ display groups are dropped).
+    "  tex = tex:gsub('%$%$(.-)%$%$', '\\\\[%1\\\\]')\n"
+    "  mep_org_latex_render(tex, function(png, err)\n"
+    "    mep.pdf_note_latex_done(key, png or '')\n"
+    "  end)\n"
+    "end\n"
+    "function mep.open_in_firefox()\n"
+    // Open the current file (e.g. the PDF) in an external browser; firefox by
+    // default, overridable with $MEP_BROWSER. mep.job_start spawns directly.
+    "  local p = mep.filename()\n"
+    "  if p == '' then mep.notify('No file to open', 'warn'); return end\n"
+    "  local b = os.getenv('MEP_BROWSER') or 'firefox'\n"
+    "  mep.notify('Opening in ' .. b .. ': ' .. p)\n"
+    "  mep.job_start({b, p}, { on_exit = function(code)\n"
+    "    if code ~= 0 then mep.notify('Failed to launch ' .. b, 'error') end\n"
+    "  end })\n"
+    "end\n"
+    "mep.command('MepOpenInFirefox', mep.open_in_firefox)\n"
+    "mep.leader_map('bf', 'Open in browser', mep.open_in_firefox)\n"
+    "mep.leader_group('m', 'markup')\n"
+    "mep.leader_map('mh', 'Highlight selection/match', function() mep.cmd('pdfhighlight') end)\n"
+    "mep.leader_map('mn', 'Add note', function() mep.cmd('pdfnote') end)\n"
+    "mep.leader_map('ma', 'Annotate mode', function() mep.cmd('pdfannotate') end)\n"
+    "mep.leader_map('mw', 'Save annotations', function() mep.cmd('w') end)\n"
+    "mep.leader_group('mc', 'colour')\n"
+    "mep.leader_map('mcy', 'yellow', function() mep.cmd('pdfcolor yellow') end)\n"
+    "mep.leader_map('mcg', 'green', function() mep.cmd('pdfcolor green') end)\n"
+    "mep.leader_map('mcb', 'blue', function() mep.cmd('pdfcolor blue') end)\n"
+    "mep.leader_map('mcp', 'pink', function() mep.cmd('pdfcolor pink') end)\n"
+    "mep.leader_map('mco', 'orange', function() mep.cmd('pdfcolor orange') end)\n";
+
 const char *kBuiltinOrgExport =
     // A babel `:file` result inserts a plain org file link
     // ([[file:plot.png]], mep_org_babel_result_lines above) the same way
@@ -14170,6 +16067,77 @@ const char *kBuiltinOrgExport =
     // mep_org_html_escape ported to OrgHtmlEscape (editor.cpp) --
     // bound as mep.org_html_escape.
     "local function mep_org_html_escape(s) return mep.org_html_escape(s) end\n"
+    // Org's emphasis markers are NOT simply "text between two of the same
+    // character" -- taking them that way (which a plain
+    // `text:gsub('/([^/\n]+)/', ...)` per marker does) turns every ordinary
+    // path, identifier and arithmetic expression in a technical document
+    // into emphasis: `/usr/bin/env` italicizes `usr`, `mep_org_export`
+    // underlines `org`, `5+3+2` strikes `3`, and `~/.config/x and ~/.local`
+    // renders the span between the two tildes as code. Real org-mode
+    // resolves this with org-emphasis-regexp-components, reproduced here:
+    //
+    //   pre     the character BEFORE the opening marker must be the start
+    //           of the line or one of  space tab ( ' " {
+    //   border  the characters immediately INSIDE both markers must not be
+    //           whitespace, a comma or a quote
+    //   post    the character AFTER the closing marker must be the end of
+    //           the line or one of  - space tab . , : ! ? ; ' " ) } [
+    //
+    // That needs lookbehind/lookahead, which Lua patterns have no way to
+    // express, so this is a left-to-right scan rather than five gsubs.
+    // Marker sets are built from byte values purely to keep the quote and
+    // backslash characters in them out of a Lua literal nested inside a C
+    // string literal.
+    //
+    // Body text is emitted literally, so emphasis does not nest -- matching
+    // the behavior of the gsub chain this replaces (which stashed each
+    // match whole, hiding any inner marker from the later patterns), and
+    // correct on its own terms for the two verbatim markers, = and ~.
+    "local function mep_org_emph_set(bytes)\n"
+    "  local t = {}\n"
+    "  for _, b in ipairs(bytes) do t[string.char(b)] = true end\n"
+    "  return t\n"
+    "end\n"
+    "local MEP_ORG_EMPH_PRE = mep_org_emph_set{32, 9, 40, 39, 34, 123}\n"
+    "local MEP_ORG_EMPH_POST = mep_org_emph_set{45, 32, 9, 46, 44, 58, 33, 63, 59, 39, 34, 41, 125, 91}\n"
+    "local MEP_ORG_EMPH_BORDER = mep_org_emph_set{32, 9, 13, 10, 44, 34, 39}\n"
+    "function mep_org_convert_emphasis(text, marks, stash_out)\n"
+    "  local pairs_for = {\n"
+    "    ['*'] = {marks.bold_open, marks.bold_close},\n"
+    "    ['/'] = {marks.italic_open, marks.italic_close},\n"
+    "    ['_'] = {marks.underline_open, marks.underline_close},\n"
+    "    ['+'] = {marks.strike_open, marks.strike_close},\n"
+    "    ['='] = {marks.code_open, marks.code_close},\n"
+    "    ['~'] = {marks.code_open, marks.code_close},\n"
+    "  }\n"
+    "  local out, i, n = {}, 1, #text\n"
+    "  while i <= n do\n"
+    "    local ch = text:sub(i, i)\n"
+    "    local m = pairs_for[ch]\n"
+    "    local matched = false\n"
+    "    if m and (i == 1 or MEP_ORG_EMPH_PRE[text:sub(i - 1, i - 1)]) then\n"
+    "      local first = text:sub(i + 1, i + 1)\n"
+    "      if first ~= '' and not MEP_ORG_EMPH_BORDER[first] then\n"
+    "        local k = i + 2\n"
+    "        while k <= n do\n"
+    "          if text:sub(k, k) == ch and not MEP_ORG_EMPH_BORDER[text:sub(k - 1, k - 1)]\n"
+    "             and (k == n or MEP_ORG_EMPH_POST[text:sub(k + 1, k + 1)]) then\n"
+    "            out[#out + 1] = stash_out(m[1] .. text:sub(i + 1, k - 1) .. m[2])\n"
+    "            i = k + 1\n"
+    "            matched = true\n"
+    "            break\n"
+    "          end\n"
+    "          k = k + 1\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    if not matched then\n"
+    "      out[#out + 1] = ch\n"
+    "      i = i + 1\n"
+    "    end\n"
+    "  end\n"
+    "  return table.concat(out)\n"
+    "end\n"
     // Every construct's generated markup is stashed behind a `\0M<n>\0`
     // placeholder as soon as it's produced, then all placeholders are
     // restored in one final pass -- otherwise e.g. HTML's `</b>` (which
@@ -14186,11 +16154,7 @@ const char *kBuiltinOrgExport =
     "  end\n"
     "  text = text:gsub('%[%[([^%]]+)%]%[([^%]]+)%]%]', function(u, d) return stash_out(marks.link(u, d)) end)\n"
     "  text = text:gsub('%[%[([^%]]+)%]%]', function(u) return stash_out(marks.link(u, u)) end)\n"
-    "  text = text:gsub('%*([^%*\\n]+)%*', function(t) return stash_out(marks.bold_open .. t .. marks.bold_close) end)\n"
-    "  text = text:gsub('/([^/\\n]+)/', function(t) return stash_out(marks.italic_open .. t .. marks.italic_close) end)\n"
-    "  text = text:gsub('_([^_\\n]+)_', function(t) return stash_out(marks.underline_open .. t .. marks.underline_close) end)\n"
-    "  text = text:gsub('%+([^%+\\n]+)%+', function(t) return stash_out(marks.strike_open .. t .. marks.strike_close) end)\n"
-    "  text = text:gsub('=([^=\\n]+)=', function(t) return stash_out(marks.code_open .. t .. marks.code_close) end)\n"
+    "  text = mep_org_convert_emphasis(text, marks, stash_out)\n"
     "  for idx, html in ipairs(stash) do\n"
     "    text = text:gsub('\\0M' .. idx .. '\\0', function() return html end)\n"
     "  end\n"
@@ -14425,6 +16389,31 @@ const char *kBuiltinOrgExport =
     // already-expanded array is a harmless no-op scan, not a
     // correctness risk) so a caller passing a raw lines array (not run
     // through mep_org_export_prepare) still gets correct behavior.
+    // Splits one table row's interior on its cell separators, honouring
+    // org's `\\|` escape for a literal pipe inside a cell. A plain
+    // gmatch on '|' cannot: it breaks every row that documents an
+    // alternation pattern, a shell pipeline or a union type into extra
+    // cells, silently mangling the row rather than failing.
+    "function mep_org_table_cells(trimmed)\n"
+    "  local cells, cur, i, n = {}, {}, 1, #trimmed\n"
+    "  while i <= n do\n"
+    "    local c = trimmed:sub(i, i)\n"
+    "    if c == '\\\\' and trimmed:sub(i + 1, i + 1) == '|' then\n"
+    "      cur[#cur + 1] = '|'\n"
+    "      i = i + 2\n"
+    "    elseif c == '|' then\n"
+    "      cells[#cells + 1] = table.concat(cur)\n"
+    "      cur = {}\n"
+    "      i = i + 1\n"
+    "    else\n"
+    "      cur[#cur + 1] = c\n"
+    "      i = i + 1\n"
+    "    end\n"
+    "  end\n"
+    "  cells[#cells + 1] = table.concat(cur)\n"
+    "  for idx, cell in ipairs(cells) do cells[idx] = cell:match('^%s*(.-)%s*$') end\n"
+    "  return cells\n"
+    "end\n"
     "function mep.org_export(format, lines_override)\n"
     "  local marks = mep.org_export_marks[format]\n"
     "  local lines = lines_override or mep.org_resolve_includes()\n"
@@ -14452,10 +16441,26 @@ const char *kBuiltinOrgExport =
     "      list_open = nil\n"
     "    end\n"
     "  end\n"
+    // Body text is gathered into a paragraph rather than emitted line by
+    // line, and wrapped in a real <p> when the run ends. Without this,
+    // consecutive paragraphs separated by a blank line come out as bare
+    // text nodes, which collapse into one another when rendered -- HTML
+    // treats the blank line as ordinary whitespace, so the paragraph break
+    // the source clearly intended simply disappears. The source's own line
+    // breaks are kept inside the <p> (they render as spaces) so the
+    // generated markup still diffs line-for-line against its Org input.
+    "  local para = {}\n"
+    "  local function close_para()\n"
+    "    if format == 'html' and #para > 0 then\n"
+    "      out[#out + 1] = '<p>' .. table.concat(para, '\\n') .. '</p>'\n"
+    "      para = {}\n"
+    "    end\n"
+    "  end\n"
     "  while i <= n do\n"
     "    local line = lines[i]\n"
     "    local h = mep_org_parse_headline(line)\n"
     "    if h then\n"
+    "      close_para()\n"
     "      close_list()\n"
     "      if h.tags and h.tags:find('noexport', 1, true) then\n"
     "        i = mep_org_subtree_end_lines(lines, i)\n"
@@ -14465,12 +16470,17 @@ const char *kBuiltinOrgExport =
     "        i = i + 1\n"
     "      end\n"
     "    elseif line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then\n"
+    "      close_para()\n"
     "      close_list()\n"
     "      local lang = line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+(%S+)') or ''\n"
     "      i = i + 1\n"
     "      local body = {}\n"
     "      while i <= n and not lines[i]:match('^%s*#%+[Ee][Nn][Dd]_[Ss][Rr][Cc]') do\n"
-    "        body[#body + 1] = lines[i]\n"
+    // Org's comma escape: inside a block, a line starting with `,*` or
+    // `,#+` has that comma stripped on export. It is how a block quotes
+    // text that would otherwise end the block or read as a headline --
+    // which any documentation showing Org syntax needs constantly.
+    "        body[#body + 1] = (lines[i]:gsub('^(%s*),([%*#])', '%1%2'))\n"
     "        i = i + 1\n"
     "      end\n"
     "      if format == 'html' then\n"
@@ -14485,14 +16495,51 @@ const char *kBuiltinOrgExport =
     "        out[#out + 1] = '----'\n"
     "      end\n"
     "      i = i + 1\n"
+    // #+begin_example / #+begin_quote. Without this the block's delimiter
+    // lines are swallowed by the generic "#+" skip further down and the
+    // body falls through as ordinary prose -- losing both the monospacing
+    // and, for an example, the fact that it is something to be typed
+    // verbatim. No language and so no highlighting, unlike begin_src.
+    "    elseif line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ee][Xx][Aa][Mm][Pp][Ll][Ee]')\n"
+    "           or line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Qq][Uu][Oo][Tt][Ee]') then\n"
+    "      close_para()\n"
+    "      close_list()\n"
+    "      local quote = line:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Qq][Uu][Oo][Tt][Ee]') ~= nil\n"
+    "      local ender = quote and '[Qq][Uu][Oo][Tt][Ee]' or '[Ee][Xx][Aa][Mm][Pp][Ll][Ee]'\n"
+    "      i = i + 1\n"
+    "      local body = {}\n"
+    "      while i <= n and not lines[i]:match('^%s*#%+[Ee][Nn][Dd]_' .. ender) do\n"
+    "        body[#body + 1] = (lines[i]:gsub('^(%s*),([%*#])', '%1%2'))\n"
+    "        i = i + 1\n"
+    "      end\n"
+    "      if format == 'html' then\n"
+    "        local escaped = {}\n"
+    "        for idx, l in ipairs(body) do escaped[idx] = mep_org_html_escape(l) end\n"
+    "        local tag = quote and 'blockquote' or 'pre'\n"
+    "        out[#out + 1] = '<' .. tag .. '>' .. table.concat(escaped, '\\n') .. '</' .. tag .. '>'\n"
+    "      elseif format == 'markdown' then\n"
+    "        local prefix = quote and '> ' or '    '\n"
+    "        for _, l in ipairs(body) do out[#out + 1] = prefix .. l end\n"
+    "      else\n"
+    "        for _, l in ipairs(body) do out[#out + 1] = '  ' .. l end\n"
+    "      end\n"
+    "      i = i + 1\n"
     "    elseif line:match('^%s*:PROPERTIES:%s*$') then\n"
     "      while i <= n and not lines[i]:match('^%s*:END:%s*$') do i = i + 1 end\n"
     "      i = i + 1\n"
     "    elseif line:match('^%s*SCHEDULED:') or line:match('^%s*DEADLINE:') or line:match('^%s*#%+') then\n"
     "      i = i + 1\n"
     "    elseif line:match('^%s*$') then\n"
+    "      close_para()\n"
     "      close_list()\n"
-    "      out[#out + 1] = ''\n"
+    // A blank source line is a block separator, and for HTML the blocks it
+    // separates now carry that meaning themselves (<p>, <ul>, <table>...).
+    // Emitting it as an empty line too leaves a stray whitespace text node
+    // between every pair of blocks, which mep's own renderer lays out as
+    // real vertical space -- pages came out with large gaps between every
+    // heading and paragraph. markdown and ascii still need the blank line:
+    // there it *is* the only block separator.
+    "      if format ~= 'html' then out[#out + 1] = '' end\n"
     "      i = i + 1\n"
     // Org's own pipe-table syntax ("| a | b |", a "|---+---|" separator
     // row marking the header/body boundary) happens to already BE valid
@@ -14506,6 +16553,7 @@ const char *kBuiltinOrgExport =
     // (main.cpp's CollectTableRows/TableMaxCols) have nothing to walk
     // without a real <table>/<tr>/<td> in the HTML this produces.
     "    elseif format == 'html' and line:match('^%s*|.-|%s*$') then\n"
+    "      close_para()\n"
     "      close_list()\n"
     "      out[#out + 1] = '<table>'\n"
     "      local header_done = false\n"
@@ -14515,8 +16563,7 @@ const char *kBuiltinOrgExport =
     "          header_done = true\n"
     "        else\n"
     "          local trimmed = row:match('^%s*|(.-)|%s*$') or ''\n"
-    "          local cells = {}\n"
-    "          for cell in (trimmed .. '|'):gmatch('(.-)|') do cells[#cells + 1] = cell:match('^%s*(.-)%s*$') end\n"
+    "          local cells = mep_org_table_cells(trimmed)\n"
     "          local tag = header_done and 'td' or 'th'\n"
     "          local cells_html = {}\n"
     "          for _, c in ipairs(cells) do\n"
@@ -14532,6 +16579,7 @@ const char *kBuiltinOrgExport =
     "      local is_bullet = line:match('^%s*[%-%*%+]%s')\n"
     "      local is_ordered = line:match('^%s*%d+[%.%)]%s')\n"
     "      if format == 'html' and (is_bullet or is_ordered) then\n"
+    "        close_para()\n"
     "        local want = is_bullet and 'ul' or 'ol'\n"
     "        if list_open and list_open ~= want then close_list() end\n"
     "        if not list_open then\n"
@@ -14540,6 +16588,18 @@ const char *kBuiltinOrgExport =
     "        end\n"
     "        local item = is_bullet and converted:gsub('^%s*[%-%*%+]%s*', '') or converted:gsub('^%s*%d+[%.%)]%s*', '')\n"
     "        out[#out + 1] = '<li>' .. item .. '</li>'\n"
+    // A hard-wrapped list item's continuation lines are indented under
+    // their own bullet. Folding them back into the <li> they belong to is
+    // what stops an ordinary wrapped list from ending its <ul> at the
+    // first wrap and spilling the rest of the item out as loose text
+    // between two lists -- the single most visible defect this exporter
+    // had on real prose, where wrapped bullets are everywhere.
+    "      elseif format == 'html' and list_open and line:match('^%s+%S')\n"
+    "             and out[#out] and out[#out]:sub(-5) == '</li>' then\n"
+    "        out[#out] = out[#out]:sub(1, -6) .. ' ' .. (converted:match('^%s*(.-)%s*$') or converted) .. '</li>'\n"
+    "      elseif format == 'html' then\n"
+    "        close_list()\n"
+    "        para[#para + 1] = converted\n"
     "      else\n"
     "        close_list()\n"
     "        out[#out + 1] = converted\n"
@@ -14547,6 +16607,7 @@ const char *kBuiltinOrgExport =
     "      i = i + 1\n"
     "    end\n"
     "  end\n"
+    "  close_para()\n"
     "  close_list()\n"
     "  return table.concat(out, '\\n')\n"
     "end\n"
@@ -14605,6 +16666,17 @@ const char *kBuiltinOrgExport =
     "    if a then meta.author = a end\n"
     "    local d = l:match('^%s*#%+[Dd][Aa][Tt][Ee]:%s*(.*)$')\n"
     "    if d then meta.date = d end\n"
+    // #+HTML_HEAD: injects its line verbatim into the exported <head>,
+    // as it does in real org-mode -- the file's own way to add a <meta>,
+    // a <link rel=stylesheet> or anything else the generated skeleton
+    // has no keyword of its own for. Repeatable: every occurrence is
+    // appended, in source order. The built-in help pages use it to carry
+    // their sidebar section and ordering (see kBuiltinHelp).
+    "    local hh = l:match('^%s*#%+[Hh][Tt][Mm][Ll]_[Hh][Ee][Aa][Dd]:%s*(.*)$')\n"
+    "    if hh then\n"
+    "      meta.html_head = meta.html_head or {}\n"
+    "      meta.html_head[#meta.html_head + 1] = hh\n"
+    "    end\n"
     "  end\n"
     "  return meta\n"
     "end\n"
@@ -14655,6 +16727,7 @@ const char *kBuiltinOrgExport =
     // included) nearly illegible against it before this line existed.
     "function mep_org_html_wrap_document(fragment, meta)\n"
     "  local title = meta.title and mep_org_html_escape(meta.title) or 'Untitled'\n"
+    "  local head_extra = meta.html_head and (table.concat(meta.html_head, '\\n') .. '\\n') or ''\n"
     "  return '<!DOCTYPE html>\\n<html lang=\"en\">\\n<head>\\n<meta charset=\"utf-8\">\\n'\n"
     "    .. '<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\\n'\n"
     "    .. '<title>' .. title .. '</title>\\n'\n"
@@ -14706,7 +16779,10 @@ const char *kBuiltinOrgExport =
     "    .. 'document.body.appendChild(ta);ta.select();'\n"
     "    .. 'try{document.execCommand(\"copy\");}catch(e){}'\n"
     "    .. 'document.body.removeChild(ta);restore();'\n"
-    "    .. '}}</script>\\n</head>\\n<body>\\n'\n"
+    // #+HTML_HEAD: lines go last, after the generated skeleton's own style
+    // and script, so a page can override the default stylesheet rather than
+    // only add to it -- the same ordering real org-mode's HTML export uses.
+    "    .. '}}</script>\\n' .. head_extra .. '</head>\\n<body>\\n'\n"
     "    .. (meta.title and ('<h1>' .. title .. '</h1>\\n') or '')\n"
     "    .. fragment .. '\\n</body>\\n</html>\\n'\n"
     "end\n"
@@ -14817,6 +16893,32 @@ const char *kBuiltinOrgExport =
     "      mep.notify('ODT export failed: ' .. (err or '?'), 'error')\n"
     "    end\n"
     "  end)\n"
+    "end\n"
+    // File-in/file-out HTML export, with no buffer and no editor window
+    // involved: what `mep --export-org in.org out.html` (main(), below)
+    // and `just help` drive to re-render help/*.org. Deliberately *not*
+    // built on mep_org_export_prepare -- that one runs the document's
+    // code blocks first (org-export-use-babel) and is asynchronous, so it
+    // needs a frame loop to pump its jobs, which a one-shot CLI export
+    // has none of. Skipping babel is also the right default here on its
+    // own terms: rendering documentation must not execute whatever the
+    // document happens to contain. #+INCLUDE: resolution and macro
+    // expansion still apply, since those are pure text operations.
+    "function mep.org_export_html_file(in_path, out_path)\n"
+    "  local lines = mep.read_lines(in_path)\n"
+    "  if not lines or #lines == 0 then return nil, 'cannot read ' .. tostring(in_path) end\n"
+    "  local base_dir = in_path:match('^(.*)/[^/]*$') or '.'\n"
+    "  local resolved = mep_org_resolve_includes_lines(lines, base_dir)\n"
+    "  local macros = mep_org_collect_macros(function(i) return resolved[i] end, #resolved)\n"
+    "  local expanded = {}\n"
+    "  for i, l in ipairs(resolved) do expanded[i] = mep_org_expand_macro_line(l, macros) end\n"
+    "  local meta = mep_org_extract_meta(expanded)\n"
+    "  local html = mep_org_html_wrap_document(mep.org_export('html', expanded), meta)\n"
+    "  local f = io.open(out_path, 'w')\n"
+    "  if not f then return nil, 'cannot write ' .. tostring(out_path) end\n"
+    "  f:write(html)\n"
+    "  f:close()\n"
+    "  return out_path\n"
     "end\n"
     "mep.command('MepOrgExportHtml', mep.org_export_html)\n"
     "mep.command('MepOrgExportMarkdown', mep.org_export_markdown)\n"
@@ -15204,6 +17306,3028 @@ const char *kBuiltinOrgDrill =
     "end\n"
     "mep.command('MepOrgDrillReview', mep.org_drill_review)\n";
 
+// Learn -- org-file-driven learning games (Duolingo-style). An org file is
+// the question database: every headline tagged :card: (mep.learn_card_tag)
+// is one entry whose title is the term and whose body is the definition,
+// with optional per-card properties (:CATEGORY:, :HINT:, :QUESTION:,
+// :DISTRACTORS:, :ALIASES:, :HIDE:, :POINTS:, fact properties), cloze
+// markup ({{answer|hint}}) in its prose, ordered lists (steps), 2-column
+// tables (facts) and #+begin_src blocks (the implementation, plus
+// `:learn cloze|bug|output` variants) -- see plans/LEARN_GAMES_PLAN.md for
+// the format and examples/learn_basic_datastructures.org for a deck that
+// uses all of it. Each game projects that same deck into its own
+// randomized session, rendered as a widget pane (mep.sidebar_open_pane)
+// so single keys and mouse clicks both play. Games: flashcards, matching,
+// identify the code, true/false, cloze, type the term, odd one out, which
+// category, fact quiz, put in order, jeopardy, hangman, complete the code,
+// spot the bug, predict the output, mixed practice, and a timed mode over
+// any choice game -- each a :Learn* command, a <leader>o? key and a bare
+// global a deck's own `mep-lua` launcher block can call.
+// The chunk is split into sub-64 KB literals (the concatenated-literal
+// length C++ compilers must support) and joined back into one Lua chunk
+// at load time, so every game still shares the shell/engine locals.
+const char *const kBuiltinLearnParts[] = {
+    "mep.learn_card_tag = 'card'\n"
+    "mep.learn_defaults = {choices = 4, direction = 'both', rounds = 0, match_size = 5, time_limit = 0}\n"
+    // Property keys that describe a card rather than state a fact about it,
+    // so the fact quiz's auto-detection skips them.
+    "mep.learn_reserved_props = {\n"
+    "  CATEGORY = true, QUESTION = true, HINT = true, DISTRACTORS = true, ALIASES = true, HIDE = true,\n"
+    "  POINTS = true, ID = true, CUSTOM_ID = true, EFFORT = true, DRILL_EF = true, DRILL_REPS = true,\n"
+    "  DRILL_INTERVAL = true, DRILL_DUE = true,\n"
+    "}\n"
+    // Nothing else in mep seeds Lua's PRNG, and an unseeded math.random
+    // deals the identical "shuffled" session every launch.
+    "math.randomseed(os.time())\n"
+    "local function mep_learn_trim(s) return (s:gsub('^%s+', ''):gsub('%s+$', '')) end\n"
+    "local function mep_learn_split_bar(s)\n"
+    "  local out = {}\n"
+    "  if not s then return out end\n"
+    "  for piece in s:gmatch('[^|]+') do\n"
+    "    local t = mep_learn_trim(piece)\n"
+    "    if t ~= '' then out[#out + 1] = t end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_learn_split_words(s)\n"
+    "  local out = {}\n"
+    "  for w in (s or ''):gmatch('%S+') do out[#out + 1] = w end\n"
+    "  return out\n"
+    "end\n"
+    // Fisher-Yates, in place; returns t for chaining.
+    "function mep.learn_shuffle(t)\n"
+    "  for i = #t, 2, -1 do\n"
+    "    local j = math.random(i)\n"
+    "    t[i], t[j] = t[j], t[i]\n"
+    "  end\n"
+    "  return t\n"
+    "end\n"
+    "local function mep_learn_copy(t) return {table.unpack(t)} end\n"
+    // Truncates an array to its first n entries (n <= 0 leaves it alone).
+    "local function mep_learn_cap(t, n)\n"
+    "  if n and n > 0 and n < #t then\n"
+    "    for i = #t, n + 1, -1 do t[i] = nil end\n"
+    "  end\n"
+    "  return t\n"
+    "end\n"
+    // mep.learn_cloze_strip(text) -> plain text, blanks: `{{answer|hint}}`
+    // markup removed (the answer stays in place), plus one {answer=, hint=,
+    // start=, stop=} per blank with byte offsets into the plain text.
+    "function mep.learn_cloze_strip(text)\n"
+    "  local blanks, out, pos = {}, {}, 1\n"
+    "  while true do\n"
+    "    local s, e, inner = text:find('{{(.-)}}', pos)\n"
+    "    if not s then break end\n"
+    "    out[#out + 1] = text:sub(pos, s - 1)\n"
+    "    local answer, hint = inner:match('^(.-)|(.*)$')\n"
+    "    if not answer then answer = inner end\n"
+    "    answer = mep_learn_trim(answer)\n"
+    "    local plain = table.concat(out)\n"
+    "    blanks[#blanks + 1] = {answer = answer, hint = hint and mep_learn_trim(hint) or nil, start = #plain + 1, stop = #plain + #answer}\n"
+    "    out[#out + 1] = answer\n"
+    "    pos = e + 1\n"
+    "  end\n"
+    "  out[#out + 1] = text:sub(pos)\n"
+    "  return table.concat(out), blanks\n"
+    "end\n"
+    // Body lines -> the card's prose paragraphs, its steps (the first ordered
+    // list), its fact rows (2-column tables) and its raw cloze sentences.
+    // Consecutive non-blank prose lines join with a space, a blank line
+    // starts a new paragraph. Block delimiters and their contents, #+keyword
+    // and #+RESULTS: lines, fixed-width `: ` results, planning lines, table
+    // rows, ordered-list items and [[file:...]] image links are not
+    // definition text.
+    "local function mep_learn_body(body)\n"
+    "  local paras, cur, in_block = {}, {}, false\n"
+    "  local steps, facts, steps_title, images = {}, {}, nil, {}\n"
+    "  local in_list, list_done = false, false\n"
+    "  local function flush()\n"
+    "    if #cur > 0 then paras[#paras + 1] = table.concat(cur, ' ') end\n"
+    "    cur = {}\n"
+    "  end\n"
+    "  for _, raw in ipairs(body) do\n"
+    "    local line = mep_learn_trim(raw)\n"
+    "    local lower = line:lower()\n"
+    "    local item = line:match('^%d+[%.%)]%s+(.*)$')\n"
+    "    if lower:match('^#%+begin_') then in_block = true\n"
+    "    elseif lower:match('^#%+end_') then in_block = false\n"
+    "    elseif in_block or line:sub(1, 1) == '#' or line:sub(1, 1) == ':' then\n"
+    "      -- skip (block contents, keywords, results, drawers)\n"
+    "    elseif line:match('^SCHEDULED:') or line:match('^DEADLINE:') or line:match('^CLOSED:') then\n"
+    "      -- skip\n"
+    "    elseif line:match('^%[%[file:[^%]]+%]%]%s*$') or line:match('^%[%[file:[^%]]+%]%[[^%]]*%]%]%s*$') then\n"
+    "      -- An image link on its own line is a picture of the card, not prose.\n"
+    "      images[#images + 1] = line:match('^%[%[file:([^%]]+)%]')\n"
+    "    elseif line:sub(1, 1) == '|' then\n"
+    "      if not line:match('^|%-') then\n"
+    "        local cells = {}\n"
+    "        for cell in line:gmatch('|([^|]*)') do cells[#cells + 1] = mep_learn_trim(cell) end\n"
+    "        if #cells >= 2 and cells[1] ~= '' and cells[2] ~= '' then facts[#facts + 1] = {key = cells[1], value = cells[2]} end\n"
+    "      end\n"
+    "    elseif item and not list_done then\n"
+    "      -- An ordered list is a sequence; a continuation line (indented,\n"
+    "      -- no marker) belongs to the last item. Only the first list counts.\n"
+    "      -- A lead-in line ending in ':' right before it (\"Inserting a\n"
+    "      -- key:\") titles the list rather than trailing the definition.\n"
+    "      if #steps == 0 and #cur > 0 and cur[#cur]:match(':$') then\n"
+    "        steps_title = table.remove(cur)\n"
+    "      end\n"
+    "      flush()\n"
+    "      in_list = true\n"
+    "      steps[#steps + 1] = item\n"
+    "    elseif in_list and raw:match('^%s+%S') and line ~= '' and #steps > 0 then\n"
+    "      steps[#steps] = steps[#steps] .. ' ' .. line\n"
+    "    elseif line == '' then\n"
+    "      if in_list then in_list, list_done = false, true end\n"
+    "      flush()\n"
+    "    else\n"
+    "      if in_list then in_list, list_done = false, true end\n"
+    "      cur[#cur + 1] = line\n"
+    "    end\n"
+    "  end\n"
+    "  flush()\n"
+    "  return paras, steps, facts, steps_title, images\n"
+    "end\n"
+    // Every `#+begin_src <lang> [args]` ... `#+end_src` in a card body, as
+    // {lang=, lines=, args=, learn=, line=, results=}: `learn` is the
+    // `:learn <kind>` header argument (nil for the card's plain
+    // implementation), `line` the `:line N` argument, and `results` the
+    // fixed-width lines of a `#+RESULTS:` drawer right after the block. The
+    // body keeps its indentation, which is the code.
+    "local function mep_learn_src_blocks(body)\n"
+    "  local blocks, code, lang, args = {}, nil, nil, nil\n"
+    "  local i = 1\n"
+    "  while i <= #body do\n"
+    "    local raw = body[i]\n"
+    "    if code then\n"
+    "      if raw:lower():match('^%s*#%+end_src') then\n"
+    "        local blk = {lang = lang, lines = code, args = args}\n"
+    "        blk.learn = args:match(':learn%s+(%S+)')\n"
+    "        blk.line = tonumber(args:match(':line%s+(%d+)'))\n"
+    "        -- #+RESULTS: (optionally after blank lines): fixed-width `: x`\n"
+    "        -- lines, or an example block.\n"
+    "        local j = i + 1\n"
+    "        while body[j] and mep_learn_trim(body[j]) == '' do j = j + 1 end\n"
+    "        if body[j] and body[j]:match('^%s*#%+RESULTS:') then\n"
+    "          local results = {}\n"
+    "          j = j + 1\n"
+    "          if body[j] and body[j]:lower():match('^%s*#%+begin_example') then\n"
+    "            j = j + 1\n"
+    "            while body[j] and not body[j]:lower():match('^%s*#%+end_example') do\n"
+    "              results[#results + 1] = body[j]\n"
+    "              j = j + 1\n"
+    "            end\n"
+    "            j = j + 1\n"
+    "          else\n"
+    "            while body[j] and body[j]:match('^%s*:') do\n"
+    "              results[#results + 1] = (body[j]:match('^%s*:%s?(.*)$'))\n"
+    "              j = j + 1\n"
+    "            end\n"
+    "          end\n"
+    "          blk.results = results\n"
+    "          i = j - 1\n"
+    "        end\n"
+    "        blocks[#blocks + 1] = blk\n"
+    "        code = nil\n"
+    "      else\n"
+    "        code[#code + 1] = raw\n"
+    "      end\n"
+    "    else\n"
+    "      local l, rest = raw:match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]%s+(%S+)%s*(.*)$')\n"
+    "      if l then lang, args, code = l:lower(), rest or '', {} end\n"
+    "    end\n"
+    "    i = i + 1\n"
+    "  end\n"
+    "  return blocks\n"
+    "end\n"
+    // mep.learn_parse_deck(path[, lines]) -> deck: {path=, title=, keywords=,
+    // options={choices=,direction=,rounds=,match_size=,time_limit=,facts=,
+    // mixed=,rank=,srs=}, categories={name, ...}, cards={{term=, definition=,
+    // paragraphs=, clozes=, steps=, steps_title=, facts=, category=, hint=, question=,
+    // distractors=, aliases=, hide=, points=, code=, blocks=, tags=, props=,
+    // line=, level=}, ...}}. A card is a headline tagged with
+    // mep.learn_card_tag (or #+LEARN_TAG:); when no headline in the file
+    // carries that tag, every headline with a non-empty body is a card, so a
+    // plain glossary works untagged. :CATEGORY: defaults to the nearest
+    // ancestor headline's title, which is what groups distractors. A card's
+    // first plain #+begin_src block becomes card.code; every block (plain
+    // and `:learn` variants) is in card.blocks. Cloze markup is stripped from
+    // the definition text (card.clozes keeps the blanks); facts merge the
+    // drawer's fact properties with any 2-column table in the body.
+    "function mep.learn_parse_deck(path, lines)\n"
+    "  -- mep.read_lines prefers the live buffer, so unsaved deck edits count.\n"
+    "  lines = lines or mep.read_lines(path)\n"
+    "  local deck = {path = path, keywords = {}, cards = {}}\n"
+    "  if not lines then return nil, 'Cannot read ' .. tostring(path) end\n"
+    "  local abs_path = (mep_lsp_abspath and mep_lsp_abspath(path)) or path\n"
+    "  local deck_dir = abs_path:match('^(.*)/[^/]*$') or '.'\n"
+    "  local ancestors, cur, in_drawer = {}, nil, false\n"
+    "  local function finish()\n"
+    "    if not cur then return end\n"
+    "    local paras, steps, table_facts, steps_title, images = mep_learn_body(cur.body)\n"
+    "    cur.clozes = {}\n"
+    "    for i, p in ipairs(paras) do\n"
+    "      local plain, blanks = mep.learn_cloze_strip(p)\n"
+    "      paras[i] = plain\n"
+    "      for _, b in ipairs(blanks) do\n"
+    "        b.sentence = plain\n"
+    "        cur.clozes[#cur.clozes + 1] = b\n"
+    "      end\n"
+    "    end\n"
+    "    cur.paragraphs = paras\n"
+    "    cur.definition = table.concat(paras, '\\n')\n"
+    "    cur.steps = steps\n"
+    "    cur.steps_title = steps_title\n"
+    "    -- Image paths resolve against the deck file's own directory.\n"
+    "    cur.images = {}\n"
+    "    for i, rel in ipairs(images) do\n"
+    "      local abs = rel\n"
+    "      if rel:sub(1, 1) == '~' then abs = (os.getenv('HOME') or '') .. rel:sub(2)\n"
+    "      elseif rel:sub(1, 1) ~= '/' then abs = deck_dir .. '/' .. rel end\n"
+    "      cur.images[i] = abs\n"
+    "    end\n"
+    "    cur.table_facts = table_facts\n"
+    "    cur.blocks = mep_learn_src_blocks(cur.body)\n"
+    "    for _, b in ipairs(cur.blocks) do\n"
+    "      if not b.learn and not cur.code then cur.code = b end\n"
+    "    end\n"
+    "    cur.body = nil\n"
+    "    deck.cards[#deck.cards + 1] = cur\n"
+    "    cur = nil\n"
+    "  end\n"
+    "  for i, line in ipairs(lines) do\n"
+    "    local h = mep_org_parse_headline(line)\n"
+    "    if h then\n"
+    "      finish()\n"
+    "      local parent\n"
+    "      for l = h.level - 1, 1, -1 do\n"
+    "        if ancestors[l] then parent = ancestors[l] break end\n"
+    "      end\n"
+    "      ancestors[h.level] = h.title\n"
+    "      for l = h.level + 1, #ancestors do ancestors[l] = nil end\n"
+    "      local tags = {}\n"
+    "      if h.tags then for t in h.tags:gmatch('[^:]+') do tags[t] = true end end\n"
+    "      cur = {term = h.title, level = h.level, line = i, tags = tags, body = {}, props = {}, parent = parent}\n"
+    "      in_drawer = false\n"
+    "    elseif cur then\n"
+    "      if line:match('^%s*:PROPERTIES:%s*$') then in_drawer = true\n"
+    "      elseif in_drawer and line:match('^%s*:END:%s*$') then in_drawer = false\n"
+    "      elseif in_drawer then\n"
+    "        local k, v = line:match('^%s*:([%w_%-]+):%s*(.-)%s*$')\n"
+    "        if k then cur.props[k:upper()] = v end\n"
+    "      else cur.body[#cur.body + 1] = line end\n"
+    "    else\n"
+    "      local k, v = line:match('^#%+([%w_]+):%s*(.-)%s*$')\n"
+    "      if k then deck.keywords[k:upper()] = v end\n"
+    "    end\n"
+    "  end\n"
+    "  finish()\n"
+    "  local kw = deck.keywords\n"
+    "  deck.title = kw.LEARN_TITLE or kw.TITLE or (path:match('([^/]+)%.org$') or path)\n"
+    "  deck.options = {\n"
+    "    choices = tonumber(kw.LEARN_CHOICES) or mep.learn_defaults.choices,\n"
+    "    direction = (kw.LEARN_DIRECTION or mep.learn_defaults.direction):lower(),\n"
+    "    rounds = tonumber(kw.LEARN_ROUNDS) or mep.learn_defaults.rounds,\n"
+    "    match_size = tonumber(kw.LEARN_MATCH_SIZE) or mep.learn_defaults.match_size,\n"
+    "    time_limit = tonumber(kw.LEARN_TIME_LIMIT) or mep.learn_defaults.time_limit,\n"
+    "    facts = kw.LEARN_FACTS and mep_learn_split_words(kw.LEARN_FACTS:upper()) or nil,\n"
+    "    mixed = kw.LEARN_MIXED and mep_learn_split_words(kw.LEARN_MIXED:lower()) or nil,\n"
+    "    rank = kw.LEARN_RANK and mep_learn_split_words(kw.LEARN_RANK:upper()) or nil,\n"
+    "    -- #+LEARN_SRS: yes deals due/unreviewed cards first (org-drill's\n"
+    "    -- :DRILL_DUE:, written by the summary's grade key).\n"
+    "    srs = (kw.LEARN_SRS or ''):lower():match('^yes') ~= nil or (kw.LEARN_SRS or ''):lower():match('^t') ~= nil,\n"
+    "  }\n"
+    "  local tag = kw.LEARN_TAG or mep.learn_card_tag\n"
+    "  local tagged = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    if c.tags[tag] then tagged[#tagged + 1] = c end\n"
+    "  end\n"
+    "  local cards, categories, seen_cat = {}, {}, {}\n"
+    "  local per_category = {}\n"
+    "  for _, c in ipairs(#tagged > 0 and tagged or deck.cards) do\n"
+    "    if #tagged > 0 or c.definition ~= '' then\n"
+    "      c.category = c.props.CATEGORY or c.parent\n"
+    "      c.hint = c.props.HINT\n"
+    "      c.question = c.props.QUESTION\n"
+    "      c.distractors = mep_learn_split_bar(c.props.DISTRACTORS)\n"
+    "      c.aliases = mep_learn_split_bar(c.props.ALIASES)\n"
+    "      c.hide = mep_learn_split_bar(c.props.HIDE)\n"
+    "      -- Facts: the drawer's fact properties (every non-reserved key, or\n"
+    "      -- exactly #+LEARN_FACTS: when given) plus the body's table rows.\n"
+    "      c.facts = {}\n"
+    "      local keys = deck.options.facts\n"
+    "      if keys then\n"
+    "        for _, k in ipairs(keys) do\n"
+    "          if c.props[k] then c.facts[#c.facts + 1] = {key = k, value = c.props[k]} end\n"
+    "        end\n"
+    "      else\n"
+    "        local sorted = {}\n"
+    "        for k in pairs(c.props) do if not mep.learn_reserved_props[k] then sorted[#sorted + 1] = k end end\n"
+    "        table.sort(sorted)\n"
+    "        for _, k in ipairs(sorted) do c.facts[#c.facts + 1] = {key = k, value = c.props[k]} end\n"
+    "      end\n"
+    "      for _, f in ipairs(c.table_facts) do c.facts[#c.facts + 1] = f end\n"
+    "      c.table_facts = nil\n"
+    "      -- Spaced repetition: org-drill's :DRILL_DUE: (YYYY-MM-DD); nil =\n"
+    "      -- never reviewed, which mep.learn_deal treats as due.\n"
+    "      c.due = c.props.DRILL_DUE\n"
+    "      -- Points: :POINTS:, else 100, 200, ... by position in the category.\n"
+    "      local cat = c.category or ''\n"
+    "      per_category[cat] = (per_category[cat] or 0) + 1\n"
+    "      c.points = tonumber(c.props.POINTS) or (100 * per_category[cat])\n"
+    "      if c.category and not seen_cat[c.category] then\n"
+    "        seen_cat[c.category] = true\n"
+    "        categories[#categories + 1] = c.category\n"
+    "      end\n"
+    "      cards[#cards + 1] = c\n"
+    "    end\n"
+    "  end\n"
+    "  deck.cards = cards\n"
+    "  deck.categories = categories\n"
+    "  return deck\n"
+    "end\n"
+    // Cards of `deck` other than `card`, same category first (each group
+    // shuffled) -- the distractor order every choice game draws from.
+    "local function mep_learn_others(deck, card)\n"
+    "  local same, other = {}, {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    if c ~= card then\n"
+    "      if card.category and c.category == card.category then same[#same + 1] = c\n"
+    "      else other[#other + 1] = c end\n"
+    "    end\n"
+    "  end\n"
+    "  mep.learn_shuffle(same)\n"
+    "  mep.learn_shuffle(other)\n"
+    "  for _, c in ipairs(other) do same[#same + 1] = c end\n"
+    "  return same\n"
+    "end\n"
+    // mep.learn_deal(deck[, n]) -> a fresh card order for a session: a plain
+    // shuffle, or with #+LEARN_SRS: yes the due cards (:DRILL_DUE: on or
+    // before today, or never graded) shuffled ahead of the rest -- so a
+    // #+LEARN_ROUNDS: cap reviews what's due first. `n` > 0 caps the count.
+    "function mep.learn_deal(deck, n)\n"
+    "  local cards = mep.learn_shuffle(mep_learn_copy(deck.cards))\n"
+    "  if deck.options.srs then\n"
+    "    local today = os.date('%Y-%m-%d')\n"
+    "    local due, later = {}, {}\n"
+    "    for _, c in ipairs(cards) do\n"
+    "      if not c.due or c.due <= today then due[#due + 1] = c else later[#later + 1] = c end\n"
+    "    end\n"
+    "    for _, c in ipairs(later) do due[#due + 1] = c end\n"
+    "    cards = due\n"
+    "  end\n"
+    "  return mep_learn_cap(cards, n)\n"
+    "end\n"
+    // Builds a shuffled choice list around `answer`: `candidates` (in
+    // preference order) fill the remaining slots, skipping duplicates and
+    // empty strings. Returns choices, answer index.
+    "local function mep_learn_choices(answer, candidates, n_choices)\n"
+    "  local seen, choices = {[answer] = true}, {answer}\n"
+    "  for _, text in ipairs(candidates) do\n"
+    "    if #choices >= n_choices then break end\n"
+    "    if text and text ~= '' and not seen[text] then\n"
+    "      seen[text] = true\n"
+    "      choices[#choices + 1] = text\n"
+    "    end\n"
+    "  end\n"
+    "  mep.learn_shuffle(choices)\n"
+    "  for i, c in ipairs(choices) do if c == answer then return choices, i end end\n"
+    "  return choices, 1\n"
+    "end\n"
+    // mep.learn_mc_questions(deck[, opts]) -> array of {card=, direction=,
+    // prompt=, choices={text, ...}, answer=<1-based index>}. One question per
+    // card in shuffled order (opts.rounds > 0 caps the count). direction
+    // 'definition' shows the definition (or :QUESTION:) and offers terms;
+    // 'term' shows the term and offers definitions; 'both' picks per card.
+    // Distractors come from the card's own :DISTRACTORS: first, then cards in
+    // the same category, then the rest of the deck -- so wrong answers stay
+    // plausible when the deck is grouped -- and never repeat the answer text.
+    "function mep.learn_mc_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local direction = opts.direction or deck.options.direction\n"
+    "  local order = mep.learn_deal(deck, opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, card in ipairs(order) do\n"
+    "    local dir = direction\n"
+    "    if dir ~= 'term' and dir ~= 'definition' then\n"
+    "      dir = (math.random(2) == 1) and 'term' or 'definition'\n"
+    "    end\n"
+    "    local function text_of(c) return dir == 'definition' and c.term or c.definition end\n"
+    "    local candidates = {}\n"
+    "    if dir == 'definition' then\n"
+    "      for _, d in ipairs(mep.learn_shuffle(mep_learn_copy(card.distractors))) do candidates[#candidates + 1] = d end\n"
+    "    end\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do candidates[#candidates + 1] = text_of(c) end\n"
+    "    local choices, answer = mep_learn_choices(text_of(card), candidates, n_choices)\n"
+    "    local prompt\n"
+    "    if dir == 'definition' then prompt = card.question or card.definition\n"
+    "    else prompt = card.term end\n"
+    "    questions[#questions + 1] = {card = card, direction = dir, prompt = prompt, choices = choices, answer = answer}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    // mep.learn_match_rounds(deck[, opts]) -> array of rounds, each
+    // {cards={...}, defs={<card index>, ...}}: the deck shuffled and dealt into
+    // groups of opts.size (#+LEARN_MATCH_SIZE:, default 5, clamped to 2..9 so
+    // every definition gets one letter a-i), with `defs` a separate shuffle of
+    // the group's card indices -- the order the definitions are listed in, so
+    // term i's definition sits at some other row. A leftover of one card is
+    // folded into the previous round (a one-pair round would answer itself).
+    // opts.rounds (#+LEARN_ROUNDS:) caps the round count.
+    "function mep.learn_match_rounds(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local size = math.max(2, math.min(9, opts.size or deck.options.match_size))\n"
+    "  local rounds_cap = opts.rounds or deck.options.rounds\n"
+    "  local order = mep.learn_deal(deck)\n"
+    "  local rounds = {}\n"
+    "  local i = 1\n"
+    "  while i <= #order do\n"
+    "    local group = {}\n"
+    "    for j = i, math.min(i + size - 1, #order) do group[#group + 1] = order[j] end\n"
+    "    i = i + size\n"
+    "    if #group == 1 and #rounds > 0 then\n"
+    "      table.insert(rounds[#rounds].cards, group[1])\n"
+    "    else\n"
+    "      rounds[#rounds + 1] = {cards = group}\n"
+    "    end\n"
+    "  end\n"
+    "  for _, r in ipairs(rounds) do\n"
+    "    local defs = {}\n"
+    "    for k = 1, #r.cards do defs[k] = k end\n"
+    "    r.defs = mep.learn_shuffle(defs)\n"
+    "    -- A round where every definition sits on its own term's row would be\n"
+    "    -- a giveaway; one swap breaks that (only reachable with a full\n"
+    "    -- fixed-point shuffle, rare past size 2 but cheap to rule out).\n"
+    "    if #defs > 1 then\n"
+    "      local fixed = true\n"
+    "      for k = 1, #defs do if defs[k] ~= k then fixed = false break end end\n"
+    "      if fixed then defs[1], defs[2] = defs[2], defs[1] end\n"
+    "    end\n"
+    "  end\n"
+    "  return mep_learn_cap(rounds, rounds_cap)\n"
+    "end\n"
+    // --- Game session shell ---------------------------------------------------
+    // One session at a time (mep_learn_state), one 'Learn' sidebar shown as a
+    // pane (mep.sidebar_open_pane) whose on_key/on_click both route into the
+    // active game's own table: {name=, unit=, reset(st), widgets(st) -> widget
+    // list, on_key(st, k) -> handled, current_card(st), validate(deck) ->
+    // message|nil, shell_keys={r=,o=,q=,g=} (a game that consumes letters,
+    // like hangman, remaps the shell keys)}. Quit/restart/open-card/summary are
+    // shared.
+    "local mep_learn_sidebar_id = nil\n"
+    "local mep_learn_state = nil\n"
+    "local MEP_LEARN_GAMES = {}\n"
+    "mep.learn_games = MEP_LEARN_GAMES\n"
+    "local function mep_learn_ensure_sidebar()\n"
+    "  if mep_learn_sidebar_id then return end\n"
+    "  mep_learn_sidebar_id = mep.sidebar_create('Learn', 'right', 72)\n"
+    "  mep.sidebar_set_on_key(mep_learn_sidebar_id, function(k) mep.learn_on_key(k) end)\n"
+    "end\n"
+    "local function mep_learn_blank(id) return {id = id, text = ''} end\n"
+    "function mep.learn_split_lines(s)\n"
+    "  local out = {}\n"
+    "  for line in (s .. '\\n'):gmatch('([^\\n]*)\\n') do out[#out + 1] = line end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_learn_shell_keys(st)\n"
+    "  return (st.game.shell_keys or {r = 'r', o = 'o', q = 'q'})\n"
+    "end\n"
+    // Shared end-of-session screen: score line, the cards to review (each a
+    // click-to-open row), play again / quit. `st.score`/`st.total` are the
+    // game's own units (questions, pairs, points, ...).
+    "local function mep_learn_summary_widgets(st)\n"
+    "  local w = {}\n"
+    "  local keys = mep_learn_shell_keys(st)\n"
+    "  local pct = st.total > 0 and math.floor(100 * st.score / st.total + 0.5) or 0\n"
+    "  w[#w + 1] = {id = 'done', text = string.format('Session complete: %d/%d %s (%d%%)', st.score, st.total, st.game.unit, pct), hl = 'Accent'}\n"
+    "  if st.best_streak then\n"
+    "    w[#w + 1] = {id = 'best', text = string.format('Best streak: %d', st.best_streak), hl = 'Comment'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if #st.missed > 0 then\n"
+    "    w[#w + 1] = {id = 'missed', text = 'Review these:', hl = 'Warn'}\n"
+    "    for i, card in ipairs(st.missed) do\n"
+    "      w[#w + 1] = {\n"
+    "        id = 'missed' .. i, text = card.term .. ' -- ' .. card.definition, hl = 'Normal',\n"
+    "        wrap = true, wrap_indent = 0,\n"
+    "        on_click = function() mep.learn_open_card(card) end,\n"
+    "      }\n"
+    "    end\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'perfect', text = 'Perfect run!', hl = 'Add'}\n"
+    "  end\n"
+    "  if st.players then\n"
+    "    local a, b = st.hs_scores[1], st.hs_scores[2]\n"
+    "    local verdict = a == b and \"It's a tie!\" or string.format('Player %d wins!', a > b and 1 or 2)\n"
+    "    w[#w + 1] = {id = 'winner', text = verdict, hl = 'Accent'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  if st.seen and #st.seen > 0 and mep.org_drill_grade then\n"
+    "    if st.graded_srs then\n"
+    "      w[#w + 1] = {id = 'srs', text = string.format('Recorded %d card(s) for spaced repetition.', st.graded_srs), hl = 'Comment'}\n"
+    "    else\n"
+    "      w[#w + 1] = {id = 'srs', text = '> Record results for spaced repetition (:DRILL_*: properties)  [' .. (keys.g or 'g') .. ']', hl = 'Blue', on_click = function() mep.learn_srs_grade() end}\n"
+    "    end\n"
+    "  end\n"
+    "  w[#w + 1] = {id = 'again', text = '> Play again  [' .. keys.r .. ']', hl = 'Blue', on_click = function() mep.learn_restart() end}\n"
+    "  w[#w + 1] = {id = 'quit', text = '> Quit  [' .. keys.q .. ']', hl = 'Blue', on_click = function() mep.learn_quit() end}\n"
+    "  return w\n"
+    "end\n"
+    "local function mep_learn_add_missed(st, card)\n"
+    "  for _, c in ipairs(st.missed) do if c == card then return end end\n"
+    "  st.missed[#st.missed + 1] = card\n"
+    "end\n"
+    // Every card the session actually asked about (for SRS grading: a card
+    // never shown gets no grade).
+    "local function mep_learn_add_seen(st, card)\n"
+    "  st.seen = st.seen or {}\n"
+    "  for _, c in ipairs(st.seen) do if c == card then return end end\n"
+    "  st.seen[#st.seen + 1] = card\n"
+    "end\n"
+    // mep.learn_srs_grade(): records the finished session into org-drill's
+    // SM-2 properties (mep.org_drill_grade -> :DRILL_EF:/:DRILL_REPS:/
+    // :DRILL_INTERVAL:/:DRILL_DUE: in each card's drawer): quality 4 (Good)
+    // for a card the session got right, 1 (Again) for one it missed. The
+    // grader works on the current buffer, so the deck is opened first; cards
+    // are graded from the bottom up because a grade can grow a drawer and
+    // shift every line below it. Returns the number of cards graded.
+    "function mep.learn_srs_grade()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.seen or #st.seen == 0 or st.graded_srs then return 0 end\n"
+    "  if not mep.org_drill_grade then mep.notify('Learn: org-drill grading is not available in this build', 'warn') return 0 end\n"
+    "  local missed = {}\n"
+    "  for _, c in ipairs(st.missed) do missed[c] = true end\n"
+    "  local cards = mep_learn_copy(st.seen)\n"
+    "  table.sort(cards, function(a, b) return a.line > b.line end)\n"
+    "  mep.pane_open(st.deck.path)\n"
+    "  for _, c in ipairs(cards) do mep.org_drill_grade(c.line, missed[c] and 1 or 4) end\n"
+    "  st.graded_srs = #cards\n"
+    "  -- Grading grows drawers, so every headline below a graded card moved:\n"
+    "  -- re-read the deck and re-point the session's cards (by term) so the\n"
+    "  -- summary's open-card rows still land on the right headline.\n"
+    "  local fresh = mep.learn_parse_deck(st.deck.path)\n"
+    "  if fresh then\n"
+    "    local line_of = {}\n"
+    "    for _, c in ipairs(fresh.cards) do line_of[c.term] = line_of[c.term] or c.line end\n"
+    "    for _, c in ipairs(st.deck.cards) do if line_of[c.term] then c.line = line_of[c.term] end end\n"
+    "  end\n"
+    "  -- Back to the game pane: pane_open put the deck in another pane.\n"
+    "  mep.sidebar_open_pane(mep_learn_sidebar_id)\n"
+    "  mep.notify(string.format('Learn: graded %d card(s) into their :DRILL_*: properties', #cards))\n"
+    "  mep.learn_render()\n"
+    "  return #cards\n"
+    "end\n"
+    // Hot-seat two-player mode (opts.players = 2): the shell attributes each
+    // score change to whoever's turn it is and passes the turn whenever the
+    // game moves to its next question/round/cell -- tracked from
+    // mep.learn_render, which every state change goes through, so no game
+    // needs to know about players. `game.position(st)` names the game's
+    // own notion of "where we are" (default: st.index or st.round).
+    "local function mep_learn_hotseat_track(st)\n"
+    "  if not st.players then return end\n"
+    "  local pos\n"
+    "  if st.game.position then pos = st.game.position(st) else pos = st.index or st.round or 0 end\n"
+    "  if not st.hs_scores then\n"
+    "    st.hs_scores, st.turn, st.hs_last_score, st.hs_last_pos = {0, 0}, 1, st.score, pos\n"
+    "    return\n"
+    "  end\n"
+    "  local delta = st.score - st.hs_last_score\n"
+    "  if delta ~= 0 then\n"
+    "    st.hs_scores[st.turn] = st.hs_scores[st.turn] + delta\n"
+    "    st.hs_last_score = st.score\n"
+    "  end\n"
+    "  if pos ~= st.hs_last_pos then\n"
+    "    st.turn = 3 - st.turn\n"
+    "    st.hs_last_pos = pos\n"
+    "  end\n"
+    "end\n"
+    "local function mep_learn_hotseat_widget(st)\n"
+    "  if not st.players then return nil end\n"
+    "  local text = string.format('Player 1: %d   Player 2: %d', st.hs_scores[1], st.hs_scores[2])\n"
+    "  if not st.finished then text = text .. string.format(\"   -> Player %d's turn\", st.turn) end\n"
+    "  return {id = 'hotseat', text = text, hl = 'Yellow'}\n"
+    "end\n"
+    "function mep.learn_render()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st then return end\n"
+    "  mep_learn_ensure_sidebar()\n"
+    "  mep_learn_hotseat_track(st)\n"
+    "  local widgets = st.finished and mep_learn_summary_widgets(st) or st.game.widgets(st)\n"
+    "  local banner = mep_learn_hotseat_widget(st)\n"
+    "  if banner then table.insert(widgets, 2, banner) end\n"
+    "  mep.sidebar_set_sections(mep_learn_sidebar_id, {{id = 'learn', title = '', collapsed = false, widgets = widgets}})\n"
+    "end\n"
+    "function mep.learn_restart()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st then return end\n"
+    "  st.finished, st.missed, st.score, st.seen, st.graded_srs, st.hs_scores = false, {}, 0, nil, nil, nil\n"
+    "  st.game.reset(st)\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_quit()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st then return end\n"
+    "  mep_learn_state = nil\n"
+    "  -- Close the game's own tab, wherever focus is now (an open-card pane,\n"
+    "  -- the deck opened for grading): focusing it first keeps\n"
+    "  -- pane_close_buffer from closing whatever else happened to be current.\n"
+    "  if st.pane_buf and mep.pane_focus_buffer then mep.pane_focus_buffer(st.pane_buf) end\n"
+    "  mep.pane_close_buffer()\n"
+    "end\n"
+    // 'o': jump to a card's headline in the deck file, in a fresh pane so the
+    // game stays where it is (default: the game's current card).
+    "function mep.learn_open_card(card)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st then return end\n"
+    "  card = card or (st.game.current_card and st.game.current_card(st))\n"
+    "  if not card then return end\n"
+    "  mep.pane_open(st.deck.path)\n"
+    "  mep.set_cursor(card.line, 1)\n"
+    "end\n"
+    "function mep.learn_on_key(k)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st then return end\n"
+    "  if not st.finished and st.game.on_key(st, k) then return end\n"
+    "  local keys = mep_learn_shell_keys(st)\n"
+    "  if k == keys.r then mep.learn_restart()\n"
+    "  elseif k == keys.o then mep.learn_open_card()\n"
+    "  elseif k == keys.q then mep.learn_quit()\n"
+    "  elseif k == (keys.g or 'g') and st.finished then mep.learn_srs_grade()\n"
+    "  end\n"
+    "end\n"
+    // mep.learn_state() -> the live session (nil when no game is open): for
+    // tests and for a deck's own mep-lua blocks to inspect progress.
+    "function mep.learn_state() return mep_learn_state end\n"
+    // Common entry: resolves the deck (default: the current org buffer),
+    // validates it (plus the game's own `validate(deck) -> message|nil`),
+    // and opens the pane on a fresh session of `game`.
+    "local function mep_learn_start(game, path, opts)\n"
+    "  if not path or path == '' then path = mep.filename() end\n"
+    "  if not path or path == '' or not path:lower():match('%.org$') then\n"
+    "    mep.notify('Learn: open an org deck first (or pass its path)', 'warn')\n"
+    "    return false\n"
+    "  end\n"
+    "  local deck, err = mep.learn_parse_deck(path)\n"
+    "  if not deck then mep.notify('Learn: ' .. err, 'warn') return false end\n"
+    "  if #deck.cards < 2 then\n"
+    "    mep.notify('Learn: the deck needs at least two cards (headlines tagged :' .. (deck.keywords.LEARN_TAG or mep.learn_card_tag) .. ':)', 'warn')\n"
+    "    return false\n"
+    "  end\n"
+    "  local problem = game.validate and game.validate(deck)\n"
+    "  if problem then mep.notify('Learn: ' .. problem, 'warn') return false end\n"
+    "  mep_learn_ensure_sidebar()\n"
+    "  mep_learn_state = {game = game, deck = deck, opts = opts or {}, missed = {}, score = 0, total = 0, finished = false}\n"
+    "  if (opts or {}).players and opts.players >= 2 then mep_learn_state.players = 2 end\n"
+    "  game.reset(mep_learn_state)\n"
+    "  mep.learn_render()\n"
+    "  mep.sidebar_open_pane(mep_learn_sidebar_id)\n"
+    "  mep_learn_state.pane_buf = mep.current_buffer()\n"
+    "  return true\n"
+    "end\n"
+    // --- Typed-answer engine -------------------------------------------------
+    // mep.learn_normalize(s): lower-cased, punctuation dropped, whitespace
+    // collapsed -- so "Hash-Table " matches "hash table".
+    "function mep.learn_normalize(s)\n"
+    "  s = (s or ''):lower():gsub('[%p]', ' '):gsub('%s+', ' ')\n"
+    "  return mep_learn_trim(s)\n"
+    "end\n"
+    "local function mep_learn_edit_distance(a, b)\n"
+    "  local la, lb = #a, #b\n"
+    "  if la == 0 then return lb end\n"
+    "  if lb == 0 then return la end\n"
+    "  local prev = {}\n"
+    "  for j = 0, lb do prev[j] = j end\n"
+    "  for i = 1, la do\n"
+    "    local cur = {[0] = i}\n"
+    "    for j = 1, lb do\n"
+    "      local cost = (a:sub(i, i) == b:sub(j, j)) and 0 or 1\n"
+    "      cur[j] = math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)\n"
+    "    end\n"
+    "    prev = cur\n"
+    "  end\n"
+    "  return prev[lb]\n"
+    "end\n"
+    // mep.learn_answer_matches(typed, accepted) -> 'exact' | 'near' | nil:
+    // `accepted` is an array of strings (a term plus its :ALIASES:); a near
+    // miss is one edit away on an answer of five or more characters. A raw
+    // (trimmed, case-sensitive) match is checked first so a code answer
+    // made of punctuation (`%`, `//`) -- which normalization would erase --
+    // still counts.
+    "function mep.learn_answer_matches(typed, accepted)\n"
+    "  local raw = mep_learn_trim(typed or '')\n"
+    "  for _, a in ipairs(accepted) do\n"
+    "    if raw ~= '' and raw == mep_learn_trim(a) then return 'exact' end\n"
+    "  end\n"
+    "  local t = mep.learn_normalize(typed)\n"
+    "  if t == '' then return nil end\n"
+    "  for _, a in ipairs(accepted) do\n"
+    "    if mep.learn_normalize(a) == t then return 'exact' end\n"
+    "  end\n"
+    "  for _, a in ipairs(accepted) do\n"
+    "    local n = mep.learn_normalize(a)\n"
+    "    if #n >= 5 and mep_learn_edit_distance(n, t) <= 1 then return 'near' end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    // --- Choice-question engine -----------------------------------------------
+    // Most games are "one prompt, pick one of N" sessions over st.questions
+    // ({card=, choices=, answer=, ...}); they differ only in how the prompt is
+    // drawn (spec.prompt_widgets) and what the reveal after an answer adds
+    // (spec.reveal_widgets), so the answer/next/scoring/streak/timer logic
+    // lives here once. spec: {name=, ask=, questions(st) -> list,
+    // prompt_widgets(st, q, w), reveal_widgets(st, q, w), validate(deck),
+    // typed=true (a `t` key answers through the typed-answer engine)}. A
+    // question may carry its own `spec` (mixed practice), which wins over the
+    // game's for drawing.
+    "local MEP_LEARN_CHOICE_HELP = '[1-9] answer   [n/Enter] next   [o] open card   [r] restart   [q] quit'\n"
+    "local mep_learn_frame_hook_installed = false\n"
+    // Timed mode: while a timed question is open, a once-per-frame poll
+    // (mep.on_frame) re-renders when the displayed second changes and
+    // answers with 0 ("time's up") once the deadline passes.
+    "local function mep_learn_tick()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.finished or not st.deadline or st.answered then return end\n"
+    "  local left = math.ceil(st.deadline - mep.now())\n"
+    "  if left <= 0 then\n"
+    "    mep.learn_choice_answer(0)\n"
+    "  elseif left ~= st.shown_left then\n"
+    "    st.shown_left = left\n"
+    "    mep.learn_render()\n"
+    "  end\n"
+    "end\n"
+    "local function mep_learn_arm_timer(st)\n"
+    "  local limit = st.opts.time_limit\n"
+    "  if not limit or limit <= 0 then limit = st.deck.options.time_limit or 0 end\n"
+    "  -- mep.learn_timed with no explicit limit and no deck default: 10 s.\n"
+    "  if st.opts.timed and limit <= 0 then limit = 10 end\n"
+    "  if limit <= 0 then st.deadline = nil return end\n"
+    "  st.deadline = mep.now() + limit\n"
+    "  st.shown_left = nil\n"
+    "  if not mep_learn_frame_hook_installed and mep.on_frame then\n"
+    "    mep_learn_frame_hook_installed = true\n"
+    "    mep.on_frame(mep_learn_tick)\n"
+    "  end\n"
+    "end\n"
+    "local function mep_learn_choice_game(spec)\n"
+    "  local game = {name = spec.name, unit = 'questions', is_choice = true, spec = spec, validate = spec.validate}\n"
+    "  function game.reset(st)\n"
+    "    st.questions = spec.questions(st)\n"
+    "    st.total = #st.questions\n"
+    "    st.index, st.streak, st.best_streak, st.answered, st.typed = 1, 0, 0, nil, nil\n"
+    "    mep_learn_arm_timer(st)\n"
+    "  end\n"
+    "  function game.current_card(st) return st.questions[st.index] and st.questions[st.index].card end\n"
+    "  function game.widgets(st)\n"
+    "    local q = st.questions[st.index]\n"
+    "    local qspec = q.spec or spec\n"
+    "    local w = {}\n"
+    "    local timer = ''\n"
+    "    if st.deadline and not st.answered then\n"
+    "      timer = string.format('   Time %ds', math.max(0, math.ceil(st.deadline - mep.now())))\n"
+    "    end\n"
+    "    w[#w + 1] = {\n"
+    "      id = 'head', hl = 'Accent',\n"
+    "      text = string.format('%s  --  %s   Question %d/%d   Score %d   Streak %d%s',\n"
+    "        st.deck.title, st.opts.survival and ('Survival: ' .. spec.name) or spec.name, st.index, #st.questions, st.score, st.streak, timer),\n"
+    "    }\n"
+    "    w[#w + 1] = mep_learn_blank('b1')\n"
+    "    qspec.prompt_widgets(st, q, w)\n"
+    "    w[#w + 1] = mep_learn_blank('b2')\n"
+    "    for i, choice in ipairs(q.choices) do\n"
+    "      local hl, mark = 'Normal', ' '\n"
+    "      if st.answered then\n"
+    "        if i == q.answer then hl, mark = 'Add', '*'\n"
+    "        elseif i == st.answered then hl, mark = 'Red', 'x'\n"
+    "        else hl = 'Comment' end\n"
+    "      end\n"
+    "      w[#w + 1] = {\n"
+    "        id = 'choice' .. i, text = string.format('%s %d) %s', mark, i, choice), hl = hl,\n"
+    "        wrap = true, wrap_indent = 5,\n"
+    "        on_click = function() mep.learn_choice_answer(i) end,\n"
+    "      }\n"
+    "    end\n"
+    "    if qspec.typed and not st.answered then\n"
+    "      w[#w + 1] = {id = 'type', text = '> Type the answer instead  [t]', hl = 'Blue', on_click = function() mep.learn_choice_type() end}\n"
+    "    end\n"
+    "    w[#w + 1] = mep_learn_blank('b3')\n"
+    "    if st.answered then\n"
+    "      if st.answered == q.answer then\n"
+    "        local how = st.typed == 'near' and ' (close enough: \"' .. st.typed_text .. '\")' or (st.typed and ' (typed)' or '')\n"
+    "        w[#w + 1] = {id = 'fb', text = 'Correct!' .. how, hl = 'Add'}\n"
+    "      else\n"
+    "        local lead = 'Not quite'\n"
+    "        if st.typed then lead = '\"' .. st.typed_text .. '\" is not it'\n"
+    "        elseif st.answered == 0 then lead = \"Time's up\" end\n"
+    "        w[#w + 1] = {id = 'fb', text = lead .. ' -- the answer is: ' .. q.choices[q.answer], hl = 'Error', wrap = true, wrap_indent = 0}\n"
+    "        if q.card.hint then\n"
+    "          w[#w + 1] = {id = 'hint', text = 'Hint: ' .. q.card.hint, hl = 'Yellow', wrap = true, wrap_indent = 0}\n"
+    "        end\n"
+    "      end\n"
+    "      if qspec.reveal_widgets then qspec.reveal_widgets(st, q, w) end\n"
+    "      w[#w + 1] = mep_learn_blank('b4')\n"
+    "      local label = st.index < #st.questions and '> Next question  [n]' or '> See results  [n]'\n"
+    "      w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_choice_next() end}\n"
+    "    end\n"
+    "    w[#w + 1] = mep_learn_blank('b5')\n"
+    "    w[#w + 1] = {id = 'help', text = (qspec.typed and '[t] type   ' or '') .. MEP_LEARN_CHOICE_HELP, hl = 'Comment'}\n"
+    "    return w\n"
+    "  end\n"
+    "  function game.on_key(st, k)\n"
+    "    local q = st.questions[st.index]\n"
+    "    local digit = tonumber(k)\n"
+    "    if digit then mep.learn_choice_answer(digit) return true end\n"
+    "    if k == 'n' or k == ' ' then mep.learn_choice_next() return true end\n"
+    "    if k == 't' and (q.spec or spec).typed then mep.learn_choice_type() return true end\n"
+    "    return false\n"
+    "  end\n"
+    "  return game\n"
+    "end\n"
+    // Records answer `i` (0 = timed out) for the current question.
+    "function mep.learn_choice_answer(i, typed_kind, typed_text)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.game.is_choice or st.finished or st.answered then return end\n"
+    "  local q = st.questions[st.index]\n"
+    "  if i < 0 or i > #q.choices then return end\n"
+    "  st.answered = i\n"
+    "  st.typed, st.typed_text = typed_kind, typed_text\n"
+    "  mep_learn_add_seen(st, q.card)\n"
+    "  if i == q.answer then\n"
+    "    st.score = st.score + 1\n"
+    "    st.streak = st.streak + 1\n"
+    "    if st.streak > st.best_streak then st.best_streak = st.streak end\n"
+    "  else\n"
+    "    st.streak = 0\n"
+    "    mep_learn_add_missed(st, q.card)\n"
+    "  end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_choice_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.game.is_choice or st.finished or not st.answered then return end\n"
+    "  -- Survival (opts.survival): the first miss ends the run; the score is\n"
+    "  -- how many were answered before it.\n"
+    "  local q = st.questions[st.index]\n"
+    "  if st.index >= #st.questions or (st.opts.survival and st.answered ~= q.answer) then\n"
+    "    st.finished = true\n"
+    "    st.deadline = nil\n"
+    "    if st.opts.survival then st.total = st.index end\n"
+    "  else\n"
+    "    st.index = st.index + 1\n"
+    "    st.answered, st.typed, st.typed_text = nil, nil, nil\n"
+    "    mep_learn_arm_timer(st)\n"
+    "  end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    // `t`: answer the current choice question by typing it (mep.ui_input);
+    // the text is matched against the right choice plus the card's aliases
+    // through the typed-answer engine. Escape leaves the question open.
+    "function mep.learn_choice_type()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.game.is_choice or st.finished or st.answered then return end\n"
+    "  local q = st.questions[st.index]\n"
+    "  local accepted = {q.choices[q.answer]}\n"
+    "  for _, a in ipairs(q.accepted or {}) do accepted[#accepted + 1] = a end\n"
+    "  mep.ui_input('Your answer', '', function(text)\n"
+    "    if text == nil then return end\n"
+    "    local live = mep_learn_state\n"
+    "    if live ~= st or st.answered or st.questions[st.index] ~= q then return end\n"
+    "    local kind = mep.learn_answer_matches(text, accepted)\n"
+    "    if kind then mep.learn_choice_answer(q.answer, kind, text)\n"
+    "    else\n"
+    "      -- A wrong typed answer marks no choice (0 is the \"none picked\" slot).\n"
+    "      mep.learn_choice_answer(0, 'typed', text)\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    // --- Selection engine helpers ----------------------------------------------
+    "local MEP_LEARN_LETTERS = 'abcdefghi'\n"
+    "local function mep_learn_letter(i) return MEP_LEARN_LETTERS:sub(i, i) end\n"
+    "local function mep_learn_letter_index(k)\n"
+    "  if #k ~= 1 then return nil end\n"
+    "  return (MEP_LEARN_LETTERS:find(k, 1, true))\n"
+    "end\n"
+    // --- Code helpers ---------------------------------------------------------
+    // Names hidden by mep.learn_anonymize_code, in order: column-0 `class X`
+    // -> Thing, Thing2, ...; column-0 `def f` (or `function f`) -> solve,
+    // solve2, ...; the card's :HIDE: identifiers -> op1, op2, ...; and every
+    // word of the term itself (3+ letters, case-insensitively, keeping a
+    // leading capital, `_` counting as a word break) -> thing/Thing, so
+    // `stack` in a comment, `self.tree` or `tree_size` can't leak the answer
+    // -- except words that are also Python keywords/builtins (set, hash,
+    // list, ...), which would corrupt the code instead of hiding anything.
+    // Every rename is a whole-identifier replacement across the block, so
+    // uses stay consistent with definitions. Returns the anonymized lines
+    // and the renames as {{from=, to=, count=}, ...} in document order
+    // (count = occurrences actually replaced), for the post-answer reveal.
+    "local MEP_LEARN_CODE_KEEP = {}\n"
+    "for word in ([[and as assert async await break class continue def del elif else except\n"
+    "  finally for from global if import in is lambda nonlocal not or pass raise return\n"
+    "  try while with yield True False None self cls abs all any bin bool bytes callable\n"
+    "  chr dict dir divmod enumerate eval filter float format frozenset getattr hasattr\n"
+    "  hash hex id input int isinstance iter len list map max min next object open ord\n"
+    "  pow print range repr reversed round set slice sorted str sum super tuple type\n"
+    "  vars zip array key value node item items data size index count left right root\n"
+    "  head tail next prev value front back top end start]]):gmatch('%S+') do\n"
+    "  MEP_LEARN_CODE_KEEP[word] = true\n"
+    "end\n"
+    "local function mep_learn_pattern_escape(s) return (s:gsub('%W', '%%%0')) end\n"
+    // Whole-identifier pattern for `word`. The case-insensitive form (term
+    // words: "stack" -> "%f[%w][sS][tT][aA][cC][kK]%f[^%w]") treats `_` as a
+    // separator too, so `stack_items` becomes `thing_items` -- a snake_case
+    // part leaks the answer as readily as a whole name; an exact rename
+    // (class/def/:HIDE:) matches the full identifier only.
+    "local function mep_learn_word_pattern(word, ignore_case)\n"
+    "  if ignore_case then\n"
+    "    local body = word:gsub('%a', function(c) return '[' .. c:lower() .. c:upper() .. ']' end)\n"
+    "    return '%f[%w]' .. body .. '%f[^%w]'\n"
+    "  end\n"
+    "  return '%f[%w_]' .. mep_learn_pattern_escape(word) .. '%f[^%w_]'\n"
+    "end\n"
+    "function mep.learn_anonymize_code(lines, card)\n"
+    "  local renames, seen = {}, {}\n"
+    "  local function add(from, to, ignore_case)\n"
+    "    if from == '' or seen[from:lower()] then return end\n"
+    "    seen[from:lower()] = true\n"
+    "    renames[#renames + 1] = {from = from, to = to, ignore_case = ignore_case, count = 0}\n"
+    "  end\n"
+    "  -- Term words go in unconditionally (their own dedupe only): a class\n"
+    "  -- already renamed case-sensitively (`Stack` -> Thing) still leaves a\n"
+    "  -- lowercase `stack` variable or comment for the case-insensitive pass.\n"
+    "  local term_words = {}\n"
+    "  local function add_term_word(word)\n"
+    "    local key = word:lower()\n"
+    "    if term_words[key] then return end\n"
+    "    term_words[key] = true\n"
+    "    renames[#renames + 1] = {from = word, to = 'thing', ignore_case = true, count = 0}\n"
+    "  end\n"
+    "  local n_class, n_def = 0, 0\n"
+    "  for _, line in ipairs(lines) do\n"
+    "    local cls = line:match('^class%s+([%a_][%w_]*)')\n"
+    "    local fn = line:match('^def%s+([%a_][%w_]*)') or line:match('^function%s+([%a_][%w_]*)')\n"
+    "    if cls and not seen[cls:lower()] then\n"
+    "      n_class = n_class + 1\n"
+    "      add(cls, n_class == 1 and 'Thing' or ('Thing' .. n_class))\n"
+    "    elseif fn and not seen[fn:lower()] then\n"
+    "      n_def = n_def + 1\n"
+    "      add(fn, n_def == 1 and 'solve' or ('solve' .. n_def))\n"
+    "    end\n"
+    "  end\n"
+    "  for i, ident in ipairs(card.hide or {}) do add(ident, 'op' .. i) end\n"
+    "  for word in card.term:gmatch('%a+') do\n"
+    "    if #word >= 3 and not MEP_LEARN_CODE_KEEP[word:lower()] then add_term_word(word) end\n"
+    "  end\n"
+    "  local out = {}\n"
+    "  for i, line in ipairs(lines) do\n"
+    "    for _, r in ipairs(renames) do\n"
+    "      local n\n"
+    "      if r.ignore_case then\n"
+    "        line, n = line:gsub(mep_learn_word_pattern(r.from, true), function(m)\n"
+    "          return m:sub(1, 1):match('%u') and ('T' .. r.to:sub(2)) or r.to\n"
+    "        end)\n"
+    "      else\n"
+    "        line, n = line:gsub(mep_learn_word_pattern(r.from, false), r.to)\n"
+    "      end\n"
+    "      r.count = r.count + n\n"
+    "    end\n"
+    "    out[i] = line\n"
+    "  end\n"
+    "  return out, renames\n"
+    "end\n"
+    // mep.learn_code_spans(lines, lang) -> per-line span arrays: Treesitter
+    // captures (mep.ts_captures) over the joined block, mapped to highlight
+    // groups through mep.ts_capture_hl and bucketed by line in the
+    // {col_start=, col_end=, hl=} shape a sidebar widget's `spans` takes.
+    // `lang` is the block's babel tag (python, lua, ...), bridged to the
+    // grammar's own filetype key (py, lua, ...) by mep_org_babel_lang_ts_ft
+    // (kBuiltinOrgPolyglot) -- unknown tag or no grammar: every line gets an
+    // empty array and the code simply draws unhighlighted.
+    "function mep.learn_code_spans(lines, lang)\n"
+    "  local by_line = {}\n"
+    "  for i = 1, #lines do by_line[i] = {} end\n"
+    "  local ft_map = mep_org_babel_lang_ts_ft or {}\n"
+    "  local ft = ft_map[lang] or lang\n"
+    "  local map = mep.ts_capture_hl\n"
+    "  if not (ft and map and mep.ts_captures) then return by_line end\n"
+    "  local ok, caps = pcall(mep.ts_captures, ft, table.concat(lines, '\\n'))\n"
+    "  if not ok or not caps then return by_line end\n"
+    "  for _, c in ipairs(caps) do\n"
+    "    local hl = map[c.capture] or map[c.capture:match('^([^.]+)')]\n"
+    "    if hl and by_line[c.row] then\n"
+    "      by_line[c.row][#by_line[c.row] + 1] = {col_start = c.col_start, col_end = c.col_end, hl = hl}\n"
+    "    end\n"
+    "  end\n"
+    "  return by_line\n"
+    "end\n"
+    // Appends one widget row per code line, Treesitter-colored. `opts`:
+    // numbered=true prefixes "NN  ", on_click(i) makes rows clickable,
+    // hl_line(i) -> hl overrides the row color (a marked line), blank=true
+    // draws lines holding `{{...}}` with the blank as ____.
+    "local function mep_learn_code_widgets(w, id_prefix, lines, lang, opts)\n"
+    "  opts = opts or {}\n"
+    "  local shown = lines\n"
+    "  if opts.blank then\n"
+    "    shown = {}\n"
+    "    for i, line in ipairs(lines) do shown[i] = (line:gsub('{{.-}}', '____')) end\n"
+    "  end\n"
+    "  local spans = mep.learn_code_spans(shown, lang)\n"
+    "  local width = #tostring(#lines)\n"
+    "  for i, line in ipairs(shown) do\n"
+    "    local prefix = ''\n"
+    "    if opts.numbered then prefix = string.format('%' .. width .. 'd  ', i) end\n"
+    "    local row_spans = spans[i]\n"
+    "    if prefix ~= '' then\n"
+    "      row_spans = {}\n"
+    "      for _, sp in ipairs(spans[i]) do\n"
+    "        row_spans[#row_spans + 1] = {col_start = sp.col_start + #prefix, col_end = sp.col_end + #prefix, hl = sp.hl}\n"
+    "      end\n"
+    "      row_spans[#row_spans + 1] = {col_start = 1, col_end = #prefix + 1, hl = 'Comment'}\n"
+    "    end\n"
+    "    -- A blank code line still needs a non-empty text to keep its row.\n"
+    "    local hl = opts.hl_line and opts.hl_line(i) or 'Normal'\n"
+    "    -- A marked row (a bug line, a reveal) shows its own color whole,\n"
+    "    -- not token colors.\n"
+    "    if hl ~= 'Normal' then row_spans = nil end\n"
+    "    local widget = {id = id_prefix .. i, text = (prefix .. line) == '' and ' ' or (prefix .. line), hl = hl, spans = row_spans}\n"
+    "    if opts.on_click then widget.on_click = function() opts.on_click(i) end end\n"
+    "    w[#w + 1] = widget\n"
+    "  end\n"
+    "end\n"
+    // --- Game: multiple-choice flashcards ---------------------------------------
+    "local MEP_LEARN_MC_SPEC = {\n"
+    "  name = 'Multiple choice',\n"
+    "  questions = function(st) return mep.learn_mc_questions(st.deck, st.opts) end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    if q.direction == 'definition' then\n"
+    "      w[#w + 1] = {id = 'ask', text = 'Which term does this describe?', hl = 'Comment'}\n"
+    "    else\n"
+    "      w[#w + 1] = {id = 'ask', text = 'Which definition matches this term?', hl = 'Comment'}\n"
+    "    end\n"
+    "    for i, para in ipairs(mep.learn_split_lines(q.prompt)) do\n"
+    "      w[#w + 1] = {id = 'prompt' .. i, text = para, hl = 'Normal', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    if q.direction == 'definition' and q.card.definition ~= '' then\n"
+    "      w[#w + 1] = {id = 'def', text = q.card.term .. ': ' .. q.card.definition, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.mc = mep_learn_choice_game(MEP_LEARN_MC_SPEC)\n"
+    // mep.learn_mc_flashcards([path][, opts]): a multiple-choice flashcard
+    // session over the deck at `path` (default: the current org buffer). opts
+    // overrides the deck's own #+LEARN_* options (choices=, direction=,
+    // rounds=, time_limit=).
+    "function mep.learn_mc_flashcards(path, opts) return mep_learn_start(MEP_LEARN_GAMES.mc, path, opts) end\n"
+    // --- Game: matching ---------------------------------------------------------
+    // A round lists its terms (1-9) above its definitions (a-i, shuffled); the
+    // player pairs every term with a definition -- digit then letter, either
+    // order, or a click on each -- and only then submits, so a round is
+    // graded as a whole the way a matching exercise is. Pairing a term or a
+    // definition that's already taken moves it; 'u' clears the selection or
+    // unpairs the selected row.
+    "MEP_LEARN_GAMES.match = {name = 'Matching', unit = 'pairs'}\n"
+    "local MEP_LEARN_MATCH_HELP = '[1-9] pick term   [a-i] pick definition   [u] unpair   [s/Enter] submit   [n] next   [o] open card   [r] restart   [q] quit'\n"
+    "function MEP_LEARN_GAMES.match.reset(st)\n"
+    "  st.rounds = mep.learn_match_rounds(st.deck, st.opts)\n"
+    "  st.total = 0\n"
+    "  for _, r in ipairs(st.rounds) do st.total = st.total + #r.cards end\n"
+    "  st.round = 1\n"
+    "  st.pairs, st.sel_term, st.sel_def, st.submitted = {}, nil, nil, nil\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.match.current_card(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  if not r then return nil end\n"
+    "  if st.sel_term then return r.cards[st.sel_term] end\n"
+    "  if st.sel_def then return r.cards[r.defs[st.sel_def]] end\n"
+    "  return r.cards[1]\n"
+    "end\n"
+    // pairs[term_index] = definition slot (1-based position in r.defs).
+    "local function mep_learn_match_term_of_slot(st, slot)\n"
+    "  for t, s in pairs(st.pairs) do if s == slot then return t end end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_learn_match_all_paired(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  for t = 1, #r.cards do if not st.pairs[t] then return false end end\n"
+    "  return true\n"
+    "end\n"
+    "local function mep_learn_match_try_pair(st)\n"
+    "  if not (st.sel_term and st.sel_def) then return end\n"
+    "  local old_term = mep_learn_match_term_of_slot(st, st.sel_def)\n"
+    "  if old_term then st.pairs[old_term] = nil end\n"
+    "  st.pairs[st.sel_term] = st.sel_def\n"
+    "  st.sel_term, st.sel_def = nil, nil\n"
+    "end\n"
+    "function mep.learn_match_pick_term(t)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.match or st.finished or st.submitted then return end\n"
+    "  local r = st.rounds[st.round]\n"
+    "  if t < 1 or t > #r.cards then return end\n"
+    "  if st.sel_term == t then st.sel_term = nil else st.sel_term = t end\n"
+    "  mep_learn_match_try_pair(st)\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_match_pick_def(slot)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.match or st.finished or st.submitted then return end\n"
+    "  local r = st.rounds[st.round]\n"
+    "  if slot < 1 or slot > #r.cards then return end\n"
+    "  if st.sel_def == slot then st.sel_def = nil else st.sel_def = slot end\n"
+    "  mep_learn_match_try_pair(st)\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_match_unpair()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.match or st.finished or st.submitted then return end\n"
+    "  if st.sel_term then st.pairs[st.sel_term] = nil\n"
+    "  elseif st.sel_def then\n"
+    "    local t = mep_learn_match_term_of_slot(st, st.sel_def)\n"
+    "    if t then st.pairs[t] = nil end\n"
+    "  end\n"
+    "  st.sel_term, st.sel_def = nil, nil\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_match_submit()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.match or st.finished or st.submitted then return end\n"
+    "  if not mep_learn_match_all_paired(st) then\n"
+    "    mep.notify('Learn: pair every term before submitting', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local correct = 0\n"
+    "  for t = 1, #r.cards do\n"
+    "    mep_learn_add_seen(st, r.cards[t])\n"
+    "    if r.defs[st.pairs[t]] == t then correct = correct + 1\n"
+    "    else mep_learn_add_missed(st, r.cards[t]) end\n"
+    "  end\n"
+    "  st.score = st.score + correct\n"
+    "  st.submitted = correct\n"
+    "  st.sel_term, st.sel_def = nil, nil\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_match_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.match or st.finished or not st.submitted then return end\n"
+    "  if st.round >= #st.rounds then\n"
+    "    st.finished = true\n"
+    "  else\n"
+    "    st.round = st.round + 1\n"
+    "    st.pairs, st.submitted = {}, nil\n"
+    "  end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.match.widgets(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Matching   Round %d/%d   Score %d/%d', st.deck.title, st.round, #st.rounds, st.score, st.total),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if st.submitted then\n"
+    "    local hl = st.submitted == #r.cards and 'Add' or (st.submitted == 0 and 'Error' or 'Yellow')\n"
+    "    w[#w + 1] = {id = 'ask', text = string.format('%d of %d pairs correct', st.submitted, #r.cards), hl = hl}\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Pair every term with its definition, then submit.', hl = 'Comment'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  w[#w + 1] = {id = 'terms', text = 'Terms', hl = 'PickerTitle'}\n"
+    "  for t, card in ipairs(r.cards) do\n"
+    "    local slot = st.pairs[t]\n"
+    "    local hl, mark, tail = 'Normal', ' ', '-> _'\n"
+    "    if slot then tail = '-> ' .. mep_learn_letter(slot) end\n"
+    "    if st.submitted then\n"
+    "      if r.defs[slot] == t then hl, mark = 'Add', '*'\n"
+    "      else\n"
+    "        hl, mark = 'Red', 'x'\n"
+    "        for s = 1, #r.defs do if r.defs[s] == t then tail = tail .. '  (answer: ' .. mep_learn_letter(s) .. ')' end end\n"
+    "      end\n"
+    "    elseif st.sel_term == t then hl, mark = 'Yellow', '>'\n"
+    "    elseif slot then hl = 'Cyan' end\n"
+    "    w[#w + 1] = {\n"
+    "      id = 'term' .. t, text = string.format('%s %d) %s  %s', mark, t, card.term, tail), hl = hl,\n"
+    "      wrap = true, wrap_indent = 5,\n"
+    "      on_click = function() mep.learn_match_pick_term(t) end,\n"
+    "    }\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b3')\n"
+    "  w[#w + 1] = {id = 'defs', text = 'Definitions', hl = 'PickerTitle'}\n"
+    "  for slot, ci in ipairs(r.defs) do\n"
+    "    local card = r.cards[ci]\n"
+    "    local t = mep_learn_match_term_of_slot(st, slot)\n"
+    "    local hl, mark = 'Normal', ' '\n"
+    "    local tag = t and ('[' .. t .. ']') or '[ ]'\n"
+    "    if st.submitted then\n"
+    "      if t == ci then hl, mark = 'Add', '*'\n"
+    "      else hl, mark, tag = 'Red', 'x', '[' .. ci .. ']' end\n"
+    "    elseif st.sel_def == slot then hl, mark = 'Yellow', '>'\n"
+    "    elseif t then hl = 'Cyan' end\n"
+    "    w[#w + 1] = {\n"
+    "      id = 'def' .. slot, text = string.format('%s %s) %s %s', mark, mep_learn_letter(slot), tag, card.definition), hl = hl,\n"
+    "      wrap = true, wrap_indent = 9,\n"
+    "      on_click = function() mep.learn_match_pick_def(slot) end,\n"
+    "    }\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b4')\n"
+    "  if st.submitted then\n"
+    "    local label = st.round < #st.rounds and '> Next round  [n]' or '> See results  [n]'\n"
+    "    w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_match_next() end}\n"
+    "  elseif mep_learn_match_all_paired(st) then\n"
+    "    w[#w + 1] = {id = 'submit', text = '> Submit  [s]', hl = 'Blue', on_click = function() mep.learn_match_submit() end}\n"
+    "  else\n"
+    "    local left = 0\n"
+    "    for t = 1, #r.cards do if not st.pairs[t] then left = left + 1 end end\n"
+    "    w[#w + 1] = {id = 'submit', text = string.format('  Submit  (%d left to pair)', left), hl = 'Comment'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = MEP_LEARN_MATCH_HELP, hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.match.on_key(st, k)\n"
+    "  local digit = tonumber(k)\n"
+    "  if digit then mep.learn_match_pick_term(digit) return true end\n"
+    "  local slot = mep_learn_letter_index(k)\n"
+    "  if slot then mep.learn_match_pick_def(slot) return true end\n"
+    "  if k == 'u' then mep.learn_match_unpair() return true end\n"
+    "  if k == 's' then mep.learn_match_submit() return true end\n"
+    "  if k == 'n' or k == ' ' then mep.learn_match_next() return true end\n"
+    "  return false\n"
+    "end\n"
+    // mep.learn_matching([path][, opts]): a matching session over the deck at
+    // `path` (default: the current org buffer); opts.size / opts.rounds
+    // override #+LEARN_MATCH_SIZE: / #+LEARN_ROUNDS:.
+    "function mep.learn_matching(path, opts) return mep_learn_start(MEP_LEARN_GAMES.match, path, opts) end\n"
+    // --- Game: identify the code ------------------------------------------------
+    // mep.learn_code_questions(deck[, opts]) -> choice questions for every
+    // card that carries a code block, in shuffled order (opts.rounds caps),
+    // each with q.code (the anonymized lines), q.renames and q.lang.
+    // Distractors come from the whole deck, code or not, so a handful of
+    // implementations still gets four plausible options.
+    "function mep.learn_code_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local order = {}\n"
+    "  for _, c in ipairs(deck.cards) do if c.code then order[#order + 1] = c end end\n"
+    "  mep_learn_cap(mep.learn_shuffle(order), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, card in ipairs(order) do\n"
+    "    local candidates = mep.learn_shuffle(mep_learn_copy(card.distractors))\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do candidates[#candidates + 1] = c.term end\n"
+    "    local choices, answer = mep_learn_choices(card.term, candidates, n_choices)\n"
+    "    local code, renames = mep.learn_anonymize_code(card.code.lines, card)\n"
+    "    questions[#questions + 1] = {\n"
+    "      card = card, direction = 'definition', prompt = card.term, choices = choices, answer = answer,\n"
+    "      code = code, renames = renames, lang = card.code.lang, accepted = card.aliases,\n"
+    "    }\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local function mep_learn_count(deck, pred)\n"
+    "  local n = 0\n"
+    "  for _, c in ipairs(deck.cards) do if pred(c) then n = n + 1 end end\n"
+    "  return n\n"
+    "end\n"
+    "local MEP_LEARN_CODE_SPEC = {\n"
+    "  name = 'Identify the code',\n"
+    "  questions = function(st) return mep.learn_code_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if mep_learn_count(deck, function(c) return c.code end) < 2 then\n"
+    "      return 'the deck needs at least two cards with a #+begin_src block'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = string.format('Which of these does this %s implement?', q.lang), hl = 'Comment'}\n"
+    "    mep_learn_code_widgets(w, 'code', st.answered and q.card.code.lines or q.code, q.lang)\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    local parts = {}\n"
+    "    for _, r in ipairs(q.renames) do\n"
+    "      if r.count > 0 then parts[#parts + 1] = r.to .. ' = ' .. r.from end\n"
+    "    end\n"
+    "    if #parts > 0 then\n"
+    "      w[#w + 1] = {id = 'names', text = 'Real names: ' .. table.concat(parts, ', '), hl = 'Cyan', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "    if q.card.definition ~= '' then\n"
+    "      w[#w + 1] = {id = 'def', text = q.card.term .. ': ' .. q.card.definition, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.code = mep_learn_choice_game(MEP_LEARN_CODE_SPEC)\n"
+    // mep.learn_code_id([path][, opts]): an identify-the-code session over
+    // the deck's cards that carry a #+begin_src block (needs at least two).
+    "function mep.learn_code_id(path, opts) return mep_learn_start(MEP_LEARN_GAMES.code, path, opts) end\n"
+    // --- Game: true or false ----------------------------------------------------
+    // mep.learn_tf_questions(deck[, opts]): one statement per card, "Term --
+    // definition", half of them swapped to another card's definition (same
+    // category first, so the false ones are plausible). choices are True /
+    // False; q.shown_card is whose definition was actually shown.
+    "function mep.learn_tf_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local order = mep_learn_cap(mep.learn_shuffle(mep_learn_copy(deck.cards)), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for i, card in ipairs(order) do\n"
+    "    local truth = (i % 2 == 1)\n"
+    "    local shown = card\n"
+    "    if not truth then\n"
+    "      local others = mep_learn_others(deck, card)\n"
+    "      shown = others[1]\n"
+    "      for _, c in ipairs(others) do if c.definition ~= card.definition then shown = c break end end\n"
+    "    end\n"
+    "    if shown == card then truth = true end\n"
+    "    questions[#questions + 1] = {\n"
+    "      card = card, shown_card = shown, prompt = card.term .. ' -- ' .. shown.definition,\n"
+    "      choices = {'True', 'False'}, answer = truth and 1 or 2,\n"
+    "    }\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_TF_SPEC = {\n"
+    "  name = 'True or false',\n"
+    "  questions = function(st) return mep.learn_tf_questions(st.deck, st.opts) end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Is this statement true?', hl = 'Comment'}\n"
+    "    w[#w + 1] = {id = 'prompt', text = q.prompt, hl = 'Normal', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    if q.shown_card ~= q.card then\n"
+    "      w[#w + 1] = {id = 'real', text = 'That was ' .. q.shown_card.term .. \"'s definition. \" .. q.card.term .. ': ' .. q.card.definition, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.tf = mep_learn_choice_game(MEP_LEARN_TF_SPEC)\n"
+    "do\n"
+    "  local base = MEP_LEARN_GAMES.tf.on_key\n"
+    "  MEP_LEARN_GAMES.tf.on_key = function(st, k)\n"
+    "    if k == 't' or k == 'y' then mep.learn_choice_answer(1) return true end\n"
+    "    if k == 'f' then mep.learn_choice_answer(2) return true end\n"
+    "    return base(st, k)\n"
+    "  end\n"
+    "end\n"
+    "function mep.learn_true_false(path, opts) return mep_learn_start(MEP_LEARN_GAMES.tf, path, opts) end\n"
+    // --- Game: fill in the blank (cloze) ----------------------------------------
+    // mep.learn_cloze_questions(deck[, opts]): one question per `{{answer}}`
+    // blank in any card's prose; the sentence shows ____ for the blank and the
+    // choices are the answer plus other cards' cloze answers (same category
+    // first), then terms. `t` types the answer instead.
+    "function mep.learn_cloze_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local all = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    for _, b in ipairs(c.clozes) do all[#all + 1] = {card = c, blank = b} end\n"
+    "  end\n"
+    "  mep_learn_cap(mep.learn_shuffle(all), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, item in ipairs(all) do\n"
+    "    local card, b = item.card, item.blank\n"
+    "    local candidates = {}\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do\n"
+    "      for _, ob in ipairs(c.clozes) do candidates[#candidates + 1] = ob.answer end\n"
+    "    end\n"
+    "    for _, ob in ipairs(card.clozes) do if ob ~= b then candidates[#candidates + 1] = ob.answer end end\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do candidates[#candidates + 1] = c.term end\n"
+    "    local choices, answer = mep_learn_choices(b.answer, candidates, n_choices)\n"
+    "    local sentence = b.sentence:sub(1, b.start - 1) .. '____' .. b.sentence:sub(b.stop + 1)\n"
+    "    questions[#questions + 1] = {card = card, blank = b, prompt = sentence, choices = choices, answer = answer, accepted = {}}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_CLOZE_SPEC = {\n"
+    "  name = 'Fill in the blank',\n"
+    "  typed = true,\n"
+    "  questions = function(st) return mep.learn_cloze_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if mep_learn_count(deck, function(c) return #c.clozes > 0 end) < 1 then\n"
+    "      return 'the deck has no {{blank}} markup in any card'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Fill in the blank  (' .. q.card.term .. ')', hl = 'Comment'}\n"
+    "    w[#w + 1] = {id = 'prompt', text = q.prompt, hl = 'Normal', wrap = true, wrap_indent = 0}\n"
+    "    if q.blank.hint and not st.answered then\n"
+    "      w[#w + 1] = {id = 'bhint', text = 'Hint: ' .. q.blank.hint, hl = 'Yellow', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'full', text = q.blank.sentence, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.cloze = mep_learn_choice_game(MEP_LEARN_CLOZE_SPEC)\n"
+    "function mep.learn_cloze(path, opts) return mep_learn_start(MEP_LEARN_GAMES.cloze, path, opts) end\n"
+    // --- Game: odd one out ------------------------------------------------------
+    // mep.learn_oddone_questions(deck[, opts]): three terms from one category
+    // plus one from another; the odd one is the answer. Only categories with
+    // three or more cards seed a question.
+    "function mep.learn_oddone_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local by_cat = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    if c.category then\n"
+    "      by_cat[c.category] = by_cat[c.category] or {}\n"
+    "      table.insert(by_cat[c.category], c)\n"
+    "    end\n"
+    "  end\n"
+    "  local questions = {}\n"
+    "  for _, odd in ipairs(mep.learn_shuffle(mep_learn_copy(deck.cards))) do\n"
+    "    if odd.category then\n"
+    "      local cats = {}\n"
+    "      for name, cards in pairs(by_cat) do\n"
+    "        if name ~= odd.category and #cards >= 3 then cats[#cats + 1] = name end\n"
+    "      end\n"
+    "      if #cats > 0 then\n"
+    "        local group = mep.learn_shuffle(mep_learn_copy(by_cat[cats[math.random(#cats)]]))\n"
+    "        local choices = {odd.term, group[1].term, group[2].term, group[3].term}\n"
+    "        mep.learn_shuffle(choices)\n"
+    "        local answer\n"
+    "        for i, t in ipairs(choices) do if t == odd.term then answer = i end end\n"
+    "        questions[#questions + 1] = {card = odd, group_category = group[1].category, choices = choices, answer = answer}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return mep_learn_cap(questions, opts.rounds or deck.options.rounds)\n"
+    "end\n"
+    "local MEP_LEARN_ODDONE_SPEC = {\n"
+    "  name = 'Odd one out',\n"
+    "  questions = function(st) return mep.learn_oddone_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if #mep.learn_oddone_questions(deck, {rounds = 1}) == 0 then\n"
+    "      return 'odd one out needs two categories, one with three or more cards'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = \"Which one doesn't belong?\", hl = 'Comment'}\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'why', text = q.card.term .. ' is a ' .. q.card.category .. '; the others are ' .. q.group_category .. '.', hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.oddone = mep_learn_choice_game(MEP_LEARN_ODDONE_SPEC)\n"
+    "function mep.learn_odd_one_out(path, opts) return mep_learn_start(MEP_LEARN_GAMES.oddone, path, opts) end\n"
+    // --- Game: which category? --------------------------------------------------
+    "function mep.learn_category_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local order = {}\n"
+    "  for _, c in ipairs(deck.cards) do if c.category then order[#order + 1] = c end end\n"
+    "  mep_learn_cap(mep.learn_shuffle(order), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, card in ipairs(order) do\n"
+    "    local candidates = mep.learn_shuffle(mep_learn_copy(deck.categories))\n"
+    "    local choices, answer = mep_learn_choices(card.category, candidates, n_choices)\n"
+    "    questions[#questions + 1] = {card = card, prompt = card.term, choices = choices, answer = answer}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_CATEGORY_SPEC = {\n"
+    "  name = 'Which category',\n"
+    "  questions = function(st) return mep.learn_category_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if #deck.categories < 2 then return 'which-category needs cards under at least two category headlines' end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Which category does this belong to?', hl = 'Comment'}\n"
+    "    w[#w + 1] = {id = 'prompt', text = q.card.term, hl = 'Normal'}\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'def', text = q.card.term .. ': ' .. q.card.definition, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.category = mep_learn_choice_game(MEP_LEARN_CATEGORY_SPEC)\n"
+    "function mep.learn_which_category(path, opts) return mep_learn_start(MEP_LEARN_GAMES.category, path, opts) end\n"
+    // --- Game: fact quiz --------------------------------------------------------
+    // mep.learn_fact_questions(deck[, opts]): one question per (card, fact)
+    // whose key has at least two distinct values across the deck -- "Term --
+    // KEY?" with the other values as choices (same category first).
+    "function mep.learn_fact_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local values_by_key = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    for _, f in ipairs(c.facts) do\n"
+    "      values_by_key[f.key] = values_by_key[f.key] or {}\n"
+    "      values_by_key[f.key][f.value] = true\n"
+    "    end\n"
+    "  end\n"
+    "  local all = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    for _, f in ipairs(c.facts) do\n"
+    "      local n = 0\n"
+    "      for _ in pairs(values_by_key[f.key]) do n = n + 1 end\n"
+    "      if n >= 2 then all[#all + 1] = {card = c, fact = f} end\n"
+    "    end\n"
+    "  end\n"
+    "  mep_learn_cap(mep.learn_shuffle(all), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, item in ipairs(all) do\n"
+    "    local card, f = item.card, item.fact\n"
+    "    local candidates = {}\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do\n"
+    "      for _, of in ipairs(c.facts) do if of.key == f.key then candidates[#candidates + 1] = of.value end end\n"
+    "    end\n"
+    "    local choices, answer = mep_learn_choices(f.value, candidates, n_choices)\n"
+    "    local label = f.key:lower():gsub('_', ' ')\n"
+    "    questions[#questions + 1] = {card = card, fact = f, prompt = card.term .. ' -- ' .. label .. '?', choices = choices, answer = answer}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_FACTS_SPEC = {\n"
+    "  name = 'Fact quiz',\n"
+    "  questions = function(st) return mep.learn_fact_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if #mep.learn_fact_questions(deck, {rounds = 1}) == 0 then\n"
+    "      return 'the fact quiz needs a property (#+LEARN_FACTS: or any non-reserved key) or a 2-column table with differing values across cards'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Which is right?', hl = 'Comment'}\n"
+    "    w[#w + 1] = {id = 'prompt', text = q.prompt, hl = 'Normal', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    local parts = {}\n"
+    "    for _, f in ipairs(q.card.facts) do parts[#parts + 1] = f.key:lower():gsub('_', ' ') .. ' = ' .. f.value end\n"
+    "    w[#w + 1] = {id = 'facts', text = q.card.term .. ': ' .. table.concat(parts, ', '), hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.facts = mep_learn_choice_game(MEP_LEARN_FACTS_SPEC)\n"
+    "function mep.learn_fact_quiz(path, opts) return mep_learn_start(MEP_LEARN_GAMES.facts, path, opts) end\n"
+    // --- Game: complete the code ------------------------------------------------
+    // mep.learn_code_cloze_questions(deck[, opts]): every `{{...}}` in a
+    // `:learn cloze` block is one question: the block shown with that blank
+    // as ____ (other blanks of the same block show their answers), choices
+    // from the deck's other code blanks. `t` types it.
+    "local function mep_learn_block_clozes(blk)\n"
+    "  local out = {}\n"
+    "  for i, line in ipairs(blk.lines) do\n"
+    "    local plain, blanks = mep.learn_cloze_strip(line)\n"
+    "    for _, b in ipairs(blanks) do out[#out + 1] = {line = i, answer = b.answer, hint = b.hint} end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    "function mep.learn_code_cloze_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local all, pool = {}, {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    for _, blk in ipairs(c.blocks) do\n"
+    "      if blk.learn == 'cloze' then\n"
+    "        for _, b in ipairs(mep_learn_block_clozes(blk)) do\n"
+    "          all[#all + 1] = {card = c, block = blk, blank = b}\n"
+    "          pool[#pool + 1] = b.answer\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  mep_learn_cap(mep.learn_shuffle(all), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, item in ipairs(all) do\n"
+    "    local card, blk, b = item.card, item.block, item.blank\n"
+    "    -- Show the block with only this blank open: every other {{x}} in\n"
+    "    -- the block is resolved to its answer, and the one asked stays as\n"
+    "    -- {{x}} for mep_learn_code_widgets' blank=true to draw as ____.\n"
+    "    local shown, seen_target = {}, false\n"
+    "    for i, line in ipairs(blk.lines) do\n"
+    "      if i == b.line then\n"
+    "        local n = 0\n"
+    "        shown[i] = line:gsub('{{(.-)}}', function(inner)\n"
+    "          n = n + 1\n"
+    "          local ans = mep_learn_trim(inner:match('^(.-)|') or inner)\n"
+    "          if not seen_target and ans == b.answer then seen_target = true return '{{' .. inner .. '}}' end\n"
+    "          return ans\n"
+    "        end)\n"
+    "      else\n"
+    "        shown[i] = (mep.learn_cloze_strip(line))\n"
+    "      end\n"
+    "    end\n"
+    "    local candidates = mep.learn_shuffle(mep_learn_copy(pool))\n"
+    "    local choices, answer = mep_learn_choices(b.answer, candidates, n_choices)\n"
+    "    questions[#questions + 1] = {card = card, block = blk, blank = b, code = shown, lang = blk.lang, choices = choices, answer = answer, accepted = {}}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_CODE_CLOZE_SPEC = {\n"
+    "  name = 'Complete the code',\n"
+    "  typed = true,\n"
+    "  questions = function(st) return mep.learn_code_cloze_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if #mep.learn_code_cloze_questions(deck, {rounds = 1}) == 0 then\n"
+    "      return 'complete-the-code needs a `#+begin_src <lang> :learn cloze` block with {{blank}} markup'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'What goes in the blank?  (' .. q.card.term .. ')', hl = 'Comment'}\n"
+    "    mep_learn_code_widgets(w, 'code', q.code, q.lang, {blank = true, hl_line = function(i) return i == q.blank.line and 'Yellow' or 'Normal' end})\n"
+    "    if q.blank.hint and not st.answered then\n"
+    "      w[#w + 1] = {id = 'bhint', text = 'Hint: ' .. q.blank.hint, hl = 'Yellow', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'full', text = 'Line ' .. q.blank.line .. ': ' .. (mep.learn_cloze_strip(q.block.lines[q.blank.line])):gsub('^%s+', ''), hl = 'Cyan', wrap = true, wrap_indent = 0}\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.code_cloze = mep_learn_choice_game(MEP_LEARN_CODE_CLOZE_SPEC)\n"
+    "function mep.learn_complete_code(path, opts) return mep_learn_start(MEP_LEARN_GAMES.code_cloze, path, opts) end\n"
+    // --- Game: predict the output -----------------------------------------------
+    // mep.learn_output_questions(deck[, opts]): one question per `:learn
+    // output` block that has a #+RESULTS: drawer: the card's implementation
+    // (if any) plus the block are shown, the choices are the other output
+    // blocks' results.
+    "function mep.learn_output_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local all, pool = {}, {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    for _, blk in ipairs(c.blocks) do\n"
+    "      if blk.learn == 'output' and blk.results and #blk.results > 0 then\n"
+    "        all[#all + 1] = {card = c, block = blk}\n"
+    "        pool[#pool + 1] = table.concat(blk.results, ' | ')\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  mep_learn_cap(mep.learn_shuffle(all), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, item in ipairs(all) do\n"
+    "    local answer_text = table.concat(item.block.results, ' | ')\n"
+    "    local choices, answer = mep_learn_choices(answer_text, mep.learn_shuffle(mep_learn_copy(pool)), n_choices)\n",
+    "    questions[#questions + 1] = {card = item.card, block = item.block, lang = item.block.lang, choices = choices, answer = answer}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_OUTPUT_SPEC = {\n"
+    "  name = 'Predict the output',\n"
+    "  questions = function(st) return mep.learn_output_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if #mep.learn_output_questions(deck, {rounds = 0}) < 2 then\n"
+    "      return 'predict-the-output needs two or more `:learn output` blocks each followed by #+RESULTS:'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'What does this print?  (lines joined with \" | \")', hl = 'Comment'}\n"
+    "    if q.card.code then\n"
+    "      mep_learn_code_widgets(w, 'impl', q.card.code.lines, q.card.code.lang)\n"
+    "      w[#w + 1] = mep_learn_blank('bimpl')\n"
+    "    end\n"
+    "    mep_learn_code_widgets(w, 'code', q.block.lines, q.lang)\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.output = mep_learn_choice_game(MEP_LEARN_OUTPUT_SPEC)\n"
+    "function mep.learn_predict_output(path, opts) return mep_learn_start(MEP_LEARN_GAMES.output, path, opts) end\n"
+    // --- Game: mixed practice ---------------------------------------------------
+    // Every choice-engine generator the deck can feed, shuffled together;
+    // each question keeps its own spec for drawing. #+LEARN_MIXED: (or
+    // opts.mixed) names the subset.
+    "local MEP_LEARN_MIXED_SOURCES = {\n"
+    "  {key = 'mc', spec = MEP_LEARN_MC_SPEC},\n"
+    "  {key = 'code', spec = MEP_LEARN_CODE_SPEC},\n"
+    "  {key = 'tf', spec = MEP_LEARN_TF_SPEC},\n"
+    "  {key = 'cloze', spec = MEP_LEARN_CLOZE_SPEC},\n"
+    "  {key = 'oddone', spec = MEP_LEARN_ODDONE_SPEC},\n"
+    "  {key = 'category', spec = MEP_LEARN_CATEGORY_SPEC},\n"
+    "  {key = 'facts', spec = MEP_LEARN_FACTS_SPEC},\n"
+    "  {key = 'code_cloze', spec = MEP_LEARN_CODE_CLOZE_SPEC},\n"
+    "  {key = 'output', spec = MEP_LEARN_OUTPUT_SPEC},\n"
+    "}\n"
+    "function mep.learn_mixed_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local wanted = opts.mixed or deck.options.mixed\n"
+    "  local allow = nil\n"
+    "  if wanted then\n"
+    "    allow = {}\n"
+    "    for _, k in ipairs(wanted) do allow[k] = true end\n"
+    "  end\n"
+    "  local all = {}\n"
+    "  for _, src in ipairs(MEP_LEARN_MIXED_SOURCES) do\n"
+    "    if not allow or allow[src.key] then\n"
+    "      local fake = {deck = deck, opts = {choices = opts.choices, rounds = 0}}\n"
+    "      local ok, qs = pcall(src.spec.questions, fake)\n"
+    "      if ok and qs and not (src.spec.validate and src.spec.validate(deck)) then\n"
+    "        for _, q in ipairs(qs) do\n"
+    "          q.spec = src.spec\n"
+    "          all[#all + 1] = q\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return mep_learn_cap(mep.learn_shuffle(all), opts.rounds or deck.options.rounds)\n"
+    "end\n"
+    "MEP_LEARN_GAMES.mixed = mep_learn_choice_game({\n"
+    "  name = 'Mixed practice',\n"
+    "  questions = function(st) return mep.learn_mixed_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if #mep.learn_mixed_questions(deck, {rounds = 1}) == 0 then return 'nothing to practice in this deck' end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w) end,\n"
+    "})\n"
+    "function mep.learn_mixed(path, opts) return mep_learn_start(MEP_LEARN_GAMES.mixed, path, opts) end\n"
+    // mep.learn_timed([path][, seconds]): mixed practice against the clock --
+    // `seconds` per question (default #+LEARN_TIME_LIMIT:, else 10).
+    "function mep.learn_timed(path, seconds)\n"
+    "  return mep_learn_start(MEP_LEARN_GAMES.mixed, path, {time_limit = tonumber(seconds), timed = true})\n"
+    "end\n"
+    // --- Game: type the term ----------------------------------------------------
+    // The definition (or :QUESTION:) is the prompt and the answer is typed
+    // (`t` or Enter opens the prompt); the term and its :ALIASES: are accepted,
+    // a one-edit slip on a longer term counts as a near miss. `n` skips
+    // (a miss).
+    "MEP_LEARN_GAMES.typed = {name = 'Type the term', unit = 'questions'}\n"
+    "function MEP_LEARN_GAMES.typed.reset(st)\n"
+    "  st.questions = mep_learn_cap(mep.learn_shuffle(mep_learn_copy(st.deck.cards)), st.opts.rounds or st.deck.options.rounds)\n"
+    "  st.total = #st.questions\n"
+    "  st.index, st.streak, st.best_streak, st.result = 1, 0, 0, nil\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.typed.current_card(st) return st.questions[st.index] end\n"
+    "function mep.learn_typed_prompt()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.typed or st.finished or st.result then return end\n"
+    "  local card = st.questions[st.index]\n"
+    "  mep.ui_input('Which term is this?', '', function(text)\n"
+    "    if text == nil then return end\n"
+    "    local live = mep_learn_state\n"
+    "    if live ~= st or st.result or st.questions[st.index] ~= card then return end\n"
+    "    local accepted = {card.term}\n"
+    "    for _, a in ipairs(card.aliases) do accepted[#accepted + 1] = a end\n"
+    "    local kind = mep.learn_answer_matches(text, accepted)\n"
+    "    st.result = {kind = kind or 'wrong', text = text}\n"
+    "    mep_learn_add_seen(st, card)\n"
+    "    if kind then\n"
+    "      st.score = st.score + 1\n"
+    "      st.streak = st.streak + 1\n"
+    "      if st.streak > st.best_streak then st.best_streak = st.streak end\n"
+    "    else\n"
+    "      st.streak = 0\n"
+    "      mep_learn_add_missed(st, card)\n"
+    "    end\n"
+    "    mep.learn_render()\n"
+    "  end)\n"
+    "end\n"
+    "function mep.learn_typed_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.typed or st.finished then return end\n"
+    "  if not st.result then\n"
+    "    -- Skipping is a miss.\n"
+    "    st.result = {kind = 'skipped', text = ''}\n"
+    "    st.streak = 0\n"
+    "    mep_learn_add_seen(st, st.questions[st.index])\n"
+    "    mep_learn_add_missed(st, st.questions[st.index])\n"
+    "    mep.learn_render()\n"
+    "    return\n"
+    "  end\n"
+    "  if st.index >= #st.questions then st.finished = true\n"
+    "  else st.index, st.result = st.index + 1, nil end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.typed.widgets(st)\n"
+    "  local card = st.questions[st.index]\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Type the term   Question %d/%d   Score %d   Streak %d', st.deck.title, st.index, #st.questions, st.score, st.streak),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  w[#w + 1] = {id = 'ask', text = 'Which term is this? Type it.', hl = 'Comment'}\n"
+    "  for i, para in ipairs(mep.learn_split_lines(card.question or card.definition)) do\n"
+    "    w[#w + 1] = {id = 'prompt' .. i, text = para, hl = 'Normal', wrap = true, wrap_indent = 0}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  if not st.result then\n"
+    "    w[#w + 1] = {id = 'type', text = '> Type your answer  [t/Enter]', hl = 'Blue', on_click = function() mep.learn_typed_prompt() end}\n"
+    "    w[#w + 1] = {id = 'skip', text = '  Skip  [n]', hl = 'Comment', on_click = function() mep.learn_typed_next() end}\n"
+    "  else\n"
+    "    local r = st.result\n"
+    "    if r.kind == 'exact' then w[#w + 1] = {id = 'fb', text = 'Correct: ' .. card.term, hl = 'Add'}\n"
+    "    elseif r.kind == 'near' then w[#w + 1] = {id = 'fb', text = 'Close enough (\"' .. r.text .. '\"): ' .. card.term, hl = 'Add'}\n"
+    "    elseif r.kind == 'skipped' then w[#w + 1] = {id = 'fb', text = 'Skipped -- it was: ' .. card.term, hl = 'Error'}\n"
+    "    else w[#w + 1] = {id = 'fb', text = '\"' .. r.text .. '\" is not it -- the answer is: ' .. card.term, hl = 'Error', wrap = true, wrap_indent = 0} end\n"
+    "    if r.kind ~= 'exact' and card.hint then\n"
+    "      w[#w + 1] = {id = 'hint', text = 'Hint: ' .. card.hint, hl = 'Yellow', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "    if #card.aliases > 0 then\n"
+    "      w[#w + 1] = {id = 'aliases', text = 'Also accepted: ' .. table.concat(card.aliases, ', '), hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "    w[#w + 1] = mep_learn_blank('b3')\n"
+    "    local label = st.index < #st.questions and '> Next question  [n]' or '> See results  [n]'\n"
+    "    w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_typed_next() end}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b4')\n"
+    "  w[#w + 1] = {id = 'help', text = '[t/Enter] type   [n] next/skip   [o] open card   [r] restart   [q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.typed.on_key(st, k)\n"
+    "  if k == 't' then mep.learn_typed_prompt() return true end\n"
+    "  if k == 'n' or k == ' ' then mep.learn_typed_next() return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_type_term(path, opts) return mep_learn_start(MEP_LEARN_GAMES.typed, path, opts) end\n"
+    // --- Game: put in order -----------------------------------------------------
+    // Every card with an ordered list (two or more steps) is one round: the
+    // steps are shown shuffled with letters, pressing letters builds the
+    // order, `u` drops the last pick, and the round grades itself once every
+    // step is placed (score = steps in the right position).
+    // A round is {title=, items={{text=, card=, value=}, ...}, perm=}: items
+    // in their correct order, `perm` the shuffled display order (slot ->
+    // item index). Graded by position: a slot is right when the item it
+    // shows carries the value the correct order has at that position --
+    // equal values (a tie in rank-by-fact) are right in either order.
+    "local function mep_learn_sequence_round(title, items, cards)\n"
+    "  local perm = {}\n"
+    "  for i = 1, #items do perm[i] = i end\n"
+    "  mep.learn_shuffle(perm)\n"
+    "  local fixed = true\n"
+    "  for i = 1, #perm do if perm[i] ~= i then fixed = false break end end\n"
+    "  if fixed then perm[1], perm[2] = perm[2], perm[1] end\n"
+    "  return {title = title, items = items, perm = perm, cards = cards}\n"
+    "end\n"
+    // mep.learn_step_rounds(deck): one round per card with an ordered list.
+    "function mep.learn_step_rounds(deck)\n"
+    "  local rounds = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    if #c.steps >= 2 and #c.steps <= 9 then\n"
+    "      local items = {}\n"
+    "      for i, step in ipairs(c.steps) do items[i] = {text = step, value = i} end\n"
+    "      local what = c.steps_title and (c.term .. ' -- ' .. c.steps_title:gsub(':$', '')) or ('the steps of \"' .. c.term .. '\"')\n"
+    "      rounds[#rounds + 1] = mep_learn_sequence_round(what, items, {c})\n"
+    "    end\n"
+    "  end\n"
+    "  return rounds\n"
+    "end\n"
+    // mep.learn_rank_rounds(deck[, opts]): rounds of up to opts.size cards
+    // (default #+LEARN_MATCH_SIZE:) ordered by a numeric fact, lowest first.
+    // Keys come from #+LEARN_RANK:, else every fact key whose value parses
+    // as a number on three or more cards.
+    "function mep.learn_rank_rounds(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local size = math.max(2, math.min(9, opts.size or deck.options.match_size))\n"
+    "  local by_key = {}\n"
+    "  local function add(k, c, v)\n"
+    "    local n = tonumber((v:gsub(',', '')))\n"
+    "    if n then\n"
+    "      by_key[k] = by_key[k] or {}\n"
+    "      table.insert(by_key[k], {card = c, value = n, text = c.term})\n"
+    "    end\n"
+    "  end\n"
+    "  local keys = deck.options.rank\n"
+    "  if keys then\n"
+    "    -- Explicit keys read the drawer directly, so a :YEAR: used only for\n"
+    "    -- ranking needn't also be a fact-quiz property.\n"
+    "    for _, c in ipairs(deck.cards) do\n"
+    "      for _, k in ipairs(keys) do if c.props[k] then add(k, c, c.props[k]) end end\n"
+    "    end\n"
+    "  else\n"
+    "    for _, c in ipairs(deck.cards) do\n"
+    "      for _, f in ipairs(c.facts) do add(f.key, c, f.value) end\n"
+    "    end\n"
+    "    keys = {}\n"
+    "    for k, list in pairs(by_key) do if #list >= 3 then keys[#keys + 1] = k end end\n"
+    "    table.sort(keys)\n"
+    "  end\n"
+    "  local rounds = {}\n"
+    "  for _, k in ipairs(keys) do\n"
+    "    local list = by_key[k]\n"
+    "    if list and #list >= 2 then\n"
+    "      mep.learn_shuffle(list)\n"
+    "      local i = 1\n"
+    "      while i <= #list do\n"
+    "        local group = {}\n"
+    "        for j = i, math.min(i + size - 1, #list) do group[#group + 1] = list[j] end\n"
+    "        i = i + size\n"
+    "        if #group == 1 and #rounds > 0 then\n"
+    "          -- fold a leftover into the previous round of the same key\n"
+    "          local prev = rounds[#rounds]\n"
+    "          if prev.key == k then\n"
+    "            table.insert(prev.items, group[1])\n"
+    "            table.insert(prev.cards, group[1].card)\n"
+    "            table.sort(prev.items, function(a, b) return a.value < b.value end)\n"
+    "            prev.perm[#prev.perm + 1] = #prev.items\n"
+    "            mep.learn_shuffle(prev.perm)\n"
+    "          end\n"
+    "        elseif #group >= 2 then\n"
+    "          table.sort(group, function(a, b) return a.value < b.value end)\n"
+    "          local cards = {}\n"
+    "          for _, it in ipairs(group) do cards[#cards + 1] = it.card end\n"
+    "          local label = k:lower():gsub('_', ' ')\n"
+    "          local r = mep_learn_sequence_round('these by ' .. label .. ', lowest first', group, cards)\n"
+    "          r.key = k\n"
+    "          rounds[#rounds + 1] = r\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return rounds\n"
+    "end\n"
+    "local function mep_learn_sequence_game(name, unit, rounds_of)\n"
+    "  local game = {name = name, unit = unit}\n"
+    "  function game.reset(st)\n"
+    "    st.rounds = mep_learn_cap(mep.learn_shuffle(rounds_of(st)), st.opts.rounds or st.deck.options.rounds)\n"
+    "    st.total = 0\n"
+    "    for _, r in ipairs(st.rounds) do st.total = st.total + #r.items end\n"
+    "    st.round, st.picks, st.graded = 1, {}, nil\n"
+    "  end\n"
+    "  function game.current_card(st) return st.rounds[st.round] and st.rounds[st.round].cards[1] end\n"
+    "  game.widgets = function(st) return mep.learn_order_widgets(st) end\n"
+    "  game.on_key = function(st, k) return mep.learn_order_on_key(st, k) end\n"
+    "  game.is_sequence = true\n"
+    "  return game\n"
+    "end\n"
+    "MEP_LEARN_GAMES.order = mep_learn_sequence_game('Put in order', 'steps', function(st) return mep.learn_step_rounds(st.deck) end)\n"
+    "function MEP_LEARN_GAMES.order.validate(deck)\n"
+    "  if mep_learn_count(deck, function(c) return #c.steps >= 2 end) == 0 then\n"
+    "    return 'put-in-order needs a card with an ordered list (1. 2. 3. ...) in its body'\n"
+    "  end\n"
+    "end\n"
+    "MEP_LEARN_GAMES.rank = mep_learn_sequence_game('Rank by fact', 'positions', function(st) return mep.learn_rank_rounds(st.deck, st.opts) end)\n"
+    "function MEP_LEARN_GAMES.rank.validate(deck)\n"
+    "  if #mep.learn_rank_rounds(deck) == 0 then\n"
+    "    return 'rank-by-fact needs a numeric property on three or more cards (#+LEARN_RANK: names the keys)'\n"
+    "  end\n"
+    "end\n"
+    "local function mep_learn_order_grade(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local correct = 0\n"
+    "  for pos, slot in ipairs(st.picks) do\n"
+    "    if r.items[r.perm[slot]].value == r.items[pos].value then correct = correct + 1 end\n"
+    "  end\n"
+    "  st.score = st.score + correct\n"
+    "  st.graded = correct\n"
+    "  for _, c in ipairs(r.cards) do mep_learn_add_seen(st, c) end\n"
+    "  if correct < #r.items then\n"
+    "    for _, c in ipairs(r.cards) do mep_learn_add_missed(st, c) end\n"
+    "  end\n"
+    "end\n"
+    "function mep.learn_order_pick(slot)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.game.is_sequence or st.finished or st.graded then return end\n"
+    "  local r = st.rounds[st.round]\n"
+    "  if slot < 1 or slot > #r.perm then return end\n"
+    "  for _, p in ipairs(st.picks) do if p == slot then return end end\n"
+    "  st.picks[#st.picks + 1] = slot\n"
+    "  if #st.picks == #r.perm then mep_learn_order_grade(st) end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_order_undo()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.game.is_sequence or st.finished or st.graded then return end\n"
+    "  st.picks[#st.picks] = nil\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_order_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or not st.game.is_sequence or st.finished or not st.graded then return end\n"
+    "  if st.round >= #st.rounds then st.finished = true\n"
+    "  else st.round, st.picks, st.graded = st.round + 1, {}, nil end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_order_widgets(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local items = r.items\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  %s   Round %d/%d   Score %d/%d', st.deck.title, st.game.name, st.round, #st.rounds, st.score, st.total),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if st.graded then\n"
+    "    local hl = st.graded == #items and 'Add' or (st.graded == 0 and 'Error' or 'Yellow')\n"
+    "    w[#w + 1] = {id = 'ask', text = string.format('%d of %d in the right place', st.graded, #items), hl = hl}\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Put in order: ' .. r.title .. '. Press the letters first to last.', hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  local position_of = {}\n"
+    "  for pos, slot in ipairs(st.picks) do position_of[slot] = pos end\n"
+    "  for slot, item_index in ipairs(r.perm) do\n"
+    "    local pos = position_of[slot]\n"
+    "    local hl, mark, tag = 'Normal', ' ', '[ ]'\n"
+    "    if pos then tag = '[' .. pos .. ']' end\n"
+    "    if st.graded then\n"
+    "      if pos and items[item_index].value == items[pos].value then hl, mark = 'Add', '*'\n"
+    "      else hl, mark, tag = 'Red', 'x', '[' .. (pos or '-') .. ' -> ' .. item_index .. ']' end\n"
+    "    elseif pos then hl = 'Cyan' end\n"
+    "    w[#w + 1] = {\n"
+    "      id = 'step' .. slot, text = string.format('%s %s) %s %s', mark, mep_learn_letter(slot), tag, items[item_index].text), hl = hl,\n"
+    "      wrap = true, wrap_indent = 9,\n"
+    "      on_click = function() mep.learn_order_pick(slot) end,\n"
+    "    }\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b3')\n"
+    "  if st.graded then\n"
+    "    w[#w + 1] = {id = 'right', text = 'Correct order:', hl = 'PickerTitle'}\n"
+    "    for i, it in ipairs(items) do\n"
+    "      local shown = it.text\n"
+    "      if r.key then shown = shown .. '  (' .. it.value .. ')' end\n"
+    "      w[#w + 1] = {id = 'right' .. i, text = string.format('  %d. %s', i, shown), hl = 'Comment', wrap = true, wrap_indent = 5}\n"
+    "    end\n"
+    "    w[#w + 1] = mep_learn_blank('b4')\n"
+    "    local label = st.round < #st.rounds and '> Next  [n]' or '> See results  [n]'\n"
+    "    w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_order_next() end}\n"
+    "  else\n"
+    "    local parts = {}\n"
+    "    for _, slot in ipairs(st.picks) do parts[#parts + 1] = mep_learn_letter(slot) end\n"
+    "    w[#w + 1] = {id = 'sofar', text = 'Your order: ' .. (#parts > 0 and table.concat(parts, ' ') or '(none yet)'), hl = 'Cyan'}\n"
+    "    if #st.picks > 0 then\n"
+    "      w[#w + 1] = {id = 'undo', text = '  Undo last  [u]', hl = 'Comment', on_click = function() mep.learn_order_undo() end}\n"
+    "    end\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = '[a-i] pick next   [u] undo   [n] next   [o] open card   [r] restart   [q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function mep.learn_order_on_key(st, k)\n"
+    "  local slot = mep_learn_letter_index(k)\n"
+    "  if slot then mep.learn_order_pick(slot) return true end\n"
+    "  if k == 'u' then mep.learn_order_undo() return true end\n"
+    "  if k == 'n' or k == ' ' then mep.learn_order_next() return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_put_in_order(path, opts) return mep_learn_start(MEP_LEARN_GAMES.order, path, opts) end\n"
+    "function mep.learn_rank(path, opts) return mep_learn_start(MEP_LEARN_GAMES.rank, path, opts) end\n"
+    // --- Game: spot the bug -----------------------------------------------------
+    // A `:learn bug :line N` block is shown with numbered lines; pick the
+    // wrong one (j/k + Enter or a click on the row, or type the number and
+    // press `s`). The reveal marks the bug line and shows the card's real
+    // implementation for comparison.
+    "MEP_LEARN_GAMES.bug = {name = 'Spot the bug', unit = 'bugs'}\n"
+    "local function mep_learn_bug_blocks(deck)\n"
+    "  local all = {}\n"
+    "  for _, c in ipairs(deck.cards) do\n"
+    "    for _, blk in ipairs(c.blocks) do\n"
+    "      if blk.learn == 'bug' and blk.line and blk.lines[blk.line] then all[#all + 1] = {card = c, block = blk} end\n"
+    "    end\n"
+    "  end\n"
+    "  return all\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.bug.validate(deck)\n"
+    "  if #mep_learn_bug_blocks(deck) == 0 then\n"
+    "    return 'spot-the-bug needs a `#+begin_src <lang> :learn bug :line N` block'\n"
+    "  end\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.bug.reset(st)\n"
+    "  st.rounds = mep_learn_cap(mep.learn_shuffle(mep_learn_bug_blocks(st.deck)), st.opts.rounds or st.deck.options.rounds)\n"
+    "  st.total = #st.rounds\n"
+    "  st.round, st.picked, st.typed_line = 1, nil, ''\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.bug.current_card(st) return st.rounds[st.round] and st.rounds[st.round].card end\n"
+    "function mep.learn_bug_pick(line)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.bug or st.finished or st.picked then return end\n"
+    "  local r = st.rounds[st.round]\n"
+    "  if not line or line < 1 or line > #r.block.lines then return end\n"
+    "  st.picked = line\n"
+    "  mep_learn_add_seen(st, r.card)\n"
+    "  if line == r.block.line then st.score = st.score + 1\n"
+    "  else mep_learn_add_missed(st, r.card) end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_bug_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.bug or st.finished or not st.picked then return end\n"
+    "  if st.round >= #st.rounds then st.finished = true\n"
+    "  else st.round, st.picked, st.typed_line = st.round + 1, nil, '' end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.bug.widgets(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Spot the bug   Round %d/%d   Score %d/%d', st.deck.title, st.round, #st.rounds, st.score, st.total),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if st.picked then\n"
+    "    if st.picked == r.block.line then\n"
+    "      w[#w + 1] = {id = 'ask', text = 'Correct -- line ' .. r.block.line .. ' is the bug.', hl = 'Add'}\n"
+    "    else\n"
+    "      w[#w + 1] = {id = 'ask', text = 'Not line ' .. st.picked .. ' -- the bug is on line ' .. r.block.line .. '.', hl = 'Error'}\n"
+    "    end\n"
+    "    if r.card.hint then w[#w + 1] = {id = 'hint', text = 'Hint: ' .. r.card.hint, hl = 'Yellow', wrap = true, wrap_indent = 0} end\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'ask', text = 'One line of this ' .. r.card.term .. ' is wrong. Which?' .. (st.typed_line ~= '' and ('   typed: ' .. st.typed_line) or ''), hl = 'Comment'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  mep_learn_code_widgets(w, 'line', r.block.lines, r.block.lang, {\n"
+    "    numbered = true,\n"
+    "    on_click = function(i) mep.learn_bug_pick(i) end,\n"
+    "    hl_line = function(i)\n"
+    "      if not st.picked then return 'Normal' end\n"
+    "      if i == r.block.line then return 'Add' end\n"
+    "      if i == st.picked then return 'Red' end\n"
+    "      return 'Normal'\n"
+    "    end,\n"
+    "  })\n"
+    "  w[#w + 1] = mep_learn_blank('b3')\n"
+    "  if st.picked then\n"
+    "    if r.card.code then\n"
+    "      w[#w + 1] = {id = 'realt', text = 'The real implementation:', hl = 'PickerTitle'}\n"
+    "      mep_learn_code_widgets(w, 'real', r.card.code.lines, r.card.code.lang)\n"
+    "      w[#w + 1] = mep_learn_blank('b4')\n"
+    "    end\n"
+    "    local label = st.round < #st.rounds and '> Next  [n]' or '> See results  [n]'\n"
+    "    w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_bug_next() end}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = '[j/k + Enter] or click a line   [digits then s] pick by number   [n] next   [o] open card   [r] restart   [q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.bug.on_key(st, k)\n"
+    "  if k:match('^%d$') and not st.picked then\n"
+    "    st.typed_line = st.typed_line .. k\n"
+    "    mep.learn_render()\n"
+    "    return true\n"
+    "  end\n"
+    "  if k == 's' then\n"
+    "    local n = tonumber(st.typed_line)\n"
+    "    st.typed_line = ''\n"
+    "    if n then mep.learn_bug_pick(n) end\n"
+    "    -- An out-of-range or empty number picks nothing; redraw so the\n"
+    "    -- cleared \"typed:\" readout disappears either way.\n"
+    "    if not st.picked then mep.learn_render() end\n"
+    "    return true\n"
+    "  end\n"
+    "  if k == 'n' or k == ' ' then mep.learn_bug_next() return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_spot_bug(path, opts) return mep_learn_start(MEP_LEARN_GAMES.bug, path, opts) end\n"
+    // --- Game: hangman ----------------------------------------------------------
+    // The definition is the clue and the term the word: letters press in
+    // guesses (a-z), non-letters show from the start, six misses lose the
+    // word. Because letters are taken, the shell keys are Q/R/O here.
+    "MEP_LEARN_GAMES.hangman = {name = 'Hangman', unit = 'words', shell_keys = {r = 'R', o = 'O', q = 'Q'}}\n"
+    "local MEP_LEARN_HANGMAN_LIVES = 6\n"
+    "function MEP_LEARN_GAMES.hangman.reset(st)\n"
+    "  st.words = mep_learn_cap(mep.learn_shuffle(mep_learn_copy(st.deck.cards)), st.opts.rounds or st.deck.options.rounds)\n"
+    "  st.total = #st.words\n"
+    "  st.round, st.guessed, st.misses, st.outcome = 1, {}, 0, nil\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.hangman.current_card(st) return st.words[st.round] end\n"
+    "local function mep_learn_hangman_masked(term, guessed)\n"
+    "  local out = {}\n"
+    "  local solved = true\n"
+    "  for ch in term:gmatch('.') do\n"
+    "    local lower = ch:lower()\n"
+    "    if lower:match('%a') then\n"
+    "      if guessed[lower] then out[#out + 1] = ch\n"
+    "      else out[#out + 1] = '_' solved = false end\n"
+    "    else out[#out + 1] = ch end\n"
+    "  end\n"
+    "  return table.concat(out, ' '), solved\n"
+    "end\n"
+    "function mep.learn_hangman_guess(letter)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.hangman or st.finished or st.outcome then return end\n"
+    "  letter = letter:lower()\n"
+    "  if not letter:match('^%a$') or st.guessed[letter] then return end\n"
+    "  st.guessed[letter] = true\n"
+    "  local term = st.words[st.round].term\n"
+    "  if not term:lower():find(letter, 1, true) then st.misses = st.misses + 1 end\n"
+    "  local _, solved = mep_learn_hangman_masked(term, st.guessed)\n"
+    "  if solved then\n"
+    "    st.outcome = 'won'\n"
+    "    st.score = st.score + 1\n"
+    "    mep_learn_add_seen(st, st.words[st.round])\n"
+    "  elseif st.misses >= MEP_LEARN_HANGMAN_LIVES then\n"
+    "    st.outcome = 'lost'\n"
+    "    mep_learn_add_seen(st, st.words[st.round])\n"
+    "    mep_learn_add_missed(st, st.words[st.round])\n"
+    "  end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_hangman_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.hangman or st.finished or not st.outcome then return end\n"
+    "  if st.round >= #st.words then st.finished = true\n"
+    "  else st.round, st.guessed, st.misses, st.outcome = st.round + 1, {}, 0, nil end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.hangman.widgets(st)\n"
+    "  local card = st.words[st.round]\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Hangman   Word %d/%d   Score %d   Misses %d/%d', st.deck.title, st.round, #st.words, st.score, st.misses, MEP_LEARN_HANGMAN_LIVES),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  for i, para in ipairs(mep.learn_split_lines(card.question or card.definition)) do\n"
+    "    w[#w + 1] = {id = 'clue' .. i, text = para, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  local masked = mep_learn_hangman_masked(card.term, st.guessed)\n"
+    "  if st.outcome then\n"
+    "    w[#w + 1] = {id = 'word', text = (card.term:gsub('.', '%0 ')), hl = st.outcome == 'won' and 'Add' or 'Error'}\n"
+    "    w[#w + 1] = {id = 'fb', text = st.outcome == 'won' and 'Solved!' or 'Out of guesses.', hl = st.outcome == 'won' and 'Add' or 'Error'}\n"
+    "    if st.outcome == 'lost' and card.hint then\n"
+    "      w[#w + 1] = {id = 'hint', text = 'Hint: ' .. card.hint, hl = 'Yellow', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'word', text = masked, hl = 'Normal'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b3')\n"
+    "  local tried, wrong = {}, {}\n"
+    "  for l in ('abcdefghijklmnopqrstuvwxyz'):gmatch('.') do\n"
+    "    if st.guessed[l] then\n"
+    "      tried[#tried + 1] = l\n"
+    "      if not card.term:lower():find(l, 1, true) then wrong[#wrong + 1] = l end\n"
+    "    end\n"
+    "  end\n"
+    "  w[#w + 1] = {id = 'tried', text = 'Tried: ' .. (#tried > 0 and table.concat(tried, ' ') or '-') .. '    Wrong: ' .. (#wrong > 0 and table.concat(wrong, ' ') or '-'), hl = 'Comment'}\n"
+    "  local gallows = {'', 'O', 'O |', 'O/|', 'O/|\\\\', 'O/|\\\\ /', 'O/|\\\\ /\\\\'}\n"
+    "  w[#w + 1] = {id = 'gallows', text = 'Misses: ' .. string.rep('x ', st.misses) .. string.rep('. ', MEP_LEARN_HANGMAN_LIVES - st.misses) .. '  ' .. (gallows[st.misses + 1] or ''), hl = st.misses >= 4 and 'Red' or 'Yellow'}\n"
+    "  if st.outcome then\n"
+    "    w[#w + 1] = mep_learn_blank('b4')\n"
+    "    local label = st.round < #st.words and '> Next word  [n]' or '> See results  [n]'\n"
+    "    w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_hangman_next() end}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = '[a-z] guess   [n] next   [O] open card   [R] restart   [Q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.hangman.on_key(st, k)\n"
+    "  if k == 'n' and st.outcome then mep.learn_hangman_next() return true end\n"
+    "  if k == ' ' then mep.learn_hangman_next() return true end\n"
+    "  if k:match('^%l$') then mep.learn_hangman_guess(k) return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_hangman(path, opts) return mep_learn_start(MEP_LEARN_GAMES.hangman, path, opts) end\n"
+    // --- Game: jeopardy ---------------------------------------------------------
+    // A board of category rows (a-i) with one cell per card, valued by
+    // :POINTS: (default 100, 200, ... by position). A letter then a digit
+    // (or a click) opens a cell: the card's :QUESTION: or definition with four
+    // terms to choose from. Right adds the value, wrong subtracts it; the
+    // cell is used either way. `n` returns to the board; the session ends
+    // when the board is empty.
+    "MEP_LEARN_GAMES.jeopardy = {name = 'Jeopardy', unit = 'points'}\n"
+    "function MEP_LEARN_GAMES.jeopardy.validate(deck)\n"
+    "  if #deck.categories < 1 then return 'jeopardy needs cards grouped under category headlines' end\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.jeopardy.reset(st)\n"
+    "  local rows = {}\n"
+    "  for _, name in ipairs(st.deck.categories) do\n"
+    "    local cells = {}\n"
+    "    for _, c in ipairs(st.deck.cards) do\n"
+    "      if c.category == name then cells[#cells + 1] = {card = c, value = c.points, used = false} end\n"
+    "    end\n"
+    "    table.sort(cells, function(a, b) return a.value < b.value end)\n"
+    "    mep_learn_cap(cells, 9)\n"
+    "    if #cells > 0 then rows[#rows + 1] = {name = name, cells = cells} end\n"
+    "  end\n"
+    "  mep_learn_cap(rows, 9)\n"
+    "  st.rows = rows\n"
+    "  st.total = 0\n"
+    "  for _, r in ipairs(rows) do for _, cell in ipairs(r.cells) do st.total = st.total + cell.value end end\n"
+    "  st.score, st.sel_row, st.cell, st.answered = 0, nil, nil, nil\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.jeopardy.position(st)\n"
+    "  local used = 0\n"
+    "  for _, r in ipairs(st.rows) do for _, cell in ipairs(r.cells) do if cell.used then used = used + 1 end end end\n"
+    "  return used\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.jeopardy.current_card(st)\n"
+    "  if st.cell then return st.cell.card end\n"
+    "  local r = st.rows[st.sel_row or 1]\n"
+    "  return r and r.cells[1] and r.cells[1].card\n"
+    "end\n"
+    "local function mep_learn_jeopardy_open(st, row, col)\n"
+    "  local r = st.rows[row]\n"
+    "  local cell = r and r.cells[col]\n"
+    "  if not cell or cell.used then return end\n"
+    "  local card = cell.card\n"
+    "  local candidates = mep.learn_shuffle(mep_learn_copy(card.distractors))\n"
+    "  for _, c in ipairs(mep_learn_others(st.deck, card)) do candidates[#candidates + 1] = c.term end\n"
+    "  local choices, answer = mep_learn_choices(card.term, candidates, st.opts.choices or st.deck.options.choices)\n"
+    "  st.cell, st.sel_row, st.answered = cell, nil, nil\n"
+    "  st.question = {card = card, choices = choices, answer = answer}\n"
+    "end\n"
+    "function mep.learn_jeopardy_pick_row(row)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.jeopardy or st.finished or st.cell then return end\n"
+    "  if not st.rows[row] then return end\n"
+    "  if st.sel_row == row then st.sel_row = nil else st.sel_row = row end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_jeopardy_pick_cell(row, col)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.jeopardy or st.finished or st.cell then return end\n"
+    "  mep_learn_jeopardy_open(st, row, col)\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_jeopardy_answer(i)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.jeopardy or st.finished or not st.cell or st.answered then return end\n"
+    "  local q = st.question\n"
+    "  if i < 1 or i > #q.choices then return end\n"
+    "  st.answered = i\n"
+    "  st.cell.used = true\n"
+    "  mep_learn_add_seen(st, q.card)\n"
+    "  if i == q.answer then st.score = st.score + st.cell.value\n"
+    "  else\n"
+    "    st.score = st.score - st.cell.value\n"
+    "    mep_learn_add_missed(st, q.card)\n"
+    "  end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_jeopardy_back()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.jeopardy or st.finished or not st.cell or not st.answered then return end\n"
+    "  st.cell, st.question, st.answered = nil, nil, nil\n"
+    "  local left = 0\n"
+    "  for _, r in ipairs(st.rows) do for _, cell in ipairs(r.cells) do if not cell.used then left = left + 1 end end end\n"
+    "  if left == 0 then st.finished = true end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.jeopardy.widgets(st)\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Jeopardy   Score %d   (board total %d)', st.deck.title, st.score, st.total),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if st.cell then\n"
+    "    local q = st.question\n"
+    "    w[#w + 1] = {id = 'ask', text = string.format('%s for %d: which term is this?', st.cell.card.category, st.cell.value), hl = 'Comment'}\n"
+    "    for i, para in ipairs(mep.learn_split_lines(q.card.question or q.card.definition)) do\n"
+    "      w[#w + 1] = {id = 'prompt' .. i, text = para, hl = 'Normal', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "    w[#w + 1] = mep_learn_blank('b2')\n"
+    "    for i, choice in ipairs(q.choices) do\n"
+    "      local hl, mark = 'Normal', ' '\n"
+    "      if st.answered then\n"
+    "        if i == q.answer then hl, mark = 'Add', '*'\n"
+    "        elseif i == st.answered then hl, mark = 'Red', 'x'\n"
+    "        else hl = 'Comment' end\n"
+    "      end\n"
+    "      w[#w + 1] = {id = 'choice' .. i, text = string.format('%s %d) %s', mark, i, choice), hl = hl, wrap = true, wrap_indent = 5,\n"
+    "        on_click = function() mep.learn_jeopardy_answer(i) end}\n"
+    "    end\n"
+    "    w[#w + 1] = mep_learn_blank('b3')\n"
+    "    if st.answered then\n"
+    "      if st.answered == q.answer then\n"
+    "        w[#w + 1] = {id = 'fb', text = string.format('Correct! +%d', st.cell.value), hl = 'Add'}\n"
+    "      else\n"
+    "        w[#w + 1] = {id = 'fb', text = string.format('Wrong, -%d -- it was: %s', st.cell.value, q.card.term), hl = 'Error', wrap = true, wrap_indent = 0}\n"
+    "        if q.card.hint then w[#w + 1] = {id = 'hint', text = 'Hint: ' .. q.card.hint, hl = 'Yellow', wrap = true, wrap_indent = 0} end\n"
+    "      end\n"
+    "      w[#w + 1] = mep_learn_blank('b4')\n"
+    "      w[#w + 1] = {id = 'back', text = '> Back to the board  [n]', hl = 'Blue', on_click = function() mep.learn_jeopardy_back() end}\n"
+    "    end\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Pick a cell: a letter for the row, then a digit for the value (or click).', hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    w[#w + 1] = mep_learn_blank('b2')\n"
+    "    for ri, r in ipairs(st.rows) do\n"
+    "      local hl = st.sel_row == ri and 'Yellow' or 'PickerTitle'\n"
+    "      w[#w + 1] = {id = 'row' .. ri, text = string.format('%s %s) %s', st.sel_row == ri and '>' or ' ', mep_learn_letter(ri), r.name), hl = hl,\n"
+    "        on_click = function() mep.learn_jeopardy_pick_row(ri) end}\n"
+    "      for ci, cell in ipairs(r.cells) do\n"
+    "        local text = cell.used and string.format('      %d) ----', ci) or string.format('      %d) %d', ci, cell.value)\n"
+    "        w[#w + 1] = {id = 'cell' .. ri .. '_' .. ci, text = text, hl = cell.used and 'Comment' or 'Cyan',\n"
+    "          on_click = function() mep.learn_jeopardy_pick_cell(ri, ci) end}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = '[a-i] row   [1-9] cell / answer   [n] back to board   [o] open card   [r] restart   [q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.jeopardy.on_key(st, k)\n"
+    "  local digit = tonumber(k)\n"
+    "  if st.cell then\n"
+    "    if digit then mep.learn_jeopardy_answer(digit) return true end\n"
+    "    if k == 'n' or k == ' ' then mep.learn_jeopardy_back() return true end\n"
+    "    return false\n"
+    "  end\n"
+    "  local row = mep_learn_letter_index(k)\n"
+    "  if row then mep.learn_jeopardy_pick_row(row) return true end\n"
+    "  if digit and st.sel_row then mep.learn_jeopardy_pick_cell(st.sel_row, digit) return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_jeopardy(path, opts) return mep_learn_start(MEP_LEARN_GAMES.jeopardy, path, opts) end\n"
+    // --- Game: reverse identify (term -> code) ----------------------------------
+    // The mirror of identify-the-code: the term is the prompt and the
+    // choices are anonymized implementations, drawn above the answer row as
+    // "Snippet 1..4" (same category first). Needs two coded cards.
+    "function mep.learn_code_reverse_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local coded = {}\n"
+    "  for _, c in ipairs(deck.cards) do if c.code then coded[#coded + 1] = c end end\n"
+    "  local order = mep_learn_cap(mep.learn_shuffle(mep_learn_copy(coded)), opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, card in ipairs(order) do\n"
+    "    local pool = {card}\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do\n"
+    "      if #pool >= n_choices then break end\n"
+    "      if c.code then pool[#pool + 1] = c end\n"
+    "    end\n"
+    "    mep.learn_shuffle(pool)\n"
+    "    local snippets, choices, answer = {}, {}, 1\n"
+    "    for i, c in ipairs(pool) do\n"
+    "      local code = mep.learn_anonymize_code(c.code.lines, c)\n"
+    "      snippets[i] = {card = c, code = code, lang = c.code.lang}\n"
+    "      choices[i] = 'Snippet ' .. i\n"
+    "      if c == card then answer = i end\n"
+    "    end\n"
+    "    questions[#questions + 1] = {card = card, prompt = card.term, snippets = snippets, choices = choices, answer = answer}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_CODE_REV_SPEC = {\n"
+    "  name = 'Which code is it',\n"
+    "  questions = function(st) return mep.learn_code_reverse_questions(st.deck, st.opts) end,\n"
+    "  validate = MEP_LEARN_CODE_SPEC.validate,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Which snippet implements: ' .. q.card.term .. '?', hl = 'Comment'}\n"
+    "    if q.card.definition ~= '' then\n"
+    "      w[#w + 1] = {id = 'def', text = q.card.definition, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "    for i, sn in ipairs(q.snippets) do\n"
+    "      w[#w + 1] = mep_learn_blank('bs' .. i)\n"
+    "      local hl = 'PickerTitle'\n"
+    "      if st.answered then hl = (i == q.answer) and 'Add' or ((i == st.answered) and 'Red' or 'Comment') end\n"
+    "      local label = 'Snippet ' .. i\n"
+    "      if st.answered then label = label .. '  (' .. sn.card.term .. ')' end\n"
+    "      w[#w + 1] = {id = 'sn' .. i, text = label, hl = hl, on_click = function() mep.learn_choice_answer(i) end}\n"
+    "      mep_learn_code_widgets(w, 'sn' .. i .. 'l', st.answered and sn.card.code.lines or sn.code, sn.lang)\n"
+    "    end\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.code_rev = mep_learn_choice_game(MEP_LEARN_CODE_REV_SPEC)\n"
+    "function mep.learn_code_reverse(path, opts) return mep_learn_start(MEP_LEARN_GAMES.code_rev, path, opts) end\n"
+    // --- Game: sort into buckets ------------------------------------------------
+    // A round of #+LEARN_MATCH_SIZE: terms (1-9) and the deck's categories
+    // (a-i): put every term in its category -- digit then letter, either
+    // order, or clicks -- then submit. Many terms may share a bucket.
+    "MEP_LEARN_GAMES.buckets = {name = 'Sort into buckets', unit = 'terms'}\n"
+    "function MEP_LEARN_GAMES.buckets.validate(deck)\n"
+    "  if #deck.categories < 2 then return 'sort-into-buckets needs cards under at least two category headlines' end\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.buckets.reset(st)\n"
+    "  local size = math.max(2, math.min(9, st.opts.size or st.deck.options.match_size))\n"
+    "  local cards = {}\n"
+    "  for _, c in ipairs(mep.learn_deal(st.deck)) do if c.category then cards[#cards + 1] = c end end\n"
+    "  local rounds, i = {}, 1\n"
+    "  while i <= #cards do\n"
+    "    local group = {}\n"
+    "    for j = i, math.min(i + size - 1, #cards) do group[#group + 1] = cards[j] end\n"
+    "    i = i + size\n"
+    "    if #group == 1 and #rounds > 0 then table.insert(rounds[#rounds].cards, group[1])\n"
+    "    else rounds[#rounds + 1] = {cards = group} end\n"
+    "  end\n"
+    "  mep_learn_cap(rounds, st.opts.rounds or st.deck.options.rounds)\n"
+    "  st.rounds = rounds\n"
+    "  st.buckets = mep_learn_cap(mep_learn_copy(st.deck.categories), 9)\n"
+    "  st.total = 0\n"
+    "  for _, r in ipairs(rounds) do st.total = st.total + #r.cards end\n"
+    "  st.round, st.placed, st.sel_term, st.sel_bucket, st.submitted = 1, {}, nil, nil, nil\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.buckets.current_card(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  return r and (r.cards[st.sel_term or 1])\n"
+    "end\n"
+    "local function mep_learn_buckets_try_place(st)\n"
+    "  if not (st.sel_term and st.sel_bucket) then return end\n"
+    "  st.placed[st.sel_term] = st.sel_bucket\n"
+    "  st.sel_term, st.sel_bucket = nil, nil\n"
+    "end\n"
+    "function mep.learn_buckets_pick_term(t)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.buckets or st.finished or st.submitted then return end\n"
+    "  if t < 1 or t > #st.rounds[st.round].cards then return end\n"
+    "  if st.sel_term == t then st.sel_term = nil else st.sel_term = t end\n"
+    "  mep_learn_buckets_try_place(st)\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_buckets_pick_bucket(b)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.buckets or st.finished or st.submitted then return end\n"
+    "  if b < 1 or b > #st.buckets then return end\n"
+    "  if st.sel_bucket == b then st.sel_bucket = nil else st.sel_bucket = b end\n"
+    "  mep_learn_buckets_try_place(st)\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_buckets_unplace()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.buckets or st.finished or st.submitted then return end\n"
+    "  if st.sel_term then st.placed[st.sel_term] = nil end\n"
+    "  st.sel_term, st.sel_bucket = nil, nil\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "local function mep_learn_buckets_all_placed(st)\n"
+    "  for t = 1, #st.rounds[st.round].cards do if not st.placed[t] then return false end end\n"
+    "  return true\n"
+    "end\n"
+    "function mep.learn_buckets_submit()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.buckets or st.finished or st.submitted then return end\n"
+    "  if not mep_learn_buckets_all_placed(st) then mep.notify('Learn: place every term before submitting', 'warn') return end\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local correct = 0\n"
+    "  for t, c in ipairs(r.cards) do\n"
+    "    mep_learn_add_seen(st, c)\n"
+    "    if st.buckets[st.placed[t]] == c.category then correct = correct + 1\n"
+    "    else mep_learn_add_missed(st, c) end\n"
+    "  end\n"
+    "  st.score = st.score + correct\n"
+    "  st.submitted = correct\n"
+    "  st.sel_term, st.sel_bucket = nil, nil\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_buckets_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.buckets or st.finished or not st.submitted then return end\n"
+    "  if st.round >= #st.rounds then st.finished = true\n"
+    "  else st.round, st.placed, st.submitted = st.round + 1, {}, nil end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.buckets.widgets(st)\n"
+    "  local r = st.rounds[st.round]\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Sort into buckets   Round %d/%d   Score %d/%d', st.deck.title, st.round, #st.rounds, st.score, st.total),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if st.submitted then\n"
+    "    local hl = st.submitted == #r.cards and 'Add' or (st.submitted == 0 and 'Error' or 'Yellow')\n"
+    "    w[#w + 1] = {id = 'ask', text = string.format('%d of %d in the right bucket', st.submitted, #r.cards), hl = hl}\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Put every term in its category, then submit.', hl = 'Comment'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  w[#w + 1] = {id = 'terms', text = 'Terms', hl = 'PickerTitle'}\n"
+    "  for t, c in ipairs(r.cards) do\n"
+    "    local b = st.placed[t]\n"
+    "    local hl, mark, tail = 'Normal', ' ', '-> _'\n"
+    "    if b then tail = '-> ' .. mep_learn_letter(b) end\n"
+    "    if st.submitted then\n"
+    "      if st.buckets[b] == c.category then hl, mark = 'Add', '*'\n"
+    "      else\n"
+    "        hl, mark = 'Red', 'x'\n"
+    "        for i, name in ipairs(st.buckets) do if name == c.category then tail = tail .. '  (answer: ' .. mep_learn_letter(i) .. ')' end end\n"
+    "      end\n"
+    "    elseif st.sel_term == t then hl, mark = 'Yellow', '>'\n"
+    "    elseif b then hl = 'Cyan' end\n"
+    "    w[#w + 1] = {id = 'term' .. t, text = string.format('%s %d) %s  %s', mark, t, c.term, tail), hl = hl, on_click = function() mep.learn_buckets_pick_term(t) end}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b3')\n"
+    "  w[#w + 1] = {id = 'buckets', text = 'Buckets', hl = 'PickerTitle'}\n"
+    "  for b, name in ipairs(st.buckets) do\n"
+    "    local members = {}\n"
+    "    for t, c in ipairs(r.cards) do if st.placed[t] == b then members[#members + 1] = tostring(t) end end\n"
+    "    local hl, mark = 'Normal', ' '\n"
+    "    if st.sel_bucket == b then hl, mark = 'Yellow', '>' elseif #members > 0 then hl = 'Cyan' end\n"
+    "    w[#w + 1] = {id = 'bucket' .. b, text = string.format('%s %s) %s  [%s]', mark, mep_learn_letter(b), name, table.concat(members, ' ')), hl = hl,\n"
+    "      on_click = function() mep.learn_buckets_pick_bucket(b) end}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b4')\n"
+    "  if st.submitted then\n"
+    "    local label = st.round < #st.rounds and '> Next round  [n]' or '> See results  [n]'\n"
+    "    w[#w + 1] = {id = 'next', text = label, hl = 'Blue', on_click = function() mep.learn_buckets_next() end}\n"
+    "  elseif mep_learn_buckets_all_placed(st) then\n"
+    "    w[#w + 1] = {id = 'submit', text = '> Submit  [s]', hl = 'Blue', on_click = function() mep.learn_buckets_submit() end}\n"
+    "  else\n"
+    "    local left = 0\n"
+    "    for t = 1, #r.cards do if not st.placed[t] then left = left + 1 end end\n"
+    "    w[#w + 1] = {id = 'submit', text = string.format('  Submit  (%d left to place)', left), hl = 'Comment'}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = '[1-9] pick term   [a-i] pick bucket   [u] unplace   [s/Enter] submit   [n] next   [o] open card   [r] restart   [q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.buckets.on_key(st, k)\n"
+    "  local digit = tonumber(k)\n"
+    "  if digit then mep.learn_buckets_pick_term(digit) return true end\n"
+    "  local b = mep_learn_letter_index(k)\n"
+    "  if b then mep.learn_buckets_pick_bucket(b) return true end\n"
+    "  if k == 'u' then mep.learn_buckets_unplace() return true end\n"
+    "  if k == 's' then mep.learn_buckets_submit() return true end\n"
+    "  if k == 'n' or k == ' ' then mep.learn_buckets_next() return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_sort_buckets(path, opts) return mep_learn_start(MEP_LEARN_GAMES.buckets, path, opts) end\n"
+    // --- Modifiers: survival, hot-seat ----------------------------------------
+    // mep.learn_survival([path][, game_key]): a choice game (default mixed)
+    // that ends at the first miss.
+    "function mep.learn_survival(path, game_key)\n"
+    "  local game = MEP_LEARN_GAMES[game_key or 'mixed']\n"
+    "  if not game or not game.is_choice then game = MEP_LEARN_GAMES.mixed end\n"
+    "  return mep_learn_start(game, path, {survival = true})\n"
+    "end\n"
+    // mep.learn_hotseat([path][, game_key]): any game (default mixed) for two
+    // players taking turns; the shell keeps both scores.
+    "function mep.learn_hotseat(path, game_key)\n"
+    "  local game = MEP_LEARN_GAMES[game_key or 'mixed'] or MEP_LEARN_GAMES.mixed\n"
+    "  return mep_learn_start(game, path, {players = 2})\n"
+    "end\n"
+    // --- Game: picture quiz ---------------------------------------------------
+    // A card's `[[file:...]]` image (on its own line in the body) is shown
+    // through the sidebar's image rows and the term is the answer among four.
+    "function mep.learn_picture_questions(deck, opts)\n"
+    "  opts = opts or {}\n"
+    "  local n_choices = opts.choices or deck.options.choices\n"
+    "  local order = {}\n"
+    "  for _, c in ipairs(mep.learn_deal(deck)) do if #c.images > 0 then order[#order + 1] = c end end\n"
+    "  mep_learn_cap(order, opts.rounds or deck.options.rounds)\n"
+    "  local questions = {}\n"
+    "  for _, card in ipairs(order) do\n"
+    "    local candidates = mep.learn_shuffle(mep_learn_copy(card.distractors))\n"
+    "    for _, c in ipairs(mep_learn_others(deck, card)) do candidates[#candidates + 1] = c.term end\n"
+    "    local choices, answer = mep_learn_choices(card.term, candidates, n_choices)\n"
+    "    questions[#questions + 1] = {card = card, image = card.images[math.random(#card.images)], choices = choices, answer = answer, accepted = card.aliases}\n"
+    "  end\n"
+    "  return questions\n"
+    "end\n"
+    "local MEP_LEARN_PICTURE_SPEC = {\n"
+    "  name = 'Picture quiz',\n"
+    "  typed = true,\n"
+    "  questions = function(st) return mep.learn_picture_questions(st.deck, st.opts) end,\n"
+    "  validate = function(deck)\n"
+    "    if mep_learn_count(deck, function(c) return #c.images > 0 end) < 2 then\n"
+    "      return 'the picture quiz needs two or more cards with a [[file:...]] image on its own line'\n"
+    "    end\n"
+    "  end,\n"
+    "  prompt_widgets = function(st, q, w)\n"
+    "    w[#w + 1] = {id = 'ask', text = 'Which structure is pictured?', hl = 'Comment'}\n"
+    "    w[#w + 1] = {id = 'img', text = '', image = q.image, image_rows = st.opts.image_rows or 12}\n"
+    "  end,\n"
+    "  reveal_widgets = function(st, q, w)\n"
+    "    if q.card.definition ~= '' then\n"
+    "      w[#w + 1] = {id = 'def', text = q.card.term .. ': ' .. q.card.definition, hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "    end\n"
+    "  end,\n"
+    "}\n"
+    "MEP_LEARN_GAMES.picture = mep_learn_choice_game(MEP_LEARN_PICTURE_SPEC)\n"
+    "function mep.learn_picture_quiz(path, opts) return mep_learn_start(MEP_LEARN_GAMES.picture, path, opts) end\n"
+    "MEP_LEARN_MIXED_SOURCES[#MEP_LEARN_MIXED_SOURCES + 1] = {key = 'picture', spec = MEP_LEARN_PICTURE_SPEC}\n"
+    // --- Game: crossword --------------------------------------------------------
+    // Terms are the answers (letters only, upper-cased) and definitions (or
+    // :QUESTION:) the clues. mep.learn_crossword_build lays the words out
+    // greedily -- longest first across the middle, then each next word on a
+    // crossing letter, alternating direction, never touching another word
+    // side-on -- and skips what won't fit. The grid draws as text rows (one
+    // cell = a letter or `_`, black = blank) with spans, so it needs no new
+    // widget: pick a clue (its number then `a`/`d`, click it, or `n` for the
+    // next) and type its answer (`t`); `s` checks the whole puzzle.
+    "local function mep_learn_word_of(term)\n"
+    "  local w = term:upper():gsub('[^A-Z]', '')\n"
+    "  return w\n"
+    "end\n"
+    "function mep.learn_crossword_build(cards, max_words)\n"
+    "  local words = {}\n"
+    "  for _, c in ipairs(cards) do\n"
+    "    local wd = mep_learn_word_of(c.term)\n"
+    "    if #wd >= 3 and #wd <= 16 then words[#words + 1] = {card = c, word = wd} end\n"
+    "  end\n"
+    "  table.sort(words, function(a, b) return #a.word > #b.word end)\n"
+    "  mep_learn_cap(words, max_words)\n"
+    "  local grid = {}  -- grid[y][x] = letter\n"
+    "  local function get(x, y) return grid[y] and grid[y][x] end\n"
+    "  local function set(x, y, ch)\n"
+    "    grid[y] = grid[y] or {}\n"
+    "    grid[y][x] = ch\n"
+    "  end\n"
+    "  local placed = {}\n"
+    "  local function fits(word, x, y, dx, dy)\n"
+    "    -- The cell before the start and after the end must be free, every\n"
+    "    -- cell either free (with free side neighbours) or the same letter.\n"
+    "    if get(x - dx, y - dy) or get(x + dx * #word, y + dy * #word) then return false end\n"
+    "    local crossings = 0\n"
+    "    for i = 1, #word do\n"
+    "      local cx, cy = x + dx * (i - 1), y + dy * (i - 1)\n"
+    "      local ch = get(cx, cy)\n"
+    "      if ch then\n"
+    "        if ch ~= word:sub(i, i) then return false end\n"
+    "        crossings = crossings + 1\n"
+    "      else\n"
+    "        if get(cx + dy, cy + dx) or get(cx - dy, cy - dx) then return false end\n"
+    "      end\n"
+    "    end\n"
+    "    return true, crossings\n"
+    "  end\n"
+    "  local function place(entry, x, y, dx, dy)\n"
+    "    for i = 1, #entry.word do set(x + dx * (i - 1), y + dy * (i - 1), entry.word:sub(i, i)) end\n"
+    "    placed[#placed + 1] = {card = entry.card, word = entry.word, x = x, y = y, dx = dx, dy = dy}\n"
+    "  end\n"
+    "  for wi, entry in ipairs(words) do\n"
+    "    if wi == 1 then\n"
+    "      place(entry, 0, 0, 1, 0)\n"
+    "    else\n"
+    "      local best, best_score = nil, -1\n"
+    "      for _, p in ipairs(placed) do\n"
+    "        for i = 1, #p.word do\n"
+    "          for j = 1, #entry.word do\n"
+    "            if p.word:sub(i, i) == entry.word:sub(j, j) then\n"
+    "              local dx, dy = p.dy, p.dx  -- perpendicular to the crossed word\n"
+    "              local cx, cy = p.x + p.dx * (i - 1), p.y + p.dy * (i - 1)\n"
+    "              local x, y = cx - dx * (j - 1), cy - dy * (j - 1)\n"
+    "              local ok, crossings = fits(entry.word, x, y, dx, dy)\n"
+    "              if ok and crossings > best_score then best, best_score = {x = x, y = y, dx = dx, dy = dy}, crossings end\n"
+    "            end\n"
+    "          end\n"
+    "        end\n"
+    "      end\n"
+    "      if best then place(entry, best.x, best.y, best.dx, best.dy) end\n"
+    "    end\n"
+    "  end\n"
+    "  if #placed == 0 then return nil end\n"
+    "  -- Normalize to a 1-based box and number the starts in reading order.\n"
+    "  local minx, miny, maxx, maxy = math.huge, math.huge, -math.huge, -math.huge\n"
+    "  for _, p in ipairs(placed) do\n"
+    "    minx, miny = math.min(minx, p.x), math.min(miny, p.y)\n"
+    "    maxx = math.max(maxx, p.x + p.dx * (#p.word - 1))\n"
+    "    maxy = math.max(maxy, p.y + p.dy * (#p.word - 1))\n"
+    "  end\n"
+    "  for _, p in ipairs(placed) do p.x, p.y = p.x - minx + 1, p.y - miny + 1 end\n"
+    "  table.sort(placed, function(a, b)\n"
+    "    if a.y ~= b.y then return a.y < b.y end\n"
+    "    if a.x ~= b.x then return a.x < b.x end\n"
+    "    return a.dx > b.dx\n"
+    "  end)\n"
+    "  local numbers, next_number = {}, 0\n"
+    "  for _, p in ipairs(placed) do\n"
+    "    local key = p.x .. ',' .. p.y\n"
+    "    if not numbers[key] then next_number = next_number + 1 numbers[key] = next_number end\n"
+    "    p.number = numbers[key]\n"
+    "    p.dir = p.dx == 1 and 'across' or 'down'\n"
+    "  end\n"
+    "  return {width = maxx - minx + 1, height = maxy - miny + 1, words = placed}\n"
+    "end\n"
+    "MEP_LEARN_GAMES.crossword = {name = 'Crossword', unit = 'words'}\n"
+    "function MEP_LEARN_GAMES.crossword.validate(deck)\n"
+    "  local n = 0\n"
+    "  for _, c in ipairs(deck.cards) do if #mep_learn_word_of(c.term) >= 3 then n = n + 1 end end\n"
+    "  if n < 2 then return 'a crossword needs at least two terms of three or more letters' end\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.crossword.reset(st)\n"
+    "  local rounds = st.opts.rounds or st.deck.options.rounds\n"
+    "  local puzzle = mep.learn_crossword_build(mep.learn_deal(st.deck), rounds > 0 and rounds or 12)\n"
+    "  st.puzzle = puzzle\n"
+    "  st.total = puzzle and #puzzle.words or 0\n"
+    "  st.letters, st.sel, st.typed_num, st.checked = {}, nil, '', nil\n"
+    "  -- Fresh cell map: cells[y][x] = {answer=, words={...}}.\n"
+    "  st.cells = {}\n"
+    "  for _, w in ipairs(puzzle.words) do\n"
+    "    for i = 1, #w.word do\n"
+    "      local x, y = w.x + w.dx * (i - 1), w.y + w.dy * (i - 1)\n"
+    "      st.cells[y] = st.cells[y] or {}\n"
+    "      st.cells[y][x] = st.cells[y][x] or {answer = w.word:sub(i, i)}\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.crossword.current_card(st)\n"
+    "  local w = st.sel and st.puzzle.words[st.sel]\n"
+    "  return w and w.card or (st.puzzle.words[1] and st.puzzle.words[1].card)\n"
+    "end\n"
+    "local function mep_learn_crossword_letter(st, x, y) return st.letters[y] and st.letters[y][x] end\n"
+    "local function mep_learn_crossword_set(st, x, y, ch)\n"
+    "  st.letters[y] = st.letters[y] or {}\n"
+    "  st.letters[y][x] = ch\n"
+    "end\n"
+    "function mep.learn_crossword_select(index)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword or st.finished or st.checked then return end\n"
+    "  if not st.puzzle.words[index] then return end\n"
+    "  st.sel = index\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    // Selects clue `number` in direction `dir` ('across'/'down').
+    "function mep.learn_crossword_select_clue(number, dir)\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword then return end\n"
+    "  for i, w in ipairs(st.puzzle.words) do\n"
+    "    if w.number == number and w.dir == dir then mep.learn_crossword_select(i) return end\n"
+    "  end\n"
+    "  mep.notify('Learn: no ' .. number .. ' ' .. dir, 'warn')\n"
+    "end\n"
+    "function mep.learn_crossword_next()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword or st.finished or st.checked then return end\n"
+    "  local n = #st.puzzle.words\n"
+    "  local start = st.sel or 0\n"
+    "  for step = 1, n do\n"
+    "    local i = (start + step - 1) % n + 1\n"
+    "    local w = st.puzzle.words[i]\n"
+    "    local complete = true\n"
+    "    for k = 1, #w.word do\n"
+    "      if not mep_learn_crossword_letter(st, w.x + w.dx * (k - 1), w.y + w.dy * (k - 1)) then complete = false break end\n"
+    "    end\n"
+    "    if not complete then st.sel = i mep.learn_render() return end\n"
+    "  end\n"
+    "  st.sel = (start % n) + 1\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_crossword_type()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword or st.finished or st.checked or not st.sel then return end\n"
+    "  local w = st.puzzle.words[st.sel]\n"
+    "  mep.ui_input(string.format('%d %s (%d letters)', w.number, w.dir, #w.word), '', function(text)\n"
+    "    if text == nil then return end\n"
+    "    if mep_learn_state ~= st or st.checked then return end\n"
+    "    local letters = text:upper():gsub('[^A-Z]', '')\n"
+    "    for k = 1, math.min(#letters, #w.word) do\n"
+    "      mep_learn_crossword_set(st, w.x + w.dx * (k - 1), w.y + w.dy * (k - 1), letters:sub(k, k))\n"
+    "    end\n"
+    "    mep.learn_crossword_next()\n"
+    "  end)\n"
+    "end\n"
+    "function mep.learn_crossword_clear()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword or st.finished or st.checked or not st.sel then return end\n"
+    "  local w = st.puzzle.words[st.sel]\n"
+    "  for k = 1, #w.word do\n"
+    "    local x, y = w.x + w.dx * (k - 1), w.y + w.dy * (k - 1)\n"
+    "    -- keep a letter another completed word still needs\n"
+    "    local shared = false\n"
+    "    for _, o in ipairs(st.puzzle.words) do\n"
+    "      if o ~= w then\n"
+    "        for m = 1, #o.word do\n"
+    "          if o.x + o.dx * (m - 1) == x and o.y + o.dy * (m - 1) == y then shared = true end\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    if not shared and st.letters[y] then st.letters[y][x] = nil end\n"
+    "  end\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "local function mep_learn_crossword_word_ok(st, w)\n"
+    "  for k = 1, #w.word do\n"
+    "    if mep_learn_crossword_letter(st, w.x + w.dx * (k - 1), w.y + w.dy * (k - 1)) ~= w.word:sub(k, k) then return false end\n"
+    "  end\n"
+    "  return true\n"
+    "end\n"
+    "function mep.learn_crossword_check()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword or st.finished or st.checked then return end\n"
+    "  local correct = 0\n"
+    "  for _, w in ipairs(st.puzzle.words) do\n"
+    "    mep_learn_add_seen(st, w.card)\n"
+    "    if mep_learn_crossword_word_ok(st, w) then correct = correct + 1 else mep_learn_add_missed(st, w.card) end\n"
+    "  end\n"
+    "  st.score = correct\n"
+    "  st.checked = correct\n"
+    "  st.sel = nil\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function mep.learn_crossword_finish()\n"
+    "  local st = mep_learn_state\n"
+    "  if not st or st.game ~= MEP_LEARN_GAMES.crossword or st.finished or not st.checked then return end\n"
+    "  st.finished = true\n"
+    "  mep.learn_render()\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.crossword.widgets(st)\n"
+    "  local pz = st.puzzle\n"
+    "  local w = {}\n"
+    "  w[#w + 1] = {\n"
+    "    id = 'head', hl = 'Accent',\n"
+    "    text = string.format('%s  --  Crossword   %d words   Score %d/%d', st.deck.title, #pz.words, st.score, st.total),\n"
+    "  }\n"
+    "  w[#w + 1] = mep_learn_blank('b1')\n"
+    "  if st.checked then\n"
+    "    w[#w + 1] = {id = 'ask', text = string.format('%d of %d words correct', st.checked, #pz.words), hl = st.checked == #pz.words and 'Add' or 'Yellow'}\n"
+    "  else\n"
+    "    local sel = st.sel and pz.words[st.sel]\n"
+    "    local hint = sel and string.format('Selected: %d %s (%d letters) -- [t] to type it', sel.number, sel.dir, #sel.word) or 'Pick a clue: its number then a/d, click it, or [n] for the next open one.'\n"
+    "    w[#w + 1] = {id = 'ask', text = hint .. (st.typed_num ~= '' and ('   typed: ' .. st.typed_num) or ''), hl = 'Comment', wrap = true, wrap_indent = 0}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b2')\n"
+    "  -- Cells of the selected word (highlighted) and, after checking, of the\n"
+    "  -- wrong ones (red).\n"
+    "  local sel_cells, wrong_cells = {}, {}\n"
+    "  if st.sel and not st.checked then\n"
+    "    local s = pz.words[st.sel]\n"
+    "    for k = 1, #s.word do sel_cells[(s.x + s.dx * (k - 1)) .. ',' .. (s.y + s.dy * (k - 1))] = true end\n"
+    "  end\n"
+    "  if st.checked then\n"
+    "    for _, wd in ipairs(pz.words) do\n"
+    "      if not mep_learn_crossword_word_ok(st, wd) then\n"
+    "        for k = 1, #wd.word do\n"
+    "          local x, y = wd.x + wd.dx * (k - 1), wd.y + wd.dy * (k - 1)\n"
+    "          if mep_learn_crossword_letter(st, x, y) ~= wd.word:sub(k, k) then wrong_cells[x .. ',' .. y] = true end\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  for y = 1, pz.height do\n"
+    "    local parts, spans = {}, {}\n"
+    "    for x = 1, pz.width do\n"
+    "      local cell = st.cells[y] and st.cells[y][x]\n"
+    "      local col = 2 + (x - 1) * 2\n"
+    "      if not cell then parts[#parts + 1] = '  '\n"
+    "      else\n"
+    "        local letter = mep_learn_crossword_letter(st, x, y)\n"
+    "        local shown = st.checked and (letter or cell.answer) or (letter or '_')\n"
+    "        parts[#parts + 1] = shown .. ' '\n"
+    "        local hl = letter and 'Cyan' or 'Comment'\n"
+    "        if st.checked then hl = wrong_cells[x .. ',' .. y] and 'Red' or 'Add'\n"
+    "        elseif sel_cells[x .. ',' .. y] then hl = 'Yellow' end\n"
+    "        spans[#spans + 1] = {col_start = col, col_end = col + 1, hl = hl}\n"
+    "      end\n"
+    "    end\n"
+    "    w[#w + 1] = {id = 'row' .. y, text = ' ' .. table.concat(parts), hl = 'Normal', spans = spans}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b3')\n"
+    "  for _, dir in ipairs({'across', 'down'}) do\n"
+    "    w[#w + 1] = {id = 'clues_' .. dir, text = dir:sub(1, 1):upper() .. dir:sub(2), hl = 'PickerTitle'}\n"
+    "    for i, wd in ipairs(pz.words) do\n"
+    "      if wd.dir == dir then\n"
+    "        local clue = wd.card.question or wd.card.definition\n"
+    "        local hl = 'Normal'\n"
+    "        if st.checked then hl = mep_learn_crossword_word_ok(st, wd) and 'Add' or 'Red'\n"
+    "        elseif st.sel == i then hl = 'Yellow' end\n"
+    "        local mark = (st.sel == i and not st.checked) and '>' or ' '\n"
+    "        local text = string.format('%s %d%s (%d) %s', mark, wd.number, dir:sub(1, 1), #wd.word, clue)\n"
+    "        if st.checked then text = text .. '  = ' .. wd.card.term end\n"
+    "        w[#w + 1] = {id = 'clue' .. i, text = text, hl = hl, wrap = true, wrap_indent = 8, on_click = function() mep.learn_crossword_select(i) end}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b4')\n"
+    "  if st.checked then\n"
+    "    w[#w + 1] = {id = 'next', text = '> See results  [n]', hl = 'Blue', on_click = function() mep.learn_crossword_finish() end}\n"
+    "  else\n"
+    "    w[#w + 1] = {id = 'check', text = '> Check the puzzle  [s]', hl = 'Blue', on_click = function() mep.learn_crossword_check() end}\n"
+    "  end\n"
+    "  w[#w + 1] = mep_learn_blank('b5')\n"
+    "  w[#w + 1] = {id = 'help', text = '[digits + a/d] pick clue   [n] next open clue   [t] type answer   [u] clear word   [s] check   [o] open card   [r] restart   [q] quit', hl = 'Comment'}\n"
+    "  return w\n"
+    "end\n"
+    "function MEP_LEARN_GAMES.crossword.on_key(st, k)\n"
+    "  if st.checked then\n"
+    "    if k == 'n' or k == ' ' then mep.learn_crossword_finish() return true end\n"
+    "    return false\n"
+    "  end\n"
+    "  if k:match('^%d$') then st.typed_num = st.typed_num .. k mep.learn_render() return true end\n"
+    "  if k == 'a' or k == 'd' then\n"
+    "    local n = tonumber(st.typed_num)\n"
+    "    st.typed_num = ''\n"
+    "    if n then mep.learn_crossword_select_clue(n, k == 'a' and 'across' or 'down') else mep.learn_render() end\n"
+    "    return true\n"
+    "  end\n"
+    "  if k == 'n' or k == ' ' then mep.learn_crossword_next() return true end\n"
+    "  if k == 't' then mep.learn_crossword_type() return true end\n"
+    "  if k == 'u' then mep.learn_crossword_clear() return true end\n"
+    "  if k == 's' then mep.learn_crossword_check() return true end\n"
+    "  return false\n"
+    "end\n"
+    "function mep.learn_crossword(path, opts) return mep_learn_start(MEP_LEARN_GAMES.crossword, path, opts) end\n"
+    // --- Registration ---------------------------------------------------------
+    // Every game: {key=, name=, start=, command=, leader=, global=}. `global`
+    // is the bare-global alias a deck's own `#+begin_src mep-lua` launcher
+    // block calls (examples/learn_basic_datastructures.org); `command` the
+    // :Learn* ex-command (an optional path argument); `leader` the key under
+    // the <leader>og "learn games" group. mep.learn_pick (:Learn, <leader>ol)
+    // lists them all.
+    "mep.learn_catalog = {\n"
+    "  {key = 'mc', name = 'Multiple-choice flashcards', start = mep.learn_mc_flashcards, command = 'LearnMCFlashCards', leader = 'f', global = 'LearnMCFlashCards'},\n"
+    "  {key = 'match', name = 'Matching', start = mep.learn_matching, command = 'LearnMatching', leader = 'm', global = 'LearnMatching'},\n"
+    "  {key = 'code', name = 'Identify the code', start = mep.learn_code_id, command = 'LearnCodeID', leader = 'c', global = 'LearnCodeID'},\n"
+    "  {key = 'tf', name = 'True or false', start = mep.learn_true_false, command = 'LearnTrueFalse', leader = 't', global = 'LearnTrueFalse'},\n"
+    "  {key = 'cloze', name = 'Fill in the blank', start = mep.learn_cloze, command = 'LearnCloze', leader = 'b', global = 'LearnCloze'},\n"
+    "  {key = 'typed', name = 'Type the term', start = mep.learn_type_term, command = 'LearnTypeTerm', leader = 'y', global = 'LearnTypeTerm'},\n"
+    "  {key = 'oddone', name = 'Odd one out', start = mep.learn_odd_one_out, command = 'LearnOddOneOut', leader = 'o', global = 'LearnOddOneOut'},\n"
+    "  {key = 'category', name = 'Which category', start = mep.learn_which_category, command = 'LearnWhichCategory', leader = 'k', global = 'LearnWhichCategory'},\n"
+    "  {key = 'facts', name = 'Fact quiz', start = mep.learn_fact_quiz, command = 'LearnFactQuiz', leader = 'a', global = 'LearnFactQuiz'},\n"
+    "  {key = 'order', name = 'Put in order', start = mep.learn_put_in_order, command = 'LearnPutInOrder', leader = 's', global = 'LearnPutInOrder'},\n"
+    "  {key = 'jeopardy', name = 'Jeopardy', start = mep.learn_jeopardy, command = 'LearnJeopardy', leader = 'j', global = 'LearnJeopardy'},\n"
+    "  {key = 'hangman', name = 'Hangman', start = mep.learn_hangman, command = 'LearnHangman', leader = 'h', global = 'LearnHangman'},\n"
+    "  {key = 'code_cloze', name = 'Complete the code', start = mep.learn_complete_code, command = 'LearnCompleteCode', leader = 'x', global = 'LearnCompleteCode'},\n"
+    "  {key = 'bug', name = 'Spot the bug', start = mep.learn_spot_bug, command = 'LearnSpotBug', leader = 'd', global = 'LearnSpotBug'},\n"
+    "  {key = 'output', name = 'Predict the output', start = mep.learn_predict_output, command = 'LearnPredictOutput', leader = 'p', global = 'LearnPredictOutput'},\n"
+    "  {key = 'mixed', name = 'Mixed practice', start = mep.learn_mixed, command = 'LearnMixed', leader = 'g', global = 'LearnMixed'},\n"
+    "  {key = 'timed', name = 'Timed mixed practice', start = mep.learn_timed, command = 'LearnTimed', leader = 'T', global = 'LearnTimed', arg = 'number'},\n"
+    "  {key = 'code_rev', name = 'Which code is it (term -> code)', start = mep.learn_code_reverse, command = 'LearnCodeReverse', leader = 'v', global = 'LearnCodeReverse'},\n"
+    "  {key = 'buckets', name = 'Sort into buckets', start = mep.learn_sort_buckets, command = 'LearnSortBuckets', leader = 'u', global = 'LearnSortBuckets'},\n"
+    "  {key = 'rank', name = 'Rank by fact', start = mep.learn_rank, command = 'LearnRank', leader = 'n', global = 'LearnRank'},\n"
+    "  {key = 'survival', name = 'Survival (mixed, until the first miss)', start = mep.learn_survival, command = 'LearnSurvival', leader = 'S', global = 'LearnSurvival', arg = 'game'},\n"
+    "  {key = 'hotseat', name = 'Hot-seat two player (mixed)', start = mep.learn_hotseat, command = 'LearnHotSeat', leader = '2', global = 'LearnHotSeat', arg = 'game'},\n"
+    "  {key = 'picture', name = 'Picture quiz', start = mep.learn_picture_quiz, command = 'LearnPictureQuiz', leader = 'i', global = 'LearnPictureQuiz'},\n"
+    "  {key = 'crossword', name = 'Crossword', start = mep.learn_crossword, command = 'LearnCrossword', leader = 'w', global = 'LearnCrossword'},\n"
+    "}\n"
+    // mep.learn_pick([path]): a chooser over every game (mep.ui_select),
+    // starting the chosen one on `path` (default: the current org buffer).
+    "function mep.learn_pick(path)\n"
+    "  local names = {}\n",
+    "  for i, g in ipairs(mep.learn_catalog) do names[i] = g.name end\n"
+    "  mep.ui_select(names, 'Learn: pick a game', function(i)\n"
+    "    if i then mep.learn_catalog[i].start(path) end\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('Learn', function(args) mep.learn_pick(mep_learn_trim(args or '')) end)\n"
+    "mep.leader_map('ol', 'Learn: pick a game for this deck', function() mep.learn_pick() end)\n"
+    "mep.leader_group('og', 'learn games', 0xf11b, 'Green')\n"
+    "for _, g in ipairs(mep.learn_catalog) do\n"
+    "  local start = g.start\n"
+    "  _G[g.global] = function(path, extra) return start(path, extra) end\n"
+    "  -- :LearnTimed [seconds] and :LearnSurvival/:LearnHotSeat [game key]\n"
+    "  -- take their own argument in place of a path; a path still works\n"
+    "  -- (anything ending in .org).\n"
+    "  mep.command(g.command, function(args)\n"
+    "    local a = mep_learn_trim(args or '')\n"
+    "    if g.arg == 'number' and tonumber(a) then start(nil, tonumber(a))\n"
+    "    elseif g.arg == 'game' and a ~= '' and not a:lower():match('%.org$') then start(nil, a)\n"
+    "    else start(a) end\n"
+    "  end)\n"
+    "  mep.leader_map('og' .. g.leader, 'Learn: ' .. g.name:lower(), function() start() end)\n"
+    "end\n"
+};
+
 // Phase 39 -- Bib (bibliography / org-ref). A hand-rolled BibTeX parser
 // using Lua's `%b{}` balanced-match pattern item for brace-nested field
 // values (titles like `{Foo {Bar} Baz}`), which a naive non-greedy regex
@@ -15263,7 +20387,7 @@ const char *kBuiltinOrgBib =
     "  local items = {}\n"
     "  for _, e in ipairs(entries) do\n"
     "    local label = e.key .. '  ' .. (e.fields.title or '') .. (e.fields.author and (' -- ' .. e.fields.author) or '')\n"
-    "    items[#items + 1] = {display = label, data = e.key}\n"
+    "    items[#items + 1] = {display = label, data = e.key, key = e.key}\n"
     "  end\n"
     "  mep.picker_open('Insert Citation', items, function(key)\n"
     "    if key then mep.insert_text('[cite:@' .. key .. ']') end\n"
@@ -15612,6 +20736,10 @@ const char *kBuiltinActivityBar =
     "    mep_activity_todo_sidebar_id = mep.sidebar_create('Todo', 'right', 40)\n"
     "    mep.sidebar_set_on_preview(mep_activity_todo_sidebar_id, mep_activity_todo_on_preview)\n"
     "    mep.sidebar_set_on_key(mep_activity_todo_sidebar_id, mep.activity_todo_on_key)\n"
+    "    mep.sidebar_set_help(mep_activity_todo_sidebar_id, {\n"
+    "      {'Enter', 'start / stop the clock'}, {'a', 'add'}, {'e', 'edit in a float (Esc closes)'}, {'d', 'mark done'},\n"
+    "      {'x', 'delete'}, {'A', 'archive'}, {'L', 'start an AI agent on it'}, {'o', 'open the TODO file'},\n"
+    "      {'R', 'refresh'}, {'C-j / C-k', 'move down / up'}})\n"
     "  end\n"
     "  mep.sidebar_set_sections(mep_activity_todo_sidebar_id, {{id = 'todos', title = '', collapsed = false, widgets = widgets}})\n"
     "  mep_activity_todo_rendered = mep_activity_todo_key(items, clock)\n"
@@ -15821,12 +20949,9 @@ const char *kBuiltinActivityBar =
     // the sidebar's own). Enter = start/stop the clock, a = add, e = edit,
     // d = done, x = delete, A = archive, L = start an AI agent on it in a
     // new workspace, o = open TODO.org, R = re-read, Ctrl-j/Ctrl-k = move
-    // down/up, ? = this list.
+    // down/up (listed by the sidebar's `?` view, mep.sidebar_set_help).
     "function mep.activity_todo_on_key(k)\n"
-    "  if k == '?' then\n"
-    "    mep.notify('Todo: Enter=start/stop clock  a=add  e=edit in float (Esc closes)  d=done  x=delete  A=archive  L=start AI agent  o=open file  R=refresh  C-j/C-k=move down/up  mod1+m=popout')\n"
-    "    return\n"
-    "  elseif k == 'a' then mep.activity_todo_add() return\n"
+    "  if k == 'a' then mep.activity_todo_add() return\n"
     "  elseif k == 'o' then mep.activity_todo_open() return\n"
     "  elseif k == 'R' then mep_activity_todo_rerender() return\n"
     "  end\n"
@@ -16185,6 +21310,803 @@ const char *kBuiltinActivityBar =
 // (not Phase 20's raw byte mode) is sufficient here. No JSON
 // encode/decode is exposed to Lua anywhere else in the codebase, so
 // this phase carries its own minimal hand-rolled encoder/parser.
+// GitHub Copilot (:Copilot, :CopilotLogin). Drives the official
+// `copilot-language-server` (npm @github/copilot-language-server) over
+// mep's existing LSP transport -- it is an ordinary LSP server with a
+// handful of documented custom methods (signIn, textDocument/
+// inlineCompletion, textDocument/copilotPanelCompletion), so none of
+// mep.lsp_start/lsp_request/lsp_on_notification needed changing to talk
+// to it. The genuinely new editor-side piece is the inline suggestion
+// ("ghost text") widget the completions are drawn in -- Editor::
+// SetInlineSuggestion and friends (editor.h), which the completion
+// popup's own bordered list could not stand in for: a Copilot
+// suggestion is usually a dozen lines of code shown in place, not a
+// word picked from a list.
+//
+// Credentials: mep never sees the OAuth token. `signIn` runs GitHub's
+// device flow inside the language server, which persists the result
+// under $XDG_CONFIG_HOME/github-copilot (the same directory the VS
+// Code/Neovim/JetBrains Copilot clients use, so one sign-in covers all
+// of them). Nothing about the token crosses the JSON-RPC socket in
+// either direction, nothing is written into mep's own config or
+// session state, and the log-message handler below only surfaces
+// server errors rather than echoing its (verbose) log stream. The one
+// value this file does touch is the short-lived device *pairing* code,
+// which is meant to be read off the screen and typed into github.com.
+//
+// Protocol shapes here were verified against a live
+// copilot-language-server 1.547.0: the initialize handshake, a real
+// textDocument/inlineCompletion round trip, the signIn
+// PromptUserDeviceFlow response, and the window/showDocument request
+// the server makes to get the browser opened.
+const char *kBuiltinCopilot =
+    // Whether `exe` resolves on PATH. Same `command -v` shellout as
+    // mep_org_babel_has_exe; `exe` only ever comes from this file's own
+    // hardcoded defaults or mep.copilot_server_cmd, never buffer content.
+    "local function mep_copilot_has_exe(exe)\n"
+    "  return os.execute('command -v ' .. exe .. ' >/dev/null 2>&1') == true\n"
+    "end\n"
+    "\n"
+    // User-facing configuration ------------------------------------------
+    // On by default, as requested: mep talks to the language server the
+    // moment you start typing in a supported file, and the only thing that
+    // gates it beyond this flag is whether you're signed in (:CopilotLogin).
+    "mep.copilot_enabled = true\n"
+    // Seconds the cursor must sit still before asking for a suggestion.
+    // Copilot requests are billed against a completion quota and are slow
+    // (0.3-2s), so firing one per keystroke would be both wasteful and
+    // useless -- the answer would always arrive describing a buffer two
+    // characters out of date.
+    "mep.copilot_debounce = 0.25\n"
+    // Explicit server command ({'copilot-language-server', '--stdio'}-shaped).
+    // nil means auto-detect; see mep.copilot_server_cmd_resolved below.
+    "mep.copilot_server_cmd = nil\n"
+    // Per-filetype gate: mep.copilot_filetypes['md'] = false turns Copilot
+    // off for Markdown only. Anything not listed is allowed.
+    "mep.copilot_filetypes = {}\n"
+    // Buffers whose filename matches any of these Lua patterns never get
+    // sent to the server at all. The defaults are the files whose whole
+    // point is to hold a secret -- a completion request ships the
+    // surrounding buffer text to GitHub, so "don't suggest here" and "don't
+    // transmit this" are the same setting.
+    "mep.copilot_exclude_patterns = {\n"
+    "  '%.env$', '%.env%.', '%.pem$', '%.key$', '%.p12$', '%.pfx$',\n"
+    "  'credentials$', 'id_rsa', 'id_ed25519', '%.netrc$', '%.htpasswd$',\n"
+    "  'secrets?%.ya?ml$', 'secrets?%.json$',\n"
+    "}\n"
+    "\n"
+    // Extension -> LSP languageId. The server uses this to pick prompt
+    // framing and stop sequences, so a wrong/missing id measurably degrades
+    // suggestions. mep's own mep_lsp_filetype returns the bare extension,
+    // which is already the right languageId for a good number of languages
+    // (python is the notable exception) -- this table only carries the ones
+    // where the two differ.
+    "local mep_copilot_language_ids = {\n"
+    "  py = 'python', rs = 'rust', ts = 'typescript', tsx = 'typescriptreact',\n"
+    "  js = 'javascript', jsx = 'javascriptreact', mjs = 'javascript',\n"
+    "  cjs = 'javascript', rb = 'ruby', kt = 'kotlin', kts = 'kotlin',\n"
+    "  cs = 'csharp', hs = 'haskell', ml = 'ocaml', mli = 'ocaml',\n"
+    "  ex = 'elixir', exs = 'elixir', pl = 'perl', pm = 'perl',\n"
+    "  h = 'c', hpp = 'cpp', cc = 'cpp', cxx = 'cpp', hxx = 'cpp',\n"
+    "  sh = 'shellscript', bash = 'shellscript', zsh = 'shellscript',\n"
+    "  md = 'markdown', yml = 'yaml', tf = 'terraform', jl = 'julia',\n"
+    "  clj = 'clojure', cljs = 'clojure', cljc = 'clojure',\n"
+    "  f90 = 'fortran', ['for'] = 'fortran', f = 'fortran',\n"
+    "  el = 'lisp', org = 'org', tex = 'latex', R = 'r',\n"
+    "}\n"
+    "\n"
+    // Module state --------------------------------------------------------
+    "local mep_copilot_client = nil        -- LSP client id, or nil\n"
+    "local mep_copilot_ready = false       -- initialize round trip finished\n"
+    "local mep_copilot_starting = false    -- spawn issued, initialize in flight\n"
+    "local mep_copilot_status = 'Starting' -- last didChangeStatus kind\n"
+    "local mep_copilot_message = ''        -- last didChangeStatus message\n"
+    "local mep_copilot_user = nil          -- GitHub login, once signed in\n"
+    "local mep_copilot_signed_in = false\n"
+    // fname -> {version = n, text = '...'} for the documents this client has
+    // been told about. Copilot needs the *whole* open file, not just the
+    // line being edited, which is exactly why it gives better suggestions
+    // than a word-scanning completion source.
+    "local mep_copilot_docs = {}\n"
+    // The raw InlineCompletionItem currently on screen, kept so an accept
+    // can report it back for telemetry (the server's own quota accounting
+    // depends on this). Never contains credentials -- it's the model's
+    // output plus an opaque uuid.
+    "local mep_copilot_item = nil\n"
+    "local mep_copilot_shown_uuid = nil\n"
+    // Debounce/dedupe bookkeeping for the on_frame trigger below.
+    "local mep_copilot_last_key = nil\n"
+    "local mep_copilot_key_time = 0\n"
+    "local mep_copilot_sent_key = nil\n"
+    "local mep_copilot_inflight = false\n"
+    // Resolved server argv, false for "looked and found nothing", nil for
+    // "not looked yet". Cached because the frame hook below consults it and
+    // resolving means a `command -v` fork -- once per frame would be absurd.
+    // mep.copilot_server_cmd still overrides it without a restart.
+    "local mep_copilot_cmd_cache = nil\n"
+    // Rate-limits start attempts while the server is coming up.
+    "local mep_copilot_start_attempt = 0\n"
+    "\n"
+    "local function mep_copilot_notify(msg, level)\n"
+    "  mep.notify('Copilot: ' .. msg, level)\n"
+    "end\n"
+    "\n"
+    // Runs one of the server's own Command objects via
+    // workspace/executeCommand. `arguments` must go out as a real JSON
+    // array, empty or not: the server rejects the request outright
+    // ("Schema validation failed ... Expected tuple") both when the field is
+    // an empty *object* -- which is what an empty Lua table marshals to --
+    // and when it is left out entirely. Verified against the real server
+    // both ways; it is what silently broke the sign-in device flow, whose
+    // finishDeviceFlow command takes no arguments and so hit this every
+    // single time (the browser was never opened, and the server never
+    // started polling GitHub for the authorization). mep.json_empty_array
+    // is the sentinel that makes `[]` expressible from Lua at all.
+    "local function mep_copilot_exec(command, cb)\n"
+    "  if not command or not mep_copilot_client then return end\n"
+    "  local args = command.arguments\n"
+    "  if type(args) ~= 'table' or #args == 0 then args = mep.json_empty_array end\n"
+    "  local params = {command = command.command, arguments = args}\n"
+    "  mep.lsp_request(mep_copilot_client, 'workspace/executeCommand', params, function(msg)\n"
+    "    if msg.error then\n"
+    "      mep_copilot_notify(tostring(msg.error.message or 'executeCommand failed'), 'warn')\n"
+    "    end\n"
+    "    if cb then cb(mep_lsp_result(msg)) end\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_server_cmd_resolved()\n"
+    "  if mep.copilot_server_cmd then return mep.copilot_server_cmd end\n"
+    "  if mep_copilot_cmd_cache ~= nil then\n"
+    "    return mep_copilot_cmd_cache or nil\n"
+    "  end\n"
+    // The standalone native binary first (what the platform-specific npm
+    // packages and the GitHub release tarballs install), then the Node
+    // distribution, then npx as a last resort -- npx works with nothing
+    // pre-installed but pays a package download on first run.
+    "  if mep_copilot_has_exe('copilot-language-server') then\n"
+    "    mep_copilot_cmd_cache = {'copilot-language-server', '--stdio'}\n"
+    "  elseif mep_copilot_has_exe('npx') then\n"
+    "    mep_copilot_cmd_cache = {'npx', '--yes', '@github/copilot-language-server', '--stdio'}\n"
+    "  else\n"
+    "    mep_copilot_cmd_cache = false\n"
+    "  end\n"
+    "  return mep_copilot_cmd_cache or nil\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_filetype()\n"
+    "  local fname = mep.filename()\n"
+    "  if fname == '' then return nil end\n"
+    "  return mep_lsp_filetype(fname)\n"
+    "end\n"
+    "\n"
+    "local function mep_copilot_language_id(fname)\n"
+    "  local ft = mep_lsp_filetype(fname)\n"
+    "  if not ft then return 'plaintext' end\n"
+    "  return mep_copilot_language_ids[ft] or ft\n"
+    "end\n"
+    "\n"
+    // Whether this buffer may be sent to the server at all. Deliberately
+    // fails closed: an unnamed buffer has no path to match exclusions
+    // against, so it isn't sent.
+    "local function mep_copilot_allowed(fname)\n"
+    "  if fname == '' then return false end\n"
+    "  local ft = mep_lsp_filetype(fname)\n"
+    "  if ft and mep.copilot_filetypes[ft] == false then return false end\n"
+    "  for _, pat in ipairs(mep.copilot_exclude_patterns) do\n"
+    "    if fname:match(pat) then return false end\n"
+    "  end\n"
+    "  return true\n"
+    "end\n"
+    "\n"
+    "local function mep_copilot_buffer_text()\n"
+    "  local lines = {}\n"
+    "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
+    "  return table.concat(lines, '\\n')\n"
+    "end\n"
+    "\n"
+    // Brings the server's copy of `fname` up to date, opening it first if it
+    // has never been seen. Returns the version number the server now holds,
+    // which textDocument/inlineCompletion has to echo back.
+    "local function mep_copilot_sync(fname)\n"
+    "  local id = mep_copilot_client\n"
+    "  if not id then return nil end\n"
+    "  local text = mep_copilot_buffer_text()\n"
+    "  local doc = mep_copilot_docs[fname]\n"
+    "  if not doc then\n"
+    "    mep_copilot_docs[fname] = {version = 1, text = text}\n"
+    "    mep.lsp_notify(id, 'textDocument/didOpen', {\n"
+    "      textDocument = {uri = mep_lsp_uri(fname), languageId = mep_copilot_language_id(fname),\n"
+    "                      version = 1, text = text},\n"
+    "    })\n"
+    "    mep.lsp_notify(id, 'textDocument/didFocus', {textDocument = {uri = mep_lsp_uri(fname)}})\n"
+    "    return 1\n"
+    "  end\n"
+    "  if doc.text == text then return doc.version end\n"
+    "  doc.version = doc.version + 1\n"
+    "  doc.text = text\n"
+    // Full-text contentChanges against a server that advertises
+    // Incremental sync: verified accepted by copilot-language-server
+    // 1.547 (suggestions come back correct for the post-change text), and
+    // it's the same shape mep.lsp_did_change already uses for every other
+    // server. Worth knowing it's a tolerance, not a guarantee, if a future
+    // server version starts rejecting it.
+    "  mep.lsp_notify(id, 'textDocument/didChange', {\n"
+    "    textDocument = {uri = mep_lsp_uri(fname), version = doc.version},\n"
+    "    contentChanges = {{text = text}},\n"
+    "  })\n"
+    "  return doc.version\n"
+    "end\n"
+    "\n"
+    // Server lifecycle ----------------------------------------------------
+    "local function mep_copilot_register_handlers(id)\n"
+    // The sign-in device flow's browser hop: the server asks the client to
+    // open https://github.com/login/device, and mep hands it to whatever
+    // the OS's default browser is. `external = true` on every showDocument
+    // Copilot sends -- an internal-pane browse would be the wrong call
+    // anyway, since the user needs a session they can trust and a password
+    // manager they already have.
+    "  mep.lsp_on_request(id, 'window/showDocument', function(params)\n"
+    "    local uri = params and params.uri\n"
+    "    if uri then\n"
+    "      mep.open_url(uri)\n"
+    "      mep_copilot_notify('opened ' .. uri .. ' in your browser')\n"
+    "    end\n"
+    "    return {success = uri ~= nil}\n"
+    "  end)\n"
+    // Account/billing notices (quota exhausted, subscription lapsed) come
+    // through here and matter enough to surface; mep has no modal-with-
+    // buttons widget to offer the actions with, so the message is shown
+    // and no action is chosen.
+    "  mep.lsp_on_request(id, 'window/showMessageRequest', function(params)\n"
+    "    if params and params.message then\n"
+    "      mep_copilot_notify(params.message, (params.type or 3) <= 2 and 'warn' or nil)\n"
+    "    end\n"
+    "    return mep.json_null\n"
+    "  end)\n"
+    // Pull-based configuration: one entry per requested item, all empty,
+    // i.e. "no overrides, use your defaults". Answering properly matters
+    // because an unanswered/mis-shaped reply can leave the server waiting
+    // before it will serve completions.
+    "  mep.lsp_on_request(id, 'workspace/configuration', function(params)\n"
+    "    local n = #((params and params.items) or {})\n"
+    "    if n == 0 then return mep.json_null end\n"
+    "    local out = {}\n"
+    "    for i = 1, n do out[i] = mep.json_null end\n"
+    "    return out\n"
+    "  end)\n"
+    "  mep.lsp_on_notification(id, 'didChangeStatus', function(params)\n"
+    "    mep_copilot_status = (params and params.kind) or 'Normal'\n"
+    "    mep_copilot_message = (params and params.message) or ''\n"
+    "    if mep_copilot_status == 'Error' and mep_copilot_message ~= '' then\n"
+    "      mep_copilot_notify(mep_copilot_message, 'warn')\n"
+    "    end\n"
+    "  end)\n"
+    // The v2 status stream carries the authenticated user, which is the
+    // one piece of account state worth showing in :CopilotStatus. Note
+    // what is *not* read here: no token, no tracking id. The OAuth token
+    // never crosses this socket in either direction -- the server keeps it
+    // to itself (see mep.copilot_credentials_path).
+    "  mep.lsp_on_notification(id, 'didChangeStatus/v2', function(params)\n"
+    "    for _, s in ipairs((params and params.statuses) or {}) do\n"
+    "      if s.category == 'auth' then\n"
+    "        local r = s.result or {}\n"
+    "        mep_copilot_signed_in = r.status == 'OK'\n"
+    "        mep_copilot_user = r.user\n"
+    "        if not mep_copilot_signed_in and s.message and s.message ~= '' then\n"
+    "          mep_copilot_message = s.message\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end)\n"
+    // Server logs are verbose and routine; only genuine errors (type 1)
+    // are worth interrupting for.
+    "  mep.lsp_on_notification(id, 'window/logMessage', function(params)\n"
+    "    if params and params.type == 1 and params.message then\n"
+    "      mep_copilot_notify(params.message, 'warn')\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_check_status(cb)\n"
+    "  local id = mep_copilot_client\n"
+    "  if not id then if cb then cb(false) end return end\n"
+    "  mep.lsp_request(id, 'checkStatus', {}, function(msg)\n"
+    "    local r = mep_lsp_result(msg) or {}\n"
+    "    mep_copilot_signed_in = r.status == 'OK'\n"
+    "    mep_copilot_user = r.user\n"
+    "    if cb then cb(mep_copilot_signed_in) end\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_start(on_ready)\n"
+    "  if mep_copilot_client and mep.lsp_is_running(mep_copilot_client) then\n"
+    "    if mep_copilot_ready and on_ready then on_ready(true) end\n"
+    "    return\n"
+    "  end\n"
+    "  if mep_copilot_starting then return end\n"
+    "  local cmd = mep.copilot_server_cmd_resolved()\n"
+    "  if not cmd then\n"
+    "    mep_copilot_notify('no language server found. Install it with ' ..\n"
+    "      '`npm i -g @github/copilot-language-server`, or set mep.copilot_server_cmd', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local id = mep.lsp_start(cmd, {cwd = mep.workspace_root()})\n"
+    "  if id <= 0 then\n"
+    "    mep_copilot_notify('failed to start ' .. cmd[1], 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep_copilot_client = id\n"
+    "  mep_copilot_ready = false\n"
+    "  mep_copilot_starting = true\n"
+    "  mep_copilot_docs = {}\n"
+    "  mep_copilot_register_handlers(id)\n"
+    "  local root = mep.workspace_root()\n"
+    "  mep.lsp_request(id, 'initialize', {\n"
+    "    processId = mep.platform() == 'wasm' and mep.json_null or nil,\n"
+    "    rootUri = mep_lsp_uri(root),\n"
+    "    workspaceFolders = {{uri = mep_lsp_uri(root), name = root:match('([^/]+)/?$') or root}},\n"
+    "    capabilities = {\n"
+    "      workspace = {workspaceFolders = true, configuration = true},\n"
+    "      window = {showDocument = {support = true}},\n"
+    "    },\n"
+    // The server reports these verbatim in its telemetry and uses
+    // editorPluginInfo to key feature rollouts; identifying mep honestly
+    // is both the documented contract and the reason a future Copilot
+    // change that breaks this client can be traced to it.
+    "    initializationOptions = {\n"
+    "      editorInfo = {name = 'mep', version = '0.1.0'},\n"
+    "      editorPluginInfo = {name = 'copilot.mep', version = '0.1.0'},\n"
+    "    },\n"
+    "  }, function(msg)\n"
+    "    mep_copilot_starting = false\n"
+    "    local result = mep_lsp_result(msg)\n"
+    "    if not result then\n"
+    "      mep_copilot_notify('server failed to initialize', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    mep_copilot_ready = true\n"
+    "    mep.lsp_notify(id, 'initialized', {})\n"
+    "    mep.lsp_notify(id, 'workspace/didChangeConfiguration', {settings = {}})\n"
+    // Ask outright rather than waiting for a status notification to say
+    // so: didChangeStatus/v2 (the one carrying the auth category and the
+    // account name) only exists on newer servers -- 1.397, for one,
+    // sends only the account-less didChangeStatus -- so on those
+    // :CopilotStatus would otherwise report a signed-in user as signed
+    // out forever. checkStatus is answered the same way by both.
+    "    mep.copilot_check_status()\n"
+    "    if on_ready then on_ready(true) end\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_stop()\n"
+    "  if mep_copilot_client then mep.lsp_stop(mep_copilot_client) end\n"
+    "  mep_copilot_client = nil\n"
+    "  mep_copilot_ready = false\n"
+    "  mep_copilot_starting = false\n"
+    "  mep_copilot_docs = {}\n"
+    "  mep_copilot_item = nil\n"
+    "  mep.clear_inline_suggestion()\n"
+    "end\n"
+    "\n"
+    // Suggestions ---------------------------------------------------------
+    // Turns one InlineCompletionItem into the text to show *after* the
+    // cursor, or nil if it can't be shown as a pure insertion there.
+    //
+    // Copilot's range routinely starts before the cursor (it re-states the
+    // indentation it is completing after, so the item is self-contained);
+    // the part of it the user has already typed has to come off the front
+    // before the rest can be drawn as ghost text. An item whose range
+    // reaches past the cursor would mean *replacing* text to the right,
+    // which the inline-suggestion widget deliberately can't do -- those are
+    // dropped rather than half-applied.
+    //
+    // Column caveat: LSP counts characters in UTF-16 code units and mep
+    // counts bytes. They agree for ASCII and diverge otherwise; this
+    // follows the same byte-for-character convention mep_lsp_position and
+    // the rest of kBuiltinLsp already use rather than diverging from it.
+    "function mep_copilot_ghost_for(item, row, col)\n"
+    "  local text = item and item.insertText\n"
+    "  if type(text) ~= 'string' or text == '' then return nil end\n"
+    "  local rng = item.range\n"
+    "  if not rng then return text end\n"
+    "  local s, e = rng.start, rng['end']\n"
+    "  if not s or not e then return text end\n"
+    "  if s.line ~= row - 1 or e.line ~= row - 1 then return nil end\n"
+    "  if s.character > col - 1 or e.character > col - 1 then return nil end\n"
+    "  local line = mep.get_line(row)\n"
+    "  local prefix = line:sub(s.character + 1, col - 1)\n"
+    "  if prefix ~= '' and text:sub(1, #prefix) ~= prefix then return nil end\n"
+    "  local ghost = text:sub(#prefix + 1)\n"
+    "  if ghost == '' then return nil end\n"
+    "  return ghost\n"
+    "end\n"
+    "\n"
+    // Asks for a suggestion at the cursor. `trigger_kind` is 1 for an
+    // explicit request (:Copilot suggest) and 2 for the automatic one.
+    // Returns true only if a request actually went out, so the frame hook
+    // below can tell "asked" from "couldn't ask yet" -- it must not record
+    // the cursor position as already-asked-about in the second case.
+    "function mep.copilot_request(trigger_kind)\n"
+    "  local fname = mep.filename()\n"
+    "  if not mep_copilot_allowed(fname) then return false end\n"
+    "  if not mep_copilot_client or not mep_copilot_ready then\n"
+    "    mep.copilot_start()\n"
+    "    return false\n"
+    "  end\n"
+    "  local row, col = mep.cursor()\n"
+    "  local version = mep_copilot_sync(fname)\n"
+    "  if not version then return false end\n"
+    "  mep_copilot_inflight = true\n"
+    "  mep.lsp_request(mep_copilot_client, 'textDocument/inlineCompletion', {\n"
+    "    textDocument = {uri = mep_lsp_uri(fname), version = version},\n"
+    "    position = {line = row - 1, character = col - 1},\n"
+    "    context = {triggerKind = trigger_kind or 2},\n"
+    // mep exposes no shiftwidth/expandtab accessor to Lua, so these are
+    // the server's own documented defaults; they only affect how it
+    // indents multi-line suggestions.
+    "    formattingOptions = {tabSize = 4, insertSpaces = true},\n"
+    "  }, function(msg)\n"
+    "    mep_copilot_inflight = false\n"
+    "    local result = mep_lsp_result(msg)\n"
+    "    local items = result and result.items\n"
+    "    if not items or #items == 0 then return end\n"
+    // The cursor may have moved while this was in flight; a suggestion
+    // computed for a position the user has left is worthless and
+    // actively misleading. (mep.set_inline_suggestion would anchor it
+    // harmlessly out of view anyway -- this just avoids the pointless
+    // didShowCompletion that would follow.)
+    "    local now_row, now_col = mep.cursor()\n"
+    "    if now_row ~= row or now_col ~= col or not mep.is_insert_mode() then return end\n"
+    "    if mep.filename() ~= fname then return end\n"
+    "    local item = items[1]\n"
+    "    local ghost = mep_copilot_ghost_for(item, row, col)\n"
+    "    if not ghost then return end\n"
+    "    mep_copilot_item = item\n"
+    "    mep.set_inline_suggestion(ghost, row, col)\n"
+    // "Shown" telemetry, once per item -- the server uses it to
+    // distinguish a suggestion the user rejected from one they never saw.
+    "    local uuid = item.command and item.command.arguments and item.command.arguments[1]\n"
+    "    if uuid and uuid ~= mep_copilot_shown_uuid then\n"
+    "      mep_copilot_shown_uuid = uuid\n"
+    "      mep.lsp_notify(mep_copilot_client, 'textDocument/didShowCompletion', {item = item})\n"
+    "    end\n"
+    "  end)\n"
+    "  return true\n"
+    "end\n"
+    "\n"
+    // Acceptance telemetry. accepted_length is 0 for a whole-suggestion
+    // accept and the UTF-16 prefix length for a word/line one -- exactly the
+    // split the two protocol messages want.
+    "mep.set_inline_suggestion_accept_hook(function(accepted_length)\n"
+    "  local item = mep_copilot_item\n"
+    "  if not item or not mep_copilot_client or not mep_copilot_ready then return end\n"
+    "  if accepted_length and accepted_length > 0 then\n"
+    "    mep.lsp_notify(mep_copilot_client, 'textDocument/didPartiallyAcceptCompletion',\n"
+    "      {item = item, acceptedLength = accepted_length})\n"
+    "    return\n"
+    "  end\n"
+    "  mep_copilot_item = nil\n"
+    "  mep_copilot_exec(item.command)\n"
+    "end)\n"
+    "\n"
+    // Automatic trigger. Runs off on_frame rather than a buffer-change hook
+    // because mep's change epoch deliberately does not tick per keystroke
+    // inside an insert session (Editor::EnterNormal's comment explains why),
+    // and because plain cursor movement inside Insert mode should re-trigger
+    // too. The dedupe key is therefore the thing that actually determines
+    // the answer: where the cursor is and what the line under it says.
+    "mep.on_frame(function()\n"
+    "  if not mep.copilot_enabled then return end\n"
+    "  if not mep.is_insert_mode() then\n"
+    "    mep_copilot_last_key = nil\n"
+    // Also forget what was already asked about, so re-entering Insert at
+    // the same spot asks again. Within one insert session the memory is
+    // what makes Ctrl-] stick (dismiss, and it stays dismissed until
+    // something actually changes); across sessions, deliberately
+    // returning to a spot is a request for a fresh look at it.
+    "    mep_copilot_sent_key = nil\n"
+    "    return\n"
+    "  end\n"
+    "  local fname = mep.filename()\n"
+    "  if not mep_copilot_allowed(fname) then return end\n"
+    // Server still coming up (the first supported file after launch):
+    // bring it up and return *without* recording this cursor position as
+    // asked-about. Getting this wrong is subtle and was a real bug -- the
+    // first request was consumed by the not-ready branch, and since the
+    // cursor hadn't moved the key never changed again, so that first file
+    // showed no suggestion at all until you moved somewhere else.
+    "  if not mep_copilot_ready then\n"
+    "    if mep.now() - mep_copilot_start_attempt >= 2 then\n"
+    "      mep_copilot_start_attempt = mep.now()\n"
+    "      mep.copilot_start()\n"
+    "    end\n"
+    "    return\n"
+    "  end\n"
+    "  local row, col = mep.cursor()\n"
+    "  local key = fname .. '\\1' .. row .. '\\1' .. col .. '\\1' .. mep.get_line(row)\n"
+    "  if key ~= mep_copilot_last_key then\n"
+    "    mep_copilot_last_key = key\n"
+    "    mep_copilot_key_time = mep.now()\n"
+    "    return\n"
+    "  end\n"
+    // Already showing the answer for this spot (including the case where
+    // the user typed straight through a suggestion and the editor
+    // re-anchored what was left of it) -- nothing to ask.
+    "  local _, visible = mep.inline_suggestion()\n"
+    "  if visible then return end\n"
+    "  if key == mep_copilot_sent_key or mep_copilot_inflight then return end\n"
+    "  if mep.now() - mep_copilot_key_time < mep.copilot_debounce then return end\n"
+    "  if mep.copilot_request(2) then mep_copilot_sent_key = key end\n"
+    "end)\n"
+    "\n"
+    // Where the OAuth token lives. mep never reads, stores, forwards or logs
+    // it: the language server performs the device flow itself and persists
+    // the result under its own standard directory -- the same one the VS
+    // Code, Neovim and JetBrains Copilot clients share, so signing in once
+    // signs you in everywhere. Nothing here is a mep-specific secret store,
+    // which is the point: there is no second copy to leak.
+    // Makes the credentials directory owner-only. The language server
+    // already creates it 0700, so this is normally a no-op -- it exists for
+    // the case where it isn't (an older server version, a restored backup,
+    // a permissive umask), because everything inside is reachable by anyone
+    // who can traverse the directory: the token store itself is a plain
+    // 0644 SQLite file and its own mode is not mep's to police. Run once
+    // after a sign-in completes rather than every start, since that is the
+    // only moment the contents change.
+    "local function mep_copilot_harden_credentials()\n"
+    "  local dir = mep.copilot_credentials_path()\n"
+    "  if dir:match('[^%w%._/%-]') then return end\n"
+    "  os.execute('chmod 700 ' .. dir .. ' 2>/dev/null')\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_credentials_path()\n"
+    "  local xdg = os.getenv('XDG_CONFIG_HOME')\n"
+    "  if xdg and xdg ~= '' then return xdg .. '/github-copilot' end\n"
+    "  return (os.getenv('HOME') or '~') .. '/.config/github-copilot'\n"
+    "end\n"
+    "\n"
+    // Commands ------------------------------------------------------------
+    "function mep.copilot_login()\n"
+    "  mep.copilot_start(function()\n"
+    "    mep.lsp_request(mep_copilot_client, 'signIn', {}, function(msg)\n"
+    "      local r = mep_lsp_result(msg)\n"
+    "      if not r then mep_copilot_notify('sign-in failed', 'warn') return end\n"
+    "      if r.status == 'AlreadySignedIn' then\n"
+    "        mep_copilot_signed_in = true\n"
+    "        mep_copilot_user = r.user\n"
+    "        mep_copilot_notify('already signed in as ' .. tostring(r.user))\n"
+    "        return\n"
+    "      end\n"
+    "      local code = r.userCode\n"
+    "      if not code then\n"
+    "        mep_copilot_notify('sign-in failed: ' .. tostring(r.status), 'warn')\n"
+    "        return\n"
+    "      end\n"
+    // The code is a short-lived device-flow pairing code, not a
+    // credential -- it is meant to be read off the screen and typed
+    // into github.com, so putting it on the clipboard is the whole
+    // intended UX rather than a leak.
+    "      mep.clipboard_set(code)\n"
+    "      mep.copilot_device_flow(code, r.verificationUri or 'https://github.com/login/device', r.command)\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    // The device code has to stay readable long enough to type into a
+    // browser -- possibly on a phone or another machine -- which a toast is
+    // not, so it goes in a confirm overlay that stays up until answered.
+    //
+    // Answering yes runs the server's own finishDeviceFlow command, which is
+    // what starts it polling GitHub *and* what makes it ask mep to open the
+    // browser (window/showDocument, handled above). The browser is opened
+    // from that one place only: mep advertises showDocument support during
+    // initialize precisely so the server routes the URL through the editor
+    // instead of shelling out to a browser itself, and opening it here as
+    // well would put two tabs on screen for one sign-in.
+    "function mep.copilot_device_flow(code, uri, command)\n"
+    // Kept short on purpose: the confirm overlay is a single unwrapped
+    // line, and an over-long message loses its tail off the right edge of
+    // a narrow window -- which here would mean losing the URL or the code.
+    // The scheme is dropped for the same reason; the handler opens the
+    // full URI.
+    "  mep.ui_confirm('Copilot: code ' .. code .. ' (copied). Open ' ..\n"
+    "    uri:gsub('^https?://', '') .. '?', true, function(yes)\n"
+    "    if not yes then\n"
+    "      mep_copilot_notify('sign-in cancelled -- run :CopilotLogin again when ready')\n"
+    "      return\n"
+    "    end\n"
+    "    if not command then\n"
+    "      mep.open_url(uri)\n"
+    "      return\n"
+    "    end\n"
+    // Deliberately not waited on: the server only answers this once the
+    // user has finished in the browser, which can be minutes away.
+    "    mep_copilot_exec(command, function(dr)\n"
+    "      if dr and (dr.status == 'OK' or dr.status == 'AlreadySignedIn') then\n"
+    "        mep_copilot_signed_in = true\n"
+    "        mep_copilot_user = dr.user\n"
+    "        mep_copilot_harden_credentials()\n"
+    "        mep_copilot_notify('signed in as ' .. tostring(dr.user))\n"
+    "      else\n"
+    "        mep_copilot_notify('sign-in did not complete' ..\n"
+    "          (dr and dr.status and (': ' .. tostring(dr.status)) or ''), 'warn')\n"
+    "      end\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_logout()\n"
+    "  mep.copilot_start(function()\n"
+    "    mep.lsp_request(mep_copilot_client, 'signOut', {}, function()\n"
+    "      mep_copilot_signed_in = false\n"
+    "      mep_copilot_user = nil\n"
+    "      mep.clear_inline_suggestion()\n"
+    "      mep_copilot_notify('signed out. Credentials removed from ' .. mep.copilot_credentials_path())\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    // Refreshes the account state before showing it -- asking is cheap and
+    // the cached value can be minutes stale (a subscription can lapse, or
+    // another editor can sign the shared credential store out).
+    "function mep.copilot_status()\n"
+    "  if mep_copilot_client and mep_copilot_ready then\n"
+    "    mep.copilot_check_status(function() mep.copilot_status_show() end)\n"
+    "  else\n"
+    "    mep.copilot_status_show()\n"
+    "  end\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_status_show()\n"
+    "  local lines = {}\n"
+    "  lines[#lines + 1] = 'enabled: ' .. tostring(mep.copilot_enabled)\n"
+    "  local cmd = mep.copilot_server_cmd_resolved()\n"
+    "  lines[#lines + 1] = 'server: ' .. (cmd and table.concat(cmd, ' ') or 'NOT FOUND')\n"
+    "  lines[#lines + 1] = 'running: ' ..\n"
+    "    tostring(mep_copilot_client ~= nil and mep.lsp_is_running(mep_copilot_client) or false) ..\n"
+    "    (mep_copilot_ready and ' (ready)' or ' (not ready)')\n"
+    "  lines[#lines + 1] = 'signed in: ' .. tostring(mep_copilot_signed_in) ..\n"
+    "    (mep_copilot_user and (' as ' .. tostring(mep_copilot_user)) or '')\n"
+    "  lines[#lines + 1] = 'status: ' .. mep_copilot_status ..\n"
+    "    (mep_copilot_message ~= '' and (' -- ' .. mep_copilot_message) or '')\n"
+    "  local fname = mep.filename()\n"
+    "  lines[#lines + 1] = 'this buffer: ' ..\n"
+    "    (mep_copilot_allowed(fname) and ('sent as ' .. mep_copilot_language_id(fname)) or 'excluded')\n"
+    "  lines[#lines + 1] = 'credentials: ' .. mep.copilot_credentials_path()\n"
+    "  lines[#lines + 1] = '  (written and read by the language server; mep never sees the token)'\n"
+    "  mep.hover_show('Copilot', table.concat(lines, '\\n'))\n"
+    "end\n"
+    "\n"
+    // :Copilot panel / :CopilotPanel -- several alternatives at once,
+    // through mep's existing picker rather than a bespoke window. Picking
+    // one shows it as ordinary ghost text, so Tab still accepts it.
+    // Applies an InlineCompletionItem as a real buffer edit, replacing
+    // whatever its range covers. Inline (ghost-text) suggestions never need
+    // this -- their range sits on the cursor line and is handled as a pure
+    // insertion -- but a *panel* completion's range routinely spans several
+    // lines (verified: a panel item for a half-written `def f(n):` comes
+    // back with a range starting on the signature line and replacing it),
+    // so the panel cannot go through the ghost-text widget at all.
+    "function mep.copilot_apply_item(item)\n"
+    "  local text = item and item.insertText\n"
+    "  if type(text) ~= 'string' then return false end\n"
+    "  local rng = item.range\n"
+    "  if not rng or not rng.start or not rng['end'] then return false end\n"
+    "  local srow, scol = rng.start.line + 1, rng.start.character\n"
+    "  local erow, ecol = rng['end'].line + 1, rng['end'].character\n"
+    "  if srow < 1 or erow > mep.line_count() then\n"
+    "    mep_copilot_notify('suggestion no longer matches the buffer', 'warn')\n"
+    "    return false\n"
+    "  end\n"
+    "  local head = mep.get_line(srow):sub(1, scol)\n"
+    "  local tail = mep.get_line(erow):sub(ecol + 1)\n"
+    "  local lines = {}\n"
+    "  for chunk in (head .. text .. tail .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = chunk end\n"
+    "  mep.replace_lines(srow, erow + 1, lines)\n"
+    "  mep.set_cursor(srow + #lines - 1, #(lines[#lines] or '') + 1)\n"
+    "  mep_copilot_exec(item.command)\n"
+    "  return true\n"
+    "end\n"
+    "\n"
+    // One line of preview for a panel item. Naively showing its first line
+    // is useless here: a panel item's range starts at the line the
+    // *signature* is on, so every alternative's first line is the identical
+    // `def fib(n):` the user already typed and the list reads as five
+    // copies of the same thing. Skip as many lines as the range covers
+    // before the cursor, then show the first thing that actually differs
+    // between the alternatives.
+    "function mep_copilot_panel_label(item, row)\n"
+    "  local text = item.insertText or ''\n"
+    "  local lines = {}\n"
+    "  for chunk in (text .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = chunk end\n"
+    "  local skip = 0\n"
+    "  if item.range and item.range.start then skip = (row - 1) - item.range.start.line end\n"
+    "  if skip < 0 then skip = 0 end\n"
+    "  for i = skip + 1, #lines do\n"
+    "    local t = lines[i]:gsub('^%s+', '')\n"
+    "    if t ~= '' then return t end\n"
+    "  end\n"
+    "  local first = (lines[1] or ''):gsub('^%s+', '')\n"
+    "  return first ~= '' and first or '(empty)'\n"
+    "end\n"
+    "\n"
+    "function mep.copilot_panel()\n"
+    "  local fname = mep.filename()\n"
+    "  if not mep_copilot_allowed(fname) then\n"
+    "    mep_copilot_notify('this buffer is excluded', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep.copilot_start(function()\n"
+    "    local row, col = mep.cursor()\n"
+    "    local version = mep_copilot_sync(fname)\n"
+    "    mep.lsp_request(mep_copilot_client, 'textDocument/copilotPanelCompletion', {\n"
+    "      textDocument = {uri = mep_lsp_uri(fname), version = version},\n"
+    "      position = {line = row - 1, character = col - 1},\n"
+    "    }, function(msg)\n"
+    "      local result = mep_lsp_result(msg)\n"
+    "      local items = result and result.items\n"
+    "      if not items or #items == 0 then\n"
+    "        mep_copilot_notify('no suggestions')\n"
+    "        return\n"
+    "      end\n"
+    "      local picker_items = {}\n"
+    "      for i, item in ipairs(items) do\n"
+    "        picker_items[i] = {display = i .. '. ' .. mep_copilot_panel_label(item, row), data = tostring(i)}\n"
+    "      end\n"
+    "      mep.picker_open('Copilot suggestions', picker_items, function(pick)\n"
+    "        local item = pick and items[tonumber(pick)]\n"
+    "        if item then mep.copilot_apply_item(item) end\n"
+    "      end)\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    "\n"
+    // :Copilot with no argument turns it on (and starts the server), which
+    // is what "turn it on" should do even though it already defaults to on.
+    // The subcommands cover the rest so there is one name to remember.
+    "mep.command('Copilot', function(args)\n"
+    "  local sub = (args or ''):match('^%s*(%S*)')\n"
+    "  if sub == '' or sub == 'on' or sub == 'enable' then\n"
+    "    mep.copilot_enabled = true\n"
+    "    mep.copilot_start()\n"
+    "    mep_copilot_notify('enabled')\n"
+    "  elseif sub == 'off' or sub == 'disable' then\n"
+    "    mep.copilot_enabled = false\n"
+    "    mep.clear_inline_suggestion()\n"
+    "    mep_copilot_notify('disabled')\n"
+    "  elseif sub == 'toggle' then\n"
+    "    mep.copilot_enabled = not mep.copilot_enabled\n"
+    "    if not mep.copilot_enabled then mep.clear_inline_suggestion() else mep.copilot_start() end\n"
+    "    mep_copilot_notify(mep.copilot_enabled and 'enabled' or 'disabled')\n"
+    "  elseif sub == 'status' then\n"
+    "    mep.copilot_status()\n"
+    "  elseif sub == 'panel' then\n"
+    "    mep.copilot_panel()\n"
+    "  elseif sub == 'suggest' then\n"
+    "    mep.copilot_request(1)\n"
+    "  elseif sub == 'login' or sub == 'signin' then\n"
+    "    mep.copilot_login()\n"
+    "  elseif sub == 'logout' or sub == 'signout' then\n"
+    "    mep.copilot_logout()\n"
+    "  elseif sub == 'restart' then\n"
+    "    mep.copilot_stop()\n"
+    "    mep.copilot_start(function() mep_copilot_notify('restarted') end)\n"
+    "  else\n"
+    "    mep_copilot_notify('unknown subcommand ' .. sub ..\n"
+    "      ' (on|off|toggle|status|panel|suggest|login|logout|restart)', 'warn')\n"
+    "  end\n"
+    "end)\n"
+    "mep.command('CopilotLogin', function() mep.copilot_login() end)\n"
+    "mep.command('CopilotLogout', function() mep.copilot_logout() end)\n"
+    "mep.command('CopilotStatus', function() mep.copilot_status() end)\n"
+    "mep.command('CopilotPanel', function() mep.copilot_panel() end)\n"
+    "mep.command('CopilotEnable', function() mep.copilot_enabled = true mep.copilot_start() end)\n"
+    "mep.command('CopilotDisable', function()\n"
+    "  mep.copilot_enabled = false\n"
+    "  mep.clear_inline_suggestion()\n"
+    "end)\n";
+
 const char *kBuiltinAi =
     "mep.ai_provider = 'openai'\n"
     "mep.ai_model = 'gpt-4o-mini'\n"
@@ -16491,7 +22413,7 @@ const char *kBuiltinAi =
     "  local current_query = ''\n"
     "  local items = mep_ai_context_filtered_items(current_query)\n"
     "  local highlighted = items[1] and items[1].data or nil\n"
-    "  mep.picker_open('AI context (C-y toggle, C-a add, C-d delete)', items,\n"
+    "  mep.picker_open('AI context', items,\n"
     "    function(data)\n"
     // Editor::HandlePickerInput's escape branch tears the picker down
     // completely -- mode_ restored, callbacks unreffed -- *before* ever
@@ -16566,10 +22488,11 @@ const char *kBuiltinAi =
     "      highlighted = data\n"
     "    end,\n"
     "    true)\n"
+    "  mep.picker_set_hint('C-y: toggle   C-a: add   C-d: delete')\n"
     "end\n"
     "mep.command('MepAiContextPicker', mep.ai_context_picker)\n"
     "mep.leader_map('ai', 'AI: context picker', mep.ai_context_picker)\n"
-    // Speech-to-text (<leader>v toggles): press once to start recording,
+    // Speech-to-text (<leader>vv toggles): press once to start recording,
     // press again to stop -- while it's running, the transcript streams in
     // at the cursor a few seconds behind your voice, entering Insert mode
     // first if the buffer wasn't already there, so dictated text behaves
@@ -16825,7 +22748,7 @@ const char *kBuiltinAi =
     "  mep.notify('Recording -- transcribing as you talk. Press <leader>v again to stop.')\n"
     "end\n"
     "mep.command('MepSttToggle', mep.stt_toggle)\n"
-    "mep.leader_map('v', 'Speech-to-text: toggle live transcription', mep.stt_toggle)\n"
+    "mep.leader_map('vv', 'Speech-to-text: toggle live transcription', mep.stt_toggle)\n"
     // Tools: read_file/list_dir/run_command, each gated by a permission
     // prompt. run_command always re-prompts (no blanket approval, per
     // the plan); the other two support an allow-always-this-session
@@ -17036,7 +22959,7 @@ const char *kBuiltinTabTerminal =
     "mep.command('MepTabTerminal', mep.tab_terminal_toggle)\n"
     "mep.command('tabterminal', mep.tab_terminal_toggle)\n"
     "mep.command('tabterm', mep.tab_terminal_toggle)\n"
-    "mep.leader_map('<CR>', 'Toggle this tab\\'s terminal (bottom)', mep.tab_terminal_toggle)\n";
+    "mep.leader_map('<CR>', 'terminal', mep.tab_terminal_toggle, 0xf120, 'Green')\n";
 
 // RUNBUTTON_PLAN: the pane-header Run button (main.cpp's DrawPane, next to
 // the vsplit/hsplit/close controls) for R/Python/C/C++ source files.
@@ -17194,13 +23117,31 @@ const char *kBuiltinRunButton =
     "  local now, remaining = mep.now(), {}\n"
     "  for _, item in ipairs(mep_run_button_pending) do\n"
     "    if now >= item.at then\n"
-    "      mep.terminal_write(item.buf, item.cmd .. '\\n')\n"
+    "      mep.terminal_write(item.buf, item.raw and item.cmd or (item.cmd .. '\\n'))\n"
     "    else\n"
     "      remaining[#remaining + 1] = item\n"
     "    end\n"
     "  end\n"
     "  mep_run_button_pending = remaining\n"
     "end)\n"
+    // mep.tab_terminal_run(cmd [, opts]): types `cmd` into this tab's popup
+    // terminal, opening it first if needed -- the public face of the helper
+    // above for other chunks (kBuiltinRunners). opts.submit=false leaves
+    // the line unsent for the user to finish; opts.focus moves focus into
+    // the terminal pane.
+    "function mep.tab_terminal_run(cmd, opts)\n"
+    "  opts = opts or {}\n"
+    "  local from = mep.current_pane_id()\n"
+    "  local buf, is_new = mep_run_button_ensure_terminal()\n"
+    "  if not buf then mep.notify('Could not open a terminal', 'error') return end\n"
+    "  local text = opts.submit == false and cmd or (cmd .. '\\n')\n"
+    "  if is_new then\n"
+    "    mep_run_button_pending[#mep_run_button_pending + 1] = {buf = buf, cmd = cmd, at = mep.now() + 0.3, raw = opts.submit == false}\n"
+    "  else\n"
+    "    mep.terminal_write(buf, text)\n"
+    "  end\n"
+    "  if opts.focus then mep.pane_focus_buffer(buf) elseif from then mep.pane_focus(from) end\n"
+    "end\n"
     // Org run button (RUNBUTTON_PLAN, org branch): unlike every filetype
     // above (a single shell command handed to the shared terminal), an
     // .org file's "run" is mep's own in-process exporter (kBuiltinOrgExport,
@@ -17629,6 +23570,33 @@ const char *kBuiltinRunButton =
     "end\n"
     "mep.command('MepRunButtonRun', mep.run_button_run)\n"
     "mep.leader_map('rr', 'Run button: run/compile current file', mep.run_button_run)\n"
+    // "gr" ("go run", mnemonically) -- the same mep.run_button_run the
+    // pane-header Run button and <leader>rr above already trigger, reached
+    // as a plain two-key Normal-mode sequence instead: no leader prefix to
+    // hold through (and no leader-popup timeout to race) for the one action
+    // an edit/run/edit loop hits over and over. Everything downstream is
+    // shared, so whatever <leader>rr means for this particular file -- org
+    // export, tectonic, rmarkdown/knitr, run-all for a notebook, sourcing
+    // into an open language UI mode's console, or the generic interpreter/
+    // compile-then-run line in this tab's popup terminal -- "gr" means
+    // exactly the same thing, including its "no run command configured for
+    // this filetype" warning.
+    //
+    // Bound via mep.map_g, not plain mep.map: the latter only ever sees a
+    // single already-unprefixed keystroke and can't reach anything typed
+    // after a pending 'g' (see mep.map_g('d', ...) for lsp_goto_definition).
+    // "r" is free after a leading 'g' here -- mep's own built-in g-motions
+    // are gg/ge/gE/gu/gU/gJ/gv, and the Lua-registered ones are gd (goto
+    // definition), gh (R help / LSP hover) and gl (AI send buffer). Real
+    // Vim's own "gr" is virtual-replace mode, which mep doesn't implement
+    // at all, so nothing existing is shadowed by taking it.
+    //
+    // Normal mode only, deliberately: Visual mode keeps an entirely
+    // separate g-prefix table (mep.map_g_visual), and "run this file" has
+    // no selection-specific meaning worth spending "gr" there on -- a
+    // Visual-mode "gr" stays unbound rather than silently doing the
+    // whole-file thing while text is highlighted.
+    "mep.map_g('r', mep.run_button_run)\n"
     // The Setup popup main.cpp's Run-button right-click menu opens
     // ("Setup..."): asks for the interpreter/compiler, then the one
     // free-form flags string, pre-filled with whatever's already in
@@ -17942,6 +23910,7 @@ const char *kBuiltinAiTerminal =
     "  if not mep_ai_agents_sidebar_id then\n"
     "    mep_ai_agents_sidebar_id = mep.sidebar_create('AI Agents', 'right', 44)\n"
     "    mep.sidebar_set_on_key(mep_ai_agents_sidebar_id, mep_ai_agents_on_key)\n"
+    "    mep.sidebar_set_help(mep_ai_agents_sidebar_id, {{'Enter', 'jump to the agent'}, {'n', 'open a new AI terminal'}, {'r', 're-scan agents'}})\n"
     "  end\n"
     "  mep_ai_agents_refresh(true)\n"
     "  mep.sidebar_open(mep_ai_agents_sidebar_id)\n"
@@ -18363,14 +24332,16 @@ const char *kBuiltinLeetcode =
 // notebook buffer, the same "gate on state, fall through otherwise"
 // pattern R's gh/mep.r_ui_help_at_cursor uses, since mep.map/leader_map
 // have no buffer-local flavor. Enter/Shift+Enter/Ctrl+Enter/mod1+Enter
-// are C++ (HandleNormalInput/HandleInsertInput/HandleMod1Shortcuts) --
-// mep.map can't bind Enter or modifier combos.
+// and the Ctrl-C Ctrl-C chord are C++ (HandleNormalInput/
+// HandleInsertInput/HandleMod1Shortcuts) -- mep.map can't bind Enter or
+// modifier combos.
 //
 // Leader keys follow Jupyter's own command-mode letters under <leader>j:
 //   jr run cell        jn run & go to next   ja insert above   jb insert below
 //   jA run all         jd delete cell        jm to markdown    jy to code
 //   jk move cell up    jj move cell down     jc clear outputs  jC clear all
-//   ji interrupt       j0 restart kernel     ]j / [j next/previous cell
+//   ji interrupt       j0 restart kernel     jK set cell kernel
+//   ]j / [j next/previous cell
 const char *kBuiltinNotebook =
     "mep.opt = mep.opt or {}\n"
     // mep.opt.notebook_python: the interpreter kernels launch with
@@ -18392,6 +24363,34 @@ const char *kBuiltinNotebook =
     // init.lua that sets mep.opt.notebook_python must still take effect
     // before the first kernel launch.
     "mep.on_frame(mep_nb_apply_python)\n"
+    "mep.opt.notebook_kernels = mep.opt.notebook_kernels or {\n"
+    "  {name='python3', display_name='Python 3', language='py', mode='python'},\n"
+    "  {name='ir', display_name='R', language='r', mode='script', command={'R', '--slave', '--no-save'}},\n"
+    "  {name='javascript', display_name='JavaScript', language='js', mode='script', command={'node'}},\n"
+    "  {name='ruby', display_name='Ruby', language='', mode='script', command={'ruby'}},\n"
+    "  {name='bash', display_name='Bash', language='', mode='script', command={'bash'}},\n"
+    "}\n"
+    "local mep_nb_kernels_applied = nil\n"
+    "local function mep_nb_apply_kernels()\n"
+    "  if mep.opt.notebook_kernels ~= mep_nb_kernels_applied then\n"
+    "    mep.notebook_set_kernels(mep.opt.notebook_kernels)\n"
+    "    mep_nb_kernels_applied = mep.opt.notebook_kernels\n"
+    "  end\n"
+    "end\n"
+    "mep_nb_apply_kernels()\n"
+    "mep.on_frame(mep_nb_apply_kernels)\n"
+    "function mep.notebook_pick_kernel()\n"
+    "  local ks = mep.notebook_kernels()\n"
+    "  if not ks or #ks == 0 then mep.notify('No kernels registered', 'warn') return end\n"
+    "  local cur = mep.notebook_cell_kernel()\n"
+    "  local labels = {}\n"
+    "  for i, k in ipairs(ks) do\n"
+    "    labels[i] = (k.name == cur and '* ' or '  ') .. (k.display_name ~= '' and k.display_name or k.name)\n"
+    "  end\n"
+    "  mep.ui_select(labels, 'Cell kernel', function(idx)\n"
+    "    if idx then mep.notebook_set_cell_kernel(ks[idx].name) end\n"
+    "  end)\n"
+    "end\n"
     "local function mep_nb_guard(fn, quiet)\n"
     "  return function(...)\n"
     "    if not mep.notebook_is_buffer() then\n"
@@ -18411,23 +24410,26 @@ const char *kBuiltinNotebook =
     "  if target < 0 or target >= n then mep.notify(delta > 0 and 'Last cell' or 'First cell') return end\n"
     "  mep.notebook_goto_cell(target)\n"
     "end\n"
+    // jj/jm/jn/jc are nil here: kBuiltinRunners owns those leader keys
+    // and forwards them to these same commands inside a .ipynb buffer.
     "local defs = {\n"
     "  {'NotebookRun', 'jr', 'Notebook: run cell', function() mep.notebook_run_cell() end},\n"
-    "  {'NotebookRunAndAdvance', 'jn', 'Notebook: run cell, go to next', mep.notebook_run_and_advance},\n"
+    "  {'NotebookRunAndAdvance', nil, 'Notebook: run cell, go to next', mep.notebook_run_and_advance},\n"
     "  {'NotebookRunAndInsert', 'jo', 'Notebook: run cell, insert below', mep.notebook_run_and_insert},\n"
     "  {'NotebookRunAll', 'jA', 'Notebook: run all cells', mep.notebook_run_all},\n"
     "  {'NotebookInsertAbove', 'ja', 'Notebook: insert cell above', function() mep.notebook_insert_cell(false, 'code') end},\n"
     "  {'NotebookInsertBelow', 'jb', 'Notebook: insert cell below', function() mep.notebook_insert_cell(true, 'code') end},\n"
     "  {'NotebookDelete', 'jd', 'Notebook: delete cell', function() mep.notebook_delete_cell() end},\n"
-    "  {'NotebookToMarkdown', 'jm', 'Notebook: cell to markdown', function() mep.notebook_set_cell_type('markdown') end},\n"
+    "  {'NotebookToMarkdown', nil, 'Notebook: cell to markdown', function() mep.notebook_set_cell_type('markdown') end},\n"
     "  {'NotebookToCode', 'jy', 'Notebook: cell to code', function() mep.notebook_set_cell_type('code') end},\n"
     "  {'NotebookToRaw', nil, 'Notebook: cell to raw', function() mep.notebook_set_cell_type('raw') end},\n"
     "  {'NotebookMoveUp', 'jk', 'Notebook: move cell up', function() mep.notebook_move_cell(-1) end},\n"
-    "  {'NotebookMoveDown', 'jj', 'Notebook: move cell down', function() mep.notebook_move_cell(1) end},\n"
-    "  {'NotebookClearOutputs', 'jc', 'Notebook: clear cell outputs', function() mep.notebook_clear_outputs() end},\n"
+    "  {'NotebookMoveDown', nil, 'Notebook: move cell down', function() mep.notebook_move_cell(1) end},\n"
+    "  {'NotebookClearOutputs', nil, 'Notebook: clear cell outputs', function() mep.notebook_clear_outputs() end},\n"
     "  {'NotebookClearAllOutputs', 'jC', 'Notebook: clear all outputs', function() mep.notebook_clear_outputs(-1) end},\n"
     "  {'NotebookInterrupt', 'ji', 'Notebook: interrupt kernel', mep.notebook_interrupt},\n"
     "  {'NotebookRestartKernel', 'j0', 'Notebook: restart kernel', mep.notebook_restart_kernel},\n"
+    "  {'NotebookKernel', 'jK', 'Notebook: set cell kernel', function() mep.notebook_pick_kernel() end},\n"
     "  {'NotebookNextCell', nil, 'Notebook: next cell', function() mep_nb_step(1) end},\n"
     "  {'NotebookPrevCell', nil, 'Notebook: previous cell', function() mep_nb_step(-1) end},\n"
     "}\n"
@@ -18456,25 +24458,1454 @@ const char *kBuiltinNotebook =
     "  mep.open(path)\n"
     "end)\n";
 
+// Command runner picker (<leader><Space>, <leader>j{j,m,n,c}, :Runner):
+// fuzzy-pick a just recipe / make target / ninja target / cmake target and
+// run it in this tab's popup terminal (mep.tab_terminal_run,
+// kBuiltinRunButton). The preview column shows the command, a tree of its
+// dependency graph (just --dump json, make -pRrq, ninja -t graph) and the
+// recipe body. Tab/Shift-Tab (mep.picker_set_tabs) also reach a
+// Workspaces tab (directories under the workspace root with runner files;
+// Enter makes one this tab's runner root) and a Variables tab (just
+// assignments, makefile variables, ninja bindings, CMake cache entries;
+// Enter jumps to the definition). Every tool is invoked asynchronously
+// (mep.job_start) so a slow `make -p` never blocks the frame.
+const char *kBuiltinRunners =
+    "mep.opt = mep.opt or {}\n"
+    // Precedence for <leader><Space> (the auto picker): the first runner found in the
+    // workspace root wins. Tabs are shown in this same order.
+    "mep.opt.runner_order = mep.opt.runner_order or {'just', 'make', 'ninja', 'cmake'}\n"
+    "mep.opt.runner_tree_depth = mep.opt.runner_tree_depth or 8\n"
+    "mep.opt.runner_tree_children = mep.opt.runner_tree_children or 40\n"
+    "mep.opt.runner_workspace_depth = mep.opt.runner_workspace_depth or 5\n"
+    // Per-tab runner root (picked on the Workspaces tab), falling back to the workspace root.
+    "mep.runner_roots = mep.runner_roots or {}\n"
+    "local function rn_root()\n"
+    "  return mep.runner_roots[mep.current_tab_id()] or mep.workspace_root()\n"
+    "end\n"
+    "local function rn_exists(path)\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if f then f:close() return true end\n"
+    "  return false\n"
+    "end\n"
+    "local function rn_read_lines(path)\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if not f then return nil end\n"
+    "  local out = {}\n"
+    "  for line in f:lines() do out[#out + 1] = line end\n"
+    "  f:close()\n"
+    "  return out\n"
+    "end\n"
+    "local function rn_join(a, b)\n"
+    "  if a:sub(-1) == '/' then return a .. b end\n"
+    "  return a .. '/' .. b\n"
+    "end\n"
+    // Path as typed into the tab terminal, which starts in the workspace root.
+    "local function rn_rel(p)\n"
+    "  local wr = mep.workspace_root()\n"
+    "  if p == wr then return '.' end\n"
+    "  if p:sub(1, #wr + 1) == wr .. '/' then return p:sub(#wr + 2) end\n"
+    "  return p\n"
+    "end\n"
+    "local function rn_quote(s)\n"
+    "  if s:match('^[%w%._/%-%+=:,@]+$') then return s end\n"
+    "  return \"'\" .. s:gsub(\"'\", \"'\\\\''\") .. \"'\"\n"
+    "end\n"
+    "local function rn_is_root(dir) return dir == mep.workspace_root() end\n"
+    // Async process -> array of stdout lines (stderr dropped), then cb(lines, code).
+    "local function rn_run(argv, cwd, cb)\n"
+    "  local out = {}\n"
+    "  local id = mep.job_start(argv, {\n"
+    "    cwd = cwd,\n"
+    "    on_stdout = function(line) out[#out + 1] = line end,\n"
+    "    on_exit = function(code) cb(out, code) end,\n"
+    "  })\n"
+    "  if not id then cb({}, -1) end\n"
+    "end\n"
+    // The newest `name` among dir/<name>, dir/build/<name>, dir/build/*/<name>, dir/out/build/*/<name>
+    // and dir/cmake-build-*/<name>: returns the containing directories, newest first.
+    "local function rn_find_build_dirs(dir, name)\n"
+    "  local found = {}\n"
+    "  local function consider(d)\n"
+    "    for _, e in ipairs(mep.list_dir(d)) do\n"
+    "      if not e.is_dir and e.name == name then found[#found + 1] = {dir = d, mtime = e.mtime} return end\n"
+    "    end\n"
+    "  end\n"
+    "  local function scan_children(d)\n"
+    "    for _, e in ipairs(mep.list_dir(d)) do\n"
+    "      if e.is_dir and e.name:sub(1, 1) ~= '.' and e.name ~= '_deps' and e.name ~= 'CMakeFiles' then consider(rn_join(d, e.name)) end\n"
+    "    end\n"
+    "  end\n"
+    "  consider(dir)\n"
+    "  for _, e in ipairs(mep.list_dir(dir)) do\n"
+    "    if e.is_dir and e.name:match('^cmake%-build') then consider(rn_join(dir, e.name)) end\n"
+    "  end\n"
+    "  consider(rn_join(dir, 'build'))\n"
+    "  scan_children(rn_join(dir, 'build'))\n"
+    "  scan_children(rn_join(dir, 'out/build'))\n"
+    "  table.sort(found, function(a, b) return a.mtime > b.mtime end)\n"
+    "  local dirs = {}\n"
+    "  for _, f in ipairs(found) do dirs[#dirs + 1] = f.dir end\n"
+    "  return dirs\n"
+    "end\n"
+    "local function rn_line_of(lines, pattern)\n"
+    "  if not lines then return nil end\n"
+    "  for i, l in ipairs(lines) do\n"
+    "    if l:match(pattern) then return i end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "local function rn_pat_escape(s) return (s:gsub('[%^%$%(%)%%%.%[%]%*%+%-%?]', '%%%0')) end\n"
+    // Dependency tree rendering: graph = {deps = {name -> {child, ...}}, info = {name -> {hl=, note=}}}.
+    // Returns lines + picker preview spans (row offset `row0`). Repeated subtrees are shown once
+    // (later occurrences end in a dim marker), cycles are cut, and depth/width are capped.
+    "local function rn_render_tree(graph, root_name, row0, show)\n"
+    "  local lines, spans = {}, {}\n"
+    "  local g_mid, g_last, g_bar, g_gap = '|-- ', '`-- ', '|   ', '    '\n"
+    "  local expanded, on_path = {}, {}\n"
+    "  local max_depth, max_children = mep.opt.runner_tree_depth, mep.opt.runner_tree_children\n"
+    "  show = show or function(n) return n end\n"
+    "  local function push(prefix, name, suffix)\n"
+    "    local info = graph.info and graph.info[name] or {}\n"
+    "    local label = show(name)\n"
+    "    local text = prefix .. label\n"
+    "    local row = row0 + #lines + 1\n"
+    "    if #prefix > 0 then spans[#spans + 1] = {row = row, col_start = 1, col_end = #prefix + 1, hl = 'Comment'} end\n"
+    "    local hl = info.hl or ((graph.deps[name] and #graph.deps[name] > 0) and 'Blue' or 'Green')\n"
+    "    spans[#spans + 1] = {row = row, col_start = #prefix + 1, col_end = #text + 1, hl = hl}\n"
+    "    local note = suffix or info.note\n"
+    "    if note and note ~= '' then\n"
+    "      local s0 = #text + 1\n"
+    "      text = text .. '  ' .. note\n"
+    "      spans[#spans + 1] = {row = row, col_start = s0, col_end = #text + 1, hl = 'Comment'}\n"
+    "    end\n"
+    "    lines[#lines + 1] = text\n"
+    "  end\n"
+    "  local function walk(name, prefix, depth)\n"
+    "    local kids = graph.deps[name] or {}\n"
+    "    if #kids == 0 then return end\n"
+    "    local limit = math.min(#kids, max_children)\n"
+    "    for i = 1, limit do\n"
+    "      local kid = kids[i]\n"
+    "      local last = i == #kids\n"
+    "      local conn = last and g_last or g_mid\n"
+    "      local cont = prefix .. (last and g_gap or g_bar)\n"
+    "      local has_kids = graph.deps[kid] and #graph.deps[kid] > 0\n"
+    "      if on_path[kid] then\n"
+    "        push(prefix .. conn, kid, '(cycle)')\n"
+    "      elseif has_kids and expanded[kid] then\n"
+    "        push(prefix .. conn, kid, '(see above)')\n"
+    "      elseif has_kids and depth >= max_depth then\n"
+    "        push(prefix .. conn, kid, '...')\n"
+    "      else\n"
+    "        push(prefix .. conn, kid)\n"
+    "        if has_kids then\n"
+    "          expanded[kid] = true\n"
+    "          on_path[kid] = true\n"
+    "          walk(kid, cont, depth + 1)\n"
+    "          on_path[kid] = nil\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    if #kids > limit then push(prefix .. g_last, '... ' .. (#kids - limit) .. ' more', '') end\n"
+    "  end\n"
+    "  push('', root_name)\n"
+    "  expanded[root_name] = true\n"
+    "  on_path[root_name] = true\n"
+    "  walk(root_name, '', 1)\n"
+    "  return lines, spans\n"
+    "end\n"
+    // ---------------------------------------------------------------- just
+    "local R = {}\n"
+    "R.just = {label = 'Just'}\n"
+    "function R.just.detect(dir)\n"
+    "  for _, n in ipairs({'justfile', 'Justfile', '.justfile', 'JUSTFILE'}) do\n"
+    "    local p = rn_join(dir, n)\n"
+    "    if rn_exists(p) then return {dir = dir, file = p, default_name = true} end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "local function rn_just_argv(ctx, ...)\n"
+    "  local argv = {'just', '--justfile', ctx.file, '--working-directory', ctx.dir}\n"
+    "  for _, a in ipairs({...}) do argv[#argv + 1] = a end\n"
+    "  return argv\n"
+    "end\n"
+    "local function rn_just_dump(ctx, cb)\n"
+    "  if ctx.dump then cb(ctx.dump) return end\n"
+    "  rn_run(rn_just_argv(ctx, '--dump', '--dump-format', 'json'), ctx.dir, function(out)\n"
+    "    ctx.dump = mep_ai_json_decode(table.concat(out, '\\n')) or {}\n"
+    "    cb(ctx.dump)\n"
+    "  end)\n"
+    "end\n"
+    "local function rn_just_fragment(frag)\n"
+    "  if type(frag) == 'string' then return frag end\n"
+    "  if type(frag) == 'table' then\n"
+    "    local e = frag[1]\n"
+    "    if type(e) == 'table' and e[1] == 'variable' then return '{{' .. tostring(e[2]) .. '}}' end\n"
+    "    return '{{...}}'\n"
+    "  end\n"
+    "  return ''\n"
+    "end\n"
+    "function R.just.list(ctx, cb)\n"
+    "  rn_just_dump(ctx, function(dump)\n"
+    "    local src = rn_read_lines(ctx.file)\n"
+    "    local items, graph = {}, {deps = {}, info = {}}\n"
+    "    for name, r in pairs(dump.recipes or {}) do\n"
+    "      local deps, required, params = {}, {}, {}\n"
+    "      for _, d in ipairs(r.dependencies or {}) do deps[#deps + 1] = d.recipe end\n"
+    "      for _, prm in ipairs(r.parameters or {}) do\n"
+    "        local sigil = (prm.kind == 'star' and '*') or (prm.kind == 'plus' and '+') or ''\n"
+    "        params[#params + 1] = sigil .. prm.name .. (prm.default ~= nil and '=...' or '')\n"
+    "        if prm.default == nil and prm.kind ~= 'star' then required[#required + 1] = prm.name end\n"
+    "      end\n"
+    "      graph.deps[name] = deps\n"
+    "      local body = {}\n"
+    "      for _, frags in ipairs(r.body or {}) do\n"
+    "        local parts = {}\n"
+    "        for _, f in ipairs(frags) do parts[#parts + 1] = rn_just_fragment(f) end\n"
+    "        body[#body + 1] = table.concat(parts)\n"
+    "      end\n"
+    "      if not r.private and name:sub(1, 1) ~= '_' then\n"
+    "        items[#items + 1] = {\n"
+    "          name = name, desc = r.doc, params = params, required = required, body = body,\n"
+    "          line = rn_line_of(src, '^@?' .. rn_pat_escape(name) .. '[%s:]'),\n"
+    "        }\n"
+    "      end\n"
+    "    end\n"
+    "    table.sort(items, function(a, b) return (a.line or 1e9) < (b.line or 1e9) end)\n"
+    "    ctx.graph = graph\n"
+    "    cb(items)\n"
+    "  end)\n"
+    "end\n"
+    "function R.just.command(ctx, item)\n"
+    "  local base = ctx.default_name and rn_is_root(ctx.dir) and 'just' or ('just -f ' .. rn_quote(rn_rel(ctx.file)))\n"
+    "  return base .. ' ' .. item.name\n"
+    "end\n"
+    "function R.just.tree(ctx, item, cb)\n"
+    "  cb(ctx.graph or {deps = {}}, item.body, 'recipe')\n"
+    "end\n"
+    "function R.just.vars(ctx, cb)\n"
+    "  rn_just_dump(ctx, function(dump)\n"
+    "    rn_run(rn_just_argv(ctx, '--evaluate'), ctx.dir, function(out)\n"
+    "      local values = {}\n"
+    "      for _, l in ipairs(out) do\n"
+    "        local k, v = l:match('^([%w_%-]+)%s*:=%s*\"(.*)\"%s*$')\n"
+    "        if k then values[k] = v end\n"
+    "      end\n"
+    "      local src = rn_read_lines(ctx.file)\n"
+    "      local vars = {}\n"
+    "      for name, a in pairs(dump.assignments or {}) do\n"
+    "        local expr = type(a.value) == 'string' and ('\"' .. a.value .. '\"') or nil\n"
+    "        vars[#vars + 1] = {\n"
+    "          name = name, value = values[name] or (type(a.value) == 'string' and a.value or '?'),\n"
+    "          origin = (a.export and 'exported ' or '') .. 'just variable', expr = expr, file = ctx.file,\n"
+    "          line = rn_line_of(src, '^%s*[%w ]-' .. rn_pat_escape(name) .. '%s*:=') or 1,\n"
+    "        }\n"
+    "      end\n"
+    "      cb(vars)\n"
+    "    end)\n"
+    "  end)\n"
+    "end\n"
+    // ---------------------------------------------------------------- make
+    "R.make = {label = 'Make'}\n"
+    "function R.make.detect(dir)\n"
+    "  for _, n in ipairs({'GNUmakefile', 'makefile', 'Makefile'}) do\n"
+    "    local p = rn_join(dir, n)\n"
+    "    if rn_exists(p) then return {dir = dir, file = p} end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    // `make -pRrq :` prints make's whole database without running anything; parsed into
+    // targets (deps, order-only deps, recipe, phony) and makefile-defined variables.
+    "local function rn_make_db(ctx, cb)\n"
+    "  if ctx.db then cb(ctx.db) return end\n"
+    "  rn_run({'make', '-C', ctx.dir, '-f', ctx.file, '-pRrq', ':'}, ctx.dir, function(out)\n"
+    "    local db = {targets = {}, order = {}, vars = {}, phony = {}}\n"
+    "    local section, skip_next, cur, origin = nil, false, nil, nil\n"
+    "    for _, l in ipairs(out) do\n"
+    "      if l:match('^# Variables') then section = 'vars' cur = nil\n"
+    "      elseif l:match('^# Files') then section = 'files' cur = nil\n"
+    "      elseif l:match('^# [A-Z][%a%s%-]+$') and not l:match('^# Not a target') then section = 'other' cur = nil\n"
+    "      elseif section == 'vars' then\n"
+    "        local from, fl = l:match(\"^# makefile %(from '(.-)', line (%d+)%)\")\n"
+    "        if from then origin = {file = from, line = tonumber(fl)}\n"
+    "        elseif l:match('^# ') then origin = l:match('^# (.*)$') == 'makefile' and origin or nil\n"
+    "        elseif origin then\n"
+    "          local name, op, value = l:match('^([^%s#:=]+)%s*([:!%?%+]*=)%s?(.*)$')\n"
+    "          if name and name ~= 'MAKEFILE_LIST' then db.vars[#db.vars + 1] = {name = name, op = op, value = value, file = origin.file, line = origin.line} end\n"
+    "          origin = nil\n"
+    "        end\n"
+    "      elseif section == 'files' then\n"
+    "        if l:match('^# Not a target:') then skip_next = true\n"
+    "        elseif l == '' then cur = nil skip_next = false\n"
+    "        elseif l:sub(1, 1) == '\\t' then\n"
+    "          if cur then cur.recipe[#cur.recipe + 1] = l:sub(2) end\n"
+    "        elseif not l:match('^#') then\n"
+    "          local name, rest = l:match('^([^%s:=][^:=]-):+%s*(.*)$')\n"
+    "          if name and not rest:match('^=') and not rest:match('^[%w_]+%s*[:!%?%+]?=') then\n"
+    "            if skip_next then skip_next = false cur = nil\n"
+    "            else\n"
+    "              local normal, oonly = rest:match('^(.-)%s*|%s*(.*)$')\n"
+    "              normal = normal or rest\n"
+    "              local t = db.targets[name]\n"
+    "              if not t then t = {name = name, deps = {}, order_only = {}, recipe = {}} db.targets[name] = t db.order[#db.order + 1] = name end\n"
+    "              for d in normal:gmatch('%S+') do t.deps[#t.deps + 1] = d end\n"
+    "              for d in (oonly or ''):gmatch('%S+') do t.order_only[#t.order_only + 1] = d end\n"
+    "              cur = t\n"
+    "              if name == '.PHONY' then for _, d in ipairs(t.deps) do db.phony[d] = true end end\n"
+    "            end\n"
+    "          end\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    ctx.db = db\n"
+    "    cb(db)\n"
+    "  end)\n"
+    "end\n"
+    "function R.make.list(ctx, cb)\n"
+    "  rn_make_db(ctx, function(db)\n"
+    "    local src = rn_read_lines(ctx.file) or {}\n"
+    // First line each target is written on (`a b: deps` names both a and b).
+    "    local target_line = {}\n"
+    "    for i, l in ipairs(src) do\n"
+    "      local lhs = l:match('^([^%s:=#][^:=#]*)::?')\n"
+    "      if lhs and not l:match('^[^:]*:=') then\n"
+    "        for w in lhs:gmatch('%S+') do target_line[w] = target_line[w] or i end\n"
+    "      end\n"
+    "    end\n"
+    "    local graph = {deps = {}, info = {}}\n"
+    "    local items = {}\n"
+    "    for _, name in ipairs(db.order) do\n"
+    "      local t = db.targets[name]\n"
+    "      local deps = {}\n"
+    "      for _, d in ipairs(t.deps) do deps[#deps + 1] = d end\n"
+    "      for _, d in ipairs(t.order_only) do deps[#deps + 1] = d graph.info[d] = graph.info[d] or {note = '(order-only)'} end\n"
+    "      graph.deps[name] = deps\n"
+    "      if db.phony[name] then graph.info[name] = {hl = 'Purple', note = '(phony)'} end\n"
+    "      local listed = name:sub(1, 1) ~= '.' and not name:find('%%') and not name:find('/')\n"
+    "        and (db.phony[name] or #t.recipe > 0 or #t.deps > 0)\n"
+    "      if listed then\n"
+    "        local line = target_line[name]\n"
+    "        local desc\n"
+    "        if line then\n"
+    "          desc = src[line]:match('##%s*(.*)$')\n"
+    "          if not desc and line > 1 then desc = src[line - 1]:match('^##?%s*(.*)$') end\n"
+    "        end\n"
+    "        items[#items + 1] = {name = name, desc = desc, body = t.recipe, line = line, phony = db.phony[name]}\n"
+    "      end\n"
+    "    end\n"
+    "    table.sort(items, function(a, b)\n"
+    "      if (a.line ~= nil) ~= (b.line ~= nil) then return a.line ~= nil end\n"
+    "      if a.line and b.line and a.line ~= b.line then return a.line < b.line end\n"
+    "      return a.name < b.name\n"
+    "    end)\n"
+    "    ctx.graph = graph\n"
+    "    cb(items)\n"
+    "  end)\n"
+    "end\n"
+    "function R.make.command(ctx, item)\n"
+    "  if rn_is_root(ctx.dir) then return 'make ' .. item.name end\n"
+    "  return 'make -C ' .. rn_quote(rn_rel(ctx.dir)) .. ' ' .. item.name\n"
+    "end\n"
+    "function R.make.tree(ctx, item, cb) cb(ctx.graph or {deps = {}}, item.body, 'recipe') end\n"
+    "function R.make.vars(ctx, cb)\n"
+    "  rn_make_db(ctx, function(db)\n"
+    "    local vars = {}\n"
+    "    for _, v in ipairs(db.vars) do\n"
+    "      local file = v.file\n"
+    "      if file:sub(1, 1) ~= '/' then file = rn_join(ctx.dir, file) end\n"
+    "      vars[#vars + 1] = {name = v.name, value = v.value, origin = 'make variable (' .. v.op .. ')', file = file, line = v.line}\n"
+    "    end\n"
+    "    cb(vars)\n"
+    "  end)\n"
+    "end\n"
+    // ---------------------------------------------------------------- ninja
+    // Shared by the Ninja tab and the CMake tab (Ninja generator): target list from
+    // `ninja -t targets all`, dependency tree from `ninja -t graph <target>` (Graphviz).
+    "local function rn_cmake_cache(bd)\n"
+    "  local cache = {}\n"
+    "  for i, l in ipairs(rn_read_lines(rn_join(bd, 'CMakeCache.txt')) or {}) do\n"
+    "    local name, ty, value = l:match('^([^#/][^:=]*):([%u_]+)=(.*)$')\n"
+    "    if name then cache[#cache + 1] = {name = name, type = ty, value = value, line = i} end\n"
+    "  end\n"
+    "  return cache\n"
+    "end\n"
+    // CMake's rule names (C_COMPILER__core_unscanned_Release, CXX_EXECUTABLE_LINKER__mep_Release)
+    // shortened to what the rule does.
+    "local function rn_rule_name(rule)\n"
+    "  local r = (rule or ''):gsub('__.*$', ''):lower()\n"
+    "  if r:match('compiler$') then return 'compile' end\n"
+    "  if r:match('executable_linker$') then return 'link' end\n"
+    "  if r:match('static_library_linker$') then return 'archive' end\n"
+    "  if r:match('shared_library_linker$') or r:match('module_library_linker$') then return 'link (shared)' end\n"
+    "  if r:match('_scan$') then return 'scan' end\n"
+    "  if r:match('_dyndep$') then return 'dyndep' end\n"
+    "  return r\n"
+    "end\n"
+    "local function rn_ninja_targets(bd, cmake_generated, cb)\n"
+    "  rn_run({'ninja', '-C', bd, '-t', 'targets', 'all'}, bd, function(out)\n"
+    "    local items, seen = {}, {}\n"
+    "    for _, l in ipairs(out) do\n"
+    "      local name, rule = l:match('^(.-): (%S+)$')\n"
+    "      if name and not seen[name] then\n"
+    "        local noise = name:match('%.o$') or name:match('%.obj$') or name:match('%.a$') or name:match('%.so[%.%d]*$')\n"
+    "          or name:match('%.json$') or name:match('%.ninja$') or name:match('%.cmake$') or name:match('%.d$')\n"
+    "          or name:match('%.ddi$') or name:match('%.modmap$') or name:match('%.txt$') or name:find('cmake_object_order', 1, true)\n"
+    "          or rule:match('^RERUN_CMAKE') or name == 'help'\n"
+    "          or (cmake_generated and name:find('/', 1, true))\n"
+    "        if not noise then\n"
+    "          seen[name] = true\n"
+    "          items[#items + 1] = {name = name, desc = rn_rule_name(rule), target = name}\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    table.sort(items, function(a, b)\n"
+    "      local ra, rb = a.name == 'all' and 0 or 1, b.name == 'all' and 0 or 1\n"
+    "      if ra ~= rb then return ra < rb end\n"
+    "      return a.name < b.name\n"
+    "    end)\n"
+    "    cb(items)\n"
+    "  end)\n"
+    "end\n"
+    "local function rn_ninja_graph(bd, target, cb)\n"
+    "  rn_run({'ninja', '-C', bd, '-t', 'graph', target}, bd, function(out)\n"
+    "    local label, is_rule, raw = {}, {}, {}\n"
+    "    for _, l in ipairs(out) do\n"
+    "      local id, lab, attrs = l:match('^\"(0x%x+)\" %[label=\"(.-)\"(.*)%]$')\n"
+    "      if id then\n"
+    "        label[id] = lab\n"
+    "        if attrs:find('ellipse', 1, true) then is_rule[id] = true end\n"
+    "      else\n"
+    "        local a, b, eattrs = l:match('^\"(0x%x+)\" %-> \"(0x%x+)\"(.*)$')\n"
+    "        if a and not eattrs:find('dotted', 1, true) then raw[#raw + 1] = {a, b, eattrs:match('label=\"%s*(.-)\"')} end\n"
+    "      end\n"
+    "    end\n"
+    "    local rule_inputs, rule_outputs, deps, info = {}, {}, {}, {}\n"
+    "    for _, e in ipairs(raw) do\n"
+    "      local a, b, elabel = e[1], e[2], e[3]\n"
+    "      if is_rule[b] then rule_inputs[b] = rule_inputs[b] or {} table.insert(rule_inputs[b], a)\n"
+    "      elseif is_rule[a] then rule_outputs[a] = rule_outputs[a] or {} table.insert(rule_outputs[a], b)\n"
+    "      elseif label[a] and label[b] then\n"
+    "        local out_name = label[b]\n"
+    "        deps[out_name] = deps[out_name] or {}\n"
+    "        table.insert(deps[out_name], label[a])\n"
+    "        if elabel and elabel ~= '' then info[out_name] = {note = rn_rule_name(elabel)} end\n"
+    "      end\n"
+    "    end\n"
+    "    for rid, outs in pairs(rule_outputs) do\n"
+    "      local ins = {}\n"
+    "      for _, i in ipairs(rule_inputs[rid] or {}) do if label[i] then ins[#ins + 1] = label[i] end end\n"
+    "      table.sort(ins)\n"
+    "      local rname = rn_rule_name(label[rid])\n"
+    "      for _, o in ipairs(outs) do\n"
+    "        local on = label[o]\n"
+    "        if not on then goto continue end\n"
+    "        deps[on] = deps[on] or {}\n"
+    "        for _, i in ipairs(ins) do table.insert(deps[on], i) end\n"
+    "        if rname ~= '' and rname ~= 'phony' then info[on] = {note = rname} end\n"
+    "        if rname == 'phony' then info[on] = {hl = 'Purple', note = '(phony)'} end\n"
+    "        ::continue::\n"
+    "      end\n"
+    "    end\n"
+    "    cb({deps = deps, info = info})\n"
+    "  end)\n"
+    "end\n"
+    // Graph labels relative to the build dir or source root; CMake may record either under
+    // another spelling of the same path (a symlink or bind mount), so its own are tried too.
+    "local function rn_short_path(bd, root)\n"
+    "  local prefixes = {bd, root}\n"
+    "  for _, c in ipairs(rn_cmake_cache(bd)) do\n"
+    "    if c.name == 'CMAKE_CACHEFILE_DIR' then table.insert(prefixes, 1, c.value)\n"
+    "    elseif c.name == 'CMAKE_HOME_DIRECTORY' then prefixes[#prefixes + 1] = c.value end\n"
+    "  end\n"
+    "  return function(n)\n"
+    "    for _, p in ipairs(prefixes) do\n"
+    "      if n:sub(1, #p + 1) == p .. '/' then return n:sub(#p + 2) end\n"
+    "    end\n"
+    "    return n\n"
+    "  end\n"
+    "end\n"
+    "R.ninja = {label = 'Ninja'}\n"
+    "function R.ninja.detect(dir)\n"
+    "  local dirs = rn_find_build_dirs(dir, 'build.ninja')\n"
+    "  if #dirs == 0 then return nil end\n"
+    "  return {dir = dir, build_dirs = dirs, bdi = 1}\n"
+    "end\n"
+    "local function rn_bd(ctx) return ctx.build_dirs and ctx.build_dirs[ctx.bdi or 1] end\n"
+    "function R.ninja.list(ctx, cb)\n"
+    "  local bd = rn_bd(ctx)\n"
+    "  rn_ninja_targets(bd, rn_exists(rn_join(bd, 'CMakeCache.txt')), cb)\n"
+    "end\n"
+    "function R.ninja.command(ctx, item)\n"
+    "  local bd = rn_bd(ctx)\n"
+    "  if bd == mep.workspace_root() then return 'ninja ' .. rn_quote(item.name) end\n"
+    "  return 'ninja -C ' .. rn_quote(rn_rel(bd)) .. ' ' .. rn_quote(item.name)\n"
+    "end\n"
+    "function R.ninja.tree(ctx, item, cb)\n"
+    "  local bd = rn_bd(ctx)\n"
+    "  rn_ninja_graph(bd, item.name, function(g) cb(g, nil, nil, rn_short_path(bd, ctx.dir)) end)\n"
+    "end\n"
+    "function R.ninja.vars(ctx, cb)\n"
+    "  local bd = rn_bd(ctx)\n"
+    "  local file = rn_join(bd, 'build.ninja')\n"
+    "  local vars = {}\n"
+    "  for i, l in ipairs(rn_read_lines(file) or {}) do\n"
+    "    local name, value = l:match('^([%w_%.%-]+)%s*=%s*(.*)$')\n"
+    "    if name then vars[#vars + 1] = {name = name, value = value, origin = 'ninja variable (' .. rn_rel(bd) .. ')', file = file, line = i} end\n"
+    "  end\n"
+    "  cb(vars)\n"
+    "end\n"
+    // ---------------------------------------------------------------- cmake
+    "R.cmake = {label = 'CMake'}\n"
+    "function R.cmake.detect(dir)\n"
+    "  if not rn_exists(rn_join(dir, 'CMakeLists.txt')) then return nil end\n"
+    "  return {dir = dir, build_dirs = rn_find_build_dirs(dir, 'CMakeCache.txt'), bdi = 1}\n"
+    "end\n"
+    "function R.cmake.list(ctx, cb)\n"
+    "  local bd = rn_bd(ctx)\n"
+    "  local items = {\n"
+    "    {name = 'configure', desc = 'cmake -S -B', special = 'configure'},\n"
+    "  }\n"
+    "  if not bd then cb(items) return end\n"
+    "  items[#items + 1] = {name = 'build', desc = 'all targets', special = 'build', target = 'all'}\n"
+    "  items[#items + 1] = {name = 'clean', desc = 'cmake --build --target clean', special = 'clean'}\n"
+    "  items[#items + 1] = {name = 'test', desc = 'ctest', special = 'test'}\n"
+    "  local generator\n"
+    "  for _, c in ipairs(rn_cmake_cache(bd)) do if c.name == 'CMAKE_GENERATOR' then generator = c.value end end\n"
+    "  ctx.generator = generator\n"
+    "  local function add_targets(targets)\n"
+    "    for _, t in ipairs(targets) do\n"
+    "      if t.name ~= 'all' and t.name ~= 'clean' then\n"
+    "        items[#items + 1] = {name = t.name, desc = t.desc, target = t.name}\n"
+    "      end\n"
+    "    end\n"
+    "    cb(items)\n"
+    "  end\n"
+    "  if generator and generator:find('Ninja', 1, true) then\n"
+    "    rn_ninja_targets(bd, true, add_targets)\n"
+    "  else\n"
+    "    rn_run({'cmake', '--build', bd, '--target', 'help'}, bd, function(out)\n"
+    "      local targets = {}\n"
+    "      for _, l in ipairs(out) do\n"
+    "        local n = l:match('^%.%.%. ([^%s]+)')\n"
+    "        if n then targets[#targets + 1] = {name = n, desc = 'target'} end\n"
+    "      end\n"
+    "      add_targets(targets)\n"
+    "    end)\n"
+    "  end\n"
+    "end\n"
+    "function R.cmake.command(ctx, item)\n"
+    "  local bd = rn_bd(ctx)\n"
+    "  local q = bd and rn_quote(rn_rel(bd))\n"
+    "  if item.special == 'configure' then\n"
+    "    local src = rn_quote(rn_rel(ctx.dir))\n"
+    "    return 'cmake -S ' .. src .. ' -B ' .. (q or rn_quote(rn_rel(rn_join(ctx.dir, 'build'))))\n"
+    "  elseif item.special == 'build' then return 'cmake --build ' .. q\n"
+    "  elseif item.special == 'clean' then return 'cmake --build ' .. q .. ' --target clean'\n"
+    "  elseif item.special == 'test' then return 'ctest --test-dir ' .. q .. ' --output-on-failure'\n"
+    "  end\n"
+    "  return 'cmake --build ' .. q .. ' --target ' .. rn_quote(item.name)\n"
+    "end\n"
+    "function R.cmake.tree(ctx, item, cb)\n"
+    "  local bd = rn_bd(ctx)\n"
+    "  if not bd or not item.target then cb(nil) return end\n"
+    "  if ctx.generator and ctx.generator:find('Ninja', 1, true) then\n"
+    "    rn_ninja_graph(bd, item.target, function(g) cb(g, nil, nil, rn_short_path(bd, ctx.dir)) end)\n"
+    "  else\n"
+    "    local mctx = {dir = bd, file = rn_join(bd, 'Makefile')}\n"
+    "    rn_make_db(mctx, function(db)\n"
+    "      local g = {deps = {}, info = {}}\n"
+    "      for n, t in pairs(db.targets) do g.deps[n] = t.deps if db.phony[n] then g.info[n] = {hl = 'Purple', note = '(phony)'} end end\n"
+    "      cb(g, nil, nil, rn_short_path(bd, ctx.dir))\n"
+    "    end)\n"
+    "  end\n"
+    "end\n"
+    "function R.cmake.vars(ctx, cb)\n"
+    "  local bd = rn_bd(ctx)\n"
+    "  if not bd then cb({}) return end\n"
+    "  local file = rn_join(bd, 'CMakeCache.txt')\n"
+    "  local lines = rn_read_lines(file) or {}\n"
+    "  local vars = {}\n"
+    "  for _, c in ipairs(rn_cmake_cache(bd)) do\n"
+    "    if c.type ~= 'INTERNAL' and c.type ~= 'STATIC' then\n"
+    "      local help = {}\n"
+    "      local i = c.line - 1\n"
+    "      while i > 0 and lines[i]:match('^//') do table.insert(help, 1, lines[i]:sub(3)) i = i - 1 end\n"
+    "      vars[#vars + 1] = {name = c.name, value = c.value, origin = 'cmake cache ' .. c.type:lower() .. ' (' .. rn_rel(bd) .. ')', file = file, line = c.line, help = table.concat(help, ' ')}\n"
+    "    end\n"
+    "  end\n"
+    "  cb(vars)\n"
+    "end\n"
+    // ---------------------------------------------------------------- workspaces
+    // Directories under the workspace root holding a runner file; a CMakeLists.txt only
+    // counts when it declares project(), and CMake-generated Makefiles are skipped.
+    "local rn_ws_markers = {justfile = 'just', Justfile = 'just', ['.justfile'] = 'just', Makefile = 'make',\n"
+    "  makefile = 'make', GNUmakefile = 'make', ['build.ninja'] = 'ninja', ['CMakeLists.txt'] = 'cmake'}\n"
+    "local function rn_find_workspaces(top, cb)\n"
+    "  local argv = {'find', top, '-maxdepth', tostring(mep.opt.runner_workspace_depth), '(', '-name', '.git', '-o', '-name', 'node_modules',\n"
+    "    '-o', '-name', '_deps', '-o', '-name', 'CMakeFiles', '-o', '-name', '.cache', '-o', '-name', '.direnv', '-o', '-name', '*.worktrees',\n"
+    "    '-o', '-name', 'target', '-o', '-name', '.venv', ')', '-prune', '-o', '-type', 'f', '('}\n"
+    "  local first = true\n"
+    "  for n in pairs(rn_ws_markers) do\n"
+    "    if not first then argv[#argv + 1] = '-o' end\n"
+    "    first = false\n"
+    "    argv[#argv + 1] = '-name'\n"
+    "    argv[#argv + 1] = n\n"
+    "  end\n"
+    "  argv[#argv + 1] = ')'\n"
+    "  argv[#argv + 1] = '-print'\n"
+    "  rn_run(argv, top, function(out)\n"
+    "    local by_dir, dirs = {}, {}\n"
+    "    for _, path in ipairs(out) do\n"
+    "      local dir, name = path:match('^(.*)/([^/]+)$')\n"
+    "      local kind = rn_ws_markers[name]\n"
+    "      local ok = kind ~= nil\n"
+    "      if ok and kind == 'make' and rn_exists(rn_join(dir, 'cmake_install.cmake')) then ok = false end\n"
+    "      if ok and kind == 'cmake' then\n"
+    "        ok = false\n"
+    "        for _, l in ipairs(rn_read_lines(path) or {}) do\n"
+    "          if l:lower():match('^%s*project%s*%(') then ok = true break end\n"
+    "        end\n"
+    "      end\n"
+    "      if ok then\n"
+    "        if not by_dir[dir] then by_dir[dir] = {} dirs[#dirs + 1] = dir end\n"
+    "        by_dir[dir][kind] = name\n"
+    "      end\n"
+    "    end\n"
+    "    if not by_dir[top] then by_dir[top] = {} dirs[#dirs + 1] = top end\n"
+    "    table.sort(dirs, function(a, b)\n"
+    "      if a == top or b == top then return a == top end\n"
+    "      return a < b\n"
+    "    end)\n"
+    "    local result = {}\n"
+    "    for _, d in ipairs(dirs) do result[#result + 1] = {dir = d, files = by_dir[d]} end\n"
+    "    cb(result)\n"
+    "  end)\n"
+    "end\n"
+    // ---------------------------------------------------------------- picker
+    "local rn_session = nil\n"
+    "local function rn_pad(s, n) if #s >= n then return s .. ' ' end return s .. string.rep(' ', n - #s) end\n"
+    "local function rn_item(display, name_len, extra, data, name_hl)\n"
+    "  local text = rn_pad(display, name_len)\n"
+    "  local hl = {}\n"
+    "  if name_hl then hl[#hl + 1] = {col_start = 1, col_end = #display + 1, hl = name_hl} end\n"
+    "  if extra and extra ~= '' then\n"
+    "    hl[#hl + 1] = {col_start = #text + 1, col_end = #text + #extra + 1, hl = 'Comment'}\n"
+    "    text = text .. extra\n"
+    "  end\n"
+    // `key`: rank a match on the name above one found only in the description.
+    "  return {display = text, data = data, hl = hl, key = display}\n"
+    "end\n"
+    "local function rn_live(S) return rn_session == S and mep.picker_is_open() end\n"
+    "local function rn_set_preview(S, data, lines, spans)\n"
+    "  if rn_live(S) and S.highlight == data then mep.picker_set_preview(table.concat(lines, '\\n'), spans) end\n"
+    "end\n"
+    // Preview for a runner entry: the command, its dependency tree and its recipe body.
+    "local function rn_preview_runner(S, tab, entry, data)\n"
+    "  local r, ctx = R[tab], S.ctx[tab]\n"
+    "  local cmd = r.command(ctx, entry)\n"
+    "  local lines = {'$ ' .. cmd}\n"
+    "  local spans = {{row = 1, col_start = 1, col_end = 2, hl = 'Comment'}, {row = 1, col_start = 3, col_end = #cmd + 3, hl = 'Yellow'}}\n"
+    "  local function note(text)\n"
+    "    lines[#lines + 1] = text\n"
+    "    spans[#spans + 1] = {row = #lines, col_start = 1, col_end = #text + 1, hl = 'Comment'}\n"
+    "  end\n"
+    "  if entry.required and #entry.required > 0 then\n"
+    "    note('needs arguments: ' .. table.concat(entry.required, ', ') .. ' -- Enter types the command without running it')\n"
+    "  end\n"
+    "  if entry.desc and entry.desc ~= '' and tab ~= 'ninja' and tab ~= 'cmake' then note(entry.desc) end\n"
+    "  local bd = rn_bd(ctx)\n"
+    "  if bd then note('build dir: ' .. rn_rel(bd) .. ((ctx.build_dirs and #ctx.build_dirs > 1) and '  (Ctrl-B: next of ' .. #ctx.build_dirs .. ')' or '')) end\n"
+    "  lines[#lines + 1] = ''\n"
+    "  local header_n = #lines\n"
+    "  local function heading(t)\n"
+    "    lines[#lines + 1] = t\n"
+    "    spans[#spans + 1] = {row = #lines, col_start = 1, col_end = #t + 1, hl = 'Accent'}\n"
+    "  end\n"
+    "  heading('Dependencies')\n"
+    "  note('  computing...')\n"
+    "  rn_set_preview(S, data, lines, spans)\n"
+    "  local cached = S.tree_cache[data]\n"
+    "  local function finish(graph, body, body_title, show)\n"
+    "    S.tree_cache[data] = {graph, body, body_title, show}\n"
+    "    while #lines > header_n do table.remove(lines) end\n"
+    "    local keep = {}\n"
+    "    for _, sp in ipairs(spans) do if sp.row <= header_n then keep[#keep + 1] = sp end end\n"
+    "    spans = keep\n"
+    "    heading('Dependencies')\n"
+    "    if graph and graph.deps then\n"
+    "      local tl, ts = rn_render_tree(graph, entry.target or entry.name, #lines, show)\n"
+    "      for _, l in ipairs(tl) do lines[#lines + 1] = l end\n"
+    "      for _, s in ipairs(ts) do spans[#spans + 1] = s end\n"
+    "    else\n"
+    "      note('  (no dependency graph for this entry)')\n"
+    "    end\n"
+    "    if body and #body > 0 then\n"
+    "      lines[#lines + 1] = ''\n"
+    "      heading(body_title == 'recipe' and 'Recipe' or 'Body')\n"
+    "      for _, b in ipairs(body) do lines[#lines + 1] = '  ' .. b end\n"
+    "    end\n"
+    "    rn_set_preview(S, data, lines, spans)\n"
+    "  end\n"
+    "  if cached then finish(cached[1], cached[2], cached[3], cached[4]) return end\n"
+    "  r.tree(ctx, entry, finish)\n"
+    "end\n"
+    "local function rn_preview(S, data)\n"
+    "  S.highlight = data\n"
+    "  local entry = S.entries[data]\n"
+    "  if not entry then mep.picker_set_preview('') return end\n"
+    "  if entry.kind == 'runner' then\n"
+    "    rn_preview_runner(S, entry.tab, entry.item, data)\n"
+    "  elseif entry.kind == 'workspace' then\n"
+    "    local w = entry.ws\n"
+    "    local lines = {w.dir, ''}\n"
+    "    local spans = {{row = 1, col_start = 1, col_end = #w.dir + 1, hl = 'Accent'}}\n"
+    "    local any = false\n"
+    "    for _, k in ipairs(mep.opt.runner_order) do\n"
+    "      if w.files[k] then any = true lines[#lines + 1] = string.format('  %-6s %s', k, w.files[k]) end\n"
+    "    end\n"
+    "    if not any then lines[#lines + 1] = '  (no runner files here)' end\n"
+    "    lines[#lines + 1] = ''\n"
+    "    lines[#lines + 1] = 'Enter: use as this tab\\'s runner root'\n"
+    "    spans[#spans + 1] = {row = #lines, col_start = 1, col_end = #lines[#lines] + 1, hl = 'Comment'}\n"
+    "    mep.picker_set_preview(table.concat(lines, '\\n'), spans)\n"
+    "  elseif entry.kind == 'var' then\n"
+    "    local v = entry.var\n"
+    "    local lines = {v.name, v.origin or '', ''}\n"
+    "    local spans = {{row = 1, col_start = 1, col_end = #v.name + 1, hl = 'Accent'}, {row = 2, col_start = 1, col_end = #lines[2] + 1, hl = 'Comment'}}\n"
+    "    lines[#lines + 1] = 'value:'\n"
+    "    lines[#lines + 1] = '  ' .. v.value\n"
+    "    if v.expr then lines[#lines + 1] = '' lines[#lines + 1] = 'expression: ' .. v.expr end\n"
+    "    if v.help and v.help ~= '' then lines[#lines + 1] = '' lines[#lines + 1] = v.help end\n"
+    "    lines[#lines + 1] = ''\n"
+    "    local loc = 'defined at ' .. rn_rel(v.file) .. ':' .. tostring(v.line) .. '  (Enter opens it)'\n"
+    "    lines[#lines + 1] = loc\n"
+    "    spans[#spans + 1] = {row = #lines, col_start = 1, col_end = #loc + 1, hl = 'Comment'}\n"
+    "    mep.picker_set_preview(table.concat(lines, '\\n'), spans)\n"
+    "  else\n"
+    "    mep.picker_set_preview(entry.message or '')\n"
+    "  end\n"
+    "end\n"
+    "local function rn_show(S, tab, items)\n"
+    "  if not rn_live(S) or S.tabs[S.tab] ~= tab then return end\n"
+    "  mep.picker_set_items(items)\n"
+    "  if items[1] then rn_preview(S, items[1].data) else mep.picker_set_preview('') end\n"
+    "end\n"
+    "local function rn_message_items(S, tab, text)\n"
+    "  local data = tab .. '\\t!'\n"
+    "  S.entries[data] = {kind = 'message', message = text}\n"
+    "  return {{display = text, data = data, hl = {{col_start = 1, col_end = #text + 1, hl = 'Comment'}}}}\n"
+    "end\n"
+    // Builds (or reuses) the item list for the active tab, asynchronously.
+    "local function rn_load_tab(S)\n"
+    "  local tab = S.tabs[S.tab]\n"
+    "  local labels = {}\n"
+    "  for i, t in ipairs(S.tabs) do labels[i] = (R[t] and R[t].label) or (t == 'workspaces' and 'Workspaces') or 'Variables' end\n"
+    "  mep.picker_set_tabs(labels, S.tab)\n"
+    "  if S.items[tab] then rn_show(S, tab, S.items[tab]) return end\n"
+    "  rn_show(S, tab, rn_message_items(S, tab, 'loading...'))\n"
+    "  local function done(items) S.items[tab] = items rn_show(S, tab, items) end\n"
+    "  if R[tab] then\n"
+    "    local ctx = S.ctx[tab]\n"
+    "    if not ctx then\n"
+    "      local what = ({just = 'justfile', make = 'Makefile', ninja = 'build.ninja', cmake = 'CMakeLists.txt'})[tab]\n"
+    "      done(rn_message_items(S, tab, 'No ' .. what .. ' in ' .. S.root .. ' -- pick another root on the Workspaces tab'))\n"
+    "      return\n"
+    "    end\n"
+    "    R[tab].list(ctx, function(list)\n"
+    "      local width = 12\n"
+    "      for _, it in ipairs(list) do width = math.max(width, math.min(32, #it.name + 2)) end\n"
+    "      local items = {}\n"
+    "      for _, it in ipairs(list) do\n"
+    "        local data = tab .. '\\t' .. it.name\n"
+    "        S.entries[data] = {kind = 'runner', tab = tab, item = it}\n"
+    "        local extra = it.desc or ''\n"
+    "        if it.params and #it.params > 0 then extra = '(' .. table.concat(it.params, ' ') .. ')  ' .. extra end\n"
+    "        items[#items + 1] = rn_item(it.name, width, extra, data, it.phony and 'Purple' or nil)\n"
+    "      end\n"
+    "      if #items == 0 then items = rn_message_items(S, tab, 'No targets found') end\n"
+    "      done(items)\n"
+    "    end)\n"
+    "  elseif tab == 'workspaces' then\n"
+    "    rn_find_workspaces(mep.workspace_root(), function(list)\n"
+    "      local items = {}\n"
+    "      for _, w in ipairs(list) do\n"
+    "        local data = 'workspaces\\t' .. w.dir\n"
+    "        S.entries[data] = {kind = 'workspace', ws = w}\n"
+    "        local kinds = {}\n"
+    "        for _, k in ipairs(mep.opt.runner_order) do if w.files[k] then kinds[#kinds + 1] = k end end\n"
+    "        local mark = w.dir == S.root and '* ' or '  '\n"
+    "        items[#items + 1] = rn_item(mark .. rn_rel(w.dir), 28, '[' .. table.concat(kinds, ' ') .. ']', data, w.dir == S.root and 'Green' or nil)\n"
+    "      end\n"
+    "      done(items)\n"
+    "    end)\n"
+    "  else\n"
+    "    local pending, per_tab = 0, {}\n"
+    "    local function collect()\n"
+    "      pending = pending - 1\n"
+    "      if pending > 0 then return end\n"
+    "      local all = {}\n"
+    "      for _, k in ipairs(mep.opt.runner_order) do\n"
+    "        for _, v in ipairs(per_tab[k] or {}) do all[#all + 1] = v end\n"
+    "      end\n"
+    "      local items = {}\n"
+    "      for _, v in ipairs(all) do\n"
+    "        local data = 'variables\\t' .. v.tab .. '\\t' .. v.name\n"
+    "        S.entries[data] = {kind = 'var', var = v}\n"
+    "        local tag = '[' .. v.tab .. '] '\n"
+    "        local value = v.value:gsub('%s+', ' ')\n"
+    "        if #value > 60 then value = value:sub(1, 57) .. '...' end\n"
+    "        local it = rn_item(tag .. v.name, 36, '= ' .. value, data)\n"
+    "        table.insert(it.hl, 1, {col_start = 1, col_end = #tag + 1, hl = 'Comment'})\n"
+    "        items[#items + 1] = it\n"
+    "      end\n"
+    "      if #items == 0 then items = rn_message_items(S, tab, 'No variables found for the runners in ' .. S.root) end\n"
+    "      done(items)\n"
+    "    end\n"
+    "    for _, k in ipairs(mep.opt.runner_order) do\n"
+    "      if S.ctx[k] then\n"
+    "        pending = pending + 1\n"
+    "        R[k].vars(S.ctx[k], function(vars)\n"
+    "          table.sort(vars, function(a, b) return a.name < b.name end)\n"
+    "          for _, v in ipairs(vars) do v.tab = k end\n"
+    "          per_tab[k] = vars\n"
+    "          collect()\n"
+    "        end)\n"
+    "      end\n"
+    "    end\n"
+    "    if pending == 0 then pending = 1 collect() end\n"
+    "  end\n"
+    "end\n"
+    "local function rn_run_entry(S, entry, edit)\n"
+    "  local cmd = R[entry.tab].command(S.ctx[entry.tab], entry.item)\n"
+    "  local needs_args = entry.item.required and #entry.item.required > 0\n"
+    "  if needs_args then cmd = cmd .. ' ' end\n"
+    "  mep.tab_terminal_run(cmd, {submit = not (edit or needs_args), focus = edit or needs_args})\n"
+    "end\n"
+    "function mep.runner_open(kind, root)\n"
+    "  if root then mep.runner_roots[mep.current_tab_id()] = root end\n"
+    "  local S = {root = rn_root(), ctx = {}, items = {}, entries = {}, tree_cache = {}, tabs = {}}\n"
+    "  rn_session = S\n"
+    "  for _, k in ipairs(mep.opt.runner_order) do\n"
+    "    if R[k] then\n"
+    "      local ok, ctx = pcall(R[k].detect, S.root)\n"
+    "      S.ctx[k] = ok and ctx or nil\n"
+    "      if S.ctx[k] or k == kind then S.tabs[#S.tabs + 1] = k end\n"
+    "    end\n"
+    "  end\n"
+    "  S.tabs[#S.tabs + 1] = 'workspaces'\n"
+    "  S.tabs[#S.tabs + 1] = 'variables'\n"
+    "  S.tab = 1\n"
+    "  if kind then\n"
+    "    for i, t in ipairs(S.tabs) do if t == kind then S.tab = i end end\n"
+    "  end\n"
+    "  if not kind and not R[S.tabs[1]] then S.tab = #S.tabs - 1 end\n"
+    "  local title = 'Run  ' .. rn_rel(S.root)\n"
+    "  function S.on_select(data)\n"
+    "    if rn_session == S then rn_session = nil end\n"
+    "    local entry = data and S.entries[data]\n"
+    "    if not entry then return end\n"
+    "    if entry.kind == 'runner' then\n"
+    "      rn_run_entry(S, entry, false)\n"
+    "    elseif entry.kind == 'workspace' then\n"
+    "      mep.runner_open(nil, entry.ws.dir)\n"
+    "    elseif entry.kind == 'var' then\n"
+    "      mep.open(entry.var.file)\n"
+    "      mep.set_cursor(entry.var.line or 1, 1)\n"
+    "    end\n"
+    "  end\n"
+    "  function S.on_key(key)\n"
+    "    local entry = S.highlight and S.entries[S.highlight]\n"
+    "    if key == '<Tab>' or key == '<S-Tab>' then\n"
+    "      S.tab = (S.tab - 1 + (key == '<Tab>' and 1 or -1)) % #S.tabs + 1\n"
+    "      rn_load_tab(S)\n"
+    "    elseif key == 'r' then\n"
+    "      local tab = S.tabs[S.tab]\n"
+    "      S.items[tab] = nil\n"
+    "      S.tree_cache = {}\n"
+    "      if S.ctx[tab] then S.ctx[tab].dump, S.ctx[tab].db, S.ctx[tab].graph = nil, nil, nil end\n"
+    "      rn_load_tab(S)\n"
+    "    elseif key == 'b' then\n"
+    "      local tab = S.tabs[S.tab]\n"
+    "      local ctx = S.ctx[tab]\n"
+    "      if ctx and ctx.build_dirs and #ctx.build_dirs > 1 then\n"
+    "        ctx.bdi = (ctx.bdi or 1) % #ctx.build_dirs + 1\n"
+    "        S.items[tab] = nil\n"
+    "        S.tree_cache = {}\n"
+    "        rn_load_tab(S)\n"
+    "        mep.notify('Build dir: ' .. rn_rel(rn_bd(ctx)))\n"
+    "      end\n"
+    "    elseif key == 'e' and entry and entry.kind == 'runner' then\n"
+    "      rn_session = nil\n"
+    "      mep.picker_close()\n"
+    "      rn_run_entry(S, entry, true)\n"
+    "    elseif key == 'o' and entry then\n"
+    "      local file, line\n"
+    "      if entry.kind == 'runner' then\n"
+    "        local ctx = S.ctx[entry.tab]\n"
+    "        file = ctx.file or (rn_bd(ctx) and rn_join(rn_bd(ctx), 'build.ninja')) or rn_join(ctx.dir, 'CMakeLists.txt')\n"
+    "        if entry.tab == 'cmake' then file = rn_join(ctx.dir, 'CMakeLists.txt') end\n"
+    "        line = entry.item.line\n"
+    "      elseif entry.kind == 'var' then file, line = entry.var.file, entry.var.line\n"
+    "      elseif entry.kind == 'workspace' then\n"
+    "        for _, k in ipairs(mep.opt.runner_order) do\n"
+    "          if entry.ws.files[k] then file = rn_join(entry.ws.dir, entry.ws.files[k]) break end\n"
+    "        end\n"
+    "      end\n"
+    "      if file then\n"
+    "        rn_session = nil\n"
+    "        mep.picker_close()\n"
+    "        mep.open(file)\n"
+    "        if line then mep.set_cursor(line, 1) end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  mep.picker_open(title, {}, S.on_select, nil, S.on_key, function(data) if rn_session == S then rn_preview(S, data) end end)\n"
+    "  mep.picker_set_hint('Enter: run   C-e: edit first   C-o: open source   C-r: reload   C-b: next build dir')\n"
+    "  rn_load_tab(S)\n"
+    "end\n"
+    // mep.runner_key(key): scriptable counterpart of the open runner picker's keys ('<Tab>',
+    // '<S-Tab>', 'r'/'b'/'e'/'o' for Ctrl-R/B/E/O, '<CR>' to accept the highlighted row);
+    // returns the active tab name and highlighted row data, or nil when no runner picker is up.
+    "function mep.runner_key(key)\n"
+    "  local S = rn_session\n"
+    "  if not S or not mep.picker_is_open() then return nil end\n"
+    "  if key == '<CR>' then\n"
+    "    local data = S.highlight\n"
+    "    mep.picker_close()\n"
+    "    S.on_select(data)\n"
+    "    return S.tabs[S.tab], data\n"
+    "  end\n"
+    "  if key then S.on_key(key) end\n"
+    "  return S.tabs[S.tab], S.highlight\n"
+    "end\n"
+    "function mep.runner_auto() mep.runner_open(nil) end\n"
+    "mep.command('Runner', function(args)\n"
+    "  local k = args and args:match('^%s*(%S+)') or nil\n"
+    "  mep.runner_open(k)\n"
+    "end)\n"
+    "mep.command('RunnerWorkspaces', function() mep.runner_open('workspaces') end)\n"
+    "mep.command('RunnerVariables', function() mep.runner_open('variables') end)\n"
+    "mep.leader_map('<Space>', 'Command runner (just > make > ninja > cmake)', mep.runner_auto, 0xf04b, 'Green')\n"
+    // <leader>j{j,m,n,c} are shared with kBuiltinNotebook: inside a .ipynb buffer they keep
+    // their cell meaning (move down / to markdown / run+next / clear outputs), elsewhere
+    // they open the runner picker on that tool's tab.
+    "local rn_leader = {\n"
+    "  {'jj', 'just', 'Runner: just recipes', 'NotebookMoveDown'},\n"
+    "  {'jm', 'make', 'Runner: make targets', 'NotebookToMarkdown'},\n"
+    "  {'jn', 'ninja', 'Runner: ninja targets', 'NotebookRunAndAdvance'},\n"
+    "  {'jc', 'cmake', 'Runner: cmake targets', 'NotebookClearOutputs'},\n"
+    "}\n"
+    "for _, b in ipairs(rn_leader) do\n"
+    "  mep.leader_map(b[1], b[3], function()\n"
+    "    if mep.notebook_is_buffer and mep.notebook_is_buffer() then mep.cmd(b[4]) return end\n"
+    "    mep.runner_open(b[2])\n"
+    "  end)\n"
+    "end\n"
+    "mep.leader_map('jw', 'Runner: workspaces', function() mep.runner_open('workspaces') end)\n"
+    "mep.leader_map('jv', 'Runner: variable inspector', function() mep.runner_open('variables') end)\n";
+
+// `gt` ("go test", TODO.org): run the tests for the file in the current
+// buffer, using whatever that language's own test framework is -- go test
+// for .go, pytest/unittest for .py, testthat for .R, the file's gtest/
+// catch2 binary for .c/.cpp, cargo/vitest/jest/busted/rspec/Pkg.test()/
+// zig test for the rest. Same shape as `gd`/`gh` (mep.map_g, checked
+// before the built-in gg/ge/gE fallback -- see Editor::HandleNormalKey):
+// a freestanding Normal-mode action, never a motion an operator can act
+// on.
+//
+// "The tests for the current file", not "the project's tests" (that's
+// <leader>tt / :MepActivityTestRun, kBuiltinActivityBar's Tests panel,
+// which runs one configured project-wide command): from a source file
+// each handler first resolves the *test* file that covers it -- foo.go's
+// package, calc.py's tests/test_calc.py, R/util.R's tests/testthat/
+// test-util.R, pdf_text.cpp's pdf_text_test.cpp -- and only then builds a
+// command scoped to it. A .go test file additionally narrows `go test` to
+// the Test/Fuzz/Example functions actually defined in the buffer (-run
+// '^(TestA|TestB)$'), which is as close to "just this file" as go's
+// package-granular test runner gets.
+//
+// The command lands in this tab's popup terminal (mep.tab_terminal_run,
+// kBuiltinTabTerminal/kBuiltinRunButton) rather than a job with its
+// output in a sidebar: a test run is exactly the thing you want to
+// scroll, re-run with a tweaked flag, or Ctrl-C -- and it inherits the
+// shell's cwd, venv, direnv and scrollback, same reasoning the Run button
+// documents for itself. Each command is wrapped in a `(cd <root> && ...)`
+// subshell so it never leaves that shared shell somewhere else.
+//
+// Everything is derived by looking at the tree (marker files: go.mod,
+// pyproject.toml, DESCRIPTION, CMakeLists' build dir, Cargo.toml,
+// package.json, Gemfile, Project.toml), with two init.lua escape hatches:
+// mep.opt.lang_test_build_dirs (where a C/C++ test binary/target is
+// looked for) and mep.opt.lang_test_python ('auto'|'pytest'|'unittest').
+const char *kBuiltinLangTest =
+    "mep.opt = mep.opt or {}\n"
+    "mep.opt.lang_test_build_dirs = mep.opt.lang_test_build_dirs or\n"
+    "  {'build/native', 'build', 'build/debug', 'cmake-build-debug', 'cmake-build-release', 'out/build'}\n"
+    "mep.opt.lang_test_python = mep.opt.lang_test_python or 'auto'\n"
+    "local function mep_lt_shq(s)\n"
+    "  return \"'\" .. tostring(s):gsub(\"'\", \"'\\\\''\") .. \"'\"\n"
+    "end\n"
+    "local function mep_lt_exists(path)\n"
+    "  if not path or path == '' then return false end\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if f then f:close() return true end\n"
+    "  return false\n"
+    "end\n"
+    "local function mep_lt_entries(path)\n"
+    "  local ok, list = pcall(mep.list_dir, path)\n"
+    "  if not ok or type(list) ~= 'table' then return {} end\n"
+    "  return list\n"
+    "end\n"
+    "local function mep_lt_dirname(path)\n"
+    "  local dir = path:match('^(.*)/[^/]*$')\n"
+    "  if dir == nil then return '.' end\n"
+    "  if dir == '' then return '/' end\n"
+    "  return dir\n"
+    "end\n"
+    "local function mep_lt_basename(path)\n"
+    "  return path:match('([^/]+)/?$') or path\n"
+    "end\n"
+    "local function mep_lt_stem(path)\n"
+    "  return (mep_lt_basename(path):gsub('%.[^.]*$', ''))\n"
+    "end\n"
+    "local function mep_lt_join(dir, name)\n"
+    "  if dir == nil or dir == '' or dir == '.' then return name end\n"
+    "  if dir:sub(-1) == '/' then return dir .. name end\n"
+    "  return dir .. '/' .. name\n"
+    "end\n"
+    "local function mep_lt_relative(path, root)\n"
+    "  if root and root ~= '' and path:sub(1, #root + 1) == root .. '/' then return path:sub(#root + 2) end\n"
+    "  return path\n"
+    "end\n"
+    "local function mep_lt_find_up(dir, names)\n"
+    "  local cur = dir\n"
+    "  for _ = 1, 64 do\n"
+    "    for _, name in ipairs(names) do\n"
+    "      if mep_lt_exists(mep_lt_join(cur, name)) then return cur end\n"
+    "    end\n"
+    "    local parent = mep_lt_dirname(cur)\n"
+    "    if parent == cur then return nil end\n"
+    "    cur = parent\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_lt_first_existing(candidates)\n"
+    "  for _, c in ipairs(candidates) do\n"
+    "    if mep_lt_exists(c) then return c end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_lt_root()\n"
+    "  local cwd = mep.getcwd()\n"
+    "  if cwd == nil or cwd == '' then return '.' end\n"
+    "  return cwd\n"
+    "end\n"
+    "local function mep_lt_cd(dir, cmd)\n"
+    "  return '(cd ' .. mep_lt_shq(dir) .. ' && ' .. cmd .. ')'\n"
+    "end\n"
+    "\n"
+    // The current buffer's own (possibly unsaved) lines when `path` is the
+    // file it holds, else the file on disk -- only the go handler needs to
+    // look *inside* a file, and it should see what the human is looking at.
+    "local function mep_lt_lines(path)\n"
+    "  if mep.filename() ~= '' and mep_lsp_abspath(mep.filename()) == path then\n"
+    "    local lines = {}\n"
+    "    for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
+    "    return lines\n"
+    "  end\n"
+    "  return mep.read_lines(path) or {}\n"
+    "end\n"
+    "\n"
+    // go: `go test` is package-granular, so the command always targets the
+    // file's own directory; a _test.go buffer additionally restricts it to
+    // that file's own Test/Fuzz/Example functions via -run. A plain .go
+    // source file just runs its package's tests (they live in sibling
+    // _test.go files, by language rule).
+    "local function mep_lt_go(path)\n"
+    "  local flags = ' -v'\n"
+    "  if mep_lt_basename(path):match('_test%.go$') then\n"
+    "    local names = {}\n"
+    "    for _, line in ipairs(mep_lt_lines(path)) do\n"
+    "      local name = line:match('^func%s+([%w_]+)%s*%(')\n"
+    "      if name and (name:match('^Test') or name:match('^Fuzz') or name:match('^Example')) then\n"
+    "        names[#names + 1] = name\n"
+    "      end\n"
+    "    end\n"
+    "    if #names > 0 then\n"
+    "      flags = flags .. ' -run ' .. mep_lt_shq('^(' .. table.concat(names, '|') .. ')$')\n"
+    "    end\n"
+    "  end\n"
+    "  return mep_lt_cd(mep_lt_dirname(path), 'go test' .. flags .. ' .'), 'go test'\n"
+    "end\n"
+    "\n"
+    // python: pytest when the tree shows any pytest marker (pytest.ini/
+    // conftest.py/tox.ini/pyproject.toml/setup.cfg), else stdlib unittest,
+    // whose discover -p <file> is the only way it takes a *file* rather
+    // than an importable dotted name. mep.opt.lang_test_python forces one.
+    "local function mep_lt_python_target(path)\n"
+    "  local base = mep_lt_basename(path)\n"
+    "  if base:match('^test_') or base:match('_test%.py$') or base == 'conftest.py' then return path end\n"
+    "  local dir, name = mep_lt_dirname(path), mep_lt_stem(path)\n"
+    "  local cands = {\n"
+    "    mep_lt_join(dir, 'test_' .. name .. '.py'),\n"
+    "    mep_lt_join(dir, name .. '_test.py'),\n"
+    "    mep_lt_join(dir, 'tests/test_' .. name .. '.py'),\n"
+    "    mep_lt_join(dir, 'test/test_' .. name .. '.py'),\n"
+    "  }\n"
+    "  local root = mep_lt_find_up(dir, {'pyproject.toml', 'setup.py', 'setup.cfg', 'tox.ini', 'pytest.ini'})\n"
+    "  if root then\n"
+    "    cands[#cands + 1] = mep_lt_join(root, 'tests/test_' .. name .. '.py')\n"
+    "    cands[#cands + 1] = mep_lt_join(root, 'test/test_' .. name .. '.py')\n"
+    "  end\n"
+    "  return mep_lt_first_existing(cands)\n"
+    "end\n"
+    "local function mep_lt_python(path)\n"
+    "  local target = mep_lt_python_target(path)\n"
+    "  if not target then\n"
+    "    return nil, 'no tests for ' .. mep_lt_basename(path) .. ' (looked for test_<name>.py / <name>_test.py)'\n"
+    "  end\n"
+    "  local dir = mep_lt_dirname(target)\n"
+    "  local pytest_root = mep_lt_find_up(dir, {'pytest.ini', 'conftest.py', 'tox.ini', 'pyproject.toml', 'setup.cfg'})\n"
+    "  local runner = mep.opt.lang_test_python\n"
+    "  if runner ~= 'pytest' and runner ~= 'unittest' then\n"
+    "    runner = pytest_root and 'pytest' or 'unittest'\n"
+    "  end\n"
+    "  if runner == 'pytest' then\n"
+    "    local root = pytest_root or dir\n"
+    "    return mep_lt_cd(root, 'python3 -m pytest -v ' .. mep_lt_shq(mep_lt_relative(target, root))), 'pytest'\n"
+    "  end\n"
+    "  return mep_lt_cd(dir, 'python3 -m unittest discover -v -s . -p ' .. mep_lt_shq(mep_lt_basename(target))), 'unittest'\n"
+    "end\n"
+    "\n"
+    // R: testthat's own layout -- tests/testthat/test-<name>.R next to the
+    // package's DESCRIPTION. test_file() for one file; a source file with no
+    // matching test file falls back to test_local() over the whole package
+    // (the closest thing to "run what covers this file" testthat offers).
+    "local function mep_lt_r(path)\n"
+    "  local base, name = mep_lt_basename(path), mep_lt_stem(path)\n"
+    "  local pkg = mep_lt_find_up(mep_lt_dirname(path), {'DESCRIPTION'})\n"
+    "  local target = nil\n"
+    "  if base:match('^test[-_]') then\n"
+    "    target = path\n"
+    "  else\n"
+    "    local cands = {}\n"
+    "    if pkg then\n"
+    "      cands[#cands + 1] = mep_lt_join(pkg, 'tests/testthat/test-' .. name .. '.R')\n"
+    "      cands[#cands + 1] = mep_lt_join(pkg, 'tests/testthat/test_' .. name .. '.R')\n"
+    "    end\n"
+    "    cands[#cands + 1] = mep_lt_join(mep_lt_dirname(path), 'test-' .. name .. '.R')\n"
+    "    cands[#cands + 1] = mep_lt_join(mep_lt_dirname(path), 'tests/testthat/test-' .. name .. '.R')\n"
+    "    target = mep_lt_first_existing(cands)\n"
+    "  end\n"
+    "  if not target and pkg then\n"
+    "    return 'Rscript -e ' .. mep_lt_shq(\"testthat::test_local('\" .. pkg .. \"')\"), 'testthat::test_local'\n"
+    "  end\n"
+    "  if not target then\n"
+    "    return nil, 'no tests for ' .. base .. ' (looked for tests/testthat/test-' .. name .. '.R)'\n"
+    "  end\n"
+    "  return 'Rscript -e ' .. mep_lt_shq(\"testthat::test_file('\" .. target .. \"')\"), 'testthat::test_file'\n"
+    "end\n"
+    "\n"
+    // C/C++: the test is a *binary* (gtest/catch2/doctest/a hand-rolled
+    // main -- mep's own tests are the last kind), so this resolves a CMake
+    // target rather than a command. <build>/CMakeFiles/<target>.dir exists
+    // for every configured target whether or not it has ever been built
+    // (Ninja and Make generators alike), which is what makes "build it,
+    // then run it" work on a fresh build dir; an already-built binary with
+    // no such directory (a non-CMake build) is run as-is, and a project
+    // that registers its tests with ctest gets `ctest -R <name>` instead.
+    // Name match is separator-insensitive and suffix-anchored, so
+    // src/pdf_text_test.cpp finds the target `mep-pdf-text-test`.
+    "local function mep_lt_c_source(path)\n"
+    "  local name = mep_lt_stem(path)\n"
+    "  if name:match('_test$') or name:match('^test_') or name:match('_tests$') or name:match('_spec$') then return path end\n"
+    "  local dir = mep_lt_dirname(path)\n"
+    "  local cands = {}\n"
+    "  for _, ext in ipairs({'.cpp', '.cc', '.cxx', '.c'}) do\n"
+    "    for _, sub in ipairs({'', 'tests/', 'test/'}) do\n"
+    "      cands[#cands + 1] = mep_lt_join(dir, sub .. name .. '_test' .. ext)\n"
+    "      cands[#cands + 1] = mep_lt_join(dir, sub .. 'test_' .. name .. ext)\n"
+    "    end\n"
+    "  end\n"
+    "  return mep_lt_first_existing(cands)\n"
+    "end\n"
+    "local function mep_lt_c_build_dir(root)\n"
+    "  for _, d in ipairs(mep.opt.lang_test_build_dirs) do\n"
+    "    local path = mep_lt_join(root, d)\n"
+    "    if #mep_lt_entries(path) > 0 then return path end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_lt_c_matches(n, dashed, under)\n"
+    "  return n == dashed or n == under\n"
+    "    or n:sub(- #dashed - 1) == '-' .. dashed or n:sub(- #under - 1) == '_' .. under\n"
+    "end\n"
+    "local function mep_lt_c_dirs(build)\n"
+    "  local dirs = {build}\n"
+    "  for _, e in ipairs(mep_lt_entries(build)) do\n"
+    "    if e.is_dir and e.name ~= 'CMakeFiles' and e.name ~= '_deps' then dirs[#dirs + 1] = mep_lt_join(build, e.name) end\n"
+    "  end\n"
+    "  return dirs\n"
+    "end\n"
+    "local function mep_lt_c_cmake_target(build, dashed, under)\n"
+    "  for _, dir in ipairs(mep_lt_c_dirs(build)) do\n"
+    "    for _, e in ipairs(mep_lt_entries(mep_lt_join(dir, 'CMakeFiles'))) do\n"
+    "      local target = e.is_dir and e.name:match('^(.*)%.dir$')\n"
+    "      if target and mep_lt_c_matches(target, dashed, under) then\n"
+    "        return target, mep_lt_join(dir, target)\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_lt_c_prebuilt(build, dashed, under)\n"
+    "  for _, dir in ipairs(mep_lt_c_dirs(build)) do\n"
+    "    for _, e in ipairs(mep_lt_entries(dir)) do\n"
+    "      if not e.is_dir and not e.name:find('%.') and mep_lt_c_matches(e.name, dashed, under) then\n"
+    "        return mep_lt_join(dir, e.name)\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_lt_c(path)\n"
+    "  local source = mep_lt_c_source(path)\n"
+    "  if not source then\n"
+    "    return nil, 'no tests for ' .. mep_lt_basename(path) .. ' (looked for <name>_test.cpp / test_<name>.cpp)'\n"
+    "  end\n"
+    "  local root = mep_lt_root()\n"
+    "  local build = mep_lt_c_build_dir(root)\n"
+    "  if not build then\n"
+    "    return nil, 'no build directory (set mep.opt.lang_test_build_dirs; tried ' .. mep.opt.lang_test_build_dirs[1] .. ', ...)'\n"
+    "  end\n"
+    "  local name = mep_lt_stem(source)\n"
+    "  local dashed = (name:gsub('_', '-'))\n"
+    "  local under = (name:gsub('%-', '_'))\n"
+    "  local rel = mep_lt_relative(build, root)\n"
+    "  local target, guess = mep_lt_c_cmake_target(build, dashed, under)\n"
+    "  local prebuilt = mep_lt_c_prebuilt(build, dashed, under)\n"
+    "  if target then\n"
+    "    return mep_lt_cd(root, 'cmake --build ' .. mep_lt_shq(rel) .. ' --target ' .. mep_lt_shq(target)\n"
+    "      .. ' && ' .. mep_lt_shq(prebuilt or guess)), target\n"
+    "  end\n"
+    "  if prebuilt then\n"
+    "    return mep_lt_cd(root, mep_lt_shq(prebuilt)), mep_lt_basename(prebuilt)\n"
+    "  end\n"
+    "  if mep_lt_exists(mep_lt_join(build, 'CTestTestfile.cmake')) then\n"
+    "    return mep_lt_cd(root, 'ctest --test-dir ' .. mep_lt_shq(rel)\n"
+    "      .. ' --output-on-failure -R ' .. mep_lt_shq(name)), 'ctest'\n"
+    "  end\n"
+    "  return nil, 'no test target for ' .. name .. ' in ' .. rel .. ' -- configure/build it first'\n"
+    "end\n"
+    "\n"
+    // rust: cargo's own filter is a substring match against the test's full
+    // path, so the module name (== the file stem) selects that file's #[test]
+    // functions; main.rs/lib.rs/mod.rs name no module of their own.
+    "local function mep_lt_rust(path)\n"
+    "  local root = mep_lt_find_up(mep_lt_dirname(path), {'Cargo.toml'})\n"
+    "  if not root then return nil, 'no Cargo.toml above ' .. mep_lt_basename(path) end\n"
+    "  local name = mep_lt_stem(path)\n"
+    "  if name == 'main' or name == 'lib' or name == 'mod' then\n"
+    "    return mep_lt_cd(root, 'cargo test'), 'cargo test'\n"
+    "  end\n"
+    "  return mep_lt_cd(root, 'cargo test ' .. mep_lt_shq(name)), 'cargo test ' .. name\n"
+    "end\n"
+    "\n"
+    // js/ts: <name>.test.<ext> / <name>.spec.<ext> (also under __tests__/,
+    // test/, tests/), run by whichever runner package.json actually depends
+    // on -- vitest, jest, mocha, else the project's own `npm test`.
+    "local function mep_lt_js_target(path)\n"
+    "  local base = mep_lt_basename(path)\n"
+    "  if base:find('%.test%.') or base:find('%.spec%.') or base:find('_test%.') then return path end\n"
+    "  local dir, name = mep_lt_dirname(path), mep_lt_stem(path)\n"
+    "  local ext = path:match('(%.[^.]*)$') or '.js'\n"
+    "  local cands = {}\n"
+    "  for _, kind in ipairs({'.test', '.spec'}) do\n"
+    "    for _, sub in ipairs({'', '__tests__/', 'test/', 'tests/'}) do\n"
+    "      cands[#cands + 1] = mep_lt_join(dir, sub .. name .. kind .. ext)\n"
+    "    end\n"
+    "  end\n"
+    "  return mep_lt_first_existing(cands)\n"
+    "end\n"
+    "local function mep_lt_js(path)\n"
+    "  local target = mep_lt_js_target(path)\n"
+    "  if not target then\n"
+    "    return nil, 'no tests for ' .. mep_lt_basename(path) .. ' (looked for <name>.test.* / <name>.spec.*)'\n"
+    "  end\n"
+    "  local root = mep_lt_find_up(mep_lt_dirname(target), {'package.json'})\n"
+    "  if not root then return nil, 'no package.json above ' .. mep_lt_basename(target) end\n"
+    "  local manifest = table.concat(mep.read_lines(mep_lt_join(root, 'package.json')) or {}, '\\n')\n"
+    "  local runner = 'npm test --'\n"
+    "  if manifest:find('\"vitest\"', 1, true) then runner = 'npx vitest run'\n"
+    "  elseif manifest:find('\"jest\"', 1, true) then runner = 'npx jest'\n"
+    "  elseif manifest:find('\"mocha\"', 1, true) then runner = 'npx mocha' end\n"
+    "  return mep_lt_cd(root, runner .. ' ' .. mep_lt_shq(mep_lt_relative(target, root))), runner\n"
+    "end\n"
+    "\n"
+    // The remaining four, each just its ecosystem's one obvious spelling:
+    // busted for lua (spec/<name>_spec.lua), rspec or minitest for ruby
+    // depending on which counterpart exists, julia's Pkg.test() (or the
+    // test file itself when that's what the buffer is), and `zig test`,
+    // which takes a plain file because zig puts tests in the source file.
+    "local function mep_lt_lua(path)\n"
+    "  local name = mep_lt_stem(path)\n"
+    "  local dir = mep_lt_dirname(path)\n"
+    "  local target = path\n"
+    "  if not name:match('_spec$') and not name:match('_test$') then\n"
+    "    target = mep_lt_first_existing({\n"
+    "      mep_lt_join(dir, name .. '_spec.lua'),\n"
+    "      mep_lt_join(dir, 'spec/' .. name .. '_spec.lua'),\n"
+    "      mep_lt_join(dir, name .. '_test.lua'),\n"
+    "    })\n"
+    "    if not target then\n"
+    "      local root = mep_lt_find_up(dir, {'.busted'})\n"
+    "      if root then\n"
+    "        target = mep_lt_first_existing({mep_lt_join(root, 'spec/' .. name .. '_spec.lua')})\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  if not target then\n"
+    "    return nil, 'no tests for ' .. mep_lt_basename(path) .. ' (looked for <name>_spec.lua)'\n"
+    "  end\n"
+    "  local root = mep_lt_find_up(mep_lt_dirname(target), {'.busted', 'rockspec'}) or mep_lt_dirname(target)\n"
+    "  return mep_lt_cd(root, 'busted ' .. mep_lt_shq(mep_lt_relative(target, root))), 'busted'\n"
+    "end\n"
+    "\n"
+    "local function mep_lt_ruby(path)\n"
+    "  local name = mep_lt_stem(path)\n"
+    "  local dir = mep_lt_dirname(path)\n"
+    "  local target, kind = nil, nil\n"
+    "  if name:match('_spec$') then target, kind = path, 'rspec'\n"
+    "  elseif name:match('_test$') or name:match('^test_') then target, kind = path, 'minitest'\n"
+    "  else\n"
+    "    local root = mep_lt_find_up(dir, {'Gemfile', '.rspec'}) or dir\n"
+    "    target = mep_lt_first_existing({\n"
+    "      mep_lt_join(root, 'spec/' .. name .. '_spec.rb'),\n"
+    "      mep_lt_join(dir, name .. '_spec.rb'),\n"
+    "    })\n"
+    "    if target then\n"
+    "      kind = 'rspec'\n"
+    "    else\n"
+    "      target = mep_lt_first_existing({\n"
+    "        mep_lt_join(root, 'test/' .. name .. '_test.rb'),\n"
+    "        mep_lt_join(dir, name .. '_test.rb'),\n"
+    "      })\n"
+    "      kind = 'minitest'\n"
+    "    end\n"
+    "  end\n"
+    "  if not target then\n"
+    "    return nil, 'no tests for ' .. mep_lt_basename(path) .. ' (looked for <name>_spec.rb / <name>_test.rb)'\n"
+    "  end\n"
+    "  local root = mep_lt_find_up(mep_lt_dirname(target), {'Gemfile'}) or mep_lt_dirname(target)\n"
+    "  if kind == 'rspec' then\n"
+    "    return mep_lt_cd(root, 'bundle exec rspec ' .. mep_lt_shq(mep_lt_relative(target, root))), 'rspec'\n"
+    "  end\n"
+    "  return mep_lt_cd(root, 'ruby -Itest -Ilib ' .. mep_lt_shq(mep_lt_relative(target, root))), 'minitest'\n"
+    "end\n"
+    "\n"
+    "local function mep_lt_julia(path)\n"
+    "  local root = mep_lt_find_up(mep_lt_dirname(path), {'Project.toml'})\n"
+    "  local base = mep_lt_basename(path)\n"
+    "  if base == 'runtests.jl' or mep_lt_basename(mep_lt_dirname(path)) == 'test' then\n"
+    "    local project = root and (' --project=' .. mep_lt_shq(root)) or ''\n"
+    "    return 'julia' .. project .. ' ' .. mep_lt_shq(path), 'julia'\n"
+    "  end\n"
+    "  if root and mep_lt_exists(mep_lt_join(root, 'test/runtests.jl')) then\n"
+    "    return mep_lt_cd(root, 'julia --project=. -e ' .. mep_lt_shq('using Pkg; Pkg.test()')), 'Pkg.test()'\n"
+    "  end\n"
+    "  return nil, 'no tests for ' .. base .. ' (looked for test/runtests.jl)'\n"
+    "end\n"
+    "\n"
+    "local function mep_lt_zig(path)\n"
+    "  return 'zig test ' .. mep_lt_shq(path), 'zig test'\n"
+    "end\n"
+    "\n"
+    // Keyed by mep_lsp_filetype's bare extension (so both 'R' and 'r'),
+    // the same convention kBuiltinRunButton's own defaults table uses.
+    "local mep_lt_handlers = {\n"
+    "  go = mep_lt_go,\n"
+    "  py = mep_lt_python,\n"
+    "  R = mep_lt_r, r = mep_lt_r,\n"
+    "  c = mep_lt_c, h = mep_lt_c, cpp = mep_lt_c, cc = mep_lt_c, cxx = mep_lt_c,\n"
+    "  hpp = mep_lt_c, hh = mep_lt_c, hxx = mep_lt_c,\n"
+    "  rs = mep_lt_rust,\n"
+    "  js = mep_lt_js, jsx = mep_lt_js, mjs = mep_lt_js, cjs = mep_lt_js, ts = mep_lt_js, tsx = mep_lt_js,\n"
+    "  lua = mep_lt_lua,\n"
+    "  rb = mep_lt_ruby,\n"
+    "  jl = mep_lt_julia,\n"
+    "  zig = mep_lt_zig,\n"
+    "}\n"
+    "\n"
+    // mep.lang_test_command(path) -> cmd, label | nil, reason: the whole
+    // resolution above with no side effects, so init.lua (or a test) can ask
+    // "what would gt run here?" without running it.
+    "function mep.lang_test_command(path)\n"
+    "  if not path or path == '' then return nil, 'no file in this buffer' end\n"
+    "  local abs = mep_lsp_abspath(path)\n"
+    "  local ext = mep_lsp_filetype(abs)\n"
+    "  local handler = ext and mep_lt_handlers[ext]\n"
+    "  if not handler then\n"
+    "    return nil, 'no test runner for ' .. (ext and ('.' .. ext) or 'this filetype')\n"
+    "  end\n"
+    "  return handler(abs)\n"
+    "end\n"
+    "\n"
+    // gt itself. Writes the buffer first when it is modified (a test run
+    // against a stale file on disk is worse than useless), then hands the
+    // command to the tab terminal and echoes the resolved runner -- the
+    // notification is the only feedback when the terminal is off-screen.
+    "function mep.lang_test_run()\n"
+    "  local fname = mep.filename()\n"
+    "  if not fname or fname == '' then\n"
+    "    mep.notify('gt: save this buffer to a file first', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local ok, cmd, info = pcall(mep.lang_test_command, fname)\n"
+    "  if not ok then\n"
+    "    mep.notify('gt: ' .. tostring(cmd), 'error')\n"
+    "    return\n"
+    "  end\n"
+    "  if not cmd then\n"
+    "    mep.notify('gt: ' .. (info or 'no tests found'), 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if mep.buffer_modified(mep.current_buffer()) then mep.cmd('write') end\n"
+    "  mep.tab_terminal_run(cmd)\n"
+    "  mep.notify('gt: ' .. (info or cmd))\n"
+    "end\n"
+    "\n"
+    "mep.map_g('t', mep.lang_test_run)\n"
+    "mep.command('MepLangTest', mep.lang_test_run)\n"
+    "\n";
+
 const char *kBuiltinWhichKeyGroups =
-    "mep.leader_group('o', 'org')\n"
-    "mep.leader_group('oe', 'export')\n"
-    "mep.leader_group('ot', 'toggle')\n"
-    "mep.leader_group('or', 'roam')\n"
-    "mep.leader_group('l', 'lsp/lang')\n"
-    "mep.leader_group('p', 'project')\n"
-    "mep.leader_group('w', 'workspace')\n"
-    "mep.leader_group('g', 'git')\n"
-    "mep.leader_group('b', 'browse')\n"
-    "mep.leader_group('a', 'ai')\n"
-    // Sidebar toggles: 's' (Treesitter structure sidebar/split), 't'
-    // (Todo/Tests activity panels), 'n' (notification history).
-    "mep.leader_group('s', 'structure')\n"
-    "mep.leader_group('z', 'spell')\n"
-    "mep.leader_group('t', 'todo/tests')\n"
-    "mep.leader_group('n', 'notifications')\n"
-    "mep.leader_group('j', 'jupyter')\n"
-    "mep.leader_group('d', 'debug')\n";
+    // Every first-key prefix with a multi-key mapping gets a named group so
+    // the initial <Space> popup is a compact, navigable hierarchy instead
+    // of a flat list of two-/three-key sequences. The icon is drawn before
+    // the key (not embedded in its label), preserving clean key alignment.
+    "mep.leader_group('a', 'ai', 0xf0e0, 'Cyan')\n"
+    "mep.leader_group('b', 'buffers/browse', 0xf0c5, 'Blue')\n"
+    "mep.leader_group('c', 'code', 0xf121, 'Purple')\n"
+    "mep.leader_group('d', 'debug', 0xf188, 'Red')\n"
+    "mep.leader_group('f', 'file', 0xf15b, 'Yellow')\n"
+    "mep.leader_group('g', 'git', 0xe725, 'Orange')\n"
+    "mep.leader_group('h', 'help', 0xf059, 'Blue')\n"
+    "mep.leader_group('j', 'jobs/jupyter', 0xf02d, 'Orange')\n"
+    "mep.leader_group('l', 'lsp/lang', 0xf121, 'Cyan')\n"
+    "mep.leader_group('n', 'notifications', 0xf0f3, 'Red')\n"
+    "mep.leader_group('o', 'org', 0xf15c, 'Green')\n"
+    "mep.leader_group('p', 'project', 0xf1b3, 'Yellow')\n"
+    "mep.leader_group('r', 'run', 0xf04b, 'Green')\n"
+    "mep.leader_group('s', 'structure', 0xf0e8, 'Cyan')\n"
+    "mep.leader_group('t', 'todo/tests', 0xf046, 'Green')\n"
+    "mep.leader_group('u', 'ui', 0xf013, 'Purple')\n"
+    "mep.leader_group('v', 'Vocal', 0xf130, 'Cyan')\n"
+    "mep.leader_group('w', 'workspace', 0xf1ad, 'Blue')\n"
+    "mep.leader_group('y', 'snippets', 0xf121, 'Purple')\n"
+    "mep.leader_group('z', 'spell', 0xf00c, 'Purple')\n"
+    "mep.leader_group('oe', 'export', 0xf15b)\n"
+    "mep.leader_group('ot', 'toggle', 0xf011)\n"
+    "mep.leader_group('or', 'roam', 0xf0e8)\n";
 
 // Help workspace. Help source may still be maintained as Org, but the
 // workspace presents its exported HTML pages so the rendered documentation
@@ -18492,6 +25923,35 @@ const char *kBuiltinHelp =
     "  end\n"
     "  return fallback:gsub('%.html?$', '')\n"
     "end\n"
+    // A page declares where it belongs with two <meta> tags its Org source
+    // writes through #+HTML_HEAD: (see mep_org_extract_meta):
+    //
+    //   #+HTML_HEAD: <meta name="help-section" content="Getting started">
+    //   #+HTML_HEAD: <meta name="help-order" content="20">
+    //
+    // Reading them from the *page* rather than a separate manifest keeps
+    // one file per topic: adding a page to the manual is still nothing but
+    // dropping it in help/, which is what `writing-help` promises. A page
+    // that declares neither still works -- it lands in the catch-all
+    // section at the bottom, ordered by title, exactly as every page did
+    // when this list was flat.
+    "local function mep_help_meta(lines, name)\n"
+    "  for _, line in ipairs(lines or {}) do\n"
+    "    local content = line:match('<[Mm][Ee][Tt][Aa]%s+name=\"' .. name .. '\"%s+content=\"(.-)\"')\n"
+    "    if content then return content end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    // The order sections are listed in. A section a page names that is not
+    // in this list still renders -- it is appended after these, so a
+    // project-local help/ can add its own without patching anything here.
+    "local MEP_HELP_SECTION_ORDER = {\n"
+    "  'Getting started', 'Editing', 'Files and windows', 'Projects', 'Interface',\n"
+    "  'Git', 'Code', 'Running code', 'Languages', 'Org mode', 'Writing',\n"
+    "  'Documents and media', 'Web', 'AI', 'Learning', 'Collaboration',\n"
+    "  'Configuration', 'Lua API', 'Reference',\n"
+    "}\n"
+    "local MEP_HELP_OTHER_SECTION = 'Other'\n"
     "function mep.help_refresh_index()\n"
     "  local workspace_help = mep_help_join(mep.workspace_root(), 'help')\n"
     "  local entries = mep.list_dir(workspace_help)\n"
@@ -18503,14 +25963,40 @@ const char *kBuiltinHelp =
     "    if not entry.is_dir and entry.name:match('%.html?$') then\n"
     "      local path = mep_help_join(mep_help_root, entry.name)\n"
     "      local lines = mep.read_lines(path) or {}\n"
-    "      mep_help_pages[#mep_help_pages + 1] = {path = path, name = entry.name, title = mep_help_title(lines, entry.name)}\n"
+    "      mep_help_pages[#mep_help_pages + 1] = {path = path, name = entry.name,\n"
+    "        title = mep_help_title(lines, entry.name),\n"
+    "        section = mep_help_meta(lines, 'help%-section') or MEP_HELP_OTHER_SECTION,\n"
+    "        order = tonumber(mep_help_meta(lines, 'help%-order') or '') or math.huge}\n"
     "    end\n"
     "  end\n"
+    // Within a section: by declared #+HTML_HEAD: help-order, then title, so
+    // a section whose pages have a natural reading order (Getting started)
+    // keeps it while one that does not (Reference) still sorts sensibly.
+    // intro.html stays pinned to the very top of the whole list regardless,
+    // as it did before -- it is the page :MepHelp itself opens.
     "  table.sort(mep_help_pages, function(a, b)\n"
     "    if a.name == 'intro.html' then return true end\n"
     "    if b.name == 'intro.html' then return false end\n"
+    "    if a.order ~= b.order then return a.order < b.order end\n"
     "    return a.title:lower() < b.title:lower()\n"
     "  end)\n"
+    "end\n"
+    // Section names in MEP_HELP_SECTION_ORDER first, in that order, then
+    // any section a page named that the list does not know about (sorted by
+    // name so the result is stable), then the catch-all last.
+    "local function mep_help_ordered_sections(present)\n"
+    "  local ordered, seen = {}, {}\n"
+    "  for _, name in ipairs(MEP_HELP_SECTION_ORDER) do\n"
+    "    if present[name] then ordered[#ordered + 1] = name seen[name] = true end\n"
+    "  end\n"
+    "  local extra = {}\n"
+    "  for name in pairs(present) do\n"
+    "    if not seen[name] and name ~= MEP_HELP_OTHER_SECTION then extra[#extra + 1] = name end\n"
+    "  end\n"
+    "  table.sort(extra)\n"
+    "  for _, name in ipairs(extra) do ordered[#ordered + 1] = name end\n"
+    "  if present[MEP_HELP_OTHER_SECTION] then ordered[#ordered + 1] = MEP_HELP_OTHER_SECTION end\n"
+    "  return ordered\n"
     "end\n"
     "function mep.help_open_page(path)\n"
     "  if not path or path == '' then return end\n"
@@ -18523,14 +26009,37 @@ const char *kBuiltinHelp =
     "  end\n"
     "  local current = mep.filename()\n"
     "  mep_help_current_path = current\n"
-    "  local widgets = {}\n"
+    // One sidebar section per help section, rather than one flat list: at
+    // this manual's size an alphabetical run of every page is unnavigable.
+    // Only the section holding the page being read is expanded, so opening
+    // Help shows the shape of the manual first and its pages second.
+    "  local by_section, present, current_section = {}, {}, nil\n"
     "  for _, page in ipairs(mep_help_pages) do\n"
-    "    local p = page\n"
-    "    widgets[#widgets + 1] = {id = p.path, text = p.title, current = current == p.path,\n"
-    "      hl = current == p.path and 'Add' or nil, on_click = function() mep.help_open_page(p.path) end}\n"
+    "    local s = page.section\n"
+    "    by_section[s] = by_section[s] or {}\n"
+    "    table.insert(by_section[s], page)\n"
+    "    present[s] = true\n"
+    "    if current == page.path then current_section = s end\n"
     "  end\n"
-    "  if #widgets == 0 then widgets[1] = {id = 'empty', text = '(no help pages in help/)'} end\n"
-    "  mep.sidebar_set_sections(mep_help_sidebar_id, {{id = 'pages', title = 'Documentation', collapsed = false, widgets = widgets}})\n"
+    "  local sections = {}\n"
+    "  for _, name in ipairs(mep_help_ordered_sections(present)) do\n"
+    "    local widgets = {}\n"
+    "    for _, page in ipairs(by_section[name]) do\n"
+    "      local p = page\n"
+    "      widgets[#widgets + 1] = {id = p.path, text = p.title, current = current == p.path,\n"
+    "        hl = current == p.path and 'Add' or nil, on_click = function() mep.help_open_page(p.path) end}\n"
+    "    end\n"
+    // Before any page has been opened there is no current section, so fall
+    // back to expanding the first one -- an all-collapsed sidebar on the
+    // very first :MepHelp would look broken.
+    "    local expanded = (current_section == nil and #sections == 0) or name == current_section\n"
+    "    sections[#sections + 1] = {id = 'sec:' .. name, title = name, collapsed = not expanded, widgets = widgets}\n"
+    "  end\n"
+    "  if #sections == 0 then\n"
+    "    sections[1] = {id = 'pages', title = 'Documentation', collapsed = false,\n"
+    "      widgets = {{id = 'empty', text = '(no help pages in help/)'}}}\n"
+    "  end\n"
+    "  mep.sidebar_set_sections(mep_help_sidebar_id, sections)\n"
     "end\n"
     "function mep.help_open()\n"
     "  mep.help_refresh_index()\n"
@@ -18539,6 +26048,76 @@ const char *kBuiltinHelp =
     "  mep.sidebar_open(mep_help_sidebar_id)\n"
     "  local intro = mep_help_join(mep_help_root, 'intro.html')\n"
     "  mep.help_open_page(intro)\n"
+    "end\n"
+    // Opening the sidebar and a page together: every entry point below
+    // wants both, and a page opened without the sidebar leaves the reader
+    // with no way to see where they are in the manual.
+    "function mep.help_show(path)\n"
+    "  mep.help_refresh_index()\n"
+    "  if #mep_help_pages == 0 then mep.notify('Built-in help files are unavailable', 'error') return end\n"
+    "  mep.help_render_sidebar()\n"
+    "  mep.sidebar_open(mep_help_sidebar_id)\n"
+    "  mep.help_open_page(path or mep_help_join(mep_help_root, 'intro.html'))\n"
+    "end\n"
+    // :help <topic>, Vim's own spelling. Matches a page's filename first,
+    // then a case-insensitive substring of its title, so both `:help
+    // motions` and `:help 'first ten'` land somewhere sensible. With no
+    // argument it behaves as :MepHelp.
+    "function mep.help_topic(name)\n"
+    "  mep.help_refresh_index()\n"
+    "  name = (name or ''):match('^%s*(.-)%s*$')\n"
+    "  if name == '' then return mep.help_show(nil) end\n"
+    "  local want = name:lower()\n"
+    "  for _, p in ipairs(mep_help_pages) do\n"
+    "    if p.name:gsub('%.html?$', ''):lower() == want then return mep.help_show(p.path) end\n"
+    "  end\n"
+    "  for _, p in ipairs(mep_help_pages) do\n"
+    "    if p.title:lower():find(want, 1, true) then return mep.help_show(p.path) end\n"
+    "  end\n"
+    "  mep.notify('No help page for ' .. name, 'warn')\n"
+    "end\n"
+    "mep.command('help', function(args) mep.help_topic(args) end)\n"
+    "mep.command('MepHelpTopic', function(args) mep.help_topic(args) end)\n"
+    // Search across every page's headings as well as its title. The
+    // exporter emits no heading ids, so a hit opens the page rather than
+    // scrolling to the heading -- still far quicker than scanning a
+    // sidebar once the manual runs to a hundred pages.
+    "function mep.help_search()\n"
+    "  mep.help_refresh_index()\n"
+    "  local items = {}\n"
+    "  for _, page in ipairs(mep_help_pages) do\n"
+    "    items[#items + 1] = {display = page.title, data = page.path}\n"
+    "    for _, line in ipairs(mep.read_lines(page.path) or {}) do\n"
+    "      local heading = line:match('^<h[1-4]>(.-)</h[1-4]>')\n"
+    "      if heading and heading ~= page.title then\n"
+    "        items[#items + 1] = {display = page.title .. '  >  ' .. heading, data = page.path}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  if #items == 0 then mep.notify('Built-in help files are unavailable', 'error') return end\n"
+    "  mep.picker_open('Help', items, function(item) if item then mep.help_show(item) end end)\n"
+    "end\n"
+    "mep.command('MepHelpSearch', mep.help_search)\n"
+    // Contextual help: <leader>hh opens the page for whatever the current
+    // pane is showing, rather than always the front page. Keyed by bare
+    // extension; anything unknown falls through to intro.
+    "MEP_HELP_FOR_FILETYPE = {\n"
+    "  org = 'org-basics', md = 'markdown', markdown = 'markdown',\n"
+    "  ipynb = 'notebooks', pdf = 'pdf', docx = 'office', odt = 'office',\n"
+    "  xlsx = 'sheets', ods = 'sheets', csv = 'sheets',\n"
+    "  png = 'images', jpg = 'images', jpeg = 'images', bmp = 'images', gif = 'images',\n"
+    "  obj = 'model3d', gltf = 'model3d', glb = 'model3d', iqm = 'model3d',\n"
+    "  vox = 'model3d', m3d = 'model3d', blend = 'model3d',\n"
+    "  wav = 'audio-svg', svg = 'audio-svg', xml = 'audio-svg',\n"
+    "  lua = 'config', R = 'r-mode', r = 'r-mode', py = 'python-mode',\n"
+    "  c = 'c-mode', h = 'c-mode', cpp = 'c-mode', cc = 'c-mode', hpp = 'c-mode',\n"
+    "}\n"
+    "function mep.help_contextual()\n"
+    "  local fname = mep.filename() or ''\n"
+    "  local ext = fname:match('%.([%w]+)$')\n"
+    "  local topic = ext and MEP_HELP_FOR_FILETYPE[ext]\n"
+    "  if topic then return mep.help_topic(topic) end\n"
+    "  return mep.help_show(nil)\n"
     "end\n"
     "mep.command('MepHelp', mep.help_open)\n"
     "mep.on_buffer_saved(function()\n"
@@ -18560,7 +26139,12 @@ const char *kBuiltinHelpKeymap =
     "mep.command('MepHelp', function()\n"
     "  if mep.help_open then mep.help_open() else mep.notify('Help workspace is unavailable', 'error') end\n"
     "end)\n"
-    "mep.leader_map('hh', 'Open help', function() mep.cmd('MepHelp') end)\n";
+    "mep.leader_map('hh', 'Open help', function()\n"
+    "  if mep.help_contextual then mep.help_contextual() else mep.cmd('MepHelp') end\n"
+    "end)\n"
+    "mep.leader_map('hf', 'Help: search the manual', function()\n"
+    "  if mep.help_search then mep.help_search() else mep.cmd('MepHelp') end\n"
+    "end)\n";
 
 const char *kBuiltinPickerSources =
     "function mep.themes()\n"
@@ -18654,6 +26238,7 @@ const char *kBuiltinPickerSources =
     "        mep.picker_preview_file(item, 200)\n"
     "      end\n"
     "    end)\n"
+    "    mep.picker_set_hint('C-i: open as tab   C-e: open as text   C-v: open rendered')\n"
     // on_select_change only fires on an actual highlight *change* -- prime
     // it with the first result so Ctrl-I (and the preview column) work
     // immediately, without requiring an arrow-key press first.\n"
@@ -18877,12 +26462,99 @@ const char *kBuiltinPickerSources =
     "  if n > 0 then show_preview(1) end\n"
     "end\n"
     "mep.command('MepBufferSearch', mep.buffer_search)\n"
-    "mep.leader_map('/', 'Buffer fuzzy find', mep.buffer_search)\n"
+    "mep.leader_map('/', 'search', mep.buffer_search, 0xf002, 'Yellow')\n"
     "mep.map('n', '/', mep.buffer_search, {desc = 'Buffer fuzzy find (picker)'})\n"
+    // <leader>bb: every open buffer, previewing the highlighted one's
+    // live contents (unsaved edits and terminals included -- read from
+    // the buffer, not the file on disk) around its cursor, Treesitter-
+    // colored like mep.buffer_search's preview. Only a window of lines is
+    // parsed per preview so a 30k-line buffer stays instant. Enter shows
+    // it in the focused pane; C-v/C-s open it in a new vertical/
+    // horizontal split, C-t in a new tab page, C-i as a buffer tab of the
+    // focused pane, and C-d deletes it (confirming first when modified).
+    // The opened buffer lands on the row a pane in this tab already has
+    // it at, else line 1 -- :split/:vsplit copy the old pane's cursor and
+    // buffer_switch keeps it, which would otherwise drop the cursor at
+    // the previous buffer's row.\n"
+    "local kBuffersPreviewBefore, kBuffersPreviewLines = 15, 300\n"
+    // mep.buffer_open_with(id, how): the picker's open actions, scriptable --
+    // how = 'vsplit' | 'split' | 'tab' (new tab page) | 'pane_tab' (buffer
+    // tab of the focused pane) | anything else (show it in the focused pane).\n"
+    "function mep.buffer_open_with(id, how)\n"
+    "  local row = mep.buffer_cursor_row(id) or 1\n"
+    "  if how == 'vsplit' then mep.cmd('vsplit') mep.buffer_switch(id)\n"
+    "  elseif how == 'split' then mep.cmd('split') mep.buffer_switch(id)\n"
+    "  elseif how == 'tab' then mep.tab_new(id)\n"
+    "  elseif how == 'pane_tab' then mep.pane_open(id)\n"
+    "  else mep.buffer_switch(id) end\n"
+    "  mep.set_cursor(row, 1)\n"
+    "end\n"
     "function mep.buffers()\n"
-    "  mep.picker_open('Buffers', mep.buffer_list(), function(item)\n"
-    "    if item then mep.buffer_switch(tonumber(item)) end\n"
+    "  local highlighted = nil\n"
+    "  local function preview(id)\n"
+    "    local lines = id and mep.buffer_get_lines(id)\n"
+    "    if not lines then mep.picker_set_preview('') return end\n"
+    "    local n = #lines\n"
+    "    if n == 0 or (n == 1 and lines[1] == '') then mep.picker_set_preview('(empty buffer)') return end\n"
+    "    local cur = mep.buffer_cursor_row(id)\n"
+    "    local from = math.max(1, (cur or 1) - kBuffersPreviewBefore)\n"
+    "    local to = math.min(n, from + kBuffersPreviewLines - 1)\n"
+    "    local slice = {}\n"
+    "    for r = from, to do slice[#slice + 1] = lines[r] end\n"
+    "    local fname = mep.buffer_filename(id)\n"
+    "    local ft = fname ~= '' and mep_lsp_filetype(fname) or nil\n"
+    "    local captures = ft and mep.ts_captures(ft, table.concat(slice, '\\n'))\n"
+    "    local width = #tostring(to)\n"
+    "    local out, spans = {}, {}\n"
+    "    for i, line in ipairs(slice) do\n"
+    "      local r = from + i - 1\n"
+    "      out[i] = ((r == cur) and '> ' or '  ') .. string.format('%' .. width .. 'd  ', r) .. line\n"
+    "      spans[#spans + 1] = {row = i, col_start = 1, col_end = width + 5, hl = (r == cur) and 'Yellow' or 'Comment'}\n"
+    "    end\n"
+    "    local shift = width + 4\n"
+    "    for _, c in ipairs(captures or {}) do\n"
+    "      local hl = mep_buffer_search_resolve_hl(c.capture)\n"
+    "      if hl and c.row >= 1 and c.row <= #slice then\n"
+    "        spans[#spans + 1] = {row = c.row, col_start = c.col_start + shift, col_end = c.col_end + shift, hl = hl}\n"
+    "      end\n"
+    "    end\n"
+    "    mep.picker_set_preview(table.concat(out, '\\n'), spans)\n"
+    "  end\n"
+    "  local items = mep.buffer_list()\n"
+    "  local function reopen_items()\n"
+    "    items = mep.buffer_list()\n"
+    "    mep.picker_set_items(items)\n"
+    "    highlighted = items[1] and items[1].data or nil\n"
+    "    preview(highlighted and tonumber(highlighted))\n"
+    "  end\n"
+    "  local actions = {v = 'vsplit', s = 'split', t = 'tab', i = 'pane_tab'}\n"
+    "  mep.picker_open('Buffers', items, function(item)\n"
+    "    if item then mep.buffer_open_with(tonumber(item), 'switch') end\n"
+    "  end, nil, function(key)\n"
+    "    local id = highlighted and tonumber(highlighted)\n"
+    "    if not id then return end\n"
+    "    if actions[key] then\n"
+    "      mep.picker_close()\n"
+    "      mep.buffer_open_with(id, actions[key])\n"
+    "    elseif key == 'd' then\n"
+    "      if mep.buffer_modified(id) then\n"
+    "        mep.picker_close()\n"
+    "        mep.ui_confirm('Buffer has unsaved changes. Delete it anyway?', false, function(yes)\n"
+    "          if yes then mep.buffer_delete(id, true) end\n"
+    "          mep.buffers()\n"
+    "        end)\n"
+    "      else\n"
+    "        mep.buffer_delete(id, false)\n"
+    "        reopen_items()\n"
+    "      end\n"
+    "    end\n"
+    "  end, function(item)\n"
+    "    highlighted = item\n"
+    "    preview(item and tonumber(item))\n"
     "  end)\n"
+    "  mep.picker_set_hint('C-v: vsplit   C-s: split   C-t: new tab   C-i: pane tab   C-d: delete')\n"
+    "  highlighted = items[1] and items[1].data or nil\n"
+    "  preview(highlighted and tonumber(highlighted))\n"
     "end\n"
     "mep.leader_map('bb', 'Buffers', mep.buffers)\n"
     // <leader>bs: the session's scratch buffer (:MepScratch -- reuses the
@@ -19090,6 +26762,11 @@ bool HandleMenuInput() {
         return true;
     }
 
+    // No bar on screen (zen mode, or mod1-tapped away) means no hover, no
+    // dropdown and nothing to consume: those pixels belong to whatever
+    // moved up into them, and a click there has to reach it.
+    if (!g_editor.IsMenuBarVisible() || g_editor.IsZenMode()) return false;
+
     gfx::Vector2 mouse = gfx::GetMousePosition();
     bool clicked = gfx::IsMouseButtonPressed(gfx::MouseButton::Left);
     int bar_height = MenuBarHeight();
@@ -19219,6 +26896,68 @@ void DrawRunButtonMenu() {
     gfx::DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), item_h,
                         ResolveHlGroup("PickerBorder"));
     RegisterClickRegion(gfx::Rectangle{dd_x, dd_y, dd_w, static_cast<float>(item_h)}, menu.items[0].action);
+}
+
+/**
+ * @brief Draws the open per-cell kernel dropdown (a code cell's kernel chip, DrawPane's notebook header)
+ * when one is open, listing every registered kernel with the cell's current one checked.
+ */
+void DrawNotebookKernelMenu() {
+    if (g_notebook_kernel_menu_buffer == -1) return;
+    const int buffer_id = g_notebook_kernel_menu_buffer;
+    const int cell_index = g_notebook_kernel_menu_cell;
+    // The cell (or notebook) may have gone away since the menu opened.
+    if (!g_editor.IsNotebookBuffer(buffer_id)) {
+        g_notebook_kernel_menu_buffer = -1;
+        g_notebook_kernel_menu_cell = -1;
+        g_notebook_kernel_menu_rect = {};
+        return;
+    }
+    const std::vector<NotebookKernelSpec> &specs = g_editor.NotebookKernels();
+    const std::string current = g_editor.NotebookCellKernelName(buffer_id, cell_index);
+    const float font_size = MenuFontSize();
+    const int item_h = MenuItemHeight();
+    // Reuses DrawMenuBar's dropdown look, same as DrawRunButtonMenu.
+    float dd_w = 0.0f;
+    for (const NotebookKernelSpec &spec : specs) {
+        const std::string label = "  " + (spec.display_name.empty() ? spec.name : spec.display_name);
+        dd_w = std::max(dd_w, MeasureUiText(label, font_size) + 2.0f * kMenuItemPaddingX + 16.0f);
+    }
+    dd_w = std::max(dd_w, g_notebook_kernel_menu_anchor.width);
+    float dd_x = g_notebook_kernel_menu_anchor.x + g_notebook_kernel_menu_anchor.width - dd_w;   // right-align under the chip
+    if (dd_x < static_cast<float>(kMarginX)) dd_x = static_cast<float>(kMarginX);
+    float dd_y = g_notebook_kernel_menu_anchor.y + g_notebook_kernel_menu_anchor.height;
+    const float dd_h = static_cast<float>(specs.size()) * static_cast<float>(item_h);
+    g_notebook_kernel_menu_rect = gfx::Rectangle{dd_x, dd_y, dd_w, dd_h};
+    gfx::Vector2 mouse = gfx::GetMousePosition();
+    gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
+                       ResolveHlGroup("Picker"));
+    for (size_t i = 0; i < specs.size(); i++) {
+        const float item_y = dd_y + static_cast<float>(i) * static_cast<float>(item_h);
+        const gfx::Rectangle item_rect{dd_x, item_y, dd_w, static_cast<float>(item_h)};
+        if (PointInRect(mouse, item_rect)) {
+            gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(item_y), static_cast<int>(dd_w), item_h,
+                               ResolveHlGroup("MenuHighlight"));
+        }
+        const bool is_current = specs[i].name == current;
+        const std::string label = (is_current ? std::string("✓ ") : std::string("  ")) +
+                                   (specs[i].display_name.empty() ? specs[i].name : specs[i].display_name);
+        const float text_y = item_y + (static_cast<float>(item_h) - font_size) / 2.0f;
+        gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
+                        ResolveHlGroup(is_current ? "Accent" : "MenuBarFg"));
+        const std::string kernel_name = specs[i].name;
+        // The pane's broad focus region is registered while drawing its
+        // content, before this floating menu.  Put menu items above it so a
+        // selection is not swallowed as a mere focus click.
+        RegisterClickRegionOnTop(item_rect, [buffer_id, cell_index, kernel_name] {
+            g_editor.NotebookSetCellKernel(buffer_id, cell_index, kernel_name);
+            g_notebook_kernel_menu_buffer = -1;
+            g_notebook_kernel_menu_cell = -1;
+            g_notebook_kernel_menu_rect = {};
+        });
+    }
+    gfx::DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
+                            ResolveHlGroup("PickerBorder"));
 }
 
 // Generic floating overlay frame: dims the screen, draws a centered
@@ -19465,6 +27204,22 @@ float DrawSidebarTabStrip(const SidebarInstance &sb, float x, float y, float fon
     return x;
 }
 
+// The one-line key hint along a sidebar's bottom edge: how to open its `?`
+// key-binding view, or -- while that view is showing -- how to get back.
+std::string SidebarFooterHint(const SidebarInstance &sb) {
+    return sb.help_open ? "Esc: back to " + sb.title : "?: help";
+}
+
+// Draws SidebarFooterHint over the bottom `line_h` of a sidebar's rect
+// (x, bottom - line_h .. bottom), in the dimmed hint color, with a rule
+// above it separating it from the rows.
+void DrawSidebarFooter(const SidebarInstance &sb, float x, float w, float bottom, int line_h) {
+    const float fy = bottom - static_cast<float>(line_h);
+    gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(fy) - 2, static_cast<int>(w) - 4, 1, ResolveHlGroup("Border"));
+    const std::string hint = SidebarFooterHint(sb);
+    DrawUiText(hint, gfx::Vector2{x + 8.0f, fy + 1.0f}, MenuFontSize(), ResolveHlGroup(sb.help_open ? "Yellow" : "Comment"));
+}
+
 void DrawSidebars() {
     int screen_w = gfx::GetScreenWidth();
     int screen_h = gfx::GetScreenHeight();
@@ -19479,7 +27234,10 @@ void DrawSidebars() {
     // over the menu bar/tab bar above it or the status/command bars below
     // it, the same way DrawEditor's pane_x/pane_w reservation already
     // keeps it from painting over pane content horizontally.
-    int content_top = MenuBarHeight() + TabBarHeight();
+    // Same menu-bar-may-be-hidden rule as DrawEditor's own
+    // menu_bar_height above; these two have to agree or a docked
+    // sidebar stops lining up with the pane tree beside it.
+    int content_top = (g_editor.IsMenuBarVisible() ? MenuBarHeight() : 0) + TabBarHeight();
     int content_bottom = screen_h - 2 * LineHeight();  // status bar + command bar
     // FocusedSidebarId() alone isn't enough now that mod1+hjkl can blur a
     // sidebar back into the pane tree without closing it (NavigatePane
@@ -19559,7 +27317,8 @@ void DrawSidebars() {
         // off-screen cursor back into view, so moving past the last visible
         // row (or a mouse wheel, previously not even wired into Mode::Sidebar
         // in Editor::HandleMouseWheel) had nowhere to go.
-        int visible_lines = std::max(1, (ph - hdr_h - 10) / line_h);
+        // The bottom row is the footer hint (DrawSidebarFooter).
+        int visible_lines = std::max(1, (ph - hdr_h - 10 - line_h) / line_h);
         // A popped-out sidebar's scroll is owned by DrawSidebarPopout's
         // own (much taller) viewport: clamping it to this docked one
         // first would keep yanking the float's view so the cursor sits
@@ -19590,7 +27349,7 @@ void DrawSidebars() {
                 gfx::DrawRectangle(px + 2, static_cast<int>(ly) - 1, pw - 4, line_h, ResolveHlGroup("PickerSelected"));
             }
             gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
-            DrawUiText(lines[i].text, gfx::Vector2{static_cast<float>(px + 8), ly}, font_size, color);
+            DrawSidebarRow(lines[i], gfx::Vector2{static_cast<float>(px + 8), ly}, font_size, color, line_h, static_cast<float>(pw) - 16.0f);
             // Right-aligned per-row trailing action (SidebarWidget::
             // trailing_icon, e.g. the Buffers sidebar's "x" to delete):
             // drawn flush against the row's right edge and given its own
@@ -19618,6 +27377,7 @@ void DrawSidebars() {
             g_sidebar_row_rects.push_back(
                 {sb.id, static_cast<int>(i), gfx::Rectangle{static_cast<float>(px), ly - 1, row_w, static_cast<float>(line_h)}});
         }
+        if (ph >= hdr_h + 2 * line_h) DrawSidebarFooter(sb, static_cast<float>(px), static_cast<float>(pw), static_cast<float>(py + ph - 4), line_h);
         gfx::EndScissorMode();
     };
 
@@ -19680,9 +27440,9 @@ void DrawSidebars() {
     // each sized to its own content (capped at half the content band).
     float top_offset = 0, bottom_offset = 0;
     for (const SidebarInstance &sb : g_editor.Sidebars()) {
-        if (!sb.open || (sb.position != "top" && sb.position != "bottom")) continue;
+        if (!sb.open || sb.popout_only || (sb.position != "top" && sb.position != "bottom")) continue;
         const std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sb.id);
-        const int content_h = static_cast<int>(lines.size()) * line_h + header_h + 10;
+        const int content_h = static_cast<int>(lines.size() + 1) * line_h + header_h + 10;  // +1: footer hint
         const int ph = std::min(content_h, (content_bottom - content_top) / 2);
         const int px = 0;
         const int pw = screen_w;
@@ -20127,7 +27887,7 @@ static float DrawPickerColoredRun(const std::string &text, const std::vector<gfx
  * highlighted text.
  */
 void DrawPickerOverlay() {
-    std::vector<PickerItem> results = g_editor.PickerFilteredResults();
+    const std::vector<PickerItem> &results = g_editor.PickerFilteredResults();
     int selected = g_editor.PickerSelected();
     bool has_preview = !g_editor.PickerPreview().empty() || IsSwatchPreviewPicker();
     // Sized like mep.nvim's own picker (mep.nvim/lua/mep/picker/ui.lua's
@@ -20139,6 +27899,58 @@ void DrawPickerOverlay() {
     int box_w = std::max(400, static_cast<int>(static_cast<float>(gfx::GetScreenWidth()) * 0.8f));
     int box_h = std::max(300, static_cast<int>(static_cast<float>(gfx::GetScreenHeight()) * 0.8f));
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.PickerTitle());
+
+    // Key hint footer, bottom-right, same placement/color as the sidebar
+    // popout's: the picker's own keys (mep.picker_set_hint) ahead of the
+    // standard ones every picker shares, on one line when it fits and the
+    // picker's own on a line above otherwise. The list and preview stop
+    // at content_bottom so neither runs under it.
+    const float hint_size = MenuFontSize();
+    std::vector<std::string> hint_lines;
+    {
+        std::string standard = "Enter: select   Esc: close   C-n/C-p: move";
+        if (has_preview) standard += "   mod1+j/k: scroll preview";
+        const std::string &own = g_editor.PickerHint();
+        const std::string joined = own.empty() ? standard : own + "   " + standard;
+        if (own.empty() || gfx::MeasureTextEx(g_font, joined.c_str(), hint_size, 0).x <= static_cast<float>(f.box_w - 28)) {
+            hint_lines.push_back(joined);
+        } else {
+            hint_lines.push_back(own);
+            hint_lines.push_back(standard);
+        }
+    }
+    const int hint_line_h = static_cast<int>(hint_size) + 4;
+    const int content_bottom = f.box_y + f.box_h - static_cast<int>(hint_lines.size()) * hint_line_h - 12;
+    for (size_t i = 0; i < hint_lines.size(); i++) {
+        const float hw = gfx::MeasureTextEx(g_font, hint_lines[i].c_str(), hint_size, 0).x;
+        const float hy = static_cast<float>(content_bottom + 4 + static_cast<int>(i) * hint_line_h);
+        gfx::DrawTextEx(g_font, hint_lines[i].c_str(), gfx::Vector2{static_cast<float>(f.box_x + f.box_w) - hw - 14, hy},
+                        hint_size, 0, ResolveHlGroup("Comment"));
+    }
+
+    // Tab strip (mep.picker_set_tabs): one row above the prompt, the active
+    // tab on the selection highlight; everything below shifts down a row.
+    const std::vector<std::string> &tabs = g_editor.PickerTabs();
+    if (!tabs.empty()) {
+        float tx = f.content_x;
+        for (int i = 0; i < static_cast<int>(tabs.size()); i++) {
+            std::string label = " " + tabs[static_cast<size_t>(i)] + " ";
+            float w = gfx::MeasureTextEx(g_font, label.c_str(), g_font_size, 0).x;
+            bool active = i == g_editor.PickerActiveTab();
+            if (active) {
+                gfx::DrawRectangle(static_cast<int>(tx), static_cast<int>(f.content_y) - 2, static_cast<int>(w),
+                                   static_cast<int>(g_font_size) + 4, ResolveHlGroup("PickerSelected"));
+            }
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{tx, f.content_y}, g_font_size, 0,
+                            ResolveHlGroup(active ? "Normal" : "Comment"));
+            tx += w + 6;
+        }
+        const char *hint = "Tab / S-Tab";
+        float hw = gfx::MeasureTextEx(g_font, hint, g_font_size, 0).x;
+        gfx::DrawTextEx(g_font, hint, gfx::Vector2{static_cast<float>(f.box_x + f.box_w) - hw - 12, f.content_y},
+                        g_font_size, 0, ResolveHlGroup("Comment"));
+        f.content_y += g_font_size + 10;
+    }
 
     std::string prompt_line = "> " + g_editor.PickerQuery();
     gfx::DrawTextEx(g_font, prompt_line.c_str(), gfx::Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
@@ -20155,9 +27967,9 @@ void DrawPickerOverlay() {
 
     float list_y = f.content_y + g_font_size + 14;
     int line_h = static_cast<int>(g_font_size) + 4;
-    int max_rows = std::max(1, static_cast<int>((static_cast<float>(f.box_y + f.box_h) - list_y) / static_cast<float>(line_h)));
+    int max_rows = std::max(1, static_cast<int>((static_cast<float>(content_bottom) - list_y) / static_cast<float>(line_h)));
     int start = std::max(0, selected - max_rows + 1);
-    gfx::BeginScissorMode(f.box_x, static_cast<int>(list_y) - 2, list_w, f.box_y + f.box_h - static_cast<int>(list_y));
+    gfx::BeginScissorMode(f.box_x, static_cast<int>(list_y) - 2, list_w, content_bottom - static_cast<int>(list_y));
     for (int i = start; i < static_cast<int>(results.size()) && i < start + max_rows; i++) {
         float ry = list_y + static_cast<float>((i - start) * line_h);
         if (i == selected) {
@@ -20177,7 +27989,7 @@ void DrawPickerOverlay() {
 
     if (has_preview) {
         int div_x = f.box_x + list_w + 6;
-        gfx::DrawLine(div_x, static_cast<int>(list_y) - 4, div_x, f.box_y + f.box_h - 6, ResolveHlGroup("PickerBorder"));
+        gfx::DrawLine(div_x, static_cast<int>(list_y) - 4, div_x, content_bottom - 6, ResolveHlGroup("PickerBorder"));
         // Mirrors mep.nvim's own preview window, which carries a " Preview
         // " title on its border -- this box has no separate border to
         // caption, so the label sits at the same row as the prompt line.
@@ -20185,7 +27997,7 @@ void DrawPickerOverlay() {
                    ResolveHlGroup("Comment"));
         float px = static_cast<float>(div_x + 10);
         int preview_w = (f.box_x + f.box_w) - div_x - 20;
-        gfx::BeginScissorMode(div_x, static_cast<int>(list_y) - 2, preview_w + 20, f.box_y + f.box_h - static_cast<int>(list_y));
+        gfx::BeginScissorMode(div_x, static_cast<int>(list_y) - 2, preview_w + 20, content_bottom - static_cast<int>(list_y));
         if (IsSwatchPreviewPicker()) {
             // One row per named palette role: a filled swatch of that
             // role's color, its hex value, and the role name -- looked up
@@ -20222,7 +28034,7 @@ void DrawPickerOverlay() {
         } else {
             int max_chars = std::max(10, static_cast<int>(static_cast<float>(preview_w) / g_char_width));
             int row = 0;
-            int max_preview_rows = static_cast<int>((static_cast<float>(f.box_y + f.box_h) - list_y) / static_cast<float>(line_h));
+            int max_preview_rows = static_cast<int>((static_cast<float>(content_bottom) - list_y) / static_cast<float>(line_h));
             // mod1+j/k (Editor::HandleMod1Shortcuts' own Mode::Picker special
             // case) scrolls by skipping raw lines here -- PickerPreviewScroll()
             // counts the same raw lines SplitLines() returns, not the wrapped
@@ -20352,7 +28164,8 @@ void DrawSidebarPopout() {
     const int line_h = static_cast<int>(font_size) + 4;
     const float hint_size = MenuFontSize();
     const int hint_h = static_cast<int>(hint_size) + 16;
-    const bool has_preview = sb->on_preview_ref != 0;
+    // The `?` key list gets the whole width -- there's no row to preview.
+    const bool has_preview = sb->on_preview_ref != 0 && !sb->help_open;
     const int right_edge = f.box_x + f.box_w;
     const int list_w = has_preview ? static_cast<int>((static_cast<float>(right_edge) - f.content_x) * 0.38f)
                                    : right_edge - static_cast<int>(f.content_x) - 4;
@@ -20381,7 +28194,7 @@ void DrawSidebarPopout() {
             gfx::DrawRectangle(f.box_x + 4, static_cast<int>(ly) - 1, list_w - 8, line_h, ResolveHlGroup("PickerSelected"));
         }
         const gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
-        DrawUiText(lines[i].text, gfx::Vector2{f.content_x, ly}, font_size, color);
+        DrawSidebarRow(lines[i], gfx::Vector2{f.content_x, ly}, font_size, color, line_h, static_cast<float>(f.box_x + f.box_w) - f.content_x - 8.0f);
         g_sidebar_row_rects.push_back(
             {sb->id, static_cast<int>(i), gfx::Rectangle{static_cast<float>(f.box_x), ly - 1, static_cast<float>(list_w), static_cast<float>(line_h)}});
     }
@@ -20446,8 +28259,13 @@ void DrawSidebarPopout() {
     }
 
     // Key hint, bottom-right, same placement/color as DrawPreviewOverlay's.
-    std::string hint = has_preview ? "Esc/q/mod1+m: dock   mod1+j/k: scroll preview" : "Esc/q/mod1+m: dock";
+    // A popout-only sidebar has nothing to dock back into -- collapsing it closes it.
+    std::string hint = sb->popout_only ? "Esc/q/mod1+m: close" : "Esc/q/mod1+m: dock";
+    if (has_preview) hint += "   mod1+j/k: scroll preview";
     if (!sb->tabs.empty()) hint = "Tab/S-Tab: switch view   " + hint;
+    hint = "?: help   " + hint;
+    // The help view's Escape/q step back to the list, not out of the popout.
+    if (sb->help_open) hint = SidebarFooterHint(*sb);
     const float hint_w = gfx::MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
     gfx::DrawTextEx(g_font, hint.c_str(),
                gfx::Vector2{static_cast<float>(right_edge) - hint_w - 14, static_cast<float>(f.box_y + f.box_h) - hint_size - 10.0f},
@@ -20602,7 +28420,7 @@ void DrawRoamGraphOverlay() {
  * bindings under the currently typed leader prefix flowed into as many columns as fit.
  */
 void DrawWhichKeyOverlay() {
-    std::vector<std::pair<std::string, std::string>> matches = g_editor.WhichKeyDisplayEntries();
+    std::vector<WhichKeyDisplayEntry> matches = g_editor.WhichKeyDisplayEntries();
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 6;
 
@@ -20611,10 +28429,10 @@ void DrawWhichKeyOverlay() {
     int margin_x = 40;
     int box_w = std::max(screen_w - margin_x * 2, 200);
 
-    // "<leader>" is a non-empty literal prefix, so `title` can never be
+    // "<Space>" is a non-empty literal prefix, so `title` can never be
     // empty here (unlike the sibling `title.empty()`-gated overlays
     // elsewhere in this file, whose title strings really can be empty).
-    std::string title = "<leader>" + Editor::WhichKeySequenceDisplay(g_editor.WhichKeyPrefix());
+    std::string title = "<Space>" + Editor::WhichKeySequenceDisplay(g_editor.WhichKeyPrefix());
     float title_size = MenuFontSize();
     int title_h = static_cast<int>(title_size) + 8;
 
@@ -20623,8 +28441,10 @@ void DrawWhichKeyOverlay() {
     // grid layout instead of leaving most of the width empty).
     int item_w = 0;
     for (const auto &m : matches) {
-        std::string line = m.first + "  " + m.second;
-        item_w = std::max(item_w, static_cast<int>(gfx::MeasureTextEx(g_font, line.c_str(), font_size, 0).x));
+        std::string line;
+        if (m.icon != 0) line = Utf8FromCodepoint(m.icon) + " ";
+        line += m.key + "  " + m.label;
+        item_w = std::max(item_w, static_cast<int>(MeasureUiText(line, font_size)));
     }
     item_w += 28;
     int content_w = box_w - 28;
@@ -20657,10 +28477,15 @@ void DrawWhichKeyOverlay() {
         int row = static_cast<int>(i) / columns;
         float x = content_x + static_cast<float>(col) * static_cast<float>(item_w);
         float y = content_y + static_cast<float>(row) * static_cast<float>(line_h);
-        gfx::DrawTextEx(g_font, matches[i].first.c_str(), gfx::Vector2{x, y}, font_size, 0, ResolveHlGroup("PickerTitle"));
-        float key_w = gfx::MeasureTextEx(g_font, matches[i].first.c_str(), font_size, 0).x;
-        gfx::DrawTextEx(g_font, matches[i].second.c_str(), gfx::Vector2{x + key_w + 16, y}, font_size, 0,
-                   ResolveHlGroup("Normal"));
+        if (matches[i].icon != 0) {
+            const std::string icon = Utf8FromCodepoint(matches[i].icon);
+            DrawUiText(icon, gfx::Vector2{x, y}, font_size,
+                       ResolveHlGroup(matches[i].icon_hl.empty() ? "Accent" : matches[i].icon_hl));
+            x += MeasureUiText(icon, font_size) + 6.0f;
+        }
+        DrawUiText(matches[i].key, gfx::Vector2{x, y}, font_size, ResolveHlGroup("PickerTitle"));
+        x += MeasureUiText(matches[i].key, font_size) + 16.0f;
+        DrawUiText(matches[i].label, gfx::Vector2{x, y}, font_size, ResolveHlGroup("Normal"));
     }
 }
 
@@ -21171,7 +28996,11 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
             if (selected) {
                 gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(cell_w) + 1,
                               static_cast<int>(lh), sel_bg);
-            } else if (bg_c.kind != VTermColorKind::Default || cell->reverse) {
+            // Codex applies its own dark prompt fills even when the editor
+            // uses a light theme.  Its terminal sessions opt out so their
+            // text inherits the pane canvas; every other terminal retains
+            // normal ANSI background rendering.
+            } else if (!sess.ignore_ansi_backgrounds && (bg_c.kind != VTermColorKind::Default || cell->reverse)) {
                 gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(cell_w) + 1,
                               static_cast<int>(lh), bg);
             }
@@ -22048,17 +29877,15 @@ void DrawVideoPane(const Pane &pane, VideoSession &sess, float x, float y, float
  * @param is_active Whether this pane is the currently active one (drawn with a thicker border).
  */
 void DrawPaneBorder(float x, float y, float w, float h, bool is_active) {
-    gfx::Color border_color = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
-    float top_thick = is_active ? 3.0f : 1.0f;
-    float side_thick = is_active ? 6.0f : 1.0f;
-    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(top_thick),
+    const float top_thick = is_active ? 3.0f : 1.0f;
+    const float side_thick = is_active ? 6.0f : 1.0f;
+    const gfx::Color border_color = is_active ? ResolveHlGroup("BorderActive") : ResolveHlGroup("BorderInactive");
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(top_thick), border_color);
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(side_thick), static_cast<int>(h), border_color);
+    gfx::DrawRectangle(static_cast<int>(x + w - side_thick), static_cast<int>(y), static_cast<int>(side_thick), static_cast<int>(h),
                   border_color);
-    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(side_thick), static_cast<int>(h),
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y + h - side_thick), static_cast<int>(w), static_cast<int>(side_thick),
                   border_color);
-    gfx::DrawRectangle(static_cast<int>(x + w - side_thick), static_cast<int>(y), static_cast<int>(side_thick),
-                  static_cast<int>(h), border_color);
-    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y + h - side_thick), static_cast<int>(w),
-                  static_cast<int>(side_thick), border_color);
 }
 
 // --- Mini LaTeX math layout -------------------------------------------------
@@ -22610,6 +30437,12 @@ struct HtmlRun {
     bool bold = false, italic = false, underline = false, strikethrough = false;
     std::string link_href = "";  // see HtmlPendingWord::link_href
     const DomNode *link_node = nullptr;
+    DomNode *node = nullptr;  // the element this text belongs to: the target of a click on it
+    // Null retains the legacy JetBrains Mono fallback used for synthetic
+    // widgets/math placeholders; normal HTML text points at a real generic
+    // family face selected from the embedded Liberation set.
+    const gfx::Font *font = nullptr;
+    float letter_spacing = 0.0f;
 };
 struct HtmlRule {
     float x = 0, y = 0, w = 0;
@@ -22694,6 +30527,8 @@ struct HtmlLayoutCtx {
     // real on-disk source, in which case only absolute local paths resolve).
     std::string base_dir = "";
     float zoom = 1.0f;  // matches HtmlSession::zoom -- local images scale with the same pane zoom as text does
+    HtmlTextAlign text_align = HtmlTextAlign::Left;
+    bool no_wrap = false;
 };
 
 /**
@@ -22748,7 +30583,34 @@ struct HtmlPendingWord {
     // key multiple runs of the same anchor merge under.
     std::string link_href = "";
     const DomNode *link_node = nullptr;
+    const gfx::Font *font = nullptr;
+    float line_height = 0.0f;
+    float letter_spacing = 0.0f;
+    bool no_wrap = false;
+    DomNode *node = nullptr;  // innermost element that produced this word (click target)
 };
+
+// HTML's generic CSS families share the already-loaded office font atlases.
+// Keeping this selection at the layout boundary leaves html_doc.h raylib-free
+// and lets the DOM/style unit test run without a graphics context.
+const gfx::Font &HtmlFontFor(const ComputedStyle &style) {
+    if (style.font_family == HtmlFontFamily::Serif) {
+        if (style.bold && style.italic) return g_office_font_serif_bolditalic;
+        if (style.bold) return g_office_font_serif_bold;
+        if (style.italic) return g_office_font_serif_italic;
+        return g_office_font_serif_regular;
+    }
+    if (style.font_family == HtmlFontFamily::Mono) {
+        // Keep the editor's primary monospace face for code/pre content.
+        // Its atlas tracks the current UI font size and has the broadest
+        // terminal-oriented fallback behavior.
+        return g_font;
+    }
+    if (style.bold && style.italic) return g_office_font_bolditalic;
+    if (style.bold) return g_office_font_bold;
+    if (style.italic) return g_office_font_italic;
+    return g_office_font_regular;
+}
 
 // Resolves an <img src> value against ctx.base_dir -- absolute local paths
 // pass through unchanged; a remote (http/https) src has no local file to
@@ -22763,19 +30625,49 @@ struct HtmlPendingWord {
 // the inline-data case this function's own doc comment already carves out
 // room for alongside "remote" and "local".
 /**
- * @brief Resolves an <img src> value against `base_dir` for local file loading. An absolute
- * path or a "data:" URI passes through unchanged; a remote (http/https) src returns "" since
- * there is no local file to fetch, so callers fall back to a bracketed placeholder instead of a
- * broken texture load.
+ * @brief Resolves an <img src> value to something the texture loaders can open. An absolute
+ * path or a "data:" URI passes through unchanged; a network image (an http(s) `src`, or any
+ * `src` when `base_dir` is itself the page's http(s) URL) is fetched once into a temp file.
  * @param src The <img> element's src attribute value.
- * @param base_dir Directory to resolve a relative `src` against.
- * @return The resolved local filesystem path, the original "data:" URI, or "" if `src` is empty
- * or a remote URL.
+ * @param base_dir Directory -- or, for a page that came from the network, its URL -- to resolve
+ * a relative `src` against.
+ * @return A local filesystem path, the original "data:" URI, or "" if `src` is empty or the
+ * network image could not be fetched (callers then draw the bracketed placeholder).
  */
+// A network image (an absolute http(s) src, or any src on a page that
+// itself came from a URL -- `base_dir` is then that page's URL) is fetched
+// once through the DOM layer's HtmlUrlFetcher into a temp file, memoized
+// by URL for the process lifetime (failures too, so a missing image isn't
+// re-requested every frame); from there the ordinary mtime-cached texture
+// loader takes over as if it had been a local file all along.
+static std::string CachedRemoteImagePath(const std::string &url) {
+    static std::unordered_map<std::string, std::string> cache;
+    auto it = cache.find(url);
+    if (it != cache.end()) return it->second;
+    std::string path;
+    const HtmlUrlFetcher &fetch = GetHtmlUrlFetcher();
+    if (fetch) {
+        HtmlFetchResult result = fetch(url);
+        if (result.status == 200 && !result.body.empty()) {
+            std::string ext = std::filesystem::path(urlutil::ParseUrl(url).path).extension().string();
+            if (ext.empty() || ext.size() > 6) ext = ".img";
+            std::error_code ec;
+            const std::filesystem::path dir = std::filesystem::temp_directory_path(ec) / "mep-web-images";
+            std::filesystem::create_directories(dir, ec);
+            const std::filesystem::path file = dir / (std::to_string(std::hash<std::string>{}(url)) + ext);
+            std::ofstream out(file, std::ios::binary);
+            if (out.write(result.body.data(), static_cast<std::streamsize>(result.body.size()))) path = file.string();
+        }
+    }
+    cache[url] = path;
+    return path;
+}
+
 std::string ResolveHtmlImagePath(const std::string &src, const std::string &base_dir) {
     if (src.empty()) return "";
-    if (src.compare(0, 7, "http://") == 0 || src.compare(0, 8, "https://") == 0) return "";
     if (src.compare(0, 5, "data:") == 0) return src;
+    if (urlutil::IsHttpUrl(src)) return CachedRemoteImagePath(src);
+    if (urlutil::IsHttpUrl(base_dir)) return CachedRemoteImagePath(urlutil::ResolveUrl(base_dir, src));
     if (src[0] == '/') return src;
     if (base_dir.empty()) return src;
     return base_dir + "/" + src;
@@ -22823,7 +30715,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
     auto word_width = [](const HtmlPendingWord &w) -> float {
         if (w.is_image) return w.image_w;
         if (w.is_math) return w.math.width;
-        return gfx::MeasureTextEx(g_font, w.text.c_str(), w.font_size, 0).x;
+        return gfx::MeasureTextEx(w.font ? *w.font : g_font, w.text.c_str(), w.font_size, w.letter_spacing).x;
     };
     /**
      * @brief Returns the line height one pending word requires (image height, math height, or
@@ -22834,7 +30726,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
     auto word_line_height = [](const HtmlPendingWord &w) -> float {
         if (w.is_image) return w.image_h + 6.0f;
         if (w.is_math) return std::max(w.math.height, w.font_size) + 6.0f;
-        return HtmlLineHeight(w.font_size);
+        return w.line_height > 0.0f ? w.line_height : HtmlLineHeight(w.font_size);
     };
     float x = indent_x;
     struct PlacedWord {
@@ -22846,20 +30738,41 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
      * @brief Emits the words buffered in `line` as centered runs/images/math runs at the
      * current cursor_y, advances cursor_y past the line, and resets `line`/`x` for the next line.
      */
-    auto flush_line = [&]() {
+    auto flush_line = [&](bool is_last_line = false) {
         if (line.empty()) return;
         float lh = 0;
         for (const PlacedWord &pw : line) lh = std::max(lh, word_line_height(*pw.w));
-        for (const PlacedWord &pw : line) {
+        // `x` is just past the final word, so it includes the ordinary
+        // inter-word spacing inserted by this layout pass.  Shift the whole
+        // completed line as one unit; this naturally preserves mixed font
+        // sizes, images, and math within centered/right-aligned content.
+        const float line_width = x - indent_x;
+        float align_offset = 0.0f;
+        if (ctx.text_align == HtmlTextAlign::Center) align_offset = std::max(0.0f, (ctx.layout_width - indent_x - line_width) / 2.0f);
+        else if (ctx.text_align == HtmlTextAlign::Right) align_offset = std::max(0.0f, ctx.layout_width - indent_x - line_width);
+        // Justification expands only wrapped (not final/explicit-break)
+        // lines, the common browser behavior.  The extra width goes between
+        // words and leaves word glyph metrics themselves untouched.
+        const float justify_gap = (ctx.text_align == HtmlTextAlign::Justify && !is_last_line && line.size() > 1)
+                                      ? std::max(0.0f, (ctx.layout_width - indent_x - line_width) /
+                                                           static_cast<float>(line.size() - 1))
+                                      : 0.0f;
+        for (size_t word_index = 0; word_index < line.size(); ++word_index) {
+            const PlacedWord &pw = line[word_index];
             const HtmlPendingWord &w = *pw.w;
             float y = cursor_y + (lh - word_line_height(w)) / 2.0f;
+            const float placed_x = pw.x + align_offset + static_cast<float>(word_index) * justify_gap;
             if (w.is_image) {
-                out.images.push_back({pw.x, y, w.image_w, w.image_h, w.image_path, w.link_href, w.link_node});
+                out.images.push_back({placed_x, y, w.image_w, w.image_h, w.image_path, w.link_href, w.link_node});
             } else if (w.is_math) {
-                out.math_runs.push_back({pw.x, y, w.color, w.math});
+                out.math_runs.push_back({placed_x, y, w.color, w.math});
             } else {
-                out.runs.push_back({pw.x, y, w.font_size, w.text, w.color, w.bold, w.italic, w.underline,
-                                     w.strikethrough, w.link_href, w.link_node});
+                HtmlRun run{placed_x, y, w.font_size, w.text, w.color, w.bold, w.italic, w.underline,
+                            w.strikethrough, w.link_href, w.link_node};
+                run.font = w.font;
+                run.letter_spacing = w.letter_spacing;
+                run.node = w.node;
+                out.runs.push_back(std::move(run));
             }
         }
         cursor_y += lh;
@@ -22868,11 +30781,12 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
     };
     for (const HtmlPendingWord &w : words) {
         if (w.text == "\n" && !w.is_image && !w.is_math) {
-            flush_line();
+            flush_line(true);
             continue;
         }
         float word_w = word_width(w);
-        float space_w = line.empty() ? 0 : gfx::MeasureTextEx(g_font, " ", w.font_size, 0).x;
+        const gfx::Font &font = w.font ? *w.font : g_font;
+        float space_w = line.empty() ? 0 : gfx::MeasureTextEx(font, " ", w.font_size, w.letter_spacing).x;
         // ctx.layout_width is the page's absolute right edge (measured
         // from the same x=0 indent_x itself is), constant regardless of
         // indent -- matching every box-width formula elsewhere in this
@@ -22884,12 +30798,12 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
         // nested lists produce, but badly wrong for a deliberately
         // narrowed+centered block (ComputedStyle::has_max_width), whose
         // indent_x can be hundreds of pixels.
-        if (!line.empty() && x + space_w + word_w > ctx.layout_width) flush_line();
-        if (!line.empty()) x += gfx::MeasureTextEx(g_font, " ", w.font_size, 0).x;
+        if (!line.empty() && !ctx.no_wrap && !w.no_wrap && x + space_w + word_w > ctx.layout_width) flush_line(false);
+        if (!line.empty()) x += gfx::MeasureTextEx(font, " ", w.font_size, w.letter_spacing).x;
         line.push_back({&w, x});
         x += word_w;
     }
-    flush_line();
+    flush_line(true);
     return cursor_y;
 }
 
@@ -22935,6 +30849,14 @@ void HtmlCollectTextWords(const std::string &text, const ComputedStyle &style, c
             word.italic = style.italic;
             word.underline = style.underline;
             word.strikethrough = style.strikethrough;
+            word.font = &HtmlFontFor(style);
+            word.letter_spacing = ResolveCssLength(style.letter_spacing, fs, ctx.layout_width);
+            word.line_height = style.line_height_multiplier > 0.0f
+                                   ? style.line_height_multiplier * fs
+                                   : (style.line_height_length.set
+                                          ? ResolveCssLength(style.line_height_length, fs, ctx.layout_width)
+                                          : HtmlLineHeight(fs));
+            word.no_wrap = style.white_space == HtmlWhiteSpace::NoWrap;
             word.link_href = style.link_href;
             word.link_node = style.link_node;
             out.push_back(std::move(word));
@@ -22994,6 +30916,14 @@ void HtmlCollectRawText(DomNode *node, std::string &out) {
  */
 void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const HtmlLayoutCtx &ctx,
                              std::vector<HtmlPendingWord> &out) {
+    // Every word produced below that a deeper element hasn't already claimed
+    // belongs to this one (a text node's words to its parent element).
+    struct ClaimWords {
+        std::vector<HtmlPendingWord> &words;
+        size_t first;
+        DomNode *owner;
+        ~ClaimWords() { for (size_t i = first; i < words.size(); ++i) if (!words[i].node) words[i].node = owner; }
+    } claim{out, out.size(), c->type == DomNodeType::Text ? c->parent : c};
     if (c->type == DomNodeType::Text) {
         HtmlCollectTextWords(c->text, parent_style, ctx, out);
         return;
@@ -23092,8 +31022,23 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
         return;
     }
     if (c->tag == "select") {
-        std::string selected = c->form_value;
-        if (selected.empty()) for (auto &option : c->children) if (option->type == DomNodeType::Element && option->tag == "option") { HtmlCollectRawText(option.get(), selected); break; }
+        // The chosen option's label: the one a script/click selected, else
+        // the `selected` attribute, else the first.
+        std::string selected;
+        DomNode *first_option = nullptr, *chosen = nullptr;
+        std::function<void(DomNode *)> scan = [&](DomNode *at) {
+            for (auto &option : at->children) {
+                if (option->type != DomNodeType::Element) continue;
+                if (option->tag != "option") { scan(option.get()); continue; }
+                if (!first_option) first_option = option.get();
+                auto live = option->attrs.find("\x01selected");
+                const bool is_selected = live != option->attrs.end() ? live->second == "1" : option->attrs.count("selected") != 0;
+                if (is_selected && (!chosen || live != option->attrs.end())) chosen = option.get();
+            }
+        };
+        scan(c);
+        if (!chosen) chosen = first_option;
+        if (chosen) HtmlCollectRawText(chosen, selected);
         out.push_back({"[" + selected + " v]", ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), false, false, false, false});
         return;
     }
@@ -23333,6 +31278,8 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     float content_x = border_x + border_l + pad_l;
     HtmlLayoutCtx box_ctx = eff_ctx;
     box_ctx.layout_width = content_x + std::max(0.0f, border_w - extras_w);
+    box_ctx.text_align = cs.text_align;
+    box_ctx.no_wrap = cs.white_space == HtmlWhiteSpace::NoWrap;
     cursor_y += std::max(out.pending_margin_bottom, margin_t);
     out.pending_margin_bottom = 0.0f;
 
@@ -23504,6 +31451,27 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
         return;
     }
+    if (node->tag == "iframe") {
+        // Nested browsing contexts need their own document, navigation, and
+        // security model, so they deliberately remain outside this in-pane
+        // renderer.  Leave a sized, legible replaced-element placeholder
+        // rather than silently producing an empty block.
+        std::string src;
+        if (auto it = node->attrs.find("src"); it != node->attrs.end()) src = it->second;
+        const std::string label = "[iframe" + (src.empty() ? std::string{} : ": " + src) + "]";
+        std::vector<HtmlPendingWord> words;
+        words.push_back({label, font_size, HtmlResolveColor(node->style, box_ctx), false, false, false, false});
+        cursor_y = HtmlFlushWords(words, content_x, cursor_y, box_ctx, out);
+        const float requested_h = cs.height.set ? ResolveCssLength(cs.height, font_size, available_w) : 150.0f;
+        cursor_y += std::max(0.0f, requested_h - line_h);
+        enforce_height();
+        cursor_y += tail_inset;
+        finish_bg();
+        finish_border();
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
+        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+        return;
+    }
 
     float my_indent = content_x + static_cast<float>(node->style.list_depth) * kHtmlListIndentPx;
     std::vector<HtmlPendingWord> words;
@@ -23530,7 +31498,9 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         if (node->tag == "details" && !node->details_open &&
             (c->type != DomNodeType::Element || c->tag != "summary")) continue;
         if (c->type == DomNodeType::Text) {
+            const size_t first_word = words.size();
             HtmlCollectTextWords(c->text, node->style, box_ctx, words);
+            for (size_t i = first_word; i < words.size(); ++i) words[i].node = node;
             continue;
         }
         if (c->style.display_none) continue;
@@ -23550,11 +31520,10 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
 }
 
-// Basic table grid layout: determine intrinsic column widths from each cell's
-// text, fit the grid into the containing block, then lay every row's cells
-// independently at the shared row origin. This deliberately leaves CSS's
-// elaborate table algorithm/border-collapse semantics for later, while giving
-// normal HTML data tables stable columns, wrapping, and visible cell bounds.
+// Basic table grid layout. Cells first occupy a coordinate grid, so a rowspan
+// reserves its columns in later rows before widths and positions are chosen.
+// This remains deliberately smaller than the CSS table algorithm, but gives
+// ordinary colspan/rowspan tables stable, non-overlapping cells.
 void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out) {
     std::vector<DomNode *> rows;
     std::function<void(DomNode *)> collect_rows = [&](DomNode *n) {
@@ -23566,55 +31535,93 @@ void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const Htm
     };
     collect_rows(table);
     if (rows.empty()) return;
+    struct TableCell { DomNode *node; size_t row, column, colspan, rowspan; };
+    const size_t row_count = rows.size();
+    std::vector<std::vector<bool>> occupied(row_count);
+    std::vector<TableCell> cells;
     size_t columns = 0;
-    for (DomNode *row : rows) {
-        size_t count = 0;
-        for (auto &cell : row->children) if (cell->type == DomNodeType::Element && (cell->tag == "td" || cell->tag == "th")) {
-            int span = 1; auto it = cell->attrs.find("colspan"); if (it != cell->attrs.end()) span = std::max(1, std::atoi(it->second.c_str()));
-            count += static_cast<size_t>(span);
+    auto span_attr = [](const DomNode *node, const char *name) -> size_t {
+        auto it = node->attrs.find(name);
+        return it == node->attrs.end() ? 1U : static_cast<size_t>(std::max(1, std::atoi(it->second.c_str())));
+    };
+    for (size_t r = 0; r < row_count; ++r) {
+        size_t column = 0;
+        for (auto &child : rows[r]->children) {
+            if (child->type != DomNodeType::Element || (child->tag != "td" && child->tag != "th")) continue;
+            while (column < occupied[r].size() && occupied[r][column]) ++column;
+            const size_t colspan = span_attr(child.get(), "colspan");
+            const size_t rowspan = std::min(span_attr(child.get(), "rowspan"), row_count - r);
+            const size_t end = column + colspan;
+            for (size_t rr = r; rr < r + rowspan; ++rr) {
+                if (occupied[rr].size() < end) occupied[rr].resize(end, false);
+                for (size_t cc = column; cc < end; ++cc) occupied[rr][cc] = true;
+            }
+            cells.push_back({child.get(), r, column, colspan, rowspan});
+            columns = std::max(columns, end);
+            column = end;
         }
-        columns = std::max(columns, count);
     }
     if (columns == 0) return;
     std::vector<float> widths(columns, 24.0f);
-    for (DomNode *row : rows) {
-        size_t column = 0;
-        for (auto &cell : row->children) {
-            if (cell->type != DomNodeType::Element || (cell->tag != "td" && cell->tag != "th")) continue;
-            int span = 1; auto it = cell->attrs.find("colspan"); if (it != cell->attrs.end()) span = std::max(1, std::atoi(it->second.c_str()));
-            std::string text; HtmlCollectRawText(cell.get(), text);
-            float natural = gfx::MeasureTextEx(g_font, text.c_str(), ctx.base_font_size * cell->style.font_scale, 0).x + 12.0f;
-            float each = natural / static_cast<float>(span);
-            for (int i = 0; i < span && column + static_cast<size_t>(i) < columns; ++i) widths[column + static_cast<size_t>(i)] = std::max(widths[column + static_cast<size_t>(i)], each);
-            column += static_cast<size_t>(span);
-        }
+    for (const TableCell &cell : cells) {
+        std::string text; HtmlCollectRawText(cell.node, text);
+        const float font_size = ctx.base_font_size * cell.node->style.font_scale;
+        const float natural = gfx::MeasureTextEx(HtmlFontFor(cell.node->style), text.c_str(), font_size, 0).x + 12.0f;
+        const float each = natural / static_cast<float>(cell.colspan);
+        for (size_t i = 0; i < cell.colspan; ++i) widths[cell.column + i] = std::max(widths[cell.column + i], each);
     }
     float available = std::max(1.0f, ctx.layout_width - content_x), total = 0.0f;
     for (float width : widths) total += width;
     if (total > available) for (float &width : widths) width *= available / total;
     else for (float &width : widths) width += (available - total) / static_cast<float>(columns);
-    for (DomNode *row : rows) {
-        float row_top = cursor_y, row_bottom = row_top;
-        float x = content_x; size_t column = 0;
-        for (auto &cell : row->children) {
-            if (cell->type != DomNodeType::Element || (cell->tag != "td" && cell->tag != "th")) continue;
-            int span = 1; auto it = cell->attrs.find("colspan"); if (it != cell->attrs.end()) span = std::max(1, std::atoi(it->second.c_str()));
-            float cell_w = 0.0f; for (int i = 0; i < span && column + static_cast<size_t>(i) < columns; ++i) cell_w += widths[column + static_cast<size_t>(i)];
-            HtmlLayoutCtx cell_ctx = ctx; cell_ctx.layout_width = x + cell_w;
-            float cell_y = row_top + 4.0f;
-            HtmlLayoutBlock(cell.get(), x + 6.0f, cell_y, cell_ctx, out);
-            row_bottom = std::max(row_bottom, cell_y + 4.0f);
-            x += cell_w; column += static_cast<size_t>(span);
-        }
-        float row_h = std::max(HtmlLineHeight(ctx.base_font_size) + 8.0f, row_bottom - row_top);
-        x = content_x;
-        for (size_t column_index = 0; column_index < columns; ++column_index) {
-            HtmlBorderRect grid{ x, row_top, widths[column_index], row_h, 1, 1, 1, 1,
-                                 ResolveHlGroup("Border"), ResolveHlGroup("Border"), ResolveHlGroup("Border"), ResolveHlGroup("Border") };
-            out.borders.push_back(grid); x += widths[column_index];
-        }
-        cursor_y = row_top + row_h;
+    // A row is as tall as its cells actually lay out, measured by laying
+    // them out -- not by re-deriving it. The estimate this replaces
+    // re-implemented word wrapping here using the *cell's* own font and
+    // size, which stops being right the moment a cell contains anything
+    // styled differently from the cell itself: a <code> span, a link, or
+    // simply a font-family or line-height inherited from the page. It then
+    // under-reserved the row, so the cell's border box came out shorter
+    // than the text inside it and the grid line was drawn straight through
+    // the row -- every entry in a key-reference table read as struck out.
+    //
+    // Measured against the built-in help pages, the old estimate was short
+    // by ~7px on a plain table and by ~20px (a full line) once the page
+    // carried a stylesheet, which is what made the artifact so
+    // inconsistent. Measuring costs one extra layout pass per cell, into a
+    // scratch HtmlLayout that is discarded; HtmlLayoutBlock only reads from
+    // its node and appends to the layout it is handed, so running it twice
+    // is safe and side-effect free.
+    std::vector<float> row_heights(row_count, HtmlLineHeight(ctx.base_font_size) + 8.0f);
+    for (const TableCell &cell : cells) {
+        float cell_w = 0.0f;
+        for (size_t i = 0; i < cell.colspan; ++i) cell_w += widths[cell.column + i];
+        // Same geometry as the real pass below: content is indented 6px and
+        // wraps at the cell's right edge, so the probe wraps identically.
+        HtmlLayoutCtx probe_ctx = ctx;
+        probe_ctx.layout_width = cell_w;
+        HtmlLayout scratch;
+        float probe_y = 0.0f;
+        HtmlLayoutBlock(cell.node, 6.0f, probe_y, probe_ctx, scratch);
+        const float wanted = probe_y + 8.0f;  // the 4px above the content, and as much below
+        float have = 0.0f;
+        for (size_t rr = cell.row; rr < cell.row + cell.rowspan; ++rr) have += row_heights[rr];
+        if (wanted > have) row_heights[cell.row + cell.rowspan - 1] += wanted - have;
     }
+    std::vector<float> row_tops(row_count);
+    float table_bottom = cursor_y;
+    for (size_t r = 0; r < row_count; ++r) { row_tops[r] = table_bottom; table_bottom += row_heights[r]; }
+    const gfx::Color border = ResolveHlGroup("Border");
+    for (const TableCell &cell : cells) {
+        float x = content_x, cell_w = 0.0f, cell_h = 0.0f;
+        for (size_t i = 0; i < cell.column; ++i) x += widths[i];
+        for (size_t i = 0; i < cell.colspan; ++i) cell_w += widths[cell.column + i];
+        for (size_t rr = cell.row; rr < cell.row + cell.rowspan; ++rr) cell_h += row_heights[rr];
+        HtmlLayoutCtx cell_ctx = ctx; cell_ctx.layout_width = x + cell_w;
+        float cell_y = row_tops[cell.row] + 4.0f;
+        HtmlLayoutBlock(cell.node, x + 6.0f, cell_y, cell_ctx, out);
+        out.borders.push_back({x, row_tops[cell.row], cell_w, cell_h, 1, 1, 1, 1, border, border, border, border});
+    }
+    cursor_y = table_bottom;
 }
 
 /**
@@ -23711,7 +31718,10 @@ HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
  * @param run The run to draw (text, font size, color, and style flags).
  */
 void DrawHtmlRun(float x, float y, const HtmlRun &run) {
-    bool sheared = run.italic;
+    const gfx::Font &font = run.font ? *run.font : g_font;
+    // Liberation has true weight/style faces; retain the old approximation
+    // only for the editor's single-face monospace fallback.
+    bool sheared = run.italic && !run.font;
     if (sheared) {
         gfx::PushMatrix();
         float baseline_y = y + run.font_size;
@@ -23727,14 +31737,14 @@ void DrawHtmlRun(float x, float y, const HtmlRun &run) {
         gfx::MultMatrix(shear);
         gfx::TranslateMatrix(-x, -baseline_y, 0);
     }
-    gfx::DrawTextEx(g_font, run.text.c_str(), gfx::Vector2{x, y}, run.font_size, 0, run.color);
+    gfx::DrawTextEx(font, run.text.c_str(), gfx::Vector2{x, y}, run.font_size, run.letter_spacing, run.color);
     // Same double-draw-offset-1px bold fake as org emphasis (g_font has no
     // real bold face) -- drawn inside the same shear so a bold+italic run
     // doesn't end up half-sheared.
-    if (run.bold) gfx::DrawTextEx(g_font, run.text.c_str(), gfx::Vector2{x + 1, y}, run.font_size, 0, run.color);
+    if (run.bold && !run.font) gfx::DrawTextEx(font, run.text.c_str(), gfx::Vector2{x + 1, y}, run.font_size, run.letter_spacing, run.color);
     if (sheared) gfx::PopMatrix();
     if (run.underline || run.strikethrough) {
-        int text_w = std::max(1, static_cast<int>(gfx::MeasureTextEx(g_font, run.text.c_str(), run.font_size, 0).x));
+        int text_w = std::max(1, static_cast<int>(gfx::MeasureTextEx(font, run.text.c_str(), run.font_size, run.letter_spacing).x));
         if (run.underline) {
             gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y + run.font_size + 2), text_w, 1, run.color);
         }
@@ -27541,6 +35551,108 @@ void DrawModel3DPane(const Pane &pane, Model3DSession &sess, float x, float y, f
     }
 }
 
+// The browser pane's omnibar: one chrome row across the top of an html
+// pane -- back / forward / reload buttons, then the URL field, with the
+// page's title right-aligned inside it. Idle, the field shows
+// HtmlSession::origin; in edit mode (HtmlSession::omnibar_active -- `o`,
+// Ctrl-L or a click, see Editor::HandleHtmlInput) it shows the text being
+// typed with a caret, tinted whole while the initial select-all is still
+// in effect (typing replaces it, like a real address bar). Everything
+// clickable registers through RegisterClickRegion like the rest of the
+// pane chrome and focuses this pane first, so a click works from another
+// pane. Returns the height it took, which DrawPane removes from the
+// page's own viewport.
+/**
+ * @brief Draws an html pane's omnibar and registers its click regions.
+ * @param pane The pane being drawn.
+ * @param sess The pane's html session (URL, history, omnibar edit state).
+ * @param x Left edge of the pane content.
+ * @param y Top edge of the pane content (below the pane header).
+ * @param w Pane content width.
+ * @param is_active Whether this pane has focus (the caret only blinks in the focused pane).
+ * @return The bar's height in pixels.
+ */
+float DrawHtmlOmnibar(const Pane &pane, const HtmlSession &sess, float x, float y, float w, bool is_active) {
+    const float font_size = MenuFontSize();
+    const float bar_h = static_cast<float>(LineHeight()) + 8.0f;
+    const int pane_id = pane.id;
+    const int buffer_id = pane.buffer_id;
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(bar_h), ResolveHlGroup("MenuBar"));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y + bar_h - 1.0f), static_cast<int>(w), 1, ResolveHlGroup("Border"));
+
+    const float text_y = y + (bar_h - font_size) * 0.5f;
+    float cx = x + 6.0f;
+    const bool can_back = sess.history_index > 0;
+    const bool can_forward = sess.history_index + 1 < sess.history.size();
+    struct Button {
+        const char *label;
+        bool enabled;
+        std::function<void()> action;
+    };
+    const Button buttons[] = {
+        {"<", can_back, [buffer_id] { g_editor.NavigateHtmlHistory(buffer_id, -1); }},
+        {">", can_forward, [buffer_id] { g_editor.NavigateHtmlHistory(buffer_id, 1); }},
+        {"R", true, [] { g_editor.RunCommand("MepBrowseReload"); }},
+    };
+    for (const Button &b : buttons) {
+        const float bw = font_size + 10.0f;
+        const gfx::Rectangle rect{cx, y + 3.0f, bw, bar_h - 7.0f};
+        const float label_w = MeasureUiText(b.label, font_size);
+        DrawUiText(b.label, gfx::Vector2{cx + (bw - label_w) * 0.5f, text_y}, font_size, ResolveHlGroup(b.enabled ? "Normal" : "Comment"));
+        if (b.enabled) {
+            std::function<void()> action = b.action;
+            RegisterClickRegion(rect, [pane_id, action] {
+                g_editor.FocusPaneById(pane_id);
+                action();
+            });
+        }
+        cx += bw + 2.0f;
+    }
+
+    // The URL field takes the rest of the row.
+    const gfx::Rectangle field{cx + 4.0f, y + 3.0f, std::max(40.0f, x + w - cx - 10.0f), bar_h - 7.0f};
+    gfx::DrawRectangleRec(field, ResolveHlGroup("NormalBg"));
+    gfx::DrawRectangleLinesEx(field, 1.0f, ResolveHlGroup(sess.omnibar_active ? "Accent" : "Border"));
+    const float inner_x = field.x + 6.0f;
+    const float inner_w = field.width - 12.0f;
+    gfx::BeginScissorMode(static_cast<int>(field.x + 1.0f), static_cast<int>(field.y), static_cast<int>(field.width - 2.0f), static_cast<int>(field.height));
+    if (sess.omnibar_active) {
+        const std::string &text = sess.omnibar_text;
+        const size_t caret = std::min(sess.omnibar_cursor, text.size());
+        const float caret_px = MeasureUiText(text.substr(0, caret), font_size);
+        // Keep the caret in view: slide the text left once it would pass the field's right edge.
+        const float shift = std::max(0.0f, caret_px - (inner_w - 4.0f));
+        if (sess.omnibar_select_all && !text.empty()) {
+            gfx::DrawRectangle(static_cast<int>(inner_x - 2.0f), static_cast<int>(field.y + 2.0f),
+                               static_cast<int>(std::min(inner_w + 4.0f, MeasureUiText(text, font_size) + 4.0f)),
+                               static_cast<int>(field.height - 4.0f), ResolveHlGroup("Visual"));
+        }
+        DrawUiText(text, gfx::Vector2{inner_x - shift, text_y}, font_size, ResolveHlGroup("Normal"));
+        if (is_active && std::fmod(gfx::GetTime(), 1.0) < 0.6) {
+            gfx::DrawRectangle(static_cast<int>(inner_x - shift + caret_px), static_cast<int>(field.y + 3.0f), 2,
+                               static_cast<int>(field.height - 6.0f), ResolveHlGroup("Accent"));
+        }
+    } else {
+        const std::string &title = sess.doc.title;
+        float title_w = 0.0f;
+        if (!title.empty()) {
+            title_w = std::min(inner_w * 0.45f, MeasureUiText(title, font_size));
+            DrawUiText(title, gfx::Vector2{field.x + field.width - 6.0f - title_w, text_y}, font_size, ResolveHlGroup("Comment"));
+        }
+        // The URL is clipped (its own scissor) so a long one never runs under the title.
+        gfx::EndScissorMode();
+        gfx::BeginScissorMode(static_cast<int>(field.x + 1.0f), static_cast<int>(field.y),
+                              static_cast<int>(std::max(10.0f, field.width - 2.0f - (title_w > 0.0f ? title_w + 16.0f : 0.0f))), static_cast<int>(field.height));
+        DrawUiText(sess.origin, gfx::Vector2{inner_x, text_y}, font_size, ResolveHlGroup("Normal"));
+    }
+    gfx::EndScissorMode();
+    RegisterClickRegion(field, [pane_id, buffer_id] {
+        g_editor.FocusPaneById(pane_id);
+        g_editor.BeginHtmlOmnibarEdit(buffer_id);
+    });
+    return bar_h;
+}
+
 /**
  * @brief Draws one pane's full contents: the header (single filename label or a multi-buffer
  * tab strip), then dispatches to the appropriate content renderer for the pane's buffer kind
@@ -27628,6 +35740,11 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
         const float cell_w = std::max(1.0f, MeasureUiText("M", font_size));
         g_editor.SetSidebarWrapCols(sidebar_id, static_cast<int>((w - 16.0f) / cell_w));
     }
+    // The bottom row is the footer hint (DrawSidebarFooter).
+    if (sb && content_h >= static_cast<float>(2 * line_h)) {
+        DrawSidebarFooter(*sb, x, w, content_y + content_h - 2.0f, line_h);
+        content_h -= static_cast<float>(line_h);
+    }
     std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sidebar_id);
     int visible_lines = std::max(1, static_cast<int>(content_h) / line_h);
     g_editor.UpdateScrollForSidebar(sidebar_id, visible_lines);
@@ -27646,12 +35763,42 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
             gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(ly) - 1, static_cast<int>(w) - 4, line_h, ResolveHlGroup("PickerSelected"));
         }
         gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
-        DrawUiText(lines[i].text, gfx::Vector2{x + 8, ly}, font_size, color);
+        DrawSidebarRow(lines[i], gfx::Vector2{x + 8, ly}, font_size, color, line_h, w - 16.0f);
         int line_index = static_cast<int>(i);
-        RegisterClickRegion(gfx::Rectangle{x, ly - 1, w, static_cast<float>(line_h)}, [pane_id, sidebar_id, line_index] {
+        const gfx::Rectangle row_rect{x, ly - 1, w, static_cast<float>(line_h)};
+        // Drag-out geometry (g_sidebar_pane_row_rects): arming a drag
+        // happens on mouse-down in UpdatePaneMouseInteraction, not in the
+        // click region below, which only ever sees a completed click.
+        g_sidebar_pane_row_rects.push_back({sidebar_id, line_index, pane_id, row_rect});
+        RegisterClickRegion(row_rect, [pane_id, sidebar_id, line_index] {
             g_editor.FocusPaneById(pane_id);
             g_editor.FocusSidebarPaneRow(sidebar_id, line_index);
-            g_editor.ActivateSidebarLine(sidebar_id, line_index);
+            if (!g_editor.SidebarActivatesOnDoubleClick(sidebar_id)) {
+                g_editor.ActivateSidebarLine(sidebar_id, line_index);
+                return;
+            }
+            // Opt-in double-click (SidebarInstance::activate_on_double_click):
+            // the same "compare against the previous click's own time and
+            // row" test the docked path runs in UpdatePaneMouseInteraction,
+            // sharing its g_last_sidebar_click_* state -- a given sidebar is
+            // either docked or pane-hosted, never both at once, so the two
+            // paths can't be mid-double-click on the same one at the same
+            // time. A single click has still moved the row cursor above,
+            // which is the whole point: it selects without firing.
+            const double now = gfx::GetTime();
+            const bool is_double = g_last_sidebar_click_id == sidebar_id && g_last_sidebar_click_row == line_index &&
+                                   (now - g_last_sidebar_click_time) < kDoubleClickThresholdSec;
+            if (is_double) {
+                g_editor.ActivateSidebarLine(sidebar_id, line_index);
+                // A third rapid click starts fresh, same as the docked path.
+                g_last_sidebar_click_time = -1.0;
+                g_last_sidebar_click_id = -1;
+                g_last_sidebar_click_row = -1;
+            } else {
+                g_last_sidebar_click_time = now;
+                g_last_sidebar_click_id = sidebar_id;
+                g_last_sidebar_click_row = line_index;
+            }
         });
     }
     gfx::EndScissorMode();
@@ -27664,6 +35811,56 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
     // zeroed out for a sidebar-pane buffer specifically so it can't shadow
     // the row regions above (see its own comment).
     RegisterClickRegion(gfx::Rectangle{x, y, w, h}, [pane_id] { g_editor.FocusPaneById(pane_id); });
+}
+
+// Jupyter notebook in-pane toolbar (a "within buffer menu"): a compact
+// strip of structural-action buttons below the pane header and above the
+// first cell, reserved from the top of the content area the same way the
+// office ribbon is. Buttons register through RegisterClickRegion like all
+// other pane chrome; the cell-insert ones focus the pane first (so
+// NotebookInsertCell, which acts on CurPane, targets this pane), while the
+// kernel/run actions take the buffer id explicitly and need no focus.
+void DrawNotebookToolbar(const Pane &pane, float x, float ty, float w, float th) {
+    const int buffer_id = pane.buffer_id;
+    const int pane_id = pane.id;
+    const float font_size = MenuFontSize();
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ty), static_cast<int>(w), static_cast<int>(th), ResolveHlGroup("MenuBar"));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ty + th - 1.0f), static_cast<int>(w), 1, ResolveHlGroup("Border"));
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+    const float bh = th - 8.0f;
+    const float by = ty + 4.0f;
+    struct TbBtn {
+        const char *label;
+        const char *color;
+        std::function<void()> action;
+    };
+    const std::vector<TbBtn> btns = {
+        {"+ Code", "Green", [pane_id] {
+             g_editor.FocusPaneById(pane_id);
+             g_editor.NotebookInsertCell(-1, /*below=*/true, NotebookCellType::Code);
+         }},
+        {"+ Markdown", "Purple", [pane_id] {
+             g_editor.FocusPaneById(pane_id);
+             g_editor.NotebookInsertCell(-1, /*below=*/true, NotebookCellType::Markdown);
+         }},
+        {"Run All", "Cyan", [buffer_id] { g_editor.NotebookRunAll(buffer_id); }},
+        {"Interrupt", "Yellow", [buffer_id] { g_editor.NotebookInterrupt(buffer_id); }},
+        {"Restart", "Red", [buffer_id] { g_editor.NotebookRestartKernel(buffer_id); }},
+        {"Clear", "Comment", [buffer_id] { g_editor.NotebookClearOutputs(buffer_id, -1); }},
+    };
+    float bx = x + 6.0f;
+    for (const TbBtn &b : btns) {
+        const float bw = MeasureUiText(b.label, font_size) + 14.0f;
+        if (bx + bw > x + w - 4.0f) break;   // too narrow: drop the overflow rather than clip
+        const gfx::Rectangle r{bx, by, bw, bh};
+        const bool hov = PointInRect(mouse, r);
+        gfx::DrawRectangleRounded(r, 0.3f, 4, gfx::Fade(ResolveHlGroup(hov ? "MenuHighlight" : "Comment"), hov ? 0.9f : 0.12f));
+        gfx::DrawRectangleRoundedLines(r, 0.3f, 4, gfx::Fade(ResolveHlGroup(b.color), 0.55f));
+        DrawUiText(b.label, gfx::Vector2{r.x + 7.0f, by + (bh - font_size) / 2.0f}, font_size,
+                   ResolveHlGroup(hov ? "Normal" : b.color));
+        RegisterClickRegion(r, b.action);
+        bx += bw + 6.0f;
+    }
 }
 
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active) {
@@ -27792,7 +35989,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // Focuses this pane, then runs/compiles its current file in
             // this tab's popup terminal.
             button(
-                run_label, run_w, "Green", "Run",
+                run_label, run_w, "Green", "Run (<Space>rr)",
                 [pane_id] {
                     g_editor.FocusPaneById(pane_id);
                     g_editor.RunCommand("lua mep.run_button_run()");
@@ -27808,7 +36005,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
         // Focuses this pane, then splits it vertically (side by side).
         button(
-            vsplit_label, vsplit_w, "Cyan", "Split vertically",
+            vsplit_label, vsplit_w, "Cyan", "Split vertically (Ctrl-W v / Alt+v)",
             [pane_id] {
                 g_editor.FocusPaneById(pane_id);
                 g_editor.RunCommand("vsplit");
@@ -27816,7 +36013,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             nullptr, control_font_size, control_label_y);
         // Focuses this pane, then splits it horizontally (stacked).
         button(
-            hsplit_label, hsplit_w, "Yellow", "Split horizontally",
+            hsplit_label, hsplit_w, "Yellow", "Split horizontally (Ctrl-W s / Alt+s)",
             [pane_id] {
                 g_editor.FocusPaneById(pane_id);
                 g_editor.RunCommand("split");
@@ -27826,7 +36023,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // pane, once empty) -- the buffer itself is left alone, see the
         // comment above control_font_size.
         button(
-            close_label, close_w, "Red", "Close pane",
+            close_label, close_w, "Red", "Close pane (Ctrl-W c / Alt+d)",
             [pane_id] {
                 g_editor.FocusPaneById(pane_id);
                 g_editor.PaneCloseBufferTab();
@@ -27983,6 +36180,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(label_y), 2, static_cast<int>(font_size),
                               ResolveHlGroup("Normal"));
             }
+        } else if (pdf_sess && pdf_sess->note_input_active) {
+            // Sticky-note text prompt (same header takeover as the '/'
+            // search input below).
+            std::string line = "note: " + pdf_sess->note_input;
+            gfx::DrawTextEx(g_font, line.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            // Caret at the insertion point (note_caret bytes into note_input),
+            // not pinned to the end -- so Left/Right/Home/End show where edits land.
+            size_t ncar = std::min(pdf_sess->note_caret, pdf_sess->note_input.size());
+            std::string upto = "note: " + pdf_sess->note_input.substr(0, ncar);
+            float cx = x + 6 + gfx::MeasureTextEx(g_font, upto.c_str(), font_size, 0).x;
+            gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(label_y), 2, static_cast<int>(font_size),
+                               ResolveHlGroup("Normal"));
         } else if (pdf_sess && pdf_sess->search_active) {
             // Takes over the header the same way Mode::Command's cmdline
             // takes over the bottom bar -- a blinking-cursor '/' input line
@@ -27996,21 +36205,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                               ResolveHlGroup("Normal"));
             }
         } else if (pdf_sess) {
-            std::string label = "PDF: " + buf.filename;
-            if (pdf_sess->doc) {
-                label += " (page " + std::to_string(pdf_sess->page + 1) + "/" +
-                         std::to_string(pdf_sess->doc->PageCount()) + ") " +
-                         std::to_string(static_cast<int>(std::lround(pdf_sess->zoom * 100.0f))) + "%" +
-                         (pdf_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [original, Ctrl-R]");
-                if (!pdf_sess->search_query.empty()) {
-                    label += pdf_sess->search_matches.empty()
-                                 ? "  /" + pdf_sess->search_query + " (no matches)"
-                                 : "  /" + pdf_sess->search_query + " (" +
-                                       std::to_string(pdf_sess->search_current + 1) + "/" +
-                                       std::to_string(pdf_sess->search_matches.size()) + ", N/P)";
-                }
+            // Just the filename, centered -- same as an ordinary text
+            // buffer's header (the full path is on the status line; page/
+            // zoom/search state moved there too, the status line's Ln/Col slot).
+            std::string label = buf.filename.empty() ? "[No Name]" : Basename(buf.filename);
+            // Annotate-mode indicator + active highlight colour (the mode
+            // chip on the status line says PDF-ANNOT; the key hints and
+            // colour only fit here).
+            if (g_editor.CurrentMode() == Mode::PdfAnnotate) {
+                label += std::string("  [ANNOTATE h/n/1-5/c ") +
+                         g_editor.PdfHighlightColorName(pdf_sess->active_color) + "]";
             }
-            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            float text_w = gfx::MeasureTextEx(g_font, label.c_str(), font_size, 0).x;
+            float text_x = x + std::max(0.0f, (w - text_w) / 2.0f);
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{text_x, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (office_sess) {
             // Just the filename -- no more "(para X/Y) Z%" (the Docs-style
             // status line below now carries page/word-count/zoom instead).
@@ -28085,6 +36293,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     float content_y = y + static_cast<float>(header_h);
     float content_h = h - static_cast<float>(header_h);
+
+    // Jupyter notebook toolbar: a within-pane button strip reserved from
+    // the top of the content area (offsetting content_y/content_h the same
+    // way the office ribbon does below), drawn BEFORE the catch-all focus
+    // click region below so that region -- now covering only the shrunken
+    // content area -- can't shadow the toolbar's own buttons (the exact
+    // first-match-wins hazard the office branch documents). Skipped on a
+    // pane too short to spare the room.
+    if (g_editor.IsNotebookBuffer(pane.buffer_id)) {
+        const float nb_toolbar_h = static_cast<float>(header_h) + 4.0f;
+        if (content_h > nb_toolbar_h + static_cast<float>(line_height)) {
+            DrawNotebookToolbar(pane, x, content_y, w, nb_toolbar_h);
+            content_y += nb_toolbar_h;
+            content_h -= nb_toolbar_h;
+        }
+    }
 
     // Click anywhere in the pane's own content area (below the header,
     // which already has its own focus-on-click handling above) to focus
@@ -28354,6 +36578,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
 
     if (html_sess) {
+        // The omnibar is pane chrome: it takes the top row, the page gets the rest.
+        const float omnibar_h = DrawHtmlOmnibar(pane, *html_sess, x, content_y, w, is_active);
+        content_y += omnibar_h;
+        content_h = std::max(0.0f, content_h - omnibar_h);
         g_editor.ResizeHtmlViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
         constexpr float kHtmlPad = 12.0f;
         HtmlLayoutCtx ctx{std::max(50.0f, w - kHtmlPad * 2.0f), g_font_size * html_sess->zoom, ResolveHlGroup("Normal")};
@@ -28362,10 +36590,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // curl-to-tempfile fetch -- has no useful "directory" of its own for
         // this, so its images just fall back to the bracketed placeholder;
         // see ResolveHtmlImagePath's own header).
-        ctx.base_dir = std::filesystem::path(html_sess->source).parent_path().string();
+        ctx.base_dir = urlutil::IsHttpUrl(html_sess->origin) ? html_sess->origin
+                                                             : std::filesystem::path(html_sess->source).parent_path().string();
         ctx.zoom = html_sess->zoom;
         // Media clocks tick with the frame, then the device mirrors the DOM.
         g_editor.AdvanceHtmlMedia(pane.buffer_id, static_cast<double>(gfx::GetFrameTime()));
+        // The page's own event loop turn for this frame (timers, rAF, promise jobs), before it is laid out.
+        g_editor.PumpHtmlScripts(pane.buffer_id);
         SyncHtmlMediaPlayback();
         HtmlLayout layout = LayoutHtmlDoc(html_sess->doc, ctx);
         // Layout depends on real font metrics (MeasureTextEx), so unlike
@@ -28594,6 +36825,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 float rw = gfx::MeasureTextEx(g_font, run.text.c_str(), run.font_size, 0).x;
                 expand_link_group(run.link_node, run.link_href, x + kHtmlPad + run.x, ry, rw, run.font_size);
             }
+            if (run.node) {
+                const float rw = gfx::MeasureTextEx(run.font ? *run.font : g_font, run.text.c_str(), run.font_size, 0).x;
+                g_html_click_rects.push_back({pane.id, pane.buffer_id, gfx::Rectangle{x + kHtmlPad + run.x, ry, rw, run.font_size * 1.2f}, run.node, run.link_href});
+                // The field that owns the keyboard shows a caret at the end of its text.
+                if (run.node == g_editor.HtmlFocusedField(pane.buffer_id) && std::fmod(gfx::GetTime(), 1.0) < 0.6) {
+                    const float caret_x = x + kHtmlPad + run.x + rw - gfx::MeasureTextEx(run.font ? *run.font : g_font, "]", run.font_size, 0).x;
+                    gfx::DrawRectangle(static_cast<int>(caret_x), static_cast<int>(ry), 2, static_cast<int>(run.font_size), ResolveHlGroup("Cursor"));
+                }
+            }
         }
         for (const HtmlImageRun &img : layout.images) {
             float ry = top + img.y;
@@ -28651,26 +36891,257 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         gfx::Color match_c = ResolveHlGroup("IncSearch");
         gfx::Color match_other = gfx::Color{match_c.r, match_c.g, match_c.b, 90};
         gfx::Color match_cur = gfx::Color{match_c.r, match_c.g, match_c.b, 190};
+        // Markup annotations (highlights + sticky notes). mep's RenderPage
+        // draws page CONTENT only, never annotations, so the viewer paints
+        // them itself as an overlay (device-pixel rects at
+        // rendered_scale -> screen via `* zoom`, exactly like the search
+        // highlights above). A sticky note under the cursor surfaces its
+        // text in a small popup drawn on top after the page stack.
+        gfx::Vector2 annot_mouse = gfx::GetMousePosition();
+        bool have_note_popup = false;
+        float note_popup_x = 0, note_popup_y = 0;
+        std::string note_popup_text;
+        // The annotation currently under the mouse (recorded for the active
+        // pane after the page stack) so annotate-mode note-edit/delete can
+        // target it. Filled by the annotation hit-tests below.
+        PdfSession::AnnotTarget hover_target;
+        auto set_hover = [&](const PdfAnnotDraw &ad) {
+            hover_target.valid = true;
+            hover_target.page = ad.page;
+            hover_target.from_file = ad.from_file;
+            hover_target.pending_index = ad.pending_index;
+            hover_target.src_obj = ad.src_obj;
+            hover_target.src_gen = ad.src_gen;
+            hover_target.kind = ad.kind;
+            hover_target.contents = ad.contents;
+        };
+        auto to255 = [](float f) { return static_cast<unsigned char>(std::clamp(f, 0.0f, 1.0f) * 255.0f + 0.5f); };
+        // Click-drag text selection: record each drawn page's screen rect so
+        // the mouse handler below (after the page stack) can map a cursor
+        // position back to a page + device-pixel offset. Selection fill uses
+        // the editor's Visual group.
+        struct DrawnPdfPage {
+            int idx;
+            gfx::Vector2 pos;
+            float w, h;
+        };
+        std::vector<DrawnPdfPage> drawn_pdf_pages;
+        gfx::Color pdf_sel_c = ResolveHlGroup("Visual");
+        pdf_sel_c.a = 110;
         /**
          * @brief Draws PDF page `idx` (if a raster for it is cached) at y position `top_y`,
          * along with its search-match highlight rectangles.
          * @param idx Page index to draw.
          * @param top_y Y position of the page's top edge.
-         * @return The page's on-screen height (zoom-scaled), or 0 if no raster is cached for it.
+         * @return The page's on-screen height (zoom-scaled) -- from the document's own page size, so the
+         *         stack keeps its layout while a page is still rendering in the background (not drawn yet).
          */
         auto draw_page = [&](int idx, float top_y) -> float {
+            // Same height Editor::PdfPageScreenHeightPx gives the scroll-rebase math.
+            const float page_h = static_cast<float>(pdf_sess->doc->PageHeightPt(idx) *
+                                                    static_cast<double>(pdf_sess->rendered_scale) *
+                                                    static_cast<double>(pdf_sess->zoom));
             auto rit = pdf_sess->rasters.find(idx);
-            if (rit == pdf_sess->rasters.end()) return 0.0f;
+            if (rit == pdf_sess->rasters.end() || rit->second.w <= 0 || rit->second.h <= 0) return page_h;
             const PdfSession::PageRaster &pr = rit->second;
             gfx::Texture2D tex = GetOrUpdatePdfPageTexture(pane.buffer_id, idx, pr, pdf_sess->theme_colors);
             gfx::Vector2 pos{x - static_cast<float>(pdf_sess->pan_x), top_y};
             gfx::DrawTextureEx(tex, pos, 0.0f, pdf_sess->zoom, gfx::White);
+            drawn_pdf_pages.push_back({idx, pos, static_cast<float>(pr.w) * pdf_sess->zoom,
+                                       static_cast<float>(pr.h) * pdf_sess->zoom});
+            // Live text selection on this page (drawn under annotations/links).
+            if (idx == pdf_sess->sel_page && !pdf_sess->sel_quads.empty() && pdf_sess->doc) {
+                for (const PdfAnnotRect &sr :
+                     pdf_sess->doc->QuadsToDeviceRects(idx, pdf_sess->rendered_scale, pdf_sess->sel_quads)) {
+                    gfx::DrawRectangle(static_cast<int>(pos.x + sr.x0 * pdf_sess->zoom),
+                                       static_cast<int>(pos.y + sr.y0 * pdf_sess->zoom),
+                                       static_cast<int>((sr.x1 - sr.x0) * pdf_sess->zoom),
+                                       static_cast<int>((sr.y1 - sr.y0) * pdf_sess->zoom), pdf_sel_c);
+                }
+            }
+            // Vim caret (annotate mode): a thin vertical bar at the caret glyph.
+            if (g_editor.CurrentMode() == Mode::PdfAnnotate && idx == pdf_sess->caret_page &&
+                pdf_sess->caret_glyph >= 0 && pdf_sess->caret_glyph < static_cast<int>(pdf_sess->caret_glyphs.size()) &&
+                pdf_sess->doc) {
+                const PdfGlyphBox &cg = pdf_sess->caret_glyphs[static_cast<size_t>(pdf_sess->caret_glyph)];
+                pdfannots::Quad cq;
+                cq.x1 = cg.left;  cq.y1 = cg.top;    cq.x2 = cg.right; cq.y2 = cg.top;
+                cq.x3 = cg.left;  cq.y3 = cg.bottom; cq.x4 = cg.right; cq.y4 = cg.bottom;
+                auto cdr = pdf_sess->doc->QuadsToDeviceRects(idx, pdf_sess->rendered_scale, {cq});
+                if (!cdr.empty()) {
+                    int cx0 = static_cast<int>(pos.x + cdr[0].x0 * pdf_sess->zoom);
+                    int cy0 = static_cast<int>(pos.y + cdr[0].y0 * pdf_sess->zoom);
+                    int chh = static_cast<int>((cdr[0].y1 - cdr[0].y0) * pdf_sess->zoom);
+                    gfx::DrawRectangle(cx0, cy0, std::max(2, static_cast<int>(font_size * 0.12f)), chh,
+                                       ResolveHlGroup("Cursor"));
+                }
+            }
             for (const PdfHighlightRect &hr : pr.highlights) {
                 bool current = hr.match_index == pdf_sess->search_current;
                 gfx::DrawRectangle(static_cast<int>(pos.x + hr.x0 * pdf_sess->zoom),
                               static_cast<int>(pos.y + hr.y0 * pdf_sess->zoom),
                               static_cast<int>((hr.x1 - hr.x0) * pdf_sess->zoom),
                               static_cast<int>((hr.y1 - hr.y0) * pdf_sess->zoom), current ? match_cur : match_other);
+            }
+            // Markup annotations: highlights as translucent colour fills,
+            // notes (and highlights that carry a comment) as a small yellow
+            // marker + a margin sticky-note box (text or rendered LaTeX),
+            // with the note text popping up on hover. Session-created
+            // (unsaved) annotations get a solid outline.
+            float page_right = pos.x + static_cast<float>(pr.w) * pdf_sess->zoom;
+            // Draws the marker at (mx,my) plus this annotation's note text as
+            // a margin box (or hover popup when there's no margin room).
+            auto emit_note = [&](const PdfAnnotDraw &ad, float mx, float my) {
+                // Marker/note sizes scale with the UI font so annotations are
+                // legible at the user's chosen size.
+                const float ms = std::max(14.0f, font_size + 4.0f);
+                gfx::Color outline{to255(ad.r * 0.6f), to255(ad.g * 0.6f), to255(ad.b * 0.6f), 230};
+                gfx::Color marker{to255(ad.r), to255(ad.g), to255(ad.b), 235};
+                gfx::Color conn_line{to255(ad.r), to255(ad.g), to255(ad.b), 90};
+                gfx::DrawRectangle(static_cast<int>(mx), static_cast<int>(my), static_cast<int>(ms),
+                                   static_cast<int>(ms), marker);
+                gfx::DrawRectangleLines(static_cast<int>(mx), static_cast<int>(my), static_cast<int>(ms),
+                                        static_cast<int>(ms), outline);
+                // Hovering the marker targets this annotation (for note
+                // edit/delete) and pops up its text.
+                if (annot_mouse.x >= mx && annot_mouse.x <= mx + ms && annot_mouse.y >= my &&
+                    annot_mouse.y <= my + ms) {
+                    set_hover(ad);
+                    if (!ad.contents.empty()) {
+                        have_note_popup = true;
+                        note_popup_x = mx + ms + 4;
+                        note_popup_y = my;
+                        note_popup_text = ad.contents;
+                    }
+                }
+                    // Show the note text as a little sticky note in the page's
+                    // right margin (if there's room), connected to the anchor;
+                    // otherwise fall back to a hover popup.
+                    float avail = (x + w) - page_right - 12.0f;
+                    if (!ad.contents.empty() && avail >= 130.0f) {
+                        const float nfs = std::max(13.0f, font_size), npad = 6.0f, nlh = nfs + 3.0f;
+                        float boxw = std::min(avail, std::max(240.0f, font_size * 16.0f));
+                        // A note containing LaTeX ($...$) renders via the async
+                        // org-latex tex->PNG pipeline (kBuiltinPdfAnnot's
+                        // mep_pdf_note_latex); once the PNG is ready it's shown
+                        // as an image instead of the raw text. While rendering,
+                        // the raw text (with the $-delimiters) shows as a
+                        // placeholder.
+                        bool drew_math = false;
+                        if (ad.contents.find('$') != std::string::npos) {
+                            std::string key = "pdfnote:" + std::to_string(std::hash<std::string>{}(ad.contents));
+                            if (!g_editor.PdfNoteLatexRequested(key)) {
+                                g_editor.Lua()->CallGlobal2Strings("mep_pdf_note_latex", key, ad.contents);
+                                g_editor.SetPdfNoteLatexPng(key, "");
+                            }
+                            std::string png = g_editor.PdfNoteLatexPng(key);
+                            const gfx::Texture2D *mt = png.empty() ? nullptr : GetOrLoadOrgLatexTexture(png);
+                            if (mt && mt->width > 0) {
+                                float scale = std::min((boxw - 2 * npad) / static_cast<float>(mt->width), 1.5f);
+                                float bw = static_cast<float>(mt->width) * scale + 2 * npad;
+                                float bh = static_cast<float>(mt->height) * scale + 2 * npad;
+                                float bx = page_right + 10.0f;
+                                float by = std::clamp(my - nlh, content_y, content_y + content_h - bh);
+                                gfx::DrawLineEx(gfx::Vector2{mx + ms, my + ms / 2}, gfx::Vector2{bx, by + npad}, 1.5f,
+                                                conn_line);
+                                gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(by), static_cast<int>(bw),
+                                                   static_cast<int>(bh), ResolveHlGroup("FloatBg"));
+                                gfx::DrawRectangleLines(static_cast<int>(bx), static_cast<int>(by),
+                                                        static_cast<int>(bw), static_cast<int>(bh), outline);
+                                gfx::DrawTextureEx(*mt, gfx::Vector2{bx + npad, by + npad}, 0.0f, scale, gfx::White);
+                                drew_math = true;
+                            }
+                        }
+                        if (!drew_math) {
+                        std::vector<std::string> lines;
+                        {
+                            std::istringstream iss(ad.contents);
+                            std::string word, cur;
+                            auto width = [&](const std::string &s) {
+                                return gfx::MeasureTextEx(g_font, s.c_str(), nfs, 0).x;
+                            };
+                            while (iss >> word) {
+                                std::string trial = cur.empty() ? word : cur + " " + word;
+                                if (width(trial) > boxw - 2 * npad && !cur.empty()) {
+                                    lines.push_back(cur);
+                                    cur = word;
+                                } else {
+                                    cur = trial;
+                                }
+                            }
+                            if (!cur.empty()) lines.push_back(cur);
+                            if (lines.empty()) lines.push_back(ad.contents);
+                        }
+                        bool truncated = false;
+                        const size_t kMaxLines = 8;
+                        if (lines.size() > kMaxLines) {
+                            lines.resize(kMaxLines);
+                            truncated = true;
+                        }
+                        float boxh = static_cast<float>(lines.size()) * nlh + 2 * npad;
+                        float boxx = page_right + 10.0f;
+                        float boxy = std::clamp(my - nlh, content_y, content_y + content_h - boxh);
+                        gfx::DrawLineEx(gfx::Vector2{mx + ms, my + ms / 2}, gfx::Vector2{boxx, boxy + npad}, 1.5f,
+                                        conn_line);
+                        // Light pastel of the note colour, with dark text.
+                        gfx::Color notebg{to255(ad.r * 0.4f + 0.6f), to255(ad.g * 0.4f + 0.6f),
+                                          to255(ad.b * 0.4f + 0.6f), 240};
+                        gfx::DrawRectangle(static_cast<int>(boxx), static_cast<int>(boxy), static_cast<int>(boxw),
+                                           static_cast<int>(boxh), notebg);
+                        gfx::DrawRectangleLines(static_cast<int>(boxx), static_cast<int>(boxy), static_cast<int>(boxw),
+                                                static_cast<int>(boxh), outline);
+                        gfx::Color txt{40, 40, 40, 255};
+                        for (size_t li = 0; li < lines.size(); ++li) {
+                            std::string ln = lines[li];
+                            if (truncated && li + 1 == lines.size()) ln += " ...";
+                            gfx::DrawTextEx(g_font, ln.c_str(),
+                                            gfx::Vector2{boxx + npad, boxy + npad + static_cast<float>(li) * nlh}, nfs,
+                                            0, txt);
+                        }
+                        }  // if (!drew_math)
+                    } else if (!ad.contents.empty() && annot_mouse.x >= mx && annot_mouse.x <= mx + ms &&
+                               annot_mouse.y >= my && annot_mouse.y <= my + ms) {
+                        have_note_popup = true;
+                        note_popup_x = mx + ms + 4;
+                        note_popup_y = my;
+                        note_popup_text = ad.contents;
+                    }
+            };  // emit_note
+
+            for (const PdfAnnotDraw &ad : pr.annots) {
+                gfx::Color fill{to255(ad.r), to255(ad.g), to255(ad.b), 55};
+                gfx::Color outline{to255(ad.r * 0.6f), to255(ad.g * 0.6f), to255(ad.b * 0.6f), 230};
+                if (ad.kind == 0) {  // highlight fill (+ note if it has a comment)
+                    bool hovering = false;
+                    for (const PdfAnnotRect &rr : ad.rects) {
+                        float rx = pos.x + rr.x0 * pdf_sess->zoom, ry = pos.y + rr.y0 * pdf_sess->zoom;
+                        float rw = (rr.x1 - rr.x0) * pdf_sess->zoom, rh = (rr.y1 - rr.y0) * pdf_sess->zoom;
+                        gfx::DrawRectangle(static_cast<int>(rx), static_cast<int>(ry), static_cast<int>(rw),
+                                           static_cast<int>(rh), fill);
+                        if (!ad.from_file) gfx::DrawRectangleLines(static_cast<int>(rx), static_cast<int>(ry),
+                                                                   static_cast<int>(rw), static_cast<int>(rh), outline);
+                        if (annot_mouse.x >= rx && annot_mouse.x <= rx + rw && annot_mouse.y >= ry &&
+                            annot_mouse.y <= ry + rh)
+                            hovering = true;
+                    }
+                    // Hovering a highlight targets it (attach/edit note, delete)
+                    // even when it has no note yet.
+                    if (hovering) set_hover(ad);
+                    if (!ad.contents.empty()) {
+                        // Yellow "has-comment" marker at the highlight's
+                        // top-right + its note in the margin; hovering the
+                        // highlight itself also pops the note up.
+                        emit_note(ad, pos.x + ad.bx1 * pdf_sess->zoom, pos.y + ad.by0 * pdf_sess->zoom);
+                        if (hovering) {
+                            have_note_popup = true;
+                            note_popup_x = annot_mouse.x + 12;
+                            note_popup_y = annot_mouse.y + 12;
+                            note_popup_text = ad.contents;
+                        }
+                    }
+                } else {  // /Text sticky note
+                    emit_note(ad, pos.x + ad.bx0 * pdf_sess->zoom, pos.y + ad.by0 * pdf_sess->zoom);
+                }
             }
             // Hint-system link targets (HINT_SYSTEM.md) -- pr.links is
             // already device-pixel space at pdf_sess->rendered_scale
@@ -28686,17 +37157,74 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 g_link_hint_rects.push_back(
                     {pane.id, pane.buffer_id, gfx::Rectangle{lx0, ly0, lx1 - lx0, ly1 - ly0}, true, link.target_page, link.uri});
             }
-            return static_cast<float>(pr.h) * pdf_sess->zoom;
+            return page_h;
         };
         float anchor_h = draw_page(pdf_sess->page, anchor_y);
         if (pdf_sess->page > 0) {
-            auto rit = pdf_sess->rasters.find(pdf_sess->page - 1);
-            if (rit != pdf_sess->rasters.end()) {
-                float prev_h = static_cast<float>(rit->second.h) * pdf_sess->zoom;
-                draw_page(pdf_sess->page - 1, anchor_y - kPdfPageGapPx - prev_h);
-            }
+            float prev_h = static_cast<float>(pdf_sess->doc->PageHeightPt(pdf_sess->page - 1) *
+                                              static_cast<double>(pdf_sess->rendered_scale) *
+                                              static_cast<double>(pdf_sess->zoom));
+            draw_page(pdf_sess->page - 1, anchor_y - kPdfPageGapPx - prev_h);
         }
         draw_page(pdf_sess->page + 1, anchor_y + anchor_h + kPdfPageGapPx);
+
+        // Click-drag text selection: map the cursor to a drawn page + its
+        // device-pixel offset (at rendered_scale, zoom-invariant) and drive
+        // the session selection. A press starts a fresh selection, a held
+        // drag extends it, release ends the drag (the selection persists for
+        // :pdfhighlight to consume). Only the active pane reacts, and only
+        // while the cursor is inside its content band.
+        if (is_active) {
+            PdfSession *sel = g_editor.GetPdfMutable(pane.buffer_id);
+            if (sel) sel->hover_annot = hover_target;  // for annotate-mode note-edit/delete targeting
+            gfx::Vector2 mp = annot_mouse;
+            bool in_pane = mp.x >= x && mp.x <= x + w && mp.y >= content_y && mp.y <= content_y + content_h;
+            int over = -1;
+            gfx::Vector2 opos{};
+            for (const DrawnPdfPage &dp : drawn_pdf_pages) {
+                if (mp.x >= dp.pos.x && mp.x <= dp.pos.x + dp.w && mp.y >= dp.pos.y && mp.y <= dp.pos.y + dp.h) {
+                    over = dp.idx;
+                    opos = dp.pos;
+                    break;
+                }
+            }
+            if (sel && in_pane && over >= 0 && sel->zoom > 0) {
+                double ddx = static_cast<double>((mp.x - opos.x) / sel->zoom);
+                double ddy = static_cast<double>((mp.y - opos.y) / sel->zoom);
+                if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
+                    sel->selecting = true;
+                    sel->sel_page = over;
+                    sel->sel_anchor_dx = ddx;
+                    sel->sel_anchor_dy = ddy;
+                    sel->sel_quads.clear();
+                    // In annotate mode a click also places the keyboard caret.
+                    if (g_editor.CurrentMode() == Mode::PdfAnnotate)
+                        g_editor.PdfCaretPlaceAtDevice(pane.buffer_id, over, ddx, ddy);
+                } else if (sel->selecting && gfx::IsMouseButtonDown(gfx::MouseButton::Left) && sel->sel_page == over &&
+                           sel->doc) {
+                    sel->sel_quads = sel->doc->SelectionQuads(over, sel->rendered_scale, sel->sel_anchor_dx,
+                                                              sel->sel_anchor_dy, ddx, ddy);
+                }
+            }
+            if (sel && gfx::IsMouseButtonReleased(gfx::MouseButton::Left)) sel->selecting = false;
+        }
+
+        // Sticky-note contents popup (drawn on top of the page stack, still
+        // inside the pane scissor). Wraps nothing -- notes are short; a long
+        // one is clipped by the pane edge.
+        if (have_note_popup) {
+            float fs = std::max(14.0f, font_size);
+            float tw = DrawUiText(note_popup_text, gfx::Vector2{0, 0}, fs, gfx::Blank, /*measure_only=*/true);
+            float pad = 6.0f;
+            float bw = tw + pad * 2, bh = fs + pad * 2;
+            float bx = std::min(note_popup_x, x + w - bw - 2);
+            float by = std::min(note_popup_y, y + h - bh - 2);
+            gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(by), static_cast<int>(bw),
+                               static_cast<int>(bh), ResolveHlGroup("FloatBg"));
+            gfx::DrawRectangleLines(static_cast<int>(bx), static_cast<int>(by), static_cast<int>(bw),
+                                    static_cast<int>(bh), ResolveHlGroup("FloatBorder"));
+            DrawUiText(note_popup_text, gfx::Vector2{bx + pad, by + pad}, fs, ResolveHlGroup("Normal"));
+        }
         gfx::EndScissorMode();
 
         DrawPaneBorder(x, y, w, h, is_active);
@@ -30047,6 +38575,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
 
     int visible_lines = std::max(1, static_cast<int>(content_h / static_cast<float>(line_height)));
+    // Buffer::footer_hint takes the bottom row away from the text (drawn
+    // after the rows below), so the cursor can never scroll under it.
+    const bool draw_footer = !buf.footer_hint.empty() && visible_lines > 1;
+    if (draw_footer) visible_lines--;
 
     // Sign column: one character wide, *always* reserved (unlike
     // number_w below) for git/LSP-diagnostic/DAP-breakpoint/todo signs
@@ -30102,6 +38634,82 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                       static_cast<int>(content_h));
 
+    // Scope guides are derived from the buffer rather than its syntax
+    // decorations, so they work in every text mode (including a filetype
+    // which has no tree-sitter query).  They are painted with row
+    // backgrounds, before text/selection, and their x position stays at
+    // the closing delimiter's column for the full multi-line scope.
+    const std::vector<ScopeGuide> scope_guides = FindScopeGuides(buf.lines, LspFiletype(buf.filename));
+
+    // Jupyter notebook cell cards: a rounded box behind each cell so code
+    // and markdown blocks read as distinct blocks (markdown tinted apart
+    // from code, and the cursor's cell accented). Fills are drawn here,
+    // under the row loop's text; the matching borders are stroked in a
+    // post-pass just before EndScissorMode so they stay crisp over the
+    // per-row backgrounds. Geometry is a prefix sum of each row's visual
+    // slots (soft-wrap rows + a code cell's trailing output block), so a
+    // cell scrolled partly off the top still gets a correctly placed card
+    // (the scissor clips whatever overflows the content area).
+    struct NbCellBox {
+        gfx::Rectangle rect;
+        NotebookCellType type;
+        bool active;
+    };
+    std::vector<NbCellBox> nb_cell_boxes;
+    if (nb_sess) {
+        const int nb_rows = buf.LineCount();
+        std::vector<int> slot_prefix(static_cast<size_t>(nb_rows) + 1, 0);
+        for (int r = 0; r < nb_rows; r++) {
+            int slots = 1;
+            if (wrap_cols > 0) {
+                int len = static_cast<int>(buf.lines[static_cast<size_t>(r)].size());
+                slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
+            }
+            slots += g_editor.NotebookTrailingSlots(pane.buffer_id, r);
+            slot_prefix[static_cast<size_t>(r) + 1] = slot_prefix[static_cast<size_t>(r)] + slots;
+        }
+        const int scroll_clamped = std::clamp(pane.scroll_row, 0, nb_rows);
+        auto nb_screen_top = [&](int r) -> float {
+            r = std::clamp(r, 0, nb_rows);
+            return content_y + static_cast<float>(slot_prefix[static_cast<size_t>(r)] - slot_prefix[static_cast<size_t>(scroll_clamped)]) *
+                                   static_cast<float>(line_height);
+        };
+        const int nb_cursor_cell = is_active ? NotebookSpanAtRow(nb_sess->spans, pane.cursor.row) : -1;
+        const int nspans = static_cast<int>(nb_sess->spans.size());
+        for (int i = 0; i < nspans; i++) {
+            const NotebookCellSpan &sp = nb_sess->spans[static_cast<size_t>(i)];
+            const int mrow = sp.marker_row >= 0 ? sp.marker_row : sp.first_row;
+            int next_mrow = nb_rows;
+            if (i + 1 < nspans) {
+                const NotebookCellSpan &nx = nb_sess->spans[static_cast<size_t>(i + 1)];
+                next_mrow = nx.marker_row >= 0 ? nx.marker_row : nx.first_row;
+            }
+            const float top = nb_screen_top(mrow) + 2.0f;
+            // End the card short of the next marker so the blank separator
+            // line between cells becomes a visible gutter between cards,
+            // rather than the cards butting together into one striped slab.
+            float bottom = nb_screen_top(next_mrow) - (static_cast<float>(line_height) * 0.5f + 4.0f);
+            if (bottom < top + static_cast<float>(line_height)) bottom = top + static_cast<float>(line_height);
+            if (bottom < content_y || top > content_y + content_h) continue;   // fully off-screen
+            // Left edge sits just right of the line-number gutter (keyed off
+            // text_x) so the card doesn't bleed over the numbers; clamped so
+            // it can't cross to the right of the text either.
+            const float nb_box_left = std::min(text_x + g_char_width * 2.0f, std::max(x + 3.0f, text_x - g_char_width * 0.5f));
+            // Leave the pane's normal horizontal breathing room plus four
+            // pixels on the right, so the outline is clearly distinct from
+            // the pane border.
+            const float nb_box_right = x + w - static_cast<float>(kMarginX + 4);
+            const gfx::Rectangle box{nb_box_left, top, nb_box_right - nb_box_left, bottom - top};
+            gfx::Color fill;
+            if (sp.type == NotebookCellType::Markdown) fill = gfx::Fade(ResolveHlGroup("Purple"), 0.10f);
+            else if (sp.type == NotebookCellType::Code) fill = gfx::Fade(ResolveHlGroup("Comment"), 0.07f);
+            else fill = gfx::Fade(ResolveHlGroup("Comment"), 0.04f);
+            const float rr = std::min(1.0f, 16.0f / std::max(1.0f, std::min(box.width, box.height)));
+            gfx::DrawRectangleRounded(box, rr, 5, fill);
+            nb_cell_boxes.push_back({box, sp.type, i == nb_cursor_cell});
+        }
+    }
+
     bool has_selection = is_active && g_editor.HasVisualSelection();
     bool linewise_selection = g_editor.CurrentMode() == Mode::VisualLine;
     bool block_selection = g_editor.CurrentMode() == Mode::VisualBlock;
@@ -30111,6 +38719,186 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         g_editor.VisualBlockRange(block_top, block_bottom, block_left, block_right);
     } else if (has_selection) {
         g_editor.VisualRange(sel_start, sel_end);
+    }
+
+    // Org block cards (<leader>otb / Editor::OrgBlockCardsVisible, on by
+    // default): every `#+begin_X ... #+end_X` block draws as a rounded
+    // card -- a tinted background, an outline in the theme's accent for a
+    // `src` code chunk (muted for example/quote/export/...), and its
+    // header concealed behind a rendered title bar carrying the block's
+    // title, language and header args. The raw `#+begin_src python
+    // :tangle yes` line comes back the instant the cursor enters it (or a
+    // Visual selection covers it), so editing header args works exactly
+    // as it did -- the rendering is only what you *read* when you aren't
+    // editing it, org-modern's own bargain.
+    //
+    // Fills are drawn here, under the row loop's text; the title bar and
+    // the outline are drawn in a post-pass just before EndScissorMode --
+    // the bar has to paint *over* the raw header text it stands in for,
+    // which is the same cover-then-draw a virt_overlay decoration does
+    // (see the decoration loop below), just with several differently
+    // colored pieces instead of one run of text.
+    struct OrgCardBox {
+        gfx::Rectangle rect;
+        gfx::Rectangle header;  // the meta/`#+begin_` band the title bar replaces
+        gfx::Rectangle footer;  // the `#+end_` row, blanked to the card's floor
+        bool conceal_header = false;
+        bool conceal_footer = false;
+        bool active = false;  // the cursor is somewhere inside this block
+        bool is_src = false;
+        const OrgBlockCard *card = nullptr;
+    };
+    std::vector<OrgCardBox> org_card_boxes;
+    if (g_editor.OrgBlockCardsVisible() && LspFiletype(buf.filename) == "org") {
+        // Row -> its first visual slot, and how many slots it claims,
+        // walked exactly the way the draw loop below walks (a closed fold
+        // collapses to one slot, an org image/LaTeX row claims its own
+        // count, a soft-wrapped row claims one per visual piece) so a
+        // card's edges land on the rows they actually belong to.
+        std::unordered_map<int, int> slot_start, slot_count;
+        {
+            int vslot = 0;
+            for (int r = pane.scroll_row; r < buf.LineCount() && vslot < visible_lines;) {
+                const Fold *f = nullptr;
+                for (const Fold &fold : buf.folds) {
+                    if (fold.closed && fold.start_row == r && (!f || fold.end_row > f->end_row)) f = &fold;
+                }
+                slot_start[r] = vslot;
+                auto latex_it = buf.org_latex_rows.find(r);
+                int slots = 1;
+                int next = r + 1;
+                if (f) {
+                    next = f->end_row + 1;
+                } else if (g_editor.OrgImagesVisible() && buf.org_image_rows.count(r) != 0) {
+                    slots = kOrgInlineImageSlots;
+                } else if (g_editor.OrgLatexVisible() && latex_it != buf.org_latex_rows.end()) {
+                    slots = latex_it->second.slots;
+                    next = latex_it->second.end_row + 1;
+                } else {
+                    if (wrap_cols > 0) {
+                        int len = static_cast<int>(buf.lines[static_cast<size_t>(r)].size());
+                        slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
+                    }
+                    slots += nb_sess ? g_editor.NotebookTrailingSlots(pane.buffer_id, r) : 0;
+                }
+                slot_count[r] = slots;
+                vslot += slots;
+                r = next;
+            }
+        }
+        // A Visual selection reveals the header the same way the cursor
+        // does: a selection you can see the ends of but not the middle of
+        // would be its own small mystery.
+        int sel_lo = -1, sel_hi = -1;
+        if (block_selection) {
+            sel_lo = block_top;
+            sel_hi = block_bottom;
+        } else if (has_selection) {
+            sel_lo = sel_start.row;
+            sel_hi = sel_end.row;
+        }
+        // Same horizontal placement as a notebook cell card: just right of
+        // the line-number gutter, and short of the pane border on the right.
+        const float card_left = std::min(text_x + g_char_width * 2.0f, std::max(x + 3.0f, text_x - g_char_width * 0.5f));
+        const float card_right = x + w - static_cast<float>(kMarginX + 4);
+        for (const OrgBlockCard &card : g_editor.OrgBlockCards(pane.buffer_id)) {
+            // An unterminated block (still being typed) runs to the end of
+            // the buffer rather than not drawing at all.
+            const int last_row = card.end_row >= 0 ? card.end_row : buf.LineCount() - 1;
+            if (last_row < pane.scroll_row) continue;
+            // A closed fold anywhere across the block collapses rows this
+            // geometry assumes are on screen -- and its summary line is
+            // the one thing the user asked to see in their place. An org
+            // image or LaTeX row inside the block renders a texture this
+            // would paint over. Both cases leave the block as plain text.
+            bool skip = false;
+            for (const Fold &fold : buf.folds) {
+                if (fold.closed && fold.start_row <= last_row && fold.end_row >= card.meta_row) {
+                    skip = true;
+                    break;
+                }
+            }
+            if (!skip && (g_editor.OrgImagesVisible() || g_editor.OrgLatexVisible())) {
+                for (int r = card.meta_row; r <= last_row && !skip; r++) {
+                    if (g_editor.OrgImagesVisible() && buf.org_image_rows.count(r) != 0) skip = true;
+                    if (g_editor.OrgLatexVisible() && buf.org_latex_rows.count(r) != 0) skip = true;
+                }
+            }
+            if (skip) continue;
+            /**
+             * @brief Looks up the y of a row's top edge within this pane's visible slots.
+             * @param r The buffer row.
+             * @param out Set to the row's top y when it is on screen.
+             * @return True if the row is within the walked (visible) range.
+             */
+            auto row_top = [&](int r, float *out) {
+                auto it = slot_start.find(r);
+                if (it == slot_start.end()) return false;
+                *out = content_y + static_cast<float>(it->second * line_height);
+                return true;
+            };
+            /**
+             * @brief Looks up the y just past a row's bottom edge within this pane's visible slots.
+             * @param r The buffer row.
+             * @param out Set to the row's bottom y when it is on screen.
+             * @return True if the row is within the walked (visible) range.
+             */
+            auto row_bottom = [&](int r, float *out) {
+                auto it = slot_start.find(r);
+                if (it == slot_start.end()) return false;
+                auto cit = slot_count.find(r);
+                const int slots = cit == slot_count.end() ? 1 : cit->second;
+                *out = content_y + static_cast<float>((it->second + slots) * line_height);
+                return true;
+            };
+            float top = 0.0f;
+            if (!row_top(card.meta_row, &top)) {
+                // Not in the walked range: either it starts above the
+                // viewport (the card continues past the top edge, drawn
+                // from just off-screen so the scissor clips its corner
+                // away) or the whole block is below it.
+                if (card.meta_row < pane.scroll_row) top = content_y - static_cast<float>(line_height);
+                else continue;
+            }
+            float bottom = 0.0f;
+            if (!row_bottom(last_row, &bottom)) bottom = content_y + content_h + static_cast<float>(line_height);
+            top += 1.0f;
+            bottom -= 1.0f;
+            if (bottom <= top + 2.0f) continue;
+            OrgCardBox box;
+            box.card = &card;
+            box.is_src = card.is_src;
+            box.rect = gfx::Rectangle{card_left, top, card_right - card_left, bottom - top};
+            box.active = is_active && pane.cursor.row >= card.meta_row && pane.cursor.row <= last_row;
+            // Keyed off the card's own top rather than the meta row's,
+            // so a block whose `#+NAME:` has scrolled off the top edge
+            // still hides the `#+begin_` line under its title bar.
+            float header_bottom = 0.0f;
+            if (row_bottom(card.begin_row, &header_bottom)) {
+                const bool cursor_in_header = is_active && pane.cursor.row >= card.meta_row && pane.cursor.row <= card.begin_row;
+                const bool sel_in_header = sel_lo >= 0 && sel_lo <= card.begin_row && sel_hi >= card.meta_row;
+                box.header = gfx::Rectangle{card_left, box.rect.y, box.rect.width, header_bottom - box.rect.y - 1.0f};
+                box.conceal_header = box.header.height > 1.0f && !cursor_in_header && !sel_in_header;
+            }
+            float footer_top = 0.0f, footer_bottom = 0.0f;
+            if (card.end_row >= 0 && row_top(card.end_row, &footer_top) && row_bottom(card.end_row, &footer_bottom)) {
+                const bool cursor_on_end = is_active && pane.cursor.row == card.end_row;
+                const bool sel_on_end = sel_lo >= 0 && sel_lo <= card.end_row && sel_hi >= card.end_row;
+                box.footer = gfx::Rectangle{card_left, footer_top, box.rect.width, footer_bottom - footer_top - 1.0f};
+                box.conceal_footer = box.footer.height > 1.0f && !cursor_on_end && !sel_on_end;
+            }
+            // A wash, not a fill: an alpha tint over whatever the pane's
+            // background already is, so the card reads as "slightly
+            // different paper" in both light and dark themes instead of
+            // as a colored slab the code has to compete with. (The
+            // theme's own AccentTint group is 82% accent -- right for an
+            // active toolbar control, far too loud behind a page of code.)
+            const float rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(box.rect.width, box.rect.height)));
+            gfx::DrawRectangleRounded(box.rect, rr, 6,
+                                  card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                              : gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+            org_card_boxes.push_back(box);
+        }
     }
 
     // buf.decorations is keyed by namespace, not by row -- scanning every
@@ -30228,6 +39016,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // drawn, fold-collapsed or not -- gives the cursor-drawing check below
     // the same visible-range bound this loop itself used, instead of the
     // stale buffer-row-based `last_line`.
+    // While an inline suggestion ("ghost text", kBuiltinCopilot) is up it
+    // occupies the cursor row from the cursor rightward plus every row
+    // under it -- exactly where end-of-line virtual text (an LSP
+    // diagnostic message) is drawn too. Two texts in the same cells is
+    // unreadable, and the suggestion routinely *causes* the diagnostic it
+    // would collide with (an empty `def f():` body is an error until the
+    // suggestion fills it in), so the suggestion wins for as long as it
+    // is showing; the diagnostic comes back the moment it is accepted or
+    // dismissed.
+    int ghost_first_row = -1, ghost_row_count = 0;
+    if (is_active && g_editor.InlineSuggestionVisible()) {
+        ghost_first_row = pane.cursor.row;
+        ghost_row_count = 1;
+        for (char gc : g_editor.InlineSuggestionText()) {
+            if (gc == '\n') ghost_row_count++;
+        }
+    }
+    auto ghost_covers_row = [&](int r) {
+        return ghost_first_row >= 0 && r >= ghost_first_row && r < ghost_first_row + ghost_row_count;
+    };
     int visual_slot = 0;  // a closed fold collapses N buffer rows into 1 of these
     int row = pane.scroll_row;
     for (; row < buf.LineCount() && visual_slot < visible_lines; row++) {
@@ -30300,26 +39108,32 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const float nb_row_h = static_cast<float>(line_height * row_wrap_slots);
             const gfx::Color nb_accent = ResolveHlGroup("Accent");
             const gfx::Color nb_border = ResolveHlGroup("Border");
-            const gfx::Color nb_bar = nb_cursor_in_cell ? nb_accent : nb_border;
-            if (nb_span) {
-                const bool nb_is_marker = row == nb_span->marker_row;
-                if (nb_span->type == NotebookCellType::Markdown && !nb_is_marker) {
-                    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), static_cast<int>(nb_row_h),
-                                       gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
-                }
-                if (nb_is_marker) {
-                    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height,
-                                       gfx::Fade(nb_cursor_in_cell ? nb_accent : nb_border, nb_cursor_in_cell ? 0.18f : 0.22f));
-                }
-                gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(ly), 3, static_cast<int>(nb_row_h), nb_bar);
+            // The cell's background and border are the rounded card drawn by
+            // the box pre/post-pass (nb_cell_boxes); here we only add the
+            // marker row's header band and the output block's shade, both
+            // inset to sit inside the card rather than a full-width bar.
+            // Same left inset as the cell card (nb_box_left above): keyed off
+            // text_x so the header band and output shade stay clear of the
+            // line-number gutter.
+            const float nb_card_x = std::max(x + 3.0f, text_x - g_char_width * 0.5f);
+            const float nb_card_w = (x + w - static_cast<float>(kMarginX + 4)) - nb_card_x;
+            if (nb_span && row == nb_span->marker_row) {
+                gfx::DrawRectangle(static_cast<int>(nb_card_x), static_cast<int>(ly), static_cast<int>(nb_card_w), line_height,
+                                   gfx::Fade(nb_cursor_in_cell ? nb_accent : nb_border, nb_cursor_in_cell ? 0.20f : 0.12f));
             }
             const int nb_trailing = g_editor.NotebookTrailingSlots(pane.buffer_id, row);
             if (nb_trailing > 0 && nb_cell) {
                 const float block_y = ly + nb_row_h;
                 const float block_h = static_cast<float>(nb_trailing * line_height);
-                gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(block_y), static_cast<int>(w), static_cast<int>(block_h),
-                                   gfx::Fade(ResolveHlGroup("CursorLine"), 0.55f));
-                gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(block_y), 3, static_cast<int>(block_h), nb_bar);
+                gfx::DrawRectangle(static_cast<int>(nb_card_x), static_cast<int>(block_y), static_cast<int>(nb_card_w), static_cast<int>(block_h),
+                                   gfx::Fade(ResolveHlGroup("CursorLine"), 0.4f));
+                // Divide source from its result at the card's full inner
+                // width. The cell-card border is stroked in the post-pass,
+                // over these endpoints, so this line reads as connected to
+                // the enclosing block rather than floating inside it.
+                gfx::DrawLine(static_cast<int>(nb_card_x), static_cast<int>(block_y),
+                              static_cast<int>(nb_card_x + nb_card_w), static_cast<int>(block_y),
+                              gfx::Fade(nb_cursor_in_cell ? nb_accent : nb_border, nb_cursor_in_cell ? 0.80f : 0.65f));
                 const float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
                 float oy = block_y;
                 for (const NotebookOutput &out : nb_cell->outputs) {
@@ -30340,7 +39154,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         const bool is_err = out.kind == NotebookOutput::Kind::Error;
                         const bool is_stderr = out.kind == NotebookOutput::Kind::Stream && out.name == "stderr";
                         if (is_err || is_stderr) {
-                            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(oy), static_cast<int>(w), static_cast<int>(out_h),
+                            // Keep failure emphasis inside this cell's output card;
+                            // the line-number gutter and neighboring pane margin are
+                            // navigation chrome, not part of the result.
+                            gfx::DrawRectangle(static_cast<int>(nb_card_x), static_cast<int>(oy), static_cast<int>(nb_card_w), static_cast<int>(out_h),
                                                gfx::Fade(ResolveHlGroup(is_err ? "Error" : "Warn"), 0.10f));
                         }
                         const gfx::Color out_color = ResolveHlGroup(is_err ? "Error" : (is_stderr ? "Warn" : "Normal"));
@@ -30374,7 +39191,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // wrapped row tints every one of its visual slots, not just the
         // first, so the tint doesn't look like it stops partway through
         // the cursor's own line.
-        if (is_active && g_editor.ShowCursorLine() && !IsCommandLineMode(g_editor.CurrentMode()) &&
+        // Buffer::row_cursor (kBuiltinFileTree's read-only tree) tints the
+        // cursor's row whether or not :set cursorline is on: this tint *is*
+        // that buffer's whole cursor -- the per-character block cursor is
+        // skipped for it further down -- so leaving it to a global option
+        // the user may well have turned off would leave the tree with no
+        // visible cursor at all.
+        if (is_active && (g_editor.ShowCursorLine() || buf.row_cursor) && !IsCommandLineMode(g_editor.CurrentMode()) &&
             (pane.cursor.row == row ||
              (fold_here && pane.cursor.row >= fold_here->start_row && pane.cursor.row <= fold_here->end_row))) {
             int tint_slots = (row_wraps && pane.cursor.row == row) ? row_wrap_slots : 1;
@@ -30382,6 +39205,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
                               line_height, ResolveHlGroup("CursorLine"));
             }
+        }
+
+        // A scope guide occupies only the lines *between* its delimiters.
+        // Every enclosing guide becomes accent-colored in the focused pane
+        // while its cursor is inside that scope; guides in an unfocused pane
+        // remain a quiet border color.  The two-pixel bar is intentionally
+        // drawn before selections and glyphs, preserving both readability
+        // and the ordinary cursor/selection layering.
+        for (const ScopeGuide &guide : scope_guides) {
+            if (row <= guide.open_row || row >= guide.close_row) continue;
+            const int guide_col = ByteOffsetToColumn(buf.lines[static_cast<size_t>(guide.close_row)], guide.close_col);
+            const bool active_scope = is_active && pane.cursor.row > guide.open_row && pane.cursor.row < guide.close_row;
+            const gfx::Color guide_color = ResolveHlGroup(active_scope ? "Accent" : "Border");
+            const float guide_x = text_x + static_cast<float>(guide_col) * g_char_width + g_char_width * 0.5f;
+            gfx::DrawRectangle(static_cast<int>(guide_x), static_cast<int>(ly), 2,
+                               line_height * row_wrap_slots, gfx::Fade(guide_color, active_scope ? 0.9f : 0.55f));
         }
 
         // Notebook cell-header text (label + Run chip): drawn after the
@@ -30407,13 +39246,6 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     } else {
                         nb_label = nb_span->type == NotebookCellType::Markdown ? "Markdown" : "Raw";
                     }
-                    if (nb_cursor_in_cell) {
-                        std::string kernel = nb_sess->status;
-                        if (!nb_sess->python_version.empty() && kernel != "not started" && kernel != "dead") {
-                            kernel = "python " + nb_sess->python_version + " " + kernel;
-                        }
-                        nb_label += "   kernel: " + kernel;
-                    }
                     const gfx::Color nb_label_color = nb_cursor_in_cell ? nb_accent : ResolveHlGroup("Comment");
                     float nb_right = x + w - kMarginX - 2.0f;
                     if (nb_span->type == NotebookCellType::Code && is_active) {
@@ -30424,8 +39256,66 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         gfx::DrawRectangleRoundedLines(nb_run_rect, 0.3f, 4, nb_accent);
                         DrawUiText(nb_run_text, gfx::Vector2{nb_run_rect.x + 5.0f, ly}, g_font_size, ResolveHlGroup("Normal"));
                         const int run_buffer = pane.buffer_id, run_cell = nb_cell_idx;
-                        RegisterClickRegion(nb_run_rect, [run_buffer, run_cell] { g_editor.NotebookRunCell(run_buffer, run_cell); });
+                        RegisterClickRegionOnTop(nb_run_rect, [run_buffer, run_cell] { g_editor.NotebookRunCell(run_buffer, run_cell); });
                         nb_right = nb_run_rect.x - 8.0f;
+                    }
+                    // Per-cell kernel dropdown chip: the kernel this block
+                    // runs on (its own metadata.kernel, or the notebook
+                    // default -- so it always reads filled in), plus a
+                    // caret. Clicking it (active pane only, like Run)
+                    // opens the kernel list (DrawNotebookKernelMenu).
+                    if (nb_span->type == NotebookCellType::Code) {
+                        std::string kernel_name = g_editor.NotebookCellKernelName(pane.buffer_id, nb_cell_idx);
+                        std::string chip_label = kernel_name;
+                        for (const NotebookKernelSpec &spec : g_editor.NotebookKernels()) {
+                            if (spec.name == kernel_name && !spec.display_name.empty()) { chip_label = spec.display_name; break; }
+                        }
+                        // A busy/dead marker for this cell's own kernel so
+                        // the header still reports kernel state per block.
+                        const NotebookSession::KernelProc *kp = g_editor.NotebookKernelState(pane.buffer_id, kernel_name);
+                        const char *dot = "";
+                        if (kp && kp->status == "busy") dot = " *";
+                        else if (kp && kp->status == "dead") dot = " x";
+                        // The caret is a drawn triangle, not a glyph: g_font
+                        // carries only ASCII, so a unicode chevron renders as
+                        // tofu (see draw_dropdown_btn's own note). Reserve a
+                        // fixed slot on the right of the chip for it.
+                        const std::string chip_text = chip_label + std::string(dot);
+                        const float chip_caret_w = 14.0f;
+                        const float chip_w = MeasureUiText(chip_text, g_font_size) + 12.0f + chip_caret_w;
+                        gfx::Rectangle chip_rect{nb_right - chip_w, ly + 1.0f, chip_w, static_cast<float>(line_height - 2)};
+                        const gfx::Color chip_fg = nb_cursor_in_cell ? nb_accent : ResolveHlGroup("Comment");
+                        const gfx::Color chip_border = nb_cursor_in_cell ? nb_accent : ResolveHlGroup("Border");
+                        gfx::DrawRectangleRounded(chip_rect, 0.3f, 4, gfx::Fade(ResolveHlGroup("Comment"), 0.12f));
+                        gfx::DrawRectangleRoundedLines(chip_rect, 0.3f, 4, chip_border);
+                        DrawUiText(chip_text, gfx::Vector2{chip_rect.x + 6.0f, ly}, g_font_size, chip_fg);
+                        {
+                            // (right, left, bottom) winding -- matches the
+                            // working DrawTriangle calls elsewhere in this file.
+                            const float tx = chip_rect.x + chip_rect.width - 9.0f, ty = chip_rect.y + chip_rect.height / 2.0f;
+                            gfx::DrawTriangle(gfx::Vector2{tx + 3.5f, ty - 2.0f}, gfx::Vector2{tx - 3.5f, ty - 2.0f},
+                                              gfx::Vector2{tx, ty + 2.5f}, chip_fg);
+                        }
+                        if (is_active) {
+                            const int chip_buffer = pane.buffer_id, chip_cell = nb_cell_idx;
+                            const gfx::Rectangle anchor_rect = chip_rect;
+                            // DrawPane registered its pane-wide focus region
+                            // before reaching this cell header.  This chip
+                            // overlaps that fallback, so it must take click
+                            // precedence or the kernel menu can never open.
+                            RegisterClickRegionOnTop(chip_rect, [chip_buffer, chip_cell, anchor_rect] {
+                                // Toggle: a second click on the open cell's chip closes it.
+                                if (g_notebook_kernel_menu_buffer == chip_buffer && g_notebook_kernel_menu_cell == chip_cell) {
+                                    g_notebook_kernel_menu_buffer = -1;
+                                    g_notebook_kernel_menu_cell = -1;
+                                } else {
+                                    g_notebook_kernel_menu_buffer = chip_buffer;
+                                    g_notebook_kernel_menu_cell = chip_cell;
+                                    g_notebook_kernel_menu_anchor = anchor_rect;
+                                }
+                            });
+                        }
+                        nb_right = chip_rect.x - 8.0f;
                     }
                     const float nb_label_w = MeasureUiText(nb_label, g_font_size);
                     DrawUiText(nb_label, gfx::Vector2{nb_right - nb_label_w, ly}, g_font_size, nb_label_color);
@@ -30604,6 +39494,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // sign column" this comment used to call a documented follow-up).
         std::string sign;
         std::string sign_hl;
+        std::string sign_shape;
         bool sign_badge = false;
         int sign_priority = -1;
         auto row_decos_it = decos_by_row.find(row);
@@ -30619,8 +39510,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                   line_height, tint);
                 }
             }
-            if (!d.sign.empty() && d.priority > sign_priority) {
+            if ((!d.sign.empty() || !d.sign_shape.empty()) && d.priority > sign_priority) {
                 sign = d.sign;
+                sign_shape = d.sign_shape;
                 sign_hl = d.sign_hl;
                 sign_badge = d.sign_badge;
                 sign_priority = d.priority;
@@ -30857,7 +39749,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         });
                 }
             }
-            if (!d.virt_text.empty()) {
+            if (!d.virt_text.empty() && !ghost_covers_row(row)) {
                 // virt_text_eol: anchored just past the row's own last
                 // character (plus one char of breathing room) rather than
                 // d.col_start, for an annotation describing the whole
@@ -30949,7 +39841,34 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
-        if (!sign.empty()) {
+        if (!sign_shape.empty()) {
+            // Geometric sign marks (Decoration::sign_shape) -- the git
+            // gutter's hunk stripes. Drawn as rectangles rather than as
+            // box-drawing glyphs because none of the UI fonts cover that
+            // block; see sign_shape's own comment in editor.h. The
+            // vertical bar is inset from the sign column's left edge so
+            // it reads as a margin rule rather than as part of the line
+            // numbers next to it; the deletion stripes hug the row's top
+            // or bottom edge, pointing at the gap where the removed
+            // lines used to be.
+            const gfx::Color mark = ResolveHlGroup(sign_hl);
+            const float bar_w = std::max(2.0f, g_char_width * 0.26f);
+            const float bar_x = x + kMarginX + g_char_width * 0.22f;
+            const float stripe_w = std::max(4.0f, g_char_width * 0.80f);
+            const float stripe_h = std::max(3.0f, static_cast<float>(line_height) * 0.16f);
+            const bool bar = sign_shape == "bar" || sign_shape == "changedelete";
+            if (bar) {
+                gfx::DrawRectangle(static_cast<int>(bar_x), static_cast<int>(ly) + 1, static_cast<int>(bar_w),
+                              std::max(1, line_height - 2), mark);
+            }
+            if (sign_shape == "delete" || sign_shape == "changedelete") {
+                gfx::DrawRectangle(static_cast<int>(bar_x), static_cast<int>(ly + static_cast<float>(line_height) - stripe_h),
+                              static_cast<int>(stripe_w), static_cast<int>(stripe_h), mark);
+            } else if (sign_shape == "topdelete") {
+                gfx::DrawRectangle(static_cast<int>(bar_x), static_cast<int>(ly), static_cast<int>(stripe_w),
+                              static_cast<int>(stripe_h), mark);
+            }
+        } else if (!sign.empty()) {
             if (sign_badge) {
                 // A filled circle (sign_hl's own color) behind the sign
                 // glyph -- e.g. a diagnostic count -- centered in the
@@ -31120,7 +40039,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         int cursor_slots = cursor_on_image ? kOrgInlineImageSlots : (cursor_on_latex ? cursor_latex_it->second.slots : 1);
         float row_extent = (cursor_on_image || cursor_on_latex) ? static_cast<float>(line_height) * static_cast<float>(cursor_slots)
                                                                   : static_cast<float>(line_height);
-        if (cursor_on_image || cursor_on_latex) {
+        // Buffer::row_cursor (kBuiltinFileTree's read-only tree): the row's
+        // own full-width tint, drawn unconditionally with the cursorline
+        // above, *is* this buffer's cursor -- nothing is drawn per column.
+        // A block cursor repaints the glyph under it in NormalBg so a
+        // normal text cursor stays readable, but a tree row's cursor always
+        // sits at column 0, which for a top-level entry is the row's icon
+        // glyph: what that actually looked like was the icon changing color
+        // (going dark) as the cursor moved down the tree. The rest of this
+        // block still runs -- cursor_x/cursor_y feed the completion popup
+        // and hover anchor, neither of which a tree ever raises, but both
+        // of which stay correct for any other row_cursor buffer.
+        if (buf.row_cursor) {
+            // no per-column cursor: the row tint above is the whole cursor
+        } else if (cursor_on_image || cursor_on_latex) {
             float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
             gfx::DrawRectangleLines(static_cast<int>(text_x), static_cast<int>(cursor_y), static_cast<int>(avail_w),
                                 static_cast<int>(row_extent), ResolveHlGroup("Normal"));
@@ -31166,6 +40098,55 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                               : IsSymbolCodepoint(codepoint) ? g_symbol_font
                                                                               : g_font;
                 gfx::DrawTextEx(punch_font, ch.c_str(), gfx::Vector2{cursor_x, cursor_y}, g_font_size, 0, ResolveHlGroup("NormalBg"));
+            }
+        }
+        // Inline suggestion / "ghost text" (kBuiltinCopilot): the
+        // pending completion drawn dimmed, in place, as if already typed.
+        // Drawn here rather than in the per-row loop above because it
+        // belongs to the cursor, not to any buffer row -- its first line
+        // continues the cursor's own row from cursor_x, and the rest
+        // overlay the rows below (a suggestion is transient and usually
+        // longer than the code it sits on, so painting over is both
+        // simpler and closer to how every other editor shows this than
+        // reflowing the real text out of the way would be).
+        if (!cursor_on_image && !cursor_on_latex && g_editor.InlineSuggestionVisible()) {
+            const std::string &ghost = g_editor.InlineSuggestionText();
+            gfx::Color ghost_color = ResolveHlGroup("Comment");
+            // Distinctly dimmer than a real comment: the whole point is
+            // that it reads as not-yet-real text, and at a comment's own
+            // weight it's easy to mistake for buffer content.
+            ghost_color.a = static_cast<unsigned char>(ghost_color.a * 3 / 5);
+            const gfx::Color ghost_bg = ResolveHlGroup("NormalBg");
+            float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
+            size_t start = 0;
+            int ghost_row = 0;
+            // Stops at the bottom of the pane: a suggestion can easily be
+            // longer than the visible area, and the rows past it would
+            // otherwise paint over the status line and the pane below.
+            // Tab still accepts the whole thing, drawn or not.
+            const float ghost_bottom = content_y + content_h;
+            while (start <= ghost.size()) {
+                size_t nl = ghost.find('\n', start);
+                std::string piece = ghost.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+                float gy = cursor_y + static_cast<float>(ghost_row * line_height);
+                if (gy + static_cast<float>(line_height) > ghost_bottom) break;
+                if (ghost_row == 0) {
+                    DrawLineFast(piece, cursor_x, gy, g_font_size, ghost_color);
+                } else {
+                    // Continuation rows sit on top of real buffer text --
+                    // clear the strip first or the two read as one
+                    // unintelligible overstrike. Drawn unwrapped (from
+                    // text_x, one buffer row per screen row) even under
+                    // :set wrap: a suggestion is transient scaffolding,
+                    // and laying it out through the wrap machinery would
+                    // make it reflow under the cursor as it arrives.
+                    gfx::DrawRectangle(static_cast<int>(text_x), static_cast<int>(gy), static_cast<int>(avail_w),
+                                  line_height, ghost_bg);
+                    DrawLineFast(piece, text_x, gy, g_font_size, ghost_color);
+                }
+                if (nl == std::string::npos) break;
+                start = nl + 1;
+                ghost_row++;
             }
         }
         // Completion popup (Phase 22): positioned just below the cursor.
@@ -31225,7 +40206,175 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         gfx::DrawTextEx(g_font, label_text.c_str(), gfx::Vector2{text_draw_x, p_label_y + (label_h - g_font_size) / 2.0f}, g_font_size, 0, gfx::White);
     }
 
+    // Org block cards (see org_card_boxes above): the title bar that
+    // stands in for the concealed header, then the card outline -- both
+    // after the row text, so the bar covers the raw `#+begin_src ...`
+    // line underneath it and the rounded outline stays crisp on top.
+    for (const OrgCardBox &cb : org_card_boxes) {
+        const OrgBlockCard &card = *cb.card;
+        const gfx::Color accent = ResolveHlGroup("Accent");
+        // The same washes the fill pass used, plus the opaque background
+        // they sit on: a concealing band has to cover the raw header text
+        // outright, so it paints NormalBg first and the wash over it,
+        // landing on exactly the color the card body already shows.
+        const gfx::Color card_wash = cb.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                                : gfx::Fade(ResolveHlGroup("Comment"), 0.08f);
+        const gfx::Color header_wash = cb.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.20f)
+                                                  : gfx::Fade(ResolveHlGroup("Comment"), 0.16f);
+        const gfx::Color opaque_bg = ResolveHlGroup("NormalBg");
+        const float card_rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(cb.rect.width, cb.rect.height)));
+        // The band only spans as far right as the card does, but a header
+        // line longer than the card is clipped by the pane (not the card),
+        // so its tail would keep showing past the card's right edge --
+        // painted out with the pane's own background rather than more card
+        // fill, which outside the rounded outline would read as a bite
+        // taken out of the card.
+        /**
+         * @brief Paints out the sliver of raw row text between the card's right edge and the pane's.
+         * @param band The concealed band whose row(s) to clear beyond the card.
+         */
+        auto clear_overflow = [&](const gfx::Rectangle &band) {
+            const float from = cb.rect.x + cb.rect.width;
+            const float to = x + w - 2.0f;
+            if (to <= from) return;
+            gfx::DrawRectangle(static_cast<int>(from), static_cast<int>(band.y), static_cast<int>(to - from),
+                          static_cast<int>(band.height), ResolveHlGroup("NormalBg"));
+        };
+        if (cb.conceal_header) {
+            clear_overflow(cb.header);
+            gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y),
+                          static_cast<int>(cb.header.width), static_cast<int>(cb.header.height), opaque_bg);
+            // A touch more tint than the body, so the bar reads as the
+            // card's header rather than as part of the code.
+            gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y),
+                          static_cast<int>(cb.header.width), static_cast<int>(cb.header.height), header_wash);
+            gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y + cb.header.height - 1.0f),
+                          static_cast<int>(cb.header.width), 1, gfx::Fade(accent, cb.is_src ? 0.45f : 0.25f));
+            // Laid out on the band's *first* line. The band is one row tall
+            // in the common case, but a stack of `#+HEADER:`/`#+NAME:`
+            // lines -- or a single header long enough to soft-wrap --
+            // makes it taller, and a title bar belongs against the card's
+            // top edge with the slack below it, not floating with a gap
+            // above.
+            const float bar_y = cb.header.y;
+            const float text_y = bar_y + (static_cast<float>(line_height) - g_font_size) / 2.0f;
+            const float chip_h = std::max(8.0f, static_cast<float>(line_height) - 5.0f);
+            const float chip_y = bar_y + (static_cast<float>(line_height) - chip_h) / 2.0f;
+            const float right_limit = cb.header.x + cb.header.width - 8.0f;
+            float cx = cb.header.x + 9.0f;
+            /**
+             * @brief Checks whether a bar element of the given width still fits before the card's right edge.
+             * @param width The element's width in pixels.
+             * @return True if it fits; otherwise an ellipsis is drawn and the bar ends.
+             */
+            auto fits = [&](float width) {
+                if (cx + width <= right_limit) return true;
+                // Pulled back against the right edge when the run of chips
+                // has already reached it, so the ellipsis marking "there's
+                // more here" can't itself spill over the card's border.
+                const float ell_w = g_char_width * 3.0f;
+                const float ell_x = std::min(cx, right_limit - ell_w);
+                if (ell_x >= cb.header.x) {
+                    gfx::DrawTextEx(g_font, "...", gfx::Vector2{ell_x, text_y}, g_font_size, 0, ResolveHlGroup("MutedFg"));
+                }
+                return false;
+            };
+            // The language (or, for a non-src block, the block word) as a
+            // filled chip -- the one piece that is always there, and the
+            // block's identity at a glance.
+            const std::string kind_text = card.is_src ? (card.lang.empty() ? std::string("src") : card.lang) : card.kind;
+            const float kind_w = gfx::MeasureTextEx(g_font, kind_text.c_str(), g_font_size, 0).x + 14.0f;
+            if (fits(kind_w)) {
+                const gfx::Rectangle chip{cx, chip_y, kind_w, chip_h};
+                gfx::DrawRectangleRounded(chip, 0.5f, 6, cb.is_src ? accent : ResolveHlGroup("Border"));
+                gfx::DrawTextEx(g_font, kind_text.c_str(), gfx::Vector2{cx + 7.0f, text_y}, g_font_size, 0,
+                           ResolveHlGroup("NormalBg"));
+                cx += kind_w + 8.0f;
+                // The title (#+NAME:/#+CAPTION:/:title), drawn twice one
+                // pixel apart for a bold that g_font has no real face for
+                // -- the same fake-bold a Decoration::bold span uses.
+                if (!card.title.empty()) {
+                    const float title_w = gfx::MeasureTextEx(g_font, card.title.c_str(), g_font_size, 0).x;
+                    if (fits(title_w + 8.0f)) {
+                        const gfx::Color title_col = ResolveHlGroup("Normal");
+                        gfx::DrawTextEx(g_font, card.title.c_str(), gfx::Vector2{cx, text_y}, g_font_size, 0, title_col);
+                        gfx::DrawTextEx(g_font, card.title.c_str(), gfx::Vector2{cx + 1.0f, text_y}, g_font_size, 0, title_col);
+                        cx += title_w + 12.0f;
+                    }
+                }
+                // Every header arg as its own outlined chip -- the
+                // "border around the options" half of the card, and the
+                // reason they read as a row of cells rather than a run of
+                // colons. Keys and values are colored apart inside it.
+                for (const OrgBlockOption &opt : card.options) {
+                    const std::string key_text = ":" + opt.key;
+                    // One long value (a `:tangle` path, typically) would
+                    // otherwise eat the whole bar and push every option
+                    // after it behind the ellipsis -- elided from the
+                    // *front*, since the tail is the informative end of a
+                    // path. The full text is one cursor move away.
+                    std::string val_text = opt.value;
+                    if (val_text.size() > 24) val_text = "..." + val_text.substr(val_text.size() - 21);
+                    const float key_w = gfx::MeasureTextEx(g_font, key_text.c_str(), g_font_size, 0).x;
+                    const float val_w = val_text.empty()
+                                             ? 0.0f
+                                             : gfx::MeasureTextEx(g_font, (" " + val_text).c_str(), g_font_size, 0).x;
+                    const float opt_w = key_w + val_w + 12.0f;
+                    if (!fits(opt_w)) break;
+                    const gfx::Rectangle chip_rect{cx, chip_y, opt_w, chip_h};
+                    gfx::DrawRectangleRounded(chip_rect, 0.5f, 6, gfx::Fade(accent, 0.07f));
+                    gfx::DrawRectangleRoundedLinesEx(chip_rect, 0.5f, 6, 1.0f,
+                                                 gfx::Fade(cb.is_src ? accent : ResolveHlGroup("Border"), 0.55f));
+                    gfx::DrawTextEx(g_font, key_text.c_str(), gfx::Vector2{cx + 6.0f, text_y}, g_font_size, 0,
+                               cb.is_src ? accent : ResolveHlGroup("MutedFg"));
+                    if (!val_text.empty()) {
+                        gfx::DrawTextEx(g_font, val_text.c_str(), gfx::Vector2{cx + 6.0f + key_w + g_char_width, text_y},
+                                   g_font_size, 0, ResolveHlGroup("Normal"));
+                    }
+                    cx += opt_w + 6.0f;
+                }
+            }
+        }
+        // The `#+end_` row, blanked to plain card floor: the bottom edge
+        // of the card *is* the "end" marker once the card is drawn.
+        if (cb.conceal_footer) {
+            clear_overflow(cb.footer);
+            gfx::DrawRectangle(static_cast<int>(cb.footer.x), static_cast<int>(cb.footer.y),
+                          static_cast<int>(cb.footer.width), static_cast<int>(cb.footer.height), opaque_bg);
+            gfx::DrawRectangle(static_cast<int>(cb.footer.x), static_cast<int>(cb.footer.y),
+                          static_cast<int>(cb.footer.width), static_cast<int>(cb.footer.height), card_wash);
+        }
+        gfx::Color border = cb.is_src ? (cb.active ? accent : gfx::Fade(accent, 0.55f))
+                                       : gfx::Fade(ResolveHlGroup("Border"), cb.active ? 1.0f : 0.7f);
+        gfx::DrawRectangleRoundedLinesEx(cb.rect, card_rr, 6, cb.active ? 2.0f : 1.0f, border);
+    }
+
+    // Notebook cell-card borders (see nb_cell_boxes above): stroked last,
+    // over the row text, so the rounded outline stays crisp. Code and
+    // markdown cards get different border hues; the cursor's cell is
+    // accented with a thicker stroke, the "which block am I in" cue the
+    // old full-height left bar used to give.
+    for (const NbCellBox &cb : nb_cell_boxes) {
+        gfx::Color border;
+        if (cb.active) border = ResolveHlGroup("Accent");
+        else if (cb.type == NotebookCellType::Markdown) border = gfx::Fade(ResolveHlGroup("Purple"), 0.55f);
+        else border = gfx::Fade(ResolveHlGroup("Border"), 0.9f);
+        const float rr = std::min(1.0f, 16.0f / std::max(1.0f, std::min(cb.rect.width, cb.rect.height)));
+        gfx::DrawRectangleRoundedLinesEx(cb.rect, rr, 5, cb.active ? 2.0f : 1.0f, border);
+    }
+
     gfx::EndScissorMode();
+
+    // Same look as DrawSidebarFooter: a rule, then the hint, over the
+    // bottom row reserved from visible_lines above.
+    if (draw_footer) {
+        const float fy = y + h - static_cast<float>(line_height);
+        gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(fy) - 2, static_cast<int>(w) - 4, 1, ResolveHlGroup("Border"));
+        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(fy), static_cast<int>(w), line_height);
+        DrawUiText(buf.footer_hint, gfx::Vector2{x + 8.0f, fy + 1.0f}, MenuFontSize(),
+                   ResolveHlGroup(buf.footer_hint_hl.empty() ? "Comment" : buf.footer_hint_hl));
+        gfx::EndScissorMode();
+    }
 
     DrawPaneBorder(x, y, w, h, is_active);
     // Hover tooltip (Phase 3 gap): recorded here but drawn later, once, by
@@ -31380,19 +40529,20 @@ void DrawTabBar(int y) {
         int icon;             // Nerd Font codepoint, 0 = DrawRobotIcon
         int icon_open;        // codepoint while open, 0 = same as `icon`
         const char *tooltip;
+        const char *binding;  // equivalent shortcut, if one exists
         const char *color;    // highlight group for the icon at rest (hover/open still override to WorkspaceActive)
     };
     static const SidebarButton kSidebarButtons[] = {
-        {"Files", "MepFileTree", 0xf07b, 0xf07c, "Files", "Yellow"},                       // nf-fa-folder / folder_open
-        {"Buffers", "MepBuffers", 0xf0c5, 0, "Buffers", "Blue"},                            // nf-fa-files_o
-        {"Git", "MepGitStatus", 0xe725, 0, "Git: status, log, branches, stash", "Orange"},                 // nf-dev-git_branch
-        {"Symbols", "MepSymbols", 0xf121, 0, "Symbols", "Purple"},                         // nf-fa-code
-        {"Structure", "MepStructure", 0xf0e8, 0, "Structure", "Cyan"},                   // nf-fa-sitemap
-        {"Todo", "MepActivityTodoPanel", 0xf046, 0, "Todo", "Green"},                     // nf-fa-check_square_o
-        {"Tests", "MepActivityTestPanel", 0xf0c3, 0, "Tests", "Blue"},                    // nf-fa-flask
-        {"Notifications", "MepNotifyPanel", 0xf0f3, 0, "Notifications", "Red"},           // nf-fa-bell
-        {"AI Agent", "MepAiAgent", 0, 0, "AI agent", "Cyan"},
-        {"AI Agents", "MepAiAgents", 0xf0c0, 0, "AI agents (connected Claude Code sessions)", "Purple"},  // nf-fa-users
+        {"Files", "MepFileTree", 0xf07b, 0xf07c, "Files", "<Space>ff", "Yellow"},                       // nf-fa-folder / folder_open
+        {"Buffers", "MepBuffers", 0xf0c5, 0, "Buffers", "<Space>bB", "Blue"},                            // nf-fa-files_o
+        {"Git", "MepGitStatus", 0xe725, 0, "Git: status, log, branches, stash", "<Space>gg", "Orange"},  // nf-dev-git_branch
+        {"Symbols", "MepSymbols", 0xf121, 0, "Symbols", nullptr, "Purple"},                                // nf-fa-code
+        {"Structure", "MepStructure", 0xf0e8, 0, "Structure", "<Space>ss", "Cyan"},                       // nf-fa-sitemap
+        {"Todo", "MepActivityTodoPanel", 0xf046, 0, "Todo", "<Space>tt", "Green"},                         // nf-fa-check_square_o
+        {"Tests", "MepActivityTestPanel", 0xf0c3, 0, "Tests", "<Space>tT", "Blue"},                        // nf-fa-flask
+        {"Notifications", "MepNotifyPanel", 0xf0f3, 0, "Notifications", "<Space>nn", "Red"},              // nf-fa-bell
+        {"AI Agent", "MepAiAgent", 0, 0, "AI agent", nullptr, "Cyan"},
+        {"AI Agents", "MepAiAgents", 0xf0c0, 0, "AI agents (connected Claude Code sessions)", "<Space>al / <Space>aa", "Purple"},  // nf-fa-users
     };
     auto find_sidebar_by_title = [](const char *title) -> const SidebarInstance * {
         for (const SidebarInstance &sb : g_editor.Sidebars()) {
@@ -31426,7 +40576,10 @@ void DrawTabBar(int y) {
             const float gw = MeasureUiText(glyph, font_size);
             DrawUiText(glyph, gfx::Vector2{rect.x + (button_size - gw) / 2.0f, cy}, font_size, icon_color);
         }
-        tooltip_if_hovered(rect, std::string(button.tooltip) + (open ? " (click to close)" : ""));
+        std::string tooltip = button.tooltip;
+        if (button.binding) tooltip += " (" + std::string(button.binding) + ")";
+        if (open) tooltip += " (click to close)";
+        tooltip_if_hovered(rect, tooltip);
         RegisterClickRegion(rect, [title = button.title, command = button.command] {
             for (const SidebarInstance &sb : g_editor.Sidebars()) {
                 if (sb.title == title && sb.open) {
@@ -31451,12 +40604,13 @@ void DrawTabBar(int y) {
         const char *command;  // :command that opens the picker
         int icon;             // Nerd Font codepoint
         const char *tooltip;
+        const char *binding;  // equivalent shortcut
         const char *color;    // highlight group for the icon at rest
     };
     static const SearchButton kSearchButtons[] = {
-        {"lua mep.buffer_search()", 0xf002, "Search in buffer", "Yellow"},           // nf-fa-search
-        {"lua mep.live_grep()", 0xf1e5, "Search project (live grep)", "Green"},      // nf-fa-binoculars
-        {"lua mep.buffers()", 0xf0c5, "Switch buffer", "Cyan"},                      // nf-fa-files_o
+        {"lua mep.buffer_search()", 0xf002, "Search in buffer", "/ or <Space>/", "Yellow"},           // nf-fa-search
+        {"lua mep.live_grep()", 0xf1e5, "Search project (live grep)", "<Space>pr", "Green"},          // nf-fa-binoculars
+        {"lua mep.buffers()", 0xf0c5, "Switch buffer", "<Space>bb", "Cyan"},                            // nf-fa-files_o
     };
     for (size_t bi = std::size(kSearchButtons); bi-- > 0;) {
         const SearchButton &button = kSearchButtons[bi];
@@ -31468,7 +40622,7 @@ void DrawTabBar(int y) {
         const float gw = MeasureUiText(glyph, font_size);
         DrawUiText(glyph, gfx::Vector2{rect.x + (button_size - gw) / 2.0f, cy}, font_size,
                    ResolveHlGroup(hovered ? "WorkspaceActive" : button.color));
-        tooltip_if_hovered(rect, button.tooltip);
+        tooltip_if_hovered(rect, std::string(button.tooltip) + " (" + button.binding + ")");
         RegisterClickRegion(rect, [command = button.command] { g_editor.RunCommand(command); });
     }
     // Divider between the search buttons and the chips to their left.
@@ -31537,6 +40691,7 @@ void DrawTabBar(int y) {
         const gfx::Rectangle rect{x, fy, w, fbar_h};
         std::string tip = project.root;
         if (g_editor.ProjectCount() > 1) tip += "  (" + std::to_string(g_editor.ProjectCount()) + " projects loaded)";
+        tip += "  (<Space>pp)";
         tooltip_if_hovered(rect, tip);
         RegisterClickRegion(rect, [] { g_editor.RunCommand("lua mep.projects_open()"); });
         x += w + 2;
@@ -31645,7 +40800,7 @@ void DrawTabBar(int y) {
         const gfx::Rectangle rect{x, fy, w, fbar_h};
         const bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
         DrawUiText(ws_add_label, gfx::Vector2{x, cy}, font_size, ResolveHlGroup(hovered ? "WorkspaceActive" : "Green"));
-        tooltip_if_hovered(rect, "New workspace");
+        tooltip_if_hovered(rect, "New workspace (<Space>wn or Ctrl-Shift-T)");
         RegisterClickRegion(rect, [] { g_editor.RunCommand("lua mep.workspace_new_prompt()"); });
         x += w;
     }
@@ -31654,7 +40809,7 @@ void DrawTabBar(int y) {
         const gfx::Rectangle rect{x, fy, w, fbar_h};
         const bool hovered = gfx::CheckCollisionPointRec(mouse, rect);
         DrawUiText(ws_close_label, gfx::Vector2{x, cy}, font_size, ResolveHlGroup(hovered ? "WorkspaceActive" : "Red"));
-        tooltip_if_hovered(rect, "Close active workspace");
+        tooltip_if_hovered(rect, "Close active workspace (<Space>wd)");
         RegisterClickRegion(rect, [] { g_editor.RunCommand("wsdelete"); });
         x += w;
     }
@@ -31669,7 +40824,9 @@ void DrawTabBar(int y) {
         // Tooltip only for the open (hollow) circles of the other tabs --
         // with one tab there's nothing to switch to, and the active tab's
         // filled circle isn't a meaningful click target.
-        if (!active && g_editor.TabCount() > 1) tooltip_if_hovered(rect, "Switch to tab " + std::to_string(i + 1));
+        if (!active && g_editor.TabCount() > 1) {
+            tooltip_if_hovered(rect, "Switch to tab " + std::to_string(i + 1) + " (Ctrl-Tab / Ctrl-Shift-Tab)");
+        }
         // Click-to-switch (Phase 11 click-dispatch gap): a click anywhere on
         // this tab's circle jumps straight to it via GoToTab, same as :tabn N.
         RegisterClickRegion(rect, [i] { g_editor.GoToTab(i); });
@@ -31681,7 +40838,7 @@ void DrawTabBar(int y) {
     // Opens a new (unnamed) tab.
     {
         const gfx::Rectangle rect{x, fy, add_w, fbar_h};
-        tooltip_if_hovered(rect, "New tab");
+        tooltip_if_hovered(rect, "New tab (Ctrl-T)");
         RegisterClickRegion(rect, [] { g_editor.TabNew(""); });
     }
     x += add_w;
@@ -31759,7 +40916,15 @@ const gfx::Texture2D &DashboardLogoTexture(bool light_theme) {
 void DrawDashboard(float x, float y, float w, float h) {
     std::vector<std::string> lines = SplitLines(kAboutText);
     lines.emplace_back();
-    lines.emplace_back("i to start typing  :e to open a file  <leader> for keys  :q to quit");
+    lines.emplace_back("i to start typing  :e to open a file  <Space> for keys  :q to quit");
+    // The menu bar is hidden by default (Editor::IsMenuBarVisible), so
+    // this line is the whole discovery path for File/Edit/Window/Help --
+    // without it the bar would be a feature nobody finds. Its own line
+    // rather than appended to the row above so it can't push that row
+    // (and, through max_w below, the action buttons) wider. Worded from
+    // the current state, since the dashboard is reachable again long
+    // after someone has turned the bar on.
+    lines.emplace_back(g_editor.IsMenuBarVisible() ? "tap Alt to hide the menu bar" : "tap Alt to show the menu bar");
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 8;
     float max_w = 0;
@@ -31812,7 +40977,12 @@ void DrawDashboard(float x, float y, float w, float h) {
                             gfx::Rectangle{x + (w - logo_w) / 2.0f, start_y, logo_w, logo_h}, gfx::Vector2{0, 0}, 0.0f, gfx::White);
     }
     start_y += logo_h + logo_gap;
-    const size_t hint_line = lines.size() - 1;
+    // The tail of `lines` is the hint block, drawn *below* the action
+    // list rather than with the about text above it -- two rows now that
+    // the menu-bar gesture has to be spelled out here (the bar is hidden
+    // by default and this is where anyone would look for it).
+    const size_t kHintLines = 2;
+    const size_t hint_line = lines.size() - kHintLines;
     for (size_t i = 0; i < hint_line; i++) {
         float lw = gfx::MeasureTextEx(g_font, lines[i].c_str(), font_size, 0).x;
         float lx = x + std::max(0.0f, (w - lw) / 2.0f);
@@ -31847,9 +41017,14 @@ void DrawDashboard(float x, float y, float w, float h) {
         RegisterClickRegion(rect, [command = button.command] { g_editor.RunCommand(command); });
     }
     const float hint_y = buttons_y + static_cast<float>(std::size(kDashboardButtons)) * (button_h + button_gap);
-    const std::string &hint = lines[hint_line];
-    const float hint_w = gfx::MeasureTextEx(g_font, hint.c_str(), font_size, 0).x;
-    gfx::DrawTextEx(g_font, hint.c_str(), gfx::Vector2{x + std::max(0.0f, (w - hint_w) / 2.0f), hint_y}, font_size, 0, ResolveHlGroup("Comment"));
+    for (size_t i = hint_line; i < lines.size(); i++) {
+        const std::string &hint = lines[i];
+        const float hint_w = gfx::MeasureTextEx(g_font, hint.c_str(), font_size, 0).x;
+        gfx::DrawTextEx(g_font, hint.c_str(),
+                        gfx::Vector2{x + std::max(0.0f, (w - hint_w) / 2.0f),
+                                     hint_y + static_cast<float>(i - hint_line) * static_cast<float>(line_h)},
+                        font_size, 0, ResolveHlGroup("Comment"));
+    }
 }
 
 // Forward-declared: defined with the rest of the hint system
@@ -31878,12 +41053,14 @@ void DrawEditor() {
     g_terminal_grid = TerminalGridCapture{};
     g_sidebar_row_rects.clear();
     g_buffer_drag_row_rects.clear();
+    g_sidebar_pane_row_rects.clear();
     g_sidebar_panel_rects.clear();
     g_sidebar_tab_rects.clear();
     g_sidebar_group_tab_rects.clear();
     g_sidebar_border_rects.clear();
     g_sidebar_stack_rects.clear();
     g_link_hint_rects.clear();
+    g_html_click_rects.clear();
     // A tab/workspace switch or :bd underneath an open floating pane
     // (Editor::OpenFloatPane) ends it before anything below draws it.
     g_editor.ValidateFloatPane();
@@ -31897,7 +41074,11 @@ void DrawEditor() {
     // regardless of chrome visibility).
     int status_bar_height = zen ? 0 : line_height;
     int command_bar_height = line_height;
-    int menu_bar_height = zen ? 0 : MenuBarHeight();
+    // Hidden by zen mode, or by the user tapping mod1 (Editor::
+    // IsMenuBarVisible) -- either way the pane area below simply
+    // grows into the freed row, since content_top is derived from
+    // this.
+    int menu_bar_height = (zen || !g_editor.IsMenuBarVisible()) ? 0 : MenuBarHeight();
     // Visible by default (mep.nvim's own showtabline=2), not just once a
     // second tab exists -- Ctrl-T/the tab bar's own '+' button are the
     // discovery path for tabs at all, which a bar that only appears after
@@ -32121,6 +41302,20 @@ void DrawEditor() {
             std::string rest = "  " + register_indicator + count_indicator + buf_label + (buf.modified ? " [+]" : "");
             std::string left = mode_chip + rest;
             std::string right = "Ln " + std::to_string(cursor.row + 1) + ", Col " + std::to_string(cursor.col + 1);
+            // A PDF has no text cursor: its page/zoom/theme/search state
+            // takes the Ln/Col slot instead (it used to crowd the pane header).
+            if (const PdfSession *pdf = g_editor.GetPdf(g_editor.CurrentBufferId()); pdf && pdf->doc) {
+                right = "Page " + std::to_string(pdf->page + 1) + "/" + std::to_string(pdf->doc->PageCount()) + "  " +
+                        std::to_string(static_cast<int>(std::lround(pdf->zoom * 100.0f))) + "%  " +
+                        (pdf->theme_colors ? "[theme, Ctrl-R]" : "[original, Ctrl-R]");
+                if (!pdf->search_query.empty()) {
+                    right = (pdf->search_matches.empty()
+                                 ? "/" + pdf->search_query + " (no matches)"
+                                 : "/" + pdf->search_query + " (" + std::to_string(pdf->search_current + 1) + "/" +
+                                       std::to_string(pdf->search_matches.size()) + ", N/P)") +
+                            "  " + right;
+                }
+            }
             // Collaboration presence stays in the editor's ordinary chrome,
             // not a modal: each compact chip identifies a peer and their
             // shared cursor location. Clicking a chip jumps there.
@@ -32213,11 +41408,13 @@ void DrawEditor() {
     // sidebars start at content_top, below both the menu bar and tab bar --
     // so moving the whole call has no effect on the bar's own draw order.
     // cppcheck-suppress duplicateCondition
-    if (!zen) DrawMenuBar();
+    if (!zen && g_editor.IsMenuBarVisible()) DrawMenuBar();
     // Same "drawn after sidebars/panes so it paints on top" reasoning as
     // DrawMenuBar's own dropdown just above -- a Run button lives inside a
     // pane header, so its own "Setup" dropdown needs the same treatment.
     DrawRunButtonMenu();
+    // A notebook code cell's kernel dropdown -- same on-top treatment.
+    DrawNotebookKernelMenu();
     // Same reasoning as the comment just above (drawn after sidebars, not
     // before, so it sits on top instead of being painted over by one) --
     // this used to be drawn inline with the command-line text itself,
@@ -32427,8 +41624,12 @@ void NavigateHtmlLink(int buffer_id, const std::string &href) {
         return;
     }
     std::string target = href;
-    if (href.rfind("http://", 0) != 0 && href.rfind("https://", 0) != 0 && href[0] != '/') {
-        const HtmlSession *sess = g_editor.GetHtml(buffer_id);
+    const HtmlSession *sess = g_editor.GetHtml(buffer_id);
+    if (sess && urlutil::IsHttpUrl(sess->origin)) {
+        // A page that came from the network: every href, root-relative
+        // ones included, resolves against the page's own URL.
+        target = urlutil::ResolveUrl(sess->origin, href);
+    } else if (href.rfind("http://", 0) != 0 && href.rfind("https://", 0) != 0 && href[0] != '/') {
         std::string base_dir = sess ? std::filesystem::path(sess->source).parent_path().string() : std::string();
         if (!base_dir.empty()) target = base_dir + "/" + href;
     }
@@ -32445,6 +41646,23 @@ void DispatchHtmlLinkClicks() {
     Mode mode = g_editor.CurrentMode();
     if (IsModalOverlayMode(mode) && mode != Mode::Sidebar) return;
     gfx::Vector2 mouse = gfx::GetMousePosition();
+    // The DOM sees the click first, at the smallest laid-out piece under the
+    // pointer; a listener that calls preventDefault() (a client-side router
+    // on an <a>) keeps the link below from being followed.
+    const HtmlClickRect *hit = nullptr;
+    for (const HtmlClickRect &candidate : g_html_click_rects) {
+        if (!PointInRect(mouse, candidate.rect)) continue;
+        if (!hit || candidate.rect.width * candidate.rect.height <= hit->rect.width * hit->rect.height) hit = &candidate;
+    }
+    if (hit) {
+        const int pane_id = hit->pane_id, buffer_id = hit->buffer_id;
+        const std::string href = hit->link_href;
+        DomNode *node = hit->node;
+        g_editor.FocusPaneById(pane_id);
+        const bool proceed = g_editor.ClickHtmlNode(buffer_id, node);  // may re-render: `hit` is stale after this
+        if (proceed && !href.empty()) NavigateHtmlLink(buffer_id, href);
+        return;
+    }
     for (const LinkHintRect &link : g_link_hint_rects) {
         if (link.is_pdf || !PointInRect(mouse, link.rect)) continue;
         g_editor.FocusPaneById(link.pane_id);
@@ -32523,7 +41741,11 @@ void CollectHintTargets() {
                                     g_open_menu = -1;
                                 }});
         }
-    } else {
+    } else if (g_editor.IsMenuBarVisible() && !g_editor.IsZenMode()) {
+        // Only when the bar is actually on screen -- hinting File/Edit/
+        // Window/Help while it's hidden would label pane content with
+        // triggers that aren't there, and firing one would open a
+        // dropdown hanging off a bar nobody can see.
         for (size_t i = 0; i < g_menus.size() && i < g_menu_starts.size(); i++) {
             int idx = static_cast<int>(i);
             targets.push_back({gfx::Vector2{g_menu_starts[i], 0.0f}, "", [idx] { g_open_menu = idx; }});
@@ -32783,8 +42005,7 @@ bool HandlePanePickInput() {
 }
 
 // Draws the pane picker: a dim veil over each candidate window with its
-// letter in a large yellow badge centered in it, matching DrawHintOverlay's
-// theme-independent high-contrast styling. The pane's current rect is looked
+// letter in a compact, theme-accent badge centered in it. The pane's current rect is looked
 // up live from g_pane_screen_rects (a window resize mid-pick moves the
 // badge with it; a candidate that has since vanished is silently skipped).
 // Called last in DrawEditor so nothing paints over it.
@@ -32793,9 +42014,13 @@ bool HandlePanePickInput() {
  */
 void DrawPanePickOverlay() {
     if (!g_pane_pick_active) return;
-    constexpr gfx::Color kBadgeBg{255, 215, 0, 255};  // solid yellow, theme-independent
-    constexpr gfx::Color kBadgeFg{0, 0, 0, 255};       // black, for contrast against kBadgeBg
-    const float letter_size = g_font_size * 3.0f;
+    // AccentTint is the theme's accent intended for filled UI controls. It
+    // keeps a bright, readable orange in Gruvbox Light rather than using
+    // Accent's darker syntax-color variant directly.
+    const gfx::Color badge_bg = ResolveHlGroup("AccentTint");
+    const gfx::Color badge_fg = ResolveHlGroup("Normal");
+    const gfx::Color badge_border = ResolveHlGroup("Accent");
+    const float letter_size = g_font_size * 1.75f;
     for (const PanePickTarget &t : g_pane_pick_targets) {
         const gfx::Rectangle *rect = nullptr;
         for (const PaneScreenRect &pr : g_pane_screen_rects) {
@@ -32811,9 +42036,10 @@ void DrawPanePickOverlay() {
         const float pad = letter_size * 0.3f;
         float badge_x = rect->x + (rect->width - sz.x) / 2.0f;
         float badge_y = rect->y + (rect->height - sz.y) / 2.0f;
-        gfx::DrawRectangle(static_cast<int>(badge_x - pad), static_cast<int>(badge_y - pad * 0.5f),
-                           static_cast<int>(sz.x + pad * 2.0f), static_cast<int>(sz.y + pad), kBadgeBg);
-        gfx::DrawTextEx(g_font, t.label.c_str(), gfx::Vector2{badge_x, badge_y}, letter_size, 0, kBadgeFg);
+        gfx::Rectangle badge{badge_x - pad, badge_y - pad * 0.5f, sz.x + pad * 2.0f, sz.y + pad};
+        gfx::DrawRectangleRounded(badge, 0.35f, 6, badge_bg);
+        gfx::DrawRectangleRoundedLinesEx(badge, 0.35f, 6, 1.0f, badge_border);
+        gfx::DrawTextEx(g_font, t.label.c_str(), gfx::Vector2{badge_x, badge_y}, letter_size, 0, badge_fg);
     }
 }
 
@@ -32862,6 +42088,16 @@ void DispatchChromeClicks() {
     if (g_editor.IsFloatPaneOpen() && !PointInRect(mouse, g_float_pane_rect)) {
         g_editor.CloseFloatPane();
         return;
+    }
+    // A click outside an open notebook kernel dropdown closes it. Not a
+    // `return`: the click still falls through to the region loop so
+    // clicking straight onto a different cell's kernel chip both closes
+    // this menu and opens that one in a single click (a click inside the
+    // menu is one of its own item regions, handled by the loop below).
+    if (g_notebook_kernel_menu_buffer != -1 && !PointInRect(mouse, g_notebook_kernel_menu_rect)) {
+        g_notebook_kernel_menu_buffer = -1;
+        g_notebook_kernel_menu_cell = -1;
+        g_notebook_kernel_menu_rect = {};
     }
     for (const ClickRegion &r : g_click_regions) {
         if (PointInRect(mouse, r.rect)) {
@@ -33499,12 +42735,26 @@ void UpdatePaneMouseInteraction() {
                     // mouse travels past kPaneDragThresholdPx.
                     {
                         const std::string wid = g_editor.SidebarLineWidgetId(r.sidebar_id, r.line_index);
+                        // A row can be draggable for either reason: it
+                        // names a real file (the file tree, git status),
+                        // or it stands for an already-open buffer
+                        // (SidebarWidget::drag_buffer_id -- the Buffers
+                        // sidebar, where a row may well have no file at
+                        // all). The buffer payload wins where both apply:
+                        // dropping the row the user is looking at should
+                        // show *that* buffer, unsaved edits and all, not
+                        // re-read its path.
+                        const int drag_buf = g_editor.SidebarLineDragBufferId(r.sidebar_id, r.line_index);
                         std::error_code ec;
-                        if (!wid.empty() && std::filesystem::is_regular_file(wid, ec)) {
+                        const bool is_file = !wid.empty() && std::filesystem::is_regular_file(wid, ec);
+                        if (drag_buf >= 0 || is_file) {
                             g_pane_drag.kind = PaneDragKind::FileDrop;
                             g_pane_drag.start_pos = mouse;
                             g_pane_drag.threshold_passed = false;
-                            g_pane_drag.dragged_path = wid;
+                            g_pane_drag.dragged_path = drag_buf >= 0 ? std::string() : wid;
+                            g_pane_drag.dragged_drop_buffer_id = drag_buf;
+                            g_pane_drag.dragged_label = drag_buf >= 0 ? g_editor.BufferLabelForLua(drag_buf) : std::string();
+                            g_pane_drag.source_pane_id = -1;  // docked: not a pane of its own
                             g_pane_drag.target_pane_id = -1;
                         }
                     }
@@ -33528,11 +42778,38 @@ void UpdatePaneMouseInteraction() {
                     break;
                 }
             }
-            // PANE_DRAG_RESTORE: the same FileDrop arming as the sidebar-row
-            // loop above, for an ordinary buffer's own row (the file tree,
-            // the Buffers sidebar's paneable cousin if it ever gets one,
-            // ...) via its registered drag resolver instead of a
-            // SidebarWidget id -- see g_buffer_drag_row_rects' own comment.
+            // The same arming again for a *pane-hosted* sidebar's rows
+            // (g_sidebar_pane_row_rects): identical payload rules to the
+            // docked loop above, except the row's own pane is recorded so
+            // a center drop back onto it can be ignored on release. The
+            // row's ordinary click handling is a RegisterClickRegion and
+            // runs independently, so this only ever arms a *potential*
+            // drag, real once threshold_passed.
+            if (g_pane_drag.kind == PaneDragKind::None) {
+                for (const SidebarPaneRowRect &r : g_sidebar_pane_row_rects) {
+                    if (!PointInRect(mouse, r.rect)) continue;
+                    const std::string wid = g_editor.SidebarLineWidgetId(r.sidebar_id, r.line_index);
+                    const int drag_buf = g_editor.SidebarLineDragBufferId(r.sidebar_id, r.line_index);
+                    std::error_code ec;
+                    const bool is_file = !wid.empty() && std::filesystem::is_regular_file(wid, ec);
+                    if (drag_buf >= 0 || is_file) {
+                        g_pane_drag.kind = PaneDragKind::FileDrop;
+                        g_pane_drag.start_pos = mouse;
+                        g_pane_drag.threshold_passed = false;
+                        g_pane_drag.dragged_path = drag_buf >= 0 ? std::string() : wid;
+                        g_pane_drag.dragged_drop_buffer_id = drag_buf;
+                        g_pane_drag.dragged_label = drag_buf >= 0 ? g_editor.BufferLabelForLua(drag_buf) : std::string();
+                        g_pane_drag.source_pane_id = r.pane_id;
+                        g_pane_drag.target_pane_id = -1;
+                    }
+                    break;
+                }
+            }
+            // PANE_DRAG_RESTORE: the same FileDrop arming as the two
+            // sidebar-row loops above, for an ordinary buffer's own row
+            // (the file tree) via its registered drag resolver instead of
+            // a SidebarWidget id -- see g_buffer_drag_row_rects' own
+            // comment.
             // Purely additive: it only ever arms a *potential* drag (real
             // only once threshold_passed), so it can never interfere with
             // that buffer's own ordinary click-to-place-cursor/Enter-to-
@@ -33547,6 +42824,7 @@ void UpdatePaneMouseInteraction() {
                         g_pane_drag.start_pos = mouse;
                         g_pane_drag.threshold_passed = false;
                         g_pane_drag.dragged_path = path;
+                        g_pane_drag.source_pane_id = -1;
                         g_pane_drag.target_pane_id = -1;
                     }
                     break;
@@ -33596,8 +42874,22 @@ void UpdatePaneMouseInteraction() {
             const bool center = g_pane_drag.drop_zone == PaneDropZone::Center;
             bool side = g_pane_drag.drop_zone == PaneDropZone::Left || g_pane_drag.drop_zone == PaneDropZone::Right;
             bool before = g_pane_drag.drop_zone == PaneDropZone::Left || g_pane_drag.drop_zone == PaneDropZone::Top;
-            g_editor.OpenFileInPane(g_pane_drag.target_pane_id, g_pane_drag.dragged_path, !center,
-                                    side ? SplitDir::Vertical : SplitDir::Horizontal, before);
+            // Dropped back into the middle of the very pane it came out of
+            // (a sidebar hosted in a pane): the gesture asked for this
+            // buffer to be shown *somewhere*, and "somewhere" is never the
+            // list itself -- dropping it there would replace that list.
+            // An edge drop onto the same pane is still a real split.
+            const bool onto_self = center && g_pane_drag.source_pane_id >= 0 &&
+                                   g_pane_drag.source_pane_id == g_pane_drag.target_pane_id;
+            if (!onto_self) {
+                if (g_pane_drag.dragged_drop_buffer_id >= 0) {
+                    g_editor.OpenBufferInPane(g_pane_drag.target_pane_id, g_pane_drag.dragged_drop_buffer_id, !center,
+                                              side ? SplitDir::Vertical : SplitDir::Horizontal, before);
+                } else {
+                    g_editor.OpenFileInPane(g_pane_drag.target_pane_id, g_pane_drag.dragged_path, !center,
+                                            side ? SplitDir::Vertical : SplitDir::Horizontal, before);
+                }
+            }
         }
         if (g_pane_drag.threshold_passed && g_pane_drag.kind == PaneDragKind::TabMove &&
             g_pane_drag.target_pane_id >= 0) {
@@ -33636,7 +42928,8 @@ void DrawPaneDragOverlay() {
         // sidebar, say): just the floating name so the gesture reads as
         // "carrying a file", no zone to highlight.
         if (file_drop) {
-            const std::string label = Basename(g_pane_drag.dragged_path);
+            const std::string label =
+                g_pane_drag.dragged_label.empty() ? Basename(g_pane_drag.dragged_path) : g_pane_drag.dragged_label;
             gfx::Vector2 mp = gfx::GetMousePosition();
             float fs = MenuFontSize();
             float tw = gfx::MeasureTextEx(g_font, label.c_str(), fs, 0).x;
@@ -33733,6 +43026,21 @@ void UpdateDrawFrame() {
         g_editor.SetNow(gfx::GetTime());
         if (g_editor.Lua()) g_editor.Lua()->RunFrameHooks();
         HandleFontSizeShortcuts();
+        // Tapping mod1 (Alt) on its own shows/hides the top menu bar --
+        // the gesture Windows and GTK apps already use to summon a hidden
+        // menu bar, and the only one that doesn't cost a keybinding, since
+        // mod1 held with anything else keeps meaning exactly what it did.
+        // Polled here, before any other input handling, because
+        // Editor::ConsumeMod1Tap has to see this frame's key state
+        // untouched -- in particular before HandleMenuInput below, whose
+        // own dropdown handling would otherwise run against a bar that is
+        // about to disappear.
+        if (g_editor.ConsumeMod1Tap()) g_editor.ToggleMenuBar();
+        // A dropdown left open when the bar goes away (tapped mod1 with
+        // File open, or a Lua mep.menubar_set_visible(false)) would keep
+        // drawing over, and swallowing clicks meant for, the pane that
+        // just inherited those pixels.
+        if (!g_editor.IsMenuBarVisible()) g_open_menu = -1;
         // Hint-system trigger (HINT_SYSTEM.md): mod1+f (mep's own
         // configurable modifier -- Editor::IsMod1Down/mep.set_mod1,
         // defaulting to Alt), checked before the menu bar/editor even get
@@ -34264,12 +43572,86 @@ void RegisterModel3DAgentMethods() {
     });
 }
 
+#if !defined(__EMSCRIPTEN__)
+/**
+ * @brief Renders one Org file to a standalone HTML file with no window, frame loop or session.
+ * @param in_path Path of the .org source to read.
+ * @param out_path Path of the .html file to write.
+ * @return 0 on success, 1 if the export failed (the reason is written to stderr).
+ *
+ * Backs `mep --export-org <in.org> <out.html>`, which `just help` runs over
+ * every Org file under help/ so the shipped documentation can be
+ * regenerated -- and checked in CI -- without a display.
+ *
+ * Only kBuiltinOrgExport is loaded, not the whole kBuiltin* set main()
+ * normally runs: the exporter's entire dependency set (mep.org_export,
+ * mep_org_resolve_includes_lines, the macro helpers, mep_org_extract_meta,
+ * mep_org_html_wrap_document) lives in that one chunk, while the rest --
+ * file tree, git, LSP, terminals, Copilot -- would start jobs and register
+ * frame hooks that nothing here will ever pump. Nothing on this path needs
+ * the GL context either: Treesitter's grammar table is static, and code-
+ * block highlighting resolves to highlight-group *names*, not theme colors.
+ */
+int RunHeadlessOrgExport(const std::string &in_path, const std::string &out_path) {
+    // Single-quoting would be wrong for a Lua literal; escape for a double-
+    // quoted one instead. A path can legitimately contain either character.
+    auto lua_quote = [](const std::string &s) {
+        std::string out = "\"";
+        for (const char c : s) {
+            if (c == '\\' || c == '"') out += '\\';
+            out += c;
+        }
+        out += '"';
+        return out;
+    };
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) -- process-lifetime
+    // singleton, exactly as main()'s own LuaEnv is; this process exits below.
+    LuaEnv *lua = new LuaEnv(&g_editor);
+    g_editor.SetLuaEnv(lua);
+    // kBuiltinEditHooks defines mep.on_buffer_changed/on_buffer_saved, which
+    // kBuiltinSyntax registers against at load; kBuiltinSyntax in turn owns
+    // mep_org_babel_lang_ts_ft, the language -> Treesitter-filetype table the
+    // exporter's own code-block highlighter looks a #+begin_src block's
+    // language up in. Neither chunk's frame/edit hooks ever fire here --
+    // nothing pumps them -- so loading them costs only their table setup.
+    for (const char *chunk : {kBuiltinEditHooks, kBuiltinSyntax, kBuiltinOrgExport}) {
+        if (!lua->DoString(chunk)) {
+            std::fprintf(stderr, "mep --export-org: could not load the Org exporter\n");
+            return 1;
+        }
+    }
+    // pcall, and the detail written to stderr from Lua: DoString reports an
+    // error only through the editor's status line, which has no terminal
+    // behind it here, so an uncaught runtime error inside the exporter
+    // would otherwise surface as a bare non-zero exit with no explanation.
+    // error() at the end is what makes DoString itself return false.
+    const std::string code = "local ran, ok, err = pcall(mep.org_export_html_file, " + lua_quote(in_path) + ", " +
+                             lua_quote(out_path) + ")\n" +
+                             "if not ran then err = ok ok = nil end\n"
+                             "if not ok then io.stderr:write('mep --export-org: ' .. tostring(err) .. '\\n') "
+                             "error('export failed', 0) end\n";
+    return lua->DoString(code) ? 0 : 1;
+}
+#endif
+
 int main(int argc, char **argv) {
     // Installs the in-house GLFW/OpenGL gfx:: backend -- must run before
     // any other gfx:: call in this process (including on the background
     // font-bake thread started a few lines below), since every gfx::
     // facade function dereferences the backend pointers this sets up.
     gfx::SetBackends(gfx::ToBackends(gfx::CreateNativeBackendSet()));
+
+#if !defined(__EMSCRIPTEN__)
+    // Handled before anything else in main(): --export-org is a one-shot
+    // file-in/file-out conversion, so it must branch off ahead of the
+    // window, the font bakes and the session restore, none of which it
+    // wants and the first of which would fail outright with no display.
+    for (int i = 1; i + 2 < argc; i++) {
+        if (std::string(argv[i]) == "--export-org") {
+            return RunHeadlessOrgExport(argv[i + 1], argv[i + 2]);
+        }
+    }
+#endif
 
     // First thing of all -- StartFontBakesAsync's background thread
     // (right below) calls LoadFontData too, and its own "size is bigger
@@ -34396,11 +43778,16 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinTodo);
     lua->DoString(kBuiltinLsp);
     lua->DoString(kBuiltinLanguageUi);
+    // After kBuiltinLsp (its fallback is mep.lsp_hover) and before every
+    // language UI mode below, each of which registers its own help provider.
+    lua->DoString(kBuiltinGoHelp);
     lua->DoString(kBuiltinLanguageUiR);
     lua->DoString(kBuiltinLanguageUiCommon);
     lua->DoString(kBuiltinLanguageUiPython);
     lua->DoString(kBuiltinLanguageUiC);
     lua->DoString(kBuiltinCompletion);
+    // After kBuiltinLsp: reuses its mep_lsp_uri/mep_lsp_result helpers.
+    lua->DoString(kBuiltinCopilot);
     lua->DoString(kBuiltinSnippets);
     lua->DoString(kBuiltinSymbols);
     lua->DoString(kBuiltinStructure);
@@ -34419,6 +43806,7 @@ int main(int argc, char **argv) {
     }
     lua->DoString(kBuiltinSpell);
     lua->DoString(kBuiltinRun);
+    lua->DoString(kBuiltinFormat);
     lua->DoString(kBuiltinTermSend);
     lua->DoString(kBuiltinMarkdown);
     lua->DoString(kBuiltinOrg);
@@ -34430,9 +43818,15 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgBabel);
     lua->DoString(kBuiltinOrgPolyglot);
     lua->DoString(kBuiltinOrgLatex);
+    lua->DoString(kBuiltinPdfAnnot);
     lua->DoString(kBuiltinOrgExport);
     lua->DoString(kBuiltinOrgRoam);
     lua->DoString(kBuiltinOrgDrill);
+    {
+        std::string learn;
+        for (const char *part : kBuiltinLearnParts) learn += part;
+        lua->DoString(learn);
+    }
     lua->DoString(kBuiltinOrgBib);
     lua->DoString(kBuiltinActivityBar);
     lua->DoString(kBuiltinAi);
@@ -34442,6 +43836,8 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinAiTerminal);
     lua->DoString(kBuiltinLeetcode);
     lua->DoString(kBuiltinNotebook);
+    lua->DoString(kBuiltinRunners);
+    lua->DoString(kBuiltinLangTest);
     // Loaded last because Help overrides '/' only for an active help page;
     // every other buffer still routes it to the normal buffer search.
     lua->DoString(kBuiltinHelp);
@@ -34469,9 +43865,12 @@ int main(int argc, char **argv) {
             g_editor.SetSessionPersistence(false);
         } else if (a == "-h" || a == "--help") {
             std::printf("usage: mep [--project <dir>] [--no-session] [file]\n"
+                        "       mep --export-org <in.org> <out.html>\n"
                         "  --project <dir>  open <dir> as the project (default: the current directory;\n"
                         "                   $MEP_PROJECT is honoured too)\n"
-                        "  --no-session     neither restore nor save the project's workspaces/tabs\n");
+                        "  --no-session     neither restore nor save the project's workspaces/tabs\n"
+                        "  --export-org     render one Org file to standalone HTML and exit, with no\n"
+                        "                   window (what `just help` runs over help/*.org)\n");
             return 0;
         } else if (file_arg.empty()) {
             file_arg = a;

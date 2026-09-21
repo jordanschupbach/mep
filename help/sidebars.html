@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sidebars</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Interface">
+<meta name="help-order" content="30">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Sidebars</h1>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Opens with</th></tr>
+<tr><td>Files</td><td><code>&lt;leader&gt;ff</code></td></tr>
+<tr><td>Git</td><td><code>&lt;leader&gt;gG</code> docked, <code>gg</code> popped out</td></tr>
+<tr><td>Symbols</td><td><code>:MepSymbols</code></td></tr>
+<tr><td>Structure</td><td><code>&lt;leader&gt;ss</code></td></tr>
+<tr><td>Todo</td><td><code>&lt;leader&gt;tt</code></td></tr>
+<tr><td>Tests</td><td><code>&lt;leader&gt;tT</code></td></tr>
+<tr><td>Notifications</td><td><code>&lt;leader&gt;nn</code></td></tr>
+<tr><td>AI Agents</td><td><code>&lt;leader&gt;al</code></td></tr>
+<tr><td>Buffers</td><td><code>&lt;leader&gt;bB</code></td></tr>
+<tr><td>Debug</td><td><code>&lt;leader&gt;du</code></td></tr>
+<tr><td>Help</td><td><code>&lt;leader&gt;hh</code></td></tr>
+</table>
+<p>Each also has a toggle button in the tab bar.</p>
+<h1>Stacking</h1>
+<p>Sidebars docked on the <b>same</b> edge share one column, split vertically
+between them. Opening Git Status while the file tree is open stacks it below
+rather than beside -- one column, two panels.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td>drag the divider</td><td>resize two stacked sidebars</td></tr>
+<tr><td><code>mod1+Shift+j</code> <code>k</code></td><td>the same, from the keyboard</td></tr>
+<tr><td><code>mod1+j</code> <code>mod1+k</code></td><td>step focus between stacked sidebars</td></tr>
+<tr><td><code>mod1+Ctrl+j</code> <code>k</code></td><td>swap this sidebar with the one above/below</td></tr>
+</table>
+<p>Swapping keeps the sidebar focused, so the cursor travels with it.</p>
+<h1>Popping one out</h1>
+<p><code>mod1+m</code> from inside a focused sidebar pops it into a large centred float
+with a <b>preview column</b> beside the list. The rows and keys are unchanged, so
+<code>j=/=k</code>, Enter and the panel's own bindings all still work.</p>
+<p>What the preview shows depends on the panel:</p>
+<table>
+<tr><th>Panel</th><th>Preview</th></tr>
+<tr><td>Files</td><td>the file under the cursor, or a directory listing</td></tr>
+<tr><td>Git Status</td><td><code>git diff HEAD</code> for the entry</td></tr>
+<tr><td>Todo</td><td>the headline's org subtree</td></tr>
+<tr><td>Structure</td><td>the definition's source</td></tr>
+</table>
+<p>Each is syntax-highlighted where a grammar is available. <code>mod1+j=/=k</code>
+scroll the preview. <code>Esc</code>, <code>q</code>, <code>mod1+m</code> again, or a click outside drop back
+to the docked panel; anything that moves focus out of the sidebar ends the
+popout too.</p>
+<h1>The <code>?</code> key</h1>
+<p>Every sidebar's bottom row hints <code>?: help</code>. Pressing <code>?</code> swaps the panel's
+rows for a list of its key bindings, and the footer changes to
+<code>Esc: back to ...</code>. <code>Esc</code>, <code>?</code> or <code>q</code> return.</p>
+<p>This is the fastest way to learn any panel: open it and press <code>?</code>. The file
+tree works the same way, even though it is a pane rather than a sidebar.</p>
+<h1>Following the cursor</h1>
+<p>A row marked as current -- the Structure outline's "you are here", the
+buffer list's active buffer -- is scrolled into view automatically whenever
+it moves while the sidebar is <b>not</b> focused. So a panel you are not looking
+at still tracks what you are doing.</p>
+<h1>Tab strips</h1>
+<p>A sidebar can carry a tab strip, drawn under its title. <code>Tab</code> and
+<code>Shift-Tab</code> switch views while it is focused, as do the number keys and a
+click. The git panel is built on this -- Status, Log, Graph, Branches and
+Stash are five views of one sidebar.</p>
+<h1>Writing your own</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-purple">local</span> id = mep.<span class="tok-blue">sidebar_create</span>(<span class="tok-green">'Notes'</span>, <span class="tok-green">'left'</span>, <span class="tok-cyan">30</span>)
+mep.<span class="tok-blue">sidebar_set_sections</span>(id, <span class="tok-blue">{</span><span class="tok-blue">{</span>
+  id = <span class="tok-green">'main'</span>, title = <span class="tok-green">'Notes'</span>, collapsed = <span class="tok-cyan">false</span>,
+  widgets = <span class="tok-blue">{</span>
+    {id = <span class="tok-green">'one'</span>, text = <span class="tok-green">'First note'</span>, on_click = <span class="tok-purple">function</span>() mep.<span class="tok-blue">notify</span>(<span class="tok-green">'one'</span>) <span class="tok-purple">end</span>},
+    {id = <span class="tok-green">'two'</span>, text = <span class="tok-green">'Second note'</span><span class="tok-blue">}</span>,
+  },
+<span class="tok-blue">}</span>})
+mep.<span class="tok-blue">sidebar_open</span>(id)</code></pre></div>
+<p><code>mep.sidebar_set_help(id, {{key, description}, ...})</code> fills in the <code>?</code>
+overlay, <code>mep.sidebar_set_on_key(id, fn)</code> handles keys, and
+<code>mep.sidebar_set_tabs</code> adds a tab strip. To give it a popout preview,
+register <code>mep.sidebar_set_on_preview(id, fn)</code> and answer with
+<code>mep.sidebar_set_preview(...)</code> or one of the helpers the built-in panels
+use: <code>sidebar_preview_code</code>, <code>sidebar_preview_diff</code>, <code>sidebar_preview_path</code>.</p>
+<p>The Help sidebar you are reading this in is one of these.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="mod1-keys.html">The mod1 layer</a> -- the keys above, in full.</li>
+<li><a href="file-tree.html">The file tree</a> -- the panel you will use most.</li>
+<li><a href="tab-bar.html">The tab bar</a> -- the toggle buttons.</li>
+</ul>
+</body>
+</html>

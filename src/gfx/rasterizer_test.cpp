@@ -121,11 +121,44 @@ void TestCubicCircleApproximationArea() {
 
 }  // namespace
 
+// RasterizeRegion must give exactly the matching window of a full
+// Rasterize (the PDF renderer rasterizes each path over just its own
+// bounding box and relies on that), including windows that cut through
+// the shape and ones that miss it entirely.
+void TestRegionMatchesFullRasterWindow() {
+    constexpr int W = 64, H = 48;
+    auto shape = [] {
+        std::vector<Edge> edges;
+        AddRectClockwise(edges, 5.3f, 4.7f, 40.2f, 30.6f);
+        AddRectClockwise(edges, 20.5f, 12.25f, 58.8f, 44.1f);
+        FlattenCubic(edges, 10.0f, 40.0f, 30.0f, 2.0f, 50.0f, 60.0f, 62.0f, 20.0f);
+        FlattenCubic(edges, 62.0f, 20.0f, 40.0f, 10.0f, 20.0f, 30.0f, 10.0f, 40.0f);
+        return edges;
+    };
+    for (FillRule rule : {FillRule::kNonZero, FillRule::kEvenOdd}) {
+        std::vector<Edge> full_edges = shape();
+        std::vector<unsigned char> full = Rasterize(full_edges, W, H, rule);
+        const int windows[][4] = {{0, 0, W, H}, {7, 3, 30, 20}, {30, 25, 34, 23}, {0, 40, 10, 8}, {60, 0, 4, 48}};
+        for (const auto &win : windows) {
+            std::vector<Edge> edges = shape();
+            std::vector<unsigned char> part = gfx::raster::RasterizeRegion(edges, win[0], win[1], win[2], win[3], rule);
+            CHECK(part.size() == static_cast<size_t>(win[2] * win[3]));
+            for (int y = 0; y < win[3]; ++y) {
+                for (int x = 0; x < win[2]; ++x) {
+                    CHECK(part[static_cast<size_t>(y * win[2] + x)] ==
+                          full[static_cast<size_t>((win[1] + y) * W + win[0] + x)]);
+                }
+            }
+        }
+    }
+}
+
 int main() {
     TestNonZeroFillsOverlapOfSameWindingRects();
     TestEvenOddPunchesHoleInOverlap();
     TestCubicDegenerateStraightLineMatchesRectArea();
     TestCubicCircleApproximationArea();
+    TestRegionMatchesFullRasterWindow();
     std::printf("rasterizer_test: all checks passed\n");
     return 0;
 }

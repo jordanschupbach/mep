@@ -1,0 +1,90 @@
+#+TITLE: The command line
+#+HTML_HEAD: <meta name="help-section" content="Editing">
+#+HTML_HEAD: <meta name="help-order" content="120">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Using it
+
+=:= opens the command line at the bottom of the window. Type a command and
+press Enter; =Esc= cancels.
+
+| Key            | Does                                        |
+|----------------+---------------------------------------------|
+| Up / Down      | walk through command history                |
+| =Tab=          | complete the command name, or a file path   |
+| =Ctrl-R {reg}= | insert a register's text                    |
+| =Ctrl-Shift-V= | paste the clipboard                         |
+| =Esc=          | cancel                                      |
+
+Completion knows which commands take a path and offers directory entries
+for those, and command names everywhere else.
+
+The =/= and =?= search prompts behave the same way, with their own history.
+Text inserted at either prompt is kept to a single printable line.
+
+* Files and windows
+
+| Command            | Does                                          |
+|--------------------+-----------------------------------------------|
+| =:e {file}=        | open a file -- a path that does not exist yet starts a new buffer |
+| =:w [file]=        | write, optionally to a different path         |
+| =:wa=              | write every modified buffer that has a name   |
+| =:q= =:q!=         | close the pane, discarding changes with =!=   |
+| =:qa= =:qa!=       | quit everything                               |
+| =:wq= =:x=         | write, then close                             |
+| =:wqa= =:xa=       | write everything, then quit                   |
+| =:split= =:vsplit= | split the current pane                        |
+| =:close=           | close the current pane                        |
+| =:tabnew= =:tabdelete= | manage tabs                               |
+| =:bnext= =:bprevious= =:bdelete= | cycle or close buffers          |
+
+=:qa= refuses if *any* buffer anywhere has unsaved changes, so nothing
+hidden in another workspace is lost silently.
+
+* Jumping and running
+
+| Command          | Does                                                  |
+|------------------+-------------------------------------------------------|
+| =:42=            | go to line 42                                         |
+| =:normal {keys}= | run =keys= as literal Normal-mode input               |
+| =:lua {code}=    | run Lua                                               |
+| =:source {file}= | run a Lua file                                        |
+| =:terminal=      | open a shell in a split below                         |
+
+=:normal= is the natural partner for =:g=: =:g/TODO/normal A -- done= appends
+to every matching line. =:norm= is the short form.
+
+* Options
+
+=:set= changes an option for the session.
+
+| Option                       | Default | Does                            |
+|------------------------------+---------+---------------------------------|
+| =number= / =nu=              | on      | line numbers in the gutter      |
+| =relativenumber= / =rnu=     | on      | distances instead of numbers    |
+| =cursorline= / =cul=         |         | highlight the cursor's line     |
+| =wrap=                       | on      | soft-wrap long lines            |
+| =ignorecase=                 | off     | case-insensitive search and =:s= |
+| =wrapscan=                   | on      | search wraps around the buffer  |
+| =textwidth=N= / =tw=N=       | 80      | the column =gq= wraps to        |
+
+Prefix a boolean option with =no= to turn it off: =:set nowrap=,
+=:set nonumber norelativenumber=.
+
+For anything persistent, set it in =~/.config/mep/init.lua= instead.
+
+* Finding a command
+
+Almost every feature has a =:Mep...= command, and there are over two hundred
+of them. Three ways to find the one you want:
+
+- =Tab= at the command line completes command names.
+- =<Space>= shows the which-key popup of leader bindings, which is how most
+  commands are reached in practice.
+- =<leader>hk= lists every key binding currently in effect.
+
+* See also
+
+- [[file:substitute.html][Substitute and global]] -- ranges, =:s=, =:g=.
+- [[file:files.html][Files and buffers]] -- what the file commands actually do.
+- [[file:installing.html][Installing and running]] -- =init.lua=, for making an option stick.

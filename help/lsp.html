@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Language servers</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="10">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Language servers</h1>
+<h1>Attaching</h1>
+<p>Open a file mep has a server for, and if that server is on <code>$PATH</code> it
+starts automatically. Nothing to configure.</p>
+<p>A client runs <b>per language per workspace root</b>, so two workspaces on two
+branches each get their own -- which is what makes branch-per-workspace
+work without servers fighting over one project.</p>
+<p><code>:MepLspAttach</code> attaches by hand; <code>:MepLspStop</code> stops a client.</p>
+<h1>The keys</h1>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>K</code></td><td>hover documentation</td></tr>
+<tr><td><code>gd</code></td><td>go to definition</td></tr>
+<tr><td><code>Q</code></td><td>this line's diagnostics, in a popup</td></tr>
+<tr><td><code>&lt;leader&gt;li</code></td><td>go to implementation</td></tr>
+<tr><td><code>&lt;leader&gt;lt</code></td><td>go to type definition</td></tr>
+<tr><td><code>&lt;leader&gt;lk</code></td><td>signature help</td></tr>
+<tr><td><code>&lt;leader&gt;rn</code></td><td>rename the symbol</td></tr>
+<tr><td><code>&lt;leader&gt;ca</code></td><td>code action</td></tr>
+</table>
+<p>Note <code>gd</code> and not <code>gr</code>: <code>gr</code> is bound to <b>run</b> in mep, not references. For
+references use <code>:MepLspReferences</code>.</p>
+<p>Every action also has a command: <code>:MepLspHover</code>, <code>:MepLspDefinition</code>,
+<code>:MepLspReferences</code>, <code>:MepLspImplementation</code>, <code>:MepLspTypeDefinition</code>,
+<code>:MepLspSignatureHelp</code>, <code>:MepLspRename</code>, <code>:MepLspCodeAction</code>,
+<code>:MepLspFormat</code>.</p>
+<h1>Diagnostics</h1>
+<p>Errors, warnings and hints are underlined in the buffer and marked in the
+sign column. <code>Q</code> shows the current line's diagnostics in a popup, and
+<code>:MepDiagShow</code> lists them.</p>
+<p>Severity maps to the <code>Error</code>, <code>Warn</code>, <code>Info</code> and <code>Hint</code> <a href="highlight-groups.html">highlight groups</a>, so
+they follow your theme.</p>
+<h1>Servers mep knows about</h1>
+<p>Thirty-six, each used when its command is on <code>$PATH</code>:</p>
+<table>
+<tr><th>Language</th><th>Command</th></tr>
+<tr><td>C, C++</td><td><code>clangd</code></td></tr>
+<tr><td>Python</td><td><code>pyright-langserver</code>, or <code>basedpyright-langserver</code></td></tr>
+<tr><td>Lua</td><td><code>lua-language-server</code></td></tr>
+<tr><td>Go</td><td><code>gopls</code></td></tr>
+<tr><td>Rust</td><td><code>rust-analyzer</code></td></tr>
+<tr><td>TypeScript, JS</td><td><code>typescript-language-server</code></td></tr>
+<tr><td>Java</td><td><code>jdtls</code></td></tr>
+<tr><td>Ruby</td><td><code>solargraph</code></td></tr>
+<tr><td>PHP</td><td><code>intelephense</code></td></tr>
+<tr><td>C#</td><td><code>OmniSharp</code></td></tr>
+<tr><td>Haskell</td><td><code>haskell-language-server-wrapper</code></td></tr>
+<tr><td>OCaml</td><td><code>ocamllsp</code></td></tr>
+<tr><td>Zig</td><td><code>zls</code></td></tr>
+<tr><td>Elixir</td><td><code>elixir-ls</code></td></tr>
+<tr><td>Bash</td><td><code>bash-language-server</code></td></tr>
+<tr><td>R</td><td>R's <code>languageserver</code></td></tr>
+<tr><td>Perl</td><td>Perl's <code>PLS</code></td></tr>
+<tr><td>Fortran</td><td><code>fortls</code></td></tr>
+<tr><td>Scala</td><td><code>metals</code></td></tr>
+<tr><td>Nim</td><td><code>nimlsp</code></td></tr>
+<tr><td>Crystal</td><td><code>crystalline</code></td></tr>
+<tr><td>D</td><td><code>serve-d</code></td></tr>
+<tr><td>Julia</td><td>Julia's <code>LanguageServer</code></td></tr>
+<tr><td>Clojure</td><td><code>clojure-lsp</code></td></tr>
+<tr><td>Kotlin</td><td><code>kotlin-language-server</code></td></tr>
+<tr><td>Svelte</td><td><code>svelteserver</code></td></tr>
+<tr><td>YAML</td><td><code>yaml-language-server</code></td></tr>
+<tr><td>JSON</td><td><code>vscode-json-language-server</code></td></tr>
+<tr><td>HTML</td><td><code>vscode-html-language-server</code></td></tr>
+<tr><td>CSS, SCSS, Less</td><td><code>vscode-css-language-server</code></td></tr>
+<tr><td>Dockerfile</td><td><code>docker-langserver</code></td></tr>
+<tr><td>Terraform</td><td><code>terraform-ls</code></td></tr>
+<tr><td>Markdown</td><td><code>marksman</code></td></tr>
+<tr><td>TOML</td><td><code>taplo</code></td></tr>
+<tr><td>Vimscript</td><td><code>vim-language-server</code></td></tr>
+</table>
+<p>If a server is missing, nothing breaks -- the file simply opens without one.</p>
+<h1>Inside org code blocks</h1>
+<p>Code blocks in an Org file get language-server support too, through a shadow
+buffer per block. See <a href="org-polyglot.html">Language servers in code blocks</a> for what that covers
+and what it does not.</p>
+<h1>From Lua</h1>
+<p><code>mep.lsp_start</code>, <code>mep.lsp_connect</code>, <code>mep.lsp_stop</code>, <code>mep.lsp_is_running</code>,
+<code>mep.lsp_request</code>, <code>mep.lsp_notify</code>, <code>mep.lsp_on_notification</code>,
+<code>mep.lsp_on_request</code> are the plumbing; <code>mep.lsp_word_at_cursor</code> and
+<code>mep.lsp_symbols_flatten</code> are the helpers the built-in features use.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="completion.html">Completion</a> -- where LSP suggestions end up.</li>
+<li><a href="formatting.html">Formatting</a> -- <code>mep.lsp_format</code> as the fallback formatter.</li>
+<li><a href="structure-symbols.html">Structure and symbols</a> -- the outline views.</li>
+</ul>
+</body>
+</html>

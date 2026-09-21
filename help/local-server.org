@@ -1,0 +1,40 @@
+#+TITLE: Serving a directory
+#+HTML_HEAD: <meta name="help-section" content="Web">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Hosting from inside the editor
+
+| Key / command            | Does                                       |
+|--------------------------+--------------------------------------------|
+| =<leader>bh=             | serve this file's directory and browse it  |
+| =:Serve [dir] [port]=    | serve a directory                          |
+| =:ServeStop [port]=      | stop a server                              |
+| =:Servers=               | list what is running                       |
+
+With no arguments it serves the current file's directory on a free port and
+opens it in the [[file:browser.html][browser pane]] -- the whole preview loop in one key.
+
+* What the server does and does not do
+
+- binds =127.0.0.1= only, so nothing is exposed to the network;
+- serves GET and HEAD;
+- never serves outside the directory it was given;
+- sends =no-store=, so a reload always shows your latest edit.
+
+That last one matters: without it you would spend time wondering why a
+change has not appeared.
+
+* From Lua
+
+#+begin_src lua
+local port = mep.http_serve('/path/to/site', 8080)
+mep.http_servers()      --> what is running
+mep.http_stop(port)
+mep.http_get(url)       --> fetch a URL directly
+#+end_src
+
+* See also
+
+- [[file:browser.html][The browser pane]] -- where the page opens.
+- [[file:web-ladder.html][Measuring the engine]] -- what the engine can run.

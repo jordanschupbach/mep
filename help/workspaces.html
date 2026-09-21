@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workspaces</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Projects">
+<meta name="help-order" content="20">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Workspaces</h1>
+<h1>One branch, one checkout, one workspace</h1>
+<p>Every project starts with a primary workspace called <code>main</code>, rooted at the
+project directory. On a git project you can add more, and each one gets its
+<b>own checkout on its own branch</b> -- a real <code>git worktree</code>, not a shared
+directory that switches branches under you.</p>
+<p>That is the point of the feature. Two workspaces means two branches checked
+out at once, each with its own open files, its own terminals and its own
+language servers, and switching between them is instant because nothing has
+to be checked out.</p>
+<h1>Creating one</h1>
+<pre>:wsnew feature-x</pre>
+<p>runs, in effect:</p>
+<pre>git worktree add -b feature-x &lt;parent&gt;/&lt;repo&gt;.worktrees/feature-x HEAD</pre>
+<p>It runs asynchronously -- the workspace's label in the tab bar shows
+<code>[feature-x...]</code> until git finishes.</p>
+<p><code>:wsnew! &lt;name&gt;</code> attaches to a branch that already exists instead of
+creating one.</p>
+<p>A workspace name is also a branch name and a directory name, so it is
+restricted to letters, digits, <code>.</code>, <code>_</code> and <code>-</code>. It may not start with <code>.</code>
+or <code>-</code>, end in <code>.lock</code>, or contain <code>..</code> -- git refuses those as branch
+names.</p>
+<h1>Switching</h1>
+<table>
+<tr><th>Key / command</th><th>Does</th></tr>
+<tr><td><code>:ws &lt;name&gt;</code> or <code>:ws &lt;N&gt;</code></td><td>switch to that workspace</td></tr>
+<tr><td><code>:wsnext</code> <code>:wsn</code></td><td>next workspace</td></tr>
+<tr><td><code>:wsprevious</code> <code>:wsp</code></td><td>previous workspace</td></tr>
+<tr><td><code>Ctrl-Alt-]</code> <code>Ctrl-Alt-[</code></td><td>next / previous</td></tr>
+<tr><td><code>Alt-1</code> .. <code>Alt-9</code></td><td>jump to the Nth</td></tr>
+<tr><td><code>:wslist</code> or <code>&lt;leader&gt;ww</code></td><td>pick from a list</td></tr>
+<tr><td><code>&lt;leader&gt;wl</code> <code>&lt;leader&gt;wh</code></td><td>next / previous</td></tr>
+<tr><td><code>&lt;leader&gt;gw</code></td><td>list with branch and ahead/behind</td></tr>
+</table>
+<p>Clicking a workspace label in the tab bar switches to it; middle-clicking
+closes it; hovering shows its directory and branch.</p>
+<h1>Managing them</h1>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:wsrename &lt;name&gt;</code></td><td>rename it (<code>&lt;leader&gt;wr</code>)</td></tr>
+<tr><td><code>:wsdelete [name]</code></td><td>remove the worktree and close it (<code>&lt;leader&gt;wd</code>)</td></tr>
+<tr><td><code>:wsdelete! [name]</code></td><td>the same, with unsaved changes</td></tr>
+<tr><td><code>:wsadopt &lt;path-or-branch&gt;</code></td><td>turn a hand-made worktree into a workspace</td></tr>
+<tr><td><code>:wsprune</code></td><td>drop workspaces whose directory has vanished</td></tr>
+<tr><td><code>&lt;leader&gt;wn</code></td><td>new workspace</td></tr>
+</table>
+<p><b>Deleting keeps the branch.</b> <code>:wsdelete</code> runs <code>git worktree remove</code> and says
+so -- "(branch kept)". Your commits are not at risk. Without <code>!</code>, git itself
+refuses on a dirty tree and mep shows git's own message.</p>
+<h1>Everything follows the active workspace</h1>
+<p>The process working directory is changed to the active workspace's root.
+That one fact explains most of the behaviour:</p>
+<ul>
+<li><code>&lt;leader&gt;ff</code>, live grep and <code>:e</code> resolve against that worktree.</li>
+<li>A language server is started per language <b>per workspace root</b>, so each branch gets its own.</li>
+<li><code>:terminal</code> opens there, with <code>$MEP_WORKSPACE_NAME</code> and <code>$MEP_PROJECT_NAME</code> exported.</li>
+</ul>
+<p>Buffers belong to the workspace they were opened in, so <code>:ls</code>, the buffer
+picker, <code>:bnext</code> and an agent's <code>buffer.list</code> show that workspace's buffers.
+The safety nets stay global, though: <code>:wa</code> writes every modified buffer
+everywhere, and <code>:qa</code> refuses if anything anywhere is unsaved.</p>
+<h1>Non-git projects</h1>
+<p>Everything above works minus the worktrees: every workspace shares the
+project root. You still get separate tabs, buffers and terminals per
+workspace, just not separate checkouts.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-comment">-- Where new worktrees go. Absolute, or relative to the project root.</span>
+<span class="tok-comment">-- Default: &lt;parent-of-repo&gt;/&lt;repo&gt;.worktrees/&lt;name&gt;</span>
+mep.opt.worktree_dir = <span class="tok-green">'~/worktrees'</span>
+
+<span class="tok-comment">-- Add a '+' to the label of a workspace with uncommitted changes,</span>
+<span class="tok-comment">-- from a 5-second `git status` poll. Off by default.</span>
+mep.opt.workspace_git_dirty = <span class="tok-cyan">true</span></code></pre></div>
+<p>From Lua: <code>mep.workspace_list</code>, <code>current</code>, <code>root</code>, <code>new</code>, <code>switch</code>,
+<code>delete</code>, <code>rename</code>, <code>next</code>, <code>previous</code>, <code>adopt</code>, <code>prune</code>, and
+<code>mep.on_workspace_changed(fn)</code>.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="projects.html">Projects</a> -- what workspaces live inside.</li>
+<li><a href="sessions.html">Sessions</a> -- how a workspace layout survives a restart.</li>
+<li><a href="files.html">Files and buffers</a> -- why a buffer list is workspace-scoped.</li>
+</ul>
+</body>
+</html>

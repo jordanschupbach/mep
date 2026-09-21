@@ -362,6 +362,10 @@ public:
     }
     bool IsKeyDown(gfx::Key key) override { return InRange(key) && ctx_->key_down[MapKey(key)]; }
     bool IsKeyReleased(gfx::Key key) override { return InRange(key) && ctx_->key_released[MapKey(key)]; }
+    // Always false here: this backend has no ReleaseAllKeys-on-FocusOut
+    // step to disambiguate in the first place (emcc's GLFW shim owns the
+    // canvas' key state), so every release it reports is a real one.
+    bool WindowFocusLostThisFrame() override { return false; }
     gfx::Key GetKeyPressed() override {
         if (ctx_->key_queue.empty()) return gfx::Key::None;
         int glfw_key = ctx_->key_queue.front();

@@ -18,6 +18,7 @@
 #include <ctime>
 #include <deque>
 #include <functional>
+#include <future>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -150,6 +151,15 @@ enum class Mode {
     // those modes, a pane refocus always re-enters at plain Mode::Pdf
     // (SyncModeToActivePaneBuffer), never resumes mid-nav.
     PdfNav,
+    // Annotation sub-mode over a focused PDF pane, entered with 'a' from
+    // Mode::Pdf (Editor::HandlePdfInput serves it too, like PdfNav): single
+    // keys create/color highlights and notes over the current text
+    // selection or search match -- h highlight, n note (opens a text
+    // prompt), 1-5 pick a highlight colour, c cycle colour. Movement
+    // (j/k/h/l, scroll) still works. Escape returns to Mode::Pdf. Same
+    // "distinct key regime, refocus re-enters plain Pdf" rationale as
+    // PdfNav.
+    PdfAnnotate,
     // A focused video-playback pane (a VideoSession buffer -- see below,
     // opened for a `.mov` file written by mov::WriteMovFile, see
     // ANIMATION_VIDEO_PLAN.md Phase 5). Same "flat viewer, ':'/leader
@@ -290,9 +300,11 @@ struct CursorPos {
 // Dependency-free fzf-style fuzzy subsequence scorer (NVIM_PARITY_PLAN.md
 // Part I Phase 8): every character of `query` must appear in `str`, in
 // order (not necessarily contiguous). Returns -1 if it doesn't match at
-// all; otherwise a score where higher is a better match (consecutive runs
-// and word-boundary starts score higher; longer overall spans and longer
-// strings score lower, as a tiebreaker). Smart-case: case-insensitive
+// all; otherwise a non-negative score where higher is a better match. The
+// best-scoring alignment is used, not the first greedy one: consecutive
+// runs and word-boundary starts score higher, gaps cost, a contiguous
+// whole-word match scores higher still and an exact whole-string match
+// highest; longer strings score slightly lower, as a tiebreaker. Smart-case: case-insensitive
 // unless `query` itself contains an uppercase letter. `positions`, if
 // non-null, receives the matched byte offsets in `str` (for highlighting).
 /**
@@ -438,6 +450,18 @@ struct Decoration {
     // line (2 errors vs. 1) is visually distinguishable at a glance, not
     // just by which single glyph happened to win priority.
     bool sign_badge = false;
+    // Draws a geometric mark in the sign column instead of a text glyph
+    // (`sign` is ignored when this is set): "bar" is a full-height
+    // vertical stripe, "delete"/"topdelete" a short horizontal stripe
+    // along the row's bottom/top edge, "changedelete" both a bar and a
+    // bottom stripe. This is what the git gutter draws its hunk marks
+    // with -- gitsigns.nvim's own look, which in Neovim comes from box-
+    // drawing/block glyphs (U+2503, U+2581, U+2594). None of those are
+    // in any of mep's four embedded UI fonts (g_font is an ASCII-only
+    // bake; see kIconCodepointRanges/kSymbolCodepointRanges, main.cpp),
+    // so asking for them by text would draw blanks -- rectangles get the
+    // same look with no font coverage to depend on.
+    std::string sign_shape;
     int priority = 0;
     // Colorizer swatch (Part III Phase 13): a literal RGB drawn as a small
     // filled square at col_start, bypassing the named-highlight-group
@@ -464,6 +488,23 @@ struct Fold {
     int end_row = 0;  // inclusive
     bool closed = true;
     std::string provider = "manual";
+};
+
+// One highlight span over a picker's item display text or its preview
+// column (Treesitter-backed syntax highlighting for `/`'s buffer-search
+// picker, kBuiltinPickerSources' mep.buffer_search -- see
+// Editor::SetPickerPreview and DrawPickerOverlay, main.cpp). `row` is
+// unused (always 0) on a PickerItem's own single-line `display`; for the
+// preview column it indexes into SplitLines(PickerPreview()) the same
+// way Decoration::row indexes into buffer lines. col_start/col_end are
+// byte offsets, [col_start, col_end) exclusive, matching Decoration's
+// own convention. Also a SidebarWidget's per-row `spans` (below), where
+// `row` is likewise unused.
+struct PickerHlSpan {
+    int row = 0;
+    int col_start = 0;
+    int col_end = 0;
+    std::string hl_group;
 };
 
 // A generic reusable side/dock panel (NVIM_PARITY_PLAN.md Part I Phase 7):
@@ -511,6 +552,33 @@ struct SidebarWidget {
     // behavior every other sidebar keeps unchanged.
     std::string trailing_icon;
     int trailing_on_click_ref = 0;
+    // The already-open buffer this row stands for, when it stands for one
+    // (the Buffers sidebar's rows; -1 everywhere else). Purely a drag
+    // payload: it makes the row draggable onto a pane the same way a row
+    // whose `id` happens to name a real file on disk already is
+    // (main.cpp's UpdatePaneMouseInteraction), except the drop shows that
+    // exact buffer (Editor::OpenBufferInPane) instead of re-opening a
+    // path -- so a terminal, a scratch buffer or any other pathless
+    // buffer drags just as well as a file-backed one, and dropping a
+    // modified buffer can't be confused with re-reading its file.
+    int drag_buffer_id = -1;
+    // Optional per-byte syntax coloring over `text` (PickerHlSpan; `row`
+    // unused), layered over `hl` the way a PickerItem's own spans are
+    // (mep.sidebar_set_sections' widget `spans` field). Ignored for a
+    // wrap=true widget: FlattenSidebar would have to re-split every span
+    // across the wrapped rows, and the one consumer (kBuiltinLearn's
+    // identify-the-code rows, Treesitter-highlighted through
+    // mep.ts_captures) never wraps code.
+    std::vector<PickerHlSpan> spans;
+    // Optional inline image (mep.sidebar_set_sections' widget `image` =
+    // an already-resolved path, `image_rows` = the row height it takes,
+    // default 8): FlattenSidebar expands the widget into image_rows
+    // SidebarLines and the renderers draw the texture (the same
+    // GetOrLoadOrgInlineImageTexture cache org inline images use) scaled
+    // into that box; `text` is ignored for an image widget. kBuiltinLearn's
+    // picture quiz is the first consumer.
+    std::string image;
+    int image_rows = 8;
 };
 struct SidebarSection {
     std::string id, title;
@@ -566,6 +634,22 @@ struct SidebarInstance {
     // and (if any) its own internal `tabs` strip underneath the group's
     // -- see Editor::OpenSidebarIdsOn/TabGroupActiveId and DrawSidebars.
     std::string tab_group;
+    // Opened straight into the popout (mep.sidebar_popout_open, e.g. the
+    // git panel's <leader>gg): while set the sidebar has no docked
+    // footprint -- OpenSidebarIdsOn/DockSize/DrawSidebars all skip it --
+    // and collapsing the popout closes it outright instead of leaving a
+    // docked panel behind. Cleared by a plain OpenSidebar/CloseSidebar.
+    bool popout_only = false;
+    // Sidebar-specific key bindings ({key, description}, in display order)
+    // listed by the `?` help view (mep.sidebar_set_help), above the
+    // generic navigation keys every sidebar shares.
+    std::vector<std::pair<std::string, std::string>> help_keys;
+    // `?` toggled the help view on: FlattenSidebar returns the key list
+    // (SidebarLine::Kind::Text rows) instead of the sections until Escape/
+    // `?`/q toggles it back, restoring the cursor/scroll saved here.
+    bool help_open = false;
+    int help_saved_cursor = 0;
+    int help_saved_scroll = 0;
     // First flattened-line index drawn at the top of the sidebar's content
     // area -- this sidebar's mirror of Pane::scroll_row. Kept per-instance
     // (rather than a single field alongside sidebar_cursor_) so a sidebar
@@ -584,19 +668,46 @@ struct SidebarInstance {
     // pane tree gives it, so wrapping to `size` there left long text
     // either clipped or wrapped far short of the pane's right edge.
     int wrap_cols = 0;
+    // Flattened index of the row last seen with SidebarLine::current set
+    // (-1 = none), so UpdateScrollForSidebar scrolls an unfocused sidebar
+    // to it only when it moves.
+    int last_current_row = -1;
     int scroll_offset = 0;
+    // Pane-hosted rows (DrawSidebarPaneContent) activate on a *double*
+    // click, selecting only on a single one -- the docked path's
+    // behavior (main.cpp's UpdatePaneMouseInteraction) instead of this
+    // path's default "a row is an ordinary button, one click both selects
+    // and fires it". Opt-in per sidebar because it only earns its extra
+    // click where activating is destructive or navigational enough that
+    // doing it by accident hurts: the Buffers sidebar, whose rows open a
+    // whole other buffer somewhere else in the layout. Every other
+    // pane-hosted sidebar (git's Status/Log, the R UI's tabs, Help)
+    // leaves this false and keeps single-click activation.
+    bool activate_on_double_click = false;
 };
 
 // One flattened, renderable/navigable line of a sidebar: either a section
 // header (collapse toggle) or a widget row. Shared by main.cpp's renderer
 // and Editor::HandleSidebarInput so the two can't disagree about layout.
 struct SidebarLine {
-    enum class Kind { SectionHeader, Widget } kind = Kind::SectionHeader;
+    // Text: a non-interactive row (the `?` key-binding view's lines) --
+    // neither a collapse toggle nor backed by a widget.
+    enum class Kind { SectionHeader, Widget, Text } kind = Kind::SectionHeader;
     int section_index = 0;
     int widget_index = -1;  // -1 for a header line
     std::string text;
     std::string hl;
     bool current = false;  // mirrors SidebarWidget::current; see its comment
+    // SidebarWidget::spans shifted past the icon prefix FlattenSidebar
+    // prepends to `text`, so they index this line's own bytes directly.
+    std::vector<PickerHlSpan> spans;
+    // Image rows (SidebarWidget::image): every line of the expansion
+    // carries the path plus its 0-based offset within the block and the
+    // block's total rows, so a renderer can position the texture from
+    // whichever of the rows is on screen.
+    std::string image;
+    int image_index = 0;
+    int image_rows = 0;
 };
 
 // A compact palette (mep.nvim's palettes.lua SPECS/FALLBACKS shape,
@@ -612,22 +723,6 @@ struct Palette {
     ThemeColor bg, fg, red, green, yellow, blue, purple, cyan, orange, border, accent;
 };
 
-// One highlight span over a picker's item display text or its preview
-// column (Treesitter-backed syntax highlighting for `/`'s buffer-search
-// picker, kBuiltinPickerSources' mep.buffer_search -- see
-// Editor::SetPickerPreview and DrawPickerOverlay, main.cpp). `row` is
-// unused (always 0) on a PickerItem's own single-line `display`; for the
-// preview column it indexes into SplitLines(PickerPreview()) the same
-// way Decoration::row indexes into buffer lines. col_start/col_end are
-// byte offsets, [col_start, col_end) exclusive, matching Decoration's
-// own convention.
-struct PickerHlSpan {
-    int row = 0;
-    int col_start = 0;
-    int col_end = 0;
-    std::string hl_group;
-};
-
 // One entry in a picker's item list (NVIM_PARITY_PLAN.md Part I Phase 8).
 // `data` is an opaque payload (e.g. a file path) handed back to the
 // on_select callback verbatim -- `display` is what's matched/shown.
@@ -637,6 +732,11 @@ struct PickerItem {
     std::string display;
     std::string data;
     std::vector<PickerHlSpan> spans;
+    // Optional primary match text (e.g. a runner entry's recipe name when
+    // `display` also carries its description). When set, items whose `key`
+    // matches the query always rank above items that only match somewhere
+    // else in `display`. Empty = match against `display` alone.
+    std::string key;
 };
 
 // One insert-mode completion candidate (NVIM_PARITY_PLAN.md Phase 22
@@ -699,6 +799,25 @@ struct WhichKeyBinding {
     std::string sequence;
     std::string description;
     int lua_ref = 0;
+    int icon = 0;
+    std::string icon_hl;
+};
+
+// A named leader-key group. `icon` is a Nerd Font codepoint (or zero for
+// text-only groups) displayed before the group's key in the which-key popup.
+struct WhichKeyGroup {
+    std::string label;
+    int icon = 0;
+    std::string icon_hl;
+};
+
+// One row rendered by the which-key popup. Group rows carry their optional
+// icon; ordinary command rows leave it at zero.
+struct WhichKeyDisplayEntry {
+    std::string key;
+    std::string label;
+    int icon = 0;
+    std::string icon_hl;
 };
 
 // The in-memory content of one file (or scratch buffer). Undo history is
@@ -728,6 +847,46 @@ struct Buffer {
     // second visual row reads as a second, indented entry rather than a
     // continuation of the first).
     bool no_wrap = false;
+    // mep.buffer_set_footer(id, text, hl?): a one-line key hint drawn along
+    // the bottom row of every pane showing this buffer (that row is taken
+    // out of the text area) -- the pane-hosted counterpart of a sidebar's
+    // `?: help` footer (DrawSidebarFooter). kBuiltinFileTree's tree is the
+    // first caller. Empty = no footer.
+    std::string footer_hint;
+    std::string footer_hint_hl;
+    // mep.buffer_set_row_cursor(id, true): this buffer's cursor selects a
+    // whole *row*, not a character within it -- so a pane showing it draws
+    // the cursor as a full-width row tint (always, regardless of the global
+    // :set cursorline) and skips the per-character block cursor entirely.
+    // Same "these rows aren't really text" family as hide_line_numbers/
+    // no_wrap above, and the same first caller: kBuiltinFileTree's
+    // read-only tree view, whose cursor always sits at column 0 -- which is
+    // the row's own icon glyph for a top-level entry. The block cursor
+    // repaints the glyph under it in NormalBg (so a normal text cursor
+    // stays readable), and on an icon that reads as the icon changing
+    // color/going dark as the cursor moves down the tree rather than as a
+    // cursor at all. Deliberately not set on the oil.nvim-style directory
+    // buffers (mep.oil_open), whose lines are genuinely editable text.
+    bool row_cursor = false;
+    // mep.buffer_set_unlisted(id, true): keeps a real, ordinary buffer out
+    // of the buffer *lists* -- the Buffers sidebar (kBuiltinBuffers) and
+    // the <leader>bb picker, both of which go through BufferLabelForLua --
+    // for a pane whose buffer is an implementation detail rather than a
+    // document the user opened. The generic counterpart of the
+    // IsSidebarPaneBuffer check in that same function: a sidebar hosted in
+    // a pane (mep.sidebar_open_pane) is recognisable from C++, but a panel
+    // that predates that machinery and just splits a pane onto a buffer of
+    // its own is not, so it says so itself. kBuiltinFileTree's tree view is
+    // the first caller -- it is a sidebar in every way that matters to the
+    // user, and listing it alongside their open files (under the project
+    // root's own name, since that is what it sets as its filename) is the
+    // same noise. Set on the tree buffer only, not in the shared
+    // mep_tree_new_buffer helper: the oil.nvim-style directory buffers
+    // (mep.oil_open) are ordinary editable buffers the user navigated to on
+    // purpose, and belong in the list like any other. Lists only, like
+    // Buffer::deleted's own note: :bnext/:bprev and the tab strip of the
+    // pane actually showing it are unaffected.
+    bool unlisted = false;
     // `:bd`/`:bdelete` (Editor::BufferDelete) -- soft-delete, not a real
     // erase from buffers_: buffer_id is treated as a stable index
     // everywhere in this codebase (panes, terminals_, agent-rpc
@@ -736,7 +895,7 @@ struct Buffer {
     // startup-only" case, or so the reasoning went) -- it now soft-deletes
     // too, since a directory argument's on_directory_open hook can cache
     // the pre-shift id of a *later* buffer (kBuiltinFileTree's
-    // mep_tree_edit_buf) before that shift ever ran, silently pointing it
+    // mep_oil_by_dir) before that shift ever ran, silently pointing it
     // at the wrong buffer for the rest of the process. Reindexing every
     // buffer_id-holding site for a general "delete any buffer at any time"
     // command would be exactly the kind of invasive, easy-to-miss-a-site
@@ -977,6 +1136,15 @@ struct Tab {
     int id = 0;
     std::unique_ptr<SplitNode> root;
     int active_pane_id = 0;
+    // Alt+M pane maximize (Editor::TogglePaneMaximize): the pane currently
+    // maximized (-1 = none; pane ids start at 0), and every split's `shares` from just before
+    // the first maximize (pre-order over the tree), restored by the toggle
+    // back -- only if the tree still has the same shape (maximize_signature,
+    // Editor's LayoutSignature), since a split/close since then makes the
+    // saved sizes meaningless.
+    int maximized_pane_id = -1;
+    std::string maximize_signature;
+    std::vector<std::vector<float>> maximize_saved_shares;
 };
 
 struct WorktreeEntry;  // workspace_git.h
@@ -1037,6 +1205,10 @@ struct TerminalSession {
     int job_id = 0;
     std::unique_ptr<VTerm> vterm;
     std::string title;      // argv[0], overridden by an OSC-title if the program sets one
+    // Codex's prompt background is selected independently of the embedding
+    // theme.  When enabled, DrawTerminalGrid leaves its ANSI backgrounds
+    // transparent so the pane's theme background remains authoritative.
+    bool ignore_ansi_backgrounds = false;
     // wasm build only: set by TerminalSpawn right after
     // mep_js_pty_connect_start() returns a slot id, cleared by
     // PollTerminals() once mep_js_pty_connect_status() reports ready or
@@ -1558,7 +1730,10 @@ inline constexpr int kSheetRowHeight = 22;
 // boundaries instead of hard-cutting between pages.
 struct PdfSession {
     int buffer_id = 0;
-    std::unique_ptr<PdfDoc> doc;
+    // shared_ptr: a background render (render_job below) holds its own
+    // reference, so reloading the document mid-render can't free it
+    // under the worker.
+    std::shared_ptr<PdfDoc> doc;
     int page = 0;  // 0-indexed anchor page
     // Vertical: device pixels (post-zoom, i.e. "on-screen" pixels) scrolled
     // into `page` from its top -- can transiently go negative or past the
@@ -1617,9 +1792,34 @@ struct PdfSession {
         // ever changes when the page is re-rastered anyway (a rescale),
         // exactly the same event that already invalidates `highlights`.
         std::vector<PdfLinkAnnot> links;
+        // This page's markup annotations (existing /Highlight and /Text
+        // from the file, plus any session-created ones targeting this
+        // page), device-pixel converted at this raster's own scale --
+        // computed alongside rgba/highlights/links in
+        // Editor::EnsurePdfPagesRastered and redrawn by main.cpp's PDF
+        // pane exactly like `highlights`. `pending_index >= 0` marks an
+        // unsaved, session-created annotation (drawn with a selection
+        // outline; the rest are already in the file).
+        std::vector<PdfAnnotDraw> annots;
     };
     std::unordered_map<int, PageRaster> rasters;
     int next_raster_generation = 1;
+    // The one page render in flight on a worker thread (Editor::
+    // EnsurePdfPagesRastered): PdfDoc::RenderPage only reads the loaded
+    // document, and a heavy page (a plotted mesh of tens of thousands of
+    // paths) can take far longer than a frame -- rendered inline it froze
+    // the UI mid-scroll. Collected on a later frame and dropped if the
+    // document or render scale changed meanwhile.
+    struct RenderResult {
+        bool ok = false;
+        std::vector<unsigned char> rgba;
+        int w = 0, h = 0;
+        std::string warning;
+    };
+    std::future<RenderResult> render_job;
+    int render_job_page = -1;
+    float render_job_scale = 0.0f;
+    const PdfDoc *render_job_doc = nullptr;
     // Memoized PdfDoc::PageWidthPt/HeightPt results -- avoids repeated
     // FPDF_LoadPage/ClosePage round-trips for page-size queries the
     // scroll/rebase math needs every frame while actively scrolling.
@@ -1650,6 +1850,90 @@ struct PdfSession {
     // search_active above). nav_goto_input is the in-progress digit string.
     bool nav_goto_active = false;
     std::string nav_goto_input;
+
+    // Set once the first time any page reports missing/undecodable content
+    // (PdfDoc::RenderPage's out_warning), so Editor::EnsurePdfPagesRastered
+    // surfaces the blank-page diagnostic a single time per document instead
+    // of re-Notifying every frame the same broken page stays on screen.
+    bool content_warning_shown = false;
+
+    // --- markup annotations (highlights + sticky notes) ---
+    // Annotations created this session but not yet written to the file, in
+    // page point space (pdfannots::PdfAnnot). The file's own existing
+    // annotations are re-read per page for drawing (PdfDoc::PageAnnots) and
+    // are NOT duplicated here; `pending_annots` holds only the new ones, so
+    // a save (PdfDoc::BytesWithAddedAnnots) appends exactly these. Cleared
+    // after a successful save+reload (they become ordinary file annots).
+    std::vector<pdfannots::PdfAnnot> pending_annots;
+    // True while there are unsaved annotations -- gates `:w` and the
+    // "modified" buffer flag. Kept in sync with pending_annots.
+    bool annots_dirty = false;
+
+    // --- click-drag text selection (main.cpp's PDF pane) ---
+    // A left-drag over the page selects text; the selection persists after
+    // release until the next click or a highlight action consumes it.
+    // Anchor/head are in device pixels at `rendered_scale` (zoom-invariant,
+    // like the cached rasters), so a mid-drag zoom doesn't warp the anchor.
+    bool selecting = false;               // a drag is currently in progress
+    int sel_page = -1;                    // page the selection lives on (-1 = none)
+    double sel_anchor_dx = 0, sel_anchor_dy = 0;  // drag anchor, device px @ rendered_scale
+    std::vector<pdfannots::Quad> sel_quads;       // current selection, point space
+
+    // --- vim caret (annotate mode) ---
+    // A keyboard text caret: an index into caret_page's reading-order glyph
+    // list. h/l/j/k/w/b/0/$ move it; `v` starts a visual selection anchored
+    // at visual_anchor_glyph, extended to caret_glyph (mirrored into
+    // sel_quads/sel_page for drawing). -1 = no caret.
+    int caret_page = -1;
+    int caret_glyph = -1;
+    std::vector<PdfGlyphBox> caret_glyphs;  // point-space glyphs for caret_page (loaded on demand)
+    bool visual_active = false;
+    int visual_anchor_glyph = -1;
+    // Mode-local leader: in annotate mode, <space> starts this (a which-key
+    // style prefix); the next key is an annotation action (h/n/d/c/1-5/q).
+    // Keeps annotate self-contained -- the global <space> leader stays for
+    // normal PDF mode.
+    bool annot_leader = false;
+
+    // Active highlight colour, an index into Editor's kPdfHighlightPalette
+    // (yellow/green/blue/pink/orange). New highlights use it; a palette
+    // menu or annotate-mode key changes it.
+    int active_color = 0;
+
+    // --- edit / delete of annotations ---
+    // A resolved reference to one annotation (session or file), used both
+    // for the annotation currently under the mouse (hover_annot, refreshed
+    // each frame by main.cpp's PDF pane for the active pane) and as the
+    // target the note prompt applies to when editing/attaching.
+    struct AnnotTarget {
+        bool valid = false;
+        int page = -1;
+        bool from_file = false;
+        int pending_index = -1;   // index into pending_annots when !from_file
+        int src_obj = 0, src_gen = 0;  // file object when from_file
+        int kind = 0;             // 0 highlight, 1 note
+        std::string contents;     // current text (to prefill an edit prompt)
+    };
+    AnnotTarget hover_annot;       // annotation under the mouse this frame (else valid==false)
+    AnnotTarget note_edit_target;  // set while the note prompt is editing/attaching (else standalone note)
+    // Edits to existing FILE annotations (from_file, src_obj>0, new contents/
+    // colour) and deletions of file annotations -- applied on :w alongside
+    // pending_annots. Session (pending) annots are edited/deleted in place in
+    // pending_annots instead. All three clear after a successful save+reload.
+    std::vector<pdfannots::PdfAnnot> annot_edits;
+    std::vector<pdfwrite::AnnotDelete> annot_deletes;
+    // True when there are unsaved annotation changes of any kind.
+    bool HasUnsavedAnnots() const {
+        return !pending_annots.empty() || !annot_edits.empty() || !annot_deletes.empty();
+    }
+
+    // --- annotate-mode note text entry ---
+    // While true, keystrokes build up a sticky note's text (mirrors
+    // search_active); Enter commits it via PdfAddNote at the current
+    // selection/match, Escape cancels.
+    bool note_input_active = false;
+    std::string note_input;
+    size_t note_caret = 0;  // byte offset of the insertion caret within note_input (UTF-8 boundary)
 };
 
 // One video-playback pane's state, keyed by buffer id the same way
@@ -1710,6 +1994,8 @@ struct HtmlHistoryEntry {
     std::string bytes;
 };
 
+struct JsRuntime;  // js_engine.h
+
 struct HtmlSession {
     int buffer_id = 0;
     HtmlDoc doc;
@@ -1742,8 +2028,26 @@ struct HtmlSession {
     // page renders with its own CSS colors/images instead, same as a real
     // browser. Toggled by Ctrl-R (Editor::HandleHtmlInput).
     bool theme_colors = true;
+    // The omnibar: the URL strip DrawPane draws across the top of the
+    // pane. Idle, it shows `origin` (plus the page title); `o`, Ctrl-L or a
+    // click puts it in edit mode, where HandleHtmlInput routes typing into
+    // `omnibar_text` instead of scrolling the page -- Enter hands the text
+    // to the Lua :MepBrowseGo command (which normalizes "localhost:8000"
+    // into a URL and navigates this pane), Escape abandons the edit.
+    bool omnibar_active = false;
+    std::string omnibar_text;
+    size_t omnibar_cursor = 0;   // byte offset into omnibar_text
+    bool omnibar_select_all = false;  // a fresh edit starts with the URL selected: typing replaces it
     std::vector<HtmlHistoryEntry> history;
     size_t history_index = 0;
+    // The page's scripts, still running: pumped once a frame so timers,
+    // animation frames, promises and async functions make progress, and
+    // handed the pane's clicks and keystrokes as DOM events. Declared after
+    // `doc` on purpose -- it points into the tree and must be destroyed
+    // first (and reset before `doc` is re-parsed).
+    std::shared_ptr<JsRuntime> js;
+    // The form field that owns the keyboard (clicked into); null otherwise.
+    DomNode *focused_field = nullptr;
 };
 
 // One WYSIWYG office-document pane's state, keyed by buffer id the same
@@ -1918,21 +2222,38 @@ struct NotebookSession {
     std::unordered_map<int, int> trailing_slots;
     int next_uid = 1;
 
-    // Kernel process (JobManager id; 0 = none). `status` is the
+    // One persistent kernel process per kernel *name* this notebook has
+    // run a cell on (NotebookKernelSpec::Mode::Python/Protocol; a
+    // Script-mode kernel has no resident process and no entry here),
+    // started lazily by the first cell that picks it. `status` is the
     // human-readable state drawn in cell headers: "not started",
-    // "starting", "idle", "busy", "dead". `spawn_generation` is captured
-    // by each spawn's callbacks so a stale exit notification from a
-    // killed (restarted) kernel can't clobber its replacement's state.
-    int kernel_job = 0;
+    // "starting", "idle", "busy", "dead". `generation` (drawn from the
+    // session-wide spawn_generation counter) is captured by each spawn's
+    // callbacks so a stale exit notification from a killed (restarted)
+    // kernel can't clobber its replacement's state.
+    struct KernelProc {
+        int job = 0;   // JobManager id; 0 = none
+        int generation = 0;
+        bool ready = false;
+        std::string status = "not started";
+        std::string version;      // the interpreter's own version, from its "ready" message
+        std::string last_error;   // last kernel-level stderr line / spawn failure, for the status line
+    };
+    std::map<std::string, KernelProc> kernels;
     int spawn_generation = 0;
-    bool kernel_ready = false;
-    std::string status = "not started";
-    std::string python_version;
-    std::string last_error;   // last kernel-level stderr line / spawn failure, for the status line
-    std::deque<int> run_queue;  // cell uids waiting for the kernel
+    // Runs are strictly sequential across every kernel of the notebook
+    // (one in-flight cell at a time, in run order, like Jupyter) -- so a
+    // "run all" over mixed cells still executes top to bottom.
+    std::deque<int> run_queue;  // cell uids waiting to run
     int running_uid = 0;        // cell whose reply is in flight, 0 = idle
+    std::string running_kernel; // its kernel's name
     int running_request_id = 0;
+    int running_job = 0;        // Script-mode: the per-cell process; 0 for a protocol kernel's request
     int next_request_id = 1;
+    // In[N] is one shared sequence per notebook regardless of which
+    // kernel ran the cell (what Jupyter shows too), so the editor counts
+    // rather than trusting any one kernel's own counter.
+    int next_execution_count = 1;
 };
 
 // Fixed Kanban card/column geometry (screen pixels, unscaled) -- shared
@@ -2254,6 +2575,43 @@ struct OrgSrcBlock {
     std::string body;
 };
 
+// --- Org block cards (org-modern style block rendering) ---------------
+//
+// One `:key value` header argument of an org block, with the row it was
+// actually written on -- the same key can come from the `#+begin_src`
+// line itself or from an affiliated `#+HEADER:` line above it, and the
+// title bar draws them all together regardless of which.
+struct OrgBlockOption {
+    std::string key;    // without the leading colon ("tangle", "exports", "var")
+    std::string value;  // "" for a bare flag key; quotes stripped
+    int row = 0;
+};
+
+// One `#+begin_X ... #+end_X` block as the renderer draws it: a rounded
+// card whose header (the affiliated keyword lines plus the `#+begin_X`
+// line) is concealed behind a title bar built from these parsed pieces,
+// and revealed again as raw text the moment the cursor enters it. See
+// DrawPane (main.cpp) for the drawing half, Editor::OrgBlockCards for
+// the scan.
+struct OrgBlockCard {
+    // First affiliated-keyword row (`#+NAME:`/`#+CAPTION:`/`#+HEADER:`/
+    // `#+ATTR_*`) attached to this block, or begin_row when it has none.
+    int meta_row = 0;
+    int begin_row = 0;
+    // The `#+end_X` row, or -1 for a block still being typed (no closer
+    // yet) -- the card then runs to the end of the buffer's last line and
+    // is drawn without a bottom edge, rather than not at all.
+    int end_row = -1;
+    // Lowercased block word: "src", "example", "quote", "export", ...
+    // Only "src" is a code chunk (drawn in the theme's accent); the rest
+    // get the same card in a muted outline.
+    std::string kind;
+    bool is_src = false;
+    std::string lang;   // src blocks only, as written ("python", "C++")
+    std::string title;  // #+NAME:/#+CAPTION:/:title value, "" when absent
+    std::vector<OrgBlockOption> options;
+};
+
 // mep_diag_wrap's own port (LUA_TO_CPP_PLAN.md Phase LSP): greedy word-
 // wrap of `text` to `width` columns (mep.float_preview itself doesn't
 // wrap). No Editor state needed. Always returns at least one line
@@ -2439,6 +2797,16 @@ public:
      * @return True if org LaTeX rendering is toggled on.
      */
     bool OrgLatexVisible() const { return org_latex_visible_; }
+    // <leader>otb / mep.org_block_cards_toggle -- whether DrawPane
+    // (main.cpp) draws `#+begin_.../#+end_...` blocks as cards with a
+    // concealed, rendered title bar. Unlike the two toggles above this
+    // defaults *on*: it needs no external renderer, no scan to have run
+    // first, and it degrades to plain text for anything it can't parse.
+    /**
+     * @brief Returns whether org blocks are drawn as cards with a rendered title bar.
+     * @return True if org block-card rendering is toggled on.
+     */
+    bool OrgBlockCardsVisible() const { return org_block_cards_visible_; }
     // Active pane/buffer -- what most of the UI (statusline, blinking
     // cursor, Visual highlight) cares about.
     /**
@@ -3886,6 +4254,25 @@ public:
      * @return A const pointer to the PdfSession, or nullptr if the buffer isn't a PDF pane.
      */
     const PdfSession *GetPdf(int buffer_id) const;
+    // Mutable accessor (used by main.cpp's PDF pane to drive click-drag
+    // text selection state, whose geometry is only known at draw time).
+    PdfSession *GetPdfMutable(int buffer_id);
+    void PdfCaretPlaceAtDevice(int buffer_id, int page, double dx, double dy);  // click-to-place the caret (called from main.cpp)
+    // Highlight-colour palette accessors + setters (used by annotate mode,
+    // the leader menu, `:pdfcolor`, and main.cpp's status label). The
+    // active colour is per-session.
+    int PdfHighlightColorCount() const;
+    const char *PdfHighlightColorName(int index) const;
+    void SetPdfHighlightColor(int index);
+    bool SetPdfHighlightColorByName(const std::string &name);
+    // LaTeX-in-notes: async tex->PNG render results, keyed by a hash of the
+    // note text. main.cpp's margin-note drawing requests a render (marking
+    // the key present with an empty value) and polls PdfNoteLatexPng each
+    // frame; the mep.pdf_note_latex_done Lua binding fills in the PNG path
+    // when the async job finishes. See kBuiltinPdfAnnot / mep_org_latex_render.
+    void SetPdfNoteLatexPng(const std::string &key, const std::string &png);
+    bool PdfNoteLatexRequested(const std::string &key) const;
+    std::string PdfNoteLatexPng(const std::string &key) const;
     // Jumps `buffer_id`'s own PdfSession to `page` (clamped to the valid
     // page range), resetting vertical scroll to that page's top -- the
     // exact same effect as HandlePdfInput's own local `goto_page` lambda
@@ -4049,6 +4436,22 @@ public:
     // Advances the page's <audio>/<video> clocks by `seconds` (DrawPane calls
     // this once per frame with GetFrameTime()); see AdvanceHtmlMediaClock.
     void AdvanceHtmlMedia(int buffer_id, double seconds);
+    /** @brief Runs the page's due timers/animation frames/promise jobs for one frame; true when script ran. */
+    bool PumpHtmlScripts(int buffer_id);
+    /**
+     * @brief Blocks while the page's scripts still have work queued: pumps until nothing is scheduled (or only slow background timers remain once the page has a verdict), or `budget_ms` elapses.
+     * @return True when the page went idle within the budget.
+     */
+    bool SettleHtmlScripts(int buffer_id, int budget_ms);
+    /**
+     * @brief A primary click on a laid-out DOM node in the html pane: dispatches the DOM click (and its default action), focuses a text field for typing.
+     * @param buffer_id The html buffer.
+     * @param node The innermost node under the pointer (from this frame's layout).
+     * @return False when a listener called preventDefault() -- the caller must then not follow an enclosing link.
+     */
+    bool ClickHtmlNode(int buffer_id, DomNode *node);
+    /** @brief The html buffer's keyboard-focused form field, or null. */
+    const DomNode *HtmlFocusedField(int buffer_id) const;
     // Parses `bytes` (already-read HTML text) and opens it as a new
     // HtmlSession in the *current* pane (mirrors OpenImageInPlace/
     // OpenPdfInPlace exactly: dedup-by-`source` reuses an existing session
@@ -4092,6 +4495,13 @@ public:
     // Restores the previous (negative) or next (positive) HTML history entry.
     // Returns false when there is no entry in that direction.
     bool NavigateHtmlHistory(int buffer_id, int direction);
+    /**
+     * @brief Puts an html pane's omnibar into edit mode, prefilled with its current URL (selected).
+     * @param buffer_id The html buffer whose omnibar to edit (no-op for any other buffer).
+     */
+    void BeginHtmlOmnibarEdit(int buffer_id);
+    /** @brief The html session's page title, or "" when `buffer_id` isn't an html buffer. */
+    std::string HtmlTitle(int buffer_id) const;
     // Re-decodes `bytes` INTO the existing PdfSession at `buffer_id` --
     // unlike OpenPdfInPlace, never creates a new buffer/session and never
     // does a dedup-by-filename lookup; a hard in-place overwrite (fresh
@@ -4574,6 +4984,37 @@ public:
      * @param command The executable name/path.
      */
     void SetNotebookPython(const std::string &command) { notebook_python_ = command; }
+    // The kernels offered in every code cell's dropdown (see
+    // NotebookKernelSpec). Replaces the whole registry; specs whose
+    // command can't be found on PATH are dropped so the dropdown only
+    // lists kernels that can actually run here. Kernel processes already
+    // running keep going under their old spec until restarted.
+    void SetNotebookKernels(std::vector<NotebookKernelSpec> specs);
+    const std::vector<NotebookKernelSpec> &NotebookKernels() const { return notebook_kernels_; }
+    // The kernel a notebook's cells run on when they don't pick one
+    // (NotebookDefaultKernel over the registry); "" for a non-notebook.
+    std::string NotebookDefaultKernelName(int buffer_id) const;
+    // The kernel cell `cell_index` (or the cursor's cell when < 0)
+    // effectively runs on: its own metadata.kernel, else the default.
+    // "" when the buffer isn't a notebook or the index is out of range.
+    std::string NotebookCellKernelName(int buffer_id, int cell_index);
+    // Records `name` as the cell's kernel (its metadata.kernel, saved with
+    // the file) and re-highlights the buffer so the cell body picks up
+    // the kernel's language. `name` need not be registered -- a file may
+    // name a kernel this machine lacks; running such a cell reports it.
+    bool NotebookSetCellKernel(int buffer_id, int cell_index, const std::string &name);
+    // Resident process state for one kernel name of a notebook, or
+    // nullptr when it has never been started (or is a Script kernel).
+    const NotebookSession::KernelProc *NotebookKernelState(int buffer_id, const std::string &name) const;
+    // Treesitter filetype key for the cell containing buffer row `row`
+    // (a code cell's kernel language; "md" for markdown), or "" for none
+    // -- what the syntax chunk asks per `# %%` marker row.
+    std::string NotebookCellLanguageAtRow(int buffer_id, int row);
+    // Returns the half-open source-row range and kernel language for the code
+    // cell containing `row`. Used by the LSP bridge to expose one cell as a
+    // virtual language-server document; false for markers, markdown, and
+    // rows outside a notebook code cell.
+    bool NotebookCellLspContext(int buffer_id, int row, int *first_row, int *end_row, std::string *language);
     /**
      * @brief Records the renderer's current char-width / line-height ratio, which sizes
      * image output blocks (NotebookImageSlots). DrawPane reports it every frame before
@@ -5311,8 +5752,8 @@ public:
     // real std::function callbacks (see LUA_TO_CPP_PLAN.md's "async is
     // not actually the blocker" note), so `git show`'s on_exit runs pure
     // C++ -- no Lua ref stored or invoked anywhere in this path. State
-    // (git_hunks_/git_base_lines_, below) moved off Lua-local tables onto
-    // Editor for the same reason. `base` (a git revision -- HEAD, a
+    // (git_signs_, below -- one cached diff per buffer) moved off
+    // Lua-local tables onto Editor for the same reason. `base` (a git revision -- HEAD, a
     // branch, a SHA) is still read from the Lua-configurable
     // mep.git_gutter_base each call rather than cached here, matching
     // this plan's usual "config stays Lua, passed in as a parameter"
@@ -5320,9 +5761,48 @@ public:
     // one-line wrapper threading that global through.
     /**
      * @brief Asynchronously diffs the current buffer against `base` and refreshes the git gutter hunks.
-     * @param base The git revision (HEAD, a branch, or a SHA) to diff against.
+     * @param base The git revision (a branch, HEAD, or a SHA) to diff against; empty means the index.
      */
     void GitGutterRefresh(const std::string &base);
+    /**
+     * @brief Asynchronously diffs one specific buffer against `base` and refreshes its git gutter hunks.
+     * @param buffer_id The buffer to diff; ignored if it has no filename.
+     * @param base The git revision to diff against; empty means the index.
+     */
+    void GitGutterRefreshBuffer(int buffer_id, const std::string &base);
+    // The always-on driver behind mep.git_gutter_auto: called once per
+    // frame, it re-diffs the *current* buffer only when something has
+    // actually changed since its last diff (a different buffer is
+    // focused, the text was edited, the base ref moved, the whole-line
+    // tint was toggled) and never more often than kGitGutterDebounceSec,
+    // since each recompute is a `git show` subprocess. The steady-state
+    // cost when nothing changed is one hash lookup and two int compares
+    // -- cheap enough to sit on the frame hook, which the old
+    // mep.on_buffer_changed wiring was not: that fired only on edits, so
+    // the gutter went stale the moment you switched buffers.
+    /**
+     * @brief Per-frame git-gutter driver: re-diffs the current buffer only when its cached diff is stale.
+     * @param base The git revision to diff against.
+     * @param line_hl Whether hunk rows also get a whole-line background tint.
+     */
+    void GitGutterTick(const std::string &base, bool line_hl);
+    // Drops every buffer's cached diff so the next GitGutterTick
+    // recomputes it -- for when the *repository* moved under the
+    // unchanged buffer text (a commit, a checkout, a stage/unstage from
+    // the git panel), which nothing in the buffer's own state reflects.
+    /**
+     * @brief Invalidates every buffer's cached git-gutter diff so the next tick recomputes it.
+     */
+    void GitGutterInvalidate();
+    /**
+     * @brief Removes every buffer's git-gutter marks and drops the cached diffs (`:MepGitGutter off`).
+     */
+    void GitGutterClear();
+    /**
+     * @brief Summarizes the current buffer's git hunks for a statusline.
+     * @return "+a ~c -d" over the non-zero counts, or "" when the buffer has no hunks (or no diff at all).
+     */
+    std::string GitGutterSummary() const;
     // 1-indexed target row, or 0 if there are no hunks at all -- the
     // find-next/prev-hunk-relative-to-cursor half of mep.git_next_hunk/
     // mep.git_prev_hunk; the cursor move + opt-in preview-on-jump stay a
@@ -5950,6 +6430,16 @@ public:
     int FindOrCreateBufferForLua(const std::string &path) { return FindOrCreateBuffer(path); }
     /** @brief mep.buffer_delete: public shim over BufferDeleteById. */
     void BufferDeleteForLua(int buffer_id, bool force) { BufferDeleteById(buffer_id, force); }
+    // mep.fs_delete/mep.fs_rename (the file tree's d/r keys) call these
+    // after a successful filesystem change so no open buffer keeps
+    // pointing at the old path: otherwise FindOrCreateBuffer's dedup-by-
+    // filename would hand the stale buffer (the deleted file's content)
+    // back the next time a file of that same name is created and opened.
+    // Both match `path` itself and, for a directory, everything under it.
+    // Removal force-closes the buffers (the user already confirmed the
+    // delete); rename retargets their filenames to the new location.
+    void CloseBuffersForRemovedPath(const std::string &path);
+    void RetargetBuffersForRenamedPath(const std::string &from, const std::string &to);
     /**
      * @brief Returns the number of open buffers.
      * @return The buffer count.
@@ -5961,6 +6451,12 @@ public:
      * @return The display label text.
      */
     std::string BufferLabelForLua(int buffer_id) const;
+    /**
+     * @brief Returns how a buffer's path should read in a list of open buffers: relative to its workspace root when it lives under it, absolute otherwise.
+     * @param buf The buffer to name.
+     * @return The display path (never decorated with "[+]"/"[Terminal] ").
+     */
+    std::string DisplayPathForBuffer(const Buffer &buf) const;
     // Raw filename (empty for a terminal buffer or an unsaved "[No Name]"
     // buffer) -- unlike BufferLabelForLua, no "[+]"/"[Terminal] " display
     // decoration, so callers needing the real path (e.g. LSP didClose's
@@ -5990,6 +6486,25 @@ public:
      * @param no_wrap True to disable soft-wrap for this buffer.
      */
     void SetBufferNoWrap(int buffer_id, bool no_wrap);
+    /**
+     * @brief Sets whether a buffer is hidden from the buffer lists (see Buffer::unlisted).
+     * @param buffer_id The id of the buffer to change.
+     * @param unlisted True to keep the buffer out of the Buffers sidebar and the buffer picker.
+     */
+    void SetBufferUnlisted(int buffer_id, bool unlisted);
+    /**
+     * @brief Sets whether a buffer's cursor selects a whole row rather than a character (see Buffer::row_cursor).
+     * @param buffer_id The id of the buffer to change.
+     * @param row_cursor True to draw a full-width row tint instead of the per-character block cursor.
+     */
+    void SetBufferRowCursor(int buffer_id, bool row_cursor);
+    /**
+     * @brief Sets the one-line key hint drawn along the bottom of every pane showing a buffer (see Buffer::footer_hint).
+     * @param buffer_id The id of the buffer to change.
+     * @param text The hint text; empty removes the footer.
+     * @param hl The highlight group to draw it in (empty = Comment).
+     */
+    void SetBufferFooter(int buffer_id, const std::string &text, const std::string &hl);
     /**
      * @brief Returns whether a buffer has unsaved changes.
      * @param buffer_id The id of the buffer to check.
@@ -6354,6 +6869,33 @@ public:
     // so images/PDFs/HTML/office files get their viewers exactly as `:e`
     // would; the new pane becomes the active one.
     void OpenFileInPane(int dest_pane_id, const std::string &path, bool split, SplitDir dir, bool before);
+    // OpenFileInPane's counterpart for a buffer that is already open: the
+    // drop target for a row dragged out of the Buffers sidebar
+    // (SidebarWidget::drag_buffer_id). Shows `buffer_id` in
+    // `dest_pane_id` -- appended to that pane's own tab strip, like
+    // MoveBufferTabToPane's destination half, except nothing is removed
+    // from a source pane since a sidebar row was never a tab in the first
+    // place -- or, with `split`, in a fresh `dir`/`before` leaf split off
+    // it. Unlike routing through the path (LoadFile), this needs no file
+    // at all, so terminals and scratch buffers drop like any other.
+    void OpenBufferInPane(int dest_pane_id, int buffer_id, bool split, SplitDir dir, bool before);
+    // "Show this buffer somewhere that isn't a navigator": opens
+    // `buffer_id` in the active pane when that's an ordinary document
+    // pane, and otherwise -- the active pane being the Buffers sidebar
+    // itself, the file tree, git status, any other list you activate rows
+    // in -- in the nearest non-navigator pane in `direction`
+    // (FindNeighborPaneId's "left"/"right"/"up"/"down"), splitting the
+    // active pane that way when there is no such neighbor. Without this,
+    // a pane-hosted Buffers sidebar's own rows open *over* the sidebar,
+    // replacing the list you were clicking in. Returns the pane the
+    // buffer ended up in, or -1 if `buffer_id` isn't a live buffer.
+    int OpenBufferBeside(int buffer_id, const std::string &direction);
+    // Whether a pane showing `buffer_id` is a navigator rather than a
+    // document: a sidebar rendered as a pane (Mode::SidebarPane), or a
+    // list buffer that publishes a row->path drag resolver (the file
+    // tree). Both are places you pick things *from*, never places to open
+    // a picked thing *into* -- see OpenBufferBeside.
+    bool IsNavigatorPaneBuffer(int buffer_id) const;
     // Border-drag resize: sets node->shares[child_index] to `new_share`
     // (clamped so both it and shares[child_index+1] stay >= kMinPaneShare),
     // taking the difference out of shares[child_index+1] so their combined
@@ -7044,6 +7586,27 @@ public:
      */
     bool ToggleOrgImages();
 
+    // --- Org block cards (<leader>otb / mep.org_block_cards_toggle) ---
+    // Every `#+begin_X ... #+end_X` block in `buffer_id`, parsed for the
+    // title bar DrawPane (main.cpp) draws in place of its concealed
+    // header. Rescanned on each call (a cheap `#+` line-prefix walk, the
+    // same per-frame shape NotebookRefresh and FindScopeGuides already
+    // use) and returned by reference out of a scratch vector owned here,
+    // so the renderer never has to own the parse.
+    /**
+     * @brief Scans a buffer for org `#+begin_.../#+end_...` blocks and their parsed header pieces.
+     * @param buffer_id The buffer to scan.
+     * @return The blocks found, in buffer order (empty for a non-existent buffer).
+     */
+    const std::vector<OrgBlockCard> &OrgBlockCards(int buffer_id);
+    // <leader>otb: flips org_block_cards_visible_ and returns the new
+    // state, same shape as ToggleOrgImages above.
+    /**
+     * @brief Toggles org block-card rendering.
+     * @return The new visibility state.
+     */
+    bool ToggleOrgBlockCards();
+
     // --- Org LaTeX/math-mode rendering (<leader>otl / mep.org_latex_toggle) ---
     // Registers/replaces the rendered-PNG path, slot count, and last raw
     // source row (see Buffer::OrgLatexRender) for `row` -- called once per
@@ -7248,6 +7811,17 @@ public:
      * @param lua_ref The Lua registry reference to invoke on a keypress.
      */
     void SetSidebarOnKey(int id, int lua_ref);
+    // mep.sidebar_set_help: the sidebar-specific keys its `?` view lists.
+    void SetSidebarHelp(int id, std::vector<std::pair<std::string, std::string>> keys);
+    // Flips sidebar `id` between its sections and its `?` key-binding view
+    // (`?` while it's focused, or mep.sidebar_toggle_help), saving/restoring
+    // the cursor -- the pane-hosted one when the focused pane shows `id`
+    // (Mode::SidebarPane), the docked one otherwise.
+    void ToggleSidebarHelp(int id);
+    bool SidebarHelpOpen(int id) const {
+        const SidebarInstance *sb = FindSidebar(id);
+        return sb && sb->help_open;
+    }
     /**
      * @brief Registers a Lua callback that supplies the popout preview for a sidebar (see SidebarInstance::on_preview_ref).
      * @param id The id of the sidebar to register the callback on.
@@ -7326,6 +7900,10 @@ public:
      * @brief Collapses the popped-out sidebar (if any) back to its docked panel, keeping its focus and cursor.
      */
     void CloseSidebarPopout();
+    // Open `id` focused and popped out with no docked column behind it
+    // (SidebarInstance::popout_only). An already docked-open sidebar is
+    // just popped out as usual and stays docked afterwards.
+    void OpenSidebarPopoutOnly(int id);
     /**
      * @brief Reports whether a sidebar popout is currently showing.
      * @return True if a sidebar is popped out and still has input focus.
@@ -7418,6 +7996,16 @@ public:
     // sidebars use the file path as the id, which is what main.cpp's
     // drag-a-file-onto-a-pane gesture keys off.
     std::string SidebarLineWidgetId(int id, int line_index) const;
+    // SidebarWidget::drag_buffer_id of that same line -- -1 for a section
+    // header, an out-of-range line, or a widget that doesn't stand for an
+    // already-open buffer. A row carrying one is draggable onto a pane
+    // whether or not it also names a file on disk.
+    int SidebarLineDragBufferId(int id, int line_index) const;
+    // SidebarInstance::activate_on_double_click (see its own comment):
+    // whether this sidebar's pane-hosted rows want the docked path's
+    // select-then-double-click-activates behavior.
+    void SetSidebarDoubleClickActivate(int id, bool enabled);
+    bool SidebarActivatesOnDoubleClick(int id) const;
     // Generic "drag a row out of this ordinary buffer onto a pane" hook
     // (PANE_DRAG_RESTORE: restores the drag-and-drop file open gesture for
     // the file tree now that it's a real Buffer instead of a SidebarInstance
@@ -7582,6 +8170,16 @@ public:
      */
     const std::string &PickerTitle() const { return picker_title_; }
     /**
+     * @brief Returns the open picker's own key hint (mep.picker_set_hint), shown in its footer.
+     * @return The hint text; empty if the picker set none.
+     */
+    const std::string &PickerHint() const { return picker_hint_; }
+    /**
+     * @brief Sets the open picker's own key hint, drawn in its footer ahead of the standard keys.
+     * @param hint The hint text, e.g. "C-a: add current dir"; cleared by the next OpenPicker.
+     */
+    void SetPickerHint(const std::string &hint) { picker_hint_ = hint; }
+    /**
      * @brief Returns the open picker's current query text.
      * @return The picker query.
      */
@@ -7591,15 +8189,17 @@ public:
      * @return The selected index.
      */
     int PickerSelected() const { return picker_selected_; }
-    // Recomputed on demand (not cached) from the current query -- items
-    // scoring < 0 (no match) are dropped, the rest sorted by score desc.
-    // Returns `picker_items_` verbatim, unfiltered/unsorted, when the
-    // picker was opened with raw_results (see OpenPicker above).
+    // Items scoring < 0 (no match) are dropped, the rest sorted by score
+    // desc. Cached until the query or the item list changes -- it's asked
+    // for several times a frame, and scoring a large list (Find Files) every
+    // frame is not free. Returns `picker_items_` verbatim, unfiltered/
+    // unsorted, when the picker was opened with raw_results (see OpenPicker
+    // above).
     /**
-     * @brief Recomputes the picker's items filtered and sorted by fuzzy match score against the current query.
+     * @brief Returns the picker's items filtered and sorted by fuzzy match score against the current query.
      * @return The filtered, score-sorted items, or `picker_items_` verbatim when opened with raw_results.
      */
-    std::vector<PickerItem> PickerFilteredResults() const;
+    const std::vector<PickerItem> &PickerFilteredResults() const;
 
     // --- Picker preview pane (NVIM_PARITY_PLAN.md Phase 8 gap, closed) ---
     // mep.picker_set_preview(text): a source (e.g. find_files' on_select_
@@ -7637,6 +8237,36 @@ public:
      * @return The preview scroll offset.
      */
     int PickerPreviewScroll() const { return picker_preview_scroll_; }
+
+    // --- Picker tab strip (mep.picker_set_tabs) ---
+    // A multi-view picker (kBuiltinRunners' command-runner picker is the
+    // first) swaps its own items per tab from Lua and uses this only for
+    // the strip DrawPickerOverlay draws above the prompt; Tab/Shift-Tab
+    // reach the picker's on_key callback as "<Tab>"/"<S-Tab>". Cleared on
+    // every OpenPicker() so an unrelated picker never inherits a strip.
+    /**
+     * @brief Sets the picker's tab-strip labels and active tab; switching to a different tab clears the query.
+     * @param tabs Tab labels, left to right (empty hides the strip).
+     * @param active 0-indexed active tab.
+     */
+    void SetPickerTabs(std::vector<std::string> tabs, int active) {
+        if (active != picker_active_tab_) {
+            picker_query_.clear();
+            picker_selected_ = 0;
+        }
+        picker_tabs_ = std::move(tabs);
+        picker_active_tab_ = active;
+    }
+    /**
+     * @brief Returns the picker's tab-strip labels.
+     * @return The tab labels, empty when the picker has no tabs.
+     */
+    const std::vector<std::string> &PickerTabs() const { return picker_tabs_; }
+    /**
+     * @brief Returns the picker's active tab.
+     * @return The 0-indexed active tab.
+     */
+    int PickerActiveTab() const { return picker_active_tab_; }
 
     // --- Roam backlink-graph view (NVIM_PARITY_PLAN.md Phase 37's flagged
     // "no fuzzy backlink-graph visualization" gap, closed) ---
@@ -7722,8 +8352,11 @@ public:
      * @param sequence The key sequence following the leader key.
      * @param description Human-readable description shown in the which-key overlay.
      * @param lua_ref The Lua registry reference to invoke when the sequence is completed.
+     * @param icon Optional Nerd Font codepoint shown before the key.
+     * @param icon_hl Optional highlight group used to color the icon.
      */
-    void RegisterWhichKey(const std::string &sequence, const std::string &description, int lua_ref);
+    void RegisterWhichKey(const std::string &sequence, const std::string &description, int lua_ref, int icon = 0,
+                          const std::string &icon_hl = "");
     // Enters Mode::WhichKey with an empty prefix -- called when the leader
     // key is pressed in Normal mode (see the char-dispatch loop).
     /**
@@ -7743,9 +8376,9 @@ public:
      * @return The matching sequence/remainder pairs.
      */
     std::vector<std::pair<std::string, std::string>> WhichKeyMatches() const;
-    // mep.leader_group(prefix, label): names a group of bindings that
+    // mep.leader_group(prefix, label[, icon[, icon_hl]]): names a group of bindings that
     // share `prefix` (e.g. "o" -> "org") so DrawWhichKeyOverlay can show
-    // one collapsed "o  +org" row instead of every leaf under it spelled
+    // one collapsed, icon-decorated "icon  o  org" row instead of every leaf under it spelled
     // out in full -- real which-key.nvim requires the same explicit
     // per-group naming (there's no reliable way to auto-derive "org" from
     // a mix of "Org: ..."/"Org-roam: ..." descriptions in general).
@@ -7753,9 +8386,12 @@ public:
      * @brief Names a group of which-key bindings sharing a prefix, so the overlay can show one collapsed row for them.
      * @param prefix The shared key sequence prefix.
      * @param label The group's display label.
+     * @param icon Optional Nerd Font codepoint shown before the key.
+     * @param icon_hl Optional highlight group used to color the icon.
      */
-    void RegisterWhichKeyGroup(const std::string &prefix, const std::string &label) {
-        whichkey_groups_[NormalizeWhichKeySequence(prefix)] = label;
+    void RegisterWhichKeyGroup(const std::string &prefix, const std::string &label, int icon = 0,
+                               const std::string &icon_hl = "") {
+        whichkey_groups_[NormalizeWhichKeySequence(prefix)] = {label, icon, icon_hl};
     }
     // Leader sequences are stored one byte per key. Enter is the one
     // non-printable key HandleWhichKeyInput accepts (so a binding like
@@ -7775,17 +8411,15 @@ public:
      */
     static std::string WhichKeySequenceDisplay(const std::string &seq);
     // What DrawWhichKeyOverlay actually lists: WhichKeyMatches() bucketed
-    // by their next character, collapsed to one "+label" row per bucket
-    // that both has more than one leaf *and* a registered group label;
-    // every other bucket (a lone leaf, or an unlabeled multi-leaf one)
-    // falls through to listing its own leaf/leaves exactly as before, so
-    // an unnamed group degrades to today's flat behavior rather than
-    // hiding anything.
+    // by their next character, collapsed to one labeled row per explicitly
+    // registered group. This also lets a single two-key command (e.g. yy)
+    // retain a useful named hierarchy. Unnamed buckets fall through to
+    // listing their leaf/leaves exactly as before.
     /**
-     * @brief Buckets the current which-key matches by their next character, collapsing labeled multi-leaf buckets into a single "+label" row.
+     * @brief Buckets the current which-key matches by their next character, collapsing explicitly labeled buckets into a single row.
      * @return The display rows to render in the which-key overlay.
      */
-    std::vector<std::pair<std::string, std::string>> WhichKeyDisplayEntries() const;
+    std::vector<WhichKeyDisplayEntry> WhichKeyDisplayEntries() const;
     // Every registered leader-sequence binding, unfiltered by any typed
     // prefix -- the leader-sequence half of the keybinding-introspection
     // picker (mep.leader_bindings(), NVIM_PARITY_PLAN.md Phase 25), the
@@ -7798,9 +8432,11 @@ public:
     const std::vector<WhichKeyBinding> &AllWhichKeyBindings() const { return whichkey_bindings_; }
 
     // --- Dashboard/scratch/zen (NVIM_PARITY_PLAN.md Part III Phase 12) ---
-    // True exactly when the dashboard should render: single tab, single
-    // pane, single buffer, that buffer untouched (empty, unmodified, no
-    // filename) -- recomputed fresh each frame rather than cached, so it
+    // True exactly when the dashboard should render: single project whose
+    // every workspace (the bootstrap one plus any auto-adopted git
+    // worktrees) is one tab / one pane on an untouched buffer (empty,
+    // unmodified, no filename), and no other buffer has been touched
+    // either -- recomputed fresh each frame rather than cached, so it
     // disappears the instant any of that stops being true.
     bool ShouldShowDashboard() const;
     // The dashboard is still Normal mode, but its two action lines use a
@@ -7815,6 +8451,32 @@ public:
     // otherwise creates one; switches the current pane to it either way.
     void OpenScratchBuffer();
     void ToggleZenMode() { zen_mode_ = !zen_mode_; }
+    // The top File/Edit/Window/Help bar, hidden by default and summoned
+    // by tapping mod1 (Alt) on its own -- the same gesture Windows/GTK
+    // apps use for a hidden menu bar. Unlike zen mode this is only that
+    // one row: the tab bar, sidebars and status line stay put, and the
+    // pane area simply grows into the freed pixels (main.cpp's
+    // menu_bar_height). Also reachable from Lua as mep.menubar_toggle()/
+    // mep.menubar_visible()/mep.menubar_set_visible(on), so a config that
+    // wants the bar up all the time can just say so in init.lua.
+    bool IsMenuBarVisible() const { return menu_bar_visible_; }
+    void ToggleMenuBar() { SetMenuBarVisible(!menu_bar_visible_); }
+    void SetMenuBarVisible(bool visible);
+    // The two physical keys mod1 currently maps to (both Alts by
+    // default). False if mod1_ has no key pair, in which case neither
+    // output is written.
+    bool Mod1KeyPair(gfx::Key *left, gfx::Key *right) const;
+    /**
+     * @brief Returns the display name of whichever modifier is currently mod1 ("Alt", "Ctrl", "Shift" or "Super").
+     * @return The modifier's name, capitalised for display.
+     */
+    std::string Mod1Name() const;
+    // Polled once per frame (main.cpp's input step, before anything else
+    // looks at mod1) to recognise a *bare* mod1 tap: mod1 pressed and
+    // released with nothing else in between. Returns true on the frame
+    // that completes one. See the implementation for what disqualifies a
+    // press from counting.
+    bool ConsumeMod1Tap();
     // Switches SheetSession::active_sheet by one, wrapping around at
     // either end (Ctrl-PageDown/Ctrl-PageUp -- Excel's own convention for
     // this) -- undo/redo stay per-workbook, not per-sheet, so this doesn't
@@ -7839,6 +8501,16 @@ public:
     // about every navigation command; switching back re-applies it.
     // Re-toggling while a *different* pane is now active zooms that one
     // instead of unzooming the stale target.
+    // Alt+M: maximizes the active pane within the split tree -- every split
+    // on its path from the root gives it all the room, squeezing every
+    // other pane to kMinPaneShare (the floor manual resizing stops at),
+    // unlike <leader>zz's TogglePaneZoom, which hides them -- or, pressed
+    // again in the maximized pane, restores the layout saved when it was
+    // first maximized (Tab::maximize_saved_shares). Pressed in a different
+    // pane while one is maximized, maximizes that one instead, keeping the
+    // original saved layout for the eventual restore.
+    void TogglePaneMaximize();
+    bool IsPaneMaximized() const;
     void TogglePaneZoom() { zoomed_pane_id_ = (zoomed_pane_id_ == ActivePaneId()) ? -1 : ActivePaneId(); }
     int ZoomedPaneId() const { return zoomed_pane_id_; }
 
@@ -7884,6 +8556,11 @@ public:
     // Per-pane buffer tabs: opens `path` as a new tab within the *current*
     // pane (find-or-create the buffer, insert after the current tab).
     void PaneOpenBufferInTab(const std::string &path);
+    /**
+     * @brief Adds an already-open buffer as a new buffer tab in the focused pane, right after the active tab, and switches to it.
+     * @param buffer_id The buffer to show; out-of-range ids are ignored.
+     */
+    void PaneOpenBufferIdInTab(int buffer_id);
     void PaneNextBufferTab();
     void PanePrevBufferTab();
     // Click-to-switch (same reasoning as GoToTab): jumps directly to buffer
@@ -7988,23 +8665,64 @@ public:
     // Insert mode has no other built-in Tab behavior to fall back to.
     void SetInsertTabHookRef(int lua_ref) { insert_tab_hook_ref_ = lua_ref; }
 
+    // --- Inline suggestion / "ghost text" (Copilot, kBuiltinCopilot) ---
+    // A whole multi-line completion shown *in place*, dimmed, as if it
+    // were already typed -- distinct from the completion popup above,
+    // which is a list of short candidate words in a bordered box. The two
+    // coexist: the popup owns Tab whenever it's open (unchanged), and the
+    // ghost only claims Tab on the frames it isn't.
+    //
+    // The suggestion is anchored to the exact (row, col) it was requested
+    // for. Anything that moves the cursor off that spot -- typing,
+    // arrowing, leaving Insert -- makes InlineSuggestionVisible() false
+    // without any Lua-side bookkeeping, so a stale suggestion from an
+    // in-flight request that landed two keystrokes late can never be
+    // drawn against text it wasn't computed from, and can never be
+    // accepted into the wrong place.
+    //
+    // `text` is what remains to be inserted at the anchor (the Lua side
+    // has already trimmed whatever prefix of the LSP item's insertText
+    // the user had typed by then -- see mep_copilot_ghost_for in
+    // kBuiltinCopilot); embedded '\n' are real line breaks.
+    void SetInlineSuggestion(const std::string &text, int row, int col);
+    void ClearInlineSuggestion();
+    const std::string &InlineSuggestionText() const { return inline_suggestion_; }
+    // True only when there's a suggestion, the buffer/cursor still sit
+    // exactly where it was requested, and Insert mode is active.
+    bool InlineSuggestionVisible() const;
+    // Splices the whole suggestion in at the cursor (one undo step),
+    // leaving the cursor at its end; no-op unless InlineSuggestionVisible().
+    // Returns true if something was inserted.
+    bool AcceptInlineSuggestion();
+    // Copilot's partial-accept: takes just the next word (or, for
+    // `whole_line`, up to the first line break) of the suggestion and
+    // keeps the rest showing, re-anchored at the new cursor. Returns the
+    // number of UTF-16 code units accepted so far -- what the language
+    // server's textDocument/didPartiallyAcceptCompletion wants as
+    // `acceptedLength` -- or 0 if nothing was accepted.
+    int AcceptInlineSuggestionPartial(bool whole_line);
+    // mep.set_inline_suggestion_accept_hook(fn): fn(accepted_length) once
+    // per accept, after the text has landed. accepted_length is 0 for a
+    // full accept and the UTF-16 prefix length for a partial one, which
+    // is exactly the split kBuiltinCopilot needs to pick between the
+    // server's didAcceptCompletionItem command and its
+    // didPartiallyAcceptCompletion notification.
+    void SetInlineSuggestionAcceptHookRef(int lua_ref) { inline_suggestion_accept_hook_ref_ = lua_ref; }
+
     // mep.buffer_set_on_enter(buffer_id, fn): fn() called instead of
     // whatever bare Enter/KP_Enter already does in Normal mode -- nothing,
     // today; unlike Insert mode's CR this editor has never bound Normal
     // mode's own Enter to a motion the way real Vim's "+"/CR is, so
     // intercepting it here doesn't take anything away -- whenever the
-    // active pane's buffer is `buffer_id`. Single-slot, last-registration-
-    // wins, same scope cut as SetCompletionSourceRef/SetSidebarOnKey above:
-    // one buffer needs this at a time, not a general per-buffer registry.
-    // kBuiltinStructure's structure-split pane (main.cpp) is the first
+    // active pane's buffer is `buffer_id`. One callback per buffer (a
+    // re-registration replaces it) -- kBuiltinFileTree's sidebar tree and
+    // its oil-style directory buffers each claim Enter at the same time as
+    // kBuiltinStructure's split pane. kBuiltinStructure's structure-split pane (main.cpp) is the first
     // caller -- lets <CR> jump to the entry under the cursor there the
     // same way ActivateSidebarLine already does for the full-sidebar
     // version (HandleSidebarInput), instead of requiring :MepStructureSplit
     // to be re-run from inside the pane.
-    void SetBufferOnEnter(int buffer_id, int lua_ref) {
-        enter_hook_buffer_id_ = buffer_id;
-        enter_hook_ref_ = lua_ref;
-    }
+    void SetBufferOnEnter(int buffer_id, int lua_ref) { SetBufferHookRef(&enter_hook_refs_, buffer_id, lua_ref); }
 
     // mep.buffer_set_on_write(buffer_id, fn): fn() called by SaveBuffer
     // instead of writing `buffer_id`'s lines to disk -- lets a Lua-managed
@@ -8016,25 +8734,33 @@ public:
     // marked unmodified, save_epoch_ bumped) since -- unlike the Enter hook,
     // which can legitimately want to defer to "no default behavior" --
     // every registered write hook so far replaces the write outright.
-    // Single-slot, last-registration-wins, same scope cut as
-    // SetBufferOnEnter above.
-    void SetBufferOnWrite(int buffer_id, int lua_ref) {
-        write_hook_buffer_id_ = buffer_id;
-        write_hook_ref_ = lua_ref;
-    }
+    // One callback per buffer, same as SetBufferOnEnter above.
+    void SetBufferOnWrite(int buffer_id, int lua_ref) { SetBufferHookRef(&write_hook_refs_, buffer_id, lua_ref); }
 
     // mep.buffer_set_on_image_toggle(buffer_id, fn): fn() called instead of
     // Normal mode's builtin 'I' (insert at first non-blank) whenever the
     // active pane's buffer is `buffer_id` -- lets a Lua-managed buffer claim
     // Shift+I for its own purpose (kBuiltinFileTree's file tree is the first
     // caller: toggling into an image-viewer pane for the tree's root
-    // directory) without shadowing 'I' anywhere else. Single-slot, last-
-    // registration-wins, same scope cut as SetBufferOnEnter/SetBufferOnWrite
-    // above.
+    // directory) without shadowing 'I' anywhere else. One callback per
+    // buffer, same as SetBufferOnEnter/SetBufferOnWrite above.
     void SetBufferOnImageToggle(int buffer_id, int lua_ref) {
-        image_toggle_hook_buffer_id_ = buffer_id;
-        image_toggle_hook_ref_ = lua_ref;
+        SetBufferHookRef(&image_toggle_hook_refs_, buffer_id, lua_ref);
     }
+
+    // mep.buffer_set_on_key(buffer_id, fn): fn(key) is offered each plain
+    // Normal-mode keypress (one ASCII character) while the active pane's
+    // buffer is `buffer_id` and nothing (operator, count, g/z/[ prefix,
+    // register) is pending; a truthy return swallows the key, otherwise the
+    // builtin command runs as usual. The leader key is always checked
+    // first so whichkey still works. kBuiltinFileTree's sidebar tree is the
+    // first caller: single-key a/r/d/... file operations, and swallowing
+    // every editing key so the tree's text can't be modified in place (the
+    // oil-style editable directory view is a separate buffer). A bare
+    // Normal-mode Escape is offered too, as "\x1b" (return false to keep
+    // its usual meaning). lua_ref 0 clears it. One callback per buffer,
+    // same as SetBufferOnEnter above.
+    void SetBufferOnKey(int buffer_id, int lua_ref) { SetBufferHookRef(&key_hook_refs_, buffer_id, lua_ref); }
 
     // mep.set_on_directory_open(fn): fn(path) called by LoadFile whenever
     // the path it was asked to open (":e"/"mep.open", either one -- both
@@ -8169,6 +8895,11 @@ public:
     // buttons (and HandleTabShortcuts' Ctrl-T) call these directly, unlike
     // TabNext/TabPrevious which only ever run through ex-commands.
     void TabNew(const std::string &file_arg);
+    /**
+     * @brief Opens a new tab page (right after the active one) whose single pane shows an existing buffer, and focuses it.
+     * @param buffer_id The buffer to show; out-of-range ids are ignored.
+     */
+    void TabNewWithBuffer(int buffer_id);
     void TabDelete();
 
     // --- Hover tooltip (NVIM_PARITY_PLAN.md Phase 3 gap, closed) ---
@@ -8230,6 +8961,10 @@ private:
     void HandlePreviewInput();
     void HandleHoverFocusInput();
     void HandleSidebarInput();
+    // Input while sidebar `id` shows its `?` key-binding view: j/k/gg/G/
+    // arrows scroll it, Escape/?/q go back, everything else is swallowed
+    // (so e.g. the git panel's `s` can't stage a file behind the help).
+    void HandleSidebarHelpInput(int id, bool escape);
     void HandlePickerInput();
     void HandleRoamGraphInput();
     void HandleWhichKeyInput();
@@ -8421,6 +9156,9 @@ private:
     // all other character input into sess.search_input, instead of the
     // normal pan/zoom/page-nav keys HandlePdfInput handles otherwise.
     void HandlePdfSearchInput(PdfSession &sess);
+    // Captures keystrokes for the annotate-mode sticky-note text prompt
+    // (PdfSession::note_input_active), committing on Enter via PdfAddNote.
+    void HandlePdfNoteInput(PdfSession &sess);
     // While sess.nav_goto_active (Mode::PdfNav's 'g' prompt): captures
     // Escape (cancel the prompt only -- stays in Mode::PdfNav, mirroring
     // HandlePdfSearchInput's cancel), Enter (jump to the typed 1-indexed
@@ -8442,6 +9180,49 @@ private:
     // entered the render window (its raster is new, so it has no
     // highlights yet even if a search was already active).
     void RecomputePdfPageHighlights(PdfSession &sess);
+    // Recomputes PageRaster::annots (markup-annotation overlays) for every
+    // cached page from the file's own /Annots plus sess.pending_annots --
+    // called when a session annotation is created/removed so the change
+    // shows without waiting for the page to be re-rastered.
+    void RecomputePdfPageAnnots(PdfSession &sess);
+    // Appends a session-created markup annotation to `sess`, marks the
+    // buffer modified, and refreshes the on-screen overlays. `:w` then
+    // writes all pending annotations into the file's /Annots.
+    void AddPendingPdfAnnot(PdfSession &sess, int buffer_id, pdfannots::PdfAnnot a);
+    // `:pdfannotate` -- enters Mode::PdfAnnotate on the active PDF pane.
+    void EnterPdfAnnotateMode();
+    // `:pdfnote` with no argument -- opens the in-pane sticky-note text
+    // prompt (PdfSession::note_input_active).
+    void PdfNotePrompt();
+    // Applies note text to an existing annotation (edit/attach); PdfDeleteTarget
+    // deletes the annotation under the mouse OR under the vim caret (a highlight
+    // + its note).
+    void ApplyPdfNoteToTarget(PdfSession &sess, const PdfSession::AnnotTarget &t, const std::string &text);
+    void PdfDeleteTarget();
+    // Resolve which annotation an edit/delete acts on: the one under the mouse
+    // (hover_annot) if any, else the highlight whose region contains the vim
+    // caret glyph. ResolveAnnotTargetAtCaret returns an invalid target when the
+    // caret isn't inside any highlight on its page.
+    PdfSession::AnnotTarget ActiveAnnotTarget(PdfSession &sess);
+    PdfSession::AnnotTarget ResolveAnnotTargetAtCaret(PdfSession &sess);
+    // --- vim caret (annotate mode) ---
+    void LoadCaretGlyphs(PdfSession &sess, int page);   // (re)load caret_glyphs for `page`, reset caret to first glyph
+    void PdfCaretMove(PdfSession &sess, int cp);         // h/l/j/k/w/b/e/0/$ motion (cp is the key char)
+    void PdfCaretToggleVisual(PdfSession &sess);         // `v`: start/stop a visual selection at the caret
+    void PdfAnnotLeaderAction(PdfSession &sess, int cp); // dispatch an annotate <space>-leader action key
+    void PdfCaretUpdateVisual(PdfSession &sess);         // recompute sel_quads from anchor..caret
+    void PdfCaretEnsureVisible(PdfSession &sess);        // auto-scroll so the caret stays in view
+    // `:pdfsearch <text>` -- runs a PDF text search and jumps to the first
+    // match (a command-line entry point to the same RunPdfSearch the '/'
+    // prompt drives).
+    void PdfSearchCommand(const std::string &query);
+    // `:pdfhighlight` -- highlights the current search match on the active
+    // PDF pane (a no-op with a status message if there's no current match).
+    void PdfHighlightCurrentMatch();
+    // `:pdfnote <text>` -- adds a sticky note on the active PDF pane,
+    // anchored to the current search match if one exists, else the page's
+    // top-left.
+    void PdfAddNote(const std::string &text);
     // Jumps to search_matches[index] (wrapping around either end so N/P
     // cycle through the whole document): sets page/pan_x/scroll_y so the
     // match is in view (vertically centered where possible), and updates
@@ -8916,12 +9697,29 @@ private:
     NotebookSession *GetNotebookMutable(int buffer_id);
     void NotebookSyncFromText(NotebookSession &sess);
     void NotebookRebuildSlotCache(NotebookSession &sess);
-    void NotebookEnsureKernel(NotebookSession &sess);
+    // Starts (if needed) the resident process for a Python/Protocol
+    // kernel and returns its state; nullptr for an unregistered name or a
+    // Script kernel (which has no resident process).
+    NotebookSession::KernelProc *NotebookEnsureKernel(NotebookSession &sess, const std::string &kernel_name);
     void NotebookPumpQueue(NotebookSession &sess);
-    void NotebookHandleKernelLine(int buffer_id, int generation, const std::string &line);
-    void NotebookKernelExited(int buffer_id, int generation, int code);
+    void NotebookHandleKernelLine(int buffer_id, const std::string &kernel_name, int generation, const std::string &line);
+    void NotebookKernelExited(int buffer_id, const std::string &kernel_name, int generation, int code);
+    // Script-mode per-cell process callbacks, matched to the in-flight
+    // request by (uid, request_id) so a cell re-run after a kill can't
+    // receive the old process's tail.
+    void NotebookScriptOutput(int buffer_id, int uid, int request_id, const char *stream, const std::string &line);
+    void NotebookScriptExited(int buffer_id, int uid, int request_id, int code);
+    void NotebookFinishRunning(NotebookSession &sess, NotebookCell &cell);
     void NotebookFailRunning(NotebookSession &sess, const std::string &reason);
+    void NotebookFailRunningCell(NotebookCell &cell, const std::string &reason);
+    void NotebookKillKernels(NotebookSession &sess);
+    std::string NotebookKernelCwd(int buffer_id);
     std::string notebook_python_ = "python3";
+    // Kernel registry (SetNotebookKernels). Starts with just the built-in
+    // python3 kernel so a notebook works before kBuiltinNotebook's Lua
+    // has pushed mep.opt.notebook_kernels.
+    std::vector<NotebookKernelSpec> notebook_kernels_ = {
+        {"python3", "Python 3", "py", {}, NotebookKernelSpec::Mode::Python}};
     double notebook_char_aspect_ = kNotebookDefaultCharAspect;
 
     // Shared by Visual mode's d/x/y and the menu-bar Copy/Cut: operates on
@@ -9343,6 +10141,9 @@ private:
     // Keyed by buffer_id -- one entry per open PDF-viewer pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, PdfSession> pdfs_;
+    // note-text hash -> rendered LaTeX PNG path ("" while still rendering);
+    // see SetPdfNoteLatexPng and kBuiltinPdfAnnot.
+    std::unordered_map<std::string, std::string> pdf_note_latex_png_;
     // Keyed by buffer_id -- one entry per open video-playback pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, VideoSession> video_sessions_;
@@ -9421,6 +10222,10 @@ private:
     // sitting on the dashboard) from "already loaded with real content",
     // since only the latter should skip mep.project_open's default layout.
     bool ProjectIsPristine(const Project &project) const;
+    // An untouched empty buffer / a single-tab, single-leaf workspace
+    // showing one (the shared pieces of the two checks above).
+    bool BufferIsPristine(int buffer_id) const;
+    bool WorkspaceIsPristine(const Workspace &ws) const;
     Json WorkspaceStateJson(const Project &project) const;
     Json SplitStateJson(const Workspace &ws, const SplitNode &node) const;
     uint64_t LayoutFingerprint() const;
@@ -9559,8 +10364,15 @@ private:
 
     bool picker_open_ = false;
     std::string picker_title_;
+    std::string picker_hint_;
     std::string picker_query_;
     std::vector<PickerItem> picker_items_;
+    // PickerFilteredResults() cache: valid while picker_items_generation_
+    // and the query match what it was computed from.
+    unsigned picker_items_generation_ = 0;
+    mutable unsigned picker_filtered_generation_ = ~0u;
+    mutable std::string picker_filtered_query_;
+    mutable std::vector<PickerItem> picker_filtered_;
     int picker_selected_ = 0;
     int picker_on_select_ref_ = 0;
     int picker_on_query_change_ref_ = 0;
@@ -9574,6 +10386,8 @@ private:
     // doesn't leave a later item's preview scrolled to wherever the
     // previous one happened to be.
     int picker_preview_scroll_ = 0;
+    std::vector<std::string> picker_tabs_;
+    int picker_active_tab_ = 0;
 
     bool roam_graph_open_ = false;
     std::string roam_graph_title_;
@@ -9586,10 +10400,9 @@ private:
     std::vector<WhichKeyBinding> whichkey_bindings_;
     char leader_key_ = ' ';
     std::string whichkey_prefix_;
-    // Sequence prefix (e.g. "o", "oe") -> group label (e.g. "org",
-    // "export"), registered via mep.leader_group -- WhichKeyDisplayEntries'
-    // own lookup table.
-    std::unordered_map<std::string, std::string> whichkey_groups_;
+    // Sequence prefix (e.g. "o", "oe") -> group metadata, registered via
+    // mep.leader_group -- WhichKeyDisplayEntries' own lookup table.
+    std::unordered_map<std::string, WhichKeyGroup> whichkey_groups_;
     int statusline_ref_ = 0;
     bool active_todo_ = false;
     std::string active_todo_text_;
@@ -9603,6 +10416,18 @@ private:
     bool direnv_active_ = false;
     int winbar_click_ref_ = 0;
     bool zen_mode_ = false;
+    // See IsMenuBarVisible. Off by default -- the editor starts with the
+    // tab bar at the top edge and the menu bar is summoned when wanted.
+    // What keeps that from being a hidden feature is the dashboard, which
+    // spells the gesture out on the empty-workspace screen every session
+    // starts on (DrawDashboard, main.cpp).
+    bool menu_bar_visible_ = false;
+    // ConsumeMod1Tap's state machine. `armed` means mod1 has gone down and
+    // nothing has disqualified the press yet; `down_at` is when, so a mod1
+    // held open as a modifier (or across an alt-tab the WM swallowed)
+    // times out instead of toggling on release.
+    bool mod1_tap_armed_ = false;
+    double mod1_tap_down_at_ = 0.0;
     int zoomed_pane_id_ = -1;  // see TogglePaneZoom/ZoomedPaneId
     // Speech-to-text recording indicator (Lua-driven, see mep.stt_toggle):
     // purely a display flag for DrawTabBar's mic icon -- the actual
@@ -9621,15 +10446,50 @@ private:
     int completion_accept_hook_ref_ = 0;
     int completion_resolve_hook_ref_ = 0;
     int insert_tab_hook_ref_ = 0;
-    // See SetBufferOnEnter's own comment above.
-    int enter_hook_buffer_id_ = -1;
-    int enter_hook_ref_ = 0;
-    // See SetBufferOnWrite's own comment above.
-    int write_hook_buffer_id_ = -1;
-    int write_hook_ref_ = 0;
-    // See SetBufferOnImageToggle's own comment above.
-    int image_toggle_hook_buffer_id_ = -1;
-    int image_toggle_hook_ref_ = 0;
+    // Called at the end of every Insert-mode input frame: keeps a
+    // suggestion alive while the user types the very characters it was
+    // going to insert (the "type along with the ghost" behavior every
+    // Copilot client has), trimming what was typed off its front and
+    // re-anchoring it at the new cursor; clears it the moment what was
+    // typed stops matching, or the cursor leaves the anchor row/buffer.
+    void ReanchorInlineSuggestionAfterEdit();
+    int inline_suggestion_accept_hook_ref_ = 0;
+    // --- Inline suggestion state (see SetInlineSuggestion above) ---
+    // Empty string == no suggestion; the anchor is only meaningful when
+    // it isn't.
+    std::string inline_suggestion_;
+    int inline_suggestion_row_ = -1;
+    int inline_suggestion_col_ = -1;
+    // The buffer the suggestion was computed against. Without this, a
+    // suggestion requested in one buffer would still be "visible" after a
+    // buffer switch that happened to leave the cursor on the same
+    // (row, col) -- rare, but it would splice one file's code into
+    // another's.
+    int inline_suggestion_buffer_ = -1;
+    // Running total of UTF-16 code units of inline_suggestion_'s *original*
+    // text already accepted via AcceptInlineSuggestionPartial. The language
+    // server's didPartiallyAcceptCompletion wants a length measured from
+    // the start of the original insertText, not the length of this one
+    // word, so each partial accept has to add to what came before it.
+    int inline_suggestion_accepted_ = 0;
+    // buffer_id -> Lua registry ref; see SetBufferOnEnter/SetBufferOnWrite/
+    // SetBufferOnImageToggle/SetBufferOnKey's own comments above.
+    std::unordered_map<int, int> enter_hook_refs_;
+    std::unordered_map<int, int> write_hook_refs_;
+    std::unordered_map<int, int> image_toggle_hook_refs_;
+    std::unordered_map<int, int> key_hook_refs_;
+    static void SetBufferHookRef(std::unordered_map<int, int> *hooks, int buffer_id, int lua_ref) {
+        if (lua_ref == 0) hooks->erase(buffer_id);
+        else (*hooks)[buffer_id] = lua_ref;
+    }
+    static int BufferHookRef(const std::unordered_map<int, int> &hooks, int buffer_id) {
+        auto it = hooks.find(buffer_id);
+        return it == hooks.end() ? 0 : it->second;
+    }
+    // Offers `cp` to the active buffer's SetBufferOnKey hook when no Normal-
+    // mode command is mid-flight (a bare pending count is fine -- it's
+    // dropped if the hook swallows the key); true = swallowed.
+    bool TryBufferKeyHook(int cp);
     // See SetDirectoryOpenHookRef's own comment above.
     int directory_open_hook_ref_ = 0;
     bool completion_open_ = false;
@@ -9753,6 +10613,12 @@ private:
     // 'latex'-provider Fold, is a real visible side effect this toggle
     // must own outright, not just gate the texture substitution).
     bool org_latex_visible_ = false;
+    // Org block cards (<leader>otb / mep.org_block_cards_toggle): see
+    // OrgBlockCardsVisible()'s own comment for why this one starts on.
+    bool org_block_cards_visible_ = true;
+    // Scratch for OrgBlockCards() -- reused across calls (one scan per
+    // pane per frame) instead of returning a fresh vector each time.
+    std::vector<OrgBlockCard> org_block_cards_;
 
     // Command-line/search history (Phase 11) -- Up/Down browse
     // command_history_/search_history_ from most-recent backward.
@@ -9835,9 +10701,11 @@ private:
     // Ctrl-W waiting for a second key (window commands: w/W/c/s/v).
     bool pending_ctrl_w_ = false;
     // Ctrl-C waiting for a second chord key -- Ctrl-C (org-babel "execute
-    // this source block") or Ctrl-E (org export-format dispatch, see
-    // pending_org_export_ below), mirroring real Emacs org-mode's own
-    // C-c C-c / C-c C-e bindings. Unlike pending_g_/pending_ctrl_w_'s
+    // this source block", or "run this cell" in a Jupyter notebook buffer,
+    // where HandleInsertInput honors the chord as well) or Ctrl-E (org
+    // export-format dispatch, see pending_org_export_ below), mirroring
+    // real Emacs org-mode's own C-c C-c / C-c C-e bindings (and EIN's
+    // C-c C-c for notebooks). Unlike pending_g_/pending_ctrl_w_'s
     // second key (an ordinary unmodified char, consumed via
     // HandleNormalChar's char loop), every key in a Ctrl-C-led chord
     // holds Ctrl, so none of them ever produce a GetCharPressed() char
@@ -10029,13 +10897,43 @@ private:
     std::unordered_map<std::string, std::vector<int>> dap_breakpoints_;
     std::unordered_map<int, int> termsend_targets_;  // source buffer id -> target (terminal) buffer id
     // GitGutterRefresh/GitNextHunkRow/GitPrevHunkRow/GitPreviewHunkText/
-    // GitResetHunk/GitStageHunk state: the most recently computed hunks
-    // and the diff base's own line content (1-indexed DiffHunk fields
-    // index into git_base_lines_ 1-based, i.e. git_base_lines_[i-1]).
-    std::vector<DiffHunk> git_hunks_;
-    std::vector<std::string> git_base_lines_;
-    // Pointer into git_hunks_, valid only until the next GitGutterRefresh
-    // call -- every caller uses it immediately, never stores it.
+    // GitResetHunk/GitStageHunk state, per buffer: the most recently
+    // computed hunks and the diff base's own line content (1-indexed
+    // DiffHunk fields index into base_lines 1-based, i.e.
+    // base_lines[i-1]). Per buffer rather than one global set because
+    // every consumer of it is cursor-relative -- with a single shared
+    // set, splitting the window or switching buffers left ]c/hunk
+    // preview/stage/reset acting on whichever file happened to be
+    // diffed last, against the cursor of a different one.
+    struct GitSignState {
+        std::vector<DiffHunk> hunks;
+        std::vector<std::string> base_lines;
+        std::string base;          // the revision `hunks` was computed against
+        std::string filename;      // the buffer's path at spawn time, to catch a reused buffer id
+        int change_epoch = -1;     // ChangeEpoch() when the diff was spawned
+        bool line_hl = false;      // whole-line tint setting the decorations were built with
+        bool pending = false;      // a `git show` for this buffer is in flight
+        bool valid = false;        // false = no usable diff (not a repo, bad ref, git missing)
+        double last_run = 0.0;     // Now() of the last spawn, for the debounce
+    };
+    std::unordered_map<int, GitSignState> git_signs_;
+    // vim-gitgutter's `highlight_lines`: tint every hunk row's background
+    // as well as marking it in the sign column. Off by default (gitsigns'
+    // own default too) -- pushed here from mep.git_gutter_line_hl through
+    // GitGutterTick, which invalidates every cached diff when it flips so
+    // the change shows up without waiting for the next edit.
+    bool git_gutter_line_hl_ = false;
+    // Minimum seconds between two `git show` spawns for the same buffer.
+    static constexpr double kGitGutterDebounceSec = 0.4;
+    // The same, for a buffer whose last diff produced nothing usable --
+    // see GitGutterTick.
+    static constexpr double kGitGutterRetrySec = 5.0;
+    /**
+     * @brief Returns the current buffer's cached git-gutter diff, or nullptr if it has none.
+     */
+    const GitSignState *CurGitSigns() const;
+    // Pointer into the current buffer's hunks, valid only until the next
+    // refresh of that buffer -- every caller uses it immediately.
     const DiffHunk *GitHunkAtCursor() const;
     // SnippetSplice/SnippetJump state -- see SnippetTabstop's own comment.
     bool has_snippet_state_ = false;

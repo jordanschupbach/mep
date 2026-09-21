@@ -257,6 +257,20 @@ int main() {
         CHECK(!t.BracketedPaste());
     }
 
+    // OSC 10/11 describes this terminal's configured defaults to apps
+    // such as Codex, so a light embedding theme does not induce a dark
+    // prompt background.
+    {
+        VTerm t(10, 40);
+        t.SetOscDefaultColors(VTermColor{VTermColorKind::Rgb, 0, 12, 34, 56},
+                             VTermColor{VTermColorKind::Rgb, 0, 250, 240, 230});
+        CHECK(!t.QueriesOscDefaultColors());
+        CHECK(t.Feed("\x1b]10;?\x07") == "\x1b]10;rgb:0c0c/2222/3838\x1b\\");
+        CHECK(!t.QueriesOscDefaultColors());
+        CHECK(t.Feed("\x1b]11;?\x07") == "\x1b]11;rgb:fafa/f0f0/e6e6\x1b\\");
+        CHECK(t.QueriesOscDefaultColors());
+    }
+
     std::printf("vterm_test: all checks passed\n");
     return 0;
 }

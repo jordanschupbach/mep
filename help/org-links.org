@@ -1,0 +1,48 @@
+#+TITLE: Links, footnotes and citations
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="70">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Links
+
+| Command                  | Does                                     |
+|--------------------------+------------------------------------------|
+| =:MepOrgLinkInsert=      | insert a link                            |
+| =:MepOrgLinkFollow=      | follow the link under the cursor         |
+| =:MepOrgStoreLink=       | remember this location as a link target  |
+
+The pair to learn is =StoreLink= then =LinkInsert=: store a link where you
+are, go elsewhere, insert it. That is how you build a link to a specific
+heading without typing its path.
+
+Link syntax is org's own:
+
+#+begin_example
+[[file:notes.org][Notes]]
+[[https://example.com][A site]]
+[[file:notes.org::*Some heading][That heading]]
+#+end_example
+
+Press =f= in a rendered org buffer to label every visible link and follow
+one by typing its letter.
+
+* Footnotes
+
+=:MepOrgFootnoteJump= moves between a footnote reference and its definition,
+in either direction.
+
+* Citations
+
+| Command                         | Does                                |
+|---------------------------------+-------------------------------------|
+| =:MepOrgBibInsertCitation=      | insert a citation                   |
+| =:MepOrgBibCiteGoto=            | jump to the entry it refers to      |
+| =:MepOrgBibCitePreview=         | preview that entry                  |
+
+Entries are read from your BibTeX files; =mep.org_bib_parse_files= is the
+parser behind it.
+
+* See also
+
+- [[file:org-roam.html][Org-roam]] -- linking notes to each other as a habit.
+- [[file:org-export.html][Exporting]] -- what links become in the output.

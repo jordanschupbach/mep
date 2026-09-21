@@ -5,11 +5,13 @@
 #include "pdf_links.h"
 #include "pdf_outline.h"
 #include "pdf_text.h"
+#include "pdf_writer.h"
 #include "pdf_xref.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <ctime>
 #include <utility>
 
 bool IsPdfPath(const std::string &path) {
@@ -42,6 +44,11 @@ struct PdfDoc::Impl {
     // itself" requirement for FPDF_LoadMemDocument) was the backend.
     std::vector<unsigned char> file_data_;
     pdfdoc::PdfDocument document_;
+    // Point-space glyph boxes for the page a text selection is currently
+    // being dragged on, extracted once and reused across the drag (mutable
+    // so the const SelectionQuads can populate it on demand).
+    mutable int glyph_cache_page_ = -1;
+    mutable std::vector<pdftext::GlyphBox> glyph_cache_;
 };
 
 PdfDoc::PdfDoc() = default;
@@ -79,7 +86,7 @@ double PdfDoc::PageWidthPt(int page_index) const { return impl_ ? impl_->documen
 double PdfDoc::PageHeightPt(int page_index) const { return impl_ ? impl_->document_.PageHeightPt(page_index) : 0; }
 
 bool PdfDoc::RenderPage(int page_index, float px_per_pt, std::vector<unsigned char> &out_rgba, int &out_w,
-                         int &out_h) {
+                         int &out_h, std::string *out_warning) {
     if (!impl_) return false;
     const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
     if (!page) return false;
@@ -92,10 +99,22 @@ bool PdfDoc::RenderPage(int page_index, float px_per_pt, std::vector<unsigned ch
     pdfrender::Mat2D ctm = pdfrender::PageToDeviceMatrix(page->effective_box[0], page->effective_box[1],
                                                           page->effective_box[2], page->effective_box[3],
                                                           page->rotate, scale);
+    pdfrender::PageContentStatus status;
     std::string content = pdfrender::GetPageContent(impl_->file_data_.data(), impl_->file_data_.size(),
-                                                      impl_->document_.Xref(), *page);
+                                                      impl_->document_.Xref(), *page, &status);
     pdfrender::RenderContentStream(content, canvas, ctm, page->resources, impl_->file_data_.data(),
                                     impl_->file_data_.size(), impl_->document_.Xref());
+
+    // A page whose /Contents stream(s) couldn't be resolved/decoded rendered
+    // blank (all failed) or partial (some failed) with no other signal --
+    // report it so the caller can warn instead of showing a silent white page.
+    if (out_warning && status.streams_failed > 0) {
+        bool all = status.streams_failed >= status.streams_total;
+        *out_warning = "page " + std::to_string(page_index + 1) + " rendered " +
+                       (all ? "blank" : "partially") + ": " + std::to_string(status.streams_failed) + " of " +
+                       std::to_string(status.streams_total) +
+                       " content stream(s) could not be decoded (unsupported or corrupt PDF feature)";
+    }
 
     out_rgba = std::move(canvas.rgba);
     out_w = w;
@@ -170,4 +189,217 @@ std::vector<PdfLinkAnnot> PdfDoc::PageLinks(int page_index, float px_per_pt) con
     out.reserve(links.size());
     for (const pdflinks::PdfLinkAnnot &l : links) out.push_back({l.x0, l.y0, l.x1, l.y1, l.target_page, l.uri});
     return out;
+}
+
+std::vector<pdfannots::PdfAnnot> PdfDoc::PageAnnots(int page_index) const {
+    if (!impl_) return {};
+    return pdfannots::GetPageAnnots(impl_->file_data_.data(), impl_->file_data_.size(), impl_->document_.Xref(),
+                                    impl_->document_, page_index);
+}
+
+std::vector<PdfAnnotDraw> PdfDoc::AnnotDrawForPage(int page_index, float px_per_pt,
+                                                   const std::vector<pdfannots::PdfAnnot> &pending,
+                                                   const std::vector<pdfannots::PdfAnnot> &edits,
+                                                   const std::vector<pdfwrite::AnnotDelete> &deletes) const {
+    std::vector<PdfAnnotDraw> out;
+    if (!impl_) return out;
+    const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
+    if (!page) return out;
+    pdfrender::Mat2D m = pdfrender::PageToDeviceMatrix(page->effective_box[0], page->effective_box[1],
+                                                       page->effective_box[2], page->effective_box[3], page->rotate,
+                                                       static_cast<double>(px_per_pt));
+
+    // Transforms a point-space axis-aligned box (two opposite corners)
+    // into a device-pixel PdfAnnotRect (normalized so x0<=x1, y0<=y1).
+    auto to_device = [&](double px0, double py0, double px1, double py1) {
+        double ax, ay, bx, by;
+        pdfrender::Transform(m, px0, py0, &ax, &ay);
+        pdfrender::Transform(m, px1, py1, &bx, &by);
+        PdfAnnotRect r;
+        r.x0 = static_cast<float>(std::min(ax, bx));
+        r.x1 = static_cast<float>(std::max(ax, bx));
+        r.y0 = static_cast<float>(std::min(ay, by));
+        r.y1 = static_cast<float>(std::max(ay, by));
+        return r;
+    };
+
+    auto emit = [&](const pdfannots::PdfAnnot &a, bool from_file, int pending_index) {
+        PdfAnnotDraw d;
+        d.kind = a.kind == pdfannots::Kind::Highlight ? 0 : 1;
+        d.r = static_cast<float>(a.color[0]);
+        d.g = static_cast<float>(a.color[1]);
+        d.b = static_cast<float>(a.color[2]);
+        d.a = static_cast<float>(a.opacity);
+        d.contents = a.contents;
+        d.from_file = from_file;
+        d.pending_index = pending_index;
+        d.src_obj = a.src_obj;
+        d.src_gen = a.src_gen;
+        d.page = a.page;
+        if (a.kind == pdfannots::Kind::Highlight) {
+            for (const pdfannots::Quad &q : a.quads) {
+                double minx = std::min({q.x1, q.x2, q.x3, q.x4});
+                double maxx = std::max({q.x1, q.x2, q.x3, q.x4});
+                double miny = std::min({q.y1, q.y2, q.y3, q.y4});
+                double maxy = std::max({q.y1, q.y2, q.y3, q.y4});
+                d.rects.push_back(to_device(minx, miny, maxx, maxy));
+            }
+        }
+        // Icon/hit rect from /Rect (also the note's device-pixel marker).
+        PdfAnnotRect rr = to_device(a.rect[0], a.rect[1], a.rect[2], a.rect[3]);
+        if (a.kind == pdfannots::Kind::Text) d.rects.push_back(rr);
+        d.bx0 = rr.x0; d.by0 = rr.y0; d.bx1 = rr.x1; d.by1 = rr.y1;
+        // For a highlight, widen the bbox to cover all quad rects.
+        for (const PdfAnnotRect &r : d.rects) {
+            d.bx0 = std::min(d.bx0, r.x0);
+            d.by0 = std::min(d.by0, r.y0);
+            d.bx1 = std::max(d.bx1, r.x1);
+            d.by1 = std::max(d.by1, r.y1);
+        }
+        out.push_back(std::move(d));
+    };
+
+    for (const pdfannots::PdfAnnot &a : PageAnnots(page_index)) {
+        // Skip file annotations scheduled for deletion.
+        bool deleted = false;
+        for (const pdfwrite::AnnotDelete &d : deletes) {
+            if (d.page == page_index && d.obj_num == a.src_obj) { deleted = true; break; }
+        }
+        if (deleted) continue;
+        // Apply an unsaved edit (new contents/colour) if one targets this obj.
+        pdfannots::PdfAnnot shown = a;
+        for (const pdfannots::PdfAnnot &e : edits) {
+            if (e.src_obj == a.src_obj && e.page == page_index) { shown = e; break; }
+        }
+        emit(shown, /*from_file=*/true, -1);
+    }
+    for (size_t i = 0; i < pending.size(); ++i) {
+        if (pending[i].page == page_index) emit(pending[i], /*from_file=*/false, static_cast<int>(i));
+    }
+    return out;
+}
+
+bool PdfDoc::DevicePxToPoint(int page_index, float px_per_pt, double dx, double dy, double *out_px,
+                             double *out_py) const {
+    if (!impl_) return false;
+    const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
+    if (!page) return false;
+    pdfrender::Mat2D m = pdfrender::PageToDeviceMatrix(page->effective_box[0], page->effective_box[1],
+                                                       page->effective_box[2], page->effective_box[3], page->rotate,
+                                                       static_cast<double>(px_per_pt));
+    // Forward: dx = a*x + c*y + e ; dy = b*x + d*y + f. Invert the 2x2.
+    double det = m.a * m.d - m.c * m.b;
+    if (std::fabs(det) < 1e-12) return false;
+    double ox = dx - m.e, oy = dy - m.f;
+    *out_px = (m.d * ox - m.c * oy) / det;
+    *out_py = (-m.b * ox + m.a * oy) / det;
+    return true;
+}
+
+std::vector<pdfannots::Quad> PdfDoc::SelectionQuads(int page_index, float px_per_pt, double dax, double day,
+                                                    double dbx, double dby) const {
+    std::vector<pdfannots::Quad> out;
+    if (!impl_) return out;
+    double ax, ay, bx, by;
+    if (!DevicePxToPoint(page_index, px_per_pt, dax, day, &ax, &ay)) return out;
+    if (!DevicePxToPoint(page_index, px_per_pt, dbx, dby, &bx, &by)) return out;
+    if (impl_->glyph_cache_page_ != page_index) {
+        const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
+        if (!page) return out;
+        impl_->glyph_cache_ = pdftext::PageGlyphBoxes(impl_->file_data_.data(), impl_->file_data_.size(),
+                                                      impl_->document_.Xref(), *page);
+        impl_->glyph_cache_page_ = page_index;
+    }
+    for (const pdftext::PdfTextRectPt &r : pdftext::SelectionRects(impl_->glyph_cache_, ax, ay, bx, by)) {
+        pdfannots::Quad q;
+        q.x1 = r.left;  q.y1 = r.top;    q.x2 = r.right; q.y2 = r.top;
+        q.x3 = r.left;  q.y3 = r.bottom; q.x4 = r.right; q.y4 = r.bottom;
+        out.push_back(q);
+    }
+    return out;
+}
+
+std::vector<PdfGlyphBox> PdfDoc::PageGlyphs(int page_index) const {
+    std::vector<PdfGlyphBox> out;
+    if (!impl_) return out;
+    if (impl_->glyph_cache_page_ != page_index) {
+        const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
+        if (!page) return out;
+        impl_->glyph_cache_ = pdftext::PageGlyphBoxes(impl_->file_data_.data(), impl_->file_data_.size(),
+                                                      impl_->document_.Xref(), *page);
+        impl_->glyph_cache_page_ = page_index;
+    }
+    out.reserve(impl_->glyph_cache_.size());
+    for (const pdftext::GlyphBox &g : impl_->glyph_cache_) out.push_back({g.left, g.top, g.right, g.bottom});
+    return out;
+}
+
+std::vector<pdfannots::Quad> PdfDoc::SelectionQuadsForGlyphs(int page_index, int gi_a, int gi_b) const {
+    std::vector<pdfannots::Quad> out;
+    if (!impl_) return out;
+    if (impl_->glyph_cache_page_ != page_index) {
+        const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
+        if (!page) return out;
+        impl_->glyph_cache_ = pdftext::PageGlyphBoxes(impl_->file_data_.data(), impl_->file_data_.size(),
+                                                      impl_->document_.Xref(), *page);
+        impl_->glyph_cache_page_ = page_index;
+    }
+    const auto &g = impl_->glyph_cache_;
+    if (g.empty()) return out;
+    int lo = std::clamp(std::min(gi_a, gi_b), 0, static_cast<int>(g.size()) - 1);
+    int hi = std::clamp(std::max(gi_a, gi_b), 0, static_cast<int>(g.size()) - 1);
+    // Pass the two glyph centres so SelectionRects picks exactly [lo..hi].
+    double ax = (g[static_cast<size_t>(lo)].left + g[static_cast<size_t>(lo)].right) / 2.0;
+    double ay = (g[static_cast<size_t>(lo)].top + g[static_cast<size_t>(lo)].bottom) / 2.0;
+    double bx = (g[static_cast<size_t>(hi)].left + g[static_cast<size_t>(hi)].right) / 2.0;
+    double by = (g[static_cast<size_t>(hi)].top + g[static_cast<size_t>(hi)].bottom) / 2.0;
+    for (const pdftext::PdfTextRectPt &r : pdftext::SelectionRects(g, ax, ay, bx, by)) {
+        pdfannots::Quad q;
+        q.x1 = r.left;  q.y1 = r.top;    q.x2 = r.right; q.y2 = r.top;
+        q.x3 = r.left;  q.y3 = r.bottom; q.x4 = r.right; q.y4 = r.bottom;
+        out.push_back(q);
+    }
+    return out;
+}
+
+std::vector<PdfAnnotRect> PdfDoc::QuadsToDeviceRects(int page_index, float px_per_pt,
+                                                     const std::vector<pdfannots::Quad> &quads) const {
+    std::vector<PdfAnnotRect> out;
+    if (!impl_) return out;
+    const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
+    if (!page) return out;
+    pdfrender::Mat2D m = pdfrender::PageToDeviceMatrix(page->effective_box[0], page->effective_box[1],
+                                                       page->effective_box[2], page->effective_box[3], page->rotate,
+                                                       static_cast<double>(px_per_pt));
+    for (const pdfannots::Quad &q : quads) {
+        double minx = std::min({q.x1, q.x2, q.x3, q.x4});
+        double maxx = std::max({q.x1, q.x2, q.x3, q.x4});
+        double miny = std::min({q.y1, q.y2, q.y3, q.y4});
+        double maxy = std::max({q.y1, q.y2, q.y3, q.y4});
+        double ax, ay, bx, by;
+        pdfrender::Transform(m, minx, miny, &ax, &ay);
+        pdfrender::Transform(m, maxx, maxy, &bx, &by);
+        PdfAnnotRect r;
+        r.x0 = static_cast<float>(std::min(ax, bx));
+        r.x1 = static_cast<float>(std::max(ax, bx));
+        r.y0 = static_cast<float>(std::min(ay, by));
+        r.y1 = static_cast<float>(std::max(ay, by));
+        out.push_back(r);
+    }
+    return out;
+}
+
+std::string PdfDoc::BytesWithAnnotChanges(const std::vector<pdfannots::PdfAnnot> &adds,
+                                          const std::vector<pdfannots::PdfAnnot> &edits,
+                                          const std::vector<pdfwrite::AnnotDelete> &deletes) {
+    if (!impl_) {
+        error_ = "no document loaded";
+        return "";
+    }
+    std::string err;
+    std::string bytes = pdfwrite::BuildIncrementalUpdate(impl_->file_data_.data(), impl_->file_data_.size(),
+                                                         impl_->document_.Xref(), impl_->document_, adds, edits,
+                                                         deletes, std::time(nullptr), &err);
+    if (bytes.empty()) error_ = err;  // e.g. "cannot add annotations to an encrypted PDF"
+    return bytes;
 }

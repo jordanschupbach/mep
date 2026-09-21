@@ -422,13 +422,19 @@ int NotebookSpanAtRow(const std::vector<NotebookCellSpan> &spans, int row) {
 
 void SyncNotebookFromLines(NotebookDoc *doc, const std::vector<std::string> &lines,
                            const std::vector<NotebookCellSpan> &spans, int *next_uid) {
-    auto fresh_cell = [&](const NotebookCellSpan &span, std::string source) {
+    auto fresh_cell = [&](const NotebookCellSpan &span, std::string source, const NotebookCell *above) {
         NotebookCell c;
         c.type = span.type;
         c.id = NotebookNewCellId();
         c.source = std::move(source);
         c.metadata = Json::Object();
         c.uid = (*next_uid)++;
+        // A new block runs on the previous block's kernel (see the header
+        // comment); a cell with no explicit kernel passes that on too.
+        if (above) {
+            std::string kernel = NotebookCellKernel(*above);
+            if (!kernel.empty()) NotebookSetCellKernel(&c, kernel);
+        }
         return c;
     };
     auto apply = [](NotebookCell &c, const NotebookCellSpan &span, std::string source) {
@@ -464,9 +470,70 @@ void SyncNotebookFromLines(NotebookDoc *doc, const std::vector<std::string> &lin
             matched = true;
             break;
         }
-        if (!matched) fresh.push_back(fresh_cell(span, std::move(source)));
+        if (!matched) fresh.push_back(fresh_cell(span, std::move(source), fresh.empty() ? nullptr : &fresh.back()));
     }
     doc->cells = std::move(fresh);
+}
+
+// --- Per-cell kernels ----------------------------------------------------
+
+std::string NotebookCellKernel(const NotebookCell &cell) { return cell.metadata.get(kNotebookCellKernelKey).as_string(""); }
+
+void NotebookSetCellKernel(NotebookCell *cell, const std::string &name) {
+    if (!cell->metadata.is_object()) cell->metadata = Json::Object();
+    cell->metadata[kNotebookCellKernelKey] = Json(name);
+}
+
+const NotebookKernelSpec *FindNotebookKernel(const std::vector<NotebookKernelSpec> &specs, const std::string &name) {
+    for (const NotebookKernelSpec &s : specs) {
+        if (s.name == name) return &s;
+    }
+    return nullptr;
+}
+
+std::string NotebookKernelLanguageName(const NotebookKernelSpec &spec) {
+    if (spec.language == "py" || spec.language == "python") return "python";
+    if (spec.language == "js" || spec.language == "javascript") return "javascript";
+    if (spec.language == "r" || spec.language == "R") return "r";
+    if (!spec.language.empty()) return spec.language;
+    return spec.name;
+}
+
+namespace {
+std::string LowerAscii(std::string s) {
+    for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+}  // namespace
+
+std::string NotebookDefaultKernel(const NotebookDoc &doc, const std::vector<NotebookKernelSpec> &specs) {
+    const Json &kernelspec = doc.metadata.get("kernelspec");
+    std::string name = kernelspec.get("name").as_string("");
+    if (!name.empty() && FindNotebookKernel(specs, name)) return name;
+    std::string language = LowerAscii(kernelspec.get("language").as_string(""));
+    if (language.empty()) language = LowerAscii(doc.metadata.get("language_info").get("name").as_string(""));
+    if (!language.empty()) {
+        for (const NotebookKernelSpec &s : specs) {
+            if (LowerAscii(NotebookKernelLanguageName(s)) == language || LowerAscii(s.name) == language) return s.name;
+        }
+    }
+    if (!specs.empty()) return specs.front().name;
+    return "python3";
+}
+
+void NotebookAppendScriptExit(NotebookCell *cell, int exit_code, const std::string &command) {
+    if (exit_code == 0) return;
+    NotebookOutput err;
+    err.kind = NotebookOutput::Kind::Error;
+    if (exit_code < 0) {
+        err.ename = "KernelError";
+        err.evalue = "could not start " + command;
+    } else {
+        err.ename = "ExitStatus";
+        err.evalue = command + " exited with status " + std::to_string(exit_code);
+    }
+    err.text = err.ename + ": " + err.evalue;
+    NotebookAppendOutput(cell, std::move(err));
 }
 
 // --- Output display ------------------------------------------------------

@@ -1,0 +1,42 @@
+#+TITLE: Python mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+=<leader>lu= in a =.py= file. The tab becomes a Python workspace: your
+module, a live interpreter, and panels tracking the session.
+
+* The panels
+
+| Panel    | Shows                                              |
+|----------+----------------------------------------------------|
+| Objects  | the names defined in the session, with type        |
+| Data     | a structured value -- a dict, a frame -- as a table |
+| Modules  | what has been imported                             |
+| History  | the statements the session has run                 |
+| Help     | pydoc for the symbol under the cursor              |
+
+* Help
+
+=gh= on a symbol runs pydoc and shows the result in the Help tab. For
+anything in the standard library or an installed package, that is more
+complete than a hover.
+
+* Options
+
+#+begin_src lua
+mep.opt.py_ui_cmd = {'python3', '-i', '-q'}
+mep.opt.py_ui_info_share = 0.3
+mep.opt.py_ui_bottom_share = 0.35
+mep.opt.py_ui_bottom_info_share = 0.4
+#+end_src
+
+Point =py_ui_cmd= at a virtualenv's interpreter to make the session use that
+environment.
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the shared machinery.
+- [[file:notebooks.html][Jupyter notebooks]] -- a persistent kernel with inline output instead.

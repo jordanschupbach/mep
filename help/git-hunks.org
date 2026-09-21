@@ -1,0 +1,59 @@
+#+TITLE: Working with hunks
+#+HTML_HEAD: <meta name="help-section" content="Git">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Moving between changes
+
+| Key           | Does                           |
+|---------------+--------------------------------|
+| =]g= or =]c=  | next hunk                      |
+| =[g= or =[c=  | previous hunk                  |
+
+Both spellings work: =]c= and =[c= are Vim's own diff-mode motions, so that
+muscle memory carries over. They wrap at either end of the file.
+
+* Looking at one
+
+=<leader>gv= (=:MepGitPreviewHunk=) shows the hunk under the cursor as a
+unified diff in a float that dismisses on any key. It is the quickest way to
+answer "what did I actually change here" without leaving the buffer.
+
+#+begin_src lua
+-- pop the preview on every hunk jump, not just on demand
+mep.git_hunk_preview_on_jump = true
+#+end_src
+
+* Staging and resetting one
+
+| Key          | Does                                |
+|--------------+-------------------------------------|
+| =<leader>ga= | stage the hunk under the cursor     |
+| =<leader>gr= | reset it back to the base           |
+
+=<leader>gr= discards work. There is no confirmation, so check with
+=<leader>gv= first if you are unsure.
+
+* Staging re-diffs against the index
+
+Worth knowing, because it is what makes staging correct when you have
+changed the gutter's base.
+
+Staging does not reuse the hunks the gutter is showing. It re-diffs the
+buffer against the *index* and stages exactly the change under the cursor --
+so whatever you set =:MepGitGutter base= to, =<leader>ga= stages the right
+thing rather than something computed against a different revision.
+
+* A workflow
+
+The three keys compose into the usual review loop:
+
+1. =]g= to the next change.
+2. =<leader>gv= to read it.
+3. =<leader>ga= to stage it, or =<leader>gr= to throw it away.
+4. Repeat; =<leader>gc= to commit when the staged set looks right.
+
+* See also
+
+- [[file:git-gutter.html][The git gutter]] -- where the hunks come from.
+- [[file:git-panel.html][The git panel]] -- staging whole files, and committing.

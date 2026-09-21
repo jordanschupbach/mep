@@ -1,0 +1,85 @@
+#+TITLE: The image editor
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="70">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+Press =e= while viewing an image. =Esc= returns to the plain viewer.
+
+Layers and undo history are kept per buffer, so =Esc= then =e= again resumes
+exactly where you left off -- leaving the editor is not the same as closing
+it.
+
+* The layout
+
+A two-column tool sidebar on the left, the canvas in the middle, a Layers
+panel on the right. A thin toolbar above the canvas has the brush size and
+recent colours; the foreground and background swatches sit at the bottom of
+the tool sidebar. A menubar across the top has File, Edit, Layer and View.
+
+* Tools
+
+Pick with a key, then drag or click on the canvas.
+
+| Key | Tool                                       |
+|-----+--------------------------------------------|
+| =b= | Pencil                                     |
+| =x= | Eraser                                     |
+| =l= | Line                                       |
+| =r= | Rectangle                                  |
+| =c= | Ellipse                                    |
+| =f= | Bucket fill (4-connected flood fill)       |
+| =i= | Eyedropper                                 |
+| =h= | Pan                                        |
+| =m= | Rectangle select                           |
+| =o= | Ellipse select                             |
+| =w= | Lasso select                               |
+| =v= | Move the selection, or the whole layer     |
+
+Hold =Shift= while releasing a Line, Rectangle or Ellipse drag to fill it
+instead of outlining it.
+
+* Canvas and brush
+
+| Key            | Does                       |
+|----------------+----------------------------|
+| =[= =]=        | shrink / grow the brush    |
+| =+= =-=        | zoom in / out              |
+| ===            | fit to the pane            |
+| =u= / =Ctrl-R= | undo / redo                |
+| middle-drag    | pan, with any tool         |
+
+With a selection active, =Delete= or =Backspace= clears its pixels and
+leaves the selection in place. Edit → Deselect drops it.
+
+* Layers
+
+The Layers panel adds, deletes, duplicates, reorders, renames and hides
+layers, and sets each one's opacity. Click an already-selected layer's name
+to rename it.
+
+* Saving
+
+=:w= flattens the visible layers and writes a real PNG.
+
+* Procedural textures
+
+For a generated texture rather than a drawn one, the headless generators are
+far quicker than painting: wood, turned wood, marble, noise, gradients and
+checkerboards, plus a blur. They fill the active layer in one step.
+
+Turned wood is the one to use for anything wrapped around a cylinder -- a
+plain wood cross-section spirals visibly when mapped onto one.
+
+* Not implemented
+
+Worth knowing so you do not go looking: free transform, crop, canvas
+resize/resample, flip and rotate, anti-aliased brush edges, a text tool,
+blend modes beyond Normal, layer masks and adjustment operations are all
+absent.
+
+* See also
+
+- [[file:images.html][Viewing images]] -- where =e= is pressed.
+- [[file:model3d.html][The 3D modeler]] -- textures made here can be applied there.

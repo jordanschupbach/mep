@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visual modes</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Editing">
+<meta name="help-order" content="60">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Visual modes</h1>
+<h1>Select, then act</h1>
+<p>Visual mode inverts the usual order: instead of naming a range up front
+(<code>d2w</code>), you select it and watch it highlight, then press the operator.
+Useful whenever the range is easier to see than to describe.</p>
+<table>
+<tr><th>Key</th><th>Selects by</th></tr>
+<tr><td><code>v</code></td><td>character</td></tr>
+<tr><td><code>V</code></td><td>whole lines</td></tr>
+<tr><td><code>Ctrl-V</code></td><td>rectangle</td></tr>
+</table>
+<p>Press the same key again, or <code>Esc</code>, to leave. Any <a href="motions.html">motion</a> extends the
+selection, and a text object sets it outright: <code>viw</code> selects a word, <code>vi(</code>
+the inside of a parenthesised group.</p>
+<h1>Acting on a selection</h1>
+<p>Every <a href="operators.html">operator</a> works: <code>d</code> deletes it, <code>y</code> yanks it, <code>c</code> changes it, <code>gu</code>
+and <code>gU</code> change its case, <code>gq</code> reflows it, <code>~</code> toggles case.</p>
+<p><code>&gt;</code> and <code>&lt;</code> indent, and they <b>keep the selection active</b> -- press <code>&gt;</code> three
+times to indent three steps, matching Vim.</p>
+<h1>Moving the other end</h1>
+<p><code>o</code> swaps the cursor to the opposite end of the selection. Useful when you
+have selected too much in one direction and want to adjust the other end
+without starting over.</p>
+<h1>Visual Block</h1>
+<p><code>Ctrl-V</code> selects a rectangle, which is what you want for columns.</p>
+<table>
+<tr><th>Key</th><th>In Visual Block</th></tr>
+<tr><td><code>d</code></td><td>delete the rectangle</td></tr>
+<tr><td><code>y</code></td><td>yank the rectangle</td></tr>
+<tr><td><code>I</code></td><td>insert on every row of the block at once</td></tr>
+<tr><td><code>A</code></td><td>append on every row of the block at once</td></tr>
+<tr><td><code>$</code></td><td>make the right edge ragged -- each row's own real end</td></tr>
+</table>
+<p><code>$</code> before <code>A</code> is the idiom for appending to the end of every line in a
+range regardless of how long each one is.</p>
+<h1>Reselecting</h1>
+<p><code>gv</code> restores the last Visual selection, including its mode. Handy after an
+operation that dropped the selection, or to repeat an action on the same
+region.</p>
+<h1>A gap worth knowing</h1>
+<p>Changes made from Visual mode are not currently captured by <code>.</code> or by macro
+recording. Both work for Normal-mode changes; a Visual-mode change is simply
+not recorded. Where repetition matters, prefer the operator-plus-motion form.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="operators.html">Operators and text objects</a> -- the operators, in full.</li>
+<li><a href="undo-repeat-macros.html">Undo, repeat and macros</a> -- more on the repetition gap.</li>
+<li><a href="motions.html">Motions</a> -- extending a selection.</li>
+</ul>
+</body>
+</html>

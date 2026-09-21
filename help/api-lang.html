@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Language tooling</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Lua API">
+<meta name="help-order" content="40">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Language tooling</h1>
+<h1>What is here</h1>
+<p>Language servers, completion, snippets, syntax, spell checking, formatting, debugging and git.</p>
+<p>This page is generated from mep's own binding table, so it lists what
+the running editor actually exposes. Call any of these from
+<code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
+<h1>The bindings (56)</h1>
+<p>A dash means that binding has no doc comment in the source yet, not
+that it does nothing.</p>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>mep.accept_inline_suggestion</code></td><td>bool. `what` is 'all' (default),</td></tr>
+<tr><td><code>mep.clear_inline_suggestion</code></td><td>--</td></tr>
+<tr><td><code>mep.colorize</code></td><td>re-runs syntax highlighting for the current buffer</td></tr>
+<tr><td><code>mep.completion_path_prefix</code></td><td>detects a path fragment ending at the cursor for path completion</td></tr>
+<tr><td><code>mep.completion_rank</code></td><td>sorts completion items by text length then alphabetically, capped to a maximum count</td></tr>
+<tr><td><code>mep.completion_scan_buffer_words</code></td><td>scans the current buffer for words starting with a prefix</td></tr>
+<tr><td><code>mep.dap_breakpoint_lines</code></td><td>lists the breakpoint line numbers set for a file</td></tr>
+<tr><td><code>mep.dap_toggle_breakpoint</code></td><td>toggles a debugger breakpoint at the cursor's current line</td></tr>
+<tr><td><code>mep.diff_lines</code></td><td>--</td></tr>
+<tr><td><code>mep.docs_signature_info</code></td><td>given an LSP SignatureInformation object and a syntactic-fallback signature string, returns the label to display, the parsed parameter list, and a...</td></tr>
+<tr><td><code>mep.git_gutter_clear</code></td><td>removes every buffer's git-gutter marks</td></tr>
+<tr><td><code>mep.git_gutter_invalidate</code></td><td>marks every buffer's cached git-gutter diff stale</td></tr>
+<tr><td><code>mep.git_gutter_refresh_native</code></td><td>recomputes the git diff gutter markers against a base ref</td></tr>
+<tr><td><code>mep.git_gutter_summary</code></td><td>the current buffer's added/changed/removed line counts as a short string</td></tr>
+<tr><td><code>mep.git_gutter_tick</code></td><td>re-diffs the current buffer only when its cached git-gutter diff is stale</td></tr>
+<tr><td><code>mep.git_next_hunk_row</code></td><td>finds the row of the next git diff hunk after the cursor</td></tr>
+<tr><td><code>mep.git_prev_hunk_row</code></td><td>finds the row of the previous git diff hunk before the cursor</td></tr>
+<tr><td><code>mep.git_preview_hunk_text</code></td><td>builds the preview text for the git diff hunk at the cursor</td></tr>
+<tr><td><code>mep.git_reset_hunk_native</code></td><td>reverts the git diff hunk at the cursor back to its base-ref content</td></tr>
+<tr><td><code>mep.git_stage_hunk</code></td><td>stages the git diff hunk at the cursor</td></tr>
+<tr><td><code>mep.inline_suggestion</code></td><td>text, visible. `text` is whatever is left of</td></tr>
+<tr><td><code>mep.leetcode_html_to_text</code></td><td>converts LeetCode problem HTML into an array of plain-text lines</td></tr>
+<tr><td><code>mep.lsp_apply_edits_current_buffer</code></td><td>--</td></tr>
+<tr><td><code>mep.lsp_apply_text_edit</code></td><td>--</td></tr>
+<tr><td><code>mep.lsp_connect</code></td><td>opens a TCP connection and registers it as a tracked JSON-RPC client</td></tr>
+<tr><td><code>mep.lsp_diag_wrap</code></td><td>word-wraps LSP diagnostic text to a given column width</td></tr>
+<tr><td><code>mep.lsp_is_running</code></td><td>checks whether an LSP client's server process/connection is still running</td></tr>
+<tr><td><code>mep.lsp_notify</code></td><td>sends a fire-and-forget JSON-RPC notification to an LSP client</td></tr>
+<tr><td><code>mep.lsp_on_notification</code></td><td>registers fn(params) to run each time the server sends a given notification; a second registration for the same method replaces the first</td></tr>
+<tr><td><code>mep.lsp_on_request</code></td><td>registers fn(params) to run each time the server sends a given request, replying with fn's return value; a second registration for the same method...</td></tr>
+<tr><td><code>mep.lsp_request</code></td><td>sends a JSON-RPC request to an LSP client, optionally registering a callback for its reply</td></tr>
+<tr><td><code>mep.lsp_start</code></td><td>spawns an LSP server process and registers it as a tracked client</td></tr>
+<tr><td><code>mep.lsp_stop</code></td><td>kills an LSP server process and removes its tracked client state</td></tr>
+<tr><td><code>mep.lsp_symbols_flatten</code></td><td>flattens a nested LSP DocumentSymbol/SymbolInformation tree into a flat list of display rows</td></tr>
+<tr><td><code>mep.lsp_word_at_cursor</code></td><td>--</td></tr>
+<tr><td><code>mep.set_completion_accept_hook</code></td><td>registers fn as the hook invoked when a completion item is accepted (used for LSP insertTextFormatSnippet expansion)</td></tr>
+<tr><td><code>mep.set_completion_resolve_hook</code></td><td>see SetCompletionResolveHookRef's</td></tr>
+<tr><td><code>mep.set_completion_source</code></td><td>registers fn(prefix) -&gt; array of candidate words as the buffer's completion source</td></tr>
+<tr><td><code>mep.set_inline_suggestion</code></td><td>show `text` dimmed at the</td></tr>
+<tr><td><code>mep.set_inline_suggestion_accept_hook</code></td><td>fn(accepted_length) -- 0 for a</td></tr>
+<tr><td><code>mep.set_insert_tab_hook</code></td><td>fn(shift) -&gt; bool</td></tr>
+<tr><td><code>mep.snippet_jump</code></td><td>moves to the next/previous snippet tab-stop</td></tr>
+<tr><td><code>mep.snippet_splice</code></td><td>splices a multi-line snippet body into the buffer at a row</td></tr>
+<tr><td><code>mep.spell_add</code></td><td>add to the personal "good" dictionary (nvim zg)</td></tr>
+<tr><td><code>mep.spell_bad</code></td><td>bool</td></tr>
+<tr><td><code>mep.spell_enabled</code></td><td>bool</td></tr>
+<tr><td><code>mep.spell_fix_selection</code></td><td>count</td></tr>
+<tr><td><code>mep.spell_fix_word</code></td><td>count (0 or 1)</td></tr>
+<tr><td><code>mep.spell_ready</code></td><td>bool</td></tr>
+<tr><td><code>mep.spell_suggest</code></td><td>{ "best", ... }. Empty table if none</td></tr>
+<tr><td><code>mep.spell_wrong</code></td><td>mark as always-misspelled (nvim zw)</td></tr>
+<tr><td><code>mep.syntax_highlight_fallback</code></td><td>runs the no-vendored-grammar fallback lexer over the current buffer</td></tr>
+<tr><td><code>mep.ts_apply_captures</code></td><td>resolves each Treesitter capture to a highlight group via hl_map and adds a decoration for it</td></tr>
+<tr><td><code>mep.ts_captures</code></td><td>runs the vendored Treesitter grammar (if any) for a filetype over source text</td></tr>
+<tr><td><code>mep.ts_fold_ranges</code></td><td>runs the vendored Treesitter fold query (if any) over source text</td></tr>
+<tr><td><code>mep.ts_structure</code></td><td>runs the vendored Treesitter structure query (if any) over source text to build a document outline</td></tr>
+</table>
+<h1>See also</h1>
+<ul>
+<li><a href="config.html">Configuration</a> -- where to call these from.</li>
+<li><a href="recipes.html">Configuration recipes</a> -- worked examples.</li>
+</ul>
+</body>
+</html>

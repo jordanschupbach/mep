@@ -1,0 +1,50 @@
+#+TITLE: Spell checking
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="80">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* The squiggle
+
+Misspelled words get a red underline, drawn through the same [[file:highlight-groups.html][decoration]]
+pipeline as syntax and diagnostics.
+
+* The keys
+
+Everything is on the =<leader>z= group, and it works in Visual mode too.
+
+| Key          | Does                                    |
+|--------------+-----------------------------------------|
+| =<leader>zt= | toggle spell checking                   |
+| =<leader>zs= | suggestions for the word, in a picker   |
+| =<leader>zf= | fix the word with the best suggestion   |
+| =<leader>zn= | next misspelled word                    |
+| =<leader>zp= | previous misspelled word                |
+| =<leader>zg= | add the word to your dictionary         |
+| =<leader>zw= | mark the word wrong                     |
+
+=<leader>zf= is the fast path when the intended word is obvious; =zs= is for
+when it is not.
+
+* Your dictionary
+
+=<leader>zg= adds a word permanently, so a project's jargon stops being
+flagged. =<leader>zw= does the opposite, marking a word wrong even though
+the dictionary accepts it.
+
+* From Lua
+
+#+begin_src lua
+mep.spell_bad(word)        --> is it misspelled?
+mep.spell_suggest(word)    --> an array of suggestions
+mep.spell_add(word)        --  add to the personal dictionary
+mep.spell_wrong(word)      --  mark it wrong
+mep.spell_ready()          --> is the dictionary loaded yet?
+#+end_src
+
+The checker is a dependency-free C++ implementation, so there is no
+hunspell or aspell to install.
+
+* See also
+
+- [[file:writing.html][Writing prose in mep]] -- the rest of the prose toolkit.
+- [[file:highlight-groups.html][Highlight groups]] -- how the squiggle is drawn.

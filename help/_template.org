@@ -1,0 +1,41 @@
+#+TITLE: Page title
+#+HTML_HEAD: <meta name="help-section" content="Getting started">
+#+HTML_HEAD: <meta name="help-order" content="50">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+# Copy this file to help/<topic>.org and edit it. `just help` skips every
+# source whose name starts with an underscore, so this template never
+# becomes a page of its own.
+#
+# The three #+HTML_HEAD: lines are the whole per-page contract:
+#
+#   help-section  which sidebar group the page belongs to. Use one of the
+#                 names in MEP_HELP_SECTION_ORDER (src/main.cpp,
+#                 kBuiltinHelp); anything else still works, it just sorts
+#                 after the known ones.
+#   help-order    position within that section, low first. Leave it out
+#                 and the page sorts by title among its section's pages.
+#   help.css      the shared stylesheet. Every page links it.
+#
+# Nothing else is registered anywhere: dropping a .org file in help/ and
+# running `just help` is the entire process of adding a page.
+
+* First section
+
+One or two sentences saying what this page covers, in plain prose. Lead with
+what the reader can do, not with how it is implemented.
+
+* Keys
+
+Reference tables are the most common element in this manual. A two-column
+table of key and effect renders with a ruled header and a non-wrapping first
+column:
+
+| Key       | Action                          |
+|-----------+---------------------------------|
+| =<Space>= | open the which-key popup        |
+| =:MepFoo= | do the thing this page is about |
+
+* See also
+
+- [[file:intro.html][mep Help]] -- the manual's front page.

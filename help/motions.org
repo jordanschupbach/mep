@@ -1,0 +1,89 @@
+#+TITLE: Motions
+#+HTML_HEAD: <meta name="help-section" content="Editing">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Why motions matter twice over
+
+A motion moves the cursor. It also describes a range for an
+[[file:operators.html][operator]]: =w= moves to the next word, and =dw= deletes as far as =w= would
+have moved. Everything on this page therefore does double duty.
+
+* Within a line
+
+| Key   | Moves to                                        |
+|-------+-------------------------------------------------|
+| =h= =l= | one character left or right                   |
+| =0=   | column zero                                     |
+| =^=   | the first non-blank character                   |
+| =$=   | the end of the line                             |
+| =w= =W= | the start of the next word (=W=: whitespace-separated) |
+| =b= =B= | the start of the previous word                |
+| =e= =E= | the end of the current or next word           |
+| =ge= =gE= | the end of the previous word                |
+| =%=   | the matching bracket                            |
+
+* Between lines
+
+| Key     | Moves to                                    |
+|---------+---------------------------------------------|
+| =j= =k= | one line down or up                         |
+| ={= =}= | the previous or next blank line (paragraph) |
+| =gg=    | the first line                              |
+| =G=     | the last line, or to a count's line         |
+| =H= =M= =L= | the highest, middle or lowest visible line |
+| =:42=   | line 42                                     |
+
+=j= and =k= move by *buffer* line, not by visual row, so a long soft-wrapped
+line is one press either way.
+
+* Finding a character
+
+=f{char}= jumps to the next occurrence of that character on the line, =t{char}=
+to just before it; =F= and =T= are the backward versions. =;= repeats the last
+such search, =,= repeats it in the opposite direction.
+
+These are the fastest way to give an operator a precise target: =dt)= deletes
+up to the next closing parenthesis, =ct"= changes up to the next quote.
+
+* Counts
+
+Any motion takes a leading count, meaning "do it that many times".
+
+| Typed  | Effect                             |
+|--------+------------------------------------|
+| =5j=   | down five lines                    |
+| =3w=   | forward three words                |
+| =10G=  | go to line 10                      |
+| =d2w=  | delete two words                   |
+| =3dd=  | delete three lines                 |
+
+A half-typed count appears in the status line, along with any pending
+operator or register prefix, so you can always see what mep is waiting for.
+
+* Jumping to what you can see
+
+Press =s= and start typing the text you are aiming at. Matches across every
+visible text pane narrow as you type, everything else dims, and each match
+gets a one-key label drawn after it -- press that key to jump there, focusing
+another pane if that is where the match is.
+
+- A query that narrows to exactly one match jumps immediately.
+- =Enter= jumps to the nearest match.
+- =Backspace= edits the query, =Esc= cancels.
+- An all-lowercase query matches case-insensitively.
+
+Labels never reuse a character that could extend the query at some live
+match, so a keypress is never ambiguous. =Ctrl-O= comes back afterwards.
+
+* Coming back
+
+=Ctrl-O= and =Ctrl-I= walk backward and forward through the jumplist, which
+records searches, =gg=/=G= and mark jumps. It is per-pane and can span
+buffers. =``= returns to where you were before the last big jump.
+
+* See also
+
+- [[file:operators.html][Operators and text objects]] -- what to do once you can aim.
+- [[file:registers-marks.html][Registers, marks and jumps]] -- marks, and the jumplist in full.
+- [[file:scrolling.html][Scrolling and the view]] -- moving the window instead of the cursor.

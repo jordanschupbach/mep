@@ -1,0 +1,57 @@
+#+TITLE: The browser pane
+#+HTML_HEAD: <meta name="help-section" content="Web">
+#+HTML_HEAD: <meta name="help-order" content="10">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening a page
+
+| Key / command            | Does                              |
+|--------------------------+-----------------------------------|
+| =<leader>bo=             | open a page in a pane             |
+| =:Browse <url-or-path>=  | the same                          |
+| =<leader>bO=             | open it in an external window     |
+| =:BrowseExternal=        | the same                          |
+
+mep loads the page itself -- plain sockets for =http://=, =curl= for
+=https://= -- along with its stylesheets, scripts and images. The page's own
+=fetch()= calls go back to the server it came from.
+
+* The omnibar
+
+Across the top: back, forward and reload buttons, the URL, and the page
+title.
+
+| Key        | Does                                   |
+|------------+----------------------------------------|
+| =o=        | edit the URL                           |
+| =Ctrl-L=   | the same                               |
+| =Enter=    | go                                     |
+| =Esc=      | cancel editing                         |
+| =H=        | back                                   |
+| =L=        | forward                                |
+| =r=        | reload                                 |
+| =f=        | label every link, type a letter to follow |
+| =Ctrl-E=   | show the page source                   |
+
+=localhost:8000=, =:8000/app=, =example.com= and plain file paths all work
+in the URL bar.
+
+* It is a live page, not a snapshot
+
+The pane pumps the page's event loop every frame, so timers,
+=requestAnimationFrame=, promises, =async= functions and ES modules all run
+after load.
+
+A click lands on the DOM node under the pointer as a real =click= event,
+with checkbox and submit default actions -- and a cancelled click on a link
+is not followed. Clicking a text field gives it the keyboard: typing raises
+=input=, =Enter= submits the form, and =Esc= or =Tab= leaves the field.
+
+* How much of a browser is it?
+
+Measured, not claimed -- see [[file:web-ladder.html][Measuring the engine]].
+
+* See also
+
+- [[file:local-server.html][Serving a directory]] -- previewing what you are building.
+- [[file:web-ladder.html][Measuring the engine]] -- the capability ladder.

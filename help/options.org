@@ -1,0 +1,100 @@
+#+TITLE: Options
+#+HTML_HEAD: <meta name="help-section" content="Configuration">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* =:set= options
+
+| Option                    | Default | Does                           |
+|---------------------------+---------+--------------------------------|
+| =number= / =nu=           | on      | line numbers in the gutter     |
+| =relativenumber= / =rnu=  | on      | distances instead of numbers   |
+| =cursorline= / =cul=      | off     | highlight the cursor's line    |
+| =wrap=                    | on      | soft-wrap long lines           |
+| =ignorecase=              | off     | case-insensitive search and =:s= |
+| =wrapscan=                | on      | search wraps around the buffer |
+| =textwidth=N= / =tw=N=    | 80      | the column =gq= wraps to       |
+
+Prefix a boolean with =no= to turn it off: =:set nowrap=.
+
+* =mep.opt= options
+
+** Editing and session
+
+| Option                        | Default | Does                      |
+|-------------------------------+---------+---------------------------|
+| =restore_workspaces=          | true    | restore a project's layout |
+| =worktree_dir=                |         | where new worktrees go    |
+| =workspace_git_dirty=         | false   | mark dirty workspaces with =+= |
+
+** Terminals and AI
+
+| Option                       | Default      | Does                    |
+|------------------------------+--------------+-------------------------|
+| =tab_terminal_share=         | 0.3          | the tab terminal's height |
+| =ai_terminal_cmd=            | ={'claude'}= | what the AI terminal runs |
+| =ai_terminal_share=          | 0.4          | its height               |
+| =ai_terminal_instructions=   |              | the appended prompt; ='' = none |
+| =ai_terminal_mcp_server=     |              | path to =mep-mcp=, passed inline |
+
+** Running and testing
+
+| Option                   | Default                          | Does           |
+|--------------------------+----------------------------------+----------------|
+| =run_button_defaults=    | py, r, c, cpp                    | per-filetype run command |
+| =runner_order=           | just, make, ninja, cmake         | build-system precedence |
+| =runner_tree_depth=      | 8                                | dependency tree depth |
+| =runner_tree_children=   | 40                               | children shown per node |
+| =runner_workspace_depth= | 5                                | how deep to scan for runner files |
+| =lang_test_python=       |                                  | the Python test runner |
+| =lang_test_build_dirs=   |                                  | where to look for a test target |
+
+** Notebooks
+
+| Option              | Does                                    |
+|---------------------+-----------------------------------------|
+| =notebook_kernels=  | the kernel list offered per cell        |
+| =notebook_python=   | the interpreter for the built-in kernel |
+
+** Language UI modes
+
+| Option                   | Does                             |
+|--------------------------+----------------------------------|
+| =language_ui_poll_interval= | how often panels refresh      |
+| =r_ui_cmd=               | the R session command            |
+| =py_ui_cmd=              | the Python session command       |
+| =r_ui_info_share=, =py_ui_info_share=, =c_ui_info_share= | panel column width |
+| =r_ui_bottom_share=, =py_ui_bottom_share=, =c_ui_bottom_share= | console height |
+| =r_ui_bottom_info_share=, =py_ui_bottom_info_share=, =c_ui_bottom_info_share= | the split within the bottom row |
+| =r_ui_poll_interval=     | R panel refresh rate             |
+| =c_ui_filter_directives= | hide assembler directives        |
+| =c_ui_hex_page=          | bytes per hex page               |
+
+** Debugging
+
+| Option        | Does                             |
+|---------------+----------------------------------|
+| =dap_r_port=  | the port the R adapter listens on |
+
+* Other settables
+
+Not under =mep.opt=, but configured the same way:
+
+#+begin_src lua
+mep.copilot_enabled = false
+mep.copilot_filetypes['md'] = false
+mep.copilot_server_cmd = {'copilot-language-server', '--stdio'}
+mep.git_gutter_base = 'index'
+mep.git_gutter_line_hl = true
+mep.git_hunk_preview_on_jump = true
+mep.syntax_auto = false
+mep.activity_todo_file = '~/notes/tasks.org'
+mep.format_languages.js = {'prettier', '--stdin-filepath', '{}'}
+mep.snippets.py = {}
+mep.ts_capture_hl['keyword'] = 'Red'
+#+end_src
+
+* See also
+
+- [[file:config.html][Configuration]] -- where to put these.
+- [[file:recipes.html][Configuration recipes]] -- worked examples.

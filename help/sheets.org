@@ -1,0 +1,40 @@
+#+TITLE: Spreadsheets
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="40">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening
+
+=.xlsx=, =.ods= and =.csv= open as a grid: a real spreadsheet view with
+rows, columns and cell selection.
+
+* Moving and editing
+
+The usual motions move between cells. Type to edit the selected cell.
+
+| Command            | Does                    |
+|--------------------+-------------------------|
+| =:MepNextSheet=    | next sheet in the workbook |
+| =:MepPrevSheet=    | previous sheet          |
+| =mep.sheet_next()= | the Lua form            |
+| =mep.sheet_prev()= | the Lua form            |
+
+* Formulas
+
+mep has its own formula engine, so a cell containing =SUM(A1:A10)= is
+evaluated rather than shown as text. Formulas recalculate as their inputs
+change.
+
+* Saving
+
+=:w= writes back in the original format -- =.xlsx= stays =.xlsx=.
+
+* CSV
+
+A =.csv= opens in the same grid, which makes it a comfortable way to read
+data files that are painful as text. Saving writes CSV back.
+
+* See also
+
+- [[file:office.html][Word processor documents]] -- the other office formats.
+- [[file:notebooks.html][Jupyter notebooks]] -- for data you want to compute over.

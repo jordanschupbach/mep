@@ -1,0 +1,73 @@
+#+TITLE: Glossary
+#+HTML_HEAD: <meta name="help-section" content="Reference">
+#+HTML_HEAD: <meta name="help-order" content="70">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Terms
+
+*Buffer* -- a file's contents in memory, with its own undo history and
+modified flag. Buffers belong to the workspace they were opened in.
+
+*Pane* -- a view onto a buffer. Several panes can show one buffer, sharing
+its undo history.
+
+*Buffer tab* -- one of several buffers sharing a single pane, shown as a
+strip along the pane's top. Not the same as a tab.
+
+*Tab* -- an independent split layout within a workspace.
+
+*Workspace* -- a checkout. On a git project each workspace is its own
+worktree on its own branch. The process working directory follows the
+active one.
+
+*Project* -- a directory containing workspaces. The unit whose layout is
+saved and restored.
+
+*Sidebar* -- a docked panel. Sidebars on the same edge share one column,
+split vertically.
+
+*Popout* -- a sidebar lifted into a large centred float with a preview
+column. =mod1+m=.
+
+*Float* -- a pane drawn over everything else, over a real buffer, with all
+the usual editing available inside it.
+
+*Picker* -- a centred list you filter by typing, with a preview.
+
+*Decoration* -- a coloured span laid over buffer text: a syntax token, a
+squiggle, a diagnostic, a git mark.
+
+*Namespace* -- a group of decorations that can be cleared together, so one
+feature's spans never disturb another's.
+
+*Highlight group* -- a named colour the active theme resolves. Code names
+=Error=, not red.
+
+*Hunk* -- one contiguous run of changed lines, as the git gutter sees it.
+
+*Leader* -- the prefix key, =<Space>= by default, that opens the which-key
+popup.
+
+*mod1* -- the window-management modifier, =Alt= by default, working in every
+mode.
+
+*Language UI mode* -- an IDE-style layout for one language: a session plus
+panels, at most one per tab.
+
+*Runner* -- a build system mep can pick targets from: just, make, ninja or
+cmake.
+
+*Deck* -- an org file used as a question bank, its =:card:= headlines
+feeding the learning games.
+
+*Card* -- one entry in a deck.
+
+*Agent* -- an AI process driving mep through its agent socket.
+
+*Participant* -- anyone present in this window: a human collaborator or an
+agent. Both appear as chips in the tab bar.
+
+* See also
+
+- [[file:intro.html][mep Help]] -- the front page.
+- [[file:editing.html][Editing basics]] -- where most of these first appear.

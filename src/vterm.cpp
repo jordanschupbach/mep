@@ -1,6 +1,7 @@
 #include "vterm.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <iterator>
 #include <utility>
 
@@ -132,6 +133,14 @@ uint32_t DecodeUtf8First(const std::string &s) {
     return cp;
 }
 
+// OSC 10/11 represents each 8-bit channel as a four-hex-digit value.  A
+// byte replicated into both octets preserves its exact intensity.
+std::string OscRgb16(const VTermColor &c) {
+    char buf[20];
+    std::snprintf(buf, sizeof(buf), "rgb:%02x%02x/%02x%02x/%02x%02x", c.r, c.r, c.g, c.g, c.b, c.b);
+    return buf;
+}
+
 }  // namespace
 
 int VTermCharWidth(uint32_t cp) {
@@ -150,6 +159,11 @@ std::string VTerm::Feed(const std::string &data) {
     replies_.clear();
     for (char raw : data) PutByte(static_cast<unsigned char>(raw));
     return std::move(replies_);
+}
+
+void VTerm::SetOscDefaultColors(VTermColor foreground, VTermColor background) {
+    osc_default_fg_ = foreground;
+    osc_default_bg_ = background;
 }
 
 void VTerm::Resize(int rows, int cols) {
@@ -438,11 +452,13 @@ void VTerm::ParseOscTitle() {
     } else if (value == "?" && num == "10") {
         // OSC 10/11 color queries are used by modern TUIs (including
         // Codex) during startup to choose a legible prompt treatment.
-        // These standard neutral defaults merely describe this terminal;
-        // applications still paint their explicit SGR colors cell by cell.
-        Reply("\x1b]10;rgb:ffff/ffff/ffff\x1b\\");
+        // Report the embedding terminal's configured defaults, not a
+        // hard-coded dark-terminal pair.
+        queried_osc_default_fg_ = true;
+        Reply("\x1b]10;" + OscRgb16(osc_default_fg_) + "\x1b\\");
     } else if (value == "?" && num == "11") {
-        Reply("\x1b]11;rgb:0000/0000/0000\x1b\\");
+        queried_osc_default_bg_ = true;
+        Reply("\x1b]11;" + OscRgb16(osc_default_bg_) + "\x1b\\");
     }
 }
 

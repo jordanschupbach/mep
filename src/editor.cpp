@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "http_client.h"
 #include "agent_rpc.h"
 #include "lua_env.h"
 #include "job.h"
@@ -15,6 +16,8 @@
 #include "workspace_git.h"
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <cctype>
 #include <random>
 #include <cmath>
@@ -28,6 +31,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <system_error>
 #include <unordered_set>
@@ -878,27 +882,211 @@ const Palette kPaletteIntellij = {
     /*accent*/ {204, 120, 50, 255},
 };
 
+// Past mep.nvim's own set: more real, published colorschemes in the same
+// ported-hex-values shape as the block above (same `border` = the scheme's
+// own selection/line-highlight tone, same `accent` = a copy of whichever
+// role color the scheme is best known for). Ordered so each one sits next
+// to the family it belongs to where it completes one (tokyonight's day,
+// ayu's light, rose-pine's moon, kanagawa's dragon/lotus, github's dimmed)
+// and roughly popularity-first after that.
+const Palette kPaletteTokyonightDay = {
+    "tokyonight-day",
+    {225, 226, 231, 255}, {55, 96, 191, 255}, {245, 42, 101, 255}, {88, 117, 57, 255}, {140, 108, 62, 255},
+    {46, 125, 233, 255}, {152, 84, 241, 255}, {0, 113, 151, 255}, {177, 92, 0, 255}, {196, 200, 218, 255},
+    /*accent*/ {46, 125, 233, 255},
+};
+const Palette kPaletteAyuLight = {
+    "ayu-light",
+    {252, 252, 252, 255}, {92, 97, 102, 255}, {240, 113, 113, 255}, {134, 179, 0, 255}, {242, 174, 73, 255},
+    {57, 158, 230, 255}, {163, 122, 204, 255}, {76, 191, 153, 255}, {250, 141, 62, 255}, {231, 232, 233, 255},
+    /*accent*/ {250, 141, 62, 255},
+};
+const Palette kPaletteRosePineMoon = {
+    "rose-pine-moon",
+    {35, 33, 54, 255}, {224, 222, 244, 255}, {235, 111, 146, 255}, {62, 143, 176, 255}, {246, 193, 119, 255},
+    {156, 207, 216, 255}, {196, 167, 231, 255}, {156, 207, 216, 255}, {234, 154, 151, 255}, {68, 65, 90, 255},
+    /*accent*/ {196, 167, 231, 255},
+};
+const Palette kPaletteKanagawaDragon = {
+    "kanagawa-dragon",
+    {24, 22, 22, 255}, {197, 201, 197, 255}, {196, 116, 110, 255}, {138, 154, 123, 255}, {196, 178, 138, 255},
+    {139, 164, 176, 255}, {162, 146, 163, 255}, {142, 164, 162, 255}, {182, 146, 123, 255}, {40, 39, 39, 255},
+    /*accent*/ {139, 164, 176, 255},
+};
+const Palette kPaletteKanagawaLotus = {
+    "kanagawa-lotus",
+    {242, 236, 188, 255}, {84, 84, 100, 255}, {200, 64, 83, 255}, {111, 137, 78, 255}, {119, 113, 63, 255},
+    {77, 105, 155, 255}, {179, 91, 121, 255}, {89, 123, 117, 255}, {204, 109, 0, 255}, {229, 221, 176, 255},
+    /*accent*/ {77, 105, 155, 255},
+};
+const Palette kPaletteGithubDarkDimmed = {
+    "github-dark-dimmed",
+    {34, 39, 46, 255}, {173, 186, 199, 255}, {244, 112, 103, 255}, {87, 171, 90, 255}, {218, 170, 63, 255},
+    {83, 155, 245, 255}, {176, 131, 240, 255}, {57, 197, 207, 255}, {224, 130, 61, 255}, {68, 76, 86, 255},
+    /*accent*/ {83, 155, 245, 255},
+};
+const Palette kPaletteNightOwl = {
+    "night-owl",
+    {1, 22, 39, 255}, {214, 222, 235, 255}, {239, 83, 80, 255}, {173, 219, 103, 255}, {236, 196, 141, 255},
+    {130, 170, 255, 255}, {199, 146, 234, 255}, {33, 199, 168, 255}, {247, 140, 108, 255}, {29, 59, 83, 255},
+    /*accent*/ {130, 170, 255, 255},
+};
+const Palette kPaletteMaterialPalenight = {
+    "material-palenight",
+    {41, 45, 62, 255}, {166, 172, 205, 255}, {240, 113, 120, 255}, {195, 232, 141, 255}, {255, 203, 107, 255},
+    {130, 170, 255, 255}, {199, 146, 234, 255}, {137, 221, 255, 255}, {247, 140, 108, 255}, {68, 66, 103, 255},
+    /*accent*/ {199, 146, 234, 255},
+};
+const Palette kPaletteMaterialDarker = {
+    "material-darker",
+    {33, 33, 33, 255}, {238, 255, 255, 255}, {240, 113, 120, 255}, {195, 232, 141, 255}, {255, 203, 107, 255},
+    {130, 170, 255, 255}, {199, 146, 234, 255}, {137, 221, 255, 255}, {247, 140, 108, 255}, {66, 66, 66, 255},
+    /*accent*/ {137, 221, 255, 255},
+};
+const Palette kPaletteNightfly = {
+    "nightfly",
+    {1, 22, 39, 255}, {195, 204, 220, 255}, {252, 81, 78, 255}, {161, 205, 94, 255}, {227, 209, 138, 255},
+    {130, 170, 255, 255}, {174, 129, 255, 255}, {127, 219, 202, 255}, {247, 140, 108, 255}, {29, 59, 83, 255},
+    /*accent*/ {130, 170, 255, 255},
+};
+const Palette kPaletteMoonfly = {
+    "moonfly",
+    {8, 8, 8, 255}, {189, 189, 189, 255}, {255, 84, 84, 255}, {140, 200, 95, 255}, {227, 199, 138, 255},
+    {128, 160, 255, 255}, {207, 135, 232, 255}, {121, 218, 200, 255}, {222, 147, 95, 255}, {50, 52, 55, 255},
+    /*accent*/ {128, 160, 255, 255},
+};
+const Palette kPaletteOceanicNext = {
+    "oceanic-next",
+    {27, 43, 52, 255}, {205, 211, 222, 255}, {236, 95, 103, 255}, {153, 199, 148, 255}, {250, 200, 99, 255},
+    {102, 153, 204, 255}, {197, 148, 197, 255}, {95, 179, 179, 255}, {249, 145, 87, 255}, {52, 61, 70, 255},
+    /*accent*/ {102, 153, 204, 255},
+};
+const Palette kPaletteIcebergDark = {
+    "iceberg-dark",
+    {22, 24, 33, 255}, {198, 200, 209, 255}, {226, 120, 120, 255}, {180, 190, 130, 255}, {226, 164, 120, 255},
+    {132, 160, 198, 255}, {160, 147, 199, 255}, {137, 184, 194, 255}, {226, 164, 120, 255}, {58, 63, 75, 255},
+    /*accent*/ {132, 160, 198, 255},
+};
+const Palette kPaletteIcebergLight = {
+    "iceberg-light",
+    {232, 233, 236, 255}, {51, 55, 76, 255}, {204, 81, 122, 255}, {102, 142, 61, 255}, {197, 115, 57, 255},
+    {45, 83, 158, 255}, {119, 89, 180, 255}, {63, 131, 166, 255}, {197, 115, 57, 255}, {202, 208, 222, 255},
+    /*accent*/ {45, 83, 158, 255},
+};
+const Palette kPaletteMelange = {
+    "melange",
+    {41, 37, 34, 255}, {236, 225, 215, 255}, {212, 119, 102, 255}, {133, 182, 149, 255}, {235, 192, 109, 255},
+    {163, 169, 206, 255}, {207, 155, 194, 255}, {137, 179, 182, 255}, {228, 155, 93, 255}, {64, 58, 54, 255},
+    /*accent*/ {235, 192, 109, 255},
+};
+const Palette kPaletteGruvboxMaterial = {
+    "gruvbox-material",
+    {40, 40, 40, 255}, {212, 190, 152, 255}, {234, 105, 98, 255}, {169, 182, 101, 255}, {216, 166, 87, 255},
+    {125, 174, 163, 255}, {211, 134, 155, 255}, {137, 180, 130, 255}, {231, 138, 78, 255}, {91, 83, 77, 255},
+    /*accent*/ {231, 138, 78, 255},
+};
+const Palette kPaletteSonokai = {
+    "sonokai",
+    {44, 46, 52, 255}, {226, 226, 227, 255}, {252, 93, 124, 255}, {158, 208, 114, 255}, {231, 198, 100, 255},
+    {118, 204, 224, 255}, {179, 157, 243, 255}, {133, 211, 242, 255}, {243, 150, 96, 255}, {127, 132, 144, 255},
+    /*accent*/ {158, 208, 114, 255},
+};
+const Palette kPaletteSrcery = {
+    "srcery",
+    {28, 27, 25, 255}, {252, 232, 195, 255}, {239, 47, 39, 255}, {81, 159, 80, 255}, {251, 184, 41, 255},
+    {44, 120, 191, 255}, {224, 44, 109, 255}, {10, 174, 179, 255}, {255, 95, 0, 255}, {145, 129, 117, 255},
+    /*accent*/ {255, 95, 0, 255},
+};
+const Palette kPaletteJellybeans = {
+    "jellybeans",
+    {21, 21, 21, 255}, {232, 232, 211, 255}, {207, 106, 76, 255}, {153, 173, 106, 255}, {250, 208, 122, 255},
+    {129, 151, 191, 255}, {198, 182, 238, 255}, {143, 191, 220, 255}, {232, 125, 62, 255}, {64, 60, 65, 255},
+    /*accent*/ {250, 208, 122, 255},
+};
+const Palette kPaletteTomorrowNight = {
+    "tomorrow-night",
+    {29, 31, 33, 255}, {197, 200, 198, 255}, {204, 102, 102, 255}, {181, 189, 104, 255}, {240, 198, 116, 255},
+    {129, 162, 190, 255}, {178, 148, 187, 255}, {138, 190, 183, 255}, {222, 147, 95, 255}, {55, 59, 65, 255},
+    /*accent*/ {129, 162, 190, 255},
+};
+const Palette kPaletteCobalt2 = {
+    "cobalt2",
+    {25, 53, 73, 255}, {255, 255, 255, 255}, {255, 98, 140, 255}, {58, 217, 0, 255}, {255, 198, 0, 255},
+    {0, 136, 255, 255}, {251, 148, 255, 255}, {128, 252, 255, 255}, {255, 157, 0, 255}, {31, 70, 98, 255},
+    /*accent*/ {255, 198, 0, 255},
+};
+const Palette kPaletteFlexokiDark = {
+    "flexoki-dark",
+    {16, 15, 15, 255}, {206, 205, 195, 255}, {209, 77, 65, 255}, {135, 154, 57, 255}, {208, 162, 21, 255},
+    {67, 133, 190, 255}, {139, 126, 200, 255}, {58, 169, 159, 255}, {218, 112, 44, 255}, {64, 62, 60, 255},
+    /*accent*/ {218, 112, 44, 255},
+};
+const Palette kPaletteFlexokiLight = {
+    "flexoki-light",
+    {255, 252, 240, 255}, {16, 15, 15, 255}, {175, 48, 41, 255}, {102, 128, 11, 255}, {173, 131, 1, 255},
+    {32, 94, 166, 255}, {94, 64, 157, 255}, {36, 131, 123, 255}, {188, 82, 21, 255}, {230, 228, 217, 255},
+    /*accent*/ {188, 82, 21, 255},
+};
+const Palette kPaletteModusVivendi = {
+    "modus-vivendi",
+    {0, 0, 0, 255}, {255, 255, 255, 255}, {255, 128, 89, 255}, {68, 188, 68, 255}, {208, 188, 0, 255},
+    {47, 175, 255, 255}, {254, 172, 208, 255}, {0, 211, 208, 255}, {239, 139, 80, 255}, {83, 83, 83, 255},
+    /*accent*/ {47, 175, 255, 255},
+};
+const Palette kPaletteModusOperandi = {
+    "modus-operandi",
+    {255, 255, 255, 255}, {0, 0, 0, 255}, {166, 0, 0, 255}, {0, 104, 0, 255}, {111, 85, 0, 255},
+    {0, 49, 169, 255}, {114, 16, 69, 255}, {0, 94, 139, 255}, {168, 82, 0, 255}, {215, 215, 215, 255},
+    /*accent*/ {0, 49, 169, 255},
+};
+const Palette kPaletteVscodeDark = {
+    "vscode-dark",
+    {30, 30, 30, 255}, {212, 212, 212, 255}, {244, 71, 71, 255}, {106, 153, 85, 255}, {220, 220, 170, 255},
+    {86, 156, 214, 255}, {197, 134, 192, 255}, {78, 201, 176, 255}, {206, 145, 120, 255}, {62, 62, 66, 255},
+    /*accent*/ {86, 156, 214, 255},
+};
+const Palette kPaletteApprentice = {
+    "apprentice",
+    {38, 38, 38, 255}, {188, 188, 188, 255}, {175, 95, 95, 255}, {95, 135, 95, 255}, {255, 255, 175, 255},
+    {95, 135, 175, 255}, {135, 135, 175, 255}, {95, 135, 135, 255}, {255, 135, 0, 255}, {68, 68, 68, 255},
+    /*accent*/ {95, 135, 175, 255},
+};
+const Palette kPaletteTerafox = {
+    "terafox",
+    {21, 37, 40, 255}, {230, 234, 234, 255}, {232, 92, 81, 255}, {122, 164, 161, 255}, {253, 164, 127, 255},
+    {90, 147, 170, 255}, {173, 92, 124, 255}, {161, 205, 216, 255}, {255, 131, 73, 255}, {41, 62, 64, 255},
+    /*accent*/ {90, 147, 170, 255},
+};
+
+// Every registered palette, in the order the :colorscheme picker lists them.
+// Single source of truth: both FindPalette (name lookup) and
+// Editor::ThemeNames (the picker's list) read this one table, so adding a
+// theme means adding its Palette above and one entry here -- there is no
+// second list to keep in sync.
+const Palette *const kAllPalettes[] = {
+    &kPaletteMepDark, &kPaletteGruvboxDark, &kPaletteNord, &kPaletteGruvboxLight, &kPaletteDracula,
+    &kPaletteTokyonightStorm, &kPaletteTokyonightNight, &kPaletteTokyonightMoon, &kPaletteCatppuccinMocha,
+    &kPaletteCatppuccinMacchiato, &kPaletteCatppuccinFrappe, &kPaletteCatppuccinLatte, &kPaletteEverforestDark,
+    &kPaletteEverforestLight, &kPaletteKanagawa, &kPaletteOnedark, &kPaletteOneLight, &kPaletteSolarizedDark,
+    &kPaletteSolarizedLight, &kPaletteNordLight, &kPaletteTokyoNight, &kPaletteRosePine, &kPaletteRosePineDawn,
+    &kPaletteMonokai, &kPaletteAyuDark, &kPaletteAyuMirage, &kPaletteGithubDark, &kPaletteGithubLight,
+    &kPaletteNightfox, &kPaletteHorizon, &kPaletteZenburn, &kPaletteSynthwave84, &kPaletteOxocarbonDark,
+    &kPaletteOxocarbonLight, &kPaletteTokyonightDay, &kPaletteAyuLight, &kPaletteRosePineMoon,
+    &kPaletteKanagawaDragon, &kPaletteKanagawaLotus, &kPaletteGithubDarkDimmed, &kPaletteNightOwl,
+    &kPaletteMaterialPalenight, &kPaletteMaterialDarker, &kPaletteNightfly, &kPaletteMoonfly, &kPaletteOceanicNext,
+    &kPaletteIcebergDark, &kPaletteIcebergLight, &kPaletteMelange, &kPaletteGruvboxMaterial, &kPaletteSonokai,
+    &kPaletteSrcery, &kPaletteJellybeans, &kPaletteTomorrowNight, &kPaletteCobalt2, &kPaletteFlexokiDark,
+    &kPaletteFlexokiLight, &kPaletteModusVivendi, &kPaletteModusOperandi, &kPaletteVscodeDark, &kPaletteApprentice,
+    &kPaletteTerafox, &kPaletteIntellij,
+};
+
 /**
  * @brief Looks up a registered color palette by name.
  * @param name The palette name to search for (e.g. "gruvbox-dark").
  * @return A pointer to the matching Palette, or nullptr if no palette has that name.
  */
 const Palette *FindPalette(const std::string &name) {
-    static const Palette *kAll[] = {
-        &kPaletteMepDark,        &kPaletteGruvboxDark,          &kPaletteNord,
-        &kPaletteGruvboxLight,   &kPaletteDracula,              &kPaletteTokyonightStorm,
-        &kPaletteTokyonightNight, &kPaletteTokyonightMoon,      &kPaletteCatppuccinMocha,
-        &kPaletteCatppuccinMacchiato, &kPaletteCatppuccinFrappe, &kPaletteCatppuccinLatte,
-        &kPaletteEverforestDark, &kPaletteEverforestLight,      &kPaletteKanagawa,
-        &kPaletteOnedark,        &kPaletteOneLight,             &kPaletteSolarizedDark,
-        &kPaletteSolarizedLight, &kPaletteNordLight,            &kPaletteTokyoNight,
-        &kPaletteRosePine,       &kPaletteRosePineDawn,         &kPaletteMonokai,
-        &kPaletteAyuDark,        &kPaletteAyuMirage,            &kPaletteGithubDark,
-        &kPaletteGithubLight,    &kPaletteNightfox,             &kPaletteHorizon,
-        &kPaletteZenburn,        &kPaletteSynthwave84,          &kPaletteOxocarbonDark,
-        &kPaletteOxocarbonLight, &kPaletteIntellij,
-    };
-    for (const Palette *p : kAll) {
+    for (const Palette *p : kAllPalettes) {
         if (p->name == name) return p;
     }
     return nullptr;
@@ -1054,20 +1242,10 @@ bool Editor::ApplyTheme(const std::string &name) {
 }
 
 std::vector<std::string> Editor::ThemeNames() const {
-    return {
-        kPaletteMepDark.name,        kPaletteGruvboxDark.name,          kPaletteNord.name,
-        kPaletteGruvboxLight.name,   kPaletteDracula.name,              kPaletteTokyonightStorm.name,
-        kPaletteTokyonightNight.name, kPaletteTokyonightMoon.name,      kPaletteCatppuccinMocha.name,
-        kPaletteCatppuccinMacchiato.name, kPaletteCatppuccinFrappe.name, kPaletteCatppuccinLatte.name,
-        kPaletteEverforestDark.name, kPaletteEverforestLight.name,      kPaletteKanagawa.name,
-        kPaletteOnedark.name,        kPaletteOneLight.name,             kPaletteSolarizedDark.name,
-        kPaletteSolarizedLight.name, kPaletteNordLight.name,            kPaletteTokyoNight.name,
-        kPaletteRosePine.name,       kPaletteRosePineDawn.name,         kPaletteMonokai.name,
-        kPaletteAyuDark.name,        kPaletteAyuMirage.name,            kPaletteGithubDark.name,
-        kPaletteGithubLight.name,    kPaletteNightfox.name,             kPaletteHorizon.name,
-        kPaletteZenburn.name,        kPaletteSynthwave84.name,          kPaletteOxocarbonDark.name,
-        kPaletteOxocarbonLight.name, kPaletteIntellij.name,
-    };
+    std::vector<std::string> names;
+    names.reserve(std::size(kAllPalettes));
+    for (const Palette *p : kAllPalettes) names.push_back(p->name);
+    return names;
 }
 
 bool Editor::ResolveHighlight(const std::string &name, ThemeColor *out) const {
@@ -1598,6 +1776,239 @@ std::set<std::string> OrgParseResults(const std::string &args_str) {
         if (i > start) modes.insert(results_str.substr(start, i - start));
     }
     return modes;
+}
+
+namespace {
+
+// --- Org block cards: the header parse behind DrawPane's title bar ----
+//
+// Deliberately its own small scanner rather than a reuse of
+// IsSrcBlockOpen/ParseSrcHeader above: those answer "is this a babel src
+// block, and what are its babel args" for *execution*, where anything
+// unrecognized should simply not run. This one is for *display*, so it
+// has the opposite bias -- it takes every `#+begin_X` shape org allows
+// (any block word, any case, any indent), and whatever it can't make
+// sense of it leaves as plain text rather than dropping.
+
+// `#+begin_<word>` / `#+end_<word>`, case- and indent-insensitively.
+// `rest` is whatever follows the word on the line (the language and
+// header args, for a src block).
+/**
+ * @brief Parses an org block marker line into its begin/end sense, block word, and trailing text.
+ * @param line The line to inspect.
+ * @param is_begin Set to true for `#+begin_`, false for `#+end_`.
+ * @param word Set to the lowercased block word ("src", "example", ...).
+ * @param rest Set to the remainder of the line after the block word.
+ * @return True if the line is an org block marker.
+ */
+bool ParseOrgBlockMarker(const std::string &line, bool *is_begin, std::string *word, std::string *rest) {
+    size_t i = SkipWs(line, 0);
+    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
+    i += 2;
+    if (MatchCiLiteral(line, i, "BEGIN_")) {
+        *is_begin = true;
+        i += 6;
+    } else if (MatchCiLiteral(line, i, "END_")) {
+        *is_begin = false;
+        i += 4;
+    } else {
+        return false;
+    }
+    size_t word_start = i;
+    while (i < line.size() && (std::isalnum(static_cast<unsigned char>(line[i])) || line[i] == '_' || line[i] == '-')) i++;
+    if (i == word_start) return false;
+    *word = line.substr(word_start, i - word_start);
+    for (char &c : *word) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    *rest = line.substr(std::min(line.size(), SkipWs(line, i)));
+    return true;
+}
+
+// An affiliated keyword line (`#+NAME: fib`, `#+header: :var x=1`) --
+// the lines org lets you stack directly above a block. `key` comes back
+// uppercased so callers can compare without caring how it was typed.
+/**
+ * @brief Parses an org affiliated keyword line (`#+KEY: value`).
+ * @param line The line to inspect.
+ * @param key Set to the uppercased keyword name.
+ * @param value Set to the text after the colon, trimmed.
+ * @return True if the line is an affiliated keyword line.
+ */
+bool ParseOrgAffiliated(const std::string &line, std::string *key, std::string *value) {
+    size_t i = SkipWs(line, 0);
+    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
+    i += 2;
+    size_t key_start = i;
+    while (i < line.size() && (std::isalnum(static_cast<unsigned char>(line[i])) || line[i] == '_' || line[i] == '-')) i++;
+    if (i == key_start || i >= line.size() || line[i] != ':') return false;
+    *key = line.substr(key_start, i - key_start);
+    for (char &c : *key) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    i = SkipWs(line, i + 1);
+    std::string v = line.substr(std::min(line.size(), i));
+    while (!v.empty() && std::isspace(static_cast<unsigned char>(v.back()))) v.pop_back();
+    *value = v;
+    return true;
+}
+
+// `:key value` header args, "regardless of how they're entered": any
+// spacing, any case, values with spaces (a value runs to the next `:key`
+// token, exactly as org itself reads them), `"quoted values"` unquoted
+// for display, and a bare `:flag` with no value at all. A colon only
+// starts a new key at a token boundary and outside quotes, so neither a
+// `https://...` in a value nor a `:` inside `"a: b"` splits one.
+/**
+ * @brief Parses an org block's `:key value` header-arg string into display options.
+ * @param args The raw header-arg text.
+ * @param row The buffer row the args were written on.
+ * @param out Options are appended/merged here (a repeated key replaces its earlier value, as org does).
+ */
+void ParseOrgHeaderArgs(const std::string &args, int row, std::vector<OrgBlockOption> *out) {
+    /**
+     * @brief Records one parsed key/value pair, replacing any earlier entry for the same key.
+     * @param key The option key without its leading colon.
+     * @param value The option's value text.
+     */
+    auto push = [&](const std::string &key, std::string value) {
+        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) value.pop_back();
+        if (value.size() >= 2 && ((value.front() == '"' && value.back() == '"') || (value.front() == '\'' && value.back() == '\''))) {
+            value = value.substr(1, value.size() - 2);
+        }
+        // `:var` is the one key org *accumulates* rather than overrides --
+        // `:var x=1 :var y=2` binds two variables, so collapsing them to
+        // the last one would silently drop a binding from the bar. Every
+        // other repeated key is a later-wins override.
+        if (key != "var") {
+            for (OrgBlockOption &existing : *out) {
+                if (existing.key == key) {
+                    existing.value = value;
+                    existing.row = row;
+                    return;
+                }
+            }
+        }
+        OrgBlockOption opt;
+        opt.key = key;
+        opt.value = value;
+        opt.row = row;
+        out->push_back(opt);
+    };
+    size_t i = 0;
+    while (i < args.size()) {
+        // Find the next `:key` starting a token.
+        while (i < args.size() && !(args[i] == ':' && (i == 0 || std::isspace(static_cast<unsigned char>(args[i - 1]))))) i++;
+        if (i >= args.size()) return;
+        size_t key_start = ++i;
+        while (i < args.size() && (std::isalnum(static_cast<unsigned char>(args[i])) || args[i] == '_' || args[i] == '-')) i++;
+        if (i == key_start) continue;  // a stray ":" -- not a key
+        std::string key = args.substr(key_start, i - key_start);
+        // The value runs to the next token-boundary colon outside quotes.
+        size_t value_start = SkipWs(args, i);
+        size_t j = value_start;
+        char quote = 0;
+        while (j < args.size()) {
+            char c = args[j];
+            if (quote != 0) {
+                if (c == quote) quote = 0;
+            } else if (c == '"' || c == '\'') {
+                quote = c;
+            } else if (c == ':' && j > 0 && std::isspace(static_cast<unsigned char>(args[j - 1]))) {
+                break;
+            }
+            j++;
+        }
+        push(key, args.substr(value_start, j - value_start));
+        i = j;
+    }
+}
+
+}  // namespace
+
+const std::vector<OrgBlockCard> &Editor::OrgBlockCards(int buffer_id) {
+    org_block_cards_.clear();
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return org_block_cards_;
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    const int n = buf.LineCount();
+    for (int row = 0; row < n; row++) {
+        bool is_begin = false;
+        std::string word, rest;
+        if (!ParseOrgBlockMarker(buf.lines[static_cast<size_t>(row)], &is_begin, &word, &rest) || !is_begin) continue;
+        OrgBlockCard card;
+        card.begin_row = row;
+        card.meta_row = row;
+        card.kind = word;
+        card.is_src = (word == "src");
+        // Affiliated keywords stacked directly above the block: they're
+        // part of its header (and so part of what the title bar stands
+        // in for), which is why the card starts at the topmost one
+        // rather than at `#+begin_`.
+        std::vector<int> meta_rows;
+        for (int r = row - 1; r >= 0; r--) {
+            std::string key, value;
+            if (!ParseOrgAffiliated(buf.lines[static_cast<size_t>(r)], &key, &value)) break;
+            if (key != "NAME" && key != "CAPTION" && key != "HEADER" && key != "HEADERS" &&
+                key.compare(0, 5, "ATTR_") != 0) {
+                break;
+            }
+            meta_rows.push_back(r);
+            card.meta_row = r;
+        }
+        // Read them back in *document* order even though they were found
+        // walking upward, so "the last one wins" (both for a repeated
+        // `#+HEADER:` key and for NAME/CAPTION) means the line closest to
+        // the block, the way org itself reads a stack of them.
+        std::string caption;
+        for (size_t mi = meta_rows.size(); mi-- > 0;) {
+            std::string key, value;
+            if (!ParseOrgAffiliated(buf.lines[static_cast<size_t>(meta_rows[mi])], &key, &value)) continue;
+            if (key == "NAME") card.title = value;
+            else if (key == "CAPTION") caption = value;
+            else if (key == "HEADER" || key == "HEADERS") ParseOrgHeaderArgs(value, meta_rows[mi], &card.options);
+        }
+        if (card.title.empty()) card.title = caption;
+        // `#+begin_src <lang> <args>`: the language is the first token
+        // that isn't itself a header arg, so a language-less block
+        // (`#+begin_src :results none`, or any non-src block) doesn't
+        // mistake its first `:key` for one.
+        size_t args_at = 0;
+        if (card.is_src) {
+            size_t k = SkipWs(rest, 0);
+            if (k < rest.size() && rest[k] != ':') {
+                size_t lang_start = k;
+                while (k < rest.size() && !std::isspace(static_cast<unsigned char>(rest[k]))) k++;
+                card.lang = rest.substr(lang_start, k - lang_start);
+            }
+            args_at = k;
+        }
+        // Header args written on the `#+begin_` line itself win over any
+        // `#+HEADER:` line above it, matching org's own precedence -- the
+        // merge in ParseOrgHeaderArgs replaces by key, and this runs last.
+        ParseOrgHeaderArgs(rest.substr(std::min(rest.size(), args_at)), row, &card.options);
+        // A `:title` header arg is a title, not an option to list twice.
+        for (size_t oi = 0; oi < card.options.size(); oi++) {
+            if (card.options[oi].key != "title") continue;
+            if (card.title.empty()) card.title = card.options[oi].value;
+            card.options.erase(card.options.begin() + static_cast<long>(oi));
+            break;
+        }
+        // The matching closer. Scanning to it (rather than continuing
+        // from the next row) also keeps a `#+begin_src` quoted *inside*
+        // an example block's body from opening a card of its own.
+        for (int r = row + 1; r < n; r++) {
+            bool end_is_begin = false;
+            std::string end_word, end_rest;
+            if (!ParseOrgBlockMarker(buf.lines[static_cast<size_t>(r)], &end_is_begin, &end_word, &end_rest)) continue;
+            if (end_is_begin || end_word != word) continue;
+            card.end_row = r;
+            break;
+        }
+        if (card.end_row >= 0) row = card.end_row;
+        org_block_cards_.push_back(card);
+    }
+    return org_block_cards_;
+}
+
+bool Editor::ToggleOrgBlockCards() {
+    org_block_cards_visible_ = !org_block_cards_visible_;
+    return org_block_cards_visible_;
 }
 
 OrgSrcBlock Editor::OrgSrcBlockAt(int row) const {
@@ -4027,6 +4438,7 @@ void Editor::HandleInput() {
             break;
         case Mode::Pdf:
         case Mode::PdfNav:
+        case Mode::PdfAnnotate:
             HandlePdfInput();
             break;
         case Mode::Video:
@@ -4160,13 +4572,28 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
             }
             return 1 + trailing;
         };
-        int slots = row_slots(pane.cursor.row);  // the cursor's own row is always the first slot(s)
+        int slots = row_slots(pane.cursor.row);  // the cursor's own row (with any output block) is the first slot(s)
         int row = pane.cursor.row;
-        while (row > pane.scroll_row && slots < visible_lines) {
-            row--;
+        // Walk up from the cursor, admitting a row above it only while the
+        // cursor's own row -- and, for a notebook code cell, the output
+        // block that hangs *below* it (row_slots includes those trailing
+        // slots) -- still fits within visible_lines. Crucially, stop
+        // *before* admitting the row that would tip the running total over,
+        // rather than after: including that overflowing top row (as this
+        // once did) leaves `row` one notch too high, so a tall trailing
+        // block gets pushed off the bottom of the pane with no way to
+        // scroll it into view -- the cursor is on the last buffer line, so
+        // nothing below it can pull the view down. Ending on the highest
+        // top row that still leaves the whole cursor row on screen lets the
+        // std::max below scroll down to it. Not bounded by the current
+        // scroll_row (that bound is re-applied by the std::max), so even a
+        // cursor whose own row is taller than the pane resolves to a
+        // definite target (its own row at the top) instead of stalling.
+        while (row > 0) {
+            int candidate = row - 1;
             for (const Fold &f : buf.folds) {
-                if (f.closed && row > f.start_row && row <= f.end_row) {
-                    row = f.start_row;
+                if (f.closed && candidate > f.start_row && candidate <= f.end_row) {
+                    candidate = f.start_row;
                     break;
                 }
             }
@@ -4175,16 +4602,19 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
             // only knows how to answer for a fragment's *start* row, so
             // landing anywhere else inside one (its remaining raw source
             // rows, skipped outright by DrawPane/the cursor-Y lookup,
-            // main.cpp) needs the same rewind before calling it.
+            // main.cpp) needs the same rewind before measuring it.
             if (org_latex_visible_) {
                 for (const auto &kv : buf.org_latex_rows) {
-                    if (row > kv.first && row <= kv.second.end_row) {
-                        row = kv.first;
+                    if (candidate > kv.first && candidate <= kv.second.end_row) {
+                        candidate = kv.first;
                         break;
                     }
                 }
             }
-            slots += row_slots(row);
+            int candidate_slots = row_slots(candidate);
+            if (slots + candidate_slots > visible_lines) break;  // admitting it would overflow -> keep `row` as the top
+            slots += candidate_slots;
+            row = candidate;
         }
         target = std::max(row, pane.scroll_row);
     }
@@ -4206,6 +4636,16 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
     // it stays effectively uncapped and still lands in a single frame.
     int cap = std::max(1, cursor_delta);
     int jump = target - pane.scroll_row;
+    // Safety valve: a gap wider than the pane itself shares no content
+    // between where the view is and where it's going, so sliding through
+    // it isn't a smooth transition -- it's a long flip-book of unrelated
+    // rows at `cap` rows per frame (1, whenever the cursor itself didn't
+    // move). That only happens when something replaced the buffer under
+    // the cursor rather than when the cursor navigated, so snap instead.
+    // The org-image/LaTeX slide this smoothing exists for stays intact:
+    // it spans one tall row (kOrgInlineImageSlots), never more than a
+    // screenful.
+    if (std::abs(jump) > visible_lines) cap = std::abs(jump);
     if (jump > cap) pane.scroll_row += cap;
     else if (jump < -cap) pane.scroll_row -= cap;
     else pane.scroll_row = target;
@@ -4499,6 +4939,7 @@ void Editor::HandleMouseWheel(float dx, float dy) {
             break;
         case Mode::Pdf:
         case Mode::PdfNav:
+        case Mode::PdfAnnotate:
             WheelScrollPdf(dx, dy);
             break;
         case Mode::Image:
@@ -4971,11 +5412,18 @@ int Editor::CreateEmptyBuffer() {
 // --- Dashboard/scratch/zen (NVIM_PARITY_PLAN.md Part III Phase 12) -------
 
 bool Editor::ShouldShowDashboard() const {
-    if (ProjectCount() != 1 || WorkspaceCount() != 1 || Tabs().size() != 1 || buffers_.size() != 1) return false;
-    const SplitNode *root = Tabs()[0].root.get();
-    if (!root || root->dir != SplitDir::Leaf) return false;
-    const Buffer &buf = buffers_[0];
-    return !buf.modified && buf.filename.empty() && !buf.scratch && buf.lines.size() == 1 && buf.lines[0].empty();
+    // Not WorkspaceCount() == 1 / buffers_.size() == 1: ProjectDetectGit
+    // adopts existing git worktrees as extra workspaces (each with its own
+    // fresh empty buffer) a moment after startup, which used to hide the
+    // dashboard right after its first frame whenever the repo had any
+    // worktree. Those adopted workspaces are just as untouched as the
+    // bootstrap one, so "every workspace and every buffer is pristine"
+    // is the real condition.
+    if (ProjectCount() != 1 || !ProjectIsPristine(ActiveProject())) return false;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!BufferIsPristine(static_cast<int>(i))) return false;
+    }
+    return true;
 }
 
 void Editor::MoveDashboardSelection(int delta) {
@@ -5008,16 +5456,39 @@ bool Editor::ActivateDashboardShortcut(char shortcut) {
     }
 }
 
-bool Editor::ProjectIsPristine(const Project &project) const {
-    if (project.workspaces.size() != 1) return false;
-    const Workspace &ws = project.workspaces[0];
+bool Editor::BufferIsPristine(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (buf.modified || !buf.filename.empty() || buf.scratch) return false;
+    if (buf.lines.size() != 1 || !buf.lines[0].empty()) return false;
+    // A pathless buffer is not necessarily an *untouched* one: a terminal
+    // (`:terminal`), a brand-new procedural image (mep.image_new) and a
+    // brand-new 3D scene (mep.model_new) all keep their real content in a
+    // side session and never write a line into Buffer::lines, so the text
+    // checks above would call every one of them pristine. Every other
+    // session kind is loaded from a file and so already fails on
+    // filename. Without this an agent-created image/3D buffer would both
+    // keep the dashboard up over it and, via BufferLabelForLua, stay out
+    // of the buffer lists entirely.
+    if (IsTerminalBuffer(buffer_id) || GetImageEditor(buffer_id) || IsModel3DBuffer(buffer_id)) return false;
+    return true;
+}
+
+bool Editor::WorkspaceIsPristine(const Workspace &ws) const {
     if (ws.tabs.size() != 1) return false;
     const SplitNode *root = ws.tabs[0].root.get();
     if (!root || root->dir != SplitDir::Leaf) return false;
-    const int bid = root->pane.buffer_id;
-    if (bid < 0 || bid >= static_cast<int>(buffers_.size())) return false;
-    const Buffer &buf = buffers_[static_cast<size_t>(bid)];
-    return !buf.modified && buf.filename.empty() && !buf.scratch && buf.lines.size() == 1 && buf.lines[0].empty();
+    return BufferIsPristine(root->pane.buffer_id);
+}
+
+bool Editor::ProjectIsPristine(const Project &project) const {
+    // Every workspace, not just a single one: git-worktree adoption
+    // (ProjectDetectGit) adds untouched workspaces on its own.
+    if (project.workspaces.empty()) return false;
+    for (const Workspace &ws : project.workspaces) {
+        if (!WorkspaceIsPristine(ws)) return false;
+    }
+    return true;
 }
 
 void Editor::OpenScratchBuffer() {
@@ -5039,23 +5510,43 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
     // Keyed by (workspace, filename) -- decision 3: the same out-of-tree
     // file opened from two workspaces is two buffers; inside worktrees the
     // paths differ anyway.
+    int reuse = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
         if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
-            if (existed) *existed = true;
+            if (!buffers_[i].deleted) {
+                if (existed) *existed = true;
+                return static_cast<int>(i);
+            }
             // Un-deletes it (BufferDelete's own comment) -- re-opening a
             // path whose buffer was `:bd`'d reuses that same buffer
-            // object (its content/undo history is still sitting right
-            // there, this dedup-by-filename match already found it)
-            // rather than silently staying hidden from buffer_list/
-            // bnext/bprev while LoadFile happily starts editing it again.
-            buffers_[i].deleted = false;
-            return static_cast<int>(i);
+            // object/index rather than silently staying hidden from
+            // buffer_list/bnext/bprev while LoadFile happily starts
+            // editing it again. Its contents are re-read from disk below,
+            // like vim's :bd + :e, never resurrected from memory: the file
+            // may have been deleted and recreated (the file tree's d then
+            // a) or edited externally since, and showing the old text
+            // back as if it were the file's is exactly the stale-buffer
+            // bug this guards against.
+            if (reuse < 0) reuse = static_cast<int>(i);  // keep looking: a live match wins
         }
     }
 
     Buffer buf;
     buf.filename = path;
+    /**
+     * @brief Stores the freshly read `buf`: over the revived deleted buffer when there is one, else as a new buffer.
+     * @return The buffer's id.
+     */
+    auto store = [&]() {
+        if (reuse >= 0) {
+            buf.workspace_id = buffers_[static_cast<size_t>(reuse)].workspace_id;
+            buffers_[static_cast<size_t>(reuse)] = std::move(buf);
+            return reuse;
+        }
+        buffers_.push_back(std::move(buf));
+        return static_cast<int>(buffers_.size()) - 1;
+    };
 
 #if defined(__EMSCRIPTEN__)
     char *result = mep_js_read_file(path.c_str());
@@ -5078,16 +5569,14 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
         // `path`, same as Vim -- this is how you create a file, not an
         // error. Genuine write failures still surface later, at :w.
         if (existed) *existed = false;
-        buffers_.push_back(std::move(buf));
-        return static_cast<int>(buffers_.size()) - 1;
+        return store();
     }
     if (existed) *existed = true;
     std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     buf.lines = SplitIntoLines(content);
 #endif
 
-    buffers_.push_back(std::move(buf));
-    return static_cast<int>(buffers_.size()) - 1;
+    return store();
 }
 
 void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg, bool new_pane_first) {
@@ -5305,11 +5794,26 @@ void Editor::OpenTerminalInPlaceArgv(const std::vector<std::string> &argv, const
     TerminalSession sess;
     sess.buffer_id = buffer_id;
     sess.title = title.empty() ? argv[0] : title;
+    // Direct argv calls (including the configurable AI terminal) name
+    // Codex in argv[0].  :terminal codex is shell-wrapped, where its title
+    // instead holds the command text.  Cover both launch paths without
+    // changing ordinary terminal programs' ANSI background behavior.
+    const auto is_codex_command = [](const std::string &command) {
+        const size_t slash = command.find_last_of('/');
+        const std::string name = slash == std::string::npos ? command : command.substr(slash + 1);
+        return name == "codex" || name.rfind("codex ", 0) == 0;
+    };
+    sess.ignore_ansi_backgrounds = is_codex_command(argv[0]) || is_codex_command(sess.title);
     // 24x80 is only a placeholder -- DrawPane calls ResizeTerminal with
     // the real pane's character-cell size on the very first frame it's
     // drawn, before any output can have arrived to be misjudged against
     // the wrong size.
     sess.vterm = std::make_unique<VTerm>(24, 80);
+    ThemeColor default_fg, default_bg;
+    ResolveHighlight("Normal", &default_fg);
+    ResolveHighlight("NormalBg", &default_bg);
+    sess.vterm->SetOscDefaultColors(VTermColor{VTermColorKind::Rgb, 0, default_fg.r, default_fg.g, default_fg.b},
+                                    VTermColor{VTermColorKind::Rgb, 0, default_bg.r, default_bg.g, default_bg.b});
     TerminalSpawn(sess, argv);
 
     terminals_[buffer_id] = std::move(sess);
@@ -5349,6 +5853,12 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
      */
     cb.on_stdout_raw = [this, buffer_id, vterm_ptr](const std::string &chunk) {
         std::string reply = vterm_ptr->Feed(chunk);
+        // Codex sends both OSC 10 and OSC 11 queries when it starts.  This
+        // lets a shell-launched `codex` opt into the same transparent prompt
+        // background as a terminal originally opened with `:terminal codex`.
+        if (vterm_ptr->QueriesOscDefaultColors()) {
+            if (TerminalSession *live = FindTerminal(buffer_id)) live->ignore_ansi_backgrounds = true;
+        }
         if (reply.empty()) return;
         // VTerm parses an application's terminal queries while consuming
         // stdout; return its response through this session's PTY so TUIs
@@ -5599,7 +6109,7 @@ void Editor::OpenImageInPlace(const std::string &path, const unsigned char *byte
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
-        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+        if (!buffers_[i].deleted && !buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
         }
@@ -5683,7 +6193,20 @@ void Editor::SyncModeToActivePaneBuffer() {
     } else if (IsModel3DBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Model3D;
     } else if (IsPdfBuffer(CurPane().buffer_id)) {
-        mode_ = Mode::Pdf;
+        // Preserve an active annotate sub-mode when focus re-lands on the
+        // same PDF buffer -- a click-to-place-caret routes through
+        // FocusPaneById (the pane click region), which always re-syncs even
+        // when the pane didn't actually change. Without this guard every
+        // annotate-mode click dropped straight back to the plain viewer.
+        // Keyed on the focused session's own caret being initialised
+        // (caret_page >= 0, set by EnterPdfAnnotateMode) so focusing a
+        // *different* PDF pane still correctly falls to the plain viewer.
+        PdfSession *ps = GetPdfMutable(CurPane().buffer_id);
+        if (mode_ == Mode::PdfAnnotate && ps && ps->caret_page >= 0) {
+            // keep Mode::PdfAnnotate
+        } else {
+            mode_ = Mode::Pdf;
+        }
     } else if (IsVideoBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Video;
     } else if (IsHtmlBuffer(CurPane().buffer_id)) {
@@ -5716,7 +6239,7 @@ void Editor::SyncModeToActivePaneBuffer() {
     } else if (IsGanttViewActive(CurPane().buffer_id)) {
         mode_ = Mode::GanttNormal;
     } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::ImageEditor || mode_ == Mode::Model3D ||
-               mode_ == Mode::Pdf || mode_ == Mode::PdfNav || mode_ == Mode::Video ||
+               mode_ == Mode::Pdf || mode_ == Mode::PdfNav || mode_ == Mode::PdfAnnotate || mode_ == Mode::Video ||
                mode_ == Mode::Html ||
                mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
                mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual ||
@@ -6797,7 +7320,7 @@ void Editor::OpenModel3DInPlace(const std::string &path) {
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
-        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+        if (!buffers_[i].deleted && !buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
         }
@@ -8040,6 +8563,113 @@ void Editor::AdvanceHtmlMedia(int buffer_id, double seconds) {
     AdvanceHtmlMediaClock(it->second.doc, seconds);
 }
 
+bool Editor::PumpHtmlScripts(int buffer_id) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end() || !it->second.js) return false;
+    return PumpScripts(*it->second.js);
+}
+
+bool Editor::SettleHtmlScripts(int buffer_id, int budget_ms) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end() || !it->second.js) return true;
+    JsRuntime &runtime = *it->second.js;
+    const auto start = std::chrono::steady_clock::now();
+    for (;;) {
+        PumpScripts(runtime);
+        const double wake = ScriptsNextWakeMs(runtime);
+        if (wake < 0) return true;
+        // A self-testing page announces it is still working in its title.
+        const bool running = it->second.doc.title.rfind("RUNNING", 0) == 0;
+        if (!running && wake > 1500) return true;
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() > budget_ms) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<long>(std::min(wake, 16.0))));
+    }
+}
+
+const DomNode *Editor::HtmlFocusedField(int buffer_id) const {
+    auto it = htmldocs_.find(buffer_id);
+    return it == htmldocs_.end() ? nullptr : it->second.focused_field;
+}
+
+namespace {
+bool IsHtmlTextField(const DomNode *node) {
+    if (!node || node->type != DomNodeType::Element) return false;
+    if (node->tag == "textarea") return true;
+    if (node->tag != "input") return false;
+    auto type = node->attrs.find("type");
+    if (type == node->attrs.end()) return true;
+    static const char *const kTextTypes[] = {"", "text", "search", "email", "url", "tel", "password", "number"};
+    for (const char *text_type : kTextTypes) if (type->second == text_type) return true;
+    return false;
+}
+void ClearHtmlFocus(DomNode *node) {
+    if (!node) return;
+    node->interaction_focus = false;
+    for (const auto &child : node->children) ClearHtmlFocus(child.get());
+}
+}  // namespace
+
+bool Editor::ClickHtmlNode(int buffer_id, DomNode *node) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end() || !node) return true;
+    HtmlSession &sess = it->second;
+    // Leaving a text field commits it: `change` fires on blur, as in a browser.
+    if (sess.focused_field && sess.focused_field != node) {
+        DomNode *left = sess.focused_field;
+        sess.focused_field = nullptr;
+        left->interaction_focus = false;
+        if (sess.js) { ScriptsDispatchEvent(*sess.js, left, "change", true); ScriptsDispatchEvent(*sess.js, left, "blur", false); }
+    }
+    // A <label> forwards its click to the control it labels.
+    DomNode *target = node;
+    for (DomNode *cur = node; cur; cur = cur->parent) {
+        if (cur->tag != "label") continue;
+        std::function<DomNode *(DomNode *)> first_control = [&](DomNode *at) -> DomNode * {
+            for (const auto &child : at->children) {
+                if (child->tag == "input" || child->tag == "select" || child->tag == "textarea" || child->tag == "button") return child.get();
+                if (DomNode *found = first_control(child.get())) return found;
+            }
+            return nullptr;
+        };
+        if (DomNode *control = first_control(cur)) target = control;
+        break;
+    }
+    if (IsHtmlTextField(target) && !target->attrs.count("disabled") && !target->attrs.count("readonly")) {
+        ClearHtmlFocus(sess.doc.root.get());
+        target->interaction_focus = true;
+        sess.focused_field = target;
+        if (sess.js) ScriptsDispatchEvent(*sess.js, target, "focus", false);
+    }
+    if (target->tag == "select" && !target->attrs.count("disabled")) {
+        // No popup list yet: each click steps to the next option.
+        std::vector<DomNode *> options;
+        std::function<void(DomNode *)> collect = [&](DomNode *at) { for (const auto &child : at->children) { if (child->tag == "option") options.push_back(child.get()); else collect(child.get()); } };
+        collect(target);
+        if (!options.empty()) {
+            size_t current = 0;
+            for (size_t i = 0; i < options.size(); ++i) {
+                auto live = options[i]->attrs.find("\x01selected");
+                if (live != options[i]->attrs.end() ? live->second == "1" : options[i]->attrs.count("selected") != 0) current = i;
+            }
+            const size_t next = (current + 1) % options.size();
+            for (size_t i = 0; i < options.size(); ++i) options[i]->attrs["\x01selected"] = i == next ? "1" : "0";
+            auto value = options[next]->attrs.find("value");
+            std::string text;
+            for (const auto &child : options[next]->children) if (child->type == DomNodeType::Text) text += child->text;
+            target->form_value = value != options[next]->attrs.end() ? value->second : text;
+        }
+    }
+    if (!sess.js) {
+        // A static page still gets the control's own behaviour.
+        auto type = target->attrs.find("type");
+        if (target->tag == "input" && type != target->attrs.end() && type->second == "checkbox") target->form_checked = !target->form_checked;
+        return true;
+    }
+    const bool proceed = ScriptsClick(*sess.js, target);
+    if (target->tag == "select") { ScriptsDispatchEvent(*sess.js, target, "input", true); ScriptsDispatchEvent(*sess.js, target, "change", true); }
+    return proceed;
+}
+
 // Parses `bytes` into `sess`'s DOM and runs its scripts -- shared by
 // OpenHtmlInPlace's create-branch (a fresh HtmlSession) and
 // ReloadHtmlBuffer (an existing one, overwritten in place). Runs any
@@ -8051,16 +8681,50 @@ void Editor::PopulateHtmlSession(HtmlSession &sess, const std::string &origin, c
                                   const unsigned char *bytes, size_t len) {
     sess.origin = origin;
     sess.source = source;
+    sess.js.reset();  // the old page's runtime points into the tree being replaced
+    sess.focused_field = nullptr;
     sess.doc = HtmlDoc();
     ParseHtml(std::string(reinterpret_cast<const char *>(bytes), len), sess.doc);
+    const bool remote_origin = origin.rfind("http://", 0) == 0 || origin.rfind("https://", 0) == 0;
+    // The DOM/JS layer reaches the network only through this hook (see
+    // HtmlUrlFetcher, html_doc.h): plain sockets for http://, a curl
+    // subprocess for https:// (http_client.h). Installed once, lazily.
+    static const bool fetcher_installed = [] {
+        SetHtmlUrlFetcher([](const std::string &url) {
+            HtmlFetchResult out;
+            HttpResponse response = HttpGet(url, 10000);
+            if (!response.ok) {
+                out.error = response.error;
+                return out;
+            }
+            out.status = response.status;
+            out.content_type = response.ContentType();
+            out.url = response.url;
+            out.body = std::move(response.body);
+            return out;
+        });
+        return true;
+    }();
+    (void)fetcher_installed;
+    if (remote_origin) {
+        // A page that came over http(s) loads its stylesheets and scripts
+        // from there too, resolved against its own URL, before its scripts
+        // run -- without this a served page is unstyled and inert.
+        sess.doc.document_url = origin;
+        LoadRemoteHtmlResources(sess.doc, origin);
+    } else {
+        sess.doc.document_url = "file://" + source;
+        LoadLocalHtmlResources(sess.doc, std::filesystem::path(source).parent_path().string());
+    }
     // Local <audio>/<video> sources are decoded before scripts so
     // `duration`/`readyState` are already meaningful to inline code.
     LoadHtmlMedia(sess.doc, std::filesystem::path(source).parent_path().string());
     // Info-level console messages surface as plain notifications; script errors are prefixed with the page's source.
-    RunScripts(
+    sess.js = StartScripts(
         sess.doc, [this](const std::string &msg) { Notify(msg, NotifyLevel::Info); },
         [this, source](const std::string &msg) { Notify(source + ": " + msg, NotifyLevel::Error); });
     sess.scroll_y = 0;
+    sess.omnibar_active = false;
 }
 
 // Dedup is by `source`, not by Buffer::filename the way OpenImageInPlace/
@@ -8101,11 +8765,12 @@ void Editor::OpenHtmlInPlace(const std::string &origin, const std::string &sourc
     }
     if (!IsHtmlBuffer(buffer_id)) {
         buffers_[static_cast<size_t>(buffer_id)].lines.clear();
-        HtmlSession sess;
+        // Built in its final home: the page's live script runtime keeps
+        // pointers into sess.doc, so the session must never be moved.
+        HtmlSession &sess = htmldocs_[buffer_id];
         sess.buffer_id = buffer_id;
         PopulateHtmlSession(sess, origin, source, bytes, len);
         sess.history.push_back({origin, source, std::string(reinterpret_cast<const char *>(bytes), len)});
-        htmldocs_[buffer_id] = std::move(sess);
     }
     CurPane().buffer_id = buffer_id;
     CurPane().cursor = {0, 0};
@@ -8148,6 +8813,21 @@ void Editor::NavigateHtmlBuffer(int buffer_id, const std::string &origin, const 
     sess.history_index = sess.history.size() - 1;
     buffers_[static_cast<size_t>(buffer_id)].filename = source;
     PopulateHtmlSession(sess, origin, source, bytes, len);
+}
+
+void Editor::BeginHtmlOmnibarEdit(int buffer_id) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    HtmlSession &sess = it->second;
+    sess.omnibar_active = true;
+    sess.omnibar_text = sess.origin;
+    sess.omnibar_cursor = sess.omnibar_text.size();
+    sess.omnibar_select_all = true;
+}
+
+std::string Editor::HtmlTitle(int buffer_id) const {
+    auto it = htmldocs_.find(buffer_id);
+    return it == htmldocs_.end() ? std::string() : it->second.doc.title;
 }
 
 bool Editor::NavigateHtmlHistory(int buffer_id, int direction) {
@@ -8203,11 +8883,11 @@ void Editor::ConvertTextBufferToHtml(int buffer_id) {
         content += "\n";
     }
     const std::string &path = buffers_[static_cast<size_t>(buffer_id)].filename;
-    HtmlSession sess;
+    const std::string path_copy = path;  // `path` aliases the buffer; keep it stable across the session setup
+    HtmlSession &sess = htmldocs_[buffer_id];  // in place: see OpenHtmlInPlace
     sess.buffer_id = buffer_id;
-    PopulateHtmlSession(sess, path, path, reinterpret_cast<const unsigned char *>(content.data()), content.size());
-    sess.history.push_back({path, path, content});
-    htmldocs_[buffer_id] = std::move(sess);
+    PopulateHtmlSession(sess, path_copy, path_copy, reinterpret_cast<const unsigned char *>(content.data()), content.size());
+    sess.history.push_back({path_copy, path_copy, content});
     buffers_[static_cast<size_t>(buffer_id)].lines.clear();
     // See ConvertHtmlBufferToText's own comment on this bump.
     change_epoch_++;
@@ -8227,6 +8907,151 @@ void Editor::HandleHtmlInput() {
     constexpr float kScrollStep = 60.0f;
     bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
     bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+
+    // A focused form field owns the keyboard the way the omnibar does:
+    // characters edit its value and raise `input` (what frameworks listen
+    // to), Enter submits the enclosing form, Escape/Tab leave the field.
+    if (sess->focused_field && !sess->omnibar_active) {
+        DomNode *field = sess->focused_field;
+        auto press = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+        auto notify_input = [&]() { if (sess->js) ScriptsDispatchEvent(*sess->js, field, "input", true); };
+        auto leave = [&]() {
+            field->interaction_focus = false;
+            sess->focused_field = nullptr;
+            if (sess->js) { ScriptsDispatchEvent(*sess->js, field, "change", true); ScriptsDispatchEvent(*sess->js, field, "blur", false); }
+        };
+        if (gfx::IsKeyPressed(gfx::Key::Escape) || gfx::IsKeyPressed(gfx::Key::Tab)) {
+            while (gfx::GetCharPressed() > 0) {}
+            leave();
+            return;
+        }
+        if (press(gfx::Key::Backspace) && !field->form_value.empty()) {
+            size_t at = field->form_value.size() - 1;
+            while (at > 0 && (static_cast<unsigned char>(field->form_value[at]) & 0xC0) == 0x80) at--;
+            field->form_value.erase(at);
+            notify_input();
+        }
+        if (ctrl && gfx::IsKeyPressed(gfx::Key::U)) { field->form_value.clear(); notify_input(); }
+        if (ctrl && gfx::IsKeyPressed(gfx::Key::V)) { field->form_value += gfx::GetClipboardText(); notify_input(); }
+        if (gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) {
+            while (gfx::GetCharPressed() > 0) {}
+            if (field->tag == "textarea") { field->form_value += '\n'; notify_input(); return; }
+            if (sess->js) {
+                ScriptsDispatchEvent(*sess->js, field, "change", true);
+                for (DomNode *form = field->parent; form; form = form->parent) {
+                    if (form->tag == "form") { ScriptsDispatchEvent(*sess->js, form, "submit", true); break; }
+                }
+            }
+            return;
+        }
+        bool typed = false;
+        for (int codepoint = gfx::GetCharPressed(); codepoint > 0; codepoint = gfx::GetCharPressed()) {
+            if (ctrl || codepoint < 0x20) continue;
+            const unsigned cp = static_cast<unsigned>(codepoint);
+            if (cp < 0x80) field->form_value += static_cast<char>(cp);
+            else if (cp < 0x800) { field->form_value += static_cast<char>(0xC0 | (cp >> 6)); field->form_value += static_cast<char>(0x80 | (cp & 0x3F)); }
+            else if (cp < 0x10000) { field->form_value += static_cast<char>(0xE0 | (cp >> 12)); field->form_value += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); field->form_value += static_cast<char>(0x80 | (cp & 0x3F)); }
+            else { field->form_value += static_cast<char>(0xF0 | (cp >> 18)); field->form_value += static_cast<char>(0x80 | ((cp >> 12) & 0x3F)); field->form_value += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); field->form_value += static_cast<char>(0x80 | (cp & 0x3F)); }
+            typed = true;
+        }
+        if (typed) notify_input();
+        return;
+    }
+
+    // Omnibar edit mode owns the keyboard: printable characters insert at
+    // the caret, the usual line-editing keys move/delete, Enter navigates
+    // (through the Lua :MepBrowseGo command, which normalizes the text --
+    // "localhost:8000" -> http://localhost:8000 -- and loads it into this
+    // pane), Escape abandons. Nothing below (scrolling, zoom, link hints)
+    // may see these keys, so this returns unconditionally.
+    if (sess->omnibar_active) {
+        std::string &text = sess->omnibar_text;
+        size_t &caret = sess->omnibar_cursor;
+        caret = std::min(caret, text.size());
+        auto press = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+        auto prev_boundary = [&](size_t at) {
+            if (at == 0) return at;
+            at--;
+            while (at > 0 && (static_cast<unsigned char>(text[at]) & 0xC0) == 0x80) at--;
+            return at;
+        };
+        auto next_boundary = [&](size_t at) {
+            if (at >= text.size()) return text.size();
+            at++;
+            while (at < text.size() && (static_cast<unsigned char>(text[at]) & 0xC0) == 0x80) at++;
+            return at;
+        };
+        if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+            sess->omnibar_active = false;
+            while (gfx::GetCharPressed() > 0) {}
+            return;
+        }
+        if (gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) {
+            const std::string target = text;
+            sess->omnibar_active = false;
+            while (gfx::GetCharPressed() > 0) {}
+            auto it = lua_commands_.find("MepBrowseGo");
+            if (!target.empty() && it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, target);
+            return;  // `sess` may have been repopulated by the navigation
+        }
+        if (ctrl && gfx::IsKeyPressed(gfx::Key::V)) {
+            std::string pasted = gfx::GetClipboardText();
+            pasted.erase(std::remove_if(pasted.begin(), pasted.end(), [](char c) { return c == '\n' || c == '\r'; }), pasted.end());
+            if (sess->omnibar_select_all) { text.clear(); caret = 0; }
+            text.insert(caret, pasted);
+            caret += pasted.size();
+            sess->omnibar_select_all = false;
+        } else if (ctrl && gfx::IsKeyPressed(gfx::Key::U)) {
+            text.erase(0, caret);
+            caret = 0;
+            sess->omnibar_select_all = false;
+        } else if (ctrl && gfx::IsKeyPressed(gfx::Key::A)) {
+            sess->omnibar_select_all = true;
+            caret = text.size();
+        } else if (press(gfx::Key::Backspace)) {
+            if (sess->omnibar_select_all) { text.clear(); caret = 0; }
+            else if (caret > 0) { const size_t from = prev_boundary(caret); text.erase(from, caret - from); caret = from; }
+            sess->omnibar_select_all = false;
+        } else if (press(gfx::Key::Delete)) {
+            if (sess->omnibar_select_all) { text.clear(); caret = 0; }
+            else if (caret < text.size()) text.erase(caret, next_boundary(caret) - caret);
+            sess->omnibar_select_all = false;
+        } else if (press(gfx::Key::Left)) {
+            caret = sess->omnibar_select_all ? 0 : prev_boundary(caret);
+            sess->omnibar_select_all = false;
+        } else if (press(gfx::Key::Right)) {
+            caret = sess->omnibar_select_all ? text.size() : next_boundary(caret);
+            sess->omnibar_select_all = false;
+        } else if (gfx::IsKeyPressed(gfx::Key::Home)) {
+            caret = 0;
+            sess->omnibar_select_all = false;
+        } else if (gfx::IsKeyPressed(gfx::Key::End)) {
+            caret = text.size();
+            sess->omnibar_select_all = false;
+        }
+        if (!ctrl) {
+            for (int ch = gfx::GetCharPressed(); ch > 0; ch = gfx::GetCharPressed()) {
+                if (ch < 32) continue;
+                if (sess->omnibar_select_all) { text.clear(); caret = 0; sess->omnibar_select_all = false; }
+                std::string utf8;
+                if (ch < 0x80) utf8 += static_cast<char>(ch);
+                else if (ch < 0x800) { utf8 += static_cast<char>(0xC0 | (ch >> 6)); utf8 += static_cast<char>(0x80 | (ch & 0x3F)); }
+                else if (ch < 0x10000) { utf8 += static_cast<char>(0xE0 | (ch >> 12)); utf8 += static_cast<char>(0x80 | ((ch >> 6) & 0x3F)); utf8 += static_cast<char>(0x80 | (ch & 0x3F)); }
+                else { utf8 += static_cast<char>(0xF0 | (ch >> 18)); utf8 += static_cast<char>(0x80 | ((ch >> 12) & 0x3F)); utf8 += static_cast<char>(0x80 | ((ch >> 6) & 0x3F)); utf8 += static_cast<char>(0x80 | (ch & 0x3F)); }
+                text.insert(caret, utf8);
+                caret += utf8.size();
+            }
+        } else {
+            while (gfx::GetCharPressed() > 0) {}
+        }
+        return;
+    }
+    // Ctrl-L, the browser convention, joins 'o' as a way into the omnibar.
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::L)) {
+        BeginHtmlOmnibarEdit(CurPane().buffer_id);
+        while (gfx::GetCharPressed() > 0) {}
+        return;
+    }
     // gfx::IsKeyPressed(Repeat) rather than draining gfx::GetKeyPressed(): GLFW only
     // enqueues the initial key-down into the gfx::GetKeyPressed() queue, so
     // holding a key down (OS auto-repeat) would otherwise scroll exactly
@@ -8318,8 +9143,9 @@ void Editor::HandleHtmlInput() {
                 auto it = lua_commands_.find("MepBrowseReload");
                 if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
             } else if (cp == 'o') {
-                auto it = lua_commands_.find("MepBrowseOpen");
-                if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
+                BeginHtmlOmnibarEdit(CurPane().buffer_id);
+                while (gfx::GetCharPressed() > 0) {}
+                return;
             } else if (cp == 'f') {
                 link_hint_request_ = true;
             }
@@ -8331,6 +9157,11 @@ void Editor::HandleHtmlInput() {
 bool Editor::IsPdfBuffer(int buffer_id) const { return pdfs_.find(buffer_id) != pdfs_.end(); }
 
 const PdfSession *Editor::GetPdf(int buffer_id) const {
+    auto it = pdfs_.find(buffer_id);
+    return it == pdfs_.end() ? nullptr : &it->second;
+}
+
+PdfSession *Editor::GetPdfMutable(int buffer_id) {
     auto it = pdfs_.find(buffer_id);
     return it == pdfs_.end() ? nullptr : &it->second;
 }
@@ -8382,32 +9213,64 @@ void Editor::EnsurePdfPagesRastered(int buffer_id) {
     int page_count = sess.doc->PageCount();
     if (page_count <= 0) return;
 
-    // At most ONE page render per call (i.e. per frame), anchor page
-    // first, then the next/previous neighbors: RenderPage is a synchronous
-    // CPU rasterization on this (the main) thread, so rendering the whole
-    // window in one frame stalled the UI for up to 3 pages' worth of work
-    // on every page jump -- with Mode::PdfNav's count jumps (5<space>)
-    // that was the difference between "snappy" and "laggy". The keystroke
-    // frame now pays for the page actually being looked at; the neighbors
-    // fill in over the following frames (DrawPane's draw_page already
-    // skips a page whose raster isn't cached yet, so a neighbor is at
-    // worst briefly blank in the continuous-scroll stack, never a stall).
-    const int order[3] = {sess.page, sess.page + 1, sess.page - 1};
-    for (int idx : order) {
-        if (idx < 0 || idx >= page_count) continue;
-        if (sess.rasters.find(idx) != sess.rasters.end()) continue;
-        PdfSession::PageRaster pr;
-        // A failed render falls through to the next candidate rather than
-        // breaking (same every-frame retry it always had -- a failing page
-        // never enters `rasters` -- but its neighbors still make progress).
-        if (!sess.doc->RenderPage(idx, sess.rendered_scale, pr.rgba, pr.w, pr.h)) continue;
-        pr.generation = sess.next_raster_generation++;
-        if (!sess.search_matches.empty()) pr.highlights = sess.doc->MatchRectsForPage(idx, sess.rendered_scale, sess.search_matches);
-        pr.links = sess.doc->PageLinks(idx, sess.rendered_scale);
-        sess.rasters[idx] = std::move(pr);
-        break;
+    // Pages render on a worker thread, one at a time (see
+    // PdfSession::render_job): this frame collects a finished render,
+    // then starts the next page the view needs -- anchor first, then its
+    // neighbors, two either side so continuous j/k scrolling finds the
+    // next page ready. A page not rendered yet is simply skipped by
+    // DrawPane's draw_page (briefly blank), never waited on. Rendering
+    // inline here used to stall the whole UI for as long as the page took
+    // (up to seconds for a dense figure), which read as scrolling that
+    // "pauses" while j/k is held.
+    if (sess.render_job.valid() &&
+        sess.render_job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        PdfSession::RenderResult res = sess.render_job.get();
+        const int idx = sess.render_job_page;
+        sess.render_job_page = -1;
+        // Stale: the document was reloaded or the page re-scaled (zoom
+        // settle) while it rendered.
+        const bool current = sess.render_job_doc == sess.doc.get() && sess.render_job_scale == sess.rendered_scale;
+        if (res.ok && current && idx >= 0 && idx < page_count) {
+            // Surface a silently-blank/partial page once per document rather than
+            // every frame it stays on screen (see PdfSession::content_warning_shown).
+            if (!res.warning.empty() && !sess.content_warning_shown) {
+                Notify("PDF: " + res.warning, NotifyLevel::Warn);
+                sess.content_warning_shown = true;
+            }
+            PdfSession::PageRaster pr;
+            pr.rgba = std::move(res.rgba);
+            pr.w = res.w;
+            pr.h = res.h;
+            pr.generation = sess.next_raster_generation++;
+            if (!sess.search_matches.empty()) pr.highlights = sess.doc->MatchRectsForPage(idx, sess.rendered_scale, sess.search_matches);
+            pr.links = sess.doc->PageLinks(idx, sess.rendered_scale);
+            pr.annots = sess.doc->AnnotDrawForPage(idx, sess.rendered_scale, sess.pending_annots, sess.annot_edits, sess.annot_deletes);
+            sess.rasters[idx] = std::move(pr);
+        } else if (!res.ok && current) {
+            // A failed render still takes a raster slot (an empty one, which
+            // draw_page skips) so it isn't retried every frame.
+            sess.rasters[idx] = PdfSession::PageRaster{};
+        }
     }
-    // Eviction keeps a wider band than the +-1 render window above: pages
+    if (!sess.render_job.valid()) {
+        const int order[5] = {sess.page, sess.page + 1, sess.page - 1, sess.page + 2, sess.page - 2};
+        for (int idx : order) {
+            if (idx < 0 || idx >= page_count) continue;
+            if (sess.rasters.find(idx) != sess.rasters.end()) continue;
+            std::shared_ptr<PdfDoc> doc = sess.doc;
+            const float scale = sess.rendered_scale;
+            sess.render_job_page = idx;
+            sess.render_job_scale = scale;
+            sess.render_job_doc = doc.get();
+            sess.render_job = std::async(std::launch::async, [doc, idx, scale]() {
+                PdfSession::RenderResult res;
+                res.ok = doc->RenderPage(idx, scale, res.rgba, res.w, res.h, &res.warning);
+                return res;
+            });
+            break;
+        }
+    }
+    // Eviction keeps a wider band than the +-2 render window above: pages
     // outside it were already paid for, and Mode::PdfNav's back-and-forth
     // paging (space / shift+space) kept re-rendering the page just left
     // when eviction hugged the render window. +-3 bounds memory at ~7
@@ -8428,6 +9291,525 @@ void Editor::RecomputePdfPageHighlights(PdfSession &sess) {
         kv.second.highlights =
             sess.search_matches.empty() ? std::vector<PdfHighlightRect>{}
                                          : sess.doc->MatchRectsForPage(kv.first, sess.rendered_scale, sess.search_matches);
+    }
+}
+
+void Editor::RecomputePdfPageAnnots(PdfSession &sess) {
+    if (!sess.doc) return;
+    for (auto &kv : sess.rasters) {
+        kv.second.annots = sess.doc->AnnotDrawForPage(kv.first, sess.rendered_scale, sess.pending_annots, sess.annot_edits, sess.annot_deletes);
+    }
+}
+
+namespace {
+// The highlight colour palette (RGB 0..1) the annotate UI cycles/picks
+// from; PdfSession::active_color indexes it.
+struct PdfHiColor {
+    const char *name;
+    double r, g, b;
+};
+const PdfHiColor kPdfHighlightPalette[] = {
+    {"yellow", 1.00, 0.90, 0.20},
+    {"green", 0.55, 0.90, 0.45},
+    {"blue", 0.50, 0.75, 1.00},
+    {"pink", 1.00, 0.60, 0.80},
+    {"orange", 1.00, 0.72, 0.30},
+};
+constexpr int kPdfPaletteCount = static_cast<int>(sizeof(kPdfHighlightPalette) / sizeof(kPdfHighlightPalette[0]));
+}  // namespace
+
+int Editor::PdfHighlightColorCount() const { return kPdfPaletteCount; }
+
+const char *Editor::PdfHighlightColorName(int index) const {
+    return (index >= 0 && index < kPdfPaletteCount) ? kPdfHighlightPalette[index].name : "";
+}
+
+void Editor::SetPdfHighlightColor(int index) {
+    PdfSession *s = GetPdfMutable(CurPane().buffer_id);
+    if (!s || index < 0 || index >= kPdfPaletteCount) return;
+    s->active_color = index;
+    status_message_ = std::string("Highlight colour: ") + kPdfHighlightPalette[index].name;
+}
+
+bool Editor::SetPdfHighlightColorByName(const std::string &name) {
+    for (int i = 0; i < kPdfPaletteCount; i++) {
+        if (name == kPdfHighlightPalette[i].name) {
+            SetPdfHighlightColor(i);
+            return true;
+        }
+    }
+    status_message_ = "Unknown highlight colour: " + name;
+    return false;
+}
+
+void Editor::AddPendingPdfAnnot(PdfSession &sess, int buffer_id, pdfannots::PdfAnnot a) {
+    sess.pending_annots.push_back(std::move(a));
+    sess.annots_dirty = true;
+    // Mark the buffer modified so the "unsaved" indicator shows and :w/:wa
+    // pick it up (BufferUnsavable now reports an annotated PDF as savable).
+    if (buffer_id >= 0 && buffer_id < static_cast<int>(buffers_.size())) buffers_[static_cast<size_t>(buffer_id)].modified = true;
+    RecomputePdfPageAnnots(sess);
+}
+
+void Editor::SetPdfNoteLatexPng(const std::string &key, const std::string &png) { pdf_note_latex_png_[key] = png; }
+
+bool Editor::PdfNoteLatexRequested(const std::string &key) const {
+    return pdf_note_latex_png_.find(key) != pdf_note_latex_png_.end();
+}
+
+std::string Editor::PdfNoteLatexPng(const std::string &key) const {
+    auto it = pdf_note_latex_png_.find(key);
+    return it == pdf_note_latex_png_.end() ? std::string() : it->second;
+}
+
+void Editor::EnterPdfAnnotateMode() {
+    if (!IsPdfBuffer(CurPane().buffer_id)) {
+        status_message_ = "Not a PDF pane";
+        return;
+    }
+    mode_ = Mode::PdfAnnotate;
+    if (PdfSession *s = GetPdfMutable(CurPane().buffer_id)) {
+        LoadCaretGlyphs(*s, s->page);
+        s->visual_active = false;
+        s->sel_quads.clear();
+        s->sel_page = -1;
+        s->annot_leader = false;
+    }
+    status_message_ = "PDF annotate: hjkl/w/b move, click to place, v select; <space> for actions; Esc exit";
+}
+
+void Editor::PdfNotePrompt() {
+    PdfSession *s = GetPdfMutable(CurPane().buffer_id);
+    if (!s) {
+        status_message_ = "Not a PDF pane";
+        return;
+    }
+    // If an annotation is under the mouse OR under the vim caret, add/edit ITS
+    // note (attach a note to a highlight, or edit an existing note), prefilled
+    // with the current text. Otherwise create a standalone sticky note.
+    PdfSession::AnnotTarget t = ActiveAnnotTarget(*s);
+    if (t.valid) {
+        s->note_edit_target = t;
+        s->note_input = t.contents;
+    } else {
+        s->note_edit_target.valid = false;
+        s->note_input.clear();
+    }
+    s->note_caret = s->note_input.size();  // caret at end of prefilled text
+    s->note_input_active = true;
+}
+
+// The annotation an edit/delete acts on: the one under the mouse if the mouse
+// is hovering one, else the highlight whose region contains the vim caret --
+// so keyboard-only annotate mode can edit/delete without touching the mouse.
+PdfSession::AnnotTarget Editor::ActiveAnnotTarget(PdfSession &sess) {
+    if (sess.hover_annot.valid) return sess.hover_annot;
+    return ResolveAnnotTargetAtCaret(sess);
+}
+
+// Hit-tests the caret glyph (point space) against every highlight on the caret
+// page -- session (pending) highlights first since they draw on top, then file
+// highlights (skipping any scheduled for deletion, and preferring an in-flight
+// edit's text). Returns an invalid target if the caret isn't inside a highlight.
+PdfSession::AnnotTarget Editor::ResolveAnnotTargetAtCaret(PdfSession &sess) {
+    PdfSession::AnnotTarget t;  // invalid by default
+    if (sess.caret_page < 0 || sess.caret_glyph < 0 ||
+        sess.caret_glyph >= static_cast<int>(sess.caret_glyphs.size()))
+        return t;
+    const PdfGlyphBox &g = sess.caret_glyphs[static_cast<size_t>(sess.caret_glyph)];
+    const double cx = (g.left + g.right) * 0.5;
+    const double cy = (g.top + g.bottom) * 0.5;
+    auto in_quads = [&](const std::vector<pdfannots::Quad> &quads) {
+        for (const pdfannots::Quad &q : quads) {
+            const double minx = std::min(std::min(q.x1, q.x2), std::min(q.x3, q.x4));
+            const double maxx = std::max(std::max(q.x1, q.x2), std::max(q.x3, q.x4));
+            const double miny = std::min(std::min(q.y1, q.y2), std::min(q.y3, q.y4));
+            const double maxy = std::max(std::max(q.y1, q.y2), std::max(q.y3, q.y4));
+            if (cx >= minx && cx <= maxx && cy >= miny && cy <= maxy) return true;
+        }
+        return false;
+    };
+    for (int i = static_cast<int>(sess.pending_annots.size()) - 1; i >= 0; --i) {
+        const pdfannots::PdfAnnot &a = sess.pending_annots[static_cast<size_t>(i)];
+        if (a.page != sess.caret_page || a.kind != pdfannots::Kind::Highlight) continue;
+        if (in_quads(a.quads)) {
+            t.valid = true; t.from_file = false; t.page = a.page;
+            t.pending_index = i; t.kind = 0; t.contents = a.contents;
+            return t;
+        }
+    }
+    if (sess.doc) {
+        for (const pdfannots::PdfAnnot &a : sess.doc->PageAnnots(sess.caret_page)) {
+            if (a.kind != pdfannots::Kind::Highlight) continue;
+            const bool deleted = std::any_of(
+                sess.annot_deletes.begin(), sess.annot_deletes.end(),
+                [&](const pdfwrite::AnnotDelete &d) { return d.page == a.page && d.obj_num == a.src_obj; });
+            if (deleted) continue;
+            if (in_quads(a.quads)) {
+                t.valid = true; t.from_file = true; t.page = a.page;
+                t.src_obj = a.src_obj; t.src_gen = a.src_gen; t.kind = 0;
+                t.contents = a.contents;
+                for (const pdfannots::PdfAnnot &e : sess.annot_edits)
+                    if (e.src_obj == a.src_obj) t.contents = e.contents;
+                return t;
+            }
+        }
+    }
+    return t;
+}
+
+// Applies `text` as the note contents of `t` (a highlight's /Contents, or a
+// sticky note's) -- session annots are mutated in place; file annots become
+// an entry in annot_edits (re-emitted on :w).
+void Editor::ApplyPdfNoteToTarget(PdfSession &sess, const PdfSession::AnnotTarget &t, const std::string &text) {
+    if (!t.valid) return;
+    if (!t.from_file) {
+        if (t.pending_index >= 0 && t.pending_index < static_cast<int>(sess.pending_annots.size()))
+            sess.pending_annots[static_cast<size_t>(t.pending_index)].contents = text;
+    } else if (sess.doc && t.src_obj > 0) {
+        // Fetch the full file annotation (geometry/colour), set its new text,
+        // and record it as an edit (replacing any prior edit of the same obj).
+        for (const pdfannots::PdfAnnot &fa : sess.doc->PageAnnots(t.page)) {
+            if (fa.src_obj == t.src_obj) {
+                pdfannots::PdfAnnot ed = fa;
+                ed.contents = text;
+                sess.annot_edits.erase(std::remove_if(sess.annot_edits.begin(), sess.annot_edits.end(),
+                                                      [&](const pdfannots::PdfAnnot &e) { return e.src_obj == t.src_obj; }),
+                                       sess.annot_edits.end());
+                sess.annot_edits.push_back(std::move(ed));
+                break;
+            }
+        }
+    }
+    sess.annots_dirty = true;
+    int bid = CurPane().buffer_id;
+    if (bid >= 0 && bid < static_cast<int>(buffers_.size())) buffers_[static_cast<size_t>(bid)].modified = true;
+    RecomputePdfPageAnnots(sess);
+}
+
+// Deletes the annotation `t` (a highlight and its note, or a sticky note).
+void Editor::PdfDeleteTarget() {
+    int bid = CurPane().buffer_id;
+    PdfSession *s = GetPdfMutable(bid);
+    if (!s) return;
+    const PdfSession::AnnotTarget t = ActiveAnnotTarget(*s);
+    if (!t.valid) {
+        status_message_ = "Hover over, or place the caret in, an annotation to delete it";
+        return;
+    }
+    if (!t.from_file) {
+        if (t.pending_index >= 0 && t.pending_index < static_cast<int>(s->pending_annots.size()))
+            s->pending_annots.erase(s->pending_annots.begin() + t.pending_index);
+    } else if (t.src_obj > 0) {
+        // Drop any pending edit of it, then schedule the file deletion.
+        s->annot_edits.erase(std::remove_if(s->annot_edits.begin(), s->annot_edits.end(),
+                                            [&](const pdfannots::PdfAnnot &e) { return e.src_obj == t.src_obj; }),
+                             s->annot_edits.end());
+        s->annot_deletes.push_back({t.page, t.src_obj});
+    }
+    s->hover_annot.valid = false;
+    s->annots_dirty = true;
+    if (bid >= 0 && bid < static_cast<int>(buffers_.size())) buffers_[static_cast<size_t>(bid)].modified = true;
+    RecomputePdfPageAnnots(*s);
+    status_message_ = "Deleted annotation (:w to save)";
+}
+
+void Editor::PdfSearchCommand(const std::string &query) {
+    int bid = CurPane().buffer_id;
+    auto it = pdfs_.find(bid);
+    if (it == pdfs_.end() || !it->second.doc) return;
+    PdfSession &sess = it->second;
+    if (query.empty()) {
+        status_message_ = "Usage: :pdfsearch <text>";
+        return;
+    }
+    RunPdfSearch(sess, query);
+    if (sess.search_matches.empty()) {
+        status_message_ = "No matches for \"" + query + "\"";
+        return;
+    }
+    int start = 0;
+    for (size_t i = 0; i < sess.search_matches.size(); i++) {
+        if (sess.search_matches[i].page >= sess.page) {
+            start = static_cast<int>(i);
+            break;
+        }
+    }
+    GotoPdfMatch(sess, start);
+}
+
+void Editor::PdfHighlightCurrentMatch() {
+    int bid = CurPane().buffer_id;
+    auto it = pdfs_.find(bid);
+    if (it == pdfs_.end() || !it->second.doc) return;
+    PdfSession &sess = it->second;
+
+    pdfannots::PdfAnnot a;
+    a.kind = pdfannots::Kind::Highlight;
+    const PdfHiColor &pc = kPdfHighlightPalette[std::clamp(sess.active_color, 0, kPdfPaletteCount - 1)];
+    a.color[0] = pc.r; a.color[1] = pc.g; a.color[2] = pc.b; a.opacity = 0.4;
+    double minx = 1e30, miny = 1e30, maxx = -1e30, maxy = -1e30;
+    auto extend = [&](double l, double t, double r, double b) {
+        minx = std::min(minx, std::min(l, r));
+        maxx = std::max(maxx, std::max(l, r));
+        miny = std::min(miny, std::min(t, b));
+        maxy = std::max(maxy, std::max(t, b));
+    };
+
+    const char *what = nullptr;
+    if (sess.sel_page >= 0 && !sess.sel_quads.empty()) {
+        // A click-drag text selection takes precedence over the search match.
+        a.page = sess.sel_page;
+        for (const pdfannots::Quad &q : sess.sel_quads) {
+            a.quads.push_back(q);
+            extend(std::min(q.x1, q.x3), std::max(q.y1, q.y2), std::max(q.x2, q.x4), std::min(q.y3, q.y4));
+        }
+        what = "selection";
+    } else if (sess.search_current >= 0 && sess.search_current < static_cast<int>(sess.search_matches.size())) {
+        const PdfTextMatch &m = sess.search_matches[static_cast<size_t>(sess.search_current)];
+        if (m.rects_pt.empty()) return;
+        a.page = m.page;
+        for (const PdfTextRectPt &r : m.rects_pt) {
+            // Point space, y-up (top >= bottom). QuadPoints order UL,UR,LL,LR.
+            pdfannots::Quad q;
+            q.x1 = r.left;  q.y1 = r.top;    q.x2 = r.right; q.y2 = r.top;
+            q.x3 = r.left;  q.y3 = r.bottom; q.x4 = r.right; q.y4 = r.bottom;
+            a.quads.push_back(q);
+            extend(r.left, r.top, r.right, r.bottom);
+        }
+        what = "match";
+    } else {
+        status_message_ = "Nothing to highlight (drag to select text, or search with /)";
+        return;
+    }
+
+    a.rect[0] = minx; a.rect[1] = miny; a.rect[2] = maxx; a.rect[3] = maxy;
+    AddPendingPdfAnnot(sess, bid, std::move(a));
+    // Consume the selection so a second :pdfhighlight doesn't re-add it.
+    sess.sel_page = -1;
+    sess.sel_quads.clear();
+    status_message_ = std::string("Highlighted ") + what + " (:w to save into the PDF)";
+}
+
+void Editor::PdfAddNote(const std::string &text) {
+    int bid = CurPane().buffer_id;
+    auto it = pdfs_.find(bid);
+    if (it == pdfs_.end() || !it->second.doc) return;
+    PdfSession &sess = it->second;
+    if (text.empty()) {
+        status_message_ = "Usage: :pdfnote <text>";
+        return;
+    }
+    pdfannots::PdfAnnot a;
+    a.kind = pdfannots::Kind::Text;
+    a.contents = text;
+    a.icon = "Note";
+    a.color[0] = 1.0; a.color[1] = 1.0; a.color[2] = 0.0;
+    a.page = sess.page;
+    double px = 36, py = 36;
+    if (sess.search_current >= 0 && sess.search_current < static_cast<int>(sess.search_matches.size())) {
+        // Anchor the note to the current search match, if any.
+        const PdfTextMatch &m = sess.search_matches[static_cast<size_t>(sess.search_current)];
+        a.page = m.page;
+        if (!m.rects_pt.empty()) {
+            px = m.rects_pt[0].right;
+            py = m.rects_pt[0].top;
+        }
+    } else {
+        // Otherwise the current page's top-left (point space is y-up).
+        double hpt = sess.doc->PageHeightPt(sess.page);
+        if (hpt > 0) py = hpt - 36;
+    }
+    a.rect[0] = px; a.rect[1] = py - 18; a.rect[2] = px + 18; a.rect[3] = py;
+    AddPendingPdfAnnot(sess, bid, std::move(a));
+    status_message_ = "Added note (:w to save into the PDF)";
+}
+
+// -- vim caret over a PDF page (annotate mode) ------------------------
+
+void Editor::LoadCaretGlyphs(PdfSession &sess, int page) {
+    sess.caret_page = page;
+    sess.caret_glyphs = sess.doc ? sess.doc->PageGlyphs(page) : std::vector<PdfGlyphBox>{};
+    sess.caret_glyph = sess.caret_glyphs.empty() ? -1 : 0;
+}
+
+void Editor::PdfCaretUpdateVisual(PdfSession &sess) {
+    if (!sess.visual_active || !sess.doc || sess.caret_glyph < 0 || sess.visual_anchor_glyph < 0) return;
+    sess.sel_page = sess.caret_page;
+    sess.sel_quads = sess.doc->SelectionQuadsForGlyphs(sess.caret_page, sess.visual_anchor_glyph, sess.caret_glyph);
+}
+
+void Editor::PdfCaretEnsureVisible(PdfSession &sess) {
+    if (!sess.doc || sess.caret_page != sess.page || sess.caret_glyph < 0 ||
+        sess.caret_glyph >= static_cast<int>(sess.caret_glyphs.size()))
+        return;
+    const PdfGlyphBox &g = sess.caret_glyphs[static_cast<size_t>(sess.caret_glyph)];
+    pdfannots::Quad q;
+    q.x1 = g.left;  q.y1 = g.top;    q.x2 = g.right; q.y2 = g.top;
+    q.x3 = g.left;  q.y3 = g.bottom; q.x4 = g.right; q.y4 = g.bottom;
+    auto dr = sess.doc->QuadsToDeviceRects(sess.caret_page, sess.rendered_scale, {q});
+    if (dr.empty()) return;
+    double top = static_cast<double>(dr[0].y0) * static_cast<double>(sess.zoom);  // page-relative screen px
+    double bot = static_cast<double>(dr[0].y1) * static_cast<double>(sess.zoom);
+    const double margin = 40;
+    double sy = static_cast<double>(sess.scroll_y);
+    if (top - sy < margin)
+        sess.scroll_y = static_cast<float>(top - margin);
+    else if (bot - sy > static_cast<double>(sess.viewport_h) - margin)
+        sess.scroll_y = static_cast<float>(bot - static_cast<double>(sess.viewport_h) + margin);
+    RebasePdfScroll(sess);
+}
+
+void Editor::PdfCaretMove(PdfSession &sess, int cp) {
+    if (sess.caret_page != sess.page) LoadCaretGlyphs(sess, sess.page);  // page changed under us
+    if (sess.caret_glyphs.empty()) return;
+    const auto &G = sess.caret_glyphs;
+    int n = static_cast<int>(G.size());
+    int c = std::clamp(sess.caret_glyph, 0, n - 1);
+    auto height = [&](int i) { return std::max(G[static_cast<size_t>(i)].top - G[static_cast<size_t>(i)].bottom, 1e-6); };
+    auto center = [&](int i) { return (G[static_cast<size_t>(i)].top + G[static_cast<size_t>(i)].bottom) / 2.0; };
+    auto sameLine = [&](int a, int b) { return std::fabs(center(a) - center(b)) <= 0.5 * std::max(height(a), height(b)); };
+    auto wordStart = [&](int i) {
+        if (i <= 0) return true;
+        if (!sameLine(i - 1, i)) return true;
+        return (G[static_cast<size_t>(i)].left - G[static_cast<size_t>(i - 1)].right) > 0.05 * std::max(height(i), height(i - 1));
+    };
+    double cx = (G[static_cast<size_t>(c)].left + G[static_cast<size_t>(c)].right) / 2.0;
+    int page_count = sess.doc ? sess.doc->PageCount() : 1;
+    switch (cp) {
+        case 'h': c = std::max(0, c - 1); break;
+        case 'l': c = std::min(n - 1, c + 1); break;
+        case '0': while (c > 0 && sameLine(c - 1, c)) --c; break;
+        case '$': while (c < n - 1 && sameLine(c, c + 1)) ++c; break;
+        case 'w': { int i = c + 1; while (i < n && !wordStart(i)) ++i; c = std::min(i, n - 1); break; }
+        case 'b': { int i = c - 1; while (i > 0 && !wordStart(i)) --i; c = std::max(i, 0); break; }
+        case 'e': { int i = c + 1; while (i < n - 1 && !wordStart(i + 1)) ++i; c = std::min(i, n - 1); break; }
+        case 'j': {
+            int i = c + 1;
+            while (i < n && sameLine(i, c)) ++i;  // first glyph of the next line
+            if (i < n) {
+                int best = i; double bd = 1e30;
+                for (int k = i; k < n && sameLine(k, i); ++k) {
+                    double kx = (G[static_cast<size_t>(k)].left + G[static_cast<size_t>(k)].right) / 2.0;
+                    if (std::fabs(kx - cx) < bd) { bd = std::fabs(kx - cx); best = k; }
+                }
+                c = best;
+            } else if (!sess.visual_active && sess.page < page_count - 1) {
+                // Past the last line: advance to the next page's first glyph.
+                sess.page++;
+                sess.scroll_y = 0;
+                LoadCaretGlyphs(sess, sess.page);
+                return;
+            }
+            break;
+        }
+        case 'k': {
+            int i = c - 1;
+            while (i >= 0 && sameLine(i, c)) --i;  // last glyph of the previous line
+            if (i >= 0) {
+                int start = i; while (start > 0 && sameLine(start - 1, i)) --start;
+                int best = start; double bd = 1e30;
+                for (int k = start; k <= i; ++k) {
+                    double kx = (G[static_cast<size_t>(k)].left + G[static_cast<size_t>(k)].right) / 2.0;
+                    if (std::fabs(kx - cx) < bd) { bd = std::fabs(kx - cx); best = k; }
+                }
+                c = best;
+            } else if (!sess.visual_active && sess.page > 0) {
+                sess.page--;
+                LoadCaretGlyphs(sess, sess.page);
+                sess.caret_glyph = sess.caret_glyphs.empty() ? -1 : static_cast<int>(sess.caret_glyphs.size()) - 1;
+                sess.scroll_y = PdfPageScreenHeightPx(sess, sess.page);  // bottom of the page
+                RebasePdfScroll(sess);
+                return;
+            }
+            break;
+        }
+        default: break;
+    }
+    sess.caret_glyph = c;
+    if (sess.visual_active) PdfCaretUpdateVisual(sess);
+    PdfCaretEnsureVisible(sess);
+}
+
+void Editor::PdfCaretPlaceAtDevice(int buffer_id, int page, double dx, double dy) {
+    PdfSession *s = GetPdfMutable(buffer_id);
+    if (!s || !s->doc) return;
+    if (s->caret_page != page) LoadCaretGlyphs(*s, page);
+    if (s->caret_glyphs.empty()) return;
+    double px, py;
+    if (!s->doc->DevicePxToPoint(page, s->rendered_scale, dx, dy, &px, &py)) return;
+    int best = -1;
+    double bestd = 1e30;
+    for (size_t i = 0; i < s->caret_glyphs.size(); ++i) {
+        const PdfGlyphBox &g = s->caret_glyphs[i];
+        double cx = std::clamp(px, g.left, g.right);
+        double cy = std::clamp(py, g.bottom, g.top);
+        double d = (px - cx) * (px - cx) + (py - cy) * (py - cy);
+        if (d < bestd) { bestd = d; best = static_cast<int>(i); }
+    }
+    if (best >= 0) {
+        s->caret_glyph = best;
+        if (s->visual_active) PdfCaretUpdateVisual(*s);
+    }
+}
+
+void Editor::PdfCaretToggleVisual(PdfSession &sess) {
+    if (sess.caret_glyph < 0) return;
+    sess.visual_active = !sess.visual_active;
+    if (sess.visual_active) {
+        sess.visual_anchor_glyph = sess.caret_glyph;
+        PdfCaretUpdateVisual(sess);
+    } else {
+        sess.sel_quads.clear();
+        sess.sel_page = -1;
+    }
+}
+
+void Editor::PdfAnnotLeaderAction(PdfSession &sess, int cp) {
+    switch (cp) {
+        case 'h':  // highlight the visual selection (or current search match)
+            PdfHighlightCurrentMatch();
+            sess.visual_active = false;
+            break;
+        case 'n':  // note: highlight the selection + attach a note, else edit the hovered/standalone note
+            if (sess.visual_active && !sess.sel_quads.empty()) {
+                PdfHighlightCurrentMatch();
+                sess.visual_active = false;
+                if (!sess.pending_annots.empty()) {
+                    PdfSession::AnnotTarget &t = sess.note_edit_target;
+                    t.valid = true;
+                    t.from_file = false;
+                    t.page = sess.pending_annots.back().page;
+                    t.pending_index = static_cast<int>(sess.pending_annots.size()) - 1;
+                    t.kind = 0;
+                    t.contents.clear();
+                    sess.note_input.clear();
+                    sess.note_caret = 0;
+                    sess.note_input_active = true;
+                }
+            } else {
+                PdfNotePrompt();
+            }
+            break;
+        case 'd':  // delete the annotation under the mouse
+            PdfDeleteTarget();
+            break;
+        case 'c':  // cycle the highlight colour
+            SetPdfHighlightColor((sess.active_color + 1) % PdfHighlightColorCount());
+            break;
+        case '1': case '2': case '3': case '4': case '5':
+            SetPdfHighlightColor(cp - '1');
+            break;
+        case 'q':  // leave annotate mode
+            mode_ = Mode::Pdf;
+            sess.visual_active = false;
+            sess.sel_quads.clear();
+            sess.sel_page = -1;
+            status_message_ = "";
+            break;
+        default:
+            status_message_ = "annotate: unknown action";
+            break;
     }
 }
 
@@ -8466,7 +9848,7 @@ void Editor::OpenPdfInPlace(const std::string &path, const unsigned char *bytes,
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
-        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+        if (!buffers_[i].deleted && !buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
         }
@@ -8505,7 +9887,7 @@ void Editor::OpenVideoInPlace(const std::string &path) {
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
-        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+        if (!buffers_[i].deleted && !buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
         }
@@ -8699,7 +10081,21 @@ void Editor::RebasePdfScroll(PdfSession &sess) {
 // zoom/rendered_scale.
 void Editor::ClampPdfPanX(PdfSession &sess) {
     double page_w_pt = PdfPageSizePt(sess, sess.page).first;
-    int mx = std::max(0, static_cast<int>(page_w_pt * static_cast<double>(sess.rendered_scale) * static_cast<double>(sess.zoom)) - sess.viewport_w);
+    int page_w_px = static_cast<int>(page_w_pt * static_cast<double>(sess.rendered_scale) * static_cast<double>(sess.zoom));
+    // When the current page carries margin notes (a sticky /Text note, or a
+    // highlight that has a comment), allow panning a little past the page's
+    // right edge so those margin note boxes -- drawn at page_right+10, i.e.
+    // beyond the page -- become reachable when zoomed in. Without this gutter
+    // pan_x tops out with the page's right edge flush at the pane edge and
+    // the notes sit permanently off-screen.
+    int gutter = 0;
+    auto rit = sess.rasters.find(sess.page);
+    if (rit != sess.rasters.end()) {
+        for (const PdfAnnotDraw &ad : rit->second.annots) {
+            if (ad.kind == 1 || (ad.kind == 0 && !ad.contents.empty())) { gutter = 280; break; }
+        }
+    }
+    int mx = std::max(0, page_w_px + gutter - sess.viewport_w);
     sess.pan_x = std::clamp(sess.pan_x, 0, mx);
 }
 
@@ -8738,11 +10134,17 @@ void Editor::HandlePdfInput() {
         HandlePdfSearchInput(*sess);
         return;
     }
-    // Mode::PdfNav shares this handler rather than getting its own (unlike
-    // Office/Sheet's split functions): ~everything below is common to both
-    // modes, and both input-drain loops consume the whole queue, so a
-    // second copy would drift. `nav` gates the nav-only branches.
+    if (sess->note_input_active) {
+        HandlePdfNoteInput(*sess);
+        return;
+    }
+    // Mode::PdfNav and Mode::PdfAnnotate share this handler rather than
+    // getting their own (unlike Office/Sheet's split functions):
+    // ~everything below is common to all three modes, and the input-drain
+    // loops consume the whole queue, so a second copy would drift. `nav`
+    // gates the nav-only branches, `annotate` the annotate-only ones.
     const bool nav = (mode_ == Mode::PdfNav);
+    const bool annotate = (mode_ == Mode::PdfAnnotate);
     if (nav && sess->nav_goto_active) {
         HandlePdfNavGotoInput(*sess);
         return;
@@ -8769,11 +10171,15 @@ void Editor::HandlePdfInput() {
      */
     auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
     bool scrolled = false;
-    if (held(gfx::Key::J) || held(gfx::Key::Down)) { sess->scroll_y += kScrollStep; scrolled = true; }
-    if (held(gfx::Key::K) || held(gfx::Key::Up)) { sess->scroll_y -= kScrollStep; scrolled = true; }
+    // In annotate mode j/k/h/l are caret motions (handled in the char loop),
+    // so only the arrow keys scroll/pan there.
+    if ((!annotate && held(gfx::Key::J)) || held(gfx::Key::Down)) { sess->scroll_y += kScrollStep; scrolled = true; }
+    if ((!annotate && held(gfx::Key::K)) || held(gfx::Key::Up)) { sess->scroll_y -= kScrollStep; scrolled = true; }
     if (scrolled) rebase_scroll();
-    if (held(gfx::Key::H) || held(gfx::Key::Left)) { sess->pan_x -= kScrollStep; clamp_pan_x(); }
-    if (held(gfx::Key::L) || held(gfx::Key::Right)) { sess->pan_x += kScrollStep; clamp_pan_x(); }
+    // In annotate mode h/l are freed for actions (highlight/...), so pan
+    // there is arrow-keys only; j/k scroll stays in every mode.
+    if ((!annotate && held(gfx::Key::H)) || held(gfx::Key::Left)) { sess->pan_x -= kScrollStep; clamp_pan_x(); }
+    if ((!annotate && held(gfx::Key::L)) || held(gfx::Key::Right)) { sess->pan_x += kScrollStep; clamp_pan_x(); }
 
     /**
      * @brief Jumps to a clamped PDF page number and resets vertical scroll to its top.
@@ -8812,10 +10218,10 @@ void Editor::HandlePdfInput() {
         else if (ctrl && key == gfx::Key::F) full_down = true;
         else if (ctrl && key == gfx::Key::B) full_up = true;
         else if (ctrl && key == gfx::Key::R) toggle_theme = true;
-        else if (nav && key == gfx::Key::Escape) {
+        else if ((nav || annotate) && key == gfx::Key::Escape) {
             // Back to plain Mode::Pdf. In normal PDF mode Escape stays a
-            // silently-consumed no-op (no case here matches it), so nav
-            // claiming it takes nothing away.
+            // silently-consumed no-op (no case here matches it), so nav/
+            // annotate claiming it takes nothing away.
             mode_ = Mode::Pdf;
             pending_count_ = 0;
         }
@@ -8845,9 +10251,21 @@ void Editor::HandlePdfInput() {
 
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
+        if (annotate && sess->annot_leader) {
+            // A <space> leader is pending: this key is the annotation action.
+            sess->annot_leader = false;
+            PdfAnnotLeaderAction(*sess, cp);
+            if (mode_ != Mode::PdfAnnotate) return;  // e.g. 'q' left annotate mode
+            cp = gfx::GetCharPressed();
+            continue;
+        }
         if (cp == ':') {
             EnterCommand();
             return;  // mode_ is no longer Pdf -- stop draining as this mode
+        } else if (annotate && cp == ' ') {
+            // Annotate-mode local leader: capture the next key as an action.
+            sess->annot_leader = true;
+            status_message_ = "annotate  <space> h highlight  n note  d delete  c colour  1-5 colour  q exit";
         } else if (nav && cp == ' ') {
             // Checked ahead of the leader branch: Space is the app's
             // default leader_key_, but scroll-on-Space is nav mode's
@@ -8862,7 +10280,9 @@ void Editor::HandlePdfInput() {
             int n = take_count();
             sess->scroll_y += static_cast<float>(sess->viewport_h) * static_cast<float>(shift ? -n : n);
             rebase_scroll();
-        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+        } else if (!annotate && cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            // Global leader only in normal PDF / nav mode; annotate mode has
+            // its own <space> leader handled above.
             TriggerWhichKey();
             return;
         } else if (cp == '+') {
@@ -8925,7 +10345,7 @@ void Editor::HandlePdfInput() {
             pending_count_ = 0;
             sess->search_active = true;
             sess->search_input.clear();
-        } else if (!nav && cp == 'n') {
+        } else if (!nav && !annotate && cp == 'n') {
             // Enter Mode::PdfNav unconditionally ('N'/'P' below took over
             // the old n/p match-jump role). Same "mode_ is no longer this
             // mode -- stop draining" reasoning as EnterCommand above.
@@ -8933,6 +10353,24 @@ void Editor::HandlePdfInput() {
             pending_count_ = 0;
             mode_ = Mode::PdfNav;
             return;
+        } else if (!nav && !annotate && cp == 'a') {
+            // Enter Mode::PdfAnnotate (caret + <space>-leader actions).
+            pending_g_ = false;
+            pending_count_ = 0;
+            EnterPdfAnnotateMode();
+            return;
+        } else if (annotate && (cp == 'h' || cp == 'l' || cp == 'j' || cp == 'k' || cp == 'w' || cp == 'b' ||
+                                 cp == 'e' || cp == '0' || cp == '$')) {
+            // Vim caret motions (h/l char, j/k line, w/b/e word, 0/$ line ends).
+            pending_g_ = false;
+            pending_count_ = 0;
+            PdfCaretMove(*sess, cp);
+        } else if (annotate && cp == 'v') {
+            // Start/stop a visual selection at the caret (a direct motion-like
+            // key). All annotation ACTIONS are under the <space> leader.
+            pending_g_ = false;
+            pending_count_ = 0;
+            PdfCaretToggleVisual(*sess);
         } else if (cp == 'N' && !sess->search_matches.empty()) {
             pending_g_ = false;
             pending_count_ = 0;
@@ -8948,6 +10386,73 @@ void Editor::HandlePdfInput() {
         // Every other printable key is a deliberate no-op -- see
         // Mode::Pdf's own comment for why (read-only content).
         cp = gfx::GetCharPressed();
+    }
+}
+
+void Editor::HandlePdfNoteInput(PdfSession &sess) {
+    // Same in-pane text-capture shape as HandlePdfSearchInput, committing a
+    // sticky note on Enter (PdfAddNote anchors it to the current selection/
+    // match) instead of running a search -- but with a movable insertion caret
+    // (note_caret, a byte offset kept on UTF-8 boundaries) so Left/Right/Home/
+    // End/Delete edit mid-string, not just at the end.
+    std::string &t = sess.note_input;
+    size_t &c = sess.note_caret;
+    if (c > t.size()) c = t.size();
+    auto prev_boundary = [&](size_t i) -> size_t {
+        if (i == 0) return 0;
+        --i;
+        while (i > 0 && (static_cast<unsigned char>(t[i]) & 0xC0) == 0x80) --i;
+        return i;
+    };
+    auto next_boundary = [&](size_t i) -> size_t {
+        if (i >= t.size()) return t.size();
+        ++i;
+        while (i < t.size() && (static_cast<unsigned char>(t[i]) & 0xC0) == 0x80) ++i;
+        return i;
+    };
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+        sess.note_input_active = false;
+        t.clear();
+        c = 0;
+        sess.note_edit_target.valid = false;
+        return;
+    }
+    if (gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) {
+        sess.note_input_active = false;
+        if (sess.note_edit_target.valid) {
+            // Editing/attaching a note on an existing annotation (empty text
+            // clears its note).
+            ApplyPdfNoteToTarget(sess, sess.note_edit_target, t);
+        } else if (!t.empty()) {
+            PdfAddNote(t);  // standalone sticky note
+        }
+        t.clear();
+        c = 0;
+        sess.note_edit_target.valid = false;
+        return;
+    }
+    // Caret motion (repeat so holding the key keeps moving).
+    if (gfx::IsKeyPressed(gfx::Key::Left) || gfx::IsKeyPressedRepeat(gfx::Key::Left)) c = prev_boundary(c);
+    if (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right)) c = next_boundary(c);
+    if (gfx::IsKeyPressed(gfx::Key::Home)) c = 0;
+    if (gfx::IsKeyPressed(gfx::Key::End)) c = t.size();
+    // Deletion, either side of the caret.
+    if (gfx::IsKeyPressed(gfx::Key::Backspace) || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
+        if (c > 0) {
+            size_t p = prev_boundary(c);
+            t.erase(p, c - p);
+            c = p;
+        }
+    }
+    if (gfx::IsKeyPressed(gfx::Key::Delete) || gfx::IsKeyPressedRepeat(gfx::Key::Delete)) {
+        if (c < t.size()) t.erase(c, next_boundary(c) - c);
+    }
+    // Insert typed characters at the caret.
+    for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) {
+        std::string enc;
+        AppendUtf8(enc, cp);
+        t.insert(c, enc);
+        c += enc.size();
     }
 }
 
@@ -9117,7 +10622,7 @@ void Editor::OpenOfficeInPlace(const std::string &path, const unsigned char *byt
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
-        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+        if (!buffers_[i].deleted && !buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
         }
@@ -10149,7 +11654,7 @@ void Editor::OpenSheetInPlace(const std::string &path, const unsigned char *byte
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
         if (!BufferInActiveWorkspace(static_cast<int>(i))) continue;
-        if (!buffers_[i].filename.empty() && buffers_[i].filename == path) {
+        if (!buffers_[i].deleted && !buffers_[i].filename.empty() && buffers_[i].filename == path) {
             buffer_id = static_cast<int>(i);
             break;
         }
@@ -11554,6 +13059,16 @@ void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
 
     const VTerm *term = sess.vterm.get();
     int cursor_line = 0, cursor_col = 0;
+    // Where the snapshot's viewport opens (Pane::scroll_row), in the same
+    // combined scrollback+grid line numbering the loop below builds.
+    // Without setting this explicitly the pane kept whatever scroll_row it
+    // last had -- 0 for a terminal that had never been browsed -- so the
+    // snapshot opened at the *top* of up to 5000 lines of scrollback and
+    // then had to travel all the way down to the cursor under
+    // UpdateScrollForPane's smoothing cap, which (the cursor not having
+    // moved since) is 1 row per frame: a visible, seconds-long scroll
+    // every time Ctrl-\ Ctrl-N was pressed.
+    int scroll_line = 0;
     if (term) {
         int sb_lines = term->ScrollbackLines();
         int rows = term->Rows(), cols = term->Cols();
@@ -11645,12 +13160,35 @@ void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
             buf.lines.pop_back();
         }
         cursor_col = std::clamp(term->CursorCol(), 0, static_cast<int>(buf.lines[static_cast<size_t>(cursor_line)].size()));
+        // Open on exactly the rows the live grid was showing, so the
+        // switch is seamless: DrawTerminalGrid (main.cpp) puts combined
+        // index `sb_lines - scroll_offset` at the top of the pane, and a
+        // snapshot line's index *is* that combined index. Also covers a
+        // terminal the user had scrolled back through (Shift-PageUp /
+        // wheel, TerminalSession::scroll_offset) -- browsing continues
+        // from where they were looking rather than snapping elsewhere.
+        scroll_line = std::clamp(sb_lines - sess.scroll_offset, 0, std::max(0, static_cast<int>(buf.lines.size()) - 1));
+        // Scrolled back far enough that the live cursor is below the
+        // visible window: park the cursor on the top visible row instead,
+        // so the view doesn't immediately chase it back down to the tail.
+        if (cursor_line >= scroll_line + rows) {
+            cursor_line = scroll_line;
+            cursor_col = std::clamp(cursor_col, 0, static_cast<int>(buf.lines[static_cast<size_t>(cursor_line)].size()));
+        }
     }
     if (buf.lines.empty()) buf.lines.emplace_back("");
 
-    CursorPos &cur = CurPane().cursor;
+    Pane &pane = CurPane();
+    CursorPos &cur = pane.cursor;
     cur.row = cursor_line;
     cur.col = cursor_col;
+    pane.scroll_row = std::clamp(scroll_line, 0, std::max(0, static_cast<int>(buf.lines.size()) - 1));
+    // "Just arrived here", same as a fresh buffer switch: the next
+    // UpdateScrollForPane must be free to correct this placement in one
+    // frame (its visible_lines can differ slightly from the terminal's own
+    // row count -- a footer hint, rounding) instead of creeping toward it
+    // a row at a time because the cursor didn't move.
+    pane.scroll_follow_last_cursor_row = -1;
     mode_ = Mode::Normal;
 }
 
@@ -12054,10 +13592,22 @@ void Editor::EnsureBufferTabSeeded(Pane &p) const {
 void Editor::PaneOpenBufferInTab(const std::string &path) {
     int buffer_id = FindOrCreateBuffer(path, nullptr);
     if (buffer_id < 0) return;
+    PaneOpenBufferIdInTab(buffer_id);
+}
+
+void Editor::PaneOpenBufferIdInTab(int buffer_id) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
     Pane &p = CurPane();
     EnsureBufferTabSeeded(p);
-    p.buffer_tabs.insert(p.buffer_tabs.begin() + p.buffer_tab_index + 1, buffer_id);
-    p.buffer_tab_index++;
+    // Already one of this pane's tabs: switch to it rather than add a
+    // duplicate tab for the same buffer.
+    auto existing = std::find(p.buffer_tabs.begin(), p.buffer_tabs.end(), buffer_id);
+    if (existing != p.buffer_tabs.end()) {
+        p.buffer_tab_index = static_cast<int>(existing - p.buffer_tabs.begin());
+    } else {
+        p.buffer_tabs.insert(p.buffer_tabs.begin() + p.buffer_tab_index + 1, buffer_id);
+        p.buffer_tab_index++;
+    }
     p.buffer_id = buffer_id;
     ClampCursor();
     SyncModeToActivePaneBuffer();
@@ -12359,6 +13909,11 @@ void Editor::ApplyLayout(const std::string &kind) {
 void Editor::TabNew(const std::string &file_arg) {
     int buffer_id = file_arg.empty() ? CreateEmptyBuffer() : FindOrCreateBuffer(file_arg);
     if (buffer_id < 0) return;
+    TabNewWithBuffer(buffer_id);
+}
+
+void Editor::TabNewWithBuffer(int buffer_id) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
 
     Tab tab;
     tab.root = std::make_unique<SplitNode>();
@@ -12582,7 +14137,16 @@ bool Editor::BufferUnsavable(int buffer_id) const {
     // every other special type (image editor, model3d, sheet, office) can
     // save, so only these three have a `modified` flag nothing can clear.
     if (IsTerminalBuffer(buffer_id)) return true;
-    if (IsPdfBuffer(buffer_id)) return true;
+    // A PDF pane is unsavable only while it has no unsaved markup
+    // annotations; with pending highlights/notes, `:w` writes them into the
+    // file's /Annots (see SaveBuffer's PDF branch), so it must NOT be
+    // reported unsavable then -- otherwise :wa/:qa's own loops would skip
+    // it and its `modified` flag could never clear (the E37 class -- keep
+    // this skip set identical to SaveBuffer's own PDF guard).
+    if (IsPdfBuffer(buffer_id)) {
+        const PdfSession *s = GetPdf(buffer_id);
+        return !s || !s->HasUnsavedAnnots();
+    }
     if (IsImageBuffer(buffer_id) && image_editors_.find(buffer_id) == image_editors_.end()) return true;
     return false;
 }
@@ -13786,6 +15350,79 @@ void Editor::ResizeActivePane(const std::string &direction, float step) {
     }
 }
 
+namespace {
+// The split tree's shape: directions, child counts and leaf pane ids, in
+// pre-order -- two trees with the same signature have `shares` vectors
+// that mean the same thing node for node.
+void LayoutSignature(const SplitNode *node, std::string &out) {
+    if (node->dir == SplitDir::Leaf) {
+        out += "L" + std::to_string(node->pane.id) + ",";
+        return;
+    }
+    out += node->dir == SplitDir::Horizontal ? "H(" : "V(";
+    for (const auto &child : node->children) LayoutSignature(child.get(), out);
+    out += ")";
+}
+
+void SnapshotShares(const SplitNode *node, std::vector<std::vector<float>> &out) {
+    if (node->dir == SplitDir::Leaf) return;
+    out.push_back(node->shares);
+    for (const auto &child : node->children) SnapshotShares(child.get(), out);
+}
+
+void RestoreShares(SplitNode *node, const std::vector<std::vector<float>> &saved, size_t &i) {
+    if (node->dir == SplitDir::Leaf) return;
+    if (i < saved.size()) node->shares = saved[i];
+    ++i;
+    for (auto &child : node->children) RestoreShares(child.get(), saved, i);
+}
+}  // namespace
+
+bool Editor::IsPaneMaximized() const { return ActiveTab().maximized_pane_id >= 0; }
+
+void Editor::TogglePaneMaximize() {
+    Tab &tab = ActiveTab();
+    if (!tab.root) return;
+    std::string signature;
+    LayoutSignature(tab.root.get(), signature);
+    if (tab.maximized_pane_id >= 0) {
+        if (signature != tab.maximize_signature) {
+            // Panes were split/closed while maximized: the saved sizes no
+            // longer fit this tree -- forget them rather than misapply.
+            tab.maximized_pane_id = -1;
+            tab.maximize_saved_shares.clear();
+            SetStatusMessage("Layout changed since maximizing -- nothing to restore");
+            return;
+        }
+        if (tab.maximized_pane_id == tab.active_pane_id) {
+            size_t i = 0;
+            RestoreShares(tab.root.get(), tab.maximize_saved_shares, i);
+            tab.maximized_pane_id = -1;
+            tab.maximize_saved_shares.clear();
+            return;
+        }
+        // Another pane: maximize it instead, keeping the original layout.
+    } else {
+        tab.maximize_saved_shares.clear();
+        SnapshotShares(tab.root.get(), tab.maximize_saved_shares);
+        tab.maximize_signature = signature;
+    }
+    std::vector<std::pair<SplitNode *, int>> path;  // leaf-to-root
+    if (!FindPathToPane(tab.root.get(), tab.active_pane_id, path) || path.empty()) {
+        SetStatusMessage("Only one pane -- nothing to maximize");
+        tab.maximized_pane_id = -1;
+        tab.maximize_saved_shares.clear();
+        return;
+    }
+    for (auto &[node, child_index] : path) {
+        const size_t n = node->children.size();
+        node->shares.assign(n, kMinPaneShare);
+        node->shares[static_cast<size_t>(child_index)] =
+            std::max(kMinPaneShare, 1.0f - kMinPaneShare * static_cast<float>(n - 1));
+    }
+    tab.maximized_pane_id = tab.active_pane_id;
+}
+
 void Editor::SetActivePaneShare(float fraction) {
     fraction = std::clamp(fraction, kMinPaneShare, 1.0f - kMinPaneShare);
     Tab &tab = ActiveTab();
@@ -13992,6 +15629,106 @@ void Editor::OpenFileInPane(int dest_pane_id, const std::string &path, bool spli
     SyncModeToActivePaneBuffer();
 }
 
+bool Editor::IsNavigatorPaneBuffer(int buffer_id) const {
+    return SidebarIdForPaneBuffer(buffer_id) != 0 || BufferHasDragResolver(buffer_id);
+}
+
+void Editor::OpenBufferInPane(int dest_pane_id, int buffer_id, bool split, SplitDir dir, bool before) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    if (buffers_[static_cast<size_t>(buffer_id)].deleted) return;
+    Tab &tab = ActiveTab();
+    SplitNode *dst_node = FindNode(tab.root.get(), dest_pane_id);
+    if (!dst_node) return;
+    if (!split) {
+        // MoveBufferTabToPane's destination half exactly, minus the
+        // RemoveBufferTabFromPane that precedes it there: a sidebar row is
+        // not a tab, so nothing is being moved *out* of anywhere. Showing
+        // a buffer the pane already has a tab for just selects that tab
+        // rather than listing it twice.
+        Pane &dst = dst_node->pane;
+        EnsureBufferTabSeeded(dst);
+        auto it = std::find(dst.buffer_tabs.begin(), dst.buffer_tabs.end(), buffer_id);
+        if (it == dst.buffer_tabs.end()) {
+            dst.buffer_tabs.insert(dst.buffer_tabs.begin() + dst.buffer_tab_index + 1, buffer_id);
+            dst.buffer_tab_index++;
+        } else {
+            dst.buffer_tab_index = static_cast<int>(it - dst.buffer_tabs.begin());
+        }
+        dst.buffer_id = buffer_id;
+        tab.active_pane_id = dest_pane_id;
+        ClampCursor();
+        SyncModeToActivePaneBuffer();
+        return;
+    }
+    // Same tree surgery as OpenFileInPane above, except the new leaf can
+    // start on the real buffer straight away -- there's no LoadFile to
+    // route through, hence no throwaway placeholder buffer to retire.
+    Pane new_pane;
+    new_pane.id = next_pane_id_++;
+    new_pane.buffer_id = buffer_id;
+    new_pane.buffer_tabs = {buffer_id};
+    new_pane.buffer_tab_index = 0;
+
+    Pane existing_pane = dst_node->pane;
+
+    auto new_leaf = std::make_unique<SplitNode>();
+    new_leaf->dir = SplitDir::Leaf;
+    new_leaf->pane = std::move(new_pane);
+    auto existing_leaf = std::make_unique<SplitNode>();
+    existing_leaf->dir = SplitDir::Leaf;
+    existing_leaf->pane = std::move(existing_pane);
+
+    const int new_pane_id = new_leaf->pane.id;
+    dst_node->dir = dir;
+    dst_node->pane = Pane{};
+    dst_node->children.clear();
+    dst_node->shares.clear();
+    if (before) {
+        dst_node->children.push_back(std::move(new_leaf));
+        dst_node->children.push_back(std::move(existing_leaf));
+    } else {
+        dst_node->children.push_back(std::move(existing_leaf));
+        dst_node->children.push_back(std::move(new_leaf));
+    }
+    FocusPaneById(new_pane_id);
+    ClampCursor();
+    SyncModeToActivePaneBuffer();
+}
+
+int Editor::OpenBufferBeside(int buffer_id, const std::string &direction) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return -1;
+    if (buffers_[static_cast<size_t>(buffer_id)].deleted) return -1;
+    const int active = ActiveTab().active_pane_id;
+    // Focused in an ordinary document pane (which is what a *docked*
+    // sidebar's rows activate against -- CurPane() is still the last real
+    // pane there, mode_ == Mode::Sidebar or not): open right here, the
+    // plain mep.buffer_switch behavior.
+    if (!IsNavigatorPaneBuffer(CurPane().buffer_id)) {
+        OpenBufferInPane(active, buffer_id, false, SplitDir::Vertical, false);
+        return active;
+    }
+    // Otherwise walk outward in `direction` past any further navigators
+    // (Buffers commonly sits in a left column stacked with the file tree
+    // and git status), bounded by the pane count so a cycle can't spin.
+    std::vector<int> leaves;
+    CollectLeaves(ActiveTab().root.get(), leaves);
+    int target = FindNeighborPaneId(active, direction);
+    for (size_t hops = 0; target >= 0 && hops < leaves.size(); hops++) {
+        const SplitNode *node = FindNode(ActiveTab().root.get(), target);
+        if (!node || !IsNavigatorPaneBuffer(node->pane.buffer_id)) break;
+        target = FindNeighborPaneId(target, direction);
+    }
+    if (target >= 0) {
+        OpenBufferInPane(target, buffer_id, false, SplitDir::Vertical, false);
+        return target;
+    }
+    // Nothing but navigators that way: make a document pane there.
+    const bool horizontal = direction == "left" || direction == "right";
+    OpenBufferInPane(active, buffer_id, true, horizontal ? SplitDir::Vertical : SplitDir::Horizontal,
+                     direction == "left" || direction == "up");
+    return ActiveTab().active_pane_id;
+}
+
 void Editor::SetPaneBorderShare(SplitNode *node, int child_index, float new_share) {
     if (!node || child_index < 0 || child_index + 1 >= static_cast<int>(node->children.size())) return;
     EnsureShares(node);
@@ -14017,6 +15754,123 @@ bool Editor::IsMod1Down() const {
         case ModKey::Super: return gfx::IsKeyDown(gfx::Key::LeftSuper) || gfx::IsKeyDown(gfx::Key::RightSuper);
     }
     return false;
+}
+
+// A tap is a quick press-and-release; past this the press was a held
+// modifier (or a chord whose other key never reached us), not a gesture.
+constexpr double kMod1TapMaxSeconds = 0.75;
+
+void Editor::SetMenuBarVisible(bool visible) { menu_bar_visible_ = visible; }
+
+// The two mod1 keys, whichever physical key mod1 currently is. Returns
+// false for a mod1_ this build doesn't map to a real key pair.
+bool Editor::Mod1KeyPair(gfx::Key *left, gfx::Key *right) const {
+    switch (mod1_) {
+        case ModKey::Alt: *left = gfx::Key::LeftAlt; *right = gfx::Key::RightAlt; return true;
+        case ModKey::Control: *left = gfx::Key::LeftControl; *right = gfx::Key::RightControl; return true;
+        case ModKey::Shift: *left = gfx::Key::LeftShift; *right = gfx::Key::RightShift; return true;
+        case ModKey::Super: *left = gfx::Key::LeftSuper; *right = gfx::Key::RightSuper; return true;
+    }
+    return false;
+}
+
+std::string Editor::Mod1Name() const {
+    switch (mod1_) {
+        case ModKey::Alt: return "Alt";
+        case ModKey::Control: return "Ctrl";
+        case ModKey::Shift: return "Shift";
+        case ModKey::Super: return "Super";
+    }
+    return "mod1";
+}
+
+bool Editor::ConsumeMod1Tap() {
+    gfx::Key left = gfx::Key::None, right = gfx::Key::None;
+    if (!Mod1KeyPair(&left, &right)) return false;
+
+    // Arm on the press edge. Re-arming on every press is deliberate: a
+    // second mod1 going down while the first is still held (both Alts, a
+    // key-repeat storm) restarts the window rather than counting as the
+    // "something else happened" that disarms below -- pressing a modifier
+    // twice is still only modifier activity.
+    if (gfx::IsKeyPressed(left) || gfx::IsKeyPressed(right)) {
+        mod1_tap_armed_ = true;
+        mod1_tap_down_at_ = gfx::GetTime();
+    }
+
+    if (mod1_tap_armed_) {
+        // Anything that makes this press part of a *combination* rather
+        // than a tap on its own disarms it. Checked while mod1 is still
+        // held so the disqualifying event doesn't have to survive until
+        // the release frame.
+        //
+        // Every non-modifier key: the Key enum is small and contiguous
+        // (gfx/types.h), so a scan costs nothing and -- unlike
+        // gfx::GetKeyPressed() -- reads state without draining the event
+        // queue every other handler in this frame still needs. The four
+        // modifier pairs are skipped: mod1 itself is obviously down, and
+        // holding Ctrl/Shift alongside it is how mod1+Shift+hjkl and
+        // friends are typed, which is a combination too (handled by the
+        // explicit check after the loop).
+        bool disarm = false;
+        for (int k = static_cast<int>(gfx::Key::A); k <= static_cast<int>(gfx::Key::Up); k++) {
+            const gfx::Key key = static_cast<gfx::Key>(k);
+            if (key == gfx::Key::LeftAlt || key == gfx::Key::RightAlt || key == gfx::Key::LeftControl ||
+                key == gfx::Key::RightControl || key == gfx::Key::LeftShift || key == gfx::Key::RightShift ||
+                key == gfx::Key::LeftSuper || key == gfx::Key::RightSuper) {
+                continue;
+            }
+            if (gfx::IsKeyDown(key)) {
+                disarm = true;
+                break;
+            }
+        }
+        // A second modifier held alongside mod1 (mod1+Shift+h resize,
+        // mod1+Ctrl+h move) -- excluding whichever one mod1 itself is,
+        // since that one is down by definition here.
+        if (mod1_ != ModKey::Control &&
+            (gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl))) {
+            disarm = true;
+        }
+        if (mod1_ != ModKey::Shift &&
+            (gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift))) {
+            disarm = true;
+        }
+        if (mod1_ != ModKey::Super &&
+            (gfx::IsKeyDown(gfx::Key::LeftSuper) || gfx::IsKeyDown(gfx::Key::RightSuper))) {
+            disarm = true;
+        }
+        if (mod1_ != ModKey::Alt && (gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt))) {
+            disarm = true;
+        }
+        // Mouse activity during the press: alt-drag to move/resize a pane,
+        // alt-scroll, alt-click -- all combinations, none of them taps.
+        if (gfx::IsMouseButtonDown(gfx::MouseButton::Left) || gfx::IsMouseButtonDown(gfx::MouseButton::Right) ||
+            gfx::IsMouseButtonDown(gfx::MouseButton::Middle) || gfx::GetMouseWheelMoveV().y != 0.0f ||
+            gfx::GetMouseWheelMoveV().x != 0.0f) {
+            disarm = true;
+        }
+        // Keyboard focus left the window with mod1 still down. The backend
+        // reports every held key as released on that frame so nothing gets
+        // stuck (gfx::WindowFocusLostThisFrame), which without this looks
+        // exactly like the user letting go of a bare mod1 -- i.e. a plain
+        // alt-tab would toggle the menu bar on the way out.
+        if (gfx::WindowFocusLostThisFrame()) disarm = true;
+        // A press held longer than this stops being a tap. Guards the
+        // leftovers the checks above can't see: a chord whose other key
+        // the window manager grabbed before mep ever saw it, or mod1 simply
+        // held down and then let go with no intent behind it.
+        if (gfx::GetTime() - mod1_tap_down_at_ > kMod1TapMaxSeconds) disarm = true;
+        if (disarm) mod1_tap_armed_ = false;
+    }
+
+    if (!gfx::IsKeyReleased(left) && !gfx::IsKeyReleased(right)) return false;
+    // Only the release of the *last* held mod1 completes a tap: releasing
+    // the left Alt while the right is still down is not letting go.
+    if (gfx::IsKeyDown(left) || gfx::IsKeyDown(right)) return false;
+    const bool tapped = mod1_tap_armed_;
+    mod1_tap_armed_ = false;
+    return tapped;
 }
 
 void Editor::SetMod1(const std::string &name) {
@@ -14077,9 +15931,12 @@ bool Editor::HandleMod1Shortcuts() {
     // open, that pane-nav mapping would just blur focus behind the picker
     // overlay to no visible effect -- so intercept it here and scroll the
     // preview instead, same reasoning as the Sidebar+D case above.
+    // Held keys auto-repeat (IsKeyPressedRepeat), like j/k anywhere else:
+    // a long preview shouldn't take one mod1+j tap per line.
+    auto scroll_key = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
     if (mode_ == Mode::Picker && !extra_ctrl && !extra_shift && !PickerPreview().empty() &&
-        (gfx::IsKeyPressed(gfx::Key::J) || gfx::IsKeyPressed(gfx::Key::K))) {
-        ScrollPickerPreview(gfx::IsKeyPressed(gfx::Key::J) ? 1 : -1);
+        (scroll_key(gfx::Key::J) || scroll_key(gfx::Key::K))) {
+        ScrollPickerPreview(scroll_key(gfx::Key::J) ? 1 : -1);
         while (gfx::GetCharPressed() > 0) {
         }
         return true;
@@ -14093,8 +15950,8 @@ bool Editor::HandleMod1Shortcuts() {
     // different sidebar, simply ends the popout -- see
     // RefreshSidebarPopoutPreview).
     if (SidebarPopoutActive() && !extra_ctrl && !extra_shift && !SidebarPopoutPreview().empty() &&
-        (gfx::IsKeyPressed(gfx::Key::J) || gfx::IsKeyPressed(gfx::Key::K))) {
-        ScrollSidebarPopoutPreview(gfx::IsKeyPressed(gfx::Key::J) ? 1 : -1);
+        (scroll_key(gfx::Key::J) || scroll_key(gfx::Key::K))) {
+        ScrollSidebarPopoutPreview(scroll_key(gfx::Key::J) ? 1 : -1);
         while (gfx::GetCharPressed() > 0) {
         }
         return true;
@@ -14374,7 +16231,17 @@ void Editor::HandleNormalInput() {
     if (ctrl_c) {
         if (pending_ctrl_c_ && (now_ - pending_ctrl_c_time_) < kCtrlCChordTimeoutSec) {
             pending_ctrl_c_ = false;
-            TryRunOrgBabelAtCursor();
+            // Ctrl-C Ctrl-C is "execute the thing under the cursor": the
+            // org-babel source block in a .org buffer, or the cell under
+            // the cursor (run in place, exactly like Ctrl+Enter) in a
+            // Jupyter notebook buffer -- Emacs' own C-c C-c in both
+            // org-mode and EIN. HandleInsertInput honors the same chord
+            // for notebooks so it works mid-typing too.
+            if (IsNotebookBuffer(CurPane().buffer_id)) {
+                NotebookRunCellAtCursor(/*advance=*/false, /*insert_below=*/false);
+            } else {
+                TryRunOrgBabelAtCursor();
+            }
         } else {
             pending_ctrl_c_ = true;
             pending_ctrl_c_time_ = now_;
@@ -14394,6 +16261,10 @@ void Editor::HandleNormalInput() {
         return;
     }
     if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+        // A "nothing pending" Escape is offered to the buffer's
+        // SetBufferOnKey hook as "\x1b" first (the file tree closes its `?`
+        // help view with it); a hook that doesn't want it returns false.
+        if (!insert_one_shot_normal_ && TryBufferKeyHook(27)) return;
         // In a floating pane, the "nothing pending" Escape that is Vim's
         // harmless no-op everywhere else dismisses the float instead
         // (Insert-mode Escape still just returns to Normal first, and one
@@ -14430,10 +16301,11 @@ void Editor::HandleNormalInput() {
         ActivateDashboardSelection();
         return;
     }
-    if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && enter_hook_ref_ != 0 &&
-        CurPane().buffer_id == enter_hook_buffer_id_ && lua_) {
-        lua_->CallRef(enter_hook_ref_);
-        return;
+    if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && lua_) {
+        if (int ref = BufferHookRef(enter_hook_refs_, CurPane().buffer_id)) {
+            lua_->CallRef(ref);
+            return;
+        }
     }
     // Notebook buffer: Enter/Ctrl+Enter run the cell under the cursor in
     // place, Shift+Enter runs it and moves to the next cell (creating one
@@ -14543,6 +16415,30 @@ void Editor::HandleNormalInput() {
         }
     }
 
+    // Arrow keys as h/j/k/l equivalents. Unlike letter keys, GLFW/raylib
+    // never emits a char event for these, so there's no gfx::GetCharPressed()
+    // queue entry to translate below -- IsKeyPressed (initial tap) plus
+    // IsKeyPressedRepeat (OS auto-repeat while held) is the same pattern
+    // already used for arrow-key movement in every other input handler in
+    // this file (e.g. HandleOfficeNormalInput, HandleSheetNormalInput), so
+    // no need to duplicate the h/j/k/l block's own hold-fast-path above.
+    static const std::pair<gfx::Key, char> kArrowMotionKeys[] = {
+        {gfx::Key::Left, 'h'},
+        {gfx::Key::Down, 'j'},
+        {gfx::Key::Up, 'k'},
+        {gfx::Key::Right, 'l'},
+    };
+    for (const auto &arrow : kArrowMotionKeys) {
+        if (ctrl || shift) continue;
+        if (!(gfx::IsKeyPressed(arrow.first) || gfx::IsKeyPressedRepeat(arrow.first))) continue;
+        if (ShouldShowDashboard() && no_pending_state_now && (arrow.second == 'j' || arrow.second == 'k')) {
+            MoveDashboardSelection(arrow.second == 'j' ? 1 : -1);
+        } else {
+            HandleNormalChar(static_cast<int>(arrow.second), no_pending_state_now);
+        }
+        if (mode_ != Mode::Normal) return;  // key switched modes
+    }
+
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
         // Digits (as a pending count) and a pending find/g-prefix always
@@ -14597,6 +16493,8 @@ void Editor::HandleNormalChar(int cp, bool no_pending_state) {
     if (no_pending_state && cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
         TriggerWhichKey();
         consumed = true;
+    } else if (TryBufferKeyHook(cp)) {
+        consumed = true;
     } else if (no_pending_state && cp != '"' && cp <= 127) {
         consumed = TryLuaMapping(Mode::Normal, std::string(1, static_cast<char>(cp)));
     }
@@ -14605,6 +16503,20 @@ void Editor::HandleNormalChar(int cp, bool no_pending_state) {
     } else {
         ProcessNormalKey(cp);
     }
+}
+
+bool Editor::TryBufferKeyHook(int cp) {
+    if (cp <= 0 || cp > 127 || !lua_) return false;
+    int ref = BufferHookRef(key_hook_refs_, CurPane().buffer_id);
+    if (ref == 0) return false;
+    int count = pending_count_;
+    pending_count_ = 0;
+    bool mid = IsMidNormalCommand();
+    pending_count_ = count;
+    if (mid) return false;
+    if (!lua_->CallRefWithStringForBool(ref, std::string(1, static_cast<char>(cp)))) return false;
+    pending_count_ = 0;
+    return true;
 }
 
 int Editor::TakeRawCount() {
@@ -15336,9 +17248,11 @@ bool Editor::DispatchNormalKey(int cp) {
     // the same way the Enter hook is checked ahead of its own drain loop,
     // so kBuiltinFileTree's file tree can use it without shadowing the
     // builtin 'I' (insert at first non-blank) anywhere else.
-    if (c == 'I' && image_toggle_hook_ref_ != 0 && CurPane().buffer_id == image_toggle_hook_buffer_id_ && lua_) {
-        lua_->CallRef(image_toggle_hook_ref_);
-        return true;
+    if (c == 'I' && lua_) {
+        if (int ref = BufferHookRef(image_toggle_hook_refs_, CurPane().buffer_id)) {
+            lua_->CallRef(ref);
+            return true;
+        }
     }
 
     switch (c) {
@@ -15757,6 +17671,8 @@ void Editor::HandleInsertInput() {
     bool escape = false, enter = false, backspace = false, del = false, ctrl_w = false, ctrl_u = false;
     bool tab_key = false, ctrl_n = false, ctrl_p = false, ctrl_o = false, ctrl_r = false, ctrl_shift_v = false;
     bool ctrl_y = false;
+    bool ctrl_c = false;
+    bool ctrl_rbracket = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Escape) escape = true;
         else if (key == gfx::Key::Enter) enter = true;
@@ -15771,13 +17687,33 @@ void Editor::HandleInsertInput() {
         else if (key == gfx::Key::R && ctrl) ctrl_r = true;
         else if (key == gfx::Key::Y && ctrl) ctrl_y = true;
         else if (key == gfx::Key::V && ctrl && shift_down) ctrl_shift_v = true;
+        else if (key == gfx::Key::C && ctrl) ctrl_c = true;
+        else if (key == gfx::Key::RightBracket && ctrl) ctrl_rbracket = true;
     }
     // A pending Ctrl-R only survives until the next *character*; any
     // special key in between (Escape especially) cancels it, so an
     // abandoned Ctrl-R can't swallow the first letter typed after Escape
     // and re-entering Insert.
-    if (escape || enter || backspace || del || ctrl_w || ctrl_u || tab_key || ctrl_o || ctrl_shift_v) {
+    if (escape || enter || backspace || del || ctrl_w || ctrl_u || tab_key || ctrl_o || ctrl_shift_v || ctrl_c) {
         insert_pending_ctrl_r_ = false;
+    }
+    // Notebook buffer: Ctrl-C Ctrl-C runs the cell under the cursor in
+    // place without leaving Insert mode -- Emacs/EIN's chord, same effect
+    // as the Ctrl+Enter handled further down. Shares pending_ctrl_c_ and
+    // its timeout with HandleNormalInput's org/notebook chord (a chord
+    // may even straddle the two modes, e.g. Ctrl-C in Normal, `i`, Ctrl-C
+    // -- harmless). Ctrl-C is otherwise unbound in Insert mode (it never
+    // produces a char event, and the drain loop above already discarded
+    // it), so non-notebook buffers see no change at all.
+    if (ctrl_c && IsNotebookBuffer(CurPane().buffer_id)) {
+        if (pending_ctrl_c_ && (now_ - pending_ctrl_c_time_) < kCtrlCChordTimeoutSec) {
+            pending_ctrl_c_ = false;
+            NotebookRunCellAtCursor(/*advance=*/false, /*insert_below=*/false);
+            return;
+        }
+        pending_ctrl_c_ = true;
+        pending_ctrl_c_time_ = now_;
+        return;
     }
     // Completion popup (Phase 22): intercepts only its own navigation/
     // accept/dismiss keys, and only while open -- a first Escape closes
@@ -15807,6 +17743,27 @@ void Editor::HandleInsertInput() {
             return;
         }
     }
+    // Inline suggestion / "ghost text" (kBuiltinCopilot): claims Tab only
+    // on frames the completion popup above didn't already take it (that
+    // block returns), so the popup's own Tab-accepts-the-selected-word
+    // behavior is untouched. Alt-Right / Alt-Ctrl-Right take one word or
+    // one line of it, Ctrl-] throws it away -- copilot.vim's own key set,
+    // so muscle memory carries over.
+    if (InlineSuggestionVisible()) {
+        bool alt = gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt);
+        if (ctrl_rbracket) {
+            ClearInlineSuggestion();
+            return;
+        }
+        if (tab_key) {
+            AcceptInlineSuggestion();
+            return;
+        }
+        if (alt && (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right))) {
+            AcceptInlineSuggestionPartial(/*whole_line=*/ctrl);
+            return;
+        }
+    }
     // Phase 23 tabstop-cycling gap: Insert mode has no built-in Tab
     // behavior of its own (no auto-indent-on-Tab, nothing) to give up, so
     // this only ever *adds* behavior -- consulted after the completion
@@ -15820,11 +17777,19 @@ void Editor::HandleInsertInput() {
         ProcessInsertKey(kReplayEscape);
         return;
     }
+    // Ctrl-W/Ctrl-U delete backwards past the anchor and return before
+    // ReanchorInlineSuggestionAfterEdit at the bottom of this function
+    // ever runs, so the suggestion has to be dropped here. Leaving it
+    // would let it reappear later if the cursor happened to land back on
+    // its anchor column -- showing text computed from a line that has
+    // since been rewritten.
     if (ctrl_w) {
+        ClearInlineSuggestion();
         ProcessInsertKey(kReplayInsertCtrlW);
         return;
     }
     if (ctrl_u) {
+        ClearInlineSuggestion();
         ProcessInsertKey(kReplayInsertCtrlU);
         return;
     }
@@ -15852,6 +17817,7 @@ void Editor::HandleInsertInput() {
     // GLFW never delivers a char for a Ctrl-chorded key, which is what
     // keeps a bare 'r'/'v' from also landing in the buffer.
     if (ctrl_shift_v) {
+        ClearInlineSuggestion();  // same early-return reason as Ctrl-W above
         InsertTextAsTyped(RegisterTextForPaste('"'));
         return;
     }
@@ -15909,6 +17875,7 @@ void Editor::HandleInsertInput() {
     if (gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) {
         if (cursor.row + 1 < Buf().LineCount()) { cursor.row++; ClampCursor(); }
     }
+    ReanchorInlineSuggestionAfterEdit();
     if (mode_ == Mode::Insert) UpdateCompletionPopup();
 }
 
@@ -17551,6 +19518,33 @@ void Editor::SetSidebarOnKey(int id, int lua_ref) {
     if (SidebarInstance *sb = FindSidebarMut(id)) sb->on_key_ref = lua_ref;
 }
 
+void Editor::SetSidebarHelp(int id, std::vector<std::pair<std::string, std::string>> keys) {
+    if (SidebarInstance *sb = FindSidebarMut(id)) sb->help_keys = std::move(keys);
+}
+
+void Editor::ToggleSidebarHelp(int id) {
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (!sb) return;
+    const bool pane_hosted = mode_ == Mode::SidebarPane && SidebarIdForPaneBuffer(CurPane().buffer_id) == id;
+    int &cursor = pane_hosted ? sidebar_pane_cursor_ : sidebar_cursor_;
+    pending_g_ = false;
+    if (!sb->help_open) {
+        sb->help_saved_cursor = cursor;
+        sb->help_saved_scroll = sb->scroll_offset;
+        sb->help_open = true;
+        cursor = 0;
+        sb->scroll_offset = 0;
+    } else {
+        sb->help_open = false;
+        const int max_idx = std::max(0, static_cast<int>(FlattenSidebar(id).size()) - 1);
+        cursor = std::clamp(sb->help_saved_cursor, 0, max_idx);
+        sb->scroll_offset = sb->help_saved_scroll;
+    }
+    // The cursor row's identity changed under the popout preview without
+    // the cursor itself necessarily moving -- make it re-ask.
+    if (id == sidebar_popout_id_) sidebar_popout_preview_dirty_ = true;
+}
+
 void Editor::SetSidebarOnPreview(int id, int lua_ref) {
     if (SidebarInstance *sb = FindSidebarMut(id)) sb->on_preview_ref = lua_ref;
 }
@@ -17614,10 +19608,23 @@ void Editor::OpenSidebarPopout(int id) {
 }
 
 void Editor::CloseSidebarPopout() {
+    const int id = sidebar_popout_id_;
     sidebar_popout_id_ = 0;
     sidebar_popout_preview_key_.clear();
     sidebar_popout_preview_dirty_ = false;
     SetSidebarPopoutPreview("");
+    // A popout-only sidebar has no docked panel to collapse back into.
+    const SidebarInstance *sb = FindSidebar(id);
+    if (sb && sb->popout_only) CloseSidebar(id);
+}
+
+void Editor::OpenSidebarPopoutOnly(int id) {
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (!sb) return;
+    const bool docked = sb->open && !sb->popout_only;
+    OpenSidebar(id, true);
+    sb->popout_only = !docked;
+    OpenSidebarPopout(id);
 }
 
 void Editor::ToggleSidebarPopout(int id) {
@@ -17724,6 +19731,31 @@ std::string Editor::SidebarLineWidgetId(int id, int line_index) const {
         return section.widgets[static_cast<size_t>(line.widget_index)].id;
     }
     return "";
+}
+
+int Editor::SidebarLineDragBufferId(int id, int line_index) const {
+    std::vector<SidebarLine> lines = FlattenSidebar(id);
+    if (line_index < 0 || line_index >= static_cast<int>(lines.size())) return -1;
+    const SidebarLine &line = lines[static_cast<size_t>(line_index)];
+    if (line.kind != SidebarLine::Kind::Widget) return -1;
+    for (const SidebarInstance &sb : sidebars_) {
+        if (sb.id != id) continue;
+        if (line.section_index < 0 || line.section_index >= static_cast<int>(sb.sections.size())) return -1;
+        const SidebarSection &section = sb.sections[static_cast<size_t>(line.section_index)];
+        if (line.widget_index < 0 || line.widget_index >= static_cast<int>(section.widgets.size())) return -1;
+        return section.widgets[static_cast<size_t>(line.widget_index)].drag_buffer_id;
+    }
+    return -1;
+}
+
+void Editor::SetSidebarDoubleClickActivate(int id, bool enabled) {
+    SidebarInstance *sb = FindSidebarMut(id);
+    if (sb) sb->activate_on_double_click = enabled;
+}
+
+bool Editor::SidebarActivatesOnDoubleClick(int id) const {
+    const SidebarInstance *sb = FindSidebar(id);
+    return sb && sb->activate_on_double_click;
 }
 
 void Editor::SetBufferDragResolver(int buffer_id, int lua_ref) {
@@ -17854,7 +19886,7 @@ std::vector<int> Editor::OpenSidebarIdsOn(const std::string &position) const {
     std::vector<int> ids;
     std::vector<std::string> seen_groups;
     for (const SidebarInstance &sb : sidebars_) {
-        if (!sb.open || sb.position != position) continue;
+        if (!sb.open || sb.popout_only || sb.position != position) continue;
         if (sb.tab_group.empty()) {
             ids.push_back(sb.id);
             continue;
@@ -17874,7 +19906,7 @@ std::vector<int> Editor::OpenSidebarIdsInGroup(const std::string &group, const s
     std::vector<int> ids;
     if (group.empty()) return ids;
     for (const SidebarInstance &sb : sidebars_) {
-        if (sb.open && sb.position == position && sb.tab_group == group) ids.push_back(sb.id);
+        if (sb.open && !sb.popout_only && sb.position == position && sb.tab_group == group) ids.push_back(sb.id);
     }
     return ids;
 }
@@ -17897,7 +19929,7 @@ void Editor::SetTabGroupActive(const std::string &group, int id) {
 int Editor::DockSize(const std::string &position) const {
     int size = 0;
     for (const SidebarInstance &sb : sidebars_) {
-        if (sb.open && sb.position == position) size = std::max(size, sb.size);
+        if (sb.open && !sb.popout_only && sb.position == position) size = std::max(size, sb.size);
     }
     return size;
 }
@@ -17963,6 +19995,7 @@ void Editor::OpenSidebar(int id, bool focus) {
     SidebarInstance *sb = FindSidebarMut(id);
     if (!sb) return;
     sb->open = true;
+    sb->popout_only = false;
     if (focus) {
         // Only capture the mode to return to on the genuine transition into
         // sidebar focus. Refocusing from one sidebar to another (mod1+j/k
@@ -17985,6 +20018,8 @@ void Editor::CloseSidebar(int id) {
     SidebarInstance *sb = FindSidebarMut(id);
     if (!sb) return;
     sb->open = false;
+    sb->popout_only = false;
+    sb->help_open = false;
     if (id == sidebar_popout_id_) CloseSidebarPopout();
     if (focused_sidebar_id_ == id) {
         focused_sidebar_id_ = 0;
@@ -18005,10 +20040,98 @@ bool Editor::IsSidebarOpen(int id) const {
     return sb && sb->open;
 }
 
+// The `?` key-binding view (SidebarInstance::help_open): the sidebar's own
+// keys (mep.sidebar_set_help), then the navigation keys every sidebar
+// shares -- worded for wherever it's showing (docked, popped out, or
+// hosted in a pane, which has no popout/q-to-close of its own).
+static std::vector<SidebarLine> FlattenSidebarHelp(const SidebarInstance &sb, bool pane_hosted, bool popped_out) {
+    std::vector<std::pair<std::string, std::string>> nav;
+    nav.push_back({"j / k", "move down / up"});
+    nav.push_back({"gg / G", "first / last row"});
+    nav.push_back({"Enter", "open / activate the row"});
+    if (!sb.tabs.empty()) nav.push_back({"Tab / S-Tab", "next / previous view"});
+    if (!pane_hosted) {
+        if (popped_out) {
+            nav.push_back({"Esc / q", sb.popout_only ? "close the popup" : "dock back into the sidebar"});
+        } else {
+            nav.push_back({"q", "close the sidebar"});
+            nav.push_back({"mod1+m", "pop out into a float"});
+        }
+    }
+    nav.push_back({"?", "show / hide this help"});
+
+    size_t key_w = 0;
+    for (const auto &kv : sb.help_keys) key_w = std::max(key_w, kv.first.size());
+    for (const auto &kv : nav) key_w = std::max(key_w, kv.first.size());
+    key_w = std::min<size_t>(key_w, 14);
+
+    std::vector<SidebarLine> out;
+    auto heading = [&](const std::string &text) {
+        SidebarLine line;
+        line.kind = SidebarLine::Kind::Text;
+        line.text = text;
+        line.hl = "SidebarTitle";
+        out.push_back(line);
+    };
+    // Descriptions wrap to the width the sidebar was last drawn at, the
+    // continuation lines hanging under the description column.
+    const int cols = sb.wrap_cols > 0 ? sb.wrap_cols : sb.size;
+    const int desc_w = std::max(8, cols - 1 - static_cast<int>(key_w) - 4);
+    auto add = [&](const std::string &key, const std::string &desc) {
+        std::string k = key;
+        if (k.size() < key_w) k.append(key_w - k.size(), ' ');
+        const std::vector<std::string> wrapped = LspDiagWrap(desc, desc_w);
+        for (size_t i = 0; i < std::max<size_t>(1, wrapped.size()); i++) {
+            SidebarLine line;
+            line.kind = SidebarLine::Kind::Text;
+            const std::string part = i < wrapped.size() ? wrapped[i] : "";
+            if (i == 0) {
+                line.text = "  " + k + "  " + part;
+                PickerHlSpan span;
+                span.col_start = 2;
+                span.col_end = 2 + static_cast<int>(key.size());
+                span.hl_group = "Cyan";
+                line.spans.push_back(span);
+            } else {
+                line.text = std::string(key_w + 4, ' ') + part;
+            }
+            out.push_back(line);
+        }
+    };
+    heading(sb.title + " keys");
+    if (sb.help_keys.empty()) {
+        SidebarLine line;
+        line.kind = SidebarLine::Kind::Text;
+        line.text = "  (no sidebar-specific keys)";
+        line.hl = "Comment";
+        out.push_back(line);
+    }
+    for (const auto &kv : sb.help_keys) {
+        // An empty key is a sub-heading (e.g. a tabbed sidebar grouping its
+        // keys per view).
+        if (kv.first.empty()) {
+            heading(kv.second);
+        } else {
+            add(kv.first, kv.second);
+        }
+    }
+    SidebarLine blank;
+    blank.kind = SidebarLine::Kind::Text;
+    out.push_back(blank);
+    heading("Navigation");
+    for (const auto &kv : nav) add(kv.first, kv.second);
+    return out;
+}
+
 std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
     std::vector<SidebarLine> out;
     const SidebarInstance *sb = FindSidebar(id);
     if (!sb) return out;
+    if (sb->help_open) {
+        // Not docked-open at all = only ever drawn hosted in a pane.
+        const bool pane_hosted = !sb->open || (mode_ == Mode::SidebarPane && SidebarIdForPaneBuffer(CurPane().buffer_id) == id);
+        return FlattenSidebarHelp(*sb, pane_hosted, sidebar_popout_id_ == id);
+    }
     for (int si = 0; si < static_cast<int>(sb->sections.size()); si++) {
         const SidebarSection &sec = sb->sections[static_cast<size_t>(si)];
         if (!sec.title.empty()) {
@@ -18022,6 +20145,22 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
         for (int wi = 0; wi < static_cast<int>(sec.widgets.size()); wi++) {
             const SidebarWidget &w = sec.widgets[static_cast<size_t>(wi)];
             std::string icon_prefix = w.icon.empty() ? "  " : "  " + w.icon + " ";
+            if (!w.image.empty()) {
+                // An image block: image_rows lines, each pointing at the
+                // widget (so Enter/click on any of them fires its on_click)
+                // and carrying its offset for the renderer.
+                for (int k = 0; k < w.image_rows; k++) {
+                    SidebarLine line;
+                    line.kind = SidebarLine::Kind::Widget;
+                    line.section_index = si;
+                    line.widget_index = wi;
+                    line.image = w.image;
+                    line.image_index = k;
+                    line.image_rows = w.image_rows;
+                    out.push_back(line);
+                }
+                continue;
+            }
             if (!w.wrap) {
                 SidebarLine line;
                 line.kind = SidebarLine::Kind::Widget;
@@ -18030,6 +20169,14 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
                 line.text = icon_prefix + w.text;
                 line.hl = w.hl;
                 line.current = w.current;
+                if (!w.spans.empty()) {
+                    line.spans = w.spans;
+                    const int shift = static_cast<int>(icon_prefix.size());
+                    for (PickerHlSpan &sp : line.spans) {
+                        sp.col_start += shift;
+                        sp.col_end += shift;
+                    }
+                }
                 out.push_back(line);
                 continue;
             }
@@ -18070,7 +20217,8 @@ void Editor::UpdateScrollForSidebar(int id, int visible_lines) {
     SidebarInstance *sb = FindSidebarMut(id);
     if (!sb) return;
     visible_lines = std::max(1, visible_lines);
-    int total = static_cast<int>(FlattenSidebar(id).size());
+    const std::vector<SidebarLine> lines = FlattenSidebar(id);
+    int total = static_cast<int>(lines.size());
     int max_scroll = std::max(0, total - visible_lines);
     // Only the focused sidebar has a live cursor to chase -- an unfocused
     // one (another open sidebar, or this one after mod1+hjkl blurred it
@@ -18098,6 +20246,25 @@ void Editor::UpdateScrollForSidebar(int id, int visible_lines) {
             sb->scroll_offset = cursor - visible_lines + 1;
         }
     }
+    // An unfocused sidebar follows its `current` row instead (SidebarWidget::
+    // current -- e.g. the Structure outline's "you are here" item as the
+    // source buffer's cursor or PDF page moves): brought into view, a few
+    // rows of context above it, whenever it changes -- only on a change, so
+    // wheel-scrolling the outline by hand isn't yanked back every frame.
+    int current_row = -1;
+    for (int i = 0; i < total; ++i) {
+        if (lines[static_cast<size_t>(i)].current) {
+            current_row = i;
+            break;
+        }
+    }
+    if (current_row != sb->last_current_row) {
+        sb->last_current_row = current_row;
+        if (!has_focus && current_row >= 0 &&
+            (current_row < sb->scroll_offset || current_row >= sb->scroll_offset + visible_lines)) {
+            sb->scroll_offset = current_row - std::min(3, visible_lines / 3);
+        }
+    }
     sb->scroll_offset = std::clamp(sb->scroll_offset, 0, max_scroll);
 }
 
@@ -18110,6 +20277,10 @@ void Editor::HandleSidebarInput() {
         if (key == gfx::Key::Escape) escape = true;
         else if (key == gfx::Key::Enter) enter = true;
         else if (key == gfx::Key::Tab) tab_delta += shift ? -1 : 1;
+    }
+    if (SidebarHelpOpen(focused_sidebar_id_)) {
+        HandleSidebarHelpInput(focused_sidebar_id_, escape);
+        return;
     }
     // Tab/Shift-Tab: next/previous view of a tabbed sidebar
     // (SidebarInstance::tabs) -- a no-op for one without tabs.
@@ -18184,6 +20355,9 @@ void Editor::HandleSidebarInput() {
         } else if (cp == 'k' && sidebar_cursor_ > 0) {
             sidebar_cursor_--;
             pending_g_ = false;
+        } else if (cp == '?') {
+            ToggleSidebarHelp(focused_sidebar_id_);
+            return;
         } else if (cp == 'q') {
             pending_g_ = false;  // don't leak a lone unmatched 'g' into whatever mode q restores
             if (popped_out) {
@@ -18230,6 +20404,36 @@ void Editor::HandleSidebarInput() {
     }
 }
 
+void Editor::HandleSidebarHelpInput(int id, bool escape) {
+    int &cursor = mode_ == Mode::SidebarPane ? sidebar_pane_cursor_ : sidebar_cursor_;
+    const int count = static_cast<int>(FlattenSidebar(id).size());
+    if (escape) {
+        ToggleSidebarHelp(id);
+        return;
+    }
+    for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) {
+        if (cp == '?' || cp == 'q') {
+            ToggleSidebarHelp(id);
+            return;
+        }
+        if (cp == 'G') {
+            cursor = std::max(0, count - 1);
+            pending_g_ = false;
+        } else if (cp == 'g' && pending_g_) {
+            cursor = 0;
+            pending_g_ = false;
+        } else if (cp == 'g') {
+            pending_g_ = true;
+        } else {
+            pending_g_ = false;
+            if (cp == 'j' && cursor + 1 < count) cursor++;
+            else if (cp == 'k' && cursor > 0) cursor--;
+        }
+    }
+    if ((gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) && cursor + 1 < count) cursor++;
+    if ((gfx::IsKeyPressed(gfx::Key::Up) || gfx::IsKeyPressedRepeat(gfx::Key::Up)) && cursor > 0) cursor--;
+}
+
 // Mode::SidebarPane's own input handler: a trimmed HandleSidebarInput above
 // for a pane-hosted sidebar view instead of a docked one -- j/k/gg/G/Enter
 // and on_key_ref forwarding carry over unchanged in spirit, but there's no
@@ -18242,9 +20446,14 @@ void Editor::HandleSidebarPaneInput() {
     int sidebar_id = SidebarIdForPaneBuffer(CurPane().buffer_id);
     if (sidebar_id == 0) return;
     std::vector<SidebarLine> lines = FlattenSidebar(sidebar_id);
-    bool enter = false;
+    bool enter = false, escape = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Escape) escape = true;
+    }
+    if (SidebarHelpOpen(sidebar_id)) {
+        HandleSidebarHelpInput(sidebar_id, escape);
+        return;
     }
     if (enter) {
         pending_g_ = false;
@@ -18267,6 +20476,9 @@ void Editor::HandleSidebarPaneInput() {
         } else if (cp == 'k' && sidebar_pane_cursor_ > 0) {
             sidebar_pane_cursor_--;
             pending_g_ = false;
+        } else if (cp == '?') {
+            ToggleSidebarHelp(sidebar_id);
+            return;
         } else if (lua_) {
             pending_g_ = false;
             const SidebarInstance *sb = FindSidebar(sidebar_id);
@@ -18401,30 +20613,112 @@ int FuzzyScore(const std::string &str, const std::string &query, std::vector<int
      * @return `c` unchanged if `smart_case` is set, otherwise its lowercased form.
      */
     auto norm = [&](char c) { return smart_case ? c : static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
-    size_t si = 0, qi = 0;
-    std::vector<int> pos;
-    int score = 0;
-    int consecutive = 0;
-    while (si < str.size() && qi < query.size()) {
-        if (norm(str[si]) == norm(query[qi])) {
-            bool boundary = si == 0 || str[si - 1] == ' ' || str[si - 1] == '-' || str[si - 1] == '_' ||
-                             str[si - 1] == '/' || str[si - 1] == '.';
-            score += (consecutive > 0) ? (15 + 5 * consecutive) : 1;
-            if (boundary) score += 10;
-            consecutive++;
-            pos.push_back(static_cast<int>(si));
-            qi++;
-        } else {
-            consecutive = 0;
-        }
-        si++;
+    /**
+     * @brief True if `c` separates words (so the character after it starts a new word).
+     * @param c The character to test.
+     * @return Whether `c` is whitespace or one of the path/identifier separators.
+     */
+    auto is_sep = [](char c) {
+        return c == ' ' || c == '\t' || c == '-' || c == '_' || c == '/' || c == '.' || c == ':' || c == ',';
+    };
+    const int n = static_cast<int>(str.size());
+    const int m = static_cast<int>(query.size());
+
+    // Cheap greedy subsequence check first: most candidates don't match at
+    // all, and those shouldn't pay for the alignment below.
+    {
+        int qi = 0;
+        for (int si = 0; si < n && qi < m; si++)
+            if (norm(str[static_cast<size_t>(si)]) == norm(query[static_cast<size_t>(qi)])) qi++;
+        if (qi < m) return -1;  // not every query char matched, in order
     }
-    if (qi < query.size()) return -1;  // not every query char matched, in order
-    int span = pos.empty() ? 0 : (pos.back() - pos.front() + 1);
-    score -= (span - static_cast<int>(query.size()));
-    score -= static_cast<int>(static_cast<double>(str.size()) * 0.01);
+
+    // Per-position bonus for a match landing there: word starts (string
+    // start, after a separator, camelCase humps) are worth more than
+    // mid-word hits, so "bn" prefers "build-native" over "cabin".
+    constexpr int kMatch = 16, kBoundary = 10, kCamel = 8, kConsecutive = 12, kGapOpen = 3, kGapExtend = 1;
+    std::vector<int> bonus(static_cast<size_t>(n), 0);
+    for (int j = 0; j < n; j++) {
+        char c = str[static_cast<size_t>(j)];
+        char prev = j > 0 ? str[static_cast<size_t>(j - 1)] : ' ';
+        if (is_sep(prev)) bonus[static_cast<size_t>(j)] = kBoundary;
+        else if (std::islower(static_cast<unsigned char>(prev)) && std::isupper(static_cast<unsigned char>(c)))
+            bonus[static_cast<size_t>(j)] = kCamel;
+    }
+
+    // Optimal alignment (fzf v2-style DP) instead of first-occurrence
+    // greedy matching: greedy grabs the earliest 'r','u','n' scattered
+    // through "rebuild unit" and never sees the contiguous "run" later on.
+    // M[i][j] = best score with query[i] matched at str[j]; from[i][j] = the
+    // str index query[i-1] was matched at on that best path (for positions).
+    constexpr int kNone = std::numeric_limits<int>::min() / 2;
+    std::vector<int> M(static_cast<size_t>(m) * static_cast<size_t>(n), kNone);
+    std::vector<int> from(static_cast<size_t>(m) * static_cast<size_t>(n), -1);
+    auto at = [n](int i, int j) { return static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(j); };
+    for (int i = 0; i < m; i++) {
+        char qc = norm(query[static_cast<size_t>(i)]);
+        // Best M[i-1][k] - gap cost over k < j-1, rolled forward as j grows.
+        int gap_best = kNone, gap_from = -1;
+        for (int j = i; j < n; j++) {
+            if (i > 0 && j >= 2) {
+                int k = j - 2;
+                if (gap_best != kNone) gap_best -= kGapExtend;
+                int cand = M[at(i - 1, k)];
+                if (cand != kNone && cand - kGapOpen > gap_best) {
+                    gap_best = cand - kGapOpen;
+                    gap_from = k;
+                }
+            }
+            if (norm(str[static_cast<size_t>(j)]) != qc) continue;
+            int b = bonus[static_cast<size_t>(j)];
+            if (i == 0) {
+                M[at(i, j)] = kMatch + b;
+                continue;
+            }
+            int best = kNone, best_from = -1;
+            int prev = M[at(i - 1, j - 1)];
+            if (prev != kNone) {
+                best = prev + kMatch + std::max(b, kConsecutive);
+                best_from = j - 1;
+            }
+            if (gap_best != kNone && gap_best + kMatch + b > best) {
+                best = gap_best + kMatch + b;
+                best_from = gap_from;
+            }
+            M[at(i, j)] = best;
+            from[at(i, j)] = best_from;
+        }
+    }
+    int score = kNone, end = -1;
+    for (int j = m - 1; j < n; j++) {
+        if (M[at(m - 1, j)] > score) {
+            score = M[at(m - 1, j)];
+            end = j;
+        }
+    }
+    std::vector<int> pos(static_cast<size_t>(m));
+    for (int i = m - 1, j = end; i >= 0; i--) {
+        pos[static_cast<size_t>(i)] = j;
+        j = from[at(i, j)];
+    }
+
+    // Whole-word bonus: the query matched one contiguous run that is an
+    // entire word ("run" in "run-wasm"/"run  languages...", not in
+    // "runner"), and more if that word is the whole string ("run" itself),
+    // so typing a name exactly always puts that name first.
+    bool contiguous = pos.back() - pos.front() + 1 == m;
+    if (contiguous && bonus[static_cast<size_t>(pos.front())] == kBoundary) {
+        int after = pos.back() + 1;
+        bool word_end = after >= n || is_sep(str[static_cast<size_t>(after)]);
+        if (word_end) score += 3 * kMatch;
+        size_t rest = str.find_first_not_of(" \t", static_cast<size_t>(after));
+        if (pos.front() == 0 && rest == std::string::npos) score += 3 * kMatch;
+    }
+    // Shorter strings win ties (trailing padding doesn't count).
+    size_t trimmed = str.find_last_not_of(" \t");
+    score -= static_cast<int>(trimmed == std::string::npos ? 0 : trimmed + 1) / 16;
     if (positions) *positions = std::move(pos);
-    return score;
+    return std::max(score, 0);
 }
 
 void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items, int on_select_ref,
@@ -18432,8 +20726,10 @@ void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items,
     overlay_previous_mode_ = mode_;
     picker_open_ = true;
     picker_title_ = title;
+    picker_hint_.clear();
     picker_query_.clear();
     picker_items_ = std::move(items);
+    picker_items_generation_++;
     picker_selected_ = 0;
     picker_on_select_ref_ = on_select_ref;
     picker_on_query_change_ref_ = on_query_change_ref;
@@ -18443,6 +20739,8 @@ void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items,
     picker_preview_text_.clear();
     picker_preview_spans_.clear();
     picker_preview_scroll_ = 0;
+    picker_tabs_.clear();
+    picker_active_tab_ = 0;
     mode_ = Mode::Picker;
 }
 
@@ -18466,34 +20764,56 @@ void Editor::ClosePickerDiscardingCallbacks() {
 
 void Editor::SetPickerItems(std::vector<PickerItem> items) {
     picker_items_ = std::move(items);
+    picker_items_generation_++;
     int max_idx = static_cast<int>(PickerFilteredResults().size()) - 1;
     picker_selected_ = std::max(0, std::min(picker_selected_, max_idx));
 }
 
-std::vector<PickerItem> Editor::PickerFilteredResults() const {
+const std::vector<PickerItem> &Editor::PickerFilteredResults() const {
     if (picker_raw_results_ || picker_query_.empty()) return picker_items_;
-    std::vector<std::pair<int, const PickerItem *>> scored;
+    if (picker_filtered_generation_ == picker_items_generation_ && picker_filtered_query_ == picker_query_)
+        return picker_filtered_;
+    // (tier, score): tier 1 = the item's `key` matched, 0 = only `display` did.
+    std::vector<std::pair<std::pair<int, int>, const PickerItem *>> scored;
     for (const PickerItem &it : picker_items_) {
+        int key_score = it.key.empty() ? -1 : FuzzyScore(it.key, picker_query_, nullptr);
+        if (key_score >= 0) {
+            scored.push_back({{1, key_score}, &it});
+            continue;
+        }
         int score = FuzzyScore(it.display, picker_query_, nullptr);
-        if (score >= 0) scored.emplace_back(score, &it);
+        if (score >= 0) scored.push_back({{0, score}, &it});
     }
-    // Orders scored items by descending fuzzy-match score (best match first).
+    // Orders scored items best match first: key matches before display-only
+    // matches, then by descending fuzzy-match score.
     std::stable_sort(scored.begin(), scored.end(),
                       [](const auto &a, const auto &b) { return a.first > b.first; });
-    std::vector<PickerItem> out;
-    out.reserve(scored.size());
-    for (auto &[score, item] : scored) out.push_back(*item);
-    return out;
+    picker_filtered_.clear();
+    picker_filtered_.reserve(scored.size());
+    for (auto &[score, item] : scored) picker_filtered_.push_back(*item);
+    picker_filtered_generation_ = picker_items_generation_;
+    picker_filtered_query_ = picker_query_;
+    return picker_filtered_;
 }
 
 void Editor::HandlePickerInput() {
-    bool escape = false, enter = false, backspace = false;
+    bool escape = false, enter = false, backspace = false, tab = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Escape) escape = true;
         else if (key == gfx::Key::Enter) enter = true;
         else if (key == gfx::Key::Backspace) backspace = true;
+        else if (key == gfx::Key::Tab) tab = true;
     }
     bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    // Tab/Shift-Tab: handed to on_key as "<Tab>"/"<S-Tab>" (tabbed pickers
+    // -- see SetPickerTabs) and otherwise ignored, as before.
+    if (tab && !escape && !enter && picker_on_key_ref_ != 0 && lua_) {
+        bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+        lua_->CallRefWithString(picker_on_key_ref_, shift ? "<S-Tab>" : "<Tab>");
+        while (gfx::GetCharPressed() > 0) {
+        }
+        return;
+    }
     // Snapshot the currently-highlighted item's `data` *before* this frame's
     // navigation/query edits are applied below, so the on_select_change_ref
     // firing at the bottom of this function can tell whether the effective
@@ -18502,7 +20822,7 @@ void Editor::HandlePickerInput() {
     // similar consumers only want to fire on a real change, not every frame.
     std::string pre_nav_data;
     if (picker_on_select_change_ref_ != 0) {
-        std::vector<PickerItem> pre_nav = PickerFilteredResults();
+        const std::vector<PickerItem> &pre_nav = PickerFilteredResults();
         if (picker_selected_ >= 0 && picker_selected_ < static_cast<int>(pre_nav.size())) {
             pre_nav_data = pre_nav[static_cast<size_t>(picker_selected_)].data;
         }
@@ -18593,7 +20913,7 @@ void Editor::HandlePickerInput() {
     // top match. Deliberately compares by `data` rather than by index --
     // an unchanged index after a query edit can point at a different item.
     if (lua_ && picker_on_select_change_ref_ != 0) {
-        std::vector<PickerItem> post_nav = PickerFilteredResults();
+        const std::vector<PickerItem> &post_nav = PickerFilteredResults();
         if (picker_selected_ >= 0 && picker_selected_ < static_cast<int>(post_nav.size())) {
             const std::string &post_nav_data = post_nav[static_cast<size_t>(picker_selected_)].data;
             if (post_nav_data != pre_nav_data) {
@@ -18737,9 +21057,12 @@ void Editor::HandleRoamGraphInput() {
 // "<CR>" at the Lua/display boundary. Case-insensitive on the way in
 // ("<cr>"/"<Cr>"), and "<Return>"/"<Enter>" are accepted too, since all
 // three spellings are common in vim configs -- the display form is
-// always the canonical "<CR>".
+// always the canonical "<CR>". "<Space>"/"<Spc>" spell a literal space
+// (the leader itself, e.g. <leader><Space> for the command runner),
+// displayed back as "<Space>".
 std::string Editor::NormalizeWhichKeySequence(const std::string &seq) {
     static const char *const kEnterSpellings[] = {"<cr>", "<return>", "<enter>"};
+    static const char *const kSpaceSpellings[] = {"<space>", "<spc>"};
     std::string out;
     size_t i = 0;
     while (i < seq.size()) {
@@ -18759,6 +21082,20 @@ std::string Editor::NormalizeWhichKeySequence(const std::string &seq) {
                     break;
                 }
             }
+            for (const char *spelling : kSpaceSpellings) {
+                if (matched) break;
+                size_t n = std::strlen(spelling);
+                if (i + n > seq.size()) continue;
+                bool eq = true;
+                for (size_t k = 0; k < n && eq; k++) {
+                    eq = std::tolower(static_cast<unsigned char>(seq[i + k])) == spelling[k];
+                }
+                if (eq) {
+                    out += ' ';
+                    i += n;
+                    matched = true;
+                }
+            }
         }
         if (!matched) out += seq[i++];
     }
@@ -18770,6 +21107,8 @@ std::string Editor::WhichKeySequenceDisplay(const std::string &seq) {
     for (char c : seq) {
         if (c == '\r') {
             out += "<CR>";
+        } else if (c == ' ') {
+            out += "<Space>";
         } else {
             out += c;
         }
@@ -18777,8 +21116,9 @@ std::string Editor::WhichKeySequenceDisplay(const std::string &seq) {
     return out;
 }
 
-void Editor::RegisterWhichKey(const std::string &sequence, const std::string &description, int lua_ref) {
-    whichkey_bindings_.push_back({NormalizeWhichKeySequence(sequence), description, lua_ref});
+void Editor::RegisterWhichKey(const std::string &sequence, const std::string &description, int lua_ref, int icon,
+                              const std::string &icon_hl) {
+    whichkey_bindings_.push_back({NormalizeWhichKeySequence(sequence), description, lua_ref, icon, icon_hl});
 }
 
 void Editor::TriggerWhichKey() {
@@ -18798,7 +21138,7 @@ std::vector<std::pair<std::string, std::string>> Editor::WhichKeyMatches() const
     return out;
 }
 
-std::vector<std::pair<std::string, std::string>> Editor::WhichKeyDisplayEntries() const {
+std::vector<WhichKeyDisplayEntry> Editor::WhichKeyDisplayEntries() const {
     // Bucket the raw (remaining-suffix, description) matches by their very
     // next character -- a "()" (empty-remainder) entry can't occur here,
     // since HandleWhichKeyInput fires and leaves WhichKey mode the instant
@@ -18806,14 +21146,22 @@ std::vector<std::pair<std::string, std::string>> Editor::WhichKeyDisplayEntries(
     std::map<char, std::vector<std::pair<std::string, std::string>>> by_next_char;
     for (const auto &m : WhichKeyMatches()) by_next_char[m.first[0]].push_back(m);
 
-    std::vector<std::pair<std::string, std::string>> out;
+    std::vector<WhichKeyDisplayEntry> out;
     for (const auto &bucket : by_next_char) {
         const auto &leaves = bucket.second;
-        auto group_it = leaves.size() > 1 ? whichkey_groups_.find(whichkey_prefix_ + bucket.first) : whichkey_groups_.end();
+        auto group_it = whichkey_groups_.find(whichkey_prefix_ + bucket.first);
         if (group_it != whichkey_groups_.end()) {
-            out.emplace_back(WhichKeySequenceDisplay(std::string(1, bucket.first)), "+" + group_it->second);
+            out.push_back({WhichKeySequenceDisplay(std::string(1, bucket.first)), group_it->second.label,
+                           group_it->second.icon, group_it->second.icon_hl});
         } else {
-            for (const auto &leaf : leaves) out.emplace_back(WhichKeySequenceDisplay(leaf.first), leaf.second);
+            for (const auto &leaf : leaves) {
+                const std::string sequence = whichkey_prefix_ + leaf.first;
+                auto binding_it = std::find_if(whichkey_bindings_.begin(), whichkey_bindings_.end(),
+                                               [&sequence](const WhichKeyBinding &binding) { return binding.sequence == sequence; });
+                const int icon = binding_it == whichkey_bindings_.end() ? 0 : binding_it->icon;
+                const std::string icon_hl = binding_it == whichkey_bindings_.end() ? "" : binding_it->icon_hl;
+                out.push_back({WhichKeySequenceDisplay(leaf.first), leaf.second, icon, icon_hl});
+            }
         }
     }
     return out;
@@ -19277,6 +21625,210 @@ void Editor::AcceptCompletion() {
     }
 }
 
+// --- Inline suggestion / "ghost text" ---------------------------------
+// See SetInlineSuggestion's own comment (editor.h) for the anchoring
+// rationale; these are deliberately dumb about *where* the text came from
+// (kBuiltinCopilot is the only producer today) so any other async
+// suggestion source can reuse them unchanged.
+
+namespace {
+
+// Length of `s` in UTF-16 code units -- what LSP counts positions and
+// (for didPartiallyAcceptCompletion) accepted lengths in. Astral-plane
+// codepoints are one Lua/UTF-8 character but two UTF-16 units, which is
+// the only reason this isn't just a codepoint count.
+int Utf16Length(const std::string &s) {
+    int units = 0;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char b = static_cast<unsigned char>(s[i]);
+        size_t len = b < 0x80 ? 1 : (b & 0xE0) == 0xC0 ? 2 : (b & 0xF0) == 0xE0 ? 3 : (b & 0xF8) == 0xF0 ? 4 : 1;
+        units += len == 4 ? 2 : 1;
+        i += len;
+    }
+    return units;
+}
+
+}  // namespace
+
+void Editor::SetInlineSuggestion(const std::string &text, int row, int col) {
+    if (text.empty()) {
+        ClearInlineSuggestion();
+        return;
+    }
+    inline_suggestion_ = text;
+    inline_suggestion_row_ = row;
+    inline_suggestion_col_ = col;
+    inline_suggestion_buffer_ = CurPane().buffer_id;
+    inline_suggestion_accepted_ = 0;
+}
+
+void Editor::ClearInlineSuggestion() {
+    inline_suggestion_.clear();
+    inline_suggestion_row_ = -1;
+    inline_suggestion_col_ = -1;
+    inline_suggestion_buffer_ = -1;
+    inline_suggestion_accepted_ = 0;
+}
+
+bool Editor::InlineSuggestionVisible() const {
+    if (inline_suggestion_.empty()) return false;
+    if (mode_ != Mode::Insert) return false;
+    const Pane &pane = CurPane();
+    if (pane.buffer_id != inline_suggestion_buffer_) return false;
+    return pane.cursor.row == inline_suggestion_row_ && pane.cursor.col == inline_suggestion_col_;
+}
+
+bool Editor::AcceptInlineSuggestion() {
+    if (!InlineSuggestionVisible()) return false;
+    const std::string text = inline_suggestion_;
+    CursorPos &cursor = CurPane().cursor;
+    PushUndo();
+    // Spliced in directly rather than through InsertTextAsTyped: the
+    // suggestion already carries its own indentation (the language server
+    // computed it against the real file), so replaying it as keystrokes
+    // would run every newline through auto-indent and double it. Raw byte
+    // insertion is also what keeps non-ASCII intact -- InsertChar/
+    // ProcessInsertKey drop anything outside 32..126.
+    std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
+    const std::string tail = line.substr(static_cast<size_t>(cursor.col));
+    line.erase(static_cast<size_t>(cursor.col));
+    size_t start = 0;
+    int inserted_rows = 0;
+    for (;;) {
+        size_t nl = text.find('\n', start);
+        const std::string piece = text.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        if (start == 0) {
+            Buf().lines[static_cast<size_t>(cursor.row)] += piece;
+            cursor.col += static_cast<int>(piece.size());
+        } else {
+            inserted_rows++;
+            Buf().lines.insert(Buf().lines.begin() + cursor.row + inserted_rows, piece);
+            cursor.col = static_cast<int>(piece.size());
+        }
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    if (inserted_rows > 0) {
+        ShiftMarksForLineEdit(cursor.row + 1, inserted_rows);
+        ShiftFoldsForLineEdit(cursor.row + 1, inserted_rows);
+        cursor.row += inserted_rows;
+    }
+    Buf().lines[static_cast<size_t>(cursor.row)] += tail;
+    Buf().modified = true;
+    ClearInlineSuggestion();
+    // The popup's own candidate list was computed against the word prefix
+    // that existed before this splice and is meaningless now -- and
+    // leaving it open would let the very next Tab "accept" a stale entry
+    // on top of what was just inserted.
+    completion_open_ = false;
+    if (inline_suggestion_accept_hook_ref_ != 0 && lua_) {
+        lua_->CallRefWithInt(inline_suggestion_accept_hook_ref_, 0);
+    }
+    return true;
+}
+
+void Editor::ReanchorInlineSuggestionAfterEdit() {
+    if (inline_suggestion_.empty()) return;
+    const Pane &pane = CurPane();
+    if (mode_ != Mode::Insert || pane.buffer_id != inline_suggestion_buffer_ ||
+        pane.cursor.row != inline_suggestion_row_) {
+        ClearInlineSuggestion();
+        return;
+    }
+    const int col = pane.cursor.col;
+    if (col == inline_suggestion_col_) return;  // no edit this frame
+    // Backspace, or a motion back over the anchor: whatever the
+    // suggestion was computed from no longer describes the line.
+    if (col < inline_suggestion_col_) {
+        ClearInlineSuggestion();
+        return;
+    }
+    const int typed_len = col - inline_suggestion_col_;
+    const std::string &line = Buf().lines[static_cast<size_t>(pane.cursor.row)];
+    if (typed_len > static_cast<int>(inline_suggestion_.size()) ||
+        inline_suggestion_col_ + typed_len > static_cast<int>(line.size())) {
+        ClearInlineSuggestion();
+        return;
+    }
+    const std::string typed = line.substr(static_cast<size_t>(inline_suggestion_col_), static_cast<size_t>(typed_len));
+    if (inline_suggestion_.compare(0, static_cast<size_t>(typed_len), typed) != 0) {
+        ClearInlineSuggestion();
+        return;
+    }
+    inline_suggestion_.erase(0, static_cast<size_t>(typed_len));
+    inline_suggestion_col_ = col;
+    // Typed-through text counts toward the server's acceptedLength the
+    // same way an explicit partial accept does -- both leave that prefix
+    // of the original insertText sitting in the buffer.
+    inline_suggestion_accepted_ += Utf16Length(typed);
+    if (inline_suggestion_.empty()) ClearInlineSuggestion();
+}
+
+int Editor::AcceptInlineSuggestionPartial(bool whole_line) {
+    if (!InlineSuggestionVisible()) return 0;
+    const std::string &text = inline_suggestion_;
+    // How much of the remaining suggestion this accept takes. A word
+    // accept steps over any leading whitespace and then one run of
+    // word-or-punctuation characters, so the very common "accept just the
+    // identifier Copilot guessed" lands where you expect; a line accept
+    // takes everything up to (but not including) the next break.
+    size_t take = 0;
+    if (whole_line) {
+        size_t nl = text.find('\n');
+        take = nl == std::string::npos ? text.size() : nl;
+        // A suggestion that *starts* with a newline (the whole thing is on
+        // following lines) would otherwise accept nothing at all and leave
+        // the key looking dead -- take the break itself plus the next line.
+        if (take == 0) {
+            size_t next = text.find('\n', 1);
+            take = next == std::string::npos ? text.size() : next;
+        }
+    } else {
+        while (take < text.size() && (text[take] == ' ' || text[take] == '\t')) take++;
+        if (take < text.size() && text[take] == '\n') {
+            take++;
+            while (take < text.size() && (text[take] == ' ' || text[take] == '\t')) take++;
+        }
+        // A byte that belongs to an identifier. Non-ASCII lead/continuation
+        // bytes count as word bytes so a UTF-8 identifier is taken whole
+        // rather than split mid-codepoint.
+        auto is_word_byte = [](char c) {
+            unsigned char u = static_cast<unsigned char>(c);
+            return u >= 0x80 || std::isalnum(u) != 0 || c == '_';
+        };
+        if (take < text.size() && text[take] != '\n') {
+            if (is_word_byte(text[take])) {
+                while (take < text.size() && is_word_byte(text[take])) take++;
+            } else {
+                take++;  // a run of punctuation is accepted one character at a time
+            }
+        }
+    }
+    if (take == 0) return 0;
+    const std::string accepted = text.substr(0, take);
+    const std::string rest = text.substr(take);
+    // Reuses the full-accept splice by temporarily making `accepted` the
+    // whole suggestion, then re-anchoring the remainder at the cursor it
+    // left behind. The accept hook is suppressed for that inner call (it
+    // reports a *full* accept, which this isn't) and fired once here with
+    // the real partial length instead.
+    int saved_hook = inline_suggestion_accept_hook_ref_;
+    int already = inline_suggestion_accepted_;
+    inline_suggestion_accept_hook_ref_ = 0;
+    inline_suggestion_ = accepted;
+    bool ok = AcceptInlineSuggestion();
+    inline_suggestion_accept_hook_ref_ = saved_hook;
+    if (!ok) return 0;
+    int accepted_len = already + Utf16Length(accepted);
+    if (!rest.empty()) {
+        const CursorPos &cursor = CurPane().cursor;
+        SetInlineSuggestion(rest, cursor.row, cursor.col);
+        inline_suggestion_accepted_ = accepted_len;
+    }
+    if (saved_hook != 0 && lua_) lua_->CallRefWithInt(saved_hook, accepted_len);
+    return accepted_len;
+}
+
 bool Editor::CompletionResolveInfo(const std::string &text, std::string *detail, std::string *doc) const {
     if (completion_resolve_hook_ref_ == 0 || !lua_) return false;
     return lua_->CallRefWithStringForDetailDoc(completion_resolve_hook_ref_, text, detail, doc);
@@ -19315,6 +21867,7 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::Model3D: return "3D-MODEL";
         case Mode::Pdf: return "PDF";
         case Mode::PdfNav: return "PDF-NAV";
+        case Mode::PdfAnnotate: return "PDF-ANNOT";
         case Mode::Video: return "VIDEO";
         case Mode::Html: return "HTML";
         case Mode::SidebarPane: return "SIDEBAR";
@@ -19478,7 +22031,7 @@ void Editor::UpdateCmdlineCompletion() {
     }
     command_line_.replace(static_cast<size_t>(word_start), std::string::npos, common);
 
-    for (const std::string &c : candidates) cmdline_completion_items_.push_back({c, c, {}});
+    for (const std::string &c : candidates) cmdline_completion_items_.push_back({c, c, {}, {}});
     cmdline_completion_selected_ = 0;
     cmdline_completion_word_start_ = word_start;
     cmdline_completion_open_ = true;
@@ -19529,6 +22082,11 @@ void Editor::EnterNormal() {
     // coincidentally starting with the same prefix text this one ended
     // on, showing stale completions left over from a different context.
     completion_last_query_prefix_ = "\x01";
+    // Same staleness argument for the inline suggestion: it's already
+    // invisible outside Insert mode (InlineSuggestionVisible), but leaving
+    // it in place would make it reappear on re-entering Insert at the same
+    // spot in a buffer that may have changed in between.
+    ClearInlineSuggestion();
     // Remember the selection being left so `gv` can restore it later --
     // must happen before mode_ is overwritten below. Vim's `gv` also
     // restores Visual Block as a block; mep's last-visual memory only has
@@ -21520,6 +24078,24 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
 
     if (name == "w" || name == "write") {
         SaveFile(args.empty() ? Buf().filename : args);
+    } else if (name == "pdfsearch") {
+        PdfSearchCommand(args);
+    } else if (name == "pdfcolor") {
+        SetPdfHighlightColorByName(args);
+    } else if (name == "pdfannotate") {
+        EnterPdfAnnotateMode();
+    } else if (name == "pdfdelete") {
+        PdfDeleteTarget();
+    } else if (name == "pdfhighlight" || name == "pdfhl") {
+        PdfHighlightCurrentMatch();
+    } else if (name == "pdfnote") {
+        if (args.empty()) {
+            PdfNotePrompt();
+        } else if (PdfSession *s = GetPdfMutable(CurPane().buffer_id); s && s->hover_annot.valid) {
+            ApplyPdfNoteToTarget(*s, s->hover_annot, args);  // attach/edit the note on the hovered annotation
+        } else {
+            PdfAddNote(args);  // standalone sticky note
+        }
     } else if (name == "wa" || name == "wall") {
         WriteAllModified();
     } else if (name == "q" || name == "quit") {
@@ -21784,7 +24360,10 @@ void Editor::RunNormalKeys(const std::string &keys) {
         if (mode_ == Mode::Insert) {
             ProcessInsertKey(c == 27 ? static_cast<int>(kReplayEscape) : static_cast<int>(c));
         } else if (mode_ == Mode::Normal) {
-            ProcessNormalKey(static_cast<int>(c));
+            // Buffer-scoped key hooks (SetBufferOnKey) see :normal's keys
+            // too, so e.g. the file tree's read-only guard can't be
+            // sidestepped with `:normal dd`.
+            if (!TryBufferKeyHook(static_cast<int>(c))) ProcessNormalKey(static_cast<int>(c));
         } else {
             break;  // Visual/Command/Search mid-:normal: not supported, bail (see header comment)
         }
@@ -21952,6 +24531,71 @@ int Editor::FindOpenBufferForPath(const std::string &path) const {
         if (NormalizedAbsolutePath(ResolveBufferPath(buf, buf.filename)) == want) return static_cast<int>(i);
     }
     return -1;
+}
+
+namespace {
+
+// The part of `candidate` below `root` ("" for root itself, "/rest" for a
+// descendant), or nullopt if it's neither -- both already normalized.
+std::optional<std::string> PathSuffixUnder(const std::string &candidate, const std::string &root) {
+    if (candidate == root) return std::string();
+    if (candidate.size() > root.size() && candidate.compare(0, root.size(), root) == 0 && candidate[root.size()] == '/') {
+        return candidate.substr(root.size());
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+void Editor::CloseBuffersForRemovedPath(const std::string &path) {
+    if (path.empty()) return;
+    const std::string root = NormalizedAbsolutePath(path);
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        const Buffer &buf = buffers_[i];
+        if (buf.deleted || buf.filename.empty() || GetTerminal(static_cast<int>(i))) continue;
+        if (write_hook_refs_.count(static_cast<int>(i))) continue;  // an oil directory view -- Lua owns its lifetime
+        if (!PathSuffixUnder(NormalizedAbsolutePath(ResolveBufferPath(buf, buf.filename)), root)) continue;
+        BufferDeleteById(static_cast<int>(i), true);
+    }
+}
+
+void Editor::RetargetBuffersForRenamedPath(const std::string &from, const std::string &to) {
+    if (from.empty() || to.empty()) return;
+    const std::string root = NormalizedAbsolutePath(from);
+    const std::string dest = NormalizedAbsolutePath(to);
+    std::vector<size_t> moved;
+    std::vector<int> stale;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        const Buffer &buf = buffers_[i];
+        if (buf.deleted || buf.filename.empty() || GetTerminal(static_cast<int>(i))) continue;
+        if (write_hook_refs_.count(static_cast<int>(i))) continue;  // an oil directory view, keyed by its dir in Lua
+        const std::string abs = NormalizedAbsolutePath(ResolveBufferPath(buf, buf.filename));
+        if (PathSuffixUnder(abs, root)) {
+            moved.push_back(i);
+        } else if (PathSuffixUnder(abs, dest) && !buf.modified) {
+            // Already named after the destination but not backed by it (the
+            // rename only succeeded because nothing was there on disk) --
+            // e.g. an unsaved `:e new.txt`. Left alone it would shadow the
+            // renamed buffer in FindOrCreateBuffer's dedup-by-filename.
+            stale.push_back(static_cast<int>(i));
+        }
+    }
+    for (int id : stale) BufferDeleteById(id, false);
+    for (size_t i : moved) {
+        Buffer &buf = buffers_[i];
+        const bool relative = buf.filename[0] != '/';
+        const std::string abs = NormalizedAbsolutePath(ResolveBufferPath(buf, buf.filename));
+        std::string renamed = dest + *PathSuffixUnder(abs, root);
+        if (relative) {
+            // Keep a relatively-opened buffer's name relative (to the same
+            // base it resolved against) so its tab/buffer-list label keeps
+            // its short form -- unless the new location left that base.
+            const std::filesystem::path base = std::filesystem::path(NormalizedAbsolutePath(ResolveBufferPath(buf, "x"))).parent_path();
+            const std::filesystem::path rel = std::filesystem::path(renamed).lexically_relative(base);
+            if (!rel.empty() && *rel.begin() != "..") renamed = rel.string();
+        }
+        buf.filename = renamed;
+    }
 }
 
 std::vector<Editor::ActivityTodoItem> Editor::ActivityTodoLoad(const std::string &path) const {
@@ -23258,8 +25902,73 @@ std::vector<std::string> Editor::ListUrls() const {
     return urls;
 }
 
-void Editor::GitGutterRefresh(const std::string &base) {
-    const std::string &fname = Buf().filename;
+namespace {
+// Where a hunk's mark sits, and which row counts as "on" it -- shared by
+// the cursor lookup (GitHunkAtCursor) and by staging, which re-derives
+// its own hunks against the index and has to resolve the cursor the same
+// way. A pure deletion covers no row of its own, so it answers for the
+// surviving line above the gap (see GitGutterRefreshBuffer).
+/**
+ * @brief Returns the 1-indexed buffer row a hunk's gutter mark is drawn on.
+ * @param h The hunk.
+ * @return The anchor row.
+ */
+int GitHunkAnchorRow(const DiffHunk &h) { return h.new_count == 0 ? std::max(1, h.new_start - 1) : h.new_start; }
+/**
+ * @brief Reports whether a 1-indexed row belongs to a hunk.
+ * @param h The hunk.
+ * @param row_1idx The 1-indexed row to test.
+ * @return True if the row is inside the hunk (or is a pure deletion's anchor row).
+ */
+bool GitHunkCoversRow(const DiffHunk &h, int row_1idx) {
+    if (h.new_count == 0) return row_1idx == GitHunkAnchorRow(h);
+    return row_1idx >= h.new_start && row_1idx <= h.new_start + h.new_count - 1;
+}
+// The path `git apply` wants in a patch header: relative to the repo
+// root it runs in. An absolute one is rejected outright ("<path>: does
+// not exist in index"), and most buffers are opened by absolute path.
+/**
+ * @brief Strips a repo root prefix off a path, for use in a patch header.
+ * @param path The buffer's filename.
+ * @param root The repository root the patch will be applied in.
+ * @return `path` relative to `root`, or `path` unchanged if it isn't under it.
+ */
+std::string GitPatchPath(const std::string &path, const std::string &root) {
+    if (!root.empty() && path.size() > root.size() && path.compare(0, root.size(), root) == 0 && path[root.size()] == '/') {
+        return path.substr(root.size() + 1);
+    }
+    return path;
+}
+// `git show` failing with one of these means "that revision simply has
+// no such path" -- a file newer than the base, or untracked. Every other
+// failure (not a repository, unknown ref, no commits yet, git missing)
+// carries no information about the file at all.
+/**
+ * @brief Reports whether a `git show` failure means the path is absent from the revision rather than unreadable.
+ * @param stderr_text The collected stderr of the failed `git show`.
+ * @return True if the path is simply new/untracked in that revision.
+ */
+bool GitShowSaysPathIsNew(const std::string &stderr_text) {
+    return stderr_text.find("does not exist in") != std::string::npos ||
+           stderr_text.find("exists on disk, but not in") != std::string::npos;
+}
+}  // namespace
+
+// Git gutter (kBuiltinGit, main.cpp): `git show <base>:<file>` fetches the
+// base revision's text (`base` empty -- the default -- makes that `:<file>`,
+// i.e. the index, which is what gitsigns/vim-gitgutter compare against), MyersDiffHunks turns it into hunks against the
+// buffer's *live* (possibly unsaved) lines -- the whole point of diffing in
+// the editor rather than shelling `git diff`, which only ever sees what's
+// on disk -- and each hunk becomes a mark in the always-reserved sign
+// column. Sign placement follows vim-gitgutter/gitsigns: added and changed
+// rows get a stripe on every row they cover, while a pure deletion has no
+// row of its own and is marked on the surviving line *above* the gap (or,
+// for a deletion off the top of the file, along the top edge of line 1).
+void Editor::GitGutterRefresh(const std::string &base) { GitGutterRefreshBuffer(CurPane().buffer_id, base); }
+
+void Editor::GitGutterRefreshBuffer(int buffer_id, const std::string &base) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    const std::string fname = buffers_[static_cast<size_t>(buffer_id)].filename;
     if (fname.empty()) return;
     int ns = CreateNamespace("git");
     // `base:path` is a pathspec, resolved relative to its own cwd -- run
@@ -23271,7 +25980,16 @@ void Editor::GitGutterRefresh(const std::string &base) {
     std::string base_name = slash == std::string::npos ? fname : fname.substr(slash + 1);
     std::string spec = base + ":" + base_name;
 
+    GitSignState &st = git_signs_[buffer_id];
+    st.base = base;
+    st.filename = fname;
+    st.change_epoch = change_epoch_;
+    st.line_hl = git_gutter_line_hl_;
+    st.pending = true;
+    st.last_run = now_;
+
     auto lines = std::make_shared<std::vector<std::string>>();
+    auto err = std::make_shared<std::string>();
     JobManager::Callbacks cb;
     /**
      * @brief Collects one line of `git show`'s stdout output as it streams in.
@@ -23279,44 +25997,101 @@ void Editor::GitGutterRefresh(const std::string &base) {
      */
     cb.on_stdout = [lines](const std::string &line) { lines->push_back(line); };
     /**
-     * @brief Once `git show` exits, diffs the fetched base-revision lines against the current buffer and redraws the git-gutter decorations.
-     * @param code The process exit code (unused).
+     * @brief Collects `git show`'s stderr, which is how a failure says *why* it failed.
+     * @param line The next line of error output.
      */
-    cb.on_exit = [this, ns, lines](int /*code*/) {
-        git_base_lines_ = *lines;
-        std::vector<std::string> cur;
-        const int n = Buf().LineCount();
-        cur.reserve(static_cast<size_t>(n));
-        for (int i = 0; i < n; i++) cur.push_back(Buf().lines[static_cast<size_t>(i)]);
-        git_hunks_ = MyersDiffHunks(*lines, cur);
-        ClearNamespace(ns);
-        for (const DiffHunk &h : git_hunks_) {
+    cb.on_stderr = [err](const std::string &line) {
+        if (err->size() < 4096) *err += line;
+    };
+    /**
+     * @brief Once `git show` exits, diffs the fetched base-revision lines against the buffer and rebuilds its git-gutter signs.
+     * @param code The process exit code; non-zero means the base revision has no such path (or this isn't a repo at all).
+     */
+    cb.on_exit = [this, ns, buffer_id, fname, lines, err](int code) {
+        auto it = git_signs_.find(buffer_id);
+        if (it == git_signs_.end()) return;
+        GitSignState &st2 = it->second;
+        st2.pending = false;
+        // The buffer can have been closed, or its id reused for a
+        // different file, while `git show` was in flight -- painting this
+        // diff onto whatever is there now would mark the wrong lines.
+        if (buffer_id >= static_cast<int>(buffers_.size()) || buffers_[static_cast<size_t>(buffer_id)].filename != fname) {
+            git_signs_.erase(it);
+            return;
+        }
+        ClearNamespaceInBuffer(buffer_id, ns);
+        if (code != 0) {
+            // git failed. The one failure that still means something is
+            // "this path isn't in that revision" -- a file that's new
+            // since `base` (or untracked), where every line really is an
+            // addition, which is exactly what gitsigns shows for one.
+            // Everything else (not a repository, unknown ref, no commits
+            // yet, git not installed) is *no information*, not "the whole
+            // file is new", so it clears the gutter instead of flooding
+            // it.
+            if (!GitShowSaysPathIsNew(*err)) {
+                st2.valid = false;
+                st2.hunks.clear();
+                st2.base_lines.clear();
+                return;
+            }
+            lines->clear();
+        }
+        st2.valid = true;
+        st2.base_lines = *lines;
+        const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+        std::vector<std::string> cur = buf.lines;
+        st2.hunks = MyersDiffHunks(*lines, cur);
+        const int n = static_cast<int>(cur.size());
+        const bool line_hl = st2.line_hl;
+        /**
+         * @brief Adds one git-gutter mark on a 0-indexed row, clamped into the buffer.
+         * @param row0 The 0-indexed row to mark.
+         * @param shape The Decoration::sign_shape to draw ("bar", "delete", "topdelete", "changedelete").
+         * @param hl The highlight group naming the mark's color.
+         */
+        auto mark = [&](int row0, const char *shape, const char *hl) {
+            if (n == 0) return;
+            Decoration d;
+            d.row = std::clamp(row0, 0, n - 1);
+            d.sign_shape = shape;
+            d.sign_hl = hl;
+            // Off by default: gitsigns' own default is signs only. A tint
+            // across every changed line competes with the syntax
+            // highlighting underneath it, which on a large diff means the
+            // whole file reads as highlighted -- opt in with
+            // mep.git_gutter_line_hl if you want vim-gitgutter's
+            // `highlight_lines` look.
+            if (line_hl) {
+                d.whole_line = true;
+                d.hl_group = hl;
+            }
+            AddDecorationToBuffer(buffer_id, ns, d);
+        };
+        for (const DiffHunk &h : st2.hunks) {
             if (h.old_count == 0) {
-                for (int r = h.new_start; r < h.new_start + h.new_count; r++) {
-                    Decoration d;
-                    d.row = r - 1;
-                    d.whole_line = true;
-                    d.hl_group = "Add";
-                    d.sign = "+";
-                    d.sign_hl = "Add";
-                    AddDecoration(ns, d);
-                }
+                for (int r = h.new_start; r < h.new_start + h.new_count; r++) mark(r - 1, "bar", "Add");
             } else if (h.new_count == 0) {
-                Decoration d;
-                d.row = std::max(0, h.new_start - 1);
-                d.whole_line = false;
-                d.sign = "_";
-                d.sign_hl = "Red";
-                AddDecoration(ns, d);
+                // A deletion occupies no row of its own: h.new_start is
+                // the row the removed text *would* have started at, so
+                // the last surviving line above the gap is new_start - 1
+                // (1-indexed). new_start == 1 means the deletion ran off
+                // the top of the file, with no line above it to mark --
+                // that one goes along the top edge of line 1 instead.
+                if (h.new_start <= 1) {
+                    mark(0, "topdelete", "Delete");
+                } else {
+                    mark(h.new_start - 2, "delete", "Delete");
+                }
             } else {
-                for (int r = h.new_start; r < h.new_start + h.new_count; r++) {
-                    Decoration d;
-                    d.row = r - 1;
-                    d.whole_line = true;
-                    d.hl_group = "Yellow";
-                    d.sign = "~";
-                    d.sign_hl = "Yellow";
-                    AddDecoration(ns, d);
+                // A change that also dropped lines (more old than new)
+                // is gitsigns' "changedelete": the last changed row
+                // carries the removal mark as well, so the dropped lines
+                // aren't silently invisible.
+                int last = h.new_start + h.new_count - 1;
+                bool shrank = h.old_count > h.new_count;
+                for (int r = h.new_start; r <= last; r++) {
+                    mark(r - 1, (shrank && r == last) ? "changedelete" : "bar", "Change");
                 }
             }
         }
@@ -23324,47 +26099,123 @@ void Editor::GitGutterRefresh(const std::string &base) {
     JobManager::Instance().Spawn({"git", "show", spec}, dir, cb);
 }
 
+void Editor::GitGutterTick(const std::string &base, bool line_hl) {
+    if (line_hl != git_gutter_line_hl_) {
+        git_gutter_line_hl_ = line_hl;
+        GitGutterInvalidate();
+    }
+    int buffer_id = CurPane().buffer_id;
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    if (buffers_[static_cast<size_t>(buffer_id)].filename.empty()) return;
+    auto it = git_signs_.find(buffer_id);
+    if (it != git_signs_.end()) {
+        const GitSignState &st = it->second;
+        if (st.pending) return;
+        if (st.change_epoch == change_epoch_ && st.base == base && st.line_hl == line_hl &&
+            st.filename == buffers_[static_cast<size_t>(buffer_id)].filename) {
+            return;  // cached diff is still current: the steady state
+        }
+        // A buffer git can say nothing useful about (not in a repo, no
+        // such ref) would otherwise re-spawn `git show` every debounce
+        // window for as long as you keep typing in it, always to be told
+        // the same thing. Retry it on the slow interval instead, which
+        // still picks up a `git init` or a corrected base ref within a
+        // few seconds.
+        double interval = st.valid ? kGitGutterDebounceSec : kGitGutterRetrySec;
+        if (now_ - st.last_run < interval) return;
+    }
+    GitGutterRefreshBuffer(buffer_id, base);
+}
+
+void Editor::GitGutterInvalidate() {
+    // Only the *epoch* is reset, not the hunks/decorations themselves --
+    // the existing marks stay on screen until the recompute lands, which
+    // is a beat of staleness instead of a visible flash of empty gutter
+    // on every commit or stage.
+    for (auto &entry : git_signs_) entry.second.change_epoch = -1;
+}
+
+void Editor::GitGutterClear() {
+    int ns = CreateNamespace("git");
+    for (const auto &entry : git_signs_) ClearNamespaceInBuffer(entry.first, ns);
+    git_signs_.clear();
+}
+
+const Editor::GitSignState *Editor::CurGitSigns() const {
+    auto it = git_signs_.find(CurPane().buffer_id);
+    if (it == git_signs_.end() || !it->second.valid) return nullptr;
+    return &it->second;
+}
+
+std::string Editor::GitGutterSummary() const {
+    const GitSignState *st = CurGitSigns();
+    if (!st) return "";
+    int added = 0, changed = 0, removed = 0;
+    for (const DiffHunk &h : st->hunks) {
+        if (h.old_count == 0) {
+            added += h.new_count;
+        } else if (h.new_count == 0) {
+            removed += h.old_count;
+        } else {
+            changed += h.new_count;
+            if (h.old_count > h.new_count) removed += h.old_count - h.new_count;
+        }
+    }
+    std::string out;
+    if (added > 0) out += "+" + std::to_string(added);
+    if (changed > 0) out += (out.empty() ? "" : " ") + ("~" + std::to_string(changed));
+    if (removed > 0) out += (out.empty() ? "" : " ") + ("-" + std::to_string(removed));
+    return out;
+}
+
 const DiffHunk *Editor::GitHunkAtCursor() const {
+    const GitSignState *st = CurGitSigns();
+    if (!st) return nullptr;
     int row = 0, col = 0;
     GetCursorForLua(&row, &col);
     int row_1idx = row + 1;
-    for (const DiffHunk &h : git_hunks_) {
-        int lo = h.new_start;
-        int hi = h.new_start + std::max(1, h.new_count) - 1;
-        if (row_1idx >= lo && row_1idx <= hi) return &h;
+    for (const DiffHunk &h : st->hunks) {
+        if (GitHunkCoversRow(h, row_1idx)) return &h;
     }
     return nullptr;
 }
 
+// ]c / [c: the next/previous hunk relative to the cursor, wrapping around
+// the ends the way vim-gitgutter's own jumps do.
 int Editor::GitNextHunkRow() const {
+    const GitSignState *st = CurGitSigns();
+    if (!st || st->hunks.empty()) return 0;
     int row = 0, col = 0;
     GetCursorForLua(&row, &col);
     int row_1idx = row + 1;
-    for (const DiffHunk &h : git_hunks_) {
-        if (h.new_start > row_1idx) return h.new_start;
+    for (const DiffHunk &h : st->hunks) {
+        int target = GitHunkAnchorRow(h);
+        if (target > row_1idx) return target;
     }
-    if (!git_hunks_.empty()) return git_hunks_.front().new_start;
-    return 0;
+    return GitHunkAnchorRow(st->hunks.front());
 }
 
 int Editor::GitPrevHunkRow() const {
+    const GitSignState *st = CurGitSigns();
+    if (!st || st->hunks.empty()) return 0;
     int row = 0, col = 0;
     GetCursorForLua(&row, &col);
     int row_1idx = row + 1;
-    for (auto it = git_hunks_.rbegin(); it != git_hunks_.rend(); ++it) {
-        if (it->new_start < row_1idx) return it->new_start;
+    for (auto it = st->hunks.rbegin(); it != st->hunks.rend(); ++it) {
+        int target = GitHunkAnchorRow(*it);
+        if (target < row_1idx) return target;
     }
-    if (!git_hunks_.empty()) return git_hunks_.back().new_start;
-    return 0;
+    return GitHunkAnchorRow(st->hunks.back());
 }
 
 std::pair<bool, std::string> Editor::GitPreviewHunkText() const {
+    const GitSignState *st = CurGitSigns();
     const DiffHunk *h = GitHunkAtCursor();
-    if (!h) return {false, ""};
+    if (!st || !h) return {false, ""};
     std::vector<std::string> lines;
     for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
         std::string old_line =
-            (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) ? git_base_lines_[static_cast<size_t>(i - 1)] : "";
+            (i - 1 >= 0 && i - 1 < static_cast<int>(st->base_lines.size())) ? st->base_lines[static_cast<size_t>(i - 1)] : "";
         lines.push_back("-" + old_line);
     }
     const int n = Buf().LineCount();
@@ -23382,61 +26233,141 @@ std::pair<bool, std::string> Editor::GitPreviewHunkText() const {
 }
 
 void Editor::GitResetHunk(const std::string &base) {
+    const GitSignState *st = CurGitSigns();
     const DiffHunk *h = GitHunkAtCursor();
-    if (!h) {
+    if (!st || !h) {
         Notify("No hunk under cursor", NotifyLevel::Warn);
         return;
     }
     std::vector<std::string> repl;
     for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
-        if (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) repl.push_back(git_base_lines_[static_cast<size_t>(i - 1)]);
+        if (i - 1 >= 0 && i - 1 < static_cast<int>(st->base_lines.size())) repl.push_back(st->base_lines[static_cast<size_t>(i - 1)]);
     }
     int new_start = h->new_start, new_count = h->new_count;
     ReplaceLinesForLua(new_start - 1, new_start - 1 + new_count, repl);
     GitGutterRefresh(base);
 }
 
+// Staging always means "move this change from the working buffer into
+// the index", so it re-diffs the buffer against the *index* here rather
+// than reusing the gutter's own hunks: those are computed against
+// mep.git_gutter_base, which defaults to HEAD and can be pointed at any
+// revision at all. With HEAD as the base and something already staged,
+// the displayed hunk's line numbers describe neither the index nor a
+// patch that would apply to it. One `git show :<file>` buys correctness
+// independent of whatever the gutter happens to be showing.
 void Editor::GitStageHunk() {
-    const DiffHunk *h = GitHunkAtCursor();
-    const std::string &fname = Buf().filename;
-    if (!h || fname.empty()) {
+    const std::string fname = Buf().filename;
+    if (fname.empty()) {
         Notify("No hunk under cursor", NotifyLevel::Warn);
         return;
     }
-    std::string old_hdr = h->old_count == 0 ? (std::to_string(h->old_start) + ",0")
-                                             : (std::to_string(h->old_start) + "," + std::to_string(h->old_count));
-    std::string new_hdr = h->new_count == 0 ? (std::to_string(h->new_start) + ",0")
-                                             : (std::to_string(h->new_start) + "," + std::to_string(h->new_count));
-    std::string patch;
-    patch += "diff --git a/" + fname + " b/" + fname + "\n";
-    patch += "--- a/" + fname + "\n";
-    patch += "+++ b/" + fname + "\n";
-    patch += "@@ -" + old_hdr + " +" + new_hdr + " @@\n";
-    const int n = Buf().LineCount();
-    for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
-        std::string old_line =
-            (i - 1 >= 0 && i - 1 < static_cast<int>(git_base_lines_.size())) ? git_base_lines_[static_cast<size_t>(i - 1)] : "";
-        patch += "-" + old_line + "\n";
-    }
-    for (int i = h->new_start; i < h->new_start + h->new_count; i++) {
-        std::string cur_line = (i - 1 >= 0 && i - 1 < n) ? Buf().lines[static_cast<size_t>(i - 1)] : "";
-        patch += "+" + cur_line + "\n";
-    }
+    int buffer_id = CurPane().buffer_id;
+    int row = 0, col = 0;
+    GetCursorForLua(&row, &col);
+    const int cursor_row = row + 1;
+    size_t slash = fname.find_last_of('/');
+    std::string dir = slash == std::string::npos ? "." : fname.substr(0, slash);
+    std::string base_name = slash == std::string::npos ? fname : fname.substr(slash + 1);
+    const std::string rel = GitPatchPath(fname, ActiveRoot());
+
+    auto index_lines = std::make_shared<std::vector<std::string>>();
+    auto err = std::make_shared<std::string>();
     JobManager::Callbacks cb;
     /**
-     * @brief Reports whether `git apply --cached` succeeded in staging the hunk.
-     * @param code The process exit code; 0 means success.
+     * @brief Collects one line of the index copy of the file.
+     * @param line The next line of output.
      */
-    cb.on_exit = [this](int code) {
-        if (code == 0) {
-            Notify("Staged hunk");
-        } else {
-            Notify("git apply failed", NotifyLevel::Error);
-        }
+    cb.on_stdout = [index_lines](const std::string &line) { index_lines->push_back(line); };
+    /**
+     * @brief Collects `git show`'s stderr so a failure can be told apart from an untracked file.
+     * @param line The next line of error output.
+     */
+    cb.on_stderr = [err](const std::string &line) {
+        if (err->size() < 4096) *err += line;
     };
-    int id = JobManager::Instance().Spawn({"git", "apply", "--cached", "--unidiff-zero", "-"}, ActiveRoot(), cb);
-    JobManager::Instance().WriteStdin(id, patch);
-    JobManager::Instance().CloseStdin(id);
+    /**
+     * @brief Diffs the buffer against its index copy, then applies the hunk under the cursor to the index.
+     * @param code `git show`'s exit code; non-zero means the file isn't in the index (or isn't in a repo at all).
+     */
+    cb.on_exit = [this, buffer_id, cursor_row, rel, index_lines, err](int code) {
+        if (code != 0) {
+            if (!GitShowSaysPathIsNew(*err)) {
+                Notify("Can't stage: no git index here", NotifyLevel::Error);
+                return;
+            }
+            index_lines->clear();  // untracked: every line is an addition
+        }
+        if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+        const std::vector<std::string> &cur = buffers_[static_cast<size_t>(buffer_id)].lines;
+        std::vector<DiffHunk> hunks = MyersDiffHunks(*index_lines, cur);
+        const DiffHunk *h = nullptr;
+        for (const DiffHunk &candidate : hunks) {
+            if (GitHunkCoversRow(candidate, cursor_row)) {
+                h = &candidate;
+                break;
+            }
+        }
+        if (!h) {
+            Notify("No unstaged hunk under cursor", NotifyLevel::Warn);
+            return;
+        }
+        // Both sides of the header are anchored on the *index's* line
+        // numbers, not on h->new_start. The patch carries this one hunk
+        // and is applied to a file that still has the index's content,
+        // so h->new_start -- a position in the working buffer, past
+        // however many earlier hunks this patch doesn't carry -- names
+        // the wrong line as soon as the buffer has more than one change.
+        // It matters because `--unidiff-zero` leaves git no context to
+        // search with: it applies each hunk at the line its *new* side
+        // names, verbatim.
+        // DiffHunk::old_start for a pure insertion is the index line the
+        // text goes *before*, one past unified-diff's own "insert after
+        // line N" convention, so that side gets the -1.
+        int old_at = h->old_count == 0 ? std::max(0, h->old_start - 1) : h->old_start;
+        std::string patch;
+        patch += "diff --git a/" + rel + " b/" + rel + "\n";
+        patch += "--- a/" + rel + "\n";
+        patch += "+++ b/" + rel + "\n";
+        patch += "@@ -" + std::to_string(old_at) + "," + std::to_string(h->old_count) + " +" +
+                 std::to_string(h->old_start) + "," + std::to_string(h->new_count) + " @@\n";
+        for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
+            std::string old_line =
+                (i - 1 >= 0 && i - 1 < static_cast<int>(index_lines->size())) ? (*index_lines)[static_cast<size_t>(i - 1)] : "";
+            patch += "-" + old_line + "\n";
+        }
+        const int n = static_cast<int>(cur.size());
+        for (int i = h->new_start; i < h->new_start + h->new_count; i++) {
+            std::string cur_line = (i - 1 >= 0 && i - 1 < n) ? cur[static_cast<size_t>(i - 1)] : "";
+            patch += "+" + cur_line + "\n";
+        }
+        JobManager::Callbacks apply_cb;
+        /**
+         * @brief Reports whether `git apply --cached` succeeded in staging the hunk.
+         * @param apply_code The process exit code; 0 means success.
+         */
+        apply_cb.on_exit = [this](int apply_code) {
+            if (apply_code == 0) {
+                Notify("Staged hunk");
+                // Staging moves the index without touching a single
+                // buffer line, so nothing in a buffer's own state would
+                // mark the cached diff stale -- and with the index as
+                // the base, every remaining hunk's line numbers just
+                // shifted.
+                GitGutterInvalidate();
+            } else {
+                Notify("git apply failed", NotifyLevel::Error);
+            }
+        };
+        // Spawning from inside another job's on_exit is supported --
+        // JobManager::PollAll is written for exactly this (see its own
+        // comment on re-entrant Spawn).
+        int apply_id =
+            JobManager::Instance().Spawn({"git", "apply", "--cached", "--unidiff-zero", "-"}, ActiveRoot(), apply_cb);
+        JobManager::Instance().WriteStdin(apply_id, patch);
+        JobManager::Instance().CloseStdin(apply_id);
+    };
+    JobManager::Instance().Spawn({"git", "show", ":" + base_name}, dir, cb);
 }
 
 void Editor::ReplaceLinesForLua(int start_row, int end_row, const std::vector<std::string> &lines) {
@@ -23553,6 +26484,44 @@ std::string Editor::BufferLabelForLua(int buffer_id) const {
     // is what actually keeps a deleted buffer out of the Buffers picker
     // without needing a second, separate filter there.
     if (buffers_[static_cast<size_t>(buffer_id)].deleted) return "";
+    // A sidebar opened as a pane (SidebarOpenPane) backs it with a
+    // synthetic "sidebar/<Title>" buffer, purely so the pane machinery --
+    // which has no title-override concept, a buffer's filename IS its
+    // displayed name -- has something to show in the tab strip. It is not
+    // a document: there is nothing to save, nothing to edit, and "switch
+    // to it" already has its own gestures (mod1+o, the top-bar chips). It
+    // has no business in a list of the user's open files, so it comes back
+    // empty here and drops out of the Buffers sidebar and the <leader>bb
+    // picker alike -- same one-filter-serves-both-lists route the deleted
+    // check above takes. Still reachable everywhere it was: this hides it
+    // from the two buffer *lists* only, not from :bnext/:bprev or the tab
+    // strip of the pane actually showing it.
+    if (IsSidebarPaneBuffer(buffer_id)) return "";
+    // Same exclusion, self-declared: a panel that owns an ordinary buffer
+    // instead of going through mep.sidebar_open_pane (kBuiltinFileTree's
+    // tree view) has nothing about it C++ can recognise, so it marks
+    // itself. See Buffer::unlisted.
+    if (buffers_[static_cast<size_t>(buffer_id)].unlisted) return "";
+    // The empty, never-touched buffer a pane is *born* on, rather than one
+    // the user asked for: every pane must point at some buffer, so the
+    // bootstrap project (Editor::Editor, the one the dashboard renders
+    // over), every new workspace and project (MakeWorkspace -- one more
+    // per adopted git worktree), `:wsreset` and BufferDelete's
+    // last-buffer fallback each mint one. They are indistinguishable
+    // "[No Name]" rows that the user never opened, and the startup one is
+    // unscoped (workspace_id -1), so it followed them into every project
+    // and workspace they ever switched to. Nothing is lost by hiding
+    // them: an empty, unmodified, nameless buffer holds nothing to come
+    // back to, and the pane showing it names it in its own header
+    // regardless. Deliberately *not* a stored flag but a live property
+    // (BufferIsPristine, the same predicate the dashboard's own
+    // "untouched" test uses): the instant the user types into one it
+    // stops being pristine and takes its place in the list as an ordinary
+    // unsaved buffer. The scratch buffer (<leader>bs/:MepScratch) is
+    // exempt by construction -- Buffer::scratch fails BufferIsPristine --
+    // so the one pathless buffer the user creates on purpose is the one
+    // pathless buffer that shows up, labelled below.
+    if (BufferIsPristine(buffer_id)) return "";
     // Terminal buffers have no filename (they're never saved), so without
     // this they'd all show as the same indistinguishable "[No Name]" --
     // defeating the point of surfacing them here at all now that closing
@@ -23567,9 +26536,34 @@ std::string Editor::BufferLabelForLua(int buffer_id) const {
         return label;
     }
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
-    std::string label = buf.filename.empty() ? "[No Name]" : buf.filename;
+    // "[Scratch]", not "[No Name]", for the session scratch buffer -- what
+    // the pane header, the status line and the pane-drag label have always
+    // called it (main.cpp), and the only way to tell it apart from a
+    // genuinely unsaved buffer now that it is the one pathless row the
+    // lists still show.
+    std::string label = buf.scratch ? "[Scratch]" : buf.filename.empty() ? "[No Name]" : DisplayPathForBuffer(buf);
     if (buf.modified) label += " [+]";
     return label;
+}
+
+std::string Editor::DisplayPathForBuffer(const Buffer &buf) const {
+    // Buffer::filename is stored exactly as the file was opened, so the
+    // same file reads as "README.org" or "/mnt/projects/mep/README.org"
+    // purely by how it was reached (`:e README.org` vs a file-tree click,
+    // an LSP/quickfix jump, an agent's buffer.open, a restored session).
+    // That inconsistency is only ever noise in a list of open buffers, so
+    // anything under the project root is shown relative to it; anything
+    // outside keeps its absolute path, which is the only thing that
+    // locates it.
+    const Workspace *ws = buf.workspace_id == -1 ? nullptr : FindWorkspace(buf.workspace_id);
+    const std::string &root = ws ? ws->root : ActiveRoot();
+    // The root directory itself, opened as a buffer (an oil.nvim-style
+    // directory buffer, mep.oil_open, names its buffer after the directory
+    // it is listing): relative would be the empty string, so use the
+    // directory's own name -- the same thing the project chip and that
+    // pane's header already call it.
+    if (!root.empty() && buf.filename == root) return BasenameOrPath(root);
+    return RelativeToRoot(buf.filename, root);
 }
 
 std::string Editor::BufferFilenameForLua(int buffer_id) const {
@@ -23588,9 +26582,25 @@ void Editor::SetBufferHideLineNumbers(int buffer_id, bool hide) {
     buffers_[static_cast<size_t>(buffer_id)].hide_line_numbers = hide;
 }
 
+void Editor::SetBufferFooter(int buffer_id, const std::string &text, const std::string &hl) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    buffers_[static_cast<size_t>(buffer_id)].footer_hint = text;
+    buffers_[static_cast<size_t>(buffer_id)].footer_hint_hl = hl;
+}
+
 void Editor::SetBufferNoWrap(int buffer_id, bool no_wrap) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
     buffers_[static_cast<size_t>(buffer_id)].no_wrap = no_wrap;
+}
+
+void Editor::SetBufferRowCursor(int buffer_id, bool row_cursor) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    buffers_[static_cast<size_t>(buffer_id)].row_cursor = row_cursor;
+}
+
+void Editor::SetBufferUnlisted(int buffer_id, bool unlisted) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    buffers_[static_cast<size_t>(buffer_id)].unlisted = unlisted;
 }
 
 bool Editor::BufferModifiedForLua(int buffer_id) const {
@@ -23806,8 +26816,8 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
     // write regardless of `path` -- checked ahead of the "no file name"
     // guard below since it doesn't need a filename at all (kBuiltinFileTree's
     // editable tree view, the first caller, never calls buffer_set_filename).
-    if (buffer_id == write_hook_buffer_id_ && write_hook_ref_ != 0 && lua_) {
-        lua_->CallRef(write_hook_ref_);
+    if (int write_ref = lua_ ? BufferHookRef(write_hook_refs_, buffer_id) : 0) {
+        lua_->CallRef(write_ref);
         buf.modified = false;
         save_epoch_++;
         return true;
@@ -23846,8 +26856,49 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
         return false;
     }
     if (IsPdfBuffer(buffer_id)) {
-        status_message_ = "E382: Cannot write, PDF buffer";
-        return false;
+        // A plain PDF viewer pane has nothing to write (same reject as
+        // before); a pane with unsaved markup annotations writes them into
+        // the file's /Annots as an appended incremental-update revision
+        // (PdfDoc::BytesWithAddedAnnots), mirroring the image-editor's
+        // "viewer rejects :w, edited session saves" split above.
+        auto pit = pdfs_.find(buffer_id);
+        if (pit == pdfs_.end() || !pit->second.doc || !pit->second.HasUnsavedAnnots()) {
+            status_message_ = "E382: Cannot write, PDF buffer (no annotations to save)";
+            return false;
+        }
+        PdfSession &psess = pit->second;
+        std::string bytes =
+            psess.doc->BytesWithAnnotChanges(psess.pending_annots, psess.annot_edits, psess.annot_deletes);
+        if (bytes.empty()) {
+            status_message_ = "E212: Can't write \"" + path + "\": " + psess.doc->Error();
+            return false;
+        }
+        // One-time backup of the pristine original before the first write.
+        std::error_code bak_ec;
+        std::string bak = io_path + ".bak";
+        if (!std::filesystem::exists(bak, bak_ec)) std::filesystem::copy_file(io_path, bak, bak_ec);
+        std::ofstream pdf_out(io_path, std::ios::binary);
+        if (!pdf_out) {
+            status_message_ = "E212: Can't open file for writing";
+            return false;
+        }
+        pdf_out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        pdf_out.close();
+        // Re-load from the just-written bytes so the newly-added
+        // annotations become ordinary existing ones (they now render via
+        // PdfDoc::PageAnnots like any other), and clear the session's
+        // pending set + caches so overlays recompute from the file.
+        psess.doc->LoadFromMemory(reinterpret_cast<const unsigned char *>(bytes.data()), bytes.size());
+        psess.pending_annots.clear();
+        psess.annot_edits.clear();
+        psess.annot_deletes.clear();
+        psess.annots_dirty = false;
+        psess.rasters.clear();
+        buf.filename = path;
+        buf.modified = false;
+        save_epoch_++;
+        status_message_ = "\"" + path + "\" written (annotations added)";
+        return true;
     }
     if (IsModel3DBuffer(buffer_id)) {
         Model3DSession &sess = model3d_sessions_.at(buffer_id);
@@ -24488,7 +27539,7 @@ void Editor::DropUnusedInitialBuffer() {
     // a directory argument's on_directory_open hook (kBuiltinFileTree's
     // mep.tree_open_in_pane) runs synchronously inside the LoadFile call
     // just above this function's own call site (main()), and caches the
-    // buffer id it creates in a Lua upvalue (mep_tree_edit_buf) before this
+    // buffer id it creates in a Lua upvalue (mep_oil_by_dir) before this
     // function ever runs -- so "narrow, startup-only, nothing has cached an
     // id yet" doesn't actually hold here. Erasing shifted every later
     // buffer down by one without any way to patch that cached id, silently
@@ -24796,15 +27847,7 @@ int Editor::NotebookCellAtCursor() {
 
 // --- Kernel -----------------------------------------------------------------
 
-void Editor::NotebookEnsureKernel(NotebookSession &sess) {
-    if (sess.kernel_job != 0 && JobManager::Instance().IsRunning(sess.kernel_job)) return;
-    sess.kernel_job = 0;
-    sess.kernel_ready = false;
-    sess.running_uid = 0;
-    sess.running_request_id = 0;
-    sess.last_error.clear();
-    const int generation = ++sess.spawn_generation;
-    const int buffer_id = sess.buffer_id;
+std::string Editor::NotebookKernelCwd(int buffer_id) {
     // The kernel's cwd is the notebook's own directory (relative paths in
     // cells resolve the way they do under `jupyter notebook`), falling
     // back to the workspace root for an unsaved one.
@@ -24818,28 +27861,57 @@ void Editor::NotebookEnsureKernel(NotebookSession &sess) {
         }
     }
     if (cwd.empty()) cwd = ActiveRoot();
-    std::vector<std::string> argv = {notebook_python_, "-u", "-c", NotebookKernelScript()};
+    return cwd;
+}
+
+// Starts (if not already running) the resident process for a Python- or
+// Protocol-mode kernel and returns its state. nullptr when `kernel_name`
+// isn't a registered Python/Protocol kernel -- a Script kernel has no
+// resident process (each run spawns its own; see NotebookPumpQueue), and
+// an unknown name has nothing to start.
+NotebookSession::KernelProc *Editor::NotebookEnsureKernel(NotebookSession &sess, const std::string &kernel_name) {
+    const NotebookKernelSpec *spec = FindNotebookKernel(notebook_kernels_, kernel_name);
+    if (!spec || spec->mode == NotebookKernelSpec::Mode::Script) return nullptr;
+    NotebookSession::KernelProc &kp = sess.kernels[kernel_name];
+    if (kp.job != 0 && JobManager::Instance().IsRunning(kp.job)) return &kp;
+    kp.job = 0;
+    kp.ready = false;
+    kp.last_error.clear();
+    const int generation = ++sess.spawn_generation;
+    kp.generation = generation;
+    const int buffer_id = sess.buffer_id;
+    const std::string name = kernel_name;
+    std::vector<std::string> argv;
+    if (spec->mode == NotebookKernelSpec::Mode::Python) {
+        // The built-in python3 kernel carries no command of its own; it
+        // runs mep.opt.notebook_python (notebook_python_) so that option
+        // keeps steering the default interpreter.
+        std::string interpreter = spec->command.empty() ? notebook_python_ : spec->command.front();
+        argv = {interpreter, "-u", "-c", NotebookKernelScript()};
+    } else {
+        argv = spec->command;   // Protocol: a user driver speaking the JSON-line protocol
+    }
     JobManager::Callbacks cb;
-    cb.on_stdout = [this, buffer_id, generation](const std::string &line) {
-        NotebookHandleKernelLine(buffer_id, generation, line);
+    cb.on_stdout = [this, buffer_id, name, generation](const std::string &line) {
+        NotebookHandleKernelLine(buffer_id, name, generation, line);
     };
-    cb.on_stderr = [this, buffer_id, generation](const std::string &line) {
-        // Kernel-level stderr (user code's stderr travels as protocol
-        // messages): an interpreter that failed to start, a hard crash.
+    cb.on_stderr = [this, buffer_id, name, generation](const std::string &line) {
         NotebookSession *s = GetNotebookMutable(buffer_id);
-        if (s && s->spawn_generation == generation && !line.empty()) s->last_error = line;
+        if (!s || line.empty()) return;
+        auto it = s->kernels.find(name);
+        if (it != s->kernels.end() && it->second.generation == generation) it->second.last_error = line;
     };
-    cb.on_exit = [this, buffer_id, generation](int code) { NotebookKernelExited(buffer_id, generation, code); };
+    cb.on_exit = [this, buffer_id, name, generation](int code) { NotebookKernelExited(buffer_id, name, generation, code); };
     std::vector<std::pair<std::string, std::string>> env = {{"PYTHONUNBUFFERED", "1"}};
-    sess.kernel_job = JobManager::Instance().Spawn(argv, cwd, std::move(cb), /*use_pty=*/false, env);
-    sess.status = sess.kernel_job != 0 ? "starting" : "dead";
-    if (sess.kernel_job == 0) sess.last_error = "could not start " + notebook_python_;
+    kp.job = JobManager::Instance().Spawn(argv, NotebookKernelCwd(buffer_id), std::move(cb), /*use_pty=*/false, env);
+    kp.status = kp.job != 0 ? "starting" : "dead";
+    if (kp.job == 0) kp.last_error = "could not start " + (argv.empty() ? kernel_name : argv.front());
+    return &kp;
 }
 
 void Editor::NotebookPumpQueue(NotebookSession &sess) {
-    while (sess.kernel_ready && sess.running_uid == 0 && !sess.run_queue.empty()) {
+    while (sess.running_uid == 0 && !sess.run_queue.empty()) {
         int uid = sess.run_queue.front();
-        sess.run_queue.pop_front();
         NotebookCell *cell = nullptr;
         for (NotebookCell &c : sess.doc.cells) {
             if (c.uid == uid) {
@@ -24847,38 +27919,98 @@ void Editor::NotebookPumpQueue(NotebookSession &sess) {
                 break;
             }
         }
-        if (!cell) continue;  // deleted while queued
+        if (!cell) {  // deleted while queued
+            sess.run_queue.pop_front();
+            continue;
+        }
+        std::string kernel_name = NotebookCellKernel(*cell);
+        if (kernel_name.empty()) kernel_name = NotebookDefaultKernel(sess.doc, notebook_kernels_);
+        const NotebookKernelSpec *spec = FindNotebookKernel(notebook_kernels_, kernel_name);
+        if (!spec) {
+            sess.run_queue.pop_front();
+            NotebookOutput err;
+            err.kind = NotebookOutput::Kind::Error;
+            err.ename = "KernelError";
+            err.evalue = "no kernel named '" + kernel_name + "' is available";
+            err.text = "KernelError: " + err.evalue;
+            NotebookAppendOutput(cell, std::move(err));
+            cell->run_state = NotebookCell::RunState::Idle;
+            continue;
+        }
+        if (spec->mode == NotebookKernelSpec::Mode::Script) {
+            sess.run_queue.pop_front();
+            cell->run_state = NotebookCell::RunState::Running;
+            sess.running_uid = uid;
+            sess.running_kernel = kernel_name;
+            sess.running_request_id = sess.next_request_id++;
+            const int buffer_id = sess.buffer_id;
+            const int req = sess.running_request_id;
+            const std::string code = cell->source;
+            JobManager::Callbacks cb;
+            cb.on_stdout = [this, buffer_id, uid, req](const std::string &line) {
+                NotebookScriptOutput(buffer_id, uid, req, "stdout", line);
+            };
+            cb.on_stderr = [this, buffer_id, uid, req](const std::string &line) {
+                NotebookScriptOutput(buffer_id, uid, req, "stderr", line);
+            };
+            cb.on_exit = [this, buffer_id, uid, req](int c) { NotebookScriptExited(buffer_id, uid, req, c); };
+            sess.running_job = JobManager::Instance().Spawn(spec->command, NotebookKernelCwd(buffer_id), std::move(cb));
+            if (sess.running_job == 0) {
+                NotebookScriptExited(buffer_id, uid, req, -1);
+            } else {
+                JobManager::Instance().WriteStdin(sess.running_job, code);
+                JobManager::Instance().CloseStdin(sess.running_job);
+            }
+            continue;  // running_uid set; the while condition ends the loop
+        }
+        // Python/Protocol: needs its resident process ready before we send.
+        NotebookSession::KernelProc *kp = NotebookEnsureKernel(sess, kernel_name);
+        if (!kp) {
+            sess.run_queue.pop_front();
+            NotebookFailRunningCell(*cell, "could not start kernel '" + kernel_name + "'");
+            continue;
+        }
+        if (!kp->ready) return;  // wait for its "ready"; the cell stays at the front of the queue
+        sess.run_queue.pop_front();
         cell->run_state = NotebookCell::RunState::Running;
         sess.running_uid = uid;
+        sess.running_kernel = kernel_name;
         sess.running_request_id = sess.next_request_id++;
-        sess.status = "busy";
-        if (!JobManager::Instance().WriteStdin(sess.kernel_job, NotebookKernelExecuteRequest(sess.running_request_id, cell->source))) {
+        sess.running_job = 0;
+        kp->status = "busy";
+        if (!JobManager::Instance().WriteStdin(kp->job, NotebookKernelExecuteRequest(sess.running_request_id, cell->source))) {
             NotebookFailRunning(sess, "could not send the cell to the kernel");
-            sess.kernel_ready = false;
-            sess.status = "dead";
+            kp->ready = false;
+            kp->status = "dead";
         }
     }
+}
+
+// Marks one cell as errored-and-idle (used when its kernel is missing or
+// dead). Does not touch the queue -- NotebookPumpQueue's caller owns that.
+void Editor::NotebookFailRunningCell(NotebookCell &cell, const std::string &reason) {
+    NotebookOutput err;
+    err.kind = NotebookOutput::Kind::Error;
+    err.ename = "KernelError";
+    err.evalue = reason;
+    err.text = "KernelError: " + reason;
+    NotebookAppendOutput(&cell, std::move(err));
+    cell.run_state = NotebookCell::RunState::Idle;
 }
 
 // The in-flight cell (if any) and everything queued behind it get an
 // error output naming `reason` and go back to idle -- for a kernel that
 // died, or whose stdin closed under us.
 void Editor::NotebookFailRunning(NotebookSession &sess, const std::string &reason) {
-    auto fail = [&](int uid) {
+    if (sess.running_uid != 0) {
         for (NotebookCell &c : sess.doc.cells) {
-            if (c.uid != uid) continue;
-            NotebookOutput err;
-            err.kind = NotebookOutput::Kind::Error;
-            err.ename = "KernelError";
-            err.evalue = reason;
-            err.text = "KernelError: " + reason;
-            NotebookAppendOutput(&c, std::move(err));
-            c.run_state = NotebookCell::RunState::Idle;
+            if (c.uid == sess.running_uid) NotebookFailRunningCell(c, reason);
         }
-    };
-    if (sess.running_uid != 0) fail(sess.running_uid);
+    }
     sess.running_uid = 0;
+    sess.running_kernel.clear();
     sess.running_request_id = 0;
+    sess.running_job = 0;
     for (int uid : sess.run_queue) {
         for (NotebookCell &c : sess.doc.cells) {
             if (c.uid == uid) c.run_state = NotebookCell::RunState::Idle;
@@ -24887,15 +28019,41 @@ void Editor::NotebookFailRunning(NotebookSession &sess, const std::string &reaso
     sess.run_queue.clear();
 }
 
-void Editor::NotebookHandleKernelLine(int buffer_id, int generation, const std::string &line) {
+// A finished run (protocol "done" or a script process exit): stamp the
+// notebook's shared In[N] counter, drop back to idle, and pump the next.
+void Editor::NotebookFinishRunning(NotebookSession &sess, NotebookCell &cell) {
+    cell.execution_count = sess.next_execution_count++;
+    cell.run_state = NotebookCell::RunState::Idle;
+    for (NotebookOutput &o : cell.outputs) {
+        if (o.kind == NotebookOutput::Kind::ExecuteResult && o.raw.is_null()) o.execution_count = cell.execution_count;
+    }
+    if (!sess.running_kernel.empty()) {
+        auto it = sess.kernels.find(sess.running_kernel);
+        if (it != sess.kernels.end() && it->second.job != 0) it->second.status = "idle";
+    }
+    sess.running_uid = 0;
+    sess.running_kernel.clear();
+    sess.running_request_id = 0;
+    sess.running_job = 0;
+    NotebookPumpQueue(sess);
+}
+
+void Editor::NotebookHandleKernelLine(int buffer_id, const std::string &kernel_name, int generation, const std::string &line) {
     NotebookSession *sess = GetNotebookMutable(buffer_id);
-    if (!sess || sess->spawn_generation != generation) return;
+    if (!sess) return;
+    auto kit = sess->kernels.find(kernel_name);
+    if (kit == sess->kernels.end() || kit->second.generation != generation) return;
+    NotebookSession::KernelProc &kp = kit->second;
     NotebookKernelMessage m;
+    // The running cell -- only when this reply is from the kernel that is
+    // actually in flight (a stray line from an idle kernel has no cell).
     NotebookCell *cell = nullptr;
-    for (NotebookCell &c : sess->doc.cells) {
-        if (sess->running_uid != 0 && c.uid == sess->running_uid) {
-            cell = &c;
-            break;
+    if (sess->running_uid != 0 && sess->running_kernel == kernel_name) {
+        for (NotebookCell &c : sess->doc.cells) {
+            if (c.uid == sess->running_uid) {
+                cell = &c;
+                break;
+            }
         }
     }
     if (!ParseNotebookKernelMessage(line, &m)) {
@@ -24911,9 +28069,9 @@ void Editor::NotebookHandleKernelLine(int buffer_id, int generation, const std::
         return;
     }
     if (m.type == "ready") {
-        sess->kernel_ready = true;
-        sess->status = "idle";
-        sess->python_version = m.python;
+        kp.ready = true;
+        kp.status = "idle";
+        kp.version = m.python;
         NotebookPumpQueue(*sess);
         return;
     }
@@ -24946,32 +28104,63 @@ void Editor::NotebookHandleKernelLine(int buffer_id, int generation, const std::
         if (out.text.empty()) out.text = m.ename + ": " + m.evalue;
         NotebookAppendOutput(cell, std::move(out));
     } else if (m.type == "done") {
-        // The kernel's own counter is the notebook's In[N] -- one shared
-        // sequence across cells, like Jupyter.
-        cell->execution_count = m.execution_count;
-        cell->run_state = NotebookCell::RunState::Idle;
-        // Jupyter drops an execute_result's own count in favor of the
-        // cell's; keep them in step so a saved notebook reads right.
-        for (NotebookOutput &o : cell->outputs) {
-            if (o.kind == NotebookOutput::Kind::ExecuteResult && o.raw.is_null()) o.execution_count = m.execution_count;
-        }
-        sess->running_uid = 0;
-        sess->running_request_id = 0;
-        sess->status = "idle";
-        NotebookPumpQueue(*sess);
+        NotebookFinishRunning(*sess, *cell);
     }
 }
 
-void Editor::NotebookKernelExited(int buffer_id, int generation, int code) {
+void Editor::NotebookScriptOutput(int buffer_id, int uid, int request_id, const char *stream, const std::string &line) {
     NotebookSession *sess = GetNotebookMutable(buffer_id);
-    if (!sess || sess->spawn_generation != generation) return;  // a restarted kernel's old process
-    std::string reason = "kernel exited";
-    if (code == -1) reason = sess->last_error.empty() ? "kernel could not be started (" + notebook_python_ + ")" : sess->last_error;
-    else if (code != 0) reason += " with status " + std::to_string(code) + (sess->last_error.empty() ? "" : ": " + sess->last_error);
-    NotebookFailRunning(*sess, reason);
-    sess->kernel_job = 0;
-    sess->kernel_ready = false;
-    sess->status = "dead";
+    if (!sess || sess->running_uid != uid || sess->running_request_id != request_id) return;
+    for (NotebookCell &c : sess->doc.cells) {
+        if (c.uid != uid) continue;
+        NotebookOutput out;
+        out.kind = NotebookOutput::Kind::Stream;
+        out.name = stream;
+        out.text = line + "\n";
+        NotebookAppendOutput(&c, std::move(out));
+        return;
+    }
+}
+
+void Editor::NotebookScriptExited(int buffer_id, int uid, int request_id, int code) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess || sess->running_uid != uid || sess->running_request_id != request_id) return;
+    std::string command;
+    const NotebookKernelSpec *spec = FindNotebookKernel(notebook_kernels_, sess->running_kernel);
+    if (spec && !spec->command.empty()) command = spec->command.front();
+    if (command.empty()) command = sess->running_kernel;
+    for (NotebookCell &c : sess->doc.cells) {
+        if (c.uid != uid) continue;
+        NotebookAppendScriptExit(&c, code, command);
+        NotebookFinishRunning(*sess, c);
+        return;
+    }
+    // Cell vanished mid-run: still clear the in-flight state.
+    sess->running_uid = 0;
+    sess->running_kernel.clear();
+    sess->running_request_id = 0;
+    sess->running_job = 0;
+    NotebookPumpQueue(*sess);
+}
+
+void Editor::NotebookKernelExited(int buffer_id, const std::string &kernel_name, int generation, int code) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess) return;
+    auto kit = sess->kernels.find(kernel_name);
+    if (kit == sess->kernels.end() || kit->second.generation != generation) return;  // a restarted kernel's old process
+    NotebookSession::KernelProc &kp = kit->second;
+    std::string interp = kernel_name;
+    const NotebookKernelSpec *spec = FindNotebookKernel(notebook_kernels_, kernel_name);
+    if (spec && !spec->command.empty()) interp = spec->command.front();
+    else if (spec && spec->mode == NotebookKernelSpec::Mode::Python) interp = notebook_python_;
+    std::string reason = "kernel '" + kernel_name + "' exited";
+    if (code == -1) reason = kp.last_error.empty() ? "kernel '" + kernel_name + "' could not be started (" + interp + ")" : kp.last_error;
+    else if (code != 0) reason += " with status " + std::to_string(code) + (kp.last_error.empty() ? "" : ": " + kp.last_error);
+    // Only fail the run if it was this kernel's cell in flight.
+    if (sess->running_uid != 0 && sess->running_kernel == kernel_name) NotebookFailRunning(*sess, reason);
+    kp.job = 0;
+    kp.ready = false;
+    kp.status = "dead";
     if (code != 0) status_message_ = "Notebook: " + reason;
 }
 
@@ -24992,7 +28181,12 @@ bool Editor::NotebookRunCell(int buffer_id, int cell_index) {
     cell.execution_count = -1;
     cell.run_state = NotebookCell::RunState::Queued;
     sess->run_queue.push_back(cell.uid);
-    NotebookEnsureKernel(*sess);
+    // Warm up this cell's kernel now (a no-op for a Script kernel and for
+    // one already running) so it can be ready by the time the queue
+    // reaches the cell rather than only starting then.
+    std::string kernel_name = NotebookCellKernel(cell);
+    if (kernel_name.empty()) kernel_name = NotebookDefaultKernel(sess->doc, notebook_kernels_);
+    NotebookEnsureKernel(*sess, kernel_name);
     NotebookPumpQueue(*sess);
     NotebookRebuildSlotCache(*sess);
     return true;
@@ -25034,8 +28228,14 @@ void Editor::NotebookInterrupt(int buffer_id) {
         }
     }
     sess->run_queue.clear();
-    if (sess->kernel_job != 0 && sess->running_uid != 0) {
-        JobManager::Instance().Interrupt(sess->kernel_job);
+    if (sess->running_uid != 0) {
+        if (sess->running_job != 0) {
+            // A stateless Script kernel: SIGTERM the per-cell process.
+            JobManager::Instance().Kill(sess->running_job);
+        } else {
+            auto it = sess->kernels.find(sess->running_kernel);
+            if (it != sess->kernels.end() && it->second.job != 0) JobManager::Instance().Interrupt(it->second.job);
+        }
         status_message_ = "Notebook: interrupt sent to kernel";
     } else {
         status_message_ = "Notebook: kernel is idle";
@@ -25046,15 +28246,30 @@ void Editor::NotebookRestartKernel(int buffer_id) {
     NotebookSession *sess = GetNotebookMutable(buffer_id);
     if (!sess) return;
     NotebookFailRunning(*sess, "kernel restarted");
-    if (sess->kernel_job != 0) {
-        JobManager::Instance().WriteStdin(sess->kernel_job, NotebookKernelShutdownRequest());
-        JobManager::Instance().Kill(sess->kernel_job);
-        sess->kernel_job = 0;
+    NotebookKillKernels(*sess);
+    sess->kernels.clear();
+    // In[N] restarts from 1, matching a fresh kernel session.
+    sess->next_execution_count = 1;
+    status_message_ = "Notebook: kernels restarted";
+}
+
+// Shuts down and kills every resident kernel of a notebook plus any
+// in-flight Script process; leaves the map entries in place (the caller
+// clears them when it wants a from-scratch restart).
+void Editor::NotebookKillKernels(NotebookSession &sess) {
+    if (sess.running_job != 0) {
+        JobManager::Instance().Kill(sess.running_job);
+        sess.running_job = 0;
     }
-    sess->kernel_ready = false;
-    sess->status = "not started";
-    NotebookEnsureKernel(*sess);
-    status_message_ = "Notebook: kernel restarted";
+    for (auto &kv : sess.kernels) {
+        if (kv.second.job != 0) {
+            JobManager::Instance().WriteStdin(kv.second.job, NotebookKernelShutdownRequest());
+            JobManager::Instance().Kill(kv.second.job);
+            kv.second.job = 0;
+        }
+        kv.second.ready = false;
+        kv.second.status = "not started";
+    }
 }
 
 void Editor::NotebookClearOutputs(int buffer_id, int cell_index) {
@@ -25078,10 +28293,7 @@ void Editor::NotebookClearOutputs(int buffer_id, int cell_index) {
 void Editor::NotebookCloseSession(int buffer_id) {
     auto it = notebooks_.find(buffer_id);
     if (it == notebooks_.end()) return;
-    if (it->second.kernel_job != 0) {
-        JobManager::Instance().WriteStdin(it->second.kernel_job, NotebookKernelShutdownRequest());
-        JobManager::Instance().Kill(it->second.kernel_job);
-    }
+    NotebookKillKernels(it->second);
     notebooks_.erase(it);
 }
 
@@ -25230,5 +28442,128 @@ bool Editor::NotebookGotoCell(int cell_index) {
     const NotebookCellSpan &span = sess->spans[static_cast<size_t>(cell_index)];
     int row = span.end_row > span.first_row ? span.first_row : (span.marker_row >= 0 ? span.marker_row : span.first_row);
     CurPane().cursor = {std::max(0, std::min(row, Buf().LineCount() - 1)), 0};
+    return true;
+}
+
+// --- Per-cell kernels -------------------------------------------------------
+
+namespace {
+// Whether the first word of `command` names an executable found on PATH
+// (or is itself an absolute/relative path to one). Used to drop kernels
+// whose interpreter isn't installed here from the dropdown.
+bool NotebookCommandAvailable(const std::string &program) {
+    if (program.empty()) return false;
+    if (program.find('/') != std::string::npos) return access(program.c_str(), X_OK) == 0;
+    const char *path_env = getenv("PATH");
+    if (!path_env) return false;
+    std::string paths = path_env;
+    size_t start = 0;
+    while (start <= paths.size()) {
+        size_t colon = paths.find(':', start);
+        std::string dir = paths.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
+        if (!dir.empty() && access((dir + "/" + program).c_str(), X_OK) == 0) return true;
+        if (colon == std::string::npos) break;
+        start = colon + 1;
+    }
+    return false;
+}
+}  // namespace
+
+void Editor::SetNotebookKernels(std::vector<NotebookKernelSpec> specs) {
+    std::vector<NotebookKernelSpec> kept;
+    for (NotebookKernelSpec &spec : specs) {
+        if (spec.name.empty()) continue;
+        // The built-in python3 kernel with no command of its own is
+        // steered by notebook_python_; keep it regardless (a missing
+        // interpreter surfaces as a run error, same as before). Every
+        // other kernel is dropped when its program isn't on PATH so the
+        // dropdown never offers a kernel that can't run.
+        bool builtin_python = spec.mode == NotebookKernelSpec::Mode::Python && spec.command.empty();
+        if (!builtin_python && !NotebookCommandAvailable(spec.command.empty() ? std::string() : spec.command.front())) continue;
+        if (spec.display_name.empty()) spec.display_name = spec.name;
+        kept.push_back(std::move(spec));
+    }
+    if (kept.empty()) {
+        kept.push_back({"python3", "Python 3", "py", {}, NotebookKernelSpec::Mode::Python});
+    }
+    notebook_kernels_ = std::move(kept);
+}
+
+std::string Editor::NotebookDefaultKernelName(int buffer_id) const {
+    auto it = notebooks_.find(buffer_id);
+    if (it == notebooks_.end()) return "";
+    return NotebookDefaultKernel(it->second.doc, notebook_kernels_);
+}
+
+std::string Editor::NotebookCellKernelName(int buffer_id, int cell_index) {
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess) return "";
+    if (cell_index < 0) cell_index = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
+    if (cell_index < 0 || cell_index >= static_cast<int>(sess->doc.cells.size())) return "";
+    std::string name = NotebookCellKernel(sess->doc.cells[static_cast<size_t>(cell_index)]);
+    if (name.empty()) name = NotebookDefaultKernel(sess->doc, notebook_kernels_);
+    return name;
+}
+
+bool Editor::NotebookSetCellKernel(int buffer_id, int cell_index, const std::string &name) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess) return false;
+    NotebookSyncFromText(*sess);
+    if (cell_index < 0) cell_index = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
+    if (cell_index < 0 || cell_index >= static_cast<int>(sess->doc.cells.size())) return false;
+    NotebookCell &cell = sess->doc.cells[static_cast<size_t>(cell_index)];
+    // Store "" (follow the notebook default) as an absent key rather than
+    // an explicit empty one, so a cell on the default kernel writes no
+    // extra metadata to the file.
+    std::string effective_default = NotebookDefaultKernel(sess->doc, notebook_kernels_);
+    if (name.empty() || name == effective_default) {
+        ::NotebookSetCellKernel(&cell, "");
+    } else {
+        ::NotebookSetCellKernel(&cell, name);
+    }
+    if (buffer_id >= 0 && buffer_id < static_cast<int>(buffers_.size())) buffers_[static_cast<size_t>(buffer_id)].modified = true;
+    // The cell body is highlighted with its kernel's language, so a kernel
+    // change re-colors it -- ask the Lua syntax layer to re-run.
+    if (lua_) lua_->DoString("if mep.syntax_auto then mep.syntax_highlight() end");
+    return true;
+}
+
+const NotebookSession::KernelProc *Editor::NotebookKernelState(int buffer_id, const std::string &name) const {
+    auto it = notebooks_.find(buffer_id);
+    if (it == notebooks_.end()) return nullptr;
+    auto kit = it->second.kernels.find(name);
+    return kit == it->second.kernels.end() ? nullptr : &kit->second;
+}
+
+std::string Editor::NotebookCellLanguageAtRow(int buffer_id, int row) {
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess) return "";
+    int idx = NotebookSpanAtRow(sess->spans, row);
+    if (idx < 0 || idx >= static_cast<int>(sess->spans.size())) return "";
+    const NotebookCellSpan &span = sess->spans[static_cast<size_t>(idx)];
+    if (span.type == NotebookCellType::Markdown) return "md";
+    if (span.type != NotebookCellType::Code) return "";
+    std::string name = idx < static_cast<int>(sess->doc.cells.size())
+                           ? NotebookCellKernel(sess->doc.cells[static_cast<size_t>(idx)])
+                           : "";
+    if (name.empty()) name = NotebookDefaultKernel(sess->doc, notebook_kernels_);
+    const NotebookKernelSpec *spec = FindNotebookKernel(notebook_kernels_, name);
+    return spec ? spec->language : "py";
+}
+
+bool Editor::NotebookCellLspContext(int buffer_id, int row, int *first_row, int *end_row, std::string *language) {
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess) return false;
+    int idx = NotebookSpanAtRow(sess->spans, row);
+    if (idx < 0 || idx >= static_cast<int>(sess->spans.size())) return false;
+    const NotebookCellSpan &span = sess->spans[static_cast<size_t>(idx)];
+    // A marker selects the cell in the UI, but isn't source text the kernel
+    // (or an LSP) can parse.
+    if (span.type != NotebookCellType::Code || row < span.first_row || row >= span.end_row) return false;
+    std::string lang = NotebookCellLanguageAtRow(buffer_id, row);
+    if (lang.empty()) return false;
+    if (first_row) *first_row = span.first_row;
+    if (end_row) *end_row = span.end_row;
+    if (language) *language = std::move(lang);
     return true;
 }

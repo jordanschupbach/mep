@@ -1,0 +1,40 @@
+#+TITLE: Timestamps and scheduling
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Inserting a date
+
+| Command                        | Inserts                            |
+|--------------------------------+------------------------------------|
+| =:MepOrgTimestamp=             | an active timestamp                |
+| =:MepOrgTimestampInactive=     | an inactive one, in square brackets |
+| =:MepOrgTimestampRange=        | a range between two dates          |
+| =:MepOrgTimestampRepeater=     | add a repeater to a timestamp      |
+
+*Active* timestamps appear in the [[file:org-agenda.html][agenda]]; inactive ones do not. Use an
+inactive one to record when something happened without it turning into an
+appointment.
+
+* Adjusting one
+
+| Command                      | Does                         |
+|------------------------------+------------------------------|
+| =:MepOrgTimestampIncr=       | move the date forward        |
+| =:MepOrgTimestampDecr=       | move it back                 |
+| =:MepOrgTimestampHighlight=  | highlight timestamps in view |
+
+* Scheduling a task
+
+| Command               | Sets                                        |
+|-----------------------+---------------------------------------------|
+| =:MepOrgScheduled=    | =SCHEDULED:= -- when you intend to start    |
+| =:MepOrgDeadline=     | =DEADLINE:= -- when it must be done         |
+
+The distinction is worth keeping: scheduled controls when a task starts
+showing up in your agenda, deadline controls when it becomes urgent.
+
+* See also
+
+- [[file:org-agenda.html][Agenda]] -- what these dates feed.
+- [[file:org-todo.html][TODO keywords and tags]] -- the headings they attach to.

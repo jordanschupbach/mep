@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buffers, text and the cursor</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Lua API">
+<meta name="help-order" content="10">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Buffers, text and the cursor</h1>
+<h1>What is here</h1>
+<p>Reading and changing buffer contents, moving the cursor, the clipboard, folds and undo.</p>
+<p>This page is generated from mep's own binding table, so it lists what
+the running editor actually exposes. Call any of these from
+<code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
+<h1>The bindings (69)</h1>
+<p>A dash means that binding has no doc comment in the source yet, not
+that it does nothing.</p>
+<table>
+<tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>mep.buffer_change_epoch</code></td><td>--</td></tr>
+<tr><td><code>mep.buffer_count</code></td><td>returns the number of currently open buffers</td></tr>
+<tr><td><code>mep.buffer_cursor_row</code></td><td>returns the cursor row of whichever pane in the active tab shows a given buffer</td></tr>
+<tr><td><code>mep.buffer_deco_add</code></td><td>adds a decoration to a specific (possibly background) buffer</td></tr>
+<tr><td><code>mep.buffer_delete</code></td><td>deletes a buffer by id</td></tr>
+<tr><td><code>mep.buffer_filename</code></td><td>returns a buffer's file path</td></tr>
+<tr><td><code>mep.buffer_get_lines</code></td><td>returns a buffer's lines</td></tr>
+<tr><td><code>mep.buffer_list</code></td><td>lists every open buffer as {display, data} picker items</td></tr>
+<tr><td><code>mep.buffer_modified</code></td><td>returns whether a buffer has unsaved changes</td></tr>
+<tr><td><code>mep.buffer_new</code></td><td>creates a new empty buffer without switching any pane to it</td></tr>
+<tr><td><code>mep.buffer_ns_clear</code></td><td>clears every decoration under a namespace in a specific (possibly background) buffer</td></tr>
+<tr><td><code>mep.buffer_on_screen</code></td><td>whether some pane in the active tab shows the buffer</td></tr>
+<tr><td><code>mep.buffer_open_beside</code></td><td>shows a buffer in a pane that isn't a navigator, splitting if need be</td></tr>
+<tr><td><code>mep.buffer_save_epoch</code></td><td>--</td></tr>
+<tr><td><code>mep.buffer_set_drag_resolver</code></td><td>registers a row-&gt;path resolver so a buffer's own rows can be dragged onto a pane to open</td></tr>
+<tr><td><code>mep.buffer_set_filename</code></td><td>sets a buffer's raw filename</td></tr>
+<tr><td><code>mep.buffer_set_footer</code></td><td>sets the key hint drawn along the bottom of panes showing a buffer</td></tr>
+<tr><td><code>mep.buffer_set_hide_line_numbers</code></td><td>opts a buffer out of the number/relativenumber gutter</td></tr>
+<tr><td><code>mep.buffer_set_lines</code></td><td>replaces the entire contents of a (possibly background) buffer</td></tr>
+<tr><td><code>mep.buffer_set_on_enter</code></td><td>registers a callback that replaces bare Enter/KP_Enter's default Normal-mode behavior for a buffer</td></tr>
+<tr><td><code>mep.buffer_set_on_image_toggle</code></td><td>registers a callback that replaces bare Shift+I's default Normal-mode behavior for a buffer</td></tr>
+<tr><td><code>mep.buffer_set_on_key</code></td><td>registers a buffer-scoped Normal-mode key filter</td></tr>
+<tr><td><code>mep.buffer_set_on_write</code></td><td>registers a callback that replaces a buffer's real disk write</td></tr>
+<tr><td><code>mep.buffer_set_row_cursor</code></td><td>makes a buffer's cursor select a whole row instead of a character</td></tr>
+<tr><td><code>mep.buffer_set_unlisted</code></td><td>hides a buffer from the Buffers sidebar and the buffer picker</td></tr>
+<tr><td><code>mep.buffer_set_wrap</code></td><td>opts a buffer out of :set wrap's soft-wrap</td></tr>
+<tr><td><code>mep.buffer_switch</code></td><td>switches the focused pane to show a given buffer</td></tr>
+<tr><td><code>mep.buffer_text_cols</code></td><td>returns the text column budget of the pane showing a buffer</td></tr>
+<tr><td><code>mep.buffer_workspace</code></td><td>the stable id of the workspace a buffer belongs to</td></tr>
+<tr><td><code>mep.clipboard_get</code></td><td>returns the system clipboard's text</td></tr>
+<tr><td><code>mep.clipboard_set</code></td><td>copies text to the system clipboard</td></tr>
+<tr><td><code>mep.current_buffer</code></td><td>returns the active pane's buffer id</td></tr>
+<tr><td><code>mep.current_pane_id</code></td><td>returns the active pane's id</td></tr>
+<tr><td><code>mep.current_tab_id</code></td><td>returns the active tab's stable id</td></tr>
+<tr><td><code>mep.cursor</code></td><td>returns the current cursor position</td></tr>
+<tr><td><code>mep.filename</code></td><td>--</td></tr>
+<tr><td><code>mep.fold_clear_provider</code></td><td>removes every fold previously created under a given provider name</td></tr>
+<tr><td><code>mep.fold_create</code></td><td>creates a fold over a line range</td></tr>
+<tr><td><code>mep.fold_toggle</code></td><td>opens or closes the fold at the cursor</td></tr>
+<tr><td><code>mep.get_line</code></td><td>returns the text of a 1-indexed line</td></tr>
+<tr><td><code>mep.insert_text</code></td><td>inserts text at the cursor position</td></tr>
+<tr><td><code>mep.jump_to_buffer</code></td><td>switches workspace/tab/pane to land on a buffer wherever it lives</td></tr>
+<tr><td><code>mep.line_count</code></td><td>returns the number of lines in the current buffer</td></tr>
+<tr><td><code>mep.menubar_set_visible</code></td><td>shows or hides the top menu bar outright</td></tr>
+<tr><td><code>mep.menubar_toggle</code></td><td>shows/hides the top menu bar, the same thing tapping mod1 does</td></tr>
+<tr><td><code>mep.menubar_visible</code></td><td>returns whether the top menu bar is currently shown</td></tr>
+<tr><td><code>mep.mod1_name</code></td><td>returns the display name of whichever modifier is currently mod1</td></tr>
+<tr><td><code>mep.replace_lines</code></td><td>replaces a 1-indexed, end-exclusive line range with a new set of lines</td></tr>
+<tr><td><code>mep.set_cursor</code></td><td>moves the cursor to a 1-indexed position</td></tr>
+<tr><td><code>mep.set_line</code></td><td>replaces the content of a 1-indexed line</td></tr>
+<tr><td><code>mep.split_below</code></td><td>opens a new horizontal split below the focused pane</td></tr>
+<tr><td><code>mep.term_resize</code></td><td>resizes a PTY-backed job's terminal dimensions</td></tr>
+<tr><td><code>mep.term_start</code></td><td>spawns a subprocess against a real PTY (raw stdout only, no separate stderr stream) instead of plain pipes</td></tr>
+<tr><td><code>mep.termsend_candidates</code></td><td>lists terminal buffer ids currently shown by a pane in the active tab</td></tr>
+<tr><td><code>mep.termsend_register</code></td><td>registers a source buffer's default termsend target</td></tr>
+<tr><td><code>mep.termsend_target</code></td><td>looks up the registered termsend target buffer for a source buffer</td></tr>
+<tr><td><code>mep.termsend_unregister</code></td><td>removes a source buffer's registered termsend target</td></tr>
+<tr><td><code>mep.todo_scan_matches</code></td><td>scans the current buffer for TODO/FIXME/HACK/NOTE-style markers</td></tr>
+<tr><td><code>mep.toggle_zen</code></td><td>--</td></tr>
+<tr><td><code>mep.tree_build_rows</code></td><td>builds the flattened row list for the file-tree sidebar</td></tr>
+<tr><td><code>mep.ui_confirm</code></td><td>shows a yes/no confirmation prompt and calls on_done with the choice</td></tr>
+<tr><td><code>mep.ui_input</code></td><td>shows a text prompt overlay and calls on_done with the entered text (or nothing on Escape)</td></tr>
+<tr><td><code>mep.ui_select</code></td><td>shows a fixed-list chooser and calls on_done with the chosen 1-indexed index (or nothing on Escape)</td></tr>
+<tr><td><code>mep.url_normalize</code></td><td>normalizes omnibar input into a loadable target</td></tr>
+<tr><td><code>mep.url_resolve</code></td><td>resolves a reference against an absolute URL</td></tr>
+<tr><td><code>mep.url_under_cursor</code></td><td>returns the URL under the cursor, if any</td></tr>
+<tr><td><code>mep.visual_change</code></td><td>deletes the current Visual selection and enters Insert mode at the deletion point, like pressing "c"</td></tr>
+<tr><td><code>mep.visual_selection</code></td><td>returns the currently selected text without altering the selection or any register</td></tr>
+<tr><td><code>mep.vsplit_right</code></td><td>opens path in a new vertical split to the right of the focused pane</td></tr>
+</table>
+<h1>See also</h1>
+<ul>
+<li><a href="config.html">Configuration</a> -- where to call these from.</li>
+<li><a href="recipes.html">Configuration recipes</a> -- worked examples.</li>
+</ul>
+</body>
+</html>

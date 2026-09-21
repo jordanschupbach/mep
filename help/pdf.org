@@ -1,0 +1,48 @@
+#+TITLE: PDF
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="20">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Reading
+
+Open a =.pdf= and it renders in a pane. Scrolling, zoom and the usual pane
+keys work.
+
+| From Lua                     | Does                      |
+|------------------------------+---------------------------|
+| =mep.pdf_goto_page(n)=       | jump to a page            |
+| =mep.pdf_current_page()=     | which page is showing     |
+| =mep.pdf_outline()=          | the document's outline    |
+| =mep.pdf_reload()=           | re-read the file          |
+| =mep.is_pdf_buffer(buf)=     | is this a PDF?            |
+
+* The outline
+
+A PDF with bookmarks gets an outline you can navigate rather than scrolling
+-- the table of contents the author built, used as a jump list.
+
+* Links
+
+Internal links jump within the document; external ones open in the browser.
+
+* Text
+
+Text is extracted, not just rasterised, so search finds real words and you
+can copy from the document.
+
+* Encrypted files
+
+A password-protected PDF is handled, including the common encryption
+revisions. An unsupported one says so rather than rendering blank.
+
+* Theming
+
+Like other rendered documents, a PDF is re-tinted to your theme by default
+-- a white page in a dark editor is jarring. The header reads
+=[theme, Ctrl-R]=; =Ctrl-R= shows the document's real colours, which is what
+you want when checking how something will print.
+
+* See also
+
+- [[file:viewers-overview.html][What mep can open]] -- the other formats.
+- [[file:org-export.html][Exporting]] -- producing a PDF from org.

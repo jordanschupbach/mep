@@ -1,0 +1,62 @@
+#+TITLE: Debugging
+#+HTML_HEAD: <meta name="help-section" content="Running code">
+#+HTML_HEAD: <meta name="help-order" content="60">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* The keys
+
+Everything is on the =<leader>d= group.
+
+| Key          | Does                              |
+|--------------+-----------------------------------|
+| =<leader>dd= | start, or continue                |
+| =<leader>db= | toggle a breakpoint on this line  |
+| =<leader>dc= | clear every breakpoint in the file |
+| =<leader>dn= | step over                         |
+| =<leader>di= | step into                         |
+| =<leader>do= | step out                          |
+| =<leader>dv= | evaluate the expression under the cursor |
+| =<leader>dr= | restart                           |
+| =<leader>dt= | terminate                         |
+| =<leader>du= | show or hide the debug UI         |
+
+=<leader>dd= is the one key to remember: it starts a session if there is
+none and continues if there is.
+
+Commands: =:MepDapBreakpoint=, =:MepDapContinue=, =:MepDapTerminate=.
+
+* Breakpoints
+
+A breakpoint shows as a sign in the gutter column, alongside git marks and
+diagnostics -- one mark per row, highest priority winning.
+
+Breakpoints are set before or during a session; =mep.dap_breakpoint_lines()=
+and =mep.dap_toggle_breakpoint()= reach them from Lua.
+
+* The debug UI
+
+=<leader>du= toggles a sidebar with three sections:
+
+| Section     | Shows                                    |
+|-------------+------------------------------------------|
+| Call Stack  | frames; select one to see its scope      |
+| Variables   | locals and arguments for the selected frame |
+| Breakpoints | every breakpoint, across files           |
+
+Alongside it, a Debug Console pane shows the adapter's output and takes
+expressions to evaluate.
+
+* Adapters
+
+mep speaks the Debug Adapter Protocol, so a language is debuggable when its
+adapter is installed and on =$PATH=.
+
+#+begin_src lua
+mep.opt.dap_r_port = 18721   -- the port the R adapter listens on
+#+end_src
+
+* See also
+
+- [[file:tests.html][Tests]] -- usually the faster way to find the problem.
+- [[file:repl.html][REPL and send-to-terminal]] -- for poking at code interactively.
+- [[file:sidebars.html][Sidebars]] -- the debug UI is one.

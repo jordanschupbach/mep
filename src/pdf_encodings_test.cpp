@@ -227,7 +227,32 @@ void TestCffStandardStringsBasics() {
     CHECK(std::string(pdfenc::CffStandardString(1)) == "space");
     CHECK(pdfenc::CffStandardString(-1) == nullptr);
     CHECK(pdfenc::CffStandardString(pdfenc::CffStandardStringCount()) == nullptr);
-    CHECK(pdfenc::CffStandardStringCount() > 200);  // sanity: the real table is large
+    // The CFF spec's predefined string table (Appendix A) has EXACTLY 391
+    // entries (SIDs 0-390, last = "Semibold"). This count is load-bearing:
+    // it's the boundary CffSidToName uses to split predefined SIDs from a
+    // font's own custom String INDEX, so an off-by-N here silently maps
+    // every custom glyph name to the wrong SID -- which is exactly the bug
+    // a spurious duplicate "fi","fl" pair in the "ff"/"ffi"/"ffl" run
+    // (SID 266-268) once caused, shifting the count to 393 and rendering
+    // embedded-CFF math glyphs (=, forall, element) as their charset
+    // neighbors.
+    CHECK(pdfenc::CffStandardStringCount() == 391);
+    CHECK(std::string(pdfenc::CffStandardString(266)) == "ff");
+    CHECK(std::string(pdfenc::CffStandardString(267)) == "ffi");
+    CHECK(std::string(pdfenc::CffStandardString(268)) == "ffl");
+    CHECK(std::string(pdfenc::CffStandardString(378)) == "Ydieresissmall");
+    CHECK(std::string(pdfenc::CffStandardString(390)) == "Semibold");
+    CHECK(std::string(pdfenc::CffStandardString(389)) == "Roman");
+    // The ligature run near the end must be exactly ff, ffi, ffl -- fi/fl
+    // appear only once, far earlier at SID 109/110.
+    for (int sid = 0; sid < pdfenc::CffStandardStringCount(); ++sid) {
+        if (std::string(pdfenc::CffStandardString(sid)) == "ff") {
+            CHECK(std::string(pdfenc::CffStandardString(sid + 1)) == "ffi");
+            CHECK(std::string(pdfenc::CffStandardString(sid + 2)) == "ffl");
+        }
+    }
+    CHECK(std::string(pdfenc::CffStandardString(109)) == "fi");
+    CHECK(std::string(pdfenc::CffStandardString(110)) == "fl");
 }
 
 void TestGlyphNameToUnicodeEscapes() {

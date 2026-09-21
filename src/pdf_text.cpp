@@ -142,6 +142,72 @@ std::vector<PdfTextMatch> Search(const unsigned char *doc_data, size_t doc_len, 
     return results;
 }
 
+std::vector<GlyphBox> PageGlyphBoxes(const unsigned char *doc_data, size_t doc_len, const pdfxref::XrefTable &table,
+                                     const pdfdoc::Page &page) {
+    std::vector<GlyphBox> out;
+    std::string content = pdfrender::GetPageContent(doc_data, doc_len, table, page);
+    if (content.empty()) return out;
+    pdfrender::Canvas canvas = pdfrender::Canvas::MakeWhite(1, 1);
+    std::vector<pdfrender::TextGlyph> glyphs;
+    pdfrender::ExtractContentStreamText(content, canvas, pdfrender::Mat2D{}, page.resources, doc_data, doc_len, table,
+                                         &glyphs);
+    out.reserve(glyphs.size());
+    for (const pdfrender::TextGlyph &g : glyphs) out.push_back(GlyphBox{g.left, g.top, g.right, g.bottom});
+    return out;
+}
+
+std::vector<PdfTextRectPt> SelectionRects(const std::vector<GlyphBox> &glyphs, double ax, double ay, double bx,
+                                          double by) {
+    std::vector<PdfTextRectPt> out;
+    if (glyphs.empty()) return out;
+    // Distance^2 from a point to a glyph box (0 if inside), y-up boxes.
+    auto dist2 = [](const GlyphBox &g, double px, double py) {
+        double dx = std::max({g.left - px, 0.0, px - g.right});
+        double dy = std::max({g.bottom - py, 0.0, py - g.top});
+        return dx * dx + dy * dy;
+    };
+    auto nearest = [&](double px, double py) {
+        size_t best = 0;
+        double best_d = dist2(glyphs[0], px, py);
+        for (size_t i = 1; i < glyphs.size(); ++i) {
+            double d = dist2(glyphs[i], px, py);
+            if (d < best_d) {
+                best_d = d;
+                best = i;
+            }
+        }
+        return best;
+    };
+    size_t ai = nearest(ax, ay), bi = nearest(bx, by);
+    size_t lo = std::min(ai, bi), hi = std::max(ai, bi);
+
+    // Group the selected run into per-line rects, splitting on the same
+    // vertical-center jump Search/BuildPageText use.
+    PdfTextRectPt cur;
+    bool have = false;
+    double prev_center = 0, prev_height = 0;
+    for (size_t i = lo; i <= hi; ++i) {
+        const GlyphBox &g = glyphs[i];
+        double height = std::max(g.top - g.bottom, 1e-6);
+        double center = (g.top + g.bottom) / 2.0;
+        bool new_line = have && std::fabs(center - prev_center) > 0.5 * std::max(height, prev_height);
+        if (!have || new_line) {
+            if (have) out.push_back(cur);
+            cur = PdfTextRectPt{g.left, g.top, g.right, g.bottom};
+            have = true;
+        } else {
+            cur.left = std::min(cur.left, g.left);
+            cur.right = std::max(cur.right, g.right);
+            cur.top = std::max(cur.top, g.top);
+            cur.bottom = std::min(cur.bottom, g.bottom);
+        }
+        prev_center = center;
+        prev_height = height;
+    }
+    if (have) out.push_back(cur);
+    return out;
+}
+
 std::vector<PdfHighlightRect> MatchRectsForPage(const pdfdoc::PdfDocument &doc, int page_index, float px_per_pt,
                                                  const std::vector<PdfTextMatch> &matches) {
     std::vector<PdfHighlightRect> out;

@@ -39,10 +39,13 @@ Org's markers work as you would expect: =*bold*=, =/italic/=, =_underline_=,
 =+strikethrough+=, ==verbatim== and =~code~=.
 
 The markers themselves are hidden and the text is styled in their place, so
-=*bold*= reads as bold text. Put the cursor on the line and the markers come
-straight back, so there is never a construct you can see but not edit.
-=<leader>otm= turns concealment off altogether, for every construct that
-uses it -- emphasis, links and table rules alike.
+=*bold*= reads as bold text -- and the line closes up over them rather than
+leaving their width behind as a gap. Put the cursor on the line and the
+markers come straight back, on their real columns, so there is never a
+construct you can see but not edit. =<leader>otm= turns concealment off
+altogether, for every construct that uses it -- emphasis, links and table
+rules alike. See [[file:org-visuals.html][Org rendering]] for what the
+closing-up does inside a table cell.
 
 * Heading sizes
 

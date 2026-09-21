@@ -9,6 +9,11 @@
 the sign column, shaded fenced code blocks, concealed link and emphasis
 markers, shaded front matter.
 
+A concealed row closes up over what it hides -- =**bold**= renders as four
+columns, not eight with four blank -- and the row the cursor is on shows its
+real markers on their real columns, so what you are editing is what is in
+the file.
+
 | Command                  | Does                                 |
 |--------------------------+--------------------------------------|
 | =:MepMarkdown=           | apply all of the below               |

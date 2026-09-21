@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 
 namespace {
@@ -1461,4 +1462,57 @@ OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int bu
         plan.rows.push_back(std::move(out));
     }
     return plan;
+}
+
+// --- Org inline images: the drawn figure's geometry (org_doc.h) -------
+
+OrgImageLayout OrgImageLayoutFor(int px_w, int px_h, float char_width, float line_height, int avail_cols,
+                                 int text_cols) {
+    OrgImageLayout out;
+    if (char_width <= 0.0f) char_width = 1.0f;
+    if (line_height <= 0.0f) line_height = 1.0f;
+    // `:set textwidth=0` (wrapping off) still needs a measure to lay a
+    // figure out against; org's own conventional 80 is it.
+    if (text_cols <= 0) text_cols = kOrgImageLineWidthChars;
+    // A pane that hasn't reported its width yet (Pane::text_cols is 0
+    // until first drawn) is measured as if it were exactly as wide as
+    // the text column -- the ordinary case, and the one that makes the
+    // very first frame agree with every later one.
+    if (avail_cols <= 0) avail_cols = text_cols;
+
+    // The column the figure is centered in: the text width, or the pane
+    // if that is narrower.
+    const float box_w = static_cast<float>(avail_cols < text_cols ? avail_cols : text_cols) * char_width;
+    // ...and the widest it may be drawn within that column.
+    const float target_cols =
+        std::min(static_cast<float>(avail_cols), static_cast<float>(text_cols) * kOrgImageWidthFraction);
+    const float target_w = target_cols * char_width;
+
+    if (px_w <= 0 || px_h <= 0) {
+        out.width = target_w;
+        out.slots = kOrgImageUnknownSlots;
+        out.height = static_cast<float>(out.slots) * line_height;
+        out.offset_x = std::max(0.0f, (box_w - out.width) * 0.5f);
+        return out;
+    }
+
+    // Downscale to the target width, but never *up*: past its native
+    // size an image only gets blurrier, and a small figure sitting at
+    // its own size reads as deliberate rather than broken.
+    float scale = std::min(1.0f, target_w / static_cast<float>(px_w));
+    // A portrait tall enough to run past the height ceiling shrinks the
+    // rest of the way instead of being cropped or letterboxed.
+    scale = std::min(scale, static_cast<float>(kOrgImageMaxSlots) * line_height / static_cast<float>(px_h));
+
+    out.width = static_cast<float>(px_w) * scale;
+    out.height = static_cast<float>(px_h) * scale;
+    // Round the reserved height up to whole line-heights -- the row grid
+    // is the only granularity a slot count has. The epsilon keeps an
+    // image whose height lands exactly on a multiple (the scaled-to-the-
+    // ceiling case above, most visibly) from tipping into one extra,
+    // empty, slot on a float hair.
+    const float rows = out.height / line_height;
+    out.slots = std::max(1, static_cast<int>(std::ceil(rows - 0.001f)));
+    out.offset_x = std::max(0.0f, (box_w - out.width) * 0.5f);
+    return out;
 }

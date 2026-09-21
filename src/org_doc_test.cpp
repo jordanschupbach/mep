@@ -618,6 +618,80 @@ int main() {
         CHECK(!plan.rows[0].empty());
     }
 
+    // --- Org inline images: the drawn figure's geometry (OrgImageLayoutFor).
+    {
+        // The default metrics of the built-in font: a 22px line height
+        // with a ~0.52 advance ratio, and a pane wider than org's own
+        // 80-column text width.
+        const float cw = 11.44f, lh = 22.0f;
+        const float text_w = 80.0f * cw;
+        const float target_w = 80.0f * kOrgImageWidthFraction * cw;
+
+        // A figure wider than the target is scaled down to exactly it,
+        // and centered in the 80-column text column -- so the gaps on
+        // either side are equal, and the one on the left is real.
+        OrgImageLayout wide = OrgImageLayoutFor(1600, 900, cw, lh, 120, 80);
+        CHECK(wide.width > target_w - 0.5f && wide.width < target_w + 0.5f);
+        CHECK(wide.height > 0.0f);
+        // Aspect preserved.
+        CHECK(wide.height > wide.width * 900.0f / 1600.0f - 0.5f);
+        CHECK(wide.height < wide.width * 900.0f / 1600.0f + 0.5f);
+        const float expect_off = (text_w - wide.width) * 0.5f;
+        CHECK(wide.offset_x > expect_off - 0.5f && wide.offset_x < expect_off + 0.5f);
+        // No dead space: the reserved band is the drawn height rounded
+        // up to whole line-heights, never more.
+        CHECK(static_cast<float>(wide.slots) * lh >= wide.height);
+        CHECK(static_cast<float>(wide.slots - 1) * lh < wide.height);
+    }
+    {
+        const float cw = 11.44f, lh = 22.0f;
+        // A figure already narrower than the target keeps its own size
+        // rather than being stretched up to fill the column.
+        OrgImageLayout small = OrgImageLayoutFor(64, 64, cw, lh, 120, 80);
+        CHECK(small.width > 63.5f && small.width < 64.5f);
+        CHECK(small.height > 63.5f && small.height < 64.5f);
+        CHECK(small.slots == 3);  // ceil(64 / 22)
+        CHECK(small.offset_x > 0.0f);
+    }
+    {
+        const float cw = 11.44f, lh = 22.0f;
+        // A very tall portrait shrinks to the height ceiling instead of
+        // claiming screenfuls -- and still reserves exactly what it draws.
+        OrgImageLayout tall = OrgImageLayoutFor(100, 100000, cw, lh, 120, 80);
+        CHECK(tall.slots == kOrgImageMaxSlots);
+        CHECK(static_cast<float>(tall.slots) * lh >= tall.height);
+        CHECK(tall.width < 100.0f);  // scaled down together with the height
+    }
+    {
+        const float cw = 11.44f, lh = 22.0f;
+        // A pane narrower than org's text width clamps both the target
+        // width and the column the figure is centered in, so nothing
+        // overflows and the offset stays non-negative.
+        OrgImageLayout narrow = OrgImageLayoutFor(1600, 900, cw, lh, 20, 80);
+        CHECK(narrow.width <= 20.0f * cw + 0.5f);
+        CHECK(narrow.offset_x >= 0.0f);
+        CHECK(narrow.offset_x + narrow.width <= 20.0f * cw + 0.5f);
+    }
+    {
+        const float cw = 11.44f, lh = 22.0f;
+        // Unknown dimensions (a header that couldn't be sniffed) fall
+        // back to a fixed, modest band rather than 0 or a screenful.
+        OrgImageLayout unknown = OrgImageLayoutFor(0, 0, cw, lh, 120, 80);
+        CHECK(unknown.slots == kOrgImageUnknownSlots);
+        // `:set textwidth` is what the figure is measured against, and
+        // `textwidth=0` falls back to org's conventional 80.
+        OrgImageLayout tw60 = OrgImageLayoutFor(1600, 900, cw, lh, 200, 60);
+        CHECK(tw60.width < OrgImageLayoutFor(1600, 900, cw, lh, 200, 80).width);
+        OrgImageLayout tw0 = OrgImageLayoutFor(1600, 900, cw, lh, 200, 0);
+        CHECK(tw0.width > OrgImageLayoutFor(1600, 900, cw, lh, 200, 80).width - 0.5f);
+        CHECK(tw0.width < OrgImageLayoutFor(1600, 900, cw, lh, 200, 80).width + 0.5f);
+        // Degenerate metrics must not divide by zero or go negative.
+        OrgImageLayout degenerate = OrgImageLayoutFor(100, 100, 0.0f, 0.0f, 0, 0);
+        CHECK(degenerate.slots >= 1);
+        CHECK(degenerate.width > 0.0f);
+        CHECK(degenerate.offset_x >= 0.0f);
+    }
+
     std::printf("org_doc_test: all checks passed\n");
     return 0;
 }

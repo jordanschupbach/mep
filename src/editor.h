@@ -947,22 +947,38 @@ struct Buffer {
     // nothing's been collapsed yet.
     int fold_level = -1;
 
-    // Org inline-image rendering: row -> resolved file path, populated by
-    // Lua's mep.org_image_scan() (kBuiltinOrgImages, main.cpp) from
-    // [[file:...]] links whose target is a raster image, consulted by
-    // DrawPane (main.cpp) when Editor::OrgImagesVisible() is on. Kept
-    // fresh regardless of that toggle (rebuilt wholesale on every scan,
-    // same "provider replaces its own entries wholesale" convention as
-    // `folds` above) so switching the toggle on shows correct state
-    // immediately rather than waiting for the next edit.
-    std::unordered_map<int, std::string> org_image_rows;
+    // Org inline-image rendering: row -> a resolved file path plus that
+    // file's native pixel size, populated by Editor::OrgImageScan (and
+    // Lua's mep.buf_set_image_row) from [[file:...]] links whose target
+    // is a raster image, consulted by DrawPane (main.cpp) when
+    // Editor::OrgImagesVisible() is on. Kept fresh regardless of that
+    // toggle (rebuilt wholesale on every scan, same "provider replaces
+    // its own entries wholesale" convention as `folds` above) so
+    // switching the toggle on shows correct state immediately rather
+    // than waiting for the next edit.
+    //
+    // The pixel size is read out of the file's header without decoding
+    // it (image_codec::Dimensions, mtime-cached in editor.cpp) because
+    // every site that has to know how tall the row renders needs it --
+    // DrawPane, DrawPane's cursor-Y lookup, its block-card walker and
+    // Editor::UpdateScrollForPane -- and all four get their answer from
+    // Editor::OrgImageLayoutForRow, which is a pure function of these
+    // two numbers plus the current font metrics. 0/0 means "couldn't be
+    // sniffed" and falls back to kOrgImageUnknownSlots (org_doc.h).
+    struct OrgImageRender {
+        std::string path;
+        int width = 0;
+        int height = 0;
+    };
+    std::unordered_map<int, OrgImageRender> org_image_rows;
 
     // Org LaTeX/math-mode rendering (<leader>otl, Editor::OrgLatexVisible()):
     // row -> a rendered fragment's PNG path plus how many line-heights tall
     // to display it, populated by Lua's mep.org_latex_scan() (kBuiltinOrgLatex,
     // main.cpp) from $$..$$/\[..\]/#+BEGIN_LaTeX (etc.) fragments, each
     // rendered offline via tectonic+pdftoppm. `slots` is per-entry (unlike
-    // org images' shared compile-time kOrgInlineImageSlots) since a fragment's
+    // org images', which is derived from the figure's own pixel size --
+    // see Buffer::OrgImageRender above) since a fragment's
     // rendered height varies hugely -- a bare "$x$" and a multi-line matrix
     // shouldn't claim the same vertical space -- computed by
     // mep_org_latex_render (kBuiltinOrgLatex) from the rendered PNG's own
@@ -1003,9 +1019,14 @@ struct Buffer {
     // cursor-Y lookup (RowSlot) and its org-card slot walk (all main.cpp)
     // plus Editor::UpdateScrollForPane (editor.cpp) all read `lines.size()`
     // back as the row's slot count. Only ever populated while the toggle
-    // is on, and never for the table the cursor is inside -- concealment's
-    // own step-aside, one table at a time instead of one row (a per-row
-    // step-aside would reflow the table on every cursor move within it).
+    // is on, and never for the row the cursor is on (nor for a row a
+    // Visual selection covers) -- concealment's own step-aside, one row
+    // at a time, so the rest of the table stays rendered around the line
+    // being edited. Every other row of that table keeps the widths it
+    // already had, because the layout is planned from the stored cells
+    // rather than from which row is stepping aside; absence of an entry
+    // is the single signal that a row draws its own text, which is why
+    // the four sites above need no cursor test of their own.
     struct OrgTableWrapRow {
         std::vector<std::string> lines;  // what this row draws as, top to bottom
         int indent = 0;                  // display column the rendered leading `|` sits at
@@ -1018,14 +1039,18 @@ struct Buffer {
     // org_latex_rows above, this can't replace the *whole* row -- mep's
     // row renderer (DrawLineFast, main.cpp) draws one row as one run of
     // text with no notion of a mid-row texture, so surrounding text has to
-    // stay. Instead each span is drawn as a small texture painted directly
-    // over its own [col_start, col_end) column range (paint the background
-    // color first to conceal the raw "$...$" markup, same trick
-    // Decoration's own virt_overlay uses for text), sized to fit *within*
-    // that column range's own pixel width and the line's height -- never
-    // stretched wider, so it can never bleed into whatever text follows it
-    // on the same row, at the cost of an occasional cramped render for a
-    // dense fragment packed into a short span. Populated by
+    // stay. Instead each span joins DrawPane's inline-conceal collapse as
+    // one more run: its raw "$...$" columns are blanked by the base pass
+    // and reserved at the render's own width, the rest of the row slides
+    // left against it, and the texture is drawn into the hole -- so a
+    // fragment sits in its line like a word rather than floating in a box
+    // the length of its own source. The render is drawn 1:1 (the PNG's
+    // DPI already matches the editor font, see DrawPane's
+    // OrgLatexInlineScale), shrunk only when it is taller than the row.
+    // A span whose texture hasn't baked yet gets no run and keeps showing
+    // its raw source, as does a table cell with no slack to give back
+    // before its `|` (that one falls back to painting a background-color
+    // cover over the markup). Populated by
     // mep_org_latex_register_inline (kBuiltinOrgLatex), only while the
     // toggle is on (see org_latex_rows' own comment for why that's a hard
     // requirement here, not just a nicety -- unlike that field this one
@@ -1067,39 +1092,14 @@ struct Buffer {
     int LineCount() const { return static_cast<int>(lines.size()); }
 };
 
-// Default "line width" org inline images size themselves against, in
-// characters, and the fraction of that width an image targets --
-// GetOrLoadOrgInlineImageTexture's caller (DrawPane, main.cpp) multiplies
-// this by g_char_width to get a target pixel width, mirroring how a
-// LaTeX export's default \includegraphics{width=0.6\linewidth} looks
-// against an 80-column-wrapped paragraph. Images smaller than the target
-// are stretched up to it (not just downscaled), so this is a target
-// width, not just a cap. Still clamped to the pane's
-// actual available width so a narrow pane never overflows.
-constexpr int kOrgImageLineWidthChars = 80;
-constexpr float kOrgImageWidthFraction = 0.6f;
-
-// Fixed visual height (in line-heights) an inline-rendered org image
-// occupies (Editor::OrgImagesVisible()/Buffer::org_image_rows): a fixed
-// slot count, rather than one derived from each image's own pixel aspect
-// ratio, keeps the scroll/cursor visual-slot bookkeeping (DrawPane's row
-// loop and its cursor-Y lookup in main.cpp, and Editor::UpdateScrollForPane
-// in editor.cpp -- three sites that must agree exactly, the same
-// constraint folds' own "closed fold = 1 slot" rule is under) as simple as
-// folds' fixed collapse-to-1 rule, just inverted (expand instead of
-// collapse) -- an image is scaled (aspect-preserved, letterboxed against
-// this many line-heights, upscaled past native size if needed to reach
-// its target width) rather than this dictating the slot count itself.
-//
-// Sized so a square (1:1) image can actually reach kOrgImageLineWidthChars
-// * kOrgImageWidthFraction wide without this vertical budget cutting it
-// short first -- with the built-in JetBrains Mono font, a character's
-// advance width is roughly 0.52 of the line height (font size + 6px, see
-// LineHeight() in main.cpp), so that's 80 * 0.6 * 0.52 =~ 25 line-heights,
-// rounded up. A wider (landscape) image hits its width target well before
-// running into this cap; a taller-than-square one is letterboxed narrower
-// than the width target instead of growing without bound.
-constexpr int kOrgInlineImageSlots = 25;
+// The geometry of an inline-rendered org image -- its target width,
+// its centering, and the visual slots it claims -- lives in org_doc.h
+// (kOrgImageLineWidthChars / kOrgImageWidthFraction / OrgImageLayoutFor),
+// reached from here through Editor::OrgImageLayoutForRow below. Unlike
+// the fixed slot count this used to carry, the height is per-image data
+// derived from the figure's own native pixel size (Buffer::OrgImageRender),
+// so the four walkers that have to agree on a row's slot count all ask
+// that one function rather than sharing a constant.
 
 // How DrawPane draws an org headline of each depth (`* ` .. `**** `);
 // anything deeper uses the last entry. `scale` multiplies both the font
@@ -1183,7 +1183,7 @@ struct Pane {
     // gg, a search, a counted motion) from "the cursor barely moved but
     // scroll_row suddenly needs to move a lot anyway" (stepping onto/off
     // an org inline image or LaTeX fragment, which claim many visual
-    // slots for one buffer row -- kOrgInlineImageSlots) -- see
+    // slots for one buffer row -- OrgImageLayoutFor) -- see
     // UpdateScrollForPane's own comment for how this drives its
     // smoothing.
     int scroll_follow_last_cursor_row = -1;
@@ -2294,7 +2294,8 @@ struct SheetSession {
 // scroll-follow pass) so DrawPane's row loop, its cursor lookup and
 // Editor::UpdateScrollForPane all read one agreed "output block height
 // after row R" answer (NotebookTrailingSlots) -- the same three-site
-// invariant kOrgInlineImageSlots is under, just table-driven.
+// invariant org inline images are under (OrgImageLayoutFor), just
+// table-driven.
 struct NotebookSession {
     int buffer_id = -1;
     NotebookDoc doc;
@@ -2944,14 +2945,20 @@ public:
     //
     // A step past OrgConcealVisible()'s own cursor-row exemption, which
     // only un-hides markup: this also strips the *styling*, so what you
-    // are editing is exactly what is in the file. Whole-row substitutions
-    // (an inline image, a whole-row LaTeX preview) are deliberately NOT
-    // reverted -- those rows claim many visual slots, and four separate
-    // walkers (Editor::UpdateScrollForPane's row_slots, DrawPane's card
-    // and cursor-Y walkers, and its draw loop) have to agree on that
-    // count, so flipping it per cursor row would shuffle everything below
-    // by ~25 rows on every cursor move. <leader>oti / <leader>otl still
-    // get that raw source back.
+    // are editing is exactly what is in the file.
+    //
+    // A whole-row LaTeX preview *is* reverted, through
+    // OrgLatexRenderForRow above -- across the fragment's whole source
+    // range, not just its first row, since a `\[..\]` block's interior
+    // rows are exactly the ones you edit its maths on. It costs the
+    // shuffle every reveal costs (the rows below move by however many
+    // slots the image claimed), which is the price of being able to edit
+    // the fragment at all; the four walkers stay in agreement because
+    // they all ask that one function rather than reading the registry
+    // themselves. An inline image is deliberately NOT reverted: unlike a
+    // formula, a photo is not something you edit through its own source
+    // row, and at ~25 slots its reveal would shuffle a whole screenful
+    // on every cursor move. <leader>oti still gets that raw source back.
     /**
      * @brief Returns whether the cursor's own row renders as plain, undecorated text in org buffers.
      * @return True if plain-cursor-line rendering is on.
@@ -5178,13 +5185,19 @@ public:
     // rows outside a notebook code cell.
     bool NotebookCellLspContext(int buffer_id, int row, int *first_row, int *end_row, std::string *language);
     /**
-     * @brief Records the renderer's current char-width / line-height ratio, which sizes
-     * image output blocks (NotebookImageSlots). DrawPane reports it every frame before
-     * NotebookRefresh so the reserved slots match the drawn texture at any font size.
-     * @param aspect g_char_width / line height.
+     * @brief Records the renderer's current monospace advance width and line height, in
+     * pixels. DrawPane reports them every frame before NotebookRefresh and the scroll-follow
+     * pass, so every height a texture is reserved room for -- a notebook image output block
+     * (NotebookImageSlots), an org inline image (OrgImageLayoutFor) -- matches what actually
+     * gets drawn at the current font size.
+     * @param char_width The monospace advance width, in pixels.
+     * @param line_height The line height, in pixels.
      */
-    void SetNotebookCharAspect(double aspect) { notebook_char_aspect_ = aspect > 0.0 ? aspect : notebook_char_aspect_; }
-    double NotebookCharAspect() const { return notebook_char_aspect_; }
+    void SetRenderCharMetrics(double char_width, double line_height) {
+        if (char_width > 0.0) render_char_width_ = char_width;
+        if (line_height > 0.0) render_line_height_ = line_height;
+    }
+    double RenderCharAspect() const { return render_char_width_ / render_line_height_; }
     /**
      * @brief Shuts down a notebook buffer's kernel and forgets its session (called when the
      * buffer is deleted).
@@ -6187,6 +6200,15 @@ public:
         std::vector<int> rule_cols;        // columns every body row carries a '|' at
         std::vector<int> sep_rows;         // rows that are a `|---+---|` rule
         int header_end_row = -1;           // last row above the first rule, -1 when the table has none
+        // Rows of a wrapped table that stepped aside for the cursor or a
+        // Visual selection (Buffer::org_table_wrap_rows) and so draw
+        // their stored columns, which the rest of the grid's geometry is
+        // no longer measured in. The renderer draws no wash, no column
+        // rule and no horizontal rule on these -- raw text is what the
+        // step-aside is for -- and every rule above and below simply
+        // stops at them. Always empty for a table rendered as stored,
+        // where the grid covers every row including the cursor's.
+        std::vector<int> raw_rows;
     };
     /**
      * @brief Scans a buffer for org tables and the geometry needed to draw a grid over each.
@@ -7835,16 +7857,46 @@ public:
 
     // --- Org inline images (<leader>oti / mep.org_images_toggle) ---
     // Registers/replaces the resolved image path for `row` in the current
-    // buffer's org_image_rows -- called once per match by Lua's
-    // mep.org_image_scan() (kBuiltinOrgImages, main.cpp), mirroring
-    // CreateFold's "one call per range" shape rather than taking a whole
-    // replacement map at once.
+    // buffer's org_image_rows -- called once per match by OrgImageScan
+    // (and by Lua's mep.buf_set_image_row), mirroring CreateFold's "one
+    // call per range" shape rather than taking a whole replacement map
+    // at once. The file's native pixel size comes along for the ride,
+    // sniffed from its header here (mtime-cached in editor.cpp, so a
+    // rescan of an unchanged file costs a stat) because every slot-
+    // counting site downstream needs it -- see Buffer::OrgImageRender.
     /**
      * @brief Registers or replaces the resolved image path for a row in the current buffer's org_image_rows.
      * @param row The row the image reference is on.
      * @param path The resolved image file path.
      */
     void SetOrgImageRow(int row, const std::string &path);
+    // Corrects a registered row's recorded pixel size in `buffer_id`
+    // without re-resolving its path -- DrawPane's own escape hatch for
+    // the one case the scan can't see: an image file regenerated in
+    // place (a re-run org-babel `:file` block) at a different size, with
+    // no buffer edit of its own to trigger a rescan. The renderer
+    // notices when the texture it just loaded disagrees with the
+    // registry and files the correction here; the next frame lays the
+    // row out at the new size.
+    /**
+     * @brief Updates the recorded native pixel size of an already-registered org image row.
+     * @param buffer_id The buffer holding the row.
+     * @param row The row to correct.
+     * @param px_w The image's true pixel width.
+     * @param px_h The image's true pixel height.
+     */
+    void SetOrgImageRowSize(int buffer_id, int row, int px_w, int px_h);
+    /**
+     * @brief Lays out one registered org image row: its drawn size, centering offset and
+     * reserved line-heights, using the renderer's last-reported font metrics.
+     * @param img The row's registry entry.
+     * @param avail_cols The pane's text width in columns (Pane::text_cols).
+     * @return The layout every slot-counting site must agree on.
+     */
+    OrgImageLayout OrgImageLayoutForRow(const Buffer::OrgImageRender &img, int avail_cols) const {
+        return ::OrgImageLayoutFor(img.width, img.height, static_cast<float>(render_char_width_),
+                                   static_cast<float>(render_line_height_), avail_cols, text_width_);
+    }
     // Clears every entry -- called by mep.org_image_scan() before
     // rescanning, mirroring ClearFoldsFromProvider's clear-and-replace
     // pattern (there's only ever one "provider" of these, so no provider
@@ -7898,6 +7950,34 @@ public:
      * @param end_row The fragment's end row (equal to `row` for a single-line fragment).
      */
     void SetOrgLatexRow(int row, const std::string &path, int slots, int end_row);
+    // The whole-row LaTeX preview that should actually be *drawn* for
+    // `row` -- the single answer all four slot walkers (DrawPane's draw
+    // loop, its cursor-Y lookup and its org-card walk, all main.cpp, plus
+    // UpdateScrollForPane below) ask, so they cannot disagree about how
+    // many slots a row claims.
+    //
+    // nullptr when the toggle is off, when nothing is registered at `row`,
+    // or when `cursor_row` lands anywhere in [row, end_row] -- the
+    // fragment's own raw source rows. That last case is the reveal rule:
+    // the fragment you are editing shows its LaTeX source, the same
+    // "never hide what is under the caret" bargain OrgConcealVisible()'s
+    // cursor-row exemption and OrgPlainCursorLineVisible() already make,
+    // and without which a multi-line `\[..\]` block was not merely
+    // un-editable but actively wrong: the interior rows are skipped by
+    // every walker, so a cursor stepped onto one was *drawn* on the row
+    // below the image while the status line said it was inside the block.
+    // `cursor_row` is the rendering pane's own cursor row -- the pane's,
+    // not the *focused* pane's, since UpdateScrollForPane knows only the
+    // pane it was handed and all four walkers have to answer alike. A
+    // negative value disables the reveal outright.
+    /**
+     * @brief Returns the whole-row LaTeX render to draw for `row`, or nullptr when there is none or the cursor is inside the fragment's own source rows.
+     * @param buf The buffer to look `row` up in.
+     * @param row The buffer row to look up.
+     * @param cursor_row The rendering pane's cursor row, or a negative value to disable the reveal.
+     * @return The registered render, or nullptr.
+     */
+    const Buffer::OrgLatexRender *OrgLatexRenderForRow(const Buffer &buf, int row, int cursor_row) const;
     // Clears every entry -- called by mep.org_latex_scan() before
     // rescanning (and when the toggle turns off), mirroring
     // ClearOrgImageRows.
@@ -10044,7 +10124,13 @@ private:
     // has pushed mep.opt.notebook_kernels.
     std::vector<NotebookKernelSpec> notebook_kernels_ = {
         {"python3", "Python 3", "py", {}, NotebookKernelSpec::Mode::Python}};
-    double notebook_char_aspect_ = kNotebookDefaultCharAspect;
+    // The renderer's current font metrics (SetRenderCharMetrics), in
+    // pixels. Defaults match the built-in font at its default size so
+    // anything measuring a texture's reserved height before the first
+    // frame is drawn (and the headless tests, which never draw one)
+    // still gets a sane answer.
+    double render_char_width_ = kNotebookDefaultCharAspect * 22.0;
+    double render_line_height_ = 22.0;
 
     // Shared by Visual mode's d/x/y and the menu-bar Copy/Cut: operates on
     // the current selection, or the current line if there is none.
@@ -10937,7 +11023,7 @@ private:
     // Safe as a default because OrgImageScan (editor.cpp) only registers a
     // link whose target actually exists on disk, so a file referencing a
     // not-yet-generated plot reads as its ordinary [[file:...]] text
-    // rather than a kOrgInlineImageSlots-tall blank.
+    // rather than a figure-tall blank.
     bool org_images_visible_ = true;
     // Org LaTeX/math-mode rendering (<leader>otl / mep.org_latex_toggle):
     // same shape as org_images_visible_ above, but Buffer::org_latex_rows
@@ -10962,15 +11048,17 @@ private:
     // table text.
     bool org_table_wrap_visible_ = true;
     // OrgTableWrapScan's early-out state: which buffer it last planned,
-    // which table the cursor was inside (that table's first row, or -1
-    // for none) and which rows a Visual selection covered. The scan runs
-    // off a per-frame, cursor-driven hook, and re-planning every table in
-    // a long org file on every `j` would be real work done for nothing --
-    // a plain cursor move only changes the layout when it crosses into or
-    // out of a table. An edit changes the text underneath all of that, so
-    // the edit hook passes `force` instead of relying on these.
+    // which row the cursor was on *while that row was a table row* (-1
+    // for a cursor anywhere else) and which rows a Visual selection
+    // covered. The scan runs off a per-frame, cursor-driven hook, and
+    // re-planning every table in a long org file on every `j` would be
+    // real work done for nothing -- a plain cursor move only changes the
+    // layout while it is moving through a table (the row it lands on
+    // steps aside) or crossing into or out of one. An edit changes the
+    // text underneath all of that, so the edit hook passes `force`
+    // instead of relying on these.
     int org_table_wrap_buffer_ = -1;
-    int org_table_wrap_cursor_top_ = -2;  // -2 = nothing planned yet
+    int org_table_wrap_cursor_row_ = -2;  // -2 = nothing planned yet
     int org_table_wrap_sel_lo_ = -1;
     int org_table_wrap_sel_hi_ = -1;
     // Org markup concealment / scaled headlines (<leader>otm, <leader>oth):

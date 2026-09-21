@@ -20,6 +20,13 @@ A link to an image file is drawn in place, in the buffer:
 This is *on by default*; the toggle is there to get the raw =[[file:...]]=
 markup back.
 
+A figure is drawn at 80% of the text width (=:set textwidth=, 80 columns by
+default) or at its own size, whichever is smaller -- so a small icon stays
+small instead of being blown up -- and is centred in that column. It
+reserves exactly as many lines as it is tall: no empty band above or below
+it, and widening the window doesn't stretch it. A picture tall enough to
+run past 40 lines is scaled down to fit rather than cropped.
+
 A link whose target is not on disk yet -- a plot a code block has still to
 produce -- stays plain text, and turns into the picture on the next edit
 after the file appears.
@@ -104,6 +111,19 @@ Concealment is what draws =*bold*= as bold text, =[[file:x][Notes]]= as
 =Notes= and a =|---+---|= row as a line. It is on by default, and always
 steps aside for the row the cursor is on.
 
+A concealed row closes up behind what it hides. The markup is almost always
+longer than what replaces it, and the difference is *not* left behind as a
+hole: the rest of the row slides left by it, so a rendered line reads as
+prose rather than as prose with gaps punched through it. Only a rendered row
+does this -- the row the cursor is on is showing its real characters on the
+real column grid, which is the grid the caret is drawn on.
+
+Inside a table the closing-up is per cell. A table's =|= columns are what
+the grid's rules are drawn down, so the slack a concealed cell frees up is
+handed back at that cell's own end instead of pulling the rest of the row
+left: the text in the cell tightens and every pipe stays where the row above
+put it.
+
 Heading sizes are separate because they are the one piece of org rendering
 that changes a row's *height* rather than which characters it shows.
 
@@ -155,13 +175,22 @@ references like =@3$2= under the table, and a continuation row can never be
 told back apart from a row whose first cell is genuinely empty, so the wrap
 would be one-way.
 
-The table the cursor is in is never wrapped: it shows its real stored
+The row the cursor is on is never wrapped: it shows its real stored
 columns, so a cell is always edited against the widths that are in the
-file. Stepping out wraps it again. A Visual selection covering a table does
-the same. Because a wrapped row's drawn text is not the row's own text, its
-syntax colouring and concealment are skipped for as long as it is wrapped
--- the grid, the header tint and the rules still draw, and the row comes
-back fully decorated the moment the cursor enters its table.
+file. Only that one row steps aside -- the rest of the table stays wrapped
+around it, at the same column widths it already had, since those are
+planned from the whole table's stored cells and not from where the cursor
+is. Moving off the row wraps it again, and the rows a Visual selection
+covers step aside the same way (the selection is drawn against the stored
+columns too).
+
+A row showing its stored text is left out of the grid: no header tint, no
+column rules and, on a =|---+---|= row, no drawn rule over the dashes --
+the rules above and below it simply stop there, because the columns it is
+showing are not the ones the rest of the table is drawn in. Because a
+wrapped row's drawn text is not the row's own text, its syntax colouring
+and concealment are skipped for as long as it is wrapped, and it comes back
+fully decorated the moment the cursor leaves it.
 
 * See also
 

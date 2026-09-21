@@ -557,4 +557,66 @@ std::vector<std::string> OrgClockStartLines(const std::vector<std::string> &line
 std::vector<std::string> OrgClockStopLines(const std::vector<std::string> &lines, const std::string &now_ts,
                                            int *minutes);
 
+// --- Org inline images: the drawn figure's geometry -------------------
+// (Buffer::org_image_rows / Editor::OrgImagesVisible(), DrawPane in
+// main.cpp)
+//
+// An inline image is laid out against org's own text column -- `:set
+// textwidth`, the same measure a LaTeX export's \linewidth stands for
+// and the same one an org block card already sizes itself to -- not
+// against the pane, so widening a split doesn't blow every figure up to
+// fill it. Within that column a figure is drawn at
+// kOrgImageWidthFraction of it, or at its own native pixel size if that
+// is smaller (an 80px icon stays an 80px icon rather than being
+// upscaled into a blurry banner), and centered in it.
+//
+// The vertical room it claims follows from that drawn height rather than
+// being a fixed budget the image is letterboxed inside -- a wide, short
+// plot reserves a few line-heights, a tall portrait reserves many, and
+// neither leaves empty rows above or below. That makes the slot count
+// per-image data, which the four walkers that must agree on a row's
+// height -- DrawPane's row loop, its block-card slot walk, its cursor-Y
+// lookup (all main.cpp) and Editor::UpdateScrollForPane (editor.cpp) --
+// all read back through Editor::OrgImageLayoutForRow, the same
+// agreement org LaTeX fragments' own per-entry `slots` is under.
+
+// The text width assumed when `:set textwidth` is off (0) -- org's own
+// conventional measure, and this setting's own default.
+constexpr int kOrgImageLineWidthChars = 80;
+constexpr float kOrgImageWidthFraction = 0.8f;
+// Ceiling on one figure's height, in line-heights: past this the image
+// is scaled down further (not cropped or letterboxed, so "no dead space"
+// still holds) so a single very tall portrait can't claim several
+// screenfuls of scroll on its own.
+constexpr int kOrgImageMaxSlots = 40;
+// What a row claims when the image's own size isn't known yet (its
+// header couldn't be sniffed -- see image_codec::Dimensions): enough to
+// show something without punching a screen-tall hole in the buffer.
+constexpr int kOrgImageUnknownSlots = 8;
+
+// Where and how big one inline image is drawn, plus the vertical room it
+// reserves. `offset_x` is measured from the text column's left edge (the
+// same x a plain row's first character starts at).
+struct OrgImageLayout {
+    float width = 0.0f;
+    float height = 0.0f;
+    float offset_x = 0.0f;
+    int slots = 1;
+};
+
+/**
+ * @brief Lays out one org inline image: its drawn size, its centering offset, and the
+ * line-heights it reserves.
+ * @param px_w the image's native pixel width (<=0 if unknown)
+ * @param px_h the image's native pixel height (<=0 if unknown)
+ * @param char_width the renderer's monospace advance width, in pixels
+ * @param line_height the renderer's line height, in pixels
+ * @param avail_cols how many columns of text actually fit in the pane (Pane::text_cols)
+ * @param text_cols org's text width in columns (`:set textwidth`; <=0 falls back to
+ * kOrgImageLineWidthChars)
+ * @return the layout; `slots` is what every slot-counting site must reserve for the row
+ */
+OrgImageLayout OrgImageLayoutFor(int px_w, int px_h, float char_width, float line_height, int avail_cols,
+                                 int text_cols);
+
 #endif

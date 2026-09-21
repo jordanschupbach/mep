@@ -39,10 +39,13 @@ getting in the way.</p>
 <p>Org's markers work as you would expect: <code>*bold*</code>, <code>/italic/</code>, <code>_underline_</code>,
 <code>+strikethrough+</code>, <code>=verbatim=</code> and <code>~code~</code>.</p>
 <p>The markers themselves are hidden and the text is styled in their place, so
-<code>*bold*</code> reads as bold text. Put the cursor on the line and the markers come
-straight back, so there is never a construct you can see but not edit.
-<code>&lt;leader&gt;otm</code> turns concealment off altogether, for every construct that
-uses it -- emphasis, links and table rules alike.</p>
+<code>*bold*</code> reads as bold text -- and the line closes up over them rather than
+leaving their width behind as a gap. Put the cursor on the line and the
+markers come straight back, on their real columns, so there is never a
+construct you can see but not edit. <code>&lt;leader&gt;otm</code> turns concealment off
+altogether, for every construct that uses it -- emphasis, links and table
+rules alike. See <a href="org-visuals.html">Org rendering</a> for what the
+closing-up does inside a table cell.</p>
 <h1>Heading sizes</h1>
 <p>A heading is drawn larger the shallower it is, and in its own colour by
 level: <code>*</code> largest, <code>**</code> a little smaller, <code>***</code> smaller again, <code>****</code> and

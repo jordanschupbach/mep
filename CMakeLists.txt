@@ -735,6 +735,21 @@ target_compile_options(mep-jpeg-codec-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SAN
 target_link_options(mep-jpeg-codec-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-jpeg-codec-test)
 
+# image_codec.h's header-only dimension sniffer (Dimensions/
+# DimensionsFile), checked against a full Decode of the same bytes --
+# org inline images size themselves from it (Buffer::org_image_rows ->
+# OrgImageLayoutFor), once per figure per rescan, which is what makes
+# skipping the decode worth having. Links the whole codec dispatcher
+# (image_codec.cpp calls into all four decoders, and deflate.cpp is
+# png_codec's zlib), same windowless pure-buffer shape as
+# mep-jpeg-codec-test above.
+add_executable(mep-image-codec-test EXCLUDE_FROM_ALL src/image_codec_test.cpp src/image_codec.cpp
+    src/png_codec.cpp src/jpeg_codec.cpp src/bmp_codec.cpp src/gif_codec.cpp src/deflate.cpp)
+target_include_directories(mep-image-codec-test PRIVATE src)
+target_compile_options(mep-image-codec-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-image-codec-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-image-codec-test)
+
 # PDFIUM_REMOVAL_PLAN.md Phase 2: pdf_object.h/.cpp's object-model
 # parser/tokenizer, standalone -- no xref/document context needed yet.
 # Same windowless, pure-buffer-parsing shape as mep-jpeg-codec-test above.

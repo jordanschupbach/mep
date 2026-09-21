@@ -5,6 +5,7 @@
 #include "job.h"
 #include "regex.h"
 #include "vterm.h"
+#include "image_codec.h"
 #include "image_doc.h"
 #include "image_procgen.h"
 #include "jpeg_codec.h"
@@ -2838,9 +2839,10 @@ void Editor::OrgImageScan() {
                 std::string path = hash == std::string::npos ? rest : rest.substr(0, hash);
                 if (IsOrgImageExtension(path)) {
                     // Only a link whose target actually exists becomes an
-                    // image row. A registered row costs kOrgInlineImageSlots
-                    // (25) line-heights whether or not there's a texture to
-                    // put in them, so with the preview on by default (see
+                    // image row. A registered row costs however many
+                    // line-heights its figure is drawn at
+                    // (OrgImageLayoutFor) whether or not there's a texture
+                    // to put in them, so with the preview on by default (see
                     // org_images_visible_, editor.h) a link to a plot a
                     // babel block hasn't produced yet would otherwise punch
                     // a screen-tall hole into the buffer. Unresolvable links
@@ -4629,7 +4631,8 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
         // the render loop never expects, since every other path onto a
         // fold's rows starts exactly at fold_start. An org inline image
         // (Editor::OrgImagesVisible()/Buffer::org_image_rows) is folds'
-        // own mirror image -- it *expands* one row into kOrgInlineImageSlots
+        // own mirror image -- it *expands* one row into however many
+        // line-heights the figure is actually drawn at (OrgImageLayoutFor)
         // instead of collapsing several into one -- so the row it's
         // stepped onto here contributes that many slots instead of 1;
         // must stay in exact agreement with DrawPane's row loop and its
@@ -4660,10 +4663,14 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
             // short-circuiting them.
             const int heading_extra =
                 (org_heading_scale_visible_ && org_buffer) ? OrgHeadingExtraSlotsFor(buf.lines[static_cast<size_t>(r)]) : 0;
-            if (org_images_visible_ && buf.org_image_rows.count(r)) return kOrgInlineImageSlots + trailing;
-            if (org_latex_visible_) {
-                auto it = buf.org_latex_rows.find(r);
-                if (it != buf.org_latex_rows.end()) return it->second.slots + trailing;
+            if (org_images_visible_) {
+                auto img_it = buf.org_image_rows.find(r);
+                if (img_it != buf.org_image_rows.end()) {
+                    return OrgImageLayoutForRow(img_it->second, pane.text_cols).slots + trailing;
+                }
+            }
+            if (const Buffer::OrgLatexRender *latex = OrgLatexRenderForRow(buf, r, pane.cursor.row)) {
+                return latex->slots + trailing;
             }
             // A row of an over-wide org table draws as however many
             // lines its wrapped layout needs (Buffer::org_table_wrap_rows)
@@ -4728,10 +4735,14 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
             // only knows how to answer for a fragment's *start* row, so
             // landing anywhere else inside one (its remaining raw source
             // rows, skipped outright by DrawPane/the cursor-Y lookup,
-            // main.cpp) needs the same rewind before measuring it.
+            // main.cpp) needs the same rewind before measuring it. Not
+            // for a *revealed* fragment (OrgLatexRenderForRow returns
+            // nullptr for it): its rows are back to being ordinary text
+            // rows, each measured on its own, with nothing to rewind to.
             if (org_latex_visible_) {
                 for (const auto &kv : buf.org_latex_rows) {
-                    if (candidate > kv.first && candidate <= kv.second.end_row) {
+                    if (candidate > kv.first && candidate <= kv.second.end_row &&
+                        OrgLatexRenderForRow(buf, kv.first, pane.cursor.row) != nullptr) {
                         candidate = kv.first;
                         break;
                     }
@@ -4769,7 +4780,7 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
     // move). That only happens when something replaced the buffer under
     // the cursor rather than when the cursor navigated, so snap instead.
     // The org-image/LaTeX slide this smoothing exists for stays intact:
-    // it spans one tall row (kOrgInlineImageSlots), never more than a
+    // it spans one tall row (OrgImageLayoutFor), never more than a
     // screenful.
     if (std::abs(jump) > visible_lines) cap = std::abs(jump);
     if (jump > cap) pane.scroll_row += cap;
@@ -19402,9 +19413,75 @@ void Editor::ClearFoldsFromProvider(const std::string &provider) {
                 folds.end());
 }
 
+namespace {
+// One remembered header sniff (image_codec::Dimensions), so rescanning a
+// buffer full of figures -- which Editor::OrgImageScan does on every
+// debounced edit -- costs one stat per figure instead of re-reading each
+// file. Keyed by resolved path with its mtime, the same best-effort
+// change signal (and the same reasoning) g_org_inline_image_textures'
+// own texture cache in main.cpp uses.
+struct OrgImageSizeCacheEntry {
+    int width = 0;
+    int height = 0;
+    // An opaque change token (the file-clock tick count of the last write
+    // time), compared for equality only -- never interpreted as a date.
+    long long stamp = -1;
+};
+std::unordered_map<std::string, OrgImageSizeCacheEntry> g_org_image_sizes;
+
+/**
+ * @brief Reads an image file's native pixel size from its header, memoized on the file's last-write time.
+ * @param path The resolved image path.
+ * @param width Receives the pixel width (0 if the header couldn't be read).
+ * @param height Receives the pixel height (0 if the header couldn't be read).
+ */
+void OrgImagePixelSize(const std::string &path, int *width, int *height) {
+    std::error_code ec;
+    const auto write_time = std::filesystem::last_write_time(path, ec);
+    const long long stamp = ec ? -1 : static_cast<long long>(write_time.time_since_epoch().count());
+    OrgImageSizeCacheEntry &entry = g_org_image_sizes[path];
+    // A miss on the stamp, or a remembered failure: the second case
+    // retries every scan on purpose, since the usual reason a sniff fails
+    // is a file caught halfway through being written (an org-babel plot
+    // landing) that will read fine a moment later.
+    if (entry.stamp != stamp || entry.width == 0 || entry.height == 0) {
+        entry.stamp = stamp;
+        entry.width = 0;
+        entry.height = 0;
+        std::string err;
+        int w = 0, h = 0;
+        if (image_codec::DimensionsFile(path.c_str(), &w, &h, &err)) {
+            entry.width = w;
+            entry.height = h;
+        }
+    }
+    *width = entry.width;
+    *height = entry.height;
+}
+}  // namespace
+
 void Editor::SetOrgImageRow(int row, const std::string &path) {
     if (row < 0 || row >= Buf().LineCount()) return;
-    Buf().org_image_rows[row] = path;
+    Buffer::OrgImageRender entry;
+    entry.path = path;
+    OrgImagePixelSize(path, &entry.width, &entry.height);
+    Buf().org_image_rows[row] = std::move(entry);
+}
+
+void Editor::SetOrgImageRowSize(int buffer_id, int row, int px_w, int px_h) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    if (px_w <= 0 || px_h <= 0) return;
+    auto it = buffers_[static_cast<size_t>(buffer_id)].org_image_rows.find(row);
+    if (it == buffers_[static_cast<size_t>(buffer_id)].org_image_rows.end()) return;
+    it->second.width = px_w;
+    it->second.height = px_h;
+    // Keep the sniff cache in step, so the next rescan doesn't hand the
+    // stale size straight back.
+    auto cached = g_org_image_sizes.find(it->second.path);
+    if (cached != g_org_image_sizes.end()) {
+        cached->second.width = px_w;
+        cached->second.height = px_h;
+    }
 }
 
 void Editor::ClearOrgImageRows() { Buf().org_image_rows.clear(); }
@@ -19420,6 +19497,16 @@ void Editor::SetOrgLatexRow(int row, const std::string &path, int slots, int end
 }
 
 void Editor::ClearOrgLatexRows() { Buf().org_latex_rows.clear(); }
+
+const Buffer::OrgLatexRender *Editor::OrgLatexRenderForRow(const Buffer &buf, int row, int cursor_row) const {
+    if (!org_latex_visible_) return nullptr;
+    auto it = buf.org_latex_rows.find(row);
+    if (it == buf.org_latex_rows.end()) return nullptr;
+    // The reveal rule (see this function's declaration): a cursor
+    // anywhere in the fragment's own source rows puts the raw LaTeX back.
+    if (org_plain_cursor_line_ && cursor_row >= row && cursor_row <= it->second.end_row) return nullptr;
+    return &it->second;
+}
 
 bool Editor::ToggleOrgLatex() {
     org_latex_visible_ = !org_latex_visible_;
@@ -26187,6 +26274,32 @@ const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
         OrgTableGrid g;
         g.start_row = row;
         g.end_row = end;
+        // A table rendered wrapped steps one row aside for the cursor
+        // (Editor::OrgTableWrapScan), and that row draws its *stored*
+        // columns -- pipes at entirely different places from the wrapped
+        // rows around it. Measuring the grid against it would collapse
+        // the pipe-column intersection below and cost the whole table its
+        // rules, so it is left out of the geometry and recorded as a row
+        // the renderer decorates nothing on: showing its raw text is the
+        // point of the step-aside.
+        bool any_wrapped = false;
+        for (int r = row; r <= end; r++) {
+            auto it = buf.org_table_wrap_rows.find(r);
+            if (it != buf.org_table_wrap_rows.end() && !it->second.lines.empty()) {
+                any_wrapped = true;
+                break;
+            }
+        }
+        /**
+         * @brief Reports whether a row of this table draws its stored text inside an otherwise-wrapped table.
+         * @param r The row to test.
+         * @return True when the table renders wrapped but this row stepped aside.
+         */
+        auto is_raw_row = [&](int r) {
+            if (!any_wrapped) return false;
+            auto it = buf.org_table_wrap_rows.find(r);
+            return it == buf.org_table_wrap_rows.end() || it->second.lines.empty();
+        };
         // Every column that carries a `|` on *every* body row is a column
         // rule. An intersection rather than any one row's own pipes, so a
         // table whose rows aren't aligned to each other (one still being
@@ -26196,10 +26309,17 @@ const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
         bool first_body = true;
         for (int r = row; r <= end; r++) {
             const std::string &line = rendered_line(r);
+            const bool raw = is_raw_row(r);
+            if (raw) g.raw_rows.push_back(r);
             if (ParseOrgTableRowImpl(line).is_sep) {
+                // Recorded even when it is the stepped-aside row, so the
+                // header block below is still found: the renderer skips
+                // every raw row's decoration anyway, so this can't put a
+                // drawn rule over the dashes the step-aside is showing.
                 g.sep_rows.push_back(r);
                 continue;
             }
+            if (raw) continue;
             if (g.header_end_row < 0 && !g.sep_rows.empty()) {
                 // Body rows have started, so the header block ended at the
                 // row above the first rule.
@@ -26394,10 +26514,9 @@ void Editor::OrgTableWrapScan(bool force) {
         return;
     }
     const int cursor_row = CurPane().cursor.row;
-    // A Visual selection steps the wrapping aside the same way the cursor
-    // does, and for a concrete reason beyond consistency with the block
-    // cards: the selection fill is drawn against the *stored* line's
-    // columns, so a table covered by one has to be showing those columns.
+    // The rows a Visual selection covers, which step the wrapping aside
+    // the same way the cursor's own row does (see the insert loop below
+    // for why).
     int sel_lo = -1, sel_hi = -1;
     if (HasVisualSelection()) {
         if (CurrentMode() == Mode::VisualBlock) {
@@ -26410,25 +26529,24 @@ void Editor::OrgTableWrapScan(bool force) {
             sel_hi = sel_end.row;
         }
     }
-    // Nothing but a cursor move since the last plan, and one that
-    // didn't cross a table boundary: what is already in
+    // Nothing but a cursor move since the last plan, and one that neither
+    // entered nor left a table row: what is already in
     // Buffer::org_table_wrap_rows is still exactly right (see the
-    // org_table_wrap_cursor_top_ group's own comment). The table the
-    // cursor is in is found by walking out from its own row, which is
-    // cheap -- the point is to skip re-wrapping every table in the file.
-    int cursor_top = -1;
-    if (cursor_row >= 0 && cursor_row < n && ParseOrgTableRowImpl(buf.lines[static_cast<size_t>(cursor_row)]).is_row) {
-        cursor_top = cursor_row;
-        while (cursor_top > 0 && ParseOrgTableRowImpl(buf.lines[static_cast<size_t>(cursor_top - 1)]).is_row) {
-            cursor_top--;
-        }
-    }
-    if (!force && org_table_wrap_buffer_ == CurrentBufferId() && org_table_wrap_cursor_top_ == cursor_top &&
+    // org_table_wrap_cursor_row_ group's own comment). Only the cursor's
+    // own row steps aside, so a move *within* a table does change the
+    // layout and has to re-plan -- but a move anywhere outside one leaves
+    // this at -1 and re-plans nothing, which is what the early-out is
+    // there for.
+    const int cursor_in_table =
+        (cursor_row >= 0 && cursor_row < n && ParseOrgTableRowImpl(buf.lines[static_cast<size_t>(cursor_row)]).is_row)
+            ? cursor_row
+            : -1;
+    if (!force && org_table_wrap_buffer_ == CurrentBufferId() && org_table_wrap_cursor_row_ == cursor_in_table &&
         org_table_wrap_sel_lo_ == sel_lo && org_table_wrap_sel_hi_ == sel_hi) {
         return;
     }
     org_table_wrap_buffer_ = CurrentBufferId();
-    org_table_wrap_cursor_top_ = cursor_top;
+    org_table_wrap_cursor_row_ = cursor_in_table;
     org_table_wrap_sel_lo_ = sel_lo;
     org_table_wrap_sel_hi_ = sel_hi;
     buf.org_table_wrap_rows.clear();
@@ -26451,20 +26569,6 @@ void Editor::OrgTableWrapScan(bool force) {
         if (!first.is_row) continue;
         int end = row;
         while (end + 1 < n && ParseOrgTableRowImpl(buf.lines[static_cast<size_t>(end + 1)]).is_row) end++;
-        // The table the cursor is inside keeps its real columns: this
-        // renders the *stored* text narrower, and editing a cell against
-        // a layout whose column boundaries aren't the ones in the file
-        // would put the caret somewhere other than where the character
-        // it is editing is drawn. Stepping out re-wraps it (this scan is
-        // on the per-frame org hook for exactly that reason).
-        if (cursor_row >= row && cursor_row <= end) {
-            row = end;
-            continue;
-        }
-        if (sel_lo >= 0 && sel_lo <= end && sel_hi >= row) {
-            row = end;
-            continue;
-        }
         std::vector<OrgTableCells> parsed;
         parsed.reserve(static_cast<size_t>(end - row + 1));
         int indent = 0;
@@ -26489,6 +26593,22 @@ void Editor::OrgTableWrapScan(bool force) {
             for (int cw : plan.col_widths) cols += cw + 3;
             const int width = cols + 1;  // the trailing `|`
             for (int r = row; r <= end; r++) {
+                // The row the cursor is on keeps its real columns: the
+                // layout renders the *stored* text narrower, and editing
+                // a cell against column boundaries that aren't the ones
+                // in the file would put the caret somewhere other than
+                // where the character it is editing is drawn. Only that
+                // one row steps aside -- the rest of the table stays
+                // wrapped, and because the plan above is computed from
+                // every row's stored cells (never from which row is
+                // stepping aside), those rows keep the exact same column
+                // widths as the cursor moves through the table instead of
+                // reflowing under it. A Visual selection does the same,
+                // per row, for a concrete reason of its own: the
+                // selection fill is drawn against the stored line's
+                // columns, so a covered row has to be showing them.
+                if (r == cursor_row) continue;
+                if (sel_lo >= 0 && r >= sel_lo && r <= sel_hi) continue;
                 Buffer::OrgTableWrapRow entry;
                 entry.lines = plan.rows[static_cast<size_t>(r - row)];
                 entry.indent = indent;
@@ -28314,7 +28434,7 @@ void Editor::NotebookRebuildSlotCache(NotebookSession &sess) {
     const Buffer &buf = buffers_[static_cast<size_t>(sess.buffer_id)];
     size_t n = std::min(sess.spans.size(), sess.doc.cells.size());
     for (size_t i = 0; i < n; i++) {
-        int slots = NotebookCellOutputSlots(sess.doc.cells[i], notebook_char_aspect_);
+        int slots = NotebookCellOutputSlots(sess.doc.cells[i], RenderCharAspect());
         if (slots <= 0) continue;
         const NotebookCellSpan &span = sess.spans[i];
         // The block hangs under the cell's last non-blank body row, so the

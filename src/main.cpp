@@ -15910,7 +15910,7 @@ const char *kBuiltinOrgPolyglot =
 // text: mep's row renderer (DrawLineFast, main.cpp) draws one row as one
 // run of text with no mechanism to splice a texture into the middle of
 // it, the same "whole row only" constraint org images live under (see
-// kOrgInlineImageSlots' own comment). A multi-line fragment's interior/
+// OrgImageLayoutFor's own comment). A multi-line fragment's interior/
 // closing raw-source lines are hidden behind a 'latex'-provider closed
 // Fold, the same collapse machinery org/markdown headings use for their
 // own folds (mep.fold_create/mep.fold_clear_provider) -- rebuilt
@@ -29701,22 +29701,24 @@ std::unordered_map<std::string, OrgLatexTextureCacheEntry> g_org_latex_textures;
 
 // Lazily loads + GPU-uploads a rendered LaTeX/math fragment (org_latex_rows'
 // own path, produced by tectonic+pdftoppm as plain black-on-white), synced
-// to the editor's own color scheme the same way GetOrUpdatePdfPageTexture
-// recolors a PDF page: each pixel's luminance is mapped onto the gradient
-// between ResolveHlGroup("Normal") (black -> editor foreground) and
-// ResolveHlGroup("NormalBg") (white -> editor background) via the same
-// ThemedPdfChannel helper, so a fragment reads as editor text instead of a
-// white index card pasted into a dark buffer. Re-recolors (and
-// re-uploads) whenever Editor::ThemeEpoch() has moved on since the last
-// upload -- see that function's own comment (editor.h) for why a raw
-// generation/mtime check alone would miss a live colorscheme preview.
+// to the editor's own color scheme in the spirit of GetOrUpdatePdfPageTexture's
+// PDF-page recolor: every pixel becomes ResolveHlGroup("Normal") with the
+// source luminance inverted into its alpha, so the ink is editor foreground
+// and the page's white is clear -- a fragment reads as editor text instead of
+// a white index card pasted into a dark buffer, and (unlike a PDF page, which
+// fills its own pane) keeps whatever the row underneath it is tinted with.
+// Re-recolors (and re-uploads) whenever Editor::ThemeEpoch() has moved on
+// since the last upload -- see that function's own comment (editor.h) for
+// why a raw generation/mtime check alone would miss a live colorscheme
+// preview.
 // Returns nullptr if `path` can't be stat'd, read, or decoded -- DrawPane's
 // own latex branch falls back to showing a warning in that case, same
 // contract as GetOrLoadOrgInlineImageTexture.
 /**
  * @brief Lazily loads and GPU-uploads a rendered LaTeX/math fragment (a black-on-white PNG
- * produced by tectonic+pdftoppm), recoloring each pixel's luminance onto the editor's own
- * foreground/background gradient; cached in g_org_latex_textures by path and theme epoch.
+ * produced by tectonic+pdftoppm), recoloring every pixel to the editor's own foreground with
+ * the source luminance inverted into its alpha so the page's white is transparent; cached in
+ * g_org_latex_textures by path and theme epoch.
  * @param path Filesystem path to the rendered fragment's PNG.
  * @return Pointer to the cached texture, or nullptr if the file can't be stat'd, read, or decoded.
  */
@@ -29740,17 +29742,28 @@ gfx::Texture2D *GetOrLoadOrgLatexTexture(const std::string &path) {
 
     int w = doc.Width(), h = doc.Height();
     gfx::Color fg = ResolveHlGroup("Normal");
-    gfx::Color bg = ResolveHlGroup("NormalBg");
     std::vector<unsigned char> themed(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
     const unsigned char *src_pixels = doc.Pixels();
     for (size_t i = 0, n = static_cast<size_t>(w) * static_cast<size_t>(h); i < n; i++) {
         const unsigned char *src = &src_pixels[i * 4];
         float luminance = (0.299f * src[0] + 0.587f * src[1] + 0.114f * src[2]) / 255.0f;
         unsigned char *dst = &themed[i * 4];
-        dst[0] = ThemedPdfChannel(fg.r, bg.r, luminance);
-        dst[1] = ThemedPdfChannel(fg.g, bg.g, luminance);
-        dst[2] = ThemedPdfChannel(fg.b, bg.b, luminance);
-        dst[3] = src[3];  // preserve alpha as-is (tectonic's own margin, if any)
+        // Every pixel is the editor's foreground color; the page's own
+        // paper white becomes *transparent* rather than the editor's
+        // background color. Alpha-blended over the Normal background
+        // that is pixel-for-pixel what interpolating to NormalBg used to
+        // produce (ThemedPdfChannel is a straight lerp, which is exactly
+        // what the blend does) -- but over anything tinted it is the
+        // difference between a formula sitting in its row and a
+        // formula-shaped hole punched through the row's background. The
+        // whole-row previews sit on the cursorline and a Visual
+        // selection; an inline one sits on those plus an org table's
+        // cell wash, where a pdftoppm PNG's opaque white page came out
+        // as a dark rectangle around the maths.
+        dst[0] = fg.r;
+        dst[1] = fg.g;
+        dst[2] = fg.b;
+        dst[3] = static_cast<unsigned char>((1.0f - luminance) * static_cast<float>(src[3]));
     }
 
     gfx::Image img{};
@@ -38790,7 +38803,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // UpdateScrollForPane just below, this pane's row loop, and its
     // RowSlot cursor lookup all see one agreed layout for this frame
     // (Editor::NotebookTrailingSlots). nullptr for every other buffer.
-    g_editor.SetNotebookCharAspect(static_cast<double>(g_char_width) / static_cast<double>(line_height));
+    g_editor.SetRenderCharMetrics(static_cast<double>(g_char_width), static_cast<double>(line_height));
     const NotebookSession *nb_sess = g_editor.NotebookRefresh(pane.buffer_id);
 
     // Pane::text_cols: the same column budget, but reported whether or not
@@ -38937,6 +38950,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // scaled headlines and the drawn table grid), so the filetype lookup
     // happens once per pane rather than once per row.
     const bool is_org_buffer = LspFiletype(buf.filename) == "org";
+    // The cursor row every LaTeX-preview lookup below is resolved
+    // against (Editor::OrgLatexRenderForRow): a fragment whose own
+    // source rows the caret is inside reverts to that source, so it can
+    // be edited. Deliberately not gated on is_org_buffer -- the math
+    // preview runs in .tex buffers too (mep_latex_preview_ft,
+    // kBuiltinOrgLatex), where a formula you cannot see the source of is
+    // no more editable -- and, unlike the plain-cursor-line rule below,
+    // not on is_active either: Editor::UpdateScrollForPane runs for
+    // every pane and knows only the pane, not which one has focus, so an
+    // active-pane-only reveal would have its slot walk disagree with
+    // this function's three for a background split and park that split's
+    // scroll a fragment's worth of slots off. The pane's own cursor,
+    // always, is the one rule all four can follow.
+    const int latex_cursor_row = pane.cursor.row;
     if (is_org_buffer) {
         for (const Editor::OrgTableGrid &t : g_editor.OrgTables(pane.buffer_id)) {
             // OrgTables' returned reference is into Editor's own scratch
@@ -38961,17 +38988,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     if (fold.closed && fold.start_row == r && (!f || fold.end_row > f->end_row)) f = &fold;
                 }
                 slot_start[r] = vslot;
-                auto latex_it = buf.org_latex_rows.find(r);
+                auto img_it = buf.org_image_rows.find(r);
+                const Buffer::OrgLatexRender *latex = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row);
                 auto tw_it = buf.org_table_wrap_rows.find(r);
                 int slots = 1;
                 int next = r + 1;
                 if (f) {
                     next = f->end_row + 1;
-                } else if (g_editor.OrgImagesVisible() && buf.org_image_rows.count(r) != 0) {
-                    slots = kOrgInlineImageSlots;
-                } else if (g_editor.OrgLatexVisible() && latex_it != buf.org_latex_rows.end()) {
-                    slots = latex_it->second.slots;
-                    next = latex_it->second.end_row + 1;
+                } else if (g_editor.OrgImagesVisible() && img_it != buf.org_image_rows.end()) {
+                    slots = g_editor.OrgImageLayoutForRow(img_it->second, pane.text_cols).slots;
+                } else if (latex != nullptr) {
+                    slots = latex->slots;
+                    next = latex->end_row + 1;
                 } else if (g_editor.OrgTableWrapVisible() && tw_it != buf.org_table_wrap_rows.end() &&
                            !tw_it->second.lines.empty()) {
                     // An over-wide table's row draws as its wrapped
@@ -39056,7 +39084,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (!skip && (g_editor.OrgImagesVisible() || g_editor.OrgLatexVisible())) {
                 for (int r = card.meta_row; r <= last_row && !skip; r++) {
                     if (g_editor.OrgImagesVisible() && buf.org_image_rows.count(r) != 0) skip = true;
-                    if (g_editor.OrgLatexVisible() && buf.org_latex_rows.count(r) != 0) skip = true;
+                    if (g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row) != nullptr) skip = true;
                 }
             }
             if (skip) continue;
@@ -39272,6 +39300,100 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     auto ghost_covers_row = [&](int r) {
         return ghost_first_row >= 0 && r >= ghost_first_row && r < ghost_first_row + ghost_row_count;
     };
+    // --- Inline conceal collapse (the per-row `conceal_runs`/DispCol/
+    // draw_line group inside the loop below) ---
+    // A concealing overlay stands a span of markup down to what it marks
+    // up -- `*bold*` to `bold`, `[[file:notes.org][Notes]]` to `Notes`,
+    // `=code=` to `code`. The replacement is shorter than the markup
+    // nearly every time, and drawing it on the raw column grid left the
+    // difference behind as a hole: a rendered line came out visibly
+    // gappy, and every table `|` after a concealed cell sat a column or
+    // two off from the one on the row above. So a row with anything
+    // concealed on it is drawn on its *own* grid, where each concealed
+    // span occupies exactly the columns its replacement needs and
+    // everything after it slides left by the difference.
+    //
+    // `conceal_runs` holds those spans for one row, in column order;
+    // DispCol maps one of the row's stored columns to the column it is
+    // drawn at; `draw_line` is the row's text with each concealed span
+    // blanked to its replacement's width (the replacement itself is
+    // drawn, with its own styling, by the virt_text pass further down).
+    // Both are empty/identity for every row with nothing concealed --
+    // which is every row of every buffer that isn't org or markdown, and
+    // the cursor's own row, whose markup is deliberately left visible to
+    // edit (Editor::OrgHighlightEmphasis, MdConceal and OrgLinkScan all
+    // skip it) -- so those rows draw exactly as they always did.
+    //
+    // Declared out here and cleared per row rather than built fresh
+    // inside the loop: this is the per-frame render path for every
+    // visible row of every pane.
+    struct ConcealRun {
+        int col_start = 0;  // stored column the markup starts at
+        int col_end = 0;    // stored column just past it
+        int draw_cols = 0;  // columns its replacement occupies instead
+        // The column this run's collapse stops applying at, which is
+        // INT_MAX for ordinary prose: everything after the markup slides
+        // left and stays there. Inside a table it is the cell's own
+        // closing `|` instead -- see the `table_row` comment below.
+        int shift_until = std::numeric_limits<int>::max();
+    };
+    // One edit to the row's text on the way to `disp_line`: either a
+    // run's markup becoming its replacement's width in blanks, or the
+    // slack a cell-local run gave up coming back just before the `|` it
+    // stopped at.
+    struct DispEdit {
+        int col = 0;
+        int pad = 0;                      // blanks to insert here (a cell's returned slack)
+        const ConcealRun *run = nullptr;  // or: the markup starting here
+    };
+    std::vector<ConcealRun> conceal_runs;
+    // The subset of those runs that are inline math (below), as stored
+    // column ranges: a decoration pointing into one of them -- above all
+    // the spell checker's red underline, which reads "\alpha" as a
+    // misspelling like any other unknown word -- has nothing left to
+    // mark once the columns it covers are a typeset formula, so the
+    // decoration loop skips it. This was invisible until the collapse
+    // landed only because the background-colored cover rectangle the
+    // math used to draw was painted over those underlines afterwards.
+    std::vector<std::pair<int, int>> math_runs;
+    std::vector<DispEdit> edits;
+    std::string disp_line;
+    // --- Inline math geometry (Buffer::org_latex_inline) ---
+    // One answer for how big a span's render is drawn, shared by the
+    // conceal pass that reserves its columns and the draw pass that
+    // fills them -- they have to agree exactly or the render floats off
+    // the hole made for it.
+    //
+    // 1:1 is the *correct* size, not a coincidence: mep_org_latex_render
+    // (kBuiltinOrgLatex) rasterizes an 11pt standalone document at
+    // 72*font_size/11 dpi, which is exactly the DPI that makes its body
+    // text g_font_size pixels tall -- so one PNG pixel is one screen
+    // pixel and the maths sits at the same optical size as the prose
+    // around it. The old rule normalized every fragment's *height* to
+    // the line height instead, which read the tight crop standalone puts
+    // around the glyphs as if it were a font metric: a bare "$x$" (no
+    // ascender, no descender, a ~0.5em-tall crop) was blown up to two
+    // and a half times body size, while a "$\frac{a}{b}$" was shrunk to
+    // a third of it. Only the shrink survives, as a clamp: a fragment
+    // genuinely taller than the row it sits on has to come down to fit.
+    /**
+     * @brief Scale factor an inline math render is drawn at: 1:1, shrunk only when the render is taller than the row.
+     * @param tex The fragment's rendered texture.
+     * @return The scale factor to draw it at.
+     */
+    auto OrgLatexInlineScale = [&](const gfx::Texture2D &tex) {
+        if (tex.height <= 0) return 1.0f;
+        return std::min(1.0f, (static_cast<float>(line_height) * 0.95f) / static_cast<float>(tex.height));
+    };
+    /**
+     * @brief Columns an inline math render claims on the drawn grid: its own width plus half a character of air on each side.
+     * @param tex The fragment's rendered texture.
+     * @return The column count to reserve for it.
+     */
+    auto OrgLatexInlineCols = [&](const gfx::Texture2D &tex) {
+        const float draw_w = static_cast<float>(tex.width) * OrgLatexInlineScale(tex);
+        return std::max(1, static_cast<int>(std::ceil(draw_w / g_char_width)) + 1);
+    };
     int visual_slot = 0;  // a closed fold collapses N buffer rows into 1 of these
     int row = pane.scroll_row;
     for (; row < buf.LineCount() && visual_slot < visible_lines; row++) {
@@ -39294,6 +39416,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // those stay put.
         const bool plain_row =
             is_org_buffer && g_editor.OrgPlainCursorLineVisible() && is_active && row == pane.cursor.row;
+        // The same reveal for this row's math previews -- inline spans
+        // here, whole-row fragments through Editor::OrgLatexRenderForRow
+        // (which applies it itself, across the fragment's whole source
+        // range). Not gated on is_org_buffer, unlike plain_row's
+        // stripping of colors and faces: the math preview runs in .tex
+        // buffers too (mep_latex_preview_ft, kBuiltinOrgLatex), where a
+        // "$...$" you cannot see the source of is just as uneditable.
+        const bool latex_plain_row =
+            g_editor.OrgPlainCursorLineVisible() && is_active && row == pane.cursor.row;
 
         // Closed fold starting here: render a one-line summary in its
         // place and skip straight past its hidden rows (Phase 5) -- a row
@@ -39345,7 +39476,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             visual_slot += row_wrap_slots - 1;  // visual_slot++ above already accounted for 1
         } else if (!fold_here && wrap_cols > 0) {
             bool is_org_image = g_editor.OrgImagesVisible() && buf.org_image_rows.count(row) != 0;
-            bool is_org_latex = !is_org_image && g_editor.OrgLatexVisible() && buf.org_latex_rows.count(row) != 0;
+            bool is_org_latex =
+                !is_org_image && g_editor.OrgLatexRenderForRow(buf, row, latex_cursor_row) != nullptr;
             if (!is_org_image && !is_org_latex) {
                 row_wraps = true;
                 int len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
@@ -39405,7 +39537,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
                 float oy = block_y;
                 for (const NotebookOutput &out : nb_cell->outputs) {
-                    const int out_slots = NotebookOutputSlots(out, g_editor.NotebookCharAspect());
+                    const int out_slots = NotebookOutputSlots(out, g_editor.RenderCharAspect());
                     if (out_slots <= 0) continue;
                     const float out_h = static_cast<float>(out_slots * line_height);
                     if (!out.image_png.empty()) {
@@ -39592,33 +39724,46 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
 
         // Org inline images (<leader>oti / mep.org_images_toggle,
-        // Editor::OrgImagesVisible()): a row registered by Lua's
-        // mep.org_image_scan() (buf.org_image_rows) renders as a scaled
-        // texture instead of its ordinary [[file:...]] text, claiming
-        // kOrgInlineImageSlots visual slots instead of 1 -- folds' own
-        // mirror image (expand instead of collapse), same "detect on this
-        // row, draw a substitute, advance visual_slot by more than one,
-        // continue" shape. `!fold_here` keeps this mutually exclusive with
-        // the closed-fold branch just below (org's own heading-based
-        // folds never start on a src-block/results line in practice, so
-        // this never actually has to arbitrate between the two).
+        // Editor::OrgImagesVisible()): a row registered by
+        // Editor::OrgImageScan (buf.org_image_rows) renders as a scaled,
+        // centered figure instead of its ordinary [[file:...]] text,
+        // claiming as many visual slots as that figure is tall instead
+        // of 1 -- folds' own mirror image (expand instead of collapse),
+        // same "detect on this row, draw a substitute, advance
+        // visual_slot by more than one, continue" shape. The geometry
+        // (how wide, how far in from the text column, how many slots)
+        // comes from OrgImageLayoutFor, org_doc.h -- the one function all
+        // four slot-counting walkers share, so what's reserved is exactly
+        // what's drawn and there's no letterboxed dead space around it.
+        // `!fold_here` keeps this mutually exclusive with the closed-fold
+        // branch just below (org's own heading-based folds never start on
+        // a src-block/results line in practice, so this never actually
+        // has to arbitrate between the two).
         if (!fold_here && g_editor.OrgImagesVisible()) {
             auto img_it = buf.org_image_rows.find(row);
             if (img_it != buf.org_image_rows.end()) {
-                float slot_h = static_cast<float>(line_height) * kOrgInlineImageSlots;
-                float pane_avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
-                float target_w = kOrgImageLineWidthChars * g_char_width * kOrgImageWidthFraction;
-                float avail_w = std::min(pane_avail_w, target_w);
-                const gfx::Texture2D *tex = GetOrLoadOrgInlineImageTexture(img_it->second);
+                const Buffer::OrgImageRender &img = img_it->second;
+                const OrgImageLayout lay = g_editor.OrgImageLayoutForRow(img, pane.text_cols);
+                const gfx::Texture2D *tex = GetOrLoadOrgInlineImageTexture(img.path);
                 if (tex) {
-                    float scale = std::min(avail_w / static_cast<float>(tex->width),
-                                            slot_h / static_cast<float>(tex->height));
-                    gfx::DrawTextureEx(*tex, gfx::Vector2{text_x, ly}, 0.0f, scale, gfx::White);
+                    // The registry's recorded size is what `lay` was
+                    // built from, so scale against *it* rather than the
+                    // texture: a file regenerated in place at a new size
+                    // (a re-run org-babel :file block, no buffer edit to
+                    // trigger a rescan) would otherwise draw taller than
+                    // the slots this frame already reserved. Filing the
+                    // correction here fixes the layout from the next
+                    // frame on.
+                    if (tex->width != img.width || tex->height != img.height) {
+                        g_editor.SetOrgImageRowSize(pane.buffer_id, row, tex->width, tex->height);
+                    }
+                    const float scale = img.width > 0 ? lay.width / static_cast<float>(img.width) : 1.0f;
+                    gfx::DrawTextureEx(*tex, gfx::Vector2{text_x + lay.offset_x, ly}, 0.0f, scale, gfx::White);
                 } else {
-                    std::string msg = "[[file: image not found: " + img_it->second + "]]";
+                    std::string msg = "[[file: image not found: " + img.path + "]]";
                     gfx::DrawTextEx(g_font, msg.c_str(), gfx::Vector2{text_x, ly}, g_font_size, 0, ResolveHlGroup("Warn"));
                 }
-                visual_slot += kOrgInlineImageSlots - 1;  // visual_slot++ above already accounted for 1
+                visual_slot += lay.slots - 1;  // visual_slot++ above already accounted for 1
                 continue;  // the for-loop's own `row++` advances past this one row
             }
         }
@@ -39631,17 +39776,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // never stretched to a linewidth fraction the way a photo/plot is,
         // since that would blow a bare "$x$" up to the same width as a full
         // page-width figure. `slots` is per-entry (buf.org_latex_rows'
-        // OrgLatexRender), not the shared kOrgInlineImageSlots constant.
+        // OrgLatexRender), the same per-entry shape org images'
+        // OrgImageLayoutFor now has.
         // A multi-line fragment's remaining raw source rows (row+1 ..
         // render.end_row) are skipped outright -- not shown as a folded
         // "+-- N lines: ... ---" summary the way an earlier version of
         // this did, since the image already shows everything those rows
         // had to show and a summary line here was just dead weight taking
-        // its own slot for no reason.
-        if (!fold_here && g_editor.OrgLatexVisible()) {
-            auto latex_it = buf.org_latex_rows.find(row);
-            if (latex_it != buf.org_latex_rows.end()) {
-                const Buffer::OrgLatexRender &render = latex_it->second;
+        // its own slot for no reason. Which is exactly why
+        // OrgLatexRenderForRow hands back nullptr once the cursor is
+        // inside that range: with the interior skipped there would be no
+        // row to put a caret on at all.
+        if (!fold_here) {
+            const Buffer::OrgLatexRender *latex_render = g_editor.OrgLatexRenderForRow(buf, row, latex_cursor_row);
+            if (latex_render != nullptr) {
+                const Buffer::OrgLatexRender &render = *latex_render;
                 float slot_h = static_cast<float>(line_height) * static_cast<float>(render.slots);
                 float pane_avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
                 const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(render.path);
@@ -39710,6 +39859,190 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
 
+        auto row_decos_it = decos_by_row.find(row);
+        const std::vector<const Decoration *> &row_decos =
+            (row_decos_it != decos_by_row.end()) ? row_decos_it->second : kNoDecos;
+        // This row's concealed spans, collapsed (see `conceal_runs`'
+        // own comment above the loop). Four kinds of row are left on the
+        // raw grid because their overlays are not drawn at all -- the
+        // plain cursor line, a row drawn as an over-wide table's wrapped
+        // layout and a scaled headline (all three feed the decoration
+        // loop `kNoDecos`), plus a row an inline completion ghost covers
+        // (the virt_text pass stands down for it) -- since blanking
+        // columns whose replacement text never gets drawn would lose the
+        // text outright. A headline is excluded whether or not it ends up
+        // scaled: OrgHighlightEmphasis already refuses to conceal one, so
+        // there is nothing there to collapse but a link, and this way the
+        // two renderers still never both claim the same row.
+        const std::string &raw_line = buf.lines[static_cast<size_t>(row)];
+        const bool headline_row = is_org_buffer && g_editor.OrgHeadingScaleVisible() &&
+                                  Editor::OrgHeadlineLevelOf(raw_line) > 0;
+        // A table row's `|` columns are load-bearing: the drawn grid's
+        // rules are the columns every row of the table carries a `|` at
+        // (Editor::OrgTables), and the eye reads the columns off those
+        // pipes besides. A cell that collapsed its markup and pulled the
+        // whole rest of the row left with it would take both apart. So
+        // inside a table the collapse is cell-local: the slack a
+        // concealed cell frees up is handed back at the cell's own end,
+        // just before the `|`, which tightens the text inside the cell
+        // while every pipe stays exactly where the row above put it.
+        const size_t first_glyph = raw_line.find_first_not_of(" \t");
+        const bool table_row = first_glyph != std::string::npos && raw_line[first_glyph] == '|';
+        conceal_runs.clear();
+        math_runs.clear();
+        if (!plain_row && tbl_wrap == nullptr && !headline_row && !ghost_covers_row(row)) {
+            const int raw_len = static_cast<int>(raw_line.size());
+            for (const Decoration *dp : row_decos) {
+                const Decoration &d = *dp;
+                if (d.whole_line || !d.virt_overlay || d.virt_text.empty() || d.virt_text_eol) continue;
+                if (d.col_end <= d.col_start) continue;
+                // Codepoints, not bytes -- the column count the virt_text
+                // pass itself measures the replacement in (its own
+                // `vtext_cols`), so the hole blanked here is exactly the
+                // room that pass will fill.
+                ConcealRun run{d.col_start, d.col_end,
+                               ByteOffsetToColumn(d.virt_text, static_cast<int>(d.virt_text.size())),
+                               std::numeric_limits<int>::max()};
+                if (table_row) {
+                    // A replacement *wider* than its markup has no slack
+                    // to hand back, so it would have to push the cell's
+                    // `|` right to fit -- left on the raw grid instead,
+                    // exactly as it is drawn today.
+                    if (run.draw_cols >= run.col_end - run.col_start) continue;
+                    const size_t bar = raw_line.find('|', static_cast<size_t>(std::min(run.col_end, raw_len)));
+                    if (bar != std::string::npos) run.shift_until = static_cast<int>(bar);
+                }
+                conceal_runs.push_back(run);
+            }
+            // Inline math (Buffer::org_latex_inline) collapses exactly
+            // the way markup does, and for the same reason: its render
+            // is nearly always narrower than the "$...$" it stands for,
+            // and leaving that difference behind as a hole is what made
+            // a fragment look like it was floating in the middle of an
+            // oversized blank box, with the prose after it stranded
+            // wherever the raw source happened to end. Reserving the
+            // render's own columns instead pulls the rest of the row
+            // back against it, so the only space left is the half a
+            // character of air OrgLatexInlineCols asks for on each side.
+            //
+            // A span whose texture hasn't finished baking gets no run:
+            // blanking columns and then drawing nothing in them would
+            // leave a hole where the source used to be, so the raw
+            // "$...$" stays visible until there is something to put in
+            // its place. The draw pass below looks the texture up the
+            // same way, in the same frame, so the two never disagree.
+            if (g_editor.OrgLatexVisible() && !latex_plain_row) {
+                auto latex_inline_it = buf.org_latex_inline.find(row);
+                if (latex_inline_it != buf.org_latex_inline.end()) {
+                    for (const Buffer::OrgLatexInlineSpan &span : latex_inline_it->second) {
+                        if (span.col_end <= span.col_start) continue;
+                        const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
+                        if (!tex) continue;
+                        ConcealRun run{span.col_start, span.col_end, OrgLatexInlineCols(*tex),
+                                       std::numeric_limits<int>::max()};
+                        // Same cell-local bargain a table row strikes
+                        // above, including its "a replacement with no
+                        // slack to give back stays on the raw grid" out.
+                        if (table_row) {
+                            if (run.draw_cols >= run.col_end - run.col_start) continue;
+                            const size_t bar = raw_line.find('|', static_cast<size_t>(std::min(run.col_end, raw_len)));
+                            if (bar != std::string::npos) run.shift_until = static_cast<int>(bar);
+                        }
+                        math_runs.emplace_back(run.col_start, run.col_end);
+                        conceal_runs.push_back(run);
+                    }
+                }
+            }
+            std::sort(conceal_runs.begin(), conceal_runs.end(),
+                      [](const ConcealRun &a, const ConcealRun &b) { return a.col_start < b.col_start; });
+            // Two overlays over the same characters (a link inside
+            // emphasis) would each claim the whole collapse, sliding the
+            // rest of the row twice as far left as the row actually
+            // shortened. Only the first of an overlapping pair counts;
+            // the second still draws its own replacement over the first's
+            // blanked columns, exactly as it does today.
+            size_t kept = 0;
+            for (size_t i = 0; i < conceal_runs.size(); i++) {
+                if (kept > 0 && conceal_runs[i].col_start < conceal_runs[kept - 1].col_end) continue;
+                conceal_runs[kept++] = conceal_runs[i];
+            }
+            conceal_runs.resize(kept);
+        }
+        /**
+         * @brief Maps one of this row's stored columns to the column it is drawn at.
+         * @param c The stored (raw-text) column.
+         * @return The drawn column, which is `c` itself when nothing on the row is concealed.
+         */
+        auto DispCol = [&](int c) -> int {
+            int shift = 0;
+            for (const ConcealRun &r : conceal_runs) {
+                // Past the end of this run's reach (a table cell's own
+                // closing `|` and everything after it): the slack was
+                // handed back there, so nothing from this run shifts it.
+                if (c >= r.shift_until) continue;
+                if (c >= r.col_end) {
+                    shift += (r.col_end - r.col_start) - r.draw_cols;
+                    continue;
+                }
+                // Inside the markup: walk the replacement instead, so a
+                // span that only partly overlaps a concealed one (a
+                // selection ending mid-markup) still maps somewhere
+                // sensible rather than collapsing to a zero width.
+                if (c > r.col_start) return r.col_start - shift + std::min(c - r.col_start, r.draw_cols);
+                break;
+            }
+            return c - shift;
+        };
+        // The row as drawn: each concealed span blanked to its
+        // replacement's width. Column counts stand in for byte counts
+        // here, the same equivalence every decoration span on this row
+        // already assumes (col_start/col_end are byte offsets used as
+        // columns).
+        if (!conceal_runs.empty()) {
+            const int raw_len = static_cast<int>(raw_line.size());
+            // The edits, walked in column order so the result agrees with
+            // DispCol column for column.
+            edits.clear();
+            for (const ConcealRun &r : conceal_runs) {
+                edits.push_back(DispEdit{r.col_start, 0, &r});
+                if (r.shift_until != std::numeric_limits<int>::max()) {
+                    edits.push_back(DispEdit{r.shift_until, (r.col_end - r.col_start) - r.draw_cols, nullptr});
+                }
+            }
+            // Pads before markup at the same column, so two runs sharing
+            // one cell's `|` both hand their slack back ahead of it.
+            std::stable_sort(edits.begin(), edits.end(), [](const DispEdit &a, const DispEdit &b) {
+                if (a.col != b.col) return a.col < b.col;
+                return a.run == nullptr && b.run != nullptr;
+            });
+            disp_line.clear();
+            int pos = 0;
+            for (const DispEdit &e : edits) {
+                const int at = std::clamp(e.col, pos, raw_len);
+                disp_line.append(raw_line, static_cast<size_t>(pos), static_cast<size_t>(at - pos));
+                pos = at;
+                if (e.run == nullptr) {
+                    disp_line.append(static_cast<size_t>(std::max(0, e.pad)), ' ');
+                    continue;
+                }
+                disp_line.append(static_cast<size_t>(e.run->draw_cols), ' ');
+                pos = std::clamp(e.run->col_end, pos, raw_len);
+            }
+            disp_line.append(raw_line, static_cast<size_t>(pos));
+        }
+        const std::string &draw_line = conceal_runs.empty() ? raw_line : disp_line;
+        /**
+         * @brief Reports whether a decoration's span is one of this row's collapsed runs.
+         * @param d The decoration to look up.
+         * @return True when the base pass already blanked exactly this span's columns.
+         */
+        auto IsCollapsedRun = [&](const Decoration &d) {
+            for (const ConcealRun &r : conceal_runs) {
+                if (r.col_start == d.col_start && r.col_end == d.col_end) return true;
+            }
+            return false;
+        };
+
         if (block_selection && row >= block_top && row <= block_bottom) {
             int line_len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
             int cs = block_left;
@@ -39717,8 +40050,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::Color sel_color = ResolveHlGroup("Visual");
             gfx::Color fill{sel_color.r, sel_color.g, sel_color.b, 160};
             // Draws the block-selection fill rectangle for each wrapped piece of this row's
-            // selected column range.
-            ForEachWrapPiece(cs, ce, row_wrap_cols, text_x, ly, line_height,
+            // selected column range -- in drawn columns (DispCol), so a fill over a row with
+            // concealed markup on it lands on the text as collapsed rather than on the columns
+            // the raw markup would have occupied.
+            ForEachWrapPiece(DispCol(cs), DispCol(ce), row_wrap_cols, text_x, ly, line_height,
                               [&](float py, float x0, float x1, int, int) {
                                   gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
                                                 static_cast<int>(x1 - x0), line_height, fill);
@@ -39730,8 +40065,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::Color sel_color = ResolveHlGroup("Visual");
             gfx::Color fill{sel_color.r, sel_color.g, sel_color.b, 160};
             // Draws the character/linewise-selection fill rectangle for each wrapped piece of
-            // this row's selected column range.
-            ForEachWrapPiece(cs, ce, row_wrap_cols, text_x, ly, line_height,
+            // this row's selected column range, in drawn columns the same way the block fill
+            // above does.
+            ForEachWrapPiece(DispCol(cs), DispCol(ce), row_wrap_cols, text_x, ly, line_height,
                               [&](float py, float x0, float x1, int, int) {
                                   gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
                                                 static_cast<int>(x1 - x0), line_height, fill);
@@ -39765,9 +40101,6 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         std::string sign_shape;
         bool sign_badge = false;
         int sign_priority = -1;
-        auto row_decos_it = decos_by_row.find(row);
-        const std::vector<const Decoration *> &row_decos =
-            (row_decos_it != decos_by_row.end()) ? row_decos_it->second : kNoDecos;
         for (const Decoration *dp : row_decos) {
             const Decoration &d = *dp;
             if (d.whole_line && !d.hl_group.empty()) {
@@ -39792,9 +40125,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // the body, so a table reads as one object instead of a run of
         // pipe characters. The rules that finish the grid are collected
         // here and drawn over the text afterwards (org_table_rules).
+        //
+        // A row of a wrapped table that stepped aside for the cursor
+        // (OrgTableGrid::raw_rows) gets none of it: it is showing its
+        // stored columns, which the grid is no longer measured in, so a
+        // wash and rules cut to the wrapped width would be drawn across
+        // the middle of text that runs past them.
         if (!org_table_of_row.empty()) {
             auto tbl_it = org_table_of_row.find(row);
-            if (tbl_it != org_table_of_row.end()) {
+            if (tbl_it != org_table_of_row.end() &&
+                std::find(tbl_it->second->raw_rows.begin(), tbl_it->second->raw_rows.end(), row) ==
+                    tbl_it->second->raw_rows.end()) {
                 const Editor::OrgTableGrid &tbl = *tbl_it->second;
                 // A row rendered wrapped carries its own geometry: the
                 // layout's indent/width, not the stored line's, and a
@@ -39935,11 +40276,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                              ResolveHlGroup("Normal"));
             }
         } else if (row_wrap_cols <= 0) {
-            DrawLineFast(buf.lines[static_cast<size_t>(row)], text_x, ly, g_font_size, ResolveHlGroup("Normal"));
+            DrawLineFast(draw_line, text_x, ly, g_font_size, ResolveHlGroup("Normal"));
         } else {
-            const std::string &wline = buf.lines[static_cast<size_t>(row)];
+            const std::string &wline = draw_line;
             for (int s = 0; s < row_wrap_slots; s++) {
-                DrawLineFast(wline.substr(static_cast<size_t>(s) * static_cast<size_t>(row_wrap_cols), static_cast<size_t>(row_wrap_cols)), text_x, ly + static_cast<float>(s * line_height), g_font_size,
+                const size_t piece_at = static_cast<size_t>(s) * static_cast<size_t>(row_wrap_cols);
+                // The slot count came from the row's *raw* length (it has
+                // to -- three other walkers count it the same way without
+                // any access to decorations), so a row whose concealed
+                // text collapsed past a wrap boundary has a trailing slot
+                // with nothing left to put on it.
+                if (piece_at >= wline.size()) break;
+                DrawLineFast(wline.substr(piece_at, static_cast<size_t>(row_wrap_cols)), text_x, ly + static_cast<float>(s * line_height), g_font_size,
                              ResolveHlGroup("Normal"));
             }
         }
@@ -39958,6 +40306,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // lands the cursor *on* its hit, so that is exactly the row
             // whose highlight there is most reason to keep.
             if (plain_row && !d.whole_line && !d.virt_text_eol && d.hl_group != "IncSearch") continue;
+            // ...and the same for a span the inline-math collapse has
+            // taken over (math_runs, above the loop): there is no text
+            // left at those columns to underline or recolor.
+            if (!d.whole_line && !d.virt_text_eol && !math_runs.empty()) {
+                bool in_math = false;
+                for (const std::pair<int, int> &m : math_runs) {
+                    if (d.col_start >= m.first && d.col_end <= m.second) {
+                        in_math = true;
+                        break;
+                    }
+                }
+                if (in_math) continue;
+            }
             if (!d.whole_line && !d.underline && !d.bold && !d.italic && (!d.hl_group.empty() || d.has_fg_color) &&
                 d.col_end > d.col_start) {
                 const std::string &line = buf.lines[static_cast<size_t>(row)];
@@ -39997,8 +40358,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // recovering columns back out of `a`/`b`; the hl_group
                     // branch's `a`/`b` already equal its own column indices
                     // (the byte-offset-as-column content it assumes).
-                    int col_a = d.has_fg_color ? d.col_start : a;
-                    int col_b = d.has_fg_color ? d.col_end : b;
+                    // ...and then through DispCol, so a recolored span on a row
+                    // with concealed markup on it is repainted over the base
+                    // pass's own (collapsed) glyphs instead of a column or two
+                    // right of them. Identity on every row with nothing
+                    // concealed, which is every row a terminal-color run can
+                    // appear on.
+                    int col_a = DispCol(d.has_fg_color ? d.col_start : a);
+                    int col_b = DispCol(d.has_fg_color ? d.col_end : b);
                     // Draws this decoration span's recolored text for each wrapped piece of it.
                     ForEachWrapPiece(col_a, col_b, row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float px, float, int pa, int pb) {
@@ -40007,11 +40374,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                           // has_fg_color content isn't guaranteed ASCII-only (ditto the
                                           // hl_group branch's own byte-offset-as-column convention, which
                                           // ColumnToByteOffset happens to reproduce exactly for it too).
-                                          int byte_a = std::min(static_cast<int>(line.size()),
-                                                                 static_cast<int>(ColumnToByteOffset(line, pa)));
-                                          int byte_b = std::min(static_cast<int>(line.size()),
-                                                                 static_cast<int>(ColumnToByteOffset(line, pb)));
-                                          std::string piece = line.substr(static_cast<size_t>(byte_a), static_cast<size_t>(byte_b - byte_a));
+                                          int byte_a = std::min(static_cast<int>(draw_line.size()),
+                                                                 static_cast<int>(ColumnToByteOffset(draw_line, pa)));
+                                          int byte_b = std::min(static_cast<int>(draw_line.size()),
+                                                                 static_cast<int>(ColumnToByteOffset(draw_line, pb)));
+                                          std::string piece = draw_line.substr(static_cast<size_t>(byte_a), static_cast<size_t>(byte_b - byte_a));
                                           if (d.has_fg_color) {
                                               gfx::DrawTextEx(span_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, c);
                                               return;
@@ -40076,7 +40443,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (b > a) {
                     gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Draws the underline rectangle for each wrapped piece of this span.
-                    ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
+                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float x0, float x1, int, int) {
                                           gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py + static_cast<float>(line_height) - 2),
                                                         static_cast<int>(x1 - x0), 1, c);
@@ -40093,7 +40460,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (b > a) {
                     gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Draws the strikethrough rectangle for each wrapped piece of this span.
-                    ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
+                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float x0, float x1, int, int) {
                                           gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py + static_cast<float>(line_height) / 2),
                                                         static_cast<int>(x1 - x0), 1, c);
@@ -40113,9 +40480,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (b > a) {
                     gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Draws each wrapped piece of this span twice, offset 1px right, to fake bold.
-                    ForEachWrapPiece(a, b, row_wrap_cols, text_x, ly, line_height,
+                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float px, float, int pa, int pb) {
-                                          std::string piece = line.substr(static_cast<size_t>(pa), static_cast<size_t>(pb - pa));
+                                          std::string piece = draw_line.substr(static_cast<size_t>(pa), static_cast<size_t>(pb - pa));
                                           gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, c);
                                           gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px + 1, py}, g_font_size, 0, c);
                                       });
@@ -40149,8 +40516,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     float pad = static_cast<float>(line_height) * 0.25f;
                     // Covers then redraws each wrapped piece of this span sheared, to fake italics.
                     ForEachWrapPiece(
-                        a, b, row_wrap_cols, text_x, ly, line_height, [&](float py, float px0, float px1, int pa, int pb) {
-                            std::string piece = line.substr(static_cast<size_t>(pa), static_cast<size_t>(pb - pa));
+                        DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, line_height, [&](float py, float px0, float px1, int pa, int pb) {
+                            std::string piece = draw_line.substr(static_cast<size_t>(pa), static_cast<size_t>(pb - pa));
                             float span_w = px1 - px0;
                             float baseline_y = py + static_cast<float>(line_height);
                             // Unlike bold's double-draw (which lands its second
@@ -40189,7 +40556,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // replacing a specific span -- see the field's own
                 // comment (editor.h) for why col_start-anchoring alone
                 // painted diagnostic text directly over real buffer text.
-                int vcol = d.virt_text_eol ? static_cast<int>(buf.lines[static_cast<size_t>(row)].size()) + 1 : d.col_start;
+                // DispCol: a concealing overlay's replacement is drawn in
+                // the columns the collapse blanked for it, and end-of-line
+                // virtual text hangs off the row's *drawn* end rather than
+                // out where its raw text used to reach.
+                int vcol = DispCol(d.virt_text_eol ? static_cast<int>(buf.lines[static_cast<size_t>(row)].size()) + 1
+                                                   : d.col_start);
                 gfx::Vector2 vpos = WrapPos(vcol, row_wrap_cols, text_x, ly, line_height);
                 float vx = vpos.x, vy = vpos.y;
                 gfx::Color vc = ResolveHlGroup(d.virt_text_hl);
@@ -40234,7 +40606,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px + 1, py}, g_font_size, 0, vc);
                     }
                 };
-                if (d.virt_overlay) {
+                // A collapsed run needs no cover at all: the base pass
+                // drew blanks over exactly those columns, so covering them
+                // again would only flatten whatever tint is underneath --
+                // the Visual selection's fill, the cursorline -- into a
+                // notch the width of the markup. The cover stays for every
+                // overlay the collapse did *not* take (one overlapping
+                // another, or any row left on the raw grid), where it is
+                // still the only thing hiding the markup.
+                if (d.virt_overlay && !IsCollapsedRun(d)) {
                     // Cover whichever is wider: the replacement text, or
                     // the original [col_start, col_end) span it's
                     // standing in for. A caller concealing markup down to
@@ -40254,7 +40634,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // concealed form -- `=tectonic=` in this repo's own
                     // help/org-visuals.org rendered as `tectonic` plus a
                     // stray `ic=` on the row below.
-                    const int cover_end = std::max(d.col_end, vcol + vtext_cols);
+                    // In drawn columns: on a row whose collapse already
+                    // blanked this span (every ordinary conceal) the span is
+                    // exactly `vtext_cols` wide there and the cover paints
+                    // over blank background -- harmless, and still the thing
+                    // that hides the markup for an overlay the collapse
+                    // skipped (one overlapping another, or a row left on the
+                    // raw grid).
+                    const int cover_end = std::max(DispCol(d.col_end), vcol + vtext_cols);
                     bool first_piece = true;
                     ForEachWrapPiece(vcol, cover_end, row_wrap_cols, text_x, ly, line_height,
                                       [&](float py, float px0, float px1, int, int) {
@@ -40323,7 +40710,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // Colorizer swatch (Phase 13): a small filled square in the
             // literal parsed color, drawn just before col_start.
             if (d.has_swatch) {
-                gfx::Vector2 spos = WrapPos(d.col_start, row_wrap_cols, text_x, ly, line_height);
+                gfx::Vector2 spos = WrapPos(DispCol(d.col_start), row_wrap_cols, text_x, ly, line_height);
                 float sw = std::max(4.0f, g_char_width - 2);
                 gfx::DrawRectangle(static_cast<int>(spos.x), static_cast<int>(spos.y + (static_cast<float>(line_height) - sw) / 2.0f),
                               static_cast<int>(sw), static_cast<int>(sw),
@@ -40355,8 +40742,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (const std::vector<Buffer::OrgLinkSpan> *link_spans =
                     g_editor.OrgLinkSpansForRow(pane.buffer_id, row)) {
                 for (const Buffer::OrgLinkSpan &lsp : *link_spans) {
-                    const float lx = text_x + static_cast<float>(lsp.col_start) * g_char_width;
-                    const int raw_cols = lsp.col_end - lsp.col_start;
+                    // Drawn columns, so the clickable rectangle follows a
+                    // concealed link to where the collapse actually put it
+                    // (DispCol; identity when nothing on the row is
+                    // concealed, which includes the cursor's own row).
+                    const float lx = text_x + static_cast<float>(DispCol(lsp.col_start)) * g_char_width;
+                    const int raw_cols = DispCol(lsp.col_end) - DispCol(lsp.col_start);
                     const int shown_cols = static_cast<int>(lsp.display.size());
                     const float lw = static_cast<float>(std::max(raw_cols, shown_cols)) * g_char_width;
                     const int click_row = row;
@@ -40379,50 +40770,57 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // Buffer::org_latex_inline's own comment explains why this can't
         // reuse the whole-row org_latex_rows path -- a fragment here
         // shares its row with other text, so instead of replacing the
-        // row it's painted directly over its own [col_start, col_end)
-        // span: first a same-color-as-background rectangle to conceal the
-        // raw "$...$" markup underneath (identical trick to a decoration's
-        // own virt_overlay, just with a texture standing in for text
-        // rather than replacement text), then the fragment's texture.
-        // Sized to the line height *only* (not squeezed to fit inside the
-        // original span's own pixel width the way an earlier version of
-        // this did -- that made a short render look like it was floating,
-        // centered, inside an oversized box whenever the raw "$...$"
-        // source was longer than its typeset form, which is the common
-        // case) and margined by one character-width -- "a single space"
-        // -- on each side. The cover itself still has to span at least
-        // the *original* [col_start, col_end) no matter how compact the
-        // render is, since anything short of col_end is still raw markup
-        // that would otherwise show through, so a render more compact
-        // than its own source leaves extra covered-but-empty space around
-        // it rather than uncovered raw text -- there's no reflowing the
-        // fixed-column text after it to close that gap, so the render is
-        // centered within whatever the cover ends up being (its own
-        // width plus a margin on each side, or the wider original span
-        // when that's the bigger of the two) so any such leftover space
-        // splits evenly across both sides instead of piling up on one.
-        // Only when the render is *wider* than its own source (needs more
-        // room than the "$...$" it's replacing had) does the cover expand
-        // past the original col_end to fit it -- still a "bleeds into
-        // whatever comes next" risk with no reflow to prevent it, but the
-        // narrower, common direction is now handled cleanly.
-        if (g_editor.OrgLatexVisible() && !plain_row) {
+        // row it's drawn into its own [col_start, col_end) span.
+        //
+        // Nearly always that span has already been collapsed to exactly
+        // the columns this render needs (the conceal pass above, which
+        // reserved them with the same OrgLatexInlineCols the cover is
+        // measured with here), so the base pass drew blanks there and
+        // the prose after it has slid left against the render: the only
+        // space around the maths is the air OrgLatexInlineCols asks for.
+        // The render is still centered in it, so the rounding up to a
+        // whole column splits evenly rather than piling on one side.
+        //
+        // A span the conceal pass passed over -- a table row, where a
+        // render wider than its own source has no slack to hand back
+        // before the cell's `|` -- falls back to what this always did:
+        // paint a background-colored rectangle over the raw "$...$"
+        // (the same trick Decoration's virt_overlay uses for text) and
+        // center the render on it. The rectangle then has to span at
+        // least the original [col_start, col_end), since anything short
+        // of col_end is raw markup that would otherwise show through.
+        if (g_editor.OrgLatexVisible() && !latex_plain_row) {
             auto inline_it = buf.org_latex_inline.find(row);
             if (inline_it != buf.org_latex_inline.end()) {
                 for (const Buffer::OrgLatexInlineSpan &span : inline_it->second) {
-                    gfx::Vector2 span_pos = WrapPos(span.col_start, row_wrap_cols, text_x, ly, line_height);
-                    float span_x = span_pos.x, span_y = span_pos.y;
-                    float span_w = static_cast<float>(span.col_end - span.col_start) * g_char_width;
                     const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
                     if (!tex) continue;
-                    float scale = (static_cast<float>(line_height) * 0.9f) / static_cast<float>(tex->height);
-                    float draw_w = static_cast<float>(tex->width) * scale;
-                    float draw_h = static_cast<float>(tex->height) * scale;
-                    float margin = g_char_width;
-                    float cover_w = std::max(span_w, draw_w + margin * 2.0f);
-                    float draw_x = span_x + (cover_w - draw_w) / 2.0f;
-                    gfx::DrawRectangle(static_cast<int>(span_x), static_cast<int>(span_y), static_cast<int>(cover_w),
-                                  line_height, ResolveHlGroup("NormalBg"));
+                    // Drawn columns (DispCol): this span's own collapse,
+                    // plus any markup concealed earlier on the row that
+                    // has already slid it left.
+                    gfx::Vector2 span_pos = WrapPos(DispCol(span.col_start), row_wrap_cols, text_x, ly, line_height);
+                    const float span_x = span_pos.x, span_y = span_pos.y;
+                    const float scale = OrgLatexInlineScale(*tex);
+                    const float draw_w = static_cast<float>(tex->width) * scale;
+                    const float draw_h = static_cast<float>(tex->height) * scale;
+                    const ConcealRun *collapsed = nullptr;
+                    for (const ConcealRun &r : conceal_runs) {
+                        if (r.col_start == span.col_start && r.col_end == span.col_end) {
+                            collapsed = &r;
+                            break;
+                        }
+                    }
+                    float cover_w;
+                    if (collapsed != nullptr) {
+                        cover_w = static_cast<float>(collapsed->draw_cols) * g_char_width;
+                    } else {
+                        const float span_w =
+                            static_cast<float>(DispCol(span.col_end) - DispCol(span.col_start)) * g_char_width;
+                        cover_w = std::max(span_w, draw_w + g_char_width * 2.0f);
+                        gfx::DrawRectangle(static_cast<int>(span_x), static_cast<int>(span_y), static_cast<int>(cover_w),
+                                      line_height, ResolveHlGroup("NormalBg"));
+                    }
+                    const float draw_x = span_x + (cover_w - draw_w) / 2.0f;
                     gfx::DrawTextureEx(*tex, gfx::Vector2{draw_x, span_y + (static_cast<float>(line_height) - draw_h) / 2.0f}, 0.0f, scale, gfx::White);
                 }
             }
@@ -40476,7 +40874,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (is_active && g_editor.IsHintActive()) {
             for (const HintMatch &hm : g_editor.HintMatches()) {
                 if (hm.row != row) continue;
-                gfx::Vector2 hpos = WrapPos(hm.col, row_wrap_cols, text_x, ly, line_height);
+                gfx::Vector2 hpos = WrapPos(DispCol(hm.col), row_wrap_cols, text_x, ly, line_height);
                 float hx = hpos.x, hy = hpos.y;
                 float label_w = gfx::MeasureTextEx(g_font, hm.label.c_str(), g_font_size, 0).x + 4;
                 gfx::DrawRectangle(static_cast<int>(hx), static_cast<int>(hy), static_cast<int>(label_w), line_height,
@@ -40505,24 +40903,31 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (g_editor.IsQuickJumpActive() && !fold_here) {
             gfx::DrawRectangle(static_cast<int>(text_x), static_cast<int>(ly), static_cast<int>(x + w - text_x),
                           line_height * row_wrap_slots, gfx::Fade(ResolveHlGroup("NormalBg"), 0.6f));
-            const std::string &qj_line = buf.lines[static_cast<size_t>(row)];
+            // The row as drawn, so repainting a match at full strength
+            // over the dimming wash can't put concealed markup back on
+            // screen; its columns are the drawn ones for the same reason.
+            const std::string &qj_line = draw_line;
             const int qj_len = static_cast<int>(g_editor.QuickJumpQuery().size());
             for (const QuickJumpMatch &hm : g_editor.QuickJumpMatches()) {
                 if (hm.pane_id != pane.id) continue;
                 if (hm.row != row) continue;
-                int col = ByteOffsetToColumn(qj_line, hm.col);
-                int i = hm.col;
-                int end = std::min(static_cast<int>(qj_line.size()), hm.col + qj_len);
-                while (i < end) {
+                // Walked in drawn columns from here on: the match's own
+                // start column comes from the raw byte offset the scan
+                // reported, then through DispCol, and each column's
+                // characters are fetched back out of the drawn text.
+                int col = DispCol(ByteOffsetToColumn(buf.lines[static_cast<size_t>(row)], hm.col));
+                const int end_col = col + qj_len;
+                while (col < end_col) {
+                    const size_t i = ColumnToByteOffset(qj_line, col);
+                    if (i >= qj_line.size()) break;
                     int cp_size = 0;
-                    gfx::GetCodepointNext(&qj_line[static_cast<size_t>(i)], &cp_size);
+                    gfx::GetCodepointNext(&qj_line[i], &cp_size);
                     if (cp_size <= 0) cp_size = 1;
                     gfx::Vector2 cpos = WrapPos(col, row_wrap_cols, text_x, ly, line_height);
                     gfx::DrawRectangle(static_cast<int>(cpos.x), static_cast<int>(cpos.y), static_cast<int>(g_char_width) + 1,
                                   line_height, gfx::Fade(ResolveHlGroup("IncSearch"), 0.45f));
-                    gfx::DrawTextEx(g_font, qj_line.substr(static_cast<size_t>(i), static_cast<size_t>(cp_size)).c_str(), cpos,
+                    gfx::DrawTextEx(g_font, qj_line.substr(i, static_cast<size_t>(cp_size)).c_str(), cpos,
                                g_font_size, 0, ResolveHlGroup("Normal"));
-                    i += cp_size;
                     col++;
                 }
                 if (hm.label.empty()) continue;
@@ -40543,7 +40948,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // the top of the view and `target_row` (each collapses to 1 slot
     // regardless of how many rows it hides -- the cursor itself is never
     // hidden inside one, see ClampCursor), any org inline image (each
-    // *expands* to kOrgInlineImageSlots instead -- see the draw loop's own
+    // *expands* to however many line-heights its figure is drawn at
+    // (OrgImageLayoutFor) instead -- see the draw loop's own
     // image branch above), any org LaTeX fragment (expands to its own
     // per-entry slots, org_latex_rows -- see the draw loop's own latex
     // branch above), and soft-wrap (:set wrap, a plain row claims however
@@ -40572,7 +40978,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             for (const Fold &fold : buf.folds) {
                 if (fold.closed && fold.start_row == r) f = &fold;
             }
-            auto latex_it = buf.org_latex_rows.find(r);
+            auto img_it = buf.org_image_rows.find(r);
+            const Buffer::OrgLatexRender *latex = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row);
             auto tw_it = buf.org_table_wrap_rows.find(r);
             // A notebook code cell's output block hangs under row r (see
             // the draw loop's notebook branch); it counts with that row.
@@ -40580,12 +40987,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (f) {
                 r = f->end_row + 1;
                 slot += 1;
-            } else if (g_editor.OrgImagesVisible() && buf.org_image_rows.count(r)) {
+            } else if (g_editor.OrgImagesVisible() && img_it != buf.org_image_rows.end()) {
                 r += 1;
-                slot += kOrgInlineImageSlots + nb_trailing;
-            } else if (g_editor.OrgLatexVisible() && latex_it != buf.org_latex_rows.end()) {
-                r = latex_it->second.end_row + 1;  // skip the fragment's remaining raw source rows outright
-                slot += latex_it->second.slots + nb_trailing;
+                slot += g_editor.OrgImageLayoutForRow(img_it->second, pane.text_cols).slots + nb_trailing;
+            } else if (latex != nullptr) {
+                r = latex->end_row + 1;  // skip the fragment's remaining raw source rows outright
+                slot += latex->slots + nb_trailing;
             } else if (g_editor.OrgTableWrapVisible() && tw_it != buf.org_table_wrap_rows.end() &&
                        !tw_it->second.lines.empty()) {
                 // An over-wide org table's row draws as its wrapped
@@ -40614,11 +41021,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         int cursor_slot = RowSlot(pane.cursor.row);
         // A cursor resting on an image/latex row itself has no meaningful
         // column position (the row's own text is replaced by the texture,
-        // not drawn at all) -- an outline around the whole reserved slot
-        // stands in for the usual per-character/per-column cursor cell.
-        bool cursor_on_image = g_editor.OrgImagesVisible() && buf.org_image_rows.count(pane.cursor.row) != 0;
-        auto cursor_latex_it = buf.org_latex_rows.find(pane.cursor.row);
-        bool cursor_on_latex = g_editor.OrgLatexVisible() && cursor_latex_it != buf.org_latex_rows.end();
+        // not drawn at all) -- an outline around what was drawn stands in
+        // for the usual per-character/per-column cursor cell.
+        auto cursor_img_it = buf.org_image_rows.find(pane.cursor.row);
+        bool cursor_on_image = g_editor.OrgImagesVisible() && cursor_img_it != buf.org_image_rows.end();
+        // Always nullptr in practice while the reveal rule is on (the
+        // cursor's own row is inside its own fragment by definition), but
+        // resolved through the same function as every other lookup so
+        // that turning the rule off (<leader>otc) still gets the outline
+        // the cursor used to get on a rendered fragment's row.
+        const Buffer::OrgLatexRender *cursor_latex =
+            g_editor.OrgLatexRenderForRow(buf, pane.cursor.row, latex_cursor_row);
+        bool cursor_on_latex = cursor_latex != nullptr;
         // The cursor's own row soft-wraps the same way any other plain row
         // does (never an image/latex row, which are handled separately
         // below); pane.cursor.col picks out which of its visual sub-lines
@@ -40635,7 +41049,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         gfx::Vector2 cursor_pos = WrapPos(cursor_display_col, cursor_wrap_cols, text_x, content_y + static_cast<float>(cursor_slot * line_height),
                                       line_height);
         float cursor_x = cursor_pos.x, cursor_y = cursor_pos.y;
-        int cursor_slots = cursor_on_image ? kOrgInlineImageSlots : (cursor_on_latex ? cursor_latex_it->second.slots : 1);
+        // An image row's outline hugs the figure itself (which is
+        // centered in the text column, not flush against it) rather than
+        // the whole reserved band -- with the reserved height now equal
+        // to the drawn height there is no longer any empty band to
+        // outline. A LaTeX fragment keeps the full-width band it had.
+        // `row_extent` stays the whole reserved band either way: it is
+        // also where the hover/completion popup is anchored below.
+        const OrgImageLayout cursor_img_lay =
+            cursor_on_image ? g_editor.OrgImageLayoutForRow(cursor_img_it->second, pane.text_cols) : OrgImageLayout{};
+        int cursor_slots = cursor_on_image ? cursor_img_lay.slots : (cursor_on_latex ? cursor_latex->slots : 1);
         float row_extent = (cursor_on_image || cursor_on_latex) ? static_cast<float>(line_height) * static_cast<float>(cursor_slots)
                                                                   : static_cast<float>(line_height);
         // Buffer::row_cursor (kBuiltinFileTree's read-only tree): the row's
@@ -40651,7 +41074,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // of which stay correct for any other row_cursor buffer.
         if (buf.row_cursor) {
             // no per-column cursor: the row tint above is the whole cursor
-        } else if (cursor_on_image || cursor_on_latex) {
+        } else if (cursor_on_image) {
+            gfx::DrawRectangleLines(static_cast<int>(text_x + cursor_img_lay.offset_x), static_cast<int>(cursor_y),
+                                static_cast<int>(cursor_img_lay.width), static_cast<int>(cursor_img_lay.height),
+                                ResolveHlGroup("Normal"));
+        } else if (cursor_on_latex) {
             float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
             gfx::DrawRectangleLines(static_cast<int>(text_x), static_cast<int>(cursor_y), static_cast<int>(avail_w),
                                 static_cast<int>(row_extent), ResolveHlGroup("Normal"));
@@ -40675,7 +41102,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // that texture from being drawn on this row, so the markup
             // under the caret is real, visible text again and does need
             // punching back through.
-            const bool plain_cursor_row = is_org_buffer && g_editor.OrgPlainCursorLineVisible();
+            // Matches the row loop's own latex_plain_row exactly (the
+            // math preview is not org-only), so the two never disagree
+            // about whether this row's markup is concealed right now.
+            const bool plain_cursor_row = g_editor.OrgPlainCursorLineVisible();
             bool cursor_in_concealed_latex = false;
             if (g_editor.OrgLatexVisible() && !plain_cursor_row) {
                 auto it = buf.org_latex_inline.find(pane.cursor.row);
@@ -40777,8 +41207,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (participant.row < pane.scroll_row || participant.row >= pane.scroll_row + pane.visible_lines) continue;
 
         bool p_on_image = g_editor.OrgImagesVisible() && buf.org_image_rows.count(participant.row) != 0;
-        auto p_latex_it = buf.org_latex_rows.find(participant.row);
-        bool p_on_latex = g_editor.OrgLatexVisible() && p_latex_it != buf.org_latex_rows.end();
+        // Resolved against the *local* cursor, same as RowSlot just
+        // above: a fragment this pane revealed draws as text for
+        // everyone looking at this pane, remote participant included.
+        bool p_on_latex = g_editor.OrgLatexRenderForRow(buf, participant.row, latex_cursor_row) != nullptr;
         int p_wrap_cols = (!p_on_image && !p_on_latex) ? wrap_cols : 0;
         gfx::Vector2 p_pos = WrapPos(participant.col, p_wrap_cols, text_x, content_y + static_cast<float>(RowSlot(participant.row) * line_height),
                                  line_height);

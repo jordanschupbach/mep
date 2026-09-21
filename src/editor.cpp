@@ -871,6 +871,16 @@ const Palette kPaletteOxocarbonLight = {
     {15, 98, 254, 255}, {103, 58, 183, 255}, {8, 189, 186, 255}, {255, 111, 0, 255}, {82, 82, 82, 255},
     /*accent*/ {15, 98, 254, 255},
 };
+// JetBrains IntelliJ IDEA's default dark scheme (Darcula), not part of
+// mep.nvim's ported set -- added on request. Colors are Darcula's actual
+// syntax-highlighting hex values (background/foreground/keyword/string/
+// number/class-name/instance-field), same as every palette above.
+const Palette kPaletteIntellij = {
+    "intellij",
+    {43, 43, 43, 255}, {169, 183, 198, 255}, {255, 107, 104, 255}, {106, 135, 89, 255}, {255, 198, 109, 255},
+    {104, 151, 187, 255}, {152, 118, 170, 255}, {82, 153, 145, 255}, {204, 120, 50, 255}, {50, 50, 50, 255},
+    /*accent*/ {204, 120, 50, 255},
+};
 
 // Past mep.nvim's own set: more real, published colorschemes in the same
 // ported-hex-values shape as the block above (same `border` = the scheme's
@@ -1067,7 +1077,7 @@ const Palette *const kAllPalettes[] = {
     &kPaletteIcebergDark, &kPaletteIcebergLight, &kPaletteMelange, &kPaletteGruvboxMaterial, &kPaletteSonokai,
     &kPaletteSrcery, &kPaletteJellybeans, &kPaletteTomorrowNight, &kPaletteCobalt2, &kPaletteFlexokiDark,
     &kPaletteFlexokiLight, &kPaletteModusVivendi, &kPaletteModusOperandi, &kPaletteVscodeDark, &kPaletteApprentice,
-    &kPaletteTerafox,
+    &kPaletteTerafox, &kPaletteIntellij,
 };
 
 /**

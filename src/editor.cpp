@@ -16484,13 +16484,21 @@ void Editor::HandleNormalInput() {
     //      queue-driven path handles it exactly as before this fix existed.
     //   2. kMotionDiscardCooldownSec -- once a *confirmed* hold ends, the
     //      queue keeps discarding that key's repeats for this long
-    //      afterward too (comfortably above the worst observed trickle,
-    //      measured empirically at a few hundred ms), since those are
-    //      presumed to be the delayed tail rather than a new keystroke.
-    //      The cost is a same-key re-tap inside this window being
-    //      swallowed too -- a minor, self-correcting annoyance (retrying
-    //      once the window passes fixes it), traded against not replaying
-    //      a stale backlog as visible extra motion.
+    //      afterward too, since those are presumed to be the delayed tail
+    //      rather than a new keystroke. The cost is a same-key re-tap
+    //      inside this window being swallowed too, so the window is
+    //      platform-split: on wasm it has to sit comfortably above the
+    //      worst observed WebKitGTK trickle (measured empirically at a
+    //      few hundred ms). Native has no delayed-repeat layer at all --
+    //      a stale repeat for a finished hold can only still be sitting
+    //      in the current frame's not-yet-drained queue -- so its window
+    //      only needs to outlive a few frames. The original single 0.7s
+    //      value ran on native too and ate real keystrokes: hold j to
+    //      scroll the file tree, release, tap j to fine-position within
+    //      0.7s -> the tap did nothing (verified with injected X11 key
+    //      events: three real taps at +0.25/+0.40/+0.60s after a
+    //      confirmed hold's release all dropped), which read as "the
+    //      caret lags behind every now and then".
     //   3. kMotionRepeatIntervalSec -- once confirmed, the cursor only
     //      actually moves this often, independent of frame rate (though
     //      it can never move faster than once per rendered frame no
@@ -16500,7 +16508,13 @@ void Editor::HandleNormalInput() {
     //      budget to mean "as fast as a frame allows," not a real
     //      independent 200/sec rate).
     constexpr double kMotionHoldConfirmSec = 0.2;
+#if defined(__EMSCRIPTEN__)
     constexpr double kMotionDiscardCooldownSec = 0.7;
+#else
+    // 3 frames at 60fps: enough for any same-frame stale repeat (plus a
+    // stalled frame or two), well under a deliberate human re-tap.
+    constexpr double kMotionDiscardCooldownSec = 0.05;
+#endif
     constexpr double kMotionRepeatIntervalSec = 0.005;
     bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     bool count_pending_now = pending_count_ != 0;

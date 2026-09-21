@@ -22,6 +22,33 @@ That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.
 
+* Org code blocks
+
+In an =.org= file =gf= formats *code*, never the prose around it.
+
+| Where the cursor is        | What =gf= does                          |
+|----------------------------+-----------------------------------------|
+| inside a =#+begin_src= block | formats that block's body             |
+| anywhere else              | formats every block that has a formatter |
+
+=:MepOrgFormatBlock= and =:MepOrgFormatBlocks= are the same two, by name.
+
+The block's language picks the formatter -- =#+begin_src python= is
+formatted by =black=, the same as a =.py= file, because the block's
+language name is translated through its babel file extension before the
+table above is looked up.
+
+A block indented under a heading is dedented before the formatter sees it
+and re-indented after, so the org file's own layout survives. A body whose
+lines do not share one indent (tabs on some, spaces on others) is passed
+through exactly as written.
+
+For a language with *no* entry in the table, a single-block =gf= falls back
+to that block's own language server -- the one already answering
+[[file:org-polyglot.html][hover and completion inside the block]]. The
+whole-file sweep does not: it only runs the table, and reports those blocks
+as skipped.
+
 * Adding one
 
 #+begin_src lua
@@ -56,4 +83,5 @@ So a filter-mode entry should almost always pass =\{\}= somewhere.
 * See also
 
 - [[file:lsp.html][Language servers]] -- the fallback formatter.
+- [[file:org-polyglot.html][Language servers in code blocks]] -- the fallback inside a block.
 - [[file:operators.html][Operators and text objects]] -- =gq= reflows prose, which is a different job.

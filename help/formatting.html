@@ -27,6 +27,27 @@ stale copy from disk.</p>
 <p>That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.</p>
+<h1>Org code blocks</h1>
+<p>In an <code>.org</code> file <code>gf</code> formats <b>code</b>, never the prose around it.</p>
+<table>
+<tr><th>Where the cursor is</th><th>What <code>gf</code> does</th></tr>
+<tr><td>inside a <code>#+begin_src</code> block</td><td>formats that block's body</td></tr>
+<tr><td>anywhere else</td><td>formats every block that has a formatter</td></tr>
+</table>
+<p><code>:MepOrgFormatBlock</code> and <code>:MepOrgFormatBlocks</code> are the same two, by name.</p>
+<p>The block's language picks the formatter -- <code>#+begin_src python</code> is
+formatted by <code>black</code>, the same as a <code>.py</code> file, because the block's
+language name is translated through its babel file extension before the
+table above is looked up.</p>
+<p>A block indented under a heading is dedented before the formatter sees it
+and re-indented after, so the org file's own layout survives. A body whose
+lines do not share one indent (tabs on some, spaces on others) is passed
+through exactly as written.</p>
+<p>For a language with <b>no</b> entry in the table, a single-block <code>gf</code> falls back
+to that block's own language server -- the one already answering
+<a href="org-polyglot.html">hover and completion inside the block</a>. The
+whole-file sweep does not: it only runs the table, and reports those blocks
+as skipped.</p>
 <h1>Adding one</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.js = {<span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span>
 mep.format_languages.ts = mep.format_languages.js</code></pre></div>
@@ -49,6 +70,7 @@ to their own defaults instead.</p>
 <h1>See also</h1>
 <ul>
 <li><a href="lsp.html">Language servers</a> -- the fallback formatter.</li>
+<li><a href="org-polyglot.html">Language servers in code blocks</a> -- the fallback inside a block.</li>
 <li><a href="operators.html">Operators and text objects</a> -- <code>gq</code> reflows prose, which is a different job.</li>
 </ul>
 </body>

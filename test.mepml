@@ -1,8 +1,24 @@
 > Some header
 
 Here, we have some _underlined_ text and we have some *bold text* and we have
-some `verbatim text` and we have some [my website : https://yabla.com].
+some `verbatim text` and we have some [my website : https://yabla.com]. and here
+we have some ~italic text~ and we have some ^superscript^ and we have some
+_subscript_ and we have some <small text> and we have some >big text< and we
+have some |monospaced text| and we have some =highlighted text= and we have some
+-strikethrough text- and we have some +inserted text+ and we have some !deleted
+text. Here's some \fs{12}{font size 12} text and here's some \fs{24}{font size
+24} text. Here's some \color{red}{red text} and here's some \color{blue}{blue
+text} . Here's some \fs{12}{\color{red}{font size 12 red text}}.
 
+Here's some latex math: $E=mc^2$ and here's some display math:
+$$
+\int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
+$$
+
+Other syntax works too like \(\frac{a}{b}\) and 
+\[ 
+  \sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6} 
+\]
 
 // Some comment about the code block to come
 //= Option1: value1
@@ -10,9 +26,9 @@ some `verbatim text` and we have some [my website : https://yabla.com].
 ```{bash, Option3="value3"}
 echo "Hello, world"
 ```
-// Result_Begin:
-
-// Result_End
+// result_begin:
+// Results will show here
+// result_end
 
 >> Some sub header
 

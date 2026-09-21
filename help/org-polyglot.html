@@ -22,15 +22,25 @@ mirrored into a scratch file of the right type, and the server sees that.</p>
 <p>Deliberate gaps, all matching the equivalent upstream implementation:</p>
 <ul>
 <li><code>:var</code> header arguments are invisible to the server. Only real execution renders them as a prelude assignment, so a variable bound by <code>:var</code> looks undefined to the language server even though the block runs fine.</li>
-<li>No code actions, formatting or symbol bridging -- those stay with the outer org buffer.</li>
+<li>No code actions or symbol bridging -- those stay with the outer org buffer. Formatting <b>is</b> bridged: see below.</li>
 <li>A client, once started, runs until mep exits; it is not torn down when the buffer closes.</li>
 </ul>
 <p>The <code>:var</code> one is the gap to remember, because it shows up as a diagnostic
 that is simply wrong rather than as a missing feature.</p>
+<h1>Formatting a block</h1>
+<p><code>gf</code> inside a block with no formatter of its own asks that block's server
+for one, over the block's rows alone
+(<code>textDocument/rangeFormatting</code>). Anything the server wants to change
+outside those rows is refused rather than applied in part -- on a shared
+shadow, that is what a whole-document reformat comes back as.</p>
+<p>The first <code>gf</code> after opening a block can land before the server has
+finished starting and report that nothing came back; press it again.</p>
+<p>See <a href="formatting.html">Formatting</a> for the rest of <code>gf</code>.</p>
 <h1>See also</h1>
 <ul>
 <li><a href="org-babel.html">Executing code blocks</a> -- running what you are editing.</li>
 <li><a href="lsp.html">Language servers</a> -- the machinery being reused.</li>
+<li><a href="formatting.html">Formatting</a> -- <code>gf</code>, and the formatter table it prefers.</li>
 </ul>
 </body>
 </html>

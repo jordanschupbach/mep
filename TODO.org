@@ -81,6 +81,48 @@ implement them. The more the better.
     installed in this sandbox, so the R command shape is unverified at
     runtime.
 
+* DONE org code block formatting
+  I currently can show docs within code blocks, but, I'd also like formatting
+  to work (e.g. 'gf').
+  - `gf` (and `:MepFormat`) in an org buffer now means "format the code",
+    not "format the prose": with the cursor inside a `#+begin_src <lang>`
+    block it reformats that block's body, and anywhere else in the file it
+    sweeps every block that has a formatter (`:MepOrgFormatBlock` /
+    `:MepOrgFormatBlocks` are the same two by name). Added to kBuiltinFormat
+    (main.cpp), reusing what org's other per-block tooling already has:
+    mep_org_src_block_at finds the block, mep.org_babel_langs' extension
+    translates the block's *language name* into the extension key
+    mep.format_languages is keyed by (`python` -> `py` -> black, `R` ->
+    styler, `cpp` -> clang-format), and a block with no entry at all falls
+    back to its own polyglot language server -- textDocument/rangeFormatting
+    over just the block's rows, with anything the server wants to change
+    outside them refused rather than half-applied. That closes the "no
+    formatting bridging" gap polyglot shipped with. A block indented under a
+    heading is dedented before the formatter sees it and re-indented after
+    (a uniformly indented body is a syntax error to black and gets flattened
+    by the others); a body with no shared indent is passed through as
+    written. The sweep formats the *last* block first so each application
+    can't shift the rows of the blocks still to come, and runs them one at a
+    time for the same reason. Nothing is applied if the block was edited or
+    the buffer left while the formatter ran, and an already-formatted block
+    is left clean rather than rewritten.
+  - Verified in a spawned instance (real `gf` keystrokes, own agent socket):
+    styler over an indented R block (indentation preserved), clang-format
+    over a cpp block, lua-language-server's rangeFormatting over a lua block
+    with no formatter entry, the whole-file sweep ("formatted 2 of 3 blocks
+    (no formatter for lua blocks)"), plus a Lua-level harness covering the
+    failure/staleness/idempotence paths. Two real bugs were caught that way
+    and fixed: routing the server's edits through
+    mep_polyglot_translate_edits collapsed a whole-body replacement into a
+    zero-width insert (the formatted body pasted in *above* the original),
+    and asking for a range that reached the `#+end_src` row got back an edit
+    one row too long, which the safety check then refused.
+  - Also fixed, found while testing this: mep_lsp_diagnostics was a `local`
+    in kBuiltinLsp, so kBuiltinOrgPolyglot's own publish handler raised
+    "attempt to index a nil value" on every diagnostic and none ever reached
+    an org buffer. It is a bare global now, like mep_lsp_server_capabilities
+    beside it, and diagnostics render inside code blocks.
+
 * TODO Add C++ language mode
 I'd like a C++ language mode that has a terminal for running the current file's
 executable, a compiler explorer like sidebar, and a hex exploration like sidebar. Can you implement these?

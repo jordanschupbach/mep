@@ -6061,8 +6061,16 @@ const char *kBuiltinLsp =
     // root across workspaces and so share one client.
     "local mep_lsp_clients = {}\n"
     "local function mep_lsp_key(ft) return ft .. '@' .. mep.workspace_root() end\n"
-    // filename -> array of LSP Diagnostic
-    "local mep_lsp_diagnostics = {}\n"
+    // filename -> array of LSP Diagnostic. A bare global, not a local,
+    // for the same reason mep_lsp_server_capabilities just above it is
+    // one: kBuiltinOrgPolyglot is a separate DoString chunk and writes
+    // a block's translated diagnostics straight into this table
+    // (mep_polyglot_on_diagnostics). As a local it was invisible there,
+    // so every publish from a polyglot server raised "attempt to index
+    // a nil value (global 'mep_lsp_diagnostics')" and no diagnostic
+    // inside a #+begin_src block ever reached the buffer -- seen in a
+    // live instance while adding gf's own block support.
+    "mep_lsp_diagnostics = {}\n"
     // filename -> version counter
     "local mep_lsp_doc_versions = {}\n"
     // client_id -> the server's own `initialize` response capabilities
@@ -12070,6 +12078,30 @@ const char *kBuiltinRun =
 // Anything with no entry here falls back to mep.lsp_format (kBuiltinLsp)
 // when a server is attached, which is how every other language with a
 // formatting-capable LSP gets gf for free.
+//
+// In an org buffer gf formats *code blocks*, not the prose around them:
+// with the cursor inside a `#+begin_src <lang>` block it reformats that
+// one block's body, and outside every block it walks the whole file and
+// formats each block that has a formatter (mep.org_format_block /
+// mep.org_format_blocks, `:MepOrgFormatBlock` / `:MepOrgFormatBlocks`).
+// The same three pieces the rest of org's per-block tooling already
+// shares are reused rather than re-derived: mep_org_src_block_at
+// (editor.cpp) finds the block, mep.org_babel_langs supplies its file
+// extension -- a block header writes a language *name* ("python"),
+// mep.format_languages is keyed by extension ("py"), the exact mismatch
+// mep_polyglot_server_for documents having been bitten by -- and, when
+// no formatter is registered for the language at all, the block's own
+// polyglot language server (kBuiltinOrgPolyglot's shadow document,
+// where hover/completion inside a block already come from) is asked for
+// textDocument/formatting instead. That last path closes the "no code
+// actions, formatting or symbol bridging" gap polyglot shipped with.
+//
+// A block's body is dedented to column 0 before the formatter sees it
+// and re-indented after (mep_format_common_indent): a block written
+// under a heading is usually indented as a whole, which is a syntax
+// error to black and something clang-format/styler would silently
+// "fix" by flattening -- either way the org file's own layout would be
+// destroyed by formatting a block in place.
 const char *kBuiltinFormat =
     "mep.format_languages = {\n"
     "  c = {'clang-format', '--assume-filename={}'},\n"
@@ -12152,18 +12184,14 @@ const char *kBuiltinFormat =
     "  mep.set_cursor(math.min(row, mep.line_count()), col)\n"
     "  mep.notify('gf: formatted with ' .. name)\n"
     "end\n"
-    "function mep.format_buffer()\n"
-    "  local fname = mep.filename()\n"
-    "  local ft = fname ~= '' and mep_lsp_filetype(fname) or ''\n"
-    "  local spec = mep.format_languages[ft]\n"
-    "  if not spec then\n"
-    "    if mep.lsp_client_for() then mep.lsp_format() return end\n"
-    "    mep.notify('gf: no formatter for ' .. (ft ~= '' and ('.' .. ft) or 'this buffer'), 'warn')\n"
-    "    return\n"
-    "  end\n"
-    "  local buf = mep.current_buffer()\n"
-    "  local text = mep_format_buffer_text()\n"
-    "  local tmp, subst = nil, mep_lsp_abspath(fname)\n"
+    // Spawns one mep.format_languages entry over `text` and reports back
+    // exactly once: on_done(lines, name) with the formatted lines, or
+    // on_done(nil, name, err) with a ready-to-notify message. Shared by
+    // the whole-buffer path and the org-block one below, which differ
+    // only in what text goes in, what path '{}' expands to, and where
+    // the result is written back.
+    "local function mep_format_run(spec, ft, subst, text, on_done)\n"
+    "  local tmp = nil\n"
     "  if spec.mode == 'file' then\n"
     // os.tmpname() creates the file it names, but with no extension --
     // useless to a formatter that dispatches on one -- so it is removed
@@ -12172,7 +12200,7 @@ const char *kBuiltinFormat =
     "    os.remove(stem)\n"
     "    tmp = stem .. '.' .. ft\n"
     "    local f = io.open(tmp, 'wb')\n"
-    "    if not f then mep.notify('gf: cannot write ' .. tmp, 'error') return end\n"
+    "    if not f then on_done(nil, spec[1], 'gf: cannot write ' .. tmp) return end\n"
     "    f:write(text)\n"
     "    f:close()\n"
     "    subst = tmp\n"
@@ -12202,13 +12230,14 @@ const char *kBuiltinFormat =
     // i.e. both mean "that formatter isn't here", which deserves a
     // different message from "that formatter rejected this file".
     "        if code == 127 or code == -1 then\n"
-    "          mep.notify('gf: ' .. argv[1] .. ' is not installed (not on PATH)', 'error')\n"
+    "          on_done(nil, argv[1], 'gf: ' .. argv[1] .. ' is not installed (not on PATH)')\n"
     "        else\n"
-    "          mep.notify('gf: ' .. argv[1] .. ' exited ' .. code .. (errs[1] and (': ' .. errs[1]) or ''), 'error')\n"
+    "          on_done(nil, argv[1], 'gf: ' .. argv[1] .. ' exited ' .. code ..\n"
+    "            (errs[1] and (': ' .. errs[1]) or ''))\n"
     "        end\n"
     "        return\n"
     "      end\n"
-    "      mep_format_apply(argv[1], buf, text, lines)\n"
+    "      on_done(lines, argv[1])\n"
     "    end,\n"
     "  })\n"
     // Filter mode feeds the buffer in and closes stdin so the formatter
@@ -12223,7 +12252,336 @@ const char *kBuiltinFormat =
     "    mep.job_close_stdin(job)\n"
     "  end\n"
     "end\n"
+    // --- org #+begin_src blocks -------------------------------------
+    // The block under the cursor, but only in an org buffer -- every
+    // entry point below starts here, and nil means "gf's ordinary
+    // whole-buffer behavior applies".
+    "local function mep_format_org_block_at_cursor()\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return nil end\n"
+    "  local blk = mep_org_src_block_at(mep.cursor())\n"
+    "  if not blk or not blk.lang or blk.lang == '' then return nil end\n"
+    "  return blk\n"
+    "end\n"
+    // A block language's mep.format_languages key. `#+begin_src python`
+    // says "python"; the table is keyed by extension, so the language's
+    // own babel descriptor (mep.org_babel_langs, which needs the same
+    // extension to write a runnable temp file) translates between them,
+    // with the bare tag as the fallback for a language babel doesn't
+    // know. Same translation, same reason, as mep_polyglot_server_for.
+    "local function mep_format_block_ft(lang)\n"
+    "  local def = mep.org_babel_langs and mep.org_babel_langs[lang]\n"
+    "  local ext = def and def.extension and (def.extension:gsub('^%.', ''))\n"
+    "  if ext and mep.format_languages[ext] then return ext end\n"
+    "  return lang\n"
+    "end\n"
+    "local function mep_format_block_lines(blk)\n"
+    "  local lines = {}\n"
+    "  for i = blk.start_row + 1, blk.end_row - 1 do lines[#lines + 1] = mep.get_line(i) or '' end\n"
+    "  return lines\n"
+    "end\n"
+    // The longest whitespace run every non-blank body line starts with
+    // (their common prefix, not merely the shortest one -- a body mixing
+    // tabs and spaces has no shared indent at all, and must be left
+    // exactly as written rather than have a tab stripped off some lines
+    // and not others).
+    "local function mep_format_common_indent(lines)\n"
+    "  local prefix = nil\n"
+    "  for _, line in ipairs(lines) do\n"
+    "    if line:match('%S') then\n"
+    "      local w = line:match('^[ \\t]*')\n"
+    "      if not prefix then\n"
+    "        prefix = w\n"
+    "      else\n"
+    "        local n = 0\n"
+    "        while n < #prefix and n < #w and prefix:byte(n + 1) == w:byte(n + 1) do n = n + 1 end\n"
+    "        prefix = prefix:sub(1, n)\n"
+    "      end\n"
+    "      if prefix == '' then return '' end\n"
+    "    end\n"
+    "  end\n"
+    "  return prefix or ''\n"
+    "end\n"
+    // A blank line inside an indented block need not carry the indent
+    // (and usually doesn't), so it is emptied rather than left with
+    // whatever partial whitespace it had; every non-blank line is known
+    // to start with `indent` by construction.
+    "local function mep_format_dedent(lines, indent)\n"
+    "  if indent == '' then return lines end\n"
+    "  local out = {}\n"
+    "  for i, line in ipairs(lines) do\n"
+    "    if line:sub(1, #indent) == indent then\n"
+    "      out[i] = line:sub(#indent + 1)\n"
+    "    else\n"
+    "      out[i] = (line:gsub('^[ \\t]*', ''))\n"
+    "    end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_format_reindent(lines, indent)\n"
+    "  if indent == '' then return lines end\n"
+    "  local out = {}\n"
+    "  for i, line in ipairs(lines) do out[i] = line ~= '' and (indent .. line) or '' end\n"
+    "  return out\n"
+    "end\n"
+    // What a filter-mode formatter is told it is looking at ('{}'): the
+    // org file's own path with the block language's extension swapped
+    // in. No such file need exist -- what both clang-format and black
+    // actually do with the name is walk *up its directory* for a
+    // .clang-format/pyproject.toml, so a block formats under the same
+    // project configuration a real source file next to the org file
+    // would (see "Why the placeholder matters" in help/formatting.org).
+    "local function mep_format_block_subst(ft)\n"
+    "  local fname = mep.filename()\n"
+    "  if fname == '' then return mep.workspace_root() .. '/block.' .. ft end\n"
+    "  return (mep_lsp_abspath(fname):gsub('%.[^%./]*$', '')) .. '.' .. ft\n"
+    "end\n"
+    // mep_format_apply's block counterpart: the same "is this still the
+    // text that was sent" guards, narrowed to the block. The block is
+    // re-read by its start row rather than trusted from before the job
+    // ran, so an edit that moved or resized it (including the block
+    // having been deleted outright) is caught instead of overwriting
+    // whatever rows now sit there.
+    "local function mep_format_apply_block(name, buf, start_row, before, lines, indent, on_done)\n"
+    "  if mep.current_buffer() ~= buf then\n"
+    "    on_done(false, 'gf: moved off the buffer being formatted -- nothing applied', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if #lines == 0 then\n"
+    "    on_done(false, 'gf: ' .. name .. ' produced no output -- nothing applied', 'error')\n"
+    "    return\n"
+    "  end\n"
+    "  local blk = mep_org_src_block_at(start_row)\n"
+    "  if not blk or blk.start_row ~= start_row or blk.body ~= before then\n"
+    "    on_done(false, 'gf: block edited while ' .. name .. ' ran -- nothing applied', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local out = mep_format_reindent(lines, indent)\n"
+    "  if table.concat(out, '\\n') == before then\n"
+    "    on_done(false, 'gf: already formatted')\n"
+    "    return\n"
+    "  end\n"
+    "  local row, col = mep.cursor()\n"
+    "  mep.replace_lines(start_row + 1, blk.end_row, out)\n"
+    "  mep.set_cursor(math.min(row, mep.line_count()), col)\n"
+    "  on_done(true, 'gf: formatted ' .. blk.lang .. ' block with ' .. name)\n"
+    "end\n"
+    // No mep.format_languages entry for this language: ask the block's
+    // own polyglot language server (the shadow document hover and
+    // completion inside a block already come from) instead. Cursor-
+    // based, hence only ever used for the block gf was pressed in,
+    // never by mep.org_format_blocks' sweep.
+    //
+    // textDocument/rangeFormatting, narrowed to the block's own rows,
+    // whenever the server offers it (lua-language-server, gopls,
+    // rust-analyzer, clangd, ... all do). Whole-document formatting is
+    // the fallback and is usually refused below rather than applied: a
+    // *shared* shadow is one scratch file per language holding every
+    // block of that language at its real org line number with blank
+    // padding in between, so a whole-document reformat comes back as
+    // one edit spanning the padding too -- text that has no org row to
+    // land on. Confirmed against lua-language-server, which answers the
+    // whole-document request with exactly that single 0..N edit and the
+    // ranged one with an edit covering only the block.
+    //
+    // Both the request and the response are translated with the same
+    // one-line shift, read off the context's own cursor position
+    // (poly.position is where the real cursor sits *in shadow
+    // coordinates*) rather than recomputed from the shadow's internals:
+    // it is 0 for a shared shadow and the synthesized wrapper's length
+    // for a per-block one, and constant across the block either way.
+    // Deliberately not mep_polyglot_translate_edits, which maps each
+    // endpoint through the shadow's own body-only row test and drops an
+    // end position that legitimately sits *on* the `#+end_src` row --
+    // the exclusive end of a whole-body replacement. That collapsed the
+    // edit to a zero-width insert at the top of the block, i.e. the
+    // formatted body pasted in above the original rather than replacing
+    // it (seen in a live instance before this was written this way).
+    "local function mep_format_block_lsp(blk, before, on_done)\n"
+    "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
+    "  if not poly or not poly.client then\n"
+    "    on_done(false, 'gf: no formatter for ' .. blk.lang .. ' blocks', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local buf, row = mep.current_buffer(), mep.cursor()\n"
+    "  local function to_shadow(r) return poly.position.line + (r - row) end\n"
+    "  local function to_org(line) return row + (line - poly.position.line) end\n"
+    "  local method = 'textDocument/formatting'\n"
+    "  local params = {textDocument = {uri = poly.uri}, options = {tabSize = 4, insertSpaces = true}}\n"
+    // The range asked for stops at the end of the *last body line*, not
+    // at the start of the `#+end_src` row below it: a server normalizes
+    // a range to whole lines and answers with an edit reaching to the
+    // start of the row after the last one it formatted, so asking
+    // through the `#+end_src` row gets back an edit that swallows it
+    // (lua-language-server, live: end line 8 -> 9, one row past the
+    // block, which the check below then refuses). Asking for the body
+    // alone gets an edit ending exactly at the `#+end_src` row's
+    // column 0, which is the boundary that check accepts.
+    "  local caps = mep_lsp_server_capabilities and mep_lsp_server_capabilities[poly.client]\n"
+    "  if caps and caps.documentRangeFormattingProvider then\n"
+    "    method = 'textDocument/rangeFormatting'\n"
+    "    params.range = {\n"
+    "      start = {line = to_shadow(blk.start_row + 1), character = 0},\n"
+    "      ['end'] = {line = to_shadow(blk.end_row - 1),\n"
+    "                 character = #(mep.get_line(blk.end_row - 1) or '')},\n"
+    "    }\n"
+    "  end\n"
+    "  mep.lsp_request(poly.client, method, params, function(msg)\n"
+    "    local edits = mep_lsp_result(msg)\n"
+    // A server that is still starting up answers null rather than an
+    // empty edit list, which is not the same thing as "already tidy" and
+    // shouldn't be reported as it -- pressing gf again once it is up
+    // does format the block.
+    "    if not edits then\n"
+    "      on_done(false, 'gf: no formatting from the ' .. blk.lang ..\n"
+    "        ' language server (it may still be starting up)', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    if #edits == 0 then on_done(false, 'gf: already formatted') return end\n"
+    "    if mep.current_buffer() ~= buf then\n"
+    "      on_done(false, 'gf: moved off the buffer being formatted -- nothing applied', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    local now = mep_org_src_block_at(blk.start_row)\n"
+    "    if not now or now.start_row ~= blk.start_row or now.body ~= before then\n"
+    "      on_done(false, 'gf: block edited while the language server ran -- nothing applied', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    // Every endpoint has to sit on a body row, or exactly at the start
+    // of the `#+end_src` row (a whole-body replacement's exclusive end).
+    // One that doesn't means the server is reformatting something this
+    // buffer doesn't contain, so the whole response is dropped rather
+    // than applied in part.
+    "    local out = {}\n"
+    "    for _, e in ipairs(edits) do\n"
+    "      local s, last = to_org(e.range.start.line), to_org(e.range['end'].line)\n"
+    "      local ok = s > blk.start_row and last >= s and last <= blk.end_row\n"
+    "      if ok and s == blk.end_row and e.range.start.character ~= 0 then ok = false end\n"
+    "      if ok and last == blk.end_row and e.range['end'].character ~= 0 then ok = false end\n"
+    "      if not ok then\n"
+    "        on_done(false, 'gf: the language server wants to reformat outside the block -- nothing applied', 'warn')\n"
+    "        return\n"
+    "      end\n"
+    "      out[#out + 1] = {newText = e.newText, range = {\n"
+    "        start = {line = s - 1, character = e.range.start.character},\n"
+    "        ['end'] = {line = last - 1, character = e.range['end'].character},\n"
+    "      }}\n"
+    "    end\n"
+    "    mep.lsp_apply_edits_current_buffer(out)\n"
+    "    on_done(true, 'gf: formatted ' .. blk.lang .. ' block with its language server')\n"
+    "  end)\n"
+    "end\n"
+    // One block, end to end. on_done(ok, msg, level) fires exactly once
+    // -- mep.org_format_block just notifies it, mep.org_format_blocks
+    // uses it to step to the next block. `allow_lsp` is off for the
+    // sweep (see mep_format_block_lsp).
+    "local function mep_format_block_run(blk, allow_lsp, on_done)\n"
+    "  local raw = mep_format_block_lines(blk)\n"
+    "  local before = table.concat(raw, '\\n')\n"
+    "  if not before:match('%S') then on_done(false, 'gf: the block is empty', 'warn') return end\n"
+    "  local ft = mep_format_block_ft(blk.lang)\n"
+    "  local spec = mep.format_languages[ft]\n"
+    "  if not spec then\n"
+    "    if allow_lsp then mep_format_block_lsp(blk, before, on_done)\n"
+    "    else on_done(false, 'gf: no formatter for ' .. blk.lang .. ' blocks', 'warn') end\n"
+    "    return\n"
+    "  end\n"
+    "  local indent = mep_format_common_indent(raw)\n"
+    "  local text = table.concat(mep_format_dedent(raw, indent), '\\n') .. '\\n'\n"
+    "  local buf, start_row = mep.current_buffer(), blk.start_row\n"
+    "  mep_format_run(spec, ft, mep_format_block_subst(ft), text, function(lines, name, err)\n"
+    "    if err then on_done(false, err, 'error') return end\n"
+    "    mep_format_apply_block(name, buf, start_row, before, lines, indent, on_done)\n"
+    "  end)\n"
+    "end\n"
+    "function mep.org_format_block(blk)\n"
+    "  blk = blk or mep_format_org_block_at_cursor()\n"
+    "  if not blk then mep.notify('gf: not inside a #+begin_src block', 'warn') return end\n"
+    "  mep_format_block_run(blk, true, function(_, msg, level)\n"
+    "    if msg then mep.notify(msg, level) end\n"
+    "  end)\n"
+    "end\n"
+    // Every src block in the file, formatted one at a time, *last one
+    // first*: formatting a block changes how many lines it has, which
+    // shifts every row below it -- walking upward means the rows still
+    // to be visited are only ever the ones nothing has touched yet, so
+    // no rescan (and no row bookkeeping) is needed between blocks.
+    // Sequential rather than parallel for the same reason: two
+    // overlapping mep.replace_lines would each be applying to rows the
+    // other had already moved.
+    "function mep.org_format_blocks()\n"
+    "  local rows = {}\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    if (mep.get_line(i) or ''):match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then\n"
+    "      rows[#rows + 1] = i\n"
+    "    end\n"
+    "  end\n"
+    "  if #rows == 0 then mep.notify('gf: no #+begin_src blocks in this file', 'warn') return end\n"
+    "  local buf = mep.current_buffer()\n"
+    "  local formatted, skipped, last_err = 0, 0, nil\n"
+    "  local i = #rows\n"
+    "  local step\n"
+    "  step = function()\n"
+    "    if i < 1 then\n"
+    "      local msg = 'gf: formatted ' .. formatted .. ' of ' .. #rows .. ' blocks'\n"
+    "      if skipped > 0 and last_err then msg = msg .. ' (' .. last_err .. ')' end\n"
+    "      mep.notify(msg, formatted > 0 and 'info' or 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    if mep.current_buffer() ~= buf then\n"
+    "      mep.notify('gf: moved off the buffer being formatted -- stopped after ' .. formatted .. ' blocks', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    local blk = mep_org_src_block_at(rows[i])\n"
+    "    i = i - 1\n"
+    "    if not blk or not blk.lang or blk.lang == '' then\n"
+    "      skipped = skipped + 1\n"
+    "      step()\n"
+    "      return\n"
+    "    end\n"
+    "    mep_format_block_run(blk, false, function(ok, msg)\n"
+    "      if ok then\n"
+    "        formatted = formatted + 1\n"
+    "      else\n"
+    "        skipped = skipped + 1\n"
+    // The final tally is itself a 'gf: ...' message, so a skipped
+    // block's own reason goes in without repeating the prefix.
+    "        last_err = msg and (msg:gsub('^gf: ', '')) or last_err\n"
+    "      end\n"
+    "      step()\n"
+    "    end)\n"
+    "  end\n"
+    "  step()\n"
+    "end\n"
+    "function mep.format_buffer()\n"
+    // An org buffer has no formatter of its own out of the box (nothing
+    // reformats prose but the user), so what gf means there is its code
+    // blocks: the one under the cursor, or all of them when the cursor
+    // is somewhere else in the document. Checked *after* the table, not
+    // before it, so a config that does register a whole-file org
+    // formatter still gets it.
+    "  local fname = mep.filename()\n"
+    "  local ft = fname ~= '' and mep_lsp_filetype(fname) or ''\n"
+    "  local spec = mep.format_languages[ft]\n"
+    "  if not spec and ft == 'org' then\n"
+    "    local blk = mep_format_org_block_at_cursor()\n"
+    "    if blk then mep.org_format_block(blk) else mep.org_format_blocks() end\n"
+    "    return\n"
+    "  end\n"
+    "  if not spec then\n"
+    "    if mep.lsp_client_for() then mep.lsp_format() return end\n"
+    "    mep.notify('gf: no formatter for ' .. (ft ~= '' and ('.' .. ft) or 'this buffer'), 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local buf = mep.current_buffer()\n"
+    "  local text = mep_format_buffer_text()\n"
+    "  mep_format_run(spec, ft, mep_lsp_abspath(fname), text, function(lines, name, err)\n"
+    "    if err then mep.notify(err, 'error') return end\n"
+    "    mep_format_apply(name, buf, text, lines)\n"
+    "  end)\n"
+    "end\n"
     "mep.command('MepFormat', mep.format_buffer)\n"
+    "mep.command('MepOrgFormatBlock', function() mep.org_format_block() end)\n"
+    "mep.command('MepOrgFormatBlocks', mep.org_format_blocks)\n"
     // Bound via mep.map_g, not plain mep.map: only the former can see a
     // key typed after a pending 'g' (see mep.map_g('d', ...) in
     // kBuiltinLsp). 'f' after 'g' is free -- mep's built-in g-motions are

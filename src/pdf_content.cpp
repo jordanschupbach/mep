@@ -1577,22 +1577,17 @@ std::string GetPageContent(const unsigned char *data, size_t len, const pdfxref:
         if (!result.empty()) result.push_back(' ');
         result += decoded;
     };
-    // /Contents (spec 7.7.3.3) is either a single content stream or an
-    // array of them -- but in either case the page dict usually holds an
-    // *indirect reference*, and that reference may point straight at the
-    // array rather than at a stream (common in linearized/object-stream
-    // producers, where the array object itself lives in an ObjStm). Peel
-    // one level of indirection so such a `/Contents 6466 0 R -> [ ... ]`
-    // is walked as the array it is; otherwise the lone ref falls through
-    // to append_stream, which resolves it as a single stream.
-    pdfobj::Object resolved;
-    const pdfobj::Object *eff = contents;
-    if (contents->IsReference()) {
-        resolved = pdfxref::ResolveObject(data, len, table, contents->ref_val.num, contents->ref_val.gen);
-        if (resolved.IsArray()) eff = &resolved;
-    }
-    if (eff->IsArray()) {
-        for (const auto &c : eff->array_val) append_stream(c);
+    // /Contents is an array of content streams or a single one -- but the
+    // array itself is very often an indirect reference (e.g. a linearized
+    // PDF that packs the array object into an ObjStm), not an inline
+    // array in the page dict. Deref before the IsArray() check: same
+    // un-dereferenced-indirect-reference bug class already fixed for
+    // /Widths/W/Resources -- here it silently blanked EVERY page of any
+    // document whose /Contents was `N 0 R` -> array (caught by a live
+    // render of a real linearized textbook PDF, all pages blank).
+    pdfobj::Object resolved = Deref(data, len, table, *contents);
+    if (resolved.IsArray()) {
+        for (const auto &c : resolved.array_val) append_stream(c);
     } else {
         append_stream(*contents);
     }

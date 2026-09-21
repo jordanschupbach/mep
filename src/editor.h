@@ -151,6 +151,15 @@ enum class Mode {
     // those modes, a pane refocus always re-enters at plain Mode::Pdf
     // (SyncModeToActivePaneBuffer), never resumes mid-nav.
     PdfNav,
+    // Annotation sub-mode over a focused PDF pane, entered with 'a' from
+    // Mode::Pdf (Editor::HandlePdfInput serves it too, like PdfNav): single
+    // keys create/color highlights and notes over the current text
+    // selection or search match -- h highlight, n note (opens a text
+    // prompt), 1-5 pick a highlight colour, c cycle colour. Movement
+    // (j/k/h/l, scroll) still works. Escape returns to Mode::Pdf. Same
+    // "distinct key regime, refocus re-enters plain Pdf" rationale as
+    // PdfNav.
+    PdfAnnotate,
     // A focused video-playback pane (a VideoSession buffer -- see below,
     // opened for a `.mov` file written by mov::WriteMovFile, see
     // ANIMATION_VIDEO_PLAN.md Phase 5). Same "flat viewer, ':'/leader
@@ -1783,6 +1792,15 @@ struct PdfSession {
         // ever changes when the page is re-rastered anyway (a rescale),
         // exactly the same event that already invalidates `highlights`.
         std::vector<PdfLinkAnnot> links;
+        // This page's markup annotations (existing /Highlight and /Text
+        // from the file, plus any session-created ones targeting this
+        // page), device-pixel converted at this raster's own scale --
+        // computed alongside rgba/highlights/links in
+        // Editor::EnsurePdfPagesRastered and redrawn by main.cpp's PDF
+        // pane exactly like `highlights`. `pending_index >= 0` marks an
+        // unsaved, session-created annotation (drawn with a selection
+        // outline; the rest are already in the file).
+        std::vector<PdfAnnotDraw> annots;
     };
     std::unordered_map<int, PageRaster> rasters;
     int next_raster_generation = 1;
@@ -1838,6 +1856,84 @@ struct PdfSession {
     // surfaces the blank-page diagnostic a single time per document instead
     // of re-Notifying every frame the same broken page stays on screen.
     bool content_warning_shown = false;
+
+    // --- markup annotations (highlights + sticky notes) ---
+    // Annotations created this session but not yet written to the file, in
+    // page point space (pdfannots::PdfAnnot). The file's own existing
+    // annotations are re-read per page for drawing (PdfDoc::PageAnnots) and
+    // are NOT duplicated here; `pending_annots` holds only the new ones, so
+    // a save (PdfDoc::BytesWithAddedAnnots) appends exactly these. Cleared
+    // after a successful save+reload (they become ordinary file annots).
+    std::vector<pdfannots::PdfAnnot> pending_annots;
+    // True while there are unsaved annotations -- gates `:w` and the
+    // "modified" buffer flag. Kept in sync with pending_annots.
+    bool annots_dirty = false;
+
+    // --- click-drag text selection (main.cpp's PDF pane) ---
+    // A left-drag over the page selects text; the selection persists after
+    // release until the next click or a highlight action consumes it.
+    // Anchor/head are in device pixels at `rendered_scale` (zoom-invariant,
+    // like the cached rasters), so a mid-drag zoom doesn't warp the anchor.
+    bool selecting = false;               // a drag is currently in progress
+    int sel_page = -1;                    // page the selection lives on (-1 = none)
+    double sel_anchor_dx = 0, sel_anchor_dy = 0;  // drag anchor, device px @ rendered_scale
+    std::vector<pdfannots::Quad> sel_quads;       // current selection, point space
+
+    // --- vim caret (annotate mode) ---
+    // A keyboard text caret: an index into caret_page's reading-order glyph
+    // list. h/l/j/k/w/b/0/$ move it; `v` starts a visual selection anchored
+    // at visual_anchor_glyph, extended to caret_glyph (mirrored into
+    // sel_quads/sel_page for drawing). -1 = no caret.
+    int caret_page = -1;
+    int caret_glyph = -1;
+    std::vector<PdfGlyphBox> caret_glyphs;  // point-space glyphs for caret_page (loaded on demand)
+    bool visual_active = false;
+    int visual_anchor_glyph = -1;
+    // Mode-local leader: in annotate mode, <space> starts this (a which-key
+    // style prefix); the next key is an annotation action (h/n/d/c/1-5/q).
+    // Keeps annotate self-contained -- the global <space> leader stays for
+    // normal PDF mode.
+    bool annot_leader = false;
+
+    // Active highlight colour, an index into Editor's kPdfHighlightPalette
+    // (yellow/green/blue/pink/orange). New highlights use it; a palette
+    // menu or annotate-mode key changes it.
+    int active_color = 0;
+
+    // --- edit / delete of annotations ---
+    // A resolved reference to one annotation (session or file), used both
+    // for the annotation currently under the mouse (hover_annot, refreshed
+    // each frame by main.cpp's PDF pane for the active pane) and as the
+    // target the note prompt applies to when editing/attaching.
+    struct AnnotTarget {
+        bool valid = false;
+        int page = -1;
+        bool from_file = false;
+        int pending_index = -1;   // index into pending_annots when !from_file
+        int src_obj = 0, src_gen = 0;  // file object when from_file
+        int kind = 0;             // 0 highlight, 1 note
+        std::string contents;     // current text (to prefill an edit prompt)
+    };
+    AnnotTarget hover_annot;       // annotation under the mouse this frame (else valid==false)
+    AnnotTarget note_edit_target;  // set while the note prompt is editing/attaching (else standalone note)
+    // Edits to existing FILE annotations (from_file, src_obj>0, new contents/
+    // colour) and deletions of file annotations -- applied on :w alongside
+    // pending_annots. Session (pending) annots are edited/deleted in place in
+    // pending_annots instead. All three clear after a successful save+reload.
+    std::vector<pdfannots::PdfAnnot> annot_edits;
+    std::vector<pdfwrite::AnnotDelete> annot_deletes;
+    // True when there are unsaved annotation changes of any kind.
+    bool HasUnsavedAnnots() const {
+        return !pending_annots.empty() || !annot_edits.empty() || !annot_deletes.empty();
+    }
+
+    // --- annotate-mode note text entry ---
+    // While true, keystrokes build up a sticky note's text (mirrors
+    // search_active); Enter commits it via PdfAddNote at the current
+    // selection/match, Escape cancels.
+    bool note_input_active = false;
+    std::string note_input;
+    size_t note_caret = 0;  // byte offset of the insertion caret within note_input (UTF-8 boundary)
 };
 
 // One video-playback pane's state, keyed by buffer id the same way
@@ -4158,6 +4254,25 @@ public:
      * @return A const pointer to the PdfSession, or nullptr if the buffer isn't a PDF pane.
      */
     const PdfSession *GetPdf(int buffer_id) const;
+    // Mutable accessor (used by main.cpp's PDF pane to drive click-drag
+    // text selection state, whose geometry is only known at draw time).
+    PdfSession *GetPdfMutable(int buffer_id);
+    void PdfCaretPlaceAtDevice(int buffer_id, int page, double dx, double dy);  // click-to-place the caret (called from main.cpp)
+    // Highlight-colour palette accessors + setters (used by annotate mode,
+    // the leader menu, `:pdfcolor`, and main.cpp's status label). The
+    // active colour is per-session.
+    int PdfHighlightColorCount() const;
+    const char *PdfHighlightColorName(int index) const;
+    void SetPdfHighlightColor(int index);
+    bool SetPdfHighlightColorByName(const std::string &name);
+    // LaTeX-in-notes: async tex->PNG render results, keyed by a hash of the
+    // note text. main.cpp's margin-note drawing requests a render (marking
+    // the key present with an empty value) and polls PdfNoteLatexPng each
+    // frame; the mep.pdf_note_latex_done Lua binding fills in the PNG path
+    // when the async job finishes. See kBuiltinPdfAnnot / mep_org_latex_render.
+    void SetPdfNoteLatexPng(const std::string &key, const std::string &png);
+    bool PdfNoteLatexRequested(const std::string &key) const;
+    std::string PdfNoteLatexPng(const std::string &key) const;
     // Jumps `buffer_id`'s own PdfSession to `page` (clamped to the valid
     // page range), resetting vertical scroll to that page's top -- the
     // exact same effect as HandlePdfInput's own local `goto_page` lambda
@@ -9041,6 +9156,9 @@ private:
     // all other character input into sess.search_input, instead of the
     // normal pan/zoom/page-nav keys HandlePdfInput handles otherwise.
     void HandlePdfSearchInput(PdfSession &sess);
+    // Captures keystrokes for the annotate-mode sticky-note text prompt
+    // (PdfSession::note_input_active), committing on Enter via PdfAddNote.
+    void HandlePdfNoteInput(PdfSession &sess);
     // While sess.nav_goto_active (Mode::PdfNav's 'g' prompt): captures
     // Escape (cancel the prompt only -- stays in Mode::PdfNav, mirroring
     // HandlePdfSearchInput's cancel), Enter (jump to the typed 1-indexed
@@ -9062,6 +9180,49 @@ private:
     // entered the render window (its raster is new, so it has no
     // highlights yet even if a search was already active).
     void RecomputePdfPageHighlights(PdfSession &sess);
+    // Recomputes PageRaster::annots (markup-annotation overlays) for every
+    // cached page from the file's own /Annots plus sess.pending_annots --
+    // called when a session annotation is created/removed so the change
+    // shows without waiting for the page to be re-rastered.
+    void RecomputePdfPageAnnots(PdfSession &sess);
+    // Appends a session-created markup annotation to `sess`, marks the
+    // buffer modified, and refreshes the on-screen overlays. `:w` then
+    // writes all pending annotations into the file's /Annots.
+    void AddPendingPdfAnnot(PdfSession &sess, int buffer_id, pdfannots::PdfAnnot a);
+    // `:pdfannotate` -- enters Mode::PdfAnnotate on the active PDF pane.
+    void EnterPdfAnnotateMode();
+    // `:pdfnote` with no argument -- opens the in-pane sticky-note text
+    // prompt (PdfSession::note_input_active).
+    void PdfNotePrompt();
+    // Applies note text to an existing annotation (edit/attach); PdfDeleteTarget
+    // deletes the annotation under the mouse OR under the vim caret (a highlight
+    // + its note).
+    void ApplyPdfNoteToTarget(PdfSession &sess, const PdfSession::AnnotTarget &t, const std::string &text);
+    void PdfDeleteTarget();
+    // Resolve which annotation an edit/delete acts on: the one under the mouse
+    // (hover_annot) if any, else the highlight whose region contains the vim
+    // caret glyph. ResolveAnnotTargetAtCaret returns an invalid target when the
+    // caret isn't inside any highlight on its page.
+    PdfSession::AnnotTarget ActiveAnnotTarget(PdfSession &sess);
+    PdfSession::AnnotTarget ResolveAnnotTargetAtCaret(PdfSession &sess);
+    // --- vim caret (annotate mode) ---
+    void LoadCaretGlyphs(PdfSession &sess, int page);   // (re)load caret_glyphs for `page`, reset caret to first glyph
+    void PdfCaretMove(PdfSession &sess, int cp);         // h/l/j/k/w/b/e/0/$ motion (cp is the key char)
+    void PdfCaretToggleVisual(PdfSession &sess);         // `v`: start/stop a visual selection at the caret
+    void PdfAnnotLeaderAction(PdfSession &sess, int cp); // dispatch an annotate <space>-leader action key
+    void PdfCaretUpdateVisual(PdfSession &sess);         // recompute sel_quads from anchor..caret
+    void PdfCaretEnsureVisible(PdfSession &sess);        // auto-scroll so the caret stays in view
+    // `:pdfsearch <text>` -- runs a PDF text search and jumps to the first
+    // match (a command-line entry point to the same RunPdfSearch the '/'
+    // prompt drives).
+    void PdfSearchCommand(const std::string &query);
+    // `:pdfhighlight` -- highlights the current search match on the active
+    // PDF pane (a no-op with a status message if there's no current match).
+    void PdfHighlightCurrentMatch();
+    // `:pdfnote <text>` -- adds a sticky note on the active PDF pane,
+    // anchored to the current search match if one exists, else the page's
+    // top-left.
+    void PdfAddNote(const std::string &text);
     // Jumps to search_matches[index] (wrapping around either end so N/P
     // cycle through the whole document): sets page/pan_x/scroll_y so the
     // match is in view (vertically centered where possible), and updates
@@ -9980,6 +10141,9 @@ private:
     // Keyed by buffer_id -- one entry per open PDF-viewer pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, PdfSession> pdfs_;
+    // note-text hash -> rendered LaTeX PNG path ("" while still rendering);
+    // see SetPdfNoteLatexPng and kBuiltinPdfAnnot.
+    std::unordered_map<std::string, std::string> pdf_note_latex_png_;
     // Keyed by buffer_id -- one entry per open video-playback pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, VideoSession> video_sessions_;

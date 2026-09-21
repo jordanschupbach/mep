@@ -15977,6 +15977,51 @@ const char *kBuiltinOrgLatex =
 // tokenizer -- src blocks always render literally (never executed
 // during export), matching the plan's own "ship without eval first"
 // guidance.
+// PDF markup annotations (highlights + sticky notes): a <space>m leader
+// menu mirroring the annotate-mode single keys and the :pdf* ex-commands,
+// so highlighting/noting is one chord away from a focused PDF pane. Each
+// action is a no-op with a status message outside a PDF pane, so the
+// global binding is harmless elsewhere. See Editor::PdfHighlightCurrentMatch
+// / PdfAddNote / EnterPdfAnnotateMode.
+const char *kBuiltinPdfAnnot =
+    // Async LaTeX render for a PDF sticky note: reuses the org-mode
+    // tex->PNG pipeline (mep_org_latex_render, itself content-hashed and
+    // disk-cached), reporting the result back to C++ by note-key so the
+    // margin-note draw can pick up the PNG. `tex` is the whole note text,
+    // rendered as a LaTeX document body so mixed prose + $math$ typesets.
+    "function mep_pdf_note_latex(key, tex)\n"
+    // Normalize $$...$$ display math to \[...\], which the standalone/preview
+    // LaTeX wrapper captures reliably (bare $$ display groups are dropped).
+    "  tex = tex:gsub('%$%$(.-)%$%$', '\\\\[%1\\\\]')\n"
+    "  mep_org_latex_render(tex, function(png, err)\n"
+    "    mep.pdf_note_latex_done(key, png or '')\n"
+    "  end)\n"
+    "end\n"
+    "function mep.open_in_firefox()\n"
+    // Open the current file (e.g. the PDF) in an external browser; firefox by
+    // default, overridable with $MEP_BROWSER. mep.job_start spawns directly.
+    "  local p = mep.filename()\n"
+    "  if p == '' then mep.notify('No file to open', 'warn'); return end\n"
+    "  local b = os.getenv('MEP_BROWSER') or 'firefox'\n"
+    "  mep.notify('Opening in ' .. b .. ': ' .. p)\n"
+    "  mep.job_start({b, p}, { on_exit = function(code)\n"
+    "    if code ~= 0 then mep.notify('Failed to launch ' .. b, 'error') end\n"
+    "  end })\n"
+    "end\n"
+    "mep.command('MepOpenInFirefox', mep.open_in_firefox)\n"
+    "mep.leader_map('bf', 'Open in browser', mep.open_in_firefox)\n"
+    "mep.leader_group('m', 'markup')\n"
+    "mep.leader_map('mh', 'Highlight selection/match', function() mep.cmd('pdfhighlight') end)\n"
+    "mep.leader_map('mn', 'Add note', function() mep.cmd('pdfnote') end)\n"
+    "mep.leader_map('ma', 'Annotate mode', function() mep.cmd('pdfannotate') end)\n"
+    "mep.leader_map('mw', 'Save annotations', function() mep.cmd('w') end)\n"
+    "mep.leader_group('mc', 'colour')\n"
+    "mep.leader_map('mcy', 'yellow', function() mep.cmd('pdfcolor yellow') end)\n"
+    "mep.leader_map('mcg', 'green', function() mep.cmd('pdfcolor green') end)\n"
+    "mep.leader_map('mcb', 'blue', function() mep.cmd('pdfcolor blue') end)\n"
+    "mep.leader_map('mcp', 'pink', function() mep.cmd('pdfcolor pink') end)\n"
+    "mep.leader_map('mco', 'orange', function() mep.cmd('pdfcolor orange') end)\n";
+
 const char *kBuiltinOrgExport =
     // A babel `:file` result inserts a plain org file link
     // ([[file:plot.png]], mep_org_babel_result_lines above) the same way
@@ -36135,6 +36180,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(label_y), 2, static_cast<int>(font_size),
                               ResolveHlGroup("Normal"));
             }
+        } else if (pdf_sess && pdf_sess->note_input_active) {
+            // Sticky-note text prompt (same header takeover as the '/'
+            // search input below).
+            std::string line = "note: " + pdf_sess->note_input;
+            gfx::DrawTextEx(g_font, line.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+            // Caret at the insertion point (note_caret bytes into note_input),
+            // not pinned to the end -- so Left/Right/Home/End show where edits land.
+            size_t ncar = std::min(pdf_sess->note_caret, pdf_sess->note_input.size());
+            std::string upto = "note: " + pdf_sess->note_input.substr(0, ncar);
+            float cx = x + 6 + gfx::MeasureTextEx(g_font, upto.c_str(), font_size, 0).x;
+            gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(label_y), 2, static_cast<int>(font_size),
+                               ResolveHlGroup("Normal"));
         } else if (pdf_sess && pdf_sess->search_active) {
             // Takes over the header the same way Mode::Command's cmdline
             // takes over the bottom bar -- a blinking-cursor '/' input line
@@ -36152,6 +36209,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // buffer's header (the full path is on the status line; page/
             // zoom/search state moved there too, the status line's Ln/Col slot).
             std::string label = buf.filename.empty() ? "[No Name]" : Basename(buf.filename);
+            // Annotate-mode indicator + active highlight colour (the mode
+            // chip on the status line says PDF-ANNOT; the key hints and
+            // colour only fit here).
+            if (g_editor.CurrentMode() == Mode::PdfAnnotate) {
+                label += std::string("  [ANNOTATE h/n/1-5/c ") +
+                         g_editor.PdfHighlightColorName(pdf_sess->active_color) + "]";
+            }
             float text_w = gfx::MeasureTextEx(g_font, label.c_str(), font_size, 0).x;
             float text_x = x + std::max(0.0f, (w - text_w) / 2.0f);
             gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{text_x, label_y}, font_size, 0, ResolveHlGroup("Normal"));
@@ -36827,6 +36891,43 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         gfx::Color match_c = ResolveHlGroup("IncSearch");
         gfx::Color match_other = gfx::Color{match_c.r, match_c.g, match_c.b, 90};
         gfx::Color match_cur = gfx::Color{match_c.r, match_c.g, match_c.b, 190};
+        // Markup annotations (highlights + sticky notes). mep's RenderPage
+        // draws page CONTENT only, never annotations, so the viewer paints
+        // them itself as an overlay (device-pixel rects at
+        // rendered_scale -> screen via `* zoom`, exactly like the search
+        // highlights above). A sticky note under the cursor surfaces its
+        // text in a small popup drawn on top after the page stack.
+        gfx::Vector2 annot_mouse = gfx::GetMousePosition();
+        bool have_note_popup = false;
+        float note_popup_x = 0, note_popup_y = 0;
+        std::string note_popup_text;
+        // The annotation currently under the mouse (recorded for the active
+        // pane after the page stack) so annotate-mode note-edit/delete can
+        // target it. Filled by the annotation hit-tests below.
+        PdfSession::AnnotTarget hover_target;
+        auto set_hover = [&](const PdfAnnotDraw &ad) {
+            hover_target.valid = true;
+            hover_target.page = ad.page;
+            hover_target.from_file = ad.from_file;
+            hover_target.pending_index = ad.pending_index;
+            hover_target.src_obj = ad.src_obj;
+            hover_target.src_gen = ad.src_gen;
+            hover_target.kind = ad.kind;
+            hover_target.contents = ad.contents;
+        };
+        auto to255 = [](float f) { return static_cast<unsigned char>(std::clamp(f, 0.0f, 1.0f) * 255.0f + 0.5f); };
+        // Click-drag text selection: record each drawn page's screen rect so
+        // the mouse handler below (after the page stack) can map a cursor
+        // position back to a page + device-pixel offset. Selection fill uses
+        // the editor's Visual group.
+        struct DrawnPdfPage {
+            int idx;
+            gfx::Vector2 pos;
+            float w, h;
+        };
+        std::vector<DrawnPdfPage> drawn_pdf_pages;
+        gfx::Color pdf_sel_c = ResolveHlGroup("Visual");
+        pdf_sel_c.a = 110;
         /**
          * @brief Draws PDF page `idx` (if a raster for it is cached) at y position `top_y`,
          * along with its search-match highlight rectangles.
@@ -36846,12 +36947,201 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::Texture2D tex = GetOrUpdatePdfPageTexture(pane.buffer_id, idx, pr, pdf_sess->theme_colors);
             gfx::Vector2 pos{x - static_cast<float>(pdf_sess->pan_x), top_y};
             gfx::DrawTextureEx(tex, pos, 0.0f, pdf_sess->zoom, gfx::White);
+            drawn_pdf_pages.push_back({idx, pos, static_cast<float>(pr.w) * pdf_sess->zoom,
+                                       static_cast<float>(pr.h) * pdf_sess->zoom});
+            // Live text selection on this page (drawn under annotations/links).
+            if (idx == pdf_sess->sel_page && !pdf_sess->sel_quads.empty() && pdf_sess->doc) {
+                for (const PdfAnnotRect &sr :
+                     pdf_sess->doc->QuadsToDeviceRects(idx, pdf_sess->rendered_scale, pdf_sess->sel_quads)) {
+                    gfx::DrawRectangle(static_cast<int>(pos.x + sr.x0 * pdf_sess->zoom),
+                                       static_cast<int>(pos.y + sr.y0 * pdf_sess->zoom),
+                                       static_cast<int>((sr.x1 - sr.x0) * pdf_sess->zoom),
+                                       static_cast<int>((sr.y1 - sr.y0) * pdf_sess->zoom), pdf_sel_c);
+                }
+            }
+            // Vim caret (annotate mode): a thin vertical bar at the caret glyph.
+            if (g_editor.CurrentMode() == Mode::PdfAnnotate && idx == pdf_sess->caret_page &&
+                pdf_sess->caret_glyph >= 0 && pdf_sess->caret_glyph < static_cast<int>(pdf_sess->caret_glyphs.size()) &&
+                pdf_sess->doc) {
+                const PdfGlyphBox &cg = pdf_sess->caret_glyphs[static_cast<size_t>(pdf_sess->caret_glyph)];
+                pdfannots::Quad cq;
+                cq.x1 = cg.left;  cq.y1 = cg.top;    cq.x2 = cg.right; cq.y2 = cg.top;
+                cq.x3 = cg.left;  cq.y3 = cg.bottom; cq.x4 = cg.right; cq.y4 = cg.bottom;
+                auto cdr = pdf_sess->doc->QuadsToDeviceRects(idx, pdf_sess->rendered_scale, {cq});
+                if (!cdr.empty()) {
+                    int cx0 = static_cast<int>(pos.x + cdr[0].x0 * pdf_sess->zoom);
+                    int cy0 = static_cast<int>(pos.y + cdr[0].y0 * pdf_sess->zoom);
+                    int chh = static_cast<int>((cdr[0].y1 - cdr[0].y0) * pdf_sess->zoom);
+                    gfx::DrawRectangle(cx0, cy0, std::max(2, static_cast<int>(font_size * 0.12f)), chh,
+                                       ResolveHlGroup("Cursor"));
+                }
+            }
             for (const PdfHighlightRect &hr : pr.highlights) {
                 bool current = hr.match_index == pdf_sess->search_current;
                 gfx::DrawRectangle(static_cast<int>(pos.x + hr.x0 * pdf_sess->zoom),
                               static_cast<int>(pos.y + hr.y0 * pdf_sess->zoom),
                               static_cast<int>((hr.x1 - hr.x0) * pdf_sess->zoom),
                               static_cast<int>((hr.y1 - hr.y0) * pdf_sess->zoom), current ? match_cur : match_other);
+            }
+            // Markup annotations: highlights as translucent colour fills,
+            // notes (and highlights that carry a comment) as a small yellow
+            // marker + a margin sticky-note box (text or rendered LaTeX),
+            // with the note text popping up on hover. Session-created
+            // (unsaved) annotations get a solid outline.
+            float page_right = pos.x + static_cast<float>(pr.w) * pdf_sess->zoom;
+            // Draws the marker at (mx,my) plus this annotation's note text as
+            // a margin box (or hover popup when there's no margin room).
+            auto emit_note = [&](const PdfAnnotDraw &ad, float mx, float my) {
+                // Marker/note sizes scale with the UI font so annotations are
+                // legible at the user's chosen size.
+                const float ms = std::max(14.0f, font_size + 4.0f);
+                gfx::Color outline{to255(ad.r * 0.6f), to255(ad.g * 0.6f), to255(ad.b * 0.6f), 230};
+                gfx::Color marker{to255(ad.r), to255(ad.g), to255(ad.b), 235};
+                gfx::Color conn_line{to255(ad.r), to255(ad.g), to255(ad.b), 90};
+                gfx::DrawRectangle(static_cast<int>(mx), static_cast<int>(my), static_cast<int>(ms),
+                                   static_cast<int>(ms), marker);
+                gfx::DrawRectangleLines(static_cast<int>(mx), static_cast<int>(my), static_cast<int>(ms),
+                                        static_cast<int>(ms), outline);
+                // Hovering the marker targets this annotation (for note
+                // edit/delete) and pops up its text.
+                if (annot_mouse.x >= mx && annot_mouse.x <= mx + ms && annot_mouse.y >= my &&
+                    annot_mouse.y <= my + ms) {
+                    set_hover(ad);
+                    if (!ad.contents.empty()) {
+                        have_note_popup = true;
+                        note_popup_x = mx + ms + 4;
+                        note_popup_y = my;
+                        note_popup_text = ad.contents;
+                    }
+                }
+                    // Show the note text as a little sticky note in the page's
+                    // right margin (if there's room), connected to the anchor;
+                    // otherwise fall back to a hover popup.
+                    float avail = (x + w) - page_right - 12.0f;
+                    if (!ad.contents.empty() && avail >= 130.0f) {
+                        const float nfs = std::max(13.0f, font_size), npad = 6.0f, nlh = nfs + 3.0f;
+                        float boxw = std::min(avail, std::max(240.0f, font_size * 16.0f));
+                        // A note containing LaTeX ($...$) renders via the async
+                        // org-latex tex->PNG pipeline (kBuiltinPdfAnnot's
+                        // mep_pdf_note_latex); once the PNG is ready it's shown
+                        // as an image instead of the raw text. While rendering,
+                        // the raw text (with the $-delimiters) shows as a
+                        // placeholder.
+                        bool drew_math = false;
+                        if (ad.contents.find('$') != std::string::npos) {
+                            std::string key = "pdfnote:" + std::to_string(std::hash<std::string>{}(ad.contents));
+                            if (!g_editor.PdfNoteLatexRequested(key)) {
+                                g_editor.Lua()->CallGlobal2Strings("mep_pdf_note_latex", key, ad.contents);
+                                g_editor.SetPdfNoteLatexPng(key, "");
+                            }
+                            std::string png = g_editor.PdfNoteLatexPng(key);
+                            const gfx::Texture2D *mt = png.empty() ? nullptr : GetOrLoadOrgLatexTexture(png);
+                            if (mt && mt->width > 0) {
+                                float scale = std::min((boxw - 2 * npad) / static_cast<float>(mt->width), 1.5f);
+                                float bw = static_cast<float>(mt->width) * scale + 2 * npad;
+                                float bh = static_cast<float>(mt->height) * scale + 2 * npad;
+                                float bx = page_right + 10.0f;
+                                float by = std::clamp(my - nlh, content_y, content_y + content_h - bh);
+                                gfx::DrawLineEx(gfx::Vector2{mx + ms, my + ms / 2}, gfx::Vector2{bx, by + npad}, 1.5f,
+                                                conn_line);
+                                gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(by), static_cast<int>(bw),
+                                                   static_cast<int>(bh), ResolveHlGroup("FloatBg"));
+                                gfx::DrawRectangleLines(static_cast<int>(bx), static_cast<int>(by),
+                                                        static_cast<int>(bw), static_cast<int>(bh), outline);
+                                gfx::DrawTextureEx(*mt, gfx::Vector2{bx + npad, by + npad}, 0.0f, scale, gfx::White);
+                                drew_math = true;
+                            }
+                        }
+                        if (!drew_math) {
+                        std::vector<std::string> lines;
+                        {
+                            std::istringstream iss(ad.contents);
+                            std::string word, cur;
+                            auto width = [&](const std::string &s) {
+                                return gfx::MeasureTextEx(g_font, s.c_str(), nfs, 0).x;
+                            };
+                            while (iss >> word) {
+                                std::string trial = cur.empty() ? word : cur + " " + word;
+                                if (width(trial) > boxw - 2 * npad && !cur.empty()) {
+                                    lines.push_back(cur);
+                                    cur = word;
+                                } else {
+                                    cur = trial;
+                                }
+                            }
+                            if (!cur.empty()) lines.push_back(cur);
+                            if (lines.empty()) lines.push_back(ad.contents);
+                        }
+                        bool truncated = false;
+                        const size_t kMaxLines = 8;
+                        if (lines.size() > kMaxLines) {
+                            lines.resize(kMaxLines);
+                            truncated = true;
+                        }
+                        float boxh = static_cast<float>(lines.size()) * nlh + 2 * npad;
+                        float boxx = page_right + 10.0f;
+                        float boxy = std::clamp(my - nlh, content_y, content_y + content_h - boxh);
+                        gfx::DrawLineEx(gfx::Vector2{mx + ms, my + ms / 2}, gfx::Vector2{boxx, boxy + npad}, 1.5f,
+                                        conn_line);
+                        // Light pastel of the note colour, with dark text.
+                        gfx::Color notebg{to255(ad.r * 0.4f + 0.6f), to255(ad.g * 0.4f + 0.6f),
+                                          to255(ad.b * 0.4f + 0.6f), 240};
+                        gfx::DrawRectangle(static_cast<int>(boxx), static_cast<int>(boxy), static_cast<int>(boxw),
+                                           static_cast<int>(boxh), notebg);
+                        gfx::DrawRectangleLines(static_cast<int>(boxx), static_cast<int>(boxy), static_cast<int>(boxw),
+                                                static_cast<int>(boxh), outline);
+                        gfx::Color txt{40, 40, 40, 255};
+                        for (size_t li = 0; li < lines.size(); ++li) {
+                            std::string ln = lines[li];
+                            if (truncated && li + 1 == lines.size()) ln += " ...";
+                            gfx::DrawTextEx(g_font, ln.c_str(),
+                                            gfx::Vector2{boxx + npad, boxy + npad + static_cast<float>(li) * nlh}, nfs,
+                                            0, txt);
+                        }
+                        }  // if (!drew_math)
+                    } else if (!ad.contents.empty() && annot_mouse.x >= mx && annot_mouse.x <= mx + ms &&
+                               annot_mouse.y >= my && annot_mouse.y <= my + ms) {
+                        have_note_popup = true;
+                        note_popup_x = mx + ms + 4;
+                        note_popup_y = my;
+                        note_popup_text = ad.contents;
+                    }
+            };  // emit_note
+
+            for (const PdfAnnotDraw &ad : pr.annots) {
+                gfx::Color fill{to255(ad.r), to255(ad.g), to255(ad.b), 55};
+                gfx::Color outline{to255(ad.r * 0.6f), to255(ad.g * 0.6f), to255(ad.b * 0.6f), 230};
+                if (ad.kind == 0) {  // highlight fill (+ note if it has a comment)
+                    bool hovering = false;
+                    for (const PdfAnnotRect &rr : ad.rects) {
+                        float rx = pos.x + rr.x0 * pdf_sess->zoom, ry = pos.y + rr.y0 * pdf_sess->zoom;
+                        float rw = (rr.x1 - rr.x0) * pdf_sess->zoom, rh = (rr.y1 - rr.y0) * pdf_sess->zoom;
+                        gfx::DrawRectangle(static_cast<int>(rx), static_cast<int>(ry), static_cast<int>(rw),
+                                           static_cast<int>(rh), fill);
+                        if (!ad.from_file) gfx::DrawRectangleLines(static_cast<int>(rx), static_cast<int>(ry),
+                                                                   static_cast<int>(rw), static_cast<int>(rh), outline);
+                        if (annot_mouse.x >= rx && annot_mouse.x <= rx + rw && annot_mouse.y >= ry &&
+                            annot_mouse.y <= ry + rh)
+                            hovering = true;
+                    }
+                    // Hovering a highlight targets it (attach/edit note, delete)
+                    // even when it has no note yet.
+                    if (hovering) set_hover(ad);
+                    if (!ad.contents.empty()) {
+                        // Yellow "has-comment" marker at the highlight's
+                        // top-right + its note in the margin; hovering the
+                        // highlight itself also pops the note up.
+                        emit_note(ad, pos.x + ad.bx1 * pdf_sess->zoom, pos.y + ad.by0 * pdf_sess->zoom);
+                        if (hovering) {
+                            have_note_popup = true;
+                            note_popup_x = annot_mouse.x + 12;
+                            note_popup_y = annot_mouse.y + 12;
+                            note_popup_text = ad.contents;
+                        }
+                    }
+                } else {  // /Text sticky note
+                    emit_note(ad, pos.x + ad.bx0 * pdf_sess->zoom, pos.y + ad.by0 * pdf_sess->zoom);
+                }
             }
             // Hint-system link targets (HINT_SYSTEM.md) -- pr.links is
             // already device-pixel space at pdf_sess->rendered_scale
@@ -36877,6 +37167,64 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             draw_page(pdf_sess->page - 1, anchor_y - kPdfPageGapPx - prev_h);
         }
         draw_page(pdf_sess->page + 1, anchor_y + anchor_h + kPdfPageGapPx);
+
+        // Click-drag text selection: map the cursor to a drawn page + its
+        // device-pixel offset (at rendered_scale, zoom-invariant) and drive
+        // the session selection. A press starts a fresh selection, a held
+        // drag extends it, release ends the drag (the selection persists for
+        // :pdfhighlight to consume). Only the active pane reacts, and only
+        // while the cursor is inside its content band.
+        if (is_active) {
+            PdfSession *sel = g_editor.GetPdfMutable(pane.buffer_id);
+            if (sel) sel->hover_annot = hover_target;  // for annotate-mode note-edit/delete targeting
+            gfx::Vector2 mp = annot_mouse;
+            bool in_pane = mp.x >= x && mp.x <= x + w && mp.y >= content_y && mp.y <= content_y + content_h;
+            int over = -1;
+            gfx::Vector2 opos{};
+            for (const DrawnPdfPage &dp : drawn_pdf_pages) {
+                if (mp.x >= dp.pos.x && mp.x <= dp.pos.x + dp.w && mp.y >= dp.pos.y && mp.y <= dp.pos.y + dp.h) {
+                    over = dp.idx;
+                    opos = dp.pos;
+                    break;
+                }
+            }
+            if (sel && in_pane && over >= 0 && sel->zoom > 0) {
+                double ddx = static_cast<double>((mp.x - opos.x) / sel->zoom);
+                double ddy = static_cast<double>((mp.y - opos.y) / sel->zoom);
+                if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
+                    sel->selecting = true;
+                    sel->sel_page = over;
+                    sel->sel_anchor_dx = ddx;
+                    sel->sel_anchor_dy = ddy;
+                    sel->sel_quads.clear();
+                    // In annotate mode a click also places the keyboard caret.
+                    if (g_editor.CurrentMode() == Mode::PdfAnnotate)
+                        g_editor.PdfCaretPlaceAtDevice(pane.buffer_id, over, ddx, ddy);
+                } else if (sel->selecting && gfx::IsMouseButtonDown(gfx::MouseButton::Left) && sel->sel_page == over &&
+                           sel->doc) {
+                    sel->sel_quads = sel->doc->SelectionQuads(over, sel->rendered_scale, sel->sel_anchor_dx,
+                                                              sel->sel_anchor_dy, ddx, ddy);
+                }
+            }
+            if (sel && gfx::IsMouseButtonReleased(gfx::MouseButton::Left)) sel->selecting = false;
+        }
+
+        // Sticky-note contents popup (drawn on top of the page stack, still
+        // inside the pane scissor). Wraps nothing -- notes are short; a long
+        // one is clipped by the pane edge.
+        if (have_note_popup) {
+            float fs = std::max(14.0f, font_size);
+            float tw = DrawUiText(note_popup_text, gfx::Vector2{0, 0}, fs, gfx::Blank, /*measure_only=*/true);
+            float pad = 6.0f;
+            float bw = tw + pad * 2, bh = fs + pad * 2;
+            float bx = std::min(note_popup_x, x + w - bw - 2);
+            float by = std::min(note_popup_y, y + h - bh - 2);
+            gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(by), static_cast<int>(bw),
+                               static_cast<int>(bh), ResolveHlGroup("FloatBg"));
+            gfx::DrawRectangleLines(static_cast<int>(bx), static_cast<int>(by), static_cast<int>(bw),
+                                    static_cast<int>(bh), ResolveHlGroup("FloatBorder"));
+            DrawUiText(note_popup_text, gfx::Vector2{bx + pad, by + pad}, fs, ResolveHlGroup("Normal"));
+        }
         gfx::EndScissorMode();
 
         DrawPaneBorder(x, y, w, h, is_active);
@@ -43470,6 +43818,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgBabel);
     lua->DoString(kBuiltinOrgPolyglot);
     lua->DoString(kBuiltinOrgLatex);
+    lua->DoString(kBuiltinPdfAnnot);
     lua->DoString(kBuiltinOrgExport);
     lua->DoString(kBuiltinOrgRoam);
     lua->DoString(kBuiltinOrgDrill);

@@ -3,6 +3,9 @@ investigate what themes there and which ones appear to be missing and then
 implement them. The more the better.
 
 * TODO todo management
+  :LOGBOOK:
+  CLOCK: [2026-09-19 Sat 09:46]
+  :END:
 
 * TODO language modes
   We've added 'ui modes' for languages before (I think just R so far). I'd like
@@ -258,6 +261,11 @@ executable, a compiler explorer like sidebar, and a hex exploration like sidebar
 * DONE git sidebar binding :ARCHIVE:
   I'd like in the status tab in the git sidebar, for pressing P to push.
   Can you implement this?
+* TODO fix exiting sidebar bug (specifically when exiting todo editor)
+  :LOGBOOK:
+  CLOCK: [2026-09-19 Sat 09:43]--[2026-09-19 Sat 09:46] =>  0:03
+  CLOCK: [2026-09-19 Sat 09:43]--[2026-09-19 Sat 09:43] =>  0:00
+  :END:
 * DONE add jupyter notebook mode :ARCHIVE:
   I'd like the ability to edit jupiter notebook files, much like the interface
   of standard web-based jupyter interface. CAn you add these capabilities? Add a

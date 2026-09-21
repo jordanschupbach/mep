@@ -4428,6 +4428,7 @@ void Editor::HandleInput() {
             break;
         case Mode::Pdf:
         case Mode::PdfNav:
+        case Mode::PdfAnnotate:
             HandlePdfInput();
             break;
         case Mode::Video:
@@ -4928,6 +4929,7 @@ void Editor::HandleMouseWheel(float dx, float dy) {
             break;
         case Mode::Pdf:
         case Mode::PdfNav:
+        case Mode::PdfAnnotate:
             WheelScrollPdf(dx, dy);
             break;
         case Mode::Image:
@@ -6181,7 +6183,20 @@ void Editor::SyncModeToActivePaneBuffer() {
     } else if (IsModel3DBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Model3D;
     } else if (IsPdfBuffer(CurPane().buffer_id)) {
-        mode_ = Mode::Pdf;
+        // Preserve an active annotate sub-mode when focus re-lands on the
+        // same PDF buffer -- a click-to-place-caret routes through
+        // FocusPaneById (the pane click region), which always re-syncs even
+        // when the pane didn't actually change. Without this guard every
+        // annotate-mode click dropped straight back to the plain viewer.
+        // Keyed on the focused session's own caret being initialised
+        // (caret_page >= 0, set by EnterPdfAnnotateMode) so focusing a
+        // *different* PDF pane still correctly falls to the plain viewer.
+        PdfSession *ps = GetPdfMutable(CurPane().buffer_id);
+        if (mode_ == Mode::PdfAnnotate && ps && ps->caret_page >= 0) {
+            // keep Mode::PdfAnnotate
+        } else {
+            mode_ = Mode::Pdf;
+        }
     } else if (IsVideoBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Video;
     } else if (IsHtmlBuffer(CurPane().buffer_id)) {
@@ -6214,7 +6229,7 @@ void Editor::SyncModeToActivePaneBuffer() {
     } else if (IsGanttViewActive(CurPane().buffer_id)) {
         mode_ = Mode::GanttNormal;
     } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::ImageEditor || mode_ == Mode::Model3D ||
-               mode_ == Mode::Pdf || mode_ == Mode::PdfNav || mode_ == Mode::Video ||
+               mode_ == Mode::Pdf || mode_ == Mode::PdfNav || mode_ == Mode::PdfAnnotate || mode_ == Mode::Video ||
                mode_ == Mode::Html ||
                mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
                mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual ||
@@ -9136,6 +9151,11 @@ const PdfSession *Editor::GetPdf(int buffer_id) const {
     return it == pdfs_.end() ? nullptr : &it->second;
 }
 
+PdfSession *Editor::GetPdfMutable(int buffer_id) {
+    auto it = pdfs_.find(buffer_id);
+    return it == pdfs_.end() ? nullptr : &it->second;
+}
+
 void Editor::GotoPdfPage(int buffer_id, int page) {
     auto it = pdfs_.find(buffer_id);
     if (it == pdfs_.end() || !it->second.doc) return;
@@ -9214,6 +9234,7 @@ void Editor::EnsurePdfPagesRastered(int buffer_id) {
             pr.generation = sess.next_raster_generation++;
             if (!sess.search_matches.empty()) pr.highlights = sess.doc->MatchRectsForPage(idx, sess.rendered_scale, sess.search_matches);
             pr.links = sess.doc->PageLinks(idx, sess.rendered_scale);
+            pr.annots = sess.doc->AnnotDrawForPage(idx, sess.rendered_scale, sess.pending_annots, sess.annot_edits, sess.annot_deletes);
             sess.rasters[idx] = std::move(pr);
         } else if (!res.ok && current) {
             // A failed render still takes a raster slot (an empty one, which
@@ -9260,6 +9281,525 @@ void Editor::RecomputePdfPageHighlights(PdfSession &sess) {
         kv.second.highlights =
             sess.search_matches.empty() ? std::vector<PdfHighlightRect>{}
                                          : sess.doc->MatchRectsForPage(kv.first, sess.rendered_scale, sess.search_matches);
+    }
+}
+
+void Editor::RecomputePdfPageAnnots(PdfSession &sess) {
+    if (!sess.doc) return;
+    for (auto &kv : sess.rasters) {
+        kv.second.annots = sess.doc->AnnotDrawForPage(kv.first, sess.rendered_scale, sess.pending_annots, sess.annot_edits, sess.annot_deletes);
+    }
+}
+
+namespace {
+// The highlight colour palette (RGB 0..1) the annotate UI cycles/picks
+// from; PdfSession::active_color indexes it.
+struct PdfHiColor {
+    const char *name;
+    double r, g, b;
+};
+const PdfHiColor kPdfHighlightPalette[] = {
+    {"yellow", 1.00, 0.90, 0.20},
+    {"green", 0.55, 0.90, 0.45},
+    {"blue", 0.50, 0.75, 1.00},
+    {"pink", 1.00, 0.60, 0.80},
+    {"orange", 1.00, 0.72, 0.30},
+};
+constexpr int kPdfPaletteCount = static_cast<int>(sizeof(kPdfHighlightPalette) / sizeof(kPdfHighlightPalette[0]));
+}  // namespace
+
+int Editor::PdfHighlightColorCount() const { return kPdfPaletteCount; }
+
+const char *Editor::PdfHighlightColorName(int index) const {
+    return (index >= 0 && index < kPdfPaletteCount) ? kPdfHighlightPalette[index].name : "";
+}
+
+void Editor::SetPdfHighlightColor(int index) {
+    PdfSession *s = GetPdfMutable(CurPane().buffer_id);
+    if (!s || index < 0 || index >= kPdfPaletteCount) return;
+    s->active_color = index;
+    status_message_ = std::string("Highlight colour: ") + kPdfHighlightPalette[index].name;
+}
+
+bool Editor::SetPdfHighlightColorByName(const std::string &name) {
+    for (int i = 0; i < kPdfPaletteCount; i++) {
+        if (name == kPdfHighlightPalette[i].name) {
+            SetPdfHighlightColor(i);
+            return true;
+        }
+    }
+    status_message_ = "Unknown highlight colour: " + name;
+    return false;
+}
+
+void Editor::AddPendingPdfAnnot(PdfSession &sess, int buffer_id, pdfannots::PdfAnnot a) {
+    sess.pending_annots.push_back(std::move(a));
+    sess.annots_dirty = true;
+    // Mark the buffer modified so the "unsaved" indicator shows and :w/:wa
+    // pick it up (BufferUnsavable now reports an annotated PDF as savable).
+    if (buffer_id >= 0 && buffer_id < static_cast<int>(buffers_.size())) buffers_[static_cast<size_t>(buffer_id)].modified = true;
+    RecomputePdfPageAnnots(sess);
+}
+
+void Editor::SetPdfNoteLatexPng(const std::string &key, const std::string &png) { pdf_note_latex_png_[key] = png; }
+
+bool Editor::PdfNoteLatexRequested(const std::string &key) const {
+    return pdf_note_latex_png_.find(key) != pdf_note_latex_png_.end();
+}
+
+std::string Editor::PdfNoteLatexPng(const std::string &key) const {
+    auto it = pdf_note_latex_png_.find(key);
+    return it == pdf_note_latex_png_.end() ? std::string() : it->second;
+}
+
+void Editor::EnterPdfAnnotateMode() {
+    if (!IsPdfBuffer(CurPane().buffer_id)) {
+        status_message_ = "Not a PDF pane";
+        return;
+    }
+    mode_ = Mode::PdfAnnotate;
+    if (PdfSession *s = GetPdfMutable(CurPane().buffer_id)) {
+        LoadCaretGlyphs(*s, s->page);
+        s->visual_active = false;
+        s->sel_quads.clear();
+        s->sel_page = -1;
+        s->annot_leader = false;
+    }
+    status_message_ = "PDF annotate: hjkl/w/b move, click to place, v select; <space> for actions; Esc exit";
+}
+
+void Editor::PdfNotePrompt() {
+    PdfSession *s = GetPdfMutable(CurPane().buffer_id);
+    if (!s) {
+        status_message_ = "Not a PDF pane";
+        return;
+    }
+    // If an annotation is under the mouse OR under the vim caret, add/edit ITS
+    // note (attach a note to a highlight, or edit an existing note), prefilled
+    // with the current text. Otherwise create a standalone sticky note.
+    PdfSession::AnnotTarget t = ActiveAnnotTarget(*s);
+    if (t.valid) {
+        s->note_edit_target = t;
+        s->note_input = t.contents;
+    } else {
+        s->note_edit_target.valid = false;
+        s->note_input.clear();
+    }
+    s->note_caret = s->note_input.size();  // caret at end of prefilled text
+    s->note_input_active = true;
+}
+
+// The annotation an edit/delete acts on: the one under the mouse if the mouse
+// is hovering one, else the highlight whose region contains the vim caret --
+// so keyboard-only annotate mode can edit/delete without touching the mouse.
+PdfSession::AnnotTarget Editor::ActiveAnnotTarget(PdfSession &sess) {
+    if (sess.hover_annot.valid) return sess.hover_annot;
+    return ResolveAnnotTargetAtCaret(sess);
+}
+
+// Hit-tests the caret glyph (point space) against every highlight on the caret
+// page -- session (pending) highlights first since they draw on top, then file
+// highlights (skipping any scheduled for deletion, and preferring an in-flight
+// edit's text). Returns an invalid target if the caret isn't inside a highlight.
+PdfSession::AnnotTarget Editor::ResolveAnnotTargetAtCaret(PdfSession &sess) {
+    PdfSession::AnnotTarget t;  // invalid by default
+    if (sess.caret_page < 0 || sess.caret_glyph < 0 ||
+        sess.caret_glyph >= static_cast<int>(sess.caret_glyphs.size()))
+        return t;
+    const PdfGlyphBox &g = sess.caret_glyphs[static_cast<size_t>(sess.caret_glyph)];
+    const double cx = (g.left + g.right) * 0.5;
+    const double cy = (g.top + g.bottom) * 0.5;
+    auto in_quads = [&](const std::vector<pdfannots::Quad> &quads) {
+        for (const pdfannots::Quad &q : quads) {
+            const double minx = std::min(std::min(q.x1, q.x2), std::min(q.x3, q.x4));
+            const double maxx = std::max(std::max(q.x1, q.x2), std::max(q.x3, q.x4));
+            const double miny = std::min(std::min(q.y1, q.y2), std::min(q.y3, q.y4));
+            const double maxy = std::max(std::max(q.y1, q.y2), std::max(q.y3, q.y4));
+            if (cx >= minx && cx <= maxx && cy >= miny && cy <= maxy) return true;
+        }
+        return false;
+    };
+    for (int i = static_cast<int>(sess.pending_annots.size()) - 1; i >= 0; --i) {
+        const pdfannots::PdfAnnot &a = sess.pending_annots[static_cast<size_t>(i)];
+        if (a.page != sess.caret_page || a.kind != pdfannots::Kind::Highlight) continue;
+        if (in_quads(a.quads)) {
+            t.valid = true; t.from_file = false; t.page = a.page;
+            t.pending_index = i; t.kind = 0; t.contents = a.contents;
+            return t;
+        }
+    }
+    if (sess.doc) {
+        for (const pdfannots::PdfAnnot &a : sess.doc->PageAnnots(sess.caret_page)) {
+            if (a.kind != pdfannots::Kind::Highlight) continue;
+            const bool deleted = std::any_of(
+                sess.annot_deletes.begin(), sess.annot_deletes.end(),
+                [&](const pdfwrite::AnnotDelete &d) { return d.page == a.page && d.obj_num == a.src_obj; });
+            if (deleted) continue;
+            if (in_quads(a.quads)) {
+                t.valid = true; t.from_file = true; t.page = a.page;
+                t.src_obj = a.src_obj; t.src_gen = a.src_gen; t.kind = 0;
+                t.contents = a.contents;
+                for (const pdfannots::PdfAnnot &e : sess.annot_edits)
+                    if (e.src_obj == a.src_obj) t.contents = e.contents;
+                return t;
+            }
+        }
+    }
+    return t;
+}
+
+// Applies `text` as the note contents of `t` (a highlight's /Contents, or a
+// sticky note's) -- session annots are mutated in place; file annots become
+// an entry in annot_edits (re-emitted on :w).
+void Editor::ApplyPdfNoteToTarget(PdfSession &sess, const PdfSession::AnnotTarget &t, const std::string &text) {
+    if (!t.valid) return;
+    if (!t.from_file) {
+        if (t.pending_index >= 0 && t.pending_index < static_cast<int>(sess.pending_annots.size()))
+            sess.pending_annots[static_cast<size_t>(t.pending_index)].contents = text;
+    } else if (sess.doc && t.src_obj > 0) {
+        // Fetch the full file annotation (geometry/colour), set its new text,
+        // and record it as an edit (replacing any prior edit of the same obj).
+        for (const pdfannots::PdfAnnot &fa : sess.doc->PageAnnots(t.page)) {
+            if (fa.src_obj == t.src_obj) {
+                pdfannots::PdfAnnot ed = fa;
+                ed.contents = text;
+                sess.annot_edits.erase(std::remove_if(sess.annot_edits.begin(), sess.annot_edits.end(),
+                                                      [&](const pdfannots::PdfAnnot &e) { return e.src_obj == t.src_obj; }),
+                                       sess.annot_edits.end());
+                sess.annot_edits.push_back(std::move(ed));
+                break;
+            }
+        }
+    }
+    sess.annots_dirty = true;
+    int bid = CurPane().buffer_id;
+    if (bid >= 0 && bid < static_cast<int>(buffers_.size())) buffers_[static_cast<size_t>(bid)].modified = true;
+    RecomputePdfPageAnnots(sess);
+}
+
+// Deletes the annotation `t` (a highlight and its note, or a sticky note).
+void Editor::PdfDeleteTarget() {
+    int bid = CurPane().buffer_id;
+    PdfSession *s = GetPdfMutable(bid);
+    if (!s) return;
+    const PdfSession::AnnotTarget t = ActiveAnnotTarget(*s);
+    if (!t.valid) {
+        status_message_ = "Hover over, or place the caret in, an annotation to delete it";
+        return;
+    }
+    if (!t.from_file) {
+        if (t.pending_index >= 0 && t.pending_index < static_cast<int>(s->pending_annots.size()))
+            s->pending_annots.erase(s->pending_annots.begin() + t.pending_index);
+    } else if (t.src_obj > 0) {
+        // Drop any pending edit of it, then schedule the file deletion.
+        s->annot_edits.erase(std::remove_if(s->annot_edits.begin(), s->annot_edits.end(),
+                                            [&](const pdfannots::PdfAnnot &e) { return e.src_obj == t.src_obj; }),
+                             s->annot_edits.end());
+        s->annot_deletes.push_back({t.page, t.src_obj});
+    }
+    s->hover_annot.valid = false;
+    s->annots_dirty = true;
+    if (bid >= 0 && bid < static_cast<int>(buffers_.size())) buffers_[static_cast<size_t>(bid)].modified = true;
+    RecomputePdfPageAnnots(*s);
+    status_message_ = "Deleted annotation (:w to save)";
+}
+
+void Editor::PdfSearchCommand(const std::string &query) {
+    int bid = CurPane().buffer_id;
+    auto it = pdfs_.find(bid);
+    if (it == pdfs_.end() || !it->second.doc) return;
+    PdfSession &sess = it->second;
+    if (query.empty()) {
+        status_message_ = "Usage: :pdfsearch <text>";
+        return;
+    }
+    RunPdfSearch(sess, query);
+    if (sess.search_matches.empty()) {
+        status_message_ = "No matches for \"" + query + "\"";
+        return;
+    }
+    int start = 0;
+    for (size_t i = 0; i < sess.search_matches.size(); i++) {
+        if (sess.search_matches[i].page >= sess.page) {
+            start = static_cast<int>(i);
+            break;
+        }
+    }
+    GotoPdfMatch(sess, start);
+}
+
+void Editor::PdfHighlightCurrentMatch() {
+    int bid = CurPane().buffer_id;
+    auto it = pdfs_.find(bid);
+    if (it == pdfs_.end() || !it->second.doc) return;
+    PdfSession &sess = it->second;
+
+    pdfannots::PdfAnnot a;
+    a.kind = pdfannots::Kind::Highlight;
+    const PdfHiColor &pc = kPdfHighlightPalette[std::clamp(sess.active_color, 0, kPdfPaletteCount - 1)];
+    a.color[0] = pc.r; a.color[1] = pc.g; a.color[2] = pc.b; a.opacity = 0.4;
+    double minx = 1e30, miny = 1e30, maxx = -1e30, maxy = -1e30;
+    auto extend = [&](double l, double t, double r, double b) {
+        minx = std::min(minx, std::min(l, r));
+        maxx = std::max(maxx, std::max(l, r));
+        miny = std::min(miny, std::min(t, b));
+        maxy = std::max(maxy, std::max(t, b));
+    };
+
+    const char *what = nullptr;
+    if (sess.sel_page >= 0 && !sess.sel_quads.empty()) {
+        // A click-drag text selection takes precedence over the search match.
+        a.page = sess.sel_page;
+        for (const pdfannots::Quad &q : sess.sel_quads) {
+            a.quads.push_back(q);
+            extend(std::min(q.x1, q.x3), std::max(q.y1, q.y2), std::max(q.x2, q.x4), std::min(q.y3, q.y4));
+        }
+        what = "selection";
+    } else if (sess.search_current >= 0 && sess.search_current < static_cast<int>(sess.search_matches.size())) {
+        const PdfTextMatch &m = sess.search_matches[static_cast<size_t>(sess.search_current)];
+        if (m.rects_pt.empty()) return;
+        a.page = m.page;
+        for (const PdfTextRectPt &r : m.rects_pt) {
+            // Point space, y-up (top >= bottom). QuadPoints order UL,UR,LL,LR.
+            pdfannots::Quad q;
+            q.x1 = r.left;  q.y1 = r.top;    q.x2 = r.right; q.y2 = r.top;
+            q.x3 = r.left;  q.y3 = r.bottom; q.x4 = r.right; q.y4 = r.bottom;
+            a.quads.push_back(q);
+            extend(r.left, r.top, r.right, r.bottom);
+        }
+        what = "match";
+    } else {
+        status_message_ = "Nothing to highlight (drag to select text, or search with /)";
+        return;
+    }
+
+    a.rect[0] = minx; a.rect[1] = miny; a.rect[2] = maxx; a.rect[3] = maxy;
+    AddPendingPdfAnnot(sess, bid, std::move(a));
+    // Consume the selection so a second :pdfhighlight doesn't re-add it.
+    sess.sel_page = -1;
+    sess.sel_quads.clear();
+    status_message_ = std::string("Highlighted ") + what + " (:w to save into the PDF)";
+}
+
+void Editor::PdfAddNote(const std::string &text) {
+    int bid = CurPane().buffer_id;
+    auto it = pdfs_.find(bid);
+    if (it == pdfs_.end() || !it->second.doc) return;
+    PdfSession &sess = it->second;
+    if (text.empty()) {
+        status_message_ = "Usage: :pdfnote <text>";
+        return;
+    }
+    pdfannots::PdfAnnot a;
+    a.kind = pdfannots::Kind::Text;
+    a.contents = text;
+    a.icon = "Note";
+    a.color[0] = 1.0; a.color[1] = 1.0; a.color[2] = 0.0;
+    a.page = sess.page;
+    double px = 36, py = 36;
+    if (sess.search_current >= 0 && sess.search_current < static_cast<int>(sess.search_matches.size())) {
+        // Anchor the note to the current search match, if any.
+        const PdfTextMatch &m = sess.search_matches[static_cast<size_t>(sess.search_current)];
+        a.page = m.page;
+        if (!m.rects_pt.empty()) {
+            px = m.rects_pt[0].right;
+            py = m.rects_pt[0].top;
+        }
+    } else {
+        // Otherwise the current page's top-left (point space is y-up).
+        double hpt = sess.doc->PageHeightPt(sess.page);
+        if (hpt > 0) py = hpt - 36;
+    }
+    a.rect[0] = px; a.rect[1] = py - 18; a.rect[2] = px + 18; a.rect[3] = py;
+    AddPendingPdfAnnot(sess, bid, std::move(a));
+    status_message_ = "Added note (:w to save into the PDF)";
+}
+
+// -- vim caret over a PDF page (annotate mode) ------------------------
+
+void Editor::LoadCaretGlyphs(PdfSession &sess, int page) {
+    sess.caret_page = page;
+    sess.caret_glyphs = sess.doc ? sess.doc->PageGlyphs(page) : std::vector<PdfGlyphBox>{};
+    sess.caret_glyph = sess.caret_glyphs.empty() ? -1 : 0;
+}
+
+void Editor::PdfCaretUpdateVisual(PdfSession &sess) {
+    if (!sess.visual_active || !sess.doc || sess.caret_glyph < 0 || sess.visual_anchor_glyph < 0) return;
+    sess.sel_page = sess.caret_page;
+    sess.sel_quads = sess.doc->SelectionQuadsForGlyphs(sess.caret_page, sess.visual_anchor_glyph, sess.caret_glyph);
+}
+
+void Editor::PdfCaretEnsureVisible(PdfSession &sess) {
+    if (!sess.doc || sess.caret_page != sess.page || sess.caret_glyph < 0 ||
+        sess.caret_glyph >= static_cast<int>(sess.caret_glyphs.size()))
+        return;
+    const PdfGlyphBox &g = sess.caret_glyphs[static_cast<size_t>(sess.caret_glyph)];
+    pdfannots::Quad q;
+    q.x1 = g.left;  q.y1 = g.top;    q.x2 = g.right; q.y2 = g.top;
+    q.x3 = g.left;  q.y3 = g.bottom; q.x4 = g.right; q.y4 = g.bottom;
+    auto dr = sess.doc->QuadsToDeviceRects(sess.caret_page, sess.rendered_scale, {q});
+    if (dr.empty()) return;
+    double top = static_cast<double>(dr[0].y0) * static_cast<double>(sess.zoom);  // page-relative screen px
+    double bot = static_cast<double>(dr[0].y1) * static_cast<double>(sess.zoom);
+    const double margin = 40;
+    double sy = static_cast<double>(sess.scroll_y);
+    if (top - sy < margin)
+        sess.scroll_y = static_cast<float>(top - margin);
+    else if (bot - sy > static_cast<double>(sess.viewport_h) - margin)
+        sess.scroll_y = static_cast<float>(bot - static_cast<double>(sess.viewport_h) + margin);
+    RebasePdfScroll(sess);
+}
+
+void Editor::PdfCaretMove(PdfSession &sess, int cp) {
+    if (sess.caret_page != sess.page) LoadCaretGlyphs(sess, sess.page);  // page changed under us
+    if (sess.caret_glyphs.empty()) return;
+    const auto &G = sess.caret_glyphs;
+    int n = static_cast<int>(G.size());
+    int c = std::clamp(sess.caret_glyph, 0, n - 1);
+    auto height = [&](int i) { return std::max(G[static_cast<size_t>(i)].top - G[static_cast<size_t>(i)].bottom, 1e-6); };
+    auto center = [&](int i) { return (G[static_cast<size_t>(i)].top + G[static_cast<size_t>(i)].bottom) / 2.0; };
+    auto sameLine = [&](int a, int b) { return std::fabs(center(a) - center(b)) <= 0.5 * std::max(height(a), height(b)); };
+    auto wordStart = [&](int i) {
+        if (i <= 0) return true;
+        if (!sameLine(i - 1, i)) return true;
+        return (G[static_cast<size_t>(i)].left - G[static_cast<size_t>(i - 1)].right) > 0.05 * std::max(height(i), height(i - 1));
+    };
+    double cx = (G[static_cast<size_t>(c)].left + G[static_cast<size_t>(c)].right) / 2.0;
+    int page_count = sess.doc ? sess.doc->PageCount() : 1;
+    switch (cp) {
+        case 'h': c = std::max(0, c - 1); break;
+        case 'l': c = std::min(n - 1, c + 1); break;
+        case '0': while (c > 0 && sameLine(c - 1, c)) --c; break;
+        case '$': while (c < n - 1 && sameLine(c, c + 1)) ++c; break;
+        case 'w': { int i = c + 1; while (i < n && !wordStart(i)) ++i; c = std::min(i, n - 1); break; }
+        case 'b': { int i = c - 1; while (i > 0 && !wordStart(i)) --i; c = std::max(i, 0); break; }
+        case 'e': { int i = c + 1; while (i < n - 1 && !wordStart(i + 1)) ++i; c = std::min(i, n - 1); break; }
+        case 'j': {
+            int i = c + 1;
+            while (i < n && sameLine(i, c)) ++i;  // first glyph of the next line
+            if (i < n) {
+                int best = i; double bd = 1e30;
+                for (int k = i; k < n && sameLine(k, i); ++k) {
+                    double kx = (G[static_cast<size_t>(k)].left + G[static_cast<size_t>(k)].right) / 2.0;
+                    if (std::fabs(kx - cx) < bd) { bd = std::fabs(kx - cx); best = k; }
+                }
+                c = best;
+            } else if (!sess.visual_active && sess.page < page_count - 1) {
+                // Past the last line: advance to the next page's first glyph.
+                sess.page++;
+                sess.scroll_y = 0;
+                LoadCaretGlyphs(sess, sess.page);
+                return;
+            }
+            break;
+        }
+        case 'k': {
+            int i = c - 1;
+            while (i >= 0 && sameLine(i, c)) --i;  // last glyph of the previous line
+            if (i >= 0) {
+                int start = i; while (start > 0 && sameLine(start - 1, i)) --start;
+                int best = start; double bd = 1e30;
+                for (int k = start; k <= i; ++k) {
+                    double kx = (G[static_cast<size_t>(k)].left + G[static_cast<size_t>(k)].right) / 2.0;
+                    if (std::fabs(kx - cx) < bd) { bd = std::fabs(kx - cx); best = k; }
+                }
+                c = best;
+            } else if (!sess.visual_active && sess.page > 0) {
+                sess.page--;
+                LoadCaretGlyphs(sess, sess.page);
+                sess.caret_glyph = sess.caret_glyphs.empty() ? -1 : static_cast<int>(sess.caret_glyphs.size()) - 1;
+                sess.scroll_y = PdfPageScreenHeightPx(sess, sess.page);  // bottom of the page
+                RebasePdfScroll(sess);
+                return;
+            }
+            break;
+        }
+        default: break;
+    }
+    sess.caret_glyph = c;
+    if (sess.visual_active) PdfCaretUpdateVisual(sess);
+    PdfCaretEnsureVisible(sess);
+}
+
+void Editor::PdfCaretPlaceAtDevice(int buffer_id, int page, double dx, double dy) {
+    PdfSession *s = GetPdfMutable(buffer_id);
+    if (!s || !s->doc) return;
+    if (s->caret_page != page) LoadCaretGlyphs(*s, page);
+    if (s->caret_glyphs.empty()) return;
+    double px, py;
+    if (!s->doc->DevicePxToPoint(page, s->rendered_scale, dx, dy, &px, &py)) return;
+    int best = -1;
+    double bestd = 1e30;
+    for (size_t i = 0; i < s->caret_glyphs.size(); ++i) {
+        const PdfGlyphBox &g = s->caret_glyphs[i];
+        double cx = std::clamp(px, g.left, g.right);
+        double cy = std::clamp(py, g.bottom, g.top);
+        double d = (px - cx) * (px - cx) + (py - cy) * (py - cy);
+        if (d < bestd) { bestd = d; best = static_cast<int>(i); }
+    }
+    if (best >= 0) {
+        s->caret_glyph = best;
+        if (s->visual_active) PdfCaretUpdateVisual(*s);
+    }
+}
+
+void Editor::PdfCaretToggleVisual(PdfSession &sess) {
+    if (sess.caret_glyph < 0) return;
+    sess.visual_active = !sess.visual_active;
+    if (sess.visual_active) {
+        sess.visual_anchor_glyph = sess.caret_glyph;
+        PdfCaretUpdateVisual(sess);
+    } else {
+        sess.sel_quads.clear();
+        sess.sel_page = -1;
+    }
+}
+
+void Editor::PdfAnnotLeaderAction(PdfSession &sess, int cp) {
+    switch (cp) {
+        case 'h':  // highlight the visual selection (or current search match)
+            PdfHighlightCurrentMatch();
+            sess.visual_active = false;
+            break;
+        case 'n':  // note: highlight the selection + attach a note, else edit the hovered/standalone note
+            if (sess.visual_active && !sess.sel_quads.empty()) {
+                PdfHighlightCurrentMatch();
+                sess.visual_active = false;
+                if (!sess.pending_annots.empty()) {
+                    PdfSession::AnnotTarget &t = sess.note_edit_target;
+                    t.valid = true;
+                    t.from_file = false;
+                    t.page = sess.pending_annots.back().page;
+                    t.pending_index = static_cast<int>(sess.pending_annots.size()) - 1;
+                    t.kind = 0;
+                    t.contents.clear();
+                    sess.note_input.clear();
+                    sess.note_caret = 0;
+                    sess.note_input_active = true;
+                }
+            } else {
+                PdfNotePrompt();
+            }
+            break;
+        case 'd':  // delete the annotation under the mouse
+            PdfDeleteTarget();
+            break;
+        case 'c':  // cycle the highlight colour
+            SetPdfHighlightColor((sess.active_color + 1) % PdfHighlightColorCount());
+            break;
+        case '1': case '2': case '3': case '4': case '5':
+            SetPdfHighlightColor(cp - '1');
+            break;
+        case 'q':  // leave annotate mode
+            mode_ = Mode::Pdf;
+            sess.visual_active = false;
+            sess.sel_quads.clear();
+            sess.sel_page = -1;
+            status_message_ = "";
+            break;
+        default:
+            status_message_ = "annotate: unknown action";
+            break;
     }
 }
 
@@ -9531,7 +10071,21 @@ void Editor::RebasePdfScroll(PdfSession &sess) {
 // zoom/rendered_scale.
 void Editor::ClampPdfPanX(PdfSession &sess) {
     double page_w_pt = PdfPageSizePt(sess, sess.page).first;
-    int mx = std::max(0, static_cast<int>(page_w_pt * static_cast<double>(sess.rendered_scale) * static_cast<double>(sess.zoom)) - sess.viewport_w);
+    int page_w_px = static_cast<int>(page_w_pt * static_cast<double>(sess.rendered_scale) * static_cast<double>(sess.zoom));
+    // When the current page carries margin notes (a sticky /Text note, or a
+    // highlight that has a comment), allow panning a little past the page's
+    // right edge so those margin note boxes -- drawn at page_right+10, i.e.
+    // beyond the page -- become reachable when zoomed in. Without this gutter
+    // pan_x tops out with the page's right edge flush at the pane edge and
+    // the notes sit permanently off-screen.
+    int gutter = 0;
+    auto rit = sess.rasters.find(sess.page);
+    if (rit != sess.rasters.end()) {
+        for (const PdfAnnotDraw &ad : rit->second.annots) {
+            if (ad.kind == 1 || (ad.kind == 0 && !ad.contents.empty())) { gutter = 280; break; }
+        }
+    }
+    int mx = std::max(0, page_w_px + gutter - sess.viewport_w);
     sess.pan_x = std::clamp(sess.pan_x, 0, mx);
 }
 
@@ -9570,11 +10124,17 @@ void Editor::HandlePdfInput() {
         HandlePdfSearchInput(*sess);
         return;
     }
-    // Mode::PdfNav shares this handler rather than getting its own (unlike
-    // Office/Sheet's split functions): ~everything below is common to both
-    // modes, and both input-drain loops consume the whole queue, so a
-    // second copy would drift. `nav` gates the nav-only branches.
+    if (sess->note_input_active) {
+        HandlePdfNoteInput(*sess);
+        return;
+    }
+    // Mode::PdfNav and Mode::PdfAnnotate share this handler rather than
+    // getting their own (unlike Office/Sheet's split functions):
+    // ~everything below is common to all three modes, and the input-drain
+    // loops consume the whole queue, so a second copy would drift. `nav`
+    // gates the nav-only branches, `annotate` the annotate-only ones.
     const bool nav = (mode_ == Mode::PdfNav);
+    const bool annotate = (mode_ == Mode::PdfAnnotate);
     if (nav && sess->nav_goto_active) {
         HandlePdfNavGotoInput(*sess);
         return;
@@ -9601,11 +10161,15 @@ void Editor::HandlePdfInput() {
      */
     auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
     bool scrolled = false;
-    if (held(gfx::Key::J) || held(gfx::Key::Down)) { sess->scroll_y += kScrollStep; scrolled = true; }
-    if (held(gfx::Key::K) || held(gfx::Key::Up)) { sess->scroll_y -= kScrollStep; scrolled = true; }
+    // In annotate mode j/k/h/l are caret motions (handled in the char loop),
+    // so only the arrow keys scroll/pan there.
+    if ((!annotate && held(gfx::Key::J)) || held(gfx::Key::Down)) { sess->scroll_y += kScrollStep; scrolled = true; }
+    if ((!annotate && held(gfx::Key::K)) || held(gfx::Key::Up)) { sess->scroll_y -= kScrollStep; scrolled = true; }
     if (scrolled) rebase_scroll();
-    if (held(gfx::Key::H) || held(gfx::Key::Left)) { sess->pan_x -= kScrollStep; clamp_pan_x(); }
-    if (held(gfx::Key::L) || held(gfx::Key::Right)) { sess->pan_x += kScrollStep; clamp_pan_x(); }
+    // In annotate mode h/l are freed for actions (highlight/...), so pan
+    // there is arrow-keys only; j/k scroll stays in every mode.
+    if ((!annotate && held(gfx::Key::H)) || held(gfx::Key::Left)) { sess->pan_x -= kScrollStep; clamp_pan_x(); }
+    if ((!annotate && held(gfx::Key::L)) || held(gfx::Key::Right)) { sess->pan_x += kScrollStep; clamp_pan_x(); }
 
     /**
      * @brief Jumps to a clamped PDF page number and resets vertical scroll to its top.
@@ -9644,10 +10208,10 @@ void Editor::HandlePdfInput() {
         else if (ctrl && key == gfx::Key::F) full_down = true;
         else if (ctrl && key == gfx::Key::B) full_up = true;
         else if (ctrl && key == gfx::Key::R) toggle_theme = true;
-        else if (nav && key == gfx::Key::Escape) {
+        else if ((nav || annotate) && key == gfx::Key::Escape) {
             // Back to plain Mode::Pdf. In normal PDF mode Escape stays a
-            // silently-consumed no-op (no case here matches it), so nav
-            // claiming it takes nothing away.
+            // silently-consumed no-op (no case here matches it), so nav/
+            // annotate claiming it takes nothing away.
             mode_ = Mode::Pdf;
             pending_count_ = 0;
         }
@@ -9677,9 +10241,21 @@ void Editor::HandlePdfInput() {
 
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
+        if (annotate && sess->annot_leader) {
+            // A <space> leader is pending: this key is the annotation action.
+            sess->annot_leader = false;
+            PdfAnnotLeaderAction(*sess, cp);
+            if (mode_ != Mode::PdfAnnotate) return;  // e.g. 'q' left annotate mode
+            cp = gfx::GetCharPressed();
+            continue;
+        }
         if (cp == ':') {
             EnterCommand();
             return;  // mode_ is no longer Pdf -- stop draining as this mode
+        } else if (annotate && cp == ' ') {
+            // Annotate-mode local leader: capture the next key as an action.
+            sess->annot_leader = true;
+            status_message_ = "annotate  <space> h highlight  n note  d delete  c colour  1-5 colour  q exit";
         } else if (nav && cp == ' ') {
             // Checked ahead of the leader branch: Space is the app's
             // default leader_key_, but scroll-on-Space is nav mode's
@@ -9694,7 +10270,9 @@ void Editor::HandlePdfInput() {
             int n = take_count();
             sess->scroll_y += static_cast<float>(sess->viewport_h) * static_cast<float>(shift ? -n : n);
             rebase_scroll();
-        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+        } else if (!annotate && cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            // Global leader only in normal PDF / nav mode; annotate mode has
+            // its own <space> leader handled above.
             TriggerWhichKey();
             return;
         } else if (cp == '+') {
@@ -9757,7 +10335,7 @@ void Editor::HandlePdfInput() {
             pending_count_ = 0;
             sess->search_active = true;
             sess->search_input.clear();
-        } else if (!nav && cp == 'n') {
+        } else if (!nav && !annotate && cp == 'n') {
             // Enter Mode::PdfNav unconditionally ('N'/'P' below took over
             // the old n/p match-jump role). Same "mode_ is no longer this
             // mode -- stop draining" reasoning as EnterCommand above.
@@ -9765,6 +10343,24 @@ void Editor::HandlePdfInput() {
             pending_count_ = 0;
             mode_ = Mode::PdfNav;
             return;
+        } else if (!nav && !annotate && cp == 'a') {
+            // Enter Mode::PdfAnnotate (caret + <space>-leader actions).
+            pending_g_ = false;
+            pending_count_ = 0;
+            EnterPdfAnnotateMode();
+            return;
+        } else if (annotate && (cp == 'h' || cp == 'l' || cp == 'j' || cp == 'k' || cp == 'w' || cp == 'b' ||
+                                 cp == 'e' || cp == '0' || cp == '$')) {
+            // Vim caret motions (h/l char, j/k line, w/b/e word, 0/$ line ends).
+            pending_g_ = false;
+            pending_count_ = 0;
+            PdfCaretMove(*sess, cp);
+        } else if (annotate && cp == 'v') {
+            // Start/stop a visual selection at the caret (a direct motion-like
+            // key). All annotation ACTIONS are under the <space> leader.
+            pending_g_ = false;
+            pending_count_ = 0;
+            PdfCaretToggleVisual(*sess);
         } else if (cp == 'N' && !sess->search_matches.empty()) {
             pending_g_ = false;
             pending_count_ = 0;
@@ -9780,6 +10376,73 @@ void Editor::HandlePdfInput() {
         // Every other printable key is a deliberate no-op -- see
         // Mode::Pdf's own comment for why (read-only content).
         cp = gfx::GetCharPressed();
+    }
+}
+
+void Editor::HandlePdfNoteInput(PdfSession &sess) {
+    // Same in-pane text-capture shape as HandlePdfSearchInput, committing a
+    // sticky note on Enter (PdfAddNote anchors it to the current selection/
+    // match) instead of running a search -- but with a movable insertion caret
+    // (note_caret, a byte offset kept on UTF-8 boundaries) so Left/Right/Home/
+    // End/Delete edit mid-string, not just at the end.
+    std::string &t = sess.note_input;
+    size_t &c = sess.note_caret;
+    if (c > t.size()) c = t.size();
+    auto prev_boundary = [&](size_t i) -> size_t {
+        if (i == 0) return 0;
+        --i;
+        while (i > 0 && (static_cast<unsigned char>(t[i]) & 0xC0) == 0x80) --i;
+        return i;
+    };
+    auto next_boundary = [&](size_t i) -> size_t {
+        if (i >= t.size()) return t.size();
+        ++i;
+        while (i < t.size() && (static_cast<unsigned char>(t[i]) & 0xC0) == 0x80) ++i;
+        return i;
+    };
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+        sess.note_input_active = false;
+        t.clear();
+        c = 0;
+        sess.note_edit_target.valid = false;
+        return;
+    }
+    if (gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) {
+        sess.note_input_active = false;
+        if (sess.note_edit_target.valid) {
+            // Editing/attaching a note on an existing annotation (empty text
+            // clears its note).
+            ApplyPdfNoteToTarget(sess, sess.note_edit_target, t);
+        } else if (!t.empty()) {
+            PdfAddNote(t);  // standalone sticky note
+        }
+        t.clear();
+        c = 0;
+        sess.note_edit_target.valid = false;
+        return;
+    }
+    // Caret motion (repeat so holding the key keeps moving).
+    if (gfx::IsKeyPressed(gfx::Key::Left) || gfx::IsKeyPressedRepeat(gfx::Key::Left)) c = prev_boundary(c);
+    if (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right)) c = next_boundary(c);
+    if (gfx::IsKeyPressed(gfx::Key::Home)) c = 0;
+    if (gfx::IsKeyPressed(gfx::Key::End)) c = t.size();
+    // Deletion, either side of the caret.
+    if (gfx::IsKeyPressed(gfx::Key::Backspace) || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
+        if (c > 0) {
+            size_t p = prev_boundary(c);
+            t.erase(p, c - p);
+            c = p;
+        }
+    }
+    if (gfx::IsKeyPressed(gfx::Key::Delete) || gfx::IsKeyPressedRepeat(gfx::Key::Delete)) {
+        if (c < t.size()) t.erase(c, next_boundary(c) - c);
+    }
+    // Insert typed characters at the caret.
+    for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) {
+        std::string enc;
+        AppendUtf8(enc, cp);
+        t.insert(c, enc);
+        c += enc.size();
     }
 }
 
@@ -13464,7 +14127,16 @@ bool Editor::BufferUnsavable(int buffer_id) const {
     // every other special type (image editor, model3d, sheet, office) can
     // save, so only these three have a `modified` flag nothing can clear.
     if (IsTerminalBuffer(buffer_id)) return true;
-    if (IsPdfBuffer(buffer_id)) return true;
+    // A PDF pane is unsavable only while it has no unsaved markup
+    // annotations; with pending highlights/notes, `:w` writes them into the
+    // file's /Annots (see SaveBuffer's PDF branch), so it must NOT be
+    // reported unsavable then -- otherwise :wa/:qa's own loops would skip
+    // it and its `modified` flag could never clear (the E37 class -- keep
+    // this skip set identical to SaveBuffer's own PDF guard).
+    if (IsPdfBuffer(buffer_id)) {
+        const PdfSession *s = GetPdf(buffer_id);
+        return !s || !s->HasUnsavedAnnots();
+    }
     if (IsImageBuffer(buffer_id) && image_editors_.find(buffer_id) == image_editors_.end()) return true;
     return false;
 }
@@ -21185,6 +21857,7 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::Model3D: return "3D-MODEL";
         case Mode::Pdf: return "PDF";
         case Mode::PdfNav: return "PDF-NAV";
+        case Mode::PdfAnnotate: return "PDF-ANNOT";
         case Mode::Video: return "VIDEO";
         case Mode::Html: return "HTML";
         case Mode::SidebarPane: return "SIDEBAR";
@@ -23395,6 +24068,24 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
 
     if (name == "w" || name == "write") {
         SaveFile(args.empty() ? Buf().filename : args);
+    } else if (name == "pdfsearch") {
+        PdfSearchCommand(args);
+    } else if (name == "pdfcolor") {
+        SetPdfHighlightColorByName(args);
+    } else if (name == "pdfannotate") {
+        EnterPdfAnnotateMode();
+    } else if (name == "pdfdelete") {
+        PdfDeleteTarget();
+    } else if (name == "pdfhighlight" || name == "pdfhl") {
+        PdfHighlightCurrentMatch();
+    } else if (name == "pdfnote") {
+        if (args.empty()) {
+            PdfNotePrompt();
+        } else if (PdfSession *s = GetPdfMutable(CurPane().buffer_id); s && s->hover_annot.valid) {
+            ApplyPdfNoteToTarget(*s, s->hover_annot, args);  // attach/edit the note on the hovered annotation
+        } else {
+            PdfAddNote(args);  // standalone sticky note
+        }
     } else if (name == "wa" || name == "wall") {
         WriteAllModified();
     } else if (name == "q" || name == "quit") {
@@ -26155,8 +26846,49 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
         return false;
     }
     if (IsPdfBuffer(buffer_id)) {
-        status_message_ = "E382: Cannot write, PDF buffer";
-        return false;
+        // A plain PDF viewer pane has nothing to write (same reject as
+        // before); a pane with unsaved markup annotations writes them into
+        // the file's /Annots as an appended incremental-update revision
+        // (PdfDoc::BytesWithAddedAnnots), mirroring the image-editor's
+        // "viewer rejects :w, edited session saves" split above.
+        auto pit = pdfs_.find(buffer_id);
+        if (pit == pdfs_.end() || !pit->second.doc || !pit->second.HasUnsavedAnnots()) {
+            status_message_ = "E382: Cannot write, PDF buffer (no annotations to save)";
+            return false;
+        }
+        PdfSession &psess = pit->second;
+        std::string bytes =
+            psess.doc->BytesWithAnnotChanges(psess.pending_annots, psess.annot_edits, psess.annot_deletes);
+        if (bytes.empty()) {
+            status_message_ = "E212: Can't write \"" + path + "\": " + psess.doc->Error();
+            return false;
+        }
+        // One-time backup of the pristine original before the first write.
+        std::error_code bak_ec;
+        std::string bak = io_path + ".bak";
+        if (!std::filesystem::exists(bak, bak_ec)) std::filesystem::copy_file(io_path, bak, bak_ec);
+        std::ofstream pdf_out(io_path, std::ios::binary);
+        if (!pdf_out) {
+            status_message_ = "E212: Can't open file for writing";
+            return false;
+        }
+        pdf_out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        pdf_out.close();
+        // Re-load from the just-written bytes so the newly-added
+        // annotations become ordinary existing ones (they now render via
+        // PdfDoc::PageAnnots like any other), and clear the session's
+        // pending set + caches so overlays recompute from the file.
+        psess.doc->LoadFromMemory(reinterpret_cast<const unsigned char *>(bytes.data()), bytes.size());
+        psess.pending_annots.clear();
+        psess.annot_edits.clear();
+        psess.annot_deletes.clear();
+        psess.annots_dirty = false;
+        psess.rasters.clear();
+        buf.filename = path;
+        buf.modified = false;
+        save_epoch_++;
+        status_message_ = "\"" + path + "\" written (annotations added)";
+        return true;
     }
     if (IsModel3DBuffer(buffer_id)) {
         Model3DSession &sess = model3d_sessions_.at(buffer_id);

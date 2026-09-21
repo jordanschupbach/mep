@@ -957,6 +957,16 @@ int l_cmd(lua_State *L) {
     return 0;
 }
 
+// mep.pdf_note_latex_done(key, png): async callback (from kBuiltinPdfAnnot's
+// mep_pdf_note_latex) recording that a PDF sticky-note's LaTeX has finished
+// rendering to `png`; main.cpp's margin-note draw polls Editor::PdfNoteLatexPng.
+int l_pdf_note_latex_done(lua_State *L) {
+    const char *key = luaL_checkstring(L, 1);
+    const char *png = luaL_checkstring(L, 2);
+    GetEditor(L)->SetPdfNoteLatexPng(key, png);
+    return 0;
+}
+
 // mep.open(path): opens `path` in its default view -- for an .html/.htm
 // file, that's the rendered :Browse viewer, not plain text (Editor::
 // LoadFile's own force_text comment). Every picker/sidebar/LSP jump that
@@ -9789,6 +9799,7 @@ const luaL_Reg kMepFuncs[] = {
     {"split_below", l_split_below},
     {"tab_new", l_tab_new},
     {"cmd", l_cmd},
+    {"pdf_note_latex_done", l_pdf_note_latex_done},
     {"open", l_open},
     {"pick_pane_open", l_pick_pane_open},
     {"terminal_here", l_terminal_here},
@@ -10316,6 +10327,21 @@ void LuaEnv::CallRefWithString(int ref, const std::string &arg) {
     lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
     lua_pushlstring(L_, arg.data(), arg.size());
     if (lua_pcall(L_, 1, 0, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+    }
+}
+
+void LuaEnv::CallGlobal2Strings(const char *fn, const std::string &a, const std::string &b) {
+    lua_getglobal(L_, fn);
+    if (!lua_isfunction(L_, -1)) {
+        lua_pop(L_, 1);
+        return;
+    }
+    lua_pushlstring(L_, a.data(), a.size());
+    lua_pushlstring(L_, b.data(), b.size());
+    if (lua_pcall(L_, 2, 0, 0) != LUA_OK) {
         const char *msg = lua_tostring(L_, -1);
         if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
         lua_pop(L_, 1);

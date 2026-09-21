@@ -367,7 +367,35 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         out += "\\texttt{" + LatexEscape(CollectRawText(node)) + "}";
         return;
     }
+    if (tag == "span" && node->Class().compare(0, 3, "hl-") == 0) {
+        // <span class="hl-<color>">: kBuiltinOrgNotes' {{{hl(color,text)}}}
+        // highlight macro, expanded by the HTML export pass (main.cpp,
+        // mep.org_export_marks.html.hl). Colored + bold, matching the
+        // .hl-* CSS rules and the in-editor render. Unknown color names
+        // fall through to the generic-container recursion below (an
+        // undefined LaTeX color would abort the whole compile).
+        std::string color = node->Class().substr(3);
+        if (color == "red" || color == "orange" || color == "yellow" || color == "green" ||
+            color == "cyan" || color == "blue" || color == "purple") {
+            out += "\\textcolor{mephl" + color + "}{\\textbf{";
+            for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
+            out += "}}";
+            return;
+        }
+    }
     if (tag == "pre") {
+        // <pre class="mermaid"> (kBuiltinOrgExport's mermaid diagram
+        // form): there is no LaTeX-side mermaid renderer -- mermaid is
+        // JS, and rasterizing would need the mmdc CLI, which the devshell
+        // doesn't carry -- so the diagram source ships as the same titled
+        // code box org code blocks use instead of silently disappearing.
+        if (node->Class() == "mermaid") {
+            std::string src = LatexEscapeVerbatim(CollectRawText(node));
+            if (!src.empty() && src.front() == '\n') src.erase(src.begin());
+            out += "\n\\begin{mepcodebox}{mermaid}\n\\color{mepCodeFg}\n\\begin{Verbatim}[commandchars=\\\\\\{\\}]\n" +
+                   src + "\n\\end{Verbatim}\n\\end{mepcodebox}\n";
+            return;
+        }
         std::string raw = CollectRawText(node);
         if (!raw.empty() && raw.front() == '\n') raw.erase(raw.begin());
         out += "\n\\begin{verbatim}\n" + raw + "\n\\end{verbatim}\n";
@@ -507,6 +535,17 @@ std::string ExportHtmlToLatex(const std::string &html, const std::string &title,
         << "\\definecolor{meptokorange}{HTML}{953800}\n"
         << "\\definecolor{meptokred}{HTML}{CF222E}\n"
         << "\\definecolor{meptokyellow}{HTML}{9A6700}\n"
+        // mephl<color>: the {{{hl(color,text)}}} highlight macro's seven
+        // colors (WalkLatexNode's span.hl-* branch) -- same hexes as the
+        // meptok* palette / the HTML export's .hl-* CSS rules, so editor,
+        // HTML, and PDF renders of a highlight all agree.
+        << "\\definecolor{mephlred}{HTML}{CF222E}\n"
+        << "\\definecolor{mephlorange}{HTML}{953800}\n"
+        << "\\definecolor{mephlyellow}{HTML}{9A6700}\n"
+        << "\\definecolor{mephlgreen}{HTML}{1A7F37}\n"
+        << "\\definecolor{mephlcyan}{HTML}{0B7285}\n"
+        << "\\definecolor{mephlblue}{HTML}{0550AE}\n"
+        << "\\definecolor{mephlpurple}{HTML}{8250DF}\n"
         << "\\definecolor{mepCodeBg}{HTML}{FFFFFF}\n"
         << "\\definecolor{mepCodeFg}{HTML}{24292E}\n"
         << "\\definecolor{mepCodeMuted}{HTML}{57606A}\n"

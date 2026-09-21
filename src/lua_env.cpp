@@ -182,6 +182,62 @@ int l_visual_selection(lua_State *L) {
     return 1;
 }
 
+// mep.visual_range() -> nil | {start_row, start_col, end_row, end_col, kind}.
+// The current Visual selection's endpoints, normalized to buffer order
+// (start <= end) and 1-indexed like every other row/col in the Lua API;
+// `kind` is 'char'/'line'/'block'. nil when no Visual mode is active.
+// This is the coordinate-level complement to mep.visual_selection()'s
+// text-only view: consumers that rewrite the selected *lines* in place
+// (e.g. kBuiltinSpell's duplicate-word dedupe over a line range, via one
+// mep.replace_lines call = one undo step) need the range, not the text.
+// Like visual_selection it is read-only: no register write, selection
+// left untouched. For 'block', start_col/end_col are the rectangle's
+// left/right columns (end_col is the line length side when the block is
+// in to-end-of-line mode -- callers treating it linewise can ignore cols).
+/**
+ * @brief Implements mep.visual_range(): returns the current Visual selection's normalized 1-indexed endpoints and kind, or nil if none.
+ * @param L Lua state.
+ * @return Number of values pushed (1: a table {start_row, start_col, end_row, end_col, kind} or nil).
+ */
+int l_visual_range(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    if (!ed->HasVisualSelection()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    int start_row, start_col, end_row, end_col;
+    const char *kind;
+    if (ed->IsVisualBlock()) {
+        int top, bottom, left, right;
+        ed->VisualBlockRange(top, bottom, left, right);
+        start_row = top;
+        end_row = bottom;
+        start_col = left;
+        end_col = (right < 0) ? left : right;
+        kind = "block";
+    } else {
+        CursorPos start, end;
+        ed->VisualRange(start, end);
+        start_row = start.row;
+        start_col = start.col;
+        end_row = end.row;
+        end_col = end.col;
+        kind = (ed->CurrentMode() == Mode::VisualLine) ? "line" : "char";
+    }
+    lua_createtable(L, 0, 5);
+    lua_pushinteger(L, start_row + 1);
+    lua_setfield(L, -2, "start_row");
+    lua_pushinteger(L, start_col + 1);
+    lua_setfield(L, -2, "start_col");
+    lua_pushinteger(L, end_row + 1);
+    lua_setfield(L, -2, "end_row");
+    lua_pushinteger(L, end_col + 1);
+    lua_setfield(L, -2, "end_col");
+    lua_pushstring(L, kind);
+    lua_setfield(L, -2, "kind");
+    return 1;
+}
+
 // --- Spell checking (src/spell.h, backed by Editor's SpellChecker) ---------
 // Thin bindings the kBuiltinSpell Lua module (main.cpp) drives: it owns the
 // squiggle-decoration hook, leader-key menu, and suggestion picker, and calls
@@ -1699,11 +1755,17 @@ int l_ns_clear(lua_State *L) {
     return 0;
 }
 
+// Defined with the picker/sidebar preview bindings further down; the
+// decoration parser reuses it for the optional virt_text `spans` field.
+std::vector<PickerHlSpan> ReadPreviewSpans(lua_State *L, int idx);
+
 // mep.deco_add(ns, opts) -> id. opts: row (1-indexed, required),
 // col_start/col_end (1-indexed, exclusive end), whole_line, hl_group,
 // underline (draw a thin underline under [col_start, col_end) using
 // hl_group's color instead of recoloring the span's text; ignored if
-// whole_line is set), virt_text, virt_text_hl, virt_overlay, sign
+// whole_line is set), virt_text, virt_text_hl, virt_overlay, spans
+// (array of {col_start=, col_end=, hl=} byte spans INTO virt_text for a
+// multi-color overlay -- kBuiltinOrgNotes' line compression), sign
 // (single-char string), sign_hl, priority.
 // Shared by l_deco_add and l_buffer_deco_add (Part VI Phase 27 needed the
 // latter -- terminal/Run/REPL output streams into a background buffer
@@ -1748,6 +1810,9 @@ Decoration ReadDecorationTable(lua_State *L, int idx) {
     lua_pop(L, 1);
     lua_getfield(L, idx, "virt_text_hl");
     if (lua_isstring(L, -1)) d.virt_text_hl = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, idx, "spans");
+    d.spans = ReadPreviewSpans(L, lua_gettop(L));
     lua_pop(L, 1);
     lua_getfield(L, idx, "virt_overlay");
     d.virt_overlay = lua_toboolean(L, -1);
@@ -2462,6 +2527,20 @@ int l_snippet_jump(lua_State *L) {
     return 0;
 }
 
+// mep.snippet_active() -> bool. See Editor::SnippetActive: true while a
+// spliced snippet's tabstop state is live, i.e. a snippet_jump would
+// actually move. The insert-Tab hook uses this to route Tab between
+// tabstop jumping and trigger expansion.
+/**
+ * @brief Implements mep.snippet_active(): returns whether a snippet's tabstop state is live.
+ * @param L Lua state.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_snippet_active(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->SnippetActive());
+    return 1;
+}
+
 
 // mep.ts_apply_captures(ns, captures, hl_map, row_offset): resolves each
 // capture's highlight group via hl_map (falling back to the capture's
@@ -3078,8 +3157,15 @@ int l_sidebar_create(lua_State *L) {
     return 1;
 }
 
+// Defined below with the picker/sidebar preview bindings; the widget
+// parser here reuses it for the optional per-widget `spans` field.
+std::vector<PickerHlSpan> ReadPreviewSpans(lua_State *L, int idx);
+
 // mep.sidebar_set_sections(id, sections): sections is an array of
 // {id=, title=, collapsed=, widgets={{id=,text=,icon=,hl=,tooltip=,on_click=fn},...}}.
+// A widget may also carry spans = {{col_start=,col_end=,hl=},...} (1-indexed
+// byte offsets into its `text`, col_end exclusive; `row` ignored) for
+// per-column coloring -- same shape as mep.sidebar_set_preview's spans.
 /**
  * @brief Implements mep.sidebar_set_sections(id, sections): replaces a sidebar's whole content with a new set of collapsible sections of widgets.
  * @param L Lua state; arg 1 is the sidebar id, arg 2 an array of section tables (each with id/title/collapsed/widgets).
@@ -3136,6 +3222,9 @@ int l_sidebar_set_sections(lua_State *L) {
                 lua_pop(L, 1);
                 lua_getfield(L, -1, "trailing_icon");
                 if (lua_isstring(L, -1)) w.trailing_icon = lua_tostring(L, -1);
+                lua_pop(L, 1);
+                lua_getfield(L, -1, "spans");
+                w.spans = ReadPreviewSpans(L, lua_gettop(L));
                 lua_pop(L, 1);
                 w.trailing_on_click_ref = RefField(L, -1, "trailing_on_click");
                 w.on_click_ref = RefField(L, -1, "on_click");
@@ -8854,6 +8943,7 @@ const luaL_Reg kMepFuncs[] = {
     {"replace_lines", l_replace_lines},
     {"line_count", l_line_count},
     {"visual_selection", l_visual_selection},
+    {"visual_range", l_visual_range},
     {"spell_ready", l_spell_ready},
     {"spell_bad", l_spell_bad},
     {"spell_suggest", l_spell_suggest},
@@ -8981,6 +9071,7 @@ const luaL_Reg kMepFuncs[] = {
     {"completion_rank", l_completion_rank},
     {"snippet_splice", l_snippet_splice},
     {"snippet_jump", l_snippet_jump},
+    {"snippet_active", l_snippet_active},
     {"docs_signature_info", l_docs_signature_info},
     {"picker_preview_file", l_picker_preview_file},
     {"tree_build_rows", l_tree_build_rows},

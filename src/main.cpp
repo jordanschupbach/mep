@@ -492,7 +492,30 @@ constexpr int kMathCodepoints[] = {
     // Arrows/logic/set theory.
     0x2192, 0x2190, 0x2194, 0x21d2, 0x21d0, 0x21d4, 0x2200, 0x2203, 0x2208, 0x2209, 0x2282, 0x2286, 0x2283, 0x2287,
     0x222a, 0x2229, 0x2205,
+    // kBuiltinSnippetHelp's cheatsheet glyph column (DrawUiText's math
+    // tier -- see IsMathCodepoint below): logic/rings, letterlike +
+    // double-struck sets, extra arrows/dots/marks. Every codepoint here
+    // was verified present in the embedded JetBrains Mono via fc-query
+    // on the extracted TTF (the font has NO \hbar \Re \Im \wp \aleph
+    // \setminus \angle \triangleq U+2AEB or the Mathematical
+    // Alphanumeric plane -- those rows stay name-only).
+    0xac, 0x2016, 0x2020, 0x2022, 0x2102, 0x2113, 0x2115, 0x211a, 0x211d, 0x2124,
+    0x2191, 0x2193, 0x21a6, 0x2223, 0x2227, 0x2228, 0x2254, 0x2296, 0x2299, 0x22a4,
+    0x22c2, 0x22c3, 0x22c6, 0x22ee, 0x22f1, 0x2dc,
 };
+
+/**
+ * @brief Checks whether a Unicode codepoint is in g_math_font's baked set (kMathCodepoints).
+ * @param cp Unicode codepoint to test.
+ * @return True if `cp` is one of the math-font codepoints.
+ */
+bool IsMathCodepoint(int cp) {
+    if (cp < 0x80) return false;  // ASCII always renders from the caller's own font tier
+    for (int c : kMathCodepoints) {
+        if (c == cp) return true;
+    }
+    return false;
+}
 
 // Same "separate atlas, same reload point" pattern as g_icon_font/
 // g_math_font above -- for VTerm cell rendering (DrawTerminalGrid,
@@ -1957,6 +1980,15 @@ float DrawUiText(const std::string &text, gfx::Vector2 pos, float font_size, gfx
         const gfx::Font &f = IsIconCodepoint(cp)   ? g_icon_font
                              : IsSymbolCodepoint(cp) ? g_symbol_font
                              : IsEmojiCodepoint(cp)  ? g_emoji_font
+                             // Math tier: Greek letters, math operators,
+                             // double-struck sets (kMathCodepoints) --
+                             // g_font's own bake is ASCII-only, so without
+                             // this the cheatsheet's glyph column (and any
+                             // other UI text carrying a math symbol) drew
+                             // '?'. Never captures ASCII (IsMathCodepoint
+                             // rejects < 0x80), so the common path is
+                             // untouched.
+                             : IsMathCodepoint(cp)   ? g_math_font
                                                      : g_font;
         if (!measure_only) gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{x, pos.y}, font_size, 0, tint);
         x += gfx::MeasureTextEx(f, glyph.c_str(), font_size, 0).x;
@@ -8210,19 +8242,26 @@ const char *kBuiltinCompletion =
     // backslash. In a tex-family buffer this takes over the whole source,
     // same reasoning as the path context above -- buffer words sitting
     // next to a half-typed \\command are noise, mep.latex_commands is the
-    // signal. In every other filetype it merely *suppresses* the sub-2-
+    // signal. Org and markdown buffers get the same treatment: LaTeX
+    // fragments embedded in prose notes ($...$, \\(...\\)) are the only
+    // place a backslash-prefixed word appears there, so the command list
+    // is just as much the signal as in a .tex file. In every other
+    // filetype it merely *suppresses* the sub-2-
     // char queries Editor::UpdateCompletionPopup's backslash_trigger now
     // lets through (see its comment: a '\\n' in a C string must not pop a
     // 1-char buffer-word query), while a 2+ char prefix after a backslash
     // falls through to the ordinary sources exactly as it always did.
     // The double-backslash check keeps LaTeX's own line-break command
     // ('\\\\', and any command right after it on the same line-break
-    // token) from popping the full list every time a tabular row ends.
+    // token) from popping the full list every time a tabular row ends --
+    // in math environments (align/matrix/cases) every row ends in '\\\\',
+    // and the second backslash must not pop the full command list.
     "  local bs_col = col - #prefix - 1\n"
     "  if bs_col >= 1 and line:sub(bs_col, bs_col) == '\\\\' then\n"
     "    local ft = mep_lsp_filetype(mep.filename())\n"
     "    local double_bs = bs_col > 1 and line:sub(bs_col - 1, bs_col - 1) == '\\\\'\n"
-    "    if (ft == 'tex' or ft == 'sty' or ft == 'cls') and not double_bs then\n"
+    "    if (ft == 'tex' or ft == 'sty' or ft == 'cls' or ft == 'org' or ft == 'md')\n"
+    "        and not double_bs then\n"
     "      for _, name in ipairs(mep.latex_commands) do\n"
     "        if #name > #prefix and name:sub(1, #prefix) == prefix and not seen[name] then\n"
     "          seen[name] = true\n"
@@ -8537,6 +8576,12 @@ const char *kBuiltinSnippets =
     "  local ft = mep_lsp_filetype(mep.filename())\n"
     "  local set = ft and mep.snippets[ft]\n"
     "  local body = set and set[name]\n"
+    // A body may be a function returning the line array instead of the
+    // array itself -- for templates that need values computed at expand
+    // time (kBuiltinOrgSnippets' `date`/`title` embed os.date output).
+    // The completion sub-source above only iterates trigger *names*, so
+    // function bodies never leak into the popup as candidate text.
+    "  if type(body) == 'function' then body = body() end\n"
     "  if not body then mep.notify('No snippet: ' .. tostring(name), 'warn') return end\n"
     "  local row, col = mep.cursor()\n"
     "  local line = mep.get_line(row)\n"
@@ -10635,6 +10680,59 @@ const char *kBuiltinSpell =
     "  if on then mep.spell_prose_only = false end\n"
     "  mep.spell_highlight()\n"
     "  mep.notify('Spell ' .. (on and 'on' or 'off'))\n"
+    "end)\n"
+    // <leader>zd -- collapse consecutive duplicate words ("the the" ->
+    // "the") across the Visual selection's line range, or on the current
+    // line without one. Case-insensitive comparison via a manual
+    // word-walk (Lua patterns have no case-insensitive flag or
+    // backreference-with-fold), whole-word only so "the theory" is left
+    // alone. mep.visual_range() gives the row span; one
+    // mep.replace_lines over it = one undo step.
+    "local function mep_spell_dedupe_line(line)\n"
+    "  local out, pos, prev = '', 1, nil\n"
+    "  while true do\n"
+    "    local ws, we = line:find(\"[%a'][%a']*\", pos)\n"
+    "    if not ws then\n"
+    "      out = out .. line:sub(pos)\n"
+    "      break\n"
+    "    end\n"
+    "    local word = line:sub(ws, we)\n"
+    "    local gap = line:sub(pos, ws - 1)\n"
+    "    if prev and prev.word:lower() == word:lower() and gap:match('^%s+$') then\n"
+    // Drop this repeat: skip the gap and the word (keeps the FIRST
+    // occurrence, so "The the" stays "The").
+    "      pos = we + 1\n"
+    "    else\n"
+    "      out = out .. gap .. word\n"
+    "      prev = {word = word}\n"
+    "      pos = we + 1\n"
+    "    end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    "mep.leader_map('zd', 'Spell: remove duplicate words', function()\n"
+    "  local range = mep.visual_range()\n"
+    "  local row1, row2\n"
+    "  if range then\n"
+    "    row1, row2 = range.start_row, range.end_row\n"
+    "  else\n"
+    "    row1 = mep.cursor()\n"
+    "    row2 = row1\n"
+    "  end\n"
+    "  local rows, changed = {}, false\n"
+    "  for r = row1, row2 do\n"
+    "    local line = mep.get_line(r) or ''\n"
+    "    local fixed = mep_spell_dedupe_line(line)\n"
+    "    rows[#rows + 1] = fixed\n"
+    "    if fixed ~= line then changed = true end\n"
+    "  end\n"
+    "  if changed then\n"
+    "    mep.replace_lines(row1, row2 + 1, rows)\n"
+    "    mep.notify('Removed duplicate words')\n"
+    "  else\n"
+    "    mep.notify('No duplicate words found')\n"
+    "  end\n"
+    "  if range then mep.enter_normal() end\n"
     "end)\n";
 
 // Embedded terminal/PTY + Run + REPL (Phase 27). **Scoped down
@@ -14152,6 +14250,11 @@ const char *kBuiltinOrgExport =
     "  html = {bold_open = '<b>', bold_close = '</b>', italic_open = '<i>', italic_close = '</i>',\n"
     "    code_open = '<code>', code_close = '</code>',\n"
     "    underline_open = '<u>', underline_close = '</u>', strike_open = '<del>', strike_close = '</del>',\n"
+    // kBuiltinOrgNotes' {{{hl(color,text)}}} highlight macro: the class
+    // names match the .hl-* CSS rules mep_org_html_wrap_document ships,
+    // and doc_export.cpp's WalkLatexNode maps the same spans to
+    // \textcolor{mephl<color>} on the PDF path.
+    "    hl = function(c, t) return '<span class=\"hl-' .. c .. '\">' .. t .. '</span>' end,\n"
     "    link = function(u, d)\n"
     "      local target = mep_org_html_link_target(u)\n"
     "      if mep_org_is_image_link(target) then\n"
@@ -14162,9 +14265,11 @@ const char *kBuiltinOrgExport =
     "  markdown = {bold_open = '**', bold_close = '**', italic_open = '_', italic_close = '_',\n"
     "    code_open = '`', code_close = '`',\n"
     "    underline_open = '<u>', underline_close = '</u>', strike_open = '~~', strike_close = '~~',\n"
+    "    hl = function(c, t) return t end,\n"
     "    link = function(u, d) return '[' .. d .. '](' .. u .. ')' end},\n"
     "  ascii = {bold_open = '', bold_close = '', italic_open = '', italic_close = '',\n"
     "    code_open = '', code_close = '', underline_open = '', underline_close = '', strike_open = '', strike_close = '',\n"
+    "    hl = function(c, t) return t end,\n"
     "    link = function(u, d) return d .. ' <' .. u .. '>' end},\n"
     "}\n"
     // mep_org_html_escape ported to OrgHtmlEscape (editor.cpp) --
@@ -14183,6 +14288,16 @@ const char *kBuiltinOrgExport =
     "  local function stash_out(html)\n"
     "    stash[#stash + 1] = html\n"
     "    return '\\0M' .. #stash .. '\\0'\n"
+    "  end\n"
+    // The hl highlight macro is stashed first of all: its inner text is
+    // emitted verbatim (org's \, comma escapes undone), and running it
+    // before the emphasis passes keeps a '*'/'/' inside a highlighted
+    // phrase from splitting the generated span. Runs after the #+MACRO
+    // pass, which leaves hl untouched unless the buffer defines its own.
+    "  if marks.hl then\n"
+    "    text = text:gsub('{{{hl%(%s*(%w+)%s*,(.-)%)}}}', function(c, t)\n"
+    "      return stash_out(marks.hl(c, (t:gsub('\\\\,', ','))))\n"
+    "    end)\n"
     "  end\n"
     "  text = text:gsub('%[%[([^%]]+)%]%[([^%]]+)%]%]', function(u, d) return stash_out(marks.link(u, d)) end)\n"
     "  text = text:gsub('%[%[([^%]]+)%]%]', function(u) return stash_out(marks.link(u, u)) end)\n"
@@ -14474,7 +14589,20 @@ const char *kBuiltinOrgExport =
     "        i = i + 1\n"
     "      end\n"
     "      if format == 'html' then\n"
-    "        out[#out + 1] = mep_org_html_code_block(lang, body)\n"
+    // Mermaid diagrams (kBuiltinOrgSnippets' graph/gex/... snippets):
+    // exported as the <pre class=\"mermaid\"> block mermaid.js looks
+    // for, not as a highlighted code box -- the wrap-document step
+    // appends the mermaid.js module include when it sees one of these.
+    // mep's own in-pane HTML viewer has no JS-module/DOM support, so
+    // there the raw graph text shows as a plain block (intended
+    // fallback); a real browser renders the diagram.
+    "        if lang:lower() == 'mermaid' then\n"
+    "          local esc = {}\n"
+    "          for bi, l in ipairs(body) do esc[bi] = mep_org_html_escape(l) end\n"
+    "          out[#out + 1] = '<pre class=\"mermaid\">' .. table.concat(esc, '\\n') .. '</pre>'\n"
+    "        else\n"
+    "          out[#out + 1] = mep_org_html_code_block(lang, body)\n"
+    "        end\n"
     "      elseif format == 'markdown' then\n"
     "        out[#out + 1] = '```' .. lang\n"
     "        for _, l in ipairs(body) do out[#out + 1] = l end\n"
@@ -14681,6 +14809,15 @@ const char *kBuiltinOrgExport =
     "    .. '.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}'\n"
     "    .. '.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}'\n"
     "    .. '.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}'\n"
+    // .hl-* rules for the {{{hl(color,text)}}} highlight macro
+    // (kBuiltinOrgNotes): the same seven hexes as the .tok-* palette
+    // above and doc_export.cpp's mephl* \definecolor values, so the
+    // editor render, the HTML export, and the PDF export stay visually
+    // consistent. Bold to match the PDF's \textbf-wrapped rendering.
+    "    .. '.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}'\n"
+    "    .. '.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}'\n"
+    "    .. '.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}'\n"
+    "    .. '.hl-purple{color:#8250df;font-weight:bold}'\n"
     "    .. '</style>\\n'\n"
     // Clipboard write needs a real button-click event, which is why this
     // is a plain onclick handler (mep_org_html_code_block, above) rather
@@ -14708,7 +14845,18 @@ const char *kBuiltinOrgExport =
     "    .. 'document.body.removeChild(ta);restore();'\n"
     "    .. '}}</script>\\n</head>\\n<body>\\n'\n"
     "    .. (meta.title and ('<h1>' .. title .. '</h1>\\n') or '')\n"
-    "    .. fragment .. '\\n</body>\\n</html>\\n'\n"
+    "    .. fragment\n"
+    // mermaid.js include, only when the fragment actually carries a
+    // mermaid block (the <pre class=\"mermaid\"> form the src-block
+    // branch emits): a CDN ES module, so it renders in any real browser
+    // with network access; without either (mep's own viewer, offline
+    // file://) the block stays visible as its plain diagram source.
+    "    .. (fragment:find('<pre class=\"mermaid\"', 1, true)\n"
+    "        and ('\\n<script type=\"module\">'\n"
+    "             .. 'import mermaid from \"https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs\";'\n"
+    "             .. 'mermaid.initialize({startOnLoad:true});</script>')\n"
+    "        or '')\n"
+    "    .. '\\n</body>\\n</html>\\n'\n"
     "end\n"
     // Every MepOrgExport*/MepOrgCompile* command below funnels through
     // this: runs every code block in the buffer (mep.org_babel_run_for_
@@ -14772,7 +14920,17 @@ const char *kBuiltinOrgExport =
     // resulting PDF itself rather than rasterizing+discarding it). The
     // .tex file is deliberately left on disk afterward -- a legitimate
     // export artifact of its own, not just scratch.
-    "function mep.org_export_pdf(on_done)\n"
+    // `on_fail(tex_err_lines)` is optional and additive (pre-existing
+    // callers pass only on_done): mep.org_export_pdf_view below hands the
+    // captured tectonic stderr to a picker on a manual export, since mep
+    // has no quickfix list to dump it into.
+    "function mep.org_export_pdf(on_done, on_fail)\n"
+    // :MepOrgExportPdf reaches here through the command dispatch, which
+    // passes the (possibly empty) argument STRING -- truthy in Lua, so
+    // without this normalization a bare :MepOrgExportPdf would try to
+    // call '' as its success callback.
+    "  if type(on_done) ~= 'function' then on_done = nil end\n"
+    "  if type(on_fail) ~= 'function' then on_fail = nil end\n"
     "  mep_org_export_prepare(function(lines)\n"
     "    local meta = mep_org_extract_meta(lines)\n"
     "    local html = mep.org_export('html', lines)\n"
@@ -14795,11 +14953,69 @@ const char *kBuiltinOrgExport =
     "        else\n"
     "          mep.notify('PDF export failed (tectonic exit ' .. code .. '): '\n"
     "            .. (tex_err[#tex_err] or 'see ' .. tex_path), 'error')\n"
+    "          if on_fail then on_fail(tex_err) end\n"
     "        end\n"
     "      end,\n"
     "    })\n"
     "  end)\n"
     "end\n"
+    // Export-and-view (<leader>oep): compile, then show the PDF in a mep
+    // PDF pane -- reusing one already open in the active tab's splits
+    // (refresh in place via mep.pdf_reload, restoring focus to the org
+    // buffer afterward) or opening a fresh right-hand vsplit the first
+    // time, same reuse-then-vsplit_right shape as kBuiltinRunButton's
+    // mep_run_button_show_org_output. Once a viewer pane is open, saving
+    // the org buffer re-exports silently in the background and the pane
+    // picks up the fresh bytes -- so editing never spawns exports for a
+    // PDF nobody is looking at, and closing the preview pane stops the
+    // re-exports on its own. Per-source-file in-flight guard, same
+    // rationale as kBuiltinRunButton's own (two rapid saves must not race
+    // two tectonic compiles for the same output).
+    "local mep_org_pdf_inflight = {}\n"
+    "local function mep_org_pdf_pane(path)\n"
+    "  for _, id in ipairs(mep.pane_buffers()) do\n"
+    "    if mep.buffer_filename(id) == path and mep.is_pdf_buffer(id) then return id end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_org_export_pdf_run(silent)\n"
+    "  local src = mep.filename() or ''\n"
+    "  if src == '' or not src:match('%.org$') then\n"
+    "    if not silent then mep.notify('Not an org buffer', 'warn') end\n"
+    "    return\n"
+    "  end\n"
+    "  if mep_org_pdf_inflight[src] then\n"
+    "    if not silent then mep.notify('Org export: PDF compile already running') end\n"
+    "    return\n"
+    "  end\n"
+    "  mep_org_pdf_inflight[src] = true\n"
+    "  mep.org_export_pdf(function(pdf)\n"
+    "    mep_org_pdf_inflight[src] = nil\n"
+    "    local existing = mep_org_pdf_pane(pdf)\n"
+    "    if existing then\n"
+    // pdf_reload works on the *current* pane (Editor::ReloadPdfBuffer via
+    // CurrentBufferId), so hop to the viewer, reload, hop back.
+    "      local back = mep.current_buffer()\n"
+    "      mep.pane_focus_buffer(existing)\n"
+    "      mep.pdf_reload(pdf)\n"
+    "      if back and back ~= existing then mep.pane_focus_buffer(back) end\n"
+    "    elseif not silent then\n"
+    "      mep.vsplit_right(pdf)\n"
+    "    end\n"
+    "  end, function(tex_err)\n"
+    "    mep_org_pdf_inflight[src] = nil\n"
+    "    if not silent and #tex_err > 0 then\n"
+    "      mep.picker_open('tectonic errors', tex_err, function() end)\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    "function mep.org_export_pdf_view() mep_org_export_pdf_run(false) end\n"
+    "mep.on_buffer_saved(function()\n"
+    "  local src = mep.filename() or ''\n"
+    "  if src == '' or not src:match('%.org$') then return end\n"
+    "  local pdf = (src:gsub('%.org$', '')) .. '.pdf'\n"
+    "  if mep_org_pdf_pane(pdf) then mep_org_export_pdf_run(true) end\n"
+    "end)\n"
     // ODT: org -> HTML (in-process) -> a real .odt written directly by
     // doc_export.h's ExportHtmlToOdt (C++, zipped via miniz) -- no
     // external tool/subprocess needed for this backend, unlike PDF.
@@ -14835,7 +15051,9 @@ const char *kBuiltinOrgExport =
     "mep.command('MepOrgExportSubtreeHtml', function() mep_org_export_to_file(mep.org_export_subtree('html'), 'html') end)\n"
     "mep.command('MepOrgExportSubtreeMarkdown', function() mep_org_export_to_file(mep.org_export_subtree('markdown'), 'md') end)\n"
     "mep.leader_map('oeh', 'Org: export to HTML', mep.org_export_html)\n"
-    "mep.leader_map('oep', 'Org: export to PDF', mep.org_export_pdf)\n"
+    // oep exports AND opens/refreshes the in-mep PDF preview;
+    // :MepOrgExportPdf stays the export-only variant.
+    "mep.leader_map('oep', 'Org: export to PDF and view', mep.org_export_pdf_view)\n"
     "mep.leader_map('oeo', 'Org: export to ODT', mep.org_export_odt)\n"
     "mep.leader_map('oem', 'Org: export to Markdown', mep.org_export_markdown)\n"
     "mep.leader_map('oea', 'Org: export to ASCII', mep.org_export_ascii)\n";
@@ -15343,6 +15561,1527 @@ const char *kBuiltinOrgBib =
     "  mep.hover_show('Citation', table.concat(lines, '\\n'))\n"
     "end\n"
     "mep.command('MepOrgBibCitePreview', mep.org_bib_cite_preview)\n";
+
+// Math autosnippets: LaTeX shortcuts that expand the instant their
+// trigger text is typed (no Tab), for fast math entry in org and tex
+// buffers -- ported behavior-for-behavior from a LuaSnip-based Neovim
+// note-taking config. Nothing else in mep expands as-you-type (the
+// completion popup only offers, mep.snippets only expands explicitly), so
+// the engine here is its own small thing: an insert-mode poller on
+// mep.on_frame that fires when the cursor ADVANCED on the same row with
+// the line's content changed -- i.e. exactly when text was just typed
+// (or pasted) before the cursor. It deliberately does NOT watch
+// mep.buffer_change_epoch(): PushUndo bumps that once at Insert-mode
+// entry and EnterNormal once at exit, leaving it frozen for the entire
+// insert session (see EnterNormal's own comment, editor.cpp) -- an
+// epoch-gated poller literally never sees the keystrokes it exists to
+// react to. Re-deriving from the live cursor/line every frame is the
+// same pattern Editor::UpdateCompletionPopup already uses for its
+// prefix. The advanced-on-same-row rule keeps it quiet on cursor motion
+// (line unchanged), backspace (col shrinks), and Enter (row changes);
+// after its own splice it re-primes the tracked state so it never
+// rescans text it just inserted.
+//
+// Math-zone gating: almost every trigger is an ordinary letter sequence
+// ('sum', 'in', 'bar'), and typing those words in prose must never
+// expand. mep_in_mathzone decides "is the cursor inside math" two ways:
+// (1) closed fragments straight from mep.org_latex_scan_fragments (the
+// same C++ scanner kBuiltinOrgLatex renders from -- $..$, $$..$$,
+// \(..\), \[..\], math environments, latex blocks), cached per edit
+// epoch; (2) an unclosed-delimiter fallback for the just-typed-the-
+// opener case, scanning back from the cursor (bounded, resetting at a
+// blank line or an org heading so one stray '$' earlier in the file
+// can't poison everything below it) and counting still-open math
+// delimiters. Treesitter/syntax stacks are deliberately not consulted --
+// org buffers are treesitter-highlighted, not tex-syntax, so a
+// synstack-style check can't work there; buffer text is the only source
+// both filetypes share.
+//
+// The spec table mep.autosnippets is user-extensible like mep.snippets
+// (ft -> array of specs; org and tex share one list). Spec fields:
+//   trig    literal trigger, matched against the text before the cursor
+//   body    tabstop template ($N/${N}/${N:default}/$0, '\n' = new line),
+//           spliced through the same engine as mep.snippets bodies
+//   math    require mep_in_mathzone (default true; the openers mk/dk/ck/
+//           flalign set false -- their whole job is opening a zone from
+//           prose)
+//   word    require a word boundary before the trigger (default true;
+//           symbolic triggers like '//', '->', ';a' set false). The
+//           boundary also rejects a preceding backslash, so an already-
+//           complete \command (hand-typed or completion-accepted) never
+//           re-expands its tail.
+//   pattern Lua pattern (anchored to the cursor at match time) + fn
+//           returning the body from its captures -- used by the
+//           letter+digit auto-subscript and by the absorb-the-leading-
+//           backslash triggers: 'in' -> \in fires first while typing
+//           'int'/'indep', so those match '\?int'/'\?indep' and swallow
+//           the backslash instead of stacking a second one. Pattern
+//           specs with guard=true re-create word's boundary check by
+//           hand (Lua patterns have no lookbehind).
+// One expansion = one undo step (Editor::SnippetSplice pushes exactly
+// one), so `u` restores the trigger text.
+const char *kBuiltinMathSnippets =
+    "mep.autosnippets = mep.autosnippets or {}\n"
+    "mep.autosnippets_enabled = true\n"
+    "local M = {}\n"
+    "local function s(trig, body, opts)\n"
+    "  opts = opts or {}\n"
+    "  M[#M + 1] = {trig = trig, body = body, math = opts.math ~= false,\n"
+    "               word = opts.word ~= false, expand = opts.expand}\n"
+    "end\n"
+    "local function p(pat, fn, opts)\n"
+    "  opts = opts or {}\n"
+    "  M[#M + 1] = {pattern = pat, fn = fn, math = opts.math ~= false,\n"
+    "               guard = opts.guard}\n"
+    "end\n"
+    // Fractions / roots / scripts. '//' is the fast symbolic form, 'frac'
+    // the word alias. The ([%a])(%d) pattern auto-subscripts any letter
+    // immediately followed by a digit (x1 -> x_{1}); xn/xi/xj cover the
+    // letter subscripts that pattern can't reach.
+    "s('//', '\\\\frac{${1:num}}{${2:den}}$0', {word = false})\n"
+    "s('frac', '\\\\frac{${1:num}}{${2:den}}$0')\n"
+    "s('^^', '^{${1:exp}}$0', {word = false})\n"
+    "s('__', '_{${1:idx}}$0', {word = false})\n"
+    "s('sq', '\\\\sqrt{${1:x}}$0')\n"
+    "s('nrt', '\\\\sqrt[${1:n}]{${2:x}}$0')\n"
+    "s('xn', 'x_{n}$0')\n"
+    "s('xi', 'x_{i}$0')\n"
+    "s('xj', 'x_{j}$0')\n"
+    "p('([%a])(%d)$', function(a, d) return a .. '_{' .. d .. '}$0' end)\n"
+    // Big operators. int/indep are pattern specs -- see the block comment.
+    "s('sum', '\\\\sum_{${1:i=1}}^{${2:n}} ${3:a_i}$0')\n"
+    "s('prod', '\\\\prod_{${1:i=1}}^{${2:n}} ${3:a_i}$0')\n"
+    "s('lim', '\\\\lim_{${1:n} \\\\to ${2:\\\\infty}} ${3:a_n}$0')\n"
+    "s('nsum', '\\\\sum_{i=1}^{n}$0')\n"
+    "s('nprod', '\\\\prod_{i=1}^{n}$0')\n"
+    "p('(\\\\?)int$', function() return '\\\\int_{${1:a}}^{${2:b}} ${3:f(x)} \\\\, d${4:x}$0' end, {guard = true})\n"
+    // Log-like functions, bare so subscripts typed after compose.
+    "s('log', '\\\\log$0')\n"
+    "s('exp', '\\\\exp$0')\n"
+    "s('min', '\\\\min$0')\n"
+    "s('max', '\\\\max$0')\n"
+    // Derivatives / vector calculus.
+    "s('dd', '\\\\frac{d${1:y}}{d${2:x}}$0')\n"
+    "s('part', '\\\\frac{\\\\partial ${1:f}}{\\\\partial ${2:x}}$0')\n"
+    "s('pd', '\\\\partial$0')\n"
+    "s('grad', '\\\\nabla$0')\n"
+    // Accents / text wrappers. No 'text' trigger on purpose: too common
+    // an English word to auto-expand (the source config removed it too).
+    "s('bar', '\\\\bar{${1:x}}$0')\n"
+    "s('hat', '\\\\hat{${1:x}}$0')\n"
+    "s('vec', '\\\\vec{${1:v}}$0')\n"
+    "s('tt', '\\\\text{${1:text}}$0')\n"
+    "s('txt', '\\\\text{${1:text}}$0')\n"
+    "s('over', '\\\\overset{${1:above}}{${2:x}}$0')\n"
+    "s('under', '\\\\underset{${1:below}}{${2:x}}$0')\n"
+    "s('ounder', '\\\\overset{${1:above}}{\\\\underset{${2:below}}{${3:x}}}$0')\n"
+    // Font / letter styles.
+    "s('cal', '\\\\mathcal{${1:L}}$0')\n"
+    "s('bf', '\\\\mathbf{${1:x}}$0')\n"
+    "s('rm', '\\\\mathrm{${1:op}}$0')\n"
+    "s('bb', '\\\\mathbb{${1:R}}$0')\n"
+    // Norms / brackets. Plain 'norm' is the Normal distribution (below);
+    // the vector norm is vnorm, its \left/\right-sized twin is nrm.
+    "s('vnorm', '\\\\lVert ${1:v} \\\\rVert$0')\n"
+    "s('abs', '\\\\lvert ${1:x} \\\\rvert$0')\n"
+    "s('floor', '\\\\lfloor ${1:x} \\\\rfloor$0')\n"
+    "s('ceil', '\\\\lceil ${1:x} \\\\rceil$0')\n"
+    "s('lbrace', '\\\\left\\\\{$0')\n"
+    "s('rbrace', '\\\\right\\\\}$0')\n"
+    "s('lr(', '\\\\left( ${1:x} \\\\right)$0', {word = false})\n"
+    "s('lr[', '\\\\left[ ${1:x} \\\\right]$0', {word = false})\n"
+    // Relations / misc symbols.
+    "s('->', '\\\\to$0', {word = false})\n"
+    "s('!=', '\\\\neq$0', {word = false})\n"
+    "s('>=', '\\\\geq$0', {word = false})\n"
+    "s('<=', '\\\\leq$0', {word = false})\n"
+    "s('~=', '\\\\approx$0', {word = false})\n"
+    "s('equiv', '\\\\equiv$0')\n"
+    "s('+-', '\\\\pm$0', {word = false})\n"
+    "s('=>', '\\\\implies$0', {word = false})\n"
+    "s(':=', '\\\\coloneqq$0', {word = false})\n"
+    "s('iff', '\\\\iff$0')\n"
+    "s('prop', '\\\\propto$0')\n"
+    "s('deq', '\\\\triangleq$0')\n"
+    "s('inf', '\\\\infty$0')\n"
+    "s('cdot', '\\\\cdot$0')\n"
+    "s('xx', '\\\\times$0', {word = false})\n"
+    "s('...', '\\\\ldots$0', {word = false})\n"
+    // Sets / logic. AA/EE capitalized so 'a'/'e' never collide.
+    "s('nn', '\\\\cap$0')\n"
+    "s('uu', '\\\\cup$0')\n"
+    "s('bigcup', '\\\\bigcup_{${1:i=1}}^{${2:n}}$0')\n"
+    "s('bigcap', '\\\\bigcap_{${1:i=1}}^{${2:n}}$0')\n"
+    "s('smin', '\\\\setminus$0')\n"
+    "s('subs', '\\\\subseteq$0')\n"
+    "s('sups', '\\\\supseteq$0')\n"
+    "s('empty', '\\\\emptyset$0')\n"
+    "s('set', '\\\\{ ${1:x} \\\\}$0')\n"
+    "s('oplus', '\\\\oplus$0')\n"
+    "s('otimes', '\\\\otimes$0')\n"
+    "s('odot', '\\\\odot$0')\n"
+    "s('land', '\\\\land$0')\n"
+    "s('lor', '\\\\lor$0')\n"
+    "s('and', '\\\\wedge$0')\n"
+    "s('or', '\\\\vee$0')\n"
+    "s('neg', '\\\\neg$0')\n"
+    "s('in', '\\\\in$0')\n"
+    "s('notin', '\\\\notin$0')\n"
+    "s('AA', '\\\\forall$0', {word = false})\n"
+    "s('EE', '\\\\exists$0', {word = false})\n"
+    // Environments. beg prompts for the environment name (the tabstop
+    // engine has no mirror node to keep \begin/\end in sync, so the name
+    // is asked for once and written at both ends).
+    "s('beg', nil, {expand = function(row, keep, after)\n"
+    "  mep.ui_input('Environment', 'align*', function(env)\n"
+    "    if not env or env == '' then return end\n"
+    "    mep.snippet_splice(row, keep, after,\n"
+    "        {'\\\\begin{' .. env .. '}', '  $0', '\\\\end{' .. env .. '}'})\n"
+    "  end)\n"
+    "end})\n"
+    "s('ali', '\\\\begin{align*}\\n  ${1:a &= b}\\n\\\\end{align*}$0')\n"
+    "s('aeq', '\\\\begin{align*}\\n  ${1:a} &= ${2:b} \\\\\\\\\\n  &= ${3:c}\\n\\\\end{align*}$0')\n"
+    "s('cases', '\\\\begin{cases}\\n  ${1:a} & ${2:condition} \\\\\\\\\\n  ${3:b} & ${4:\\\\text{otherwise}}\\n\\\\end{cases}$0')\n"
+    "s('bmat', '\\\\begin{bmatrix}\\n  ${1:a & b}\\n\\\\end{bmatrix}$0')\n"
+    "s('pmat', '\\\\begin{pmatrix}\\n  ${1:a & b}\\n\\\\end{pmatrix}$0')\n"
+    "s('cvec', '\\\\begin{bmatrix}\\n  ${1:a} \\\\\\\\\\n  ${2:b}\\n\\\\end{bmatrix}$0')\n"
+    // Statistics: moments, distributions (capitalized triggers so
+    // lowercase English words never collide), probability, optimisation.
+    // Ind is capitalized so it can't fire inside 'independent' typed in a
+    // \text{}; indep shares int's absorb-the-\in trick. The independence
+    // glyph is a raw \perp\!\!\!\perp sequence, not a \newcommand, so it
+    // renders without any preamble help.
+    "s('Ev', '\\\\mathbb{E}\\\\left[ ${1:X} \\\\right]$0')\n"
+    "s('Var', '\\\\mathrm{Var}\\\\left( ${1:X} \\\\right)$0')\n"
+    "s('Cov', '\\\\mathrm{Cov}\\\\left( ${1:X}, ${2:Y} \\\\right)$0')\n"
+    "s('Cor', '\\\\mathrm{Corr}\\\\left( ${1:X}, ${2:Y} \\\\right)$0')\n"
+    "s('xbar', '\\\\bar{x}$0')\n"
+    "s('bhat', '\\\\hat{\\\\beta}$0')\n"
+    "s('thhat', '\\\\hat{\\\\theta}$0')\n"
+    "s('phat', '\\\\hat{p}$0')\n"
+    "s('norm', '\\\\mathcal{N}\\\\left( ${1:\\\\mu}, ${2:\\\\sigma^2} \\\\right)$0')\n"
+    "s('nrm', '\\\\left\\\\lVert ${1:x} \\\\right\\\\rVert$0')\n"
+    "s('Pois', '\\\\mathrm{Poisson}(${1:\\\\lambda})$0')\n"
+    "s('Bin', '\\\\mathrm{Binomial}(${1:n}, ${2:p})$0')\n"
+    "s('Unif', '\\\\mathrm{Uniform}(${1:a}, ${2:b})$0')\n"
+    "s('Bern', '\\\\mathrm{Bernoulli}(${1:p})$0')\n"
+    "s('Gam', '\\\\mathrm{Gamma}(${1:\\\\alpha}, ${2:\\\\beta})$0')\n"
+    "s('Expo', '\\\\mathrm{Exponential}(${1:\\\\lambda})$0')\n"
+    "s('Beta', '\\\\mathrm{Beta}(${1:\\\\alpha}, ${2:\\\\beta})$0')\n"
+    "s('Geom', '\\\\mathrm{Geometric}(${1:p})$0')\n"
+    "s('Pr', 'P\\\\left( ${1:A} \\\\right)$0')\n"
+    "s('cond', 'P\\\\left( ${1:A} \\\\mid ${2:B} \\\\right)$0')\n"
+    "s('Ind', '\\\\begin{cases} 1 & ${1:condition} \\\\\\\\ 0 & \\\\text{otherwise} \\\\end{cases}$0')\n"
+    "s('given', '\\\\mid$0')\n"
+    "s('mid', '\\\\mid$0')\n"
+    "s('sim', '\\\\sim$0')\n"
+    "s('iid', '\\\\overset{\\\\text{iid}}{\\\\sim}$0')\n"
+    "s('perp', '\\\\perp$0')\n"
+    "s('iperp', '\\\\perp\\\\!\\\\!\\\\!\\\\perp$0')\n"
+    "p('(\\\\?)indep$', function() return '\\\\perp\\\\!\\\\!\\\\!\\\\perp$0' end, {guard = true})\n"
+    "s('argmax', '\\\\underset{${1:\\\\theta}}{\\\\arg\\\\max}\\\\;$0')\n"
+    "s('argmin', '\\\\underset{${1:\\\\theta}}{\\\\arg\\\\min}\\\\;$0')\n"
+    "s('convp', '\\\\xrightarrow{p}$0')\n"
+    "s('convd', '\\\\xrightarrow{d}$0')\n"
+    "s('binom', '\\\\binom{${1:n}}{${2:k}}$0')\n"
+    // Blackboard letter sets (case-distinct from nn/uu above).
+    "s('RR', '\\\\mathbb{R}$0')\n"
+    "s('ZZ', '\\\\mathbb{Z}$0')\n"
+    "s('NN', '\\\\mathbb{N}$0')\n"
+    "s('QQ', '\\\\mathbb{Q}$0')\n"
+    "s('CC', '\\\\mathbb{C}$0')\n"
+    // Greek letters: ';' + mnemonic. The prefix exists precisely so these
+    // never collide with ordinary words, hence word = false.
+    "for k, v in pairs({a = 'alpha', b = 'beta', g = 'gamma', d = 'delta',\n"
+    "    e = 'epsilon', z = 'zeta', h = 'eta', th = 'theta', k = 'kappa',\n"
+    "    l = 'lambda', m = 'mu', n = 'nu', x = 'xi', p = 'pi', r = 'rho',\n"
+    "    s = 'sigma', ta = 'tau', ph = 'phi', ch = 'chi', ps = 'psi',\n"
+    "    o = 'omega', G = 'Gamma', D = 'Delta', Th = 'Theta',\n"
+    "    L = 'Lambda', X = 'Xi', P = 'Pi', S = 'Sigma', Ph = 'Phi',\n"
+    "    Ps = 'Psi', O = 'Omega'}) do\n"
+    "  s(';' .. k, '\\\\' .. v .. '$0', {word = false})\n"
+    "end\n"
+    // Math-zone OPENERS -- the only specs with math = false, since their
+    // job is opening a zone from prose. dk/ck take the opener-on-its-own-
+    // line shape so kBuiltinOrgLatex's fragment scanner picks them up for
+    // the in-editor render; they differ only in export centering (\(..\)
+    // inline, \[..\] centered). flalign's trailing '&' per row is the
+    // flush-to-both-margins idiom.
+    "s('mk', '\\\\$${1}\\\\$$0', {math = false})\n"
+    "s('dk', '\\\\(\\n  ${1}\\n\\\\)$0', {math = false})\n"
+    "s('ck', '\\\\[\\n  ${1}\\n\\\\]$0', {math = false})\n"
+    "s('flalign', '\\\\begin{flalign*}\\n  ${1:a} &= ${2:b} & \\\\\\\\\\n  ${3:c} &= ${4:d} &\\n\\\\end{flalign*}$0', {math = false})\n"
+    // org and tex share the math set (the source config's
+    // filetype_extend('org', {'tex'})). tex additionally gets '.' ->
+    // \dots -- the source config registers that one for tex only (its
+    // synstack gating never fires in org, and a bare-dot autosnippet in
+    // prose-heavy org would be too eager). A COPY, not an alias: the
+    // trigger index cache is keyed per spec table.
+    "mep.autosnippets.org = M\n"
+    "local TEX = {}\n"
+    "for i2 = 1, #M do TEX[i2] = M[i2] end\n"
+    "TEX[#TEX + 1] = {trig = '.', body = '\\\\dots$0', math = true, word = true}\n"
+    "mep.autosnippets.tex = TEX\n"
+    // Trigger index: per-spec-table cache of (a) plain triggers bucketed
+    // by their last character -- only the bucket for the just-typed char
+    // is scanned per edit -- sorted longest-first so 'argmax' beats
+    // 'max' and ';th' beats ';h'; (b) pattern specs in registration
+    // order.
+    "local mep_autosnip_index_cache = {}\n"
+    "local function mep_autosnip_index(specs)\n"
+    "  local cached = mep_autosnip_index_cache[specs]\n"
+    "  if cached then return cached end\n"
+    "  local by_last, pats = {}, {}\n"
+    "  for _, sp in ipairs(specs) do\n"
+    "    if sp.pattern then\n"
+    "      pats[#pats + 1] = sp\n"
+    "    else\n"
+    "      local c = sp.trig:sub(-1)\n"
+    "      by_last[c] = by_last[c] or {}\n"
+    "      table.insert(by_last[c], sp)\n"
+    "    end\n"
+    "  end\n"
+    "  for _, bucket in pairs(by_last) do\n"
+    "    table.sort(bucket, function(a, b) return #a.trig > #b.trig end)\n"
+    "  end\n"
+    "  cached = {by_last = by_last, pats = pats}\n"
+    "  mep_autosnip_index_cache[specs] = cached\n"
+    "  return cached\n"
+    "end\n"
+    "local mep_math_envs = {}\n"
+    "for _, e in ipairs({'equation', 'equation*', 'align', 'align*',\n"
+    "    'aligned', 'alignat', 'alignat*', 'gather', 'gather*', 'gathered',\n"
+    "    'multline', 'multline*', 'flalign', 'flalign*', 'split', 'cases',\n"
+    "    'array', 'matrix', 'bmatrix', 'pmatrix', 'vmatrix', 'Bmatrix',\n"
+    "    'Vmatrix', 'smallmatrix', 'math', 'displaymath'}) do\n"
+    "  mep_math_envs[e] = true\n"
+    "end\n"
+    // No caching here: buffer_change_epoch is frozen during an insert
+    // session (header comment above), so an epoch-keyed cache would serve
+    // stale fragments for the exact keystrokes that matter. The scan only
+    // runs when a trigger's text+boundary already matched (in_math() is
+    // lazy), so it's one buffer scan per would-be expansion, not per key.
+    "local function mep_math_fragments()\n"
+    "  return mep.org_latex_scan_fragments()\n"
+    "end\n"
+    "local function mep_in_mathzone(row, col)\n"
+    // Closed fragments first: the scanner's rows/cols are 1-indexed,
+    // inline col_end is one past the span's last char, so 'strictly
+    // between the delimiters' is col > col_start and col < col_end.
+    "  local frags = mep_math_fragments()\n"
+    "  for _, b in ipairs(frags.blocks) do\n"
+    "    if row >= b.start_row and row <= b.end_row then return true end\n"
+    "  end\n"
+    "  for _, sp in ipairs(frags.inlines) do\n"
+    "    if sp.row == row and col > sp.col_start and col < sp.col_end then\n"
+    "      return true\n"
+    "    end\n"
+    "  end\n"
+    // Unclosed fallback: walk up to the nearest blank line / org heading
+    // (bounded to 300 rows), then count still-open delimiters from there
+    // to the cursor.
+    "  local first = row\n"
+    "  local floor_row = math.max(1, row - 500)\n"
+    "  while first > floor_row do\n"
+    "    local prev = mep.get_line(first - 1)\n"
+    "    if not prev or prev:match('^%s*$') or prev:match('^%*+ ') then break end\n"
+    "    first = first - 1\n"
+    "  end\n"
+    "  local text = ''\n"
+    "  for r = first, row - 1 do\n"
+    "    text = text .. (mep.get_line(r) or '') .. '\\n'\n"
+    "  end\n"
+    "  text = text .. (mep.get_line(row) or ''):sub(1, col - 1)\n"
+    "  local i, n = 1, #text\n"
+    "  local dollar, ddollar = false, false\n"
+    "  local paren, brack, env = 0, 0, 0\n"
+    "  while i <= n do\n"
+    "    local ch = text:sub(i, i)\n"
+    "    local two = text:sub(i, i + 1)\n"
+    "    if two == '$$' then\n"
+    "      ddollar = not ddollar\n"
+    "      i = i + 2\n"
+    "    elseif ch == '$' then\n"
+    "      dollar = not dollar\n"
+    "      i = i + 1\n"
+    "    elseif two == '\\\\(' then\n"
+    "      paren = paren + 1\n"
+    "      i = i + 2\n"
+    "    elseif two == '\\\\)' then\n"
+    "      paren = math.max(0, paren - 1)\n"
+    "      i = i + 2\n"
+    "    elseif two == '\\\\[' then\n"
+    "      brack = brack + 1\n"
+    "      i = i + 2\n"
+    "    elseif two == '\\\\]' then\n"
+    "      brack = math.max(0, brack - 1)\n"
+    "      i = i + 2\n"
+    "    elseif ch == '\\\\' then\n"
+    "      local env_open = text:match('^\\\\begin{([%a*]+)}', i)\n"
+    "      if env_open and mep_math_envs[env_open] then\n"
+    "        env = env + 1\n"
+    "      else\n"
+    "        local env_close = text:match('^\\\\end{([%a*]+)}', i)\n"
+    "        if env_close and mep_math_envs[env_close] then\n"
+    "          env = math.max(0, env - 1)\n"
+    "        end\n"
+    "      end\n"
+    "      i = i + 1\n"
+    "    else\n"
+    "      i = i + 1\n"
+    "    end\n"
+    "  end\n"
+    "  return dollar or ddollar or paren > 0 or brack > 0 or env > 0\n"
+    "end\n"
+    "local function mep_autosnip_lines(body)\n"
+    "  local lines = {}\n"
+    "  for l in (body .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = l end\n"
+    "  if not body:find('$', 1, true) then\n"
+    "    lines[#lines] = lines[#lines] .. '$0'\n"
+    "  end\n"
+    "  return lines\n"
+    "end\n"
+    "local mep_autosnip_prev_row, mep_autosnip_prev_col, mep_autosnip_prev_line\n"
+    "mep.on_frame(function()\n"
+    "  if not mep.autosnippets_enabled or not mep.is_insert_mode() then\n"
+    "    mep_autosnip_prev_row = nil\n"
+    "    return\n"
+    "  end\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row)\n"
+    "  if not line then\n"
+    "    mep_autosnip_prev_row = nil\n"
+    "    return\n"
+    "  end\n"
+    // "Just typed" = same row, cursor moved right, content changed (see
+    // the header comment for why buffer_change_epoch can't be the signal
+    // here). The first tick after entering Insert only primes the state.
+    "  local typed = row == mep_autosnip_prev_row\n"
+    "      and col > mep_autosnip_prev_col and line ~= mep_autosnip_prev_line\n"
+    "  mep_autosnip_prev_row, mep_autosnip_prev_col, mep_autosnip_prev_line = row, col, line\n"
+    "  if not typed then return end\n"
+    "  local ft = mep_lsp_filetype(mep.filename() or '')\n"
+    "  local specs = ft and mep.autosnippets[ft]\n"
+    "  if not specs then return end\n"
+    "  local idx = mep_autosnip_index(specs)\n"
+    "  local before = line:sub(1, col - 1)\n"
+    "  if before == '' then return end\n"
+    "  local mathzone\n"
+    "  local function in_math()\n"
+    "    if mathzone == nil then mathzone = mep_in_mathzone(row, col) end\n"
+    "    return mathzone\n"
+    "  end\n"
+    "  local function fire(trig_len, body, expand)\n"
+    "    local keep = before:sub(1, #before - trig_len)\n"
+    "    local after = line:sub(col)\n"
+    "    if expand then\n"
+    "      expand(row, keep, after)\n"
+    "    else\n"
+    "      mep.snippet_splice(row, keep, after, mep_autosnip_lines(body))\n"
+    "    end\n"
+    // Re-prime the tracked state from the post-splice cursor/line so the
+    // next tick reads "nothing typed" and the engine never rescans text
+    // it inserted itself (also what makes `u` clean: one undo step per
+    // expansion, no cascade).
+    "    local nrow, ncol = mep.cursor()\n"
+    "    mep_autosnip_prev_row, mep_autosnip_prev_col = nrow, ncol\n"
+    "    mep_autosnip_prev_line = mep.get_line(nrow)\n"
+    "  end\n"
+    "  local bucket = idx.by_last[before:sub(-1)]\n"
+    "  if bucket then\n"
+    "    for _, sp in ipairs(bucket) do\n"
+    "      local t = sp.trig\n"
+    "      if #before >= #t and before:sub(-#t) == t then\n"
+    "        local prev = #before > #t\n"
+    "            and before:sub(#before - #t, #before - #t) or ''\n"
+    "        if (not sp.word or prev == '' or not prev:match('[%w_\\\\]'))\n"
+    "            and (not sp.math or in_math()) then\n"
+    "          fire(#t, sp.body, sp.expand)\n"
+    "          return\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  for _, sp in ipairs(idx.pats) do\n"
+    "    local s0, e0, c1, c2 = before:find(sp.pattern)\n"
+    "    if s0 and e0 == #before and (not sp.math or in_math()) then\n"
+    "      local prev = s0 > 1 and before:sub(s0 - 1, s0 - 1) or ''\n"
+    "      if not sp.guard or prev == '' or not prev:match('[%w\\\\]') then\n"
+    "        fire(#before - s0 + 1, sp.fn(c1, c2))\n"
+    "        return\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "end)\n"
+    "mep.command('MepAutosnippetsToggle', function()\n"
+    "  mep.autosnippets_enabled = not mep.autosnippets_enabled\n"
+    "  mep.notify('Autosnippets ' ..\n"
+    "      (mep.autosnippets_enabled and 'enabled' or 'disabled'), 'info')\n"
+    "end)\n";
+
+// Org note-taking structural snippets: regular Tab-expanded templates,
+// deliberately NOT autosnippets (kBuiltinMathSnippets) -- 'title', 'date',
+// 'quote' etc. are ordinary English words, and typing them in prose must
+// never expand on its own. They go through the explicit expansion paths
+// only: the insert-Tab hook wired at the bottom of this block, the
+// <leader>yy picker, or :MepSnippets. Bodies live in the same
+// mep.snippets registry as every code filetype's snippets (kBuiltinSnippets),
+// so the completion popup already offers the trigger names in org buffers
+// and init.lua can extend/override entries the usual way. The tabstop
+// engine has no choice/mirror nodes, so where the reference LuaSnip
+// config cycled a choice (src language, callout label, mermaid direction)
+// the most common value ships as a ${N:default} instead.
+//
+// The mermaid snippets (graph/gex/gnode/gedge/gwedge) put a quick
+// auto-laid-out node/edge graph in a '#+begin_src mermaid' block:
+// mermaid's dagre engine positions the nodes, the direction keyword
+// (LR/TD/BT/RL) is the only layout knob, 'id((label))' is a circle node,
+// an embedded <br/> stacks a name over a value inside one label, and
+// '-->|w|' is a weighted/labelled edge. kBuiltinOrgExport renders these
+// blocks as <pre class="mermaid"> + a mermaid.js include on HTML export;
+// the PDF path keeps them as plain code boxes (rendering mermaid needs a
+// JS engine -- the mmdc CLI -- which the devshell doesn't carry).
+//
+// 'cbl' ("come back later") is just a canned call of kBuiltinOrgNotes'
+// {{{hl(color,text)}}} highlight macro -- orange, fixed text -- riding
+// that feature's in-editor render and HTML/PDF export paths unchanged.
+// Literal org-macro argument placeholders ($1 in a #+MACRO line, if a
+// buffer defines its own) must be written \$1 in a body so the tabstop
+// parser leaves them alone.
+const char *kBuiltinOrgSnippets =
+    "mep.snippets.org = mep.snippets.org or {}\n"
+    "local O = mep.snippets.org\n"
+    // Code/example blocks. Language defaults match mep.org_babel_langs
+    // keys (kBuiltinOrgBabel); OrgSrcBlockAt lowercases the header lang,
+    // so the conventional '#+begin_src R' spelling still resolves to L.r.
+    "O.src = {'#+begin_src ${1:python}', '${0}', '#+end_src'}\n"
+    "O.nsrc = {'#+NAME: ${1:name}', '#+begin_src ${2:python} :results output', '${0}', '#+end_src'}\n"
+    "O.pysrc = {'#+begin_src python', '${0}', '#+end_src'}\n"
+    "O.rsrc = {'#+begin_src R', '${0}', '#+end_src'}\n"
+    "O.javasrc = {'#+begin_src java', '${0}', '#+end_src'}\n"
+    "O.cppsrc = {'#+begin_src cpp', '${0}', '#+end_src'}\n"
+    "O.ex = {'#+begin_example', '${0}', '#+end_example'}\n"
+    "O.quote = {'#+begin_quote', '${0}', '#+end_quote'}\n"
+    // Labelled aside/admonition; Label alternatives from the reference
+    // config's choice node: Note/Tip/Warning/Definition/Example.
+    "O.callout = {'#+begin_quote', '*${1:Note}:* ${0}', '#+end_quote'}\n"
+    // New-note file header. A function body (see mep.snippet_expand):
+    // computed at expand time so the #+DATE line carries today's date.
+    "O.title = function()\n"
+    "  return {\n"
+    "    '#+TITLE: ${1:Title}',\n"
+    "    '#+AUTHOR: ${2:Ben Heinze}',\n"
+    "    '#+DATE: ' .. os.date('%Y-%m-%d'),\n"
+    "    '#+STARTUP: noindent',\n"
+    "    '',\n"
+    "    '${0}',\n"
+    "  }\n"
+    "end\n"
+    "O.date = function() return {os.date('%Y-%m-%d') .. '${0}'} end\n"
+    // Links / anchors / cross-references. 'cid' gives a heading a stable
+    // :CUSTOM_ID: anchor; 'sref'/'aref' target it from another page /
+    // within the same file; 'oref' links a whole page.
+    "O.img = {'[[file:${1:path}][${2:caption}]]${0}'}\n"
+    "O.pdf = {'#+begin_export html', '<embed src=\"${1:file.pdf}\" width=\"100%\" height=\"800px\" type=\"application/pdf\">', '#+end_export', '${0}'}\n"
+    "O.link = {'[[${1:target}][${2:description}]]${0}'}\n"
+    "O.cid = {':PROPERTIES:', ':CUSTOM_ID: ${1:anchor-id}', ':END:', '${0}'}\n"
+    "O.oref = {'[[file:${1:../page/index.org}][${2:description}]]${0}'}\n"
+    "O.sref = {'[[file:${1:../page/index.org}::#${2:anchor-id}][${3:description}]]${0}'}\n"
+    "O.aref = {'[[#${1:anchor-id}][${2:description}]]${0}'}\n"
+    "O.tbl = {'| ${1:h1} | ${2:h2} |', '|----+----|', '| ${3} | ${4} |${0}'}\n"
+    // Citations (kBuiltinOrgBib's org-cite syntax) + bibliography stub.
+    "O.cite = {'[cite:@${1:key}]${0}'}\n"
+    "O.refs = {'* References', '', '#+print_bibliography:', '${0}'}\n"
+    "O.h1 = {'* ${0}'}\n"
+    "O.h2 = {'** ${0}'}\n"
+    "O.h3 = {'*** ${0}'}\n"
+    // Tab-expanded twins of kBuiltinMathSnippets' mk/dk/ck math-zone
+    // openers, for inserting the same three shapes deliberately instead
+    // of by fast-typing. dk/ck differ only in export centering: \\(..\\)
+    // stays inline, \\[..\\] exports centered; both render identically
+    // in-editor via kBuiltinOrgLatex.
+    "O.mm = {'\\\\$${1}\\\\$${0}'}\n"
+    "O.dm = {'\\\\(', '  ${1}', '\\\\)', '${0}'}\n"
+    "O.cm = {'\\\\[', '  ${1}', '\\\\]', '${0}'}\n"
+    // Numbered + labelled display equation (amsmath \\begin{equation}, no
+    // star = numbered) and its cross-reference. eqref is wrapped in
+    // \\(..\\) on purpose: a bare \\eqref outside math delimiters prints
+    // literally in a MathJax HTML export, and org's own [[eq:name]] link
+    // syntax cannot resolve a raw LaTeX \\label.
+    "O.eqn = {'\\\\begin{equation}', '  \\\\label{eq:${1:name}}', '  ${2:E = mc^2}', '\\\\end{equation}', '${0}'}\n"
+    "O.eqref = {'\\\\(\\\\eqref{eq:${1:name}}\\\\)${0}'}\n"
+    // Mermaid graphs (see the block comment above).
+    "O.graph = {'#+begin_src mermaid', 'graph ${1:LR}', '    ${2:a}((${3:name}<br/>${4:value})) --- ${5:b}((${6:name}<br/>${7:value}))', '#+end_src', '${0}'}\n"
+    "O.gex = {'#+begin_src mermaid', 'graph LR', '    a((Start<br/>0)) -->|3| b((B<br/>3))', '    b -->|5| c((Goal<br/>8))', '    a -->|9| c', '#+end_src', '${0}'}\n"
+    "O.gnode = {'${1:id}((${2:name}<br/>${3:value}))${0}'}\n"
+    "O.gedge = {'${1:a} ${2:---} ${3:b}${0}'}\n"
+    "O.gwedge = {'${1:a} ${2:-->}|${3:weight}| ${4:b}${0}'}\n"
+    // Come-back-later marker (kBuiltinOrgNotes' hl macro, orange).
+    "O.cbl = {'{{{hl(orange,COME BACK LATER)}}}${0}'}\n"
+    // Insert-mode Tab: jump tabstops while a spliced snippet is live,
+    // else expand the word before the cursor as a snippet trigger, else
+    // fall through (Editor's insert dispatch already gave the completion
+    // popup first claim on Tab, so accept-completion is unaffected; a
+    // second Tab right after accepting a trigger-word candidate expands
+    // it). Registered here, not in kBuiltinSnippets, purely because this
+    // block is the first consumer -- the hook itself is global and works
+    // for every filetype's snippet set.
+    "mep.set_insert_tab_hook(function(shift)\n"
+    "  if mep.snippet_active() then\n"
+    "    mep.snippet_jump(shift and -1 or 1)\n"
+    "    return true\n"
+    "  end\n"
+    "  if shift then return false end\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row)\n"
+    "  local word = line and line:sub(1, col - 1):match('[%w_]+$')\n"
+    "  local ft = word and mep_lsp_filetype(mep.filename())\n"
+    "  local set = ft and mep.snippets and mep.snippets[ft]\n"
+    "  if set and set[word] then\n"
+    "    mep.snippet_expand(word)\n"
+    "    return true\n"
+    "  end\n"
+    "  return false\n"
+    "end)\n";
+
+// Org note markup: rainbow highlight macro + emphasis wraps, all under
+// the <leader>m 'markup' which-key group (Visual mode; the selection
+// survives the whichkey overlay, same as kBuiltinSpell's zf).
+//
+// The highlight's underlying markup is one org macro call,
+// {{{hl(color,text)}}} -- plain org-macro syntax, so a single markup
+// form drives the in-editor render (here), the HTML export (
+// kBuiltinOrgExport expands it to <span class="hl-color"> + ships the
+// matching .hl-* CSS rules) and the PDF export (ExportHtmlToLatex maps
+// that span to \textcolor{mephl<color>}, doc_export.cpp) with no
+// editor/export divergence. mep's own macro pass leaves macros with no
+// #+MACRO definition untouched (Editor::OrgExpandMacroLine), so the call
+// survives to those hooks; a buffer that defines its own '#+MACRO: hl'
+// (e.g. for Emacs interop) takes precedence, which is correct org
+// semantics. Literal commas inside the highlighted text are escaped \,
+// so they don't parse as extra macro arguments.
+//
+// In-editor render: org buffers are treesitter-highlighted, so this uses
+// high-priority decorations (above treesitter's) concealing every macro
+// call down to just its inner text in the color -- WYSIWYG, and GAP-FREE:
+// rows the cursor is not on are compressed (one whole-line overlay whose
+// virt_text is the markup-stripped line, colored per-span via
+// Decoration::spans), so the hidden markup takes zero display width,
+// vim-conceal style. The cursor's own row shows the raw markup VISIBLY
+// (wrappers dimmed to Comment, inner words colored) -- invisible
+// wrappers that still occupy columns read as broken spacing, so the one
+// line being edited shows its syntax instead, exactly like vim's
+// conceal cursor line. <leader>mht toggles the raw view globally.
+// Macros may
+// span lines (a hard-wrapped highlight) -- the render searches the
+// closer forward across lines. Re-coloring a selection that overlaps an
+// existing highlight re-splits it per character (parse/recolor/
+// serialize below, ported from the source config), so the untouched
+// remainder keeps its old color instead of being stripped; multi-line
+// selections take a plain-wrap path.
+const char *kBuiltinOrgNotes =
+    "local mep_orghl_groups = {red = 'Red', orange = 'Orange',\n"
+    "  yellow = 'Yellow', green = 'Green', cyan = 'Cyan', blue = 'Blue',\n"
+    "  purple = 'Purple'}\n"
+    "local mep_orghl_ns = nil\n"
+    "local mep_orghl_raw = false\n"
+    // WYSIWYG render: every {{{hl(...)}}} call is concealed down to just
+    // its colored inner text -- including on the cursor's row -- EXCEPT
+    // when the cursor sits inside the macro's own span, where the raw
+    // markup shows (colored) so it can be edited in place. Macros may
+    // span lines (a hard-wrapped highlight): the closer is searched
+    // forward across lines, the opener/closer rows get virt_overlay
+    // head/tail decorations and interior rows a whole-span color (one
+    // decoration per row -- Decoration has no end_row). <leader>mht flips
+    // mep_orghl_raw to show the buffer as-is.
+    "local function mep_orghl_render()\n"
+    "  if not mep_orghl_ns then mep_orghl_ns = mep.ns_create('orghl') end\n"
+    "  mep.ns_clear(mep_orghl_ns)\n"
+    "  if mep_orghl_raw then return end\n"
+    "  if mep_lsp_filetype(mep.filename() or '') ~= 'org' then return end\n"
+    "  local crow = mep.cursor()\n"
+    "  local n = mep.line_count()\n"
+    // Pass 1: collect every macro as per-row parts. 'single' = whole
+    // macro on one row; multi-line macros contribute 'open' (opener row),
+    // 'mid' (fully-covered interior rows), 'close' (closer row). A 'mid'
+    // row never co-exists with other parts (the macro owns the row).
+    "  local parts = {}\n"
+    "  local function add(r, p)\n"
+    "    parts[r] = parts[r] or {}\n"
+    "    parts[r][#parts[r] + 1] = p\n"
+    "  end\n"
+    "  local row, col = 1, 1\n"
+    "  while row <= n do\n"
+    "    local line = mep.get_line(row) or ''\n"
+    "    if col > #line then\n"
+    "      row, col = row + 1, 1\n"
+    "    else\n"
+    "      local s0, oe, color = line:find('{{{hl%((%w+),', col)\n"
+    "      if not s0 then\n"
+    "        row, col = row + 1, 1\n"
+    "      elseif not mep_orghl_groups[color] then\n"
+    "        col = oe + 1\n"
+    "      else\n"
+    "        local erow, cstart, cend = nil, nil, nil\n"
+    "        local sr, sc = row, oe + 1\n"
+    "        while sr <= n do\n"
+    "          local l2 = mep.get_line(sr) or ''\n"
+    "          local hit = l2:find(')}}}', sc, true)\n"
+    "          if hit then erow, cstart, cend = sr, hit, hit + 3 break end\n"
+    "          sr, sc = sr + 1, 1\n"
+    "        end\n"
+    "        if not erow then\n"
+    "          row = n + 1\n"
+    "        else\n"
+    "          local hl = mep_orghl_groups[color]\n"
+    "          if row == erow then\n"
+    "            add(row, {kind = 'single', s = s0, oe = oe, cs = cstart, ce = cend, hl = hl})\n"
+    "          else\n"
+    "            add(row, {kind = 'open', s = s0, oe = oe, hl = hl})\n"
+    "            for r2 = row + 1, erow - 1 do add(r2, {kind = 'mid', hl = hl}) end\n"
+    "            add(erow, {kind = 'close', cs = cstart, ce = cend, hl = hl})\n"
+    "          end\n"
+    "          row, col = erow, cend + 1\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    // Pass 2: emit. Rows the cursor is NOT on are COMPRESSED -- one
+    // whole-line overlay whose virt_text is the line with every macro
+    // wrapper stripped (\, unescaped) and per-span colors on the
+    // highlighted words (Decoration::spans), so there is NO gap where
+    // the hidden markup sits: 'the quick brown fox jumps ...' reads with
+    // ordinary spacing, vim-conceal style. The cursor's own row keeps
+    // real text at real columns (correct cursor + live edits) with the
+    // wrappers blanked by single-space overlays -- entering a line
+    // shifts its text to raw columns, leaving re-compresses it, exactly
+    // like vim's conceal on the cursor line. Syntax never shows either
+    // way; <leader>mht is the raw-view escape hatch. Compressed overlays
+    // draw the replacement text unwrapped, so a soft-wrapped highlight
+    // line can overhang -- org prose here is hard-wrapped, acceptable.
+    // Cursor row: the raw markup is VISIBLE here, wrappers dimmed to
+    // Comment and the inner words in their highlight color -- vim's
+    // conceal cursor line, per the user's explicit call: invisible
+    // wrappers that still occupy their columns read as broken spacing,
+    // so on the one line being edited the syntax shows (unobtrusively)
+    // instead. Every other row is fully compressed with ZERO spacing.
+    "  for r, ps in pairs(parts) do\n"
+    "    local line = mep.get_line(r) or ''\n"
+    "    if r == crow then\n"
+    "      for _, p in ipairs(ps) do\n"
+    "        if p.kind == 'single' then\n"
+    "          mep.deco_add(mep_orghl_ns, {row = r, col_start = p.s,\n"
+    "            col_end = p.oe + 1, hl_group = 'Comment', priority = 200})\n"
+    "          mep.deco_add(mep_orghl_ns, {row = r, col_start = p.oe + 1,\n"
+    "            col_end = p.cs, hl_group = p.hl, priority = 200})\n"
+    "          mep.deco_add(mep_orghl_ns, {row = r, col_start = p.cs,\n"
+    "            col_end = p.ce + 1, hl_group = 'Comment', priority = 200})\n"
+    "        elseif p.kind == 'open' then\n"
+    "          mep.deco_add(mep_orghl_ns, {row = r, col_start = p.s,\n"
+    "            col_end = p.oe + 1, hl_group = 'Comment', priority = 200})\n"
+    "          mep.deco_add(mep_orghl_ns, {row = r, col_start = p.oe + 1,\n"
+    "            col_end = #line + 1, hl_group = p.hl, priority = 200})\n"
+    "        elseif p.kind == 'mid' then\n"
+    "          mep.deco_add(mep_orghl_ns, {row = r, col_start = 1,\n"
+    "            col_end = #line + 1, hl_group = p.hl, priority = 200})\n"
+    "        elseif p.kind == 'close' then\n"
+    "          mep.deco_add(mep_orghl_ns, {row = r, col_start = 1,\n"
+    "            col_end = p.cs, hl_group = p.hl, priority = 200})\n"
+    "          mep.deco_add(mep_orghl_ns, {row = r, col_start = p.cs,\n"
+    "            col_end = p.ce + 1, hl_group = 'Comment', priority = 200})\n"
+    "        end\n"
+    "      end\n"
+    "    elseif ps[1].kind == 'mid' then\n"
+    "      mep.deco_add(mep_orghl_ns, {row = r, col_start = 1,\n"
+    "        col_end = #line + 1, hl_group = ps[1].hl, priority = 200})\n"
+    "    else\n"
+    "      local out, spans, pos = '', {}, 1\n"
+    "      for _, p in ipairs(ps) do\n"
+    "        if p.kind == 'single' then\n"
+    "          out = out .. line:sub(pos, p.s - 1)\n"
+    "          local a = #out + 1\n"
+    "          out = out .. (line:sub(p.oe + 1, p.cs - 1):gsub('\\\\,', ','))\n"
+    "          spans[#spans + 1] = {col_start = a, col_end = #out + 1, hl = p.hl}\n"
+    "          pos = p.ce + 1\n"
+    "        elseif p.kind == 'open' then\n"
+    "          out = out .. line:sub(pos, p.s - 1)\n"
+    "          local a = #out + 1\n"
+    "          out = out .. (line:sub(p.oe + 1):gsub('\\\\,', ','))\n"
+    "          spans[#spans + 1] = {col_start = a, col_end = #out + 1, hl = p.hl}\n"
+    "          pos = #line + 1\n"
+    "        elseif p.kind == 'close' then\n"
+    "          local a = #out + 1\n"
+    "          out = out .. (line:sub(1, p.cs - 1):gsub('\\\\,', ','))\n"
+    "          spans[#spans + 1] = {col_start = a, col_end = #out + 1, hl = p.hl}\n"
+    "          pos = p.ce + 1\n"
+    "        end\n"
+    "      end\n"
+    "      out = out .. line:sub(pos)\n"
+    "      if out == '' then out = ' ' end\n"
+    "      mep.deco_add(mep_orghl_ns, {row = r, col_start = 1,\n"
+    "        col_end = #line + 1, virt_text = out, spans = spans,\n"
+    "        virt_overlay = true, priority = 200})\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "mep.on_buffer_changed(function() mep_orghl_render() end, 0.15)\n"
+    // Cursor tracking for the compressed-vs-real split: only the cursor
+    // ROW matters (the cursor line renders real text, everything else
+    // compresses), so re-render on row changes alone -- column motion
+    // never triggers a rescan.
+    "local mep_orghl_last_row = nil\n"
+    "mep.on_frame(function()\n"
+    "  local r = mep.cursor()\n"
+    "  if r ~= mep_orghl_last_row then\n"
+    "    mep_orghl_last_row = r\n"
+    "    mep_orghl_render()\n"
+    "  end\n"
+    "end)\n"
+    // Overlap-aware recolor (port of the source config's per-character
+    // parse/serialize): a line is split into visible characters tagged
+    // with their current highlight color ('\\,' inside a macro counts as
+    // ONE comma character; multibyte UTF-8 kept whole), the selection's
+    // byte range is recolored, and the run list is re-serialized merging
+    // adjacent same-color runs -- so recoloring part of an existing
+    // highlight SPLITS it (never nests, never drops the remainder).
+    "local function mep_orghl_push_chars(list, raw, base, color, is_inner)\n"
+    "  local i = 1\n"
+    "  while i <= #raw do\n"
+    "    local b = raw:byte(i)\n"
+    "    if is_inner and b == 92 and raw:byte(i + 1) == 44 then\n"
+    "      list[#list + 1] = {ch = ',', bs = base + i - 1, be = base + i, color = color}\n"
+    "      i = i + 2\n"
+    "    else\n"
+    "      local len = 1\n"
+    "      if b >= 240 then len = 4 elseif b >= 224 then len = 3 elseif b >= 192 then len = 2 end\n"
+    "      list[#list + 1] = {ch = raw:sub(i, i + len - 1), bs = base + i - 1,\n"
+    "        be = base + i + len - 2, color = color}\n"
+    "      i = i + len\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "local function mep_orghl_parse_line(line)\n"
+    "  local list = {}\n"
+    "  local i = 1\n"
+    "  while i <= #line do\n"
+    "    local s, e, name, text = line:find('{{{hl%((%w+),(.-)%)}}}', i)\n"
+    "    if s and mep_orghl_groups[name] then\n"
+    "      if s > i then mep_orghl_push_chars(list, line:sub(i, s - 1), i, nil, false) end\n"
+    "      local inner_base = s + #('{{{hl(' .. name .. ',')\n"
+    "      mep_orghl_push_chars(list, text, inner_base, name, true)\n"
+    "      i = e + 1\n"
+    "    else\n"
+    "      if i <= #line then mep_orghl_push_chars(list, line:sub(i), i, nil, false) end\n"
+    "      break\n"
+    "    end\n"
+    "  end\n"
+    "  return list\n"
+    "end\n"
+    "local function mep_orghl_serialize(list)\n"
+    "  local out = {}\n"
+    "  local i, n = 1, #list\n"
+    "  while i <= n do\n"
+    "    local color = list[i].color\n"
+    "    local buf = {}\n"
+    "    while i <= n and list[i].color == color do\n"
+    "      buf[#buf + 1] = list[i].ch\n"
+    "      i = i + 1\n"
+    "    end\n"
+    "    local str = table.concat(buf)\n"
+    "    if color == nil then\n"
+    "      out[#out + 1] = str\n"
+    "    else\n"
+    "      out[#out + 1] = '{{{hl(' .. color .. ',' .. str:gsub(',', '\\\\,') .. ')}}}'\n"
+    "    end\n"
+    "  end\n"
+    "  return table.concat(out)\n"
+    "end\n"
+    "local function mep_orghl_recolor_line(line, scol, end_excl, newcolor)\n"
+    "  local list = mep_orghl_parse_line(line)\n"
+    "  for _, item in ipairs(list) do\n"
+    "    if item.bs >= scol + 1 and item.be <= end_excl then item.color = newcolor end\n"
+    "  end\n"
+    "  return mep_orghl_serialize(list)\n"
+    "end\n"
+    // Shared single-line Visual selection guard: these are charwise
+    // inline wraps by design (an org emphasis marker or macro can't span
+    // lines), so multi-line selections are rejected, not mangled.
+    "local function mep_orgnotes_selection()\n"
+    "  if mep_lsp_filetype(mep.filename() or '') ~= 'org' then\n"
+    "    mep.notify('org buffers only', 'warn')\n"
+    "    return nil\n"
+    "  end\n"
+    "  local sel = mep.visual_selection()\n"
+    "  if sel == '' then\n"
+    "    mep.notify('No visual selection', 'warn')\n"
+    "    return nil\n"
+    "  end\n"
+    "  if sel:find('\\n') then\n"
+    "    mep.notify('Selection must stay within one line', 'warn')\n"
+    "    return nil\n"
+    "  end\n"
+    "  return sel\n"
+    "end\n"
+    // Advance past the (possibly multibyte) char whose first byte sits at
+    // 1-indexed `ecol` of `line`, returning the 1-indexed byte index of
+    // its LAST byte -- the inclusive end of the selection's byte range.
+    "local function mep_orghl_end_byte(line, ecol)\n"
+    "  if #line == 0 then return 0 end\n"
+    "  ecol = math.min(ecol, #line)\n"
+    "  local b = line:byte(ecol) or 32\n"
+    "  local len = 1\n"
+    "  if b >= 240 then len = 4 elseif b >= 224 then len = 3 elseif b >= 192 then len = 2 end\n"
+    "  return math.min(#line, ecol - 1 + len)\n"
+    "end\n"
+    "local function mep_orghl_wrap(color)\n"
+    "  if mep_lsp_filetype(mep.filename() or '') ~= 'org' then\n"
+    "    mep.notify('org buffers only', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local r = mep.visual_range()\n"
+    "  if not r then\n"
+    "    mep.notify('No visual selection', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if r.kind == 'block' then\n"
+    "    mep.notify('Highlight: block selections not supported', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep.enter_normal()\n"
+    "  local eline = mep.get_line(r.end_row) or ''\n"
+    "  local ecol = (r.kind == 'line') and #eline or r.end_col\n"
+    "  local end_excl = mep_orghl_end_byte(eline, ecol)\n"
+    "  local scol = (r.kind == 'line') and 0 or (r.start_col - 1)\n"
+    "  if r.start_row == r.end_row then\n"
+    // Single line: parse/recolor/reserialize, so highlighting over part
+    // of an existing highlight splits it and keeps the remainder.
+    "    local line = mep.get_line(r.start_row) or ''\n"
+    "    mep.set_line(r.start_row, mep_orghl_recolor_line(line, scol, end_excl, color))\n"
+    "  else\n"
+    // Multi-line: plain wrap of the exact selected byte range (rare
+    // path, not re-split, matching the source config). One
+    // replace_lines = one undo step; the macro keeps the selection's
+    // own line breaks, which the render's cross-line pass understands.
+    "    local sline = mep.get_line(r.start_row) or ''\n"
+    "    local pieces = {sline:sub(scol + 1)}\n"
+    "    for rr = r.start_row + 1, r.end_row - 1 do\n"
+    "      pieces[#pieces + 1] = mep.get_line(rr) or ''\n"
+    "    end\n"
+    "    pieces[#pieces + 1] = eline:sub(1, end_excl)\n"
+    "    local text = table.concat(pieces, '\\n')\n"
+    "    text = text:gsub('{{{hl%(%w+,(.-)%)}}}', '%1')\n"
+    "    text = text:gsub('\\\\,', ','):gsub(',', '\\\\,')\n"
+    "    local combined = sline:sub(1, scol) .. '{{{hl(' .. color .. ',' .. text .. ')}}}'\n"
+    "        .. eline:sub(end_excl + 1)\n"
+    "    local new_lines = {}\n"
+    "    for l in (combined .. '\\n'):gmatch('(.-)\\n') do new_lines[#new_lines + 1] = l end\n"
+    "    mep.replace_lines(r.start_row, r.end_row + 1, new_lines)\n"
+    "  end\n"
+    "  mep_orghl_render()\n"
+    "end\n"
+    // Clear: with a selection, strip every macro inside it; without one,
+    // unwrap the macro under the cursor on the current line.
+    // Clear: with a selection, strip every macro wrapper on the selected
+    // LINES (whole-line strip per row, one replace_lines = one undo
+    // step); without one, unwrap the macro under the cursor.
+    "local function mep_orghl_strip(s)\n"
+    "  s = s:gsub('{{{hl%(%w+,(.-)%)}}}', '%1')\n"
+    "  return (s:gsub('\\\\,', ','))\n"
+    "end\n"
+    "local function mep_orghl_clear()\n"
+    "  local r = mep.visual_range()\n"
+    "  if r then\n"
+    "    mep.enter_normal()\n"
+    "    local rows, changed = {}, false\n"
+    "    for rr = r.start_row, r.end_row do\n"
+    "      local line = mep.get_line(rr) or ''\n"
+    "      local fixed = mep_orghl_strip(line)\n"
+    "      rows[#rows + 1] = fixed\n"
+    "      if fixed ~= line then changed = true end\n"
+    "    end\n"
+    "    if changed then mep.replace_lines(r.start_row, r.end_row + 1, rows) end\n"
+    "    mep_orghl_render()\n"
+    "    return\n"
+    "  end\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row) or ''\n"
+    "  local init = 1\n"
+    "  while true do\n"
+    "    local ms, me, body = line:find('{{{hl%(%w+,(.-)%)}}}', init)\n"
+    "    if not ms then return end\n"
+    "    if col >= ms and col <= me then\n"
+    "      local unescaped = body:gsub('\\\\,', ',')\n"
+    "      mep.set_line(row, line:sub(1, ms - 1) .. unescaped .. line:sub(me + 1))\n"
+    "      mep.set_cursor(row, ms)\n"
+    "      mep_orghl_render()\n"
+    "      return\n"
+    "    end\n"
+    "    init = me + 1\n"
+    "  end\n"
+    "end\n"
+    "local function mep_org_wrap(marker)\n"
+    "  local sel = mep_orgnotes_selection()\n"
+    "  if not sel then return end\n"
+    "  mep.visual_change()\n"
+    "  mep.insert_text(marker .. sel .. marker)\n"
+    "  mep.enter_normal()\n"
+    "end\n"
+    "mep.leader_map('mb', 'Bold selection', function() mep_org_wrap('*') end)\n"
+    "mep.leader_map('mi', 'Italic selection', function() mep_org_wrap('/') end)\n"
+    "mep.leader_map('mm', 'Inline-math selection', function() mep_org_wrap('$') end)\n"
+    "mep.leader_map('mhr', 'Highlight red', function() mep_orghl_wrap('red') end)\n"
+    "mep.leader_map('mho', 'Highlight orange', function() mep_orghl_wrap('orange') end)\n"
+    "mep.leader_map('mhy', 'Highlight yellow', function() mep_orghl_wrap('yellow') end)\n"
+    "mep.leader_map('mhg', 'Highlight green', function() mep_orghl_wrap('green') end)\n"
+    "mep.leader_map('mhc', 'Highlight cyan', function() mep_orghl_wrap('cyan') end)\n"
+    "mep.leader_map('mhb', 'Highlight blue', function() mep_orghl_wrap('blue') end)\n"
+    "mep.leader_map('mhp', 'Highlight purple', function() mep_orghl_wrap('purple') end)\n"
+    "mep.leader_map('mhx', 'Highlight clear', mep_orghl_clear)\n"
+    "mep.leader_map('mht', 'Highlight: toggle raw markup view', function()\n"
+    "  mep_orghl_raw = not mep_orghl_raw\n"
+    "  mep_orghl_render()\n"
+    "  mep.notify('Highlight markup ' .. (mep_orghl_raw and 'shown' or 'concealed'))\n"
+    "end)\n";
+
+// Tabbed snippet/symbol cheatsheet popup (<leader>? / :MepSnippetHelp) --
+// port of the note-writing config's help-popup.lua (nvmep2), Awesome-WM
+// hotkeys style: a centered popout with numbered tabs, each split into
+// sections of aligned rows -- trigger | expansion | description -- with
+// per-column colors (SidebarWidget::spans). Hosted on the tabbed-sidebar
+// popout exactly like kBuiltinGit's panel: digits 1-9 / h / l switch tabs
+// (Tab/S-Tab are built into HandleSidebarInput), '/' or 'f' opens a fuzzy
+// picker over every row across tabs, Enter (or click) on a row ACTS --
+// a 'snip' row expands the real registry snippet (tabstops and all) at
+// the cursor of the buffer the popup was opened from, a symbol/'auto'
+// row inserts its LaTeX literally with the caret dropped at the most
+// useful interior slot, and 'key' rows are documentation only. Row
+// content is verified against the mep port's actual triggers (e.g. no
+// 'text' alias -- deliberately absent from the snippet set; mermaid
+// graph rows, not the source config's TikZ; mep's own DAP keys), so the
+// popup never advertises a trigger that doesn't fire here.
+//
+// Escape/q while popped out are consumed by HandleSidebarInput before
+// on_key and only dock the popout -- the on_frame watcher below notices
+// the popout collapsing and closes the sidebar outright, so the popup
+// never lingers as a docked panel (one-frame flash accepted).
+const char *kBuiltinSnippetHelp =
+    "local T = {}\n"
+    "local function tab(name)\n"
+    "  local t = {name = name, sections = {}}\n"
+    "  T[#T + 1] = t\n"
+    "  return t\n"
+    "end\n"
+    "local function sec(t, title, kind, rows)\n"
+    "  t.sections[#t.sections + 1] = {title = title, kind = kind, rows = rows}\n"
+    "end\n"
+    // Tab 1: mep keybindings for the note-taking features ('key' rows).
+    "local t1 = tab('mep')\n"
+    "sec(t1, 'Completion / snippets', 'key', {\n"
+    "  {'Tab', '', 'jump snippet tabstop / expand trigger word (popup open: accept completion)'},\n"
+    "  {'<leader>yy', '', 'snippet picker for the current filetype'},\n"
+    "  {':MepAutosnippetsToggle', '', 'math autosnippets on/off'},\n"
+    "  {'<leader>?', '', 'this cheatsheet'},\n"
+    "})\n"
+    "sec(t1, 'Notes: colour (visual mode)', 'key', {\n"
+    "  {'<leader>mhr', '', 'highlight selection red'},\n"
+    "  {'<leader>mho', '', 'highlight selection orange'},\n"
+    "  {'<leader>mhy', '', 'highlight selection yellow'},\n"
+    "  {'<leader>mhg', '', 'highlight selection green'},\n"
+    "  {'<leader>mhc', '', 'highlight selection cyan'},\n"
+    "  {'<leader>mhb', '', 'highlight selection blue'},\n"
+    "  {'<leader>mhp', '', 'highlight selection purple'},\n"
+    "  {'<leader>mhx', '', 'clear highlight (selection or under cursor)'},\n"
+    "  {'<leader>mht', '', 'toggle raw highlight markup view'},\n"
+    "})\n"
+    "sec(t1, 'Notes: emphasis / math (visual mode, org)', 'key', {\n"
+    "  {'<leader>mb', '*...*', 'bold selection'},\n"
+    "  {'<leader>mi', '/.../', 'italic selection'},\n"
+    "  {'<leader>mm', '$...$', 'wrap selection in inline math'},\n"
+    "})\n"
+    "sec(t1, 'Org / export', 'key', {\n"
+    "  {'<leader>oep', '', 'export org buffer to PDF & view (auto-refresh on save)'},\n"
+    "  {'<leader>oeh', '', 'export org buffer to HTML'},\n"
+    "})\n"
+    "sec(t1, 'Spelling', 'key', {\n"
+    "  {'<leader>zf', '', 'fix word under cursor / selection'},\n"
+    "  {'<leader>zs', '', 'spelling suggestions picker'},\n"
+    "  {'<leader>zg', '', 'add word to dictionary'},\n"
+    "  {'<leader>zw', '', 'mark word wrong'},\n"
+    "  {'<leader>zn / zp', '', 'next / previous misspelled word'},\n"
+    "  {'<leader>zt', '', 'toggle spell check'},\n"
+    "  {'<leader>zd', '', 'remove duplicate consecutive words'},\n"
+    "})\n"
+    // Tab 2: LaTeX (math autosnippets; mm/dm/cm are the Tab-snippet twins).
+    "local t2 = tab('LaTeX')\n"
+    "sec(t2, 'Math zones', 'auto', {\n"
+    "  {'mk', '$ $', 'inline $...$ (fires from prose)'},\n"
+    "  {'dk', '\\\\(  \\\\)', 'math zone - renders in editor, NOT centered on export'},\n"
+    "  {'ck', '\\\\[  \\\\]', 'math zone - renders in editor, CENTERED on export'},\n"
+    "  {'mm', '$ $', 'inline $...$ (org snippet, Tab)'},\n"
+    "  {'dm', '\\\\(  \\\\)', 'not-centered math zone (org snippet, Tab)'},\n"
+    "  {'cm', '\\\\[  \\\\]', 'centered math zone (org snippet, Tab)'},\n"
+    "})\n"
+    "sec(t2, 'Fractions / scripts / roots', 'auto', {\n"
+    "  {'//', '\\\\frac{num}{den}', 'fraction'},\n"
+    "  {'frac', '\\\\frac{num}{den}', 'fraction (word alias of //)'},\n"
+    "  {'^^', '^{exp}', 'superscript'},\n"
+    "  {'__', '_{idx}', 'subscript'},\n"
+    "  {'sq', '\\\\sqrt{x}', '\xE2\x88\x9A  square root'},\n"
+    "  {'nrt', '\\\\sqrt[n]{x}', 'nth root'},\n"
+    "  {'x1', 'x_{1}', 'auto-subscript letter+digit'},\n"
+    "  {'xn xi xj', 'x_{n}', 'named subscripts: x with n / i / j'},\n"
+    "})\n"
+    "sec(t2, 'Big operators', 'auto', {\n"
+    "  {'sum', '\\\\sum_{i=1}^{n} a_i', '\xE2\x88\x91  summation'},\n"
+    "  {'prod', '\\\\prod_{i=1}^{n} a_i', '\xE2\x88\x8F  product'},\n"
+    "  {'int', '\\\\int_{a}^{b} f(x) \\\\, dx', '\xE2\x88\xAB  integral'},\n"
+    "  {'lim', '\\\\lim_{n \\\\to \\\\infty} a_n', 'limit'},\n"
+    "  {'nsum', '\\\\sum_{i=1}^{n}', '\xE2\x88\x91  sum i=1..n (bare)'},\n"
+    "  {'nprod', '\\\\prod_{i=1}^{n}', '\xE2\x88\x8F  product i=1..n (bare)'},\n"
+    "})\n"
+    "sec(t2, 'Log-like functions', 'auto', {\n"
+    "  {'log', '\\\\log', 'logarithm (compose \\\\log_{2} etc.)'},\n"
+    "  {'exp', '\\\\exp', 'exponential'},\n"
+    "  {'min', '\\\\min', 'minimum'},\n"
+    "  {'max', '\\\\max', 'maximum'},\n"
+    "})\n"
+    "sec(t2, 'Derivatives', 'auto', {\n"
+    "  {'dd', '\\\\frac{dy}{dx}', 'derivative'},\n"
+    "  {'part', '\\\\frac{\\\\partial f}{\\\\partial x}', 'partial derivative (fraction)'},\n"
+    "  {'pd', '\\\\partial', '\xE2\x88\x82  bare partial'},\n"
+    "  {'grad', '\\\\nabla', '\xE2\x88\x87  gradient / nabla'},\n"
+    "})\n"
+    "sec(t2, 'Accents / wrappers', 'auto', {\n"
+    "  {'bar', '\\\\bar{x}', 'bar accent'},\n"
+    "  {'hat', '\\\\hat{x}', 'hat accent'},\n"
+    "  {'vec', '\\\\vec{v}', 'vector arrow'},\n"
+    "  {'tt / txt', '\\\\text{text}', 'upright text in math'},\n"
+    "  {'over', '\\\\overset{above}{x}', 'text above a symbol'},\n"
+    "  {'under', '\\\\underset{below}{x}', 'text below a symbol'},\n"
+    "  {'ounder', '\\\\overset{a}{\\\\underset{b}{x}}', 'text above AND below'},\n"
+    "})\n"
+    // Tab 3: org structural snippets (Tab-expanded).
+    "local t3 = tab('Snippets')\n"
+    "sec(t3, 'Note scaffold (org)', 'snip', {\n"
+    "  {'title', '#+TITLE: ...', 'new-note header (title/author/date)'},\n"
+    "  {'src', '#+begin_src <lang>', 'code block'},\n"
+    "  {'nsrc', '#+NAME + #+begin_src', 'named source block (:results output)'},\n"
+    "  {'pysrc', '#+begin_src python', 'Python code block'},\n"
+    "  {'rsrc', '#+begin_src R', 'R code block'},\n"
+    "  {'javasrc', '#+begin_src java', 'Java code block'},\n"
+    "  {'cppsrc', '#+begin_src cpp', 'C++ code block'},\n"
+    "  {'ex', '#+begin_example', 'example block'},\n"
+    "  {'quote', '#+begin_quote', 'quote block'},\n"
+    "  {'callout', '*Note:* ...', 'labelled aside / admonition'},\n"
+    "})\n"
+    "sec(t3, 'Structure (org)', 'snip', {\n"
+    "  {'h1 h2 h3', '* / ** / ***', 'headings'},\n"
+    "  {'link', '[[target][text]]', 'hyperlink'},\n"
+    "  {'img', '[[file:path][caption]]', 'file / image link'},\n"
+    "  {'pdf', '<embed src=\"...\">', 'embed a PDF (HTML export)'},\n"
+    "  {'tbl', '| h1 | h2 |', 'starter table'},\n"
+    "  {'date', '(today)', 'insert today\\'s date'},\n"
+    "})\n"
+    "sec(t3, 'Citations (org)', 'snip', {\n"
+    "  {'cite', '[cite:@key]', 'citation'},\n"
+    "  {'refs', '* References', 'references section + print_bibliography'},\n"
+    "})\n"
+    "sec(t3, 'Cross-references (org)', 'snip', {\n"
+    "  {'cid', ':CUSTOM_ID: id', 'stable anchor on a heading'},\n"
+    "  {'oref', '[[file:page][text]]', 'link to another org page'},\n"
+    "  {'sref', '[[file:page::#id][text]]', 'link to a CUSTOM_ID in another page'},\n"
+    "  {'aref', '[[#id][text]]', 'link to a CUSTOM_ID in this file'},\n"
+    "})\n"
+    "sec(t3, 'Equations / markers (org)', 'snip', {\n"
+    "  {'eqn', '\\\\begin{equation} + label', 'numbered, labelled equation'},\n"
+    "  {'eqref', '\\\\(\\\\eqref{eq:name}\\\\)', 'reference an eqn number'},\n"
+    "  {'cbl', '{{{hl(orange,COME BACK LATER)}}}', 'come-back-later marker'},\n"
+    "})\n"
+    // Tab 4: mermaid graph snippets.
+    "local t4 = tab('Graphs')\n"
+    "sec(t4, 'Mermaid graphs (org - type trigger + Tab)', 'snip', {\n"
+    "  {'graph', '#+begin_src mermaid ...', 'auto-laid-out graph scaffold (direction LR/TD/BT)'},\n"
+    "  {'gex', 'graph LR ...', 'ready-made weighted example (renders as-is)'},\n"
+    "  {'gnode', 'id((name<br/>value))', 'circle node: name / value stacked'},\n"
+    "  {'gedge', 'a --- b', 'edge (--- / --> / <-->)'},\n"
+    "  {'gwedge', 'a -->|w| b', 'weighted / labelled edge'},\n"
+    "  {'--', '', 'HTML export renders via mermaid.js; PDF keeps the source as a code box'},\n"
+    "})\n"
+    // Tab 5: letters & symbols. '--' rows are reference-only (no trigger;
+    // Enter still inserts the LaTeX).
+    "local t5 = tab('Letters')\n"
+    "sec(t5, 'Greek - lowercase (prefix ;)', 'auto', {\n"
+    "  {';a', '\\\\alpha', '\xCE\xB1  alpha'}, {';b', '\\\\beta', '\xCE\xB2  beta'},\n"
+    "  {';g', '\\\\gamma', '\xCE\xB3  gamma'}, {';d', '\\\\delta', '\xCE\xB4  delta'},\n"
+    "  {';e', '\\\\epsilon', '\xCE\xB5  epsilon'}, {';z', '\\\\zeta', '\xCE\xB6  zeta'},\n"
+    "  {';h', '\\\\eta', '\xCE\xB7  eta'}, {';th', '\\\\theta', '\xCE\xB8  theta'},\n"
+    "  {';k', '\\\\kappa', '\xCE\xBA  kappa'}, {';l', '\\\\lambda', '\xCE\xBB  lambda'},\n"
+    "  {';m', '\\\\mu', '\xCE\xBC  mu'}, {';n', '\\\\nu', '\xCE\xBD  nu'},\n"
+    "  {';x', '\\\\xi', '\xCE\xBE  xi'}, {';p', '\\\\pi', '\xCF\x80  pi'},\n"
+    "  {';r', '\\\\rho', '\xCF\x81  rho'}, {';s', '\\\\sigma', '\xCF\x83  sigma'},\n"
+    "  {';ta', '\\\\tau', '\xCF\x84  tau'}, {';ph', '\\\\phi', '\xCF\x86  phi'},\n"
+    "  {';ch', '\\\\chi', '\xCF\x87  chi'}, {';ps', '\\\\psi', '\xCF\x88  psi'},\n"
+    "  {';o', '\\\\omega', '\xCF\x89  omega'},\n"
+    "  {'--', '\\\\iota', '\xCE\xB9  iota'}, {'--', '\\\\upsilon', '\xCF\x85  upsilon'},\n"
+    "})\n"
+    "sec(t5, 'Greek - uppercase (prefix ;)', 'auto', {\n"
+    "  {';G', '\\\\Gamma', '\xCE\x93  Gamma'}, {';D', '\\\\Delta', '\xCE\x94  Delta'},\n"
+    "  {';Th', '\\\\Theta', '\xCE\x98  Theta'}, {';L', '\\\\Lambda', '\xCE\x9B  Lambda'},\n"
+    "  {';X', '\\\\Xi', '\xCE\x9E  Xi'}, {';P', '\\\\Pi', '\xCE\xA0  Pi'},\n"
+    "  {';S', '\\\\Sigma', '\xCE\xA3  Sigma'}, {';Ph', '\\\\Phi', '\xCE\xA6  Phi'},\n"
+    "  {';Ps', '\\\\Psi', '\xCE\xA8  Psi'}, {';O', '\\\\Omega', '\xCE\xA9  Omega'},\n"
+    "  {'--', '\\\\Upsilon', '\xCE\xA5  Upsilon'},\n"
+    "})\n"
+    // The embedded font has no script/fraktur/bold-math alphabets, so the
+    // style rows describe by name; blackboard capitals it DOES have.
+    "sec(t5, 'Letter styles', 'auto', {\n"
+    "  {'cal', '\\\\mathcal{L}', 'calligraphic (loss, big-O, data)'},\n"
+    "  {'bb', '\\\\mathbb{R}', '\xE2\x84\x9D  blackboard'},\n"
+    "  {'bf', '\\\\mathbf{x}', 'bold (vectors / matrices)'},\n"
+    "  {'rm', '\\\\mathrm{op}', 'upright operator'},\n"
+    "  {'--', '\\\\mathfrak{}', 'fraktur (sigma-algebras)'},\n"
+    "  {'--', '\\\\boldsymbol{}', 'bold greek / symbols'},\n"
+    "  {'--', '\\\\tilde{}', 'x\xCB\x9C  tilde'},\n"
+    "})\n"
+    "sec(t5, 'Blackboard sets', 'auto', {\n"
+    "  {'RR', '\\\\mathbb{R}', '\xE2\x84\x9D  reals'}, {'ZZ', '\\\\mathbb{Z}', '\xE2\x84\xA4  integers'},\n"
+    "  {'NN', '\\\\mathbb{N}', '\xE2\x84\x95  naturals'}, {'QQ', '\\\\mathbb{Q}', '\xE2\x84\x9A  rationals'},\n"
+    "  {'CC', '\\\\mathbb{C}', '\xE2\x84\x82  complex'},\n"
+    "})\n"
+    "sec(t5, 'Symbols & constants', 'auto', {\n"
+    "  {'inf', '\\\\infty', '\xE2\x88\x9E  infinity'},\n"
+    "  {'empty', '\\\\emptyset', '\xE2\x88\x85  empty set'},\n"
+    "  {'cdot', '\\\\cdot', '\xC2\xB7  dot product'},\n"
+    "  {'xx', '\\\\times', '\xC3\x97  times / cross'},\n"
+    "  {'+-', '\\\\pm', '\xC2\xB1  plus-minus'},\n"
+    "  {'prop', '\\\\propto', 'proportional'},\n"
+    "  {'--', '\\\\ell', '\xE2\x84\x93  script ell'}, {'--', '\\\\hbar', 'reduced Planck'},\n"
+    "  {'--', '\\\\Re', 'real part'}, {'--', '\\\\Im', 'imaginary part'},\n"
+    "  {'--', '\\\\aleph', 'aleph (cardinality)'},\n"
+    "  {'--', '\\\\circ', '\xE2\x88\x98  composition'}, {'--', '\\\\mp', '\xE2\x88\x93  minus-plus'},\n"
+    "  {'--', '\\\\dagger', '\xE2\x80\xA0  dagger / adjoint'},\n"
+    "  {'--', '\\\\top', '\xE2\x8A\xA4  top / true'}, {'--', '\\\\bot', '\xE2\x8A\xA5  bottom / false'},\n"
+    "  {'--', '\\\\prime', '\xE2\x80\xB2  prime'}, {'--', '\\\\star', '\xE2\x8B\x86  star'},\n"
+    "})\n"
+    "sec(t5, 'Dots / arrows', 'auto', {\n"
+    "  {'...', '\\\\ldots', '\xE2\x80\xA6  low dots'},\n"
+    "  {'--', '\\\\cdots', '\xE2\x8B\xAF  centered dots'}, {'--', '\\\\vdots', '\xE2\x8B\xAE  vertical dots'},\n"
+    "  {'--', '\\\\ddots', '\xE2\x8B\xB1  diagonal dots'},\n"
+    "  {'->', '\\\\to', '\xE2\x86\x92  to / maps'}, {'=>', '\\\\implies', '\xE2\x87\x92  implies'},\n"
+    "  {'iff', '\\\\iff', '\xE2\x87\x94  if and only if'},\n"
+    "  {'--', '\\\\gets', '\xE2\x86\x90  gets'}, {'--', '\\\\mapsto', '\xE2\x86\xA6  maps to'},\n"
+    "  {'--', '\\\\uparrow', '\xE2\x86\x91  up'}, {'--', '\\\\downarrow', '\xE2\x86\x93  down'},\n"
+    "})\n"
+    // Tab 6: logic & relations.
+    "local t6 = tab('Logic/Rel')\n"
+    "sec(t6, 'Relations', 'auto', {\n"
+    "  {'->', '\\\\to', '\xE2\x86\x92  to / maps'}, {'=>', '\\\\implies', '\xE2\x87\x92  implies'},\n"
+    "  {'iff', '\\\\iff', '\xE2\x87\x94  if and only if'},\n"
+    "  {':=', '\\\\coloneqq', '\xE2\x89\x94  defined as (:=)'},\n"
+    "  {'deq', '\\\\triangleq', 'defined as (triangle)'},\n"
+    "  {'prop', '\\\\propto', 'proportional to'},\n"
+    "  {'~=', '\\\\approx', '\xE2\x89\x88  approximately'},\n"
+    "  {'sim', '\\\\sim', '\xE2\x88\xBC  similar / asymptotic'},\n"
+    "  {'equiv', '\\\\equiv', '\xE2\x89\xA1  equivalent / identical'},\n"
+    "  {'mid / given', '\\\\mid', '\xE2\x88\xA3  divides / such that / given'},\n"
+    "  {'!=', '\\\\neq', '\xE2\x89\xA0  not equal'},\n"
+    "  {'<=', '\\\\leq', '\xE2\x89\xA4  less-or-equal'}, {'>=', '\\\\geq', '\xE2\x89\xA5  greater-or-equal'},\n"
+    "  {'--', '\\\\therefore', '\xE2\x88\xB4  therefore'},\n"
+    "})\n"
+    "sec(t6, 'Logic', 'auto', {\n"
+    "  {'land', '\\\\land', '\xE2\x88\xA7  logical and'}, {'lor', '\\\\lor', '\xE2\x88\xA8  logical or'},\n"
+    "  {'and', '\\\\wedge', '\xE2\x88\xA7  and / meet'}, {'or', '\\\\vee', '\xE2\x88\xA8  or / join'},\n"
+    "  {'neg', '\\\\neg', '\xC2\xAC  logical not'},\n"
+    "  {'AA', '\\\\forall', '\xE2\x88\x80  for all'}, {'EE', '\\\\exists', '\xE2\x88\x83  there exists'},\n"
+    "})\n"
+    "sec(t6, 'Sets', 'auto', {\n"
+    "  {'uu', '\\\\cup', '\xE2\x88\xAA  union'}, {'nn', '\\\\cap', '\xE2\x88\xA9  intersection'},\n"
+    "  {'bigcup', '\\\\bigcup_{i=1}^{n}', '\xE2\x8B\x83  indexed union'},\n"
+    "  {'bigcap', '\\\\bigcap_{i=1}^{n}', '\xE2\x8B\x82  indexed intersection'},\n"
+    "  {'smin', '\\\\setminus', 'set minus'},\n"
+    "  {'subs', '\\\\subseteq', '\xE2\x8A\x86  subset-or-equal'},\n"
+    "  {'sups', '\\\\supseteq', '\xE2\x8A\x87  superset-or-equal'},\n"
+    "  {'in', '\\\\in', '\xE2\x88\x88  element of'}, {'notin', '\\\\notin', '\xE2\x88\x89  not element of'},\n"
+    "  {'set', '\\\\{ x \\\\}', 'set literal'},\n"
+    "  {'oplus', '\\\\oplus', '\xE2\x8A\x95  direct sum / xor'},\n"
+    "  {'otimes', '\\\\otimes', '\xE2\x8A\x97  tensor product'},\n"
+    "  {'odot', '\\\\odot', '\xE2\x8A\x99  elementwise product'},\n"
+    "})\n"
+    // Tab 7: matrices, vectors, environments, brackets.
+    "local t7 = tab('Matrix/Vec')\n"
+    "sec(t7, 'Environments', 'auto', {\n"
+    "  {'bmat', '\\\\begin{bmatrix} ... \\\\end{bmatrix}', 'matrix (square brackets)'},\n"
+    "  {'pmat', '\\\\begin{pmatrix} ... \\\\end{pmatrix}', 'matrix (parens)'},\n"
+    "  {'cases', '\\\\begin{cases} ... \\\\end{cases}', 'piecewise cases'},\n"
+    "  {'ali', '\\\\begin{align*} ... \\\\end{align*}', 'aligned equations'},\n"
+    "  {'aeq', 'a &= b \\\\\\\\ &= c', 'multi-line eqn aligned on ='},\n"
+    "  {'flalign', '\\\\begin{flalign*} ... \\\\end{flalign*}', 'full-width eqns; opens its own zone'},\n"
+    "  {'beg', '\\\\begin{env} ... \\\\end{env}', 'generic environment (prompts for name)'},\n"
+    "})\n"
+    "sec(t7, 'Vectors (& = next col, \\\\\\\\ = new row)', 'auto', {\n"
+    "  {'cvec', '\\\\begin{bmatrix} a \\\\\\\\ b \\\\end{bmatrix}', 'column vector'},\n"
+    "  {'vec', '\\\\vec{v}', 'vector arrow'},\n"
+    "})\n"
+    "sec(t7, 'Norms / brackets', 'auto', {\n"
+    "  {'vnorm', '\\\\lVert v \\\\rVert', '\xE2\x80\x96v\xE2\x80\x96  vector norm'},\n"
+    "  {'nrm', '\\\\left\\\\lVert x \\\\right\\\\rVert', '\xE2\x80\x96x\xE2\x80\x96  auto-sized norm'},\n"
+    "  {'abs', '\\\\lvert x \\\\rvert', '|x|  absolute value'},\n"
+    "  {'floor', '\\\\lfloor x \\\\rfloor', '\xE2\x8C\x8Ax\xE2\x8C\x8B  floor'},\n"
+    "  {'ceil', '\\\\lceil x \\\\rceil', '\xE2\x8C\x88x\xE2\x8C\x89  ceiling'},\n"
+    "  {'lbrace', '\\\\left\\\\{', 'big left curly brace'},\n"
+    "  {'rbrace', '\\\\right\\\\}', 'big right curly brace'},\n"
+    "  {'lr(', '\\\\left( x \\\\right)', 'auto-sized parentheses'},\n"
+    "  {'lr[', '\\\\left[ x \\\\right]', 'auto-sized brackets'},\n"
+    "})\n"
+    // Tab 8: statistics.
+    "local t8 = tab('Stats')\n"
+    "sec(t8, 'Moments / estimators', 'auto', {\n"
+    "  {'Ev', '\\\\mathbb{E}\\\\left[ X \\\\right]', 'expectation'},\n"
+    "  {'Var', '\\\\mathrm{Var}\\\\left( X \\\\right)', 'variance'},\n"
+    "  {'Cov', '\\\\mathrm{Cov}\\\\left( X, Y \\\\right)', 'covariance'},\n"
+    "  {'Cor', '\\\\mathrm{Corr}\\\\left( X, Y \\\\right)', 'correlation'},\n"
+    "  {'xbar', '\\\\bar{x}', 'sample mean'},\n"
+    "  {'bhat', '\\\\hat{\\\\beta}', 'beta hat'},\n"
+    "  {'thhat', '\\\\hat{\\\\theta}', 'theta hat'},\n"
+    "  {'phat', '\\\\hat{p}', 'p hat'},\n"
+    "})\n"
+    "sec(t8, 'Probability', 'auto', {\n"
+    "  {'Pr', 'P\\\\left( A \\\\right)', 'probability'},\n"
+    "  {'cond', 'P\\\\left( A \\\\mid B \\\\right)', 'conditional probability'},\n"
+    "  {'Ind', '\\\\begin{cases} 1 & ... \\\\end{cases}', 'indicator body (piecewise 1/0)'},\n"
+    "  {'sim', '\\\\sim', '\xE2\x88\xBC  distributed as'},\n"
+    "  {'iid', '\\\\overset{\\\\text{iid}}{\\\\sim}', 'iid'},\n"
+    "  {'perp', '\\\\perp', '\xE2\x8A\xA5  perpendicular'},\n"
+    "  {'indep / iperp', '\\\\perp\\\\!\\\\!\\\\!\\\\perp', '\xE2\x8A\xA5\xE2\x8A\xA5  independent'},\n"
+    "})\n"
+    "sec(t8, 'Distributions', 'auto', {\n"
+    "  {'norm', '\\\\mathcal{N}\\\\left( \\\\mu, \\\\sigma^2 \\\\right)', 'Normal'},\n"
+    "  {'Pois', '\\\\mathrm{Poisson}(\\\\lambda)', 'Poisson'},\n"
+    "  {'Bin', '\\\\mathrm{Binomial}(n, p)', 'Binomial'},\n"
+    "  {'Unif', '\\\\mathrm{Uniform}(a, b)', 'Uniform'},\n"
+    "  {'Bern', '\\\\mathrm{Bernoulli}(p)', 'Bernoulli'},\n"
+    "  {'Gam', '\\\\mathrm{Gamma}(\\\\alpha, \\\\beta)', 'Gamma'},\n"
+    "  {'Expo', '\\\\mathrm{Exponential}(\\\\lambda)', 'Exponential'},\n"
+    "  {'Beta', '\\\\mathrm{Beta}(\\\\alpha, \\\\beta)', 'Beta'},\n"
+    "  {'Geom', '\\\\mathrm{Geometric}(p)', 'Geometric'},\n"
+    "})\n"
+    "sec(t8, 'Optimisation / convergence', 'auto', {\n"
+    "  {'argmax', '\\\\underset{\\\\theta}{\\\\arg\\\\max}\\\\;', 'argmax'},\n"
+    "  {'argmin', '\\\\underset{\\\\theta}{\\\\arg\\\\min}\\\\;', 'argmin'},\n"
+    "  {'convp', '\\\\xrightarrow{p}', '\xE2\x86\x92  converges in probability'},\n"
+    "  {'convd', '\\\\xrightarrow{d}', '\xE2\x86\x92  converges in distribution'},\n"
+    "  {'binom', '\\\\binom{n}{k}', 'binomial coefficient'},\n"
+    "})\n"
+    // Tab 9: mep's actual DAP keys (kBuiltinDap's leader maps).
+    "local t9 = tab('Debugger')\n"
+    "sec(t9, 'Debug keys (<leader>d..., any supported filetype)', 'key', {\n"
+    "  {'<leader>du', '', 'toggle debug UI'},\n"
+    "  {'<leader>dd', '', 'start / continue'},\n"
+    "  {'<leader>db', '', 'toggle breakpoint on current line'},\n"
+    "  {'<leader>dn', '', 'step over'},\n"
+    "  {'<leader>di', '', 'step into'},\n"
+    "  {'<leader>do', '', 'step out'},\n"
+    "  {'<leader>dt', '', 'terminate'},\n"
+    "  {'<leader>dr', '', 'restart'},\n"
+    "  {'<leader>dc', '', 'clear breakpoints in file'},\n"
+    "  {'<leader>dv', '', 'evaluate under cursor'},\n"
+    "})\n"
+    "local MEP_HELP_TAB_NAMES = {}\n"
+    "for i, t in ipairs(T) do MEP_HELP_TAB_NAMES[i] = i .. ':' .. t.name end\n"
+    "local mep_help_id = nil\n"
+    "local mep_help_tab = 1\n"
+    "local mep_help_rows = {}\n"
+    "local mep_help_origin = nil\n"
+    "local mep_help_watch = false\n"
+    // Where the caret lands inside freshly-inserted LaTeX (byte offset of
+    // text placed before it): first empty {} or () -> just inside; else
+    // the first '( ' / '[ ' argument slot; else between a double space
+    // (control-word delimiters like \lVert  \rVert); else the end.
+    // Straight port of the source config's caret_offset.
+    "local function mep_help_caret_offset(latex)\n"
+    "  local p = latex:find('{}', 1, true) or latex:find('()', 1, true)\n"
+    "  if p then return p end\n"
+    "  local q = latex:find('( ', 1, true)\n"
+    "  local r = latex:find('[ ', 1, true)\n"
+    "  local paren = (q and (not r or q < r)) and q or r\n"
+    "  if paren then return paren + 1 end\n"
+    "  local d = latex:find('  ', 1, true)\n"
+    "  if d then return d end\n"
+    "  return #latex\n"
+    "end\n"
+    "local function mep_help_close()\n"
+    "  mep_help_watch = false\n"
+    "  if mep_help_id then mep.sidebar_close(mep_help_id) end\n"
+    "end\n"
+    "local function mep_help_goto_origin()\n"
+    "  local o = mep_help_origin\n"
+    "  if not o then return end\n"
+    "  if mep.current_buffer() ~= o.buf then mep.jump_to_buffer(o.buf) end\n"
+    "  mep.set_cursor(o.row, o.col)\n"
+    "end\n"
+    "local function mep_help_insert(latex)\n"
+    "  if not latex or latex == '' then return end\n"
+    "  mep_help_close()\n"
+    "  mep_help_goto_origin()\n"
+    "  local row, col = mep.cursor()\n"
+    "  local line = mep.get_line(row) or ''\n"
+    "  mep.set_line(row, line:sub(1, col - 1) .. latex .. line:sub(col))\n"
+    "  mep.set_cursor(row, col + mep_help_caret_offset(latex))\n"
+    "  mep.enter_insert()\n"
+    "end\n"
+    // 'snip' rows expand the REAL registry snippet (tabstops and all) at
+    // the origin cursor -- same splice recipe as mep.snippet_expand, just
+    // with no typed trigger to delete. Falls back to a literal insert
+    // when the trigger has no snippet in the origin buffer's filetype
+    // (e.g. an org snippet activated from a .tex buffer).
+    "local function mep_help_expand_snip(trig, fallback)\n"
+    "  mep_help_close()\n"
+    "  mep_help_goto_origin()\n"
+    "  local want = trig:match('^%S+') or trig\n"
+    "  local ft = mep_lsp_filetype(mep.filename() or '')\n"
+    "  local set = ft and mep.snippets and mep.snippets[ft]\n"
+    "  local body = set and set[want]\n"
+    "  if type(body) == 'function' then body = body() end\n"
+    "  if body then\n"
+    "    local row, col = mep.cursor()\n"
+    "    local line = mep.get_line(row) or ''\n"
+    "    mep.snippet_splice(row, line:sub(1, col - 1), line:sub(col), body)\n"
+    "  elseif fallback and fallback ~= '' then\n"
+    "    local row, col = mep.cursor()\n"
+    "    local line = mep.get_line(row) or ''\n"
+    "    mep.set_line(row, line:sub(1, col - 1) .. fallback .. line:sub(col))\n"
+    "    mep.set_cursor(row, col + #fallback)\n"
+    "    mep.enter_insert()\n"
+    "  end\n"
+    "end\n"
+    "local function mep_help_activate(wid)\n"
+    "  local r = mep_help_rows[wid]\n"
+    "  if not r or r.kind == 'key' then return end\n"
+    "  if r.kind == 'snip' then\n"
+    "    mep_help_expand_snip(r.trig, r.out)\n"
+    "  else\n"
+    "    mep_help_insert(r.out)\n"
+    "  end\n"
+    "end\n"
+    // Column layout (port of the reference render): trigger and output
+    // padded to the widest entry in THIS tab, description last so its
+    // length never shifts the aligned columns. Three spans color the
+    // columns; the hint row rides in a title-less section (FlattenSidebar
+    // skips empty-title headers).
+    "local function mep_help_render()\n"
+    "  if not mep_help_id then return end\n"
+    "  local t = T[mep_help_tab]\n"
+    "  mep_help_rows = {}\n"
+    "  local trig_w, out_w = 0, 0\n"
+    "  for _, s in ipairs(t.sections) do\n"
+    "    for _, r in ipairs(s.rows) do\n"
+    "      trig_w = math.max(trig_w, #r[1])\n"
+    "      out_w = math.max(out_w, #r[2])\n"
+    "    end\n"
+    "  end\n"
+    "  out_w = math.min(out_w, 42)\n"
+    "  local sections = {}\n"
+    "  for si, s in ipairs(t.sections) do\n"
+    "    local widgets = {}\n"
+    "    for ri, r in ipairs(s.rows) do\n"
+    "      local trig, out, desc = r[1], r[2], r[3]\n"
+    "      local pad1 = string.rep(' ', trig_w - #trig + 2)\n"
+    "      local pad2 = string.rep(' ', math.max(2, out_w - #out + 2))\n"
+    // U+00B7 separator renders via DrawUiText's math tier (kMathCodepoints
+    // has 0xb7), same as the glyph column in the descriptions.
+    "      local text = trig .. pad1 .. out .. pad2 .. '\\xC2\\xB7 ' .. desc\n"
+    "      local out_start = #trig + #pad1 + 1\n"
+    "      local desc_start = #trig + #pad1 + #out + #pad2 + 1\n"
+    "      local spans = {{col_start = 1, col_end = #trig + 1, hl = 'Green'}}\n"
+    "      if out ~= '' then\n"
+    "        spans[#spans + 1] = {col_start = out_start, col_end = out_start + #out, hl = 'Orange'}\n"
+    "      end\n"
+    "      spans[#spans + 1] = {col_start = desc_start, col_end = #text + 1, hl = 'Comment'}\n"
+    "      local wid = 'h' .. mep_help_tab .. '_' .. si .. '_' .. ri\n"
+    "      mep_help_rows[wid] = {trig = trig, out = out, kind = s.kind or 'auto'}\n"
+    "      widgets[#widgets + 1] = {id = wid, text = text, spans = spans,\n"
+    "        on_click = function() mep_help_activate(wid) end}\n"
+    "    end\n"
+    "    sections[#sections + 1] = {id = 'hs' .. si, title = s.title, widgets = widgets}\n"
+    "  end\n"
+    "  sections[#sections + 1] = {id = 'hhint', title = '', widgets = {{id = 'hint',\n"
+    "    text = '[1-9]/h/l tabs   / fuzzy   Enter insert/expand   Esc/q close',\n"
+    "    hl = 'Comment'}}}\n"
+    "  mep.sidebar_set_sections(mep_help_id, sections)\n"
+    "end\n"
+    // Fuzzy search over every actionable row across every tab; Enter on a
+    // picker item routes through the same insert/expand-at-origin paths.
+    "local function mep_help_fuzzy()\n"
+    "  local flat, items = {}, {}\n"
+    "  for _, t in ipairs(T) do\n"
+    "    for _, s in ipairs(t.sections) do\n"
+    "      if (s.kind or 'auto') ~= 'key' then\n"
+    "        for _, r in ipairs(s.rows) do\n"
+    "          if r[2] ~= '' then\n"
+    "            flat[#flat + 1] = {trig = r[1], out = r[2], kind = s.kind or 'auto'}\n"
+    // The picker draws items with the ASCII-only g_font (not DrawUiText),
+    // so strip the descriptions' glyph column down to printable ASCII
+    // here -- otherwise every Greek/math glyph shows as '?'.
+    "            local d = r[3]:gsub('[^ -~]', ''):gsub('^%s+', '')\n"
+    "            items[#items + 1] = {display = string.format('%-12s %-32s %s  (%s)', r[1], r[2], d, t.name),\n"
+    "              data = tostring(#flat)}\n"
+    "          end\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  mep_help_watch = false\n"
+    "  if mep_help_id then mep.sidebar_close(mep_help_id) end\n"
+    "  mep.picker_open('Snippets & symbols', items, function(data)\n"
+    "    local e = data and flat[tonumber(data) or 0]\n"
+    "    if not e then return end\n"
+    "    if e.kind == 'snip' then\n"
+    "      mep_help_expand_snip(e.trig, e.out)\n"
+    "    else\n"
+    "      mep_help_insert(e.out)\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    "local function mep_help_ensure()\n"
+    "  if mep_help_id then return end\n"
+    "  mep_help_id = mep.sidebar_create('Cheatsheet', 'right', 46)\n"
+    "  mep.sidebar_set_tabs(mep_help_id, MEP_HELP_TAB_NAMES, 1)\n"
+    "  mep.sidebar_set_on_tab(mep_help_id, function(i)\n"
+    "    mep_help_tab = i\n"
+    "    mep_help_render()\n"
+    "  end)\n"
+    "  mep.sidebar_set_on_key(mep_help_id, function(k)\n"
+    "    local n = tonumber(k)\n"
+    "    if n and T[n] then mep.sidebar_set_active_tab(mep_help_id, n) return end\n"
+    "    if k == 'l' then mep.sidebar_set_active_tab(mep_help_id, mep_help_tab % #T + 1) return end\n"
+    "    if k == 'h' then mep.sidebar_set_active_tab(mep_help_id, (mep_help_tab - 2) % #T + 1) return end\n"
+    "    if k == '/' or k == 'f' then mep_help_fuzzy() return end\n"
+    "    if k == '?' then mep.notify('1-9/h/l/Tab: tabs   /: fuzzy   Enter: insert/expand   Esc/q: close') end\n"
+    "  end)\n"
+    "end\n"
+    "function mep.snippet_help()\n"
+    "  mep_help_ensure()\n"
+    "  local orow, ocol = mep.cursor()\n"
+    "  mep_help_origin = {buf = mep.current_buffer(), row = orow, col = ocol}\n"
+    "  mep.sidebar_open(mep_help_id, true)\n"
+    "  mep.sidebar_set_active_tab(mep_help_id, mep_help_tab)\n"
+    "  mep_help_render()\n"
+    "  if not mep.sidebar_is_popout(mep_help_id) then\n"
+    "    mep.sidebar_popout_toggle(mep_help_id)\n"
+    "  end\n"
+    "  mep_help_watch = true\n"
+    "end\n"
+    // Escape/q are consumed by HandleSidebarInput before on_key and only
+    // dock the popout -- watch for the collapse and close outright.
+    "mep.on_frame(function()\n"
+    "  if not mep_help_watch or not mep_help_id then return end\n"
+    "  if not mep.sidebar_is_popout(mep_help_id) then\n"
+    "    mep_help_watch = false\n"
+    "    mep.sidebar_close(mep_help_id)\n"
+    "  end\n"
+    "end)\n"
+    "mep.command('MepSnippetHelp', mep.snippet_help)\n"
+    "mep.leader_map('?', 'Cheatsheet: snippets & symbols', mep.snippet_help)\n";
 
 // Part IX, Phase 40 -- Activity bar (notifications/todo/tests/git).
 // Notifications (:MepNotifyPanel) and Git (:MepGitStatus) panels already
@@ -18470,6 +20209,8 @@ const char *kBuiltinWhichKeyGroups =
     // Sidebar toggles: 's' (Treesitter structure sidebar/split), 't'
     // (Todo/Tests activity panels), 'n' (notification history).
     "mep.leader_group('s', 'structure')\n"
+    "mep.leader_group('m', 'markup')\n"
+    "mep.leader_group('mh', 'highlight')\n"
     "mep.leader_group('z', 'spell')\n"
     "mep.leader_group('t', 'todo/tests')\n"
     "mep.leader_group('n', 'notifications')\n"
@@ -18485,10 +20226,22 @@ const char *kBuiltinHelp =
     "local mep_help_pages = {}\n"
     "local mep_help_current_path = nil\n"
     "local function mep_help_join(a, b) return a:gsub('/+$', '') .. '/' .. b end\n"
-    "local function mep_help_title(lines, fallback)\n"
-    "  for _, line in ipairs(lines or {}) do\n"
-    "    local title = line:match('<[Tt][Ii][Tt][Ll][Ee][^>]*>%s*(.-)%s*</[Tt][Ii][Tt][Ll][Ee]>')\n"
-    "    if title then return title end\n"
+    // Titles are read straight from disk, NOT via mep.read_lines: that
+    // binding prefers an open buffer's live lines, and a help page that's
+    // currently open sits in an HTML *viewer* pane whose text-buffer view
+    // is empty -- so refreshing the index while a page was open degraded
+    // its sidebar label to the bare filename. The exported file on disk
+    // is the source of truth for the <title> either way.
+    "local function mep_help_title(path, fallback)\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if f then\n"
+    "    for _ = 1, 20 do\n"
+    "      local line = f:read('l')\n"
+    "      if not line then break end\n"
+    "      local title = line:match('<[Tt][Ii][Tt][Ll][Ee][^>]*>%s*(.-)%s*</[Tt][Ii][Tt][Ll][Ee]>')\n"
+    "      if title then f:close() return title end\n"
+    "    end\n"
+    "    f:close()\n"
     "  end\n"
     "  return fallback:gsub('%.html?$', '')\n"
     "end\n"
@@ -18502,8 +20255,7 @@ const char *kBuiltinHelp =
     "  for _, entry in ipairs(mep.list_dir(mep_help_root)) do\n"
     "    if not entry.is_dir and entry.name:match('%.html?$') then\n"
     "      local path = mep_help_join(mep_help_root, entry.name)\n"
-    "      local lines = mep.read_lines(path) or {}\n"
-    "      mep_help_pages[#mep_help_pages + 1] = {path = path, name = entry.name, title = mep_help_title(lines, entry.name)}\n"
+    "      mep_help_pages[#mep_help_pages + 1] = {path = path, name = entry.name, title = mep_help_title(path, entry.name)}\n"
     "    end\n"
     "  end\n"
     "  table.sort(mep_help_pages, function(a, b)\n"
@@ -19465,6 +21217,36 @@ float DrawSidebarTabStrip(const SidebarInstance &sb, float x, float y, float fon
     return x;
 }
 
+// Draws one flattened sidebar row's text, split into per-span color runs
+// when the line carries spans (SidebarWidget::spans, offset-shifted by
+// FlattenSidebar) -- the kBuiltinSnippetHelp cheatsheet's tri-color
+// trigger|output|description columns. Empty spans = the pre-existing
+// single-color DrawUiText call. Per-byte color model mirrors
+// PickerLineColors (below); runs go through DrawUiText so icon/symbol/
+// emoji codepoints keep routing to their fonts, and span boundaries are
+// Lua-provided byte offsets that sit on codepoint boundaries.
+static void DrawSidebarLineText(const SidebarLine &line, float x, float y, float font_size, gfx::Color base) {
+    if (line.spans.empty()) {
+        DrawUiText(line.text, gfx::Vector2{x, y}, font_size, base);
+        return;
+    }
+    std::vector<gfx::Color> colors(line.text.size(), base);
+    for (const PickerHlSpan &s : line.spans) {
+        gfx::Color c = ResolveHlGroup(s.hl_group);
+        int lo = std::max(0, s.col_start);
+        int hi = std::min(static_cast<int>(line.text.size()), s.col_end);
+        for (int i = lo; i < hi; i++) colors[static_cast<size_t>(i)] = c;
+    }
+    auto same = [](gfx::Color a, gfx::Color b) { return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a; };
+    size_t i = 0;
+    while (i < line.text.size()) {
+        size_t j = i + 1;
+        while (j < line.text.size() && same(colors[j], colors[i])) j++;
+        x += DrawUiText(line.text.substr(i, j - i), gfx::Vector2{x, y}, font_size, colors[i]);
+        i = j;
+    }
+}
+
 void DrawSidebars() {
     int screen_w = gfx::GetScreenWidth();
     int screen_h = gfx::GetScreenHeight();
@@ -19590,7 +21372,7 @@ void DrawSidebars() {
                 gfx::DrawRectangle(px + 2, static_cast<int>(ly) - 1, pw - 4, line_h, ResolveHlGroup("PickerSelected"));
             }
             gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
-            DrawUiText(lines[i].text, gfx::Vector2{static_cast<float>(px + 8), ly}, font_size, color);
+            DrawSidebarLineText(lines[i], static_cast<float>(px + 8), ly, font_size, color);
             // Right-aligned per-row trailing action (SidebarWidget::
             // trailing_icon, e.g. the Buffers sidebar's "x" to delete):
             // drawn flush against the row's right edge and given its own
@@ -20381,7 +22163,7 @@ void DrawSidebarPopout() {
             gfx::DrawRectangle(f.box_x + 4, static_cast<int>(ly) - 1, list_w - 8, line_h, ResolveHlGroup("PickerSelected"));
         }
         const gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
-        DrawUiText(lines[i].text, gfx::Vector2{f.content_x, ly}, font_size, color);
+        DrawSidebarLineText(lines[i], f.content_x, ly, font_size, color);
         g_sidebar_row_rects.push_back(
             {sb->id, static_cast<int>(i), gfx::Rectangle{static_cast<float>(f.box_x), ly - 1, static_cast<float>(list_w), static_cast<float>(line_h)}});
     }
@@ -27646,7 +29428,7 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
             gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(ly) - 1, static_cast<int>(w) - 4, line_h, ResolveHlGroup("PickerSelected"));
         }
         gfx::Color color = lines[i].hl.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(lines[i].hl);
-        DrawUiText(lines[i].text, gfx::Vector2{x + 8, ly}, font_size, color);
+        DrawSidebarLineText(lines[i], x + 8, ly, font_size, color);
         int line_index = static_cast<int>(i);
         RegisterClickRegion(gfx::Rectangle{x, ly - 1, w, static_cast<float>(line_h)}, [pane_id, sidebar_id, line_index] {
             g_editor.FocusPaneById(pane_id);
@@ -30884,8 +32666,37 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     gfx::DrawRectangle(static_cast<int>(vx), static_cast<int>(vy), static_cast<int>(overlay_w),
                                   line_height, ResolveHlGroup("NormalBg"));
                 }
-                gfx::DrawTextEx(g_font, d.virt_text.c_str(), gfx::Vector2{vx, vy}, g_font_size, 0,
-                           ResolveHlGroup(d.virt_text_hl));
+                if (d.spans.empty()) {
+                    gfx::DrawTextEx(g_font, d.virt_text.c_str(), gfx::Vector2{vx, vy}, g_font_size, 0,
+                               ResolveHlGroup(d.virt_text_hl));
+                } else {
+                    // Multi-color overlay text (Decoration::spans --
+                    // kBuiltinOrgNotes' line compression): per-byte color
+                    // array split into contiguous same-color runs, same
+                    // model as PickerLineColors/DrawSidebarLineText. Span
+                    // boundaries are Lua-provided byte offsets that land
+                    // on codepoint boundaries.
+                    std::vector<gfx::Color> vcolors(d.virt_text.size(), ResolveHlGroup(d.virt_text_hl));
+                    for (const PickerHlSpan &sp : d.spans) {
+                        gfx::Color c = ResolveHlGroup(sp.hl_group);
+                        int lo = std::max(0, sp.col_start);
+                        int hi = std::min(static_cast<int>(d.virt_text.size()), sp.col_end);
+                        for (int b = lo; b < hi; b++) vcolors[static_cast<size_t>(b)] = c;
+                    }
+                    auto vsame = [](gfx::Color a, gfx::Color b) {
+                        return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+                    };
+                    float rx = vx;
+                    size_t bi = 0;
+                    while (bi < d.virt_text.size()) {
+                        size_t bj = bi + 1;
+                        while (bj < d.virt_text.size() && vsame(vcolors[bj], vcolors[bi])) bj++;
+                        std::string run = d.virt_text.substr(bi, bj - bi);
+                        gfx::DrawTextEx(g_font, run.c_str(), gfx::Vector2{rx, vy}, g_font_size, 0, vcolors[bi]);
+                        rx += gfx::MeasureTextEx(g_font, run.c_str(), g_font_size, 0).x;
+                        bi = bj;
+                    }
+                }
             }
             // Colorizer swatch (Phase 13): a small filled square in the
             // literal parsed color, drawn just before col_start.
@@ -34434,6 +36245,10 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgRoam);
     lua->DoString(kBuiltinOrgDrill);
     lua->DoString(kBuiltinOrgBib);
+    lua->DoString(kBuiltinMathSnippets);
+    lua->DoString(kBuiltinOrgSnippets);
+    lua->DoString(kBuiltinOrgNotes);
+    lua->DoString(kBuiltinSnippetHelp);
     lua->DoString(kBuiltinActivityBar);
     lua->DoString(kBuiltinAi);
     lua->DoString(kBuiltinTabTerminal);

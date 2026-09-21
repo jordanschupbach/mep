@@ -367,6 +367,23 @@ struct JumpEntry {
     CursorPos pos;
 };
 
+// One highlight span over a picker's item display text or its preview
+// column (Treesitter-backed syntax highlighting for `/`'s buffer-search
+// picker, kBuiltinPickerSources' mep.buffer_search -- see
+// Editor::SetPickerPreview and DrawPickerOverlay, main.cpp). `row` is
+// unused (always 0) on a PickerItem's own single-line `display`; for the
+// preview column it indexes into SplitLines(PickerPreview()) the same
+// way Decoration::row indexes into buffer lines. col_start/col_end are
+// byte offsets, [col_start, col_end) exclusive, matching Decoration's
+// own convention. Declared this early because Decoration, SidebarWidget,
+// and SidebarLine all reuse the same shape for per-span colors.
+struct PickerHlSpan {
+    int row = 0;
+    int col_start = 0;
+    int col_end = 0;
+    std::string hl_group;
+};
+
 // One buffer decoration (NVIM_PARITY_PLAN.md Part I Phase 4 --
 // mep.nvim/Neovim's "extmark", scoped down): a highlight span, virtual
 // text, and/or a gutter sign anchored at a position. Row/col are plain
@@ -417,6 +434,13 @@ struct Decoration {
     std::string virt_text;
     std::string virt_text_hl;
     bool virt_overlay = false;
+    // Optional per-span colors over virt_text (byte offsets INTO
+    // virt_text, [col_start, col_end) exclusive; `row` ignored) -- lets
+    // one overlay carry several colors, which kBuiltinOrgNotes' line
+    // compression needs: a whole line's display text replaced by its
+    // markup-stripped form with just the highlighted words recolored.
+    // Empty = the pre-existing single-virt_text_hl draw.
+    std::vector<PickerHlSpan> spans;
     // Anchors virt_text to just past the *end of this row's own text*
     // (buf.lines[row].size()) instead of col_start -- for an annotation
     // that describes the whole line (e.g. a diagnostic message) rather
@@ -475,6 +499,13 @@ struct Fold {
 // later phase that builds a panel on top of this).
 struct SidebarWidget {
     std::string id, text, icon, hl, tooltip;
+    // Optional per-span colors over `text` (byte offsets into `text`,
+    // [col_start, col_end) exclusive, NOT including FlattenSidebar's
+    // icon prefix -- the flatten step shifts them). Same PickerHlSpan
+    // shape the popout preview uses (`row` ignored). Empty = the
+    // pre-existing single-`hl` row. Ignored when wrap = true: spans
+    // don't survive re-wrapping, and no wrap consumer needs them.
+    std::vector<PickerHlSpan> spans;
     int on_click_ref = 0;  // Lua function ref (luaL_ref), 0 = none
     // Marks this row as "where the cursor currently is" for a consumer
     // that tracks an external position (kBuiltinStructure's outline, e.g.)
@@ -597,6 +628,9 @@ struct SidebarLine {
     std::string text;
     std::string hl;
     bool current = false;  // mirrors SidebarWidget::current; see its comment
+    // Per-span colors over `text`, already shifted past the icon prefix
+    // by FlattenSidebar -- ready for the renderers to draw runs with.
+    std::vector<PickerHlSpan> spans;
 };
 
 // A compact palette (mep.nvim's palettes.lua SPECS/FALLBACKS shape,
@@ -610,22 +644,6 @@ struct SidebarLine {
 struct Palette {
     std::string name;
     ThemeColor bg, fg, red, green, yellow, blue, purple, cyan, orange, border, accent;
-};
-
-// One highlight span over a picker's item display text or its preview
-// column (Treesitter-backed syntax highlighting for `/`'s buffer-search
-// picker, kBuiltinPickerSources' mep.buffer_search -- see
-// Editor::SetPickerPreview and DrawPickerOverlay, main.cpp). `row` is
-// unused (always 0) on a PickerItem's own single-line `display`; for the
-// preview column it indexes into SplitLines(PickerPreview()) the same
-// way Decoration::row indexes into buffer lines. col_start/col_end are
-// byte offsets, [col_start, col_end) exclusive, matching Decoration's
-// own convention.
-struct PickerHlSpan {
-    int row = 0;
-    int col_start = 0;
-    int col_end = 0;
-    std::string hl_group;
 };
 
 // One entry in a picker's item list (NVIM_PARITY_PLAN.md Part I Phase 8).
@@ -5229,6 +5247,16 @@ public:
      * @param delta The number of tabstops to move (1 = next, -1 = previous).
      */
     void SnippetJump(int delta);
+    // Whether a spliced snippet's tabstop state is still live (a
+    // SnippetJump would actually move somewhere). Bound as
+    // mep.snippet_active so the insert-mode Tab hook (kBuiltinOrgSnippets,
+    // main.cpp) can pick between "jump to the next tabstop" and "try to
+    // expand the word before the cursor as a trigger".
+    /**
+     * @brief Returns whether a snippet's tabstop state is currently active.
+     * @return True if a spliced snippet still has live tabstop state.
+     */
+    bool SnippetActive() const { return has_snippet_state_; }
     // Picker file preview (kBuiltinPickerSources, main.cpp): reads up to
     // `max_lines` of `path` and sets it as the picker's preview pane text
     // (SetPickerPreview) -- mep_picker_preview_file's own port, including

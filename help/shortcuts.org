@@ -16,4 +16,4 @@ See [[file:editing.html][Editing basics]] for a short overview.
 
 * Page navigation
 
-[[file:editing.html][<]] [[file:writing-help.html][>]]
+[[file:editing.html][<]] [[file:org-notes.html][>]]

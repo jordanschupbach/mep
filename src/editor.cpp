@@ -18020,6 +18020,15 @@ std::vector<SidebarLine> Editor::FlattenSidebar(int id) const {
                 line.text = icon_prefix + w.text;
                 line.hl = w.hl;
                 line.current = w.current;
+                // Widget spans are byte offsets into w.text; the rendered
+                // line prepends icon_prefix, so shift them here once and
+                // the renderers can use them as-is. (The wrap branch below
+                // drops spans on purpose -- see SidebarWidget::spans.)
+                for (PickerHlSpan sp : w.spans) {
+                    sp.col_start += static_cast<int>(icon_prefix.size());
+                    sp.col_end += static_cast<int>(icon_prefix.size());
+                    line.spans.push_back(std::move(sp));
+                }
                 out.push_back(line);
                 continue;
             }

@@ -12,6 +12,7 @@ Use the left sidebar or click a page link to move between pages.
 
 - [[file:editing.html][Editing basics]] explains the normal editing model.
 - [[file:shortcuts.html][Keyboard shortcuts]] lists the initial help bindings.
+- [[file:org-notes.html][Org note-taking]] covers math autosnippets, org snippets, highlights, and export previews.
 - [[file:writing-help.html][Writing help pages]] describes the document format.
 
 * Navigation

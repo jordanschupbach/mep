@@ -201,12 +201,31 @@ I'd like an inhouse LSP engine for R. Can you implement one? I'd like it to run 
 
 
 
-* TODO org export 
+* DONE org export
 I'd like a button at the top of an org mode buffer (pane bar) for exporting the
 org document. I should be able to press the button and for the export button to
 have a dropdown menu with options: html, pdf, odt, markdown,
 ascii, etc... When I select one of these options, it should export the org document to
 that format and open it in a new pane. Can you implement this?
+  - An Export button (share glyph) now sits leftmost in an org buffer's pane
+    header, under the same conditions as the `</>` insert-block button next
+    to it (a plain .org text pane, no viewer session on the buffer).
+    Clicking it drops down HTML / PDF / ODT / Markdown / LaTeX / ASCII text;
+    picking one writes the buffer, exports it and opens the result in a
+    right-hand vsplit -- HTML in the browser pane, PDF in the PDF viewer,
+    ODT in the office pane, the rest as text buffers. Exporting again
+    refreshes that pane in place instead of stacking up new splits, reusing
+    the Run button's own mep_run_button_show_org_output.
+  - Same thing without the mouse: `<leader>oee` (a format picker) and
+    `:MepOrgExportOpen [format]`, which with no argument falls back to the
+    document's `#+EXPORT:` keyword exactly like the Run button does.
+  - LaTeX is a new export backend of its own (mep.org_export_latex,
+    `:MepOrgExportLatex`, `<leader>oel`): the same .tex the PDF backend
+    writes, without the tectonic step, factored into one shared writer so
+    the two can't drift.
+  - The two org header dropdowns now share one body (DrawPaneHeaderMenu,
+    main.cpp) instead of a second hand-rolled copy of the same anchoring/
+    clamping/click-away logic. Documented in help/org-export.org.
 
 * DONE org insert block
 

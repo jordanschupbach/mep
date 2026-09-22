@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 128 =<leader>= sequences registered at startup. Press
+All 130 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -92,7 +92,9 @@ the features live.
 | =<leader>mw= | Save annotations | -- |
 | =<leader>nn= | Toggle notifications pane | [[file:notifications.html][Notifications]] |
 | =<leader>oea= | Org: export to ASCII | [[file:org-export.html][Exporting]] |
+| =<leader>oee= | Org: export and open (pick format) | [[file:org-export.html][Exporting]] |
 | =<leader>oeh= | Org: export to HTML | [[file:org-export.html][Exporting]] |
+| =<leader>oel= | Org: export to LaTeX | [[file:org-export.html][Exporting]] |
 | =<leader>oem= | Org: export to Markdown | [[file:org-export.html][Exporting]] |
 | =<leader>oeo= | Org: export to ODT | [[file:office.html][Word processor documents]] |
 | =<leader>oep= | Org: export to PDF and view | [[file:org-export.html][Exporting]] |
@@ -118,7 +120,7 @@ the features live.
 | =<leader>pr= | Live grep | [[file:pickers.html][Pickers]] |
 | =<leader>rj= | Jump to/from Run/REPL pane | [[file:repl.html][REPL and send-to-terminal]] |
 | =<leader>rn= | LSP: rename | [[file:lsp.html][Language servers]] |
-| =<leader>rr= | Run button: run/compile current file | [[file:run-button.html][Running the current file]] |
+| =<leader>rr= | Run button: run/compile current file | [[file:org-export.html][Exporting]] |
 | =<leader>rs= | Run button: setup current filetype | [[file:run-button.html][Running the current file]] |
 | =<leader>sS= | Toggle structure split (buffer-local) | [[file:structure-symbols.html][Structure and symbols]] |
 | =<leader>ss= | Open structure pane (treesitter) | [[file:sidebars.html][Sidebars]] |

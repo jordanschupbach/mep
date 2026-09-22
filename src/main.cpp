@@ -15759,7 +15759,12 @@ const char *kBuiltinOrgInsertBlock =
     "mep.command('MepOrgInsertBlock', function(args)\n"
     "  if args and args:match('%S') then mep.org_insert_src_block(args) else mep.org_insert_src_block_pick() end\n"
     "end)\n"
-    "mep.leader_map('oi', 'Org: insert source block', mep.org_insert_src_block_pick)\n";
+    "mep.leader_map('oi', 'Org: insert source block', mep.org_insert_src_block_pick)\n"
+    // The keyboard half of a block card's gear button (its C++ half is
+    // DrawPane's title-bar control plus DrawOrgBlockSettingsOverlay):
+    // the same header-argument popup, for the block the cursor is in.
+    "mep.command('MepOrgBlockSettings', function() mep.org_block_settings() end)\n"
+    "mep.leader_map('os', 'Org: block settings', mep.org_block_settings)\n";
 
 const char *kBuiltinOrgPolyglot =
     "mep.org_polyglot_enabled = true\n"
@@ -29551,6 +29556,203 @@ void DrawSelectOverlay() {
                        ResolveHlGroup("Normal"));
         }
     }
+}
+
+// --- Org block settings popup (Mode::OrgBlockSettings) -------------------
+//
+// One row per header argument the focused block can take, each drawn as
+// the kind of input it actually is: a dropdown, a number, a text field
+// or a bare `-n`-style switch. The rows themselves come from
+// Editor::OrgSettingsRows (which reads them off the block) and the
+// catalog behind them from org_doc.cpp; all this does is draw them and
+// let the mouse pick one.
+
+// Whether the popup was already on screen *before* this frame. The click
+// that opens the popup (a card's gear button) is dispatched earlier in
+// the same frame this overlay first draws in, and IsMouseButtonPressed
+// is still true for the rest of it -- without this, that one click would
+// be seen a second time here, by whichever row happened to be under the
+// pointer. Reset at the draw call site whenever the popup isn't up.
+bool g_org_settings_overlay_armed = false;
+
+/**
+ * @brief Renders one settings row's value as the popup shows it.
+ * @param row The row.
+ * @param value The value to render (the row's own, or the staged one while editing).
+ * @return The display text; a placeholder for an option the block doesn't set.
+ */
+std::string OrgSettingValueText(const OrgBlockSettingRow &row, const std::string &value) {
+    if (row.spec.kind == OrgHeaderArgKind::kSwitch) return value.empty() ? "off" : "on";
+    // An option that isn't written on the block at all -- which is not
+    // the same as one set to "no", and reads differently here for
+    // exactly that reason.
+    if (value.empty()) return "--";
+    return value;
+}
+
+/**
+ * @brief Draws the org block settings popup for the block Editor::BeginOrgBlockSettings opened.
+ */
+void DrawOrgBlockSettingsOverlay() {
+    const bool armed = g_org_settings_overlay_armed;
+    g_org_settings_overlay_armed = true;
+    const std::vector<OrgBlockSettingRow> &rows = g_editor.OrgSettingsRows();
+    if (rows.empty()) return;
+    const float font_size = g_font_size;
+    const int line_h = static_cast<int>(font_size) + 6;
+    const int sel = std::max(0, std::min(g_editor.OrgSettingsIndex(), static_cast<int>(rows.size()) - 1));
+    const bool editing = g_editor.OrgSettingsEditing();
+    const std::string pending = g_editor.OrgSettingsPending();
+
+    // The list, with each section's heading as a row of its own that the
+    // selection skips over (Editor's own index counts options, not
+    // lines) -- forty header arguments in one flat column is a wall.
+    struct SettingsEntry {
+        bool heading = false;
+        int row = -1;  // index into `rows`, -1 for a heading
+        std::string text;
+    };
+    std::vector<SettingsEntry> entries;
+    entries.reserve(rows.size() + 8);
+    float label_w = 0.0f;
+    float value_w = 0.0f;
+    for (size_t i = 0; i < rows.size(); i++) {
+        if (!rows[i].spec.section.empty()) entries.push_back({true, -1, rows[i].spec.section});
+        entries.push_back({false, static_cast<int>(i), rows[i].spec.label});
+        label_w = std::max(label_w, gfx::MeasureTextEx(g_font, rows[i].spec.label.c_str(), font_size, 0).x);
+        const std::string value_text = OrgSettingValueText(rows[i], rows[i].value);
+        value_w = std::max(value_w, gfx::MeasureTextEx(g_font, value_text.c_str(), font_size, 0).x);
+    }
+    // The two lines under the list: what the focused option does, and
+    // what the keys do right now. Both are part of the box's width
+    // budget, so neither is clipped by a narrow list of short labels.
+    const std::string hint = rows[static_cast<size_t>(sel)].spec.hint;
+    // The key help changes with what's focused, and the box is sized
+    // against the longest of them (this one) whichever is showing --
+    // sizing it to the current line alone made the whole popup resize,
+    // and every row jump sideways, on entering and leaving a field.
+    const std::string nav_keys = "j/k move   Enter/i edit   Ctrl-N/Ctrl-P change   d clear   q close";
+    std::string keys;
+    if (!editing) {
+        keys = nav_keys;
+    } else {
+        switch (rows[static_cast<size_t>(sel)].spec.kind) {
+            case OrgHeaderArgKind::kNumber:
+                keys = "j/k -/+   digits type a value   Enter/Esc done";
+                break;
+            case OrgHeaderArgKind::kText:
+                keys = "type to edit   Enter/Esc done";
+                break;
+            default:
+                keys = "j/k or Ctrl-N/Ctrl-P cycle   Enter/Esc done";
+                break;
+        }
+    }
+    const float hint_size = MenuFontSize();
+    // The value column: wide enough for the widest value, the widest
+    // dropdown choice it could be cycled to (so the field doesn't resize
+    // under the cursor mid-cycle), and a reasonable minimum for an empty
+    // text field.
+    for (const OrgBlockSettingRow &row : rows) {
+        for (const std::string &choice : row.spec.choices) {
+            value_w = std::max(value_w, gfx::MeasureTextEx(g_font, choice.c_str(), font_size, 0).x);
+        }
+    }
+    value_w = std::max(value_w, g_char_width * 14.0f);
+    const float arrow_w = g_char_width * 2.0f;
+    const float field_w = value_w + 2.0f * arrow_w + 16.0f;
+    float box_w = label_w + field_w + 56.0f;
+    // The two footer lines start at the same left inset the rows do and
+    // need their own right margin, or the longest of them (the key help)
+    // runs into the box's border.
+    box_w = std::max(box_w, gfx::MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x + 72.0f);
+    box_w = std::max(box_w, gfx::MeasureTextEx(g_font, nav_keys.c_str(), hint_size, 0).x + 72.0f);
+    box_w = std::min(box_w, static_cast<float>(gfx::GetScreenWidth() - 80));
+
+    const int title_h = static_cast<int>(MenuFontSize()) + 8;
+    const int footer_h = 2 * static_cast<int>(hint_size) + 14;
+    const int total_rows = static_cast<int>(entries.size());
+    const int max_rows = std::max(1, (gfx::GetScreenHeight() - 80 - 60 - title_h - footer_h) / line_h);
+    const int visible_rows = std::min(total_rows, max_rows);
+    const int box_h = visible_rows * line_h + 60 + title_h + footer_h;
+    FloatFrame f = DrawFloatFrame(static_cast<int>(box_w), box_h, g_editor.OrgSettingsTitle());
+
+    // Scrolled to keep the focused option on screen, recomputed from the
+    // selection each frame rather than kept as state -- the selection is
+    // the only thing that moves this view (same as DrawSelectOverlay).
+    int sel_entry = 0;
+    for (size_t i = 0; i < entries.size(); i++) {
+        if (entries[i].row == sel) {
+            sel_entry = static_cast<int>(i);
+            break;
+        }
+    }
+    // The focused option is the last visible line when the list has
+    // scrolled to reach it; a heading right above it is then still on
+    // screen (any window taller than one line holds both), so the
+    // section it belongs to stays readable without a special case.
+    int first = 0;
+    if (sel_entry >= visible_rows) first = sel_entry - visible_rows + 1;
+
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+    const bool clicked = armed && gfx::IsMouseButtonPressed(gfx::MouseButton::Left);
+    for (int i = first; i < total_rows && i < first + visible_rows; i++) {
+        const SettingsEntry &entry = entries[static_cast<size_t>(i)];
+        const float y = f.content_y + static_cast<float>(i - first) * static_cast<float>(line_h);
+        if (entry.heading) {
+            gfx::DrawTextEx(g_font, entry.text.c_str(), gfx::Vector2{f.content_x, y}, font_size, 0,
+                            ResolveHlGroup("Comment"));
+            continue;
+        }
+        const OrgBlockSettingRow &row = rows[static_cast<size_t>(entry.row)];
+        const bool focused = entry.row == sel;
+        const gfx::Rectangle row_rect{static_cast<float>(f.box_x) + 6.0f, y - 1.0f, static_cast<float>(f.box_w) - 12.0f,
+                                      static_cast<float>(line_h)};
+        if (focused) {
+            gfx::DrawRectangle(static_cast<int>(row_rect.x), static_cast<int>(row_rect.y),
+                               static_cast<int>(row_rect.width), static_cast<int>(row_rect.height),
+                               ResolveHlGroup("PickerSelected"));
+        }
+        gfx::DrawTextEx(g_font, row.spec.label.c_str(), gfx::Vector2{f.content_x, y}, font_size, 0,
+                        ResolveHlGroup("Normal"));
+        // The value field, right-aligned in the box so a page of options
+        // reads as two columns rather than a ragged run of values.
+        const float field_x = static_cast<float>(f.box_x + f.box_w) - field_w - 20.0f;
+        const gfx::Rectangle field{field_x, y - 1.0f, field_w, static_cast<float>(line_h) - 2.0f};
+        const bool active = focused && editing;
+        const gfx::Color accent = ResolveHlGroup("Accent");
+        gfx::DrawRectangleRounded(field, 0.35f, 6, gfx::Fade(accent, active ? 0.18f : 0.07f));
+        gfx::DrawRectangleRoundedLinesEx(field, 0.35f, 6, 1.0f,
+                                         gfx::Fade(active ? accent : ResolveHlGroup("Border"), active ? 0.9f : 0.5f));
+        const std::string shown = OrgSettingValueText(row, active ? pending : row.value);
+        const bool unset = shown == "--";
+        gfx::DrawTextEx(g_font, shown.c_str(), gfx::Vector2{field.x + arrow_w + 8.0f, y}, font_size, 0,
+                        ResolveHlGroup(unset ? "MutedFg" : "Normal"));
+        // A dropdown says so with a pair of arrows, which are also the
+        // two keys that work on it; a text/number field being edited
+        // shows a cursor instead.
+        const bool cycles = row.spec.kind == OrgHeaderArgKind::kChoice || row.spec.kind == OrgHeaderArgKind::kSwitch;
+        if (cycles) {
+            const gfx::Color arrow = gfx::Fade(ResolveHlGroup("MutedFg"), focused ? 1.0f : 0.6f);
+            gfx::DrawTextEx(g_font, "<", gfx::Vector2{field.x + 6.0f, y}, font_size, 0, arrow);
+            gfx::DrawTextEx(g_font, ">", gfx::Vector2{field.x + field.width - arrow_w - 4.0f, y}, font_size, 0, arrow);
+        } else if (active) {
+            const float cx = field.x + arrow_w + 8.0f + gfx::MeasureTextEx(g_font, shown.c_str(), font_size, 0).x + 1.0f;
+            gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(y), 2, static_cast<int>(font_size), accent);
+        }
+        // Mouse: a click on the row focuses it, a click on its value
+        // opens it for editing -- the same two things Enter does in two
+        // steps. Handled here rather than through g_click_regions, which
+        // a modal overlay mode deliberately stops dispatching (see
+        // IsModalOverlayMode).
+        if (clicked && PointInRect(mouse, row_rect)) {
+            g_editor.OrgSettingsSelect(entry.row, PointInRect(mouse, field));
+        }
+    }
+    const float footer_y = f.content_y + static_cast<float>(visible_rows) * static_cast<float>(line_h) + 6.0f;
+    gfx::DrawTextEx(g_font, hint.c_str(), gfx::Vector2{f.content_x, footer_y}, hint_size, 0, ResolveHlGroup("Comment"));
+    gfx::DrawTextEx(g_font, keys.c_str(), gfx::Vector2{f.content_x, footer_y + hint_size + 4.0f}, hint_size, 0,
+                    ResolveHlGroup("MutedFg"));
 }
 
 // Read-only informational float (Phase 17 gap: git-gutter's "preview
@@ -44210,6 +44412,62 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     play_left = play_rect.x;
                 }
             }
+            // The settings button, docked just left of the play button
+            // and sized to match it: opens this block's header arguments
+            // as a popup of typed rows (Editor::BeginOrgBlockSettings).
+            // Only on the kinds that actually have arguments to set --
+            // `src` and `example` (OrgBlockHasSettings, org_doc.h); a
+            // `quote`/`export` block gets a card and no gear, the same
+            // way it gets no play button.
+            if (OrgBlockHasSettings(card.kind)) {
+                const float gear_w = std::max(20.0f, chip_h + 4.0f);
+                const gfx::Rectangle gear_rect{right_limit - gear_w, chip_y, gear_w, chip_h};
+                // Dropped on a card too narrow for it, same as the play
+                // button: the kind chip is the block's identity and wins
+                // the last of the bar's width.
+                if (gear_rect.x >= cb.header.x + 9.0f + g_char_width * 3.0f) {
+                    const gfx::Color gear_c = ResolveHlGroup("MutedFg");
+                    const bool gear_hover = PointInRect(gfx::GetMousePosition(), gear_rect);
+                    gfx::DrawRectangleRounded(gear_rect, 0.5f, 6, gfx::Fade(gear_c, gear_hover ? 0.35f : 0.12f));
+                    gfx::DrawRectangleRoundedLinesEx(gear_rect, 0.5f, 6, 1.0f, gfx::Fade(gear_c, 0.55f));
+                    // nf-fa-cog (U+F013) out of the icon font -- g_font's
+                    // own atlas is ASCII-only, so it goes through
+                    // DrawUiText, which routes a PUA codepoint to
+                    // g_icon_font (the play button next to it draws its
+                    // triangle by hand for the same reason: there is no
+                    // glyph for it in either).
+                    const std::string gear_icon = "\xEF\x80\x93";
+                    const float icon_size = std::min(g_font_size, chip_h);
+                    const float icon_w = MeasureUiText(gear_icon, icon_size);
+                    DrawUiText(gear_icon,
+                               gfx::Vector2{gear_rect.x + (gear_rect.width - icon_w) / 2.0f,
+                                            gear_rect.y + (gear_rect.height - icon_size) / 2.0f},
+                               icon_size, gear_c);
+                    if (gear_hover) {
+                        const std::string what = card.is_src ? (card.lang.empty() ? std::string("src") : card.lang)
+                                                              : card.kind;
+                        g_pane_control_tooltip_text = "Settings for this " + what + " block (<leader>os)";
+                        // Same full-row anchor height the play button
+                        // hands the shared tooltip, and for the same
+                        // reason (see its own comment above).
+                        g_pane_control_tooltip_anchor =
+                            gfx::Rectangle{gear_rect.x, gear_rect.y, gear_rect.width, static_cast<float>(line_height)};
+                    }
+                    const int gear_pane = pane.id;
+                    const int gear_row = card.begin_row;
+                    RegisterClickRegionOnTop(gear_rect, [gear_pane, gear_row] {
+                        // Focus first, exactly as the play button does:
+                        // the popup edits the *active* buffer's block.
+                        g_editor.FocusPaneById(gear_pane);
+                        g_editor.BeginOrgBlockSettings(gear_row);
+                    });
+                    right_limit = gear_rect.x - 6.0f;
+                    // The leftmost of the bar's controls now, which is
+                    // what the end-of-line virtual text pass right-aligns
+                    // against (see play_left's own comment).
+                    play_left = gear_rect.x;
+                }
+            }
             float cx = cb.header.x + 9.0f;
             /**
              * @brief Checks whether a bar element of the given width still fits before the card's right edge.
@@ -45556,6 +45814,11 @@ void DrawEditor() {
     if (g_editor.CurrentMode() == Mode::Prompt) DrawPromptOverlay();
     if (g_editor.CurrentMode() == Mode::Confirm) DrawConfirmOverlay();
     if (g_editor.CurrentMode() == Mode::Select) DrawSelectOverlay();
+    if (g_editor.CurrentMode() == Mode::OrgBlockSettings) {
+        DrawOrgBlockSettingsOverlay();
+    } else {
+        g_org_settings_overlay_armed = false;
+    }
     if (g_editor.CurrentMode() == Mode::Preview) DrawPreviewOverlay();
     if (g_editor.CurrentMode() == Mode::Picker) DrawPickerOverlay();
     if (g_editor.CurrentMode() == Mode::RoamGraph) DrawRoamGraphOverlay();
@@ -45583,6 +45846,11 @@ bool IsModalOverlayMode(Mode m) {
         case Mode::Select:
         case Mode::WhichKey:
         case Mode::Preview:
+        // The settings popup captures its own keys and mouse (its rows
+        // are hit-tested in DrawOrgBlockSettingsOverlay); a click falling
+        // through to the pane under it would move focus out of the block
+        // being edited without ever closing the popup.
+        case Mode::OrgBlockSettings:
         // Keystrokes are already captured by Mode::HoverFocus (see
         // Editor::HandleHoverFocusInput); a click falling through to a
         // pane/tab underneath the popup while focused would move focus out
@@ -45654,6 +45922,7 @@ bool ModeAllowsHintTrigger(Mode m) {
         case Mode::KanbanInsert:
         case Mode::GanttInsert:
         case Mode::Preview:
+        case Mode::OrgBlockSettings:
         case Mode::HoverFocus:
             return false;
         default:

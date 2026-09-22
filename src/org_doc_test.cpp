@@ -963,6 +963,183 @@ int main() {
         CHECK(OrgBlockPlayFor(in) == OrgBlockPlay::kReady);
     }
 
+    {
+        // --- Block settings: which kinds get a gear at all. `src` takes
+        // the whole header-arg vocabulary, `example` takes the same line
+        // switches, and nothing else has options to set.
+        CHECK(OrgBlockHasSettings("src"));
+        CHECK(OrgBlockHasSettings("example"));
+        CHECK(!OrgBlockHasSettings("quote"));
+        CHECK(!OrgBlockHasSettings("export"));
+        CHECK(!OrgBlockHasSettings(""));
+        CHECK(OrgHeaderArgSpecsFor("quote", "").empty());
+        // An example block's whole list is the four switches.
+        const std::vector<OrgHeaderArgSpec> ex = OrgHeaderArgSpecsFor("example", "");
+        CHECK(ex.size() == 4);
+        CHECK(ex[0].key == "-n");
+        CHECK(ex[0].kind == OrgHeaderArgKind::kSwitch);
+        CHECK(ex[0].section == "Display");
+        CHECK(ex[1].section.empty());  // continues the same section
+    }
+    {
+        // The catalog is common-args-then-language: the same core list
+        // for every src block, plus only the family's own options.
+        /**
+         * @brief Finds one option's spec in a catalog.
+         * @param specs the catalog to search
+         * @param key the header-arg key (or switch token) wanted
+         * @return a pointer to the first spec with that key, or nullptr
+         */
+        auto find = [](const std::vector<OrgHeaderArgSpec> &specs, const std::string &key) -> const OrgHeaderArgSpec * {
+            for (const OrgHeaderArgSpec &spec : specs) {
+                if (spec.key == key) return &spec;
+            }
+            return nullptr;
+        };
+        const std::vector<OrgHeaderArgSpec> py = OrgHeaderArgSpecsFor("src", "python");
+        CHECK(find(py, "results") != nullptr);
+        CHECK(find(py, "exports") != nullptr);
+        CHECK(find(py, "tangle") != nullptr);
+        CHECK(find(py, "return") != nullptr);   // ob-python's own
+        CHECK(find(py, "width") == nullptr);    // R's, not python's
+        CHECK(find(py, "-n") != nullptr);       // the switches come last
+        CHECK(py.front().facet == "collection");
+        // The four `:results` rows are one key split four ways, so a
+        // popup row can own a facet instead of the whole value.
+        CHECK(py[0].key == "results" && py[1].key == "results" && py[2].key == "results" && py[3].key == "results");
+        CHECK(py[1].facet == "type" && py[2].facet == "format" && py[3].facet == "handling");
+        // Language families, including the aliases that share a backend.
+        CHECK(find(OrgHeaderArgSpecsFor("src", "R"), "width") != nullptr);
+        CHECK(find(OrgHeaderArgSpecsFor("src", "C++"), "namespaces") != nullptr);
+        CHECK(find(OrgHeaderArgSpecsFor("src", "bash"), "cmdline") != nullptr);
+        CHECK(find(OrgHeaderArgSpecsFor("src", "sqlite"), "engine") != nullptr);
+        // A language with no backend-specific args still gets the common
+        // list rather than an invented one.
+        const std::vector<OrgHeaderArgSpec> lua_specs = OrgHeaderArgSpecsFor("src", "lua");
+        CHECK(find(lua_specs, "exports") != nullptr);
+        CHECK(find(lua_specs, "includes") == nullptr);
+        // A numeric option carries the range j/k moves in.
+        const OrgHeaderArgSpec *width = find(OrgHeaderArgSpecsFor("src", "r"), "width");
+        CHECK(width != nullptr);
+        CHECK(width->kind == OrgHeaderArgKind::kNumber);
+        CHECK(width->default_value == 7.0);
+        CHECK(width->min_value == 1.0);
+    }
+    {
+        // --- `:results` facets: four independent word classes in one value.
+        CHECK(OrgResultsFacetOf("output") == "collection");
+        CHECK(OrgResultsFacetOf("table") == "type");
+        CHECK(OrgResultsFacetOf("raw") == "format");
+        CHECK(OrgResultsFacetOf("silent") == "handling");
+        CHECK(OrgResultsFacetOf("OUTPUT") == "collection");  // org itself is case-insensitive here
+        CHECK(OrgResultsFacetOf("nonsense").empty());
+        CHECK(OrgResultsFacetValue("output table replace", "type") == "table");
+        CHECK(OrgResultsFacetValue("output table replace", "format").empty());
+        CHECK(OrgResultsFacetValue("", "collection").empty());
+        // Writing one facet leaves the others exactly where they were.
+        CHECK(OrgResultsWithFacet("output table", "type", "list") == "output list");
+        CHECK(OrgResultsWithFacet("output table", "format", "raw") == "output table raw");
+        CHECK(OrgResultsWithFacet("", "collection", "value") == "value");
+        // Clearing a facet drops just that word.
+        CHECK(OrgResultsWithFacet("output table", "type", "") == "output");
+        CHECK(OrgResultsWithFacet("output", "collection", "").empty());
+        // A word from no class at all is kept: this rewrite owns one
+        // facet, not the whole value.
+        CHECK(OrgResultsWithFacet("output mystery", "collection", "value") == "value mystery");
+    }
+    {
+        // --- Writing one argument back into the line it lives on.
+        // Appended when the block doesn't have it yet.
+        CHECK(OrgSetHeaderArgOnLine("#+begin_src python", "results", "output") == "#+begin_src python :results output");
+        // Replaced where it sits, with everything after it left alone.
+        CHECK(OrgSetHeaderArgOnLine("#+begin_src python :results value :exports both", "results", "output") ==
+              "#+begin_src python :results output :exports both");
+        // An empty value removes the argument -- from the middle...
+        CHECK(OrgSetHeaderArgOnLine("#+begin_src python :results value :exports both", "results", "") ==
+              "#+begin_src python :exports both");
+        // ...and from the end, without leaving the separator behind.
+        CHECK(OrgSetHeaderArgOnLine("#+begin_src python :exports both", "exports", "") == "#+begin_src python");
+        // Removing something that was never there changes nothing.
+        CHECK(OrgSetHeaderArgOnLine("#+begin_src python", "exports", "") == "#+begin_src python");
+        // Keys match without regard to case, the way org reads them.
+        CHECK(OrgSetHeaderArgOnLine("#+begin_src python :RESULTS value", "results", "output") ==
+              "#+begin_src python :results output");
+        // The language tag and any switches sit before the arguments and
+        // are never mistaken for one.
+        CHECK(OrgSetHeaderArgOnLine("#+begin_src python -n", "eval", "no") == "#+begin_src python -n :eval no");
+        // A quoted value holding a colon is one value, not two arguments.
+        CHECK(OrgSetHeaderArgOnLine("#+begin_src sh :dir \"a :b\" :eval yes", "eval", "no") ==
+              "#+begin_src sh :dir \"a :b\" :eval no");
+        // Indentation is preserved (a block nested under a list item).
+        CHECK(OrgSetHeaderArgOnLine("  #+begin_src python", "cache", "yes") == "  #+begin_src python :cache yes");
+        // A `#+HEADER:` line is the other place an argument lives, and
+        // its own colon is part of the keyword, not an argument.
+        CHECK(OrgSetHeaderArgOnLine("#+HEADER: :var x=1", "var", "y=2") == "#+HEADER: :var y=2");
+        CHECK(OrgSetHeaderArgOnLine("#+HEADER: :var x=1", "cache", "yes") == "#+HEADER: :var x=1 :cache yes");
+        // Anything that is neither is left alone rather than guessed at.
+        CHECK(OrgSetHeaderArgOnLine("print('hello')", "eval", "no") == "print('hello')");
+        CHECK(OrgSetHeaderArgOnLine("#+begin_src python", "", "x") == "#+begin_src python");
+    }
+    {
+        // --- Values that would be reparsed as two arguments get quoted;
+        // multi-word values that org reads as one must not be.
+        CHECK(OrgQuoteHeaderArgValue("out.png") == "out.png");
+        CHECK(OrgQuoteHeaderArgValue("my plot.png") == "my plot.png");
+        CHECK(OrgQuoteHeaderArgValue("output table") == "output table");
+        CHECK(OrgQuoteHeaderArgValue("a :b") == "\"a :b\"");
+        CHECK(OrgQuoteHeaderArgValue(":x") == "\":x\"");
+        CHECK(OrgQuoteHeaderArgValue("\"a :b\"") == "\"a :b\"");  // already quoted
+        CHECK(OrgQuoteHeaderArgValue("").empty());
+        CHECK(OrgQuoteHeaderArgValue("http://example.com") == "http://example.com");
+    }
+    {
+        // --- Numbers: j/k stepping, clamped, and what an unset option does.
+        CHECK(OrgFormatHeaderArgNumber(7.0) == "7");
+        CHECK(OrgFormatHeaderArgNumber(6.5) == "6.5");
+        OrgHeaderArgSpec spec;
+        spec.kind = OrgHeaderArgKind::kNumber;
+        spec.min_value = 1.0;
+        spec.max_value = 10.0;
+        spec.step = 1.0;
+        spec.default_value = 7.0;
+        // The first press on an unset option lands *on* the default, in
+        // either direction -- it is the value someone opening this row
+        // most likely wants, and one more press moves off it.
+        CHECK(OrgStepHeaderArgNumber(spec, "", 1) == "7");
+        CHECK(OrgStepHeaderArgNumber(spec, "", -1) == "7");
+        CHECK(OrgStepHeaderArgNumber(spec, "7", 1) == "8");
+        CHECK(OrgStepHeaderArgNumber(spec, "7", -1) == "6");
+        CHECK(OrgStepHeaderArgNumber(spec, "10", 1) == "10");  // clamped
+        CHECK(OrgStepHeaderArgNumber(spec, "1", -1) == "1");
+        // A value that isn't wholly a number (an elisp form, a typo) is
+        // treated as unset rather than half-parsed and mangled.
+        CHECK(OrgStepHeaderArgNumber(spec, "(fig-width)", 1) == "7");
+        CHECK(OrgStepHeaderArgNumber(spec, "7in", 1) == "7");
+    }
+    {
+        // --- Bare line switches, which live before the first `:key`.
+        CHECK(!OrgBlockLineHasSwitch("#+begin_src python", "-n"));
+        CHECK(OrgBlockLineHasSwitch("#+begin_src python -n", "-n"));
+        CHECK(!OrgBlockLineHasSwitch("#+begin_src python -n", "+n"));
+        CHECK(OrgSetBlockSwitchOnLine("#+begin_src python", "-n", true) == "#+begin_src python -n");
+        // Added at the end of the switch region: after the language,
+        // before the arguments, which is where org reads them.
+        CHECK(OrgSetBlockSwitchOnLine("#+begin_src python :results output", "-n", true) ==
+              "#+begin_src python -n :results output");
+        CHECK(OrgSetBlockSwitchOnLine("#+begin_example", "-n", true) == "#+begin_example -n");
+        // Removed with one separator, from the middle of a run...
+        CHECK(OrgSetBlockSwitchOnLine("#+begin_src python -n -r :eval no", "-n", false) ==
+              "#+begin_src python -r :eval no");
+        // ...and from the end of the line.
+        CHECK(OrgSetBlockSwitchOnLine("#+begin_src python -n", "-n", false) == "#+begin_src python");
+        // Setting what is already set (or clearing what isn't) is a no-op.
+        CHECK(OrgSetBlockSwitchOnLine("#+begin_src python -n", "-n", true) == "#+begin_src python -n");
+        CHECK(OrgSetBlockSwitchOnLine("#+begin_src python", "-n", false) == "#+begin_src python");
+        // A `#+HEADER:` line has no switch region at all.
+        CHECK(!OrgBlockLineHasSwitch("#+HEADER: -n", "-n"));
+        CHECK(OrgSetBlockSwitchOnLine("#+HEADER: :var x=1", "-n", true) == "#+HEADER: :var x=1");
+    }
+
     std::printf("org_doc_test: all checks passed\n");
     return 0;
 }

@@ -277,8 +277,62 @@ Add a play button to org mode code blocks that will run the code block in the ap
     the buffer. Documented in help/org-visuals.org (a new "The play button"
     section) with a pointer from help/org-babel.org.
 
-* TODO org settings
+* DONE org settings
 Add a settings button to orgmode code blocks that will allow the user to set the settings for the code block (e.g. results, exports, etc.). On click, it should bring up an options setting popup with any possible options for the language specific (or options for other types of blocks) options. This should allow for changing numbers, input string, or dropdown selection, depending on the type of option. Id like the popup to list all options, with the appropriate input. Make sure to add keyboard navigation in normal mode, h,j,k,l for selecting option by direction, ctrl+n and ctrl+p for selecting from dropdown, i to insert mode on text input, and j,k for incrementing/decrementing number.
+  - Every =src= (and =example=) block card's title bar now carries a gear
+    button, left of the play button and dropped under the same
+    too-narrow-a-card rule. Clicking it -- or `<leader>os` /
+    `:MepOrgBlockSettings` with the cursor in the block -- opens that
+    block's header arguments as a modal list (`Mode::OrgBlockSettings`),
+    one row per argument org honours for it: the common set grouped into
+    Results/Execution/Output/Tangle/Noweb, then the language's own (R's
+    `:width`/`:height`/`:units`/`:res`/`:pointsize`/`:bg`, Python's
+    `:return`/`:preamble`, C/C++'s `:includes`/`:flags`/`:libs`/`:main`,
+    shell's `:cmdline`/`:stdin`, SQL's engine/connection args, LaTeX's
+    ImageMagick args), then the `-n`/`+n`/`-r`/`-k` line switches. A
+    `quote`/`verse`/`export` block has no arguments to set and gets no
+    gear.
+  - Each row is typed: a dropdown over the words org accepts, a number
+    with its own range and step, or free text. `:results` is four rows,
+    not one -- its value is up to four words from four independent
+    classes, and writing one facet recomposes the value the other three
+    still read (`OrgResultsWithFacet`), which is what makes "set output
+    without losing `table replace`" a single keystroke rather than a
+    retype.
+  - Navigation is the normal-mode idiom the request asked for: h/j/k/l
+    between rows, Enter or `i` to open the focused one, and inside it
+    j/k step a number or cycle a dropdown (Ctrl-N/Ctrl-P too, and those
+    also work straight from the list without opening a row), typing
+    edits a text field, Enter/Escape commits back to the list. `d`/`x`
+    clears an argument off the block entirely -- deliberately distinct
+    from setting it to `no`, since an absent argument is what lets a
+    `#+PROPERTY:` line or org's own default decide, and the popup draws
+    `--` for that state. The mouse works as well: a row click focuses,
+    a value click opens.
+  - Every committed change is written into the buffer immediately, as
+    one undo entry per option, so the popup and the file can never
+    disagree and `u` takes the last change back. A value is written
+    where it already lives -- an argument set on a `#+HEADER:` line is
+    edited there, a new one goes on the `#+begin_src` line -- and an
+    existing argument is replaced in place, leaving the rest of the line
+    byte-for-byte alone.
+  - Split the way the rest of the org stack is: the catalog and every
+    line rewrite are pure and GL-free in org_doc.cpp
+    (`OrgHeaderArgSpecsFor`, `OrgSetHeaderArgOnLine`,
+    `OrgSetBlockSwitchOnLine`, the `:results` facet split, the number
+    stepper -- all covered by mep-org-doc-test), the state machine is
+    editor.cpp (`BeginOrgBlockSettings`/`HandleOrgBlockSettingsInput`),
+    and only the drawing is main.cpp (the gear in DrawPane's card title
+    bar plus `DrawOrgBlockSettingsOverlay`).
+  - Verified live against a detached instance on its own X display:
+    opening from both the gear and the command, the popup's rendering
+    and scrolling, a facet write (`:results output table`), a text field
+    (`:wrap example`), `d` clearing it again, Ctrl-N in the list
+    (`:results ... replace`), a number stepped to `:width 8`, a `:var`
+    edit landing on the `#+HEADER:` line it was written on, the example
+    block's `-n` switch toggling on and off, and the warn toast for a
+    quote block. Documented in help/org-babel.org ("Setting them from a
+    popup") and help/org-visuals.org ("The settings button").
 
 * TODO add themes
 investigate what themes there and which ones appear to be missing and then

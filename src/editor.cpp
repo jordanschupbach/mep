@@ -2054,6 +2054,188 @@ void Editor::RunOrgBabelBlockAt(int begin_row) {
     TryRunOrgBabelAtCursor();
 }
 
+// --- Org block settings popup (a card's gear button, <leader>os) ----------
+//
+// The state machine behind Mode::OrgBlockSettings. The catalog of
+// options, and every rewrite of a header line, live in org_doc.cpp (pure
+// and tested); the drawing lives in DrawOrgBlockSettingsOverlay
+// (main.cpp). What's here is the part that needs a buffer: which block
+// is being edited, what it currently says, and writing a committed value
+// back into it.
+
+void Editor::BeginOrgBlockSettings(int begin_row) {
+    const int buffer_id = CurrentBufferId();
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    const OrgBlockCard *card = nullptr;
+    for (const OrgBlockCard &c : OrgBlockCards(buffer_id)) {
+        if (c.begin_row == begin_row) {
+            card = &c;
+            break;
+        }
+    }
+    if (card == nullptr) {
+        Notify("No block here", NotifyLevel::Warn);
+        return;
+    }
+    if (!OrgBlockHasSettings(card->kind)) {
+        // `quote`/`verse`/`export` blocks get a card but no gear, so this
+        // is only reachable from `:MepOrgBlockSettings` with the cursor
+        // parked in one -- worth saying why rather than doing nothing.
+        Notify("A " + card->kind + " block has no header arguments to set", NotifyLevel::Warn);
+        return;
+    }
+    org_settings_buffer_ = buffer_id;
+    org_settings_begin_row_ = begin_row;
+    org_settings_index_ = 0;
+    org_settings_editing_ = false;
+    org_settings_pending_.clear();
+    overlay_previous_mode_ = mode_;
+    mode_ = Mode::OrgBlockSettings;
+    OrgSettingsReload();
+    // Reload closes the popup again if the block turned out not to be
+    // one it can edit; nothing above this point has touched the buffer.
+    if (org_settings_rows_.empty() && mode_ == Mode::OrgBlockSettings) RestoreFromOverlay();
+}
+
+bool Editor::OpenOrgBlockSettingsAtCursor() {
+    const int buffer_id = CurrentBufferId();
+    const int row = Cursor().row;
+    int begin_row = -1;
+    for (const OrgBlockCard &card : OrgBlockCards(buffer_id)) {
+        // The card's own extent, affiliated `#+HEADER:` lines included:
+        // those are part of the block's header (and are where some of
+        // these very arguments live), so the cursor sitting on one is
+        // still "in" the block. An unterminated block runs to the end of
+        // the buffer, matching the card DrawPane draws for it.
+        const int last = card.end_row >= 0 ? card.end_row : buffers_[static_cast<size_t>(buffer_id)].LineCount() - 1;
+        if (row >= card.meta_row && row <= last) {
+            begin_row = card.begin_row;
+            break;
+        }
+    }
+    if (begin_row < 0) {
+        Notify("Block settings: not in a block", NotifyLevel::Warn);
+        return false;
+    }
+    BeginOrgBlockSettings(begin_row);
+    return mode_ == Mode::OrgBlockSettings;
+}
+
+void Editor::OrgSettingsReload() {
+    org_settings_rows_.clear();
+    org_settings_results_.clear();
+    if (org_settings_buffer_ < 0 || org_settings_buffer_ >= static_cast<int>(buffers_.size())) {
+        if (mode_ == Mode::OrgBlockSettings) RestoreFromOverlay();
+        return;
+    }
+    const OrgBlockCard *card = nullptr;
+    for (const OrgBlockCard &c : OrgBlockCards(org_settings_buffer_)) {
+        if (c.begin_row == org_settings_begin_row_) {
+            card = &c;
+            break;
+        }
+    }
+    // The block moved or stopped being one (the buffer was edited from
+    // under the popup -- a collaborator's edit, an undo). Closing beats
+    // editing whatever now happens to sit on that row.
+    if (card == nullptr || !OrgBlockHasSettings(card->kind)) {
+        if (mode_ == Mode::OrgBlockSettings) RestoreFromOverlay();
+        return;
+    }
+    org_settings_title_ = (card->is_src && !card->lang.empty() ? card->lang : card->kind) + " block settings";
+    const Buffer &buf = buffers_[static_cast<size_t>(org_settings_buffer_)];
+    const std::string begin_line = org_settings_begin_row_ < buf.LineCount()
+                                       ? buf.lines[static_cast<size_t>(org_settings_begin_row_)]
+                                       : std::string();
+    for (const OrgBlockOption &opt : card->options) {
+        if (opt.key == "results") org_settings_results_ = opt.value;
+    }
+    for (const OrgHeaderArgSpec &spec : OrgHeaderArgSpecsFor(card->kind, card->lang)) {
+        OrgBlockSettingRow row;
+        row.spec = spec;
+        if (spec.kind == OrgHeaderArgKind::kSwitch) {
+            // A switch is never on a `#+HEADER:` line -- org reads it
+            // from the `#+begin_` line's own switch region.
+            row.value = OrgBlockLineHasSwitch(begin_line, spec.key) ? "yes" : "";
+            row.row = org_settings_begin_row_;
+        } else {
+            for (const OrgBlockOption &opt : card->options) {
+                if (opt.key != spec.key) continue;
+                row.value = opt.value;
+                // Where the winning value was written: the `#+begin_`
+                // line when it sets the key, else the `#+HEADER:` line
+                // that does (ParseOrgHeaderArgs merges later-wins, and
+                // the `#+begin_` line is parsed last).
+                row.row = opt.row;
+                break;
+            }
+            // The four `:results` rows each own one word of that one
+            // value.
+            if (!spec.facet.empty()) row.value = OrgResultsFacetValue(org_settings_results_, spec.facet);
+        }
+        org_settings_rows_.push_back(std::move(row));
+    }
+    if (org_settings_index_ >= static_cast<int>(org_settings_rows_.size())) {
+        org_settings_index_ = static_cast<int>(org_settings_rows_.size()) - 1;
+    }
+    if (org_settings_index_ < 0) org_settings_index_ = 0;
+}
+
+void Editor::OrgSettingsApply(int index, const std::string &value) {
+    if (index < 0 || index >= static_cast<int>(org_settings_rows_.size())) return;
+    if (org_settings_buffer_ < 0 || org_settings_buffer_ >= static_cast<int>(buffers_.size())) return;
+    const OrgBlockSettingRow row = org_settings_rows_[static_cast<size_t>(index)];
+    if (value == row.value) return;  // nothing to write
+    Buffer &buf = buffers_[static_cast<size_t>(org_settings_buffer_)];
+    const int target = row.row >= 0 ? row.row : org_settings_begin_row_;
+    if (target < 0 || target >= buf.LineCount()) return;
+    const std::string &line = buf.lines[static_cast<size_t>(target)];
+    std::string updated;
+    if (row.spec.kind == OrgHeaderArgKind::kSwitch) {
+        updated = OrgSetBlockSwitchOnLine(line, row.spec.key, !value.empty());
+    } else if (!row.spec.facet.empty()) {
+        // One facet changes, the other three keep their words -- so the
+        // whole `:results` value is recomposed and written as one.
+        const std::string results = OrgResultsWithFacet(org_settings_results_, row.spec.facet, value);
+        updated = OrgSetHeaderArgOnLine(line, "results", results);
+    } else {
+        updated = OrgSetHeaderArgOnLine(line, row.spec.key, OrgQuoteHeaderArgValue(value));
+    }
+    if (updated == line) return;
+    // One undo entry per option committed: the popup stages a value
+    // while it is being edited and only lands here once, rather than
+    // writing (and stacking an undo entry) per keystroke.
+    PushUndoForBuffer(org_settings_buffer_);
+    buf.lines[static_cast<size_t>(target)] = updated;
+    buf.modified = true;
+    OrgSettingsReload();
+}
+
+void Editor::OrgSettingsSelect(int index, bool begin_edit) {
+    if (index < 0 || index >= static_cast<int>(org_settings_rows_.size())) return;
+    // A click elsewhere while a field is open commits it first, the way
+    // clicking out of a form field does -- never silently discards it.
+    if (org_settings_editing_ && index != org_settings_index_) OrgSettingsCommitEdit();
+    // That commit wrote to the buffer and reread the rows, which closes
+    // the popup outright if the block went away underneath it (an undo,
+    // a collaborator's edit) -- so the row asked for may no longer be
+    // one.
+    if (index >= static_cast<int>(org_settings_rows_.size())) return;
+    org_settings_index_ = index;
+    if (!begin_edit || org_settings_editing_) return;
+    org_settings_editing_ = true;
+    org_settings_pending_ = org_settings_rows_[static_cast<size_t>(index)].value;
+}
+
+void Editor::OrgSettingsCommitEdit() {
+    if (!org_settings_editing_) return;
+    const int index = org_settings_index_;
+    const std::string value = org_settings_pending_;
+    org_settings_editing_ = false;
+    org_settings_pending_.clear();
+    OrgSettingsApply(index, value);
+}
+
 bool Editor::ToggleOrgBlockCards() {
     org_block_cards_visible_ = !org_block_cards_visible_;
     return org_block_cards_visible_;
@@ -4550,6 +4732,9 @@ void Editor::HandleInput() {
             break;
         case Mode::Preview:
             HandlePreviewInput();
+            break;
+        case Mode::OrgBlockSettings:
+            HandleOrgBlockSettingsInput();
             break;
         case Mode::Sidebar:
             HandleSidebarInput();
@@ -19717,6 +19902,177 @@ void Editor::HandlePreviewInput() {
     if (dismiss) RestoreFromOverlay();
 }
 
+void Editor::CloseOrgBlockSettings() {
+    if (mode_ != Mode::OrgBlockSettings) return;
+    OrgSettingsCommitEdit();
+    RestoreFromOverlay();
+}
+
+// Two states in one handler, and the difference is what j/k mean:
+// sitting on a row they move between rows, and inside a row's value they
+// change it (step a number, cycle a dropdown). Enter/i goes in, Enter/
+// Escape comes back out committing what's there -- vim's own "Escape
+// keeps what you typed", not a cancel.
+void Editor::HandleOrgBlockSettingsInput() {
+    if (org_settings_rows_.empty()) {
+        RestoreFromOverlay();
+        return;
+    }
+    bool escape = false, enter = false, backspace = false;
+    bool key_down = false, key_up = false;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (key == gfx::Key::Escape) escape = true;
+        else if (key == gfx::Key::Enter) enter = true;
+        else if (key == gfx::Key::Backspace) backspace = true;
+        else if (key == gfx::Key::Down) key_down = true;
+        else if (key == gfx::Key::Up) key_up = true;
+    }
+    // Ctrl-held letters produce no character event at all, so they're
+    // read as keys -- and can't then be seen twice by the char loops
+    // below. Ctrl-N/Ctrl-P are the dropdown keys wherever they're
+    // pressed: on a row they change its value in place (no need to open
+    // it first), inside one they cycle the field like j/k.
+    const bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    bool ctrl_next = false, ctrl_prev = false;
+    if (ctrl) {
+        if (gfx::IsKeyPressed(gfx::Key::N) || gfx::IsKeyPressedRepeat(gfx::Key::N)) ctrl_next = true;
+        if (gfx::IsKeyPressed(gfx::Key::P) || gfx::IsKeyPressedRepeat(gfx::Key::P)) ctrl_prev = true;
+    }
+    // Deliberately read fresh at each use below rather than kept in a
+    // local: a Ctrl-N/Ctrl-P on a row applies immediately, which rereads
+    // the rows and can close the popup if the block went away underneath
+    // it, and a count from before that would outlive the list it counted.
+    /**
+     * @brief Steps the focused row's value one place in a direction, staging or applying it.
+     * @param direction +1 for the next choice / a larger number, -1 for the previous / smaller.
+     * @param staged True to stage the result (a field being edited), false to write it straight out.
+     */
+    auto step_value = [&](int direction, bool staged) {
+        // Applying a value rereads the rows and can close the popup (see
+        // OrgSettingsReload), so every entry into this checks again
+        // rather than trusting the count it was called with.
+        if (org_settings_index_ < 0 || org_settings_index_ >= static_cast<int>(org_settings_rows_.size())) return;
+        const OrgBlockSettingRow &row = org_settings_rows_[static_cast<size_t>(org_settings_index_)];
+        const std::string current = staged ? org_settings_pending_ : row.value;
+        std::string next;
+        if (row.spec.kind == OrgHeaderArgKind::kNumber) {
+            next = OrgStepHeaderArgNumber(row.spec, current, direction);
+        } else {
+            const std::vector<std::string> &choices = row.spec.choices;
+            if (choices.empty()) return;
+            int at = 0;
+            for (size_t i = 0; i < choices.size(); i++) {
+                if (choices[i] == current) {
+                    at = static_cast<int>(i);
+                    break;
+                }
+            }
+            // Wraps, so a dropdown is reachable in either direction
+            // without counting rows -- including back to "" (unset),
+            // which is a value like any other here.
+            const int size = static_cast<int>(choices.size());
+            at = ((at + direction) % size + size) % size;
+            next = choices[static_cast<size_t>(at)];
+        }
+        if (staged) {
+            org_settings_pending_ = next;
+        } else {
+            OrgSettingsApply(org_settings_index_, next);
+        }
+    };
+    if (org_settings_editing_) {
+        if (escape || enter) {
+            OrgSettingsCommitEdit();
+            return;
+        }
+        const OrgHeaderArgKind kind = org_settings_rows_[static_cast<size_t>(org_settings_index_)].spec.kind;
+        const bool typed_field = kind == OrgHeaderArgKind::kText || kind == OrgHeaderArgKind::kNumber;
+        if (backspace && typed_field && !org_settings_pending_.empty()) {
+            // One UTF-8 codepoint, not one byte.
+            size_t cut = org_settings_pending_.size() - 1;
+            while (cut > 0 && (static_cast<unsigned char>(org_settings_pending_[cut]) & 0xC0) == 0x80) cut--;
+            org_settings_pending_.erase(cut);
+        }
+        if (ctrl_next || key_down) step_value(1, true);
+        if (ctrl_prev || key_up) step_value(-1, true);
+        for (int cp = gfx::GetCharPressed(); cp != 0; cp = gfx::GetCharPressed()) {
+            if (kind == OrgHeaderArgKind::kChoice || kind == OrgHeaderArgKind::kSwitch) {
+                // A dropdown's field has nothing to type into, so its
+                // letters stay navigation.
+                if (cp == 'j' || cp == 'l') step_value(1, true);
+                if (cp == 'k' || cp == 'h') step_value(-1, true);
+                continue;
+            }
+            if (kind == OrgHeaderArgKind::kNumber) {
+                // j/k step the number (the one key the spec asks for
+                // here); everything a number is actually made of still
+                // types, so an exact value doesn't have to be stepped to.
+                if (cp == 'j') { step_value(-1, true); continue; }
+                if (cp == 'k') { step_value(1, true); continue; }
+                if (!(std::isdigit(cp) || cp == '.' || cp == '-' || cp == '+')) continue;
+            }
+            if (cp < 32 || cp > 0x10FFFF) continue;
+            AppendUtf8(org_settings_pending_, cp);
+        }
+        return;
+    }
+    if (escape) {
+        RestoreFromOverlay();
+        return;
+    }
+    if (enter) {
+        OrgSettingsSelect(org_settings_index_, true);
+        return;
+    }
+    if (key_down) org_settings_index_ = std::min(static_cast<int>(org_settings_rows_.size()) - 1, org_settings_index_ + 1);
+    if (key_up) org_settings_index_ = std::max(0, org_settings_index_ - 1);
+    // On a row, the dropdown keys change it where it sits: the popup is
+    // a list of settings, and having to open one before Ctrl-N could
+    // move it would be a step that buys nothing.
+    if (ctrl_next) step_value(1, false);
+    if (ctrl_prev) step_value(-1, false);
+    for (int cp = gfx::GetCharPressed(); cp != 0; cp = gfx::GetCharPressed()) {
+        switch (cp) {
+            // h/l move by row like k/j rather than doing nothing: the
+            // list is one column, so "by direction" is up and down, and
+            // a hand already on hjkl shouldn't have to find out which
+            // half of it this popup listens to.
+            case 'j':
+            case 'l':
+                org_settings_index_ =
+                    std::min(static_cast<int>(org_settings_rows_.size()) - 1, org_settings_index_ + 1);
+                break;
+            case 'k':
+            case 'h':
+                org_settings_index_ = std::max(0, org_settings_index_ - 1);
+                break;
+            case 'g':
+                org_settings_index_ = 0;
+                break;
+            case 'G':
+                org_settings_index_ = static_cast<int>(org_settings_rows_.size()) - 1;
+                break;
+            case 'i':
+                OrgSettingsSelect(org_settings_index_, true);
+                return;
+            // Clearing an option is not the same as setting it to "no":
+            // an unset option lets a `#+PROPERTY:` line or the language's
+            // own default decide, so the popup has to be able to write
+            // both, and `d`/`x` is the one that takes the option off the
+            // block entirely.
+            case 'd':
+            case 'x':
+                OrgSettingsApply(org_settings_index_, "");
+                return;
+            case 'q':
+                RestoreFromOverlay();
+                return;
+            default:
+                break;
+        }
+    }
+}
+
 // --- Decorations -----------------------------------------------------------
 
 int Editor::CreateNamespace(const std::string &name) {
@@ -22442,6 +22798,7 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::Confirm: return "CONFIRM";
         case Mode::Select: return "SELECT";
         case Mode::Preview: return "PREVIEW";
+        case Mode::OrgBlockSettings: return "BLOCK-SETTINGS";
         case Mode::Sidebar: return "SIDEBAR";
         case Mode::Picker: return "PICKER";
         case Mode::RoamGraph: return "ROAM-GRAPH";

@@ -71,6 +71,14 @@ enum class Mode {
     // git-gutter's "preview hunk"): shows text and closes on the very
     // next keypress -- no callback, unlike Prompt/Confirm/Select above.
     Preview,
+    // The org block settings popup (TODO.org "org settings"): the header
+    // arguments of one `#+begin_src`/`#+begin_example` block, each row
+    // typed as a dropdown, a number or free text. Navigated in a
+    // normal-mode idiom (h/j/k/l between rows, Enter/i to edit the
+    // focused one), and unlike the overlays above it writes straight
+    // into the buffer as each edit is committed rather than handing a
+    // result back through a callback. See Editor::BeginOrgBlockSettings.
+    OrgBlockSettings,
     // A focused Sidebar (Part I Phase 7) takes over input the same way,
     // navigating its flattened section/widget list.
     Sidebar,
@@ -2782,6 +2790,22 @@ inline OrgBlockPlayInput OrgBlockPlayInputOf(const OrgBlockCard &card) {
     }
     return in;
 }
+
+// One row of the block settings popup (Mode::OrgBlockSettings): an
+// option's spec (org_doc.h -- what it is and what input it takes) paired
+// with what this block currently has for it, and the buffer row that
+// value lives on. `row` is the `#+HEADER:` line an argument was written
+// on when it came from one, so editing it writes it back where the user
+// put it instead of shadowing it from the `#+begin_` line.
+struct OrgBlockSettingRow {
+    OrgHeaderArgSpec spec;
+    // The value as written on the block, "" when the block doesn't set
+    // this option at all. For a kSwitch row: "yes" or "".
+    std::string value;
+    // Where `value` was written, or -1 when the option is unset -- a new
+    // value then goes on the block's own `#+begin_` line.
+    int row = -1;
+};
 
 // mep_diag_wrap's own port (LUA_TO_CPP_PLAN.md Phase LSP): greedy word-
 // wrap of `text` to `width` columns (mep.float_preview itself doesn't
@@ -8099,6 +8123,58 @@ public:
      * @return The new visibility state.
      */
     bool ToggleOrgBlockCards();
+
+    // --- Org block settings popup (a card's gear button, <leader>os) ---
+    // The block's header arguments, opened as a modal list of typed
+    // rows (Mode::OrgBlockSettings). Every committed edit is written
+    // into the buffer immediately -- one undo entry per option changed
+    // -- so the popup and the text never disagree about what the block
+    // says, and closing it is just closing it.
+    /**
+     * @brief Opens the settings popup for the block starting at `begin_row` of the active buffer.
+     * @param begin_row The block's `#+begin_` row (an OrgBlockCard::begin_row).
+     */
+    void BeginOrgBlockSettings(int begin_row);
+    /**
+     * @brief Opens the settings popup for the block the cursor is in (`:MepOrgBlockSettings`, <leader>os).
+     * @return True when a block was found and the popup opened; false (with a toast) otherwise.
+     */
+    bool OpenOrgBlockSettingsAtCursor();
+    /**
+     * @brief The settings popup's rows, in display order.
+     * @return The rows (empty when the popup isn't open).
+     */
+    const std::vector<OrgBlockSettingRow> &OrgSettingsRows() const { return org_settings_rows_; }
+    /**
+     * @brief The settings popup's title line ("python block settings").
+     * @return The title.
+     */
+    const std::string &OrgSettingsTitle() const { return org_settings_title_; }
+    /**
+     * @brief Which row the popup's cursor is on.
+     * @return The focused row index.
+     */
+    int OrgSettingsIndex() const { return org_settings_index_; }
+    /**
+     * @brief Whether the focused row's value is being edited rather than merely focused.
+     * @return True while editing.
+     */
+    bool OrgSettingsEditing() const { return org_settings_editing_; }
+    /**
+     * @brief The staged value of the row being edited (what the popup draws in its field).
+     * @return The in-progress value; "" when nothing is being edited.
+     */
+    const std::string &OrgSettingsPending() const { return org_settings_pending_; }
+    /**
+     * @brief Moves the popup's cursor to a row (the mouse path; the keyboard goes through j/k).
+     * @param index The row to focus; out-of-range values are ignored.
+     * @param begin_edit True to start editing that row as well, as a click on its value does.
+     */
+    void OrgSettingsSelect(int index, bool begin_edit);
+    /**
+     * @brief Closes the settings popup, committing whatever value was being edited.
+     */
+    void CloseOrgBlockSettings();
     // Clicking a card's play button (DrawPane, main.cpp): runs the src
     // block that starts on `begin_row` (0-based, an OrgBlockCard::
     // begin_row) in the *active* pane's buffer -- the caller focuses the
@@ -9588,6 +9664,18 @@ private:
     void HandleConfirmInput();
     void HandleSelectInput();
     void HandlePreviewInput();
+    void HandleOrgBlockSettingsInput();
+    // Writes `value` for row `index` into the buffer (one PushUndo) and
+    // rereads every row from the block afterwards, so the popup always
+    // shows what the file now says.
+    void OrgSettingsApply(int index, const std::string &value);
+    // Rebuilds org_settings_rows_ from the block the popup was opened
+    // on, keeping the focused row. Closes the popup if the block is gone
+    // (the buffer was edited underneath it).
+    void OrgSettingsReload();
+    // Commits the staged value of the row being edited and returns to
+    // row navigation. A no-op when nothing is being edited.
+    void OrgSettingsCommitEdit();
     void HandleHoverFocusInput();
     void HandleSidebarInput();
     // Input while sidebar `id` shows its `?` key-binding view: j/k/gg/G/
@@ -11017,6 +11105,30 @@ private:
     // select_callback_ref_ so a cancelled select leaks neither.
     int select_on_key_ref_ = 0;
     std::string preview_title_, preview_text_;
+
+    // --- Org block settings popup (Mode::OrgBlockSettings) ---
+    std::vector<OrgBlockSettingRow> org_settings_rows_;
+    std::string org_settings_title_;
+    // The block the popup is editing. The buffer id is kept so an edit
+    // can never land in a different buffer than the one the gear was
+    // clicked on, and the `#+begin_` row is where a new argument goes
+    // (and what the rows are reread from).
+    int org_settings_buffer_ = -1;
+    int org_settings_begin_row_ = -1;
+    int org_settings_index_ = 0;
+    // Editing the focused row's value rather than just sitting on it:
+    // j/k then step a number or cycle a dropdown instead of moving, and
+    // typing goes into the field.
+    bool org_settings_editing_ = false;
+    // The staged value while editing -- written to the buffer only when
+    // the edit is committed (Enter/Escape), so one option changed is one
+    // undo entry rather than one per keystroke.
+    std::string org_settings_pending_;
+    // The block's whole `:results` value as last read, which the four
+    // facet rows share: each of them owns one word of it, so writing one
+    // means recomposing the value the other three are still reading
+    // (OrgResultsWithFacet, org_doc.h).
+    std::string org_settings_results_;
 
     std::vector<SidebarInstance> sidebars_;
     int next_sidebar_id_ = 1;

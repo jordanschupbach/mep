@@ -850,4 +850,159 @@ OrgBlockPlay OrgBlockPlayFor(const OrgBlockPlayInput &in);
  */
 std::string OrgBlockPlayHint(const OrgBlockPlayInput &in);
 
+
+// --- Block settings (the card's gear button, Mode::OrgBlockSettings) ------
+//
+// The settings popup a block card's gear button opens: every header
+// argument org honors for that block, each with the kind of input it
+// actually takes, and the two pure operations the popup needs -- reading
+// one option's current value out of a block's header, and writing a new
+// one back into the line it lives on.
+//
+// All of it is here rather than in the editor for the usual reason the
+// org stack splits this way: the catalog and the line rewriting are
+// decidable from text alone, so they can be tested without a GL context
+// (org_doc_test.cpp), leaving editor.cpp with the mode's state machine
+// and main.cpp with the drawing.
+enum class OrgHeaderArgKind {
+    // One of a fixed list of words. The list always starts with "",
+    // which means "not written on this block at all" -- clearing an
+    // option and setting it to org's own default are different things
+    // (`:cache no` is not the same as no `:cache` when a `#+PROPERTY:`
+    // sets one file-wide), so the popup can express both.
+    kChoice,
+    // A number, stepped by `step` and clamped to [min_value, max_value].
+    kNumber,
+    // Free text (a filename, a session name, a compiler flag list).
+    kText,
+    // A bare `-n`/`+n`/`-r`/`-k` block switch rather than a `:key value`
+    // argument: written in the switch region between the block's
+    // language and its first `:key`, and either present or absent.
+    kSwitch,
+};
+
+// One row of the settings popup: what to show, what kind of input it
+// takes, and which header argument it writes.
+struct OrgHeaderArgSpec {
+    // Section heading drawn above this row, "" to continue the previous
+    // section. Purely a display grouping -- navigation skips headings.
+    std::string section;
+    // The header-arg key without its colon ("results", "tangle"), or the
+    // switch token itself ("-n") for kSwitch.
+    std::string key;
+    // The row's label, which is not always ":" + key: the four `:results`
+    // rows all write the same key and say which part of it they own.
+    std::string label;
+    OrgHeaderArgKind kind = OrgHeaderArgKind::kText;
+    // kChoice/kSwitch: the values offered, in cycle order, "" first.
+    std::vector<std::string> choices;
+    // kNumber only. `default_value` is where the first j/k press lands
+    // when the option isn't written on the block yet -- the value org (or
+    // the language's own plotting defaults) would have used anyway, so
+    // stepping an unset option starts somewhere sensible instead of at 0.
+    double min_value = 0.0;
+    double max_value = 0.0;
+    double step = 1.0;
+    double default_value = 0.0;
+    // For the four `:results` rows: which class of org's up-to-four
+    // space-separated `:results` words this row owns ("collection",
+    // "type", "format", "handling"). "" for every other spec, which owns
+    // its key's whole value.
+    std::string facet;
+    // One line under the list explaining what the focused option does.
+    std::string hint;
+};
+
+/**
+ * @brief Reports whether a block kind has header arguments worth a settings popup.
+ * @param block_kind The lowercased block word ("src", "example", "quote", ...).
+ * @return True for the kinds org reads options from (`src` and `example`), false otherwise.
+ */
+bool OrgBlockHasSettings(const std::string &block_kind);
+
+/**
+ * @brief Builds the settings popup's rows for one block: the common header args, then the
+ * ones only that language takes.
+ * @param block_kind The lowercased block word ("src", "example", ...).
+ * @param lang The block's language tag as written ("python", "C++"), "" when it has none.
+ * @return The specs in display order; empty when the kind has no settings (OrgBlockHasSettings).
+ */
+std::vector<OrgHeaderArgSpec> OrgHeaderArgSpecsFor(const std::string &block_kind, const std::string &lang);
+
+/**
+ * @brief Classifies one `:results` word into the facet it belongs to.
+ * @param word A single `:results` word ("output", "table", "raw", "silent").
+ * @return "collection", "type", "format", "handling", or "" for a word org doesn't know.
+ */
+std::string OrgResultsFacetOf(const std::string &word);
+
+/**
+ * @brief Reads one facet out of a whole `:results` value.
+ * @param results The block's `:results` value ("output table replace"), "" when unset.
+ * @param facet The facet wanted ("collection", "type", "format", "handling").
+ * @return That facet's word, or "" when the value names none.
+ */
+std::string OrgResultsFacetValue(const std::string &results, const std::string &facet);
+
+/**
+ * @brief Returns a `:results` value with one facet replaced (or removed), the other words kept in place.
+ * @param results The current `:results` value, "" when unset.
+ * @param facet The facet to write ("collection", "type", "format", "handling").
+ * @param word The word to put there, or "" to drop that facet entirely.
+ * @return The rewritten value; "" when nothing is left, which the caller writes as "remove :results".
+ */
+std::string OrgResultsWithFacet(const std::string &results, const std::string &facet, const std::string &word);
+
+/**
+ * @brief Quotes a header-arg value if it needs it, so it survives the reparse as one value.
+ * @param value The raw value text.
+ * @return The value, wrapped in double quotes when it contains a token-boundary colon that
+ * would otherwise be read as the start of the next argument; unchanged otherwise.
+ */
+std::string OrgQuoteHeaderArgValue(const std::string &value);
+
+/**
+ * @brief Formats a number as a header-arg value, without a trailing ".0".
+ * @param v The value.
+ * @return Its shortest exact-enough spelling ("7", "6.5").
+ */
+std::string OrgFormatHeaderArgNumber(double v);
+
+/**
+ * @brief Steps a numeric option's value up or down, clamped to the spec's range.
+ * @param spec The option's spec (supplies step/min/max and the starting point for an unset value).
+ * @param value The current value as written, "" when the option is unset.
+ * @param direction +1 to increment, -1 to decrement.
+ * @return The new value, formatted the way it will be written.
+ */
+std::string OrgStepHeaderArgNumber(const OrgHeaderArgSpec &spec, const std::string &value, int direction);
+
+/**
+ * @brief Writes one `:key value` header argument into a block header line, in place.
+ * @param line The `#+begin_...` or `#+HEADER:` line to rewrite.
+ * @param key The header-arg key without its colon.
+ * @param value The value to write, or "" to remove the argument entirely.
+ * @return The rewritten line. An argument already on the line is replaced where it sits (the
+ * rest of the line is left byte-for-byte alone); a new one is appended at the end.
+ */
+std::string OrgSetHeaderArgOnLine(const std::string &line, const std::string &key, const std::string &value);
+
+/**
+ * @brief Reports whether a block header line already carries a given bare switch.
+ * @param line The `#+begin_...` line.
+ * @param sw The switch token ("-n", "+n", "-r", "-k").
+ * @return True when the switch is present in the line's switch region.
+ */
+bool OrgBlockLineHasSwitch(const std::string &line, const std::string &sw);
+
+/**
+ * @brief Adds or removes a bare block switch on a `#+begin_...` line.
+ * @param line The line to rewrite.
+ * @param sw The switch token ("-n", "+n", "-r", "-k").
+ * @param on True to add it (if absent), false to remove it (if present).
+ * @return The rewritten line; a switch is added after the block's language and before its
+ * first `:key` argument, which is where org reads switches from.
+ */
+std::string OrgSetBlockSwitchOnLine(const std::string &line, const std::string &sw, bool on);
+
 #endif

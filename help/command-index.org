@@ -5,7 +5,7 @@
 
 * Every command
 
-All 326 ex commands mep defines: 103 built in and 224 registered from Lua.
+All 327 ex commands mep defines: 103 built in and 225 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -148,6 +148,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepOrgBibCitePreview= | [[file:org-links.html][Links, footnotes and citations]] |
 | =:MepOrgBibInsertCitation= | [[file:org-links.html][Links, footnotes and citations]] |
 | =:MepOrgBlockCardsToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =:MepOrgBlockSettings= | [[file:org-babel.html][Executing code blocks]] |
 | =:MepOrgCapture= | [[file:org-capture.html][Capture]] |
 | =:MepOrgCaptureAbort= | [[file:org-capture.html][Capture]] |
 | =:MepOrgCaptureCommit= | [[file:org-capture.html][Capture]] |

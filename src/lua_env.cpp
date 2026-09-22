@@ -3333,6 +3333,21 @@ int l_org_block_cards_visible(lua_State *L) {
     return 1;
 }
 
+// mep.org_block_settings() -> opened (bool). <leader>os /
+// `:MepOrgBlockSettings` -- opens the header-argument popup for the
+// block the cursor is in, the same popup a card's gear button opens
+// (Editor::OpenOrgBlockSettingsAtCursor, which toasts and returns false
+// when the cursor isn't in a block that has any).
+/**
+ * @brief Implements mep.org_block_settings(): opens the block settings popup at the cursor.
+ * @param L Lua state.
+ * @return Number of values pushed (1: whether the popup opened).
+ */
+int l_org_block_settings(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->OpenOrgBlockSettingsAtCursor());
+    return 1;
+}
+
 // mep.org_lsp_status_toggle() -> new visibility (bool). <leader>ots --
 // whether a `#+begin_src` card carries the language-server status line
 // along its bottom edge.
@@ -10301,6 +10316,7 @@ const luaL_Reg kMepFuncs[] = {
     {"org_latex_toggle", l_org_latex_toggle},
     {"org_block_cards_toggle", l_org_block_cards_toggle},
     {"org_block_cards_visible", l_org_block_cards_visible},
+    {"org_block_settings", l_org_block_settings},
     {"org_lsp_status_toggle", l_org_lsp_status_toggle},
     {"org_lsp_status_visible", l_org_lsp_status_visible},
     {"buf_set_org_lsp_status", l_buf_set_org_lsp_status},

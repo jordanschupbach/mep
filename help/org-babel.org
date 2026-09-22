@@ -89,6 +89,51 @@ launching itself, a notebook of editor commands.
 exporting, matching real org-mode's default, so a block you do not want run
 during a build needs to say so.
 
+** Setting them from a popup
+
+The gear button on a block card's title bar -- or =<leader>os= /
+=:MepOrgBlockSettings= with the cursor in the block -- opens that block's
+header arguments as a list you can edit without remembering how any of
+them are spelled. Every argument org honours for the block is there,
+whether or not the block sets it: the common ones first, grouped into
+Results, Execution, Output, Tangle and Noweb, then the ones only that
+language takes (=:width= / =:height= / =:res= for R, =:includes= /
+=:flags= / =:libs= for C and C++, =:return= for Python, and so on), then
+the line switches.
+
+Each row is the kind of input the argument actually takes -- a dropdown
+of the words org accepts, a number, or free text -- so the popup will not
+let you write =:exports bth=. =:results= gets four rows rather than one,
+since its value is up to four words from four independent groups
+(=output=, =table=, =raw=, =silent=); setting one leaves the other three
+alone.
+
+| Key                 | Does                                             |
+|---------------------+--------------------------------------------------|
+| =j= / =k=, =h= / =l=  | move between rows                              |
+| =Enter= or =i=      | edit the focused row                             |
+| =Ctrl-N= / =Ctrl-P= | change the focused value without opening it      |
+| =d= or =x=          | clear the argument off the block entirely        |
+| =q= or =Escape=     | close                                            |
+
+Inside a row, =j= / =k= (and =Ctrl-N= / =Ctrl-P=) cycle a dropdown or
+step a number, typing edits a text field -- digits type an exact number
+too -- and =Enter= or =Escape= commits it and goes back to the list. The
+mouse works as well: a click on a row focuses it, a click on its value
+opens it.
+
+Each committed change is written straight into the file, as one undo
+entry, so =u= after closing the popup takes the last one back. Values are
+written where they already live: an argument set on a =#+HEADER:= line
+above the block is edited there, and a new one goes on the =#+begin_src=
+line. Clearing an argument is not the same as setting it to =no= -- an
+argument that isn't there lets a =#+PROPERTY:= line or org's own default
+decide, which is why the popup shows =--= for one the block doesn't set.
+
+An =#+begin_example= block has the same popup with only the line switches
+in it (=-n= to number its lines, =+n=, =-r=, =-k=); a =quote= or =export=
+block has no header arguments at all, so it gets no gear.
+
 * Tangling
 
 =:MepOrgBabelTangle= writes the code blocks out to real source files, which

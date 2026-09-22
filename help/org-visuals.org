@@ -95,6 +95,21 @@ and neither does any non-=src= block. If the card is too narrow for both
 the button and the block's language, the language wins and the button is
 dropped -- =C-c C-c= is unaffected.
 
+** The settings button
+
+Left of the play button, a gear: it opens the block's header arguments as
+an editable list -- every argument org honours for that block, each as a
+dropdown, a number or a text field, described in full under
+[[file:org-babel.html][Executing code blocks]]. =<leader>os= (or
+=:MepOrgBlockSettings=) opens the same popup for the block the cursor is
+in.
+
+Unlike the play button it is also on an =#+begin_example= card, whose
+popup holds that block's line switches (=-n=, =+n=, =-r=, =-k=). A
+=quote=, =verse= or =export= block has no arguments to set and gets no
+gear, and a card too narrow for both the gear and the block's language
+drops the gear the same way it drops the play button.
+
 ** How wide a card is
 
 As wide as the *wider* of its own longest line and =textwidth= (=:set

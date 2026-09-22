@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 namespace {
 
@@ -1804,4 +1805,572 @@ std::string OrgBlockPlayHint(const OrgBlockPlayInput &in) {
             break;
     }
     return "Run this " + in.lang + " block (C-c C-c)";
+}
+
+// --- Block settings (the card's gear button) ------------------------------
+
+namespace {
+
+/**
+ * @brief Lowercases a string's ASCII letters.
+ * @param s the string to fold
+ * @return `s` with A-Z mapped to a-z
+ */
+std::string LowerAscii(const std::string &s) {
+    std::string out = s;
+    for (char &c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+/**
+ * @brief Splits a string on runs of ASCII whitespace.
+ * @param s the string to split
+ * @return its whitespace-separated words, in order, with no empty entries
+ */
+std::vector<std::string> SplitWords(const std::string &s) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i < s.size()) {
+        while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) i++;
+        size_t start = i;
+        while (i < s.size() && !std::isspace(static_cast<unsigned char>(s[i]))) i++;
+        if (i > start) out.push_back(s.substr(start, i - start));
+    }
+    return out;
+}
+
+/**
+ * @brief Drops trailing ASCII whitespace from a string.
+ * @param s the string to trim
+ * @return `s` without its trailing whitespace
+ */
+std::string RTrim(const std::string &s) {
+    std::string out = s;
+    while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back()))) out.pop_back();
+    return out;
+}
+
+// Where a header line's `:key value` arguments may start: just past
+// `#+HEADER:`/`#+HEADERS:`, or past the `#+begin_<word>` token. Anything
+// between that point and the first token-boundary colon -- a language
+// tag, a `-n` switch, an export backend -- is left alone by every
+// rewrite below, which is what keeps them from being mistaken for
+// arguments. Returns std::string::npos for a line that is neither.
+/**
+ * @brief Locates where a block header line's `:key` arguments may begin.
+ * @param line the `#+begin_...` or `#+HEADER:` line
+ * @return the index just past the line's introducing token, or npos when the line is neither form
+ */
+size_t HeaderArgRegionStart(const std::string &line) {
+    size_t i = 0;
+    while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+    if (i + 2 > line.size() || line[i] != '#' || line[i + 1] != '+') return std::string::npos;
+    size_t word_start = i + 2;
+    size_t j = word_start;
+    while (j < line.size() && (std::isalnum(static_cast<unsigned char>(line[j])) || line[j] == '_' || line[j] == '-')) j++;
+    const std::string word = LowerAscii(line.substr(word_start, j - word_start));
+    if (word == "header" || word == "headers") {
+        // `#+HEADER:` -- the colon is part of the keyword, not the start
+        // of an argument, so the region opens after it.
+        return j < line.size() && line[j] == ':' ? j + 1 : std::string::npos;
+    }
+    if (word.compare(0, 6, "begin_") == 0) return j;
+    return std::string::npos;
+}
+
+// One `:key value` argument's span inside a line: `begin` is its colon,
+// `end` the first character of the next argument (or the end of the
+// line), so the span carries any whitespace that separated the two --
+// which is what makes a removal collapse cleanly.
+struct HeaderArgSpan {
+    bool found = false;
+    size_t begin = 0;
+    size_t end = 0;
+};
+
+// The value-scanning rule is ParseOrgHeaderArgs' own (editor.cpp): a
+// value runs to the next colon that starts a token outside quotes, so
+// neither a `https://` inside a value nor a `:` inside `"a: b"` ends it
+// early.
+/**
+ * @brief Finds one header argument's span in a line.
+ * @param line the line to scan
+ * @param key the key to find, matched without regard to case
+ * @return the span of `:key value` including its trailing separator, or not-found
+ */
+HeaderArgSpan FindHeaderArg(const std::string &line, const std::string &key) {
+    HeaderArgSpan span;
+    const size_t region = HeaderArgRegionStart(line);
+    if (region == std::string::npos) return span;
+    const std::string want = LowerAscii(key);
+    size_t i = region;
+    while (i < line.size()) {
+        while (i < line.size() &&
+               !(line[i] == ':' && i > 0 && std::isspace(static_cast<unsigned char>(line[i - 1])))) {
+            i++;
+        }
+        if (i >= line.size()) return span;
+        const size_t colon = i;
+        size_t k = colon + 1;
+        while (k < line.size() && (std::isalnum(static_cast<unsigned char>(line[k])) || line[k] == '_' || line[k] == '-')) k++;
+        const std::string found_key = LowerAscii(line.substr(colon + 1, k - colon - 1));
+        // Walk to the start of the next argument, which is where this
+        // one's value ends.
+        size_t j = k;
+        char quote = 0;
+        while (j < line.size()) {
+            const char c = line[j];
+            if (quote != 0) {
+                if (c == quote) quote = 0;
+            } else if (c == '"' || c == '\'') {
+                quote = c;
+            } else if (c == ':' && j > 0 && std::isspace(static_cast<unsigned char>(line[j - 1]))) {
+                break;
+            }
+            j++;
+        }
+        if (!found_key.empty() && found_key == want) {
+            span.found = true;
+            span.begin = colon;
+            span.end = j;
+            return span;
+        }
+        i = j;
+    }
+    return span;
+}
+
+// Everything before the first `:key` argument and after the
+// `#+begin_<word>` token: where org reads `-n`/`+n`/`-r`/`-k` from.
+/**
+ * @brief Locates a `#+begin_...` line's switch region.
+ * @param line the line to scan
+ * @param begin receives the region's first index
+ * @param end receives the region's end (the first argument's colon, or the line's end)
+ * @return true when the line is a `#+begin_...` line, false otherwise
+ */
+bool BlockSwitchRegion(const std::string &line, size_t *begin, size_t *end) {
+    const size_t region = HeaderArgRegionStart(line);
+    if (region == std::string::npos) return false;
+    // A `#+HEADER:` line carries arguments only: its switch region would
+    // be the empty span right after the keyword, and a switch written
+    // there means nothing to org.
+    if (region > 0 && line[region - 1] == ':') return false;
+    size_t i = region;
+    size_t stop = line.size();
+    while (i < line.size()) {
+        if (line[i] == ':' && i > 0 && std::isspace(static_cast<unsigned char>(line[i - 1]))) {
+            stop = i;
+            break;
+        }
+        i++;
+    }
+    *begin = region;
+    *end = stop;
+    return true;
+}
+
+}  // namespace
+
+bool OrgBlockHasSettings(const std::string &block_kind) {
+    // The two kinds org actually reads options from: `src` takes the
+    // whole header-argument vocabulary, `example` takes the same line
+    // switches `src` does. A `quote`/`verse`/`center`/`export` block has
+    // nothing to set, so it gets a card but no gear.
+    return block_kind == "src" || block_kind == "example";
+}
+
+std::string OrgResultsFacetOf(const std::string &word) {
+    const std::string w = LowerAscii(word);
+    if (w == "value" || w == "output") return "collection";
+    if (w == "table" || w == "vector" || w == "list" || w == "scalar" || w == "verbatim" || w == "file") return "type";
+    if (w == "raw" || w == "org" || w == "html" || w == "latex" || w == "code" || w == "pp" || w == "drawer" ||
+        w == "link" || w == "graphics") {
+        return "format";
+    }
+    if (w == "replace" || w == "silent" || w == "append" || w == "prepend" || w == "none") return "handling";
+    return "";
+}
+
+std::string OrgResultsFacetValue(const std::string &results, const std::string &facet) {
+    for (const std::string &word : SplitWords(results)) {
+        if (OrgResultsFacetOf(word) == facet) return LowerAscii(word);
+    }
+    return "";
+}
+
+std::string OrgResultsWithFacet(const std::string &results, const std::string &facet, const std::string &word) {
+    std::vector<std::string> words = SplitWords(results);
+    bool replaced = false;
+    std::vector<std::string> out;
+    for (const std::string &existing : words) {
+        if (OrgResultsFacetOf(existing) != facet) {
+            // A word from another facet -- or one org doesn't know, which
+            // is kept rather than silently dropped: this rewrite owns one
+            // facet, not the whole value.
+            out.push_back(existing);
+            continue;
+        }
+        if (replaced || word.empty()) continue;
+        out.push_back(word);
+        replaced = true;
+    }
+    if (!replaced && !word.empty()) out.push_back(word);
+    std::string joined;
+    for (const std::string &w : out) {
+        if (!joined.empty()) joined += ' ';
+        joined += w;
+    }
+    return joined;
+}
+
+std::string OrgQuoteHeaderArgValue(const std::string &value) {
+    if (value.empty()) return value;
+    if (value.size() >= 2 && value.front() == '"' && value.back() == '"') return value;
+    // The only thing that actually breaks a value is a colon at a token
+    // boundary, which the reparse would read as the next argument
+    // starting. Spaces alone are fine (`:file my plot.png` is one value
+    // to org), and quoting them anyway would corrupt the multi-word
+    // values that must stay unquoted -- `:results output table`.
+    bool needs = value.front() == ':';
+    for (size_t i = 1; i < value.size() && !needs; i++) {
+        if (value[i] == ':' && std::isspace(static_cast<unsigned char>(value[i - 1]))) needs = true;
+    }
+    return needs ? "\"" + value + "\"" : value;
+}
+
+std::string OrgFormatHeaderArgNumber(double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.6g", v);
+    return std::string(buf);
+}
+
+std::string OrgStepHeaderArgNumber(const OrgHeaderArgSpec &spec, const std::string &value, int direction) {
+    double current = spec.default_value;
+    bool have = false;
+    if (!value.empty()) {
+        const char *begin = value.c_str();
+        char *stop = nullptr;
+        const double parsed = std::strtod(begin, &stop);
+        // Only a value that is *entirely* a number is stepped from;
+        // anything else (a `:width (fig-width)` elisp form, a typo) is
+        // treated as unset, so the first press writes a number rather
+        // than mangling whatever was there.
+        if (stop != nullptr && static_cast<size_t>(stop - begin) == value.size()) {
+            current = parsed;
+            have = true;
+        }
+    }
+    // An unset option's first press lands on the default rather than a
+    // step away from it: the default is the value someone reaching for
+    // this option most likely wants, and one more press moves off it.
+    double next = have ? current + static_cast<double>(direction) * spec.step : spec.default_value;
+    if (next < spec.min_value) next = spec.min_value;
+    if (next > spec.max_value) next = spec.max_value;
+    return OrgFormatHeaderArgNumber(next);
+}
+
+std::string OrgSetHeaderArgOnLine(const std::string &line, const std::string &key, const std::string &value) {
+    if (key.empty()) return line;
+    const size_t region = HeaderArgRegionStart(line);
+    if (region == std::string::npos) return line;
+    const HeaderArgSpan span = FindHeaderArg(line, key);
+    if (span.found) {
+        std::string out = line.substr(0, span.begin);
+        if (!value.empty()) {
+            out += ":" + key + " " + value;
+            // The span swallowed the separator before the next argument,
+            // so put one back when there is one.
+            if (span.end < line.size()) out += " ";
+        }
+        out += line.substr(span.end);
+        // Removing the last argument leaves the separator that preceded
+        // it dangling.
+        return RTrim(out);
+    }
+    if (value.empty()) return line;  // nothing to remove
+    return RTrim(line) + " :" + key + " " + value;
+}
+
+bool OrgBlockLineHasSwitch(const std::string &line, const std::string &sw) {
+    size_t begin = 0, end = 0;
+    if (!BlockSwitchRegion(line, &begin, &end)) return false;
+    for (const std::string &word : SplitWords(line.substr(begin, end - begin))) {
+        if (word == sw) return true;
+    }
+    return false;
+}
+
+std::string OrgSetBlockSwitchOnLine(const std::string &line, const std::string &sw, bool on) {
+    size_t begin = 0, end = 0;
+    if (sw.empty() || !BlockSwitchRegion(line, &begin, &end)) return line;
+    const bool has = OrgBlockLineHasSwitch(line, sw);
+    if (on == has) return line;
+    if (on) {
+        // Appended at the tail of the switch region, so it lands after
+        // the language tag (which lives in that same region) and before
+        // the first `:key` -- exactly where org looks for it.
+        if (end >= line.size()) return RTrim(line) + " " + sw;
+        return line.substr(0, end) + sw + " " + line.substr(end);
+    }
+    // Remove it plus one adjacent separator, preferring the one after it
+    // so the switches before it keep their spacing.
+    size_t i = begin;
+    while (i < end) {
+        while (i < end && std::isspace(static_cast<unsigned char>(line[i]))) i++;
+        size_t start = i;
+        while (i < end && !std::isspace(static_cast<unsigned char>(line[i]))) i++;
+        if (line.compare(start, i - start, sw) != 0) continue;
+        size_t cut_from = start, cut_to = i;
+        if (cut_to < line.size() && std::isspace(static_cast<unsigned char>(line[cut_to]))) {
+            cut_to++;
+        } else if (cut_from > 0 && std::isspace(static_cast<unsigned char>(line[cut_from - 1]))) {
+            cut_from--;
+        }
+        return RTrim(line.substr(0, cut_from) + line.substr(cut_to));
+    }
+    return line;
+}
+
+namespace {
+
+/**
+ * @brief Appends one choice-valued option to a spec list.
+ * @param out the list being built
+ * @param section section heading for this row, "" to continue the previous section
+ * @param key the header-arg key without its colon
+ * @param label the row's label
+ * @param choices the values offered, "" first for "not set"
+ * @param hint the one-line explanation shown under the list
+ */
+void AddChoice(std::vector<OrgHeaderArgSpec> *out, const char *section, const char *key, const char *label,
+                std::vector<std::string> choices, const char *hint) {
+    OrgHeaderArgSpec spec;
+    spec.section = section;
+    spec.key = key;
+    spec.label = label;
+    spec.kind = OrgHeaderArgKind::kChoice;
+    spec.choices = std::move(choices);
+    spec.hint = hint;
+    out->push_back(std::move(spec));
+}
+
+/**
+ * @brief Appends one free-text option to a spec list.
+ * @param out the list being built
+ * @param section section heading for this row, "" to continue the previous section
+ * @param key the header-arg key without its colon
+ * @param hint the one-line explanation shown under the list
+ */
+void AddText(std::vector<OrgHeaderArgSpec> *out, const char *section, const char *key, const char *hint) {
+    OrgHeaderArgSpec spec;
+    spec.section = section;
+    spec.key = key;
+    spec.label = std::string(":") + key;
+    spec.kind = OrgHeaderArgKind::kText;
+    spec.hint = hint;
+    out->push_back(std::move(spec));
+}
+
+/**
+ * @brief Appends one numeric option to a spec list.
+ * @param out the list being built
+ * @param section section heading for this row, "" to continue the previous section
+ * @param key the header-arg key without its colon
+ * @param min_value lowest value j/k will reach
+ * @param max_value highest value j/k will reach
+ * @param step how far one press moves
+ * @param default_value where the first press lands when the option is unset
+ * @param hint the one-line explanation shown under the list
+ */
+void AddNumber(std::vector<OrgHeaderArgSpec> *out, const char *section, const char *key, double min_value,
+                double max_value, double step, double default_value, const char *hint) {
+    OrgHeaderArgSpec spec;
+    spec.section = section;
+    spec.key = key;
+    spec.label = std::string(":") + key;
+    spec.kind = OrgHeaderArgKind::kNumber;
+    spec.min_value = min_value;
+    spec.max_value = max_value;
+    spec.step = step;
+    spec.default_value = default_value;
+    spec.hint = hint;
+    out->push_back(std::move(spec));
+}
+
+/**
+ * @brief Appends one bare block switch to a spec list.
+ * @param out the list being built
+ * @param section section heading for this row, "" to continue the previous section
+ * @param sw the switch token ("-n", "+n", "-r", "-k")
+ * @param hint the one-line explanation shown under the list
+ */
+void AddSwitch(std::vector<OrgHeaderArgSpec> *out, const char *section, const char *sw, const char *hint) {
+    OrgHeaderArgSpec spec;
+    spec.section = section;
+    spec.key = sw;
+    spec.label = sw;
+    spec.kind = OrgHeaderArgKind::kSwitch;
+    spec.choices = {"", "yes"};
+    spec.hint = hint;
+    out->push_back(std::move(spec));
+}
+
+/**
+ * @brief Appends the `-n`/`+n`/`-r`/`-k` line switches, which `src` and `example` blocks share.
+ * @param out the list being built
+ */
+void AddDisplaySwitches(std::vector<OrgHeaderArgSpec> *out) {
+    AddSwitch(out, "Display", "-n", "Number the lines of this block.");
+    AddSwitch(out, "", "+n", "Number the lines, continuing from the previous block.");
+    AddSwitch(out, "", "-r", "Remove (ref:name) labels from the block as it is displayed.");
+    AddSwitch(out, "", "-k", "Keep the (ref:name) labels visible in the displayed block.");
+}
+
+// A language tag as written -> the family whose own header arguments it
+// takes. Everything not named here gets the common set only, which is
+// the honest answer: an option list invented for a language org has no
+// backend for would be a list of settings that do nothing.
+/**
+ * @brief Maps a block's language tag onto the header-arg family it belongs to.
+ * @param lang the language tag as written on the `#+begin_src` line
+ * @return one of "r", "python", "c", "shell", "sql", "latex", or "" for a language with no extra options
+ */
+std::string LanguageFamily(const std::string &lang) {
+    const std::string l = LowerAscii(lang);
+    if (l == "r" || l == "rscript") return "r";
+    if (l == "python" || l == "py" || l == "jupyter-python" || l == "ipython") return "python";
+    if (l == "c" || l == "cpp" || l == "c++" || l == "d") return "c";
+    if (l == "sh" || l == "bash" || l == "shell" || l == "zsh" || l == "fish" || l == "dash") return "shell";
+    if (l == "sql" || l == "sqlite") return "sql";
+    if (l == "latex") return "latex";
+    return "";
+}
+
+}  // namespace
+
+std::vector<OrgHeaderArgSpec> OrgHeaderArgSpecsFor(const std::string &block_kind, const std::string &lang) {
+    std::vector<OrgHeaderArgSpec> out;
+    if (!OrgBlockHasSettings(block_kind)) return out;
+    if (block_kind != "src") {
+        // An `example` block has no header arguments at all -- the
+        // switches are the whole of what org reads from its line.
+        AddDisplaySwitches(&out);
+        return out;
+    }
+    // `:results` takes up to four words from four independent classes,
+    // and mixing them into one text field is exactly how they get
+    // mistyped ("output verbatim" vs "verbatim output" vs "ouput"). One
+    // row per class, recombined on write (OrgResultsWithFacet).
+    const char *kResults = "Results";
+    {
+        OrgHeaderArgSpec spec;
+        spec.section = kResults;
+        spec.key = "results";
+        spec.label = ":results collection";
+        spec.kind = OrgHeaderArgKind::kChoice;
+        spec.choices = {"", "value", "output"};
+        spec.facet = "collection";
+        spec.hint = "Capture the block's return value, or everything it printed.";
+        out.push_back(spec);
+        spec.section = "";
+        spec.label = ":results type";
+        spec.choices = {"", "table", "list", "scalar", "verbatim", "file"};
+        spec.facet = "type";
+        spec.hint = "How to interpret what came back.";
+        out.push_back(spec);
+        spec.label = ":results format";
+        spec.choices = {"", "raw", "org", "html", "latex", "code", "pp", "drawer", "link", "graphics"};
+        spec.facet = "format";
+        spec.hint = "How the results are written into the document.";
+        out.push_back(spec);
+        spec.label = ":results handling";
+        spec.choices = {"", "replace", "silent", "append", "prepend", "none"};
+        spec.facet = "handling";
+        spec.hint = "What happens to the results already under the block.";
+        out.push_back(spec);
+    }
+    AddText(&out, "", "wrap", "Wrap the results in this block (e.g. example, src html).");
+    AddText(&out, "", "post", "Name of another block the results are passed through first.");
+    AddChoice(&out, "Execution", "exports", ":exports", {"", "code", "results", "both", "none"},
+               "What an export of the document includes for this block.");
+    AddChoice(&out, "", "eval", ":eval", {"", "yes", "no", "never", "query", "no-export", "never-export"},
+               "Whether this block may run; no/never also grey out the play button.");
+    AddText(&out, "", "session", "REPL session to run in; none for a fresh process each time.");
+    AddChoice(&out, "", "cache", ":cache", {"", "yes", "no"},
+               "Re-run only when the block's body or arguments have changed.");
+    AddText(&out, "", "dir", "Working directory the block runs in.");
+    AddText(&out, "", "var", "A name=value binding passed in (the first :var on the line).");
+    AddText(&out, "", "prologue", "Code prepended to the body before it runs.");
+    AddText(&out, "", "epilogue", "Code appended to the body before it runs.");
+    AddText(&out, "Output", "file", "Write the results to this file and link to it.");
+    AddText(&out, "", "file-ext", "Extension used when :file is derived from the block's name.");
+    AddText(&out, "", "file-desc", "Description text for the link to :file.");
+    AddText(&out, "", "output-dir", "Directory :file is written into.");
+    AddText(&out, "", "sep", "Field separator used when reading a table back.");
+    AddChoice(&out, "", "hlines", ":hlines", {"", "yes", "no"},
+               "Pass an input table's horizontal lines through to the code.");
+    AddChoice(&out, "", "colnames", ":colnames", {"", "yes", "no", "nil"},
+               "Treat an input table's first row as column names.");
+    AddChoice(&out, "", "rownames", ":rownames", {"", "yes", "no"},
+               "Treat an input table's first column as row names.");
+    AddText(&out, "Tangle", "tangle", "yes/no, or the file this block tangles into.");
+    AddText(&out, "", "tangle-mode", "Permissions for the tangled file (e.g. o755).");
+    AddChoice(&out, "", "mkdirp", ":mkdirp", {"", "yes", "no"},
+               "Create the tangle target's directory when it is missing.");
+    AddChoice(&out, "", "comments", ":comments", {"", "no", "link", "yes", "org", "both", "noweb"},
+               "What comments to leave around the tangled code.");
+    AddChoice(&out, "", "padline", ":padline", {"", "yes", "no"}, "Leave a blank line between tangled blocks.");
+    AddText(&out, "", "shebang", "First line of the tangled file (e.g. #!/bin/sh).");
+    AddChoice(&out, "", "no-expand", ":no-expand", {"", "yes", "no"},
+               "Skip variable and noweb expansion when tangling.");
+    AddChoice(&out, "Noweb", "noweb", ":noweb", {"", "no", "yes", "tangle", "no-export", "strip-export", "eval"},
+               "When <<reference>> syntax in the body is expanded.");
+    AddText(&out, "", "noweb-ref", "Name this block answers to when another one references it.");
+    AddText(&out, "", "noweb-sep", "Separator inserted between concatenated noweb blocks.");
+    const std::string family = LanguageFamily(lang);
+    if (family == "r") {
+        AddNumber(&out, "Language: R", "width", 1.0, 100.0, 1.0, 7.0, "Graphics device width, in :units.");
+        AddNumber(&out, "", "height", 1.0, 100.0, 1.0, 7.0, "Graphics device height, in :units.");
+        AddChoice(&out, "", "units", ":units", {"", "in", "cm", "px"}, "Units :width and :height are given in.");
+        AddNumber(&out, "", "res", 10.0, 1200.0, 10.0, 72.0, "Graphics resolution, in dpi.");
+        AddNumber(&out, "", "pointsize", 1.0, 96.0, 1.0, 12.0, "Base font size of the graphics device.");
+        AddText(&out, "", "bg", "Background of the graphics device (white, transparent, ...).");
+    } else if (family == "python") {
+        AddText(&out, "Language: Python", "return", "Expression whose value is returned under :results value.");
+        AddText(&out, "", "preamble", "Code run before the block's body.");
+        AddText(&out, "", "python", "Interpreter this block runs under.");
+        AddChoice(&out, "", "async", ":async", {"", "yes", "no"}, "Run the block without blocking the editor.");
+    } else if (family == "c") {
+        AddText(&out, "Language: C/C++", "includes", "#include lines prepended to the body (<stdio.h> <math.h>).");
+        AddText(&out, "", "defines", "#define lines prepended to the body.");
+        AddText(&out, "", "flags", "Extra flags passed to the compiler.");
+        AddText(&out, "", "libs", "Linker flags (e.g. -lm).");
+        AddChoice(&out, "", "main", ":main", {"", "yes", "no"}, "no when the body supplies its own main().");
+        AddText(&out, "", "namespaces", "C++ using-namespace lines prepended to the body.");
+        AddText(&out, "", "cmdline", "Arguments passed to the compiled program.");
+    } else if (family == "shell") {
+        AddText(&out, "Language: Shell", "cmdline", "Arguments passed to the script.");
+        AddText(&out, "", "stdin", "Name of a block whose results are fed in on stdin.");
+    } else if (family == "sql") {
+        AddChoice(&out, "Language: SQL", "engine", ":engine",
+                   {"", "postgresql", "mysql", "sqlite", "dbi", "oracle", "vertica", "msosql"},
+                   "Database backend this block is sent to.");
+        AddText(&out, "", "database", "Database to connect to.");
+        AddText(&out, "", "dbhost", "Host the database is on.");
+        AddNumber(&out, "", "dbport", 1.0, 65535.0, 1.0, 5432.0, "Port the database listens on.");
+        AddText(&out, "", "dbuser", "User to connect as.");
+        AddText(&out, "", "dbpassword", "Password to connect with (stored in the file as written).");
+        AddText(&out, "", "cmdline", "Extra arguments for the database client.");
+    } else if (family == "latex") {
+        AddChoice(&out, "Language: LaTeX", "imagemagick", ":imagemagick", {"", "yes", "no"},
+                   "Convert the rendered PDF with ImageMagick.");
+        AddText(&out, "", "iminoptions", "ImageMagick options applied before conversion.");
+        AddText(&out, "", "imoutoptions", "ImageMagick options applied after conversion.");
+        AddText(&out, "", "headers", "Extra LaTeX header lines for this block.");
+        AddChoice(&out, "", "fit", ":fit", {"", "yes", "no"}, "Crop the output to the drawing's own bounds.");
+        AddText(&out, "", "border", "Border left around a fitted drawing (e.g. 1cm).");
+    }
+    AddDisplaySwitches(&out);
+    return out;
 }

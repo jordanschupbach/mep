@@ -74,6 +74,45 @@ launching itself, a notebook of editor commands.</p>
 <p><code>:eval no</code> matters for export: code blocks are executed as part of
 exporting, matching real org-mode's default, so a block you do not want run
 during a build needs to say so.</p>
+<h2>Setting them from a popup</h2>
+<p>The gear button on a block card's title bar -- or <code>&lt;leader&gt;os</code> /
+<code>:MepOrgBlockSettings</code> with the cursor in the block -- opens that block's
+header arguments as a list you can edit without remembering how any of
+them are spelled. Every argument org honours for the block is there,
+whether or not the block sets it: the common ones first, grouped into
+Results, Execution, Output, Tangle and Noweb, then the ones only that
+language takes (<code>:width</code> / <code>:height</code> / <code>:res</code> for R, <code>:includes</code> /
+<code>:flags</code> / <code>:libs</code> for C and C++, <code>:return</code> for Python, and so on), then
+the line switches.</p>
+<p>Each row is the kind of input the argument actually takes -- a dropdown
+of the words org accepts, a number, or free text -- so the popup will not
+let you write <code>:exports bth</code>. <code>:results</code> gets four rows rather than one,
+since its value is up to four words from four independent groups
+(<code>output</code>, <code>table</code>, <code>raw</code>, <code>silent</code>); setting one leaves the other three
+alone.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>j</code> / <code>k</code>, <code>h</code> / <code>l</code></td><td>move between rows</td></tr>
+<tr><td><code>Enter</code> or <code>i</code></td><td>edit the focused row</td></tr>
+<tr><td><code>Ctrl-N</code> / <code>Ctrl-P</code></td><td>change the focused value without opening it</td></tr>
+<tr><td><code>d</code> or <code>x</code></td><td>clear the argument off the block entirely</td></tr>
+<tr><td><code>q</code> or <code>Escape</code></td><td>close</td></tr>
+</table>
+<p>Inside a row, <code>j</code> / <code>k</code> (and <code>Ctrl-N</code> / <code>Ctrl-P</code>) cycle a dropdown or
+step a number, typing edits a text field -- digits type an exact number
+too -- and <code>Enter</code> or <code>Escape</code> commits it and goes back to the list. The
+mouse works as well: a click on a row focuses it, a click on its value
+opens it.</p>
+<p>Each committed change is written straight into the file, as one undo
+entry, so <code>u</code> after closing the popup takes the last one back. Values are
+written where they already live: an argument set on a <code>#+HEADER:</code> line
+above the block is edited there, and a new one goes on the <code>#+begin_src</code>
+line. Clearing an argument is not the same as setting it to <code>no</code> -- an
+argument that isn't there lets a <code>#+PROPERTY:</code> line or org's own default
+decide, which is why the popup shows <code>--</code> for one the block doesn't set.</p>
+<p>An <code>#+begin_example</code> block has the same popup with only the line switches
+in it (<code>-n</code> to number its lines, <code>+n</code>, <code>-r</code>, <code>-k</code>); a <code>quote</code> or <code>export</code>
+block has no header arguments at all, so it gets no gear.</p>
 <h1>Tangling</h1>
 <p><code>:MepOrgBabelTangle</code> writes the code blocks out to real source files, which
 is the literate-programming direction: the org file is the source, and the

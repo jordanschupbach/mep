@@ -81,8 +81,8 @@ the colours follow your theme.
 
 * Servers mep knows about
 
-Thirty-seven. All but the last are used when their command is on =$PATH=;
-the org one ships with mep itself:
+Thirty-seven. All but the last two are used when their command is on
+=$PATH=; the org and R ones ship with mep itself:
 
 | Language        | Command                            |
 |-----------------+------------------------------------|
@@ -101,7 +101,7 @@ the org one ships with mep itself:
 | Zig             | =zls=                              |
 | Elixir          | =elixir-ls=                        |
 | Bash            | =bash-language-server=             |
-| R               | R's =languageserver=               |
+| R               | =mep-r-lsp= (ships with mep)       |
 | Perl            | Perl's =PLS=                       |
 | Fortran         | =fortls=                           |
 | Scala           | =metals=                           |
@@ -125,11 +125,24 @@ the org one ships with mep itself:
 
 If a server is missing, nothing breaks -- the file simply opens without one.
 
-* The one mep brings itself
+* The two mep brings itself
 
 =mep-org-lsp= is mep's own org-mode server, built and installed alongside
 =mep=, so org files get diagnostics and completion with nothing to install.
 See [[file:org-lsp.html][The org language server]].
+
+=mep-r-lsp= is the same idea for R: it parses R itself and never starts R,
+so a =.R= file gets diagnostics, completion, hover and signature help on a
+machine with no R installed. See [[file:r-lsp.html][The R language server]].
+
+R's own =languageserver= package is still registered, under
+=r_languageserver=, with no file types claimed. It knows what an installed
+package exports, which mep's own server cannot. To prefer it:
+
+#+begin_src lua
+mep.lsp_servers.r_languageserver.filetypes = {'R', 'r'}
+mep.lsp_servers.r_ls.filetypes = {}
+#+end_src
 
 * Inside org code blocks
 

@@ -87,7 +87,7 @@ implemented here rather than bound to a library:
 
 mep is an LSP *client* for around thirty-seven servers (=kBuiltinLsp= in
 =main.cpp=; the registry is plain data, so =init.lua= can extend it), and
-ships one *server* of its own:
+ships two *servers* of its own:
 
 - =src/org_lsp.cpp= — org-mode diagnostics, completion, hover, document
   symbols, folding and definition, as pure functions over plain lines.
@@ -95,6 +95,18 @@ ships one *server* of its own:
   stdio JSON-RPC. mep spawns it out of its own bin directory, so org
   files get diagnostics with nothing installed; it also runs standalone
   in any other LSP client.
+- =src/r_lsp_parse.cpp= — a hand-written R lexer and parser (the whole
+  language: precedence, every assignment form, =[[= subscripts, formulas,
+  lambdas), recovering per statement so a half-typed file still has an
+  outline.
+- =src/r_lsp.cpp= — R scope resolution on top of that, and from it
+  diagnostics, completion, hover, symbols, folding, definition,
+  references and signature help. =src/r_lsp_vocab.cpp= holds the curated
+  signatures and documentation; =src/r_lsp_base_names.cpp= is generated
+  by =scripts/gen_r_names.R= from a real R installation and committed, so
+  the build (and the server) need no R at all.
+- =src/r_lsp_server.cpp= — the =mep-r-lsp= binary, same stdio shape as
+  the org one. Nothing in it starts R or evaluates the document.
 
 Code *inside* a =#+begin_src= block is handled separately, by
 =kBuiltinOrgPolyglot='s per-block shadow buffers talking to a real server
@@ -104,10 +116,10 @@ diagnostics are merged (=mep_org_diag_set=).
 * Build targets
 
 =mep= (the editor), =mep-mcp= (MCP bridge), =mep-collabd= (collab relay),
-=mep-org-lsp= (org language server), plus around thirty =*-test= and
-=*-bench= binaries. Every test and benchmark target is
-=EXCLUDE_FROM_ALL=, so a plain build produces only the four shipped
-binaries; =just test= builds and runs the windowless ones,
+=mep-org-lsp= (org language server), =mep-r-lsp= (R language server),
+plus around thirty =*-test= and =*-bench= binaries. Every test and
+benchmark target is =EXCLUDE_FROM_ALL=, so a plain build produces only
+the five shipped binaries; =just test= builds and runs the windowless ones,
 =just test-gui= the two that drive a real window, and =just bench= the
 performance suite.
 

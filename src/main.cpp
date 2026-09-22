@@ -6068,18 +6068,37 @@ const char *kBuiltinLsp =
     "  zls = {cmd = {'zls'}, filetypes = {'zig'}},\n"
     "  elixirls = {cmd = {'elixir-ls'}, filetypes = {'ex', 'exs'}},\n"
     "  bashls = {cmd = {'bash-language-server', 'start'}, filetypes = {'sh', 'bash'}},\n"
+    // mep's own R server (src/r_lsp_server.cpp, built as the `mep-r-lsp`
+    // target beside `mep` itself) -- the second entry here that is not an
+    // external project's binary, resolved through mep.bundled_tool the
+    // same way org_ls below is. It ships with mep and needs no R
+    // installed at all: it parses R itself and carries the base
+    // distribution's own name list (src/r_lsp_base_names.cpp), so a user
+    // who has never run `install.packages("languageserver")` -- or never
+    // installed R -- still gets diagnostics, completion, hover and
+    // signature help in a .R file.
+    //
     // R's own babel entry (mep.org_babel_langs.r) uses extension '.R'
     // (capital -- what `Rscript` itself expects for a script file), so
     // that's what mep_polyglot_server_for's extension-based lookup
     // resolves to for a `#+begin_src R`/`#+begin_src r` block either way
     // (org's own language tag is lowercased on parse, but the extension
     // conversion here isn't) -- both cases listed so the direct-key
-    // fallback also matches regardless. No dedicated `--stdio` flag the
-    // way most servers have: languageserver::run() always talks over
-    // stdio once invoked, and R itself needs telling not to print its own
-    // interactive banner/echo commands onto that same stream first.
+    // fallback also matches regardless.
+    "  r_ls = {cmd = {mep.bundled_tool('mep-r-lsp')}, filetypes = {'R', 'r'}},\n"
+    // The external alternative: R's own `languageserver` package, which
+    // does know what an installed package exports (mep-r-lsp deliberately
+    // does not -- see src/r_lsp.h) at the cost of needing a real R with
+    // that package in it. Registered with no filetypes claim of its own,
+    // the way basedpyright is below, so the two never race for the same
+    // buffer; select it with
+    // `mep.lsp_servers.r_languageserver.filetypes = {'R', 'r'}` in
+    // init.lua. No dedicated `--stdio` flag the way most servers have:
+    // languageserver::run() always talks over stdio once invoked, and R
+    // itself needs telling not to print its own interactive banner/echo
+    // commands onto that same stream first.
     "  r_languageserver = {cmd = {'R', '--no-save', '--slave', '-e', 'languageserver::run()'},\n"
-    "    filetypes = {'R', 'r'}},\n"
+    "    filetypes = {}},\n"
     // The remaining babel languages that had no server registered at
     // all (same gap R was in) -- perl/fortran/scala/nim/crystal/d, all
     // verified end-to-end (real initialize handshake, real capabilities)

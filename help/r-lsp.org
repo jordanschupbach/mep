@@ -1,0 +1,178 @@
+#+TITLE: The R language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="12">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+=.R= files get a language server of their own, =mep-r-lsp=, built and
+shipped with mep. Open an R file and it attaches by itself -- there is
+nothing to install and nothing to configure.
+
+It never starts R. It parses R itself, so it answers immediately, it
+answers on a machine with no R on it at all, and opening a script cannot
+run it. That is also the trade: it knows R's grammar, its scope rules and
+the base distribution's own functions, and it cannot know what an
+installed package exports or what a variable holds at run time.
+
+R's own =languageserver= package is still registered if you prefer it --
+see [[file:lsp.html][Language servers]] for the one-line switch.
+
+* What it catches
+
+Syntax first: anything R itself would refuse to parse is an error, with
+the construct named -- an unclosed =(=, =[= or ={=, a string that never
+ends, an operator with nothing after it, =else= on its own line at top
+level.
+
+Then scope:
+
+| Problem                                            | Severity |
+|----------------------------------------------------+----------|
+| A name that is defined nowhere in the file and is not base R | warning, with a suggestion |
+| A local assigned in a function and never used      | hint     |
+| A duplicated formal argument                       | error    |
+| =break= or =next= outside a loop                   | error    |
+| =...= in a function that has no =...=              | warning  |
+| =return()= outside a function                      | warning  |
+| Code after a =return()= or =stop()=                | hint     |
+
+Then the traps R does not stop you at:
+
+| Problem                                       | Severity |
+|-----------------------------------------------+----------|
+| =x == NA= -- always NA, never TRUE            | warning  |
+| =x == NULL= -- a zero-length answer           | warning  |
+| =if (a & b)= -- elementwise logic in a condition | warning |
+| =if (x = 1)= -- assignment where a test was meant | error |
+| =1:length(x)= -- counts down when x is empty  | warning  |
+| =T= and =F= -- ordinary variables, not constants | warning |
+| =attach()=                                    | warning  |
+| =library()= inside a function                 | warning  |
+| =setwd()= -- a script that only runs from one directory | hint |
+| =x = 1= where the rest of the file uses =<-=  | hint     |
+| A =;= at the end of a line                    | hint     |
+
+Then arguments, against the signatures the server knows:
+
+| Problem                                            | Severity |
+|----------------------------------------------------+----------|
+| =nchar(x, tpe = "bytes")= -- no such argument       | warning, with a suggestion |
+| The same argument passed twice                      | error    |
+| More positional arguments than the function takes   | warning  |
+| An argument list ending in a stray comma            | warning  |
+| =base::median()= -- that name is in another package | warning  |
+
+And roxygen2 blocks, against the function underneath them: a =@param= for
+an argument that does not exist, the same argument documented twice, a
+tag roxygen2 does not define.
+
+* What it will not say
+
+A linter that cries wolf gets switched off, so this one stays quiet
+where it cannot be sure:
+
+- If the file attaches something the server cannot see -- =library()= of
+  anything outside base R, =source()=, =Rcpp::sourceCpp()=, =attach()=,
+  =load()=, a =get()= of a computed name -- the unknown-name and
+  unused-variable checks switch themselves off for the whole file rather
+  than reporting every verb of every package as undefined.
+- The same happens when a file simply *has* a lot of names this server
+  cannot place -- six distinct ones is the line. One or two are a typo
+  worth pointing at; a dozen means the file runs somewhere else entirely
+  (a shiny =ui.R=, a =tinytest= file, a script sourced into a prepared
+  workspace), and then it says nothing.
+- The two style hints calibrate themselves to the file. =x = 1= is
+  reported only where the rest of the file assigns with =<-=, and a
+  trailing =;= only where the file is not full of them: written that way
+  throughout, both are someone's deliberate style, and a hint per line is
+  how a linter gets switched off.
+- An empty argument in the *middle* of a call -- =cv.tree(fit, ,
+  prune.misclass)= -- is how R skips an argument and takes its default,
+  so only a trailing comma is reported.
+- Quoted arguments are never resolved: both sides of a =~= formula, and
+  the arguments of =quote()=, =substitute()=, =with()=, =subset()=,
+  =aes()= and friends. Names in them still count as *used*, so nothing
+  they touch is reported unused either.
+- A function whose formals end in =...= is never argument-checked,
+  because =...= accepts anything. Partial matching counts as a match too:
+  =nchar(x, ty = "bytes")= is legal R, and is left alone.
+- Names beginning with a dot are never reported. Too many of them are
+  real.
+- A top-level =x <- 1= that nothing reads is a script's output, not an
+  unused variable. Only locals inside functions are reported.
+
+* What it completes
+
+Type and the suggestions follow the context:
+
+| Where you are          | What you get                                     |
+|------------------------+--------------------------------------------------|
+| anywhere               | what is in scope right there, innermost first, then base R |
+| inside a call          | that function's argument names, inserted with their === |
+| =library(= / =require(= | package names                                   |
+| =stats::=              | that package's exports                           |
+| after a =$= or =@=     | the fields the file shows that object having     |
+| =@= in a =#'= comment  | roxygen2 tags                                    |
+
+Inside a string or an ordinary comment it offers nothing, which is the
+point.
+
+* Hover, signatures, outline, folding, jumps
+
+=K= over a name says what it is: a function defined in the file gets its
+signature, where it was defined and its roxygen title; a local gets where
+it was assigned and what it was assigned; an argument says so; a base R
+function gets its real signature, what it does and which package it comes
+from. Over an operator -- =%in%=, =|>=, =<<-=, =~= -- it explains the
+operator, including the ones people forget: =**= is R's own deprecated
+spelling of =^=.
+
+=<leader>lk= shows the signature of the call the cursor is inside, with
+the argument being typed highlighted. It works for functions defined in
+the file as well as base R ones.
+
+=gd= jumps to where a name is bound, following R's scope rules, so a
+local wins over a global of the same name. On the path inside a
+=source()= call it opens that file.
+
+The outline ([[file:structure-symbols.html][the symbol views]]) is =# Section ----= headers, with the
+definitions under each one nested inside it -- functions, variables,
+=setClass()=, =setGeneric()=, =setMethod()=, =R6Class()= -- and functions
+defined inside functions nested inside those. Folding follows braces,
+multi-line calls, comment blocks and section regions.
+
+Find-references and highlight-occurrences resolve through the same
+scopes, so highlighting a local in one function does not light up an
+unrelated variable of the same name in another.
+
+* No formatter
+
+There is deliberately no formatting provider. R's community already has
+=styler= and =air=, they disagree, and an editor quietly shipping a third
+opinion would be a liability. Use whichever you prefer as an external
+command.
+
+* Turning it off
+
+It is an ordinary entry in the server registry, so =init.lua= can drop
+it:
+
+#+begin_src lua
+mep.lsp_servers.r_ls = nil
+#+end_src
+
+Or point it at your own build:
+
+#+begin_src lua
+mep.lsp_servers.r_ls.cmd = {'/path/to/mep-r-lsp'}
+#+end_src
+
+It also runs standalone, over stdio, in any editor that speaks LSP.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the client, the keys and the other servers.
+- [[file:org-lsp.html][The org language server]] -- the other one mep ships.
+- [[file:org-polyglot.html][Language servers in code blocks]] -- =#+begin_src R= blocks get this
+  server too.

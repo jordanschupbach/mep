@@ -74,8 +74,8 @@ more than one, the message beside it is prefixed with the count -- =(3)
 <p>Severity maps to the <code>Error</code>, <code>Warn</code>, <code>Info</code> and <code>Hint</code> <a href="highlight-groups.html">highlight groups</a>, so
 the colours follow your theme.</p>
 <h1>Servers mep knows about</h1>
-<p>Thirty-seven. All but the last are used when their command is on <code>$PATH</code>;
-the org one ships with mep itself:</p>
+<p>Thirty-seven. All but the last two are used when their command is on
+<code>$PATH</code>; the org and R ones ship with mep itself:</p>
 <table>
 <tr><th>Language</th><th>Command</th></tr>
 <tr><td>C, C++</td><td><code>clangd</code></td></tr>
@@ -93,7 +93,7 @@ the org one ships with mep itself:</p>
 <tr><td>Zig</td><td><code>zls</code></td></tr>
 <tr><td>Elixir</td><td><code>elixir-ls</code></td></tr>
 <tr><td>Bash</td><td><code>bash-language-server</code></td></tr>
-<tr><td>R</td><td>R's <code>languageserver</code></td></tr>
+<tr><td>R</td><td><code>mep-r-lsp</code> (ships with mep)</td></tr>
 <tr><td>Perl</td><td>Perl's <code>PLS</code></td></tr>
 <tr><td>Fortran</td><td><code>fortls</code></td></tr>
 <tr><td>Scala</td><td><code>metals</code></td></tr>
@@ -116,10 +116,18 @@ the org one ships with mep itself:</p>
 <tr><td>Org</td><td><code>mep-org-lsp</code> (ships with mep)</td></tr>
 </table>
 <p>If a server is missing, nothing breaks -- the file simply opens without one.</p>
-<h1>The one mep brings itself</h1>
+<h1>The two mep brings itself</h1>
 <p><code>mep-org-lsp</code> is mep's own org-mode server, built and installed alongside
 <code>mep</code>, so org files get diagnostics and completion with nothing to install.
 See <a href="org-lsp.html">The org language server</a>.</p>
+<p><code>mep-r-lsp</code> is the same idea for R: it parses R itself and never starts R,
+so a <code>.R</code> file gets diagnostics, completion, hover and signature help on a
+machine with no R installed. See <a href="r-lsp.html">The R language server</a>.</p>
+<p>R's own <code>languageserver</code> package is still registered, under
+<code>r_languageserver</code>, with no file types claimed. It knows what an installed
+package exports, which mep's own server cannot. To prefer it:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.r_languageserver.filetypes = {<span class="tok-green">'R'</span>, <span class="tok-green">'r'</span>}
+mep.lsp_servers.r_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span></code></pre></div>
 <h1>Inside org code blocks</h1>
 <p>Code blocks in an Org file get language-server support too, through a shadow
 buffer per block. See <a href="org-polyglot.html">Language servers in code blocks</a> for what that covers

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The R language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="12">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The R language server</h1>
+<h1>What it is</h1>
+<p><code>.R</code> files get a language server of their own, <code>mep-r-lsp</code>, built and
+shipped with mep. Open an R file and it attaches by itself -- there is
+nothing to install and nothing to configure.</p>
+<p>It never starts R. It parses R itself, so it answers immediately, it
+answers on a machine with no R on it at all, and opening a script cannot
+run it. That is also the trade: it knows R's grammar, its scope rules and
+the base distribution's own functions, and it cannot know what an
+installed package exports or what a variable holds at run time.</p>
+<p>R's own <code>languageserver</code> package is still registered if you prefer it --
+see <a href="lsp.html">Language servers</a> for the one-line switch.</p>
+<h1>What it catches</h1>
+<p>Syntax first: anything R itself would refuse to parse is an error, with
+the construct named -- an unclosed <code>(</code>, <code>[</code> or <code>{</code>, a string that never
+ends, an operator with nothing after it, <code>else</code> on its own line at top
+level.</p>
+<p>Then scope:</p>
+<table>
+<tr><th>Problem</th><th>Severity</th></tr>
+<tr><td>A name that is defined nowhere in the file and is not base R</td><td>warning, with a suggestion</td></tr>
+<tr><td>A local assigned in a function and never used</td><td>hint</td></tr>
+<tr><td>A duplicated formal argument</td><td>error</td></tr>
+<tr><td><code>break</code> or <code>next</code> outside a loop</td><td>error</td></tr>
+<tr><td><code>...</code> in a function that has no <code>...</code></td><td>warning</td></tr>
+<tr><td><code>return()</code> outside a function</td><td>warning</td></tr>
+<tr><td>Code after a <code>return()</code> or <code>stop()</code></td><td>hint</td></tr>
+</table>
+<p>Then the traps R does not stop you at:</p>
+<table>
+<tr><th>Problem</th><th>Severity</th></tr>
+<tr><td><code>x =</code> NA= -- always NA, never TRUE</td><td>warning</td></tr>
+<tr><td><code>x =</code> NULL= -- a zero-length answer</td><td>warning</td></tr>
+<tr><td><code>if (a &amp; b)</code> -- elementwise logic in a condition</td><td>warning</td></tr>
+<tr><td><code>if (x = 1)</code> -- assignment where a test was meant</td><td>error</td></tr>
+<tr><td><code>1:length(x)</code> -- counts down when x is empty</td><td>warning</td></tr>
+<tr><td><code>T</code> and <code>F</code> -- ordinary variables, not constants</td><td>warning</td></tr>
+<tr><td><code>attach()</code></td><td>warning</td></tr>
+<tr><td><code>library()</code> inside a function</td><td>warning</td></tr>
+<tr><td><code>setwd()</code> -- a script that only runs from one directory</td><td>hint</td></tr>
+<tr><td><code>x = 1</code> where the rest of the file uses <code>&lt;-</code></td><td>hint</td></tr>
+<tr><td>A <code>;</code> at the end of a line</td><td>hint</td></tr>
+</table>
+<p>Then arguments, against the signatures the server knows:</p>
+<table>
+<tr><th>Problem</th><th>Severity</th></tr>
+<tr><td><code>nchar(x, tpe = "bytes")</code> -- no such argument</td><td>warning, with a suggestion</td></tr>
+<tr><td>The same argument passed twice</td><td>error</td></tr>
+<tr><td>More positional arguments than the function takes</td><td>warning</td></tr>
+<tr><td>An argument list ending in a stray comma</td><td>warning</td></tr>
+<tr><td><code>base::median()</code> -- that name is in another package</td><td>warning</td></tr>
+</table>
+<p>And roxygen2 blocks, against the function underneath them: a <code>@param</code> for
+an argument that does not exist, the same argument documented twice, a
+tag roxygen2 does not define.</p>
+<h1>What it will not say</h1>
+<p>A linter that cries wolf gets switched off, so this one stays quiet
+where it cannot be sure:</p>
+<ul>
+<li>If the file attaches something the server cannot see -- <code>library()</code> of anything outside base R, <code>source()</code>, <code>Rcpp::sourceCpp()</code>, <code>attach()</code>, <code>load()</code>, a <code>get()</code> of a computed name -- the unknown-name and unused-variable checks switch themselves off for the whole file rather than reporting every verb of every package as undefined.</li>
+<li>The same happens when a file simply <b>has</b> a lot of names this server cannot place -- six distinct ones is the line. One or two are a typo worth pointing at; a dozen means the file runs somewhere else entirely (a shiny <code>ui.R</code>, a <code>tinytest</code> file, a script sourced into a prepared workspace), and then it says nothing.</li>
+<li>The two style hints calibrate themselves to the file. <code>x = 1</code> is reported only where the rest of the file assigns with <code>&lt;-</code>, and a trailing <code>;</code> only where the file is not full of them: written that way throughout, both are someone's deliberate style, and a hint per line is how a linter gets switched off.</li>
+<li>An empty argument in the <b>middle</b> of a call -- =cv.tree(fit, , prune.misclass)= -- is how R skips an argument and takes its default, so only a trailing comma is reported.</li>
+<li>Quoted arguments are never resolved: both sides of a <code>~</code> formula, and the arguments of <code>quote()</code>, <code>substitute()</code>, <code>with()</code>, <code>subset()</code>, <code>aes()</code> and friends. Names in them still count as <b>used</b>, so nothing they touch is reported unused either.</li>
+<li>A function whose formals end in <code>...</code> is never argument-checked, because <code>...</code> accepts anything. Partial matching counts as a match too: <code>nchar(x, ty = "bytes")</code> is legal R, and is left alone.</li>
+<li>Names beginning with a dot are never reported. Too many of them are real.</li>
+<li>A top-level <code>x &lt;- 1</code> that nothing reads is a script's output, not an unused variable. Only locals inside functions are reported.</li>
+</ul>
+<h1>What it completes</h1>
+<p>Type and the suggestions follow the context:</p>
+<table>
+<tr><th>Where you are</th><th>What you get</th></tr>
+<tr><td>anywhere</td><td>what is in scope right there, innermost first, then base R</td></tr>
+<tr><td>inside a call</td><td>that function's argument names, inserted with their <code>=</code></td></tr>
+<tr><td><code>library(</code> / <code>require(</code></td><td>package names</td></tr>
+<tr><td><code>stats::</code></td><td>that package's exports</td></tr>
+<tr><td>after a <code>$</code> or <code>@</code></td><td>the fields the file shows that object having</td></tr>
+<tr><td><code>@</code> in a =#'= comment</td><td>roxygen2 tags</td></tr>
+</table>
+<p>Inside a string or an ordinary comment it offers nothing, which is the
+point.</p>
+<h1>Hover, signatures, outline, folding, jumps</h1>
+<p><code>K</code> over a name says what it is: a function defined in the file gets its
+signature, where it was defined and its roxygen title; a local gets where
+it was assigned and what it was assigned; an argument says so; a base R
+function gets its real signature, what it does and which package it comes
+from. Over an operator -- <code>%in%</code>, <code>|&gt;</code>, <code>&lt;&lt;-</code>, <code>~</code> -- it explains the
+operator, including the ones people forget: <code>**</code> is R's own deprecated
+spelling of <code>^</code>.</p>
+<p><code>&lt;leader&gt;lk</code> shows the signature of the call the cursor is inside, with
+the argument being typed highlighted. It works for functions defined in
+the file as well as base R ones.</p>
+<p><code>gd</code> jumps to where a name is bound, following R's scope rules, so a
+local wins over a global of the same name. On the path inside a
+<code>source()</code> call it opens that file.</p>
+<p>The outline (<a href="structure-symbols.html">the symbol views</a>) is <code># Section ----</code> headers, with the
+definitions under each one nested inside it -- functions, variables,
+<code>setClass()</code>, <code>setGeneric()</code>, <code>setMethod()</code>, <code>R6Class()</code> -- and functions
+defined inside functions nested inside those. Folding follows braces,
+multi-line calls, comment blocks and section regions.</p>
+<p>Find-references and highlight-occurrences resolve through the same
+scopes, so highlighting a local in one function does not light up an
+unrelated variable of the same name in another.</p>
+<h1>No formatter</h1>
+<p>There is deliberately no formatting provider. R's community already has
+<code>styler</code> and <code>air</code>, they disagree, and an editor quietly shipping a third
+opinion would be a liability. Use whichever you prefer as an external
+command.</p>
+<h1>Turning it off</h1>
+<p>It is an ordinary entry in the server registry, so <code>init.lua</code> can drop
+it:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.r_ls = <span class="tok-cyan">nil</span></code></pre></div>
+<p>Or point it at your own build:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.r_ls.cmd = {<span class="tok-green">'/path/to/mep-r-lsp'</span><span class="tok-blue">}</span></code></pre></div>
+<p>It also runs standalone, over stdio, in any editor that speaks LSP.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the client, the keys and the other servers.</li>
+<li><a href="org-lsp.html">The org language server</a> -- the other one mep ships.</li>
+<li><a href="org-polyglot.html">Language servers in code blocks</a> -- <code>#+begin_src R</code> blocks get this server too.</li>
+</ul>
+</body>
+</html>

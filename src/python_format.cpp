@@ -1345,14 +1345,13 @@ void Emitter::EmitSimple(size_t lo, size_t hi, int indent) {
 void Emitter::EmitExpr(size_t lo, size_t hi, int indent, const std::string &suffix) {
     if (lo >= hi) return;
     // A trailing comment is carried along rather than measured as part of the
-    // expression's own bracket structure.
-    std::string tail_suffix = suffix;
+    // expression's own bracket structure. `suffix` (the comma an exploded
+    // element is owed) has to land *before* it -- put a comment first and the
+    // comma ends up inside it, i.e. deleted.
     size_t code_hi = hi;
-    while (code_hi > lo && t_[code_hi - 1].kind == Kind::Comment) {
-        tail_suffix = "  " + t_[code_hi - 1].text +
-                      (tail_suffix.empty() ? "" : tail_suffix);
-        code_hi--;
-    }
+    while (code_hi > lo && t_[code_hi - 1].kind == Kind::Comment) code_hi--;
+    std::string tail_suffix = suffix;
+    for (size_t i = code_hi; i < hi; i++) tail_suffix += "  " + t_[i].text;
     if (code_hi <= lo) {
         // Nothing but comments (a dangling comment inside a bracket).
         for (size_t i = lo; i < hi; i++) Push(indent, t_[i].text);

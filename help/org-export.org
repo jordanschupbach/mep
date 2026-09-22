@@ -12,9 +12,43 @@
 | =<leader>oea= | =:MepOrgExportAscii=       | =.txt=              |
 | =<leader>oep= | =:MepOrgExportPdf=         | =.pdf=              |
 | =<leader>oeo= | =:MepOrgExportOdt=         | =.odt=              |
+| =<leader>oel= | =:MepOrgExportLatex=       | =.tex=              |
 
+Each writes its file next to the =.org= source; =<leader>oep= also opens (or
+refreshes) the PDF in a viewer pane, where =:MepOrgExportPdf= only exports.
 =:MepOrgExportSubtreeHtml= and =:MepOrgExportSubtreeMarkdown= export just
 the subtree under the cursor.
+
+* The Export button
+
+An org buffer's pane header carries an *Export* button, left of the
+insert-block and Run buttons. Clicking it drops down the formats above;
+picking one exports the document *and* opens the result in a split to the
+right -- HTML in the browser pane, PDF in the PDF viewer, ODT in the office
+pane, Markdown/LaTeX/ASCII as ordinary text buffers.
+
+Run it again and the preview refreshes in place rather than piling up a new
+split each time.
+
+| Key           | Command                    | Does                            |
+|---------------+----------------------------+---------------------------------|
+| =<leader>oee= | =:MepOrgExportOpen=        | pick a format, export, and open |
+|               | =:MepOrgExportOpen pdf=    | that format directly            |
+
+The buffer is written first, so an export never renders a stale file.
+
+* The Run button and =#+EXPORT:=
+
+=<leader>rr= on an org document does the same export-and-open, with the
+format taken from a document keyword instead of a menu:
+
+#+begin_src org
+,#+EXPORT: pdf
+#+end_src
+
+=html= (the default when the keyword is absent), =pdf=, =odt=, =markdown=,
+=ascii= and =latex= are recognized, as are the =md=, =txt= and =tex=
+aliases. A bare =:MepOrgExportOpen= with no argument uses the same keyword.
 
 * Document keywords
 
@@ -37,11 +71,13 @@ tables become real HTML tables.
 
 This manual is built with it -- see [[file:writing-help.html][Writing help pages]].
 
-* PDF and ODT
+* PDF, LaTeX and ODT
 
 PDF goes org → HTML → LaTeX → =tectonic=, leaving the =.tex= on disk as a
-real artifact rather than scratch. ODT is written directly, with no external
-tool needed.
+real artifact rather than scratch. Exporting to LaTeX stops one step
+earlier: the same =.tex=, with no =tectonic= run -- which is what a
+submission with its own LaTeX pipeline wants, and it needs no TeX toolchain
+installed. ODT is written directly, with no external tool needed.
 
 Both carry the code-block highlighting through, so a PDF's code looks like
 the editor's.

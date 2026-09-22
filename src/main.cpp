@@ -739,6 +739,20 @@ gfx::Rectangle g_org_block_menu_rect{};
 // closes itself instead of floating over whatever replaced it.
 bool g_org_block_button_drawn = false;
 
+// The org *export* button's dropdown, immediately left of the insert-block
+// button in the same pane header -- identical state shape and identical
+// lifetime rules (see the three globals just above, and DrawPaneHeaderMenu
+// which is the shared body both dropdowns are drawn by). Kept as its own
+// set rather than one "which org header menu is open" enum because the two
+// buttons sit side by side: clicking one while the other is open must open
+// it, and a single shared slot plus DispatchChromeClicks' spare-the-anchor
+// rule would have the outgoing menu's dismissal and the incoming button's
+// toggle fight over the same click.
+int g_org_export_menu_pane = -1;
+gfx::Rectangle g_org_export_menu_anchor{};
+gfx::Rectangle g_org_export_menu_rect{};
+bool g_org_export_button_drawn = false;
+
 // Populated by DrawPane's office branch (a full-document wrap-height scan
 // -- see the comment where it's filled in) and consumed by that same
 // pane's own Docs-style status footer (word/page count, zoom) right after,
@@ -17578,6 +17592,27 @@ const char *kBuiltinOrgExport =
     // callers pass only on_done): mep.org_export_pdf_view below hands the
     // captured tectonic stderr to a picker on a manual export, since mep
     // has no quickfix list to dump it into.
+    // Shared by the PDF backend below and mep.org_export_latex beside it:
+    // org -> HTML -> LaTeX (doc_export.h's ExportHtmlToLatex, C++) written
+    // to a real .tex file next to the org source. Returns that path plus
+    // the document's directory (what tectonic must be run in, for relative
+    // \\includegraphics paths to resolve) and the extension-less base path
+    // the PDF lands on. Factored out when LaTeX became an export target of
+    // its own -- the two backends must write byte-identical .tex output,
+    // which one shared writer guarantees and two copies would not.\n"
+    "local function mep_org_export_write_tex(lines)\n"
+    "  local meta = mep_org_extract_meta(lines)\n"
+    "  local html = mep.org_export('html', lines)\n"
+    "  local base_dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$') or '.'\n"
+    "  local latex = mep.doc_export_html_to_latex(html, meta.title or '', meta.author or '', base_dir)\n"
+    "  local base = (mep.filename():gsub('%.org$', ''))\n"
+    "  local tex_path = base .. '.tex'\n"
+    "  local f = io.open(tex_path, 'w')\n"
+    "  if not f then error('cannot write ' .. tex_path) end\n"
+    "  f:write(latex)\n"
+    "  f:close()\n"
+    "  return tex_path, base_dir, base\n"
+    "end\n"
     "function mep.org_export_pdf(on_done, on_fail)\n"
     // :MepOrgExportPdf reaches here through the command dispatch, which
     // passes the (possibly empty) argument STRING -- truthy in Lua, so
@@ -17586,15 +17621,7 @@ const char *kBuiltinOrgExport =
     "  if type(on_done) ~= 'function' then on_done = nil end\n"
     "  if type(on_fail) ~= 'function' then on_fail = nil end\n"
     "  mep_org_export_prepare(function(lines)\n"
-    "    local meta = mep_org_extract_meta(lines)\n"
-    "    local html = mep.org_export('html', lines)\n"
-    "    local base_dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$') or '.'\n"
-    "    local latex = mep.doc_export_html_to_latex(html, meta.title or '', meta.author or '', base_dir)\n"
-    "    local base = (mep.filename():gsub('%.org$', ''))\n"
-    "    local tex_path = base .. '.tex'\n"
-    "    local f = io.open(tex_path, 'w')\n"
-    "    f:write(latex)\n"
-    "    f:close()\n"
+    "    local tex_path, base_dir, base = mep_org_export_write_tex(lines)\n"
     "    mep.notify('Org export: compiling PDF (tectonic)...')\n"
     "    local tex_err = {}\n"
     "    mep.job_start({'tectonic', '-X', 'compile', tex_path, '--outfmt', 'pdf'}, {\n"
@@ -17611,6 +17638,23 @@ const char *kBuiltinOrgExport =
     "        end\n"
     "      end,\n"
     "    })\n"
+    "  end)\n"
+    "end\n"
+    // LaTeX: the same .tex the PDF backend compiles, kept as the export
+    // itself with no tectonic step. A real target of its own rather than
+    // PDF's leftover artifact -- it is what a paper being submitted
+    // somewhere with its own LaTeX pipeline actually wants, and it needs
+    // none of tectonic's download-a-toolchain-on-first-run cost just to
+    // get the source out.\n"
+    "function mep.org_export_latex(on_done)\n"
+    // Same reason as mep.org_export_pdf's own normalization just above:
+    // reached from the command dispatch, `on_done` is the (possibly
+    // empty) argument STRING, which is truthy in Lua.\n"
+    "  if type(on_done) ~= 'function' then on_done = nil end\n"
+    "  mep_org_export_prepare(function(lines)\n"
+    "    local tex_path = mep_org_export_write_tex(lines)\n"
+    "    mep.notify('Exported to ' .. tex_path)\n"
+    "    if on_done then on_done(tex_path) end\n"
     "  end)\n"
     "end\n"
     // Export-and-view (<leader>oep): compile, then show the PDF in a mep
@@ -17719,6 +17763,7 @@ const char *kBuiltinOrgExport =
     "mep.command('MepOrgExportAscii', mep.org_export_ascii)\n"
     "mep.command('MepOrgExportPdf', mep.org_export_pdf)\n"
     "mep.command('MepOrgExportOdt', mep.org_export_odt)\n"
+    "mep.command('MepOrgExportLatex', mep.org_export_latex)\n"
     // Subtree export deliberately keeps its pre-existing, narrower
     // behavior (no babel execution, no #+INCLUDE: resolution -- see
     // mep.org_export_subtree's own header) rather than being folded into
@@ -17736,7 +17781,8 @@ const char *kBuiltinOrgExport =
     "mep.leader_map('oep', 'Org: export to PDF and view', mep.org_export_pdf_view)\n"
     "mep.leader_map('oeo', 'Org: export to ODT', mep.org_export_odt)\n"
     "mep.leader_map('oem', 'Org: export to Markdown', mep.org_export_markdown)\n"
-    "mep.leader_map('oea', 'Org: export to ASCII', mep.org_export_ascii)\n";
+    "mep.leader_map('oea', 'Org: export to ASCII', mep.org_export_ascii)\n"
+    "mep.leader_map('oel', 'Org: export to LaTeX', mep.org_export_latex)\n";
 
 // Part VIII, Phase 37 -- Roam (zettelkasten note linking). One-note-per-
 // file, file-level :ID: property drawer at the very top (before any
@@ -25470,6 +25516,8 @@ const char *kBuiltinRunButton =
     "  md = mep.org_export_markdown,\n"
     "  ascii = mep.org_export_ascii,\n"
     "  txt = mep.org_export_ascii,\n"
+    "  latex = mep.org_export_latex,\n"
+    "  tex = mep.org_export_latex,\n"
     "}\n"
     "local function mep_run_button_org_format()\n"
     "  for i = 1, mep.line_count() do\n"
@@ -25503,7 +25551,8 @@ const char *kBuiltinRunButton =
     // this was already fully generic before the tex Run button became a
     // second caller -- not renamed, to keep the diff to that feature
     // small.\n"
-    "local function mep_run_button_show_org_output(path)\n"
+    "local function mep_run_button_show_org_output(path, prefix)\n"
+    "  prefix = prefix or 'Run'\n"
     "  local existing = mep_run_button_pane_for_path(path)\n"
     "  if existing then\n"
     "    mep.pane_focus_buffer(existing)\n"
@@ -25525,7 +25574,7 @@ const char *kBuiltinRunButton =
     // instead of vsplit-then-open.\n"
     "    mep.vsplit_right(path)\n"
     "  end\n"
-    "  mep.notify('Run: opened ' .. path)\n"
+    "  mep.notify(prefix .. ': opened ' .. path)\n"
     "end\n"
     // Guards against a second <leader>rr firing while the first run's
     // export (org-babel code blocks, or a tectonic PDF compile -- both
@@ -25544,30 +25593,94 @@ const char *kBuiltinRunButton =
     // lua_env.cpp) guarantees the async side reaches the callback below
     // the same way.\n"
     "local mep_run_button_org_running = {}\n"
-    "function mep.run_button_run_org()\n"
+    // The whole export-and-show pipeline, shared by the Run button (which
+    // passes no format, so the `#+EXPORT:` keyword decides) and by the
+    // pane-header Export button / :MepOrgExportOpen / <leader>oee (which
+    // pass one explicitly). `prefix` is only the wording of this run's
+    // notifications -- "Run: ..." vs "Export: ..." -- so a toast says
+    // which of the two the user actually pressed; the in-flight guard is
+    // deliberately shared between them (keyed by filename, not by entry
+    // point), since two exports of the same file racing each other is
+    // exactly as wrong when one of them came from the Export menu.\n"
+    "local function mep_run_button_org_export(format, prefix)\n"
     "  local fname = mep.filename()\n"
-    "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
+    "  if not fname or fname == '' then mep.notify(prefix .. ': save this buffer to a file first', 'warn') return end\n"
     "  if mep_run_button_org_running[fname] then\n"
-    "    mep.notify('Run: already running, please wait...', 'warn')\n"
+    "    mep.notify(prefix .. ': already running, please wait...', 'warn')\n"
     "    return\n"
     "  end\n"
     "  mep_run_button_org_running[fname] = true\n"
     "  local function done() mep_run_button_org_running[fname] = nil end\n"
     "  local ok, err = pcall(function()\n"
     "    mep.cmd('write')\n"
-    "    local format = mep_run_button_org_format()\n"
-    "    local exporter = mep_run_button_org_exporters[format]\n"
+    "    local fmt = format or mep_run_button_org_format()\n"
+    "    local exporter = mep_run_button_org_exporters[fmt]\n"
     "    if not exporter then\n"
-    "      mep.notify('Run: unknown #+EXPORT: ' .. format .. ', defaulting to html', 'warn')\n"
+    // Only reachable on the no-format path: an explicit format is
+    // validated by mep.org_export_open below, before it ever gets here.\n"
+    "      mep.notify(prefix .. ': unknown #+EXPORT: ' .. fmt .. ', defaulting to html', 'warn')\n"
     "      exporter = mep.org_export_html\n"
     "    end\n"
-    "    exporter(function(path) done() mep_run_button_show_org_output(path) end)\n"
+    "    exporter(function(path) done() mep_run_button_show_org_output(path, prefix) end)\n"
     "  end)\n"
     "  if not ok then\n"
     "    done()\n"
-    "    mep.notify('Run: ' .. tostring(err), 'error')\n"
+    "    mep.notify(prefix .. ': ' .. tostring(err), 'error')\n"
     "  end\n"
     "end\n"
+    "function mep.run_button_run_org() mep_run_button_org_export(nil, 'Run') end\n"
+    // The formats the Export button's dropdown offers, in menu order --
+    // also what :MepOrgExportOpen accepts and what its error message
+    // lists. Every entry must be a key of mep_run_button_org_exporters
+    // above (mep.org_export_open checks against that table, not this
+    // list); the aliases that table also carries (md/txt/tex) are left
+    // out here on purpose, so the menu shows each backend once.\n"
+    "mep.org_export_open_formats = {'html', 'pdf', 'odt', 'markdown', 'latex', 'ascii'}\n"
+    // Export this org buffer to `format` and show the result in a pane --
+    // the same reuse-an-open-split-or-vsplit_right behavior the Run button
+    // already had, just with the format chosen by the caller rather than
+    // read out of the document. A nil/blank format falls back to the
+    // `#+EXPORT:` keyword, so `:MepOrgExportOpen` bare behaves like Run.\n"
+    "function mep.org_export_open(format)\n"
+    // Reachable as :MepOrgExportOpen from any buffer at all (the button
+    // itself only ever appears on an org pane), and every backend below
+    // assumes an org document -- so refuse anything else here rather than
+    // run the org exporter over, say, a .tex file's contents and write the
+    // result out under a mangled name.\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then\n"
+    "    mep.notify('Export: not an org buffer', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if type(format) ~= 'string' then format = nil end\n"
+    "  if format then\n"
+    "    format = format:lower():match('^%s*(.-)%s*$')\n"
+    "    if format == '' then format = nil end\n"
+    "  end\n"
+    "  if format and not mep_run_button_org_exporters[format] then\n"
+    "    mep.notify('Export: unknown format ' .. format .. ' (try '\n"
+    "      .. table.concat(mep.org_export_open_formats, ', ') .. ')', 'error')\n"
+    "    return\n"
+    "  end\n"
+    "  mep_run_button_org_export(format, 'Export')\n"
+    "end\n"
+    // Keyboard route to the same menu the pane-header Export button drops
+    // down (<leader>oee): the <leader>oe<backend> bindings in
+    // kBuiltinOrgExport export without opening anything, this one is the
+    // export-and-show pick-a-format one.\n"
+    "function mep.org_export_open_pick()\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then\n"
+    "    mep.notify('Export: not an org buffer', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep.ui_select(mep.org_export_open_formats, 'Export and open', function(idx)\n"
+    "    if idx then mep.org_export_open(mep.org_export_open_formats[idx]) end\n"
+    "  end)\n"
+    "end\n"
+    // Bare `:MepOrgExportOpen` uses the document's own `#+EXPORT:`
+    // keyword; with an argument it exports that format directly
+    // (`:MepOrgExportOpen pdf`).\n"
+    "mep.command('MepOrgExportOpen', mep.org_export_open)\n"
+    "mep.leader_map('oee', 'Org: export and open (pick format)', mep.org_export_open_pick)\n"
     // tex Run button: compiles the current .tex file with tectonic (same
     // devShell dependency + invocation shape as mep.org_export_pdf and
     // kBuiltinOrgLatex's own mep_org_latex_render) and shows the result
@@ -29320,40 +29433,54 @@ constexpr OrgBlockLanguage kOrgBlockLanguages[] = {
 };
 constexpr const char *kOrgBlockOtherLabel = "Other language...";
 
+// One row of a pane-header dropdown: `label` is what the row shows,
+// `command` the ex-command run (on the pane that owns the menu, focused
+// first) when it's picked, and `dim` draws the label in Comment instead of
+// MenuBarFg -- for a row that hands over to a picker rather than doing the
+// thing itself.
+struct PaneHeaderMenuItem {
+    std::string label;
+    std::string command;
+    bool dim = false;
+};
+
 /**
- * @brief Draws the pane-header org insert-block button's language dropdown when one is open,
- * anchored under the button that opened it.
+ * @brief Draws one pane-header button's dropdown when it is open, anchored under that button.
+ * @param menu_pane Pane::id the menu belongs to, or -1 when closed; cleared when the menu closes.
+ * @param anchor The owning button's screen rect as of the frame it was last drawn.
+ * @param rect Receives the dropdown's own bounds, for the click-away test in DispatchChromeClicks.
+ * @param button_drawn Whether the owning button was drawn this frame; consumed (reset) here.
+ * @param items The rows to offer, top to bottom.
  */
-void DrawOrgInsertBlockMenu() {
-    if (g_org_block_menu_pane == -1) return;
+void DrawPaneHeaderMenu(int &menu_pane, const gfx::Rectangle &anchor, gfx::Rectangle &rect, bool &button_drawn,
+                        const std::vector<PaneHeaderMenuItem> &items) {
+    if (menu_pane == -1 || items.empty()) return;
     // The button this menu belongs to is gone (see g_org_block_button_drawn).
-    if (!g_org_block_button_drawn) {
-        g_org_block_menu_pane = -1;
-        g_org_block_menu_rect = {};
+    if (!button_drawn) {
+        menu_pane = -1;
+        rect = {};
         return;
     }
-    g_org_block_button_drawn = false;
-    const int pane_id = g_org_block_menu_pane;
+    button_drawn = false;
+    const int pane_id = menu_pane;
     const float font_size = MenuFontSize();
     const int item_h = MenuItemHeight();
     // Reuses DrawMenuBar's dropdown look (the Picker/PickerBorder/
     // MenuHighlight/MenuBarFg groups, kMenuItemPaddingX, MenuItemHeight),
     // same as DrawRunButtonMenu and DrawNotebookKernelMenu above.
-    const size_t item_count = std::size(kOrgBlockLanguages) + 1;  // + the "Other language..." row
-    float dd_w = g_org_block_menu_anchor.width;
-    for (const OrgBlockLanguage &lang : kOrgBlockLanguages) {
-        dd_w = std::max(dd_w, MeasureUiText(lang.label, font_size) + 2.0f * static_cast<float>(kMenuItemPaddingX));
+    float dd_w = anchor.width;
+    for (const PaneHeaderMenuItem &item : items) {
+        dd_w = std::max(dd_w, MeasureUiText(item.label, font_size) + 2.0f * static_cast<float>(kMenuItemPaddingX));
     }
-    dd_w = std::max(dd_w, MeasureUiText(kOrgBlockOtherLabel, font_size) + 2.0f * static_cast<float>(kMenuItemPaddingX));
     // Right-aligned under the button, like the notebook kernel menu: the
     // header controls are docked at the pane's right edge, so a list grown
     // rightwards from the button would hang off it. Clamped to the window
     // on both axes -- a pane header near the bottom of a stacked split
     // flips the list above itself rather than drawing it off-screen.
-    float dd_x = g_org_block_menu_anchor.x + g_org_block_menu_anchor.width - dd_w;
+    float dd_x = anchor.x + anchor.width - dd_w;
     if (dd_x < static_cast<float>(kMarginX)) dd_x = static_cast<float>(kMarginX);
-    const float dd_h = static_cast<float>(item_count) * static_cast<float>(item_h);
-    float dd_y = g_org_block_menu_anchor.y + g_org_block_menu_anchor.height;
+    const float dd_h = static_cast<float>(items.size()) * static_cast<float>(item_h);
+    float dd_y = anchor.y + anchor.height;
     if (dd_y + dd_h > static_cast<float>(gfx::GetScreenHeight())) {
         // Doesn't fit below the header: flip above it when there's room
         // there, else pin the list to the bottom of the window. Pinning is
@@ -29362,18 +29489,17 @@ void DrawOrgInsertBlockMenu() {
         // can then cover its own button -- the button's toggle-to-close
         // stops working for as long as it does, since the menu's own rows
         // are registered on top of it, but clicking anywhere else still
-        // closes it and every language stays reachable, which a list
-        // running off the bottom of the window would not be.
-        const float above = g_org_block_menu_anchor.y - dd_h;
+        // closes it and every row stays reachable, which a list running
+        // off the bottom of the window would not be.
+        const float above = anchor.y - dd_h;
         dd_y = above >= 0.0f ? above : std::max(0.0f, static_cast<float>(gfx::GetScreenHeight()) - dd_h);
     }
-    g_org_block_menu_rect = gfx::Rectangle{dd_x, dd_y, dd_w, dd_h};
+    rect = gfx::Rectangle{dd_x, dd_y, dd_w, dd_h};
     const gfx::Vector2 mouse = gfx::GetMousePosition();
     gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
                        ResolveHlGroup("Picker"));
-    for (size_t i = 0; i < item_count; i++) {
-        const bool is_other = (i == item_count - 1);
-        const std::string label = is_other ? std::string(kOrgBlockOtherLabel) : std::string(kOrgBlockLanguages[i].label);
+    for (size_t i = 0; i < items.size(); i++) {
+        const PaneHeaderMenuItem &item = items[i];
         const float item_y = dd_y + static_cast<float>(i) * static_cast<float>(item_h);
         const gfx::Rectangle item_rect{dd_x, item_y, dd_w, static_cast<float>(item_h)};
         if (PointInRect(mouse, item_rect)) {
@@ -29381,26 +29507,72 @@ void DrawOrgInsertBlockMenu() {
                                ResolveHlGroup("MenuHighlight"));
         }
         const float text_y = item_y + (static_cast<float>(item_h) - font_size) / 2.0f;
-        gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
-                        ResolveHlGroup(is_other ? "Comment" : "MenuBarFg"));
-        // Every language row is the same one-line Lua call with a different
-        // tag; the last row hands over to the picker instead, which covers
-        // the languages this menu doesn't list.
-        const std::string cmd = is_other ? std::string("lua mep.org_insert_src_block_pick()")
-                                         : std::string("lua mep.org_insert_src_block('") + kOrgBlockLanguages[i].tag + "')";
+        gfx::DrawTextEx(g_font, item.label.c_str(), gfx::Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
+                        ResolveHlGroup(item.dim ? "Comment" : "MenuBarFg"));
         // The pane registered its broad focus region while drawing its own
         // content, before this floating menu -- so these go on top, or a
         // pick would be swallowed as a plain focus click (same reasoning as
         // DrawNotebookKernelMenu's items).
-        RegisterClickRegionOnTop(item_rect, [pane_id, cmd] {
+        const std::string cmd = item.command;
+        RegisterClickRegionOnTop(item_rect, [&menu_pane, &rect, pane_id, cmd] {
             g_editor.FocusPaneById(pane_id);
             g_editor.RunCommand(cmd);
-            g_org_block_menu_pane = -1;
-            g_org_block_menu_rect = {};
+            menu_pane = -1;
+            rect = {};
         });
     }
     gfx::DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
                             ResolveHlGroup("PickerBorder"));
+}
+
+/**
+ * @brief Draws the pane-header org insert-block button's language dropdown when one is open,
+ * anchored under the button that opened it.
+ */
+void DrawOrgInsertBlockMenu() {
+    if (g_org_block_menu_pane == -1) return;
+    std::vector<PaneHeaderMenuItem> items;
+    items.reserve(std::size(kOrgBlockLanguages) + 1);
+    // Every language row is the same one-line Lua call with a different
+    // tag; the last row hands over to the picker instead, which covers
+    // the languages this menu doesn't list.
+    for (const OrgBlockLanguage &lang : kOrgBlockLanguages) {
+        items.push_back({lang.label, std::string("lua mep.org_insert_src_block('") + lang.tag + "')", false});
+    }
+    items.push_back({kOrgBlockOtherLabel, "lua mep.org_insert_src_block_pick()", true});
+    DrawPaneHeaderMenu(g_org_block_menu_pane, g_org_block_menu_anchor, g_org_block_menu_rect, g_org_block_button_drawn,
+                       items);
+}
+
+// The formats DrawPane's org export button offers, in menu order -- the
+// same list (and the same order) as Lua's mep.org_export_open_formats,
+// which is what actually validates a format; `label` is only how the menu
+// spells it. Each row exports the pane's org document through the matching
+// mep.org_export_* backend and opens/refreshes the result in a right-hand
+// split, so "Markdown"/"ASCII text" open as ordinary text buffers, HTML in
+// the browser pane, PDF in the PDF viewer and ODT in the office pane.
+struct OrgExportFormat {
+    const char *label;
+    const char *format;
+};
+constexpr OrgExportFormat kOrgExportFormats[] = {
+    {"HTML", "html"},         {"PDF", "pdf"},     {"ODT", "odt"},
+    {"Markdown", "markdown"}, {"LaTeX", "latex"}, {"ASCII text", "ascii"},
+};
+
+/**
+ * @brief Draws the pane-header org export button's format dropdown when one is open,
+ * anchored under the button that opened it.
+ */
+void DrawOrgExportMenu() {
+    if (g_org_export_menu_pane == -1) return;
+    std::vector<PaneHeaderMenuItem> items;
+    items.reserve(std::size(kOrgExportFormats));
+    for (const OrgExportFormat &fmt : kOrgExportFormats) {
+        items.push_back({fmt.label, std::string("lua mep.org_export_open('") + fmt.format + "')", false});
+    }
+    DrawPaneHeaderMenu(g_org_export_menu_pane, g_org_export_menu_anchor, g_org_export_menu_rect,
+                       g_org_export_button_drawn, items);
 }
 
 // Generic floating overlay frame: dims the screen, draws a centered
@@ -38471,10 +38643,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                        LspFiletype(buf.filename) == "org";
     const std::string org_block_label = " " + Utf8FromCodepoint(0xf121) + " ";  // nf-fa-code
     const float org_block_w = show_org_block_button ? MeasureUiText(org_block_label, font_size) : 0.0f;
+    // Export button: leftmost of all, shown under exactly the same
+    // conditions as the insert-block button next to it (a plain .org text
+    // pane) -- both act on the org document itself, so a pane that can
+    // offer one can always offer the other. A left click opens the format
+    // dropdown (DrawOrgExportMenu); picking a format exports the document
+    // and opens the result in a right-hand split. Same font_size as its
+    // two content-acting neighbors, for the same reason.
+    const bool show_org_export_button = show_org_block_button;
+    const std::string org_export_label = " " + Utf8FromCodepoint(0xf045) + " ";  // nf-fa-share_square_o
+    const float org_export_w = show_org_export_button ? MeasureUiText(org_export_label, font_size) : 0.0f;
     const float vsplit_w = MeasureUiText(vsplit_label, control_font_size);
     const float hsplit_w = MeasureUiText(hsplit_label, control_font_size);
     const float close_w = MeasureUiText(close_label, control_font_size);
-    const float controls_w = org_block_w + run_w + vsplit_w + hsplit_w + close_w;
+    const float controls_w = org_export_w + org_block_w + run_w + vsplit_w + hsplit_w + close_w;
     const gfx::Vector2 header_mouse = gfx::GetMousePosition();
     // Draws the three controls over `bg` filling controls_rect (each
     // brightened while hovered) and registers their click regions.
@@ -38505,6 +38687,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (on_right_click && hovered && gfx::IsMouseButtonPressed(gfx::MouseButton::Right)) on_right_click(rect);
             bx += bw;
         };
+        if (show_org_export_button) {
+            // Same capture-bx-before-`button`-advances-it trick as the
+            // insert-block button just below, for the same reason: this
+            // button's click action needs its own rect to anchor the
+            // dropdown it toggles.
+            const gfx::Rectangle org_export_rect{bx, controls_rect.y, org_export_w, controls_rect.height};
+            button(
+                org_export_label, org_export_w, "Blue", "Export document (<Space>oee)",
+                [pane_id, org_export_rect] {
+                    g_editor.FocusPaneById(pane_id);
+                    g_org_export_menu_pane = (g_org_export_menu_pane == pane_id) ? -1 : pane_id;
+                    g_org_export_menu_anchor = org_export_rect;
+                },
+                nullptr, font_size, label_y);
+            if (pane_id == g_org_export_menu_pane) g_org_export_button_drawn = true;
+        }
         if (show_org_block_button) {
             // `bx` is exactly where `button` will place this control's own
             // rect (it builds the rect from bx, then advances it), so the
@@ -45531,6 +45729,8 @@ void DrawEditor() {
     DrawNotebookKernelMenu();
     // An org pane's insert-block language dropdown -- likewise.
     DrawOrgInsertBlockMenu();
+    // An org pane's export-format dropdown -- likewise.
+    DrawOrgExportMenu();
     // Same reasoning as the comment just above (drawn after sidebars, not
     // before, so it sits on top instead of being painted over by one) --
     // this used to be drawn inline with the command-line text itself,
@@ -46224,6 +46424,12 @@ void DispatchChromeClicks() {
         !PointInRect(mouse, g_org_block_menu_anchor)) {
         g_org_block_menu_pane = -1;
         g_org_block_menu_rect = {};
+    }
+    // ...and for the export dropdown right beside it, same rules.
+    if (g_org_export_menu_pane != -1 && !PointInRect(mouse, g_org_export_menu_rect) &&
+        !PointInRect(mouse, g_org_export_menu_anchor)) {
+        g_org_export_menu_pane = -1;
+        g_org_export_menu_rect = {};
     }
     for (const ClickRegion &r : g_click_regions) {
         if (PointInRect(mouse, r.rect)) {

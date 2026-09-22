@@ -20,9 +20,33 @@
 <tr><td><code>&lt;leader&gt;oea</code></td><td><code>:MepOrgExportAscii</code></td><td><code>.txt</code></td></tr>
 <tr><td><code>&lt;leader&gt;oep</code></td><td><code>:MepOrgExportPdf</code></td><td><code>.pdf</code></td></tr>
 <tr><td><code>&lt;leader&gt;oeo</code></td><td><code>:MepOrgExportOdt</code></td><td><code>.odt</code></td></tr>
+<tr><td><code>&lt;leader&gt;oel</code></td><td><code>:MepOrgExportLatex</code></td><td><code>.tex</code></td></tr>
 </table>
-<p><code>:MepOrgExportSubtreeHtml</code> and <code>:MepOrgExportSubtreeMarkdown</code> export just
+<p>Each writes its file next to the <code>.org</code> source; <code>&lt;leader&gt;oep</code> also opens (or
+refreshes) the PDF in a viewer pane, where <code>:MepOrgExportPdf</code> only exports.
+<code>:MepOrgExportSubtreeHtml</code> and <code>:MepOrgExportSubtreeMarkdown</code> export just
 the subtree under the cursor.</p>
+<h1>The Export button</h1>
+<p>An org buffer's pane header carries an <b>Export</b> button, left of the
+insert-block and Run buttons. Clicking it drops down the formats above;
+picking one exports the document <b>and</b> opens the result in a split to the
+right -- HTML in the browser pane, PDF in the PDF viewer, ODT in the office
+pane, Markdown/LaTeX/ASCII as ordinary text buffers.</p>
+<p>Run it again and the preview refreshes in place rather than piling up a new
+split each time.</p>
+<table>
+<tr><th>Key</th><th>Command</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;oee</code></td><td><code>:MepOrgExportOpen</code></td><td>pick a format, export, and open</td></tr>
+<tr><td></td><td><code>:MepOrgExportOpen pdf</code></td><td>that format directly</td></tr>
+</table>
+<p>The buffer is written first, so an export never renders a stale file.</p>
+<h1>The Run button and <code>#+EXPORT:</code></h1>
+<p><code>&lt;leader&gt;rr</code> on an org document does the same export-and-open, with the
+format taken from a document keyword instead of a menu:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">org</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="org">#+EXPORT: pdf</code></pre></div>
+<p><code>html</code> (the default when the keyword is absent), <code>pdf</code>, <code>odt</code>, <code>markdown</code>,
+<code>ascii</code> and <code>latex</code> are recognized, as are the <code>md</code>, <code>txt</code> and <code>tex</code>
+aliases. A bare <code>:MepOrgExportOpen</code> with no argument uses the same keyword.</p>
 <h1>Document keywords</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">org</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="org">#+TITLE: The document's title
 #+AUTHOR: Your name
@@ -36,10 +60,12 @@ add to them. It is repeatable.</p>
 stylesheet. Code blocks are syntax-highlighted with a copy button, and
 tables become real HTML tables.</p>
 <p>This manual is built with it -- see <a href="writing-help.html">Writing help pages</a>.</p>
-<h1>PDF and ODT</h1>
+<h1>PDF, LaTeX and ODT</h1>
 <p>PDF goes org → HTML → LaTeX → <code>tectonic</code>, leaving the <code>.tex</code> on disk as a
-real artifact rather than scratch. ODT is written directly, with no external
-tool needed.</p>
+real artifact rather than scratch. Exporting to LaTeX stops one step
+earlier: the same <code>.tex</code>, with no <code>tectonic</code> run -- which is what a
+submission with its own LaTeX pipeline wants, and it needs no TeX toolchain
+installed. ODT is written directly, with no external tool needed.</p>
 <p>Both carry the code-block highlighting through, so a PDF's code looks like
 the editor's.</p>
 <h1>Code blocks are executed</h1>

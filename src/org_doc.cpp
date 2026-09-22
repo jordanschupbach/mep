@@ -1516,3 +1516,88 @@ OrgImageLayout OrgImageLayoutFor(int px_w, int px_h, float char_width, float lin
     out.offset_x = std::max(0.0f, (box_w - out.width) * 0.5f);
     return out;
 }
+
+// --- Per-src-block language-server status (<leader>ots) ---
+
+namespace {
+
+/**
+ * @brief Renders a count with a singular/plural noun ("1 error", "2 errors").
+ * @param n The count.
+ * @param noun The singular noun; an "s" is appended for any other count.
+ * @return The formatted phrase.
+ */
+std::string CountPhrase(int n, const char *noun) {
+    std::string out = std::to_string(n) + " " + noun;
+    if (n != 1) out += "s";
+    return out;
+}
+
+}  // namespace
+
+std::string FormatOrgLspStatus(const OrgLspStatus &st) {
+    // A block with nothing to attach says why in plain words rather than
+    // naming a server that doesn't exist. The language is only worth
+    // repeating here in the case the title bar can't already show it --
+    // a block with no language tag at all has an "src" chip up there and
+    // nothing else, so "no language set" is the whole answer.
+    if (st.state == OrgLspState::kUnsupported || st.server.empty()) {
+        if (st.lang.empty()) return "LSP: no language set";
+        return "LSP: no server for " + st.lang;
+    }
+    // Everywhere else the language is already on the card's title bar, so
+    // the line leads with the one thing that bar doesn't carry: which
+    // server, and what it is doing.
+    std::string out = st.server + ": ";
+    switch (st.state) {
+        case OrgLspState::kIdle:
+            // Not "off": the bridge attaches the first time an LSP
+            // feature actually runs inside the block (hover, completion,
+            // goto-definition -- mep_polyglot_context_at_cursor's callers),
+            // and saying so is the difference between an idle block and a
+            // broken one.
+            return out + "idle (attaches on first use)";
+        case OrgLspState::kStarting:
+            return out + "starting...";
+        case OrgLspState::kExited:
+            return out + "not running";
+        case OrgLspState::kReady:
+            break;
+        case OrgLspState::kUnsupported:
+            break;
+    }
+    out += "ready";
+    std::vector<std::string> counts;
+    if (st.errors > 0) counts.push_back(CountPhrase(st.errors, "error"));
+    if (st.warnings > 0) counts.push_back(CountPhrase(st.warnings, "warning"));
+    if (st.hints > 0) counts.push_back(CountPhrase(st.hints, "hint"));
+    if (counts.empty()) return out + ", no diagnostics";
+    out += ", ";
+    for (size_t i = 0; i < counts.size(); i++) {
+        if (i > 0) out += ", ";
+        out += counts[i];
+    }
+    return out;
+}
+
+OrgLspStatusTone OrgLspStatusToneOf(const OrgLspStatus &st) {
+    // Counts first: what the server found matters more than the fact that
+    // it is running, and a block whose code is broken should read as
+    // broken even though its client is perfectly healthy.
+    if (st.errors > 0) return OrgLspStatusTone::kError;
+    if (st.warnings > 0) return OrgLspStatusTone::kWarn;
+    // A client that was started and is gone is a real fault (a crashed
+    // server, a failed spawn) -- unlike kIdle, which is the normal
+    // resting state of a block the cursor hasn't visited.
+    if (st.state == OrgLspState::kExited) return OrgLspStatusTone::kWarn;
+    if (st.state == OrgLspState::kReady) return OrgLspStatusTone::kOk;
+    return OrgLspStatusTone::kMuted;
+}
+
+OrgLspState OrgLspStateFromName(const std::string &name) {
+    if (name == "idle") return OrgLspState::kIdle;
+    if (name == "starting") return OrgLspState::kStarting;
+    if (name == "ready") return OrgLspState::kReady;
+    if (name == "exited") return OrgLspState::kExited;
+    return OrgLspState::kUnsupported;
+}

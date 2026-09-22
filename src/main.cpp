@@ -15530,6 +15530,14 @@ const char *kBuiltinOrgPolyglot =
     // drop, another language's own most recent contribution when both
     // get merged into mep_lsp_diagnostics.
     "mep_polyglot_diag_by_shadow = {}\n"
+    // Bumped whenever anything the per-block status line reports on
+    // changes -- a shadow created, a client spawned or initialized, a
+    // fresh publish of diagnostics. mep.org_lsp_status_scan's frame hook
+    // below rescans on a change to this (plus the buffer's own change
+    // epoch) rather than re-deriving every block's status every frame,
+    // which would mean a whole-buffer line walk per frame for a panel
+    // that changes a handful of times per session.
+    "mep_polyglot_epoch = 0\n"
     "local function mep_polyglot_sanitize(path)\n"
     "  return (path:gsub('[/%.]', '_'))\n"
     "end\n"
@@ -15562,13 +15570,18 @@ const char *kBuiltinOrgPolyglot =
     // lang_def.extension (already known-correct, since babel needs it to
     // write a real interpreter-recognizable temp file), falling back to
     // the bare language key only for languages with no extension entry.
+    // Returns the server entry AND its registry key -- the key is the
+    // server's user-facing name ("pyright", "clangd"), which the
+    // per-block status line (mep.org_lsp_status_scan below) has to be
+    // able to print and which the entry itself does not carry.
     "local function mep_polyglot_server_for(lang, lang_def)\n"
     "  local ft = (lang_def and lang_def.extension and lang_def.extension:gsub('^%.', '')) or lang\n"
-    "  local server = mep.lsp_servers[ft] or mep.lsp_servers[lang]\n"
-    "  if server then return server end\n"
-    "  for _, s in pairs(mep.lsp_servers) do\n"
+    "  for _, name in ipairs({ft, lang}) do\n"
+    "    if mep.lsp_servers[name] then return mep.lsp_servers[name], name end\n"
+    "  end\n"
+    "  for name, s in pairs(mep.lsp_servers) do\n"
     "    for _, sft in ipairs(s.filetypes or {}) do\n"
-    "      if sft == ft or sft == lang then return s end\n"
+    "      if sft == ft or sft == lang then return s, name end\n"
     "    end\n"
     "  end\n"
     "  return nil\n"
@@ -15711,12 +15724,14 @@ const char *kBuiltinOrgPolyglot =
     "      for _, d in ipairs(mep_polyglot_diag_by_shadow[s.path] or {}) do merged[#merged + 1] = d end\n"
     "    end\n"
     "  end\n"
+    "  mep_polyglot_epoch = mep_polyglot_epoch + 1\n"
     "  mep_org_diag_set(shadow.org_abspath, 'polyglot', merged)\n"
     "end\n"
     "function mep_polyglot_start_client(shadow, lang_def, server)\n"
     "  local id = mep.lsp_start(server.cmd, {cwd = shadow.dir})\n"
     "  if id <= 0 then return end\n"
     "  shadow.client = id\n"
+    "  mep_polyglot_epoch = mep_polyglot_epoch + 1\n"
     "  shadow.version = 1\n"
     "  mep.lsp_request(id, 'initialize', {\n"
     "    processId = mep.platform() == 'wasm' and mep.json_null or nil,\n"
@@ -15733,6 +15748,7 @@ const char *kBuiltinOrgPolyglot =
     "  }, function(msg)\n"
     "    local init_result = mep_lsp_result(msg)\n"
     "    mep_lsp_server_capabilities[id] = init_result and init_result.capabilities\n"
+    "    mep_polyglot_epoch = mep_polyglot_epoch + 1\n"
     "    mep.lsp_notify(id, 'initialized', {})\n"
     "    mep.lsp_on_notification(id, 'textDocument/publishDiagnostics', function(params)\n"
     "      mep_polyglot_on_diagnostics(shadow, params)\n"
@@ -15745,8 +15761,15 @@ const char *kBuiltinOrgPolyglot =
     "    })\n"
     "  end)\n"
     "end\n"
+    // Resolved with the block's own lang_def, not by the bare language
+    // name: mep_polyglot_server_for converts through lang_def.extension
+    // (see its own comment), and dropping the argument here silently
+    // resolved "no server" for every language whose extension and name
+    // differ. Latent rather than live until now -- the only caller is
+    // the c/cpp compile-database rewrite, and those two happen to be the
+    // languages whose name and extension are the same string.
     "function mep_polyglot_restart_shadow_client(shadow, lang_def)\n"
-    "  local server = mep_polyglot_server_for(shadow.lang)\n"
+    "  local server = mep_polyglot_server_for(shadow.lang, lang_def)\n"
     "  if not server then return end\n"
     "  if shadow.client then mep.lsp_stop(shadow.client) end\n"
     "  mep_polyglot_start_client(shadow, lang_def, server)\n"
@@ -15804,6 +15827,7 @@ const char *kBuiltinOrgPolyglot =
     "    start_row = blk.start_row, end_row = blk.end_row, prefix_len = prefix_len,\n"
     "    org_abspath = org_abspath, client = nil, compile_argv = nil,\n"
     "  }\n"
+    "  mep_polyglot_epoch = mep_polyglot_epoch + 1\n"
     "  mep_polyglot_shadows[key] = shadow\n"
     "  mep_polyglot_shadow_by_path[mep_lsp_abspath(path)] = key\n"
     "  mep_polyglot_shadows_by_file[org_abspath] = mep_polyglot_shadows_by_file[org_abspath] or {}\n"
@@ -15991,7 +16015,111 @@ const char *kBuiltinOrgPolyglot =
     "    end\n"
     "  end\n"
     "end\n"
-    "mep.on_buffer_changed(mep_polyglot_resync)\n";
+    "mep.on_buffer_changed(mep_polyglot_resync)\n"
+
+    // --- Per-src-block LSP status line (<leader>ots) ---
+    // Every #+begin_src block's card gets one line along its bottom edge
+    // saying what that block's language server is doing -- which server
+    // resolved, whether it is attached, and how many diagnostics it is
+    // reporting *inside this block*. It lands on the `#+end_src` row,
+    // which the card already conceals and paints as blank floor, so it
+    // costs no extra vertical space and none of the four slot walkers
+    // (see OrgBlockCards' own comment) has to change.
+    //
+    // The whole point of putting it here rather than in the renderer is
+    // that everything it reports on is Lua-side state: mep.lsp_servers,
+    // mep_polyglot_shadows, mep_lsp_server_capabilities and
+    // mep_lsp_diagnostics. C++ owns only the wording
+    // (FormatOrgLspStatus, org_doc.cpp) and the drawing (DrawPane).
+    //
+    // Reports the *bridge's* view, deliberately: a block whose language
+    // has no registered server says so even though mep's own org server
+    // is attached to the file as a whole, because "can I get completion
+    // in this block" is the question the line exists to answer.
+    "local function mep_org_lsp_status_for_block(blk, org_abspath, diags)\n"
+    "  local st = {state = 'unsupported', lang = blk.lang or '', server = '',\n"
+    "              errors = 0, warnings = 0, hints = 0}\n"
+    "  local lang_def = blk.lang and blk.lang ~= '' and mep.org_babel_langs[blk.lang] or nil\n"
+    "  local server, server_name = nil, nil\n"
+    "  if lang_def then server, server_name = mep_polyglot_server_for(blk.lang, lang_def) end\n"
+    "  if server then\n"
+    "    st.server = server_name or ''\n"
+    "    local per_block = mep_polyglot_per_block(lang_def)\n"
+    "    local shadow = mep_polyglot_shadows[mep_polyglot_key(org_abspath, blk.lang, per_block and blk or nil)]\n"
+    // No shadow yet, or one whose mep.lsp_start returned <= 0 (the spawn
+    // failed and shadow.client was never assigned): the first is the
+    // resting state of a block no LSP feature has ever run inside, the
+    // second is a server that is not installed. They are told apart by
+    // whether a shadow exists at all, which is exactly the distinction
+    // between "hasn't been tried" and "was tried, nothing is running".
+    "    if not shadow then\n"
+    "      st.state = 'idle'\n"
+    "    elseif not shadow.client or not mep.lsp_is_running(shadow.client) then\n"
+    "      st.state = 'exited'\n"
+    "    elseif not mep_lsp_server_capabilities[shadow.client] then\n"
+    "      st.state = 'starting'\n"
+    "    else\n"
+    "      st.state = 'ready'\n"
+    "    end\n"
+    "  end\n"
+    // Counted over the block's *body* rows only (start_row and end_row
+    // are the `#+begin_src`/`#+end_src` lines themselves): a bad header
+    // argument reported on the `#+begin_src` line is org's own lint, not
+    // this block's language server's finding, and the card already hangs
+    // that one off its title bar.
+    "  for _, d in ipairs(diags) do\n"
+    "    local line = (d.range and d.range.start and d.range.start.line or 0) + 1\n"
+    "    if line > blk.start_row and line < blk.end_row then\n"
+    "      local sev = d.severity or 1\n"
+    "      if sev == 1 then st.errors = st.errors + 1\n"
+    "      elseif sev == 2 then st.warnings = st.warnings + 1\n"
+    "      else st.hints = st.hints + 1 end\n"
+    "    end\n"
+    "  end\n"
+    "  return st\n"
+    "end\n"
+    "function mep.org_lsp_status_scan()\n"
+    "  mep.buf_clear_org_lsp_status()\n"
+    "  if not mep.org_lsp_status_visible() then return end\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
+    "  local org_abspath = mep_lsp_abspath(mep.filename())\n"
+    "  local diags = mep_lsp_diagnostics[org_abspath] or {}\n"
+    "  for _, blk in ipairs(mep_org_src_blocks_all()) do\n"
+    "    mep.buf_set_org_lsp_status(blk.start_row, mep_org_lsp_status_for_block(blk, org_abspath, diags))\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepOrgLspStatusScan', mep.org_lsp_status_scan)\n"
+    "function mep.org_lsp_status_toggle_ui()\n"
+    "  local visible = mep.org_lsp_status_toggle()\n"
+    "  mep.notify('Org src-block LSP status: ' .. (visible and 'on' or 'off'))\n"
+    "  mep.org_lsp_status_scan()\n"
+    "end\n"
+    "mep.command('MepOrgLspStatusToggle', mep.org_lsp_status_toggle_ui)\n"
+    "mep.leader_map('ots', 'Org: toggle src-block LSP status', mep.org_lsp_status_toggle_ui)\n"
+    // Rescan triggers. mep_org_src_blocks_all walks every line in the
+    // buffer, so this deliberately does *not* run per frame: it runs when
+    // the buffer's text changed, when the file under the cursor changed,
+    // or when the bridge itself moved (mep_polyglot_epoch).
+    //
+    // Plus a slow floor, because one transition has no event to hook:
+    // a language server *dying*. Nothing bumps the epoch when a client's
+    // process exits, so without this a crashed server would keep reading
+    // "ready" until the next keystroke. Two seconds is well under how
+    // long anyone stares at a status line, and far above how often a
+    // whole-buffer walk is worth doing.
+    "local mep_org_lsp_status_sig = nil\n"
+    "local mep_org_lsp_status_last_at = 0\n"
+    "mep.on_frame(function()\n"
+    "  if not mep.org_lsp_status_visible() then return end\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
+    "  local sig = mep.filename() .. '|' .. tostring(mep.buffer_change_epoch()) ..\n"
+    "    '|' .. tostring(mep_polyglot_epoch)\n"
+    "  local now = mep.now()\n"
+    "  if sig == mep_org_lsp_status_sig and now - mep_org_lsp_status_last_at < 2.0 then return end\n"
+    "  mep_org_lsp_status_sig = sig\n"
+    "  mep_org_lsp_status_last_at = now\n"
+    "  mep.org_lsp_status_scan()\n"
+    "end)\n";
 
 // Org LaTeX/math-mode inline rendering, a sibling feature to
 // kBuiltinOrgImages (defined earlier in this file): <leader>otl /
@@ -41586,13 +41714,80 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
         // The `#+end_` row, blanked to plain card floor: the bottom edge
-        // of the card *is* the "end" marker once the card is drawn.
+        // of the card *is* the "end" marker once the card is drawn --
+        // which frees the row it used to spell that out on, and that row
+        // is where a src block's language-server status goes (see
+        // Buffer::org_lsp_status_rows). Reusing it is what keeps this
+        // feature free of layout: no extra slot, so none of the four slot
+        // walkers that must agree on a row's height has to know about it.
         if (cb.conceal_footer) {
             clear_overflow(cb.footer);
             gfx::DrawRectangle(static_cast<int>(cb.footer.x), static_cast<int>(cb.footer.y),
                           static_cast<int>(cb.footer.width), static_cast<int>(cb.footer.height), opaque_bg);
             gfx::DrawRectangle(static_cast<int>(cb.footer.x), static_cast<int>(cb.footer.y),
                           static_cast<int>(cb.footer.width), static_cast<int>(cb.footer.height), card_wash);
+            // Only for a src block, and only while the cursor is off the
+            // `#+end_src` row: on it the raw text is revealed (that is
+            // what conceal_footer already means), and a status line
+            // painted over the line being edited would be the one thing
+            // the whole conceal/reveal bargain exists to avoid.
+            const OrgLspStatus *lsp = cb.is_src ? g_editor.OrgLspStatusForRow(buf, card.begin_row) : nullptr;
+            if (lsp != nullptr) {
+                // The rule the status hangs under, separating it from the
+                // code above. Inset at both ends so it reads as a divider
+                // inside the card rather than as a second border meeting
+                // the rounded outline at the corners.
+                const float rule_x = cb.footer.x + 8.0f;
+                const float rule_w = std::max(0.0f, cb.footer.width - 16.0f);
+                gfx::DrawRectangle(static_cast<int>(rule_x), static_cast<int>(cb.footer.y),
+                              static_cast<int>(rule_w), 1, gfx::Fade(accent, 0.35f));
+                const OrgLspStatusTone tone = OrgLspStatusToneOf(*lsp);
+                gfx::Color tone_c = ResolveHlGroup("MutedFg");
+                if (tone == OrgLspStatusTone::kError) tone_c = ResolveHlGroup("Error");
+                else if (tone == OrgLspStatusTone::kWarn) tone_c = ResolveHlGroup("Warn");
+                else if (tone == OrgLspStatusTone::kOk) tone_c = ResolveHlGroup("Green");
+                // A dot carries the severity so the line's state is
+                // readable without reading it; the text itself stays
+                // muted unless something is actually wrong, so a page of
+                // healthy blocks doesn't turn into a wall of color.
+                const float dot_r = std::max(2.0f, g_font_size * 0.16f);
+                const float dot_cx = cb.footer.x + 10.0f + dot_r;
+                gfx::DrawCircle(static_cast<int>(dot_cx), static_cast<int>(cb.footer.y + cb.footer.height / 2.0f),
+                           dot_r, tone_c);
+                const float sx = dot_cx + dot_r + 6.0f;
+                const float s_limit = cb.footer.x + cb.footer.width - 8.0f;
+                std::string s_text = FormatOrgLspStatus(*lsp);
+                // Elided rather than clipped mid-glyph by the scissor, the
+                // same bargain the title bar's own chips make: the full
+                // answer is a `:MepDiagShow`/cursor move away, and a
+                // status line that runs off its card reads as a bug.
+                float s_w = gfx::MeasureTextEx(g_font, s_text.c_str(), g_font_size, 0).x;
+                if (sx + s_w > s_limit) {
+                    const float ell_w = gfx::MeasureTextEx(g_font, "...", g_font_size, 0).x;
+                    const float avail = s_limit - sx;
+                    int cols = ByteOffsetToColumn(s_text, static_cast<int>(s_text.size()));
+                    bool fitted = false;
+                    while (cols > 0) {
+                        cols--;
+                        std::string cut = s_text.substr(0, ColumnToByteOffset(s_text, cols));
+                        if (gfx::MeasureTextEx(g_font, cut.c_str(), g_font_size, 0).x + ell_w <= avail) {
+                            s_text = cut + "...";
+                            fitted = true;
+                            break;
+                        }
+                    }
+                    // Not even an ellipsis fits (a very narrow split):
+                    // the dot alone still says how the block is doing.
+                    if (!fitted) s_text.clear();
+                }
+                if (!s_text.empty()) {
+                    const float s_y = cb.footer.y + (cb.footer.height - g_font_size) / 2.0f;
+                    gfx::DrawTextEx(g_font, s_text.c_str(), gfx::Vector2{sx, s_y}, g_font_size, 0,
+                               tone == OrgLspStatusTone::kError || tone == OrgLspStatusTone::kWarn
+                                   ? tone_c
+                                   : ResolveHlGroup("MutedFg"));
+                }
+            }
         }
         gfx::Color border = cb.is_src ? (cb.active ? accent : gfx::Fade(accent, 0.55f))
                                        : gfx::Fade(ResolveHlGroup("Border"), cb.active ? 1.0f : 0.7f);

@@ -1090,6 +1090,20 @@ struct Buffer {
     };
     std::unordered_map<int, std::vector<OrgLinkSpan>> org_link_spans;
 
+    // Per-src-block language-server status (<leader>ots): the `#+begin_src`
+    // row (0-based, matching OrgBlockCard::begin_row) -> what that block's
+    // language server is doing, drawn as one line along the bottom edge of
+    // the block's card. Populated by Lua's mep.org_lsp_status_scan
+    // (kBuiltinOrgPolyglot, main.cpp), which is the only side that can see
+    // the shadow files/clients/server registry the status describes;
+    // rebuilt wholesale on every scan, the same "one provider replaces its
+    // own entries" convention as org_image_rows above. Only ever populated
+    // while the toggle is on -- the scan clears it and returns otherwise,
+    // and, like every other org scan here, it only ever runs for the
+    // buffer that is current when it fires, so a background pane's org
+    // buffer keeps whatever it was last scanned with.
+    std::unordered_map<int, OrgLspStatus> org_lsp_status_rows;
+
     /**
      * @brief Returns the number of lines currently in the buffer.
      * @return The line count.
@@ -2914,6 +2928,21 @@ public:
      * @return True if org block-card rendering is toggled on.
      */
     bool OrgBlockCardsVisible() const { return org_block_cards_visible_; }
+    // <leader>ots / mep.org_lsp_status_visible -- whether a `#+begin_src`
+    // block's card carries a language-server status line along its bottom
+    // edge (Buffer::org_lsp_status_rows). Like OrgLatexVisible() above
+    // this needs a real Lua-visible getter rather than being consulted
+    // only by the renderer: the scan that fills the registry lives in
+    // Lua (kBuiltinOrgPolyglot), and it has to clear its rows and stop
+    // polling the polyglot bridge while this is off rather than keep
+    // producing state nothing draws. Defaults on -- the line is one row
+    // of text inside space the card already reserves for `#+end_src`,
+    // so it costs no layout and hides nothing.
+    /**
+     * @brief Returns whether org src blocks show a language-server status line.
+     * @return True if org src-block LSP status rendering is toggled on.
+     */
+    bool OrgLspStatusVisible() const { return org_lsp_status_visible_; }
     // <leader>otm / mep.org_conceal_toggle -- whether org markup is
     // hidden behind what it marks up: `[[file:x][Notes]]` drawn as
     // `Notes`, `*bold*` as `bold`, a `|---+---|` rule as a drawn line.
@@ -7941,6 +7970,45 @@ public:
      */
     bool ToggleOrgBlockCards();
 
+    // --- Org src-block LSP status (<leader>ots / mep.org_lsp_status_toggle) ---
+    // Registers/replaces one `#+begin_src` block's language-server status
+    // in the current buffer's org_lsp_status_rows, keyed by the block's
+    // own `#+begin_src` row -- called once per block by Lua's
+    // mep.org_lsp_status_scan (kBuiltinOrgPolyglot, main.cpp), the same
+    // "one call per match" shape SetOrgImageRow and SetOrgLatexRow use.
+    /**
+     * @brief Registers or replaces one org src block's language-server status.
+     * @param row The block's `#+begin_src` row (0-based).
+     * @param status What that block's server is doing, and what it has reported.
+     */
+    void SetOrgLspStatusRow(int row, const OrgLspStatus &status);
+    // Drops every registered status in the current buffer -- the scan
+    // calls this before refilling (and instead of refilling, when the
+    // toggle is off), so a block that stopped existing, or a whole
+    // registry the toggle just turned off, leaves nothing stale behind.
+    /**
+     * @brief Clears the current buffer's whole org src-block LSP status registry.
+     */
+    void ClearOrgLspStatusRows();
+    // The status DrawPane (main.cpp) should draw along a block card's
+    // bottom edge, or nullptr for a block with none registered (a
+    // non-src block, one the scan hasn't reached yet, or the toggle
+    // being off).
+    /**
+     * @brief Looks up the registered language-server status for a src block's `#+begin_src` row.
+     * @param buf The buffer the block lives in.
+     * @param row The block's `#+begin_src` row (0-based).
+     * @return The status, or nullptr when the row has none.
+     */
+    const OrgLspStatus *OrgLspStatusForRow(const Buffer &buf, int row) const;
+    // <leader>ots: flips org_lsp_status_visible_ and returns the new
+    // state, same shape as ToggleOrgBlockCards above.
+    /**
+     * @brief Toggles org src-block LSP status rendering.
+     * @return The new visibility state.
+     */
+    bool ToggleOrgLspStatus();
+
     // --- Org LaTeX/math-mode rendering (<leader>otl / mep.org_latex_toggle) ---
     // Registers/replaces the rendered-PNG path, slot count, and last raw
     // source row (see Buffer::OrgLatexRender) for `row` -- called once per
@@ -11087,6 +11155,9 @@ private:
     // Org block cards (<leader>otb / mep.org_block_cards_toggle): see
     // OrgBlockCardsVisible()'s own comment for why this one starts on.
     bool org_block_cards_visible_ = true;
+    // Org src-block LSP status (<leader>ots / mep.org_lsp_status_toggle):
+    // see OrgLspStatusVisible() for why this one starts on too.
+    bool org_lsp_status_visible_ = true;
     // Plain cursor line (<leader>otc): see OrgPlainCursorLineVisible()'s
     // own comment. On by default -- the raw text of the row being edited
     // is what an editor should show.

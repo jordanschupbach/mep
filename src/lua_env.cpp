@@ -3239,6 +3239,93 @@ int l_org_block_cards_visible(lua_State *L) {
     return 1;
 }
 
+// mep.org_lsp_status_toggle() -> new visibility (bool). <leader>ots --
+// whether a `#+begin_src` card carries the language-server status line
+// along its bottom edge.
+/**
+ * @brief Implements mep.org_lsp_status_toggle(): toggles org src-block LSP status rendering on/off.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new visibility state).
+ */
+int l_org_lsp_status_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleOrgLspStatus());
+    return 1;
+}
+
+// mep.org_lsp_status_visible() -> bool. Read by mep.org_lsp_status_scan
+// itself, which clears the registry and returns while this is off rather
+// than keeping a polyglot-state poll running for something nothing draws.
+/**
+ * @brief Implements mep.org_lsp_status_visible(): reports whether org src-block LSP status rendering is on.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the current visibility state).
+ */
+int l_org_lsp_status_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->OrgLspStatusVisible());
+    return 1;
+}
+
+// mep.buf_set_org_lsp_status(row, opts) -- `row` is the block's
+// 1-indexed `#+begin_src` line (the same 1-indexed convention every other
+// mep.buf_* registration function uses); `opts` is
+// {state=, lang=, server=, errors=, warnings=, hints=}, with `state` one
+// of the names OrgLspStateFromName understands. Called once per block by
+// mep.org_lsp_status_scan (kBuiltinOrgPolyglot).
+/**
+ * @brief Implements mep.buf_set_org_lsp_status(row, opts): registers one org src block's language-server status.
+ * @param L Lua state; arg 1 is the 1-indexed `#+begin_src` row, arg 2 the status table.
+ * @return Number of values pushed (0).
+ */
+int l_buf_set_org_lsp_status(lua_State *L) {
+    const int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    luaL_checktype(L, 2, LUA_TTABLE);
+    OrgLspStatus status;
+    /**
+     * @brief Reads one string field out of the opts table at stack index 2.
+     * @param key The field name.
+     * @return The field's value, or "" when it is absent or not a string.
+     */
+    auto str_field = [&](const char *key) {
+        lua_getfield(L, 2, key);
+        std::string out;
+        if (lua_isstring(L, -1) != 0) out = lua_tostring(L, -1);
+        lua_pop(L, 1);
+        return out;
+    };
+    /**
+     * @brief Reads one non-negative integer field out of the opts table at stack index 2.
+     * @param key The field name.
+     * @return The field's value clamped at 0, or 0 when it is absent.
+     */
+    auto int_field = [&](const char *key) {
+        lua_getfield(L, 2, key);
+        const int out = lua_isnumber(L, -1) != 0 ? static_cast<int>(lua_tointeger(L, -1)) : 0;
+        lua_pop(L, 1);
+        return std::max(0, out);
+    };
+    status.state = OrgLspStateFromName(str_field("state"));
+    status.lang = str_field("lang");
+    status.server = str_field("server");
+    status.errors = int_field("errors");
+    status.warnings = int_field("warnings");
+    status.hints = int_field("hints");
+    GetEditor(L)->SetOrgLspStatusRow(row, status);
+    return 0;
+}
+
+// mep.buf_clear_org_lsp_status() -- mep.org_lsp_status_scan calls this
+// before refilling, and instead of refilling while the toggle is off, so
+// a block that stopped existing leaves nothing stale behind.
+/**
+ * @brief Implements mep.buf_clear_org_lsp_status(): clears the current buffer's org src-block LSP status registry.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_buf_clear_org_lsp_status(lua_State *L) {
+    GetEditor(L)->ClearOrgLspStatusRows();
+    return 0;
+}
+
 // mep.org_latex_visible() -> bool. Lua-side readable state (unlike
 // OrgImagesVisible(), org_latex_scan itself needs to consult this -- see
 // Buffer::org_latex_rows' own comment for why the two toggles' scan
@@ -10118,6 +10205,10 @@ const luaL_Reg kMepFuncs[] = {
     {"org_latex_toggle", l_org_latex_toggle},
     {"org_block_cards_toggle", l_org_block_cards_toggle},
     {"org_block_cards_visible", l_org_block_cards_visible},
+    {"org_lsp_status_toggle", l_org_lsp_status_toggle},
+    {"org_lsp_status_visible", l_org_lsp_status_visible},
+    {"buf_set_org_lsp_status", l_buf_set_org_lsp_status},
+    {"buf_clear_org_lsp_status", l_buf_clear_org_lsp_status},
     {"org_latex_visible", l_org_latex_visible},
     {"org_link_scan", l_org_link_scan},
     {"org_table_auto_align", l_org_table_auto_align},

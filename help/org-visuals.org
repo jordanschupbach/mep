@@ -95,6 +95,44 @@ of the bar's own colour. Either way it is shortened with =...= to fit;
 the gutter badge marks the row as it always did, and =:MepDiagShow= (or
 just moving the cursor onto the line) gives the full text.
 
+** The language-server status line
+
+| Key / command                | Does                              |
+|------------------------------+-----------------------------------|
+| =<leader>ots=                | toggle the status line            |
+| =:MepOrgLspStatusToggle=     | the same                          |
+| =:MepOrgLspStatusScan=       | refresh it now                    |
+
+A =src= card carries one line along its bottom edge, under a rule
+separating it from the code, saying what its own language server
+([[file:org-lsp.html][per-block LSP]]) is doing. It sits on the
+=#+end_src= row, which the card was already blanking out, so it costs the
+block no extra height.
+
+A coloured dot carries the state at a glance and the text spells it out:
+
+| Reads                               | Means                                         |
+|-------------------------------------+-----------------------------------------------|
+| =LSP: no server for sh=             | nothing is registered for that language       |
+| =LSP: no language set=              | the block has no =#+begin_src <lang>= tag     |
+| =pyright: idle (attaches on first use)= | a server is registered, nothing started yet |
+| =pyright: starting...=              | spawned, still initialising                   |
+| =pyright: not running=              | it failed to start, or it died                |
+| =pyright: ready, no diagnostics=    | attached and happy                            |
+| =pyright: ready, 2 errors, 1 warning= | attached; what it found *inside this block* |
+
+The counts cover the block's own body lines only, so a bad header
+argument on the =#+begin_src= line (org's own lint, shown beside the card
+-- see above) doesn't get counted against the code. They also outrank the
+state: a perfectly healthy server reporting errors reads red, not green.
+
+This is *on by default*. Like every other concealed row, put the cursor
+on =#+end_src= and the raw text comes back in place of the status.
+
+Servers attach lazily -- the first time an LSP feature actually runs
+inside the block (hover with =K=, completion, =gd=), not merely on the
+cursor entering it -- which is why an untouched block reads =idle=.
+
 * LaTeX and maths
 
 | Key / command             | Does                              |

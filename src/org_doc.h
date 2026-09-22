@@ -91,6 +91,34 @@ struct OrgOutline {
  */
 int OrgHeadlineLevel(const std::string &line);
 
+// A headline's leading stars are markup like any other: what they say
+// (this row's depth) the render already says with size and colour
+// (kOrgHeadingStyles/OrgHeadlineLevel1..3, editor.h), so concealment
+// hides them and indents the title one column per level below the first
+// instead -- real org's own org-indent-mode look, and the reason a
+// rendered outline reads as a document rather than as a run of asterisks.
+//
+// Two numbers, one definition, because two renderers have to agree on
+// them (DrawPane's row loop and its closed-fold summary, main.cpp):
+// OrgHeadlineStarHideLen is what the render drops from the front of the
+// line -- the stars *and* the single space separating them from the
+// title, so a level-1 headline's title starts at the margin -- and
+// OrgHeadlineStarIndentCols is the indent drawn in its place. The
+// difference between them is 2 at every depth, which is exactly how far
+// left a headline's title slides when its stars are hidden.
+/**
+ * @brief Returns the bytes at the start of an org headline the render hides (stars plus their separating space), or 0 when the line isn't a headline.
+ * @param line the line to measure
+ * @return the prefix length to hide, or 0
+ */
+int OrgHeadlineStarHideLen(const std::string &line);
+/**
+ * @brief Returns the columns of indentation the render draws in place of a headline's hidden stars (level - 1), or 0 when the line isn't a headline.
+ * @param line the line to measure
+ * @return the indent width in columns, or 0
+ */
+int OrgHeadlineStarIndentCols(const std::string &line);
+
 // --- Org emphasis marker boundaries -----------------------------------
 //
 // Org only lets `*bold*`, `/italic/`, `_under_`, `+strike+`, `=verbatim=`

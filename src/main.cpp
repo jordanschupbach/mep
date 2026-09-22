@@ -14514,6 +14514,22 @@ const char *kBuiltinOrgBabel =
     "local function mep_org_babel_extend(dst, src)\n"
     "  for _, v in ipairs(src) do dst[#dst + 1] = v end\n"
     "end\n"
+    // mep_org_babel_format_literal ported to OrgBabelFormatLiteral
+    // (editor.cpp) -- bound as mep.org_babel_format_literal.
+    //
+    // Declared up here, with mep_org_babel_extend and *above* the language
+    // table, because the table's own closures call it: L.r.graphics_wrap
+    // formats the `:file` path it hands to png(). A `local function`
+    // further down the chunk would not be in scope for them -- the name
+    // would compile as a global read instead, and since this is only ever
+    // a local, that read is nil: running any `:results graphics :file`
+    // R block died with "attempt to call a nil value (global
+    // 'mep_org_babel_format_literal')" for exactly that reason. Every
+    // other bare mep_org_babel_* name the language table reaches for is a
+    // real global (a `function foo()` in a builtin chunk, or a C-side bare
+    // global like mep_org_src_block_at); this one is not, so its position
+    // is load-bearing.
+    "local function mep_org_babel_format_literal(raw) return mep.org_babel_format_literal(tostring(raw)) end\n"
     "mep.org_babel_langs = {}\n"
     "local L = mep.org_babel_langs\n"
     "-- Per-language descriptor: executable (checked via mep_org_babel_has_exe,\n"
@@ -14901,10 +14917,6 @@ const char *kBuiltinOrgBabel =
     "  end\n"
     "  return lang_def, exe\n"
     "end\n"
-    "\n"
-    // mep_org_babel_format_literal ported to OrgBabelFormatLiteral
-    // (editor.cpp) -- bound as mep.org_babel_format_literal.
-    "local function mep_org_babel_format_literal(raw) return mep.org_babel_format_literal(tostring(raw)) end\n"
     "\n"
     "local mep_org_babel_cache = mep.babel_cache_load()\n"
     "local function mep_org_babel_cache_save() mep.babel_cache_save(mep_org_babel_cache) end\n"
@@ -41711,8 +41723,36 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // handle wrapping, selection, the number gutter and every other
     // decoration kind (virt text, swatches, underline/bold/italic) a
     // one-line fold summary doesn't need any of.
-    auto draw_fold_summary_text = [&](int fold_row, float fold_ly) {
-        const std::string &line = buf.lines[static_cast<size_t>(fold_row)];
+    // Returns the columns it drew, which is two fewer than the row's own
+    // length when it hid a headline's stars -- the caller's trailing
+    // " ..." follows the text it actually put on screen.
+    auto draw_fold_summary_text = [&](int fold_row, float fold_ly) -> int {
+        const std::string &raw = buf.lines[static_cast<size_t>(fold_row)];
+        // A closed subtree's summary row is a headline like any other, so
+        // it hides its own leading stars too (OrgHeadlineStarHideLen,
+        // org_doc.h) -- otherwise a heading sprouted its asterisks back
+        // the moment it was folded, which is exactly when an outline is
+        // most of what is on screen. Same two exemptions the row loop
+        // makes: concealment off, and the caret's own row (drawn from the
+        // row's stored columns, further down).
+        //
+        // Its own copy of the collapsed line rather than the loop's
+        // `disp_line`: this branch runs before that is built, and a
+        // folded row is one of a handful on screen.
+        const int star_hide =
+            (is_org_buffer && g_editor.OrgConcealVisible() && !(is_active && fold_row == pane.cursor.row))
+                ? OrgHeadlineStarHideLen(raw)
+                : 0;
+        // How far left the title slid: the stars and their space out,
+        // OrgHeadlineStarIndentCols back in. Always 2 -- but derived, so
+        // the two definitions cannot drift apart.
+        const int star_shift = star_hide > 0 ? star_hide - OrgHeadlineStarIndentCols(raw) : 0;
+        std::string collapsed;
+        if (star_hide > 0) {
+            collapsed.assign(static_cast<size_t>(OrgHeadlineStarIndentCols(raw)), ' ');
+            collapsed.append(raw, static_cast<size_t>(star_hide), std::string::npos);
+        }
+        const std::string &line = star_hide > 0 ? collapsed : raw;
         DrawLineFast(line, text_x, fold_ly, g_font_size, ResolveHlGroup("Normal"));
         auto it = decos_by_row.find(fold_row);
         const std::vector<const Decoration *> &row_decos = (it != decos_by_row.end()) ? it->second : kNoDecos;
@@ -41720,18 +41760,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const Decoration &d = *dp;
             if (d.whole_line || d.underline || d.bold || d.italic || d.col_end <= d.col_start) continue;
             if (d.hl_group.empty() && !d.has_fg_color) continue;
+            // Stored columns shifted onto the drawn line, the same
+            // mapping the row loop's DispCol applies. A span the hidden
+            // stars swallowed whole (the grammar's OrgStars1..3 capture)
+            // ends at or before column 0 and is dropped, rather than
+            // painting the asterisks back on.
+            const int dstart = d.col_start - star_shift;
+            const int dend = d.col_end - star_shift;
+            if (dend <= 0) continue;
             int a, b;
             if (d.has_fg_color) {
-                a = std::min(static_cast<int>(line.size()), static_cast<int>(ColumnToByteOffset(line, d.col_start)));
-                b = std::min(static_cast<int>(line.size()), static_cast<int>(ColumnToByteOffset(line, d.col_end)));
+                a = std::min(static_cast<int>(line.size()), static_cast<int>(ColumnToByteOffset(line, std::max(0, dstart))));
+                b = std::min(static_cast<int>(line.size()), static_cast<int>(ColumnToByteOffset(line, dend)));
             } else {
-                a = std::min(static_cast<int>(line.size()), d.col_start);
-                b = std::min(static_cast<int>(line.size()), d.col_end);
+                a = std::min(static_cast<int>(line.size()), std::max(0, dstart));
+                b = std::min(static_cast<int>(line.size()), dend);
             }
             if (b <= a) continue;
             gfx::Color c = d.has_fg_color ? gfx::Color{d.fg_color.r, d.fg_color.g, d.fg_color.b, d.fg_color.a}
                                       : ResolveHlGroup(d.hl_group);
-            int col_a = d.has_fg_color ? d.col_start : a;
+            int col_a = d.has_fg_color ? std::max(0, dstart) : a;
             std::string piece = line.substr(static_cast<size_t>(a), static_cast<size_t>(b - a));
             if (d.has_fg_color) {
                 gfx::DrawTextEx(g_terminal_font, piece.c_str(), gfx::Vector2{text_x + static_cast<float>(col_a) * g_char_width, fold_ly},
@@ -41757,6 +41805,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 dx += g_char_width;
             }
         }
+        return static_cast<int>(line.size());
     };
 
     // Bounded by *visual* slots, not buffer rows: `visible_lines` is how
@@ -42317,9 +42366,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // formatted, uncolored line with nothing to set it apart --
             // the background fill drawn above now carries that job
             // instead.
-            draw_fold_summary_text(row, ly);
-            const std::string &folded_line = buf.lines[static_cast<size_t>(row)];
-            gfx::DrawTextEx(g_font, " ...", gfx::Vector2{text_x + static_cast<float>(folded_line.size()) * g_char_width, ly},
+            // Right after the summary's last character -- which is two
+            // columns in from the row's own length once a folded
+            // headline's stars are hidden, so the ellipsis follows the
+            // title instead of floating past where the asterisks used to
+            // end the line.
+            const int folded_cols = draw_fold_summary_text(row, ly);
+            gfx::DrawTextEx(g_font, " ...", gfx::Vector2{text_x + static_cast<float>(folded_cols) * g_char_width, ly},
                        g_font_size, 0, ResolveHlGroup("Comment"));
             // Fold marker click-to-toggle (Phase 11 click-dispatch gap):
             // mep has no separate statuscolumn widget row, so the fold
@@ -42370,10 +42423,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // loop `kNoDecos`), plus a row an inline completion ghost covers
         // (the virt_text pass stands down for it) -- since blanking
         // columns whose replacement text never gets drawn would lose the
-        // text outright. A headline is excluded whether or not it ends up
-        // scaled: OrgHighlightEmphasis already refuses to conceal one, so
-        // there is nothing there to collapse but a link, and this way the
-        // two renderers still never both claim the same row.
+        // text outright. A headline's *markup* is excluded whether or not
+        // it ends up scaled: OrgHighlightEmphasis already refuses to
+        // conceal one, so there is nothing there to collapse but a link,
+        // and this way the two renderers still never both claim the same
+        // row. Its own leading stars are the one exception -- they have no
+        // replacement text to lose, and the scaled renderer reads the
+        // collapse instead of ignoring it (see head_star_hide below).
         const std::string &raw_line = buf.lines[static_cast<size_t>(row)];
         const bool headline_row = is_org_buffer && g_editor.OrgHeadingScaleVisible() &&
                                   Editor::OrgHeadlineLevelOf(raw_line) > 0;
@@ -42390,6 +42446,30 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const bool table_row = first_glyph != std::string::npos && raw_line[first_glyph] == '|';
         conceal_runs.clear();
         math_runs.clear();
+        // An org headline's leading stars, hidden and replaced by the
+        // indent that stands for its depth instead
+        // (OrgHeadlineStarHideLen/OrgHeadlineStarIndentCols, org_doc.h).
+        // A collapse run rather than a concealing overlay: there is no
+        // replacement *text* to draw, only columns to stop drawing, and
+        // going through the same runs every other conceal uses means the
+        // row's decorations, its selection fill and the scaled-headline
+        // renderer below all land on the title where it actually draws --
+        // for free, through DispCol -- instead of two columns right of it.
+        //
+        // The caret's own row keeps its stars, the same reveal-to-edit
+        // rule concealment follows everywhere else, and here also because
+        // the caret is drawn (further down, on the raw column grid) from
+        // the row's stored columns: collapsing the row it sits on would
+        // leave it two columns off the glyph it is on.
+        const int head_star_hide =
+            (is_org_buffer && g_editor.OrgConcealVisible() && !plain_row && tbl_wrap == nullptr &&
+             !ghost_covers_row(row) && !(is_active && row == pane.cursor.row))
+                ? OrgHeadlineStarHideLen(raw_line)
+                : 0;
+        if (head_star_hide > 0) {
+            conceal_runs.push_back(ConcealRun{0, head_star_hide, OrgHeadlineStarIndentCols(raw_line),
+                                              std::numeric_limits<int>::max()});
+        }
         if (!plain_row && tbl_wrap == nullptr && !headline_row && !ghost_covers_row(row)) {
             const int raw_len = static_cast<int>(raw_line.size());
             for (const Decoration *dp : row_decos) {
@@ -42799,7 +42879,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // title running off the right edge reads far worse than one
             // drawn at body size.
             const float head_avail_w = std::max(1.0f, w - (text_x - x) - static_cast<float>(kMarginX));
-            const float head_cols = static_cast<float>(buf.lines[static_cast<size_t>(row)].size());
+            // The columns it actually draws, which is two fewer than the
+            // stored line's once its stars are hidden (head_star_hide) --
+            // measuring the raw line would keep a headline at body size
+            // over markup that isn't on screen.
+            const float head_cols = static_cast<float>(draw_line.size());
             if (head_cols > 0.0f) {
                 scale = std::min(scale, head_avail_w / (head_cols * g_char_width));
             }
@@ -42811,7 +42895,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
         if (org_head_level > 0) {
-            const std::string &hline = buf.lines[static_cast<size_t>(row)];
+            // The row as the collapse leaves it -- its leading stars
+            // already blanked down to the indent that stands for its
+            // depth (head_star_hide above) -- not the stored line, so the
+            // asterisks stay off a rendered headline at the scaled size
+            // too. Identical to the stored line when concealment is off
+            // or the caret is on this row.
+            const std::string &hline = draw_line;
             // Level colour comes from the same theme groups the org
             // grammar's own headline captures use (OrgHeadlineLevel1..3),
             // so a themed headline keeps its colour at any size.
@@ -42827,12 +42917,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // exist to carry. Spans that would need a *different* glyph
             // layout than the base pass -- concealment overlays, italic's
             // shear -- are skipped: a headline is structure, not prose.
+            //
+            // Columns come through DispCol, the same mapping every other
+            // pass on a collapsed row uses, so a span lands on the title
+            // where the stars' removal actually left it. A span the
+            // collapse swallowed whole -- the grammar's own OrgStars1..3
+            // capture over the asterisks -- maps to nothing and is
+            // skipped, rather than painting them back on.
             for (const Decoration *dp : row_decos) {
                 const Decoration &d = *dp;
                 if (d.whole_line || d.virt_overlay || d.hl_group.empty() || d.has_fg_color) continue;
                 if (d.col_end <= d.col_start) continue;
-                int a = std::min(static_cast<int>(hline.size()), d.col_start);
-                int b = std::min(static_cast<int>(hline.size()), d.col_end);
+                const int raw_len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
+                int a = DispCol(std::min(raw_len, d.col_start));
+                int b = DispCol(std::min(raw_len, d.col_end));
+                a = std::min(static_cast<int>(hline.size()), a);
+                b = std::min(static_cast<int>(hline.size()), b);
                 if (b <= a) continue;
                 DrawLineFast(hline.substr(static_cast<size_t>(a), static_cast<size_t>(b - a)),
                              text_x + static_cast<float>(a) * org_head_cw, ly, org_head_fs,

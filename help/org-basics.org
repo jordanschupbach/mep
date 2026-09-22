@@ -49,10 +49,18 @@ closing-up does inside a table cell.
 
 * Heading sizes
 
-A heading is drawn larger the shallower it is, and in its own colour by
-level: =*= largest, =**= a little smaller, =***= smaller again, =****= and
-deeper at body size. The top two levels get a line of space under them as
-well, which is what gives the outline its shape at a glance.
+A heading's own leading stars are not drawn. What they say -- how deep the
+heading is -- the render already says with size and colour, so concealment
+hides them and indents the title one column per level below the first
+instead: =* Top= sits at the margin, =** Sub= one column in, and so on. A
+folded heading's summary line hides them the same way. =<leader>otm= (markup
+concealment) brings them back, as does putting the cursor on the row.
+
+Under those stars, a heading is drawn larger the shallower it is, and in its
+own colour by level: =*= largest, =**= a little smaller, =***= smaller
+again, =****= and deeper at body size. The top two levels get a line of
+space under them as well, which is what gives the outline its shape at a
+glance.
 
 =<leader>oth= turns that off and draws every heading at body size.
 

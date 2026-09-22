@@ -192,7 +192,9 @@ than once per fragment.
 | =:MepOrgPlainCursorLineToggle= | the same                        |
 
 Concealment is what draws =*bold*= as bold text, =[[file:x][Notes]]= as
-=Notes= and a =|---+---|= row as a line. It is on by default, and always
+=Notes=, a =|---+---|= row as a line, and a heading without its leading
+stars (indented one column per level below the first instead -- see
+[[file:org-basics.html][Org files in mep]]). It is on by default, and always
 steps aside for the row the cursor is on.
 
 A concealed row closes up behind what it hides. The markup is almost always

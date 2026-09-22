@@ -367,6 +367,33 @@ int main() {
         CHECK(OrgHeadlineLevel("plain prose") == 0);
     }
 
+    // --- The leading stars the render hides, and the indent it draws in
+    //     their place. Both renderers that hide them (DrawPane's row loop
+    //     and its closed-fold summary) rely on the difference being 2 at
+    //     every depth: that is how far left a title slides.
+    {
+        CHECK(OrgHeadlineStarHideLen("* Top") == 2);  // the star and its space
+        CHECK(OrgHeadlineStarIndentCols("* Top") == 0);  // level 1 sits at the margin
+        CHECK(OrgHeadlineStarHideLen("** Sub") == 3);
+        CHECK(OrgHeadlineStarIndentCols("** Sub") == 1);
+        CHECK(OrgHeadlineStarHideLen("***** Deep") == 6);
+        CHECK(OrgHeadlineStarIndentCols("***** Deep") == 4);
+        for (const char *h : {"* a", "** a", "*** a", "**** a", "***** a"}) {
+            CHECK(OrgHeadlineStarHideLen(h) - OrgHeadlineStarIndentCols(h) == 2);
+        }
+        // Only the one separating space is eaten -- the rest of the line,
+        // extra spaces included, is drawn exactly as stored.
+        CHECK(OrgHeadlineStarHideLen("*   padded") == 2);
+        // Everything OrgHeadlineLevel rejects has nothing to hide.
+        CHECK(OrgHeadlineStarHideLen("*bold* opening a line") == 0);
+        CHECK(OrgHeadlineStarIndentCols("*bold* opening a line") == 0);
+        CHECK(OrgHeadlineStarHideLen("  * an indented list bullet") == 0);
+        CHECK(OrgHeadlineStarHideLen("plain prose") == 0);
+        CHECK(OrgHeadlineStarHideLen("") == 0);
+        // An empty-titled headline hides its stars and draws nothing else.
+        CHECK(OrgHeadlineStarHideLen("* ") == 2);
+    }
+
     // --- Link spans: what gets drawn in place of the markup, and what
     //     columns a click has to hit. The edge cases are the point.
     {

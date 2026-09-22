@@ -995,6 +995,16 @@ int OrgHeadlineLevel(const std::string &line) {
     return static_cast<int>(stars);
 }
 
+int OrgHeadlineStarHideLen(const std::string &line) {
+    const int level = OrgHeadlineLevel(line);
+    return level > 0 ? level + 1 : 0;  // the stars, plus the space that ends them
+}
+
+int OrgHeadlineStarIndentCols(const std::string &line) {
+    const int level = OrgHeadlineLevel(line);
+    return level > 1 ? level - 1 : 0;  // level 1 sits at the margin
+}
+
 bool OrgEmphasisPreOk(char c) {
     // '\0' is how both callers spell "there is no character here", i.e.
     // start-of-line, which org's own regexp allows via its `^` branch.

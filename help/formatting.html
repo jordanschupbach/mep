@@ -19,18 +19,19 @@ stale copy from disk.</p>
 <h1>What runs</h1>
 <table>
 <tr><th>Filetype</th><th>Formatter</th></tr>
-<tr><td>C, C++ and friends</td><td><code>clang-format</code></td></tr>
+<tr><td>C++ and friends</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Python</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>R</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>C</td><td><code>clang-format</code></td></tr>
 <tr><td>anything else</td><td><code>mep.lsp_format</code>, if a server is attached</td></tr>
 </table>
 <p>That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.</p>
-<p>Python and R need nothing installed at all: both formatters are built into
-mep, so <code>gf</code> on a <code>.py</code> or <code>.R</code> buffer works on a machine with no <code>black</code>,
-no <code>air</code> and no Python or R toolchain, and answers instantly because nothing
-is spawned.</p>
+<p>C++, Python and R need nothing installed at all: all three formatters are
+built into mep, so <code>gf</code> on a <code>.cpp</code>, <code>.h</code>, <code>.py</code> or <code>.R</code> buffer works on a
+machine with no <code>clang-format</code>, no <code>black</code>, no <code>air</code> and no Python or R
+toolchain, and answers instantly because nothing is spawned.</p>
 <h1>Org code blocks</h1>
 <p>In an <code>.org</code> file <code>gf</code> formats <b>code</b>, never the prose around it.</p>
 <table>
@@ -40,9 +41,10 @@ is spawned.</p>
 </table>
 <p><code>:MepOrgFormatBlock</code> and <code>:MepOrgFormatBlocks</code> are the same two, by name.</p>
 <p>The block's language picks the formatter -- <code>#+begin_src python</code> gets the
-built-in Python formatter, the same as a <code>.py</code> file, because the block's
-language name is translated through its babel file extension before the
-table above is looked up.</p>
+built-in Python formatter and <code>#+begin_src cpp</code> the built-in C++ one, the
+same as a <code>.py</code> or <code>.cpp</code> file, because the block's language name is
+translated through its babel file extension before the table above is looked
+up.</p>
 <p>A block indented under a heading is dedented before the formatter sees it
 and re-indented after, so the org file's own layout survives. A body whose
 lines do not share one indent (tabs on some, spaces on others) is passed
@@ -52,6 +54,78 @@ to that block's own language server -- the one already answering
 <a href="org-polyglot.html">hover and completion inside the block</a>. The
 whole-file sweep does not: it only runs the table, and reports those blocks
 as skipped.</p>
+<h1>The C++ formatter</h1>
+<p>C++ is formatted by mep itself. Nothing is spawned, no <code>clang-format</code> has to
+be on <code>PATH</code>, and <code>gf</code> works the same in a fresh checkout as on a fully
+set-up machine. The same formatter handles <code>.cpp</code>, <code>.cc</code>, <code>.cxx</code>, <code>.h</code>,
+<code>.hpp</code>, <code>.hh</code>, <code>.hxx</code>, <code>.ipp</code>, <code>.inl</code>, <code>.cu</code> and <code>.cuh</code>.</p>
+<p>It is shaped after <code>clang-format</code>, in the dialect mep's own source is
+written in: 4-space indents, <code>Type *name</code> with the star on the name, =if
+(x)= with a space and <code>foo(x)</code> without, namespace bodies not indented,
+access specifiers flush with the class, <code>case</code> labels a level inside the
+<code>switch</code>, continuation lines aligned under the open bracket and packed, runs
+of trailing <code>//</code> comments lined up in one column with two spaces in front of
+them, and a 100-column margin.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">cpp</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="cpp"><span class="tok-purple">struct</span> <span class="tok-orange">Point</span>{<span class="tok-orange">int</span> x=<span class="tok-cyan">0</span>;<span class="tok-orange">int</span> y=<span class="tok-cyan">0</span>;};
+<span class="tok-orange">int</span> Sum(<span class="tok-purple">const</span> std::<span class="tok-orange">vector</span>&lt;<span class="tok-orange">Point</span>&gt;&amp;pts,<span class="tok-orange">int</span> scale){
+<span class="tok-orange">int</span> total=<span class="tok-cyan">0</span>;
+<span class="tok-purple">for</span>(<span class="tok-orange">size_t</span> i=<span class="tok-cyan">0</span>;i&lt;pts.size();i++)total+=pts[i].x*scale+pts[i].y;
+<span class="tok-purple">return</span> total;
+}</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">cpp</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="cpp"><span class="tok-purple">struct</span> <span class="tok-orange">Point</span> { <span class="tok-orange">int</span> x = <span class="tok-cyan">0</span>; <span class="tok-orange">int</span> y = <span class="tok-cyan">0</span>; };
+<span class="tok-orange">int</span> Sum(<span class="tok-purple">const</span> std::<span class="tok-orange">vector</span>&lt;<span class="tok-orange">Point</span>&gt; &amp;pts, <span class="tok-orange">int</span> scale) {
+    <span class="tok-orange">int</span> total = <span class="tok-cyan">0</span>;
+    <span class="tok-purple">for</span> (<span class="tok-orange">size_t</span> i = <span class="tok-cyan">0</span>; i &lt; pts.size(); i++) total += pts[i].x * scale + pts[i].y;
+    <span class="tok-purple">return</span> total;
+}</code></pre></div>
+<p>A braced initializer whose last element carries a comma stays exploded, one
+element per line, however short it would be -- the same "magic trailing
+comma" <code>black</code> has and <code>clang-format</code> reads the same way. Remove the comma
+and it collapses back onto one line:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">cpp</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="cpp"><span class="tok-orange">int</span> a[] = {<span class="tok-cyan">1</span>, <span class="tok-cyan">2</span>, <span class="tok-cyan">3</span>,};   <span class="tok-comment">// stays one per line</span>
+<span class="tok-orange">int</span> b[] = {<span class="tok-cyan">1</span>, <span class="tok-cyan">2</span>, <span class="tok-cyan">3</span>};    <span class="tok-comment">// stays on one line</span></code></pre></div>
+<p>It is not <code>clang-format</code>, though, and the differences are deliberate:</p>
+<ul>
+<li><b>Short forms are preserved, not imposed.</b> <code>if (c) return;</code> and =int f() { return 1; }= stay on one line if that is how they were written and they fit. Nothing is ever <b>joined</b> onto one line that the input had apart, so the mixed style real C++ is written in survives instead of being flattened one way or the other.</li>
+<li><b>Preprocessor directives are re-spaced but never re-wrapped.</b> A <code>#define</code> carrying a backslash continuation is emitted byte for byte, and the code inside a macro body is not formatted -- without expanding it there is no way to know whether it is a statement, an expression or a fragment of either. Directives go flush left, including inside a function body.</li>
+<li><b>Greedy, not optimal, line breaking.</b> <code>clang-format</code> will take a worse break early to get a better one later; this takes the first split that fits. Long chained calls in particular wrap less prettily.</li>
+<li><b>No comment reflowing.</b> A too-long <code>//</code> stays too long, and a block comment's interior is only re-indented when every line of it starts with a single <code>*</code>. A banner drawn with <code>**</code>, ASCII art or commented-out code is left byte for byte.</li>
+<li><b>No <code>#include</code> sorting</b>, and nothing is ever inserted or rewritten that was not already there -- no braces, no <code>const</code>, no blank lines, and in particular no fixing up of a <code>\}  // namespace foo</code> comment, which <code>clang-format</code> does and which edits the code's text rather than its layout.</li>
+<li><b>A macro invocation with no semicolon</b> (<code>ABSL_NAMESPACE_BEGIN</code>) reads as part of the declaration after it, because in a token stream that is exactly what it looks like.</li>
+</ul>
+<h2>It will not rewrite code it cannot prove it preserved</h2>
+<p>A C++ formatter only ever moves whitespace, so the proof-reading is exact:
+every result is re-lexed and compared against the original token for token,
+spelling for spelling, with no tolerance at all except trailing whitespace
+inside a comment. If that check fails -- or the file does not lex in the
+first place -- <code>gf</code> reports the reason and *leaves the buffer exactly as it
+was*, naming the line so the cursor can be put on it.</p>
+<p>That check is also what licenses the guessing C++ forces on a formatter that
+does not parse. Whether a <code>&lt;</code> opens a template or compares two numbers,
+whether a <code>*</code> declares a pointer or multiplies, whether a <code>{</code> opens a block
+or an initializer list -- none of those can be settled without name lookup
+over the whole translation unit. Guessing wrong moves a space; it cannot
+move a token, and the check proves it.</p>
+<p>There is exactly one place in C++ where the whitespace between two tokens is
+<b>meaningful</b> rather than cosmetic, and the check above is blind to it because
+the token streams really are identical: <code>#define X(a)</code> defines a
+function-like macro and <code>#define X (a)</code> an object-like one. That single
+space is carried over from the source rather than re-derived.</p>
+<p>That is what makes the guesses C++ forces on a formatter safe. Whether a
+<code>&lt;</code> opens a template or compares two numbers, whether a <code>*</code> declares a
+pointer or multiplies, whether a <code>{</code> opens a block or an initializer list --
+none of those can be settled without name lookup over the whole translation
+unit, so mep guesses. Guessing wrong moves a space; it cannot move a token,
+and the check proves it.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.cpp.width = <span class="tok-cyan">120</span>   <span class="tok-comment">-- default 100</span></code></pre></div>
+<p>On a sample of 300 real C++ files from the nix store, 82% of output lines
+are byte-identical to <code>clang-format</code>'s with the matching style; the rest are
+the deliberate differences above.</p>
+<p>To go back to <code>clang-format</code> instead, replace the entry with an ordinary
+argv one:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.cpp = <span class="tok-blue">{</span><span class="tok-green">'clang-format'</span>, <span class="tok-green">'--assume-filename={}'</span><span class="tok-blue">}</span></code></pre></div>
 <h1>The Python formatter</h1>
 <p>Python is formatted by mep itself. Nothing is spawned, nothing has to be on
 <code>PATH</code>, and <code>gf</code> works the same in a fresh checkout as on a fully set-up
@@ -117,10 +191,10 @@ mep.format_languages.<span class="tok-cyan">R</span> = <span class="tok-blue">{<
 <p>Both need the tool installed, and <code>air</code> takes its own margin from the
 nearest <code>air.toml</code> rather than from <code>width</code> above.</p>
 <h1>Line width</h1>
-<p>The built-in formatters wrap at <b>88 columns</b> for Python and <b>80</b> for R --
-<code>width</code> in each one's table entry, and the two subsections above change it.
-<code>clang-format</code> takes its margin from the project's own <code>.clang-format</code>
-instead.</p>
+<p>The built-in formatters wrap at <b>100 columns</b> for C++, <b>88</b> for Python and
+<b>80</b> for R -- <code>width</code> in each one's table entry, and the subsections above
+change it. <code>clang-format</code>, if you put it back for C or C++, takes its margin
+from the project's own <code>.clang-format</code> instead.</p>
 <h1>Adding one</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.js = {<span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span>
 mep.format_languages.ts = mep.format_languages.js</code></pre></div>
@@ -129,11 +203,11 @@ mep.format_languages.ts = mep.format_languages.js</code></pre></div>
 <ul>
 <li><b>filter</b> (the default): the buffer is written to the formatter's stdin and its stdout replaces the buffer. <code>\{\}</code> is the buffer's real absolute filename.</li>
 <li><b>file</b>: add <code>mode = 'file'=, and =\{\}</code> is a temporary file the formatter edits in place.</li>
-<li><b>builtin</b>: no program at all -- =\{builtin = 'format_python', name = '...', width = 88\}= names a <code>mep.*</code> function taking the text and a width and returning the formatted text, which runs in-process. This is how both the Python and the R entries are wired.</li>
+<li><b>builtin</b>: no program at all -- =\{builtin = 'format_python', name = '...', width = 88\}= names a <code>mep.*</code> function taking the text and a width and returning the formatted text, which runs in-process. This is how the C++, Python and R entries are wired.</li>
 </ul>
 <p>Entries are looked up by <b>bare extension</b>, so every extension of a language
 needs its own key -- which is why the built-in table aliases <code>.h</code>, <code>.cc</code>,
-<code>.hpp</code> and the rest onto the C entry.</p>
+<code>.hpp</code> and the rest onto the C++ entry.</p>
 <h1>Why the placeholder matters</h1>
 <p>A formatter reading stdin has no idea what file it is looking at.
 <code>clang-format</code> and <code>air</code> have to be told -- <code>--assume-filename</code> and

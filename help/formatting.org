@@ -13,19 +13,20 @@ stale copy from disk.
 
 | Filetype             | Formatter                                 |
 |----------------------+-------------------------------------------|
-| C, C++ and friends   | =clang-format=                            |
+| C++ and friends      | *built in* -- mep's own, nothing to install |
 | Python               | *built in* -- mep's own, nothing to install |
 | R                    | *built in* -- mep's own, nothing to install |
+| C                    | =clang-format=                            |
 | anything else        | =mep.lsp_format=, if a server is attached |
 
 That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.
 
-Python and R need nothing installed at all: both formatters are built into
-mep, so =gf= on a =.py= or =.R= buffer works on a machine with no =black=,
-no =air= and no Python or R toolchain, and answers instantly because nothing
-is spawned.
+C++, Python and R need nothing installed at all: all three formatters are
+built into mep, so =gf= on a =.cpp=, =.h=, =.py= or =.R= buffer works on a
+machine with no =clang-format=, no =black=, no =air= and no Python or R
+toolchain, and answers instantly because nothing is spawned.
 
 * Org code blocks
 
@@ -39,9 +40,10 @@ In an =.org= file =gf= formats *code*, never the prose around it.
 =:MepOrgFormatBlock= and =:MepOrgFormatBlocks= are the same two, by name.
 
 The block's language picks the formatter -- =#+begin_src python= gets the
-built-in Python formatter, the same as a =.py= file, because the block's
-language name is translated through its babel file extension before the
-table above is looked up.
+built-in Python formatter and =#+begin_src cpp= the built-in C++ one, the
+same as a =.py= or =.cpp= file, because the block's language name is
+translated through its babel file extension before the table above is looked
+up.
 
 A block indented under a heading is dedented before the formatter sees it
 and re-indented after, so the org file's own layout survives. A body whose
@@ -53,6 +55,125 @@ to that block's own language server -- the one already answering
 [[file:org-polyglot.html][hover and completion inside the block]]. The
 whole-file sweep does not: it only runs the table, and reports those blocks
 as skipped.
+
+* The C++ formatter
+
+C++ is formatted by mep itself. Nothing is spawned, no =clang-format= has to
+be on =PATH=, and =gf= works the same in a fresh checkout as on a fully
+set-up machine. The same formatter handles =.cpp=, =.cc=, =.cxx=, =.h=,
+=.hpp=, =.hh=, =.hxx=, =.ipp=, =.inl=, =.cu= and =.cuh=.
+
+It is shaped after =clang-format=, in the dialect mep's own source is
+written in: 4-space indents, =Type *name= with the star on the name, =if
+(x)= with a space and =foo(x)= without, namespace bodies not indented,
+access specifiers flush with the class, =case= labels a level inside the
+=switch=, continuation lines aligned under the open bracket and packed, runs
+of trailing =//= comments lined up in one column with two spaces in front of
+them, and a 100-column margin.
+
+#+begin_src cpp
+struct Point{int x=0;int y=0;};
+int Sum(const std::vector<Point>&pts,int scale){
+int total=0;
+for(size_t i=0;i<pts.size();i++)total+=pts[i].x*scale+pts[i].y;
+return total;
+}
+#+end_src
+
+becomes
+
+#+begin_src cpp
+struct Point { int x = 0; int y = 0; };
+int Sum(const std::vector<Point> &pts, int scale) {
+    int total = 0;
+    for (size_t i = 0; i < pts.size(); i++) total += pts[i].x * scale + pts[i].y;
+    return total;
+}
+#+end_src
+
+A braced initializer whose last element carries a comma stays exploded, one
+element per line, however short it would be -- the same "magic trailing
+comma" =black= has and =clang-format= reads the same way. Remove the comma
+and it collapses back onto one line:
+
+#+begin_src cpp
+int a[] = {1, 2, 3,};   // stays one per line
+int b[] = {1, 2, 3};    // stays on one line
+#+end_src
+
+It is not =clang-format=, though, and the differences are deliberate:
+
+- *Short forms are preserved, not imposed.* =if (c) return;= and =int f() {
+  return 1; }= stay on one line if that is how they were written and they
+  fit. Nothing is ever *joined* onto one line that the input had apart, so
+  the mixed style real C++ is written in survives instead of being flattened
+  one way or the other.
+- *Preprocessor directives are re-spaced but never re-wrapped.* A =#define=
+  carrying a backslash continuation is emitted byte for byte, and the code
+  inside a macro body is not formatted -- without expanding it there is no
+  way to know whether it is a statement, an expression or a fragment of
+  either. Directives go flush left, including inside a function body.
+- *Greedy, not optimal, line breaking.* =clang-format= will take a worse
+  break early to get a better one later; this takes the first split that
+  fits. Long chained calls in particular wrap less prettily.
+- *No comment reflowing.* A too-long =//= stays too long, and a block
+  comment's interior is only re-indented when every line of it starts with a
+  single =*=. A banner drawn with =**=, ASCII art or commented-out code is
+  left byte for byte.
+- *No =#include= sorting*, and nothing is ever
+  inserted or rewritten that was not already there -- no braces, no =const=,
+  no blank lines, and in particular no fixing up of a =\}  // namespace foo=
+  comment, which =clang-format= does and which edits the code's text rather
+  than its layout.
+- *A macro invocation with no semicolon* (=ABSL_NAMESPACE_BEGIN=) reads as
+  part of the declaration after it, because in a token stream that is
+  exactly what it looks like.
+
+** It will not rewrite code it cannot prove it preserved
+
+A C++ formatter only ever moves whitespace, so the proof-reading is exact:
+every result is re-lexed and compared against the original token for token,
+spelling for spelling, with no tolerance at all except trailing whitespace
+inside a comment. If that check fails -- or the file does not lex in the
+first place -- =gf= reports the reason and *leaves the buffer exactly as it
+was*, naming the line so the cursor can be put on it.
+
+That check is also what licenses the guessing C++ forces on a formatter that
+does not parse. Whether a =<= opens a template or compares two numbers,
+whether a =*= declares a pointer or multiplies, whether a ={= opens a block
+or an initializer list -- none of those can be settled without name lookup
+over the whole translation unit. Guessing wrong moves a space; it cannot
+move a token, and the check proves it.
+
+There is exactly one place in C++ where the whitespace between two tokens is
+*meaningful* rather than cosmetic, and the check above is blind to it because
+the token streams really are identical: =#define X(a)= defines a
+function-like macro and =#define X (a)= an object-like one. That single
+space is carried over from the source rather than re-derived.
+
+That is what makes the guesses C++ forces on a formatter safe. Whether a
+=<= opens a template or compares two numbers, whether a =*= declares a
+pointer or multiplies, whether a ={= opens a block or an initializer list --
+none of those can be settled without name lookup over the whole translation
+unit, so mep guesses. Guessing wrong moves a space; it cannot move a token,
+and the check proves it.
+
+** Options
+
+#+begin_src lua
+mep.format_languages.cpp.width = 120   -- default 100
+#+end_src
+
+On a sample of 300 real C++ files from the nix store, 82% of output lines
+are byte-identical to =clang-format='s with the matching style; the rest are
+the deliberate differences above.
+
+To go back to =clang-format= instead, replace the entry with an ordinary
+argv one:
+
+#+begin_src lua
+mep.format_languages.cpp = {'clang-format', '--assume-filename={}'}
+#+end_src
 
 * The Python formatter
 
@@ -163,10 +284,10 @@ nearest =air.toml= rather than from =width= above.
 
 * Line width
 
-The built-in formatters wrap at *88 columns* for Python and *80* for R --
-=width= in each one's table entry, and the two subsections above change it.
-=clang-format= takes its margin from the project's own =.clang-format=
-instead.
+The built-in formatters wrap at *100 columns* for C++, *88* for Python and
+*80* for R -- =width= in each one's table entry, and the subsections above
+change it. =clang-format=, if you put it back for C or C++, takes its margin
+from the project's own =.clang-format= instead.
 
 * Adding one
 
@@ -186,12 +307,12 @@ Three modes:
   edits in place.
 - *builtin*: no program at all -- =\{builtin = 'format_python', name = '...',
   width = 88\}= names a =mep.*= function taking the text and a width and
-  returning the formatted text, which runs in-process. This is how both the
-  Python and the R entries are wired.
+  returning the formatted text, which runs in-process. This is how the C++,
+  Python and R entries are wired.
 
 Entries are looked up by *bare extension*, so every extension of a language
 needs its own key -- which is why the built-in table aliases =.h=, =.cc=,
-=.hpp= and the rest onto the C entry.
+=.hpp= and the rest onto the C++ entry.
 
 * Why the placeholder matters
 

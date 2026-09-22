@@ -3,6 +3,7 @@
 #include "http_server.h"
 #include "url_util.h"
 #include "doc_export.h"
+#include "cpp_format.h"
 #include "python_format.h"
 #include "editor.h"
 #include "job.h"
@@ -305,6 +306,48 @@ int l_format_python(lua_State *L) {
         if (w > 0) opts.line_length = static_cast<int>(w);
     }
     pyfmt::Result r = pyfmt::Format(std::string_view(src, len), opts);
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        if (r.error_line > 0) {
+            lua_pushinteger(L, r.error_line);
+        } else {
+            lua_pushnil(L);
+        }
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
+    return 1;
+}
+
+// mep.format_cpp(text[, width]) -> formatted, nil | nil, error, line
+//
+// mep's in-house C++ formatter (cpp_format.h), the built-in behind `gf` in a
+// .cpp/.h buffer and inside an org `#+begin_src cpp` block. Nothing is spawned
+// and nothing needs to be installed -- no clang-format, no LLVM -- which is
+// the point of TODO.org's "entirely inhouse".
+//
+// Same two-value error contract as mep.format_python: a formatter that cannot
+// prove it preserved the code returns nil plus a message rather than text, and
+// the caller must leave the buffer alone. For C++ that check is exact, because
+// the formatter only ever moves whitespace: the output is re-lexed and its
+// token stream compared against the input's, spelling for spelling.
+/**
+ * @brief Implements mep.format_cpp(text[, width]): formats C++ with mep's own
+ * in-house formatter, or returns nil plus a reason.
+ * @param L Lua state; arg 1 is the source text, arg 2 an optional line width.
+ * @return Number of values pushed (1: the formatted text; 3 on failure:
+ * nil, the message, and the 1-based source line or nil).
+ */
+int l_format_cpp(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    cppfmt::Options opts;
+    if (!lua_isnoneornil(L, 2)) {
+        lua_Integer w = luaL_checkinteger(L, 2);
+        if (w > 0) opts.column_limit = static_cast<int>(w);
+    }
+    cppfmt::Result r = cppfmt::Format(std::string_view(src, len), opts);
     if (!r.ok) {
         lua_pushnil(L);
         lua_pushlstring(L, r.error.data(), r.error.size());
@@ -10453,6 +10496,7 @@ const luaL_Reg kMepFuncs[] = {
     {"spell_bad", l_spell_bad},
     {"spell_suggest", l_spell_suggest},
     {"format_python", l_format_python},
+    {"format_cpp", l_format_cpp},
     {"spell_add", l_spell_add},
     {"spell_wrong", l_spell_wrong},
     {"spell_enabled", l_spell_enabled},

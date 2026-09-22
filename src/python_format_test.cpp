@@ -272,6 +272,13 @@ void TestSplitting() {
             "def f(\n    aaaa, bbbb\n) -> Dict[str, int]:\n    pass\n");
     // Nothing to split at: emitted long rather than broken somewhere unsafe.
     ExpectW("xxxxxxxxxx = yyyyyyyyyy\n", 5, "xxxxxxxxxx = yyyyyyyyyy\n");
+    // A candidate bracket whose head would itself have to explode is not a
+    // usable split point, however short that head measures when flattened --
+    // the flat form is never emitted, and measuring it counts trailing commas
+    // this formatter adds, so the file would alternate between two shapes on
+    // successive runs.
+    Expect("x = {\n    'a': [1, 2,],\n} if cond(y) else None\n",
+           "x = {\n    \"a\": [\n        1,\n        2,\n    ],\n} if cond(y) else None\n");
 }
 
 void TestComments() {
@@ -287,6 +294,12 @@ void TestComments() {
     Expect("if x:\n        # note\n    y = 1\n", "if x:\n    # note\n    y = 1\n");
     Expect("def f():\n    a()\n    # done\nb()\n",
            "def f():\n    a()\n    # done\n\n\nb()\n");
+    // ...including when the statement above it is itself about to gain a
+    // level. `def read(self): ...` becomes two lines, so a rule that placed
+    // this comment by comparing columns with the statement above would put it
+    // somewhere else on the second run.
+    Expect("class A:\n    def read(self): ...\n    # note\n\nclass B:\n    pass\n",
+           "class A:\n    def read(self):\n        ...\n\n    # note\n\n\nclass B:\n    pass\n");
     // Comments stranded between implicitly concatenated pieces cannot be
     // rendered inline -- everything after the '#' would be swallowed.
     std::string joined = Fmt("x = fn(\n    'a'  # one\n    'b'  # two\n)\n");
@@ -538,6 +551,7 @@ void TestIdempotenceOfExpectations() {
         "x = a[lower+1:upper+1]\n",
         "x = f(key=lambda x: x, n=1)\n",
         "if x:\n        # note\n    y = 1\n",
+        "class A:\n    def read(self): ...\n    # note\n\nclass B:\n    pass\n",
         "x = 1  #note\n",
         "match x:\n    case (A | B):\n        pass\n",
     };

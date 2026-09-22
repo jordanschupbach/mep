@@ -1403,6 +1403,14 @@ void Emitter::RightHandSplit(size_t lo, size_t hi, int indent,
     }
     size_t open = kNpos;
     for (size_t k = candidates.size(); k-- > 0;) {
+        // A head that itself has to split is not a head that "fits", however
+        // short its flattened form measures: that flattened form is never
+        // what gets emitted. Checking the length alone is also not stable,
+        // because the measurement counts trailing commas this formatter adds
+        // -- a head could come in one character under the limit, gain a comma
+        // from its own exploded bracket, and be over it on the next run, so
+        // the same file would alternate between two shapes forever.
+        if (ForcedSplit(lo, candidates[k] + 1)) continue;
         if (Cols(indent) + static_cast<int>(Render(lo, candidates[k] + 1).size()) <=
             opts_.line_length) {
             open = candidates[k];
@@ -1522,16 +1530,15 @@ bool IsDefLikeItem(const LogicalLine &l) {
 // but not past the statement above stays with the block above (so a comment
 // closing out a function body is not yanked to module level by the next
 // top-level def).
-void AssignCommentIndents(std::vector<LogicalLine> &lines) {
+void AssignCommentIndents(std::vector<LogicalLine> &lines, int indent_width) {
     for (size_t i = 0; i < lines.size(); i++) {
         if (!lines[i].IsComment()) continue;
         bool have_prev = false, have_next = false;
-        int prev_indent = 0, prev_col = 0, next_indent = 0;
+        int prev_indent = 0, next_indent = 0;
         for (size_t j = i; j-- > 0;) {
             if (!lines[j].IsComment()) {
                 have_prev = true;
                 prev_indent = lines[j].indent;
-                prev_col = lines[j].comment_col;
                 break;
             }
         }
@@ -1553,12 +1560,20 @@ void AssignCommentIndents(std::vector<LogicalLine> &lines) {
             // whatever column it was written at) or nothing changed.
             lines[i].indent = next_indent;
         } else {
-            // A dedent: the comment can belong either to the block that is
-            // ending or to what follows it, and its own column decides. Only
-            // those two levels are candidates, which is what makes this
-            // stable -- re-running on the output re-derives the same answer,
-            // because the emitted column is exactly the chosen level's.
-            lines[i].indent = col >= prev_col ? prev_indent : next_indent;
+            // A dedent: the comment can belong to the block that is ending, to
+            // what follows it, or to any level in between, and its own column
+            // decides. The column is mapped onto the *output's* indent grid
+            // rather than compared against the neighbouring statements'
+            // columns, because those move: `def f(): ...` becomes two lines,
+            // so the statement above a trailing comment can gain a level
+            // between one run and the next, and a rule that reads its column
+            // would then pick a different answer every time. Rounding a column
+            // that is already a multiple of `indent_width` is a fixed point,
+            // so this settles after one pass.
+            int level = (col + indent_width / 2) / indent_width;
+            if (level > prev_indent) level = prev_indent;
+            if (level < next_indent) level = next_indent;
+            lines[i].indent = level;
         }
     }
 }
@@ -1805,7 +1820,7 @@ Result Format(std::string_view source, const Options &opts) {
         r.text = std::string(bom);  // nothing but whitespace/blank lines
         return r;
     }
-    AssignCommentIndents(lines);
+    AssignCommentIndents(lines, opts.indent_width);
 
     std::vector<Token> before_tokens = Significant(lines);
 

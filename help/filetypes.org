@@ -8,7 +8,7 @@
 | Filetype     | Syntax        | Language server              | Formatter      | Runs with |
 |--------------+---------------+------------------------------+----------------+-----------|
 | C, C++       | Treesitter    | =clangd=                     | =clang-format= | =cc= / =c++= |
-| Python       | Treesitter    | =pyright=, =basedpyright=    | =black=        | =python3= |
+| Python       | Treesitter    | =mep-python-lsp=, =pyright=  | =black=        | =python3= |
 | Lua          | Treesitter    | =lua-language-server=        | LSP            |           |
 | R            | Treesitter    | R's =languageserver=         | built in       | =Rscript= |
 | JavaScript   | Treesitter    | =typescript-language-server= | LSP            |           |

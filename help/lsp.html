@@ -74,12 +74,12 @@ more than one, the message beside it is prefixed with the count -- =(3)
 <p>Severity maps to the <code>Error</code>, <code>Warn</code>, <code>Info</code> and <code>Hint</code> <a href="highlight-groups.html">highlight groups</a>, so
 the colours follow your theme.</p>
 <h1>Servers mep knows about</h1>
-<p>Thirty-seven. All but the last two are used when their command is on
-<code>$PATH</code>; the org and R ones ship with mep itself:</p>
+<p>Thirty-nine. Each is used when its command is on <code>$PATH</code>; the org, R and
+Python ones ship with mep itself:</p>
 <table>
 <tr><th>Language</th><th>Command</th></tr>
 <tr><td>C, C++</td><td><code>clangd</code></td></tr>
-<tr><td>Python</td><td><code>pyright-langserver</code>, or <code>basedpyright-langserver</code></td></tr>
+<tr><td>Python</td><td><code>mep-python-lsp</code> (ships with mep), or <code>pyright-langserver</code></td></tr>
 <tr><td>Lua</td><td><code>lua-language-server</code></td></tr>
 <tr><td>Go</td><td><code>gopls</code></td></tr>
 <tr><td>Rust</td><td><code>rust-analyzer</code></td></tr>
@@ -116,13 +116,18 @@ the colours follow your theme.</p>
 <tr><td>Org</td><td><code>mep-org-lsp</code> (ships with mep)</td></tr>
 </table>
 <p>If a server is missing, nothing breaks -- the file simply opens without one.</p>
-<h1>The two mep brings itself</h1>
-<p><code>mep-org-lsp</code> is mep's own org-mode server, built and installed alongside
-<code>mep</code>, so org files get diagnostics and completion with nothing to install.
-See <a href="org-lsp.html">The org language server</a>.</p>
-<p><code>mep-r-lsp</code> is the same idea for R: it parses R itself and never starts R,
-so a <code>.R</code> file gets diagnostics, completion, hover and signature help on a
-machine with no R installed. See <a href="r-lsp.html">The R language server</a>.</p>
+<h1>The three mep brings itself</h1>
+<p><code>mep-org-lsp</code>, <code>mep-r-lsp</code> and <code>mep-python-lsp</code> are mep's own servers,
+built and installed alongside <code>mep</code>, so org, R and Python files get
+diagnostics and completion with nothing to install. See
+<a href="org-lsp.html">The org language server</a>, <a href="r-lsp.html">The R language server</a> and
+<a href="python-lsp.html">The Python language server</a>.</p>
+<p>Python is the one language where mep's own server is preferred over an
+external one out of the box: <code>pyright</code> stays registered but claims no
+filetype, and one line in <code>init.lua</code> swaps them back.</p>
+<p>The R one never starts R: it parses the language itself, so a <code>.R</code> file
+gets diagnostics, completion, hover and signature help on a machine with
+no R installed at all.</p>
 <p>R's own <code>languageserver</code> package is still registered, under
 <code>r_languageserver</code>, with no file types claimed. It knows what an installed
 package exports, which mep's own server cannot. To prefer it:</p>
@@ -145,6 +150,7 @@ rather than replacing one another.</p>
 <li><a href="completion.html">Completion</a> -- where LSP suggestions end up.</li>
 <li><a href="formatting.html">Formatting</a> -- <code>mep.lsp_format</code> as the fallback formatter.</li>
 <li><a href="structure-symbols.html">Structure and symbols</a> -- the outline views.</li>
+<li><a href="python-lsp.html">The Python language server</a> -- the one that needs no Python.</li>
 </ul>
 </body>
 </html>

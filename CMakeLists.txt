@@ -705,6 +705,32 @@ target_compile_options(mep-r-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE
 target_link_options(mep-r-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-r-lsp-test)
 
+# mep's own Python language server: the wire half (src/python_lsp_server.cpp)
+# over the analysis half (src/python_lsp.cpp), its baked-in standard-library
+# vocabulary (src/python_lsp_vocab.cpp) and the tokenizer/parser under both
+# (src/python_ast.cpp). Same reasoning as mep-org-lsp above, point for
+# point: no mep_core, built by default rather than EXCLUDE_FROM_ALL because
+# kBuiltinLsp's `python_ls` entry spawns it out of mep's own bin directory,
+# and skipped on Emscripten, which cannot spawn a subprocess at all.
+if(NOT EMSCRIPTEN)
+    add_executable(mep-python-lsp src/python_lsp_server.cpp src/python_lsp.cpp src/python_lsp_vocab.cpp
+                   src/python_ast.cpp)
+    target_include_directories(mep-python-lsp PRIVATE src)
+    target_compile_options(mep-python-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-python-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-python-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# The Python language server's parser and analysis halves driven directly --
+# no process, no JSON-RPC client, no Python installation. Same CHECK()-based
+# shape as mep-org-lsp-test.
+add_executable(mep-python-lsp-test EXCLUDE_FROM_ALL src/python_lsp_test.cpp src/python_lsp.cpp
+               src/python_lsp_vocab.cpp src/python_ast.cpp)
+target_include_directories(mep-python-lsp-test PRIVATE src)
+target_compile_options(mep-python-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-python-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-python-lsp-test)
+
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
 # cascade behavior can be verified without opening a window.
 add_executable(mep-html-doc-test EXCLUDE_FROM_ALL src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp)

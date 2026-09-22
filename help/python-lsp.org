@@ -1,0 +1,185 @@
+#+TITLE: The Python language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="12">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Python files get a language server of their own, =mep-python-lsp=, built
+and shipped with mep. Open a =.py= file and it attaches by itself -- there
+is nothing to install, no =pip=, no =node=, and no Python interpreter
+involved. It is mep's own tokenizer, parser and scope analyser, with a
+table of the standard library compiled into it.
+
+That last point is the whole design: everything it knows, it knows from
+the file in front of it plus that table. It will tell you that a name is
+never defined anywhere in the file, and it will not tell you that you
+passed a =str= where an =int= was wanted -- because it cannot see the
+modules you import, and a checker that guessed about them would be wrong
+far more often than it was right.
+
+* What it catches
+
+Syntax, first -- with messages that say what happened rather than
+"invalid syntax":
+
+| Problem                                          | Severity |
+|--------------------------------------------------+----------|
+| An unterminated string, or one that crosses a line | error  |
+| =(=, =[= or ={= that is never closed             | error    |
+| A closing bracket that matches the wrong opener   | error    |
+| Indentation that matches no outer level           | error    |
+| Tabs and spaces whose order depends on tab width  | error    |
+| =print "x"=, =except E, e:=, =<>=, =10L= -- Python 2 | error, named as such |
+| =try:= with neither =except= nor =finally=        | error    |
+| A bare =except:= that is not the last clause      | error    |
+
+Names and scopes:
+
+| Problem                                            | Severity |
+|----------------------------------------------------+----------|
+| A name defined in no enclosing scope               | error    |
+| An import nothing uses                             | warning  |
+| A =def=, =class= or import replaced before anything read it | warning |
+| A local assigned and never read                    | hint     |
+| A name that shadows a builtin                      | hint     |
+| =l=, =I= or =O= as a name -- unreadable next to digits | hint |
+
+Statements in the wrong place, which Python would refuse to compile:
+=return= or =yield= outside a function, =break= or =continue= outside a
+loop, =await= outside an =async def=, =nonlocal= at module level.
+
+And the mistakes that compile perfectly and still ruin your afternoon:
+
+| Problem                                             | Severity |
+|-----------------------------------------------------+----------|
+| =def f(items=[])= -- one list, shared by every call | warning  |
+| =x is "yes"= -- identity against a literal          | warning  |
+| =assert (cond, "message")= -- always true           | warning  |
+| =except:= with no exception type                    | warning  |
+| The same =except= clause twice                      | warning  |
+| A duplicate key in a dict literal                   | warning  |
+| A duplicate parameter name                          | error    |
+| =return= inside =finally= -- it hides the exception | warning |
+| =raise NotImplemented= -- you want =NotImplementedError= | warning |
+| =__init__= returning a value                        | warning  |
+| A method with no =self=                             | warning  |
+| =x == None= -- compare to =None= with =is=          | hint     |
+| =type(a) == type(b)= -- use =isinstance=            | hint     |
+| An f-string with no ={...}= in it                   | hint     |
+| A statement whose result is discarded (=a == b= alone) | hint / warning |
+| Code after a =return=, =raise=, =break= or =continue= | hint   |
+
+** What it deliberately stays quiet about
+
+A linter that cries wolf gets switched off, and then its true reports go
+unseen too. So:
+
+- =from x import *= switches the undefined-name check off for the whole
+  file rather than guessing what the star brought in -- and says so, once,
+  on the import itself.
+- So does anything that writes the namespace at run time
+  (=globals().update(...)=, =eval=, =exec=).
+- A file with a syntax error gets no scope diagnostics at all until it
+  parses again: mid-edit is exactly when a screenful of invented
+  "undefined name" errors would be least welcome.
+- =from __future__ import annotations=, a name listed in =__all__=, and
+  every import in an =__init__.py= are never "unused".
+- A string annotation (='Node'=) counts as *using* the name, never as
+  claiming it exists -- =Literal['w']= must not invent one.
+- =@property= setters, =@overload= runs, =try:/except ImportError:=
+  import fallbacks and =import os= beside =import os.path= are all
+  redefinitions on purpose, and pass without comment.
+- =with pytest.raises(TypeError): a + b= is a test, not a dead
+  expression.
+- An unused half of a tuple unpacking, and any name starting with =_=,
+  are not unused variables.
+
+A line-length hint exists but is off unless asked for:
+
+#+begin_src lua
+mep.lsp_servers.python_ls.init_options = {maxLineLength = 100}
+#+end_src
+
+* Completion
+
+Completion is context-aware rather than a word list:
+
+| Where you are          | What you get                                      |
+|------------------------+---------------------------------------------------|
+| anywhere in code       | every name in scope, then builtins, then keywords |
+| after =os.=            | that module's members, from the built-in table    |
+| after =self.=          | the class's own methods and fields, and its bases' |
+| after =text.= where =text= is a string | =str='s methods                   |
+| after =c.= where =c = MyClass()= | that class's members                    |
+| after =import=         | the standard library, plus the =.py= files beside this one |
+| after =from json import= | that module's members                           |
+| after =raise=          | the builtin exceptions                            |
+| after =def= in a class | the special methods, =__init__= first             |
+| after =@=              | =property=, =staticmethod=, =dataclass=, and what is in scope |
+
+Inside a comment or a string it offers nothing -- except inside an
+f-string's ={...}=, which is code and is treated as such.
+
+* Hover, signatures, outline, jumps
+
+=K= over a name gives its definition line: a function's full signature and
+the first line of its docstring, a class and its bases, a parameter and
+its annotation, a variable and what it was assigned. Over a builtin, a
+keyword or a standard-library member it answers from the built-in table.
+
+=<leader>lk= (signature help) shows the signature of the call the cursor
+is inside, with the parameter you are on highlighted -- including while
+you are typing a string argument, and with =self= dropped from a method
+called through an instance. It fires by itself as you type =(= and =,=.
+
+=gd= jumps to where a name is bound. On =self.field= it jumps to the
+method that first assigns it; on an import of a module that sits beside
+this file, it opens that file *at the definition*, not at line 1.
+
+=:MepLspReferences= lists every use of the binding under the cursor --
+the one in this scope, not every name that happens to match, so a local
+=value= and a module-level =value= stay separate. =<leader>rn= renames
+the same set, and refuses names it cannot rename safely (a builtin, or an
+attribute whose owner is defined in another file).
+
+Classes, functions, methods and module-level assignments are the document
+outline, so [[file:structure-symbols.html][the symbol views]] work from the server. Folding covers every
+suite, each =else=/=except=/=finally= arm, runs of comment lines, the
+import block at the top and multi-line strings.
+
+* What it does not do
+
+- *No type checking.* See the opening section.
+- *One file is the whole world.* An imported name is known to exist and
+  nothing more. Attribute completion on an object from another module
+  falls back to "attribute names this file already mentions".
+- *No project-wide rename or references.* Both stop at the file's edge,
+  which is why a rename that cannot see the other users is refused
+  rather than half-done.
+- *No formatting.* =mep.lsp_format= falls through to the configured
+  formatter for Python; the server does not claim the capability.
+
+* Turning it off
+
+It is an ordinary entry in the server registry, so =init.lua= can drop it,
+or hand =py= back to pyright:
+
+#+begin_src lua
+mep.lsp_servers.python_ls = nil
+mep.lsp_servers.pyright.filetypes = {'py'}
+#+end_src
+
+Or point it at your own build:
+
+#+begin_src lua
+mep.lsp_servers.python_ls.cmd = {'/path/to/mep-python-lsp'}
+#+end_src
+
+It also runs standalone, over stdio, in any editor that speaks LSP.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the client, the keys and the other servers.
+- [[file:org-lsp.html][The org language server]] -- the other one mep ships.
+- [[file:filetypes.html][Filetypes]] -- what mep does with a =.py= file besides this.

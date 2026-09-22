@@ -85,7 +85,7 @@ implemented here rather than bound to a library:
 
 * Language servers
 
-mep is an LSP *client* for around thirty-seven servers (=kBuiltinLsp= in
+mep is an LSP *client* for around thirty-eight servers (=kBuiltinLsp= in
 =main.cpp=; the registry is plain data, so =init.lua= can extend it), and
 ships two *servers* of its own:
 
@@ -107,6 +107,17 @@ ships two *servers* of its own:
   the build (and the server) need no R at all.
 - =src/r_lsp_server.cpp= — the =mep-r-lsp= binary, same stdio shape as
   the org one. Nothing in it starts R or evaluates the document.
+- =src/python_ast.cpp= — a Python 3 tokenizer and recursive-descent
+  parser. Unlike the org server, the Python one needs a real syntax tree:
+  its interesting questions ("is this name ever defined?", "is this
+  import used?") are about scopes.
+- =src/python_lsp.cpp= — the scope model and every feature over it, again
+  as pure functions over plain lines; =src/python_lsp_vocab.cpp= is the
+  standard-library table it answers from, generated once and committed so
+  no Python installation is needed.
+- =src/python_lsp_server.cpp= — the =mep-python-lsp= binary, the same
+  stdio JSON-RPC shape as the org one. It claims =py= in the registry;
+  pyright stays registered without a filetype.
 
 Code *inside* a =#+begin_src= block is handled separately, by
 =kBuiltinOrgPolyglot='s per-block shadow buffers talking to a real server
@@ -116,10 +127,10 @@ diagnostics are merged (=mep_org_diag_set=).
 * Build targets
 
 =mep= (the editor), =mep-mcp= (MCP bridge), =mep-collabd= (collab relay),
-=mep-org-lsp= (org language server), =mep-r-lsp= (R language server),
-plus around thirty =*-test= and =*-bench= binaries. Every test and
-benchmark target is =EXCLUDE_FROM_ALL=, so a plain build produces only
-the five shipped binaries; =just test= builds and runs the windowless ones,
+=mep-org-lsp=, =mep-r-lsp= and =mep-python-lsp= (the language servers mep
+ships), plus around thirty =*-test= and =*-bench= binaries. Every test and
+benchmark target is =EXCLUDE_FROM_ALL=, so a plain build produces only the
+six shipped binaries; =just test= builds and runs the windowless ones,
 =just test-gui= the two that drive a real window, and =just bench= the
 performance suite.
 

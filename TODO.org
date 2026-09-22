@@ -231,8 +231,90 @@ I'd like an inhouse LSP engine for C++. Can you implement one? I'd like it to ru
 I'd like an inhouse LSP engine for C. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
 
 
-* TODO python lsp engine
+* DONE python lsp engine
 I'd like an inhouse LSP engine for python. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+  - `mep-python-lsp` (src/python_lsp_server.cpp), built and installed
+    beside `mep` and registered as `mep.lsp_servers.python_ls` for `py`
+    and `pyi`. Same three-file shape as the org server: a JSON-RPC wire
+    half, a pure analysis half (src/python_lsp.cpp) and a windowless
+    CHECK() suite (src/python_lsp_test.cpp, `mep-python-lsp-test`, in
+    `just test`). Nothing external: no pyright, no pyflakes, no `pip`,
+    no node -- and no Python interpreter either, at build time or at run
+    time.
+  - Unlike org_lsp.cpp, which deliberately stays a line scanner, this one
+    has a real front end (src/python_ast.h/.cpp): a Python 3.12+
+    tokenizer -- significant indentation, implicit and explicit line
+    joining, every string prefix, PEP 701 nested f-strings, PEP 750
+    `t""` -- and a recursive-descent parser over it. It has to: "this
+    name is never defined", "this import is unused", "this local is never
+    read" are questions about *scopes*, and a scope is exactly what a
+    line-oriented scan cannot see. f-string `{...}` fields are parsed as
+    real expressions and positioned back inside the literal, so a typo in
+    one is found like any other.
+  - Verified against a corpus rather than by inspection: 3,399 real
+    files (CPython 3.13's stdlib plus numpy/pandas/matplotlib/fontTools
+    out of the nix store, every one of which CPython itself compiles) --
+    zero false syntax errors, and 367 of 367 mutants (one `:` deleted
+    per file, each confirmed a SyntaxError by CPython) caught. Five
+    genuine parser gaps turned up that way and are fixed: nested
+    same-quote f-strings, `t""` template strings, `case x if guard:`,
+    PEP 617 parenthesized `with (a as b,):` item lists, and PEP 758
+    `except A, B:` (which is spelled exactly like Python 2's
+    `except E, err:`, so the two are told apart by whether the last item
+    reads as a capture name).
+  - Diagnostics: syntax (with Python 2 constructs named as such rather
+    than reported as "invalid syntax"), scope (undefined name, unused
+    import, unused local, redefinition), the statements Python itself
+    would refuse (`return`/`yield`/`break`/`await`/`nonlocal` out of
+    place, duplicate parameter), and the mistakes that compile and still
+    bite (mutable default argument, `is` against a literal,
+    `assert (cond, msg)`, bare `except:`, duplicate dict key, `return`
+    inside `finally`, `raise NotImplemented`, `__init__` returning a
+    value, a method with no `self`, dead code after `return`). There is
+    no type checking and there will not be one here: a single file cannot
+    see the modules it imports.
+  - The false-positive work was the bulk of it, and each suppression is
+    tested as deliberately as the findings: the same corpus run took
+    undefined-name from 596 reports to 60 (the survivors are mostly
+    ssl.py/calendar.py's own runtime namespace injection, which pyflakes
+    reports too) and unused-variable from 49,383 to 313. The five that
+    mattered: a read marks *every* binding of that name in the scope it
+    resolved to (not just the last, or `if/else: colno = ...` reports the
+    first branch); a comprehension's outermost iterable is evaluated in
+    the enclosing scope (which is the only way one in a class body can
+    see a class variable); a string annotation counts as a *use* but
+    never as a claim that the name exists (`Literal["w"]` must not invent
+    one); a file with a syntax error gets no scope diagnostics at all,
+    since mid-edit is when invented errors are least welcome; and
+    `with pytest.raises(...): a + b` is a test, not a dead expression.
+  - Everything the server knows about the standard library is a table
+    compiled into it (src/python_lsp_vocab.cpp, 4,417 entries: builtins,
+    exceptions, dunders, the members of ~80 modules and of every builtin
+    type, each with its signature and a one-line doc). Generated once by
+    introspecting CPython 3.13 and committed, which is what lets Python
+    support work on a machine with no Python on it.
+  - Features beyond diagnostics: context-aware completion (scope names,
+    `os.`, `self.` including inherited members, `text.` for a local
+    assigned a literal, `import`, `from x import`, `raise`, `def` in a
+    class body, `@`; nothing at all inside a comment or a string, but an
+    f-string field is code), hover, signature help (with `self` dropped
+    for a method called through an instance, and live while typing a
+    string argument), document symbols, folding (suites, comment runs,
+    the import block, multi-line strings), definition (including
+    `self.field` and an import of a sibling module, resolved to the
+    *definition* line in that file), references, document highlight and
+    rename -- the last two scoped to the binding under the cursor, so a
+    local `value` and a module-level `value` stay separate.
+  - Two things outside the server itself: the tokenizer re-runs in a
+    recovery mode when a file ends with a bracket still open, so one
+    unfinished `f(` while typing no longer swallows every symbol, fold
+    and diagnostic below it into one logical line; and the LSP client now
+    passes a registry entry's `init_options` as `initializationOptions`
+    (mep.lsp_servers.python_ls.init_options = {maxLineLength = 100}
+    turns on the one style check, which is off by default).
+  - pyright keeps its registry entry but no longer claims `py`; handing
+    it back is one line in init.lua, documented on the new
+    help/python-lsp.org page.
 
 
 * DONE R lsp engine

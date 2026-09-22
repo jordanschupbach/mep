@@ -6038,7 +6038,12 @@ const char *kBuiltinLsp =
     "mep.lsp_servers = {\n"
     "  lua = {cmd = {'lua-language-server'}, filetypes = {'lua'}},\n"
     "  clangd = {cmd = {'clangd'}, filetypes = {'c', 'cpp', 'h', 'hpp', 'cc', 'cxx'}},\n"
-    "  pyright = {cmd = {'pyright-langserver', '--stdio'}, filetypes = {'py'}},\n"
+    // pyright keeps its entry but no longer claims `py`: mep's own
+    // Python server (python_ls below) does, so a fresh checkout gets
+    // Python diagnostics with nothing installed. Select pyright instead
+    // by giving it the filetype back -- `mep.lsp_servers.pyright.filetypes
+    // = {'py'}` (and clearing python_ls's) in init.lua.
+    "  pyright = {cmd = {'pyright-langserver', '--stdio'}, filetypes = {}},\n"
     // NVIM_PARITY_PLAN.md's own "LSP server registry ... is just data, add
     // entries as needed" note (mep.nvim's lua/mep/lsp/servers.lua has 35).
     // Grown here from the original 3 (lua/clangd/pyright) using the exact
@@ -6173,6 +6178,22 @@ const char *kBuiltinLsp =
     // their diagnostics go through mep_org_diag_set below instead of each
     // overwriting mep_lsp_diagnostics[file] with only its own half.
     "  org_ls = {cmd = {mep.bundled_tool('mep-org-lsp')}, filetypes = {'org'}},\n"
+    // mep's own Python server (src/python_lsp_server.cpp, built as the
+    // `mep-python-lsp` target beside `mep` itself), resolved through
+    // mep.bundled_tool for the same reason org_ls is. It is an entire
+    // Python front end -- tokenizer, parser, scope resolution -- with a
+    // baked-in table of the standard library, so it needs no Python
+    // installation, no `pip install`, and no node: opening a .py file in
+    // a fresh checkout gets diagnostics, completion, hover, symbols,
+    // folding, definition, references, rename and signature help.
+    //
+    // It claims `py`, which pyright used to (see its entry above); both
+    // are still registered, and swapping them back is a filetypes edit
+    // in init.lua. What it deliberately does not do is type checking:
+    // a single file cannot see the modules it imports, and a checker
+    // that guesses about them would be wrong far more often than right
+    // (python_lsp.h states the whole scope).
+    "  python_ls = {cmd = {mep.bundled_tool('mep-python-lsp')}, filetypes = {'py', 'pyi'}},\n"
     "}\n"
     // (filetype .. '@' .. workspace root) -> client_id: one client per
     // filetype *per workspace root* (WORKSPACES_PLAN.md Phase 5), since
@@ -6282,6 +6303,11 @@ const char *kBuiltinLsp =
     "  mep.lsp_request(id, 'initialize', {\n"
     "    processId = mep.platform() == 'wasm' and mep.json_null or nil,\n"
     "    rootUri = mep_lsp_uri(root),\n"
+    // Per-server initializationOptions, straight from the registry entry
+    // (nil when the entry has none, which drops the key). This is how a
+    // server that takes settings rather than command-line flags gets
+    // them -- mep's own Python server reads `maxLineLength` here.
+    "    initializationOptions = server.init_options,\n"
     "    capabilities = {\n"
     "      textDocument = {\n"
     "        hover = {contentFormat = {'plaintext'}},\n"

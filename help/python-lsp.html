@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Python language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="12">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Python language server</h1>
+<h1>What it is</h1>
+<p>Python files get a language server of their own, <code>mep-python-lsp</code>, built
+and shipped with mep. Open a <code>.py</code> file and it attaches by itself -- there
+is nothing to install, no <code>pip</code>, no <code>node</code>, and no Python interpreter
+involved. It is mep's own tokenizer, parser and scope analyser, with a
+table of the standard library compiled into it.</p>
+<p>That last point is the whole design: everything it knows, it knows from
+the file in front of it plus that table. It will tell you that a name is
+never defined anywhere in the file, and it will not tell you that you
+passed a <code>str</code> where an <code>int</code> was wanted -- because it cannot see the
+modules you import, and a checker that guessed about them would be wrong
+far more often than it was right.</p>
+<h1>What it catches</h1>
+<p>Syntax, first -- with messages that say what happened rather than
+"invalid syntax":</p>
+<table>
+<tr><th>Problem</th><th>Severity</th></tr>
+<tr><td>An unterminated string, or one that crosses a line</td><td>error</td></tr>
+<tr><td><code>(</code>, <code>[</code> or <code>{</code> that is never closed</td><td>error</td></tr>
+<tr><td>A closing bracket that matches the wrong opener</td><td>error</td></tr>
+<tr><td>Indentation that matches no outer level</td><td>error</td></tr>
+<tr><td>Tabs and spaces whose order depends on tab width</td><td>error</td></tr>
+<tr><td><code>print "x"=, =except E, e:</code>, <code>&lt;&gt;</code>, <code>10L</code> -- Python 2</td><td>error, named as such</td></tr>
+<tr><td><code>try:</code> with neither <code>except</code> nor <code>finally</code></td><td>error</td></tr>
+<tr><td>A bare <code>except:</code> that is not the last clause</td><td>error</td></tr>
+</table>
+<p>Names and scopes:</p>
+<table>
+<tr><th>Problem</th><th>Severity</th></tr>
+<tr><td>A name defined in no enclosing scope</td><td>error</td></tr>
+<tr><td>An import nothing uses</td><td>warning</td></tr>
+<tr><td>A <code>def</code>, <code>class</code> or import replaced before anything read it</td><td>warning</td></tr>
+<tr><td>A local assigned and never read</td><td>hint</td></tr>
+<tr><td>A name that shadows a builtin</td><td>hint</td></tr>
+<tr><td><code>l</code>, <code>I</code> or <code>O</code> as a name -- unreadable next to digits</td><td>hint</td></tr>
+</table>
+<p>Statements in the wrong place, which Python would refuse to compile:
+<code>return</code> or <code>yield</code> outside a function, <code>break</code> or <code>continue</code> outside a
+loop, <code>await</code> outside an <code>async def</code>, <code>nonlocal</code> at module level.</p>
+<p>And the mistakes that compile perfectly and still ruin your afternoon:</p>
+<table>
+<tr><th>Problem</th><th>Severity</th></tr>
+<tr><td><code>def f(items</code>[])= -- one list, shared by every call</td><td>warning</td></tr>
+<tr><td>=x is "yes"= -- identity against a literal</td><td>warning</td></tr>
+<tr><td><code>assert (cond, "message")</code> -- always true</td><td>warning</td></tr>
+<tr><td><code>except:</code> with no exception type</td><td>warning</td></tr>
+<tr><td>The same <code>except</code> clause twice</td><td>warning</td></tr>
+<tr><td>A duplicate key in a dict literal</td><td>warning</td></tr>
+<tr><td>A duplicate parameter name</td><td>error</td></tr>
+<tr><td><code>return</code> inside <code>finally</code> -- it hides the exception</td><td>warning</td></tr>
+<tr><td><code>raise NotImplemented</code> -- you want <code>NotImplementedError</code></td><td>warning</td></tr>
+<tr><td><code>__init__</code> returning a value</td><td>warning</td></tr>
+<tr><td>A method with no <code>self</code></td><td>warning</td></tr>
+<tr><td><code>x =</code> None= -- compare to <code>None</code> with <code>is</code></td><td>hint</td></tr>
+<tr><td><code>type(a) =</code> type(b)= -- use <code>isinstance</code></td><td>hint</td></tr>
+<tr><td>An f-string with no <code>{...}</code> in it</td><td>hint</td></tr>
+<tr><td>A statement whose result is discarded (<code>a =</code> b= alone)</td><td>hint / warning</td></tr>
+<tr><td>Code after a <code>return</code>, <code>raise</code>, <code>break</code> or <code>continue</code></td><td>hint</td></tr>
+</table>
+<h2>What it deliberately stays quiet about</h2>
+<p>A linter that cries wolf gets switched off, and then its true reports go
+unseen too. So:</p>
+<ul>
+<li><code>from x import *</code> switches the undefined-name check off for the whole file rather than guessing what the star brought in -- and says so, once, on the import itself.</li>
+<li>So does anything that writes the namespace at run time (<code>globals().update(...)</code>, <code>eval</code>, <code>exec</code>).</li>
+<li>A file with a syntax error gets no scope diagnostics at all until it parses again: mid-edit is exactly when a screenful of invented "undefined name" errors would be least welcome.</li>
+<li><code>from __future__ import annotations</code>, a name listed in <code>__all__</code>, and every import in an <code>__init__.py</code> are never "unused".</li>
+<li>A string annotation (='Node'=) counts as <b>using</b> the name, never as claiming it exists -- <code>Literal['w']</code> must not invent one.</li>
+<li><code>@property</code> setters, <code>@overload</code> runs, <code>try:/except ImportError:</code> import fallbacks and <code>import os</code> beside <code>import os.path</code> are all redefinitions on purpose, and pass without comment.</li>
+<li><code>with pytest.raises(TypeError): a + b</code> is a test, not a dead expression.</li>
+<li>An unused half of a tuple unpacking, and any name starting with <code>_</code>, are not unused variables.</li>
+</ul>
+<p>A line-length hint exists but is off unless asked for:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.python_ls.init_options = <span class="tok-blue">{</span>maxLineLength = <span class="tok-cyan">100</span>}</code></pre></div>
+<h1>Completion</h1>
+<p>Completion is context-aware rather than a word list:</p>
+<table>
+<tr><th>Where you are</th><th>What you get</th></tr>
+<tr><td>anywhere in code</td><td>every name in scope, then builtins, then keywords</td></tr>
+<tr><td>after <code>os.</code></td><td>that module's members, from the built-in table</td></tr>
+<tr><td>after <code>self.</code></td><td>the class's own methods and fields, and its bases'</td></tr>
+<tr><td>after <code>text.</code> where <code>text</code> is a string</td><td><code>str</code>'s methods</td></tr>
+<tr><td>after <code>c.</code> where <code>c = MyClass()</code></td><td>that class's members</td></tr>
+<tr><td>after <code>import</code></td><td>the standard library, plus the <code>.py</code> files beside this one</td></tr>
+<tr><td>after <code>from json import</code></td><td>that module's members</td></tr>
+<tr><td>after <code>raise</code></td><td>the builtin exceptions</td></tr>
+<tr><td>after <code>def</code> in a class</td><td>the special methods, <code>__init__</code> first</td></tr>
+<tr><td>after <code>@</code></td><td><code>property</code>, <code>staticmethod</code>, <code>dataclass</code>, and what is in scope</td></tr>
+</table>
+<p>Inside a comment or a string it offers nothing -- except inside an
+f-string's <code>{...}</code>, which is code and is treated as such.</p>
+<h1>Hover, signatures, outline, jumps</h1>
+<p><code>K</code> over a name gives its definition line: a function's full signature and
+the first line of its docstring, a class and its bases, a parameter and
+its annotation, a variable and what it was assigned. Over a builtin, a
+keyword or a standard-library member it answers from the built-in table.</p>
+<p><code>&lt;leader&gt;lk</code> (signature help) shows the signature of the call the cursor
+is inside, with the parameter you are on highlighted -- including while
+you are typing a string argument, and with <code>self</code> dropped from a method
+called through an instance. It fires by itself as you type <code>(</code> and =,=.</p>
+<p><code>gd</code> jumps to where a name is bound. On <code>self.field</code> it jumps to the
+method that first assigns it; on an import of a module that sits beside
+this file, it opens that file <b>at the definition</b>, not at line 1.</p>
+<p><code>:MepLspReferences</code> lists every use of the binding under the cursor --
+the one in this scope, not every name that happens to match, so a local
+<code>value</code> and a module-level <code>value</code> stay separate. <code>&lt;leader&gt;rn</code> renames
+the same set, and refuses names it cannot rename safely (a builtin, or an
+attribute whose owner is defined in another file).</p>
+<p>Classes, functions, methods and module-level assignments are the document
+outline, so <a href="structure-symbols.html">the symbol views</a> work from the server. Folding covers every
+suite, each <code>else=/=except=/=finally</code> arm, runs of comment lines, the
+import block at the top and multi-line strings.</p>
+<h1>What it does not do</h1>
+<ul>
+<li><b>No type checking.</b> See the opening section.</li>
+<li><b>One file is the whole world.</b> An imported name is known to exist and nothing more. Attribute completion on an object from another module falls back to "attribute names this file already mentions".</li>
+<li><b>No project-wide rename or references.</b> Both stop at the file's edge, which is why a rename that cannot see the other users is refused rather than half-done.</li>
+<li><b>No formatting.</b> <code>mep.lsp_format</code> falls through to the configured formatter for Python; the server does not claim the capability.</li>
+</ul>
+<h1>Turning it off</h1>
+<p>It is an ordinary entry in the server registry, so <code>init.lua</code> can drop it,
+or hand <code>py</code> back to pyright:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.python_ls = <span class="tok-cyan">nil</span>
+mep.lsp_servers.pyright.filetypes = <span class="tok-blue">{</span><span class="tok-green">'py'</span>}</code></pre></div>
+<p>Or point it at your own build:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.python_ls.cmd = {<span class="tok-green">'/path/to/mep-python-lsp'</span><span class="tok-blue">}</span></code></pre></div>
+<p>It also runs standalone, over stdio, in any editor that speaks LSP.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the client, the keys and the other servers.</li>
+<li><a href="org-lsp.html">The org language server</a> -- the other one mep ships.</li>
+<li><a href="filetypes.html">Filetypes</a> -- what mep does with a <code>.py</code> file besides this.</li>
+</ul>
+</body>
+</html>

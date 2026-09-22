@@ -81,13 +81,13 @@ the colours follow your theme.
 
 * Servers mep knows about
 
-Thirty-seven. All but the last two are used when their command is on
-=$PATH=; the org and R ones ship with mep itself:
+Thirty-nine. Each is used when its command is on =$PATH=; the org, R and
+Python ones ship with mep itself:
 
 | Language        | Command                            |
 |-----------------+------------------------------------|
 | C, C++          | =clangd=                           |
-| Python          | =pyright-langserver=, or =basedpyright-langserver= |
+| Python          | =mep-python-lsp= (ships with mep), or =pyright-langserver= |
 | Lua             | =lua-language-server=              |
 | Go              | =gopls=                            |
 | Rust            | =rust-analyzer=                    |
@@ -125,15 +125,21 @@ Thirty-seven. All but the last two are used when their command is on
 
 If a server is missing, nothing breaks -- the file simply opens without one.
 
-* The two mep brings itself
+* The three mep brings itself
 
-=mep-org-lsp= is mep's own org-mode server, built and installed alongside
-=mep=, so org files get diagnostics and completion with nothing to install.
-See [[file:org-lsp.html][The org language server]].
+=mep-org-lsp=, =mep-r-lsp= and =mep-python-lsp= are mep's own servers,
+built and installed alongside =mep=, so org, R and Python files get
+diagnostics and completion with nothing to install. See
+[[file:org-lsp.html][The org language server]], [[file:r-lsp.html][The R language server]] and
+[[file:python-lsp.html][The Python language server]].
 
-=mep-r-lsp= is the same idea for R: it parses R itself and never starts R,
-so a =.R= file gets diagnostics, completion, hover and signature help on a
-machine with no R installed. See [[file:r-lsp.html][The R language server]].
+Python is the one language where mep's own server is preferred over an
+external one out of the box: =pyright= stays registered but claims no
+filetype, and one line in =init.lua= swaps them back.
+
+The R one never starts R: it parses the language itself, so a =.R= file
+gets diagnostics, completion, hover and signature help on a machine with
+no R installed at all.
 
 R's own =languageserver= package is still registered, under
 =r_languageserver=, with no file types claimed. It knows what an installed
@@ -166,3 +172,4 @@ rather than replacing one another.
 - [[file:completion.html][Completion]] -- where LSP suggestions end up.
 - [[file:formatting.html][Formatting]] -- =mep.lsp_format= as the fallback formatter.
 - [[file:structure-symbols.html][Structure and symbols]] -- the outline views.
+- [[file:python-lsp.html][The Python language server]] -- the one that needs no Python.

@@ -6,7 +6,7 @@ Now, here's some latex in a block:
 \int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
 \]
 
-#+begin_src R -n :results graphics :file ./test.png :exports results :width 18 :height 9
+#+begin_src R -n :results graphics :file ./test.png :exports results :width 800 :height  600
 library(splines)
 n <- 1000
 x <- runif(n, 0, 1)
@@ -15,7 +15,7 @@ doppler <- function(x) {
 }
 ytrue <- doppler(x)
 epsilon <- rnorm(n, 0, 0.1)
-g <- ytrue + epsilon
+y <- ytrue + epsilon
 xseq <- seq(0, 1, length.out = n)
 yseq <- doppler(xseq)
 plot(x, y, col = rgb(0.4, 0.1, 0.1, 0.5), pch = 19, xlab = "x", ylab = "y")
@@ -35,7 +35,17 @@ lines(xseq, yhat, col = "red", lwd = 2)
 
 #+begin_src python -n
 print("Hello, world")
+
+for i in range(5):
+    print(f"Iteration {i}")
 #+end_src
 #+RESULTS:
-: Hello, world
+#+begin_example
+Hello, world
+Iteration 0
+Iteration 1
+Iteration 2
+Iteration 3
+Iteration 4
+#+end_example
 

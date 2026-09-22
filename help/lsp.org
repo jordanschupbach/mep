@@ -21,6 +21,7 @@ work without servers fighting over one project.
 | =K=            | hover documentation           |
 | =gd=           | go to definition              |
 | =Q=            | this line's diagnostics, in a popup |
+| =]e= / =[e=    | next / previous error, then its popup |
 | =<leader>li=   | go to implementation          |
 | =<leader>lt=   | go to type definition         |
 | =<leader>lk=   | signature help                |
@@ -40,6 +41,23 @@ Every action also has a command: =:MepLspHover=, =:MepLspDefinition=,
 Errors, warnings and hints are underlined in the buffer and marked in the
 sign column. =Q= shows the current line's diagnostics in a popup, and
 =:MepDiagShow= lists them.
+
+=]e= and =[e= jump to the next and previous *error* in the file (wrapping
+at either end), then pop up that line's errors. For diagnostics of any
+severity there are =mep.lsp_next_diagnostic= and =mep.lsp_prev_diagnostic=,
+unbound by default -- =mep.map_bracket_next('d', mep.lsp_next_diagnostic)=
+puts them on =]d=/=[d=.
+
+The popup is a list, one entry per diagnostic -- long messages are wrapped
+but stay a single entry:
+
+| Key                | Does                                       |
+|--------------------+--------------------------------------------|
+| =C-n= / =C-p=      | next / previous entry (=j= / =k= too)      |
+| =y=                | copy that message to the system clipboard  |
+| =Y=                | copy every message in the popup            |
+| =Enter=            | jump to that diagnostic's own line:column  |
+| =Esc=              | dismiss                                    |
 
 The gutter mark says which kind, by shape as well as by colour:
 

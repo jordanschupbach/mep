@@ -57,7 +57,7 @@ figure scrolls past the center of the height of the window (i.e. where the
 cursor should be emulated from (but not visible, while going over the image),
 depending how on which way the user is scrolling.
 
-* TODO error binding
+* DONE error binding
 
 I'd like a binding for going to the next error, should be [e and ]e. Once the
 error has been jumped to, id like a popup to show the error message(s). Should

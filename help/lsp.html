@@ -25,6 +25,7 @@ work without servers fighting over one project.</p>
 <tr><td><code>K</code></td><td>hover documentation</td></tr>
 <tr><td><code>gd</code></td><td>go to definition</td></tr>
 <tr><td><code>Q</code></td><td>this line's diagnostics, in a popup</td></tr>
+<tr><td><code>]e</code> / <code>[e</code></td><td>next / previous error, then its popup</td></tr>
 <tr><td><code>&lt;leader&gt;li</code></td><td>go to implementation</td></tr>
 <tr><td><code>&lt;leader&gt;lt</code></td><td>go to type definition</td></tr>
 <tr><td><code>&lt;leader&gt;lk</code></td><td>signature help</td></tr>
@@ -41,6 +42,21 @@ references use <code>:MepLspReferences</code>.</p>
 <p>Errors, warnings and hints are underlined in the buffer and marked in the
 sign column. <code>Q</code> shows the current line's diagnostics in a popup, and
 <code>:MepDiagShow</code> lists them.</p>
+<p><code>]e</code> and <code>[e</code> jump to the next and previous <b>error</b> in the file (wrapping
+at either end), then pop up that line's errors. For diagnostics of any
+severity there are <code>mep.lsp_next_diagnostic</code> and <code>mep.lsp_prev_diagnostic</code>,
+unbound by default -- <code>mep.map_bracket_next('d', mep.lsp_next_diagnostic)</code>
+puts them on <code>]d=/</code>[d=.</p>
+<p>The popup is a list, one entry per diagnostic -- long messages are wrapped
+but stay a single entry:</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>C-n</code> / <code>C-p</code></td><td>next / previous entry (<code>j</code> / <code>k</code> too)</td></tr>
+<tr><td><code>y</code></td><td>copy that message to the system clipboard</td></tr>
+<tr><td><code>Y</code></td><td>copy every message in the popup</td></tr>
+<tr><td><code>Enter</code></td><td>jump to that diagnostic's own line:column</td></tr>
+<tr><td><code>Esc</code></td><td>dismiss</td></tr>
+</table>
 <p>The gutter mark says which kind, by shape as well as by colour:</p>
 <table>
 <tr><th>Mark</th><th>Severity</th></tr>

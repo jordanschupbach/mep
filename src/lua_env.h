@@ -181,6 +181,20 @@ public:
      */
     bool CallRefWithStringForBool(int ref, const std::string &arg);
     /**
+     * @brief Calls a Lua callback with a string plus an integer and reads back a boolean result.
+     *
+     * mep.ui_select's opts.on_key: the key typed over the select overlay and the 1-indexed item it was
+     * typed over, with the return value saying whether that key is done with the overlay (true closes
+     * it without on_done ever firing). Separate from CallRefWithStringForBool above rather than a
+     * second argument on it, so that hook's own (key) -> handled contract stays exactly one argument
+     * wide for the dozens of buffer-scoped key handlers already written against it.
+     * @param ref Registry reference of the function to call.
+     * @param arg String argument (the key) to pass to the Lua function.
+     * @param index Integer argument (the highlighted item, 1-indexed) to pass alongside it.
+     * @return The truthiness of ref's return value, or false if ref is unset or errors.
+     */
+    bool CallRefWithStringIntForBool(int ref, const std::string &arg, long long index);
+    /**
      * @brief Releases a registered callback so it can be garbage-collected -- call once a callback
      * (e.g. a finished job's on_exit) will never fire again.
      * @param ref Registry reference to release.

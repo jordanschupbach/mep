@@ -63,17 +63,64 @@ marked <code>:results silent</code>.</p>
 <p>This is what lets a document drive the editor -- a deck of learning games
 launching itself, a notebook of editor commands.</p>
 <h1>Header arguments</h1>
+<p>A block's arguments are read from four places, each beating the one before
+it: a file-wide <code>#+PROPERTY: header-args</code>, a <code>#+PROPERTY: header-args:&lt;lang&gt;</code>
+for that language, the <code>#+HEADER:</code> lines directly above the block, and the
+<code>#+begin_src</code> line itself. A value runs to the next <code>:key</code>, so it can hold
+spaces; quote it if it contains a colon.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">org</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="org">#+PROPERTY: header-args:python :results output
+#+HEADER: :var greeting="hello"
+#+begin_src python :dir ~/my notes :prologue import sys
+#+end_src</code></pre></div>
+<h2>What comes back</h2>
 <table>
 <tr><th>Argument</th><th>Does</th></tr>
 <tr><td><code>:results value</code></td><td>the value of the last expression</td></tr>
 <tr><td><code>:results output</code></td><td>whatever the block printed</td></tr>
+<tr><td><code>:results table</code></td><td>read the output as a table (<code>:sep</code> sets the field separator)</td></tr>
+<tr><td><code>:results list</code></td><td>one org list item per output line</td></tr>
+<tr><td><code>:results verbatim</code></td><td>no interpretation at all, just quoted lines</td></tr>
+<tr><td><code>:results raw</code> / <code>org</code></td><td>insert the output as org markup, unfenced</td></tr>
+<tr><td><code>:results html</code> / <code>latex</code></td><td>fence it as an export block for that backend</td></tr>
+<tr><td><code>:results code</code></td><td>fence it as a <code>src</code> block in the block's own language</td></tr>
+<tr><td><code>:results drawer</code></td><td>put it in a <code>:results:</code> drawer</td></tr>
+<tr><td><code>:wrap example</code></td><td>fence it in that block instead (beats the above)</td></tr>
 <tr><td><code>:results silent</code></td><td>run it, write nothing back</td></tr>
-<tr><td><code>:var name=value</code></td><td>bind a variable for the block</td></tr>
+<tr><td><code>:results append</code> / <code>prepend</code></td><td>add to the results already there rather than replacing them</td></tr>
+<tr><td><code>:post NAME(arg=*this*)</code></td><td>run the results through another named block first</td></tr>
+</table>
+<h2>How it runs</h2>
+<table>
+<tr><th>Argument</th><th>Does</th></tr>
+<tr><td><code>:var name=value</code></td><td>bind a variable; repeat it to bind more than one</td></tr>
 <tr><td><code>:eval no</code></td><td>never run this block, including on export</td></tr>
+<tr><td><code>:exports code</code></td><td>export the code only (org's default)</td></tr>
+<tr><td><code>:exports results</code> / <code>both</code> / <code>none</code></td><td>what an export includes for this block</td></tr>
+<tr><td><code>:dir PATH</code></td><td>run the block in that directory</td></tr>
+<tr><td><code>:prologue</code> / <code>:epilogue</code></td><td>code around the body (<code>\n</code> separates lines)</td></tr>
+<tr><td><code>:cmdline ARGS</code></td><td>arguments the block's own program is run with</td></tr>
+<tr><td><code>:stdin NAME</code></td><td>feed another block's results in on stdin</td></tr>
+<tr><td><code>:cache yes</code></td><td>re-run only when the body or arguments change</td></tr>
+<tr><td><code>:session NAME</code></td><td>share state with the other blocks in that session (export only)</td></tr>
+<tr><td><code>:noweb yes</code></td><td>expand <code>&lt;&lt;name&gt;&gt;</code> references from other named blocks</td></tr>
 </table>
 <p><code>:eval no</code> matters for export: code blocks are executed as part of
 exporting, matching real org-mode's default, so a block you do not want run
-during a build needs to say so.</p>
+during a build needs to say so. <code>:exports</code> is the other half of that
+decision -- it controls what the exported document <b>shows</b>, and applies
+whether or not the block ran.</p>
+<h2>Files a block writes</h2>
+<p><code>:file</code> names what the block produces, and the results become a link to it.
+<code>:file-ext</code> derives that name from the block's <code>#+NAME:</code> instead,
+<code>:output-dir</code> puts it in a directory, and <code>:file-desc</code> gives the link its
+text. For a language with a graphics device (R, LaTeX), =:results graphics
+file= opens it around the body for you, sized by <code>:width</code> / <code>:height</code> /
+<code>:units</code> / <code>:res</code>.</p>
+<h2>Line switches</h2>
+<p><code>-n</code> numbers the block's lines when it is displayed or exported, <code>+n</code>
+continues the numbering from the previous numbered block, and <code>-r</code> / <code>-k</code>
+remove or keep its <code>(ref:name)</code> labels. An <code>#+begin_example</code> block takes
+them too.</p>
 <h2>Setting them from a popup</h2>
 <p>The gear button on a block card's title bar -- or <code>&lt;leader&gt;os</code> /
 <code>:MepOrgBlockSettings</code> with the cursor in the block -- opens that block's
@@ -82,8 +129,8 @@ them are spelled. Every argument org honours for the block is there,
 whether or not the block sets it: the common ones first, grouped into
 Results, Execution, Output, Tangle and Noweb, then the ones only that
 language takes (<code>:width</code> / <code>:height</code> / <code>:res</code> for R, <code>:includes</code> /
-<code>:flags</code> / <code>:libs</code> for C and C++, <code>:return</code> for Python, and so on), then
-the line switches.</p>
+<code>:flags</code> / <code>:libs</code> for anything that compiles, <code>:return</code> for Python,
+<code>:engine</code> / <code>:database</code> for SQL, and so on), then the line switches.</p>
 <p>Each row is the kind of input the argument actually takes -- a dropdown
 of the words org accepts, a number, or free text -- so the popup will not
 let you write <code>:exports bth</code>. <code>:results</code> gets four rows rather than one,
@@ -116,7 +163,18 @@ block has no header arguments at all, so it gets no gear.</p>
 <h1>Tangling</h1>
 <p><code>:MepOrgBabelTangle</code> writes the code blocks out to real source files, which
 is the literate-programming direction: the org file is the source, and the
-code files are generated from it.</p>
+code files are generated from it. Blocks sharing a <code>:tangle</code> target are
+concatenated into it in document order.</p>
+<table>
+<tr><th>Argument</th><th>Does</th></tr>
+<tr><td><code>:tangle FILE</code></td><td>the file this block is written to</td></tr>
+<tr><td><code>:shebang LINE</code></td><td>the tangled file's first line</td></tr>
+<tr><td><code>:tangle-mode o755</code></td><td>the permissions it ends up with</td></tr>
+<tr><td><code>:mkdirp yes</code></td><td>create the target's directory when it is missing</td></tr>
+<tr><td><code>:padline no</code></td><td>pack the blocks with no blank line between them</td></tr>
+<tr><td><code>:comments link</code></td><td>bracket each block with a link back to the org file</td></tr>
+<tr><td><code>:no-expand yes</code></td><td>write the body as-is, with no <code>:var</code> prelude or noweb expansion</td></tr>
+</table>
 <h1>See also</h1>
 <ul>
 <li><a href="org-polyglot.html">Language servers in code blocks</a> -- editing support inside a block.</li>

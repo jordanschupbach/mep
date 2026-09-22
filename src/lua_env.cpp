@@ -5,6 +5,7 @@
 #include "doc_export.h"
 #include "editor.h"
 #include "job.h"
+#include "org_doc.h"
 #include "tcp_client.h"
 #include "treesitter.h"
 
@@ -5096,6 +5097,44 @@ int l_fs_mkdir(lua_State *L) {
 }
 
 /**
+ * @brief Implements mep.fs_mkdirp(path): creates a directory and every missing parent (native builds only).
+ * @param L Lua state; arg 1 is the directory path.
+ * @return Number of values pushed (1: true when the directory exists afterwards, false on error or under wasm).
+ */
+int l_fs_mkdirp(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+#if !defined(__EMSCRIPTEN__)
+    std::error_code ec;
+    std::filesystem::create_directories(path, ec);
+    // create_directories reports "created nothing" for a directory that
+    // was already there, which is a success for a `:mkdirp yes` caller.
+    lua_pushboolean(L, !ec || std::filesystem::is_directory(path, ec));
+#else
+    lua_pushboolean(L, false);
+#endif
+    return 1;
+}
+
+/**
+ * @brief Implements mep.fs_chmod(path, mode): sets a file's permission bits (native builds only).
+ * @param L Lua state; arg 1 is the file path, arg 2 the mode as an integer (already octal-decoded).
+ * @return Number of values pushed (1: true on success, false on error or under wasm).
+ */
+int l_fs_chmod(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    const lua_Integer mode = luaL_checkinteger(L, 2);
+#if !defined(__EMSCRIPTEN__)
+    std::error_code ec;
+    std::filesystem::permissions(path, static_cast<std::filesystem::perms>(mode & 07777),
+                                 std::filesystem::perm_options::replace, ec);
+    lua_pushboolean(L, !ec);
+#else
+    lua_pushboolean(L, false);
+#endif
+    return 1;
+}
+
+/**
  * @brief Implements mep.fs_create_file(path): creates an empty file if it doesn't already exist (native builds only).
  * @param L Lua state; arg 1 is the file path.
  * @return Number of values pushed (1: true on success, false on error or under wasm).
@@ -7330,6 +7369,255 @@ int l_org_parse_results(lua_State *L) {
     return 1;
 }
 
+// mep.org_header_arg(args_str, key) -> value string: see
+// OrgHeaderArgValue. The reader the babel pipeline uses everywhere it
+// used to pattern-match `':KEY%s+(%S+)'` in Lua, which only ever saw a
+// value's first word.
+/**
+ * @brief Implements mep.org_header_arg(args_str, key): reads one header argument's whole value.
+ * @param L Lua state; arg 1 is the header-args text, arg 2 the key without its colon.
+ * @return Number of values pushed (1: the value, or nil when the key is not written).
+ */
+int l_org_header_arg(lua_State *L) {
+    const char *args = luaL_checkstring(L, 1);
+    const char *key = luaL_checkstring(L, 2);
+    if (!OrgHeaderArgPresent(args, key)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const std::string value = OrgHeaderArgValue(args, key);
+    lua_pushlstring(L, value.data(), value.size());
+    return 1;
+}
+
+// mep.org_merge_header_args({args1, args2, ...}) -> merged args string:
+// see OrgMergeHeaderArgs.
+/**
+ * @brief Implements mep.org_merge_header_args({args, ...}): merges header-arg layers in precedence order.
+ * @param L Lua state; arg 1 is an array of arguments strings, least significant first.
+ * @return Number of values pushed (1: the merged arguments string).
+ */
+int l_org_merge_header_args(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const std::string merged = OrgMergeHeaderArgs(ReadStringArray(L, 1));
+    lua_pushlstring(L, merged.data(), merged.size());
+    return 1;
+}
+
+namespace {
+/**
+ * @brief Reads an OrgResultsOptions out of a Lua table plus the block's args string.
+ * @param L Lua state.
+ * @param args_idx Stack index of the header-args string.
+ * @param lang_idx Stack index of the block's language tag.
+ * @param file_link_idx Stack index of the "already an org link" boolean.
+ * @return The options.
+ */
+OrgResultsOptions ReadResultsOptions(lua_State *L, int args_idx, int lang_idx, int file_link_idx) {
+    OrgResultsOptions opts = OrgResultsOptionsFrom(luaL_checkstring(L, args_idx), luaL_optstring(L, lang_idx, ""));
+    opts.file_link = lua_toboolean(L, file_link_idx) != 0;
+    return opts;
+}
+}  // namespace
+
+// mep.org_format_results({line, ...}, args_str, lang, file_link) ->
+// {line, ...}, raw: see OrgFormatResultsBody/OrgResultsBodyIsRaw. `raw`
+// tells the caller the lines are already org markup and must be spliced
+// in untouched.
+/**
+ * @brief Implements mep.org_format_results(lines, args_str, lang, file_link): shapes a run's output into results lines.
+ * @param L Lua state; arg 1 is the output lines, arg 2 the header args, arg 3 the language, arg 4 whether the output is already an org link.
+ * @return Number of values pushed (2: the results lines, and whether they are raw org markup).
+ */
+int l_org_format_results(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const std::vector<std::string> out_lines = ReadStringArray(L, 1);
+    const OrgResultsOptions opts = ReadResultsOptions(L, 2, 3, 4);
+    PushStringArray(L, OrgFormatResultsBody(out_lines, opts));
+    lua_pushboolean(L, OrgResultsBodyIsRaw(opts) ? 1 : 0);
+    return 2;
+}
+
+// mep.org_results_handling(args_str) -> "replace"|"append"|"prepend"|
+// "none"|"silent": the `:results` word that decides what happens to the
+// results already under the block. "" (unwritten) reports as "replace",
+// which is org's default.
+/**
+ * @brief Implements mep.org_results_handling(args_str): reads the `:results` handling facet.
+ * @param L Lua state; arg 1 is the header-args text.
+ * @return Number of values pushed (1: the handling word, defaulted to "replace").
+ */
+int l_org_results_handling(lua_State *L) {
+    const std::string results = OrgHeaderArgValue(luaL_checkstring(L, 1), "results");
+    std::string handling = OrgResultsFacetValue(results, "handling");
+    if (handling.empty()) handling = "replace";
+    lua_pushlstring(L, handling.data(), handling.size());
+    return 1;
+}
+
+// mep.org_noweb_expand({line, ...}, {name = body, ...}, sep, depth) ->
+// {line, ...}: see OrgNowebExpand.
+/**
+ * @brief Implements mep.org_noweb_expand(body, blocks, sep, depth): expands `<<name>>` references in a block body.
+ * @param L Lua state; arg 1 is the body lines, arg 2 a name->body table, arg 3 the `:noweb-sep` value, arg 4 the recursion limit.
+ * @return Number of values pushed (1: the expanded body lines).
+ */
+int l_org_noweb_expand(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    const std::vector<std::string> body = ReadStringArray(L, 1);
+    std::map<std::string, std::string> blocks;
+    lua_pushnil(L);
+    while (lua_next(L, 2) != 0) {
+        if (lua_type(L, -2) == LUA_TSTRING && lua_type(L, -1) == LUA_TSTRING) {
+            blocks[lua_tostring(L, -2)] = lua_tostring(L, -1);
+        }
+        lua_pop(L, 1);
+    }
+    const char *sep = luaL_optstring(L, 3, "");
+    const int depth = static_cast<int>(luaL_optinteger(L, 4, 8));
+    PushStringArray(L, OrgNowebExpand(body, blocks, sep, depth));
+    return 1;
+}
+
+// mep.org_noweb_expands_in(noweb_value, context) -> bool: see
+// OrgNowebExpandsIn.
+/**
+ * @brief Implements mep.org_noweb_expands_in(noweb, context): reports whether `:noweb` asks for expansion here.
+ * @param L Lua state; arg 1 is the `:noweb` value, arg 2 the context ("eval", "tangle", "export").
+ * @return Number of values pushed (1: the boolean).
+ */
+int l_org_noweb_expands_in(lua_State *L) {
+    lua_pushboolean(L, OrgNowebExpandsIn(luaL_optstring(L, 1, ""), luaL_checkstring(L, 2)) ? 1 : 0);
+    return 1;
+}
+
+// mep.org_apply_block_switches({line, ...}, begin_line, counter) ->
+// {line, ...}, next_counter: see OrgParseBlockSwitches/
+// OrgApplyBlockSwitches. Returns the body unchanged (and the counter
+// untouched) for a line carrying no switches, so a caller can apply it
+// unconditionally.
+/**
+ * @brief Implements mep.org_apply_block_switches(body, begin_line, counter): applies `-n`/`+n`/`-r`/`-k` to a block body.
+ * @param L Lua state; arg 1 is the body lines, arg 2 the `#+begin_` line, arg 3 the running `+n` counter.
+ * @return Number of values pushed (2: the displayed body lines, and the advanced counter).
+ */
+int l_org_apply_block_switches(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const std::vector<std::string> body = ReadStringArray(L, 1);
+    const OrgBlockSwitches sw = OrgParseBlockSwitches(luaL_checkstring(L, 2));
+    int counter = static_cast<int>(luaL_optinteger(L, 3, 1));
+    PushStringArray(L, OrgApplyBlockSwitches(body, sw, &counter));
+    lua_pushinteger(L, counter);
+    return 2;
+}
+
+// mep.org_tangle_options(args_str) -> {shebang=, mode=, mkdirp=,
+// padline=, comments=}: see OrgTangleOptionsFrom.
+/**
+ * @brief Implements mep.org_tangle_options(args_str): reads a block's tangle-side header arguments.
+ * @param L Lua state; arg 1 is the header-args text.
+ * @return Number of values pushed (1: the options table).
+ */
+int l_org_tangle_options(lua_State *L) {
+    const OrgTangleOptions opts = OrgTangleOptionsFrom(luaL_checkstring(L, 1));
+    lua_createtable(L, 0, 5);
+    lua_pushlstring(L, opts.shebang.data(), opts.shebang.size());
+    lua_setfield(L, -2, "shebang");
+    lua_pushinteger(L, OrgParseTangleMode(opts.mode));
+    lua_setfield(L, -2, "mode");
+    lua_pushboolean(L, opts.mkdirp ? 1 : 0);
+    lua_setfield(L, -2, "mkdirp");
+    lua_pushboolean(L, opts.padline ? 1 : 0);
+    lua_setfield(L, -2, "padline");
+    lua_pushlstring(L, opts.comments.data(), opts.comments.size());
+    lua_setfield(L, -2, "comments");
+    return 1;
+}
+
+// mep.org_tangle_comment(comments, prefix, org_file, name, row, opening)
+// -> {line, ...}: see OrgTangleComment.
+/**
+ * @brief Implements mep.org_tangle_comment(...): renders the comment lines that bracket one tangled block.
+ * @param L Lua state; args are the `:comments` value, the language's comment prefix, the org file, the block name, its row and whether this opens the block.
+ * @return Number of values pushed (1: the comment lines, empty when `:comments` asks for none).
+ */
+int l_org_tangle_comment(lua_State *L) {
+    PushStringArray(L, OrgTangleComment(luaL_optstring(L, 1, ""), luaL_optstring(L, 2, "# "),
+                                        luaL_optstring(L, 3, ""), luaL_optstring(L, 4, ""),
+                                        static_cast<int>(luaL_optinteger(L, 5, 0)), lua_toboolean(L, 6) != 0));
+    return 1;
+}
+
+// mep.org_exports(exports_value) -> code_bool, results_bool: see
+// OrgExportsCode/OrgExportsResults.
+/**
+ * @brief Implements mep.org_exports(value): reports what an export includes for a block.
+ * @param L Lua state; arg 1 is the `:exports` value.
+ * @return Number of values pushed (2: whether the code is included, and whether the results are).
+ */
+int l_org_exports(lua_State *L) {
+    const char *value = luaL_optstring(L, 1, "");
+    lua_pushboolean(L, OrgExportsCode(value) ? 1 : 0);
+    lua_pushboolean(L, OrgExportsResults(value) ? 1 : 0);
+    return 2;
+}
+
+// mep.org_splice_results({line, ...}, after_row, {block line, ...},
+// handling) -> {line, ...}: see OrgSpliceResultsBlock. One writer for
+// both the live buffer and the export-time scratch copy, so `:wrap`,
+// `:results drawer` and the rest are recognized as an existing results
+// block by both rather than only by whichever grew its own matcher.
+/**
+ * @brief Implements mep.org_splice_results(lines, after_row, block, handling): writes a results block into a document copy.
+ * @param L Lua state; arg 1 is the document lines, arg 2 the `#+end_src` row, arg 3 the results block, arg 4 the `:results` handling word.
+ * @return Number of values pushed (1: the document with the results written).
+ */
+int l_org_splice_results(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    luaL_checktype(L, 3, LUA_TTABLE);
+    const std::vector<std::string> lines = ReadStringArray(L, 1);
+    const int after_row = static_cast<int>(luaL_checkinteger(L, 2));
+    const std::vector<std::string> block = ReadStringArray(L, 3);
+    PushStringArray(L, OrgSpliceResultsBlock(lines, after_row, block, luaL_optstring(L, 4, "replace")));
+    return 1;
+}
+
+// mep.org_find_results({line, ...}, after_row) -> start_row, end_row (or
+// nil): see OrgFindResultsBlock.
+/**
+ * @brief Implements mep.org_find_results(lines, after_row): locates the results block under a src block.
+ * @param L Lua state; arg 1 is the document lines, arg 2 the `#+end_src` row.
+ * @return Number of values pushed (2 rows, or 1 nil when no results block follows).
+ */
+int l_org_find_results(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const std::vector<std::string> lines = ReadStringArray(L, 1);
+    int start = 0, end = 0;
+    if (!OrgFindResultsBlock(lines, static_cast<int>(luaL_checkinteger(L, 2)), &start, &end)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushinteger(L, start);
+    lua_pushinteger(L, end);
+    return 2;
+}
+
+// mep.org_apply_export_gates({line, ...}) -> {line, ...}: see
+// OrgApplyExportGates. Applied by every export backend, on both the
+// interactive path and the one-shot `mep --export-org` one -- `:exports`
+// is a rendering decision, so it must not depend on whether babel ran.
+/**
+ * @brief Implements mep.org_apply_export_gates(lines): drops what each block's `:exports` leaves out.
+ * @param L Lua state; arg 1 is the document's lines.
+ * @return Number of values pushed (1: the gated document lines).
+ */
+int l_org_apply_export_gates(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    PushStringArray(L, OrgApplyExportGates(ReadStringArray(L, 1)));
+    return 1;
+}
+
 namespace {
 // Shared by l_org_src_block_at_global below: pushes an OrgSrcBlock as
 // the same table shape the original Lua mep_org_src_block_at built.
@@ -7382,6 +7670,12 @@ void PushOrgSrcBlock(lua_State *L, const OrgSrcBlock &blk) {
     lua_setfield(L, -2, "results_modes");
     lua_pushlstring(L, blk.args_str.data(), blk.args_str.size());
     lua_setfield(L, -2, "args_str");
+    lua_pushlstring(L, blk.own_args_str.data(), blk.own_args_str.size());
+    lua_setfield(L, -2, "own_args_str");
+    lua_pushlstring(L, blk.begin_line.data(), blk.begin_line.size());
+    lua_setfield(L, -2, "begin_line");
+    lua_pushlstring(L, blk.name.data(), blk.name.size());
+    lua_setfield(L, -2, "name");
     lua_pushlstring(L, blk.body.data(), blk.body.size());
     lua_setfield(L, -2, "body");
 }
@@ -10300,6 +10594,19 @@ const luaL_Reg kMepFuncs[] = {
     {"org_babel_format_literal", l_org_babel_format_literal},
     {"org_parse_vars", l_org_parse_vars},
     {"org_parse_results", l_org_parse_results},
+    {"org_header_arg", l_org_header_arg},
+    {"org_merge_header_args", l_org_merge_header_args},
+    {"org_format_results", l_org_format_results},
+    {"org_results_handling", l_org_results_handling},
+    {"org_noweb_expand", l_org_noweb_expand},
+    {"org_noweb_expands_in", l_org_noweb_expands_in},
+    {"org_apply_block_switches", l_org_apply_block_switches},
+    {"org_tangle_options", l_org_tangle_options},
+    {"org_tangle_comment", l_org_tangle_comment},
+    {"org_exports", l_org_exports},
+    {"org_splice_results", l_org_splice_results},
+    {"org_find_results", l_org_find_results},
+    {"org_apply_export_gates", l_org_apply_export_gates},
     {"lsp_word_at_cursor", l_lsp_word_at_cursor},
     {"lsp_apply_text_edit", l_lsp_apply_text_edit},
     {"lsp_apply_edits_current_buffer", l_lsp_apply_edits_current_buffer},
@@ -10417,6 +10724,8 @@ const luaL_Reg kMepFuncs[] = {
     {"list_dir", l_list_dir},
     {"is_image_path", l_is_image_path},
     {"fs_mkdir", l_fs_mkdir},
+    {"fs_mkdirp", l_fs_mkdirp},
+    {"fs_chmod", l_fs_chmod},
     {"fs_create_file", l_fs_create_file},
     {"fs_rename", l_fs_rename},
     {"fs_delete", l_fs_delete},

@@ -5,8 +5,11 @@
 // CHECK(), never assert(): the Release build strips assert() entirely.
 #include "org_doc.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -113,12 +116,12 @@ int main() {
         OrgTodoItem fresh;
         fresh.text = "First";
         Lines out = OrgTodoListApply(Lines{""}, {fresh});
-        CHECK(out == Lines{"* TODO First"});
+        CHECK((out == Lines{"* TODO First"}));
         Lines out2 = OrgTodoListApply(Lines{}, {fresh});
-        CHECK(out2 == Lines{"* TODO First"});
+        CHECK((out2 == Lines{"* TODO First"}));
         fresh.done = true;
         Lines out3 = OrgTodoListApply(Lines{}, {fresh});
-        CHECK(out3 == Lines{"* DONE First"});
+        CHECK((out3 == Lines{"* DONE First"}));
     }
 
     // --- A custom "#+TODO:" sequence: the first keyword on each side of the
@@ -169,7 +172,7 @@ int main() {
         CHECK(items.size() == 1 && items[0].text == "Important thing");
         items[0].done = true;
         Lines out = OrgTodoListApply(tagged, items);
-        CHECK(out == Lines{"* DONE [#A] Important thing :work:urgent:"});
+        CHECK((out == Lines{"* DONE [#A] Important thing :work:urgent:"}));
     }
 
     // --- Retitle (the sidebar's 'e' key): stars, keyword, priority and
@@ -482,7 +485,7 @@ int main() {
     {
         CHECK(OrgEmphasisPreOk('\0'));  // start of line
         CHECK(OrgEmphasisPreOk(' ') && OrgEmphasisPreOk('\t'));
-        CHECK(OrgEmphasisPreOk('-') && OrgEmphasisPreOk('(') && OrgEmphasisPreOk('{'));
+        CHECK((OrgEmphasisPreOk('-') && OrgEmphasisPreOk('(') && OrgEmphasisPreOk('{')));
         CHECK(OrgEmphasisPreOk('\'') && OrgEmphasisPreOk('"'));
         CHECK(!OrgEmphasisPreOk('/'));  // the `https://` case
         CHECK(!OrgEmphasisPreOk(':') && !OrgEmphasisPreOk('$') && !OrgEmphasisPreOk('='));
@@ -1138,6 +1141,348 @@ int main() {
         // A `#+HEADER:` line has no switch region at all.
         CHECK(!OrgBlockLineHasSwitch("#+HEADER: -n", "-n"));
         CHECK(OrgSetBlockSwitchOnLine("#+HEADER: :var x=1", "-n", true) == "#+HEADER: :var x=1");
+    }
+
+    {
+        // --- Header-arg reading: the whole value, not just its first word.
+        const std::string args = ":dir ~/my notes :flags -O2 -Wall :eval no";
+        CHECK(OrgHeaderArgValue(args, "dir") == "~/my notes");
+        CHECK(OrgHeaderArgValue(args, "flags") == "-O2 -Wall");
+        CHECK(OrgHeaderArgValue(args, "eval") == "no");
+        CHECK(OrgHeaderArgValue(args, "session").empty());
+        CHECK(OrgHeaderArgPresent(args, "eval"));
+        CHECK(!OrgHeaderArgPresent(args, "session"));
+        // A quoted value keeps its interior colon, and loses its quotes.
+        CHECK(OrgHeaderArgValue(":file \"a: b.png\" :eval yes", "file") == "a: b.png");
+        // `:file` must not be answered by `:file-ext`, nor the reverse.
+        CHECK(OrgHeaderArgValue(":file-ext png", "file").empty());
+        CHECK(OrgHeaderArgValue(":file-ext png", "file-ext") == "png");
+        // Key matching ignores case; a bare key has an empty value but is
+        // still present.
+        CHECK(OrgHeaderArgValue(":EVAL never", "eval") == "never");
+        CHECK(OrgHeaderArgPresent(":no-expand", "no-expand"));
+        CHECK(OrgHeaderArgValue(":no-expand", "no-expand").empty());
+        // A colon that does not start a token is part of the value.
+        CHECK(OrgHeaderArgValue(":var url=https://example.com/x :eval yes", "var") == "url=https://example.com/x");
+        std::vector<std::pair<std::string, std::string>> pairs = OrgHeaderArgPairs(":var a=1 :var b=2 :eval yes");
+        CHECK(pairs.size() == 3);
+        CHECK(pairs[0].first == "var" && pairs[0].second == "a=1");
+        CHECK(pairs[1].second == "b=2");
+        CHECK(pairs[2].first == "eval");
+    }
+    {
+        // --- Merging the layers a block's arguments come from: a
+        // file-wide `#+PROPERTY:`, then `#+HEADER:` lines, then the
+        // `#+begin_src` line itself. Later wins, except `:var`, which
+        // accumulates by name.
+        const std::string merged = OrgMergeHeaderArgs({":results output :var base=1", ":var x=2", ":results value"});
+        CHECK(OrgHeaderArgValue(merged, "results") == "value");
+        CHECK(OrgHeaderArgPairs(merged).size() == 3);
+        std::string base, x;
+        for (const auto &kv : OrgHeaderArgPairs(merged)) {
+            if (kv.second.compare(0, 5, "base=") == 0) base = kv.second;
+            if (kv.second.compare(0, 2, "x=") == 0) x = kv.second;
+        }
+        CHECK(base == "base=1");
+        CHECK(x == "x=2");
+        // Same variable in two layers: the later one wins rather than
+        // binding twice.
+        const std::string rebound = OrgMergeHeaderArgs({":var x=1", ":var x=9"});
+        CHECK(OrgHeaderArgPairs(rebound).size() == 1);
+        CHECK(OrgHeaderArgValue(rebound, "var") == "x=9");
+        // A key written with no value survives the round trip as one.
+        CHECK((OrgMergeHeaderArgs({":eval no"}) == ":eval no"));
+    }
+    {
+        // --- Results bodies: every `:results` word, and `:wrap`.
+        const Lines out = {"a", "b"};
+        OrgResultsOptions opts;
+        // Unset: one line becomes `: x`, several become an example block.
+        CHECK((OrgFormatResultsBody({"only"}, opts) == Lines{": only"}));
+        CHECK((OrgFormatResultsBody(out, opts) == Lines{"#+begin_example", "a", "b", "#+end_example"}));
+        CHECK(!OrgResultsBodyIsRaw(opts));
+        // `raw`/`org`: inserted exactly as they stand.
+        opts.format = "raw";
+        CHECK(OrgFormatResultsBody(out, opts) == out);
+        CHECK(OrgResultsBodyIsRaw(opts));
+        // `drawer`, `html`, `latex`, `code`.
+        opts.format = "drawer";
+        CHECK((OrgFormatResultsBody(out, opts) == Lines{":results:", "a", "b", ":end:"}));
+        opts.format = "html";
+        CHECK((OrgFormatResultsBody(out, opts) == Lines{"#+begin_export html", "a", "b", "#+end_export"}));
+        opts.format = "latex";
+        CHECK((OrgFormatResultsBody(out, opts) == Lines{"#+begin_export latex", "a", "b", "#+end_export"}));
+        opts.format = "code";
+        opts.lang = "python";
+        CHECK((OrgFormatResultsBody(out, opts) == Lines{"#+begin_src python", "a", "b", "#+end_src"}));
+        // `:wrap` beats `:results format`, and closes on the block word
+        // alone even when it opened with arguments.
+        opts.wrap = "src html";
+        CHECK((OrgFormatResultsBody(out, opts) == Lines{"#+begin_src html", "a", "b", "#+end_src"}));
+        opts.wrap = "example";
+        CHECK((OrgFormatResultsBody(out, opts) == Lines{"#+begin_example", "a", "b", "#+end_example"}));
+    }
+    {
+        // --- `:results` types.
+        OrgResultsOptions opts;
+        opts.type = "list";
+        CHECK((OrgFormatResultsBody({"x", "y"}, opts) == Lines{"- x", "- y"}));
+        // `verbatim`/`scalar` refuse every interpretation, including the
+        // example fence a multi-line result would otherwise get.
+        opts.type = "verbatim";
+        CHECK((OrgFormatResultsBody({"a,b", "c,d"}, opts) == Lines{": a,b", ": c,d"}));
+        opts.type = "scalar";
+        CHECK((OrgFormatResultsBody({"1"}, opts) == Lines{": 1"}));
+        // A `:file` link is inserted untouched whatever else is set.
+        opts.type = "";
+        opts.format = "raw";
+        opts.file_link = true;
+        CHECK((OrgFormatResultsBody({"[[file:p.png]]"}, opts) == Lines{"[[file:p.png]]"}));
+    }
+    {
+        // --- Tables: auto-detected separator, `:sep`, `:colnames no`.
+        CHECK((OrgFormatResultsTable({"a,b", "c,d"}, "", true) == Lines{"| a | b |", "|---+---|", "| c | d |"}));
+        CHECK((OrgFormatResultsTable({"a,b", "c,d"}, "", false) == Lines{"| a | b |", "| c | d |"}));
+        CHECK((OrgFormatResultsTable({"a|b"}, "|", true) == Lines{"| a | b |"}));
+        CHECK((OrgFormatResultsTable({"a\tb"}, "\\t", true) == Lines{"| a | b |"}));
+        // A tab anywhere wins over a comma, and output with neither is
+        // left alone rather than forced into a one-column table.
+        CHECK((OrgFormatResultsTable({"a,b\tc"}, "", true) == Lines{"| a,b | c |"}));
+        CHECK((OrgFormatResultsTable({"plain"}, "", true) == Lines{"plain"}));
+        // Reached through the full options path too.
+        OrgResultsOptions opts;
+        opts.type = "table";
+        opts.sep = ",";
+        opts.colnames = false;
+        CHECK((OrgFormatResultsBody({"1,2"}, opts) == Lines{"| 1 | 2 |"}));
+    }
+    {
+        // --- Reading the options off a header-args string.
+        OrgResultsOptions opts = OrgResultsOptionsFrom(":results output table replace :sep , :colnames no", "R");
+        CHECK(opts.collection == "output");
+        CHECK(opts.type == "table");
+        CHECK(opts.handling == "replace");
+        CHECK(opts.sep == ",");
+        CHECK(!opts.colnames);
+        CHECK(opts.lang == "R");
+        CHECK(opts.format.empty());
+    }
+    {
+        // --- Noweb: when it expands, and what it expands to.
+        CHECK(!OrgNowebExpandsIn("", "eval"));
+        CHECK(!OrgNowebExpandsIn("no", "eval"));
+        CHECK(OrgNowebExpandsIn("yes", "eval"));
+        CHECK(OrgNowebExpandsIn("yes", "tangle"));
+        CHECK(OrgNowebExpandsIn("tangle", "tangle"));
+        CHECK(!OrgNowebExpandsIn("tangle", "eval"));
+        CHECK(OrgNowebExpandsIn("eval", "eval"));
+        CHECK(!OrgNowebExpandsIn("eval", "tangle"));
+        CHECK(OrgNowebExpandsIn("no-export", "eval"));
+        CHECK(!OrgNowebExpandsIn("no-export", "export"));
+
+        std::map<std::string, std::string> blocks;
+        blocks["helper"] = "def helper():\n    return 1";
+        // A reference on its own line carries its indentation onto every
+        // expanded line -- the whole point in Python.
+        CHECK((OrgNowebExpand({"class C:", "    <<helper>>"}, blocks, "", 8) ==
+              Lines{"class C:", "    def helper():", "        return 1"}));
+        // Unresolved references are left exactly as written.
+        CHECK((OrgNowebExpand({"<<missing>>"}, blocks, "", 8) == Lines{"<<missing>>"}));
+        // References nest.
+        blocks["outer"] = "<<helper>>";
+        CHECK((OrgNowebExpand({"<<outer>>"}, blocks, "", 8) == Lines{"def helper():", "    return 1"}));
+        // A self-reference terminates at the depth limit instead of hanging.
+        blocks["loop"] = "<<loop>>";
+        CHECK((OrgNowebExpand({"<<loop>>"}, blocks, "", 4) == Lines{"<<loop>>"}));
+        // Arguments are accepted so the reference still resolves.
+        CHECK((OrgNowebExpand({"<<helper(1)>>"}, blocks, "", 8) == Lines{"def helper():", "    return 1"}));
+    }
+    {
+        // --- Display switches.
+        OrgBlockSwitches sw = OrgParseBlockSwitches("#+begin_src python");
+        CHECK(!sw.number);
+        CHECK(sw.strip_refs);
+        sw = OrgParseBlockSwitches("#+begin_src python -n :results output");
+        CHECK(sw.number && !sw.continue_numbers && sw.start == 1);
+        sw = OrgParseBlockSwitches("#+begin_src python -n 12");
+        CHECK(sw.number && sw.start == 12);
+        sw = OrgParseBlockSwitches("#+begin_example +n");
+        CHECK(sw.number && sw.continue_numbers);
+        CHECK(!OrgParseBlockSwitches("#+begin_src c -k").strip_refs);
+        // A `:key` value that happens to read like a switch is not one.
+        CHECK(!OrgParseBlockSwitches("#+begin_src sh :cmdline -n").number);
+
+        int counter = 1;
+        Lines numbered = OrgApplyBlockSwitches({"a", "b"}, OrgParseBlockSwitches("#+begin_src c -n"), &counter);
+        CHECK((numbered == Lines{"1:  a", "2:  b"}));
+        CHECK(counter == 3);
+        // `+n` picks the count up where the last numbered block left it,
+        // across an unnumbered block in between.
+        OrgApplyBlockSwitches({"plain"}, OrgParseBlockSwitches("#+begin_src c"), &counter);
+        numbered = OrgApplyBlockSwitches({"c"}, OrgParseBlockSwitches("#+begin_src c +n"), &counter);
+        CHECK((numbered == Lines{"3:  c"}));
+        // Numbers are right-aligned to the block's widest.
+        counter = 1;
+        Lines wide = OrgApplyBlockSwitches({"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"},
+                                           OrgParseBlockSwitches("#+begin_src c -n"), &counter);
+        CHECK(wide[0] == " 1:  a");
+        CHECK(wide[9] == "10:  j");
+        // `(ref:)` labels go unless `-k` keeps them.
+        counter = 1;
+        CHECK((OrgApplyBlockSwitches({"x = 1  (ref:one)"}, OrgParseBlockSwitches("#+begin_src c"), &counter) ==
+              Lines{"x = 1"}));
+        counter = 1;
+        CHECK((OrgApplyBlockSwitches({"x = 1  (ref:one)"}, OrgParseBlockSwitches("#+begin_src c -k"), &counter) ==
+              Lines{"x = 1  (ref:one)"}));
+        // A `(ref:` that isn't a trailing label stays put.
+        counter = 1;
+        CHECK((OrgApplyBlockSwitches({"f((ref:x)) + 1"}, OrgParseBlockSwitches("#+begin_src c"), &counter) ==
+              Lines{"f((ref:x)) + 1"}));
+    }
+    {
+        // --- Tangle options.
+        OrgTangleOptions opts = OrgTangleOptionsFrom(":tangle out.sh :shebang #!/bin/sh :mkdirp yes :padline no");
+        CHECK(opts.shebang == "#!/bin/sh");
+        CHECK(opts.mkdirp);
+        CHECK(!opts.padline);
+        CHECK(opts.comments.empty());
+        CHECK(OrgTangleOptionsFrom(":comments no").comments.empty());
+        CHECK(OrgTangleOptionsFrom(":comments link").comments == "link");
+        CHECK(OrgTangleOptionsFrom("").padline);
+
+        CHECK(OrgParseTangleMode("o755") == 0755);
+        CHECK(OrgParseTangleMode("#o644") == 0644);
+        CHECK(OrgParseTangleMode("755") == 0755);
+        CHECK(OrgParseTangleMode("") == -1);
+        CHECK(OrgParseTangleMode("o799") == -1);
+        CHECK(OrgParseTangleMode("rwxr-xr-x") == -1);
+
+        Lines open_comment = OrgTangleComment("link", "# ", "notes.org", "setup", 12, true);
+        CHECK(open_comment.size() == 1);
+        CHECK(open_comment[0] == "# [[file:notes.org::setup][setup]]");
+        Lines close_comment = OrgTangleComment("link", "# ", "notes.org", "setup", 12, false);
+        CHECK(close_comment[0] == "# [[file:notes.org::setup][setup]] ends here");
+        // An unnamed block falls back to its row.
+        CHECK(OrgTangleComment("link", "// ", "notes.org", "", 12, true)[0] ==
+              "// [[file:notes.org::12][notes.org]]");
+        CHECK(OrgTangleComment("", "# ", "notes.org", "setup", 1, true).empty());
+        CHECK(OrgTangleComment("no", "# ", "notes.org", "setup", 1, true).empty());
+    }
+    {
+        // --- `:exports`, which defaults to code.
+        CHECK(OrgExportsCode(""));
+        CHECK(!OrgExportsResults(""));
+        CHECK(OrgExportsCode("both") && OrgExportsResults("both"));
+        CHECK(!OrgExportsCode("results") && OrgExportsResults("results"));
+        CHECK(!OrgExportsCode("none") && !OrgExportsResults("none"));
+    }
+
+    {
+        // --- Finding and replacing the results block already under a run.
+        const Lines doc = {"#+begin_src sh", "echo hi", "#+end_src", "#+RESULTS:", ": hi", "", "after"};
+        int start = 0, end = 0;
+        CHECK(OrgFindResultsBlock(doc, 3, &start, &end));
+        CHECK(start == 4 && end == 5);
+        // A named `#+RESULTS: plot` keyword counts, which the old
+        // `%s*$`-anchored matcher refused.
+        const Lines named = {"#+end_src", "#+RESULTS: plot", "| a | b |", "x"};
+        CHECK(OrgFindResultsBlock(named, 1, &start, &end));
+        CHECK(start == 2 && end == 3);
+        // Fenced bodies run to their own closer, whatever `:wrap` named.
+        const Lines wrapped = {"#+end_src", "#+RESULTS:", "#+begin_export html", "<b>x</b>", "#+end_export", "tail"};
+        CHECK(OrgFindResultsBlock(wrapped, 1, &start, &end));
+        CHECK(start == 2 && end == 5);
+        const Lines drawer = {"#+end_src", "#+RESULTS:", ":results:", "x", ":end:"};
+        CHECK(OrgFindResultsBlock(drawer, 1, &start, &end));
+        CHECK(start == 2 && end == 5);
+        // A keyword with nothing under it is just itself.
+        const Lines bare = {"#+end_src", "#+RESULTS:", "", "prose"};
+        CHECK(OrgFindResultsBlock(bare, 1, &start, &end));
+        CHECK(start == 2 && end == 2);
+        // Nothing there at all.
+        CHECK(!OrgFindResultsBlock({"#+end_src", "prose"}, 1, &start, &end));
+    }
+    {
+        // --- Splicing: replace/append/prepend/none.
+        const Lines doc = {"#+end_src", "#+RESULTS:", ": old", "after"};
+        const Lines block = {"#+RESULTS:", ": new"};
+        CHECK((OrgSpliceResultsBlock(doc, 1, block, "replace") == Lines{"#+end_src", "#+RESULTS:", ": new", "after"}));
+        CHECK((OrgSpliceResultsBlock(doc, 1, block, "append") ==
+               Lines{"#+end_src", "#+RESULTS:", ": old", ": new", "after"}));
+        CHECK((OrgSpliceResultsBlock(doc, 1, block, "prepend") ==
+               Lines{"#+end_src", "#+RESULTS:", ": new", ": old", "after"}));
+        CHECK(OrgSpliceResultsBlock(doc, 1, block, "none") == doc);
+        CHECK(OrgSpliceResultsBlock(doc, 1, block, "silent") == doc);
+        // With nothing there yet, every writing handling inserts.
+        const Lines empty = {"#+end_src", "after"};
+        CHECK((OrgSpliceResultsBlock(empty, 1, block, "append") ==
+               Lines{"#+end_src", "#+RESULTS:", ": new", "after"}));
+        // Appending to a bare keyword keeps the new body in order.
+        const Lines bare = {"#+end_src", "#+RESULTS:", "after"};
+        CHECK((OrgSpliceResultsBlock(bare, 1, {"#+RESULTS:", ": a", ": b"}, "append") ==
+               Lines{"#+end_src", "#+RESULTS:", ": a", ": b", "after"}));
+    }
+
+    {
+        // --- `:exports`, over a whole document.
+        const Lines doc = {
+            "#+TITLE: t",           // 1
+            "* one",                // 2
+            "#+begin_src python",   // 3
+            "print(1)",             // 4
+            "#+end_src",            // 5
+            "#+RESULTS:",           // 6
+            ": 1",                  // 7
+            "* two",                // 8
+            "#+NAME: hidden",       // 9
+            "#+begin_src python :exports results",  // 10
+            "print(2)",             // 11
+            "#+end_src",            // 12
+            "#+RESULTS: hidden",    // 13
+            ": 2",                  // 14
+            "* three",              // 15
+            "#+begin_src python :exports none",  // 16
+            "print(3)",             // 17
+            "#+end_src",            // 18
+            "#+RESULTS:",           // 19
+            ": 3",                  // 20
+            "tail",                 // 21
+        };
+        const Lines gated = OrgApplyExportGates(doc);
+        // Default (`code`): the block stays, its results go.
+        CHECK((std::find(gated.begin(), gated.end(), "print(1)") != gated.end()));
+        CHECK((std::find(gated.begin(), gated.end(), ": 1") == gated.end()));
+        // `results`: the results stay, and the code goes along with the
+        // `#+NAME:` affiliated with it.
+        CHECK((std::find(gated.begin(), gated.end(), "print(2)") == gated.end()));
+        CHECK((std::find(gated.begin(), gated.end(), "#+NAME: hidden") == gated.end()));
+        CHECK((std::find(gated.begin(), gated.end(), ": 2") != gated.end()));
+        // `none`: neither.
+        CHECK((std::find(gated.begin(), gated.end(), "print(3)") == gated.end()));
+        CHECK((std::find(gated.begin(), gated.end(), ": 3") == gated.end()));
+        // Everything that is not a block is untouched.
+        CHECK(gated.front() == "#+TITLE: t");
+        CHECK(gated.back() == "tail");
+        CHECK((std::find(gated.begin(), gated.end(), "* three") != gated.end()));
+
+        // A file-wide `#+PROPERTY:` reaches a block that sets nothing...
+        const Lines prop = {"#+PROPERTY: header-args :exports none", "#+begin_src sh", "echo hi", "#+end_src"};
+        CHECK(OrgApplyExportGates(prop).size() == 1);
+        // ...and the block's own value still beats it.
+        const Lines override = {"#+PROPERTY: header-args :exports none", "#+begin_src sh :exports code", "echo hi",
+                                "#+end_src"};
+        CHECK(OrgApplyExportGates(override).size() == 4);
+        // As does a `#+HEADER:` line between them.
+        const Lines hdr = {"#+PROPERTY: header-args :exports none", "#+HEADER: :exports code", "#+begin_src sh",
+                           "echo hi", "#+end_src"};
+        CHECK(OrgApplyExportGates(hdr).size() == 5);
+        // A language-scoped property only applies to that language.
+        const Lines scoped = {"#+PROPERTY: header-args:python :exports none", "#+begin_src sh", "echo hi",
+                              "#+end_src"};
+        CHECK(OrgApplyExportGates(scoped).size() == 4);
+        // An unterminated block is left exactly as it stands.
+        const Lines open_block = {"#+begin_src sh :exports none", "echo hi"};
+        CHECK(OrgApplyExportGates(open_block) == open_block);
     }
 
     std::printf("org_doc_test: all checks passed\n");

@@ -77,17 +77,74 @@ launching itself, a notebook of editor commands.
 
 * Header arguments
 
-| Argument           | Does                                        |
-|--------------------+---------------------------------------------|
-| =:results value=   | the value of the last expression            |
-| =:results output=  | whatever the block printed                  |
-| =:results silent=  | run it, write nothing back                  |
-| =:var name=value=  | bind a variable for the block               |
-| =:eval no=         | never run this block, including on export   |
+A block's arguments are read from four places, each beating the one before
+it: a file-wide =#+PROPERTY: header-args=, a =#+PROPERTY: header-args:<lang>=
+for that language, the =#+HEADER:= lines directly above the block, and the
+=#+begin_src= line itself. A value runs to the next =:key=, so it can hold
+spaces; quote it if it contains a colon.
+
+#+begin_src org
+,#+PROPERTY: header-args:python :results output
+,#+HEADER: :var greeting="hello"
+,#+begin_src python :dir ~/my notes :prologue import sys
+,#+end_src
+#+end_src
+
+** What comes back
+
+| Argument              | Does                                                |
+|-----------------------+-----------------------------------------------------|
+| =:results value=      | the value of the last expression                    |
+| =:results output=     | whatever the block printed                          |
+| =:results table=      | read the output as a table (=:sep= sets the field separator) |
+| =:results list=       | one org list item per output line                   |
+| =:results verbatim=   | no interpretation at all, just quoted lines         |
+| =:results raw= / =org= | insert the output as org markup, unfenced          |
+| =:results html= / =latex= | fence it as an export block for that backend    |
+| =:results code=       | fence it as a =src= block in the block's own language |
+| =:results drawer=     | put it in a =:results:= drawer                      |
+| =:wrap example=       | fence it in that block instead (beats the above)    |
+| =:results silent=     | run it, write nothing back                          |
+| =:results append= / =prepend= | add to the results already there rather than replacing them |
+| =:post NAME(arg=*this*)= | run the results through another named block first |
+
+** How it runs
+
+| Argument              | Does                                                |
+|-----------------------+-----------------------------------------------------|
+| =:var name=value=     | bind a variable; repeat it to bind more than one    |
+| =:eval no=            | never run this block, including on export           |
+| =:exports code=       | export the code only (org's default)                |
+| =:exports results= / =both= / =none= | what an export includes for this block |
+| =:dir PATH=           | run the block in that directory                     |
+| =:prologue= / =:epilogue= | code around the body (=\n= separates lines)      |
+| =:cmdline ARGS=       | arguments the block's own program is run with       |
+| =:stdin NAME=         | feed another block's results in on stdin            |
+| =:cache yes=          | re-run only when the body or arguments change       |
+| =:session NAME=       | share state with the other blocks in that session (export only) |
+| =:noweb yes=          | expand =<<name>>= references from other named blocks |
 
 =:eval no= matters for export: code blocks are executed as part of
 exporting, matching real org-mode's default, so a block you do not want run
-during a build needs to say so.
+during a build needs to say so. =:exports= is the other half of that
+decision -- it controls what the exported document *shows*, and applies
+whether or not the block ran.
+
+** Files a block writes
+
+=:file= names what the block produces, and the results become a link to it.
+=:file-ext= derives that name from the block's =#+NAME:= instead,
+=:output-dir= puts it in a directory, and =:file-desc= gives the link its
+text. For a language with a graphics device (R, LaTeX), =:results graphics
+file= opens it around the body for you, sized by =:width= / =:height= /
+=:units= / =:res=.
+
+** Line switches
+
+=-n= numbers the block's lines when it is displayed or exported, =+n=
+continues the numbering from the previous numbered block, and =-r= / =-k=
+remove or keep its =(ref:name)= labels. An =#+begin_example= block takes
+them too.
 
 ** Setting them from a popup
 
@@ -98,8 +155,8 @@ them are spelled. Every argument org honours for the block is there,
 whether or not the block sets it: the common ones first, grouped into
 Results, Execution, Output, Tangle and Noweb, then the ones only that
 language takes (=:width= / =:height= / =:res= for R, =:includes= /
-=:flags= / =:libs= for C and C++, =:return= for Python, and so on), then
-the line switches.
+=:flags= / =:libs= for anything that compiles, =:return= for Python,
+=:engine= / =:database= for SQL, and so on), then the line switches.
 
 Each row is the kind of input the argument actually takes -- a dropdown
 of the words org accepts, a number, or free text -- so the popup will not
@@ -138,7 +195,18 @@ block has no header arguments at all, so it gets no gear.
 
 =:MepOrgBabelTangle= writes the code blocks out to real source files, which
 is the literate-programming direction: the org file is the source, and the
-code files are generated from it.
+code files are generated from it. Blocks sharing a =:tangle= target are
+concatenated into it in document order.
+
+| Argument           | Does                                              |
+|--------------------+---------------------------------------------------|
+| =:tangle FILE=     | the file this block is written to                 |
+| =:shebang LINE=    | the tangled file's first line                     |
+| =:tangle-mode o755= | the permissions it ends up with                  |
+| =:mkdirp yes=      | create the target's directory when it is missing  |
+| =:padline no=      | pack the blocks with no blank line between them   |
+| =:comments link=   | bracket each block with a link back to the org file |
+| =:no-expand yes=   | write the body as-is, with no =:var= prelude or noweb expansion |
 
 * See also
 

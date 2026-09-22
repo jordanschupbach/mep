@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (63)</h1>
+<h1>The bindings (65)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -25,10 +25,12 @@ that it does nothing.</p>
 <tr><td><code>mep.bundled_help_root</code></td><td>the installed rendered help directory</td></tr>
 <tr><td><code>mep.chdir</code></td><td>changes the process's current working directory (native builds only)</td></tr>
 <tr><td><code>mep.direnv_set_active</code></td><td>sets the status bar's direnv chip state</td></tr>
+<tr><td><code>mep.fs_chmod</code></td><td>sets a file's permission bits (native builds only)</td></tr>
 <tr><td><code>mep.fs_copy</code></td><td>recursively copies a file or directory (native builds only)</td></tr>
 <tr><td><code>mep.fs_create_file</code></td><td>creates an empty file if it doesn't already exist (native builds only)</td></tr>
 <tr><td><code>mep.fs_delete</code></td><td>recursively deletes a file or directory (native builds only), closing any open buffers under it</td></tr>
 <tr><td><code>mep.fs_mkdir</code></td><td>creates a directory (native builds only)</td></tr>
+<tr><td><code>mep.fs_mkdirp</code></td><td>creates a directory and every missing parent (native builds only)</td></tr>
 <tr><td><code>mep.fs_rename</code></td><td>renames/moves a file or directory (native builds only), retargeting any open buffers under `from`</td></tr>
 <tr><td><code>mep.fuzzy_score</code></td><td>score (-1 if no match), positions (1-indexed array)</td></tr>
 <tr><td><code>mep.getcwd</code></td><td>returns the process's current working directory (native builds only)</td></tr>

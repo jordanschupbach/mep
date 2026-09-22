@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (162)
+* The bindings (175)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -120,6 +120,8 @@ that it does nothing.
 | =mep.office_reload= | re-reads local file `path` (docx or odt) and |
 | =mep.org_agenda_expand_glob= | expands a glob pattern into matching agenda file paths |
 | =mep.org_agenda_scan_lines= | scans a set of lines for org agenda entries (headlines with TODO/scheduling info) |
+| =mep.org_apply_block_switches= | applies `-n`/`+n`/`-r`/`-k` to a block body |
+| =mep.org_apply_export_gates= | drops what each block's `:exports` leaves out |
 | =mep.org_babel_format_literal= | formats a raw babel result value as a literal-example string |
 | =mep.org_bib_parse_files= | parses BibTeX-style file contents into bibliography entries |
 | =mep.org_block_cards_toggle= | toggles org block-card rendering on/off |
@@ -135,7 +137,11 @@ that it does nothing.
 | =mep.org_drill_grade= | records a spaced-repetition drill grade against a headline |
 | =mep.org_expand_macro_line= | expands {{{macro(...)}}} references in a line using a table of macro definitions |
 | =mep.org_export_heading= | formats a heading string for the given export format |
+| =mep.org_exports= | reports what an export includes for a block |
+| =mep.org_find_results= | locates the results block under a src block |
 | =mep.org_footnote_jump= | jumps between an org footnote reference and its definition |
+| =mep.org_format_results= | shapes a run's output into results lines |
+| =mep.org_header_arg= | reads one header argument's whole value |
 | =mep.org_heading_scale_toggle= | toggles depth-scaled org headline text |
 | =mep.org_highlight_emphasis= | highlights org emphasis markup over the current buffer |
 | =mep.org_html_escape= | HTML-escapes a string for org HTML export |
@@ -149,6 +155,9 @@ that it does nothing.
 | =mep.org_link_scan= | rescans the current org buffer's links |
 | =mep.org_lsp_status_toggle= | toggles org src-block LSP status rendering on/off |
 | =mep.org_lsp_status_visible= | reports whether org src-block LSP status rendering is on |
+| =mep.org_merge_header_args= | merges header-arg layers in precedence order |
+| =mep.org_noweb_expand= | expands `<<name>>` references in a block body |
+| =mep.org_noweb_expands_in= | reports whether `:noweb` asks for expansion here |
 | =mep.org_parse_results= | parses a babel header args string's :results modes |
 | =mep.org_parse_vars= | parses a babel header args string's :var entries |
 | =mep.org_plain_cursor_line_toggle= | toggles plain rendering of the cursor's own row |
@@ -156,6 +165,7 @@ that it does nothing.
 | =mep.org_property_remove= | removes a property from a headline's property drawer |
 | =mep.org_property_set= | writes an org property drawer value on a headline |
 | =mep.org_refile_move= | moves the current subtree under a target headline |
+| =mep.org_results_handling= | reads the `:results` handling facet |
 | =mep.org_roam_ensure_id= | ensures the current org-roam note has an :ID:, generating one if missing |
 | =mep.org_roam_files_in= | lists org-roam note files under the given directories |
 | =mep.org_roam_find_backlink_lines= | finds lines linking to a given org-roam ID |
@@ -163,11 +173,14 @@ that it does nothing.
 | =mep.org_roam_slugify= | converts a note title into a filesystem-safe slug |
 | =mep.org_roam_title_of= | extracts an org-roam note's title from its file lines |
 | =mep.org_set_planning= | sets/updates a SCHEDULED or DEADLINE planning line on the current headline |
+| =mep.org_splice_results= | writes a results block into a document copy |
 | =mep.org_subtree_end_lines= | finds the last row of the subtree rooted at row, given a plain line array instead of a buffer |
 | =mep.org_table_align= | reformats the org table under the cursor to align its columns |
 | =mep.org_table_auto_align= | realigns the org table the cursor just moved out of |
 | =mep.org_table_wrap_scan= | rebuilds the wrapped display layout for over-wide org tables |
 | =mep.org_table_wrap_toggle= | toggles wrapped rendering of over-wide org tables |
+| =mep.org_tangle_comment= | renders the comment lines that bracket one tangled block |
+| =mep.org_tangle_options= | reads a block's tangle-side header arguments |
 | =mep.org_timestamp_at= | finds an org timestamp overlapping a given column in a line |
 | =mep.org_timestamp_insert= | inserts an org timestamp at the cursor |
 | =mep.org_timestamp_shift= | shifts the org timestamp under/near the cursor by a number of days |

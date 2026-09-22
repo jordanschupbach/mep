@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (162)</h1>
+<h1>The bindings (175)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -124,6 +124,8 @@ that it does nothing.</p>
 <tr><td><code>mep.office_reload</code></td><td>re-reads local file `path` (docx or odt) and</td></tr>
 <tr><td><code>mep.org_agenda_expand_glob</code></td><td>expands a glob pattern into matching agenda file paths</td></tr>
 <tr><td><code>mep.org_agenda_scan_lines</code></td><td>scans a set of lines for org agenda entries (headlines with TODO/scheduling info)</td></tr>
+<tr><td><code>mep.org_apply_block_switches</code></td><td>applies `-n`/`+n`/`-r`/`-k` to a block body</td></tr>
+<tr><td><code>mep.org_apply_export_gates</code></td><td>drops what each block's `:exports` leaves out</td></tr>
 <tr><td><code>mep.org_babel_format_literal</code></td><td>formats a raw babel result value as a literal-example string</td></tr>
 <tr><td><code>mep.org_bib_parse_files</code></td><td>parses BibTeX-style file contents into bibliography entries</td></tr>
 <tr><td><code>mep.org_block_cards_toggle</code></td><td>toggles org block-card rendering on/off</td></tr>
@@ -139,7 +141,11 @@ that it does nothing.</p>
 <tr><td><code>mep.org_drill_grade</code></td><td>records a spaced-repetition drill grade against a headline</td></tr>
 <tr><td><code>mep.org_expand_macro_line</code></td><td>expands {{{macro(...)}}} references in a line using a table of macro definitions</td></tr>
 <tr><td><code>mep.org_export_heading</code></td><td>formats a heading string for the given export format</td></tr>
+<tr><td><code>mep.org_exports</code></td><td>reports what an export includes for a block</td></tr>
+<tr><td><code>mep.org_find_results</code></td><td>locates the results block under a src block</td></tr>
 <tr><td><code>mep.org_footnote_jump</code></td><td>jumps between an org footnote reference and its definition</td></tr>
+<tr><td><code>mep.org_format_results</code></td><td>shapes a run's output into results lines</td></tr>
+<tr><td><code>mep.org_header_arg</code></td><td>reads one header argument's whole value</td></tr>
 <tr><td><code>mep.org_heading_scale_toggle</code></td><td>toggles depth-scaled org headline text</td></tr>
 <tr><td><code>mep.org_highlight_emphasis</code></td><td>highlights org emphasis markup over the current buffer</td></tr>
 <tr><td><code>mep.org_html_escape</code></td><td>HTML-escapes a string for org HTML export</td></tr>
@@ -153,6 +159,9 @@ that it does nothing.</p>
 <tr><td><code>mep.org_link_scan</code></td><td>rescans the current org buffer's links</td></tr>
 <tr><td><code>mep.org_lsp_status_toggle</code></td><td>toggles org src-block LSP status rendering on/off</td></tr>
 <tr><td><code>mep.org_lsp_status_visible</code></td><td>reports whether org src-block LSP status rendering is on</td></tr>
+<tr><td><code>mep.org_merge_header_args</code></td><td>merges header-arg layers in precedence order</td></tr>
+<tr><td><code>mep.org_noweb_expand</code></td><td>expands `&lt;&lt;name&gt;&gt;` references in a block body</td></tr>
+<tr><td><code>mep.org_noweb_expands_in</code></td><td>reports whether `:noweb` asks for expansion here</td></tr>
 <tr><td><code>mep.org_parse_results</code></td><td>parses a babel header args string's :results modes</td></tr>
 <tr><td><code>mep.org_parse_vars</code></td><td>parses a babel header args string's :var entries</td></tr>
 <tr><td><code>mep.org_plain_cursor_line_toggle</code></td><td>toggles plain rendering of the cursor's own row</td></tr>
@@ -160,6 +169,7 @@ that it does nothing.</p>
 <tr><td><code>mep.org_property_remove</code></td><td>removes a property from a headline's property drawer</td></tr>
 <tr><td><code>mep.org_property_set</code></td><td>writes an org property drawer value on a headline</td></tr>
 <tr><td><code>mep.org_refile_move</code></td><td>moves the current subtree under a target headline</td></tr>
+<tr><td><code>mep.org_results_handling</code></td><td>reads the `:results` handling facet</td></tr>
 <tr><td><code>mep.org_roam_ensure_id</code></td><td>ensures the current org-roam note has an :ID:, generating one if missing</td></tr>
 <tr><td><code>mep.org_roam_files_in</code></td><td>lists org-roam note files under the given directories</td></tr>
 <tr><td><code>mep.org_roam_find_backlink_lines</code></td><td>finds lines linking to a given org-roam ID</td></tr>
@@ -167,11 +177,14 @@ that it does nothing.</p>
 <tr><td><code>mep.org_roam_slugify</code></td><td>converts a note title into a filesystem-safe slug</td></tr>
 <tr><td><code>mep.org_roam_title_of</code></td><td>extracts an org-roam note's title from its file lines</td></tr>
 <tr><td><code>mep.org_set_planning</code></td><td>sets/updates a SCHEDULED or DEADLINE planning line on the current headline</td></tr>
+<tr><td><code>mep.org_splice_results</code></td><td>writes a results block into a document copy</td></tr>
 <tr><td><code>mep.org_subtree_end_lines</code></td><td>finds the last row of the subtree rooted at row, given a plain line array instead of a buffer</td></tr>
 <tr><td><code>mep.org_table_align</code></td><td>reformats the org table under the cursor to align its columns</td></tr>
 <tr><td><code>mep.org_table_auto_align</code></td><td>realigns the org table the cursor just moved out of</td></tr>
 <tr><td><code>mep.org_table_wrap_scan</code></td><td>rebuilds the wrapped display layout for over-wide org tables</td></tr>
 <tr><td><code>mep.org_table_wrap_toggle</code></td><td>toggles wrapped rendering of over-wide org tables</td></tr>
+<tr><td><code>mep.org_tangle_comment</code></td><td>renders the comment lines that bracket one tangled block</td></tr>
+<tr><td><code>mep.org_tangle_options</code></td><td>reads a block's tangle-side header arguments</td></tr>
 <tr><td><code>mep.org_timestamp_at</code></td><td>finds an org timestamp overlapping a given column in a line</td></tr>
 <tr><td><code>mep.org_timestamp_insert</code></td><td>inserts an org timestamp at the cursor</td></tr>
 <tr><td><code>mep.org_timestamp_shift</code></td><td>shifts the org timestamp under/near the cursor by a number of days</td></tr>

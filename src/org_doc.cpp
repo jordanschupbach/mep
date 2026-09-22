@@ -2240,11 +2240,42 @@ std::string LanguageFamily(const std::string &lang) {
     const std::string l = LowerAscii(lang);
     if (l == "r" || l == "rscript") return "r";
     if (l == "python" || l == "py" || l == "jupyter-python" || l == "ipython") return "python";
-    if (l == "c" || l == "cpp" || l == "c++" || l == "d") return "c";
-    if (l == "sh" || l == "bash" || l == "shell" || l == "zsh" || l == "fish" || l == "dash") return "shell";
+    if (l == "c" || l == "cpp" || l == "c++") return "c";
     if (l == "sql" || l == "sqlite") return "sql";
-    if (l == "latex") return "latex";
+    if (l == "latex" || l == "tex") return "latex";
     return "";
+}
+
+// Whether a block's run goes through a real compile step, which is what
+// decides if `:flags` and `:libs` reach anything -- they are passed to
+// the compiler, and a language mep runs in one step (`zig run`, `nim r`)
+// has none. Deliberately the same list the babel language table marks
+// `compiled = true` (kBuiltinOrgBabel, main.cpp); offering these two
+// arguments any wider would put back the inert rows this list exists to
+// remove.
+/**
+ * @brief Reports whether a language tag names one of babel's compiled languages.
+ * @param lang the language tag as written on the `#+begin_src` line
+ * @return true for the languages that compile before they run
+ */
+bool IsCompiledLanguage(const std::string &lang) {
+    const std::string l = LowerAscii(lang);
+    return l == "c" || l == "cpp" || l == "c++" || l == "d" || l == "rust" || l == "go" || l == "fortran" ||
+           l == "java";
+}
+
+// Whether a block's body can be wrapped in an entry point for it, which
+// is what `:main` turns on and off and what `:includes` feeds. Wider than
+// the compiled set: `php` and `zig` wrap without compiling.
+/**
+ * @brief Reports whether a language tag names one babel wraps in an entry point.
+ * @param lang the language tag as written on the `#+begin_src` line
+ * @return true for the languages with a `wrap_main` in the babel language table
+ */
+bool HasEntryPointWrapper(const std::string &lang) {
+    const std::string l = LowerAscii(lang);
+    return IsCompiledLanguage(lang) || l == "php" || l == "scala" || l == "zig" || l == "haskell" || l == "latex" ||
+           l == "tex";
 }
 
 }  // namespace
@@ -2300,9 +2331,11 @@ std::vector<OrgHeaderArgSpec> OrgHeaderArgSpecsFor(const std::string &block_kind
     AddChoice(&out, "", "cache", ":cache", {"", "yes", "no"},
                "Re-run only when the block's body or arguments have changed.");
     AddText(&out, "", "dir", "Working directory the block runs in.");
-    AddText(&out, "", "var", "A name=value binding passed in (the first :var on the line).");
-    AddText(&out, "", "prologue", "Code prepended to the body before it runs.");
-    AddText(&out, "", "epilogue", "Code appended to the body before it runs.");
+    AddText(&out, "", "var", "A name=value binding passed in; repeat :var for more than one.");
+    AddText(&out, "", "prologue", "Code prepended to the body before it runs (\\n separates lines).");
+    AddText(&out, "", "epilogue", "Code appended to the body before it runs (\\n separates lines).");
+    AddText(&out, "", "cmdline", "Arguments the block's own program is run with.");
+    AddText(&out, "", "stdin", "Name of a block whose results are fed in on stdin.");
     AddText(&out, "Output", "file", "Write the results to this file and link to it.");
     AddText(&out, "", "file-ext", "Extension used when :file is derived from the block's name.");
     AddText(&out, "", "file-desc", "Description text for the link to :file.");
@@ -2328,6 +2361,20 @@ std::vector<OrgHeaderArgSpec> OrgHeaderArgSpecsFor(const std::string &block_kind
                "When <<reference>> syntax in the body is expanded.");
     AddText(&out, "", "noweb-ref", "Name this block answers to when another one references it.");
     AddText(&out, "", "noweb-sep", "Separator inserted between concatenated noweb blocks.");
+    // What a language's own build step takes, rather than what its syntax
+    // family does -- the two cut differently, and the popup must only
+    // offer a row the execution path will actually read.
+    if (HasEntryPointWrapper(lang)) {
+        AddChoice(&out, "Compilation", "main", ":main", {"", "yes", "no"},
+                   "Wrap the body in an entry point; no when it supplies its own.");
+        AddText(&out, "", "includes",
+                 "Imports the wrapper prepends, in the language's own spelling (<stdio.h>, std::io).");
+    }
+    if (IsCompiledLanguage(lang)) {
+        AddText(&out, HasEntryPointWrapper(lang) ? "" : "Compilation", "flags",
+                 "Extra flags passed to the compiler.");
+        AddText(&out, "", "libs", "Linker flags, passed after the source (e.g. -lm).");
+    }
     const std::string family = LanguageFamily(lang);
     if (family == "r") {
         AddNumber(&out, "Language: R", "width", 1.0, 100.0, 1.0, 7.0, "Graphics device width, in :units.");
@@ -2338,39 +2385,933 @@ std::vector<OrgHeaderArgSpec> OrgHeaderArgSpecsFor(const std::string &block_kind
         AddText(&out, "", "bg", "Background of the graphics device (white, transparent, ...).");
     } else if (family == "python") {
         AddText(&out, "Language: Python", "return", "Expression whose value is returned under :results value.");
-        AddText(&out, "", "preamble", "Code run before the block's body.");
-        AddText(&out, "", "python", "Interpreter this block runs under.");
-        AddChoice(&out, "", "async", ":async", {"", "yes", "no"}, "Run the block without blocking the editor.");
+        AddText(&out, "", "preamble", "Code run before the body (\\n separates lines).");
+        AddText(&out, "", "python", "Interpreter this block runs under (a virtualenv's, typically).");
     } else if (family == "c") {
-        AddText(&out, "Language: C/C++", "includes", "#include lines prepended to the body (<stdio.h> <math.h>).");
-        AddText(&out, "", "defines", "#define lines prepended to the body.");
-        AddText(&out, "", "flags", "Extra flags passed to the compiler.");
-        AddText(&out, "", "libs", "Linker flags (e.g. -lm).");
-        AddChoice(&out, "", "main", ":main", {"", "yes", "no"}, "no when the body supplies its own main().");
-        AddText(&out, "", "namespaces", "C++ using-namespace lines prepended to the body.");
-        AddText(&out, "", "cmdline", "Arguments passed to the compiled program.");
-    } else if (family == "shell") {
-        AddText(&out, "Language: Shell", "cmdline", "Arguments passed to the script.");
-        AddText(&out, "", "stdin", "Name of a block whose results are fed in on stdin.");
+        AddText(&out, "Language: C/C++", "defines", "Macros defined before the body (N=10 DEBUG).");
+        AddText(&out, "", "namespaces", "C++ using-directives prepended to the body (std).");
     } else if (family == "sql") {
         AddChoice(&out, "Language: SQL", "engine", ":engine",
                    {"", "postgresql", "mysql", "sqlite", "dbi", "oracle", "vertica", "msosql"},
                    "Database backend this block is sent to.");
-        AddText(&out, "", "database", "Database to connect to.");
+        AddText(&out, "", "database", "Database to connect to (a file path, for sqlite).");
         AddText(&out, "", "dbhost", "Host the database is on.");
         AddNumber(&out, "", "dbport", 1.0, 65535.0, 1.0, 5432.0, "Port the database listens on.");
         AddText(&out, "", "dbuser", "User to connect as.");
-        AddText(&out, "", "dbpassword", "Password to connect with (stored in the file as written).");
-        AddText(&out, "", "cmdline", "Extra arguments for the database client.");
+        AddText(&out, "", "dbpassword", "Password to connect with; visible in the process table while it runs.");
     } else if (family == "latex") {
-        AddChoice(&out, "Language: LaTeX", "imagemagick", ":imagemagick", {"", "yes", "no"},
-                   "Convert the rendered PDF with ImageMagick.");
-        AddText(&out, "", "iminoptions", "ImageMagick options applied before conversion.");
-        AddText(&out, "", "imoutoptions", "ImageMagick options applied after conversion.");
-        AddText(&out, "", "headers", "Extra LaTeX header lines for this block.");
-        AddChoice(&out, "", "fit", ":fit", {"", "yes", "no"}, "Crop the output to the drawing's own bounds.");
+        AddText(&out, "Language: LaTeX", "headers", "Extra preamble lines for this block (\\n separates them).");
+        AddChoice(&out, "", "fit", ":fit", {"", "yes", "no"},
+                   "Crop the output to the drawing's own bounds; no renders a full page.");
         AddText(&out, "", "border", "Border left around a fitted drawing (e.g. 1cm).");
+        AddNumber(&out, "", "res", 36.0, 1200.0, 12.0, 300.0, "Rasterization resolution, in dpi.");
     }
     AddDisplaySwitches(&out);
+    return out;
+}
+
+// --- Babel header arguments ----------------------------------------------
+
+namespace {
+
+// One `:key value` pair found while scanning a header-args string.
+struct ScannedArg {
+    std::string key;    // lowercased, no colon
+    std::string value;  // trimmed, one layer of matching quotes removed
+};
+
+/**
+ * @brief Strips one layer of matching surrounding quotes from a value.
+ * @param v the value text
+ * @return `v` without its outermost matching `"`/`'` pair, unchanged when it has none
+ */
+std::string Unquote(const std::string &v) {
+    if (v.size() >= 2 && ((v.front() == '"' && v.back() == '"') || (v.front() == '\'' && v.back() == '\''))) {
+        return v.substr(1, v.size() - 2);
+    }
+    return v;
+}
+
+/**
+ * @brief Drops leading and trailing ASCII whitespace.
+ * @param s the string to trim
+ * @return `s` without its surrounding whitespace
+ */
+std::string Trim(const std::string &s) {
+    size_t a = 0;
+    while (a < s.size() && std::isspace(static_cast<unsigned char>(s[a]))) a++;
+    size_t b = s.size();
+    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) b--;
+    return s.substr(a, b - a);
+}
+
+// The same value grammar ParseOrgHeaderArgs (editor.cpp) and
+// FindHeaderArg (above) use, run over a bare arguments string rather than
+// a whole line: a `:key` starts at the string's start or after
+// whitespace, and its value runs to the next such colon outside quotes.
+/**
+ * @brief Scans every `:key value` pair out of a header-args string.
+ * @param args the arguments text
+ * @return the pairs in written order
+ */
+std::vector<ScannedArg> ScanHeaderArgs(const std::string &args) {
+    std::vector<ScannedArg> out;
+    size_t i = 0;
+    while (i < args.size()) {
+        // Find the next token-boundary colon.
+        while (i < args.size() &&
+               !(args[i] == ':' && (i == 0 || std::isspace(static_cast<unsigned char>(args[i - 1]))))) {
+            i++;
+        }
+        if (i >= args.size()) break;
+        const size_t key_start = ++i;
+        while (i < args.size() && (std::isalnum(static_cast<unsigned char>(args[i])) || args[i] == '_' || args[i] == '-')) {
+            i++;
+        }
+        if (i == key_start) continue;  // a stray ":" -- not a key
+        ScannedArg arg;
+        arg.key = LowerAscii(args.substr(key_start, i - key_start));
+        size_t j = i;
+        char quote = 0;
+        while (j < args.size()) {
+            const char c = args[j];
+            if (quote != 0) {
+                if (c == quote) quote = 0;
+            } else if (c == '"' || c == '\'') {
+                quote = c;
+            } else if (c == ':' && j > 0 && std::isspace(static_cast<unsigned char>(args[j - 1]))) {
+                break;
+            }
+            j++;
+        }
+        arg.value = Unquote(Trim(args.substr(i, j - i)));
+        out.push_back(std::move(arg));
+        i = j;
+    }
+    return out;
+}
+
+}  // namespace
+
+std::string OrgHeaderArgValue(const std::string &args, const std::string &key) {
+    const std::string want = LowerAscii(key);
+    std::string value;
+    // Later wins, matching org's own override order within one args string.
+    for (const ScannedArg &arg : ScanHeaderArgs(args)) {
+        if (arg.key == want) value = arg.value;
+    }
+    return value;
+}
+
+bool OrgHeaderArgPresent(const std::string &args, const std::string &key) {
+    const std::string want = LowerAscii(key);
+    for (const ScannedArg &arg : ScanHeaderArgs(args)) {
+        if (arg.key == want) return true;
+    }
+    return false;
+}
+
+std::vector<std::pair<std::string, std::string>> OrgHeaderArgPairs(const std::string &args) {
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const ScannedArg &arg : ScanHeaderArgs(args)) out.emplace_back(arg.key, arg.value);
+    return out;
+}
+
+std::string OrgMergeHeaderArgs(const std::vector<std::string> &layers) {
+    // Keys in first-seen order with the last-written value, except
+    // `:var`, which org accumulates: a file-wide `:var base=1` and a
+    // block's own `:var x=2` bind two variables, not one. Two `:var`
+    // bindings of the *same name* still override, which is why they are
+    // keyed by name rather than simply appended.
+    std::vector<std::string> order;
+    std::map<std::string, std::string> values;
+    std::vector<std::string> var_order;
+    std::map<std::string, std::string> vars;
+    for (const std::string &layer : layers) {
+        for (const ScannedArg &arg : ScanHeaderArgs(layer)) {
+            if (arg.key == "var") {
+                std::string name = arg.value.substr(0, arg.value.find('='));
+                name = Trim(name);
+                if (vars.find(name) == vars.end()) var_order.push_back(name);
+                vars[name] = arg.value;
+                continue;
+            }
+            if (values.find(arg.key) == values.end()) order.push_back(arg.key);
+            values[arg.key] = arg.value;
+        }
+    }
+    std::string out;
+    for (const std::string &name : var_order) {
+        if (!out.empty()) out += " ";
+        out += ":var " + OrgQuoteHeaderArgValue(vars[name]);
+    }
+    for (const std::string &key : order) {
+        if (!out.empty()) out += " ";
+        out += ":" + key;
+        if (!values[key].empty()) out += " " + OrgQuoteHeaderArgValue(values[key]);
+    }
+    return out;
+}
+
+// --- Results blocks -------------------------------------------------------
+
+OrgResultsOptions OrgResultsOptionsFrom(const std::string &args, const std::string &lang) {
+    OrgResultsOptions opts;
+    const std::string results = OrgHeaderArgValue(args, "results");
+    opts.collection = OrgResultsFacetValue(results, "collection");
+    opts.type = OrgResultsFacetValue(results, "type");
+    opts.format = OrgResultsFacetValue(results, "format");
+    opts.handling = OrgResultsFacetValue(results, "handling");
+    opts.wrap = OrgHeaderArgValue(args, "wrap");
+    opts.lang = lang;
+    opts.sep = OrgHeaderArgValue(args, "sep");
+    // Org reads `:colnames` as a question about the *input* table too, but
+    // the only thing it can say about an output one is whether to rule off
+    // a header row -- and `no` is the one value that says not to.
+    opts.colnames = LowerAscii(OrgHeaderArgValue(args, "colnames")) != "no";
+    return opts;
+}
+
+namespace {
+
+// `:sep` values org accepts as an escape rather than a literal.
+/**
+ * @brief Resolves a `:sep` value's backslash escapes.
+ * @param sep the separator as written
+ * @return the literal separator characters
+ */
+std::string ResolveSep(const std::string &sep) {
+    std::string out;
+    for (size_t i = 0; i < sep.size(); i++) {
+        if (sep[i] == '\\' && i + 1 < sep.size()) {
+            const char c = sep[i + 1];
+            if (c == 't') {
+                out += '\t';
+                i++;
+                continue;
+            }
+            if (c == 'n') {
+                out += '\n';
+                i++;
+                continue;
+            }
+            if (c == '\\') {
+                out += '\\';
+                i++;
+                continue;
+            }
+        }
+        out += sep[i];
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<std::string> OrgFormatResultsTable(const std::vector<std::string> &lines, const std::string &sep,
+                                               bool colnames) {
+    if (lines.empty()) return lines;
+    std::string delim = ResolveSep(sep);
+    if (delim.empty()) {
+        // Auto-detect, tab before comma: a tab-separated row containing a
+        // comma is far commoner than the reverse.
+        for (const std::string &l : lines) {
+            if (l.find('\t') != std::string::npos) {
+                delim = "\t";
+                break;
+            }
+        }
+        if (delim.empty()) {
+            for (const std::string &l : lines) {
+                if (l.find(',') != std::string::npos) {
+                    delim = ",";
+                    break;
+                }
+            }
+        }
+    }
+    if (delim.empty()) return lines;
+    std::vector<std::vector<std::string>> rows;
+    for (const std::string &l : lines) {
+        std::vector<std::string> cells;
+        size_t pos = 0;
+        while (true) {
+            const size_t p = l.find(delim, pos);
+            if (p == std::string::npos) {
+                cells.push_back(l.substr(pos));
+                break;
+            }
+            cells.push_back(l.substr(pos, p - pos));
+            pos = p + delim.size();
+        }
+        rows.push_back(std::move(cells));
+    }
+    /**
+     * @brief Renders one row of cells as an org table line.
+     * @param cells the row's cells
+     * @return the `| a | b |` line
+     */
+    auto row_line = [](const std::vector<std::string> &cells) {
+        std::string out = "|";
+        for (const std::string &c : cells) out += " " + c + " |";
+        return out;
+    };
+    std::vector<std::string> out;
+    out.push_back(row_line(rows[0]));
+    if (rows.size() > 1 && colnames) {
+        std::string rule = "|";
+        for (size_t i = 0; i < rows[0].size(); i++) rule += i + 1 < rows[0].size() ? "---+" : "---|";
+        out.push_back(rule);
+    }
+    for (size_t i = 1; i < rows.size(); i++) out.push_back(row_line(rows[i]));
+    return out;
+}
+
+bool OrgResultsBodyIsRaw(const OrgResultsOptions &opts) {
+    if (opts.file_link) return true;
+    if (!opts.wrap.empty()) return true;
+    const std::string f = LowerAscii(opts.format);
+    if (f == "raw" || f == "org" || f == "link" || f == "graphics") return true;
+    if (f == "html" || f == "latex" || f == "code" || f == "drawer") return true;
+    const std::string t = LowerAscii(opts.type);
+    if (t == "table" || t == "list" || t == "file") return true;
+    return false;
+}
+
+std::vector<std::string> OrgFormatResultsBody(const std::vector<std::string> &out_lines,
+                                              const OrgResultsOptions &opts) {
+    // A `:file` result is already the one org link line it is supposed to
+    // be -- no fencing, no prefixing, whatever else the header asked for.
+    if (opts.file_link) return out_lines;
+
+    const std::string type = LowerAscii(opts.type);
+    const std::string format = LowerAscii(opts.format);
+
+    // Step one: the *shape* of the payload, which `:results type` decides.
+    std::vector<std::string> body = out_lines;
+    if (type == "table") {
+        body = OrgFormatResultsTable(out_lines, opts.sep, opts.colnames);
+    } else if (type == "list") {
+        body.clear();
+        for (const std::string &l : out_lines) body.push_back("- " + l);
+        if (body.empty()) body.emplace_back("-");
+    } else if (type == "scalar" || type == "verbatim") {
+        // Explicitly *not* interpreted: one `: `-prefixed example line per
+        // output line, even when the output looks like a table or is a
+        // single line that would otherwise be fenced.
+        std::vector<std::string> quoted;
+        quoted.reserve(out_lines.size());
+        for (const std::string &l : out_lines) quoted.push_back(": " + l);
+        if (quoted.empty()) quoted.emplace_back(": ");
+        return quoted;
+    }
+
+    // Step two: the *wrapper*, which `:wrap` decides, then `:results
+    // format`. `:wrap` wins because it is the explicit form of the same
+    // request ("put it in this block").
+    std::string open, close;
+    if (!opts.wrap.empty()) {
+        // `:wrap src html` opens `#+begin_src html` but closes on the
+        // block word alone -- the arguments belong to the opening line.
+        const std::vector<std::string> wrap_words = SplitWords(opts.wrap);
+        open = "#+begin_" + opts.wrap;
+        close = "#+end_" + (wrap_words.empty() ? std::string() : wrap_words[0]);
+    } else if (format == "drawer") {
+        open = ":results:";
+        close = ":end:";
+    } else if (format == "html") {
+        open = "#+begin_export html";
+        close = "#+end_export";
+    } else if (format == "latex") {
+        open = "#+begin_export latex";
+        close = "#+end_export";
+    } else if (format == "code") {
+        open = opts.lang.empty() ? "#+begin_src" : "#+begin_src " + opts.lang;
+        close = "#+end_src";
+    }
+    if (!open.empty()) {
+        std::vector<std::string> wrapped;
+        wrapped.push_back(open);
+        for (const std::string &l : body) wrapped.push_back(l);
+        wrapped.push_back(close);
+        return wrapped;
+    }
+
+    // `raw`/`org`/`link`/`graphics` and the interpreted types are inserted
+    // exactly as they stand -- they are already org markup.
+    if (format == "raw" || format == "org" || format == "link" || format == "graphics" || type == "table" ||
+        type == "list" || type == "file") {
+        return body;
+    }
+
+    // Everything left is uninterpreted output: one line becomes a `: `
+    // example line, several become an example block.
+    if (body.size() <= 1) return {": " + (body.empty() ? std::string() : body[0])};
+    std::vector<std::string> fenced;
+    fenced.emplace_back("#+begin_example");
+    for (const std::string &l : body) fenced.push_back(l);
+    fenced.emplace_back("#+end_example");
+    return fenced;
+}
+
+// --- Noweb references -----------------------------------------------------
+
+bool OrgNowebExpandsIn(const std::string &noweb, const std::string &context) {
+    const std::string v = LowerAscii(noweb);
+    // Org's default is `no`: references are left alone unless asked for.
+    if (v.empty() || v == "no") return false;
+    if (v == "yes") return true;
+    if (v == "tangle") return context == "tangle";
+    if (v == "eval") return context == "eval";
+    // `no-export`/`strip-export` both expand everywhere *but* export; the
+    // difference between them (strip replaces with nothing rather than
+    // leaving the reference) only shows on the export side, which never
+    // expands either way.
+    if (v == "no-export" || v == "strip-export") return context != "export";
+    return false;
+}
+
+namespace {
+
+// `<<name>>`, optionally with arguments org ignores here (`<<name(a=1)>>`).
+/**
+ * @brief Finds the first noweb reference in a line.
+ * @param line the line to scan
+ * @param begin receives the reference's first index
+ * @param end receives one past its last index
+ * @param name receives the reference name
+ * @return true when the line carries a reference
+ */
+bool FindNowebRef(const std::string &line, size_t *begin, size_t *end, std::string *name) {
+    size_t i = line.find("<<");
+    while (i != std::string::npos) {
+        const size_t close = line.find(">>", i + 2);
+        if (close == std::string::npos) return false;
+        std::string inner = line.substr(i + 2, close - i - 2);
+        // Arguments are accepted syntactically (so the reference still
+        // resolves) but not substituted: mep has no per-reference
+        // argument binding, and silently dropping the reference would be
+        // worse than expanding its body unbound.
+        const size_t paren = inner.find('(');
+        if (paren != std::string::npos) inner = inner.substr(0, paren);
+        inner = Trim(inner);
+        if (!inner.empty() && inner.find('<') == std::string::npos) {
+            *begin = i;
+            *end = close + 2;
+            *name = inner;
+            return true;
+        }
+        i = line.find("<<", i + 2);
+    }
+    return false;
+}
+
+/**
+ * @brief Splits a newline-joined body into lines.
+ * @param s the body text
+ * @return its lines, with no trailing empty entry for a terminating newline
+ */
+std::vector<std::string> SplitLinesKeepEmpty(const std::string &s) {
+    std::vector<std::string> out;
+    size_t pos = 0;
+    while (true) {
+        const size_t nl = s.find('\n', pos);
+        if (nl == std::string::npos) {
+            out.push_back(s.substr(pos));
+            break;
+        }
+        out.push_back(s.substr(pos, nl - pos));
+        pos = nl + 1;
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<std::string> OrgNowebExpand(const std::vector<std::string> &body,
+                                        const std::map<std::string, std::string> &blocks, const std::string &sep,
+                                        int depth_limit) {
+    (void)sep;
+    if (depth_limit <= 0) return body;
+    std::vector<std::string> out;
+    bool expanded_any = false;
+    for (const std::string &line : body) {
+        size_t begin = 0, end = 0;
+        std::string name;
+        if (!FindNowebRef(line, &begin, &end, &name)) {
+            out.push_back(line);
+            continue;
+        }
+        const auto it = blocks.find(name);
+        if (it == blocks.end()) {
+            // Unresolved: left exactly as written, so the failure is
+            // visible in the code that runs rather than silently blank.
+            out.push_back(line);
+            continue;
+        }
+        expanded_any = true;
+        const std::vector<std::string> ref_lines = SplitLinesKeepEmpty(it->second);
+        const std::string prefix = line.substr(0, begin);
+        const std::string suffix = line.substr(end);
+        const bool own_line = Trim(prefix).empty() && Trim(suffix).empty();
+        if (own_line) {
+            // Org indents every expanded line by the reference's own
+            // indentation -- which is the whole point in a
+            // whitespace-significant language.
+            for (const std::string &rl : ref_lines) out.push_back(rl.empty() ? rl : prefix + rl);
+        } else {
+            // Inline: the first line joins the surrounding text, the rest
+            // follow on their own lines.
+            for (size_t i = 0; i < ref_lines.size(); i++) {
+                if (i == 0) {
+                    out.push_back(prefix + ref_lines[i] + (ref_lines.size() == 1 ? suffix : std::string()));
+                } else if (i + 1 == ref_lines.size()) {
+                    out.push_back(ref_lines[i] + suffix);
+                } else {
+                    out.push_back(ref_lines[i]);
+                }
+            }
+        }
+    }
+    // A reference whose body carries references of its own resolves on the
+    // next pass; the depth limit is what stops a cycle.
+    if (!expanded_any) return out;
+    return OrgNowebExpand(out, blocks, sep, depth_limit - 1);
+}
+
+// --- Block switches -------------------------------------------------------
+
+OrgBlockSwitches OrgParseBlockSwitches(const std::string &line) {
+    OrgBlockSwitches sw;
+    size_t begin = 0, end = 0;
+    if (!BlockSwitchRegion(line, &begin, &end)) return sw;
+    const std::vector<std::string> words = SplitWords(line.substr(begin, end - begin));
+    for (size_t i = 0; i < words.size(); i++) {
+        const std::string &w = words[i];
+        if (w == "-n" || w == "+n") {
+            sw.number = true;
+            sw.continue_numbers = w == "+n";
+            // `-n 12` / `+n 5`: an explicit starting number (for `+n`, an
+            // offset org adds to the running count; treated as a start
+            // here, which is the same thing for the common case of one
+            // continued chain).
+            if (i + 1 < words.size()) {
+                const std::string &next = words[i + 1];
+                bool numeric = !next.empty();
+                for (char c : next) {
+                    if (!std::isdigit(static_cast<unsigned char>(c))) numeric = false;
+                }
+                if (numeric) {
+                    sw.start = std::atoi(next.c_str());
+                    i++;
+                }
+            }
+        } else if (w == "-r") {
+            sw.strip_refs = true;
+        } else if (w == "-k") {
+            sw.strip_refs = false;
+        }
+    }
+    return sw;
+}
+
+namespace {
+
+// `(ref:name)` at the end of a line, with the whitespace that separates it
+// from the code.
+/**
+ * @brief Removes a trailing `(ref:name)` label from a line.
+ * @param line the line to strip
+ * @return the line without its label and the whitespace before it
+ */
+std::string StripRefLabel(const std::string &line) {
+    const std::string needle = "(ref:";
+    const size_t open = line.rfind(needle);
+    if (open == std::string::npos) return line;
+    const size_t close = line.find(')', open);
+    if (close == std::string::npos) return line;
+    if (!Trim(line.substr(close + 1)).empty()) return line;
+    size_t cut = open;
+    while (cut > 0 && std::isspace(static_cast<unsigned char>(line[cut - 1]))) cut--;
+    return line.substr(0, cut);
+}
+
+}  // namespace
+
+std::vector<std::string> OrgApplyBlockSwitches(const std::vector<std::string> &body, const OrgBlockSwitches &sw,
+                                               int *counter) {
+    std::vector<std::string> out;
+    out.reserve(body.size());
+    int n = sw.number && sw.continue_numbers && counter != nullptr ? *counter : sw.start;
+    // Right-aligned to the widest number this block will print, so the
+    // code stays in one column.
+    int last = n + static_cast<int>(body.size()) - 1;
+    int width = 1;
+    for (int v = last; v >= 10; v /= 10) width++;
+    for (const std::string &line : body) {
+        std::string text = sw.strip_refs ? StripRefLabel(line) : line;
+        if (sw.number) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%*d:  ", width, n);
+            text = std::string(buf) + text;
+            n++;
+        }
+        out.push_back(text);
+    }
+    if (counter != nullptr && sw.number) *counter = n;
+    return out;
+}
+
+// --- Tangling -------------------------------------------------------------
+
+OrgTangleOptions OrgTangleOptionsFrom(const std::string &args) {
+    OrgTangleOptions opts;
+    opts.shebang = OrgHeaderArgValue(args, "shebang");
+    opts.mode = OrgHeaderArgValue(args, "tangle-mode");
+    opts.mkdirp = LowerAscii(OrgHeaderArgValue(args, "mkdirp")) == "yes";
+    opts.padline = LowerAscii(OrgHeaderArgValue(args, "padline")) != "no";
+    opts.comments = LowerAscii(OrgHeaderArgValue(args, "comments"));
+    if (opts.comments == "no") opts.comments.clear();
+    return opts;
+}
+
+int OrgParseTangleMode(const std::string &mode) {
+    std::string digits = mode;
+    // Org writes these as elisp octal literals (`#o755`); `o755` and a
+    // bare `755` are both common in the wild.
+    if (digits.compare(0, 2, "#o") == 0) {
+        digits = digits.substr(2);
+    } else if (!digits.empty() && (digits[0] == 'o' || digits[0] == 'O')) {
+        digits = digits.substr(1);
+    }
+    if (digits.empty() || digits.size() > 4) return -1;
+    int value = 0;
+    for (char c : digits) {
+        if (c < '0' || c > '7') return -1;
+        value = value * 8 + (c - '0');
+    }
+    return value;
+}
+
+std::vector<std::string> OrgTangleComment(const std::string &comments, const std::string &comment_prefix,
+                                          const std::string &org_file, const std::string &name, int start_row,
+                                          bool opening) {
+    std::vector<std::string> out;
+    const std::string c = LowerAscii(comments);
+    if (c.empty() || c == "no") return out;
+    // `link` (and the `both`/`noweb` values that include it) is the one
+    // org guarantees round-trips: the comment names the file and the
+    // block, which is what `org-babel-detangle` reads back.
+    if (c == "link" || c == "both" || c == "noweb" || c == "yes" || c == "org") {
+        std::string ref = org_file;
+        if (!name.empty()) {
+            ref += "::" + name;
+        } else if (start_row > 0) {
+            ref += "::" + std::to_string(start_row);
+        }
+        out.push_back(comment_prefix + "[[file:" + ref + "][" + (name.empty() ? org_file : name) + "]]" +
+                      (opening ? "" : " ends here"));
+    }
+    return out;
+}
+
+// --- `:exports` -----------------------------------------------------------
+
+bool OrgExportsCode(const std::string &exports) {
+    const std::string v = LowerAscii(exports);
+    // Org's default for a src block is `code`.
+    if (v.empty()) return true;
+    return v == "code" || v == "both";
+}
+
+bool OrgExportsResults(const std::string &exports) {
+    const std::string v = LowerAscii(exports);
+    return v == "results" || v == "both";
+}
+
+// --- The results block already under a block ------------------------------
+
+namespace {
+
+// The lines a results block can be made of, as OrgFormatResultsBody
+// emits them: a `: ` example line, a table row, a file link, or one of
+// the fenced forms (`#+begin_example`, `#+begin_export`, `#+begin_src`,
+// whatever `:wrap` named, or a `:results:` drawer). Getting this wrong
+// leaves a stale results block behind and writes a second one under it,
+// which is exactly what `:wrap`/`:results drawer` used to do.
+/**
+ * @brief Classifies the line that opens a results body as a fence, and names its closer.
+ * @param line the first line under the `#+RESULTS:` keyword
+ * @param closer receives the line prefix that ends the fence, lowercased
+ * @return true when the line opens a fenced results body
+ */
+bool ResultsFenceOpener(const std::string &line, std::string *closer) {
+    const std::string l = LowerAscii(LStrip(line));
+    if (l == ":results:") {
+        *closer = ":end:";
+        return true;
+    }
+    if (l.compare(0, 8, "#+begin_") == 0) {
+        size_t end = 8;
+        while (end < l.size() && (std::isalnum(static_cast<unsigned char>(l[end])) || l[end] == '-')) end++;
+        *closer = "#+end_" + l.substr(8, end - 8);
+        return true;
+    }
+    return false;
+}
+
+/**
+ * @brief Reports whether a line continues an unfenced results body.
+ * @param line the line to test
+ * @return true for a `: ` example line, a table row, or a file link
+ */
+bool ResultsPlainLine(const std::string &line) {
+    const std::string l = LStrip(line);
+    if (l.empty()) return false;
+    if (l[0] == ':' || l[0] == '|') return true;
+    return l.compare(0, 7, "[[file:") == 0;
+}
+
+}  // namespace
+
+bool OrgFindResultsBlock(const std::vector<std::string> &lines, int after_row, int *start, int *end) {
+    const int n = static_cast<int>(lines.size());
+    const int head = after_row + 1;
+    if (head < 1 || head > n) return false;
+    const std::string keyword = LowerAscii(LStrip(lines[static_cast<size_t>(head - 1)]));
+    // `#+RESULTS:` optionally carries the block's name, which org writes
+    // and which the old `%s*$`-anchored matcher refused to recognize.
+    if (keyword.compare(0, 10, "#+results:") != 0) return false;
+    *start = head;
+    *end = head;
+    if (head + 1 > n) return true;
+    const std::string &first = lines[static_cast<size_t>(head)];
+    std::string closer;
+    if (ResultsFenceOpener(first, &closer)) {
+        for (int i = head + 1; i <= n; i++) {
+            const std::string l = LowerAscii(LStrip(lines[static_cast<size_t>(i - 1)]));
+            if (l.compare(0, closer.size(), closer) == 0) {
+                *end = i;
+                return true;
+            }
+        }
+        // Unterminated: only the keyword is safely ours to replace.
+        return true;
+    }
+    int i = head + 1;
+    while (i <= n && ResultsPlainLine(lines[static_cast<size_t>(i - 1)])) i++;
+    *end = i - 1;
+    return true;
+}
+
+std::vector<std::string> OrgSpliceResultsBlock(const std::vector<std::string> &lines, int after_row,
+                                               const std::vector<std::string> &block, const std::string &handling) {
+    const std::string how = LowerAscii(handling);
+    if (how == "none" || how == "silent") return lines;
+    int start = 0, end = 0;
+    const bool existing = OrgFindResultsBlock(lines, after_row, &start, &end);
+    std::vector<std::string> out;
+    out.reserve(lines.size() + block.size());
+    const int n = static_cast<int>(lines.size());
+    if (!existing || how == "replace" || how.empty()) {
+        const int cut_from = existing ? start : after_row + 1;
+        const int cut_to = existing ? end : after_row;  // inclusive; `after_row` means "nothing to cut"
+        for (int i = 1; i < cut_from; i++) out.push_back(lines[static_cast<size_t>(i - 1)]);
+        for (const std::string &l : block) out.push_back(l);
+        for (int i = cut_to + 1; i <= n; i++) out.push_back(lines[static_cast<size_t>(i - 1)]);
+        return out;
+    }
+    // `append`/`prepend` keep the block that is there and add the new
+    // body to one end of it -- the keyword line is not repeated.
+    std::vector<std::string> body(block.begin() + (block.empty() ? 0 : 1), block.end());
+    for (int i = 1; i <= n; i++) {
+        const std::string &l = lines[static_cast<size_t>(i - 1)];
+        if (i == start) {
+            out.push_back(l);
+            if (how == "prepend") {
+                for (const std::string &b : body) out.push_back(b);
+            }
+            continue;
+        }
+        out.push_back(l);
+        if (i == end && how == "append") {
+            for (const std::string &b : body) out.push_back(b);
+        }
+    }
+    // A keyword with nothing under it has start == end, so an append
+    // would have run inside the `i == start` branch's `continue`.
+    if (how == "append" && start == end) {
+        out.insert(out.begin() + start, body.begin(), body.end());
+    }
+    return out;
+}
+
+// --- `:exports`: what an export leaves out --------------------------------
+
+namespace {
+
+// A `#+begin_...`/`#+end_...` marker, case- and indent-insensitively.
+/**
+ * @brief Matches a `#+begin_src`/`#+end_src` line.
+ * @param line the line to test
+ * @param begin true to match the opener, false the closer
+ * @param rest receives what follows the `src` word, for the opener
+ * @return true when the line is that marker
+ */
+bool IsSrcMarker(const std::string &line, bool begin, std::string *rest) {
+    const std::string l = LowerAscii(LStrip(line));
+    const std::string want = begin ? "#+begin_src" : "#+end_src";
+    if (l.compare(0, want.size(), want) != 0) return false;
+    // `#+begin_srcfoo` is not a src block.
+    if (l.size() > want.size() && (std::isalnum(static_cast<unsigned char>(l[want.size()])) || l[want.size()] == '_')) {
+        return false;
+    }
+    if (rest != nullptr) *rest = Trim(LStrip(line).substr(want.size()));
+    return true;
+}
+
+/**
+ * @brief Splits a `#+begin_src` line's trailer into its language tag and its arguments.
+ * @param rest the text after the `src` word
+ * @param lang receives the lowercased language tag, "" when the block has none
+ * @param args receives the arguments text
+ */
+void SplitSrcTrailer(const std::string &rest, std::string *lang, std::string *args) {
+    size_t i = 0;
+    while (i < rest.size() && std::isspace(static_cast<unsigned char>(rest[i]))) i++;
+    if (i >= rest.size() || rest[i] == ':') {
+        lang->clear();
+        *args = rest.substr(i);
+        return;
+    }
+    const size_t start = i;
+    while (i < rest.size() && !std::isspace(static_cast<unsigned char>(rest[i]))) i++;
+    *lang = LowerAscii(rest.substr(start, i - start));
+    while (i < rest.size() && std::isspace(static_cast<unsigned char>(rest[i]))) i++;
+    *args = rest.substr(i);
+}
+
+/**
+ * @brief Reads a `#+HEADER:`/`#+HEADERS:` line's arguments.
+ * @param line the line to read
+ * @param args receives the arguments text
+ * @return true when the line is a header-arg keyword line
+ */
+bool ParseHeaderKeyword(const std::string &line, std::string *args) {
+    const std::string l = LStrip(line);
+    const std::string low = LowerAscii(l);
+    if (low.compare(0, 10, "#+headers:") == 0) {
+        *args = l.substr(10);
+        return true;
+    }
+    if (low.compare(0, 9, "#+header:") == 0) {
+        *args = l.substr(9);
+        return true;
+    }
+    return false;
+}
+
+// An *affiliated* keyword -- one that belongs to the element below it --
+// rather than a document-level one. The distinction matters here: a
+// `#+PROPERTY:` line directly above a block is not part of that block,
+// and dropping it along with the block would take a file-wide setting
+// out with it.
+/**
+ * @brief Reports whether a line is a keyword affiliated with the element below it.
+ * @param line the line to test
+ * @return true for `#+NAME:`/`#+CAPTION:`/`#+HEADER:`/`#+ATTR_*:` and friends
+ */
+bool IsAffiliatedKeyword(const std::string &line) {
+    const std::string l = LowerAscii(LStrip(line));
+    if (l.compare(0, 2, "#+") != 0) return false;
+    const size_t colon = l.find(':');
+    if (colon == std::string::npos) return false;
+    const std::string key = l.substr(2, colon - 2);
+    if (key.compare(0, 5, "attr_") == 0) return true;
+    return key == "name" || key == "caption" || key == "header" || key == "headers" || key == "label" ||
+           key == "plot" || key == "index";
+}
+
+}  // namespace
+
+std::vector<std::string> OrgApplyExportGates(const std::vector<std::string> &lines) {
+    const int n = static_cast<int>(lines.size());
+    // File-wide `#+PROPERTY: header-args[:<lang>]`, collected first so a
+    // block below one of them inherits it the way org says it should.
+    std::vector<std::string> generic_property;
+    std::map<std::string, std::vector<std::string>> lang_property;
+    for (const std::string &line : lines) {
+        const std::string l = LStrip(line);
+        if (LowerAscii(l).compare(0, 11, "#+property:") != 0) continue;
+        const std::string body = Trim(l.substr(11));
+        size_t k = 0;
+        while (k < body.size() && !std::isspace(static_cast<unsigned char>(body[k]))) k++;
+        const std::string key = LowerAscii(body.substr(0, k));
+        const std::string value = Trim(body.substr(k));
+        if (key == "header-args") {
+            generic_property.push_back(value);
+        } else if (key.compare(0, 12, "header-args:") == 0) {
+            lang_property[key.substr(12)].push_back(value);
+        }
+    }
+
+    std::vector<std::string> out;
+    out.reserve(lines.size());
+    int i = 1;
+    while (i <= n) {
+        std::string rest;
+        if (!IsSrcMarker(lines[static_cast<size_t>(i - 1)], true, &rest)) {
+            out.push_back(lines[static_cast<size_t>(i - 1)]);
+            i++;
+            continue;
+        }
+        // The contiguous run of affiliated keyword lines above the block
+        // belongs to it: they are the block's header, not the prose
+        // before it, so they go wherever its code goes.
+        int meta_start = i;
+        std::vector<std::string> header_layers;
+        while (meta_start > 1) {
+            const std::string &above = lines[static_cast<size_t>(meta_start - 2)];
+            if (!IsAffiliatedKeyword(above)) break;
+            std::string args;
+            if (ParseHeaderKeyword(above, &args)) header_layers.push_back(args);
+            meta_start--;
+        }
+        std::reverse(header_layers.begin(), header_layers.end());
+        int end_row = i;
+        while (end_row <= n && !IsSrcMarker(lines[static_cast<size_t>(end_row - 1)], false, nullptr)) end_row++;
+        if (end_row > n) {
+            // Unterminated: nothing to gate, and dropping to the end of
+            // the document on a typo would be unforgivable.
+            out.push_back(lines[static_cast<size_t>(i - 1)]);
+            i++;
+            continue;
+        }
+        std::string lang, own_args;
+        SplitSrcTrailer(rest, &lang, &own_args);
+        std::vector<std::string> layers = generic_property;
+        const auto per_lang = lang_property.find(lang);
+        if (per_lang != lang_property.end()) {
+            layers.insert(layers.end(), per_lang->second.begin(), per_lang->second.end());
+        }
+        layers.insert(layers.end(), header_layers.begin(), header_layers.end());
+        layers.push_back(own_args);
+        const std::string exports = OrgHeaderArgValue(OrgMergeHeaderArgs(layers), "exports");
+
+        // The affiliated lines were already emitted; unwind them when the
+        // code they belong to is not being exported.
+        if (!OrgExportsCode(exports)) {
+            const int drop = i - meta_start;
+            for (int k = 0; k < drop && !out.empty(); k++) out.pop_back();
+        } else {
+            for (int k = i; k <= end_row; k++) out.push_back(lines[static_cast<size_t>(k - 1)]);
+        }
+        int res_start = 0, res_end = 0;
+        const bool has_results = OrgFindResultsBlock(lines, end_row, &res_start, &res_end);
+        i = has_results ? res_end + 1 : end_row + 1;
+        if (has_results && OrgExportsResults(exports)) {
+            for (int k = res_start; k <= res_end; k++) out.push_back(lines[static_cast<size_t>(k - 1)]);
+        }
+    }
     return out;
 }

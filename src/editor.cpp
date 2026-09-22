@@ -1567,6 +1567,14 @@ void ParseSrcHeader(const std::string &header, bool *has_lang, std::string *lang
         *args_str = "";
         return;
     }
+    if (header[i] == ':') {
+        // A language-less block (`#+begin_src :results none`): the first
+        // token is an argument, not a tag. Reading it as the language
+        // gave every such block the language ":results".
+        *has_lang = false;
+        *args_str = header.substr(i);
+        return;
+    }
     size_t lang_start = i;
     while (i < header.size() && !std::isspace(static_cast<unsigned char>(header[i]))) i++;
     *lang = header.substr(lang_start, i - lang_start);
@@ -1575,45 +1583,16 @@ void ParseSrcHeader(const std::string &header, bool *has_lang, std::string *lang
     *args_str = header.substr(i);
 }
 
-// kBuiltinOrgBabel's own `':KEY%s+(%S+)'` port (unanchored search,
-// required whitespace, one-or-more non-whitespace captured) -- shared
-// shape behind `:main`/`:tangle`/`:cache`/`:file` header-arg extraction.
-/**
- * @brief Finds a `:key value` header-arg token in a babel header-args string.
- * @param s The header-args text to search.
- * @param key The key to look for (without the leading colon).
- * @param val Set to the token's value on success.
- * @return True if the key was found with a following value token, false otherwise.
- */
-bool MatchHeaderArgToken(const std::string &s, const std::string &key, std::string *val) {
-    std::string needle = ":" + key;
-    size_t pos = 0;
-    while (true) {
-        size_t p = s.find(needle, pos);
-        if (p == std::string::npos) return false;
-        size_t i = p + needle.size();
-        size_t ws_start = i;
-        i = SkipWs(s, i);
-        if (i > ws_start) {
-            size_t tok_start = i;
-            while (i < s.size() && !std::isspace(static_cast<unsigned char>(s[i]))) i++;
-            if (i > tok_start) {
-                *val = s.substr(tok_start, i - tok_start);
-                return true;
-            }
-        }
-        pos = p + 1;
-    }
-}
 }  // namespace
 
 bool OrgBabelShouldWrapMain(const std::string &lang_key, const std::string &args_str) {
-    std::string main_val;
-    if (MatchHeaderArgToken(args_str, "main", &main_val)) {
-        if (main_val == "yes") return true;
-        if (main_val == "no") return false;
-    }
-    return lang_key == "php";
+    const std::string main_val = OrgHeaderArgValue(args_str, "main");
+    if (main_val == "yes") return true;
+    if (main_val == "no") return false;
+    // The two languages whose wrapper is not optional scaffolding but the
+    // thing that makes the body a document at all: PHP needs its `<?php`
+    // tag, LaTeX its `\documentclass`/`document` environment.
+    return lang_key == "php" || lang_key == "latex";
 }
 
 namespace {
@@ -2265,6 +2244,87 @@ bool Editor::ToggleOrgLspStatus() {
     return org_lsp_status_visible_;
 }
 
+namespace {
+
+// The header-argument layers a block inherits, in increasing precedence:
+// the file's `#+PROPERTY: header-args` and `header-args:<lang>` lines,
+// then the `#+HEADER:`/`#+HEADERS:` lines affiliated with the block
+// itself (the contiguous run of keyword lines directly above it). The
+// block's own `#+begin_src` arguments are appended by the caller, which
+// is the only layer that used to exist.
+/**
+ * @brief Collects the header-argument layers a src block inherits, least significant first.
+ * @param buf The buffer the block lives in.
+ * @param start_row The block's `#+begin_src` row, 1-based.
+ * @param lang The block's lowercased language tag, for `header-args:<lang>`.
+ * @return The layers, each an arguments string.
+ */
+std::vector<std::string> OrgHeaderArgLayers(const Buffer &buf, int start_row, const std::string &lang) {
+    std::vector<std::string> generic, per_lang, affiliated;
+    const int n = buf.LineCount();
+    for (int i = 1; i <= n && i < start_row; i++) {
+        const std::string &line = buf.lines[static_cast<size_t>(i - 1)];
+        size_t k = SkipWs(line, 0);
+        if (k + 1 >= line.size() || line[k] != '#' || line[k + 1] != '+') continue;
+        k += 2;
+        if (!MatchCiLiteral(line, k, "PROPERTY:")) continue;
+        k = SkipWs(line, k + 9);
+        size_t key_start = k;
+        while (k < line.size() && !std::isspace(static_cast<unsigned char>(line[k]))) k++;
+        std::string key = line.substr(key_start, k - key_start);
+        for (char &c : key) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const std::string value = line.substr(SkipWs(line, k));
+        if (key == "header-args") {
+            generic.push_back(value);
+        } else if (key.compare(0, 12, "header-args:") == 0 && !lang.empty() && key.substr(12) == lang) {
+            per_lang.push_back(value);
+        }
+    }
+    // The contiguous run of affiliated keyword lines directly above the
+    // block -- the same extent OrgBlockCards treats as the card's header.
+    for (int i = start_row - 1; i >= 1; i--) {
+        const std::string &line = buf.lines[static_cast<size_t>(i - 1)];
+        size_t k = SkipWs(line, 0);
+        if (k + 1 >= line.size() || line[k] != '#' || line[k + 1] != '+') break;
+        k += 2;
+        if (MatchCiLiteral(line, k, "HEADERS:")) {
+            affiliated.push_back(line.substr(k + 8));
+        } else if (MatchCiLiteral(line, k, "HEADER:")) {
+            affiliated.push_back(line.substr(k + 7));
+        }
+    }
+    // Scanned upward, so the nearest line came first -- and the nearest
+    // one wins, which means it has to be applied last.
+    std::reverse(affiliated.begin(), affiliated.end());
+    std::vector<std::string> layers;
+    layers.insert(layers.end(), generic.begin(), generic.end());
+    layers.insert(layers.end(), per_lang.begin(), per_lang.end());
+    layers.insert(layers.end(), affiliated.begin(), affiliated.end());
+    return layers;
+}
+
+/**
+ * @brief Reads the `#+NAME:` affiliated with a block.
+ * @param buf The buffer the block lives in.
+ * @param start_row The block's `#+begin_src` row, 1-based.
+ * @return The name as written, "" when the block has none.
+ */
+std::string OrgAffiliatedName(const Buffer &buf, int start_row) {
+    for (int i = start_row - 1; i >= 1; i--) {
+        const std::string &line = buf.lines[static_cast<size_t>(i - 1)];
+        size_t k = SkipWs(line, 0);
+        if (k + 1 >= line.size() || line[k] != '#' || line[k + 1] != '+') break;
+        k += 2;
+        if (!MatchCiLiteral(line, k, "NAME:")) continue;
+        std::string name = line.substr(SkipWs(line, k + 5));
+        while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
+        return name;
+    }
+    return "";
+}
+
+}  // namespace
+
 OrgSrcBlock Editor::OrgSrcBlockAt(int row) const {
     OrgSrcBlock result;
     const int n = Buf().LineCount();
@@ -2304,17 +2364,32 @@ OrgSrcBlock Editor::OrgSrcBlockAt(int row) const {
         if (i < 1 || i > n) continue;
         body_lines.push_back(Buf().lines[static_cast<size_t>(i - 1)]);
     }
+    // Every layer org reads this block's arguments from, least
+    // significant first. Until this merge existed the `#+begin_src` line
+    // was the only one execution saw, so a `#+PROPERTY: header-args` and
+    // the `#+HEADER:` lines the settings popup itself writes to were both
+    // silently inert.
+    std::vector<std::string> layers = OrgHeaderArgLayers(Buf(), start_row, lang);
+    layers.push_back(args_str);
+    const std::string merged = OrgMergeHeaderArgs(layers);
+
     result.found = true;
     result.start_row = start_row;
     result.end_row = end_row;
     result.has_lang = has_lang;
     result.lang = lang;
-    result.vars = OrgParseVars(args_str);
-    result.has_tangle = MatchHeaderArgToken(args_str, "tangle", &result.tangle);
-    result.has_cache = MatchHeaderArgToken(args_str, "cache", &result.cache);
-    result.has_file = MatchHeaderArgToken(args_str, "file", &result.file);
-    result.results_modes = OrgParseResults(args_str);
-    result.args_str = args_str;
+    result.begin_line = header;
+    result.own_args_str = args_str;
+    result.name = OrgAffiliatedName(Buf(), start_row);
+    result.vars = OrgParseVars(merged);
+    result.tangle = OrgHeaderArgValue(merged, "tangle");
+    result.has_tangle = !result.tangle.empty();
+    result.cache = OrgHeaderArgValue(merged, "cache");
+    result.has_cache = !result.cache.empty();
+    result.file = OrgHeaderArgValue(merged, "file");
+    result.has_file = !result.file.empty();
+    result.results_modes = OrgParseResults(merged);
+    result.args_str = merged;
     result.body = JoinNewline(body_lines);
     return result;
 }

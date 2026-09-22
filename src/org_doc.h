@@ -1,8 +1,10 @@
 #ifndef MEP_ORG_DOC_H
 #define MEP_ORG_DOC_H
 
+#include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Deliberately raylib-free (same reasoning as sheet_doc.h/pdf_doc.h): the
@@ -1004,5 +1006,253 @@ bool OrgBlockLineHasSwitch(const std::string &line, const std::string &sw);
  * first `:key` argument, which is where org reads switches from.
  */
 std::string OrgSetBlockSwitchOnLine(const std::string &line, const std::string &sw, bool on);
+
+// --- Babel header arguments: the values the *execution* path reads -------
+//
+// The settings popup writes header arguments with the full org grammar
+// (multi-word values, quoted values, `#+HEADER:` lines), but babel used
+// to read them back with a single-whitespace-token matcher over the
+// `#+begin_src` line alone -- so `:dir ~/my notes`, `:flags -O2 -Wall`
+// and anything written onto a `#+HEADER:` line were silently ignored.
+// These are the readers that close that gap; they take the *arguments*
+// text (what follows the language tag), not a whole line, so the same
+// code serves a `#+begin_src` line, a `#+HEADER:` line and a
+// `#+PROPERTY: header-args` line.
+
+/**
+ * @brief Reads one header argument's value out of a header-args string.
+ * @param args The arguments text (everything after the block's language tag).
+ * @param key The key to read, without its leading colon, matched case-insensitively.
+ * @return The value with surrounding whitespace and one layer of matching quotes removed;
+ * "" both for an absent key and for a bare valueless one (use OrgHeaderArgPresent to tell them apart).
+ */
+std::string OrgHeaderArgValue(const std::string &args, const std::string &key);
+
+/**
+ * @brief Reports whether a header-args string mentions a key at all.
+ * @param args The arguments text.
+ * @param key The key to look for, without its leading colon.
+ * @return True when the key is written, whatever its value.
+ */
+bool OrgHeaderArgPresent(const std::string &args, const std::string &key);
+
+/**
+ * @brief Splits every `:key value` pair out of a header-args string, in written order.
+ * @param args The arguments text.
+ * @return The pairs, keys lowercased and values unquoted; repeated keys are kept (`:var` is
+ * accumulated by org, and the caller decides later-wins for the rest).
+ */
+std::vector<std::pair<std::string, std::string>> OrgHeaderArgPairs(const std::string &args);
+
+/**
+ * @brief Merges header-args strings in increasing precedence order into one args string.
+ * @param layers The args texts, least-significant first (`#+PROPERTY:`, then `#+HEADER:`
+ * lines in document order, then the `#+begin_src` line's own).
+ * @return One args string carrying the winning value for every key, with every `:var`
+ * from every layer preserved.
+ */
+std::string OrgMergeHeaderArgs(const std::vector<std::string> &layers);
+
+// --- Results blocks: what a finished run actually writes back ------------
+//
+// Org's `:results` value is up to four independent words plus `:wrap`,
+// and only two of them (`table`, `graphics`) used to reach the writer.
+// This turns the whole set into the literal lines that follow a
+// `#+RESULTS:` keyword.
+struct OrgResultsOptions {
+    // The four `:results` facets, as OrgResultsFacetValue reads them.
+    std::string collection;  // "value" / "output" / ""
+    std::string type;        // "table" / "list" / "scalar" / "verbatim" / "file" / ""
+    std::string format;      // "raw" / "org" / "html" / "latex" / "code" / "pp" / "drawer" / "link" / "graphics" / ""
+    std::string handling;    // "replace" / "silent" / "append" / "prepend" / "none" / ""
+    // `:wrap`'s value: the block word (plus any arguments) the results
+    // are fenced in, e.g. "example" or "src html". Beats `:format`.
+    std::string wrap;
+    // The block's own language, used as the fence language by
+    // `:results code` when `:wrap` didn't name one.
+    std::string lang;
+    // `:sep`'s value: the field separator a `:results table` run's output
+    // is split on. "" auto-detects tab, then comma, the way it always did.
+    std::string sep;
+    // `:colnames no` drops the `|---+---|` rule a table result otherwise
+    // grows under its first row.
+    bool colnames = true;
+    // The output is already org markup that must not be fenced or
+    // prefixed -- a `:file` block's own `[[file:...]]` link.
+    bool file_link = false;
+};
+
+/**
+ * @brief Reads the results options out of a block's header arguments.
+ * @param args The block's merged header-args text.
+ * @param lang The block's language tag, used as `:results code`'s fence language.
+ * @return The options, with every facet defaulted to "" (org's own "not written") rather than guessed.
+ */
+OrgResultsOptions OrgResultsOptionsFrom(const std::string &args, const std::string &lang);
+
+/**
+ * @brief Turns a run's raw output lines into the lines written under `#+RESULTS:`.
+ * @param out_lines The process's output, one line per entry.
+ * @param opts The block's results options.
+ * @return The literal lines to insert after the `#+RESULTS:` keyword.
+ */
+std::vector<std::string> OrgFormatResultsBody(const std::vector<std::string> &out_lines,
+                                              const OrgResultsOptions &opts);
+
+/**
+ * @brief Reports whether a results body is raw org markup (inserted as-is) rather than a
+ * plain `: ` example.
+ * @param opts The block's results options.
+ * @return True when OrgFormatResultsBody's output must not be re-fenced or re-prefixed by the caller.
+ */
+bool OrgResultsBodyIsRaw(const OrgResultsOptions &opts);
+
+/**
+ * @brief Formats output lines as an org table.
+ * @param lines The raw output lines.
+ * @param sep The field separator (`:sep`); "" auto-detects a tab, then a comma.
+ * @param colnames True to write the `|---+---|` rule under the first row of a multi-row table.
+ * @return The table's lines, or `lines` unchanged when no separator could be found.
+ */
+std::vector<std::string> OrgFormatResultsTable(const std::vector<std::string> &lines, const std::string &sep,
+                                               bool colnames);
+
+// --- Noweb references ----------------------------------------------------
+
+/**
+ * @brief Expands `<<name>>` noweb references in a block body.
+ * @param body The block's body lines.
+ * @param blocks Reference name -> the body text that name resolves to (already joined with newlines).
+ * @param sep The separator `:noweb-sep` asks for between concatenated blocks; unused here
+ * because `blocks` arrives pre-joined, kept so the caller's contract reads the same.
+ * @param depth_limit How many levels of reference-inside-reference to follow before giving up.
+ * @return The expanded body. A reference on its own line has its indentation applied to every
+ * expanded line, the way org does it; an unresolved reference is left exactly as written.
+ */
+std::vector<std::string> OrgNowebExpand(const std::vector<std::string> &body,
+                                        const std::map<std::string, std::string> &blocks, const std::string &sep,
+                                        int depth_limit);
+
+/**
+ * @brief Decides whether a `:noweb` value asks for expansion in a given context.
+ * @param noweb The `:noweb` value as written, "" when unset (org's default is "no").
+ * @param context "eval" for an interactive/export run, "tangle" for tangling.
+ * @return True when references must be expanded in that context.
+ */
+bool OrgNowebExpandsIn(const std::string &noweb, const std::string &context);
+
+// --- Block switches: `-n` / `+n` / `-r` / `-k` ---------------------------
+
+// What a block's display switches ask for, read off its `#+begin_` line.
+struct OrgBlockSwitches {
+    bool number = false;         // `-n` or `+n`
+    bool continue_numbers = false;  // `+n`: keep counting from the previous block
+    int start = 1;               // `-n 12` starts the count at 12
+    bool strip_refs = true;      // `(ref:name)` labels are removed unless `-k` keeps them
+};
+
+/**
+ * @brief Reads a `#+begin_...` line's display switches.
+ * @param line The block's opening line.
+ * @return The switches; `number` false when the line carries neither `-n` nor `+n`.
+ */
+OrgBlockSwitches OrgParseBlockSwitches(const std::string &line);
+
+/**
+ * @brief Applies a block's display switches to its body.
+ * @param body The block's body lines.
+ * @param sw The switches read from its opening line.
+ * @param counter In/out: the running line number `+n` continues from, advanced past this block.
+ * @return The body as it should be displayed: `(ref:name)` labels stripped unless `-k`, and
+ * every line prefixed with a right-aligned number when `-n`/`+n` asked for one.
+ */
+std::vector<std::string> OrgApplyBlockSwitches(const std::vector<std::string> &body, const OrgBlockSwitches &sw,
+                                               int *counter);
+
+// --- Tangling ------------------------------------------------------------
+
+// The tangle-side header arguments, which decide what the written file
+// looks like around each block's body rather than what it contains.
+struct OrgTangleOptions {
+    std::string shebang;    // `:shebang`, written as the file's first line
+    std::string mode;       // `:tangle-mode`, e.g. "o755"
+    bool mkdirp = false;    // `:mkdirp yes`
+    bool padline = true;    // `:padline no` packs blocks with no blank line between them
+    std::string comments;   // `:comments` -- "link"/"yes"/"org"/"both"/"noweb"
+};
+
+/**
+ * @brief Reads the tangle options out of a block's header arguments.
+ * @param args The block's merged header-args text.
+ * @return The options, defaulted to org's own defaults for anything unwritten.
+ */
+OrgTangleOptions OrgTangleOptionsFrom(const std::string &args);
+
+/**
+ * @brief Parses a `:tangle-mode` value into a filesystem mode.
+ * @param mode The value as written ("o755", "#o755", "0755", "755").
+ * @return The mode in octal, or -1 when the value isn't one org would accept.
+ */
+int OrgParseTangleMode(const std::string &mode);
+
+/**
+ * @brief Renders the comment lines that precede or follow one tangled block.
+ * @param comments The `:comments` value.
+ * @param comment_prefix The target language's line-comment marker ("# ", "// ").
+ * @param org_file The org file's name, for a `link` comment's back-reference.
+ * @param name The block's `#+NAME:`, "" when it has none.
+ * @param start_row The block's `#+begin_src` row, 1-based, for a `link` comment.
+ * @param opening True for the comment that opens the block, false for the one that closes it.
+ * @return The comment lines, empty when `:comments` asks for none.
+ */
+std::vector<std::string> OrgTangleComment(const std::string &comments, const std::string &comment_prefix,
+                                          const std::string &org_file, const std::string &name, int start_row,
+                                          bool opening);
+
+// --- `:exports` ----------------------------------------------------------
+
+/**
+ * @brief Reports whether an export includes a block's code.
+ * @param exports The `:exports` value, "" when unset (org's default is "code").
+ * @return True for "code"/"both"/"" , false for "results"/"none".
+ */
+bool OrgExportsCode(const std::string &exports);
+
+/**
+ * @brief Reports whether an export includes a block's results.
+ * @param exports The `:exports` value, "" when unset.
+ * @return True for "results"/"both", false for "code"/"none"/"".
+ */
+bool OrgExportsResults(const std::string &exports);
+
+/**
+ * @brief Finds the `#+RESULTS:` block already written under a src block.
+ * @param lines The document's lines.
+ * @param after_row The block's `#+end_src` row, 1-based; the results start on the row after it.
+ * @param start Receives the `#+RESULTS:` row, 1-based.
+ * @param end Receives the results' last row, 1-based (equal to `start` for a keyword with nothing under it).
+ * @return True when a results block follows the given row.
+ */
+bool OrgFindResultsBlock(const std::vector<std::string> &lines, int after_row, int *start, int *end);
+
+/**
+ * @brief Splices a formatted results block into a copy of a document.
+ * @param lines The document's lines.
+ * @param after_row The `#+end_src` row the results belong under, 1-based.
+ * @param block The results block's lines, `#+RESULTS:` keyword included.
+ * @param handling The `:results` handling word ("replace", "append", "prepend", "none", "silent").
+ * @return The document with the results written; unchanged for a handling that writes nothing.
+ */
+std::vector<std::string> OrgSpliceResultsBlock(const std::vector<std::string> &lines, int after_row,
+                                               const std::vector<std::string> &block, const std::string &handling);
+
+/**
+ * @brief Applies every src block's `:exports` to a document, dropping what an export leaves out.
+ * @param lines The document's lines, results blocks already spliced in.
+ * @return The document with each block's code and/or results removed as its `:exports` asks.
+ * A block's affiliated keyword lines go with its code; `#+PROPERTY: header-args` and the
+ * block's own `#+HEADER:` lines are both read, in org's precedence order.
+ */
+std::vector<std::string> OrgApplyExportGates(const std::vector<std::string> &lines);
 
 #endif

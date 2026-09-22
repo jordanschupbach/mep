@@ -2717,7 +2717,23 @@ struct OrgSrcBlock {
     bool has_file = false;
     std::string file;
     std::set<std::string> results_modes;
+    // Every header argument that applies to this block, with the layers
+    // org reads them from already merged in precedence order: a file-wide
+    // `#+PROPERTY: header-args`, then `header-args:<lang>`, then the
+    // affiliated `#+HEADER:` lines above the block, then the
+    // `#+begin_src` line's own. Before this merge existed, execution saw
+    // the `#+begin_src` line alone -- so an argument the block settings
+    // popup had written onto a `#+HEADER:` line did nothing at all.
     std::string args_str;
+    // Just the `#+begin_src` line's own arguments, for the few places
+    // that must not see the inherited ones.
+    std::string own_args_str;
+    // The `#+begin_src` line verbatim: where the display switches
+    // (`-n`/`+n`/`-r`/`-k`) live, which is not the argument region.
+    std::string begin_line;
+    // The block's `#+NAME:`, "" when it has none -- what `:post` and
+    // `<<noweb>>` references address it by.
+    std::string name;
     std::string body;
 };
 

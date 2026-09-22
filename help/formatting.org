@@ -11,20 +11,21 @@ stale copy from disk.
 
 * What runs
 
-| Filetype             | Formatter      |
-|----------------------+----------------|
-| C, C++ and friends   | =clang-format= |
-| Python               | =black=        |
-| R                    | mep's own -- nothing to install |
+| Filetype             | Formatter                                 |
+|----------------------+-------------------------------------------|
+| C, C++ and friends   | =clang-format=                            |
+| Python               | *built in* -- mep's own, nothing to install |
+| R                    | *built in* -- mep's own, nothing to install |
 | anything else        | =mep.lsp_format=, if a server is attached |
 
 That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.
 
-R is the exception that needs nothing installed at all: the formatter is
-built into mep, so =gf= on an R buffer works on a machine with no R, no
-=air= and no =styler=, and answers instantly because nothing is spawned.
+Python and R need nothing installed at all: both formatters are built into
+mep, so =gf= on a =.py= or =.R= buffer works on a machine with no =black=,
+no =air= and no Python or R toolchain, and answers instantly because nothing
+is spawned.
 
 * Org code blocks
 
@@ -37,8 +38,8 @@ In an =.org= file =gf= formats *code*, never the prose around it.
 
 =:MepOrgFormatBlock= and =:MepOrgFormatBlocks= are the same two, by name.
 
-The block's language picks the formatter -- =#+begin_src python= is
-formatted by =black=, the same as a =.py= file, because the block's
+The block's language picks the formatter -- =#+begin_src python= gets the
+built-in Python formatter, the same as a =.py= file, because the block's
 language name is translated through its babel file extension before the
 table above is looked up.
 
@@ -52,6 +53,50 @@ to that block's own language server -- the one already answering
 [[file:org-polyglot.html][hover and completion inside the block]]. The
 whole-file sweep does not: it only runs the table, and reports those blocks
 as skipped.
+
+* The Python formatter
+
+Python is formatted by mep itself. Nothing is spawned, nothing has to be on
+=PATH=, and =gf= works the same in a fresh checkout as on a fully set-up
+machine.
+
+It is shaped after =black=, because that is what a Python buffer is expected
+to look like: 4-space indents, double quotes, 88-column lines, one argument
+per line with a trailing comma once a call has to be exploded, two blank
+lines around top-level =def= and =class=.
+
+It is not =black=, though, and the differences are deliberate:
+
+- *No invented parentheses.* =black= wraps a too-long =return a and b= in
+  parentheses of its own so it can split it. mep's does not, so a long line
+  with no bracket in it stays long rather than being restructured.
+- *=match= statements are left alone.* =match= and =case= are ordinary
+  identifiers until they are not, and telling the two apart needs a real
+  parser.
+- *Comments are normalized, not moved.* They keep the token they follow.
+
+** It will not rewrite code it cannot prove it preserved
+
+Every result is proof-read before it reaches the buffer: the formatted text
+is re-tokenized and compared against the original, allowing only the changes
+the formatter is entitled to make (whitespace, quote style, numeric literal
+case, and the trailing commas an exploded bracket gains).
+
+If that check fails -- or the file does not parse in the first place -- =gf=
+reports the reason and *leaves the buffer exactly as it was*. A syntax error
+names its line, so the cursor can be put on it.
+
+** Options
+
+#+begin_src lua
+mep.format_languages.py.width = 100   -- default 88
+#+end_src
+
+To go back to =black= instead, replace the entry with an ordinary argv one:
+
+#+begin_src lua
+mep.format_languages.py = {'black', '--quiet', '--stdin-filename={}', '-'}
+#+end_src
 
 * The R formatter
 
@@ -116,6 +161,13 @@ mep.format_languages.R = {mode = 'file', 'Rscript', '-e',
 Both need the tool installed, and =air= takes its own margin from the
 nearest =air.toml= rather than from =width= above.
 
+* Line width
+
+The built-in formatters wrap at *88 columns* for Python and *80* for R --
+=width= in each one's table entry, and the two subsections above change it.
+=clang-format= takes its margin from the project's own =.clang-format=
+instead.
+
 * Adding one
 
 #+begin_src lua
@@ -132,9 +184,10 @@ Three modes:
   filename.
 - *file*: add =mode = 'file'=, and =\{\}= is a temporary file the formatter
   edits in place.
-- *builtin*: no program at all -- =builtin = 'format_r'= names a =mep.*=
-  function taking the text and a width and returning the formatted text,
-  which runs in-process. This is what the R entry is.
+- *builtin*: no program at all -- =\{builtin = 'format_python', name = '...',
+  width = 88\}= names a =mep.*= function taking the text and a width and
+  returning the formatted text, which runs in-process. This is how both the
+  Python and the R entries are wired.
 
 Entries are looked up by *bare extension*, so every extension of a language
 needs its own key -- which is why the built-in table aliases =.h=, =.cc=,
@@ -143,10 +196,11 @@ needs its own key -- which is why the built-in table aliases =.h=, =.cc=,
 * Why the placeholder matters
 
 A formatter reading stdin has no idea what file it is looking at.
-=clang-format=, =black= and =air= all have to be told -- =--assume-filename=,
-=--stdin-filename= and =--stdin-file-path= -- or they cannot find the
-=.clang-format=, =pyproject.toml= or =air.toml= the project configures them
-with, and they silently format to their own defaults instead.
+=clang-format= and =air= have to be told -- =--assume-filename= and
+=--stdin-file-path= -- or they cannot find the =.clang-format= or =air.toml=
+the project configures them with, and they silently format to their own
+defaults instead. (A =builtin= entry has no such problem: it is handed the
+text directly and takes its options from its own table entry.)
 
 So a filter-mode entry should almost always pass =\{\}= somewhere.
 

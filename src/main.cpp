@@ -12444,22 +12444,34 @@ const char *kBuiltinRun =
 const char *kBuiltinFormat =
     "mep.format_languages = {\n"
     "  c = {'clang-format', '--assume-filename={}'},\n"
-    "  py = {'black', '--quiet', '--stdin-filename={}', '-'},\n"
-    // R is the one language here that needs nothing installed: the
-    // formatter is mep's own (src/r_format.cpp, TODO.org's "r formatter"
-    // -- a tidyverse-style lexer/parser/printer, no `air`, no `styler`,
-    // no R). A `builtin` entry names a mep.* function taking the text
-    // and a width and returning the formatted text (or nil + message +
-    // line), which mep_format_run below calls in-process instead of
-    // spawning anything, so gf on an R buffer is instant and works on a
-    // machine with no R toolchain at all.
+    // Python and R are the two languages here that need nothing
+    // installed: both formatters are mep's own (src/python_format.cpp and
+    // src/r_format.cpp), reached through a `builtin` entry rather than a
+    // command line. A `builtin` names a mep.* function taking the text and
+    // a width and returning the formatted text (or nil + message + line),
+    // which mep_format_run below calls in-process instead of spawning
+    // anything -- so gf on a .py or .R buffer is instant and works in a
+    // fresh checkout with no toolchain at all.
     //
-    // Swapping in an external formatter is still one line of config --
+    // mep's Python formatter is black-shaped on purpose -- 4-space
+    // indents, double quotes, the magic trailing comma, two blank lines
+    // around top-level defs -- but it is not black, and python_format.h
+    // lists exactly where it stops short. The R one follows the tidyverse
+    // style air/styler produce.
+    //
+    // A config that would rather have the real thing puts it back in one
+    // line, and `width` here is what the builtin wraps at:
+    //   mep.format_languages.py = {'black', '--quiet', '--stdin-filename={}', '-'}
     //   mep.format_languages.R = {'air', 'format', '--stdin-file-path={}'}
-    // (air, Posit's own, is the tidyverse formatter this style follows;
-    // styler is the other one, and being style_file()-shaped it needs
-    // mode = 'file' -- see mep_format_run) -- and `width` here is what
-    // the builtin wraps at.
+    // (air is Posit's own tidyverse formatter and the only R one with a
+    // line width -- styler fixes spacing, indentation and `=` vs `<-` but
+    // never breaks a long call across lines at any width. Being
+    // style_file()-shaped, styler would also need mode = 'file'; see
+    // mep_format_run. air's --stdin-file-path is the same argument
+    // clang-format and black need above and for the same reason: in
+    // filter mode it is reading a nameless stream, and the path is what
+    // it walks up from to find the project's air.toml.)
+    "  py = {builtin = 'format_python', name = \"mep's Python formatter\", width = 88},\n"
     "  R = {builtin = 'format_r', name = \"mep's R formatter\", width = 80},\n"
     "}\n"
     // Same aliasing as mep.run_languages': entries are looked up by bare

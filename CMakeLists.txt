@@ -435,6 +435,7 @@ add_library(mep_core STATIC
     src/editor.cpp
     src/spell.cpp
     src/r_format.cpp
+    src/python_format.cpp
     src/workspace_git.cpp
     ${MEP_GFX_NATIVE_SOURCES}
 )
@@ -791,6 +792,18 @@ target_include_directories(mep-spell-test PRIVATE src)
 target_compile_options(mep-spell-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-spell-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-spell-test)
+
+# The in-house Python formatter (python_format.cpp is dependency-free -- it
+# includes <string> and <vector> and nothing else, and shells out to nothing):
+# the tokenizer and the errors it has to refuse on, the spacing table,
+# statement and bracket splitting with their trailing-comma rules, blank-line
+# placement, and the token-equivalence check that backs the whole thing. Same
+# CHECK()-based shape as mep-org-doc-test.
+add_executable(mep-python-format-test EXCLUDE_FROM_ALL src/python_format_test.cpp src/python_format.cpp)
+target_include_directories(mep-python-format-test PRIVATE src)
+target_compile_options(mep-python-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-python-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-python-format-test)
 
 # Jupyter notebook helpers (notebook_doc.cpp is dependency-free apart from
 # the header-only json.h): nbformat parse/serialize round trips, the

@@ -3,6 +3,7 @@
 #include "http_server.h"
 #include "url_util.h"
 #include "doc_export.h"
+#include "python_format.h"
 #include "editor.h"
 #include "job.h"
 #include "org_doc.h"
@@ -273,6 +274,48 @@ int l_spell_suggest(lua_State *L) {
         lua_pushlstring(L, sugg[i].data(), sugg[i].size());
         lua_rawseti(L, -2, static_cast<lua_Integer>(i) + 1);
     }
+    return 1;
+}
+
+// mep.format_python(text[, width]) -> formatted, nil | nil, error, line
+//
+// mep's in-house Python formatter (python_format.h), the built-in behind
+// `gf` in a .py buffer and inside an org `#+begin_src python` block. Nothing
+// is spawned and nothing needs to be installed -- the whole formatter is
+// compiled in, which is the point of TODO.org's "entirely inhouse".
+//
+// The two-value error return is what the Lua side keys off: a formatter that
+// cannot prove it preserved the code returns nil plus a message rather than
+// text, and the caller must leave the buffer alone. `line` is the 1-based
+// source line to put the cursor on, or nil when the failure is not tied to
+// one.
+/**
+ * @brief Implements mep.format_python(text[, width]): formats Python with
+ * mep's own in-house formatter, or returns nil plus a reason.
+ * @param L Lua state; arg 1 is the source text, arg 2 an optional line width.
+ * @return Number of values pushed (1: the formatted text; 3 on failure:
+ * nil, the message, and the 1-based source line or nil).
+ */
+int l_format_python(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    pyfmt::Options opts;
+    if (!lua_isnoneornil(L, 2)) {
+        lua_Integer w = luaL_checkinteger(L, 2);
+        if (w > 0) opts.line_length = static_cast<int>(w);
+    }
+    pyfmt::Result r = pyfmt::Format(std::string_view(src, len), opts);
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        if (r.error_line > 0) {
+            lua_pushinteger(L, r.error_line);
+        } else {
+            lua_pushnil(L);
+        }
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
     return 1;
 }
 
@@ -10409,6 +10452,7 @@ const luaL_Reg kMepFuncs[] = {
     {"spell_ready", l_spell_ready},
     {"spell_bad", l_spell_bad},
     {"spell_suggest", l_spell_suggest},
+    {"format_python", l_format_python},
     {"spell_add", l_spell_add},
     {"spell_wrong", l_spell_wrong},
     {"spell_enabled", l_spell_enabled},

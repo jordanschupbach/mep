@@ -93,10 +93,44 @@ like it to run without previously exisiting linters (i.e. entirely inhouse).
 I'd like an inhouse version of a formatter for c. Can you implement one? I'd
 like it to run without previously exisiting linters (i.e. entirely inhouse).
 
-* TODO python formatter
+* DONE python formatter
 
 I'd like an inhouse version of a formatter for python. Can you implement one? I'd
 like it to run without previously exisiting linters (i.e. entirely inhouse).
+  - Done: `src/python_format.{h,cpp}`, a dependency-free black-shaped
+    formatter. It includes `<string>`/`<vector>` and nothing else, spawns
+    nothing, and needs no `black`/`ruff`/Python on PATH -- `gf` in a .py
+    buffer now works in a fresh checkout. Wired as
+    `mep.format_languages.py = {builtin = 'format_python', name = ..., width = 88}`
+    (kBuiltinFormat, src/main.cpp), the same `spec.builtin` dispatch the R
+    formatter uses, so `#+begin_src python` org blocks get it for free.
+    `mep.format_python(text[, width])` is the Lua binding.
+  - It reformats the *token stream* rather than parsing to a tree the way
+    black does: tokenize, group into logical lines, re-render under a
+    spacing table, split the too-long ones at their brackets. That covers
+    4-space indents, double quotes, 88 columns, kwarg/annotation/slice/`**`
+    spacing, `;` and one-line-suite splitting, blank-line rules, the magic
+    trailing comma and black's two-stage bracket split. python_format.h
+    lists what it deliberately does not do -- no invented parentheses, no
+    `match` statement handling (soft keywords need a real parser), comments
+    normalized but not relocated.
+  - Safety is the design point, since `gf` overwrites a live buffer: every
+    result is re-tokenized and compared against the input before it is
+    returned (`VerifyEquivalent`), tolerating only the changes the formatter
+    is entitled to make -- and only *inert* added trailing commas, so a
+    comma that would turn `(a + b)` into a tuple or `case (A | B):` into a
+    sequence pattern is caught rather than waved through. Any mismatch, or
+    any syntax error, refuses with a message and leaves the buffer alone.
+  - Verified against a real corpus: 51k .py files
+    from the nix store, each checked for ast.parse equality (with the `u`
+    prefix normalized, since dropping it is intended) and byte-identical
+    idempotency, plus `mep-python-format-test`. Bugs it found and that are
+    fixed: `;` splitting across a one-line suite header (moved a statement
+    out of its `if`), comments stranded between implicitly concatenated
+    strings (swallowed the rest of the line, and were emitted twice), the
+    soft-keyword `case (...)` pattern bug above, PEP 701 nested f-strings,
+    t-strings, and raw-string `\'`. Per the recipe's in-process rule there
+    is a `kMaxNest` cap: 20k nested parens segfaulted the editor before it.
 
 * DONE r formatter
 

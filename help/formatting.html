@@ -20,16 +20,17 @@ stale copy from disk.</p>
 <table>
 <tr><th>Filetype</th><th>Formatter</th></tr>
 <tr><td>C, C++ and friends</td><td><code>clang-format</code></td></tr>
-<tr><td>Python</td><td><code>black</code></td></tr>
-<tr><td>R</td><td>mep's own -- nothing to install</td></tr>
+<tr><td>Python</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>R</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>anything else</td><td><code>mep.lsp_format</code>, if a server is attached</td></tr>
 </table>
 <p>That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.</p>
-<p>R is the exception that needs nothing installed at all: the formatter is
-built into mep, so <code>gf</code> on an R buffer works on a machine with no R, no
-<code>air</code> and no <code>styler</code>, and answers instantly because nothing is spawned.</p>
+<p>Python and R need nothing installed at all: both formatters are built into
+mep, so <code>gf</code> on a <code>.py</code> or <code>.R</code> buffer works on a machine with no <code>black</code>,
+no <code>air</code> and no Python or R toolchain, and answers instantly because nothing
+is spawned.</p>
 <h1>Org code blocks</h1>
 <p>In an <code>.org</code> file <code>gf</code> formats <b>code</b>, never the prose around it.</p>
 <table>
@@ -38,8 +39,8 @@ built into mep, so <code>gf</code> on an R buffer works on a machine with no R, 
 <tr><td>anywhere else</td><td>formats every block that has a formatter</td></tr>
 </table>
 <p><code>:MepOrgFormatBlock</code> and <code>:MepOrgFormatBlocks</code> are the same two, by name.</p>
-<p>The block's language picks the formatter -- <code>#+begin_src python</code> is
-formatted by <code>black</code>, the same as a <code>.py</code> file, because the block's
+<p>The block's language picks the formatter -- <code>#+begin_src python</code> gets the
+built-in Python formatter, the same as a <code>.py</code> file, because the block's
 language name is translated through its babel file extension before the
 table above is looked up.</p>
 <p>A block indented under a heading is dedented before the formatter sees it
@@ -51,6 +52,32 @@ to that block's own language server -- the one already answering
 <a href="org-polyglot.html">hover and completion inside the block</a>. The
 whole-file sweep does not: it only runs the table, and reports those blocks
 as skipped.</p>
+<h1>The Python formatter</h1>
+<p>Python is formatted by mep itself. Nothing is spawned, nothing has to be on
+<code>PATH</code>, and <code>gf</code> works the same in a fresh checkout as on a fully set-up
+machine.</p>
+<p>It is shaped after <code>black</code>, because that is what a Python buffer is expected
+to look like: 4-space indents, double quotes, 88-column lines, one argument
+per line with a trailing comma once a call has to be exploded, two blank
+lines around top-level <code>def</code> and <code>class</code>.</p>
+<p>It is not <code>black</code>, though, and the differences are deliberate:</p>
+<ul>
+<li><b>No invented parentheses.</b> <code>black</code> wraps a too-long <code>return a and b</code> in parentheses of its own so it can split it. mep's does not, so a long line with no bracket in it stays long rather than being restructured.</li>
+<li><b>=match= statements are left alone.</b> <code>match</code> and <code>case</code> are ordinary identifiers until they are not, and telling the two apart needs a real parser.</li>
+<li><b>Comments are normalized, not moved.</b> They keep the token they follow.</li>
+</ul>
+<h2>It will not rewrite code it cannot prove it preserved</h2>
+<p>Every result is proof-read before it reaches the buffer: the formatted text
+is re-tokenized and compared against the original, allowing only the changes
+the formatter is entitled to make (whitespace, quote style, numeric literal
+case, and the trailing commas an exploded bracket gains).</p>
+<p>If that check fails -- or the file does not parse in the first place -- <code>gf</code>
+reports the reason and <b>leaves the buffer exactly as it was</b>. A syntax error
+names its line, so the cursor can be put on it.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.py.width = <span class="tok-cyan">100</span>   <span class="tok-comment">-- default 88</span></code></pre></div>
+<p>To go back to <code>black</code> instead, replace the entry with an ordinary argv one:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.py = <span class="tok-blue">{</span><span class="tok-green">'black'</span>, <span class="tok-green">'--quiet'</span>, <span class="tok-green">'--stdin-filename={}'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span></code></pre></div>
 <h1>The R formatter</h1>
 <p>mep's R formatter follows the tidyverse style: two-space indent, spaces
 around binary operators (but not around <code>^</code>, <code>:</code>, <code>::</code>, <code>$</code> or <code>@</code>), <code>&lt;-</code>
@@ -89,6 +116,11 @@ mep.format_languages.<span class="tok-cyan">R</span> = <span class="tok-blue">{<
   <span class="tok-green">'styler::style_file(commandArgs(TRUE))'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span></code></pre></div>
 <p>Both need the tool installed, and <code>air</code> takes its own margin from the
 nearest <code>air.toml</code> rather than from <code>width</code> above.</p>
+<h1>Line width</h1>
+<p>The built-in formatters wrap at <b>88 columns</b> for Python and <b>80</b> for R --
+<code>width</code> in each one's table entry, and the two subsections above change it.
+<code>clang-format</code> takes its margin from the project's own <code>.clang-format</code>
+instead.</p>
 <h1>Adding one</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.js = {<span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span>
 mep.format_languages.ts = mep.format_languages.js</code></pre></div>
@@ -97,17 +129,18 @@ mep.format_languages.ts = mep.format_languages.js</code></pre></div>
 <ul>
 <li><b>filter</b> (the default): the buffer is written to the formatter's stdin and its stdout replaces the buffer. <code>\{\}</code> is the buffer's real absolute filename.</li>
 <li><b>file</b>: add <code>mode = 'file'=, and =\{\}</code> is a temporary file the formatter edits in place.</li>
-<li><b>builtin</b>: no program at all -- <code>builtin = 'format_r'= names a =mep.*</code> function taking the text and a width and returning the formatted text, which runs in-process. This is what the R entry is.</li>
+<li><b>builtin</b>: no program at all -- =\{builtin = 'format_python', name = '...', width = 88\}= names a <code>mep.*</code> function taking the text and a width and returning the formatted text, which runs in-process. This is how both the Python and the R entries are wired.</li>
 </ul>
 <p>Entries are looked up by <b>bare extension</b>, so every extension of a language
 needs its own key -- which is why the built-in table aliases <code>.h</code>, <code>.cc</code>,
 <code>.hpp</code> and the rest onto the C entry.</p>
 <h1>Why the placeholder matters</h1>
 <p>A formatter reading stdin has no idea what file it is looking at.
-<code>clang-format</code>, <code>black</code> and <code>air</code> all have to be told -- <code>--assume-filename</code>,
-<code>--stdin-filename</code> and <code>--stdin-file-path</code> -- or they cannot find the
-<code>.clang-format</code>, <code>pyproject.toml</code> or <code>air.toml</code> the project configures them
-with, and they silently format to their own defaults instead.</p>
+<code>clang-format</code> and <code>air</code> have to be told -- <code>--assume-filename</code> and
+<code>--stdin-file-path</code> -- or they cannot find the <code>.clang-format</code> or <code>air.toml</code>
+the project configures them with, and they silently format to their own
+defaults instead. (A <code>builtin</code> entry has no such problem: it is handed the
+text directly and takes its options from its own table entry.)</p>
 <p>So a filter-mode entry should almost always pass <code>\{\}</code> somewhere.</p>
 <h1>See also</h1>
 <ul>

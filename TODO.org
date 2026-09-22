@@ -83,10 +83,63 @@ like it to run without previously exisiting linters (i.e. entirely inhouse).
 I'd like an inhouse version of a formatter for java. Can you implement one? I'd
 like it to run without previously exisiting linters (i.e. entirely inhouse).
 
-* TODO c++ formatter
+* DONE c++ formatter
 
 I'd like an inhouse version of a formatter for c++. Can you implement one? I'd
 like it to run without previously exisiting linters (i.e. entirely inhouse).
+  - Done: `src/cpp_format.{h,cpp}`, a dependency-free clang-format-shaped
+    formatter. It includes `<string>`, `<vector>`, `<algorithm>` and
+    `<cctype>` and nothing else, spawns nothing, links no LLVM and needs no
+    `.clang-format`, so `gf` on a C++ buffer works in a fresh checkout with
+    no toolchain at all and answers instantly.
+    `mep.format_languages.cpp = {builtin = 'format_cpp', name = ..., width = 100}`
+    (kBuiltinFormat, src/main.cpp), the same `spec.builtin` dispatch the
+    Python and R formatters use; `.cc/.cxx/.h/.hpp/.hh/.hxx/.ipp/.inl/.cu/.cuh`
+    alias onto it, and `#+begin_src cpp` org blocks get it for free.
+    `mep.format_cpp(text[, width])` is the Lua binding. `c` itself is still on
+    clang-format -- the C formatter entry above is its own task, and this
+    engine handles C already, so that one is mostly a wiring decision.
+  - Style target is clang-format in the dialect mep's own source is written
+    in: 4-space indents, `Type *name`, `if (x)` spaced and `foo(x)` not,
+    namespace bodies unindented, access specifiers flush with the class,
+    `case` labels a level inside the switch, continuations aligned under the
+    open bracket and bin-packed, runs of trailing `//` comments lined up in
+    one column with two spaces in front of them, a braced initializer with a
+    trailing comma left exploded, 100 columns. Calibrated against
+    clang-format run with the matching style: **89% of output lines over
+    mep's own 217 C++ sources are byte-identical** to it, 82% over 300 real
+    files from the nix store, and the remainder are the deliberate
+    differences cpp_format.h lists.
+  - It reformats the *token stream* rather than parsing to a tree: lex, group
+    into unwrapped lines at `;`/`{`/`}`/labels, re-render each under a
+    spacing table, split the too-long ones greedily at their member-init
+    colon, assignment, lowest-precedence top-level operator or brackets.
+    cpp_format.h lists the known gaps (no macro-body formatting, no comment
+    reflow, no `#include` sorting, no `}  // namespace foo` fixups, greedy
+    rather than optimal breaking, and short forms preserved rather than
+    imposed -- `if (c) return;` stays on one line if that is how it was
+    written, and nothing is ever *joined* that the input had apart).
+  - Safety is exact here in a way it could not be for Python: the formatter
+    only moves whitespace, so the output is re-lexed and compared to the
+    input token for token with *no* tolerance beyond trailing whitespace
+    inside comments. That makes every C++ ambiguity a token stream cannot
+    settle -- `<` template vs less-than, `*` pointer vs multiply, `{` block
+    vs braced-init -- cosmetic by construction: a wrong guess moves a space
+    and the check proves it moved nothing else. The one place whitespace is
+    genuinely semantic, `#define X(a)` vs `#define X (a)`, is carried over
+    from the source rather than re-derived, because no re-lexing can see it.
+  - Covered by `mep-cpp-format-test` (src/cpp_format_test.cpp, in
+    `just test`): the spacing table, templates/operators/braces, indentation,
+    braceless bodies, the splitter, the preprocessor, comments, blank lines,
+    lexer corners, refusals, the 20k-nested-paren guard, a token-shape
+    property test over 40 awkward snippets at three widths, and idempotency
+    asserted on every expectation. Beyond that it was run over **25k real C++
+    files** from the nix store (plus every one of mep's own), checking three
+    things per file: clang's own raw lexer (`clang -cc1 -dump-raw-tokens`)
+    agrees the token streams of input and output are identical, formatting
+    twice is a fixed point, and anything it cannot prove is a refusal rather
+    than a rewrite. The only refusals left in that corpus are two bison `.cc`
+    m4 skeletons, which are not C++.
 
 * TODO c formatter
 

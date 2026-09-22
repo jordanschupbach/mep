@@ -12444,25 +12444,31 @@ const char *kBuiltinRun =
 const char *kBuiltinFormat =
     "mep.format_languages = {\n"
     "  c = {'clang-format', '--assume-filename={}'},\n"
-    // Python and R are the two languages here that need nothing
-    // installed: both formatters are mep's own (src/python_format.cpp and
-    // src/r_format.cpp), reached through a `builtin` entry rather than a
-    // command line. A `builtin` names a mep.* function taking the text and
-    // a width and returning the formatted text (or nil + message + line),
-    // which mep_format_run below calls in-process instead of spawning
-    // anything -- so gf on a .py or .R buffer is instant and works in a
-    // fresh checkout with no toolchain at all.
+    // Python, R and C++ are the languages here that need nothing
+    // installed: all three formatters are mep's own
+    // (src/python_format.cpp, src/r_format.cpp and src/cpp_format.cpp),
+    // reached through a `builtin` entry rather than a command line. A
+    // `builtin` names a mep.* function taking the text and a width and
+    // returning the formatted text (or nil + message + line), which
+    // mep_format_run below calls in-process instead of spawning anything --
+    // so gf on a .cpp, .h, .py or .R buffer is instant and works in a fresh
+    // checkout with no toolchain at all.
     //
     // mep's Python formatter is black-shaped on purpose -- 4-space
     // indents, double quotes, the magic trailing comma, two blank lines
     // around top-level defs -- but it is not black, and python_format.h
     // lists exactly where it stops short. The R one follows the tidyverse
-    // style air/styler produce.
+    // style air/styler produce. The C++ one is clang-format-shaped, in the
+    // dialect mep's own source is written in: 4-space indents, `Type *name`,
+    // `if (x)` with a space and `foo(x)` without, namespace bodies not
+    // indented, continuations aligned under the open bracket; cpp_format.h
+    // lists where that one stops short.
     //
     // A config that would rather have the real thing puts it back in one
     // line, and `width` here is what the builtin wraps at:
     //   mep.format_languages.py = {'black', '--quiet', '--stdin-filename={}', '-'}
     //   mep.format_languages.R = {'air', 'format', '--stdin-file-path={}'}
+    //   mep.format_languages.cpp = {'clang-format', '--assume-filename={}'}
     // (air is Posit's own tidyverse formatter and the only R one with a
     // line width -- styler fixes spacing, indentation and `=` vs `<-` but
     // never breaks a long call across lines at any width. Being
@@ -12473,20 +12479,23 @@ const char *kBuiltinFormat =
     // it walks up from to find the project's air.toml.)
     "  py = {builtin = 'format_python', name = \"mep's Python formatter\", width = 88},\n"
     "  R = {builtin = 'format_r', name = \"mep's R formatter\", width = 80},\n"
+    "  cpp = {builtin = 'format_cpp', name = \"mep's C++ formatter\", width = 100},\n"
     "}\n"
     // Same aliasing as mep.run_languages': entries are looked up by bare
-    // extension, so every extension of a language needs its own key.
-    "mep.format_languages.h = mep.format_languages.c\n"
-    "mep.format_languages.cc = mep.format_languages.c\n"
-    "mep.format_languages.cpp = mep.format_languages.c\n"
-    "mep.format_languages.cxx = mep.format_languages.c\n"
-    "mep.format_languages.hh = mep.format_languages.c\n"
-    "mep.format_languages.hpp = mep.format_languages.c\n"
-    "mep.format_languages.hxx = mep.format_languages.c\n"
-    "mep.format_languages.ipp = mep.format_languages.c\n"
-    "mep.format_languages.inl = mep.format_languages.c\n"
-    "mep.format_languages.cu = mep.format_languages.c\n"
-    "mep.format_languages.cuh = mep.format_languages.c\n"
+    // extension, so every extension of a language needs its own key. `c`
+    // stays on clang-format for now (TODO.org has a C formatter of its own
+    // still open); every C++ spelling, `.h` included -- which in a C++
+    // project is what a header is -- gets the builtin.
+    "mep.format_languages.h = mep.format_languages.cpp\n"
+    "mep.format_languages.cc = mep.format_languages.cpp\n"
+    "mep.format_languages.cxx = mep.format_languages.cpp\n"
+    "mep.format_languages.hh = mep.format_languages.cpp\n"
+    "mep.format_languages.hpp = mep.format_languages.cpp\n"
+    "mep.format_languages.hxx = mep.format_languages.cpp\n"
+    "mep.format_languages.ipp = mep.format_languages.cpp\n"
+    "mep.format_languages.inl = mep.format_languages.cpp\n"
+    "mep.format_languages.cu = mep.format_languages.cpp\n"
+    "mep.format_languages.cuh = mep.format_languages.cpp\n"
     "mep.format_languages.pyi = mep.format_languages.py\n"
     "mep.format_languages.r = mep.format_languages.R\n"
     "local function mep_format_buffer_text()\n"

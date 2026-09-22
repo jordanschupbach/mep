@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (73)
+* The bindings (74)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -58,6 +58,7 @@ that it does nothing.
 | =mep.fold_clear_provider= | removes every fold previously created under a given provider name |
 | =mep.fold_create= | creates a fold over a line range |
 | =mep.fold_toggle= | opens or closes the fold at the cursor |
+| =mep.format_cpp= | formats C++ with mep's own in-house formatter, or returns nil plus a reason |
 | =mep.format_python= | formats Python with mep's own in-house formatter, or returns nil plus a reason |
 | =mep.format_r= | the text formatted as R, or nil plus an error message |
 | =mep.get_line= | returns the text of a 1-indexed line |

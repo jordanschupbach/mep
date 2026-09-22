@@ -436,6 +436,7 @@ add_library(mep_core STATIC
     src/spell.cpp
     src/r_format.cpp
     src/python_format.cpp
+    src/cpp_format.cpp
     src/workspace_git.cpp
     ${MEP_GFX_NATIVE_SOURCES}
 )
@@ -804,6 +805,19 @@ target_include_directories(mep-python-format-test PRIVATE src)
 target_compile_options(mep-python-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-python-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-python-format-test)
+
+# The in-house C++ formatter (cpp_format.cpp is dependency-free -- it includes
+# <string>, <vector>, <algorithm> and <cctype>, and shells out to nothing, in
+# particular not to clang-format): the lexer and the inputs it has to refuse
+# on, the spacing table and the pointer/template/brace guesses behind it,
+# unwrapped-line splitting and indentation, the bracket/operator/assignment
+# splitter, preprocessor handling, and the token-equivalence check that backs
+# the whole thing. Same CHECK()-based shape as mep-org-doc-test.
+add_executable(mep-cpp-format-test EXCLUDE_FROM_ALL src/cpp_format_test.cpp src/cpp_format.cpp)
+target_include_directories(mep-cpp-format-test PRIVATE src)
+target_compile_options(mep-cpp-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cpp-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cpp-format-test)
 
 # Jupyter notebook helpers (notebook_doc.cpp is dependency-free apart from
 # the header-only json.h): nbformat parse/serialize round trips, the

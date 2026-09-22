@@ -2035,6 +2035,25 @@ const std::vector<OrgBlockCard> &Editor::OrgBlockCards(int buffer_id) {
     return org_block_cards_;
 }
 
+void Editor::RunOrgBabelBlockAt(int begin_row) {
+    const Buffer &buf = Buf();
+    if (begin_row < 0 || begin_row >= buf.LineCount()) return;
+    // One row into the block when it has a body, so the header stays
+    // concealed (see the declaration's own comment). An *empty* block is
+    // the one case that can't have that: its next row is the `#+end_src`
+    // closer, and OrgSrcBlockAt refuses a row on the closer itself (it
+    // scans upward and stops at the first close marker it meets), so the
+    // cursor goes on `#+begin_src` -- a row that same scan does accept.
+    // Which of the two it is comes from that parser rather than a second
+    // copy of the marker matching here; a block the renderer drew a
+    // button for is always closed, so the not-found fallback is only
+    // belt-and-braces.
+    const OrgSrcBlock blk = OrgSrcBlockAt(begin_row + 1);
+    const bool has_body = blk.found && blk.end_row - blk.start_row > 1;
+    SetCursorForLua(has_body ? begin_row + 1 : begin_row, 0);
+    TryRunOrgBabelAtCursor();
+}
+
 bool Editor::ToggleOrgBlockCards() {
     org_block_cards_visible_ = !org_block_cards_visible_;
     return org_block_cards_visible_;

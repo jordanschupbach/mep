@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Consistency checks for the built-in help workspace (help/).
 
-Run by `just help-check` (and by `just test`). Four checks:
+Run by `just help-check` (and by `just test`). Five checks:
 
   1. Freshness -- every help/*.html is exactly what mep's own exporter
      produces from its .org source right now. Done by re-exporting into a
@@ -10,10 +10,12 @@ Run by `just help-check` (and by `just test`). Four checks:
      rebased branch could pass one while shipping stale HTML.
   2. Structure -- every page declares a <title> and a help-section, the two
      things the Help sidebar reads to place it.
-  3. Links -- every internal href in a page resolves to a file that exists,
+  3. Bytes -- no exported page carries a control byte, which is what an
+     unsubstituted exporter placeholder reaches the reader as.
+  4. Links -- every internal href in a page resolves to a file that exists,
      and no Org source has a link straddling a line break (which the exporter
      silently renders as literal text).
-  4. Coverage -- how much of mep's command and <leader> surface the manual
+  5. Coverage -- how much of mep's command and <leader> surface the manual
      actually mentions. Reported always; enforced only under --strict,
      because the manual is being written incrementally and a hard gate here
      would just be permanently red until the last page lands.
@@ -57,6 +59,29 @@ def check_freshness(mep, problems):
             if out.read_bytes() != committed.read_bytes():
                 fail(problems, f"{committed.name} is stale -- it differs from "
                                f"what {src.name} exports now (run `just help`)")
+
+
+def check_exported_bytes(problems):
+    """No exported page may carry a control byte.
+
+    The exporter hides each construct's generated markup behind a
+    `\0M<n>\0` placeholder while it converts the rest of the line, and
+    substitutes them all back at the end. A placeholder that survives
+    that reaches the reader as a literal NUL -- and makes git classify
+    the page as binary, so it stops merging it and every branch that
+    touches the page conflicts on it instead. Cheap to assert, and the
+    symptom is otherwise invisible in a diff.
+    """
+    for page in sorted(HELP.glob("*.html")):
+        data = page.read_bytes()
+        bad = {b for b in data if b < 9 or 13 < b < 32}
+        if bad:
+            where = data.find(bytes([min(bad)]))
+            fail(problems, f"{page.name}: control byte(s) "
+                           f"{sorted(hex(b) for b in bad)} in the exported HTML "
+                           f"(first at offset {where}) -- an unsubstituted "
+                           f"exporter placeholder, not something the source can "
+                           f"contain")
 
 
 def check_structure(problems):
@@ -149,6 +174,7 @@ def main():
 
     problems = []
     check_freshness(args.mep, problems)
+    check_exported_bytes(problems)
     check_structure(problems)
     check_links(problems)
     check_source_links(problems)

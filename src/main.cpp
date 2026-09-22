@@ -29647,15 +29647,36 @@ void DrawPromptOverlay() {
  */
 void DrawConfirmOverlay() {
     const std::string &msg = g_editor.ConfirmMessage();
-    int box_w = std::min(gfx::GetScreenWidth() - 80,
-                          static_cast<int>(gfx::MeasureTextEx(g_font, msg.c_str(), g_font_size, 0).x) + 60);
+    const bool danger = g_editor.ConfirmDanger();
+    // Danger confirms (irreversible deletes) gain a red "WARNING" header so
+    // the user can't reflexively dismiss them -- the whole point of gating
+    // the action behind this dialog.
+    // ASCII only: the embedded fonts lack U+26A0 (warning sign) and U+2014
+    // (em dash) -- both render as a missing-glyph '?' box, which undercuts
+    // the "this is serious" intent. '!!' carries the alarm without a glyph.
+    const char *header = "!! WARNING - THIS CANNOT BE UNDONE !!";
+    const float header_size = MenuFontSize();
+    float content_w = gfx::MeasureTextEx(g_font, msg.c_str(), g_font_size, 0).x;
+    if (danger) content_w = std::max(content_w, gfx::MeasureTextEx(g_font, header, header_size, 0).x);
+    int box_w = std::min(gfx::GetScreenWidth() - 80, static_cast<int>(content_w) + 60);
     box_w = std::max(box_w, 260);
-    FloatFrame f = DrawFloatFrame(box_w, static_cast<int>(g_font_size) * 2 + 50, "");
-    gfx::DrawTextEx(g_font, msg.c_str(), gfx::Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
+    const int header_h = danger ? static_cast<int>(header_size) + 12 : 0;
+    FloatFrame f = DrawFloatFrame(box_w, static_cast<int>(g_font_size) * 2 + 50 + header_h, "");
+    float y = f.content_y;
+    if (danger) {
+        // A doubled red border over the default one so the box itself reads
+        // as an alert, not just its text.
+        gfx::DrawRectangleLines(f.box_x, f.box_y, f.box_w, f.box_h, ResolveHlGroup("Error"));
+        gfx::DrawRectangleLines(f.box_x + 1, f.box_y + 1, f.box_w - 2, f.box_h - 2, ResolveHlGroup("Error"));
+        gfx::DrawTextEx(g_font, header, gfx::Vector2{f.content_x, y}, header_size, 0, ResolveHlGroup("Error"));
+        y += header_size + 12;
+    }
+    gfx::DrawTextEx(g_font, msg.c_str(), gfx::Vector2{f.content_x, y}, g_font_size, 0,
+                    ResolveHlGroup(danger ? "Error" : "Normal"));
     std::string hint = g_editor.ConfirmDefaultYes() ? "[y]es / [n]o (Enter = yes, Esc = no)"
                                                      : "[y]es / [n]o (Enter = no, Esc = no)";
     float hint_size = MenuFontSize();
-    gfx::DrawTextEx(g_font, hint.c_str(), gfx::Vector2{f.content_x, f.content_y + g_font_size + 10}, hint_size, 0, ResolveHlGroup("Comment"));
+    gfx::DrawTextEx(g_font, hint.c_str(), gfx::Vector2{f.content_x, y + g_font_size + 10}, hint_size, 0, ResolveHlGroup("Comment"));
 }
 
 /**

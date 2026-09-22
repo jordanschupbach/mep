@@ -7729,6 +7729,19 @@ public:
      */
     void BeginConfirm(const std::string &message, bool default_yes, int on_done_ref);
     /**
+     * @brief Opens a confirm-dialog-equivalent modal driven by a native C++ callback instead of a Lua ref.
+     * @param message The confirmation message text.
+     * @param default_yes The default answer used when the user presses Enter (Escape always counts as false).
+     * @param on_done Callback invoked with the answer (true = yes, false = no/cancel).
+     * @param danger When true, the overlay renders in red with a warning header (for irreversible/destructive actions).
+     *
+     * The native analogue of BeginConfirm, mirroring BeginPromptNative: lets
+     * C++ flows (e.g. WorkspaceRemove's force-delete confirmation) gate an
+     * action behind an explicit y/n without round-tripping through Lua.
+     */
+    void BeginConfirmNative(const std::string &message, bool default_yes,
+                             std::function<void(bool)> on_done, bool danger = false);
+    /**
      * @brief Opens a vim.ui.select-equivalent modal item picker, taking over input until confirmed or cancelled.
      * @param title The picker's title text.
      * @param items The selectable item labels, each of which may contain '\\n's the renderer draws as its own rows.
@@ -7773,6 +7786,11 @@ public:
      * @return True if the default answer is yes.
      */
     bool ConfirmDefaultYes() const { return confirm_default_yes_; }
+    /**
+     * @brief Whether the active confirm is a destructive-action warning that should render in red.
+     * @return True for a danger-styled confirm (e.g. force-deleting a workspace with unsaved work).
+     */
+    bool ConfirmDanger() const { return confirm_danger_; }
     /**
      * @brief Returns the active select overlay's title text.
      * @return The select title.
@@ -11090,7 +11108,15 @@ private:
     bool prompt_masked_ = false;
     std::string confirm_message_;
     bool confirm_default_yes_ = false;
+    // Destructive-action confirm: DrawConfirmOverlay renders the box red with
+    // a warning header so the user can't gloss over an irreversible delete.
+    bool confirm_danger_ = false;
     int confirm_callback_ref_ = 0;
+    // Set only by BeginConfirmNative; HandleConfirmInput fires this in place
+    // of confirm_callback_ref_ and clears it right after (either branch), so
+    // a later BeginConfirm(Lua-ref) reusing the overlay can't re-invoke a
+    // stale native callback. Mirrors prompt_native_callback_.
+    std::function<void(bool)> confirm_native_callback_;
     std::string select_title_;
     std::vector<std::string> select_items_;
     int select_index_ = 0;

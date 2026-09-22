@@ -15073,8 +15073,23 @@ void Editor::WorkspaceRemove(const std::string &arg, bool force) {
             }
             std::string msg = TrimWs(*err);
             if (msg.empty()) msg = "git worktree remove exited " + std::to_string(code);
-            // Without `!` git itself refuses on a dirty tree -- surfaced
-            // verbatim (decision 5).
+            // Without `!` git refuses on a dirty tree ("contains modified or
+            // untracked files, use --force to delete it"). Rather than
+            // dead-ending on that error, offer to force through it -- but
+            // behind an explicit y/n confirm (defaulting to No) so a stray
+            // :wsdelete can't silently discard uncommitted or untracked work,
+            // while still letting the user remove the workspace regardless.
+            if (!force && (msg.find("use --force") != std::string::npos ||
+                           msg.find("modified or untracked") != std::string::npos)) {
+                BeginConfirmNative(
+                    "Workspace '" + name + "' has uncommitted or untracked changes that will be "
+                    "permanently lost. Force delete it anyway?",
+                    /*default_yes=*/false, [this, name](bool yes) {
+                        if (yes) WorkspaceRemove(name, /*force=*/true);
+                        else Notify("Kept workspace '" + name + "'");
+                    }, /*danger=*/true);
+                return;
+            }
             Notify("Workspace '" + name + "': " + msg, NotifyLevel::Error);
         };
         if (JobManager::Instance().Spawn(argv, project->git_toplevel.empty() ? project->root : project->git_toplevel, cb) == 0) {
@@ -19446,7 +19461,20 @@ void Editor::BeginConfirm(const std::string &message, bool default_yes, int on_d
     overlay_previous_mode_ = mode_;
     confirm_message_ = message;
     confirm_default_yes_ = default_yes;
+    confirm_danger_ = false;
     confirm_callback_ref_ = on_done_ref;
+    confirm_native_callback_ = nullptr;
+    mode_ = Mode::Confirm;
+}
+
+void Editor::BeginConfirmNative(const std::string &message, bool default_yes,
+                                 std::function<void(bool)> on_done, bool danger) {
+    overlay_previous_mode_ = mode_;
+    confirm_message_ = message;
+    confirm_default_yes_ = default_yes;
+    confirm_danger_ = danger;
+    confirm_callback_ref_ = 0;
+    confirm_native_callback_ = std::move(on_done);
     mode_ = Mode::Confirm;
 }
 
@@ -19799,8 +19827,12 @@ void Editor::HandleConfirmInput() {
     }
     if (!decided) return;
     int ref = confirm_callback_ref_;
+    auto native_cb = std::move(confirm_native_callback_);
+    confirm_native_callback_ = nullptr;
     RestoreFromOverlay();
-    if (lua_) {
+    if (native_cb) {
+        native_cb(result);
+    } else if (ref != 0 && lua_) {
         lua_->CallRefWithBool(ref, result);
         lua_->UnrefFunction(ref);
     }

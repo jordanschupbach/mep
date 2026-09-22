@@ -39514,12 +39514,92 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     struct OrgTableRule {
         gfx::Rectangle rect;
         bool horizontal = false;
+        // Horizontal rules only: the band wash to lay back over the
+        // opaque cover that hides the `|---+---|` dashes, and which of
+        // the box's corners that band sits in (a table can both begin
+        // and end on a rule row).
+        gfx::Color wash{};
+        bool round_top = false, round_bot = false;
     };
     std::vector<OrgTableRule> org_table_rules;
+    // The outermost `|` of a table row, concealed the way a block card
+    // conceals its `#+begin_` line: the rounded outline drawn round the
+    // table *is* that pipe, and a table showing both reads as
+    // double-ruled all down each side. Painted opaque and re-washed
+    // (the pipe has to actually go) in the pass after the row text, so
+    // these are collected here rather than drawn where they are found.
+    // The row under the cursor or inside a Visual selection keeps its
+    // pipes: the caret is drawn before this pass and would be painted
+    // out with them.
+    struct OrgTableConceal {
+        gfx::Rectangle rect;
+        gfx::Color wash{};
+        bool round_top = false, round_bot = false;
+        bool inset_l = false, inset_r = false;  // which end of the band meets a rounded corner
+    };
+    std::vector<OrgTableConceal> org_table_conceals;
+    // The box drawn round each visible table: the union of its rows' own
+    // bands, so the rounded outline lands on exactly the geometry the
+    // wash was painted in rather than on a re-derived guess. Extended
+    // off-screen when the table runs past the viewport -- the same thing
+    // a block card's box does -- so the scissor clips that edge away
+    // instead of laying a lid across the middle of a table.
+    struct OrgTableBox {
+        gfx::Rectangle rect{};
+        bool active = false;  // the cursor is inside this table: a brighter border, as a card gets
+    };
+    std::unordered_map<const Editor::OrgTableGrid *, OrgTableBox> org_table_boxes;
     // Row -> the table it belongs to, so the row loop can answer "is this
     // a table row, and if so where are its rules" in one hash lookup
     // instead of re-walking the table list per row.
     std::unordered_map<int, const Editor::OrgTableGrid *> org_table_of_row;
+    // Row -> its parity among the table's *body* rows (header and rule
+    // rows excluded, so a rule between two stripes does not restart the
+    // pattern): zebra banding, which is what lets the eye carry a wide
+    // row across to its last column. Presence in this map is itself the
+    // "is this a striped body row?" test.
+    std::unordered_map<int, int> org_table_stripe;
+    // The radius the table's outline -- and so the inset of the bands
+    // that meet it -- is rounded by, the same corner the block cards
+    // have. Fixed in pixels rather than scaled by the box: a table's box
+    // grows with the document, a corner should not.
+    const float org_table_corner = 6.0f;
+    /**
+     * @brief Draws one horizontal band of an org table's background, inset wherever it meets a rounded corner.
+     * @param b The band's rectangle.
+     * @param round_top Whether the band sits against the top of the table's box.
+     * @param round_bot Whether the band sits against the bottom of the table's box.
+     * @param inset_l Whether the band's left end is at the box's left edge.
+     * @param inset_r Whether the band's right end is at the box's right edge.
+     * @param c The color to paint.
+     *
+     * Split into up to three rects that share their edges exactly and
+     * never overlap, so an alpha wash lands at one coverage everywhere
+     * rather than doubling along a seam. The corner squares are left
+     * unpainted: the pane's own background showing through inside the
+     * rounded outline is what a rounded corner should look like. The two
+     * `inset_` flags are what let a band covering only one *cell* of the
+     * top row -- the concealed outer pipe -- round the corner it owns
+     * and stay square at the edge it shares with the cell beside it.
+     */
+    auto draw_org_table_band = [org_table_corner](const gfx::Rectangle &b, bool round_top, bool round_bot,
+                                                  bool inset_l, bool inset_r, gfx::Color c) {
+        if (b.width <= 0.0f || b.height <= 0.0f) return;
+        const float r = std::min(org_table_corner, std::min(b.height / 2.0f, b.width / 2.0f));
+        const float top = round_top ? r : 0.0f;
+        const float bot = round_bot ? r : 0.0f;
+        const float li = inset_l ? r : 0.0f;
+        const float ri = inset_r ? r : 0.0f;
+        // Absolute pixel edges, each truncated once and then shared by
+        // the rect above and the rect below it, so no seam can open up.
+        const int x0 = static_cast<int>(b.x), x1 = static_cast<int>(b.x + li);
+        const int x2 = static_cast<int>(b.x + b.width - ri), x3 = static_cast<int>(b.x + b.width);
+        const int y0 = static_cast<int>(b.y), y1 = static_cast<int>(b.y + top);
+        const int y2 = static_cast<int>(b.y + b.height - bot), y3 = static_cast<int>(b.y + b.height);
+        if (y1 > y0 && x2 > x1) gfx::DrawRectangle(x1, y0, x2 - x1, y1 - y0, c);
+        if (y2 > y1) gfx::DrawRectangle(x0, y1, x3 - x0, y2 - y1, c);
+        if (y3 > y2 && x2 > x1) gfx::DrawRectangle(x1, y2, x2 - x1, y3 - y2, c);
+    };
     // Shared by every org-specific render pass below (block cards, the
     // scaled headlines and the drawn table grid), so the filetype lookup
     // happens once per pane rather than once per row.
@@ -39544,7 +39624,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // vector, refilled on the next call -- taking addresses into
             // it is safe only until then, and nothing between here and
             // this function's end calls it again.
-            for (int r = t.start_row; r <= t.end_row; r++) org_table_of_row[r] = &t;
+            int body = 0;
+            for (int r = t.start_row; r <= t.end_row; r++) {
+                org_table_of_row[r] = &t;
+                const bool hdr = t.header_end_row >= 0 && r <= t.header_end_row;
+                const bool sep = std::find(t.sep_rows.begin(), t.sep_rows.end(), r) != t.sep_rows.end();
+                if (!hdr && !sep) org_table_stripe[r] = body++ % 2;
+            }
         }
     }
     if (g_editor.OrgBlockCardsVisible() && is_org_buffer) {
@@ -40026,6 +40112,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
+        // Whether this row's background is still nothing but the pane's
+        // own -- no fold tint, no cursorline, no whole-line decoration.
+        // Cleared by each of the three fills below, and read by the org
+        // table pass, whose conceal of the outer `|` has to repaint the
+        // background it covers and can only reproduce a plain one: over a
+        // tinted row it would leave two notches in that tint instead.
+        bool row_bg_plain = true;
         // Background fill for the fold's summary row -- the same tint
         // :set cursorline uses for the current line (not a separate,
         // more saturated color of its own), just always on for a folded
@@ -40035,6 +40128,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // actually is inside this (collapsed) range.
         if (fold_here) {
             gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height, ResolveHlGroup("CursorLine"));
+            row_bg_plain = false;
         }
 
         // An over-wide org table's row (Buffer::org_table_wrap_rows,
@@ -40193,6 +40287,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
                               line_height, ResolveHlGroup("CursorLine"));
             }
+            row_bg_plain = false;
         }
 
         // A scope guide occupies only the lines *between* its delimiters.
@@ -40698,6 +40793,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
                                   line_height, tint);
                 }
+                row_bg_plain = false;
             }
             if ((!d.sign.empty() || !d.sign_shape.empty()) && d.priority > sign_priority) {
                 sign = d.sign;
@@ -40738,16 +40834,93 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const bool is_header = tbl.header_end_row >= 0 && row <= tbl.header_end_row;
                 const bool is_sep =
                     std::find(tbl.sep_rows.begin(), tbl.sep_rows.end(), row) != tbl.sep_rows.end();
-                gfx::Color wash = ResolveHlGroup("Accent");
-                gfx::DrawRectangle(static_cast<int>(tbl_x), static_cast<int>(ly), static_cast<int>(tbl_w),
-                              static_cast<int>(tbl_h),
-                              gfx::Color{wash.r, wash.g, wash.b, static_cast<unsigned char>(is_header ? 34 : 14)});
+                // Zebra banding: the header keeps the loudest wash, and
+                // the body rows alternate either side of a faint base, so
+                // consecutive rows read apart without either of them
+                // looking selected.
+                auto stripe_it = org_table_stripe.find(row);
+                const unsigned char wash_a =
+                    is_header ? 44 : (stripe_it != org_table_stripe.end() && stripe_it->second == 1 ? 26 : 12);
+                // Only the table's real first/last row gets its corners
+                // inset. A table continuing past the viewport is drawn
+                // square there, because the outline it meets is off-screen
+                // too.
+                const bool round_top = row == tbl.start_row;
+                const bool round_bot = row == tbl.end_row;
+                gfx::Color accent_wash = ResolveHlGroup("Accent");
+                const gfx::Color wash{accent_wash.r, accent_wash.g, accent_wash.b, wash_a};
+                draw_org_table_band(gfx::Rectangle{tbl_x, ly, tbl_w, tbl_h}, round_top, round_bot, true, true, wash);
+                // The box the rounded outline is stroked on, grown row by
+                // row; a table running off either edge of the viewport is
+                // pushed a row past it so the scissor takes that side's
+                // border away rather than drawing it mid-table.
+                {
+                    OrgTableBox &box = org_table_boxes[&tbl];
+                    // Every row with a neighbour in the table reaches a
+                    // line past itself. For an interior row that lands on
+                    // the neighbour the loop visits anyway (a row is never
+                    // shorter than one slot), so the union is unchanged;
+                    // for the first or last row *on screen* of a table
+                    // that continues past the edge, it reaches off-screen,
+                    // which is the point.
+                    const float top = ly - (tbl.start_row < row ? static_cast<float>(line_height) : 0.0f);
+                    const float bot = ly + tbl_h + (tbl.end_row > row ? static_cast<float>(line_height) : 0.0f);
+                    if (box.rect.width <= 0.0f) {
+                        box.rect = gfx::Rectangle{tbl_x, top, tbl_w, bot - top};
+                        box.active = is_active && pane.cursor.row >= tbl.start_row && pane.cursor.row <= tbl.end_row;
+                    } else {
+                        const float x1 = std::max(box.rect.x + box.rect.width, tbl_x + tbl_w);
+                        box.rect.x = std::min(box.rect.x, tbl_x);
+                        box.rect.width = x1 - box.rect.x;
+                        const float y1 = std::max(box.rect.y + box.rect.height, bot);
+                        box.rect.y = std::min(box.rect.y, top);
+                        box.rect.height = y1 - box.rect.y;
+                    }
+                }
                 if (is_sep) {
                     // A `|---+---|` row is drawn, not read: the post-pass
-                    // covers its dashes and lays one line across the table.
-                    org_table_rules.push_back({gfx::Rectangle{tbl_x, ly, tbl_w, tbl_h}, true});
+                    // covers its dashes -- outer pipes and all, so a rule
+                    // row needs no conceal band of its own -- and lays one
+                    // line across the table.
+                    org_table_rules.push_back(
+                        {gfx::Rectangle{tbl_x, ly, tbl_w, tbl_h}, true, wash, round_top, round_bot});
                 } else {
+                    // The two outer pipes, concealed so the outline can be
+                    // the table's edge -- but only on a row whose
+                    // background the conceal can put back (row_bg_plain),
+                    // and never over a pipe the caret is actually on: the
+                    // caret is drawn before the conceal pass and would be
+                    // painted out with it. Kept per *cell* rather than per
+                    // row, so walking along a row doesn't flash both edges
+                    // back on -- and tested by byte offset into the stored
+                    // line (its first and last `|`), which is what
+                    // pane.cursor.col is measured in.
+                    const std::string &cur_line = buf.lines[static_cast<size_t>(row)];
+                    const size_t first_bar = cur_line.find('|');
+                    const size_t last_bar = cur_line.rfind('|');
+                    const int caret_col = is_active && pane.cursor.row == row ? pane.cursor.col : -1;
+                    const bool row_selected = block_selection
+                                                  ? (row >= block_top && row <= block_bottom)
+                                                  : (has_selection && row >= sel_start.row && row <= sel_end.row);
+                    const bool keep_l =
+                        row_selected || !row_bg_plain ||
+                        (caret_col >= 0 && first_bar != std::string::npos &&
+                         caret_col <= static_cast<int>(first_bar));
+                    const bool keep_r = row_selected || !row_bg_plain ||
+                                        (caret_col >= 0 && last_bar != std::string::npos &&
+                                         caret_col >= static_cast<int>(last_bar));
+                    if (!keep_l) {
+                        org_table_conceals.push_back(
+                            {gfx::Rectangle{tbl_x, ly, g_char_width, tbl_h}, wash, round_top, round_bot, true, false});
+                    }
+                    if (!keep_r) {
+                        org_table_conceals.push_back({gfx::Rectangle{tbl_x + tbl_w - g_char_width, ly, g_char_width, tbl_h},
+                                                      wash, round_top, round_bot, false, true});
+                    }
                     for (int rc : tbl.rule_cols) {
+                        // The outermost two columns are the table's own
+                        // edges, and the outline already runs down them.
+                        if (rc == geo_indent || rc == geo_indent + geo_width - 1) continue;
                         // Centred on the `|` glyph's own column, full row
                         // height, so the per-row glyphs join into one
                         // continuous rule down the table.
@@ -41936,6 +42109,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         gfx::DrawTextEx(g_font, label_text.c_str(), gfx::Vector2{text_draw_x, p_label_y + (label_h - g_font_size) / 2.0f}, g_font_size, 0, gfx::White);
     }
 
+    // The outer pipes (org_table_conceals above), painted out before the
+    // rules so a horizontal rule still runs the full width of the box
+    // rather than stopping a cell short of the border at each end. Opaque
+    // first -- the pipe has to actually go -- then the band's own wash
+    // back over it, landing on exactly the color the row already shows.
+    for (const OrgTableConceal &tc : org_table_conceals) {
+        draw_org_table_band(tc.rect, tc.round_top, tc.round_bot, tc.inset_l, tc.inset_r, ResolveHlGroup("NormalBg"));
+        draw_org_table_band(tc.rect, tc.round_top, tc.round_bot, tc.inset_l, tc.inset_r, tc.wash);
+    }
+
     // Org table grid (see org_table_rules above): drawn after the row
     // text so a column rule merges with the `|` glyphs it runs through,
     // and a horizontal rule covers the `|---+---|` dashes it stands in
@@ -41944,9 +42127,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const gfx::Color rule_c = ResolveHlGroup("Comment");
         for (const OrgTableRule &tr : org_table_rules) {
             if (tr.horizontal) {
-                gfx::DrawRectangle(static_cast<int>(tr.rect.x), static_cast<int>(tr.rect.y),
-                              static_cast<int>(tr.rect.width), static_cast<int>(tr.rect.height),
-                              ResolveHlGroup("NormalBg"));
+                // The cover is opaque -- the dashes underneath have to go
+                // -- so the band's own wash goes back on over it, or the
+                // rule row would be the one strip of bare page in an
+                // otherwise washed table. Both are inset at the corners
+                // the outline rounds, exactly as the fill pass was.
+                draw_org_table_band(tr.rect, tr.round_top, tr.round_bot, true, true, ResolveHlGroup("NormalBg"));
+                draw_org_table_band(tr.rect, tr.round_top, tr.round_bot, true, true, tr.wash);
                 gfx::DrawRectangle(static_cast<int>(tr.rect.x),
                               static_cast<int>(tr.rect.y + tr.rect.height / 2.0f),
                               static_cast<int>(tr.rect.width), 1, rule_c);
@@ -41955,6 +42142,24 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                               static_cast<int>(tr.rect.height), rule_c);
             }
         }
+    }
+
+    // The rounded outline round each table (org_table_boxes above), last
+    // of the table passes so it stays crisp over both the row text and
+    // the rules that ran to the table's edge -- the same border a block
+    // card draws, and for the same reason: it is what makes the thing
+    // read as one object rather than as a run of pipe characters.
+    for (const auto &entry : org_table_boxes) {
+        const OrgTableBox &box = entry.second;
+        if (box.rect.width <= 0.0f || box.rect.height <= 0.0f) continue;
+        const gfx::Color accent = ResolveHlGroup("Accent");
+        const gfx::Color border = box.active ? gfx::Fade(accent, 0.55f) : gfx::Fade(ResolveHlGroup("Border"), 0.7f);
+        // roundness is a fraction of half the shorter side, so the fixed
+        // pixel radius has to be converted -- and clamped, for a table
+        // one row tall.
+        const float rr = std::min(1.0f, 2.0f * org_table_corner /
+                                            std::max(1.0f, std::min(box.rect.width, box.rect.height)));
+        gfx::DrawRectangleRoundedLinesEx(box.rect, rr, 6, box.active ? 2.0f : 1.0f, border);
     }
 
     // Org block cards (see org_card_boxes above): the title bar that

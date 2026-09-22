@@ -15,12 +15,16 @@ stale copy from disk.
 |----------------------+----------------|
 | C, C++ and friends   | =clang-format= |
 | Python               | =black=        |
-| R                    | =air=          |
+| R                    | mep's own -- nothing to install |
 | anything else        | =mep.lsp_format=, if a server is attached |
 
 That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.
+
+R is the exception that needs nothing installed at all: the formatter is
+built into mep, so =gf= on an R buffer works on a machine with no R, no
+=air= and no =styler=, and answers instantly because nothing is spawned.
 
 * Org code blocks
 
@@ -49,23 +53,68 @@ to that block's own language server -- the one already answering
 whole-file sweep does not: it only runs the table, and reports those blocks
 as skipped.
 
-* Line width
+* The R formatter
 
-=air= wraps R at *80 columns*. It is the only formatter in the table with a
-line width of its own: =clang-format= and =black= take theirs from the
-project's =.clang-format= / =pyproject.toml=, and =styler=, R's other
-formatter, has no line width at all -- it fixes spacing and indentation but
-never breaks a long call across lines, which is why =air= is the R entry.
+mep's R formatter follows the tidyverse style: two-space indent, spaces
+around binary operators (but not around =^=, =:=, =::=, =$= or =@=), =<-=
+for assignment, double-quoted strings, and an 80-column margin that calls,
+argument lists and pipelines are broken across to respect.
 
-The margin comes from an =air.toml= beside the file:
-
-#+begin_src toml
-[format]
-line-width = 80
+#+begin_src r
+result=some_function(argument_one=1,argument_two=2,argument_three='three')
 #+end_src
 
-mep's own repository root carries one. =air= walks up from the file it is
-formatting to find the nearest, so a project can set its own.
+becomes
+
+#+begin_src r
+result <- some_function(
+  argument_one = 1,
+  argument_two = 2,
+  argument_three = "three"
+)
+#+end_src
+
+A trailing block "hugs" the call it belongs to rather than exploding the
+argument list, which is the shape R is actually written in:
+
+#+begin_src r
+test_that("it works", {
+  expect_equal(1, 1)
+})
+#+end_src
+
+Two things it deliberately does *not* do: it never adds braces to an
+=if=/=for= body that has none, and it never rewrites a =%>%= into a =|>=.
+Both change the code rather than its layout, which is not what =gf= is
+for.
+
+Comments are kept where they were written -- above a statement, after it,
+or after the operator they follow -- and one blank line between statements
+survives (several collapse to one).
+
+A file it cannot parse is left *completely alone*: =gf= reports the line
+the parse failed on and the buffer is untouched. So is a file where the
+formatter's own check -- it re-reads its output and compares it, token for
+token, against the input -- finds a difference it did not intend.
+
+** Changing the width
+
+#+begin_src lua
+mep.format_languages.R.width = 100
+#+end_src
+
+** Using air or styler instead
+
+#+begin_src lua
+-- Posit's air, the tidyverse formatter this style follows:
+mep.format_languages.R = {'air', 'format', '--stdin-file-path={}'}
+-- or styler, which rewrites a file in place rather than filtering:
+mep.format_languages.R = {mode = 'file', 'Rscript', '-e',
+  'styler::style_file(commandArgs(TRUE))', '{}'}
+#+end_src
+
+Both need the tool installed, and =air= takes its own margin from the
+nearest =air.toml= rather than from =width= above.
 
 * Adding one
 
@@ -76,13 +125,16 @@ mep.format_languages.ts = mep.format_languages.js
 
 The entry is an argv array. =\{\}= anywhere in it is replaced by a path.
 
-Two modes:
+Three modes:
 
 - *filter* (the default): the buffer is written to the formatter's stdin and
   its stdout replaces the buffer. =\{\}= is the buffer's real absolute
   filename.
 - *file*: add =mode = 'file'=, and =\{\}= is a temporary file the formatter
   edits in place.
+- *builtin*: no program at all -- =builtin = 'format_r'= names a =mep.*=
+  function taking the text and a width and returning the formatted text,
+  which runs in-process. This is what the R entry is.
 
 Entries are looked up by *bare extension*, so every extension of a language
 needs its own key -- which is why the built-in table aliases =.h=, =.cc=,

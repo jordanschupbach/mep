@@ -6,6 +6,7 @@
 #include "editor.h"
 #include "job.h"
 #include "org_doc.h"
+#include "r_format.h"
 #include "tcp_client.h"
 #include "treesitter.h"
 
@@ -310,6 +311,30 @@ int l_spell_fix_selection(lua_State *L) {
 // mep.spell_fix_word() -> count (0 or 1). Fixes the word under the cursor.
 int l_spell_fix_word(lua_State *L) {
     lua_pushinteger(L, GetEditor(L)->FixSpellingWordUnderCursor());
+    return 1;
+}
+
+// mep.format_r(text[, width]) -> the text formatted as R, or nil plus an error message
+//
+// mep's own R formatter (r_format.h), the builtin behind `gf` in an R
+// buffer and in an org `#+begin_src R` block -- no `air`/`styler`/R
+// installation involved, and no subprocess, so unlike every other
+// mep.format_languages entry this one answers synchronously. On a file
+// it cannot parse it returns nil plus a message and the 1-indexed line,
+// and the caller leaves the buffer alone.
+int l_format_r(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    rfmt::Options opt;
+    if (!lua_isnoneornil(L, 2)) opt.width = static_cast<int>(luaL_checkinteger(L, 2));
+    rfmt::Result r = rfmt::Format(std::string(src, len), opt);
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        lua_pushinteger(L, r.error_line);
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
     return 1;
 }
 
@@ -10389,6 +10414,7 @@ const luaL_Reg kMepFuncs[] = {
     {"spell_enabled", l_spell_enabled},
     {"spell_fix_selection", l_spell_fix_selection},
     {"spell_fix_word", l_spell_fix_word},
+    {"format_r", l_format_r},
     {"cursor", l_cursor},
     {"set_cursor", l_set_cursor},
     {"current_buffer", l_current_buffer},

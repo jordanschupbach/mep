@@ -434,6 +434,7 @@ add_library(mep_core STATIC
     src/http_server.cpp
     src/editor.cpp
     src/spell.cpp
+    src/r_format.cpp
     src/workspace_git.cpp
     ${MEP_GFX_NATIVE_SOURCES}
 )
@@ -715,6 +716,17 @@ target_include_directories(mep-vterm-test PRIVATE src)
 target_compile_options(mep-vterm-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-vterm-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-vterm-test)
+
+# mep's own R formatter (r_format.cpp): lexer, parser and width-driven
+# printer for the `gf` binding on R buffers, with no external `air`/
+# `styler`/R installation involved. Dependency-free std::string code, so
+# this links only r_format.cpp itself -- same windowless shape as
+# mep-spell-test below.
+add_executable(mep-r-format-test EXCLUDE_FROM_ALL src/r_format_test.cpp src/r_format.cpp)
+target_include_directories(mep-r-format-test PRIVATE src)
+target_compile_options(mep-r-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-r-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-r-format-test)
 
 # The dependency-free spell checker (spell.cpp): edit-distance/Soundex
 # helpers, case-insensitive IsMisspelled with its skip rules and personal

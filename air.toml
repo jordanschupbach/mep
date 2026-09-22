@@ -1,9 +1,10 @@
-# mep's own R formatting, and the default gf applies to every R buffer:
-# `air format` (mep.format_languages.R, kBuiltinFormat in src/main.cpp)
-# walks up from the file it is given to find this file.
+# This file is *not* what mep uses to format R any more: `gf` on an R
+# buffer runs mep's own formatter (src/r_format.cpp, mep.format_languages.R
+# in kBuiltinFormat, src/main.cpp), which takes its 80-column margin from
+# that entry's own `width` field and reads nothing from disk.
 #
-# air's own default is already 80, but pinning it makes the margin an
-# explicit project decision rather than a default that could move, and
-# gives one obvious place to change it.
+# It is kept for anyone running `air format` over this repo by hand, and
+# because air's own default is already 80, pinning it makes the margin an
+# explicit project decision rather than a default that could move.
 [format]
 line-width = 80

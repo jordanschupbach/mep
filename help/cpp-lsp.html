@@ -61,8 +61,11 @@ next to the file. Both are worth setting for a project of any size.</p>
 <h1>Choosing clangd instead</h1>
 <p><code>clangd</code> is still registered. Give it back the filetypes and clear this
 server's to use it:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.clangd.filetypes = <span class="tok-blue">{</span><span class="tok-green">'c'</span>, <span class="tok-green">'cpp'</span>, <span class="tok-green">'h'</span>, <span class="tok-green">'hpp'</span>, <span class="tok-green">'cc'</span>, <span class="tok-green">'cxx'</span><span class="tok-blue">}</span>
-mep.lsp_servers.cpp_ls.filetypes = <span class="tok-blue">{</span>}</code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.clangd.filetypes = <span class="tok-blue">{</span><span class="tok-green">'cpp'</span>, <span class="tok-green">'h'</span>, <span class="tok-green">'hpp'</span>, <span class="tok-green">'cc'</span>, <span class="tok-green">'cxx'</span><span class="tok-blue">}</span>
+mep.lsp_servers.cpp_ls.filetypes = {<span class="tok-blue">}</span></code></pre></div>
+<p><code>c</code> is left out of that list on purpose: it belongs to mep's own C
+server (see <a href="c-lsp.html">The C language server</a>), so add it only if you want clangd
+for C as well and clear <code>mep.lsp_servers.c_ls.filetypes</code> alongside it.</p>
 <p>clangd knows what a real compilation knows, which is more than this
 server can; it also needs a compile database and an install. This one is
 always there.</p>

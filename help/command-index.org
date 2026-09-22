@@ -118,7 +118,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepLspFormat= | [[file:lsp.html][Language servers]] |
 | =:MepLspHover= | [[file:lsp.html][Language servers]] |
 | =:MepLspImplementation= | [[file:lsp.html][Language servers]] |
-| =:MepLspReferences= | [[file:lsp.html][Language servers]] |
+| =:MepLspReferences= | [[file:c-lsp.html][The C language server]] |
 | =:MepLspRename= | [[file:lsp.html][Language servers]] |
 | =:MepLspSignatureHelp= | [[file:lsp.html][Language servers]] |
 | =:MepLspTypeDefinition= | [[file:lsp.html][Language servers]] |

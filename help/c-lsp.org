@@ -1,0 +1,245 @@
+#+TITLE: The C language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="12">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+C files get a language server of their own, =mep-c-lsp=, built and
+shipped with mep. Open a =.c= file and it attaches by itself -- there
+is nothing to install, no compiler, no =-I= flags and no
+=compile_commands.json=. It is mep's own lexer, preprocessor model,
+parser and scope analyser, with the declarations of the C standard
+library and the common POSIX headers compiled into it.
+
+That last point is the whole design. Every other C tool starts by running
+the preprocessor, which means it starts by needing to know how your
+project is built. An editor is looking at unpreprocessed source, in a
+buffer that may not even be saved yet, so this one never runs the
+preprocessor at all -- and says exactly what it does instead, below.
+
+* The preprocessor, without a preprocessor
+
+Directives are read, not executed. A conditional group contributes
+exactly *one* arm to what the rest of the server sees, chosen like this:
+
+- If the file itself settles the condition, that decides it. =#if 0= is
+  dead, =#if VERSION > 2= is live when the file defines =VERSION= as =3=
+  above it, and =__cplusplus= is false by construction -- this is a C
+  server.
+- Otherwise the *shape* decides. A group with a written =#else= takes its
+  first arm, since both arms spell the same construct. A group without
+  one takes its arm only if that arm closes every bracket it opened.
+
+That second rule is what keeps the prologue every public header opens
+with from unbalancing the file:
+
+#+begin_src c
+#ifdef __cplusplus
+extern "C" {
+#endif
+#+end_src
+
+Object-like macros are known by name and by body; function-like macros
+are never expanded, because a call to one looks exactly like a call and
+reads perfectly well as one.
+
+The cost is stated rather than hidden: *a name that exists only in an arm
+this server did not take is invisible to it*, exactly as it is to a
+compiler that took the other branch. Nothing in such an arm is reported,
+and nothing that only such an arm uses is ever called unused.
+
+* What it catches
+
+Syntax and the preprocessor, first -- with messages that say what
+happened:
+
+| Problem                                              | Severity |
+|------------------------------------------------------+----------|
+| A string, character constant or =/* */= never closed | error    |
+| =(=, =[= or ={= that is never closed                 | error    |
+| A missing =;= after a declaration or statement       | error    |
+| =struct= with neither a tag nor a member list        | error    |
+| =10xac0a=, =019=, =1e= -- a number C has no reading for | error |
+| =#endif=, =#else= or =#elif= with no =#if=           | error    |
+| An =#if= never closed, or a second =#else=           | error    |
+| =#incldue=, or an =#include= with no header name     | error    |
+| A macro redefined with a different body              | warning  |
+| =#include "x.h"= that resolves to no file            | hint     |
+
+Names and scopes:
+
+| Problem                                             | Severity |
+|-----------------------------------------------------+----------|
+| A name nothing declares                             | error    |
+| A member the struct does not have                   | error    |
+| A =goto= whose label does not exist                 | error    |
+| A second definition of the same name                | error    |
+| A duplicate member, parameter or enumeration constant | error  |
+| A local set up and never read                       | warning  |
+| A =static= function or object nothing in this file uses | warning |
+| A label nothing jumps to                            | warning  |
+| A local that hides one from an outer block          | hint     |
+
+And the mistakes C makes easy and a compiler stays quiet about:
+
+| Problem                                              | Severity |
+|------------------------------------------------------+----------|
+| =if (x = 0)= -- an assignment where a comparison goes | warning |
+| =a & b == c= -- it parses as =a & (b == c)=          | warning  |
+| =if (cond);= -- the =;= is the whole body            | warning  |
+| A duplicated =case= label, or a second =default=     | error    |
+| =x = x;=                                             | warning  |
+| A statement that computes a value and discards it    | warning  |
+| Code after a =return=, =break=, =continue= or =goto= | warning  |
+| =return x;= in a =void= function, =return;= in one that is not | error / warning |
+| A non-=void= function that never returns a value     | warning  |
+| ='ab'= -- a character constant with two characters in it | warning |
+| A =printf= or =scanf= whose argument count does not match its format | warning |
+
+That last one is worth its own sentence: it counts the conversions in the
+format string, handles =%%=, =*= widths (which add an argument when
+printing and remove one when scanning), scansets like =%[^\n]=, and the
+length modifiers -- and it says nothing at all when the format is built
+out of macros, or uses positional =%2$d= conversions, because then the
+count is not the conversion count.
+
+** What it deliberately stays quiet about
+
+A linter that cries wolf gets switched off, and then its true reports go
+unseen too. So:
+
+- The undeclared-name check is off entirely for a file that includes a
+  header this server has no declarations for -- which is the honest
+  answer, since the name may well be in it.
+- It is off for a file with a syntax error in it, because mid-edit is
+  exactly when a screenful of invented "undeclared" errors would be least
+  welcome.
+- It is off for a file with six or more distinct unplaceable names: that
+  is not six typos, that is a file whose declarations live somewhere this
+  server cannot reach.
+- A name spelled =__like_this= or =_LikeThis= belongs to the
+  implementation, so the implementation declared it -- somewhere.
+- A parameter that goes unused is an interface, not a mistake.
+- A name mentioned anywhere this server does not read -- inside a =#if=
+  arm it did not take, or inside a macro body -- is never reported as
+  unused, because the mention it cannot see is the one that makes the
+  name used.
+- The arguments of a function-like macro are text, not values, so
+  =FIX(gecos)= is not a use of a variable called =gecos=.
+- A name used four or more times and declared nowhere is one a macro
+  brought into scope, not a typo -- nobody misspells the same identifier
+  four times.
+- A quoted =#include= that does not resolve is only mentioned when
+  *another* one in the same file did. If none of them resolve, the
+  headers are somewhere a build system knows about and this server does
+  not, and saying so once per line would help nobody.
+- =while ((c = getchar()) != EOF)= is the idiom, not the bug: a second
+  pair of parentheses around a deliberate assignment is respected.
+- =(void)unused;= is how C says "I know", and passes without comment.
+- Two =static int x;= at file scope are two tentative definitions, which
+  C explicitly allows.
+- A =.h= file has nothing unused in it, since it declares things for
+  other files.
+- A function whose return type came out of a macro gets no return
+  checking, because "declared to return =RTDECL=" is nonsense.
+
+A line-length hint exists but is off unless asked for:
+
+#+begin_src lua
+mep.lsp_servers.c_ls.init_options = {maxLineLength = 100}
+#+end_src
+
+* Completion
+
+Completion is context-aware rather than a word list:
+
+| Where you are               | What you get                                     |
+|-----------------------------+--------------------------------------------------|
+| anywhere in code            | names in scope, then this file's, then macros, then keywords, then the standard library |
+| after =p->= or =s.=         | that struct's members, through typedefs and chains |
+| after =struct=              | the tags this file and its headers define        |
+| after =#=                   | the preprocessor directives                      |
+| after =#include <=          | the standard headers                             |
+| after =#include "=          | the headers and directories beside this file     |
+| after =#ifdef=              | the macros this file and its headers define      |
+
+Inside a comment or a string it offers nothing.
+
+* Hover, signatures, outline, jumps
+
+=K= over a name gives its declaration: a function's full signature, a
+variable and its type, a member and the struct it belongs to, a macro and
+its replacement text. Over a standard-library name it answers from the
+compiled-in table -- the real signature, read out of the real headers,
+plus which header it comes from and, for the ones worth explaining, a
+sentence about what to watch for. Over the header name in an =#include=
+it tells you which file that resolved to.
+
+=<leader>lk= (signature help) shows the signature of the call the cursor
+is inside, with the parameter you are on highlighted. It works for
+functions this file declares, for function-like macros, and for the
+standard library. It fires by itself as you type =(= and =,=.
+
+=gd= jumps to where a name is declared -- including into a
+=#include "sibling.h"= that resolved, and from the header name in an
+=#include= line to the file itself.
+
+=:MepLspReferences= lists every use of the binding under the cursor. A
+local is listed only within its own function, so two functions that each
+have a =count= stay separate. =<leader>rn= renames the same set, and
+refuses what it cannot rename safely: a keyword, a name from the standard
+library, or one declared in another file.
+
+Functions, types, macros, file-scope objects, struct members and
+enumeration constants are the document outline, so [[file:structure-symbols.html][the symbol views]] work
+from the server. Folding covers every braced block, each =#if= group, the
+=#include= block at the top, and runs of comment lines.
+
+* What it does not do
+
+- *No preprocessing.* See the opening sections.
+- *No type checking.* It will tell you a struct has no such member, and
+  it will not tell you that you passed an =int= where a =char *= was
+  wanted -- because it cannot see the headers you include, and a checker
+  that guessed about them would be wrong far more often than right.
+- *One file plus its neighbours is the whole world.* =#include "x.h"=
+  next to the file is read; =#include <x.h>= is known only if it is one
+  of the standard or POSIX headers in the compiled-in table.
+- *No project-wide rename or references.* Both stop at the file's edge,
+  which is why a rename that cannot see the other users is refused rather
+  than half-done.
+- *No C++.* The C++ filetypes belong to mep's own C++ server, =.h=
+  among them -- see [[file:cpp-lsp.html][The C++ language server]]. A project whose
+  headers are all C can hand =h= over with
+  =mep.lsp_servers.c_ls.filetypes = {'c', 'h'}=.
+- *No formatting.* =mep.lsp_format= falls through to the configured
+  formatter for C; the server does not claim the capability.
+
+* Turning it off
+
+It is an ordinary entry in the server registry, so =init.lua= can drop
+it, or hand =c= back to clangd:
+
+#+begin_src lua
+mep.lsp_servers.c_ls = nil
+mep.lsp_servers.clangd.filetypes = {'c'}
+#+end_src
+
+That leaves the C++ filetypes with mep's own C++ server; clearing
+=mep.lsp_servers.cpp_ls.filetypes= too gives clangd all of them back.
+
+Or point it at your own build:
+
+#+begin_src lua
+mep.lsp_servers.c_ls.cmd = {'/path/to/mep-c-lsp'}
+#+end_src
+
+It also runs standalone, over stdio, in any editor that speaks LSP.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the client, the keys and the other servers.
+- [[file:c-mode.html][C and C++ mode]] -- what mep does with a =.c= file besides this.
+- [[file:python-lsp.html][The Python language server]] -- the same shape, for Python.
+- [[file:r-lsp.html][The R language server]] -- and for R.

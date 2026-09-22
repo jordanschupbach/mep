@@ -762,6 +762,34 @@ target_compile_options(mep-cpp-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITI
 target_link_options(mep-cpp-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-cpp-lsp-test)
 
+# mep's own C language server: the wire half (src/c_lsp_server.cpp) over the
+# analysis half (src/c_lsp.cpp), the lexer/preprocessor/parser under both
+# (src/c_ast.cpp), the hand-written keyword and prose vocabulary
+# (src/c_lsp_vocab.cpp) and the generated standard-library declaration
+# tables (src/c_lsp_std_names.cpp, produced by scripts/gen_c_names.py and
+# committed, so building mep never needs a compiler's headers to hand).
+# Same reasoning as mep-org-lsp above, point for point: no mep_core, built
+# by default rather than EXCLUDE_FROM_ALL because kBuiltinLsp's `c_ls` entry
+# spawns it out of mep's own bin directory, and skipped on Emscripten, which
+# cannot spawn a subprocess at all.
+set(MEP_C_LSP_SOURCES src/c_lsp.cpp src/c_lsp_vocab.cpp src/c_lsp_std_names.cpp src/c_ast.cpp)
+if(NOT EMSCRIPTEN)
+    add_executable(mep-c-lsp src/c_lsp_server.cpp ${MEP_C_LSP_SOURCES})
+    target_include_directories(mep-c-lsp PRIVATE src)
+    target_compile_options(mep-c-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-c-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-c-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# The C language server's parser and analysis halves driven directly -- no
+# process, no JSON-RPC client, no compiler. Same CHECK()-based shape as
+# mep-org-lsp-test.
+add_executable(mep-c-lsp-test EXCLUDE_FROM_ALL src/c_lsp_test.cpp ${MEP_C_LSP_SOURCES})
+target_include_directories(mep-c-lsp-test PRIVATE src)
+target_compile_options(mep-c-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-c-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-c-lsp-test)
+
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
 # cascade behavior can be verified without opening a window.
 add_executable(mep-html-doc-test EXCLUDE_FROM_ALL src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp)

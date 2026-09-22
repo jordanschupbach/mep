@@ -6037,15 +6037,15 @@ const char *kBuiltinTodo =
 const char *kBuiltinLsp =
     "mep.lsp_servers = {\n"
     "  lua = {cmd = {'lua-language-server'}, filetypes = {'lua'}},\n"
-    // clangd keeps its entry but no longer claims the C++ filetypes:
-    // mep's own C++ server (cpp_ls below) does, so a fresh checkout gets
-    // C++ diagnostics with nothing installed. Select clangd instead by
-    // giving it the filetypes back -- `mep.lsp_servers.clangd.filetypes =
-    // {'c', 'cpp', 'h', 'hpp', 'cc', 'cxx'}` (and clearing cpp_ls's) in
-    // init.lua. It keeps `c` either way: mep's C++ front end reads C, but
-    // clangd is the better answer for a C project that has a compile
-    // database.
-    "  clangd = {cmd = {'clangd'}, filetypes = {'c'}},\n"
+    // clangd keeps its entry but no longer claims a filetype at all:
+    // mep's own C++ and C servers (cpp_ls and c_ls below) claim them
+    // between them, so a fresh checkout gets diagnostics for both with
+    // nothing installed. Select clangd instead by giving it the
+    // filetypes back -- `mep.lsp_servers.clangd.filetypes = {'c', 'cpp',
+    // 'h', 'hpp', 'cc', 'cxx'}` (and clearing cpp_ls's and c_ls's) in
+    // init.lua. It stays the better answer for a project that has a
+    // compile database, which neither in-house server reads.
+    "  clangd = {cmd = {'clangd'}, filetypes = {}},\n"
     // pyright keeps its entry but no longer claims `py`: mep's own
     // Python server (python_ls below) does, so a fresh checkout gets
     // Python diagnostics with nothing installed. Select pyright instead
@@ -6222,6 +6222,29 @@ const char *kBuiltinLsp =
     // `includeDirs`.
     "  cpp_ls = {cmd = {mep.bundled_tool('mep-cpp-lsp')},\n"
     "    filetypes = {'cpp', 'cc', 'cxx', 'c++', 'hpp', 'hh', 'hxx', 'h++', 'h', 'ipp', 'tpp', 'inl'}},\n"
+    // mep's own C server (src/c_lsp_server.cpp, the `mep-c-lsp` target
+    // beside `mep` itself) -- the fifth entry here that is not an
+    // external project's binary, resolved through mep.bundled_tool the
+    // same way org_ls, r_ls, python_ls and cpp_ls are. It ships with mep
+    // and needs no compiler, no `-I` flags and no compile_commands.json:
+    // it reads C itself, carries the standard library's declarations
+    // compiled in, and resolves `#include "sibling.h"` against the
+    // file's own directory.
+    //
+    // It claims `c`, which clangd used to (see its entry above); both
+    // are still registered, and swapping them back is a filetypes edit
+    // in init.lua. `h` deliberately stays with cpp_ls above rather than
+    // coming here: a .h holds C++ at least as often as C -- mep's own
+    // headers included -- and the C++ front end reads C, so it is the
+    // safe default for the one extension that could be either. A C-only
+    // project moves it over with `mep.lsp_servers.c_ls.filetypes =
+    // {'c', 'h'}`.
+    //
+    // What it deliberately does not do is run the preprocessor or
+    // type-check: an editor is looking at unpreprocessed source, and a
+    // checker that cannot see the included headers would be wrong far
+    // more often than right (c_lsp.h states the whole scope).
+    "  c_ls = {cmd = {mep.bundled_tool('mep-c-lsp')}, filetypes = {'c'}},\n"
     "}\n"
     // (filetype .. '@' .. workspace root) -> client_id: one client per
     // filetype *per workspace root* (WORKSPACES_PLAN.md Phase 5), since

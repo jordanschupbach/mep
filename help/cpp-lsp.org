@@ -86,9 +86,13 @@ next to the file. Both are worth setting for a project of any size.
 server's to use it:
 
 #+begin_src lua
-mep.lsp_servers.clangd.filetypes = {'c', 'cpp', 'h', 'hpp', 'cc', 'cxx'}
+mep.lsp_servers.clangd.filetypes = {'cpp', 'h', 'hpp', 'cc', 'cxx'}
 mep.lsp_servers.cpp_ls.filetypes = {}
 #+end_src
+
+=c= is left out of that list on purpose: it belongs to mep's own C
+server (see [[file:c-lsp.html][The C language server]]), so add it only if you want clangd
+for C as well and clear =mep.lsp_servers.c_ls.filetypes= alongside it.
 
 clangd knows what a real compilation knows, which is more than this
 server can; it also needs a compile database and an install. This one is

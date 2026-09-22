@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (69)
+* The bindings (70)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -47,6 +47,7 @@ that it does nothing.
 | =mep.buffer_switch= | switches the focused pane to show a given buffer |
 | =mep.buffer_text_cols= | returns the text column budget of the pane showing a buffer |
 | =mep.buffer_workspace= | the stable id of the workspace a buffer belongs to |
+| =mep.bundled_tool= | resolves a helper binary installed beside the running `mep` |
 | =mep.clipboard_get= | returns the system clipboard's text |
 | =mep.clipboard_set= | copies text to the system clipboard |
 | =mep.current_buffer= | returns the active pane's buffer id |

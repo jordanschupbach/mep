@@ -1,0 +1,147 @@
+#+TITLE: The org language server
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="95">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Org files get a language server of their own, =mep-org-lsp=, built and
+shipped with mep. Open a =.org= file and it attaches by itself -- there is
+nothing to install and nothing to configure.
+
+It checks the org markup: blocks, drawers, timestamps, links, footnotes,
+keywords and source-block header arguments. It completes the same
+vocabulary as you type it.
+
+This is the *outer* org file. Code *inside* a =#+begin_src= block is handled
+separately, by a real server for that language -- see
+[[file:org-polyglot.html][Language servers in code blocks]]. The two run side by side and their
+diagnostics are merged, so a Python error in a block and a malformed
+timestamp in the prose both show up at once.
+
+* What it catches
+
+Structure:
+
+| Problem                                            | Severity |
+|----------------------------------------------------+----------|
+| =#+begin_src= with no =#+end_src=                  | error    |
+| =#+end_quote= closing a =#+begin_example=          | error    |
+| An =#+end_...= closing nothing                     | error    |
+| =#+BEGIN:= dynamic block with no =#+END:=          | error    |
+| A drawer with no =:END:=                           | error    |
+| =:END:= closing nothing                            | error    |
+| A =:PROPERTIES:= drawer that is not under its headline | warning |
+| A line in a =:PROPERTIES:= drawer that is not =:NAME: value= | error |
+
+Timestamps:
+
+| Problem                                       | Severity |
+|-----------------------------------------------+----------|
+| =<2026-02-30 Mon>= -- no such day             | error    |
+| =<2026-09-21 Fri>= -- that date is a Monday   | warning  |
+| =<2026-09-21 Mon 25:00>= -- no such time      | error    |
+| =<2026-9-21 Mon>= -- not zero-padded          | warning  |
+| A repeater cookie that is not one             | warning  |
+
+Links and footnotes:
+
+| Problem                                            | Severity |
+|----------------------------------------------------+----------|
+| =[[target= that never closes                       | error    |
+| =[[]]= with an empty target                        | error    |
+| =[[*Headline]]= naming no headline in the file     | warning  |
+| =[[#custom-id]]= naming no =:CUSTOM_ID:=           | warning  |
+| =[[name]]= matching no =#+NAME:=, =<<target>>= or headline | warning |
+| =[[file:missing.png]]=                             | warning  |
+| =#+INCLUDE:= naming a file that is not there       | warning  |
+| A =[fn:x]= reference with no definition            | warning  |
+| The same footnote defined twice                    | error    |
+| A footnote defined and never referenced            | hint     |
+| The same =#+NAME:= used twice                      | warning  |
+
+Keywords and blocks:
+
+| Problem                                              | Severity |
+|------------------------------------------------------+----------|
+| =#+TITEL:= -- a keyword org does not define          | warning, with a suggestion |
+| =#+TITLE A document= -- keyword missing its =:=      | warning  |
+| A malformed =#+TODO:= sequence                       | warning  |
+| An unknown =#+OPTIONS:= switch or =#+STARTUP:= word  | hint     |
+| =#+begin_src= with no language                       | warning  |
+| A source language babel cannot run                   | info     |
+| =:reslts= -- an unknown header argument              | hint, with a suggestion |
+| =:results ouput= -- an unknown value for a known one | warning, with a suggestion |
+| =:var x= with no ===                                 | warning  |
+
+Headlines:
+
+| Problem                                    | Severity |
+|--------------------------------------------+----------|
+| =[#AB]= -- a priority cookie is one letter | warning  |
+| =:two words:= as a tag list                | warning  |
+| A level jumping from =*= to =***=          | hint     |
+| A =SCHEDULED:=/=DEADLINE:= line that is not under its headline | warning |
+
+Everything inside a =#+begin_src=, =#+begin_example=, =#+begin_export= or
+=#+begin_comment= block is left alone, and so is anything inside
+=verbatim= or ~code~ markup. A help page *showing* broken org syntax does
+not get told its syntax is broken.
+
+* What it completes
+
+Type and the suggestions follow the context:
+
+| Where you are             | What you get                                   |
+|---------------------------+------------------------------------------------|
+| =#+= at the start of a line | every keyword and block, plus the =#+end_= that closes the block you are in |
+| =#+begin_src= + a space   | source languages                               |
+| =:= in a source header    | header arguments                               |
+| after =:results=          | its values                                     |
+| =#+OPTIONS:=              | export switches                                |
+| =#+STARTUP:=              | startup words                                  |
+| =[[=                      | headlines, =#+NAME:=s, =<<targets>>=, custom ids, files, link schemes |
+| =[fn:=                    | the footnote labels already defined            |
+| after the stars           | the file's TODO keywords                       |
+| =[#= on a headline        | priorities                                     |
+| =:= at the end of a headline | tags already used in the file               |
+| in a =:PROPERTIES:= drawer | property names                                |
+| under a headline          | =SCHEDULED:=, =DEADLINE:=, =CLOSED:=           |
+| after a =\=               | org entities such as =\alpha=                  |
+
+Keywords match whichever case you are typing: =#+ti= completes to
+=#+title:=, =#+TI= to =#+TITLE:=.
+
+* Hover, outline, folding, jumps
+
+=K= over a timestamp says which weekday it falls on; over a header
+argument, option switch, keyword or entity it explains what that one
+does; over a headline it summarises state, priority, tags and planning.
+
+=gd= on a link jumps to it -- a headline, a =#+NAME:=, a =<<target>>=, a
+=:CUSTOM_ID:= or another file, including =file.org::42=.
+
+Headlines are the document outline, so [[file:structure-symbols.html][the symbol views]] and folding both
+work from the server as well.
+
+* Turning it off
+
+It is an ordinary entry in the server registry, so =init.lua= can drop it:
+
+#+begin_src lua
+mep.lsp_servers.org_ls = nil
+#+end_src
+
+Or point it at your own build:
+
+#+begin_src lua
+mep.lsp_servers.org_ls.cmd = {'/path/to/mep-org-lsp'}
+#+end_src
+
+It also runs standalone, over stdio, in any editor that speaks LSP.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the client, the keys and the other servers.
+- [[file:org-polyglot.html][Language servers in code blocks]] -- the inside of a =#+begin_src= block.
+- [[file:org-basics.html][Org basics]] -- the syntax this page checks.

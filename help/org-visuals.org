@@ -80,6 +80,21 @@ Every line the card encloses counts, including the =#+NAME:=/=#+HEADER:=
 stack and the =#+begin_= line -- so the header still fits inside the card
 on the frame the cursor moves onto it and the raw line comes back.
 
+** Errors reported on the header line
+
+A diagnostic whose line is one the card covers -- the =#+begin_src= line
+itself, most often, where [[file:org-lsp.html][the org language server]]
+reports an unknown language or a bad header argument -- is drawn *after
+the card's right border*, not where the row's own text would be. The
+title bar stands where that text was, so a message left there would be
+painted over by it and never seen.
+
+If the card reaches the pane's own edge and leaves no room past the
+border, the message moves inside the bar's right end instead, over a band
+of the bar's own colour. Either way it is shortened with =...= to fit;
+the gutter badge marks the row as it always did, and =:MepDiagShow= (or
+just moving the cursor onto the line) gives the full text.
+
 * LaTeX and maths
 
 | Key / command             | Does                              |

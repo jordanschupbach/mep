@@ -41,10 +41,25 @@ references use <code>:MepLspReferences</code>.</p>
 <p>Errors, warnings and hints are underlined in the buffer and marked in the
 sign column. <code>Q</code> shows the current line's diagnostics in a popup, and
 <code>:MepDiagShow</code> lists them.</p>
+<p>The gutter mark says which kind, by shape as well as by colour:</p>
+<table>
+<tr><th>Mark</th><th>Severity</th></tr>
+<tr><td>a disc with an <code>x</code></td><td>error</td></tr>
+<tr><td>a hazard triangle with a <code>!</code></td><td>warning</td></tr>
+<tr><td>a disc with an <code>i</code></td><td>information</td></tr>
+<tr><td>a disc with a <code>?</code></td><td>hint</td></tr>
+</table>
+<p>So a glance tells you an error from a warning without having to know the
+theme's red from its yellow -- and so does a reader who cannot tell them
+apart at all.</p>
+<p>The worst severity on a line is the one its mark shows. When a line has
+more than one, the message beside it is prefixed with the count -- =(3)
+...= -- so nothing is lost by the mark naming a kind rather than a number.</p>
 <p>Severity maps to the <code>Error</code>, <code>Warn</code>, <code>Info</code> and <code>Hint</code> <a href="highlight-groups.html">highlight groups</a>, so
-they follow your theme.</p>
+the colours follow your theme.</p>
 <h1>Servers mep knows about</h1>
-<p>Thirty-six, each used when its command is on <code>$PATH</code>:</p>
+<p>Thirty-seven. All but the last are used when their command is on <code>$PATH</code>;
+the org one ships with mep itself:</p>
 <table>
 <tr><th>Language</th><th>Command</th></tr>
 <tr><td>C, C++</td><td><code>clangd</code></td></tr>
@@ -82,12 +97,20 @@ they follow your theme.</p>
 <tr><td>Markdown</td><td><code>marksman</code></td></tr>
 <tr><td>TOML</td><td><code>taplo</code></td></tr>
 <tr><td>Vimscript</td><td><code>vim-language-server</code></td></tr>
+<tr><td>Org</td><td><code>mep-org-lsp</code> (ships with mep)</td></tr>
 </table>
 <p>If a server is missing, nothing breaks -- the file simply opens without one.</p>
+<h1>The one mep brings itself</h1>
+<p><code>mep-org-lsp</code> is mep's own org-mode server, built and installed alongside
+<code>mep</code>, so org files get diagnostics and completion with nothing to install.
+See <a href="org-lsp.html">The org language server</a>.</p>
 <h1>Inside org code blocks</h1>
 <p>Code blocks in an Org file get language-server support too, through a shadow
 buffer per block. See <a href="org-polyglot.html">Language servers in code blocks</a> for what that covers
 and what it does not.</p>
+<p>In an org file both run at once -- the org server on the markup, a real
+language server on each block's contents -- and their diagnostics are merged
+rather than replacing one another.</p>
 <h1>From Lua</h1>
 <p><code>mep.lsp_start</code>, <code>mep.lsp_connect</code>, <code>mep.lsp_stop</code>, <code>mep.lsp_is_running</code>,
 <code>mep.lsp_request</code>, <code>mep.lsp_notify</code>, <code>mep.lsp_on_notification</code>,

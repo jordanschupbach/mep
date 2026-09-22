@@ -444,14 +444,19 @@ struct Decoration {
                         // single ASCII char -- main.cpp's DrawUiText is
                         // what actually renders it.
     std::string sign_hl;
-    // Draws a small filled circle (sign_hl's own color) behind `sign` in
-    // the gutter instead of just plain colored text -- a "badge" look
-    // for e.g. a diagnostic count, so more than one stacked signal on a
-    // line (2 errors vs. 1) is visually distinguishable at a glance, not
-    // just by which single glyph happened to win priority.
+    // Draws a small filled shape (sign_hl's own color) behind `sign` in
+    // the gutter instead of just plain colored text -- a "badge" look,
+    // so a signal reads as a marked-up symbol rather than as one more
+    // character in the margin. `sign_shape` picks the outline here
+    // ("triangle" for a hazard sign, a disc otherwise) instead of
+    // replacing `sign` the way it does on its own; the diagnostics
+    // renderer uses the pair to say a severity with a shape and a glyph
+    // rather than with a color alone (mep.lsp_render_diagnostics).
     bool sign_badge = false;
     // Draws a geometric mark in the sign column instead of a text glyph
-    // (`sign` is ignored when this is set): "bar" is a full-height
+    // (`sign` is ignored when this is set, unless `sign_badge` is also
+    // set -- then this names the badge's outline and `sign` is the glyph
+    // drawn inside it): "bar" is a full-height
     // vertical stripe, "delete"/"topdelete" a short horizontal stripe
     // along the row's bottom/top edge, "changedelete" both a bar and a
     // bottom stripe. This is what the git gutter draws its hunk marks

@@ -417,6 +417,15 @@
                 knitr
               ] ++ [ vscDebuggerR ]; # mep.dap_adapters.r (see vscDebuggerR above)
             })
+            # air is gf's R formatter (mep.format_languages.R, kBuiltinFormat
+            # in src/main.cpp). Not an rPackages entry and deliberately not
+            # part of the rWrapper above: it is a standalone Rust binary, not
+            # an R package, so it needs listing on its own the way clang-tools
+            # and the other formatters/servers here do. styler, the formatter
+            # it replaced, was never listed either -- it arrived transitively
+            # as one of languageserver's dependencies, which is exactly the
+            # kind of accident this line avoids repeating.
+            pkgs.air-formatter
             # rmarkdown::render()'s HTML/Word output goes through pandoc --
             # nixpkgs' rPackages.rmarkdown does NOT vendor its own copy the
             # way RStudio Desktop's bundled installation does, so without

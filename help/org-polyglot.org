@@ -42,6 +42,7 @@ See [[file:formatting.html][Formatting]] for the rest of =gf=.
 
 * See also
 
+- [[file:org-lsp.html][The org language server]] -- the markup *around* the blocks.
 - [[file:org-babel.html][Executing code blocks]] -- running what you are editing.
 - [[file:lsp.html][Language servers]] -- the machinery being reused.
 - [[file:formatting.html][Formatting]] -- =gf=, and the formatter table it prefers.

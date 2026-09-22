@@ -5145,6 +5145,41 @@ int l_bundled_help_root(lua_State *L) {
     return 1;
 }
 
+// mep.bundled_tool(name): the absolute path of a helper binary that ships
+// beside `mep` itself (today: `mep-org-lsp`, spawned by kBuiltinLsp's
+// `org_ls` registry entry), or the bare name when there is none there.
+//
+// Resolved through /proc/self/exe rather than the process CWD for the
+// same reason mep.bundled_help_root is: the CWD follows the active
+// workspace, so a relative guess would break the moment a user switches
+// workspace. The bare-name fallback is not a failure path -- it lets a
+// system-installed or hand-built server on PATH win when mep itself was
+// run out of a directory that has no copy of it, which is exactly what
+// every other entry in mep.lsp_servers already relies on.
+/**
+ * @brief Implements mep.bundled_tool(name): resolves a helper binary installed beside the running `mep`.
+ * @param L Lua state; arg 1 is the helper's file name, e.g. "mep-org-lsp".
+ * @return Number of values pushed (1: the absolute path if that file exists beside `mep`, else `name` unchanged).
+ */
+int l_bundled_tool(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+#if !defined(__EMSCRIPTEN__) && defined(__linux__)
+    std::array<char, 4096> exe_path{};
+    ssize_t len = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
+    if (len > 0) {
+        std::error_code ec;
+        std::filesystem::path sibling =
+            std::filesystem::path(std::string(exe_path.data(), static_cast<size_t>(len))).parent_path() / name;
+        if (std::filesystem::is_regular_file(sibling, ec) && !ec) {
+            lua_pushstring(L, sibling.string().c_str());
+            return 1;
+        }
+    }
+#endif
+    lua_pushstring(L, name);
+    return 1;
+}
+
 /**
  * @brief Implements mep.workspace_new(name [, attach_existing]): `:wsnew[!] name`.
  * @param L Lua state; arg 1 is the name, optional arg 2 attaches to an existing branch.
@@ -10196,6 +10231,7 @@ const luaL_Reg kMepFuncs[] = {
     {"workspace_current", l_workspace_current},
     {"workspace_root", l_workspace_root},
     {"bundled_help_root", l_bundled_help_root},
+    {"bundled_tool", l_bundled_tool},
     {"workspace_new", l_workspace_new},
     {"workspace_switch", l_workspace_switch},
     {"workspace_delete", l_workspace_delete},

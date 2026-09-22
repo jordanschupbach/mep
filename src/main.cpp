@@ -6059,6 +6059,22 @@ const char *kBuiltinLsp =
     "  kotlin_language_server = {cmd = {'kotlin-language-server'}, filetypes = {'kt', 'kts'}},\n"
     "  svelte = {cmd = {'svelteserver', '--stdio'}, filetypes = {'svelte'}},\n"
     "  basedpyright = {cmd = {'basedpyright-langserver', '--stdio'}, filetypes = {}},\n"
+    // mep's own org server (src/org_lsp_server.cpp, built as the
+    // `mep-org-lsp` target beside `mep` itself). The only entry here that
+    // is not an external project's binary, and the only one resolved
+    // through mep.bundled_tool rather than named bare: it ships with mep,
+    // so a user who never installed anything still gets org diagnostics,
+    // while a copy on PATH still wins if `mep` was run from somewhere
+    // without one beside it (see l_bundled_tool, lua_env.cpp).
+    //
+    // Attaching this to an org buffer does NOT displace the per-src-block
+    // polyglot bridge (kBuiltinOrgPolyglot): that bridge runs a real
+    // language server over each `#+begin_src` body, this one lints the
+    // org markup around them and deliberately reports nothing inside a
+    // literal block. Both publish against the same org file, which is why
+    // their diagnostics go through mep_org_diag_set below instead of each
+    // overwriting mep_lsp_diagnostics[file] with only its own half.
+    "  org_ls = {cmd = {mep.bundled_tool('mep-org-lsp')}, filetypes = {'org'}},\n"
     "}\n"
     // (filetype .. '@' .. workspace root) -> client_id: one client per
     // filetype *per workspace root* (WORKSPACES_PLAN.md Phase 5), since
@@ -6077,6 +6093,28 @@ const char *kBuiltinLsp =
     // inside a #+begin_src block ever reached the buffer -- seen in a
     // live instance while adding gf's own block support.
     "mep_lsp_diagnostics = {}\n"
+    // An org buffer is the one case with *two* diagnostic producers for
+    // the same file: mep's own org server (mep.lsp_servers.org_ls, which
+    // lints the org markup) and the polyglot bridge (kBuiltinOrgPolyglot,
+    // which translates each src block's own server's diagnostics back to
+    // org line numbers). Both used to assign straight to
+    // mep_lsp_diagnostics[file], so whichever published last erased the
+    // other's findings -- a Python error inside a block would flicker
+    // away the moment the org lint republished, and vice versa. Each side
+    // now owns a named slot and this merges them.
+    // abspath -> {org = {...}, polyglot = {...}}
+    "mep_org_diag_sources = {}\n"
+    "function mep_org_diag_set(abspath, source, diags)\n"
+    "  local slot = mep_org_diag_sources[abspath]\n"
+    "  if not slot then slot = {} mep_org_diag_sources[abspath] = slot end\n"
+    "  slot[source] = diags or {}\n"
+    "  local merged = {}\n"
+    "  for _, key in ipairs({'org', 'polyglot'}) do\n"
+    "    for _, d in ipairs(slot[key] or {}) do merged[#merged + 1] = d end\n"
+    "  end\n"
+    "  mep_lsp_diagnostics[abspath] = merged\n"
+    "  if abspath == mep_lsp_abspath(mep.filename()) then mep.lsp_render_diagnostics() end\n"
+    "end\n"
     // filename -> version counter
     "local mep_lsp_doc_versions = {}\n"
     // client_id -> the server's own `initialize` response capabilities
@@ -6167,6 +6205,13 @@ const char *kBuiltinLsp =
     "    mep.lsp_on_notification(id, 'textDocument/publishDiagnostics', function(params)\n"
     "      local uri = params.uri or ''\n"
     "      local f = uri:gsub('^file://', '')\n"
+    // An org file's diagnostics are merged with the polyglot bridge's
+    // (see mep_org_diag_set); every other filetype has a single producer
+    // and assigns directly, exactly as before.
+    "      if mep_lsp_filetype(f) == 'org' then\n"
+    "        mep_org_diag_set(f, 'org', params.diagnostics or {})\n"
+    "        return\n"
+    "      end\n"
     "      mep_lsp_diagnostics[f] = params.diagnostics or {}\n"
     "      if f == mep_lsp_abspath(mep.filename()) then mep.lsp_render_diagnostics() end\n"
     "    end)\n"
@@ -6611,6 +6656,26 @@ const char *kBuiltinLsp =
     // shared since this all lives in the same DoString chunk).
     "local mep_diag_ns = nil\n"
     "local MEP_DIAG_SEVERITY = {[1] = 'Error', [2] = 'Warn', [3] = 'Info', [4] = 'Hint'}\n"
+    // The gutter badge each severity draws as: {glyph, shape}. The badge
+    // used to be the *count* of diagnostics on the row in a disc colored
+    // by the worst severity, which made "how many" the thing you could
+    // read at a glance and "what kind" the thing you had to know the
+    // theme's colors to infer. These say the kind instead, in the shapes
+    // the rest of the world already uses for it -- a hazard triangle for
+    // a warning, a crossed-out disc for an error, `i`/`?` discs for
+    // information and a hint -- so severity survives both a glance and a
+    // reader who cannot tell the theme's red from its yellow. The count
+    // did not disappear with the digit: it is still the "(N) " the
+    // virt_text below carries whenever a row has more than one.
+    //
+    // Every glyph here is ASCII on purpose. g_font (and the UI fonts
+    // DrawUiText falls back through) is why sign_shape exists at all for
+    // the git gutter -- box-drawing and most symbol blocks are simply
+    // not in them -- so the one piece that genuinely needs to be a shape,
+    // the triangle, is drawn as geometry and the rest is text that is
+    // certain to render.
+    "local MEP_DIAG_SIGN = {[1] = {'x', 'circle'}, [2] = {'!', 'triangle'},\n"
+    "                       [3] = {'i', 'circle'}, [4] = {'?', 'circle'}}\n"
     "local MEP_DIAG_WRAP_WIDTH = 70\n"
     // mep_diag_wrap ported to LspDiagWrap (editor.h/.cpp) --
     // LUA_TO_CPP_PLAN.md Phase LSP, bound as mep.lsp_diag_wrap.
@@ -6673,8 +6738,9 @@ const char *kBuiltinLsp =
     "    table.sort(row_diags, function(a, b) return (a.severity or 1) < (b.severity or 1) end)\n"
     "    local worst = row_diags[1]\n"
     "    local hl = MEP_DIAG_SEVERITY[worst.severity or 1] or 'Error'\n"
+    "    local badge = MEP_DIAG_SIGN[worst.severity or 1] or MEP_DIAG_SIGN[1]\n"
     "    mep.deco_add(mep_diag_ns, {\n"
-    "      row = row, sign = tostring(#row_diags), sign_hl = hl, sign_badge = true,\n"
+    "      row = row, sign = badge[1], sign_shape = badge[2], sign_hl = hl, sign_badge = true,\n"
     "      virt_text = '  ' .. (#row_diags > 1 and ('(' .. #row_diags .. ') ') or '') .. worst.message:gsub('\\n.*', ''),\n"
     "      virt_text_hl = hl, virt_text_eol = true, priority = 10,\n"
     "    })\n"
@@ -9319,6 +9385,29 @@ const char *kBuiltinCompletion =
     // buffer -- nil for the ordinary case, falling back to the same
     // mep_lsp_uri(mep.filename())/mep_lsp_position() this always used.
     "function mep_lsp_completion_request(client, row, start_col, trigger_char, uri_override, position_override)\n"
+    // Flush the document to the server first. mep.lsp_did_change is wired
+    // to mep.on_buffer_changed, which polls Editor::change_epoch_ -- and
+    // that epoch deliberately does NOT move during an Insert session (see
+    // Editor::EnterNormal's own comment: PushUndo bumps it once at insert
+    // *entry*, and again on leaving, so one insert session is one undo
+    // step). Completion is the one LSP request that fires *inside* an
+    // insert session, so without this the server is answering about a
+    // document that predates everything just typed -- for a line typed at
+    // the end of a buffer the requested position does not exist in the
+    // server's copy at all, and every server (not just org) silently
+    // returns an empty list. Caught with mep's own org server: typing
+    // `#+ti` on a fresh line produced no candidates until something else
+    // ended the insert session.
+    //
+    // Cheap enough to do per request rather than per keystroke: this runs
+    // at most once per word (mep_lsp_completion_pending guards a second
+    // request for the same word start), itself behind
+    // UpdateCompletionPopup's prefix-change + 50ms throttle.
+    //
+    // Skipped for the polyglot path (uri_override set): that request is
+    // about a shadow file whose own contents kBuiltinOrgPolyglot syncs,
+    // not about the buffer mep.lsp_did_change would send.
+    "  if not uri_override then mep.lsp_did_change() end\n"
     "  local context = trigger_char and {triggerKind = 2, triggerCharacter = trigger_char} or {triggerKind = 1}\n"
     "  mep.lsp_request(client, 'textDocument/completion', {\n"
     "    textDocument = {uri = uri_override or mep_lsp_uri(mep.filename())},\n"
@@ -12063,8 +12152,9 @@ const char *kBuiltinRun =
     "mep.command('MepReplSendBuffer', mep.repl_send_buffer)\n";
 
 // "gf" ("go format"): run the current buffer's own language formatter
-// over it in place -- clang-format for C/C++, black for Python, styler
-// for R (TODO.org's own list). Modeled on kBuiltinRun's mep.run_languages
+// over it in place -- clang-format for C/C++, black for Python, air
+// for R (TODO.org's list, whose R entry said styler -- see the R entry
+// below for why air replaced it). Modeled on kBuiltinRun's mep.run_languages
 // above: one filetype -> argv table (keyed by mep_lsp_filetype's bare
 // extension, with the usual aliases) a user's config can extend or
 // override, rather than the three commands being hardcoded in the
@@ -12072,13 +12162,16 @@ const char *kBuiltinRun =
 //
 // Two shapes of formatter exist and both are supported, because neither
 // covers the other: a stdin/stdout filter (the default -- clang-format,
-// black) and an in-place file rewriter (mode = 'file' -- styler's
-// style_file(), the exact call TODO.org asks for). Either way the text
-// that gets formatted is the *buffer's* current text, unsaved edits
-// included: the filter gets it on stdin, the file rewriter gets it in a
-// temp file carrying the buffer's own extension (styler::style_file
-// dispatches on that, and errors without it), so gf never needs the
-// buffer written to disk first and never formats a stale copy.
+// black, air) and an in-place file rewriter (mode = 'file'), which every
+// entry here happens not to need any more but which a user's config
+// still reaches for whenever a formatter has no stdin mode at all --
+// styler::style_file(), R's other formatter, is exactly that shape.
+// Either way the text that gets formatted is the *buffer's* current
+// text, unsaved edits included: the filter gets it on stdin, the file
+// rewriter gets it in a temp file carrying the buffer's own extension
+// (a style_file()-shaped formatter dispatches on that, and errors
+// without it), so gf never needs the buffer written to disk first and
+// never formats a stale copy.
 //
 // '{}' anywhere in an argv element is replaced by a path: the buffer's
 // real (absolute) filename in filter mode, the temp file in file mode.
@@ -12119,13 +12212,20 @@ const char *kBuiltinFormat =
     "mep.format_languages = {\n"
     "  c = {'clang-format', '--assume-filename={}'},\n"
     "  py = {'black', '--quiet', '--stdin-filename={}', '-'},\n"
-    // Not --vanilla: an renv project keeps styler in its own per-project
-    // library, reachable only through the .Rprofile that renv writes --
-    // which --vanilla would skip, turning "styler is installed" into
-    // "there is no package called 'styler'" in exactly the projects most
-    // likely to have it. cwd is the workspace root below, so that
-    // .Rprofile is the one found.
-    "  R = {'Rscript', '-e', 'styler::style_file(\"{}\")', mode = 'file'},\n"
+    // air, not styler (which TODO.org's list named): styler has no line
+    // width at all -- it fixes spacing, indentation and `=` vs `<-`, but
+    // it never breaks a long call across lines, at any width, so an R
+    // buffer was the one language here where gf could not bring a
+    // 300-column line back inside a margin. air is Posit's own tidyverse
+    // formatter and the only R one with a line width; it subsumes what
+    // styler did for gf's purposes (`y = x + 1` still becomes
+    // `y <- x + 1`) and wraps at 80 by default. --stdin-file-path is the
+    // same argument clang-format and black need above and for the same
+    // reason: in filter mode air is reading a nameless stream, and the
+    // path is what it walks up from to find the project's air.toml (the
+    // repo's own is at the workspace root, pinning [format] line-width =
+    // 80 rather than leaning on air's default staying 80).
+    "  R = {'air', 'format', '--stdin-file-path={}'},\n"
     "}\n"
     // Same aliasing as mep.run_languages': entries are looked up by bare
     // extension, so every extension of a language needs its own key.
@@ -15611,8 +15711,7 @@ const char *kBuiltinOrgPolyglot =
     "      for _, d in ipairs(mep_polyglot_diag_by_shadow[s.path] or {}) do merged[#merged + 1] = d end\n"
     "    end\n"
     "  end\n"
-    "  mep_lsp_diagnostics[shadow.org_abspath] = merged\n"
-    "  if shadow.org_abspath == mep_lsp_abspath(mep.filename()) then mep.lsp_render_diagnostics() end\n"
+    "  mep_org_diag_set(shadow.org_abspath, 'polyglot', merged)\n"
     "end\n"
     "function mep_polyglot_start_client(shadow, lang_def, server)\n"
     "  local id = mep.lsp_start(server.cmd, {cwd = shadow.dir})\n"
@@ -38929,6 +39028,29 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const OrgBlockCard *card = nullptr;
     };
     std::vector<OrgCardBox> org_card_boxes;
+    // End-of-line virtual text (a diagnostic message, git blame) whose row
+    // the card conceals -- the `#+begin_src` header band or the `#+end_`
+    // footer. Drawing it inline the way every other row does puts it
+    // underneath the title bar the post-pass paints over that row, and
+    // then underneath clear_overflow's repaint of everything past the
+    // card's right edge: an error reported *on* the `#+begin_src` line
+    // (org-lsp's unknown language / bad header argument, the most
+    // common kind there is) rendered to nothing at all but its gutter
+    // badge. So it is deferred here and drawn by that same post-pass,
+    // after the bar and the outline, hanging off the card's right border
+    // instead of the row's own concealed text.
+    struct OrgCardEolText {
+        size_t box;  // index into org_card_boxes
+        std::string text;
+        gfx::Color color;
+        float y;         // the row's own top edge, not the card's
+        bool on_header;  // header band (vs. the `#+end_` footer row): which wash the fallback band uses
+    };
+    std::vector<OrgCardEolText> org_card_eol_texts;
+    // Row -> the card box concealing it and whether that row is part of
+    // the header band, for the decoration loop's own "is this row's text
+    // hidden behind a card?" test.
+    std::unordered_map<int, std::pair<size_t, bool>> org_card_concealed_rows;
     // Org tables drawn as a real grid (Editor::OrgTables): continuous
     // column rules through the `|` glyphs, a drawn horizontal rule in
     // place of each `|---+---|` row's dashes, and a tinted header block.
@@ -39161,6 +39283,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::DrawRectangleRounded(box.rect, rr, 6,
                                   card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
                                               : gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+            // Every row the card paints over, so the decoration loop can
+            // hand that row's end-of-line virtual text to the post-pass
+            // rather than drawing it where the bar is about to land. A
+            // revealed header (cursor or selection inside it) is not
+            // registered: its raw text is on screen, so its annotation
+            // belongs after that text like any other row's.
+            if (box.conceal_header) {
+                for (int r = card.meta_row; r <= card.begin_row; r++) {
+                    org_card_concealed_rows[r] = {org_card_boxes.size(), true};
+                }
+            }
+            if (box.conceal_footer && card.end_row >= 0) {
+                org_card_concealed_rows[card.end_row] = {org_card_boxes.size(), false};
+            }
             org_card_boxes.push_back(box);
         }
     }
@@ -40548,7 +40684,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         });
                 }
             }
-            if (!d.virt_text.empty() && !ghost_covers_row(row)) {
+            // A card conceals this row, so its end-of-line annotation is
+            // deferred to the card post-pass (org_card_eol_texts above)
+            // and drawn past the card's right border -- where it is
+            // visible -- instead of under the title bar that is about to
+            // cover this row's columns.
+            const bool defer_eol_to_card =
+                d.virt_text_eol && !d.virt_text.empty() && org_card_concealed_rows.count(row) != 0;
+            if (defer_eol_to_card) {
+                const std::pair<size_t, bool> &where = org_card_concealed_rows[row];
+                org_card_eol_texts.push_back(
+                    {where.first, d.virt_text, ResolveHlGroup(d.virt_text_hl), ly, where.second});
+            }
+            if (!d.virt_text.empty() && !ghost_covers_row(row) && !defer_eol_to_card) {
                 // virt_text_eol: anchored just past the row's own last
                 // character (plus one char of breathing room) rather than
                 // d.col_start, for an annotation describing the whole
@@ -40825,7 +40973,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
-        if (!sign_shape.empty()) {
+        if (!sign_shape.empty() && !sign_badge) {
             // Geometric sign marks (Decoration::sign_shape) -- the git
             // gutter's hunk stripes. Drawn as rectangles rather than as
             // box-drawing glyphs because none of the UI fonts cover that
@@ -40854,17 +41002,62 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         } else if (!sign.empty()) {
             if (sign_badge) {
-                // A filled circle (sign_hl's own color) behind the sign
-                // glyph -- e.g. a diagnostic count -- centered in the
-                // sign column (sign_w's own one-char width) and on the
-                // row's own line height. Text drawn in "NormalBg" punches
-                // a legible hole in it, the same contrast trick
-                // virt_overlay's own cover rectangle already uses.
-                float cx = x + kMarginX + g_char_width / 2.0f;
-                float cy = ly + static_cast<float>(line_height) / 2.0f;
-                gfx::DrawCircle(static_cast<int>(cx), static_cast<int>(cy), g_char_width * 0.58f, ResolveHlGroup(sign_hl));
-                float sign_w_text = MeasureUiText(sign, g_font_size);
-                DrawUiText(sign, gfx::Vector2{cx - sign_w_text / 2.0f, ly}, g_font_size, ResolveHlGroup("NormalBg"));
+                // A filled shape (sign_hl's own color) behind the sign
+                // glyph, centered in the sign column (sign_w's own
+                // one-char width) and on the row's own line height. Text
+                // drawn in "NormalBg" punches a legible hole in it, the
+                // same contrast trick virt_overlay's own cover rectangle
+                // already uses.
+                //
+                // `sign_shape` picks the outline: "triangle" is the
+                // hazard sign a warning draws as, anything else (the
+                // default) the disc an error/information/hint draws as.
+                // Shape and glyph together are what make a severity
+                // readable at a glance and, unlike a color alone, still
+                // readable without color vision -- see the caller
+                // (mep.lsp_render_diagnostics, kBuiltinLsp) for the
+                // severity -> (glyph, shape) table itself.
+                const float cx = x + kMarginX + g_char_width / 2.0f;
+                const float cy = ly + static_cast<float>(line_height) / 2.0f;
+                const float r = g_char_width * 0.58f;
+                const gfx::Color badge = ResolveHlGroup(sign_hl);
+                // The glyph is drawn well under the row's own font size.
+                // At the full size it is taller than the badge is wide --
+                // the sign column is one character across and the badge
+                // barely more, while a glyph at g_font_size is drawn on a
+                // box that size *tall* -- so it spilled out of the disc
+                // and straight through the triangle's apex. These factors
+                // are of the badge, not of the font, so they hold at
+                // every zoom level.
+                //
+                // The triangle gets the smaller glyph of the two: a disc
+                // is at its widest across the middle, where the glyph
+                // sits, and a triangle is at its narrowest near the top.
+                const bool hazard = sign_shape == "triangle";
+                const float glyph_size = std::max(5.0f, r * (hazard ? 1.25f : 1.5f));
+                // DrawUiText takes the text box's *top*, so centering the
+                // glyph on the badge means lifting it by half its own
+                // height rather than drawing it at the row's top the way
+                // a full-size sign is.
+                float glyph_cy = cy;
+                if (hazard) {
+                    // Rounded off the disc's own footprint so a warning
+                    // does not read as bigger than an error beside it:
+                    // the apex sits a little above the disc's top and the
+                    // base a little below its middle, which is where a
+                    // triangle's visual weight already is.
+                    gfx::DrawTriangle(gfx::Vector2{cx, cy - r * 1.15f}, gfx::Vector2{cx - r * 1.18f, cy + r * 0.85f},
+                                      gfx::Vector2{cx + r * 1.18f, cy + r * 0.85f}, badge);
+                    // ...and for the same reason the glyph rides below the
+                    // true center: the room inside a triangle is all in
+                    // its lower half.
+                    glyph_cy += r * 0.18f;
+                } else {
+                    gfx::DrawCircle(static_cast<int>(cx), static_cast<int>(cy), r, badge);
+                }
+                const float sign_w_text = MeasureUiText(sign, glyph_size);
+                DrawUiText(sign, gfx::Vector2{cx - sign_w_text / 2.0f, glyph_cy - glyph_size / 2.0f}, glyph_size,
+                           ResolveHlGroup("NormalBg"));
             } else {
                 DrawUiText(sign, gfx::Vector2{x + kMarginX, ly}, g_font_size, ResolveHlGroup(sign_hl));
             }
@@ -41404,6 +41597,99 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         gfx::Color border = cb.is_src ? (cb.active ? accent : gfx::Fade(accent, 0.55f))
                                        : gfx::Fade(ResolveHlGroup("Border"), cb.active ? 1.0f : 0.7f);
         gfx::DrawRectangleRoundedLinesEx(cb.rect, card_rr, 6, cb.active ? 2.0f : 1.0f, border);
+        // End-of-line virtual text belonging to a row this card conceals
+        // (org_card_eol_texts above): a diagnostic on the `#+begin_src`
+        // line, most often. Drawn last of all -- after the title bar, the
+        // clear_overflow repaint and the outline, every one of which used
+        // to land on top of it -- and anchored a character past the card's
+        // right border rather than at the row's own (hidden) end, so it
+        // reads as an annotation hanging off the block instead of text
+        // buried inside it.
+        bool restroke_outline = false;  // set by the in-card fallback below, which paints over the card's top edge
+        for (const OrgCardEolText &et : org_card_eol_texts) {
+            if (et.box != static_cast<size_t>(&cb - org_card_boxes.data())) continue;
+            const float limit = x + w - static_cast<float>(kMarginX);
+            const float card_right = cb.rect.x + cb.rect.width;
+            float ex = card_right + g_char_width;
+            // A card only runs to the pane's own edge when its content (or
+            // `:set textwidth`) is as wide as the pane -- a big font, or a
+            // narrow split. There is no "after the border" left to draw in
+            // then, and falling back to nothing would leave exactly the
+            // invisible diagnostic this whole pass exists to fix, so the
+            // message moves *inside* the card's right end instead, over
+            // its own band of card background. The band stops short of the
+            // border so the outline stays unbroken, and the title bar's
+            // chips are laid out from the left and already elide
+            // themselves (see `fits` above), so what it covers is the
+            // empty tail of the bar in all but the busiest headers.
+            const bool after_border = ex + gfx::MeasureTextEx(g_font, "...", g_font_size, 0).x < limit;
+            float avail = limit - ex;
+            if (!after_border) {
+                avail = std::max(0.0f, (card_right - 8.0f) - (cb.rect.x + 8.0f));
+                avail = std::min(avail, cb.rect.width * 0.5f);  // never more than the bar's right half
+            }
+            if (avail < g_char_width * 4.0f) continue;  // nowhere to put it; the gutter badge still marks the row
+            // The message is one line of prose and the space it has is
+            // whatever is left over, so it is elided to fit rather than
+            // clipped mid-glyph by the scissor -- the full text is one
+            // `:MepDiagShow` (or cursor move) away.
+            std::string et_text = et.text;
+            float tw = gfx::MeasureTextEx(g_font, et_text.c_str(), g_font_size, 0).x;
+            if (tw > avail) {
+                const float ell_w = gfx::MeasureTextEx(g_font, "...", g_font_size, 0).x;
+                int cols = ByteOffsetToColumn(et_text, static_cast<int>(et_text.size()));
+                bool fitted = false;
+                while (cols > 0) {
+                    cols--;
+                    std::string cut = et_text.substr(0, ColumnToByteOffset(et_text, cols));
+                    const float cut_w = gfx::MeasureTextEx(g_font, cut.c_str(), g_font_size, 0).x;
+                    if (cut_w + ell_w <= avail) {
+                        et_text = cut + "...";
+                        tw = cut_w + ell_w;
+                        fitted = true;
+                        break;
+                    }
+                }
+                if (!fitted) continue;  // not even an ellipsis fits
+            }
+            if (!after_border) {
+                // Right-aligned against the card's inner edge: the end the
+                // bar's own content is furthest from.
+                ex = card_right - 8.0f - tw;
+                // Clamped to the concealed band's own rect, not just to
+                // the row: painting a plain row-height rectangle here
+                // overshot the bar by a pixel at the top and swallowed
+                // the accent rule along its bottom, so the title bar
+                // visibly broke apart around the message.
+                const gfx::Rectangle &owner = et.on_header ? cb.header : cb.footer;
+                const float band_top = std::max(et.y, owner.y);
+                const float band_bottom = std::min(et.y + static_cast<float>(line_height), owner.y + owner.height);
+                const gfx::Rectangle band{ex - 6.0f, band_top, tw + 12.0f, band_bottom - band_top};
+                if (band.height <= 0.0f) continue;
+                gfx::DrawRectangle(static_cast<int>(band.x), static_cast<int>(band.y), static_cast<int>(band.width),
+                              static_cast<int>(band.height), opaque_bg);
+                gfx::DrawRectangle(static_cast<int>(band.x), static_cast<int>(band.y), static_cast<int>(band.width),
+                              static_cast<int>(band.height), et.on_header ? header_wash : card_wash);
+                // ...and the rule itself back on over the band's own
+                // width. A no-op when the band does not reach it.
+                if (et.on_header) {
+                    gfx::DrawRectangle(static_cast<int>(band.x), static_cast<int>(cb.header.y + cb.header.height - 1.0f),
+                                  static_cast<int>(band.width), 1, gfx::Fade(accent, cb.is_src ? 0.45f : 0.25f));
+                }
+                restroke_outline = true;
+            }
+            gfx::DrawTextEx(g_font, et_text.c_str(), gfx::Vector2{ex, et.y}, g_font_size, 0, et.color);
+        }
+        // The fallback band lands on the header row, which *is* the card's
+        // top row, so it paints out the stretch of rounded outline running
+        // along it. Cheaper and more exact than trying to inset the band
+        // by the stroke's own width (1px, or 2 for the active card, and
+        // rounded at the corners): stroke the outline again, over the
+        // band. The message ends well short of the right edge, so this
+        // cannot land on the text it was drawn for.
+        if (restroke_outline) {
+            gfx::DrawRectangleRoundedLinesEx(cb.rect, card_rr, 6, cb.active ? 2.0f : 1.0f, border);
+        }
     }
 
     // Notebook cell-card borders (see nb_cell_boxes above): stroked last,

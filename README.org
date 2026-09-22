@@ -172,7 +172,7 @@ just lint               # clang-tidy + cppcheck + include-what-you-use
 #+end_src
 
 Tests and benchmarks are =EXCLUDE_FROM_ALL=, so an ordinary build
-produces only =mep=, =mep-mcp= and =mep-collabd=. Start at
+produces only =mep=, =mep-mcp=, =mep-collabd= and =mep-org-lsp=. Start at
 [[file:docs/architecture.org][docs/architecture.org]] for the layout of the source tree.
 
 * License

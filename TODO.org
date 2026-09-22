@@ -1,3 +1,12 @@
+* TODO link formatting
+Change links in org mode to be rendered to have an underline underneath it. 
+
+* TODO org play
+Add a play button to org mode code blocks that will run the code block in the appropriate language mode.
+
+* TODO org settings
+Add a settings button to orgmode code blocks that will allow the user to set the settings for the code block (e.g. results, exports, etc.). On click, it should bring up an options setting popup with any possible options for the language specific (or options for other types of blocks) options. This should allow for changing numbers, input string, or dropdown selection, depending on the type of option. Id like the popup to list all options, with the appropriate input. Make sure to add keyboard navigation in normal mode, h,j,k,l for selecting option by direction, ctrl+n and ctrl+p for selecting from dropdown, i to insert mode on text input, and j,k for incrementing/decrementing number.
+
 * TODO add themes
 investigate what themes there and which ones appear to be missing and then
 implement them. The more the better.
@@ -161,6 +170,20 @@ executable, a compiler explorer like sidebar, and a hex exploration like sidebar
     (it applied clangd's mid-line edits as whole-line replacements and
     collapsed the file to a single space), fixed here by routing it through
     mep.lsp_apply_edits_current_buffer.
+  - Later change, same entry: R's formatter is now `air format
+    --stdin-file-path={}` (filter mode), not styler::style_file() as this
+    task asked for. styler has no line width at all -- it fixes spacing,
+    indentation and `=` vs `<-` but never breaks a long call across lines,
+    at any width, so R was the one language here where gf could not bring
+    an over-long line back inside a margin. air is Posit's own tidyverse
+    formatter and the only R one with a line width; it still does the
+    `=` -> `<-` rewrite styler was wanted for, wraps at 80, and reads its
+    margin from the nearest air.toml ([format] line-width) the same way
+    clang-format and black read .clang-format/pyproject.toml -- hence the
+    switch from mode = 'file' to a plain stdin filter, and the air.toml at
+    the repository root. flake.nix gained pkgs.air-formatter; styler had
+    never been listed there at all, arriving transitively as one of
+    languageserver's dependencies.
 
 * DONE go help binding :ARCHIVE:
   Add a 'gh' binding for 'go help' to open the help for the current function

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The C++ language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="13">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The C++ language server</h1>
+<p>mep ships its own C++ language server, <code>mep-cpp-lsp</code>, built beside the
+editor and attached to every C++ buffer by itself. It needs no compiler,
+no <code>compile_commands.json</code> and no <code>clangd</code> install: it is an entire C++
+front end -- tokenizer, preprocessor, parser and scope model -- with the
+standard library's names compiled into it.</p>
+<h1>What it gives you</h1>
+<p>Open a <code>.cpp</code> or <code>.h</code> file and you get, with nothing installed:</p>
+<ul>
+<li><b>Diagnostics</b> as you type: syntax and preprocessor errors, a local that is assigned and never read, a static function nobody calls, a declaration that shadows another, an assignment used as a condition, a member initializer list out of declaration order, a class with virtual functions and a public non-virtual destructor, a member a class does not have, a call with the wrong number of arguments.</li>
+<li><b>Completion</b> of everything in scope, of a class's members after <code>.</code>, <code>-&gt;</code> or <code>::</code>, of the standard library after <code>std::</code>, of the standard headers inside <code>#include &lt;&gt;</code>, and of the headers next to your file inside =#include ""=.</li>
+<li><b>Hover</b> showing a declaration, its type or signature, and the comment written above it.</li>
+<li><b>Document symbols</b> for the outline sidebar: namespaces, classes, members, enums, typedefs and macros, nested the way the file is.</li>
+<li><b>Folding</b> of braced blocks, comment runs, the include block and <code>#if</code> groups.</li>
+<li><b>Go to definition</b>, including into a header sitting next to the file, and onto the header an <code>#include</code> names.</li>
+<li><b>References, document highlight and rename</b> over the scope the declaration actually lives in.</li>
+<li><b>Signature help</b> while typing a call's arguments.</li>
+</ul>
+<h1>What it deliberately does not do</h1>
+<p>It does not type-check, and it never will. A language server that cannot
+see the headers a file includes -- beyond the ones next to it, which this
+one does read -- would be guessing, and a C++ linter that guesses is one
+bad heuristic away from being switched off. So every check reports only
+what a careful reader could confirm from the file in front of them, and
+several of them switch themselves off entirely when the file turns out to
+include a header the server could not read:</p>
+<ul>
+<li>The <b>undefined name</b> check is off for any file that includes a header the server could not open, that says <code>using namespace</code> of a namespace it cannot see, that does not parse cleanly, or in which six or more distinct names cannot be placed. In a file whose includes all resolve -- your own headers, plus standard ones -- it is on, and it catches typos.</li>
+<li>The <b>no such member</b> check runs only for a class defined in the file (or in a header next to it) whose base classes are all visible too.</li>
+<li>The <b>argument count</b> check steps aside as soon as a name has more than one declaration, or takes <code>...</code>, or is a template.</li>
+</ul>
+<p>The preprocessor is modelled, not run: <code>#if</code> groups are resolved against
+the macros the file itself defines plus a host-shaped predefined set
+(<code>__cplusplus</code>, <code>__GNUC__</code>, <code>__linux__</code>, ...), and only the surviving
+branch reaches the parser. <code>#error</code> behind a macro the server cannot know
+about is not reported -- it would fire in half the standard headers.</p>
+<h1>Settings</h1>
+<p>Three optional settings, passed through the server registry in your
+<code>init.lua</code>:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.cpp_ls.init_options = <span class="tok-blue">{</span>
+  maxLineLength = <span class="tok-cyan">110</span>,                    <span class="tok-comment">-- hint past this column; off by default</span>
+  defines = {<span class="tok-green">'MEP_DEBUG'</span>, <span class="tok-green">'VERSION=3'</span><span class="tok-blue">}</span>,   <span class="tok-comment">-- your build system's -D flags</span>
+  includeDirs = {<span class="tok-green">'/path/to/project/src'</span>}, <span class="tok-comment">-- where quoted #includes resolve</span>
+}</code></pre></div>
+<p><code>defines</code> is what decides which <code>#if</code> branches the server reads, and
+<code>includeDirs</code> is what lets it resolve (and index) a header that is not
+next to the file. Both are worth setting for a project of any size.</p>
+<h1>Choosing clangd instead</h1>
+<p><code>clangd</code> is still registered. Give it back the filetypes and clear this
+server's to use it:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.clangd.filetypes = <span class="tok-blue">{</span><span class="tok-green">'c'</span>, <span class="tok-green">'cpp'</span>, <span class="tok-green">'h'</span>, <span class="tok-green">'hpp'</span>, <span class="tok-green">'cc'</span>, <span class="tok-green">'cxx'</span><span class="tok-blue">}</span>
+mep.lsp_servers.cpp_ls.filetypes = <span class="tok-blue">{</span>}</code></pre></div>
+<p>clangd knows what a real compilation knows, which is more than this
+server can; it also needs a compile database and an install. This one is
+always there.</p>
+<h1>How it is built</h1>
+<ul>
+<li><code>src/cpp_ast.{h,cpp}</code> -- tokenizer (line splices, raw strings, every literal form) and preprocessor (directives, conditional groups, macro expansion with <code>#</code> and <code>##</code>).</li>
+<li><code>src/cpp_parse.cpp</code> -- the parser: declarations, statements and expressions, with documented heuristics for the three things C++ cannot decide without a symbol table (declaration versus expression, template argument list versus less-than, and what an unknown SHOUTED identifier in declaration position means).</li>
+<li><code>src/cpp_lsp.cpp</code> -- the scope model, plus the one place the server reads another file: a quoted <code>#include</code> that resolves is parsed too, so a name from your own header resolves and go to definition lands in it.</li>
+<li><code>src/cpp_lsp_diagnostics.cpp</code> and <code>src/cpp_lsp_features.cpp</code> -- the checks, and everything that is not a check.</li>
+<li><code>src/cpp_lsp_vocab.cpp</code> and <code>src/cpp_lsp_std_names.cpp</code> -- the curated vocabulary and the generated name list. Regenerate the latter from the standard headers on your machine with <code>scripts/gen_cpp_std_names.sh</code>; it is committed, so building mep never needs them.</li>
+<li><code>src/cpp_lsp_test.cpp</code> -- the windowless test suite (<code>mep-cpp-lsp-test</code>), which asserts as carefully that ordinary code produces <b>no</b> diagnostics as it does that broken code produces them.</li>
+</ul>
+</body>
+</html>

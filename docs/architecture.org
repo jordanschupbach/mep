@@ -118,6 +118,25 @@ ships two *servers* of its own:
 - =src/python_lsp_server.cpp= — the =mep-python-lsp= binary, the same
   stdio JSON-RPC shape as the org one. It claims =py= in the registry;
   pyright stays registered without a filetype.
+- =src/cpp_ast.{h,cpp}= and =src/cpp_parse.cpp= — the C++ front end: a
+  tokenizer, a *modelled* preprocessor (conditional groups are resolved
+  against the macros the file defines plus a host-shaped predefined set,
+  and only the surviving branch reaches the parser) and a
+  recursive-descent parser whose three ambiguity heuristics are
+  documented where they are made.
+- =src/cpp_lsp.cpp=, =src/cpp_lsp_diagnostics.cpp= and
+  =src/cpp_lsp_features.cpp= — the scope model, the checks and everything
+  that is not a check. This is the one server that reads another file: a
+  quoted =#include= that resolves next to the document is parsed too and
+  cached by modification time, which is what makes go to definition land
+  in a project's own header.
+- =src/cpp_lsp_vocab.cpp= and =src/cpp_lsp_std_names.cpp= — the curated
+  vocabulary and a 4,000-name standard-library list generated from the
+  real headers by =scripts/gen_cpp_std_names.sh= (which extracts them
+  with mep's own parser) and committed, so no compiler headers are needed
+  to build.
+- =src/cpp_lsp_server.cpp= — the =mep-cpp-lsp= binary. It claims the C++
+  filetypes; clangd stays registered and keeps =c=.
 
 Code *inside* a =#+begin_src= block is handled separately, by
 =kBuiltinOrgPolyglot='s per-block shadow buffers talking to a real server
@@ -127,10 +146,10 @@ diagnostics are merged (=mep_org_diag_set=).
 * Build targets
 
 =mep= (the editor), =mep-mcp= (MCP bridge), =mep-collabd= (collab relay),
-=mep-org-lsp=, =mep-r-lsp= and =mep-python-lsp= (the language servers mep
-ships), plus around thirty =*-test= and =*-bench= binaries. Every test and
-benchmark target is =EXCLUDE_FROM_ALL=, so a plain build produces only the
-six shipped binaries; =just test= builds and runs the windowless ones,
+=mep-org-lsp=, =mep-r-lsp=, =mep-python-lsp= and =mep-cpp-lsp= (the
+language servers mep ships), plus around thirty =*-test= and =*-bench=
+binaries. Every test and benchmark target is =EXCLUDE_FROM_ALL=, so a
+plain build produces only the seven shipped binaries; =just test= builds and runs the windowless ones,
 =just test-gui= the two that drive a real window, and =just bench= the
 performance suite.
 

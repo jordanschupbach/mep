@@ -7,7 +7,7 @@
 
 | Filetype     | Syntax        | Language server              | Formatter      | Runs with |
 |--------------+---------------+------------------------------+----------------+-----------|
-| C++          | Treesitter    | =clangd=                     | built in       | =c++=     |
+| C++          | Treesitter    | =mep-cpp-lsp=, =clangd=      | built in       | =c++=     |
 | C            | Treesitter    | =clangd=                     | =clang-format= | =cc=      |
 | Python       | Treesitter    | =mep-python-lsp=, =pyright=  | built in       | =python3= |
 | Lua          | Treesitter    | =lua-language-server=        | LSP            |           |

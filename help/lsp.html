@@ -78,7 +78,8 @@ the colours follow your theme.</p>
 Python ones ship with mep itself:</p>
 <table>
 <tr><th>Language</th><th>Command</th></tr>
-<tr><td>C, C++</td><td><code>clangd</code></td></tr>
+<tr><td>C++</td><td><code>mep-cpp-lsp</code> (ships with mep), or <code>clangd</code></td></tr>
+<tr><td>C</td><td><code>clangd</code></td></tr>
 <tr><td>Python</td><td><code>mep-python-lsp</code> (ships with mep), or <code>pyright-langserver</code></td></tr>
 <tr><td>Lua</td><td><code>lua-language-server</code></td></tr>
 <tr><td>Go</td><td><code>gopls</code></td></tr>
@@ -117,14 +118,15 @@ Python ones ship with mep itself:</p>
 </table>
 <p>If a server is missing, nothing breaks -- the file simply opens without one.</p>
 <h1>The three mep brings itself</h1>
-<p><code>mep-org-lsp</code>, <code>mep-r-lsp</code> and <code>mep-python-lsp</code> are mep's own servers,
-built and installed alongside <code>mep</code>, so org, R and Python files get
-diagnostics and completion with nothing to install. See
-<a href="org-lsp.html">The org language server</a>, <a href="r-lsp.html">The R language server</a> and
-<a href="python-lsp.html">The Python language server</a>.</p>
-<p>Python is the one language where mep's own server is preferred over an
-external one out of the box: <code>pyright</code> stays registered but claims no
-filetype, and one line in <code>init.lua</code> swaps them back.</p>
+<p><code>mep-org-lsp</code>, <code>mep-r-lsp</code>, <code>mep-python-lsp</code> and <code>mep-cpp-lsp</code> are mep's
+own servers, built and installed alongside <code>mep</code>, so org, R, Python and
+C++ files get diagnostics and completion with nothing to install. See
+<a href="org-lsp.html">The org language server</a>, <a href="r-lsp.html">The R language server</a>,
+<a href="python-lsp.html">The Python language server</a> and <a href="cpp-lsp.html">The C++ language server</a>.</p>
+<p>Python and C++ are the two languages where mep's own server is preferred
+over an external one out of the box: <code>pyright</code> and <code>clangd</code> stay
+registered but claim no filetype of their own (clangd keeps <code>c</code>), and one
+line in <code>init.lua</code> swaps either back.</p>
 <p>The R one never starts R: it parses the language itself, so a <code>.R</code> file
 gets diagnostics, completion, hover and signature help on a machine with
 no R installed at all.</p>
@@ -151,6 +153,7 @@ rather than replacing one another.</p>
 <li><a href="formatting.html">Formatting</a> -- <code>mep.lsp_format</code> as the fallback formatter.</li>
 <li><a href="structure-symbols.html">Structure and symbols</a> -- the outline views.</li>
 <li><a href="python-lsp.html">The Python language server</a> -- the one that needs no Python.</li>
+<li><a href="cpp-lsp.html">The C++ language server</a> -- the one that needs no compiler.</li>
 </ul>
 </body>
 </html>

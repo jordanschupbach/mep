@@ -86,7 +86,8 @@ Python ones ship with mep itself:
 
 | Language        | Command                            |
 |-----------------+------------------------------------|
-| C, C++          | =clangd=                           |
+| C++             | =mep-cpp-lsp= (ships with mep), or =clangd= |
+| C               | =clangd=                           |
 | Python          | =mep-python-lsp= (ships with mep), or =pyright-langserver= |
 | Lua             | =lua-language-server=              |
 | Go              | =gopls=                            |
@@ -127,15 +128,16 @@ If a server is missing, nothing breaks -- the file simply opens without one.
 
 * The three mep brings itself
 
-=mep-org-lsp=, =mep-r-lsp= and =mep-python-lsp= are mep's own servers,
-built and installed alongside =mep=, so org, R and Python files get
-diagnostics and completion with nothing to install. See
-[[file:org-lsp.html][The org language server]], [[file:r-lsp.html][The R language server]] and
-[[file:python-lsp.html][The Python language server]].
+=mep-org-lsp=, =mep-r-lsp=, =mep-python-lsp= and =mep-cpp-lsp= are mep's
+own servers, built and installed alongside =mep=, so org, R, Python and
+C++ files get diagnostics and completion with nothing to install. See
+[[file:org-lsp.html][The org language server]], [[file:r-lsp.html][The R language server]],
+[[file:python-lsp.html][The Python language server]] and [[file:cpp-lsp.html][The C++ language server]].
 
-Python is the one language where mep's own server is preferred over an
-external one out of the box: =pyright= stays registered but claims no
-filetype, and one line in =init.lua= swaps them back.
+Python and C++ are the two languages where mep's own server is preferred
+over an external one out of the box: =pyright= and =clangd= stay
+registered but claim no filetype of their own (clangd keeps =c=), and one
+line in =init.lua= swaps either back.
 
 The R one never starts R: it parses the language itself, so a =.R= file
 gets diagnostics, completion, hover and signature help on a machine with
@@ -173,3 +175,4 @@ rather than replacing one another.
 - [[file:formatting.html][Formatting]] -- =mep.lsp_format= as the fallback formatter.
 - [[file:structure-symbols.html][Structure and symbols]] -- the outline views.
 - [[file:python-lsp.html][The Python language server]] -- the one that needs no Python.
+- [[file:cpp-lsp.html][The C++ language server]] -- the one that needs no compiler.

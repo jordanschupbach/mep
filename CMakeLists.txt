@@ -733,6 +733,35 @@ target_compile_options(mep-python-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SAN
 target_link_options(mep-python-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-python-lsp-test)
 
+# mep's own C++ language server: the wire half (src/cpp_lsp_server.cpp) over
+# the analysis half (src/cpp_lsp.cpp's scope model, src/cpp_lsp_diagnostics.cpp
+# and src/cpp_lsp_features.cpp), its vocabulary (src/cpp_lsp_vocab.cpp plus the
+# generated src/cpp_lsp_std_names.cpp, which scripts/gen_cpp_std_names.sh
+# refreshes from the real standard headers) and the front end under all of it
+# (src/cpp_ast.cpp's tokenizer and preprocessor, src/cpp_parse.cpp's parser).
+# Same reasoning as mep-python-lsp above, point for point: no mep_core, built
+# by default rather than EXCLUDE_FROM_ALL because kBuiltinLsp's `cpp_ls` entry
+# spawns it out of mep's own bin directory, and skipped on Emscripten, which
+# cannot spawn a subprocess at all.
+set(MEP_CPP_LSP_SOURCES src/cpp_lsp.cpp src/cpp_lsp_diagnostics.cpp src/cpp_lsp_features.cpp
+    src/cpp_lsp_vocab.cpp src/cpp_lsp_std_names.cpp src/cpp_ast.cpp src/cpp_parse.cpp)
+if(NOT EMSCRIPTEN)
+    add_executable(mep-cpp-lsp src/cpp_lsp_server.cpp ${MEP_CPP_LSP_SOURCES})
+    target_include_directories(mep-cpp-lsp PRIVATE src)
+    target_compile_options(mep-cpp-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-cpp-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-cpp-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# The C++ language server's front end and analysis halves driven directly --
+# no process, no JSON-RPC client, no compiler. Same CHECK()-based shape as
+# mep-python-lsp-test.
+add_executable(mep-cpp-lsp-test EXCLUDE_FROM_ALL src/cpp_lsp_test.cpp ${MEP_CPP_LSP_SOURCES})
+target_include_directories(mep-cpp-lsp-test PRIVATE src)
+target_compile_options(mep-cpp-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cpp-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cpp-lsp-test)
+
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
 # cascade behavior can be verified without opening a window.
 add_executable(mep-html-doc-test EXCLUDE_FROM_ALL src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp)

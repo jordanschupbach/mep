@@ -11,7 +11,14 @@ Now, here's some latex in a block:
 #+begin_src R :results graphics :file ./test.png :exports both
 data(iris)
 head(iris)
-plot(iris$Sepal.Length, iris$Sepal.Width, col = iris$Species, pch = 19, xlab = "Sepal Length", ylab = "Sepal Width")
+plot(
+  iris$Sepal.Length,
+  iris$Sepal.Width,
+  col = iris$Species,
+  pch = 19,
+  xlab = "Sepal Length",
+  ylab = "Sepal Width"
+)
 #+end_src
 #+RESULTS:
 #+begin_example

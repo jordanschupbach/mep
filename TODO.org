@@ -1,3 +1,98 @@
+
+* TODO org table formatting
+There's a bug in org table formatting, where, links dont get properly formatted. May be related to precedence when formatting org tables between link formatting and column formatting (w auto page wrapping).  Investigate and fix.
+
+* TODO org table render
+
+I'd like org tables to render better. Should have slightly different backgrounds
+one row after the other. I'd also like there to be a rounded border, similar to
+the style that org code blocks have.
+
+* TODO lua formatter
+
+I'd like an inhouse version of a formatter for lua. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO java formatter
+
+I'd like an inhouse version of a formatter for java. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO c++ formatter
+
+I'd like an inhouse version of a formatter for c++. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO c formatter
+
+I'd like an inhouse version of a formatter for c. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO python formatter
+
+I'd like an inhouse version of a formatter for python. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO r formatter
+
+I'd like an inhouse version of a formatter for R. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+
+* TODO smooth scroll
+
+I'd like smooth scrolling in org files. When going over a figure, I'd like j,k
+to scroll one line at a time until the position of the top or bottom of the
+figure scrolls past the center of the height of the window (i.e. where the
+cursor should be emulated from (but not visible, while going over the image),
+depending how on which way the user is scrolling.
+
+* TODO error binding
+
+I'd like a binding for going to the next error, should be [e and ]e. Once the
+error has been jumped to, id like a popup to show the error message(s). Should
+be able to select error in popup (ctrl+n, ctrl+p) and yank the error message to
+the clipboard (y).
+
+* TODO lsp status
+I'd like org mode code blocks to give status of running lsp at the bottom of a
+code block (separated by a horizontal line (from the code part of the block).
+
+* TODO octave lsp engine
+I'd like an inhouse LSP engine for octave. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+* TODO java lsp engine
+I'd like an inhouse LSP engine for Java. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+* TODO c++ lsp engine
+I'd like an inhouse LSP engine for C++. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+
+* TODO c lsp engine
+I'd like an inhouse LSP engine for C. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+
+* TODO python lsp engine
+I'd like an inhouse LSP engine for python. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+
+* TODO R lsp engine
+I'd like an inhouse LSP engine for R. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+
+
+* TODO org export 
+I'd like a button at the top of an org mode buffer (pane bar) for exporting the
+org document. I should be able to press the button and for the export button to
+have a dropdown menu with options: html, pdf, odt, markdown,
+ascii, etc... When I select one of these options, it should export the org document to
+that format and open it in a new pane. Can you implement this?
+
+* TODO org insert block
+
+I'd like a button at the top of an org mode buffer (pane bar), I'd like to be
+able to insert a code block (e.g. R, python, C/C++, etc.) into the org mode buffer. Can you implement this?
+
 * TODO link formatting
 Change links in org mode to be rendered to have an underline underneath it. 
 
@@ -12,9 +107,6 @@ investigate what themes there and which ones appear to be missing and then
 implement them. The more the better.
 
 * TODO todo management
-  :LOGBOOK:
-  CLOCK: [2026-09-19 Sat 09:46]
-  :END:
 
 * TODO language modes
   We've added 'ui modes' for languages before (I think just R so far). I'd like

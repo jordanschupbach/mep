@@ -2040,6 +2040,30 @@ bool Editor::ToggleOrgBlockCards() {
     return org_block_cards_visible_;
 }
 
+void Editor::SetOrgLspStatusRow(int row, const OrgLspStatus &status) {
+    Buf().org_lsp_status_rows[row] = status;
+}
+
+void Editor::ClearOrgLspStatusRows() { Buf().org_lsp_status_rows.clear(); }
+
+const OrgLspStatus *Editor::OrgLspStatusForRow(const Buffer &buf, int row) const {
+    if (!org_lsp_status_visible_) return nullptr;
+    auto it = buf.org_lsp_status_rows.find(row);
+    if (it == buf.org_lsp_status_rows.end()) return nullptr;
+    return &it->second;
+}
+
+bool Editor::ToggleOrgLspStatus() {
+    org_lsp_status_visible_ = !org_lsp_status_visible_;
+    // The flip alone is what stops the line being drawn -- OrgLspStatusForRow
+    // gates on this flag, so the registry's contents are irrelevant while it
+    // is off. (mep.org_lsp_status_toggle_ui does rescan right after calling
+    // this, which clears the registry on the way off and refills it on the
+    // way on, so the state is correct immediately either way rather than a
+    // scan tick later.)
+    return org_lsp_status_visible_;
+}
+
 OrgSrcBlock Editor::OrgSrcBlockAt(int row) const {
     OrgSrcBlock result;
     const int n = Buf().LineCount();

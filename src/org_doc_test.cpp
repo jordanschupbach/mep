@@ -692,6 +692,86 @@ int main() {
         CHECK(degenerate.offset_x >= 0.0f);
     }
 
+
+    // --- Per-src-block LSP status line (<leader>ots): the wording and
+    // the severity ranking DrawPane draws along a src card's bottom edge,
+    // from the facts Lua's mep.org_lsp_status_scan reports for the block.
+    {
+        // Nothing will ever attach: say why, and name the language, since
+        // the card's title bar is the only other place it appears.
+        OrgLspStatus none;
+        none.lang = "sh";
+        CHECK(FormatOrgLspStatus(none) == "LSP: no server for sh");
+        CHECK(OrgLspStatusToneOf(none) == OrgLspStatusTone::kMuted);
+        // A `#+begin_src` with no language tag at all.
+        OrgLspStatus bare;
+        CHECK(FormatOrgLspStatus(bare) == "LSP: no language set");
+        // A server that resolved but a state that says otherwise is still
+        // an "unsupported" line -- the two facts can't disagree.
+        OrgLspStatus stale;
+        stale.state = OrgLspState::kReady;
+        stale.lang = "python";
+        CHECK(FormatOrgLspStatus(stale) == "LSP: no server for python");
+    }
+    {
+        OrgLspStatus st;
+        st.lang = "python";
+        st.server = "pyright";
+        st.state = OrgLspState::kIdle;
+        // Idle is the resting state of a block no LSP feature has run
+        // in yet -- not a fault, and the line says what would attach it.
+        CHECK(FormatOrgLspStatus(st) == "pyright: idle (attaches on first use)");
+        CHECK(OrgLspStatusToneOf(st) == OrgLspStatusTone::kMuted);
+        st.state = OrgLspState::kStarting;
+        CHECK(FormatOrgLspStatus(st) == "pyright: starting...");
+        CHECK(OrgLspStatusToneOf(st) == OrgLspStatusTone::kMuted);
+        // A client that was started and is gone is a real fault.
+        st.state = OrgLspState::kExited;
+        CHECK(FormatOrgLspStatus(st) == "pyright: not running");
+        CHECK(OrgLspStatusToneOf(st) == OrgLspStatusTone::kWarn);
+    }
+    {
+        OrgLspStatus st;
+        st.lang = "python";
+        st.server = "pyright";
+        st.state = OrgLspState::kReady;
+        CHECK(FormatOrgLspStatus(st) == "pyright: ready, no diagnostics");
+        CHECK(OrgLspStatusToneOf(st) == OrgLspStatusTone::kOk);
+        // Singular/plural, and only the categories that actually have
+        // findings -- a clean category must not print "0 warnings".
+        st.errors = 1;
+        CHECK(FormatOrgLspStatus(st) == "pyright: ready, 1 error");
+        CHECK(OrgLspStatusToneOf(st) == OrgLspStatusTone::kError);
+        st.errors = 2;
+        st.warnings = 1;
+        st.hints = 3;
+        CHECK(FormatOrgLspStatus(st) == "pyright: ready, 2 errors, 1 warning, 3 hints");
+        CHECK(OrgLspStatusToneOf(st) == OrgLspStatusTone::kError);
+        // Warnings alone rank below errors but above a healthy line.
+        st.errors = 0;
+        CHECK(FormatOrgLspStatus(st) == "pyright: ready, 1 warning, 3 hints");
+        CHECK(OrgLspStatusToneOf(st) == OrgLspStatusTone::kWarn);
+        // Hints alone never raise the tone: they are information, not a
+        // problem, and a page of blocks shouldn't glow for them.
+        st.warnings = 0;
+        CHECK(FormatOrgLspStatus(st) == "pyright: ready, 3 hints");
+        CHECK(OrgLspStatusToneOf(st) == OrgLspStatusTone::kOk);
+        st.hints = 1;
+        CHECK(FormatOrgLspStatus(st) == "pyright: ready, 1 hint");
+    }
+    {
+        // The Lua bridge's state names, and the fallback for anything
+        // this side doesn't know -- an unrecognized name must degrade to
+        // "nothing is attached here", never to a confident "ready".
+        CHECK(OrgLspStateFromName("idle") == OrgLspState::kIdle);
+        CHECK(OrgLspStateFromName("starting") == OrgLspState::kStarting);
+        CHECK(OrgLspStateFromName("ready") == OrgLspState::kReady);
+        CHECK(OrgLspStateFromName("exited") == OrgLspState::kExited);
+        CHECK(OrgLspStateFromName("unsupported") == OrgLspState::kUnsupported);
+        CHECK(OrgLspStateFromName("") == OrgLspState::kUnsupported);
+        CHECK(OrgLspStateFromName("Ready") == OrgLspState::kUnsupported);
+    }
+
     std::printf("org_doc_test: all checks passed\n");
     return 0;
 }

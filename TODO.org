@@ -64,9 +64,39 @@ error has been jumped to, id like a popup to show the error message(s). Should
 be able to select error in popup (ctrl+n, ctrl+p) and yank the error message to
 the clipboard (y).
 
-* TODO lsp status
+* DONE lsp status
 I'd like org mode code blocks to give status of running lsp at the bottom of a
 code block (separated by a horizontal line (from the code part of the block).
+  - Landed on the `#+end_src` row itself -- the block card already conceals
+    that row and paints it as blank floor, so the status line costs no extra
+    slot and none of the four slot walkers that must agree on a row's height
+    had to change. A rule across the card's inner width separates it from the
+    code above; a severity dot plus one line of text sits under it.
+  - Five states, in the block's own terms: `LSP: no server for <lang>` /
+    `LSP: no language set` when nothing can ever attach, `<server>: idle
+    (attaches on first use)` for a block no LSP feature has run in yet,
+    `<server>: starting...`, `<server>: not running` (spawn failed, or the
+    client died), and `<server>: ready, 2 errors, 1 warning` counting only
+    diagnostics inside that block's own body rows. The dot is green/yellow/
+    red; counts outrank state, so a healthy client reporting errors reads red.
+  - Split the way the rest of the org render stack is: Lua owns the facts
+    (mep.org_lsp_status_scan in kBuiltinOrgPolyglot -- shadows, clients,
+    mep.lsp_servers and mep_lsp_diagnostics are all Lua-side), C++ owns the
+    wording (FormatOrgLspStatus/OrgLspStatusToneOf, org_doc.cpp, covered by
+    mep-org-doc-test) and the drawing (DrawPane). The scan is not per-frame:
+    it reruns on a buffer change, a file change or a new mep_polyglot_epoch,
+    with a 2s floor so a *dying* server (which has no event to hook) still
+    stops reading "ready".
+  - Toggled with <leader>ots / :MepOrgLspStatusToggle, on by default, and
+    revealed like every other concealed row: put the cursor on `#+end_src`
+    and the raw text comes back in place of the status.
+  - Also fixed, found while building this: mep_polyglot_restart_shadow_client
+    called mep_polyglot_server_for without the block's lang_def, so the
+    extension-based lookup that function exists for degraded to a bare
+    language-name lookup and resolved "no server" for every language whose
+    name and extension differ. Latent, not live -- its only caller is the
+    c/cpp compile-database rewrite, and those two languages happen to have
+    name == extension.
 
 * TODO octave lsp engine
 I'd like an inhouse LSP engine for octave. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)

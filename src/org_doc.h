@@ -619,4 +619,76 @@ struct OrgImageLayout {
 OrgImageLayout OrgImageLayoutFor(int px_w, int px_h, float char_width, float line_height, int avail_cols,
                                  int text_cols);
 
+// --- Per-src-block language-server status (<leader>ots) ---
+// One `#+begin_src` block's language-server state, rendered as a line of
+// text along the bottom edge of the block's card (DrawPane, main.cpp),
+// under a rule separating it from the code above.
+//
+// The facts themselves can only come from Lua: the org->LSP bridge
+// (kBuiltinOrgPolyglot, main.cpp) owns the shadow files, the per-block
+// clients and the server registry, none of which C++ has a view of. Lua
+// reports them per block (mep.buf_set_org_lsp_status) and this pure half
+// turns them into the one line actually drawn -- kept here rather than in
+// the Lua chunk or inline in DrawPane so the wording, the pluralization
+// and the severity ranking are testable without a GL context
+// (org_doc_test.cpp).
+enum class OrgLspState {
+    // The block has no language tag, no org-babel entry, or no LSP server
+    // registered for its language -- nothing will ever attach.
+    kUnsupported,
+    // A server is registered, but this block has no client yet. The bridge
+    // attaches lazily (the first time an LSP feature runs inside the block),
+    // so this is the resting state of an untouched block, not a failure.
+    kIdle,
+    // Client process spawned; its `initialize` response hasn't come back.
+    kStarting,
+    // Initialized and answering.
+    kReady,
+    // A client was started for this block and is gone now -- the process
+    // exited, or the spawn itself failed.
+    kExited,
+};
+
+struct OrgLspStatus {
+    OrgLspState state = OrgLspState::kUnsupported;
+    // `#+begin_src <lang>`'s language tag as written, "" when the block has
+    // none (which is itself a reason for kUnsupported).
+    std::string lang;
+    // The mep.lsp_servers registry key that resolved for `lang`
+    // ("pyright", "clangd", ...), "" when none did.
+    std::string server;
+    // Diagnostics whose range starts on one of the block's body rows,
+    // already translated back to org line numbers by the bridge. `hints`
+    // merges LSP severity 3 (Information) and 4 (Hint), which a one-line
+    // status has no room to tell apart.
+    int errors = 0;
+    int warnings = 0;
+    int hints = 0;
+};
+
+// How loudly the line is drawn. The counts outrank the state: a `ready`
+// server reporting three errors is an error line, not a healthy one.
+enum class OrgLspStatusTone { kMuted, kOk, kWarn, kError };
+
+/**
+ * @brief Renders one block's language-server status as the single line drawn under its code.
+ * @param st The block's reported state, server and diagnostic counts.
+ * @return The status line; never empty.
+ */
+std::string FormatOrgLspStatus(const OrgLspStatus &st);
+
+/**
+ * @brief Picks the color bucket a status line is drawn in.
+ * @param st The block's reported state, server and diagnostic counts.
+ * @return kError/kWarn when diagnostics or a dead client say so, kOk for a healthy attached server, kMuted otherwise.
+ */
+OrgLspStatusTone OrgLspStatusToneOf(const OrgLspStatus &st);
+
+/**
+ * @brief Maps the bridge's state name ("idle", "starting", "ready", "exited") to its enum.
+ * @param name The state name as Lua reports it; anything unrecognized is kUnsupported.
+ * @return The parsed state.
+ */
+OrgLspState OrgLspStateFromName(const std::string &name);
+
 #endif

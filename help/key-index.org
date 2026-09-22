@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 111 =<leader>= sequences registered at startup. Press
+All 112 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -94,6 +94,7 @@ the features live.
 | =<leader>oti= | Org: toggle inline images | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otl= | Toggle LaTeX/math preview (org/tex) | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otm= | Org: toggle markup concealment | [[file:org-basics.html][Org files in mep]] |
+| =<leader>ots= | Org: toggle src-block LSP status | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otw= | Org: toggle wrapped table rendering | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>pc= | Clear project (default layout) | [[file:projects.html][Projects]] |
 | =<leader>pf= | Find files | [[file:pickers.html][Pickers]] |

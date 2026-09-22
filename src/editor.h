@@ -1036,6 +1036,13 @@ struct Buffer {
         std::vector<std::string> lines;  // what this row draws as, top to bottom
         int indent = 0;                  // display column the rendered leading `|` sits at
         int width = 0;                   // rendered columns from `indent` to the trailing `|`
+        // The links drawn in `lines`, in line then column order
+        // (PlanOrgTableWrap's own row_links). The row's stored link
+        // decorations index the raw markup, which is not what is on
+        // screen here, so the renderer draws and registers these instead
+        // -- without them a link inside a wrapped table came out as
+        // unstyled, unfollowable body text.
+        std::vector<OrgTableWrapLink> links;
     };
     std::unordered_map<int, OrgTableWrapRow> org_table_wrap_rows;
 
@@ -11066,6 +11073,14 @@ private:
     int org_table_wrap_cursor_row_ = -2;  // -2 = nothing planned yet
     int org_table_wrap_sel_lo_ = -1;
     int org_table_wrap_sel_hi_ = -1;
+    // ...and the concealment setting the last plan was made under, which
+    // is part of the same key because the layout is budgeted in the text
+    // that will be drawn (PlanOrgTableWrap's `collapse_links`): flipping
+    // <leader>otm changes a link cell from `Docs` to the whole
+    // `[[...][Docs]]` and so changes every column width in the table.
+    // Without it the toggle left a wrapped table drawing the layout it
+    // had before, i.e. showing concealed links with concealment off.
+    bool org_table_wrap_conceal_ = true;
     // Org markup concealment / scaled headlines (<leader>otm, <leader>oth):
     // see OrgConcealVisible()/OrgHeadingScaleVisible() for what each gates
     // and why both start on.

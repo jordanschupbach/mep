@@ -203,9 +203,25 @@ A row showing its stored text is left out of the grid: no header tint, no
 column rules and, on a =|---+---|= row, no drawn rule over the dashes --
 the rules above and below it simply stop there, because the columns it is
 showing are not the ones the rest of the table is drawn in. Because a
-wrapped row's drawn text is not the row's own text, its syntax colouring
-and concealment are skipped for as long as it is wrapped, and it comes back
-fully decorated the moment the cursor leaves it.
+wrapped row's drawn text is not the row's own text, its syntax colouring is
+skipped for as long as it is wrapped, and it comes back fully decorated the
+moment the cursor leaves it.
+
+Links are the exception, because the layout resolves them itself. A cell's
+link markup is turned into its display text *before* the columns are
+budgeted, so a =[[https://orgmode.org/manual/Tables.html][Tables]]= cell
+costs the table the six columns of =Tables= rather than the fifty of its
+markup -- no other column is shaved to pay for a URL that is never drawn --
+and the link is then coloured, underlined and clickable exactly where the
+layout put it. A description the wrap breaks across lines stays a link on
+every line it lands on. With concealment off (=<leader>otm=) the markup is
+what gets
+measured, wrapped and drawn, and flipping the setting re-lays out the
+table.
+
+Whether a table needs this layout at all is still judged on its *stored*
+width, markup and all: a row rendered as stored keeps every =|= where the
+file puts it, so that is the width it would overrun the line at.
 
 * See also
 

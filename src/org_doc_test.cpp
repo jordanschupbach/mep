@@ -617,6 +617,98 @@ int main() {
         for (int wv : plan.col_widths) CHECK(wv >= 1);
         CHECK(!plan.rows[0].empty());
     }
+    {
+        // --- Links in a table: resolved to their display text *before*
+        //     the columns are budgeted, and reported at the columns they
+        //     were actually drawn at (OrgTableWrapPlan::row_links).
+        std::vector<OrgTableCells> rows;
+        OrgTableCells head;
+        head.cells.push_back("Topic");
+        head.cells.push_back("Link");
+        rows.push_back(head);
+        OrgTableCells sep;
+        sep.is_sep = true;
+        rows.push_back(sep);
+        OrgTableCells body;
+        body.cells.push_back("org");
+        body.cells.push_back("[[https://orgmode.org/manual/Tables.html][Tables]]");
+        rows.push_back(body);
+
+        // The link cell is six columns of "Tables", not the fifty of its
+        // markup, so its column is budgeted at what is drawn and the
+        // table fits as stored.
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 80, 0);
+        CHECK(!plan.wrapped);
+        CHECK(plan.col_widths.size() == 2);
+        CHECK(plan.col_widths[0] == 5 && plan.col_widths[1] == 6);
+        CHECK(plan.rows[2][0] == "| org   | Tables |");
+        // ...and the link is reported where the renderer has to colour,
+        // underline and register a click on it.
+        CHECK(plan.row_links.size() == plan.rows.size());
+        CHECK(plan.row_links[1].empty());  // a `|---+---|` rule holds no links
+        CHECK(plan.row_links[2].size() == 1);
+        const OrgTableWrapLink &link = plan.row_links[2][0];
+        CHECK(link.line == 0);
+        CHECK(link.target == "https://orgmode.org/manual/Tables.html");
+        CHECK(plan.rows[2][0].substr(static_cast<size_t>(link.col_start),
+                                     static_cast<size_t>(link.col_end - link.col_start)) == "Tables");
+
+        // With concealment off the markup itself is what gets drawn, so
+        // it is what gets measured -- the column is fifty wide again, and
+        // the link is still reported, or it would draw unstyled and
+        // unfollowable there.
+        OrgTableWrapPlan raw = PlanOrgTableWrap(rows, 80, 0, false);
+        CHECK(raw.col_widths[1] == 50);
+        CHECK(raw.row_links[2].size() == 1);
+        const OrgTableWrapLink &raw_link = raw.row_links[2][0];
+        CHECK(raw.rows[2][0].substr(static_cast<size_t>(raw_link.col_start),
+                                    static_cast<size_t>(raw_link.col_end - raw_link.col_start)) ==
+              "[[https://orgmode.org/manual/Tables.html][Tables]]");
+
+        // A budget the *stored* markup overruns gets the layout even
+        // though the drawn text would have fitted as stored: rendering it
+        // as stored would pad the table out to the width of a URL nobody
+        // sees and run it off the side of the pane. Getting there costs
+        // the columns nothing -- both keep their full drawn width, and
+        // the row still draws as one line.
+        OrgTableWrapPlan tight = PlanOrgTableWrap(rows, 40, 0);
+        CHECK(tight.wrapped);
+        CHECK(tight.col_widths[0] == 5 && tight.col_widths[1] == 6);
+        CHECK(tight.rows[2].size() == 1);
+        CHECK(tight.rows[2][0] == "| org   | Tables |");
+    }
+    {
+        // A description the wrap breaks across lines reports one span per
+        // line, each covering exactly the text it drew there.
+        std::vector<OrgTableCells> rows;
+        OrgTableCells body;
+        body.cells.push_back("docs");
+        body.cells.push_back(
+            "see [[https://example.com/a/very/long/path][the org manual]] for the details of the "
+            "table formatting rules and rather more prose besides");
+        rows.push_back(body);
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 40, 0);
+        CHECK(plan.wrapped);
+        CHECK(plan.row_links.size() == 1);
+        CHECK(!plan.row_links[0].empty());
+        std::string joined;
+        for (const OrgTableWrapLink &link : plan.row_links[0]) {
+            CHECK(link.target == "https://example.com/a/very/long/path");
+            CHECK(link.line >= 0 && link.line < static_cast<int>(plan.rows[0].size()));
+            const std::string &line = plan.rows[0][static_cast<size_t>(link.line)];
+            CHECK(link.col_end > link.col_start);
+            CHECK(static_cast<size_t>(link.col_end) <= line.size());
+            if (!joined.empty()) joined += " ";
+            joined += line.substr(static_cast<size_t>(link.col_start),
+                                  static_cast<size_t>(link.col_end - link.col_start));
+        }
+        // Every span, in drawing order, is the description and nothing
+        // else: no cell padding, no `|`, no markup.
+        CHECK(joined == "the org manual");
+        // ...and the markup never reaches the drawn lines at all.
+        for (const std::string &l : plan.rows[0]) CHECK(l.find("[[") == std::string::npos);
+    }
 
     // --- Org inline images: the drawn figure's geometry (OrgImageLayoutFor).
     {

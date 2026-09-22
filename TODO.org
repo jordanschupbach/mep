@@ -2,8 +2,32 @@
 
 In commit messages, I can quit by pressing escape. I'd like this to not be the case. To abort, I can press mod+d (alt+d), or do :bd. Implement this.
 
-* TODO org table formatting
+* DONE org table formatting
 There's a bug in org table formatting, where, links dont get properly formatted. May be related to precedence when formatting org tables between link formatting and column formatting (w auto page wrapping).  Investigate and fix.
+  - It was exactly the precedence: the auto-wrap layout (PlanOrgTableWrap,
+    org_doc.cpp) measured and wrapped each cell's *raw* text, so a
+    `[[https://...][Docs]]` cell claimed thirty columns for six columns of
+    drawn text, every other column was shaved to pay for a URL nobody
+    sees, and the markup got hard-split across lines. The renderer then
+    skipped every decoration on a wrapped row (its columns index the
+    stored line, not the drawn one), so those links came out as plain,
+    unstyled, unclickable body text -- while the same link rendered
+    normally in an unwrapped table and in prose.
+  - Link formatting now runs *first*: a cell is resolved to its drawn text
+    before a single width is measured, and the plan hands back where each
+    link landed in the lines it generated (OrgTableWrapPlan::row_links ->
+    Buffer::OrgTableWrapRow::links), which DrawPane repaints Blue,
+    underlines and registers a click region for. Whether the table needs
+    wrapping at all is still judged on the *stored* width, since a table
+    rendered as stored keeps its pipes where the file puts them.
+  - Concealment off (<leader>otm) measures, wraps and draws the markup
+    instead, and flipping it re-plans the layout (it is part of
+    OrgTableWrapScan's early-out key now).
+  - Covered by org_doc_test.cpp (three new cases: collapsed widths, the
+    concealment-off contrast, and a description the wrap broke across
+    lines) and verified live on a spawned instance: a wide table of link
+    cells renders inside the margin with each link blue/underlined and the
+    grid rules intact.
 
 * TODO org table render
 

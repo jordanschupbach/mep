@@ -13716,6 +13716,14 @@ const char *kBuiltinOrgLinks =
     "  mep.notify('Org markup concealment: ' .. (visible and 'on' or 'off'))\n"
     "  mep.org_link_highlight()\n"
     "  mep.syntax_highlight()\n"
+    // An over-wide table's layout is budgeted in the text that will be
+    // drawn (PlanOrgTableWrap's `collapse_links`), so flipping this
+    // changes every column width in a table holding links. Forced for
+    // the same reason the buffer-changed hook forces it: the scan's own
+    // early-out is cursor-driven, so without this the table would go on
+    // drawing its old layout -- concealed links with concealment off --
+    // until the cursor happened to move.
+    "  mep.org_table_wrap_scan(true)\n"
     "end\n"
     "mep.command('MepOrgConcealToggle', mep.org_conceal_toggle_ui)\n"
     "mep.leader_map('otm', 'Org: toggle markup concealment', mep.org_conceal_toggle_ui)\n"
@@ -40406,10 +40414,31 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // collected above still draw, so it reads as a table; the
             // table the cursor is in is never wrapped, so the row being
             // edited always shows its own characters.
+            const gfx::Color tbl_link_color = ResolveHlGroup("Blue");
             for (size_t tl = 0; tl < tbl_wrap->lines.size(); tl++) {
-                DrawLineFast(tbl_wrap->lines[tl], text_x,
-                             ly + static_cast<float>(static_cast<int>(tl) * line_height), g_font_size,
-                             ResolveHlGroup("Normal"));
+                const std::string &tbl_line = tbl_wrap->lines[tl];
+                const float tbl_y = ly + static_cast<float>(static_cast<int>(tl) * line_height);
+                DrawLineFast(tbl_line, text_x, tbl_y, g_font_size, ResolveHlGroup("Normal"));
+                // The one exception to "no decorations here", because the
+                // layout carries its own (Buffer::OrgTableWrapRow::links,
+                // in the drawn lines' own columns rather than the stored
+                // row's): a link is repainted Blue and underlined over
+                // the Normal pass that just drew it, so a `[[...][Docs]]`
+                // cell reads as the same link it does everywhere else
+                // instead of as plain body text. Its markup was already
+                // resolved into these lines by PlanOrgTableWrap, so there
+                // is nothing left to conceal -- only to colour.
+                for (const OrgTableWrapLink &tlk : tbl_wrap->links) {
+                    if (tlk.line != static_cast<int>(tl) || tlk.col_end <= tlk.col_start) continue;
+                    const size_t lb = ColumnToByteOffset(tbl_line, tlk.col_start);
+                    const size_t le = ColumnToByteOffset(tbl_line, tlk.col_end);
+                    if (le <= lb) continue;
+                    const float lx = text_x + static_cast<float>(tlk.col_start) * g_char_width;
+                    DrawLineFast(tbl_line.substr(lb, le - lb), lx, tbl_y, g_font_size, tbl_link_color);
+                    gfx::DrawRectangle(static_cast<int>(lx), static_cast<int>(tbl_y + static_cast<float>(line_height) - 2),
+                                       static_cast<int>(static_cast<float>(tlk.col_end - tlk.col_start) * g_char_width), 1,
+                                       tbl_link_color);
+                }
             }
         } else if (row_wrap_cols <= 0) {
             DrawLineFast(draw_line, text_x, ly, g_font_size, ResolveHlGroup("Normal"));
@@ -40886,7 +40915,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // about whether this one actually broke across visual lines. Only
         // a row that really did is skipped, since a link split over two
         // sub-rows isn't one rectangle.
-        if (is_org_buffer && row_wrap_slots <= 1) {
+        //
+        // A row drawn as a wrapped table's layout is handled separately
+        // below instead of here: its stored columns are not the ones on
+        // screen, so this rectangle would land somewhere else entirely --
+        // including for a short row of such a table, which claims a
+        // single slot and so used to reach this branch and register a
+        // click region over the wrong text.
+        if (is_org_buffer && tbl_wrap == nullptr && row_wrap_slots <= 1) {
             if (const std::vector<Buffer::OrgLinkSpan> *link_spans =
                     g_editor.OrgLinkSpansForRow(pane.buffer_id, row)) {
                 for (const Buffer::OrgLinkSpan &lsp : *link_spans) {
@@ -40911,6 +40947,40 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                                  g_editor.OrgFollowLinkAt(click_row, click_col);
                                              });
                 }
+            }
+        }
+
+        // The same click regions for a link drawn inside a wrapped
+        // table, whose rectangles come from the layout (which knows what
+        // it drew where) rather than from the stored columns. Following
+        // still goes through the one dispatcher, so the stored link that
+        // carries this target is looked up by target: matching by
+        // position is not available here, and matching by index would
+        // follow the wrong link on any row where the two scans disagree
+        // about how many links there are.
+        const std::vector<Buffer::OrgLinkSpan> *tbl_link_spans =
+            (is_org_buffer && tbl_wrap != nullptr) ? g_editor.OrgLinkSpansForRow(pane.buffer_id, row) : nullptr;
+        if (tbl_link_spans != nullptr) {
+            for (const OrgTableWrapLink &tlk : tbl_wrap->links) {
+                if (tlk.col_end <= tlk.col_start) continue;
+                int click_col = -1;
+                for (const Buffer::OrgLinkSpan &lsp : *tbl_link_spans) {
+                    if (lsp.target == tlk.target) {
+                        click_col = lsp.col_start;
+                        break;
+                    }
+                }
+                if (click_col < 0) continue;
+                const float lx = text_x + static_cast<float>(tlk.col_start) * g_char_width;
+                const float lw = static_cast<float>(tlk.col_end - tlk.col_start) * g_char_width;
+                const float lky = ly + static_cast<float>(tlk.line * line_height);
+                const int click_row = row;
+                const int click_pane = pane.id;
+                RegisterClickRegionOnTop(gfx::Rectangle{lx, lky, lw, static_cast<float>(line_height)},
+                                         [click_pane, click_row, click_col] {
+                                             g_editor.FocusPaneById(click_pane);
+                                             g_editor.OrgFollowLinkAt(click_row, click_col);
+                                         });
             }
         }
 

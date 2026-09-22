@@ -476,13 +476,41 @@ struct OrgTableCells {
     std::vector<std::string> cells;
 };
 
+// Where one link's display text landed in a row's rendered lines.
+//
+// A wrapped row draws the plan's own text rather than the buffer's, so
+// the row's stored link decorations -- whose columns index the raw
+// `[[target][desc]]` markup (Editor::OrgLinkScan) -- no longer map onto
+// anything on screen, and the renderer stands them down for exactly that
+// reason. Without this there is nothing left to tell it where the links
+// in a wrapped table went, which is why one used to draw as plain body
+// text there while the same link drew as a link everywhere else.
+//
+// A description the wrap broke across lines reports one span per line
+// rather than being forced onto one: each piece is still drawn and
+// followed as the same link, the way a link straddling a soft-wrap
+// boundary already behaves in prose.
+struct OrgTableWrapLink {
+    int line = 0;        // index into this row's rendered lines
+    int col_start = 0;   // display column in that line the drawn text starts at
+    int col_end = 0;     // one past its last column
+    std::string target;  // what following it opens ("https://...", "file:notes.org", ...)
+};
+
 struct OrgTableWrapPlan {
-    // False when the table already fits the budget, in which case the
-    // caller should leave the rows alone and render them as stored --
-    // `col_widths`/`rows` still hold the (unwrapped) layout.
+    // False when the table already fits the budget *as stored*, in which
+    // case the caller should leave the rows alone and render them as
+    // stored -- `col_widths`/`rows` still hold the (unwrapped) layout.
+    // Measured on the stored text rather than the drawn text because a
+    // row rendered as stored keeps every `|` where the file put it, so
+    // that is the width it overruns the line at, link markup and all.
     bool wrapped = false;
     std::vector<int> col_widths;                 // content columns, excluding each cell's ` ` padding
     std::vector<std::vector<std::string>> rows;  // per input row, the line(s) it draws as
+    // Per input row, every link drawn in that row's lines, in line then
+    // column order. Parallel to `rows`; empty for a `|---+---|` rule and
+    // for any row that holds no links.
+    std::vector<std::vector<OrgTableWrapLink>> row_links;
 };
 
 /**
@@ -514,14 +542,26 @@ std::vector<std::string> OrgTableWrapCell(const std::string &text, int width);
 // prose rather than shaving all four evenly). A column is never widened
 // past its own longest cell, and never shrunk below kOrgTableMinColWidth
 // unless the budget leaves no choice.
+//
+// Link markup is resolved *before* the columns are budgeted, not after:
+// with `collapse_links` on (concealment's own setting, the default), a
+// cell's `[[target][desc]]` counts and wraps as the `desc` it will
+// actually be drawn as. Measuring the raw markup instead -- which is what
+// this used to do -- spent a column's whole budget on a URL nobody would
+// ever see, shaved every other column to pay for it, and hard-split the
+// markup across lines so the renderer could not recognise a link there at
+// all. `false` (concealment off) keeps the markup, which is then what is
+// measured, wrapped and drawn, since that is what the reader sees.
 /**
  * @brief Plans a table's rendered column widths and per-row wrapped lines for a line-width budget.
  * @param rows the table's parsed rows, in order
  * @param budget the total rendered width to fit, in display columns (`:set textwidth`)
  * @param indent the display column the table's leading `|` sits at
- * @return the plan; `wrapped` is false when the table already fits
+ * @param collapse_links whether a cell's link markup is measured and drawn as its display text
+ * @return the plan; `wrapped` is false when the table already fits as stored
  */
-OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int budget, int indent);
+OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int budget, int indent,
+                                  bool collapse_links = true);
 
 // The narrowest a column is squeezed to while any wider one still has
 // columns to give up -- below this a prose cell wraps to one or two words

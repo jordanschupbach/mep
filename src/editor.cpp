@@ -26556,13 +26556,15 @@ void Editor::OrgTableWrapScan(bool force) {
             ? cursor_row
             : -1;
     if (!force && org_table_wrap_buffer_ == CurrentBufferId() && org_table_wrap_cursor_row_ == cursor_in_table &&
-        org_table_wrap_sel_lo_ == sel_lo && org_table_wrap_sel_hi_ == sel_hi) {
+        org_table_wrap_sel_lo_ == sel_lo && org_table_wrap_sel_hi_ == sel_hi &&
+        org_table_wrap_conceal_ == org_conceal_visible_) {
         return;
     }
     org_table_wrap_buffer_ = CurrentBufferId();
     org_table_wrap_cursor_row_ = cursor_in_table;
     org_table_wrap_sel_lo_ = sel_lo;
     org_table_wrap_sel_hi_ = sel_hi;
+    org_table_wrap_conceal_ = org_conceal_visible_;
     buf.org_table_wrap_rows.clear();
 
     // A `|`-heavy line inside a `#+begin_src`/`#+begin_example` block is
@@ -26601,7 +26603,11 @@ void Editor::OrgTableWrapScan(bool force) {
                 have_indent = true;
             }
         }
-        OrgTableWrapPlan plan = PlanOrgTableWrap(parsed, budget, indent);
+        // Concealment's own setting decides what a link counts as here,
+        // so the layout is budgeted against the text the reader is
+        // actually shown: `Docs` while links are concealed, the whole
+        // `[[https://...][Docs]]` when they are not (<leader>oc).
+        OrgTableWrapPlan plan = PlanOrgTableWrap(parsed, budget, indent, org_conceal_visible_);
         if (plan.wrapped) {
             int cols = 0;
             for (int cw : plan.col_widths) cols += cw + 3;
@@ -26625,6 +26631,7 @@ void Editor::OrgTableWrapScan(bool force) {
                 if (sel_lo >= 0 && r >= sel_lo && r <= sel_hi) continue;
                 Buffer::OrgTableWrapRow entry;
                 entry.lines = plan.rows[static_cast<size_t>(r - row)];
+                entry.links = plan.row_links[static_cast<size_t>(r - row)];
                 entry.indent = indent;
                 entry.width = width;
                 if (entry.lines.empty()) continue;

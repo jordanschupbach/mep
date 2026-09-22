@@ -1277,14 +1277,40 @@ int OrgTableDisplayWidth(const std::string &s) {
     return width;
 }
 
-std::vector<std::string> OrgTableWrapCell(const std::string &text, int width) {
+namespace {
+// One placed run of a wrapped cell's text: the byte range of the cell it
+// came from, and where the wrapper put it. Emitted per word -- or per
+// piece of a word too wide for its column -- which is all it takes to
+// find something *inside* the text again afterwards (a link's drawn run,
+// PlanOrgTableWrap's own row_links) without the wrap itself having to
+// know what a link is.
+struct OrgWrapRun {
+    size_t src_begin = 0;
+    size_t src_end = 0;
+    int line = 0;
+    int col = 0;  // display column within that line
+};
+
+// OrgTableWrapCell's actual implementation, with the placement record its
+// public form throws away. One wrap, not two: the widths a cell is
+// measured at and the columns its links are drawn at have to come from
+// the same walk or they drift apart.
+/**
+ * @brief Wraps a cell to a column width, optionally reporting where each run of its text landed.
+ * @param text the cell text to wrap
+ * @param width the target width in display columns (values below 1 are treated as 1)
+ * @param runs when non-null, receives one entry per placed run, in source order
+ * @return the wrapped lines, never empty
+ */
+std::vector<std::string> OrgWrapCellRuns(const std::string &text, int width, std::vector<OrgWrapRun> *runs) {
     const int w = std::max(1, width);
     std::vector<std::string> out;
     // Split on runs of spaces: the cell text arrives already trimmed, and
     // interior runs collapse to one space, which is what makes a wrapped
     // cell read as prose instead of keeping the column padding of
-    // whatever the author happened to type.
-    std::vector<std::string> words;
+    // whatever the author happened to type. Byte ranges rather than
+    // copies, so a run can be traced back to the text it came from.
+    std::vector<std::pair<size_t, size_t>> words;
     for (size_t i = 0; i < text.size();) {
         if (text[i] == ' ' || text[i] == '\t') {
             i++;
@@ -1292,12 +1318,13 @@ std::vector<std::string> OrgTableWrapCell(const std::string &text, int width) {
         }
         size_t k = i;
         while (k < text.size() && text[k] != ' ' && text[k] != '\t') k++;
-        words.push_back(text.substr(i, k - i));
+        words.emplace_back(i, k);
         i = k;
     }
     std::string cur;
-    for (const std::string &word : words) {
-        std::string piece = word;
+    for (const std::pair<size_t, size_t> &word : words) {
+        std::string piece = text.substr(word.first, word.second - word.first);
+        size_t at = word.first;  // byte offset `piece` currently starts at
         // A word wider than the whole column can't be placed by breaking
         // on spaces: flush what we have and hard-split it across as many
         // lines as it needs (a long URL, a path, a chemical name).
@@ -1308,8 +1335,17 @@ std::vector<std::string> OrgTableWrapCell(const std::string &text, int width) {
             }
             while (OrgTableDisplayWidth(piece) > w) {
                 std::string head = OrgTakeCols(piece, w);
+                if (runs != nullptr) {
+                    runs->push_back(OrgWrapRun{at, at + head.size(), static_cast<int>(out.size()), 0});
+                }
                 out.push_back(head);
                 piece = piece.substr(head.size());
+                at += head.size();
+            }
+            // The tail becomes the line being built, so it is placed at
+            // the column the *next* pushed line starts at.
+            if (runs != nullptr && !piece.empty()) {
+                runs->push_back(OrgWrapRun{at, word.second, static_cast<int>(out.size()), 0});
             }
             cur = piece;
             continue;
@@ -1318,8 +1354,15 @@ std::vector<std::string> OrgTableWrapCell(const std::string &text, int width) {
         if (OrgTableDisplayWidth(cur) + extra + OrgTableDisplayWidth(piece) > w) {
             out.push_back(cur);
             cur = piece;
+            if (runs != nullptr) {
+                runs->push_back(OrgWrapRun{word.first, word.second, static_cast<int>(out.size()), 0});
+            }
         } else {
             if (!cur.empty()) cur += " ";
+            if (runs != nullptr) {
+                runs->push_back(
+                    OrgWrapRun{word.first, word.second, static_cast<int>(out.size()), OrgTableDisplayWidth(cur)});
+            }
             cur += piece;
         }
     }
@@ -1327,7 +1370,99 @@ std::vector<std::string> OrgTableWrapCell(const std::string &text, int width) {
     return out;
 }
 
-OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int budget, int indent) {
+// A cell as it will be drawn, with each link's markup resolved to the
+// text standing in for it, and where those links ended up in the result.
+struct OrgCellDisplay {
+    std::string text;
+    struct Link {
+        size_t begin = 0;  // byte range of the drawn text within `text`
+        size_t end = 0;
+        std::string target;
+    };
+    std::vector<Link> links;
+};
+
+/**
+ * @brief Resolves a cell's link markup to the text that will be drawn for it.
+ * @param cell the cell's stored text
+ * @param collapse whether a `[[target][desc]]` resolves to its display text (concealment on) or stays as markup
+ * @return the drawn text and the byte range each link occupies in it
+ */
+OrgCellDisplay OrgCellForDisplay(const std::string &cell, bool collapse) {
+    OrgCellDisplay out;
+    const std::vector<OrgLinkSpanInfo> spans = ScanOrgLinkSpans(cell);
+    if (spans.empty()) {
+        out.text = cell;
+        return out;
+    }
+    size_t pos = 0;
+    for (const OrgLinkSpanInfo &sp : spans) {
+        const size_t start = static_cast<size_t>(std::max(0, sp.col_start));
+        const size_t stop = static_cast<size_t>(std::max(0, sp.col_end));
+        // Degenerate or out-of-order spans are left as plain text rather
+        // than trusted: the copy below walks forward only.
+        if (start < pos || stop <= start || stop > cell.size()) continue;
+        out.text.append(cell, pos, start - pos);
+        // A bare URL is already its own display text, and with
+        // concealment off the markup itself is what gets drawn -- either
+        // way the span is still reported, or a link would come out
+        // unstyled and unfollowable in a wrapped table.
+        OrgCellDisplay::Link link;
+        link.begin = out.text.size();
+        out.text += (collapse && sp.bracketed) ? sp.display : cell.substr(start, stop - start);
+        link.end = out.text.size();
+        link.target = sp.target;
+        pos = stop;
+        if (link.end > link.begin) out.links.push_back(std::move(link));
+    }
+    out.text.append(cell, pos, std::string::npos);
+    return out;
+}
+
+// Where a cell's links landed once it was wrapped, in the rendered row's
+// own columns (`cell_col` is the column the cell's text starts at).
+/**
+ * @brief Converts one cell's placed runs into the drawn spans of each link it holds.
+ * @param cell the cell's drawn text and link ranges
+ * @param runs where OrgWrapCellRuns put each run of that text
+ * @param cell_col the rendered column the cell's text starts at
+ * @param out receives the link spans, in line then column order
+ */
+void OrgCollectCellLinks(const OrgCellDisplay &cell, const std::vector<OrgWrapRun> &runs, int cell_col,
+                         std::vector<OrgTableWrapLink> *out) {
+    for (const OrgCellDisplay::Link &link : cell.links) {
+        const size_t first = out->size();
+        for (const OrgWrapRun &run : runs) {
+            const size_t b = std::max(link.begin, run.src_begin);
+            const size_t e = std::min(link.end, run.src_end);
+            if (b >= e) continue;
+            const int lead = OrgTableDisplayWidth(cell.text.substr(run.src_begin, b - run.src_begin));
+            const int cols = OrgTableDisplayWidth(cell.text.substr(b, e - b));
+            OrgTableWrapLink span;
+            span.line = run.line;
+            span.col_start = cell_col + run.col + lead;
+            span.col_end = span.col_start + cols;
+            span.target = link.target;
+            // Words of one description that the wrap kept on the same
+            // line are one span, the space between them included: an
+            // underline broken at every space would read as several
+            // links rather than one.
+            if (out->size() > first && out->back().line == span.line && span.col_start <= out->back().col_end + 1) {
+                out->back().col_end = span.col_end;
+                continue;
+            }
+            out->push_back(std::move(span));
+        }
+    }
+}
+}  // namespace
+
+std::vector<std::string> OrgTableWrapCell(const std::string &text, int width) {
+    return OrgWrapCellRuns(text, width, nullptr);
+}
+
+OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int budget, int indent,
+                                  bool collapse_links) {
     OrgTableWrapPlan plan;
     size_t cols = 0;
     for (const OrgTableCells &r : rows) {
@@ -1335,13 +1470,39 @@ OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int bu
     }
     if (cols == 0) return plan;
 
-    // Natural width: the widest cell in each column, i.e. exactly the
-    // widths :MepOrgTableAlign would write into the file.
+    // Links resolved to what will be drawn *before* a single width is
+    // measured -- the precedence the whole layout depends on (see the
+    // header's own note): a cell holding `[[https://...][Docs]]` is four
+    // columns wide here, not thirty, so the budget below is spent on text
+    // the reader can actually see and no column is shaved to make room
+    // for a URL that is never drawn.
+    std::vector<std::vector<OrgCellDisplay>> shown(rows.size());
+    for (size_t r = 0; r < rows.size(); r++) {
+        if (rows[r].is_sep) continue;
+        shown[r].reserve(rows[r].cells.size());
+        for (const std::string &cell : rows[r].cells) shown[r].push_back(OrgCellForDisplay(cell, collapse_links));
+    }
+
+    // Natural width: the widest cell in each column -- as drawn, so less
+    // whatever link markup collapsed above.
     std::vector<int> natural(cols, 0);
-    for (const OrgTableCells &r : rows) {
-        if (r.is_sep) continue;
-        for (size_t c = 0; c < r.cells.size(); c++) {
-            natural[c] = std::max(natural[c], OrgTableDisplayWidth(r.cells[c]));
+    // ...and the same measured on the stored text, which is exactly what
+    // :MepOrgTableAlign writes into the file. Both are needed, and they
+    // answer different questions: the layout below draws its own lines
+    // and so is budgeted in what they measure, but whether the table
+    // *needs* that layout at all depends on how wide it comes out if left
+    // as stored -- and a row rendered as stored keeps every `|` where the
+    // file put it (a concealed cell hands its slack back before its own
+    // `|`, Editor's cell-local collapse), so that is the stored width,
+    // markup and all. Judging the overrun on the drawn width instead
+    // would leave a table whose links push it well past the margin
+    // rendering as stored and running off the side of the pane.
+    std::vector<int> stored(cols, 0);
+    for (size_t r = 0; r < rows.size(); r++) {
+        if (rows[r].is_sep) continue;
+        for (size_t c = 0; c < shown[r].size(); c++) {
+            natural[c] = std::max(natural[c], OrgTableDisplayWidth(shown[r][c].text));
+            stored[c] = std::max(stored[c], OrgTableDisplayWidth(rows[r].cells[c]));
         }
     }
 
@@ -1352,10 +1513,21 @@ OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int bu
     const int avail = budget - chrome;
     int natural_total = 0;
     for (int n : natural) natural_total += n;
+    int stored_total = 0;
+    for (int n : stored) stored_total += n;
 
     std::vector<int> widths = natural;
-    if (avail > 0 && natural_total > avail) {
+    // The stored width is what overruns the line; the drawn width is what
+    // the layout has to fit into. A table whose markup alone pushes it
+    // past the margin is therefore laid out here even when its drawn text
+    // would have fitted as stored -- the layout then costs it nothing
+    // (every cell still gets its full natural width and stays on one
+    // line) and buys it a table that ends at the margin instead of one
+    // padded out to the width of its own URLs.
+    if (avail > 0 && stored_total > avail) {
         plan.wrapped = true;
+    }
+    if (avail > 0 && natural_total > avail) {
         // Water-filling: columns that already fit an equal share of the
         // budget keep their natural width and leave the rest of the
         // budget to the columns that don't, repeated until no column
@@ -1426,10 +1598,13 @@ OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int bu
     plan.col_widths = widths;
 
     const std::string lead(static_cast<size_t>(std::max(0, indent)), ' ');
+    const OrgCellDisplay kNoCell;  // stands in for a column a ragged row doesn't reach
     plan.rows.reserve(rows.size());
-    for (const OrgTableCells &r : rows) {
+    plan.row_links.reserve(rows.size());
+    for (size_t r = 0; r < rows.size(); r++) {
         std::vector<std::string> out;
-        if (r.is_sep) {
+        std::vector<OrgTableWrapLink> links;
+        if (rows[r].is_sep) {
             std::string line = lead + "|";
             for (size_t c = 0; c < cols; c++) {
                 if (c > 0) line += "+";
@@ -1438,17 +1613,31 @@ OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int bu
             line += "|";
             out.push_back(std::move(line));
             plan.rows.push_back(std::move(out));
+            plan.row_links.push_back(std::move(links));
             continue;
         }
         // Wrap every cell first: the row draws as however many lines its
         // tallest cell needs, with the shorter cells blank underneath.
         std::vector<std::vector<std::string>> cell_lines(cols);
         size_t height = 1;
+        // The column each cell's own text starts at: past the indent and
+        // the leading `| `, then a whole cell (its width plus the `|` and
+        // the two padding spaces around it) per column already passed.
+        int cell_col = std::max(0, indent) + 2;
         for (size_t c = 0; c < cols; c++) {
-            const std::string &txt = c < r.cells.size() ? r.cells[c] : std::string();
-            cell_lines[c] = OrgTableWrapCell(txt, widths[c]);
+            const OrgCellDisplay &cell = c < shown[r].size() ? shown[r][c] : kNoCell;
+            std::vector<OrgWrapRun> runs;
+            cell_lines[c] = OrgWrapCellRuns(cell.text, widths[c], cell.links.empty() ? nullptr : &runs);
+            if (!cell.links.empty()) OrgCollectCellLinks(cell, runs, cell_col, &links);
             height = std::max(height, cell_lines[c].size());
+            cell_col += widths[c] + 3;
         }
+        // Collected cell by cell, but reported the way the renderer walks
+        // the row: line by line, left to right.
+        std::stable_sort(links.begin(), links.end(), [](const OrgTableWrapLink &a, const OrgTableWrapLink &b) {
+            if (a.line != b.line) return a.line < b.line;
+            return a.col_start < b.col_start;
+        });
         for (size_t l = 0; l < height; l++) {
             std::string line = lead + "|";
             for (size_t c = 0; c < cols; c++) {
@@ -1460,6 +1649,7 @@ OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int bu
             out.push_back(std::move(line));
         }
         plan.rows.push_back(std::move(out));
+        plan.row_links.push_back(std::move(links));
     }
     return plan;
 }

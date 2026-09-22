@@ -108,13 +108,17 @@ The preview is =git stash show -p=.
 =c= opens the repository's own =COMMIT_EDITMSG= in a floating editable pane,
 with the usual =#= status comment block below the message.
 
-| Key                             | Does                        |
-|---------------------------------+-----------------------------|
-| =ZZ= in Normal mode             | commit                      |
-| =Escape=, =:q=, or a click away | abort and discard the message |
+| Key                             | Does                          |
+|---------------------------------+-------------------------------|
+| =ZZ= in Normal mode             | commit                        |
+| =mod1+d= (=Alt-d=) or =:bd=     | abort and discard the message |
+| =:q=, or a click away           | the same abort                |
 
 It is a real pane over a real buffer, so every editing mode, motion and
-operator works while you write the message.
+operator works while you write the message. =Escape= here does nothing but
+leave Insert mode: a half-written commit message is the last thing that
+should be one stray keystroke away from gone, so aborting one is always
+something you asked for by name.
 
 * Commands and popped-out shortcuts
 

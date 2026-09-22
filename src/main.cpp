@@ -4888,10 +4888,16 @@ const char *kBuiltinGit =
     // line on failure), then refresh the current view. Commit messages
     // are edited in a floating pane over the repo's own COMMIT_EDITMSG
     // (mep.float_open + on_close, save_on_close=false so any implicit
-    // dismiss -- Escape, :q, clicking away -- discards rather than
-    // commits): ZZ in Normal mode is the explicit confirm
-    // (CloseFloatPane's force_write, DispatchNormalKey), running
+    // dismiss -- :q, clicking away -- discards rather than commits): ZZ
+    // in Normal mode is the explicit confirm (CloseFloatPane's
+    // force_write, DispatchNormalKey), running
     // `git commit -F <file> --cleanup=strip` against whatever was typed.
+    // Escape is deliberately *not* one of those dismissals here
+    // (escape_dismiss=false): leaving Insert mode is the one keystroke a
+    // half-written commit message gets constantly, and it must not be
+    // able to throw that message away. Aborting is mod1+d
+    // (pane_close_buffer, which closes the float) or :bd -- both of
+    // which land on the same on_close(saved=false) cancel path.
     "local MEP_GIT_TABS = {'Status', 'Log', 'Graph', 'Branches', 'Stash'}\n"
     "local MEP_GIT_VIEWS = {'status', 'log', 'graph', 'branches', 'stash'}\n"
     "local mep_git_view = 'status'\n"
@@ -5277,11 +5283,12 @@ const char *kBuiltinGit =
     "        lines[#lines + 1] = ''\n"
     "        lines[#lines + 1] = '# Please enter the commit message for your changes. Lines starting'\n"
     "        lines[#lines + 1] = \"# with '#' will be ignored, and an empty message aborts the commit.\"\n"
-    "        lines[#lines + 1] = '# ZZ commits; Escape (or :q) aborts, discarding this message.'\n"
+    "        lines[#lines + 1] = '# ZZ commits; ' .. mep.mod1_name() .. '-d (or :bd) aborts, discarding this message.'\n"
     "        lines[#lines + 1] = '#'\n"
     "        for _, l in ipairs(status) do lines[#lines + 1] = '# ' .. l end\n"
     "        local msg_buf = nil\n"
-    "        local ok = mep.float_open(path, 1, {save_on_close = false, on_close = function(saved)\n"
+    "        local ok = mep.float_open(path, 1, {save_on_close = false, escape_dismiss = false,\n"
+    "          on_close = function(saved)\n"
     "          if msg_buf then mep.buffer_delete(msg_buf, true) end\n"
     "          if not saved then mep.notify('Commit cancelled') return end\n"
     "          local argv = {'git', 'commit', '-F', path, '--cleanup=strip'}\n"

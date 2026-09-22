@@ -95,8 +95,11 @@ Everything on the =mep.*= table, available to =:lua=, =:source= and
   pane over a real buffer (every editing mode, =:w=, the wheel all work
   inside it), closed by =Escape= with nothing pending, =:q=/=:close=, or
   a click outside the box. =save_on_close= (default true) writes the
-  buffer on close if it changed, and =on_close=fn(saved)= runs once it
-  is gone with whether that close wrote the buffer; opened from a
+  buffer on close if it changed, =escape_dismiss= (default true) is that
+  =Escape= dismissal -- pass false for a float whose typed content
+  shouldn't be one stray =Escape= away from gone (the git commit message,
+  aborted with mod1+=d= or =:bd= instead) -- and =on_close=fn(saved)= runs
+  once it is gone with whether that close wrote the buffer; opened from a
   focused sidebar, closing returns focus to that sidebar row.
   =mep.float_close()= / =mep.float_is_open()= go with it. The Todo
   sidebar's =e= and the git panel's commit editor are built on it.

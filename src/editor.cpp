@@ -13616,7 +13616,7 @@ void Editor::ClosePane() {
 
 // --- Floating editable pane (see editor.h) ---------------------------------
 
-bool Editor::OpenFloatPane(const std::string &path, int row, bool save_on_close, int on_close_ref) {
+bool Editor::OpenFloatPane(const std::string &path, int row, bool save_on_close, int on_close_ref, bool escape_dismiss) {
     if (path.empty()) {
         status_message_ = "E32: No file name";
         if (on_close_ref != 0 && lua_) lua_->UnrefFunction(on_close_ref);
@@ -13649,6 +13649,7 @@ bool Editor::OpenFloatPane(const std::string &path, int row, bool save_on_close,
     float_tab_index_ = ActiveWorkspace().active_tab;
     float_save_on_close_ = save_on_close;
     float_on_close_ref_ = on_close_ref;
+    float_escape_dismiss_ = escape_dismiss;
     CancelPendingNormalState();
     mode_ = Mode::Normal;
     SyncModeToActivePaneBuffer();
@@ -13667,6 +13668,7 @@ void Editor::CloseFloatPane(bool force_write) {
         if ((b.modified || force_write) && !b.deleted && !b.filename.empty()) wrote = SaveFile(b.filename);
     }
     float_node_.reset();
+    float_escape_dismiss_ = true;
     const int sidebar_id = float_return_sidebar_id_;
     const int sidebar_row = float_return_sidebar_row_;
     float_return_sidebar_id_ = 0;
@@ -13827,12 +13829,27 @@ void Editor::BufferDeleteById(int target, bool force) {
     if (target < 0 || target >= static_cast<int>(buffers_.size())) return;
     Buffer &buf = buffers_[static_cast<size_t>(target)];
     if (buf.deleted) return;  // already gone (e.g. a stray repeated :bd)
+    // :bd on a float that never writes its buffer (save_on_close=false --
+    // the git commit message float, where it is the typed-out abort next
+    // to mod1+d) leaves the file on disk untouched either way, so the
+    // unsaved-changes guard below has nothing to protect and would only
+    // stand between the user and dismissing the float.
+    if (float_node_ && float_node_->pane.buffer_id == target && !float_save_on_close_) force = true;
     if (!force && buf.modified) {
         status_message_ = "E37: No write since last change (add ! to override)";
         return;
     }
-    if (float_node_ && float_node_->pane.buffer_id == target) CloseFloatPane();
-    buf.deleted = true;
+    if (float_node_ && float_node_->pane.buffer_id == target) {
+        // CloseFloatPane runs the float's on_close hook, which is Lua (the
+        // git panel's commit-or-cancel) and may itself create or delete
+        // buffers -- so `buf` above can dangle across this call, and this
+        // very buffer may already be gone by the time it returns (the
+        // commit flow's own mep.buffer_delete). Bail out in that case and
+        // re-resolve the reference otherwise.
+        CloseFloatPane();
+        if (target >= static_cast<int>(buffers_.size()) || buffers_[static_cast<size_t>(target)].deleted) return;
+    }
+    buffers_[static_cast<size_t>(target)].deleted = true;
     NotebookCloseSession(target);
 
     // Computed lazily -- only if some pane actually ends up with nothing
@@ -16405,8 +16422,12 @@ void Editor::HandleNormalInput() {
         // In a floating pane, the "nothing pending" Escape that is Vim's
         // harmless no-op everywhere else dismisses the float instead
         // (Insert-mode Escape still just returns to Normal first, and one
-        // that cancels a pending operator/count still only cancels it).
-        if (float_node_ && !IsMidNormalCommand() && !insert_one_shot_normal_) {
+        // that cancels a pending operator/count still only cancels it) --
+        // unless the float asked to keep Escape harmless
+        // (OpenFloatPane's escape_dismiss, the git commit message float),
+        // where it falls through to the no-op below and mod1+d / :bd is
+        // the abort instead.
+        if (float_node_ && float_escape_dismiss_ && !IsMidNormalCommand() && !insert_one_shot_normal_) {
             CloseFloatPane();
             return;
         }

@@ -1764,11 +1764,14 @@ int l_buffer_set_drag_resolver(lua_State *L) {
 // editing mode, :w, the mouse wheel all work inside it -- and it closes
 // on Escape with nothing pending, :q/:close/:wq, or a click outside the
 // box. opts.save_on_close (default true) writes the buffer on close if
-// it was modified. Opened from a focused sidebar (the Todo panel's 'e'),
-// closing returns focus to that sidebar row.
+// it was modified. opts.escape_dismiss (default true) is that Escape
+// dismissal: set it false for a float whose typed content shouldn't be
+// one stray Escape away from gone (the git commit message, aborted with
+// mod1+d or :bd instead). Opened from a focused sidebar (the Todo
+// panel's 'e'), closing returns focus to that sidebar row.
 /**
  * @brief Implements mep.float_open(path, line?, opts?): opens a file in a floating editable pane.
- * @param L Lua state; arg 1 is the path, optional arg 2 the 1-based line, optional arg 3 an options table ({save_on_close=bool}).
+ * @param L Lua state; arg 1 is the path, optional arg 2 the 1-based line, optional arg 3 an options table ({save_on_close=bool, escape_dismiss=bool, on_close=fn}).
  * @return Number of values pushed (1: true if the float opened).
  */
 int l_float_open(lua_State *L) {
@@ -1776,10 +1779,14 @@ int l_float_open(lua_State *L) {
     const char *path = luaL_checklstring(L, 1, &len);
     int line = static_cast<int>(luaL_optinteger(L, 2, 1));
     bool save_on_close = true;
+    bool escape_dismiss = true;
     int on_close_ref = 0;
     if (lua_istable(L, 3)) {
         lua_getfield(L, 3, "save_on_close");
         if (!lua_isnil(L, -1)) save_on_close = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "escape_dismiss");
+        if (!lua_isnil(L, -1)) escape_dismiss = lua_toboolean(L, -1) != 0;
         lua_pop(L, 1);
         // opts.on_close(saved): fired once the float is gone, `saved` =
         // this close wrote the buffer (so "opened, typed nothing, Escape"
@@ -1791,7 +1798,8 @@ int l_float_open(lua_State *L) {
             lua_pop(L, 1);
         }
     }
-    lua_pushboolean(L, GetEditor(L)->OpenFloatPane(std::string(path, len), line - 1, save_on_close, on_close_ref));
+    lua_pushboolean(L,
+                    GetEditor(L)->OpenFloatPane(std::string(path, len), line - 1, save_on_close, on_close_ref, escape_dismiss));
     return 1;
 }
 

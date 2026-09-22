@@ -289,8 +289,9 @@ The git panel (=<leader>gG= docked, =<leader>gg= popped out, the tab bar's Git b
 In every view =c= commits and =C= amends -- the message is edited in a
 floating pane over the repository's own =COMMIT_EDITMSG=, with the
 usual =#= status comment block below; =ZZ= in Normal mode commits the
-message, while =Escape= (or =:q=, or clicking away) aborts and discards
-it -- =P= (or =p=) pushes (offering to set the upstream when the branch has
+message, while =mod1+d= (=Alt-d=) or =:bd= -- or =:q=, or clicking away --
+aborts and discards it, =Escape= deliberately doing nothing there but
+leaving Insert mode -- =P= (or =p=) pushes (offering to set the upstream when the branch has
 none), =l= pulls, =f= fetches (=--all --prune=), =R= re-reads and =?=
 lists the keys. Every view's head section says how far the branch is
 ahead of / behind its upstream (or that it has none), so unpushed

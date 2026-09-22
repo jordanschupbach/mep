@@ -1,6 +1,13 @@
-* TODO commit popup binding
+* DONE commit popup binding
 
 In commit messages, I can quit by pressing escape. I'd like this to not be the case. To abort, I can press mod+d (alt+d), or do :bd. Implement this.
+
+Done: =mep.float_open= grew an =escape_dismiss= option (default true, so
+every other float is untouched) and the git commit float passes false, so
+=Escape= there only leaves Insert mode. Aborting is =mod1+d= (which already
+closed the float, via =pane_close_buffer=) or =:bd= -- the latter no longer
+stops at "E37: No write since last change", since a float that never writes
+its buffer leaves the file on disk untouched either way. =ZZ= still commits.
 
 * TODO org table formatting
 There's a bug in org table formatting, where, links dont get properly formatted. May be related to precedence when formatting org tables between link formatting and column formatting (w auto page wrapping).  Investigate and fix.

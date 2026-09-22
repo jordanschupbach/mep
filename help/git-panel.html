@@ -99,10 +99,14 @@ with the usual <code>#</code> status comment block below the message.</p>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
 <tr><td><code>ZZ</code> in Normal mode</td><td>commit</td></tr>
-<tr><td><code>Escape</code>, <code>:q</code>, or a click away</td><td>abort and discard the message</td></tr>
+<tr><td><code>mod1+d</code> (<code>Alt-d</code>) or <code>:bd</code></td><td>abort and discard the message</td></tr>
+<tr><td><code>:q</code>, or a click away</td><td>the same abort</td></tr>
 </table>
 <p>It is a real pane over a real buffer, so every editing mode, motion and
-operator works while you write the message.</p>
+operator works while you write the message. <code>Escape</code> here does nothing but
+leave Insert mode: a half-written commit message is the last thing that
+should be one stray keystroke away from gone, so aborting one is always
+something you asked for by name.</p>
 <h1>Commands and popped-out shortcuts</h1>
 <table>
 <tr><th>Key</th><th>Command</th><th>Opens</th></tr>

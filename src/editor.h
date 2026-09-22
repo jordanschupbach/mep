@@ -8252,7 +8252,8 @@ public:
     // Command path (and the status line, :w, the mouse wheel) works on it
     // exactly as on a docked pane. It is not part of any tab's split tree
     // -- the tab's own active_pane_id is left alone underneath -- so
-    // closing it (Escape with nothing pending, :q/:close/:wq, the
+    // closing it (Escape with nothing pending unless the float opted out
+    // of that with escape_dismiss=false, :q/:close/:wq, the
     // header's x, a click outside the box) simply drops the node and
     // returns focus to wherever it came from: the sidebar row it was
     // opened from (the Todo panel's 'e') or the tab's active pane. Any
@@ -8264,9 +8265,13 @@ public:
      * @brief Opens `path` in a floating pane with the cursor on `row` (0-based), replacing any open float.
      * @param save_on_close Whether closing the float writes the buffer if it was modified.
      * @param on_close_ref Lua function ref called once on close with `true` if the buffer was written by that close (0 = none); released afterwards.
+     * @param escape_dismiss Whether a "nothing pending" Escape dismisses the float (default true). False is for a float
+     * whose typed content is worth protecting from a stray Escape -- the git commit message, where mod1+d (or :bd) is
+     * the deliberate abort and ZZ the deliberate confirm.
      * @return true if the float opened.
      */
-    bool OpenFloatPane(const std::string &path, int row, bool save_on_close, int on_close_ref = 0);
+    bool OpenFloatPane(const std::string &path, int row, bool save_on_close, int on_close_ref = 0,
+                       bool escape_dismiss = true);
     /**
      * @brief Closes the floating pane, restoring the prior focus.
      * @param force_write When true, writes the buffer unconditionally (ignoring save_on_close and whether it was
@@ -10763,6 +10768,12 @@ private:
     int float_tab_index_ = 0;
     bool float_save_on_close_ = false;
     int float_on_close_ref_ = 0;
+    // Whether a bare Escape dismisses this float (OpenFloatPane's
+    // escape_dismiss). False for the git commit message float: a stray
+    // Escape there would throw away a message that was just typed, so
+    // aborting it is deliberate (mod1+d / :bd), as committing already was
+    // (ZZ).
+    bool float_escape_dismiss_ = true;
     // Popout (see ToggleSidebarPopout): which sidebar is popped out (0 =
     // none), and the single preview slot it shows -- one slot, not
     // per-instance, since only one sidebar can be popped out at a time.

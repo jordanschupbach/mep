@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Key index</title>
-<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}</style>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
 <script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
 <meta name="help-section" content="Reference">
 <meta name="help-order" content="20">
@@ -13,7 +13,7 @@
 <body>
 <h1>Key index</h1>
 <h1>Leader bindings</h1>
-<p>All 113 <code>&lt;leader&gt;</code> sequences registered at startup. Press
+<p>All 127 <code>&lt;leader&gt;</code> sequences registered at startup. Press
 <code>&lt;Space&gt;</code> for the same list as a popup, or <code>&lt;leader&gt;hk</code> for every
 binding including your own.</p>
 <p>Motions, operators and the other Normal-mode keys are on the pages in
@@ -24,6 +24,7 @@ the features live.</p>
 <tr><td><code>&lt;leader&gt;/</code></td><td>search</td><td><a href="pickers.html">Pickers</a></td></tr>
 <tr><td><code>&lt;leader&gt;&lt;CR&gt;</code></td><td>terminal</td><td><a href="terminals.html">Terminals</a></td></tr>
 <tr><td><code>&lt;leader&gt;&lt;Space&gt;</code></td><td>Command runner (just &gt; make &gt; ninja &gt; cmake)</td><td><a href="runners.html">The command runner</a></td></tr>
+<tr><td><code>&lt;leader&gt;?</code></td><td>Cheatsheet: snippets &amp; symbols</td><td><a href="org-notes.html">Note-taking: snippets and highlights</a></td></tr>
 <tr><td><code>&lt;leader&gt;a&lt;CR&gt;</code></td><td>AI: Claude Code terminal below</td><td><a href="ai-terminal.html">Claude Code in a pane</a></td></tr>
 <tr><td><code>&lt;leader&gt;aa</code></td><td>Toggle AI agents pane</td><td><a href="ai-agents.html">The AI Agents sidebar</a></td></tr>
 <tr><td><code>&lt;leader&gt;ai</code></td><td>AI: context picker</td><td><a href="ai-commands.html">Ask the model</a></td></tr>
@@ -75,12 +76,24 @@ the features live.</p>
 <tr><td><code>&lt;leader&gt;lt</code></td><td>LSP: goto type definition</td><td><a href="lsp.html">Language servers</a></td></tr>
 <tr><td><code>&lt;leader&gt;lu</code></td><td>Language UI mode (toggle)</td><td><a href="c-mode.html">C and C++ mode</a></td></tr>
 <tr><td><code>&lt;leader&gt;ma</code></td><td>Annotate mode</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mb</code></td><td>Bold selection</td><td><a href="org-notes.html">Note-taking: snippets and highlights</a></td></tr>
 <tr><td><code>&lt;leader&gt;mcb</code></td><td>blue</td><td>--</td></tr>
 <tr><td><code>&lt;leader&gt;mcg</code></td><td>green</td><td>--</td></tr>
 <tr><td><code>&lt;leader&gt;mco</code></td><td>orange</td><td>--</td></tr>
 <tr><td><code>&lt;leader&gt;mcp</code></td><td>pink</td><td>--</td></tr>
 <tr><td><code>&lt;leader&gt;mcy</code></td><td>yellow</td><td>--</td></tr>
-<tr><td><code>&lt;leader&gt;mh</code></td><td>Highlight selection/match</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mh</code></td><td>Highlight selection/match</td><td><a href="org-notes.html">Note-taking: snippets and highlights</a></td></tr>
+<tr><td><code>&lt;leader&gt;mhb</code></td><td>Highlight blue</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mhc</code></td><td>Highlight cyan</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mhg</code></td><td>Highlight green</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mho</code></td><td>Highlight orange</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mhp</code></td><td>Highlight purple</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mhr</code></td><td>Highlight red</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mht</code></td><td>Highlight: toggle raw markup view</td><td><a href="org-notes.html">Note-taking: snippets and highlights</a></td></tr>
+<tr><td><code>&lt;leader&gt;mhx</code></td><td>Highlight clear</td><td><a href="org-notes.html">Note-taking: snippets and highlights</a></td></tr>
+<tr><td><code>&lt;leader&gt;mhy</code></td><td>Highlight yellow</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;mi</code></td><td>Italic selection</td><td><a href="org-notes.html">Note-taking: snippets and highlights</a></td></tr>
+<tr><td><code>&lt;leader&gt;mm</code></td><td>Inline-math selection</td><td><a href="org-notes.html">Note-taking: snippets and highlights</a></td></tr>
 <tr><td><code>&lt;leader&gt;mn</code></td><td>Add note</td><td>--</td></tr>
 <tr><td><code>&lt;leader&gt;mw</code></td><td>Save annotations</td><td>--</td></tr>
 <tr><td><code>&lt;leader&gt;nn</code></td><td>Toggle notifications pane</td><td><a href="notifications.html">Notifications</a></td></tr>
@@ -88,7 +101,7 @@ the features live.</p>
 <tr><td><code>&lt;leader&gt;oeh</code></td><td>Org: export to HTML</td><td><a href="org-export.html">Exporting</a></td></tr>
 <tr><td><code>&lt;leader&gt;oem</code></td><td>Org: export to Markdown</td><td><a href="org-export.html">Exporting</a></td></tr>
 <tr><td><code>&lt;leader&gt;oeo</code></td><td>Org: export to ODT</td><td><a href="office.html">Word processor documents</a></td></tr>
-<tr><td><code>&lt;leader&gt;oep</code></td><td>Org: export to PDF</td><td><a href="org-export.html">Exporting</a></td></tr>
+<tr><td><code>&lt;leader&gt;oep</code></td><td>Org: export to PDF and view</td><td><a href="org-export.html">Exporting</a></td></tr>
 <tr><td><code>&lt;leader&gt;oi</code></td><td>Org: insert source block</td><td><a href="org-babel.html">Executing code blocks</a></td></tr>
 <tr><td><code>&lt;leader&gt;ol</code></td><td>Learn: pick a game for this deck</td><td><a href="learn-games.html">Playing</a></td></tr>
 <tr><td><code>&lt;leader&gt;oo</code></td><td>Org: follow link at point</td><td><a href="org-links.html">Links, footnotes and citations</a></td></tr>
@@ -125,7 +138,8 @@ the features live.</p>
 <tr><td><code>&lt;leader&gt;wn</code></td><td>New workspace</td><td><a href="workspaces.html">Workspaces</a></td></tr>
 <tr><td><code>&lt;leader&gt;wr</code></td><td>Rename workspace</td><td><a href="workspaces.html">Workspaces</a></td></tr>
 <tr><td><code>&lt;leader&gt;ww</code></td><td>Workspaces</td><td><a href="pickers.html">Pickers</a></td></tr>
-<tr><td><code>&lt;leader&gt;yy</code></td><td>Snippets picker</td><td><a href="pickers.html">Pickers</a></td></tr>
+<tr><td><code>&lt;leader&gt;yy</code></td><td>Snippets picker</td><td><a href="org-notes.html">Note-taking: snippets and highlights</a></td></tr>
+<tr><td><code>&lt;leader&gt;zd</code></td><td>Spell: remove duplicate words</td><td><a href="org-notes.html">Note-taking: snippets and highlights</a></td></tr>
 <tr><td><code>&lt;leader&gt;zf</code></td><td>Spell: fix</td><td><a href="spell.html">Spell checking</a></td></tr>
 <tr><td><code>&lt;leader&gt;zg</code></td><td>Spell: add word to dictionary</td><td><a href="spell.html">Spell checking</a></td></tr>
 <tr><td><code>&lt;leader&gt;zn</code></td><td>Spell: next misspelled</td><td><a href="spell.html">Spell checking</a></td></tr>

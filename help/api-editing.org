@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (70)
+* The bindings (71)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -86,6 +86,7 @@ that it does nothing.
 | =mep.url_resolve= | resolves a reference against an absolute URL |
 | =mep.url_under_cursor= | returns the URL under the cursor, if any |
 | =mep.visual_change= | deletes the current Visual selection and enters Insert mode at the deletion point, like pressing "c" |
+| =mep.visual_range= | returns the current Visual selection's normalized 1-indexed endpoints and kind, or nil if none |
 | =mep.visual_selection= | returns the currently selected text without altering the selection or any register |
 | =mep.vsplit_right= | opens path in a new vertical split to the right of the focused pane |
 

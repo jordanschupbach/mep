@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 113 =<leader>= sequences registered at startup. Press
+All 127 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -18,6 +18,7 @@ the features live.
 | =<leader>/= | search | [[file:pickers.html][Pickers]] |
 | =<leader><CR>= | terminal | [[file:terminals.html][Terminals]] |
 | =<leader><Space>= | Command runner (just > make > ninja > cmake) | [[file:runners.html][The command runner]] |
+| =<leader>?= | Cheatsheet: snippets & symbols | [[file:org-notes.html][Note-taking: snippets and highlights]] |
 | =<leader>a<CR>= | AI: Claude Code terminal below | [[file:ai-terminal.html][Claude Code in a pane]] |
 | =<leader>aa= | Toggle AI agents pane | [[file:ai-agents.html][The AI Agents sidebar]] |
 | =<leader>ai= | AI: context picker | [[file:ai-commands.html][Ask the model]] |
@@ -69,12 +70,24 @@ the features live.
 | =<leader>lt= | LSP: goto type definition | [[file:lsp.html][Language servers]] |
 | =<leader>lu= | Language UI mode (toggle) | [[file:c-mode.html][C and C++ mode]] |
 | =<leader>ma= | Annotate mode | -- |
+| =<leader>mb= | Bold selection | [[file:org-notes.html][Note-taking: snippets and highlights]] |
 | =<leader>mcb= | blue | -- |
 | =<leader>mcg= | green | -- |
 | =<leader>mco= | orange | -- |
 | =<leader>mcp= | pink | -- |
 | =<leader>mcy= | yellow | -- |
-| =<leader>mh= | Highlight selection/match | -- |
+| =<leader>mh= | Highlight selection/match | [[file:org-notes.html][Note-taking: snippets and highlights]] |
+| =<leader>mhb= | Highlight blue | -- |
+| =<leader>mhc= | Highlight cyan | -- |
+| =<leader>mhg= | Highlight green | -- |
+| =<leader>mho= | Highlight orange | -- |
+| =<leader>mhp= | Highlight purple | -- |
+| =<leader>mhr= | Highlight red | -- |
+| =<leader>mht= | Highlight: toggle raw markup view | [[file:org-notes.html][Note-taking: snippets and highlights]] |
+| =<leader>mhx= | Highlight clear | [[file:org-notes.html][Note-taking: snippets and highlights]] |
+| =<leader>mhy= | Highlight yellow | -- |
+| =<leader>mi= | Italic selection | [[file:org-notes.html][Note-taking: snippets and highlights]] |
+| =<leader>mm= | Inline-math selection | [[file:org-notes.html][Note-taking: snippets and highlights]] |
 | =<leader>mn= | Add note | -- |
 | =<leader>mw= | Save annotations | -- |
 | =<leader>nn= | Toggle notifications pane | [[file:notifications.html][Notifications]] |
@@ -82,7 +95,7 @@ the features live.
 | =<leader>oeh= | Org: export to HTML | [[file:org-export.html][Exporting]] |
 | =<leader>oem= | Org: export to Markdown | [[file:org-export.html][Exporting]] |
 | =<leader>oeo= | Org: export to ODT | [[file:office.html][Word processor documents]] |
-| =<leader>oep= | Org: export to PDF | [[file:org-export.html][Exporting]] |
+| =<leader>oep= | Org: export to PDF and view | [[file:org-export.html][Exporting]] |
 | =<leader>oi= | Org: insert source block | [[file:org-babel.html][Executing code blocks]] |
 | =<leader>ol= | Learn: pick a game for this deck | [[file:learn-games.html][Playing]] |
 | =<leader>oo= | Org: follow link at point | [[file:org-links.html][Links, footnotes and citations]] |
@@ -119,7 +132,8 @@ the features live.
 | =<leader>wn= | New workspace | [[file:workspaces.html][Workspaces]] |
 | =<leader>wr= | Rename workspace | [[file:workspaces.html][Workspaces]] |
 | =<leader>ww= | Workspaces | [[file:pickers.html][Pickers]] |
-| =<leader>yy= | Snippets picker | [[file:pickers.html][Pickers]] |
+| =<leader>yy= | Snippets picker | [[file:org-notes.html][Note-taking: snippets and highlights]] |
+| =<leader>zd= | Spell: remove duplicate words | [[file:org-notes.html][Note-taking: snippets and highlights]] |
 | =<leader>zf= | Spell: fix | [[file:spell.html][Spell checking]] |
 | =<leader>zg= | Spell: add word to dictionary | [[file:spell.html][Spell checking]] |
 | =<leader>zn= | Spell: next misspelled | [[file:spell.html][Spell checking]] |

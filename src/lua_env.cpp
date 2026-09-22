@@ -185,6 +185,62 @@ int l_visual_selection(lua_State *L) {
     return 1;
 }
 
+// mep.visual_range() -> nil | {start_row, start_col, end_row, end_col, kind}.
+// The current Visual selection's endpoints, normalized to buffer order
+// (start <= end) and 1-indexed like every other row/col in the Lua API;
+// `kind` is 'char'/'line'/'block'. nil when no Visual mode is active.
+// This is the coordinate-level complement to mep.visual_selection()'s
+// text-only view: consumers that rewrite the selected *lines* in place
+// (e.g. kBuiltinSpell's duplicate-word dedupe over a line range, via one
+// mep.replace_lines call = one undo step) need the range, not the text.
+// Like visual_selection it is read-only: no register write, selection
+// left untouched. For 'block', start_col/end_col are the rectangle's
+// left/right columns (end_col is the line length side when the block is
+// in to-end-of-line mode -- callers treating it linewise can ignore cols).
+/**
+ * @brief Implements mep.visual_range(): returns the current Visual selection's normalized 1-indexed endpoints and kind, or nil if none.
+ * @param L Lua state.
+ * @return Number of values pushed (1: a table {start_row, start_col, end_row, end_col, kind} or nil).
+ */
+int l_visual_range(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    if (!ed->HasVisualSelection()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    int start_row, start_col, end_row, end_col;
+    const char *kind;
+    if (ed->IsVisualBlock()) {
+        int top, bottom, left, right;
+        ed->VisualBlockRange(top, bottom, left, right);
+        start_row = top;
+        end_row = bottom;
+        start_col = left;
+        end_col = (right < 0) ? left : right;
+        kind = "block";
+    } else {
+        CursorPos start, end;
+        ed->VisualRange(start, end);
+        start_row = start.row;
+        start_col = start.col;
+        end_row = end.row;
+        end_col = end.col;
+        kind = (ed->CurrentMode() == Mode::VisualLine) ? "line" : "char";
+    }
+    lua_createtable(L, 0, 5);
+    lua_pushinteger(L, start_row + 1);
+    lua_setfield(L, -2, "start_row");
+    lua_pushinteger(L, start_col + 1);
+    lua_setfield(L, -2, "start_col");
+    lua_pushinteger(L, end_row + 1);
+    lua_setfield(L, -2, "end_row");
+    lua_pushinteger(L, end_col + 1);
+    lua_setfield(L, -2, "end_col");
+    lua_pushstring(L, kind);
+    lua_setfield(L, -2, "kind");
+    return 1;
+}
+
 // --- Spell checking (src/spell.h, backed by Editor's SpellChecker) ---------
 // Thin bindings the kBuiltinSpell Lua module (main.cpp) drives: it owns the
 // squiggle-decoration hook, leader-key menu, and suggestion picker, and calls
@@ -2791,6 +2847,20 @@ int l_snippet_jump(lua_State *L) {
     int delta = static_cast<int>(luaL_checkinteger(L, 1));
     GetEditor(L)->SnippetJump(delta);
     return 0;
+}
+
+// mep.snippet_active() -> bool. See Editor::SnippetActive: true while a
+// spliced snippet's tabstop state is live, i.e. a snippet_jump would
+// actually move. The insert-Tab hook uses this to route Tab between
+// tabstop jumping and trigger expansion.
+/**
+ * @brief Implements mep.snippet_active(): returns whether a snippet's tabstop state is live.
+ * @param L Lua state.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_snippet_active(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->SnippetActive());
+    return 1;
 }
 
 
@@ -10001,6 +10071,7 @@ const luaL_Reg kMepFuncs[] = {
     {"replace_lines", l_replace_lines},
     {"line_count", l_line_count},
     {"visual_selection", l_visual_selection},
+    {"visual_range", l_visual_range},
     {"spell_ready", l_spell_ready},
     {"spell_bad", l_spell_bad},
     {"spell_suggest", l_spell_suggest},
@@ -10138,6 +10209,7 @@ const luaL_Reg kMepFuncs[] = {
     {"completion_rank", l_completion_rank},
     {"snippet_splice", l_snippet_splice},
     {"snippet_jump", l_snippet_jump},
+    {"snippet_active", l_snippet_active},
     {"docs_signature_info", l_docs_signature_info},
     {"picker_preview_file", l_picker_preview_file},
     {"tree_build_rows", l_tree_build_rows},

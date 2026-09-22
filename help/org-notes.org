@@ -1,0 +1,111 @@
+#+TITLE: Note-taking: snippets and highlights
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="130">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Math autosnippets
+
+Inside a math zone (=$...$=, =\(...\)=, =\[...\]=, or a math environment),
+LaTeX shortcuts expand the instant they are typed -- no Tab needed. In
+ordinary prose they stay plain text, so typing "sum" in a sentence is safe.
+Toggle them with =:MepAutosnippetsToggle=; one expansion is one undo step,
+so =u= restores exactly what you typed.
+
+Openers work from prose and create the math zone itself:
+
+#+begin_src text
+mk       $...$ inline math
+dk       \( ... \) on its own lines (inline on export)
+ck       \[ ... \] on its own lines (centered on export)
+flalign  full-width two-row flalign* scaffold
+#+end_src
+
+A sample of the in-math triggers (the full set of ~160 lives in
+=mep.autosnippets=, and the =<leader>?= cheatsheet lists every one):
+
+#+begin_src text
+//  frac   \frac{num}{den}          sq       \sqrt{x}
+^^         ^{exp}                   __       _{idx}
+x1 x2 ...  auto-subscript x_{1}     sum prod \sum / \prod with limits
+int        \int_{a}^{b} f(x) dx     lim      \lim_{n \to \infty}
+bar hat vec  accents                tt txt   \text{...}
+cal bf rm bb mathcal/bf/rm/bb       ->  =>   \to  \implies
+RR ZZ NN QQ CC  blackboard sets     ;a ;b ;g ...    Greek letters
+Ev Var Cov norm  statistics         Pois Bin Unif Bern  distributions
+ali aeq cases bmat pmat cvec        environments
+beg        prompts for an environment name
+#+end_src
+
+* Org snippets (Tab-expanded)
+
+Structural templates never expand on their own: type the trigger and press
+=Tab= (or pick one with =<leader>yy=). =Tab= then jumps between the
+template's fields; =Shift-Tab= jumps back.
+
+#+begin_src text
+src nsrc pysrc rsrc javasrc cppsrc   code blocks (named / per-language)
+ex quote callout                     example, quote, labelled aside
+title date                           note header / today's date
+img pdf link cid oref sref aref      links, anchors, cross-references
+tbl cite refs                        table, citation, bibliography
+h1 h2 h3                             headings
+mm dm cm                             math openers (Tab twins of mk/dk/ck)
+eqn eqref                            numbered equation and its reference
+cbl                                  orange COME BACK LATER marker
+#+end_src
+
+* Mermaid graphs
+
+=graph=, =gex=, =gnode=, =gedge= and =gwedge= insert auto-laid-out
+node/edge diagrams in a mermaid source block. HTML export renders them
+with mermaid.js in the browser; PDF export keeps the diagram source as a
+code box.
+
+* The cheatsheet popup
+
+=<leader>?= (or =:MepSnippetHelp=) opens a tabbed popup documenting every
+trigger, symbol and note-taking key: press =1=-=9=, =h=/=l= or =Tab= to
+switch tabs, =/= to fuzzy-search every row, and =Enter= on a row to insert
+that symbol -- or expand that snippet -- at the spot you opened it from.
+
+* Highlights and markup
+
+Select text in Visual mode, then:
+
+- =<leader>mb= / =<leader>mi= / =<leader>mm= -- wrap in bold / italic /
+  inline math.
+- =<leader>mh= + =r o y g c b p= -- highlight the selection red, orange,
+  yellow, green, cyan, blue or purple.
+- =<leader>mhx= -- remove highlighting (selection, or under the cursor).
+- =<leader>mht= -- toggle the raw highlight markup view.
+
+Highlights are stored as a plain org macro, colored live in the editor
+(the markup is concealed everywhere except the line you are editing) and
+on both HTML and PDF export:
+
+#+begin_src text
+{{{hl(green,the highlighted words)}}}
+#+end_src
+
+Re-coloring part of an existing highlight splits it and keeps the rest;
+highlights may span lines.
+
+* Export and preview
+
+- =<leader>oep= -- export the buffer to PDF and open it in a split. While
+  that preview is open, saving the buffer re-exports in the background and
+  the pane refreshes itself; close the pane to stop.
+- =:MepOrgExportPdf= still exports without opening a viewer.
+- Typing =\= plus a few letters completes LaTeX commands in org buffers.
+
+* Spelling
+
+The spell tools live under =<leader>z= (fix, suggestions, add word, jump).
+=<leader>zd= removes consecutive duplicate words ("the the") in the Visual
+selection's lines, or on the current line.
+
+* See also
+
+- [[file:org-basics.html][Org basics]] -- headlines, structure and editing.
+- [[file:org-export.html][Org export]] -- every export backend.
+- [[file:spell.html][Spelling]] -- the full spell checker.

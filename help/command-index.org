@@ -5,7 +5,7 @@
 
 * Every command
 
-All 324 ex commands mep defines: 103 built in and 222 registered from Lua.
+All 326 ex commands mep defines: 103 built in and 224 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -68,6 +68,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepAiSendBuffer= | [[file:ai-commands.html][Ask the model]] |
 | =:MepAiSendSelection= | [[file:ai-commands.html][Ask the model]] |
 | =:MepAiTerminal= | [[file:ai-terminal.html][Claude Code in a pane]] |
+| =:MepAutosnippetsToggle= | [[file:org-notes.html][Note-taking: snippets and highlights]] |
 | =:MepBrowse= | -- |
 | =:MepBrowseExternal= | -- |
 | =:MepBrowseGo= | -- |
@@ -238,6 +239,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepRunButtonRun= | -- |
 | =:MepRunButtonSetup= | [[file:run-button.html][Running the current file]] |
 | =:MepScratch= | [[file:files.html][Files and buffers]] |
+| =:MepSnippetHelp= | [[file:org-notes.html][Note-taking: snippets and highlights]] |
 | =:MepSnippetNext= | [[file:insert-mode.html][Insert and Replace]] |
 | =:MepSnippetPrev= | [[file:insert-mode.html][Insert and Replace]] |
 | =:MepSnippets= | [[file:snippets.html][Snippets]] |

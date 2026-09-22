@@ -1011,13 +1011,18 @@ struct Buffer {
     };
     std::unordered_map<int, OrgLatexRender> org_latex_rows;
 
-    // Org tables rendered wrapped (Editor::OrgTableWrapScan): a table
-    // whose aligned width runs past `:set textwidth` draws with
-    // re-budgeted columns and its long cells wrapped, so one stored row
-    // takes several screen rows. Display-only -- the file keeps its long
-    // lines (see org_doc.h's own section for why wrapping *into* the
-    // buffer was rejected), and these strings are the only thing the
-    // renderer draws for such a row.
+    // Org tables laid out for the screen (Editor::OrgTableWrapScan),
+    // for either of two reasons. A table whose width runs past `:set
+    // textwidth` draws with re-budgeted columns and its long cells
+    // wrapped, so one stored row takes several screen rows. A table
+    // whose cells are *narrower* drawn than stored -- one holding
+    // `[[file:x][desc]]` links, padded in the file to its markup's width
+    // -- draws at its rendered widths instead, which closes the dead
+    // gutter that padding leaves in the link column; such a row is
+    // usually one line, not several. Display-only either way -- the file
+    // keeps its own text (see org_doc.h's own section for why wrapping
+    // *into* the buffer was rejected), and these strings are the only
+    // thing the renderer draws for such a row.
     //
     // Same "one row, more than one slot" shape as org_latex_rows above,
     // and the same four-site agreement: DrawPane's row loop, its own
@@ -1033,9 +1038,13 @@ struct Buffer {
     // is the single signal that a row draws its own text, which is why
     // the four sites above need no cursor test of their own.
     struct OrgTableWrapRow {
-        std::vector<std::string> lines;  // what this row draws as, top to bottom
-        int indent = 0;                  // display column the rendered leading `|` sits at
-        int width = 0;                   // rendered columns from `indent` to the trailing `|`
+        // What this row draws as, top to bottom -- each line carrying
+        // the links on it (OrgTableWrapLine, org_doc.h), since the
+        // row's own link decorations are skipped along with the rest of
+        // them and this layout is the only thing the renderer has.
+        std::vector<OrgTableWrapLine> lines;
+        int indent = 0;  // display column the rendered leading `|` sits at
+        int width = 0;   // rendered columns from `indent` to the trailing `|`
     };
     std::unordered_map<int, OrgTableWrapRow> org_table_wrap_rows;
 
@@ -2998,16 +3007,19 @@ public:
      * @return True if plain-cursor-line rendering is on.
      */
     bool OrgPlainCursorLineVisible() const { return org_plain_cursor_line_; }
-    // <leader>otw / mep.org_table_wrap_toggle -- whether a table too
-    // wide for `:set textwidth` renders with re-budgeted columns and its
-    // long cells wrapped (Buffer::org_table_wrap_rows) instead of running
-    // off past the margin. Defaults on, like the rest of the org
-    // rendering; consulted both by Editor::OrgTableWrapScan (which
-    // clears its rows and no-ops while off, so the raw lines come back)
-    // and by every one of the four slot walkers.
+    // <leader>otw / mep.org_table_wrap_toggle -- whether an org table
+    // renders from a layout fitted to the screen
+    // (Buffer::org_table_wrap_rows) instead of from its own text: a
+    // table too wide for `:set textwidth` with re-budgeted columns and
+    // its long cells wrapped, a table whose link markup conceals with
+    // its columns closed up to what they draw as. Defaults on, like the
+    // rest of the org rendering; consulted both by
+    // Editor::OrgTableWrapScan (which clears its rows and no-ops while
+    // off, so the raw lines come back) and by every one of the four slot
+    // walkers.
     /**
-     * @brief Returns whether over-wide org tables are rendered with wrapped cells and re-budgeted columns.
-     * @return True if wrapped table rendering is on.
+     * @brief Returns whether org tables render from a screen-fitted layout (wrapped cells, rendered-width columns).
+     * @return True if laid-out table rendering is on.
      */
     bool OrgTableWrapVisible() const { return org_table_wrap_visible_; }
     // Active pane/buffer -- what most of the UI (statusline, blinking
@@ -6218,6 +6230,20 @@ public:
      * @return True if a link was found there and followed.
      */
     bool OrgFollowLinkAt(int row, int col);
+    // The same follow, addressed by target instead of by column: a click
+    // inside a table rendered wrapped (Buffer::org_table_wrap_rows) lands
+    // on the *plan's* columns, which are nowhere near the stored line's,
+    // so there is no column to hand OrgFollowLinkAt -- but the plan does
+    // carry each link's target through the wrap (OrgTableWrapLink,
+    // org_doc.h). Follows the first link on the row with that target;
+    // two links to the same place are the same jump either way.
+    /**
+     * @brief Follows the first link on a row whose target matches, wherever its markup sits.
+     * @param row The 0-based row the link is on.
+     * @param target The link target to follow.
+     * @return True if a link with that target was found on the row and followed.
+     */
+    bool OrgFollowLinkTargetOn(int row, const std::string &target);
 
     // --- Org tables: the drawn grid (DrawPane, main.cpp) ---
     // A run of consecutive `|`-delimited rows, parsed into what it takes

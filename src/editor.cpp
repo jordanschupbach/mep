@@ -26302,6 +26302,15 @@ void Editor::OrgLinkScan(int ns) {
     }
 }
 
+bool Editor::OrgFollowLinkTargetOn(int row, const std::string &target) {
+    const std::vector<Buffer::OrgLinkSpan> *spans = OrgLinkSpansForRow(CurrentBufferId(), row);
+    if (!spans) return false;
+    for (const Buffer::OrgLinkSpan &sp : *spans) {
+        if (sp.target == target) return OrgFollowLinkAt(row, sp.col_start);
+    }
+    return false;
+}
+
 const std::vector<Buffer::OrgLinkSpan> *Editor::OrgLinkSpansForRow(int buffer_id, int row) const {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return nullptr;
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
@@ -26356,7 +26365,7 @@ const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
      */
     auto rendered_line = [&](int r) -> const std::string & {
         auto it = buf.org_table_wrap_rows.find(r);
-        if (it != buf.org_table_wrap_rows.end() && !it->second.lines.empty()) return it->second.lines.front();
+        if (it != buf.org_table_wrap_rows.end() && !it->second.lines.empty()) return it->second.lines.front().text;
         return buf.lines[static_cast<size_t>(r)];
     };
     // A `|`-heavy line inside a `#+begin_src`/`#+begin_example` block is
@@ -26578,6 +26587,14 @@ void Editor::OrgTableAutoAlign() {
 
 bool Editor::ToggleOrgConceal() {
     org_conceal_visible_ = !org_conceal_visible_;
+    // A table's layout is planned from its cells as *drawn*
+    // (OrgTableWrapScan), so concealment decides both how wide a cell
+    // holding a link is and, for a table that fits, whether the layout
+    // is drawn at all. The plan has to be thrown away with the toggle
+    // rather than waiting for a cursor move to invalidate it. A no-op
+    // unless this is an org buffer with table layout on; the scan
+    // checks both.
+    OrgTableWrapScan(true);
     return org_conceal_visible_;
 }
 
@@ -26683,7 +26700,19 @@ void Editor::OrgTableWrapScan(bool force) {
             OrgTableRow pr = ParseOrgTableRowImpl(line);
             OrgTableCells cells;
             cells.is_sep = pr.is_sep;
-            cells.cells = pr.cells;
+            // Planned from the cells as *drawn*, not as stored: a
+            // `[[file:docs/lua-api.org][Lua API]]` cell is seven columns
+            // wide on screen, not fifty, and budgeting the column for
+            // the markup wraps tables that fit and splits the URL inside
+            // one that doesn't (OrgTableCellDisplayText, org_doc.h).
+            // Concealment's own toggle decides which it is, the same
+            // switch OrgLinkScan renders the row itself by.
+            cells.cells.reserve(pr.cells.size());
+            cells.links.resize(pr.cells.size());
+            for (size_t ci = 0; ci < pr.cells.size(); ci++) {
+                cells.cells.push_back(
+                    OrgTableCellDisplayText(pr.cells[ci], org_conceal_visible_, &cells.links[ci]));
+            }
             parsed.push_back(std::move(cells));
             if (!have_indent) {
                 // In display columns, not bytes -- consistent with the
@@ -26693,7 +26722,45 @@ void Editor::OrgTableWrapScan(bool force) {
             }
         }
         OrgTableWrapPlan plan = PlanOrgTableWrap(parsed, budget, indent);
-        if (plan.wrapped) {
+        // Two reasons to draw a table from the layout rather than from
+        // its own text.
+        //
+        // The first is what this scan was written for: it doesn't fit
+        // `:set textwidth` and its columns had to be re-budgeted
+        // (plan.wrapped).
+        //
+        // The second is concealment. A table of
+        // `[[file:docs/lua-api.org][Lua API]]` cells is padded in the
+        // *file* to its markup's width -- which is the right thing for
+        // the file, and :MepOrgTableAlign keeps doing it -- and the
+        // renderer holds every `|` at the column the raw text puts it
+        // (the cell-local conceal collapse, DrawPane), so the link
+        // column draws as a short description followed by thirty columns
+        // of dead gutter. Laying the table out on its rendered widths
+        // closes that gutter. Only when the result is genuinely narrower
+        // than what is stored, though: a table already as tight as its
+        // layout gains nothing and would only pay the step-aside below,
+        // and an unaligned table whose layout comes out *wider* is left
+        // alone rather than silently aligned on screen.
+        /**
+         * @brief Returns a stored table row's width in display columns, up to its last `|`.
+         * @param line The row's stored text.
+         * @return The width through the closing `|`, or 0 when the row has none.
+         */
+        auto stored_row_width = [](const std::string &line) {
+            const size_t last = line.find_last_of('|');
+            return last == std::string::npos ? 0 : OrgTableDisplayWidth(line.substr(0, last + 1));
+        };
+        int stored_width = 0;
+        for (int r = row; r <= end; r++) {
+            stored_width = std::max(stored_width, stored_row_width(buf.lines[static_cast<size_t>(r)]));
+        }
+        // Every line of the layout is the same width by construction, so
+        // the first stands in for all of them.
+        const int plan_width = (plan.rows.empty() || plan.rows.front().empty())
+                                   ? 0
+                                   : OrgTableDisplayWidth(plan.rows.front().front().text);
+        if (plan.wrapped || (plan_width > 0 && plan_width < stored_width)) {
             int cols = 0;
             for (int cw : plan.col_widths) cols += cw + 3;
             const int width = cols + 1;  // the trailing `|`

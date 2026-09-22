@@ -452,11 +452,18 @@ bool OrgParseClockTimestamp(const std::string &s, int *y, int *mo, int *d, int *
  */
 OrgOpenClock OrgFindOpenClock(const std::vector<std::string> &lines);
 
-// --- Org tables: the wrapped display layout (Editor::OrgTableWrapScan) ---
-// A table whose aligned width runs past `:set textwidth` is *rendered*
-// narrower than it is stored: the columns are re-budgeted to fit the line
-// width and any cell too long for its column wraps onto continuation
-// lines, so one stored row draws as several. Display-only, deliberately:
+// --- Org tables: the rendered display layout (Editor::OrgTableWrapScan) ---
+// A table is *rendered* narrower than it is stored, for either of two
+// reasons: its aligned width runs past `:set textwidth`, so the columns
+// are re-budgeted to fit the line width and any cell too long for its
+// column wraps onto continuation lines (one stored row drawing as
+// several); or its cells are simply narrower drawn than stored, because
+// concealment stood their link markup down to a description, and laying
+// the columns out on the rendered widths closes the gutter the file's
+// own padding leaves behind. The caller decides which applies -- the
+// planner reports the first as `wrapped` and the second falls out of
+// comparing its layout against the stored rows. Display-only,
+// deliberately:
 // wrapping in the file would be valid org (a continuation row is an
 // ordinary row with an empty first cell, which is what Emacs'
 // `org-table-wrap-region` writes) but it is a *semantic* edit -- it adds
@@ -469,20 +476,90 @@ OrgOpenClock OrgFindOpenClock(const std::vector<std::string> &lines);
 // in editor.cpp, which had it first) so the whole width/wrap policy is
 // testable without a GL context -- org_doc_test.cpp.
 
+// One link inside a table cell, as it lands in the text the cell is
+// *planned* from -- which is the cell as drawn, so a bracket link
+// concealed down to its description spans the description and not the
+// markup (byte offsets, half-open, the same convention OrgLinkSpanInfo
+// uses).
+struct OrgTableCellLink {
+    int start = 0;
+    int end = 0;
+    std::string target;
+    // True when the span is a description standing in for hidden markup,
+    // false when it is the link's own raw text (a bare URL, or a bracket
+    // link with concealment off). Editor::OrgLinkScan underlines the
+    // second and not the first -- the underline is what tells you an
+    // unconcealed run of text is a link -- and the table layout has to
+    // make the same distinction or the two renderers disagree about what
+    // the same link looks like.
+    bool concealed = false;
+};
+
+// A table cell as it is drawn: every `[[target][description]]` on it
+// stood down to `description` when `conceal` is set, and every bare
+// `http(s)://...` left as its own text either way -- exactly what
+// Editor::OrgLinkScan conceals and leaves alone on an ordinary row.
+//
+// This is what the wrap planner below has to be fed, and the reason this
+// exists at all: a cell measured and wrapped as its raw markup is
+// budgeted columns for characters that never reach the screen, so a
+// table of `[[file:docs/lua-api.org][Lua API]]` links is re-budgeted as
+// if its first column held fifty columns of text instead of the seven it
+// draws as -- wrapping a table that fits, and hard-splitting the URL
+// inside the markup across two rendered lines when it really doesn't.
+// Link formatting comes first; the columns are then laid out around what
+// it leaves.
+/**
+ * @brief Renders a table cell as drawn, standing each bracket link down to its description.
+ * @param cell the cell's stored text, already trimmed
+ * @param conceal true when markup concealment is on (Editor::OrgConcealVisible)
+ * @param links optional; set to each link's span in the returned text, in column order
+ * @return the cell's display text (`cell` itself when it holds no links)
+ */
+std::string OrgTableCellDisplayText(const std::string &cell, bool conceal, std::vector<OrgTableCellLink> *links);
+
 // One table row as the planner sees it: either a `|---+---|` rule or a
 // row of trimmed cell texts.
 struct OrgTableCells {
     bool is_sep = false;
     std::vector<std::string> cells;
+    // Links inside `cells`, one entry per cell, as spans into that
+    // cell's own text (OrgTableCellDisplayText's output). Left short or
+    // empty by a caller with no links to report -- a cell index past the
+    // end of this simply carries none.
+    std::vector<std::vector<OrgTableCellLink>> links;
+};
+
+// One link on a rendered line, in that line's own columns: the planner
+// carries each cell's links through the wrap so the renderer has
+// something to style and follow. A link whose description wraps onto two
+// lines is reported once per line, over just the part that landed there.
+struct OrgTableWrapLink {
+    int col_start = 0;  // byte offset into the line's text
+    int col_end = 0;
+    std::string target;
+    bool concealed = false;  // see OrgTableCellLink::concealed
+};
+
+// One line a stored row draws as: its text, plus the links on it. A
+// wrapped row's own text never reaches the screen and its decorations
+// are skipped (see Buffer::org_table_wrap_rows, editor.h), so anything
+// the renderer needs to style has to arrive here.
+struct OrgTableWrapLine {
+    std::string text;
+    std::vector<OrgTableWrapLink> links;
 };
 
 struct OrgTableWrapPlan {
-    // False when the table already fits the budget, in which case the
-    // caller should leave the rows alone and render them as stored --
-    // `col_widths`/`rows` still hold the (unwrapped) layout.
+    // True when the table did not fit the budget and its columns had to
+    // be re-budgeted (so some cell wrapped onto continuation lines).
+    // False does *not* mean the layout is unusable: `col_widths`/`rows`
+    // always hold a complete one, at the table's natural rendered
+    // widths, which is exactly what a caller wanting to close a
+    // concealed table's gutter draws. It only means nothing had to give.
     bool wrapped = false;
-    std::vector<int> col_widths;                 // content columns, excluding each cell's ` ` padding
-    std::vector<std::vector<std::string>> rows;  // per input row, the line(s) it draws as
+    std::vector<int> col_widths;                      // content columns, excluding each cell's ` ` padding
+    std::vector<std::vector<OrgTableWrapLine>> rows;  // per input row, the line(s) it draws as
 };
 
 /**

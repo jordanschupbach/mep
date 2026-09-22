@@ -516,9 +516,9 @@ int main() {
         CHECK(plan.col_widths[0] == 3 && plan.col_widths[1] == 5);
         CHECK(plan.rows.size() == 3);
         CHECK(plan.rows[0].size() == 1);
-        CHECK(plan.rows[0][0] == "| Key | Value |");
-        CHECK(plan.rows[1][0] == "|-----+-------|");
-        CHECK(plan.rows[2][0] == "| a   | b     |");
+        CHECK(plan.rows[0][0].text == "| Key | Value |");
+        CHECK(plan.rows[1][0].text == "|-----+-------|");
+        CHECK(plan.rows[2][0].text == "| a   | b     |");
     }
     {
         // A wide prose column: the short column keeps its natural width
@@ -547,19 +547,19 @@ int main() {
         // 3 `|` plus 4 padding spaces of chrome.
         CHECK(plan.col_widths[0] + plan.col_widths[1] + 7 == 80);
         CHECK(plan.rows[2].size() > 1);  // the prose row draws as several lines
-        for (const std::vector<std::string> &row_lines : plan.rows) {
-            for (const std::string &l : row_lines) CHECK(OrgTableDisplayWidth(l) == 80);
+        for (const std::vector<OrgTableWrapLine> &row_lines : plan.rows) {
+            for (const OrgTableWrapLine &l : row_lines) CHECK(OrgTableDisplayWidth(l.text) == 80);
         }
         // The first line carries the first cell, the continuation lines
         // leave its column blank -- and every line keeps its `|` in the
         // same display columns, which is what lets the grid draw rules.
-        CHECK(plan.rows[2][0].compare(0, 12, "| wrapping | ") != 0 ||
-              plan.rows[2][1].compare(0, 12, "|          |") == 0);
-        const std::string &first = plan.rows[2][0];
-        for (const std::string &l : plan.rows[2]) {
-            CHECK(l.size() == first.size());
+        CHECK(plan.rows[2][0].text.compare(0, 12, "| wrapping | ") != 0 ||
+              plan.rows[2][1].text.compare(0, 12, "|          |") == 0);
+        const std::string &first = plan.rows[2][0].text;
+        for (const OrgTableWrapLine &l : plan.rows[2]) {
+            CHECK(l.text.size() == first.size());
             for (size_t c = 0; c < first.size(); c++) {
-                if (first[c] == '|') CHECK(l[c] == '|');
+                if (first[c] == '|') CHECK(l.text[c] == '|');
             }
         }
     }
@@ -574,10 +574,10 @@ int main() {
 
         OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 40, 4);
         CHECK(plan.wrapped);
-        for (const std::vector<std::string> &row_lines : plan.rows) {
-            for (const std::string &l : row_lines) {
-                CHECK(OrgTableDisplayWidth(l) == 40);
-                CHECK(l.compare(0, 4, "    ") == 0);
+        for (const std::vector<OrgTableWrapLine> &row_lines : plan.rows) {
+            for (const OrgTableWrapLine &l : row_lines) {
+                CHECK(OrgTableDisplayWidth(l.text) == 40);
+                CHECK(l.text.compare(0, 4, "    ") == 0);
             }
         }
         // Both columns had to give, and neither fell below the floor.
@@ -599,7 +599,7 @@ int main() {
 
         OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 80, 0);
         CHECK(plan.col_widths.size() == 3);
-        CHECK(plan.rows[1][0] == "| x |   |   |");
+        CHECK(plan.rows[1][0].text == "| x |   |   |");
         // An empty table is a no-op rather than a crash.
         CHECK(PlanOrgTableWrap(std::vector<OrgTableCells>(), 80, 0).col_widths.empty());
     }
@@ -616,6 +616,126 @@ int main() {
         CHECK(plan.col_widths.size() == 2);
         for (int wv : plan.col_widths) CHECK(wv >= 1);
         CHECK(!plan.rows[0].empty());
+    }
+
+    // --- Links in a table (OrgTableCellDisplayText + the planner's
+    //     carry-through): the cell is measured, wrapped and drawn as the
+    //     description it renders to, not as its markup.
+    {
+        std::vector<OrgTableCellLink> links;
+        CHECK(OrgTableCellDisplayText("[[file:docs/lua-api.org][Lua API]]", true, &links) == "Lua API");
+        CHECK(links.size() == 1);
+        CHECK(links[0].start == 0 && links[0].end == 7);
+        CHECK(links[0].target == "file:docs/lua-api.org");
+        CHECK(links[0].concealed);  // a description: Blue face, no underline
+        // With concealment off the markup is what draws, so it is what
+        // the columns have to be budgeted for -- but it is still a link.
+        CHECK(OrgTableCellDisplayText("[[file:docs/lua-api.org][Lua API]]", false, &links) ==
+              "[[file:docs/lua-api.org][Lua API]]");
+        CHECK(links.size() == 1 && links[0].start == 0 && links[0].end == 34);
+        CHECK(!links[0].concealed);  // raw markup drawn: underlined in place
+        // A bare URL is its own display text either way, and prose
+        // around a link survives intact.
+        CHECK(OrgTableCellDisplayText("see https://example.org/x now", true, &links) ==
+              "see https://example.org/x now");
+        CHECK(links.size() == 1 && links[0].start == 4 && links[0].end == 25);
+        CHECK(!links[0].concealed);
+        CHECK(OrgTableCellDisplayText("plain text", true, &links) == "plain text");
+        CHECK(links.empty());
+        CHECK(OrgTableCellDisplayText("a [[x][one]] b [[y][two]] c", true, &links) == "a one b two c");
+        CHECK(links.size() == 2);
+        CHECK(links[0].start == 2 && links[0].end == 5 && links[0].target == "x");
+        CHECK(links[1].start == 8 && links[1].end == 11 && links[1].target == "y");
+    }
+    {
+        // The bug this section exists for: a table of link cells whose
+        // *descriptions* fit inside the budget must not wrap at all. The
+        // same rows measured as raw markup ran to 109 columns and got
+        // re-budgeted, hard-splitting the URL inside the markup.
+        std::vector<OrgTableCells> rows;
+        const char *targets[] = {"file:docs/keybindings.org", "file:docs/lua-api.org"};
+        const char *descs[] = {"Keybindings and commands", "Lua API"};
+        const char *notes[] = {"every key and =:= command", "the =mep.*= table"};
+        for (size_t i = 0; i < 2; i++) {
+            OrgTableCells body;
+            body.links.resize(2);
+            body.cells.push_back(OrgTableCellDisplayText(
+                std::string("[[") + targets[i] + "][" + descs[i] + "]]", true, &body.links[0]));
+            body.cells.push_back(OrgTableCellDisplayText(notes[i], true, &body.links[1]));
+            rows.push_back(std::move(body));
+        }
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 80, 0);
+        CHECK(!plan.wrapped);
+        CHECK(plan.col_widths[0] == 24);  // "Keybindings and commands", not the 55-column markup
+        CHECK(plan.rows[0].size() == 1);
+        CHECK(plan.rows[0][0].text == "| Keybindings and commands | every key and =:= command |");
+        // The link comes back in the *rendered* line's columns, as one
+        // run over the whole description rather than one span per word.
+        CHECK(plan.rows[0][0].links.size() == 1);
+        CHECK(plan.rows[0][0].links[0].col_start == 2);
+        CHECK(plan.rows[0][0].links[0].col_end == 26);
+        CHECK(plan.rows[0][0].links[0].target == "file:docs/keybindings.org");
+        CHECK(plan.rows[0][0].text.compare(2, 24, "Keybindings and commands") == 0);
+        // `wrapped` is false here, but the layout is still complete and
+        // still narrower than the stored rows -- which is the signal
+        // OrgTableWrapScan draws it by, to close the gutter the file's
+        // markup-width padding leaves in the link column.
+        const std::string stored =
+            "| [[file:docs/keybindings.org][Keybindings and commands]] | every key and =:= command |";
+        CHECK(OrgTableDisplayWidth(plan.rows[0][0].text) == 56);
+        CHECK(OrgTableDisplayWidth(plan.rows[0][0].text) < OrgTableDisplayWidth(stored));
+    }
+    {
+        // The other side of that signal: an aligned table with no links
+        // lays out to exactly what is already stored, so
+        // OrgTableWrapScan leaves it drawing its own text and nothing
+        // about a link-free table changes.
+        std::vector<OrgTableCells> rows;
+        OrgTableCells head;
+        head.cells.push_back("Key");
+        head.cells.push_back("Value");
+        rows.push_back(head);
+        OrgTableCells body;
+        body.cells.push_back("a");
+        body.cells.push_back("bb");
+        rows.push_back(body);
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 80, 0);
+        CHECK(!plan.wrapped);
+        CHECK(plan.rows[0][0].text == "| Key | Value |");
+        CHECK(OrgTableDisplayWidth(plan.rows[0][0].text) == OrgTableDisplayWidth("| Key | Value |"));
+        for (const std::vector<OrgTableWrapLine> &row_lines : plan.rows) {
+            for (const OrgTableWrapLine &l : row_lines) CHECK(l.links.empty());
+        }
+    }
+    {
+        // A description that has to wrap: each line reports only the
+        // part of the link that landed on it, and both parts point at
+        // the same target.
+        std::vector<OrgTableCells> rows;
+        OrgTableCells body;
+        body.links.resize(2);
+        body.cells.push_back(OrgTableCellDisplayText("[[file:a.org][alpha beta gamma delta]]", true, &body.links[0]));
+        body.cells.push_back(OrgTableCellDisplayText(
+            "a second column of prose long enough to force the first one to give up columns", true, &body.links[1]));
+        rows.push_back(std::move(body));
+
+        OrgTableWrapPlan plan = PlanOrgTableWrap(rows, 40, 0);
+        CHECK(plan.wrapped);
+        CHECK(plan.rows[0].size() > 1);
+        int link_lines = 0;
+        for (const OrgTableWrapLine &l : plan.rows[0]) {
+            for (const OrgTableWrapLink &lk : l.links) {
+                CHECK(lk.target == "file:a.org");
+                CHECK(lk.col_start >= 0 && lk.col_end <= static_cast<int>(l.text.size()));
+                CHECK(lk.col_end > lk.col_start);
+                // Every column the span claims is text the link put
+                // there, never the cell's padding or a `|`.
+                for (int c = lk.col_start; c < lk.col_end; c++) CHECK(l.text[static_cast<size_t>(c)] != '|');
+            }
+            if (!l.links.empty()) link_lines++;
+        }
+        CHECK(link_lines > 1);  // the description really did span lines
     }
 
     // --- Org inline images: the drawn figure's geometry (OrgImageLayoutFor).

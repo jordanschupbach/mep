@@ -13725,10 +13725,11 @@ const char *kBuiltinOrgLinks =
     "end\n"
     "mep.command('MepOrgHeadingScaleToggle', mep.org_heading_scale_toggle_ui)\n"
     "mep.leader_map('oth', 'Org: toggle scaled heading sizes', mep.org_heading_scale_toggle_ui)\n"
-    // Wrapped tables (Editor::OrgTableWrapVisible): a table too wide for
-    // `:set textwidth` renders with re-budgeted columns and its long
-    // cells wrapped. On by default; this gets the table's real stored
-    // widths back on screen.
+    // Laid-out tables (Editor::OrgTableWrapVisible): a table too wide
+    // for `:set textwidth` renders with re-budgeted columns and its long
+    // cells wrapped, and a table whose link markup conceals renders with
+    // its columns closed up to the widths they draw as. On by default;
+    // this gets the table's real stored widths back on screen.
     "function mep.org_table_wrap_toggle_ui()\n"
     "  local visible = mep.org_table_wrap_toggle()\n"
     "  mep.notify('Org table wrapping: ' .. (visible and 'on' or 'off'))\n"
@@ -40407,9 +40408,51 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // table the cursor is in is never wrapped, so the row being
             // edited always shows its own characters.
             for (size_t tl = 0; tl < tbl_wrap->lines.size(); tl++) {
-                DrawLineFast(tbl_wrap->lines[tl], text_x,
-                             ly + static_cast<float>(static_cast<int>(tl) * line_height), g_font_size,
-                             ResolveHlGroup("Normal"));
+                const OrgTableWrapLine &twl = tbl_wrap->lines[tl];
+                const float tly = ly + static_cast<float>(static_cast<int>(tl) * line_height);
+                DrawLineFast(twl.text, text_x, tly, g_font_size, ResolveHlGroup("Normal"));
+                // The links the layout carried through the wrap
+                // (OrgTableWrapLine, org_doc.h): the row's own link
+                // decorations index its stored text and are skipped with
+                // the rest, so the Blue underline every other org link
+                // gets -- and the click that follows it -- have to be
+                // drawn from the plan's own columns instead. Same visual
+                // as the per-span hl_group/underline passes further
+                // down, just laid out on this line rather than the row's.
+                const gfx::Color link_color = ResolveHlGroup("Blue");
+                for (const OrgTableWrapLink &lk : twl.links) {
+                    const int a = std::clamp(lk.col_start, 0, static_cast<int>(twl.text.size()));
+                    const int b = std::clamp(lk.col_end, a, static_cast<int>(twl.text.size()));
+                    if (b <= a) continue;
+                    const int col_a = ByteOffsetToColumn(twl.text, a);
+                    const int col_b = ByteOffsetToColumn(twl.text, b);
+                    const float lx = text_x + static_cast<float>(col_a) * g_char_width;
+                    const float lw = static_cast<float>(col_b - col_a) * g_char_width;
+                    DrawLineFast(twl.text.substr(static_cast<size_t>(a), static_cast<size_t>(b - a)), lx, tly,
+                                 g_font_size, link_color);
+                    // Underlined only where the raw text is what draws --
+                    // a bare URL, or a bracket link with concealment off.
+                    // A description standing in for hidden markup gets
+                    // the Blue face alone, which is exactly what
+                    // Editor::OrgLinkScan's concealing overlay does.
+                    if (!lk.concealed) {
+                        gfx::DrawRectangle(static_cast<int>(lx),
+                                           static_cast<int>(tly + static_cast<float>(line_height) - 2),
+                                           static_cast<int>(lw), 1, link_color);
+                    }
+                    // Followed by target rather than by column: the
+                    // stored line's own columns are nowhere near these
+                    // ones, so there is nothing to hand OrgFollowLinkAt.
+                    const int click_row = row;
+                    const int click_pane = pane.id;
+                    const std::string click_target = lk.target;
+                    RegisterClickRegionOnTop(
+                        gfx::Rectangle{lx, tly, lw, static_cast<float>(line_height)},
+                        [click_pane, click_row, click_target] {
+                            g_editor.FocusPaneById(click_pane);
+                            g_editor.OrgFollowLinkTargetOn(click_row, click_target);
+                        });
+                }
             }
         } else if (row_wrap_cols <= 0) {
             DrawLineFast(draw_line, text_x, ly, g_font_size, ResolveHlGroup("Normal"));
@@ -40886,7 +40929,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // about whether this one actually broke across visual lines. Only
         // a row that really did is skipped, since a link split over two
         // sub-rows isn't one rectangle.
-        if (is_org_buffer && row_wrap_slots <= 1) {
+        // A row drawn as a wrapped table's layout is excluded for the
+        // same reason: its stored columns aren't the drawn ones, and the
+        // layout registers its own regions from the plan's columns
+        // above. (row_wrap_slots already excludes every such row that
+        // draws as more than one line, but a short one draws as exactly
+        // one and would otherwise get a rectangle off to the right of
+        // where the link actually is.)
+        if (is_org_buffer && row_wrap_slots <= 1 && tbl_wrap == nullptr) {
             if (const std::vector<Buffer::OrgLinkSpan> *link_spans =
                     g_editor.OrgLinkSpansForRow(pane.buffer_id, row)) {
                 for (const Buffer::OrgLinkSpan &lsp : *link_spans) {

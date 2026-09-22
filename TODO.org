@@ -2,8 +2,63 @@
 
 In commit messages, I can quit by pressing escape. I'd like this to not be the case. To abort, I can press mod+d (alt+d), or do :bd. Implement this.
 
-* TODO org table formatting
+* DONE org table formatting
 There's a bug in org table formatting, where, links dont get properly formatted. May be related to precedence when formatting org tables between link formatting and column formatting (w auto page wrapping).  Investigate and fix.
+  - It was exactly the precedence you guessed: column formatting ran
+    first. The over-wide-table wrap (`Editor::OrgTableWrapScan` ->
+    `PlanOrgTableWrap`) measured, re-budgeted and wrapped each cell as
+    its *raw markup*, so a cell holding `[[file:docs/lua-api.org][Lua
+    API]]` was billed fifty columns for the seven it draws as. Two
+    visible symptoms, both on this repo's own README: the Documentation
+    table (155 raw columns, 78 rendered) was wrapped although it fits,
+    and once wrapped its cells were hard-split mid-URL
+    (`[[file:docs/architecture.org][Architectu` / `re]]`) and drawn as
+    plain unstyled text, because a wrapped row's own decorations are
+    skipped -- its stored columns aren't the drawn ones.
+  - Link formatting now runs first. `OrgTableCellDisplayText` (org_doc.h)
+    renders a cell the way the row itself is rendered -- each
+    `[[target][desc]]` stood down to `desc` while concealment is on, a
+    bare URL left alone either way -- and the planner lays the columns
+    out around *that*, so the widths and the wrap points are the ones the
+    reader sees. The README table stops wrapping entirely; one that
+    genuinely is too wide now wraps on word boundaries in the
+    description instead of through the middle of a URL.
+  - The links survive the wrap rather than being flattened into it: the
+    plan carries each one through as an `OrgTableWrapLink` in the
+    rendered line's own columns (one span per line a description spans,
+    with the word-break pieces merged back), so DrawPane paints the same
+    Blue underline every other org link gets and registers a click
+    region for it. Clicking a link inside a wrapped table follows it now
+    -- by target, via `Editor::OrgFollowLinkTargetOn`, since there is no
+    stored column to hand `OrgFollowLinkAt`. `<leader>otm` re-plans the
+    table on the spot, because concealment is what decides a link cell's
+    width.
+  - The other half, once the wrapped case was right: a link table that
+    *fits* still drew badly. The file pads such a table to its markup's
+    width and the renderer holds every `|` at the column the raw text
+    puts it (the cell-local conceal collapse), so the README's own
+    Documentation table rendered as a 24-column description followed by
+    31 columns of dead gutter before the pipe. `OrgTableWrapScan` now
+    draws a table from its layout whenever that layout is genuinely
+    narrower than the stored rows, not only when the table overflows
+    `:set textwidth` -- so the columns close up to what they draw as.
+    A table already as tight as its layout, and an unaligned one whose
+    layout comes out *wider*, are both left alone, so nothing about a
+    link-free table changes.
+  - Concealed links draw with the Blue face and no underline, which is
+    what `OrgLinkScan`'s concealing overlay does; raw markup and bare
+    URLs keep the underline. The layout carries the distinction as
+    `OrgTableWrapLink::concealed` so the two renderers can't drift.
+  - `:MepOrgTableAlign` is deliberately untouched: it pads the *file*,
+    which the raw-column renderer needs, so raw widths stay the right
+    thing to write -- the tightening is display-only, and `<leader>otw`
+    turns it off along with the rest of the layout. The row the cursor
+    is on still steps aside to its stored columns (the caret has to land
+    on the character it is editing), so that one row shows its markup
+    and its own wider pipes -- the same trade-off over-wide tables
+    already made. Covered by new
+    `PlanOrgTableWrap`/`OrgTableCellDisplayText` cases in
+    org_doc_test.cpp, including the link-free table that must not move.
 
 * TODO org table render
 

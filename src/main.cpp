@@ -6037,7 +6037,15 @@ const char *kBuiltinTodo =
 const char *kBuiltinLsp =
     "mep.lsp_servers = {\n"
     "  lua = {cmd = {'lua-language-server'}, filetypes = {'lua'}},\n"
-    "  clangd = {cmd = {'clangd'}, filetypes = {'c', 'cpp', 'h', 'hpp', 'cc', 'cxx'}},\n"
+    // clangd keeps its entry but no longer claims the C++ filetypes:
+    // mep's own C++ server (cpp_ls below) does, so a fresh checkout gets
+    // C++ diagnostics with nothing installed. Select clangd instead by
+    // giving it the filetypes back -- `mep.lsp_servers.clangd.filetypes =
+    // {'c', 'cpp', 'h', 'hpp', 'cc', 'cxx'}` (and clearing cpp_ls's) in
+    // init.lua. It keeps `c` either way: mep's C++ front end reads C, but
+    // clangd is the better answer for a C project that has a compile
+    // database.
+    "  clangd = {cmd = {'clangd'}, filetypes = {'c'}},\n"
     // pyright keeps its entry but no longer claims `py`: mep's own
     // Python server (python_ls below) does, so a fresh checkout gets
     // Python diagnostics with nothing installed. Select pyright instead
@@ -6194,6 +6202,26 @@ const char *kBuiltinLsp =
     // that guesses about them would be wrong far more often than right
     // (python_lsp.h states the whole scope).
     "  python_ls = {cmd = {mep.bundled_tool('mep-python-lsp')}, filetypes = {'py', 'pyi'}},\n"
+    // mep's own C++ server (src/cpp_lsp_server.cpp, built as the
+    // `mep-cpp-lsp` target beside `mep` itself), resolved through
+    // mep.bundled_tool for the same reason org_ls and python_ls are. It
+    // is an entire C++ front end -- tokenizer, preprocessor, parser,
+    // scope model -- with the standard library's names baked in
+    // (src/cpp_lsp_std_names.cpp, generated from the real headers), so it
+    // needs no compiler, no compile_commands.json and no clangd install:
+    // opening a .cpp file in a fresh checkout gets diagnostics,
+    // completion, hover, symbols, folding, definition, references,
+    // rename and signature help.
+    //
+    // What it deliberately does not do is type checking. A single file
+    // cannot see the headers it includes -- beyond the ones sitting next
+    // to it, which this server does read -- and a checker that guessed
+    // about the rest would be wrong far more often than right
+    // (src/cpp_lsp.h states the whole scope). It takes three optional
+    // settings through `init_options`: `maxLineLength`, `defines` and
+    // `includeDirs`.
+    "  cpp_ls = {cmd = {mep.bundled_tool('mep-cpp-lsp')},\n"
+    "    filetypes = {'cpp', 'cc', 'cxx', 'c++', 'hpp', 'hh', 'hxx', 'h++', 'h', 'ipp', 'tpp', 'inl'}},\n"
     "}\n"
     // (filetype .. '@' .. workspace root) -> client_id: one client per
     // filetype *per workspace root* (WORKSPACES_PLAN.md Phase 5), since

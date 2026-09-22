@@ -191,8 +191,48 @@ able to insert a code block (e.g. R, python, C/C++, etc.) into the org mode buff
 * TODO link formatting
 Change links in org mode to be rendered to have an underline underneath it. 
 
-* TODO org play
+* DONE org play
 Add a play button to org mode code blocks that will run the code block in the appropriate language mode.
+  - Every =src= block card's title bar now ends with a play button, docked
+    against the bar's right edge so a page of blocks lines its buttons up in
+    one column rather than at each block's own title length. Clicking it
+    runs that block: `Editor::RunOrgBabelBlockAt` (editor.cpp) moves the
+    cursor into the block and calls the same `TryRunOrgBabelAtCursor` that
+    `C-c C-c` already goes through, so there is one execution path, not a
+    second copy of it -- `#+RESULTS:`, `:cache`, `:session`, `mep-lua`
+    blocks and the `:eval` gate all behave exactly as they do from the
+    keyboard.
+  - The cursor lands on the block's *first body row*, not on `#+begin_src`:
+    the babel path is "at the cursor" from `mep_org_src_block_at` down, and
+    a cursor on the header row would reveal the raw line and pull the card's
+    whole title bar (button included) out from under the pointer mid-click.
+    An empty block has no body row, and `Editor::OrgSrcBlockAt` refuses a
+    row on the closer, so that one case stays on the header.
+  - Split the way the rest of the org render stack is: the pure decision
+    lives in org_doc.cpp (`OrgBlockPlayFor`/`OrgBlockPlayHint`, covered by
+    mep-org-doc-test), the card -> decision projection in editor.h
+    (`OrgBlockPlayInputOf`), and only the drawing in DrawPane. The button
+    is drawn live (accent) when the header says the block can run, and
+    muted when it can't -- no language tag, or `:eval no`/`:eval never`,
+    which are exactly the two values `mep.org_babel_execute` itself
+    refuses, matched the same literal way so the button can't promise a run
+    that path would then decline. A muted button is still clickable: the
+    click produces the warn toast saying which of the two it is, which
+    beats a control that does nothing.
+  - Hovering any button explains it through the shared pane-control tooltip
+    ("Run this python block (C-c C-c)", "Blocked by :eval no", "No language
+    on this block -- nothing to run"). No button at all for a non-=src=
+    block or one still being typed with no `#+end_src` yet, and on a card
+    too narrow for both the button and the language chip the chip wins --
+    `C-c C-c` is unaffected either way. Registered with
+    `RegisterClickRegionOnTop` (the pane's own click-to-focus region covers
+    every row underneath it) and it focuses the clicked pane first, so a
+    click in a background split runs *that* split's block.
+  - Verified live against a detached instance on its own X display: the
+    four states render as described, the tooltip and hover fill appear, and
+    clicking the runnable block wrote `#+RESULTS:` / `: hello from sh` into
+    the buffer. Documented in help/org-visuals.org (a new "The play button"
+    section) with a pointer from help/org-babel.org.
 
 * TODO org settings
 Add a settings button to orgmode code blocks that will allow the user to set the settings for the code block (e.g. results, exports, etc.). On click, it should bring up an options setting popup with any possible options for the language specific (or options for other types of blocks) options. This should allow for changing numbers, input string, or dropdown selection, depending on the type of option. Id like the popup to list all options, with the appropriate input. Make sure to add keyboard navigation in normal mode, h,j,k,l for selecting option by direction, ctrl+n and ctrl+p for selecting from dropdown, i to insert mode on text input, and j,k for incrementing/decrementing number.

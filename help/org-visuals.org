@@ -64,6 +64,26 @@ and the raw =#+begin_src ...= line comes straight back to edit. The card
 also steps aside for a folded block, and for a block holding an image or
 a maths fragment that is being previewed in place.
 
+** The play button
+
+A =src= card's title bar ends with a play button, docked against its
+right edge so a page of blocks lines its buttons up in one column. Click
+it and that block runs -- the same execution =C-c C-c=
+([[file:org-babel.html][org-babel]]) performs, on the same block, writing
+its =#+RESULTS:= back into the file. Clicking one in an unfocused split
+focuses that split first.
+
+The button is muted, rather than in the accent colour, when the block
+would refuse to run: no language tag on the =#+begin_src= line, or an
+=:eval no= / =:eval never= header argument. It is still clickable -- the
+click says which of the two it is. Hovering any button says what it will
+do.
+
+A block that has no =#+end_src= yet gets none (there is nothing to run),
+and neither does any non-=src= block. If the card is too narrow for both
+the button and the block's language, the language wins and the button is
+dropped -- =C-c C-c= is unaffected.
+
 ** How wide a card is
 
 As wide as the *wider* of its own longest line and =textwidth= (=:set

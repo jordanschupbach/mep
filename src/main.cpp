@@ -41763,6 +41763,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::DrawRectangle(static_cast<int>(from), static_cast<int>(band.y), static_cast<int>(to - from),
                           static_cast<int>(band.height), ResolveHlGroup("NormalBg"));
         };
+        // The play button's own left edge once it has been laid out
+        // below, 0 when this card has none: the end-of-line virtual text
+        // pass at the bottom of this loop has to right-align *inside* the
+        // bar in a pane-wide card, and that is exactly where the button
+        // sits (it draws later, so it would simply paint over it).
+        float play_left = 0.0f;
         if (cb.conceal_header) {
             clear_overflow(cb.header);
             gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y),
@@ -41783,7 +41789,77 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const float text_y = bar_y + (static_cast<float>(line_height) - g_font_size) / 2.0f;
             const float chip_h = std::max(8.0f, static_cast<float>(line_height) - 5.0f);
             const float chip_y = bar_y + (static_cast<float>(line_height) - chip_h) / 2.0f;
-            const float right_limit = cb.header.x + cb.header.width - 8.0f;
+            // The play button: this card's own "run this block", docked
+            // against the bar's right edge so a page of cards lines its
+            // buttons up in one column instead of putting each one
+            // wherever that block's title happens to end. Laid out before
+            // the chip run below because that run's own `right_limit` has
+            // to stop short of it.
+            float right_limit = cb.header.x + cb.header.width - 8.0f;
+            const OrgBlockPlayInput play_in = OrgBlockPlayInputOf(card);
+            const OrgBlockPlay play = OrgBlockPlayFor(play_in);
+            if (play != OrgBlockPlay::kHidden) {
+                const float play_w = std::max(20.0f, chip_h + 4.0f);
+                const gfx::Rectangle play_rect{right_limit - play_w, chip_y, play_w, chip_h};
+                // Dropped entirely rather than overlapping the kind chip,
+                // which is the one piece of the bar that is always there:
+                // a card squeezed this narrow (a split a few columns
+                // wide) has no room for both, and the block's identity
+                // outranks a control C-c C-c already covers.
+                if (play_rect.x >= cb.header.x + 9.0f + g_char_width * 3.0f) {
+                    const bool play_ready = play == OrgBlockPlay::kReady;
+                    const gfx::Color play_c = play_ready ? accent : ResolveHlGroup("MutedFg");
+                    const bool play_hover = PointInRect(gfx::GetMousePosition(), play_rect);
+                    gfx::DrawRectangleRounded(play_rect, 0.5f, 6, gfx::Fade(play_c, play_hover ? 0.35f : 0.12f));
+                    gfx::DrawRectangleRoundedLinesEx(play_rect, 0.5f, 6, 1.0f,
+                                                 gfx::Fade(play_c, play_ready ? 0.75f : 0.45f));
+                    // A drawn triangle, not a glyph: g_font carries only
+                    // ASCII, so a unicode play symbol renders as tofu
+                    // (the notebook kernel chip's caret is drawn for the
+                    // same reason). Wound top-left -> bottom-left -> apex,
+                    // the same winding direction as every other working
+                    // DrawTriangle call in this file.
+                    const float tri_h = chip_h * 0.46f;
+                    const float tri_w = tri_h * 0.88f;
+                    // Nudged left of center so the triangle's own visual
+                    // weight -- all of it in the flat left edge -- reads
+                    // as centered in the button rather than trailing.
+                    const float tri_cx = play_rect.x + play_rect.width / 2.0f - tri_w * 0.15f;
+                    const float tri_cy = play_rect.y + play_rect.height / 2.0f;
+                    gfx::DrawTriangle(gfx::Vector2{tri_cx - tri_w / 2.0f, tri_cy - tri_h / 2.0f},
+                                      gfx::Vector2{tri_cx - tri_w / 2.0f, tri_cy + tri_h / 2.0f},
+                                      gfx::Vector2{tri_cx + tri_w / 2.0f, tri_cy}, play_c);
+                    if (play_hover) {
+                        g_pane_control_tooltip_text = OrgBlockPlayHint(play_in);
+                        // The button's own rect, but a full row tall: the
+                        // shared tooltip draws itself `anchor.height` tall
+                        // just under the anchor's bottom edge (see
+                        // DrawSimpleTooltip), and the chip is deliberately
+                        // shorter than a row -- handing it that height
+                        // would squeeze the label into it.
+                        g_pane_control_tooltip_anchor =
+                            gfx::Rectangle{play_rect.x, play_rect.y, play_rect.width, static_cast<float>(line_height)};
+                    }
+                    // OnTop: DrawPane has already registered this pane's
+                    // own click-to-focus region, which covers every row of
+                    // it -- a control drawn inside the text area has to
+                    // take precedence over that fallback or it can never
+                    // be clicked (same as the notebook cell's Run chip).
+                    const int play_pane = pane.id;
+                    const int play_row = card.begin_row;
+                    RegisterClickRegionOnTop(play_rect, [play_pane, play_row] {
+                        // Focus first: the babel path works on the active
+                        // pane's buffer, so a click in a background split
+                        // would otherwise run a block out of whichever
+                        // buffer happened to be focused -- the same
+                        // ordering an org link click needs.
+                        g_editor.FocusPaneById(play_pane);
+                        g_editor.RunOrgBabelBlockAt(play_row);
+                    });
+                    right_limit = play_rect.x - 8.0f;
+                    play_left = play_rect.x;
+                }
+            }
             float cx = cb.header.x + 9.0f;
             /**
              * @brief Checks whether a bar element of the given width still fits before the card's right edge.
@@ -41964,8 +42040,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // empty tail of the bar in all but the busiest headers.
             const bool after_border = ex + gfx::MeasureTextEx(g_font, "...", g_font_size, 0).x < limit;
             float avail = limit - ex;
+            // On the header band, the bar's right end is the play button's,
+            // not the card's -- stop short of it (and of the gap it keeps)
+            // rather than painting the message over a control.
+            const float inner_right =
+                (et.on_header && play_left > 0.0f) ? (play_left - 6.0f) : (card_right - 8.0f);
             if (!after_border) {
-                avail = std::max(0.0f, (card_right - 8.0f) - (cb.rect.x + 8.0f));
+                avail = std::max(0.0f, inner_right - (cb.rect.x + 8.0f));
                 avail = std::min(avail, cb.rect.width * 0.5f);  // never more than the bar's right half
             }
             if (avail < g_char_width * 4.0f) continue;  // nowhere to put it; the gutter badge still marks the row
@@ -41995,7 +42076,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (!after_border) {
                 // Right-aligned against the card's inner edge: the end the
                 // bar's own content is furthest from.
-                ex = card_right - 8.0f - tw;
+                ex = inner_right - tw;
                 // Clamped to the concealed band's own rect, not just to
                 // the row: painting a plain row-height rectangle here
                 // overshot the bar by a pixel at the top and swallowed

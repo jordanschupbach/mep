@@ -18,6 +18,10 @@ print(40 + 2)
 : 42
 #+end_src
 
+Or click the play button on the block's own card
+([[file:org-visuals.html][block cards]]): same execution, same block, no
+need to put the cursor there first.
+
 * Languages
 
 Twenty-seven, each used when its toolchain is on =$PATH=:

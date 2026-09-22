@@ -2732,6 +2732,30 @@ struct OrgBlockCard {
     int content_cols = 0;
 };
 
+// The play-button view of a card (OrgBlockPlayFor, org_doc.h). The two
+// types sit on opposite sides of the org render split -- OrgBlockCard is
+// the buffer scan's own output, OrgBlockPlayInput is what the pure,
+// GL-free decision takes -- so the translation between them lives here
+// rather than being spelled out again at its one call site in DrawPane.
+/**
+ * @brief Projects a scanned block card onto the header facts its play button is decided from.
+ * @param card The block as Editor::OrgBlockCards parsed it.
+ * @return The play button's input: kind, closedness, language and `:eval` value.
+ */
+inline OrgBlockPlayInput OrgBlockPlayInputOf(const OrgBlockCard &card) {
+    OrgBlockPlayInput in;
+    in.is_src = card.is_src;
+    in.closed = card.end_row >= 0;
+    in.lang = card.lang;
+    // Last `:eval` wins, matching the precedence the options themselves
+    // were merged under (a `#+begin_src` line's own args override the
+    // `#+HEADER:` stack above it -- see Editor::OrgBlockCards).
+    for (const OrgBlockOption &opt : card.options) {
+        if (opt.key == "eval") in.eval_arg = opt.value;
+    }
+    return in;
+}
+
 // mep_diag_wrap's own port (LUA_TO_CPP_PLAN.md Phase LSP): greedy word-
 // wrap of `text` to `width` columns (mep.float_preview itself doesn't
 // wrap). No Editor state needed. Always returns at least one line
@@ -7996,6 +8020,23 @@ public:
      * @return The new visibility state.
      */
     bool ToggleOrgBlockCards();
+    // Clicking a card's play button (DrawPane, main.cpp): runs the src
+    // block that starts on `begin_row` (0-based, an OrgBlockCard::
+    // begin_row) in the *active* pane's buffer -- the caller focuses the
+    // clicked pane first, exactly as an org link click does.
+    //
+    // Both halves matter. The cursor moves into the block because every
+    // piece of the babel path downstream of here is "at the cursor"
+    // (mep_org_src_block_at, and the #+RESULTS: insertion that follows
+    // it), and it lands on the block's *first body row* rather than on
+    // `#+begin_src` itself so the card keeps its header concealed -- the
+    // button the user just clicked stays under their pointer instead of
+    // vanishing behind the revealed raw line.
+    /**
+     * @brief Runs the org-babel src block beginning at a row, moving the cursor into it first.
+     * @param begin_row The block's `#+begin_src` row (0-based) in the active pane's buffer.
+     */
+    void RunOrgBabelBlockAt(int begin_row);
 
     // --- Org src-block LSP status (<leader>ots / mep.org_lsp_status_toggle) ---
     // Registers/replaces one `#+begin_src` block's language-server status

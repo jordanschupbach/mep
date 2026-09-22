@@ -63,7 +63,7 @@ implemented here rather than bound to a library:
 | HTML/CSS/JS (the browser pane) | =html_doc.cpp=, =js_engine.cpp=, =svg_doc.cpp=, =http_client.cpp=, =http_server.cpp= |
 | Images | =image_codec.cpp=, =png_codec.cpp=, =jpeg_codec.cpp=, =gif_codec.cpp=, =bmp_codec.cpp=, =image_doc.cpp=, =image_procgen.cpp= |
 | 3D scenes | =model3d_doc.cpp=, =model3d_blend_import.cpp= |
-| Org | =org_doc.cpp= |
+| Org | =org_doc.cpp=, =org_lsp.cpp= |
 | Notebooks | =notebook_doc.cpp= |
 | Office and spreadsheets | =office_doc.cpp=, =office_odt.cpp=, =sheet_doc.cpp=, =sheet_xlsx.cpp=, =sheet_ods.cpp=, =formula.cpp=, =zip_archive.cpp=, =xml_doc.cpp= |
 | Video and audio | =mov_container.cpp=, =wav_doc.cpp= |
@@ -83,12 +83,31 @@ implemented here rather than bound to a library:
   =collab_relay.cpp= — CRDT-based shared editing and the =mep-collabd=
   relay. See [[file:collaboration.org][Collaboration]].
 
+* Language servers
+
+mep is an LSP *client* for around thirty-seven servers (=kBuiltinLsp= in
+=main.cpp=; the registry is plain data, so =init.lua= can extend it), and
+ships one *server* of its own:
+
+- =src/org_lsp.cpp= — org-mode diagnostics, completion, hover, document
+  symbols, folding and definition, as pure functions over plain lines.
+- =src/org_lsp_server.cpp= — the =mep-org-lsp= binary wrapping those in
+  stdio JSON-RPC. mep spawns it out of its own bin directory, so org
+  files get diagnostics with nothing installed; it also runs standalone
+  in any other LSP client.
+
+Code *inside* a =#+begin_src= block is handled separately, by
+=kBuiltinOrgPolyglot='s per-block shadow buffers talking to a real server
+for that language. Both publish against the same org file and their
+diagnostics are merged (=mep_org_diag_set=).
+
 * Build targets
 
 =mep= (the editor), =mep-mcp= (MCP bridge), =mep-collabd= (collab relay),
-plus around thirty =*-test= and =*-bench= binaries. Every test and
-benchmark target is =EXCLUDE_FROM_ALL=, so a plain build produces only the
-three shipped binaries; =just test= builds and runs the windowless ones,
+=mep-org-lsp= (org language server), plus around thirty =*-test= and
+=*-bench= binaries. Every test and benchmark target is
+=EXCLUDE_FROM_ALL=, so a plain build produces only the four shipped
+binaries; =just test= builds and runs the windowless ones,
 =just test-gui= the two that drive a real window, and =just bench= the
 performance suite.
 

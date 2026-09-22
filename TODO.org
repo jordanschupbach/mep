@@ -1,11 +1,250 @@
+* DONE commit popup binding
+
+In commit messages, I can quit by pressing escape. I'd like this to not be the case. To abort, I can press mod+d (alt+d), or do :bd. Implement this.
+
+Done: =mep.float_open= grew an =escape_dismiss= option (default true, so
+every other float is untouched) and the git commit float passes false, so
+=Escape= there only leaves Insert mode. Aborting is =mod1+d= (which already
+closed the float, via =pane_close_buffer=) or =:bd= -- the latter no longer
+stops at "E37: No write since last change", since a float that never writes
+its buffer leaves the file on disk untouched either way. =ZZ= still commits.
+
+* DONE org table formatting
+There's a bug in org table formatting, where, links dont get properly formatted. May be related to precedence when formatting org tables between link formatting and column formatting (w auto page wrapping).  Investigate and fix.
+  - It was exactly the precedence you guessed: column formatting ran
+    first. The over-wide-table wrap (`Editor::OrgTableWrapScan` ->
+    `PlanOrgTableWrap`) measured, re-budgeted and wrapped each cell as
+    its *raw markup*, so a cell holding `[[file:docs/lua-api.org][Lua
+    API]]` was billed fifty columns for the seven it draws as. Two
+    visible symptoms, both on this repo's own README: the Documentation
+    table (155 raw columns, 78 rendered) was wrapped although it fits,
+    and once wrapped its cells were hard-split mid-URL
+    (`[[file:docs/architecture.org][Architectu` / `re]]`) and drawn as
+    plain unstyled text, because a wrapped row's own decorations are
+    skipped -- its stored columns aren't the drawn ones.
+  - Link formatting now runs first. `OrgTableCellDisplayText` (org_doc.h)
+    renders a cell the way the row itself is rendered -- each
+    `[[target][desc]]` stood down to `desc` while concealment is on, a
+    bare URL left alone either way -- and the planner lays the columns
+    out around *that*, so the widths and the wrap points are the ones the
+    reader sees. The README table stops wrapping entirely; one that
+    genuinely is too wide now wraps on word boundaries in the
+    description instead of through the middle of a URL.
+  - The links survive the wrap rather than being flattened into it: the
+    plan carries each one through as an `OrgTableWrapLink` in the
+    rendered line's own columns (one span per line a description spans,
+    with the word-break pieces merged back), so DrawPane paints the same
+    Blue underline every other org link gets and registers a click
+    region for it. Clicking a link inside a wrapped table follows it now
+    -- by target, via `Editor::OrgFollowLinkTargetOn`, since there is no
+    stored column to hand `OrgFollowLinkAt`. `<leader>otm` re-plans the
+    table on the spot, because concealment is what decides a link cell's
+    width.
+  - The other half, once the wrapped case was right: a link table that
+    *fits* still drew badly. The file pads such a table to its markup's
+    width and the renderer holds every `|` at the column the raw text
+    puts it (the cell-local conceal collapse), so the README's own
+    Documentation table rendered as a 24-column description followed by
+    31 columns of dead gutter before the pipe. `OrgTableWrapScan` now
+    draws a table from its layout whenever that layout is genuinely
+    narrower than the stored rows, not only when the table overflows
+    `:set textwidth` -- so the columns close up to what they draw as.
+    A table already as tight as its layout, and an unaligned one whose
+    layout comes out *wider*, are both left alone, so nothing about a
+    link-free table changes.
+  - Concealed links draw with the Blue face and no underline, which is
+    what `OrgLinkScan`'s concealing overlay does; raw markup and bare
+    URLs keep the underline. The layout carries the distinction as
+    `OrgTableWrapLink::concealed` so the two renderers can't drift.
+  - `:MepOrgTableAlign` is deliberately untouched: it pads the *file*,
+    which the raw-column renderer needs, so raw widths stay the right
+    thing to write -- the tightening is display-only, and `<leader>otw`
+    turns it off along with the rest of the layout. The row the cursor
+    is on still steps aside to its stored columns (the caret has to land
+    on the character it is editing), so that one row shows its markup
+    and its own wider pipes -- the same trade-off over-wide tables
+    already made. Covered by new
+    `PlanOrgTableWrap`/`OrgTableCellDisplayText` cases in
+    org_doc_test.cpp, including the link-free table that must not move.
+
+* TODO org table render
+
+I'd like org tables to render better. Should have slightly different backgrounds
+one row after the other. I'd also like there to be a rounded border, similar to
+the style that org code blocks have.
+
+* TODO lua formatter
+
+I'd like an inhouse version of a formatter for lua. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO java formatter
+
+I'd like an inhouse version of a formatter for java. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO c++ formatter
+
+I'd like an inhouse version of a formatter for c++. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO c formatter
+
+I'd like an inhouse version of a formatter for c. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO python formatter
+
+I'd like an inhouse version of a formatter for python. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO r formatter
+
+I'd like an inhouse version of a formatter for R. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+
+* DONE smooth scroll
+
+I'd like smooth scrolling in org files. When going over a figure, I'd like j,k
+to scroll one line at a time until the position of the top or bottom of the
+figure scrolls past the center of the height of the window (i.e. where the
+cursor should be emulated from (but not visible, while going over the image),
+depending how on which way the user is scrolling.
+  - A pane's scroll position now has a sub-row part (Pane::scroll_sub,
+    editor.h): how many of the top row's own visual slots are above the top
+    of the pane. It is 0 everywhere except over an org inline image, which
+    is one buffer row drawn many line-heights tall (OrgImageLayoutFor), and
+    DrawPane applies it once as a shift of the slot grid all four of its
+    walkers share, so nothing else had to learn about a partial top row.
+    Editor::ScrollFigureStep is the rule this task asked for: while the
+    cursor is on a figure, j/k (and each mouse-wheel step) move the *view*
+    by one visual line and leave the cursor where it is, until the edge the
+    press is travelling toward -- the figure's bottom going down, its top
+    going up -- has passed the middle of the pane, which is where the caret
+    conceptually rides while it is over a figure; the next press then steps
+    the cursor off the figure as it would off any other row. Stepping onto
+    a figure from the row above or below reveals exactly one line of it, at
+    the edge it came from, so the slide starts from there rather than from
+    a screenful already scrolled past, and stepping off it scrolls the
+    remainder away one line per press instead of jerking it off in one go.
+    A counted "10j", an operator's motion ("dj"), Visual mode and the
+    explicit scroll commands (Ctrl-D/zz/zt/zb, which reset the sub-row
+    offset) all behave exactly as before. Verified in a spawned instance
+    over the agent socket, on a 13-slot figure in a 12-line pane: j held
+    the cursor on the figure row for 18 presses while scroll_row/scroll_sub
+    advanced one slot each, released it once the bottom edge crossed the
+    middle, and k retraced the same path in reverse; state.dump now reports
+    `scroll_sub` alongside `scroll_row` so this is observable.
+
+* DONE error binding
+
+I'd like a binding for going to the next error, should be [e and ]e. Once the
+error has been jumped to, id like a popup to show the error message(s). Should
+be able to select error in popup (ctrl+n, ctrl+p) and yank the error message to
+the clipboard (y).
+
+* DONE lsp status
+I'd like org mode code blocks to give status of running lsp at the bottom of a
+code block (separated by a horizontal line (from the code part of the block).
+  - Landed on the `#+end_src` row itself -- the block card already conceals
+    that row and paints it as blank floor, so the status line costs no extra
+    slot and none of the four slot walkers that must agree on a row's height
+    had to change. A rule across the card's inner width separates it from the
+    code above; a severity dot plus one line of text sits under it.
+  - Five states, in the block's own terms: `LSP: no server for <lang>` /
+    `LSP: no language set` when nothing can ever attach, `<server>: idle
+    (attaches on first use)` for a block no LSP feature has run in yet,
+    `<server>: starting...`, `<server>: not running` (spawn failed, or the
+    client died), and `<server>: ready, 2 errors, 1 warning` counting only
+    diagnostics inside that block's own body rows. The dot is green/yellow/
+    red; counts outrank state, so a healthy client reporting errors reads red.
+  - Split the way the rest of the org render stack is: Lua owns the facts
+    (mep.org_lsp_status_scan in kBuiltinOrgPolyglot -- shadows, clients,
+    mep.lsp_servers and mep_lsp_diagnostics are all Lua-side), C++ owns the
+    wording (FormatOrgLspStatus/OrgLspStatusToneOf, org_doc.cpp, covered by
+    mep-org-doc-test) and the drawing (DrawPane). The scan is not per-frame:
+    it reruns on a buffer change, a file change or a new mep_polyglot_epoch,
+    with a 2s floor so a *dying* server (which has no event to hook) still
+    stops reading "ready".
+  - Toggled with <leader>ots / :MepOrgLspStatusToggle, on by default, and
+    revealed like every other concealed row: put the cursor on `#+end_src`
+    and the raw text comes back in place of the status.
+  - Also fixed, found while building this: mep_polyglot_restart_shadow_client
+    called mep_polyglot_server_for without the block's lang_def, so the
+    extension-based lookup that function exists for degraded to a bare
+    language-name lookup and resolved "no server" for every language whose
+    name and extension differ. Latent, not live -- its only caller is the
+    c/cpp compile-database rewrite, and those two languages happen to have
+    name == extension.
+
+* TODO octave lsp engine
+I'd like an inhouse LSP engine for octave. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+* TODO java lsp engine
+I'd like an inhouse LSP engine for Java. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+* TODO c++ lsp engine
+I'd like an inhouse LSP engine for C++. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+
+* TODO c lsp engine
+I'd like an inhouse LSP engine for C. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+
+* TODO python lsp engine
+I'd like an inhouse LSP engine for python. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+
+* TODO R lsp engine
+I'd like an inhouse LSP engine for R. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+
+
+* TODO org export 
+I'd like a button at the top of an org mode buffer (pane bar) for exporting the
+org document. I should be able to press the button and for the export button to
+have a dropdown menu with options: html, pdf, odt, markdown,
+ascii, etc... When I select one of these options, it should export the org document to
+that format and open it in a new pane. Can you implement this?
+
+* DONE org insert block
+
+I'd like a button at the top of an org mode buffer (pane bar), I'd like to be
+able to insert a code block (e.g. R, python, C/C++, etc.) into the org mode buffer. Can you implement this?
+  - A `</>` button now sits in an org buffer's pane header, left of the Run
+    button and shown under the same conditions (a plain .org text pane, no
+    viewer session on the buffer). Clicking it drops down twelve common
+    languages -- Python, R, C, C++, Rust, Go, Lua, JavaScript, TypeScript,
+    Java, Shell, Julia -- plus an "Other language..." row; picking one
+    writes an empty `#+begin_src <lang>` / `#+end_src` pair at the cursor
+    and leaves the cursor on its body line. The same insert is reachable
+    without the mouse as `<leader>oi` and `:MepOrgInsertBlock` (a picker
+    over every language org-babel registers, with a free-text entry for one
+    it doesn't), or directly as `:MepOrgInsertBlock rust`. A blank cursor
+    line becomes the block itself, any other line keeps its text and the
+    block goes below it, and with the cursor already inside a block the new
+    one lands after that block's `#+end_src` instead of nesting inside it.
+    The insert itself is Lua (kBuiltinOrgInsertBlock, main.cpp) so any
+    language tag works, listed or not; the button and its dropdown are
+    DrawPane's header controls and DrawOrgInsertBlockMenu, built the same
+    way the Run button's Setup menu and a notebook cell's kernel dropdown
+    already were. Documented in help/org-babel.org.
+
+* TODO link formatting
+Change links in org mode to be rendered to have an underline underneath it. 
+
+* TODO org play
+Add a play button to org mode code blocks that will run the code block in the appropriate language mode.
+
+* TODO org settings
+Add a settings button to orgmode code blocks that will allow the user to set the settings for the code block (e.g. results, exports, etc.). On click, it should bring up an options setting popup with any possible options for the language specific (or options for other types of blocks) options. This should allow for changing numbers, input string, or dropdown selection, depending on the type of option. Id like the popup to list all options, with the appropriate input. Make sure to add keyboard navigation in normal mode, h,j,k,l for selecting option by direction, ctrl+n and ctrl+p for selecting from dropdown, i to insert mode on text input, and j,k for incrementing/decrementing number.
+
 * TODO add themes
 investigate what themes there and which ones appear to be missing and then
 implement them. The more the better.
 
 * TODO todo management
-  :LOGBOOK:
-  CLOCK: [2026-09-19 Sat 09:46]
-  :END:
 
 * TODO language modes
   We've added 'ui modes' for languages before (I think just R so far). I'd like
@@ -161,6 +400,20 @@ executable, a compiler explorer like sidebar, and a hex exploration like sidebar
     (it applied clangd's mid-line edits as whole-line replacements and
     collapsed the file to a single space), fixed here by routing it through
     mep.lsp_apply_edits_current_buffer.
+  - Later change, same entry: R's formatter is now `air format
+    --stdin-file-path={}` (filter mode), not styler::style_file() as this
+    task asked for. styler has no line width at all -- it fixes spacing,
+    indentation and `=` vs `<-` but never breaks a long call across lines,
+    at any width, so R was the one language here where gf could not bring
+    an over-long line back inside a margin. air is Posit's own tidyverse
+    formatter and the only R one with a line width; it still does the
+    `=` -> `<-` rewrite styler was wanted for, wraps at 80, and reads its
+    margin from the nearest air.toml ([format] line-width) the same way
+    clang-format and black read .clang-format/pyproject.toml -- hence the
+    switch from mode = 'file' to a plain stdin filter, and the air.toml at
+    the repository root. flake.nix gained pkgs.air-formatter; styler had
+    never been listed there at all, arriving transitively as one of
+    languageserver's dependencies.
 
 * DONE go help binding :ARCHIVE:
   Add a 'gh' binding for 'go help' to open the help for the current function

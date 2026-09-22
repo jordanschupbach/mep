@@ -5,7 +5,7 @@
 
 * Every command
 
-All 323 ex commands mep defines: 103 built in and 221 registered from Lua.
+All 326 ex commands mep defines: 103 built in and 224 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -175,6 +175,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepOrgHeadingScaleToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgImageScan= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgImagesToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =:MepOrgInsertBlock= | [[file:org-babel.html][Executing code blocks]] |
 | =:MepOrgInsertHeading= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgInsertTodoHeading= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgLatexScan= | [[file:org-visuals.html][Images, LaTeX and tables]] |
@@ -186,6 +187,8 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepOrgListNewItem= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgListOutdent= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgListRenumber= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgLspStatusScan= | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =:MepOrgLspStatusToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgMatch= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgNarrow= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgNext= | [[file:org-basics.html][Org files in mep]] |

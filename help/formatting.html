@@ -21,7 +21,7 @@ stale copy from disk.</p>
 <tr><th>Filetype</th><th>Formatter</th></tr>
 <tr><td>C, C++ and friends</td><td><code>clang-format</code></td></tr>
 <tr><td>Python</td><td><code>black</code></td></tr>
-<tr><td>R</td><td><code>styler</code></td></tr>
+<tr><td>R</td><td><code>air</code></td></tr>
 <tr><td>anything else</td><td><code>mep.lsp_format</code>, if a server is attached</td></tr>
 </table>
 <p>That is a deliberately short table. Most languages already have a formatter
@@ -48,6 +48,17 @@ to that block's own language server -- the one already answering
 <a href="org-polyglot.html">hover and completion inside the block</a>. The
 whole-file sweep does not: it only runs the table, and reports those blocks
 as skipped.</p>
+<h1>Line width</h1>
+<p><code>air</code> wraps R at <b>80 columns</b>. It is the only formatter in the table with a
+line width of its own: <code>clang-format</code> and <code>black</code> take theirs from the
+project's <code>.clang-format</code> / <code>pyproject.toml</code>, and <code>styler</code>, R's other
+formatter, has no line width at all -- it fixes spacing and indentation but
+never breaks a long call across lines, which is why <code>air</code> is the R entry.</p>
+<p>The margin comes from an <code>air.toml</code> beside the file:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">toml</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="toml">[format]
+line-width = 80</code></pre></div>
+<p>mep's own repository root carries one. <code>air</code> walks up from the file it is
+formatting to find the nearest, so a project can set its own.</p>
 <h1>Adding one</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.js = {<span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span>
 mep.format_languages.ts = mep.format_languages.js</code></pre></div>
@@ -61,11 +72,11 @@ mep.format_languages.ts = mep.format_languages.js</code></pre></div>
 needs its own key -- which is why the built-in table aliases <code>.h</code>, <code>.cc</code>,
 <code>.hpp</code> and the rest onto the C entry.</p>
 <h1>Why the placeholder matters</h1>
-<p>A formatter reading stdin has no idea what file it is looking at. Both
-<code>clang-format</code> and <code>black</code> have to be told -- <code>--assume-filename</code> and
-<code>--stdin-filename</code> -- or they cannot find the <code>.clang-format</code> or
-<code>pyproject.toml</code> the project configures them with, and they silently format
-to their own defaults instead.</p>
+<p>A formatter reading stdin has no idea what file it is looking at.
+<code>clang-format</code>, <code>black</code> and <code>air</code> all have to be told -- <code>--assume-filename</code>,
+<code>--stdin-filename</code> and <code>--stdin-file-path</code> -- or they cannot find the
+<code>.clang-format</code>, <code>pyproject.toml</code> or <code>air.toml</code> the project configures them
+with, and they silently format to their own defaults instead.</p>
 <p>So a filter-mode entry should almost always pass <code>\{\}</code> somewhere.</p>
 <h1>See also</h1>
 <ul>

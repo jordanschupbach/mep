@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (157)</h1>
+<h1>The bindings (161)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -29,8 +29,10 @@ that it does nothing.</p>
 <tr><td><code>mep.buf_clear_image_rows</code></td><td>clears the current buffer's whole inline-image row registry</td></tr>
 <tr><td><code>mep.buf_clear_latex_inline</code></td><td>clears the current buffer's whole inline-LaTeX span registry</td></tr>
 <tr><td><code>mep.buf_clear_latex_rows</code></td><td>clears the current buffer's whole rendered-LaTeX row registry</td></tr>
+<tr><td><code>mep.buf_clear_org_lsp_status</code></td><td>clears the current buffer's org src-block LSP status registry</td></tr>
 <tr><td><code>mep.buf_set_image_row</code></td><td>registers an inline-image target for a line of the current buffer</td></tr>
 <tr><td><code>mep.buf_set_latex_row</code></td><td>registers a rendered LaTeX fragment for a source-line span of the current buffer</td></tr>
+<tr><td><code>mep.buf_set_org_lsp_status</code></td><td>registers one org src block's language-server status</td></tr>
 <tr><td><code>mep.doc_export_html_to_latex</code></td><td>thin</td></tr>
 <tr><td><code>mep.doc_export_html_to_odt</code></td><td>--</td></tr>
 <tr><td><code>mep.html_current_origin</code></td><td>the current pane's HtmlSession::origin, or</td></tr>
@@ -148,6 +150,8 @@ that it does nothing.</p>
 <tr><td><code>mep.org_latex_visible</code></td><td>reports whether inline org LaTeX rendering is currently on</td></tr>
 <tr><td><code>mep.org_link_at_cursor</code></td><td>reads the org link under the cursor, if any</td></tr>
 <tr><td><code>mep.org_link_scan</code></td><td>rescans the current org buffer's links</td></tr>
+<tr><td><code>mep.org_lsp_status_toggle</code></td><td>toggles org src-block LSP status rendering on/off</td></tr>
+<tr><td><code>mep.org_lsp_status_visible</code></td><td>reports whether org src-block LSP status rendering is on</td></tr>
 <tr><td><code>mep.org_parse_results</code></td><td>parses a babel header args string's :results modes</td></tr>
 <tr><td><code>mep.org_parse_vars</code></td><td>parses a babel header args string's :var entries</td></tr>
 <tr><td><code>mep.org_plain_cursor_line_toggle</code></td><td>toggles plain rendering of the cursor's own row</td></tr>

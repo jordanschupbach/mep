@@ -1729,12 +1729,19 @@ int l_ui_confirm(lua_State *L) {
     return 0;
 }
 
-// mep.ui_select(items, title, on_done): vim.ui.select equivalent (a
+// mep.ui_select(items, title, on_done, opts): vim.ui.select equivalent (a
 // simpler fixed-list chooser, distinct from the fuzzy mep.picker widget).
-// on_done(1-indexed index) on Enter, on_done() [nil] on Escape.
+// on_done(1-indexed index) on Enter, on_done() [nil] on Escape. An item
+// may contain '\n's, which DrawSelectOverlay draws as further rows of that
+// same (single, still separately selectable) item -- a wrapped multi-line
+// message stays one choice instead of becoming one choice per line.
+// opts.on_key(key, 1-indexed highlighted item) receives every other
+// printable key typed over the list; returning true from it closes the
+// overlay without on_done firing (see HandleSelectInput). Ctrl-N/Ctrl-P
+// move the highlight like j/k, so a handler never sees those either.
 /**
- * @brief Implements mep.ui_select(items, title, on_done): shows a fixed-list chooser and calls on_done with the chosen 1-indexed index (or nothing on Escape).
- * @param L Lua state; arg 1 is an array of item strings, arg 2 the title, arg 3 the callback.
+ * @brief Implements mep.ui_select(items, title, on_done, opts): shows a fixed-list chooser and calls on_done with the chosen 1-indexed index (or nothing on Escape).
+ * @param L Lua state; arg 1 is an array of item strings, arg 2 the title, arg 3 the callback, arg 4 an optional table with on_key.
  * @return Number of values pushed (0).
  */
 int l_ui_select(lua_State *L) {
@@ -1748,9 +1755,18 @@ int l_ui_select(lua_State *L) {
         items.emplace_back(luaL_checkstring(L, -1));
         lua_pop(L, 1);
     }
+    int on_key_ref = 0;
+    if (lua_istable(L, 4)) {
+        lua_getfield(L, 4, "on_key");
+        if (lua_isfunction(L, -1)) {
+            on_key_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        } else {
+            lua_pop(L, 1);
+        }
+    }
     lua_pushvalue(L, 3);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    GetEditor(L)->BeginSelect(title, std::move(items), ref);
+    GetEditor(L)->BeginSelect(title, std::move(items), ref, on_key_ref);
     return 0;
 }
 
@@ -1820,11 +1836,14 @@ int l_buffer_set_drag_resolver(lua_State *L) {
 // editing mode, :w, the mouse wheel all work inside it -- and it closes
 // on Escape with nothing pending, :q/:close/:wq, or a click outside the
 // box. opts.save_on_close (default true) writes the buffer on close if
-// it was modified. Opened from a focused sidebar (the Todo panel's 'e'),
-// closing returns focus to that sidebar row.
+// it was modified. opts.escape_dismiss (default true) is that Escape
+// dismissal: set it false for a float whose typed content shouldn't be
+// one stray Escape away from gone (the git commit message, aborted with
+// mod1+d or :bd instead). Opened from a focused sidebar (the Todo
+// panel's 'e'), closing returns focus to that sidebar row.
 /**
  * @brief Implements mep.float_open(path, line?, opts?): opens a file in a floating editable pane.
- * @param L Lua state; arg 1 is the path, optional arg 2 the 1-based line, optional arg 3 an options table ({save_on_close=bool}).
+ * @param L Lua state; arg 1 is the path, optional arg 2 the 1-based line, optional arg 3 an options table ({save_on_close=bool, escape_dismiss=bool, on_close=fn}).
  * @return Number of values pushed (1: true if the float opened).
  */
 int l_float_open(lua_State *L) {
@@ -1832,10 +1851,14 @@ int l_float_open(lua_State *L) {
     const char *path = luaL_checklstring(L, 1, &len);
     int line = static_cast<int>(luaL_optinteger(L, 2, 1));
     bool save_on_close = true;
+    bool escape_dismiss = true;
     int on_close_ref = 0;
     if (lua_istable(L, 3)) {
         lua_getfield(L, 3, "save_on_close");
         if (!lua_isnil(L, -1)) save_on_close = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "escape_dismiss");
+        if (!lua_isnil(L, -1)) escape_dismiss = lua_toboolean(L, -1) != 0;
         lua_pop(L, 1);
         // opts.on_close(saved): fired once the float is gone, `saved` =
         // this close wrote the buffer (so "opened, typed nothing, Escape"
@@ -1847,7 +1870,8 @@ int l_float_open(lua_State *L) {
             lua_pop(L, 1);
         }
     }
-    lua_pushboolean(L, GetEditor(L)->OpenFloatPane(std::string(path, len), line - 1, save_on_close, on_close_ref));
+    lua_pushboolean(L,
+                    GetEditor(L)->OpenFloatPane(std::string(path, len), line - 1, save_on_close, on_close_ref, escape_dismiss));
     return 1;
 }
 
@@ -3307,6 +3331,93 @@ int l_org_block_cards_toggle(lua_State *L) {
 int l_org_block_cards_visible(lua_State *L) {
     lua_pushboolean(L, GetEditor(L)->OrgBlockCardsVisible());
     return 1;
+}
+
+// mep.org_lsp_status_toggle() -> new visibility (bool). <leader>ots --
+// whether a `#+begin_src` card carries the language-server status line
+// along its bottom edge.
+/**
+ * @brief Implements mep.org_lsp_status_toggle(): toggles org src-block LSP status rendering on/off.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new visibility state).
+ */
+int l_org_lsp_status_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleOrgLspStatus());
+    return 1;
+}
+
+// mep.org_lsp_status_visible() -> bool. Read by mep.org_lsp_status_scan
+// itself, which clears the registry and returns while this is off rather
+// than keeping a polyglot-state poll running for something nothing draws.
+/**
+ * @brief Implements mep.org_lsp_status_visible(): reports whether org src-block LSP status rendering is on.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the current visibility state).
+ */
+int l_org_lsp_status_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->OrgLspStatusVisible());
+    return 1;
+}
+
+// mep.buf_set_org_lsp_status(row, opts) -- `row` is the block's
+// 1-indexed `#+begin_src` line (the same 1-indexed convention every other
+// mep.buf_* registration function uses); `opts` is
+// {state=, lang=, server=, errors=, warnings=, hints=}, with `state` one
+// of the names OrgLspStateFromName understands. Called once per block by
+// mep.org_lsp_status_scan (kBuiltinOrgPolyglot).
+/**
+ * @brief Implements mep.buf_set_org_lsp_status(row, opts): registers one org src block's language-server status.
+ * @param L Lua state; arg 1 is the 1-indexed `#+begin_src` row, arg 2 the status table.
+ * @return Number of values pushed (0).
+ */
+int l_buf_set_org_lsp_status(lua_State *L) {
+    const int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    luaL_checktype(L, 2, LUA_TTABLE);
+    OrgLspStatus status;
+    /**
+     * @brief Reads one string field out of the opts table at stack index 2.
+     * @param key The field name.
+     * @return The field's value, or "" when it is absent or not a string.
+     */
+    auto str_field = [&](const char *key) {
+        lua_getfield(L, 2, key);
+        std::string out;
+        if (lua_isstring(L, -1) != 0) out = lua_tostring(L, -1);
+        lua_pop(L, 1);
+        return out;
+    };
+    /**
+     * @brief Reads one non-negative integer field out of the opts table at stack index 2.
+     * @param key The field name.
+     * @return The field's value clamped at 0, or 0 when it is absent.
+     */
+    auto int_field = [&](const char *key) {
+        lua_getfield(L, 2, key);
+        const int out = lua_isnumber(L, -1) != 0 ? static_cast<int>(lua_tointeger(L, -1)) : 0;
+        lua_pop(L, 1);
+        return std::max(0, out);
+    };
+    status.state = OrgLspStateFromName(str_field("state"));
+    status.lang = str_field("lang");
+    status.server = str_field("server");
+    status.errors = int_field("errors");
+    status.warnings = int_field("warnings");
+    status.hints = int_field("hints");
+    GetEditor(L)->SetOrgLspStatusRow(row, status);
+    return 0;
+}
+
+// mep.buf_clear_org_lsp_status() -- mep.org_lsp_status_scan calls this
+// before refilling, and instead of refilling while the toggle is off, so
+// a block that stopped existing leaves nothing stale behind.
+/**
+ * @brief Implements mep.buf_clear_org_lsp_status(): clears the current buffer's org src-block LSP status registry.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_buf_clear_org_lsp_status(lua_State *L) {
+    GetEditor(L)->ClearOrgLspStatusRows();
+    return 0;
 }
 
 // mep.org_latex_visible() -> bool. Lua-side readable state (unlike
@@ -5212,6 +5323,41 @@ int l_bundled_help_root(lua_State *L) {
 #endif
 #endif
     lua_pushliteral(L, "");
+    return 1;
+}
+
+// mep.bundled_tool(name): the absolute path of a helper binary that ships
+// beside `mep` itself (today: `mep-org-lsp`, spawned by kBuiltinLsp's
+// `org_ls` registry entry), or the bare name when there is none there.
+//
+// Resolved through /proc/self/exe rather than the process CWD for the
+// same reason mep.bundled_help_root is: the CWD follows the active
+// workspace, so a relative guess would break the moment a user switches
+// workspace. The bare-name fallback is not a failure path -- it lets a
+// system-installed or hand-built server on PATH win when mep itself was
+// run out of a directory that has no copy of it, which is exactly what
+// every other entry in mep.lsp_servers already relies on.
+/**
+ * @brief Implements mep.bundled_tool(name): resolves a helper binary installed beside the running `mep`.
+ * @param L Lua state; arg 1 is the helper's file name, e.g. "mep-org-lsp".
+ * @return Number of values pushed (1: the absolute path if that file exists beside `mep`, else `name` unchanged).
+ */
+int l_bundled_tool(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+#if !defined(__EMSCRIPTEN__) && defined(__linux__)
+    std::array<char, 4096> exe_path{};
+    ssize_t len = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
+    if (len > 0) {
+        std::error_code ec;
+        std::filesystem::path sibling =
+            std::filesystem::path(std::string(exe_path.data(), static_cast<size_t>(len))).parent_path() / name;
+        if (std::filesystem::is_regular_file(sibling, ec) && !ec) {
+            lua_pushstring(L, sibling.string().c_str());
+            return 1;
+        }
+    }
+#endif
+    lua_pushstring(L, name);
     return 1;
 }
 
@@ -10155,6 +10301,10 @@ const luaL_Reg kMepFuncs[] = {
     {"org_latex_toggle", l_org_latex_toggle},
     {"org_block_cards_toggle", l_org_block_cards_toggle},
     {"org_block_cards_visible", l_org_block_cards_visible},
+    {"org_lsp_status_toggle", l_org_lsp_status_toggle},
+    {"org_lsp_status_visible", l_org_lsp_status_visible},
+    {"buf_set_org_lsp_status", l_buf_set_org_lsp_status},
+    {"buf_clear_org_lsp_status", l_buf_clear_org_lsp_status},
     {"org_latex_visible", l_org_latex_visible},
     {"org_link_scan", l_org_link_scan},
     {"org_table_auto_align", l_org_table_auto_align},
@@ -10268,6 +10418,7 @@ const luaL_Reg kMepFuncs[] = {
     {"workspace_current", l_workspace_current},
     {"workspace_root", l_workspace_root},
     {"bundled_help_root", l_bundled_help_root},
+    {"bundled_tool", l_bundled_tool},
     {"workspace_new", l_workspace_new},
     {"workspace_switch", l_workspace_switch},
     {"workspace_delete", l_workspace_delete},
@@ -10694,6 +10845,22 @@ bool LuaEnv::CallRefWithBoolForBool(int ref, bool arg) {
     lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
     lua_pushboolean(L_, arg);
     if (lua_pcall(L_, 1, 1, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+        return false;
+    }
+    bool result = lua_toboolean(L_, -1);
+    lua_pop(L_, 1);
+    return result;
+}
+
+bool LuaEnv::CallRefWithStringIntForBool(int ref, const std::string &arg, long long index) {
+    if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return false;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    lua_pushlstring(L_, arg.data(), arg.size());
+    lua_pushinteger(L_, static_cast<lua_Integer>(index));
+    if (lua_pcall(L_, 2, 1, 0) != LUA_OK) {
         const char *msg = lua_tostring(L_, -1);
         if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
         lua_pop(L_, 1);

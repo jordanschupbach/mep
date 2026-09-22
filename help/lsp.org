@@ -21,6 +21,7 @@ work without servers fighting over one project.
 | =K=            | hover documentation           |
 | =gd=           | go to definition              |
 | =Q=            | this line's diagnostics, in a popup |
+| =]e= / =[e=    | next / previous error, then its popup |
 | =<leader>li=   | go to implementation          |
 | =<leader>lt=   | go to type definition         |
 | =<leader>lk=   | signature help                |
@@ -41,12 +42,47 @@ Errors, warnings and hints are underlined in the buffer and marked in the
 sign column. =Q= shows the current line's diagnostics in a popup, and
 =:MepDiagShow= lists them.
 
+=]e= and =[e= jump to the next and previous *error* in the file (wrapping
+at either end), then pop up that line's errors. For diagnostics of any
+severity there are =mep.lsp_next_diagnostic= and =mep.lsp_prev_diagnostic=,
+unbound by default -- =mep.map_bracket_next('d', mep.lsp_next_diagnostic)=
+puts them on =]d=/=[d=.
+
+The popup is a list, one entry per diagnostic -- long messages are wrapped
+but stay a single entry:
+
+| Key                | Does                                       |
+|--------------------+--------------------------------------------|
+| =C-n= / =C-p=      | next / previous entry (=j= / =k= too)      |
+| =y=                | copy that message to the system clipboard  |
+| =Y=                | copy every message in the popup            |
+| =Enter=            | jump to that diagnostic's own line:column  |
+| =Esc=              | dismiss                                    |
+
+The gutter mark says which kind, by shape as well as by colour:
+
+| Mark                          | Severity    |
+|-------------------------------+-------------|
+| a disc with an =x=            | error       |
+| a hazard triangle with a =!=  | warning     |
+| a disc with an =i=            | information |
+| a disc with a =?=             | hint        |
+
+So a glance tells you an error from a warning without having to know the
+theme's red from its yellow -- and so does a reader who cannot tell them
+apart at all.
+
+The worst severity on a line is the one its mark shows. When a line has
+more than one, the message beside it is prefixed with the count -- =(3)
+...= -- so nothing is lost by the mark naming a kind rather than a number.
+
 Severity maps to the =Error=, =Warn=, =Info= and =Hint= [[file:highlight-groups.html][highlight groups]], so
-they follow your theme.
+the colours follow your theme.
 
 * Servers mep knows about
 
-Thirty-six, each used when its command is on =$PATH=:
+Thirty-seven. All but the last are used when their command is on =$PATH=;
+the org one ships with mep itself:
 
 | Language        | Command                            |
 |-----------------+------------------------------------|
@@ -85,14 +121,25 @@ Thirty-six, each used when its command is on =$PATH=:
 | Markdown        | =marksman=                         |
 | TOML            | =taplo=                            |
 | Vimscript       | =vim-language-server=              |
+| Org             | =mep-org-lsp= (ships with mep)     |
 
 If a server is missing, nothing breaks -- the file simply opens without one.
+
+* The one mep brings itself
+
+=mep-org-lsp= is mep's own org-mode server, built and installed alongside
+=mep=, so org files get diagnostics and completion with nothing to install.
+See [[file:org-lsp.html][The org language server]].
 
 * Inside org code blocks
 
 Code blocks in an Org file get language-server support too, through a shadow
 buffer per block. See [[file:org-polyglot.html][Language servers in code blocks]] for what that covers
 and what it does not.
+
+In an org file both run at once -- the org server on the markup, a real
+language server on each block's contents -- and their diagnostics are merged
+rather than replacing one another.
 
 * From Lua
 

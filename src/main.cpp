@@ -717,6 +717,28 @@ int g_notebook_kernel_menu_cell = -1;
 gfx::Rectangle g_notebook_kernel_menu_anchor{};
 gfx::Rectangle g_notebook_kernel_menu_rect{};
 
+// Which pane's org insert-block dropdown (DrawPane's header controls --
+// the code-block button next to Run) is open, keyed by Pane::id; -1 =
+// none. Same single-target convention as the two menus above. The anchor
+// is that button's rect as of the frame it was last drawn (refreshed
+// every frame rather than only on the opening click, so the list stays
+// glued to the button when a split resizes underneath it); the rect is
+// the dropdown's own bounds, for the click-away-closes test in
+// DispatchChromeClicks -- which deliberately spares the anchor too, so a
+// second click on the button toggles the menu shut instead of closing it
+// and having the button's own region reopen it in the same click.
+int g_org_block_menu_pane = -1;
+gfx::Rectangle g_org_block_menu_anchor{};
+gfx::Rectangle g_org_block_menu_rect{};
+// Set by DrawPane while the *owning* pane draws that button, and cleared
+// by DrawOrgInsertBlockMenu (which runs after every pane, once per frame)
+// as it reads it: an open menu whose button wasn't drawn this frame has
+// nothing left to hang off -- the pane was closed or zoomed away, its
+// buffer was switched to a non-org one, a viewer session took the buffer
+// over, the tab strip got too narrow for the controls -- so the menu
+// closes itself instead of floating over whatever replaced it.
+bool g_org_block_button_drawn = false;
+
 // Populated by DrawPane's office branch (a full-document wrap-height scan
 // -- see the comment where it's filled in) and consumed by that same
 // pane's own Docs-style status footer (word/page count, zoom) right after,
@@ -4924,10 +4946,16 @@ const char *kBuiltinGit =
     // line on failure), then refresh the current view. Commit messages
     // are edited in a floating pane over the repo's own COMMIT_EDITMSG
     // (mep.float_open + on_close, save_on_close=false so any implicit
-    // dismiss -- Escape, :q, clicking away -- discards rather than
-    // commits): ZZ in Normal mode is the explicit confirm
-    // (CloseFloatPane's force_write, DispatchNormalKey), running
+    // dismiss -- :q, clicking away -- discards rather than commits): ZZ
+    // in Normal mode is the explicit confirm (CloseFloatPane's
+    // force_write, DispatchNormalKey), running
     // `git commit -F <file> --cleanup=strip` against whatever was typed.
+    // Escape is deliberately *not* one of those dismissals here
+    // (escape_dismiss=false): leaving Insert mode is the one keystroke a
+    // half-written commit message gets constantly, and it must not be
+    // able to throw that message away. Aborting is mod1+d
+    // (pane_close_buffer, which closes the float) or :bd -- both of
+    // which land on the same on_close(saved=false) cancel path.
     "local MEP_GIT_TABS = {'Status', 'Log', 'Graph', 'Branches', 'Stash'}\n"
     "local MEP_GIT_VIEWS = {'status', 'log', 'graph', 'branches', 'stash'}\n"
     "local mep_git_view = 'status'\n"
@@ -5313,11 +5341,12 @@ const char *kBuiltinGit =
     "        lines[#lines + 1] = ''\n"
     "        lines[#lines + 1] = '# Please enter the commit message for your changes. Lines starting'\n"
     "        lines[#lines + 1] = \"# with '#' will be ignored, and an empty message aborts the commit.\"\n"
-    "        lines[#lines + 1] = '# ZZ commits; Escape (or :q) aborts, discarding this message.'\n"
+    "        lines[#lines + 1] = '# ZZ commits; ' .. mep.mod1_name() .. '-d (or :bd) aborts, discarding this message.'\n"
     "        lines[#lines + 1] = '#'\n"
     "        for _, l in ipairs(status) do lines[#lines + 1] = '# ' .. l end\n"
     "        local msg_buf = nil\n"
-    "        local ok = mep.float_open(path, 1, {save_on_close = false, on_close = function(saved)\n"
+    "        local ok = mep.float_open(path, 1, {save_on_close = false, escape_dismiss = false,\n"
+    "          on_close = function(saved)\n"
     "          if msg_buf then mep.buffer_delete(msg_buf, true) end\n"
     "          if not saved then mep.notify('Commit cancelled') return end\n"
     "          local argv = {'git', 'commit', '-F', path, '--cleanup=strip'}\n"
@@ -6095,6 +6124,22 @@ const char *kBuiltinLsp =
     "  kotlin_language_server = {cmd = {'kotlin-language-server'}, filetypes = {'kt', 'kts'}},\n"
     "  svelte = {cmd = {'svelteserver', '--stdio'}, filetypes = {'svelte'}},\n"
     "  basedpyright = {cmd = {'basedpyright-langserver', '--stdio'}, filetypes = {}},\n"
+    // mep's own org server (src/org_lsp_server.cpp, built as the
+    // `mep-org-lsp` target beside `mep` itself). The only entry here that
+    // is not an external project's binary, and the only one resolved
+    // through mep.bundled_tool rather than named bare: it ships with mep,
+    // so a user who never installed anything still gets org diagnostics,
+    // while a copy on PATH still wins if `mep` was run from somewhere
+    // without one beside it (see l_bundled_tool, lua_env.cpp).
+    //
+    // Attaching this to an org buffer does NOT displace the per-src-block
+    // polyglot bridge (kBuiltinOrgPolyglot): that bridge runs a real
+    // language server over each `#+begin_src` body, this one lints the
+    // org markup around them and deliberately reports nothing inside a
+    // literal block. Both publish against the same org file, which is why
+    // their diagnostics go through mep_org_diag_set below instead of each
+    // overwriting mep_lsp_diagnostics[file] with only its own half.
+    "  org_ls = {cmd = {mep.bundled_tool('mep-org-lsp')}, filetypes = {'org'}},\n"
     "}\n"
     // (filetype .. '@' .. workspace root) -> client_id: one client per
     // filetype *per workspace root* (WORKSPACES_PLAN.md Phase 5), since
@@ -6113,6 +6158,28 @@ const char *kBuiltinLsp =
     // inside a #+begin_src block ever reached the buffer -- seen in a
     // live instance while adding gf's own block support.
     "mep_lsp_diagnostics = {}\n"
+    // An org buffer is the one case with *two* diagnostic producers for
+    // the same file: mep's own org server (mep.lsp_servers.org_ls, which
+    // lints the org markup) and the polyglot bridge (kBuiltinOrgPolyglot,
+    // which translates each src block's own server's diagnostics back to
+    // org line numbers). Both used to assign straight to
+    // mep_lsp_diagnostics[file], so whichever published last erased the
+    // other's findings -- a Python error inside a block would flicker
+    // away the moment the org lint republished, and vice versa. Each side
+    // now owns a named slot and this merges them.
+    // abspath -> {org = {...}, polyglot = {...}}
+    "mep_org_diag_sources = {}\n"
+    "function mep_org_diag_set(abspath, source, diags)\n"
+    "  local slot = mep_org_diag_sources[abspath]\n"
+    "  if not slot then slot = {} mep_org_diag_sources[abspath] = slot end\n"
+    "  slot[source] = diags or {}\n"
+    "  local merged = {}\n"
+    "  for _, key in ipairs({'org', 'polyglot'}) do\n"
+    "    for _, d in ipairs(slot[key] or {}) do merged[#merged + 1] = d end\n"
+    "  end\n"
+    "  mep_lsp_diagnostics[abspath] = merged\n"
+    "  if abspath == mep_lsp_abspath(mep.filename()) then mep.lsp_render_diagnostics() end\n"
+    "end\n"
     // filename -> version counter
     "local mep_lsp_doc_versions = {}\n"
     // client_id -> the server's own `initialize` response capabilities
@@ -6203,6 +6270,13 @@ const char *kBuiltinLsp =
     "    mep.lsp_on_notification(id, 'textDocument/publishDiagnostics', function(params)\n"
     "      local uri = params.uri or ''\n"
     "      local f = uri:gsub('^file://', '')\n"
+    // An org file's diagnostics are merged with the polyglot bridge's
+    // (see mep_org_diag_set); every other filetype has a single producer
+    // and assigns directly, exactly as before.
+    "      if mep_lsp_filetype(f) == 'org' then\n"
+    "        mep_org_diag_set(f, 'org', params.diagnostics or {})\n"
+    "        return\n"
+    "      end\n"
     "      mep_lsp_diagnostics[f] = params.diagnostics or {}\n"
     "      if f == mep_lsp_abspath(mep.filename()) then mep.lsp_render_diagnostics() end\n"
     "    end)\n"
@@ -6647,6 +6721,26 @@ const char *kBuiltinLsp =
     // shared since this all lives in the same DoString chunk).
     "local mep_diag_ns = nil\n"
     "local MEP_DIAG_SEVERITY = {[1] = 'Error', [2] = 'Warn', [3] = 'Info', [4] = 'Hint'}\n"
+    // The gutter badge each severity draws as: {glyph, shape}. The badge
+    // used to be the *count* of diagnostics on the row in a disc colored
+    // by the worst severity, which made "how many" the thing you could
+    // read at a glance and "what kind" the thing you had to know the
+    // theme's colors to infer. These say the kind instead, in the shapes
+    // the rest of the world already uses for it -- a hazard triangle for
+    // a warning, a crossed-out disc for an error, `i`/`?` discs for
+    // information and a hint -- so severity survives both a glance and a
+    // reader who cannot tell the theme's red from its yellow. The count
+    // did not disappear with the digit: it is still the "(N) " the
+    // virt_text below carries whenever a row has more than one.
+    //
+    // Every glyph here is ASCII on purpose. g_font (and the UI fonts
+    // DrawUiText falls back through) is why sign_shape exists at all for
+    // the git gutter -- box-drawing and most symbol blocks are simply
+    // not in them -- so the one piece that genuinely needs to be a shape,
+    // the triangle, is drawn as geometry and the rest is text that is
+    // certain to render.
+    "local MEP_DIAG_SIGN = {[1] = {'x', 'circle'}, [2] = {'!', 'triangle'},\n"
+    "                       [3] = {'i', 'circle'}, [4] = {'?', 'circle'}}\n"
     "local MEP_DIAG_WRAP_WIDTH = 70\n"
     // mep_diag_wrap ported to LspDiagWrap (editor.h/.cpp) --
     // LUA_TO_CPP_PLAN.md Phase LSP, bound as mep.lsp_diag_wrap.
@@ -6660,21 +6754,55 @@ const char *kBuiltinLsp =
     "  table.sort(row_diags, function(a, b) return (a.severity or 1) < (b.severity or 1) end)\n"
     "  return row_diags\n"
     "end\n"
-    // More than 2 diagnostics on one line can't be conveyed by a single
-    // gutter badge + one line of virt_text -- pop up all of them
-    // instead, word-wrapped (mep.float_preview itself does not wrap --
-    // see mep_diag_wrap's own comment) so a long message is actually
-    // readable rather than running off the edge of the box.
+    // The diagnostics on a row, as a *selectable* list rather than a block
+    // of text: one entry per diagnostic, word-wrapped (nothing in the
+    // overlay wraps for us -- see mep_diag_wrap's own comment) with each
+    // entry's wrapped lines joined by '\n', which mep.ui_select draws as
+    // extra rows of that same single entry. So a long message stays one
+    // thing you step over with Ctrl-N/Ctrl-P (or j/k), and:
+    //   Enter -- jump the cursor to that diagnostic's own line:column
+    //   y     -- copy that one message to the system clipboard
+    //   Y     -- copy every message on the row
+    //   Esc   -- dismiss
+    // A gutter badge plus one line of virt_text can only ever show the
+    // worst diagnostic on a row; this is where the rest of them (and the
+    // full text of a message too long for the virt_text line) live.
     "local function mep_diag_popup(row_diags)\n"
-    "  local wrapped = {}\n"
+    "  local items, messages = {}, {}\n"
+    // MEP_DIAG_WRAP_WIDTH is the width a message *wants*; the popup can
+    // only actually show what fits the window, and nothing downstream
+    // re-wraps (DrawSelectOverlay clamps the box to the screen and lets a
+    // too-long row run off its right edge). The focused pane's own text
+    // width is the closest thing Lua has to "how many columns fit", and is
+    // never wider than the window the box is centered in -- so wrap to
+    // whichever of the two is narrower, leaving room for the box's border
+    // and padding.
+    "  local cols = mep.buffer_text_cols(mep.current_buffer())\n"
+    "  local width = math.max(24, math.min(MEP_DIAG_WRAP_WIDTH, (cols or MEP_DIAG_WRAP_WIDTH) - 6))\n"
     "  for i, d in ipairs(row_diags) do\n"
-    "    if i > 1 then wrapped[#wrapped + 1] = '' end\n"
     "    local sev = MEP_DIAG_SEVERITY[d.severity or 1] or 'Error'\n"
-    "    for _, l in ipairs(mep_diag_wrap(i .. '. [' .. sev .. '] ' .. d.message, MEP_DIAG_WRAP_WIDTH)) do\n"
-    "      wrapped[#wrapped + 1] = l\n"
-    "    end\n"
+    "    local lines = mep_diag_wrap(i .. '. [' .. sev .. '] ' .. d.message, width)\n"
+    "    items[#items + 1] = table.concat(lines, '\\n')\n"
+    "    messages[#messages + 1] = d.message\n"
     "  end\n"
-    "  mep.float_preview('Diagnostics on this line (' .. #row_diags .. ')', table.concat(wrapped, '\\n'))\n"
+    "  local title = 'Diagnostics on this line (' .. #row_diags .. ')  C-n/C-p move, y yank, Esc close'\n"
+    "  mep.ui_select(items, title, function(idx)\n"
+    "    local d = idx and row_diags[idx]\n"
+    "    if d then mep.set_cursor(d.range.start.line + 1, d.range.start.character + 1) end\n"
+    "  end, {on_key = function(key, idx)\n"
+    "    if key == 'y' then\n"
+    "      local msg = messages[idx]\n"
+    "      if not msg then return false end\n"
+    "      mep.clipboard_set(msg)\n"
+    "      mep.notify('Yanked diagnostic to clipboard')\n"
+    "      return true\n"
+    "    elseif key == 'Y' then\n"
+    "      mep.clipboard_set(table.concat(messages, '\\n'))\n"
+    "      mep.notify('Yanked ' .. #messages .. ' diagnostics to clipboard')\n"
+    "      return true\n"
+    "    end\n"
+    "    return false\n"
+    "  end})\n"
     "end\n"
     // One underline decoration per diagnostic (its own exact span, as
     // before), but only *one* sign+virt_text decoration per row instead
@@ -6709,17 +6837,19 @@ const char *kBuiltinLsp =
     "    table.sort(row_diags, function(a, b) return (a.severity or 1) < (b.severity or 1) end)\n"
     "    local worst = row_diags[1]\n"
     "    local hl = MEP_DIAG_SEVERITY[worst.severity or 1] or 'Error'\n"
+    "    local badge = MEP_DIAG_SIGN[worst.severity or 1] or MEP_DIAG_SIGN[1]\n"
     "    mep.deco_add(mep_diag_ns, {\n"
-    "      row = row, sign = tostring(#row_diags), sign_hl = hl, sign_badge = true,\n"
+    "      row = row, sign = badge[1], sign_shape = badge[2], sign_hl = hl, sign_badge = true,\n"
     "      virt_text = '  ' .. (#row_diags > 1 and ('(' .. #row_diags .. ') ') or '') .. worst.message:gsub('\\n.*', ''),\n"
     "      virt_text_hl = hl, virt_text_eol = true, priority = 10,\n"
     "    })\n"
     "  end\n"
     "end\n"
-    // :MepDiagShow: pop up the full (wrapped) list once there are more
-    // than 2 diagnostics on the cursor's own line (matching the same
-    // threshold mep_diag_nav's own jump-then-maybe-popup uses below),
-    // otherwise the original one-line notify is still plenty.
+    // :MepDiagShow: pop up the (selectable, yankable) list once there are
+    // more than 2 diagnostics on the cursor's own line -- for one or two,
+    // the original one-line notify is still plenty and doesn't take over
+    // input the way the popup does. "[e"/"]e" below pop up unconditionally
+    // instead: there, the popup is the point of having jumped.
     "function mep.lsp_diagnostic_at_cursor()\n"
     "  local row_diags = mep_diag_at_row(mep.cursor())\n"
     "  if #row_diags == 0 then mep.notify('No diagnostic on this line') return end\n"
@@ -6734,7 +6864,7 @@ const char *kBuiltinLsp =
     // Unlike mep.lsp_diagnostic_at_cursor above (popup only past the
     // 2-diagnostic threshold, else a one-line notify), this always pops
     // up the full list -- the point of a dedicated "show me everything
-    // on this line" key.
+    // on this line" key (and the way to get at y/Y for a lone diagnostic).
     "function mep.lsp_line_diagnostics_popup()\n"
     "  local row_diags = mep_diag_at_row(mep.cursor())\n"
     "  if #row_diags == 0 then mep.notify('No diagnostics on this line') return end\n"
@@ -6744,11 +6874,15 @@ const char *kBuiltinLsp =
     // deduped (a real, if minor, pre-existing gap: multiple diagnostics
     // sharing a row used to make that row count once per diagnostic, so
     // "next" could re-land on the same row more than once in a row
-    // before actually advancing) -- then, once landed, pop up the full
-    // list if that line turns out to have more than 2 (errors_only
-    // narrows which diagnostics count toward that threshold too, so "[e"
-    // popping up means more than 2 *errors*, not diagnostics of any
-    // severity, matching what "next/previous error" itself already means).
+    // before actually advancing) -- then, once landed, pop up that row's
+    // list (mep_diag_popup: Ctrl-N/Ctrl-P to move over it, y/Y to yank a
+    // message, Enter to land on the exact column, Escape to dismiss).
+    // Unconditionally, not past some count: the reason to jump to an error
+    // is to read it, and a row's badge + single virt_text line is exactly
+    // what can't show a wrapped message or a second diagnostic. errors_only
+    // narrows which diagnostics reach the popup too, so "[e" shows the
+    // *errors* on the row rather than diagnostics of any severity, matching
+    // what "next/previous error" itself already means.
     "local function mep_diag_nav(delta, errors_only)\n"
     "  local diags = mep_lsp_diagnostics[mep_lsp_abspath(mep.filename())] or {}\n"
     "  if #diags == 0 then mep.notify('No diagnostics') return end\n"
@@ -6792,7 +6926,7 @@ const char *kBuiltinLsp =
     "    end\n"
     "    row_diags = errors_here\n"
     "  end\n"
-    "  if #row_diags > 2 then mep_diag_popup(row_diags) end\n"
+    "  if #row_diags > 0 then mep_diag_popup(row_diags) end\n"
     "end\n"
     "function mep.lsp_next_diagnostic() mep_diag_nav(1, false) end\n"
     "function mep.lsp_prev_diagnostic() mep_diag_nav(-1, false) end\n"
@@ -9355,6 +9489,29 @@ const char *kBuiltinCompletion =
     // buffer -- nil for the ordinary case, falling back to the same
     // mep_lsp_uri(mep.filename())/mep_lsp_position() this always used.
     "function mep_lsp_completion_request(client, row, start_col, trigger_char, uri_override, position_override)\n"
+    // Flush the document to the server first. mep.lsp_did_change is wired
+    // to mep.on_buffer_changed, which polls Editor::change_epoch_ -- and
+    // that epoch deliberately does NOT move during an Insert session (see
+    // Editor::EnterNormal's own comment: PushUndo bumps it once at insert
+    // *entry*, and again on leaving, so one insert session is one undo
+    // step). Completion is the one LSP request that fires *inside* an
+    // insert session, so without this the server is answering about a
+    // document that predates everything just typed -- for a line typed at
+    // the end of a buffer the requested position does not exist in the
+    // server's copy at all, and every server (not just org) silently
+    // returns an empty list. Caught with mep's own org server: typing
+    // `#+ti` on a fresh line produced no candidates until something else
+    // ended the insert session.
+    //
+    // Cheap enough to do per request rather than per keystroke: this runs
+    // at most once per word (mep_lsp_completion_pending guards a second
+    // request for the same word start), itself behind
+    // UpdateCompletionPopup's prefix-change + 50ms throttle.
+    //
+    // Skipped for the polyglot path (uri_override set): that request is
+    // about a shadow file whose own contents kBuiltinOrgPolyglot syncs,
+    // not about the buffer mep.lsp_did_change would send.
+    "  if not uri_override then mep.lsp_did_change() end\n"
     "  local context = trigger_char and {triggerKind = 2, triggerCharacter = trigger_char} or {triggerKind = 1}\n"
     "  mep.lsp_request(client, 'textDocument/completion', {\n"
     "    textDocument = {uri = uri_override or mep_lsp_uri(mep.filename())},\n"
@@ -12165,8 +12322,9 @@ const char *kBuiltinRun =
     "mep.command('MepReplSendBuffer', mep.repl_send_buffer)\n";
 
 // "gf" ("go format"): run the current buffer's own language formatter
-// over it in place -- clang-format for C/C++, black for Python, styler
-// for R (TODO.org's own list). Modeled on kBuiltinRun's mep.run_languages
+// over it in place -- clang-format for C/C++, black for Python, air
+// for R (TODO.org's list, whose R entry said styler -- see the R entry
+// below for why air replaced it). Modeled on kBuiltinRun's mep.run_languages
 // above: one filetype -> argv table (keyed by mep_lsp_filetype's bare
 // extension, with the usual aliases) a user's config can extend or
 // override, rather than the three commands being hardcoded in the
@@ -12174,13 +12332,16 @@ const char *kBuiltinRun =
 //
 // Two shapes of formatter exist and both are supported, because neither
 // covers the other: a stdin/stdout filter (the default -- clang-format,
-// black) and an in-place file rewriter (mode = 'file' -- styler's
-// style_file(), the exact call TODO.org asks for). Either way the text
-// that gets formatted is the *buffer's* current text, unsaved edits
-// included: the filter gets it on stdin, the file rewriter gets it in a
-// temp file carrying the buffer's own extension (styler::style_file
-// dispatches on that, and errors without it), so gf never needs the
-// buffer written to disk first and never formats a stale copy.
+// black, air) and an in-place file rewriter (mode = 'file'), which every
+// entry here happens not to need any more but which a user's config
+// still reaches for whenever a formatter has no stdin mode at all --
+// styler::style_file(), R's other formatter, is exactly that shape.
+// Either way the text that gets formatted is the *buffer's* current
+// text, unsaved edits included: the filter gets it on stdin, the file
+// rewriter gets it in a temp file carrying the buffer's own extension
+// (a style_file()-shaped formatter dispatches on that, and errors
+// without it), so gf never needs the buffer written to disk first and
+// never formats a stale copy.
 //
 // '{}' anywhere in an argv element is replaced by a path: the buffer's
 // real (absolute) filename in filter mode, the temp file in file mode.
@@ -12221,13 +12382,20 @@ const char *kBuiltinFormat =
     "mep.format_languages = {\n"
     "  c = {'clang-format', '--assume-filename={}'},\n"
     "  py = {'black', '--quiet', '--stdin-filename={}', '-'},\n"
-    // Not --vanilla: an renv project keeps styler in its own per-project
-    // library, reachable only through the .Rprofile that renv writes --
-    // which --vanilla would skip, turning "styler is installed" into
-    // "there is no package called 'styler'" in exactly the projects most
-    // likely to have it. cwd is the workspace root below, so that
-    // .Rprofile is the one found.
-    "  R = {'Rscript', '-e', 'styler::style_file(\"{}\")', mode = 'file'},\n"
+    // air, not styler (which TODO.org's list named): styler has no line
+    // width at all -- it fixes spacing, indentation and `=` vs `<-`, but
+    // it never breaks a long call across lines, at any width, so an R
+    // buffer was the one language here where gf could not bring a
+    // 300-column line back inside a margin. air is Posit's own tidyverse
+    // formatter and the only R one with a line width; it subsumes what
+    // styler did for gf's purposes (`y = x + 1` still becomes
+    // `y <- x + 1`) and wraps at 80 by default. --stdin-file-path is the
+    // same argument clang-format and black need above and for the same
+    // reason: in filter mode air is reading a nameless stream, and the
+    // path is what it walks up from to find the project's air.toml (the
+    // repo's own is at the workspace root, pinning [format] line-width =
+    // 80 rather than leaning on air's default staying 80).
+    "  R = {'air', 'format', '--stdin-file-path={}'},\n"
     "}\n"
     // Same aliasing as mep.run_languages': entries are looked up by bare
     // extension, so every extension of a language needs its own key.
@@ -13727,10 +13895,11 @@ const char *kBuiltinOrgLinks =
     "end\n"
     "mep.command('MepOrgHeadingScaleToggle', mep.org_heading_scale_toggle_ui)\n"
     "mep.leader_map('oth', 'Org: toggle scaled heading sizes', mep.org_heading_scale_toggle_ui)\n"
-    // Wrapped tables (Editor::OrgTableWrapVisible): a table too wide for
-    // `:set textwidth` renders with re-budgeted columns and its long
-    // cells wrapped. On by default; this gets the table's real stored
-    // widths back on screen.
+    // Laid-out tables (Editor::OrgTableWrapVisible): a table too wide
+    // for `:set textwidth` renders with re-budgeted columns and its long
+    // cells wrapped, and a table whose link markup conceals renders with
+    // its columns closed up to the widths they draw as. On by default;
+    // this gets the table's real stored widths back on screen.
     "function mep.org_table_wrap_toggle_ui()\n"
     "  local visible = mep.org_table_wrap_toggle()\n"
     "  mep.notify('Org table wrapping: ' .. (visible and 'on' or 'off'))\n"
@@ -15512,6 +15681,74 @@ const char *kBuiltinOrgBabel =
 //    stays running until mep exits, rather than being torn down when
 //    its org buffer is. Simpler, and consistent with mep.nvim's own
 //    "don't autostart eagerly, do nothing clever about stopping" bias.
+
+// The Lua half of the pane-header insert-block button (its C++ half is
+// DrawPane's header controls plus DrawOrgInsertBlockMenu, above): writes
+// an empty `#+begin_src <lang>` / `#+end_src` pair into the current org
+// buffer and parks the cursor on its blank body line, ready to type in.
+// Deliberately language-agnostic -- the button's own dropdown
+// (kOrgBlockLanguages) lists a curated dozen, mep.org_insert_src_block_
+// pick offers every registered babel language, and both just hand this a
+// tag string, so nothing is reachable from one entry point only.
+const char *kBuiltinOrgInsertBlock =
+    "function mep.org_insert_src_block(lang)\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then\n"
+    "    mep.notify('Insert block: not an org buffer', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  lang = (lang or ''):match('^%s*(.-)%s*$')\n"
+    "  local row = mep.cursor()\n"
+    "  local line = mep.get_line(row) or ''\n"
+    "  local indent = line:match('^%s*') or ''\n"
+    "  local header = '#+begin_src'\n"
+    "  if lang ~= '' then header = header .. ' ' .. lang end\n"
+    "  local block = {indent .. header, indent, indent .. '#+end_src'}\n"
+    // An all-whitespace cursor line becomes the block's own opening line
+    // (the common case: a blank line left under a headline); any other
+    // line keeps its text and the block goes in right below it. Either
+    // way the cursor lands on the block's empty body line.
+    "  local at, upto = row, row + 1\n"
+    "  if not line:match('^%s*$') then at, upto = row + 1, row + 1 end\n"
+    // ...unless the cursor is inside an existing source block (its own
+    // blank body line very much included -- that's where it lands right
+    // after inserting one), in which case the new block goes just past
+    // that block's #+end_src. Splitting a block in half around a nested
+    // one is never what the click meant, and the result isn't valid org.
+    "  local blk = mep_org_src_block_at(row)\n"
+    "  if blk then\n"
+    "    indent = (mep.get_line(blk.start_row) or ''):match('^%s*') or ''\n"
+    "    at, upto = blk.end_row + 1, blk.end_row + 1\n"
+    "  end\n"
+    "  mep.replace_lines(at, upto, block)\n"
+    "  mep.set_cursor(at + 1, #indent + 1)\n"
+    "  mep.notify('Inserted ' .. (lang ~= '' and lang or 'source') .. ' block')\n"
+    "end\n"
+    // Every babel language, alphabetically, with a free-text escape hatch
+    // last for one babel doesn't know (an export-only or hand-run block).
+    "function mep.org_insert_src_block_pick()\n"
+    "  local langs = {}\n"
+    "  for name in pairs(mep.org_babel_langs or {}) do langs[#langs + 1] = name end\n"
+    "  table.sort(langs)\n"
+    "  local other = #langs + 1\n"
+    "  langs[other] = 'other (type a language)'\n"
+    "  mep.ui_select(langs, 'Insert source block', function(idx)\n"
+    "    if not idx then return end\n"
+    "    if idx == other then\n"
+    "      mep.ui_input('Source block language:', '', function(lang)\n"
+    "        if lang then mep.org_insert_src_block(lang) end\n"
+    "      end)\n"
+    "      return\n"
+    "    end\n"
+    "    mep.org_insert_src_block(langs[idx])\n"
+    "  end)\n"
+    "end\n"
+    // Bare `:MepOrgInsertBlock` opens the picker; with an argument it
+    // inserts that language directly (`:MepOrgInsertBlock rust`).
+    "mep.command('MepOrgInsertBlock', function(args)\n"
+    "  if args and args:match('%S') then mep.org_insert_src_block(args) else mep.org_insert_src_block_pick() end\n"
+    "end)\n"
+    "mep.leader_map('oi', 'Org: insert source block', mep.org_insert_src_block_pick)\n";
+
 const char *kBuiltinOrgPolyglot =
     "mep.org_polyglot_enabled = true\n"
     // key -> {path, dir, lang, per_block, start_row, end_row, prefix_len,
@@ -15532,6 +15769,14 @@ const char *kBuiltinOrgPolyglot =
     // drop, another language's own most recent contribution when both
     // get merged into mep_lsp_diagnostics.
     "mep_polyglot_diag_by_shadow = {}\n"
+    // Bumped whenever anything the per-block status line reports on
+    // changes -- a shadow created, a client spawned or initialized, a
+    // fresh publish of diagnostics. mep.org_lsp_status_scan's frame hook
+    // below rescans on a change to this (plus the buffer's own change
+    // epoch) rather than re-deriving every block's status every frame,
+    // which would mean a whole-buffer line walk per frame for a panel
+    // that changes a handful of times per session.
+    "mep_polyglot_epoch = 0\n"
     "local function mep_polyglot_sanitize(path)\n"
     "  return (path:gsub('[/%.]', '_'))\n"
     "end\n"
@@ -15564,13 +15809,18 @@ const char *kBuiltinOrgPolyglot =
     // lang_def.extension (already known-correct, since babel needs it to
     // write a real interpreter-recognizable temp file), falling back to
     // the bare language key only for languages with no extension entry.
+    // Returns the server entry AND its registry key -- the key is the
+    // server's user-facing name ("pyright", "clangd"), which the
+    // per-block status line (mep.org_lsp_status_scan below) has to be
+    // able to print and which the entry itself does not carry.
     "local function mep_polyglot_server_for(lang, lang_def)\n"
     "  local ft = (lang_def and lang_def.extension and lang_def.extension:gsub('^%.', '')) or lang\n"
-    "  local server = mep.lsp_servers[ft] or mep.lsp_servers[lang]\n"
-    "  if server then return server end\n"
-    "  for _, s in pairs(mep.lsp_servers) do\n"
+    "  for _, name in ipairs({ft, lang}) do\n"
+    "    if mep.lsp_servers[name] then return mep.lsp_servers[name], name end\n"
+    "  end\n"
+    "  for name, s in pairs(mep.lsp_servers) do\n"
     "    for _, sft in ipairs(s.filetypes or {}) do\n"
-    "      if sft == ft or sft == lang then return s end\n"
+    "      if sft == ft or sft == lang then return s, name end\n"
     "    end\n"
     "  end\n"
     "  return nil\n"
@@ -15713,13 +15963,14 @@ const char *kBuiltinOrgPolyglot =
     "      for _, d in ipairs(mep_polyglot_diag_by_shadow[s.path] or {}) do merged[#merged + 1] = d end\n"
     "    end\n"
     "  end\n"
-    "  mep_lsp_diagnostics[shadow.org_abspath] = merged\n"
-    "  if shadow.org_abspath == mep_lsp_abspath(mep.filename()) then mep.lsp_render_diagnostics() end\n"
+    "  mep_polyglot_epoch = mep_polyglot_epoch + 1\n"
+    "  mep_org_diag_set(shadow.org_abspath, 'polyglot', merged)\n"
     "end\n"
     "function mep_polyglot_start_client(shadow, lang_def, server)\n"
     "  local id = mep.lsp_start(server.cmd, {cwd = shadow.dir})\n"
     "  if id <= 0 then return end\n"
     "  shadow.client = id\n"
+    "  mep_polyglot_epoch = mep_polyglot_epoch + 1\n"
     "  shadow.version = 1\n"
     "  mep.lsp_request(id, 'initialize', {\n"
     "    processId = mep.platform() == 'wasm' and mep.json_null or nil,\n"
@@ -15736,6 +15987,7 @@ const char *kBuiltinOrgPolyglot =
     "  }, function(msg)\n"
     "    local init_result = mep_lsp_result(msg)\n"
     "    mep_lsp_server_capabilities[id] = init_result and init_result.capabilities\n"
+    "    mep_polyglot_epoch = mep_polyglot_epoch + 1\n"
     "    mep.lsp_notify(id, 'initialized', {})\n"
     "    mep.lsp_on_notification(id, 'textDocument/publishDiagnostics', function(params)\n"
     "      mep_polyglot_on_diagnostics(shadow, params)\n"
@@ -15748,8 +16000,15 @@ const char *kBuiltinOrgPolyglot =
     "    })\n"
     "  end)\n"
     "end\n"
+    // Resolved with the block's own lang_def, not by the bare language
+    // name: mep_polyglot_server_for converts through lang_def.extension
+    // (see its own comment), and dropping the argument here silently
+    // resolved "no server" for every language whose extension and name
+    // differ. Latent rather than live until now -- the only caller is
+    // the c/cpp compile-database rewrite, and those two happen to be the
+    // languages whose name and extension are the same string.
     "function mep_polyglot_restart_shadow_client(shadow, lang_def)\n"
-    "  local server = mep_polyglot_server_for(shadow.lang)\n"
+    "  local server = mep_polyglot_server_for(shadow.lang, lang_def)\n"
     "  if not server then return end\n"
     "  if shadow.client then mep.lsp_stop(shadow.client) end\n"
     "  mep_polyglot_start_client(shadow, lang_def, server)\n"
@@ -15807,6 +16066,7 @@ const char *kBuiltinOrgPolyglot =
     "    start_row = blk.start_row, end_row = blk.end_row, prefix_len = prefix_len,\n"
     "    org_abspath = org_abspath, client = nil, compile_argv = nil,\n"
     "  }\n"
+    "  mep_polyglot_epoch = mep_polyglot_epoch + 1\n"
     "  mep_polyglot_shadows[key] = shadow\n"
     "  mep_polyglot_shadow_by_path[mep_lsp_abspath(path)] = key\n"
     "  mep_polyglot_shadows_by_file[org_abspath] = mep_polyglot_shadows_by_file[org_abspath] or {}\n"
@@ -15994,7 +16254,111 @@ const char *kBuiltinOrgPolyglot =
     "    end\n"
     "  end\n"
     "end\n"
-    "mep.on_buffer_changed(mep_polyglot_resync)\n";
+    "mep.on_buffer_changed(mep_polyglot_resync)\n"
+
+    // --- Per-src-block LSP status line (<leader>ots) ---
+    // Every #+begin_src block's card gets one line along its bottom edge
+    // saying what that block's language server is doing -- which server
+    // resolved, whether it is attached, and how many diagnostics it is
+    // reporting *inside this block*. It lands on the `#+end_src` row,
+    // which the card already conceals and paints as blank floor, so it
+    // costs no extra vertical space and none of the four slot walkers
+    // (see OrgBlockCards' own comment) has to change.
+    //
+    // The whole point of putting it here rather than in the renderer is
+    // that everything it reports on is Lua-side state: mep.lsp_servers,
+    // mep_polyglot_shadows, mep_lsp_server_capabilities and
+    // mep_lsp_diagnostics. C++ owns only the wording
+    // (FormatOrgLspStatus, org_doc.cpp) and the drawing (DrawPane).
+    //
+    // Reports the *bridge's* view, deliberately: a block whose language
+    // has no registered server says so even though mep's own org server
+    // is attached to the file as a whole, because "can I get completion
+    // in this block" is the question the line exists to answer.
+    "local function mep_org_lsp_status_for_block(blk, org_abspath, diags)\n"
+    "  local st = {state = 'unsupported', lang = blk.lang or '', server = '',\n"
+    "              errors = 0, warnings = 0, hints = 0}\n"
+    "  local lang_def = blk.lang and blk.lang ~= '' and mep.org_babel_langs[blk.lang] or nil\n"
+    "  local server, server_name = nil, nil\n"
+    "  if lang_def then server, server_name = mep_polyglot_server_for(blk.lang, lang_def) end\n"
+    "  if server then\n"
+    "    st.server = server_name or ''\n"
+    "    local per_block = mep_polyglot_per_block(lang_def)\n"
+    "    local shadow = mep_polyglot_shadows[mep_polyglot_key(org_abspath, blk.lang, per_block and blk or nil)]\n"
+    // No shadow yet, or one whose mep.lsp_start returned <= 0 (the spawn
+    // failed and shadow.client was never assigned): the first is the
+    // resting state of a block no LSP feature has ever run inside, the
+    // second is a server that is not installed. They are told apart by
+    // whether a shadow exists at all, which is exactly the distinction
+    // between "hasn't been tried" and "was tried, nothing is running".
+    "    if not shadow then\n"
+    "      st.state = 'idle'\n"
+    "    elseif not shadow.client or not mep.lsp_is_running(shadow.client) then\n"
+    "      st.state = 'exited'\n"
+    "    elseif not mep_lsp_server_capabilities[shadow.client] then\n"
+    "      st.state = 'starting'\n"
+    "    else\n"
+    "      st.state = 'ready'\n"
+    "    end\n"
+    "  end\n"
+    // Counted over the block's *body* rows only (start_row and end_row
+    // are the `#+begin_src`/`#+end_src` lines themselves): a bad header
+    // argument reported on the `#+begin_src` line is org's own lint, not
+    // this block's language server's finding, and the card already hangs
+    // that one off its title bar.
+    "  for _, d in ipairs(diags) do\n"
+    "    local line = (d.range and d.range.start and d.range.start.line or 0) + 1\n"
+    "    if line > blk.start_row and line < blk.end_row then\n"
+    "      local sev = d.severity or 1\n"
+    "      if sev == 1 then st.errors = st.errors + 1\n"
+    "      elseif sev == 2 then st.warnings = st.warnings + 1\n"
+    "      else st.hints = st.hints + 1 end\n"
+    "    end\n"
+    "  end\n"
+    "  return st\n"
+    "end\n"
+    "function mep.org_lsp_status_scan()\n"
+    "  mep.buf_clear_org_lsp_status()\n"
+    "  if not mep.org_lsp_status_visible() then return end\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
+    "  local org_abspath = mep_lsp_abspath(mep.filename())\n"
+    "  local diags = mep_lsp_diagnostics[org_abspath] or {}\n"
+    "  for _, blk in ipairs(mep_org_src_blocks_all()) do\n"
+    "    mep.buf_set_org_lsp_status(blk.start_row, mep_org_lsp_status_for_block(blk, org_abspath, diags))\n"
+    "  end\n"
+    "end\n"
+    "mep.command('MepOrgLspStatusScan', mep.org_lsp_status_scan)\n"
+    "function mep.org_lsp_status_toggle_ui()\n"
+    "  local visible = mep.org_lsp_status_toggle()\n"
+    "  mep.notify('Org src-block LSP status: ' .. (visible and 'on' or 'off'))\n"
+    "  mep.org_lsp_status_scan()\n"
+    "end\n"
+    "mep.command('MepOrgLspStatusToggle', mep.org_lsp_status_toggle_ui)\n"
+    "mep.leader_map('ots', 'Org: toggle src-block LSP status', mep.org_lsp_status_toggle_ui)\n"
+    // Rescan triggers. mep_org_src_blocks_all walks every line in the
+    // buffer, so this deliberately does *not* run per frame: it runs when
+    // the buffer's text changed, when the file under the cursor changed,
+    // or when the bridge itself moved (mep_polyglot_epoch).
+    //
+    // Plus a slow floor, because one transition has no event to hook:
+    // a language server *dying*. Nothing bumps the epoch when a client's
+    // process exits, so without this a crashed server would keep reading
+    // "ready" until the next keystroke. Two seconds is well under how
+    // long anyone stares at a status line, and far above how often a
+    // whole-buffer walk is worth doing.
+    "local mep_org_lsp_status_sig = nil\n"
+    "local mep_org_lsp_status_last_at = 0\n"
+    "mep.on_frame(function()\n"
+    "  if not mep.org_lsp_status_visible() then return end\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
+    "  local sig = mep.filename() .. '|' .. tostring(mep.buffer_change_epoch()) ..\n"
+    "    '|' .. tostring(mep_polyglot_epoch)\n"
+    "  local now = mep.now()\n"
+    "  if sig == mep_org_lsp_status_sig and now - mep_org_lsp_status_last_at < 2.0 then return end\n"
+    "  mep_org_lsp_status_sig = sig\n"
+    "  mep_org_lsp_status_last_at = now\n"
+    "  mep.org_lsp_status_scan()\n"
+    "end)\n";
 
 // Org LaTeX/math-mode inline rendering, a sibling feature to
 // kBuiltinOrgImages (defined earlier in this file): <leader>otl /
@@ -28893,6 +29257,109 @@ void DrawNotebookKernelMenu() {
                             ResolveHlGroup("PickerBorder"));
 }
 
+// The languages DrawPane's org insert-block button offers, in menu order:
+// the common head of mep.org_babel_langs (kBuiltinOrgBabel), whose full
+// ~27-language set would make a dropdown taller than the window under a
+// pane header low in a split. `label` is what the menu shows, `tag` what
+// gets written after `#+begin_src`; the tag is handed straight to
+// mep.org_insert_src_block (kBuiltinOrgInsertBlock), which accepts any
+// string, so this list is pure menu curation -- the "Other language..."
+// row appended after it reaches the rest of the babel set (and anything
+// else, typed) through that same module's picker.
+struct OrgBlockLanguage {
+    const char *label;
+    const char *tag;
+};
+constexpr OrgBlockLanguage kOrgBlockLanguages[] = {
+    {"Python", "python"},          {"R", "r"},       {"C", "c"},           {"C++", "cpp"},
+    {"Rust", "rust"},              {"Go", "go"},     {"Lua", "lua"},       {"JavaScript", "javascript"},
+    {"TypeScript", "typescript"},  {"Java", "java"}, {"Shell", "sh"},      {"Julia", "julia"},
+};
+constexpr const char *kOrgBlockOtherLabel = "Other language...";
+
+/**
+ * @brief Draws the pane-header org insert-block button's language dropdown when one is open,
+ * anchored under the button that opened it.
+ */
+void DrawOrgInsertBlockMenu() {
+    if (g_org_block_menu_pane == -1) return;
+    // The button this menu belongs to is gone (see g_org_block_button_drawn).
+    if (!g_org_block_button_drawn) {
+        g_org_block_menu_pane = -1;
+        g_org_block_menu_rect = {};
+        return;
+    }
+    g_org_block_button_drawn = false;
+    const int pane_id = g_org_block_menu_pane;
+    const float font_size = MenuFontSize();
+    const int item_h = MenuItemHeight();
+    // Reuses DrawMenuBar's dropdown look (the Picker/PickerBorder/
+    // MenuHighlight/MenuBarFg groups, kMenuItemPaddingX, MenuItemHeight),
+    // same as DrawRunButtonMenu and DrawNotebookKernelMenu above.
+    const size_t item_count = std::size(kOrgBlockLanguages) + 1;  // + the "Other language..." row
+    float dd_w = g_org_block_menu_anchor.width;
+    for (const OrgBlockLanguage &lang : kOrgBlockLanguages) {
+        dd_w = std::max(dd_w, MeasureUiText(lang.label, font_size) + 2.0f * static_cast<float>(kMenuItemPaddingX));
+    }
+    dd_w = std::max(dd_w, MeasureUiText(kOrgBlockOtherLabel, font_size) + 2.0f * static_cast<float>(kMenuItemPaddingX));
+    // Right-aligned under the button, like the notebook kernel menu: the
+    // header controls are docked at the pane's right edge, so a list grown
+    // rightwards from the button would hang off it. Clamped to the window
+    // on both axes -- a pane header near the bottom of a stacked split
+    // flips the list above itself rather than drawing it off-screen.
+    float dd_x = g_org_block_menu_anchor.x + g_org_block_menu_anchor.width - dd_w;
+    if (dd_x < static_cast<float>(kMarginX)) dd_x = static_cast<float>(kMarginX);
+    const float dd_h = static_cast<float>(item_count) * static_cast<float>(item_h);
+    float dd_y = g_org_block_menu_anchor.y + g_org_block_menu_anchor.height;
+    if (dd_y + dd_h > static_cast<float>(gfx::GetScreenHeight())) {
+        // Doesn't fit below the header: flip above it when there's room
+        // there, else pin the list to the bottom of the window. Pinning is
+        // the last resort (a window barely taller than the list itself, so
+        // a mid-window pane header has room on neither side) and the list
+        // can then cover its own button -- the button's toggle-to-close
+        // stops working for as long as it does, since the menu's own rows
+        // are registered on top of it, but clicking anywhere else still
+        // closes it and every language stays reachable, which a list
+        // running off the bottom of the window would not be.
+        const float above = g_org_block_menu_anchor.y - dd_h;
+        dd_y = above >= 0.0f ? above : std::max(0.0f, static_cast<float>(gfx::GetScreenHeight()) - dd_h);
+    }
+    g_org_block_menu_rect = gfx::Rectangle{dd_x, dd_y, dd_w, dd_h};
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+    gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
+                       ResolveHlGroup("Picker"));
+    for (size_t i = 0; i < item_count; i++) {
+        const bool is_other = (i == item_count - 1);
+        const std::string label = is_other ? std::string(kOrgBlockOtherLabel) : std::string(kOrgBlockLanguages[i].label);
+        const float item_y = dd_y + static_cast<float>(i) * static_cast<float>(item_h);
+        const gfx::Rectangle item_rect{dd_x, item_y, dd_w, static_cast<float>(item_h)};
+        if (PointInRect(mouse, item_rect)) {
+            gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(item_y), static_cast<int>(dd_w), item_h,
+                               ResolveHlGroup("MenuHighlight"));
+        }
+        const float text_y = item_y + (static_cast<float>(item_h) - font_size) / 2.0f;
+        gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
+                        ResolveHlGroup(is_other ? "Comment" : "MenuBarFg"));
+        // Every language row is the same one-line Lua call with a different
+        // tag; the last row hands over to the picker instead, which covers
+        // the languages this menu doesn't list.
+        const std::string cmd = is_other ? std::string("lua mep.org_insert_src_block_pick()")
+                                         : std::string("lua mep.org_insert_src_block('") + kOrgBlockLanguages[i].tag + "')";
+        // The pane registered its broad focus region while drawing its own
+        // content, before this floating menu -- so these go on top, or a
+        // pick would be swallowed as a plain focus click (same reasoning as
+        // DrawNotebookKernelMenu's items).
+        RegisterClickRegionOnTop(item_rect, [pane_id, cmd] {
+            g_editor.FocusPaneById(pane_id);
+            g_editor.RunCommand(cmd);
+            g_org_block_menu_pane = -1;
+            g_org_block_menu_rect = {};
+        });
+    }
+    gfx::DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
+                            ResolveHlGroup("PickerBorder"));
+}
+
 // Generic floating overlay frame: dims the screen, draws a centered
 // bordered box with an optional title line, returns where content should
 // start drawing. Shared by the Prompt/Confirm/Select overlays below and
@@ -28979,18 +29446,67 @@ void DrawSelectOverlay() {
     const std::vector<std::string> &items = g_editor.SelectItems();
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 6;
+    // An item may carry embedded '\n's (mep.ui_select's own contract): each
+    // becomes another *row* of the same item, not another item -- what lets
+    // the LSP diagnostics popup wrap a long message and still have the whole
+    // message be one thing Ctrl-N/Ctrl-P steps over and "y" yanks. So the
+    // list is laid out in rows while selection stays per item.
+    std::vector<std::vector<std::string>> item_rows;
+    item_rows.reserve(items.size());
+    int total_rows = 0;
     float max_w = gfx::MeasureTextEx(g_font, g_editor.SelectTitle().c_str(), MenuFontSize(), 0).x;
-    for (const auto &it : items) max_w = std::max(max_w, gfx::MeasureTextEx(g_font, it.c_str(), font_size, 0).x);
+    for (const auto &it : items) {
+        std::vector<std::string> lines = SplitLines(it);
+        if (lines.empty()) lines.emplace_back("");
+        for (const auto &line : lines) {
+            max_w = std::max(max_w, gfx::MeasureTextEx(g_font, line.c_str(), font_size, 0).x);
+        }
+        total_rows += static_cast<int>(lines.size());
+        item_rows.push_back(std::move(lines));
+    }
     int box_w = std::min(gfx::GetScreenWidth() - 80, static_cast<int>(max_w) + 60);
-    int box_h = std::min(gfx::GetScreenHeight() - 80, static_cast<int>(items.size()) * line_h + 60);
+    // DrawFloatFrame draws its title *inside* the box and starts the content
+    // below it, so the title's row has to come out of the height budget here
+    // too -- left out of it, the last row of a list tall enough to fill the
+    // screen was drawn past the box's own bottom border.
+    int title_h = g_editor.SelectTitle().empty() ? 0 : static_cast<int>(MenuFontSize()) + 8;
+    int max_rows = std::max(1, (gfx::GetScreenHeight() - 80 - 60 - title_h) / line_h);
+    int visible_rows = std::min(total_rows, max_rows);
+    int box_h = visible_rows * line_h + 60 + title_h;
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.SelectTitle());
     int sel = g_editor.SelectIndex();
-    for (size_t i = 0; i < items.size(); i++) {
-        float y = f.content_y + static_cast<float>(i) * static_cast<float>(line_h);
+    // Where the highlighted item starts, and from which row the box is
+    // drawn so that item is on screen -- recomputed from `sel` every frame
+    // rather than kept as scroll state, since the only thing that moves the
+    // view here is the selection itself.
+    int sel_row = 0;
+    for (int i = 0; i < sel && i < static_cast<int>(item_rows.size()); i++) {
+        sel_row += static_cast<int>(item_rows[static_cast<size_t>(i)].size());
+    }
+    int sel_h = sel < static_cast<int>(item_rows.size())
+                    ? static_cast<int>(item_rows[static_cast<size_t>(sel)].size())
+                    : 1;
+    int first_row = 0;
+    if (sel_row + sel_h > visible_rows) first_row = sel_row + sel_h - visible_rows;
+    if (first_row > sel_row) first_row = sel_row;
+    int row = 0;
+    for (size_t i = 0; i < item_rows.size(); i++) {
+        const std::vector<std::string> &lines = item_rows[i];
         if (static_cast<int>(i) == sel) {
-            gfx::DrawRectangle(f.box_x + 6, static_cast<int>(y) - 1, f.box_w - 12, line_h, ResolveHlGroup("PickerSelected"));
+            int top = std::max(row, first_row);
+            int bottom = std::min(row + static_cast<int>(lines.size()), first_row + visible_rows);
+            if (bottom > top) {
+                float y = f.content_y + static_cast<float>(top - first_row) * static_cast<float>(line_h);
+                gfx::DrawRectangle(f.box_x + 6, static_cast<int>(y) - 1, f.box_w - 12, (bottom - top) * line_h,
+                              ResolveHlGroup("PickerSelected"));
+            }
         }
-        gfx::DrawTextEx(g_font, items[i].c_str(), gfx::Vector2{f.content_x, y}, font_size, 0, ResolveHlGroup("Normal"));
+        for (size_t j = 0; j < lines.size(); j++, row++) {
+            if (row < first_row || row >= first_row + visible_rows) continue;
+            float y = f.content_y + static_cast<float>(row - first_row) * static_cast<float>(line_h);
+            gfx::DrawTextEx(g_font, lines[j].c_str(), gfx::Vector2{f.content_x, y}, font_size, 0,
+                       ResolveHlGroup("Normal"));
+        }
     }
 }
 
@@ -37897,10 +38413,25 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                    RunButtonSupportsExtension(LspFiletype(buf.filename));
     const std::string run_label = " " + Utf8FromCodepoint(0xf04b) + " ";  // nf-fa-play
     const float run_w = show_run_button ? MeasureUiText(run_label, font_size) : 0.0f;
+    // Insert-block button: leftmost of the header controls, shown only on
+    // a plain .org text pane (the same "no other session owns this
+    // buffer" gate the Run button uses, plus the org filetype itself --
+    // an org buffer showing its Kanban/Gantt view has no cursor row to
+    // insert at). A left click opens the language dropdown
+    // (DrawOrgInsertBlockMenu); picking a language writes an empty
+    // `#+begin_src <lang>`/`#+end_src` pair at the cursor. Drawn at
+    // font_size like the Run button rather than the smaller
+    // control_font_size the split/close chrome uses -- both act on the
+    // buffer's *contents*, not on the pane, and read as a pair.
+    const bool show_org_block_button = !term_sess && !img_sess && !pdf_sess && !video_sess && !office_sess &&
+                                       !sheet_sess && !html_sess && !kanban_sess && !gantt_sess &&
+                                       LspFiletype(buf.filename) == "org";
+    const std::string org_block_label = " " + Utf8FromCodepoint(0xf121) + " ";  // nf-fa-code
+    const float org_block_w = show_org_block_button ? MeasureUiText(org_block_label, font_size) : 0.0f;
     const float vsplit_w = MeasureUiText(vsplit_label, control_font_size);
     const float hsplit_w = MeasureUiText(hsplit_label, control_font_size);
     const float close_w = MeasureUiText(close_label, control_font_size);
-    const float controls_w = run_w + vsplit_w + hsplit_w + close_w;
+    const float controls_w = org_block_w + run_w + vsplit_w + hsplit_w + close_w;
     const gfx::Vector2 header_mouse = gfx::GetMousePosition();
     // Draws the three controls over `bg` filling controls_rect (each
     // brightened while hovered) and registers their click regions.
@@ -37931,6 +38462,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (on_right_click && hovered && gfx::IsMouseButtonPressed(gfx::MouseButton::Right)) on_right_click(rect);
             bx += bw;
         };
+        if (show_org_block_button) {
+            // `bx` is exactly where `button` will place this control's own
+            // rect (it builds the rect from bx, then advances it), so the
+            // dropdown's anchor can be captured here -- the click action
+            // needs the rect, and `button` only ever hands one to its
+            // right-click callback.
+            const gfx::Rectangle org_block_rect{bx, controls_rect.y, org_block_w, controls_rect.height};
+            // Focuses this pane, then toggles its insert-block dropdown
+            // (same "a second click on the open menu's own button closes
+            // it" convention as the Run button's Setup menu).
+            button(
+                org_block_label, org_block_w, "Purple", "Insert code block (<Space>oi)",
+                [pane_id, org_block_rect] {
+                    g_editor.FocusPaneById(pane_id);
+                    g_org_block_menu_pane = (g_org_block_menu_pane == pane_id) ? -1 : pane_id;
+                    g_org_block_menu_anchor = org_block_rect;
+                },
+                nullptr, font_size, label_y);
+            if (pane_id == g_org_block_menu_pane) g_org_block_button_drawn = true;
+        }
         if (show_run_button) {
             // Focuses this pane, then runs/compiles its current file in
             // this tab's popup terminal.
@@ -40580,6 +41131,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                       static_cast<int>(content_h));
 
+    // Sub-row scroll offset (Pane::scroll_sub, set by
+    // Editor::ScrollFigureStep): how many of the top row's own visual
+    // slots are scrolled off above the pane. Nonzero only part-way
+    // through a tall org figure -- and rather than teach each of the
+    // walkers below about a partial top row, it is applied once, here, as
+    // a shift of the whole slot grid they share: content_y moves up by
+    // that many line-heights while content_h grows by the same amount, so
+    // `content_y + content_h` -- the bottom edge every off-screen cull
+    // below compares against -- doesn't move, and visible_lines grows to
+    // match so the row loop keeps drawing down to that same last pixel.
+    // The scissor above was begun from the *unshifted* content_y, so the
+    // figure's scrolled-off part is clipped rather than spilling up into
+    // the pane header.
+    if (pane.scroll_sub > 0) {
+        const float sub_px = static_cast<float>(pane.scroll_sub * line_height);
+        content_y -= sub_px;
+        content_h += sub_px;
+        visible_lines += pane.scroll_sub;
+    }
+
     // Scope guides are derived from the buffer rather than its syntax
     // decorations, so they work in every text mode (including a filetype
     // which has no tree-sitter query).  They are painted with row
@@ -40695,6 +41266,29 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const OrgBlockCard *card = nullptr;
     };
     std::vector<OrgCardBox> org_card_boxes;
+    // End-of-line virtual text (a diagnostic message, git blame) whose row
+    // the card conceals -- the `#+begin_src` header band or the `#+end_`
+    // footer. Drawing it inline the way every other row does puts it
+    // underneath the title bar the post-pass paints over that row, and
+    // then underneath clear_overflow's repaint of everything past the
+    // card's right edge: an error reported *on* the `#+begin_src` line
+    // (org-lsp's unknown language / bad header argument, the most
+    // common kind there is) rendered to nothing at all but its gutter
+    // badge. So it is deferred here and drawn by that same post-pass,
+    // after the bar and the outline, hanging off the card's right border
+    // instead of the row's own concealed text.
+    struct OrgCardEolText {
+        size_t box;  // index into org_card_boxes
+        std::string text;
+        gfx::Color color;
+        float y;         // the row's own top edge, not the card's
+        bool on_header;  // header band (vs. the `#+end_` footer row): which wash the fallback band uses
+    };
+    std::vector<OrgCardEolText> org_card_eol_texts;
+    // Row -> the card box concealing it and whether that row is part of
+    // the header band, for the decoration loop's own "is this row's text
+    // hidden behind a card?" test.
+    std::unordered_map<int, std::pair<size_t, bool>> org_card_concealed_rows;
     // Org tables drawn as a real grid (Editor::OrgTables): continuous
     // column rules through the `|` glyphs, a drawn horizontal rule in
     // place of each `|---+---|` row's dashes, and a tinted header block.
@@ -40706,12 +41300,92 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     struct OrgTableRule {
         gfx::Rectangle rect;
         bool horizontal = false;
+        // Horizontal rules only: the band wash to lay back over the
+        // opaque cover that hides the `|---+---|` dashes, and which of
+        // the box's corners that band sits in (a table can both begin
+        // and end on a rule row).
+        gfx::Color wash{};
+        bool round_top = false, round_bot = false;
     };
     std::vector<OrgTableRule> org_table_rules;
+    // The outermost `|` of a table row, concealed the way a block card
+    // conceals its `#+begin_` line: the rounded outline drawn round the
+    // table *is* that pipe, and a table showing both reads as
+    // double-ruled all down each side. Painted opaque and re-washed
+    // (the pipe has to actually go) in the pass after the row text, so
+    // these are collected here rather than drawn where they are found.
+    // The row under the cursor or inside a Visual selection keeps its
+    // pipes: the caret is drawn before this pass and would be painted
+    // out with them.
+    struct OrgTableConceal {
+        gfx::Rectangle rect;
+        gfx::Color wash{};
+        bool round_top = false, round_bot = false;
+        bool inset_l = false, inset_r = false;  // which end of the band meets a rounded corner
+    };
+    std::vector<OrgTableConceal> org_table_conceals;
+    // The box drawn round each visible table: the union of its rows' own
+    // bands, so the rounded outline lands on exactly the geometry the
+    // wash was painted in rather than on a re-derived guess. Extended
+    // off-screen when the table runs past the viewport -- the same thing
+    // a block card's box does -- so the scissor clips that edge away
+    // instead of laying a lid across the middle of a table.
+    struct OrgTableBox {
+        gfx::Rectangle rect{};
+        bool active = false;  // the cursor is inside this table: a brighter border, as a card gets
+    };
+    std::unordered_map<const Editor::OrgTableGrid *, OrgTableBox> org_table_boxes;
     // Row -> the table it belongs to, so the row loop can answer "is this
     // a table row, and if so where are its rules" in one hash lookup
     // instead of re-walking the table list per row.
     std::unordered_map<int, const Editor::OrgTableGrid *> org_table_of_row;
+    // Row -> its parity among the table's *body* rows (header and rule
+    // rows excluded, so a rule between two stripes does not restart the
+    // pattern): zebra banding, which is what lets the eye carry a wide
+    // row across to its last column. Presence in this map is itself the
+    // "is this a striped body row?" test.
+    std::unordered_map<int, int> org_table_stripe;
+    // The radius the table's outline -- and so the inset of the bands
+    // that meet it -- is rounded by, the same corner the block cards
+    // have. Fixed in pixels rather than scaled by the box: a table's box
+    // grows with the document, a corner should not.
+    const float org_table_corner = 6.0f;
+    /**
+     * @brief Draws one horizontal band of an org table's background, inset wherever it meets a rounded corner.
+     * @param b The band's rectangle.
+     * @param round_top Whether the band sits against the top of the table's box.
+     * @param round_bot Whether the band sits against the bottom of the table's box.
+     * @param inset_l Whether the band's left end is at the box's left edge.
+     * @param inset_r Whether the band's right end is at the box's right edge.
+     * @param c The color to paint.
+     *
+     * Split into up to three rects that share their edges exactly and
+     * never overlap, so an alpha wash lands at one coverage everywhere
+     * rather than doubling along a seam. The corner squares are left
+     * unpainted: the pane's own background showing through inside the
+     * rounded outline is what a rounded corner should look like. The two
+     * `inset_` flags are what let a band covering only one *cell* of the
+     * top row -- the concealed outer pipe -- round the corner it owns
+     * and stay square at the edge it shares with the cell beside it.
+     */
+    auto draw_org_table_band = [org_table_corner](const gfx::Rectangle &b, bool round_top, bool round_bot,
+                                                  bool inset_l, bool inset_r, gfx::Color c) {
+        if (b.width <= 0.0f || b.height <= 0.0f) return;
+        const float r = std::min(org_table_corner, std::min(b.height / 2.0f, b.width / 2.0f));
+        const float top = round_top ? r : 0.0f;
+        const float bot = round_bot ? r : 0.0f;
+        const float li = inset_l ? r : 0.0f;
+        const float ri = inset_r ? r : 0.0f;
+        // Absolute pixel edges, each truncated once and then shared by
+        // the rect above and the rect below it, so no seam can open up.
+        const int x0 = static_cast<int>(b.x), x1 = static_cast<int>(b.x + li);
+        const int x2 = static_cast<int>(b.x + b.width - ri), x3 = static_cast<int>(b.x + b.width);
+        const int y0 = static_cast<int>(b.y), y1 = static_cast<int>(b.y + top);
+        const int y2 = static_cast<int>(b.y + b.height - bot), y3 = static_cast<int>(b.y + b.height);
+        if (y1 > y0 && x2 > x1) gfx::DrawRectangle(x1, y0, x2 - x1, y1 - y0, c);
+        if (y2 > y1) gfx::DrawRectangle(x0, y1, x3 - x0, y2 - y1, c);
+        if (y3 > y2 && x2 > x1) gfx::DrawRectangle(x1, y2, x2 - x1, y3 - y2, c);
+    };
     // Shared by every org-specific render pass below (block cards, the
     // scaled headlines and the drawn table grid), so the filetype lookup
     // happens once per pane rather than once per row.
@@ -40736,7 +41410,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // vector, refilled on the next call -- taking addresses into
             // it is safe only until then, and nothing between here and
             // this function's end calls it again.
-            for (int r = t.start_row; r <= t.end_row; r++) org_table_of_row[r] = &t;
+            int body = 0;
+            for (int r = t.start_row; r <= t.end_row; r++) {
+                org_table_of_row[r] = &t;
+                const bool hdr = t.header_end_row >= 0 && r <= t.header_end_row;
+                const bool sep = std::find(t.sep_rows.begin(), t.sep_rows.end(), r) != t.sep_rows.end();
+                if (!hdr && !sep) org_table_stripe[r] = body++ % 2;
+            }
         }
     }
     if (g_editor.OrgBlockCardsVisible() && is_org_buffer) {
@@ -40927,6 +41607,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::DrawRectangleRounded(box.rect, rr, 6,
                                   card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
                                               : gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+            // Every row the card paints over, so the decoration loop can
+            // hand that row's end-of-line virtual text to the post-pass
+            // rather than drawing it where the bar is about to land. A
+            // revealed header (cursor or selection inside it) is not
+            // registered: its raw text is on screen, so its annotation
+            // belongs after that text like any other row's.
+            if (box.conceal_header) {
+                for (int r = card.meta_row; r <= card.begin_row; r++) {
+                    org_card_concealed_rows[r] = {org_card_boxes.size(), true};
+                }
+            }
+            if (box.conceal_footer && card.end_row >= 0) {
+                org_card_concealed_rows[card.end_row] = {org_card_boxes.size(), false};
+            }
             org_card_boxes.push_back(box);
         }
     }
@@ -41204,6 +41898,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
+        // Whether this row's background is still nothing but the pane's
+        // own -- no fold tint, no cursorline, no whole-line decoration.
+        // Cleared by each of the three fills below, and read by the org
+        // table pass, whose conceal of the outer `|` has to repaint the
+        // background it covers and can only reproduce a plain one: over a
+        // tinted row it would leave two notches in that tint instead.
+        bool row_bg_plain = true;
         // Background fill for the fold's summary row -- the same tint
         // :set cursorline uses for the current line (not a separate,
         // more saturated color of its own), just always on for a folded
@@ -41213,6 +41914,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // actually is inside this (collapsed) range.
         if (fold_here) {
             gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height, ResolveHlGroup("CursorLine"));
+            row_bg_plain = false;
         }
 
         // An over-wide org table's row (Buffer::org_table_wrap_rows,
@@ -41371,6 +42073,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
                               line_height, ResolveHlGroup("CursorLine"));
             }
+            row_bg_plain = false;
         }
 
         // A scope guide occupies only the lines *between* its delimiters.
@@ -41876,6 +42579,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
                                   line_height, tint);
                 }
+                row_bg_plain = false;
             }
             if ((!d.sign.empty() || !d.sign_shape.empty()) && d.priority > sign_priority) {
                 sign = d.sign;
@@ -41916,16 +42620,93 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const bool is_header = tbl.header_end_row >= 0 && row <= tbl.header_end_row;
                 const bool is_sep =
                     std::find(tbl.sep_rows.begin(), tbl.sep_rows.end(), row) != tbl.sep_rows.end();
-                gfx::Color wash = ResolveHlGroup("Accent");
-                gfx::DrawRectangle(static_cast<int>(tbl_x), static_cast<int>(ly), static_cast<int>(tbl_w),
-                              static_cast<int>(tbl_h),
-                              gfx::Color{wash.r, wash.g, wash.b, static_cast<unsigned char>(is_header ? 34 : 14)});
+                // Zebra banding: the header keeps the loudest wash, and
+                // the body rows alternate either side of a faint base, so
+                // consecutive rows read apart without either of them
+                // looking selected.
+                auto stripe_it = org_table_stripe.find(row);
+                const unsigned char wash_a =
+                    is_header ? 44 : (stripe_it != org_table_stripe.end() && stripe_it->second == 1 ? 26 : 12);
+                // Only the table's real first/last row gets its corners
+                // inset. A table continuing past the viewport is drawn
+                // square there, because the outline it meets is off-screen
+                // too.
+                const bool round_top = row == tbl.start_row;
+                const bool round_bot = row == tbl.end_row;
+                gfx::Color accent_wash = ResolveHlGroup("Accent");
+                const gfx::Color wash{accent_wash.r, accent_wash.g, accent_wash.b, wash_a};
+                draw_org_table_band(gfx::Rectangle{tbl_x, ly, tbl_w, tbl_h}, round_top, round_bot, true, true, wash);
+                // The box the rounded outline is stroked on, grown row by
+                // row; a table running off either edge of the viewport is
+                // pushed a row past it so the scissor takes that side's
+                // border away rather than drawing it mid-table.
+                {
+                    OrgTableBox &box = org_table_boxes[&tbl];
+                    // Every row with a neighbour in the table reaches a
+                    // line past itself. For an interior row that lands on
+                    // the neighbour the loop visits anyway (a row is never
+                    // shorter than one slot), so the union is unchanged;
+                    // for the first or last row *on screen* of a table
+                    // that continues past the edge, it reaches off-screen,
+                    // which is the point.
+                    const float top = ly - (tbl.start_row < row ? static_cast<float>(line_height) : 0.0f);
+                    const float bot = ly + tbl_h + (tbl.end_row > row ? static_cast<float>(line_height) : 0.0f);
+                    if (box.rect.width <= 0.0f) {
+                        box.rect = gfx::Rectangle{tbl_x, top, tbl_w, bot - top};
+                        box.active = is_active && pane.cursor.row >= tbl.start_row && pane.cursor.row <= tbl.end_row;
+                    } else {
+                        const float x1 = std::max(box.rect.x + box.rect.width, tbl_x + tbl_w);
+                        box.rect.x = std::min(box.rect.x, tbl_x);
+                        box.rect.width = x1 - box.rect.x;
+                        const float y1 = std::max(box.rect.y + box.rect.height, bot);
+                        box.rect.y = std::min(box.rect.y, top);
+                        box.rect.height = y1 - box.rect.y;
+                    }
+                }
                 if (is_sep) {
                     // A `|---+---|` row is drawn, not read: the post-pass
-                    // covers its dashes and lays one line across the table.
-                    org_table_rules.push_back({gfx::Rectangle{tbl_x, ly, tbl_w, tbl_h}, true});
+                    // covers its dashes -- outer pipes and all, so a rule
+                    // row needs no conceal band of its own -- and lays one
+                    // line across the table.
+                    org_table_rules.push_back(
+                        {gfx::Rectangle{tbl_x, ly, tbl_w, tbl_h}, true, wash, round_top, round_bot});
                 } else {
+                    // The two outer pipes, concealed so the outline can be
+                    // the table's edge -- but only on a row whose
+                    // background the conceal can put back (row_bg_plain),
+                    // and never over a pipe the caret is actually on: the
+                    // caret is drawn before the conceal pass and would be
+                    // painted out with it. Kept per *cell* rather than per
+                    // row, so walking along a row doesn't flash both edges
+                    // back on -- and tested by byte offset into the stored
+                    // line (its first and last `|`), which is what
+                    // pane.cursor.col is measured in.
+                    const std::string &cur_line = buf.lines[static_cast<size_t>(row)];
+                    const size_t first_bar = cur_line.find('|');
+                    const size_t last_bar = cur_line.rfind('|');
+                    const int caret_col = is_active && pane.cursor.row == row ? pane.cursor.col : -1;
+                    const bool row_selected = block_selection
+                                                  ? (row >= block_top && row <= block_bottom)
+                                                  : (has_selection && row >= sel_start.row && row <= sel_end.row);
+                    const bool keep_l =
+                        row_selected || !row_bg_plain ||
+                        (caret_col >= 0 && first_bar != std::string::npos &&
+                         caret_col <= static_cast<int>(first_bar));
+                    const bool keep_r = row_selected || !row_bg_plain ||
+                                        (caret_col >= 0 && last_bar != std::string::npos &&
+                                         caret_col >= static_cast<int>(last_bar));
+                    if (!keep_l) {
+                        org_table_conceals.push_back(
+                            {gfx::Rectangle{tbl_x, ly, g_char_width, tbl_h}, wash, round_top, round_bot, true, false});
+                    }
+                    if (!keep_r) {
+                        org_table_conceals.push_back({gfx::Rectangle{tbl_x + tbl_w - g_char_width, ly, g_char_width, tbl_h},
+                                                      wash, round_top, round_bot, false, true});
+                    }
                     for (int rc : tbl.rule_cols) {
+                        // The outermost two columns are the table's own
+                        // edges, and the outline already runs down them.
+                        if (rc == geo_indent || rc == geo_indent + geo_width - 1) continue;
                         // Centred on the `|` glyph's own column, full row
                         // height, so the per-row glyphs join into one
                         // continuous rule down the table.
@@ -42037,9 +42818,51 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // table the cursor is in is never wrapped, so the row being
             // edited always shows its own characters.
             for (size_t tl = 0; tl < tbl_wrap->lines.size(); tl++) {
-                DrawLineFast(tbl_wrap->lines[tl], text_x,
-                             ly + static_cast<float>(static_cast<int>(tl) * line_height), g_font_size,
-                             ResolveHlGroup("Normal"));
+                const OrgTableWrapLine &twl = tbl_wrap->lines[tl];
+                const float tly = ly + static_cast<float>(static_cast<int>(tl) * line_height);
+                DrawLineFast(twl.text, text_x, tly, g_font_size, ResolveHlGroup("Normal"));
+                // The links the layout carried through the wrap
+                // (OrgTableWrapLine, org_doc.h): the row's own link
+                // decorations index its stored text and are skipped with
+                // the rest, so the Blue underline every other org link
+                // gets -- and the click that follows it -- have to be
+                // drawn from the plan's own columns instead. Same visual
+                // as the per-span hl_group/underline passes further
+                // down, just laid out on this line rather than the row's.
+                const gfx::Color link_color = ResolveHlGroup("Blue");
+                for (const OrgTableWrapLink &lk : twl.links) {
+                    const int a = std::clamp(lk.col_start, 0, static_cast<int>(twl.text.size()));
+                    const int b = std::clamp(lk.col_end, a, static_cast<int>(twl.text.size()));
+                    if (b <= a) continue;
+                    const int col_a = ByteOffsetToColumn(twl.text, a);
+                    const int col_b = ByteOffsetToColumn(twl.text, b);
+                    const float lx = text_x + static_cast<float>(col_a) * g_char_width;
+                    const float lw = static_cast<float>(col_b - col_a) * g_char_width;
+                    DrawLineFast(twl.text.substr(static_cast<size_t>(a), static_cast<size_t>(b - a)), lx, tly,
+                                 g_font_size, link_color);
+                    // Underlined only where the raw text is what draws --
+                    // a bare URL, or a bracket link with concealment off.
+                    // A description standing in for hidden markup gets
+                    // the Blue face alone, which is exactly what
+                    // Editor::OrgLinkScan's concealing overlay does.
+                    if (!lk.concealed) {
+                        gfx::DrawRectangle(static_cast<int>(lx),
+                                           static_cast<int>(tly + static_cast<float>(line_height) - 2),
+                                           static_cast<int>(lw), 1, link_color);
+                    }
+                    // Followed by target rather than by column: the
+                    // stored line's own columns are nowhere near these
+                    // ones, so there is nothing to hand OrgFollowLinkAt.
+                    const int click_row = row;
+                    const int click_pane = pane.id;
+                    const std::string click_target = lk.target;
+                    RegisterClickRegionOnTop(
+                        gfx::Rectangle{lx, tly, lw, static_cast<float>(line_height)},
+                        [click_pane, click_row, click_target] {
+                            g_editor.FocusPaneById(click_pane);
+                            g_editor.OrgFollowLinkTargetOn(click_row, click_target);
+                        });
+                }
             }
         } else if (row_wrap_cols <= 0) {
             DrawLineFast(draw_line, text_x, ly, g_font_size, ResolveHlGroup("Normal"));
@@ -42314,7 +43137,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         });
                 }
             }
-            if (!d.virt_text.empty() && !ghost_covers_row(row)) {
+            // A card conceals this row, so its end-of-line annotation is
+            // deferred to the card post-pass (org_card_eol_texts above)
+            // and drawn past the card's right border -- where it is
+            // visible -- instead of under the title bar that is about to
+            // cover this row's columns.
+            const bool defer_eol_to_card =
+                d.virt_text_eol && !d.virt_text.empty() && org_card_concealed_rows.count(row) != 0;
+            if (defer_eol_to_card) {
+                const std::pair<size_t, bool> &where = org_card_concealed_rows[row];
+                org_card_eol_texts.push_back(
+                    {where.first, d.virt_text, ResolveHlGroup(d.virt_text_hl), ly, where.second});
+            }
+            if (!d.virt_text.empty() && !ghost_covers_row(row) && !defer_eol_to_card) {
                 // virt_text_eol: anchored just past the row's own last
                 // character (plus one char of breathing room) rather than
                 // d.col_start, for an annotation describing the whole
@@ -42504,7 +43339,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // about whether this one actually broke across visual lines. Only
         // a row that really did is skipped, since a link split over two
         // sub-rows isn't one rectangle.
-        if (is_org_buffer && row_wrap_slots <= 1) {
+        // A row drawn as a wrapped table's layout is excluded for the
+        // same reason: its stored columns aren't the drawn ones, and the
+        // layout registers its own regions from the plan's columns
+        // above. (row_wrap_slots already excludes every such row that
+        // draws as more than one line, but a short one draws as exactly
+        // one and would otherwise get a rectangle off to the right of
+        // where the link actually is.)
+        if (is_org_buffer && row_wrap_slots <= 1 && tbl_wrap == nullptr) {
             if (const std::vector<Buffer::OrgLinkSpan> *link_spans =
                     g_editor.OrgLinkSpansForRow(pane.buffer_id, row)) {
                 for (const Buffer::OrgLinkSpan &lsp : *link_spans) {
@@ -42591,7 +43433,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
-        if (!sign_shape.empty()) {
+        if (!sign_shape.empty() && !sign_badge) {
             // Geometric sign marks (Decoration::sign_shape) -- the git
             // gutter's hunk stripes. Drawn as rectangles rather than as
             // box-drawing glyphs because none of the UI fonts cover that
@@ -42620,17 +43462,62 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         } else if (!sign.empty()) {
             if (sign_badge) {
-                // A filled circle (sign_hl's own color) behind the sign
-                // glyph -- e.g. a diagnostic count -- centered in the
-                // sign column (sign_w's own one-char width) and on the
-                // row's own line height. Text drawn in "NormalBg" punches
-                // a legible hole in it, the same contrast trick
-                // virt_overlay's own cover rectangle already uses.
-                float cx = x + kMarginX + g_char_width / 2.0f;
-                float cy = ly + static_cast<float>(line_height) / 2.0f;
-                gfx::DrawCircle(static_cast<int>(cx), static_cast<int>(cy), g_char_width * 0.58f, ResolveHlGroup(sign_hl));
-                float sign_w_text = MeasureUiText(sign, g_font_size);
-                DrawUiText(sign, gfx::Vector2{cx - sign_w_text / 2.0f, ly}, g_font_size, ResolveHlGroup("NormalBg"));
+                // A filled shape (sign_hl's own color) behind the sign
+                // glyph, centered in the sign column (sign_w's own
+                // one-char width) and on the row's own line height. Text
+                // drawn in "NormalBg" punches a legible hole in it, the
+                // same contrast trick virt_overlay's own cover rectangle
+                // already uses.
+                //
+                // `sign_shape` picks the outline: "triangle" is the
+                // hazard sign a warning draws as, anything else (the
+                // default) the disc an error/information/hint draws as.
+                // Shape and glyph together are what make a severity
+                // readable at a glance and, unlike a color alone, still
+                // readable without color vision -- see the caller
+                // (mep.lsp_render_diagnostics, kBuiltinLsp) for the
+                // severity -> (glyph, shape) table itself.
+                const float cx = x + kMarginX + g_char_width / 2.0f;
+                const float cy = ly + static_cast<float>(line_height) / 2.0f;
+                const float r = g_char_width * 0.58f;
+                const gfx::Color badge = ResolveHlGroup(sign_hl);
+                // The glyph is drawn well under the row's own font size.
+                // At the full size it is taller than the badge is wide --
+                // the sign column is one character across and the badge
+                // barely more, while a glyph at g_font_size is drawn on a
+                // box that size *tall* -- so it spilled out of the disc
+                // and straight through the triangle's apex. These factors
+                // are of the badge, not of the font, so they hold at
+                // every zoom level.
+                //
+                // The triangle gets the smaller glyph of the two: a disc
+                // is at its widest across the middle, where the glyph
+                // sits, and a triangle is at its narrowest near the top.
+                const bool hazard = sign_shape == "triangle";
+                const float glyph_size = std::max(5.0f, r * (hazard ? 1.25f : 1.5f));
+                // DrawUiText takes the text box's *top*, so centering the
+                // glyph on the badge means lifting it by half its own
+                // height rather than drawing it at the row's top the way
+                // a full-size sign is.
+                float glyph_cy = cy;
+                if (hazard) {
+                    // Rounded off the disc's own footprint so a warning
+                    // does not read as bigger than an error beside it:
+                    // the apex sits a little above the disc's top and the
+                    // base a little below its middle, which is where a
+                    // triangle's visual weight already is.
+                    gfx::DrawTriangle(gfx::Vector2{cx, cy - r * 1.15f}, gfx::Vector2{cx - r * 1.18f, cy + r * 0.85f},
+                                      gfx::Vector2{cx + r * 1.18f, cy + r * 0.85f}, badge);
+                    // ...and for the same reason the glyph rides below the
+                    // true center: the room inside a triangle is all in
+                    // its lower half.
+                    glyph_cy += r * 0.18f;
+                } else {
+                    gfx::DrawCircle(static_cast<int>(cx), static_cast<int>(cy), r, badge);
+                }
+                const float sign_w_text = MeasureUiText(sign, glyph_size);
+                DrawUiText(sign, gfx::Vector2{cx - sign_w_text / 2.0f, glyph_cy - glyph_size / 2.0f}, glyph_size,
+                           ResolveHlGroup("NormalBg"));
             } else {
                 DrawUiText(sign, gfx::Vector2{x + kMarginX, ly}, g_font_size, ResolveHlGroup(sign_hl));
             }
@@ -43008,6 +43895,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         gfx::DrawTextEx(g_font, label_text.c_str(), gfx::Vector2{text_draw_x, p_label_y + (label_h - g_font_size) / 2.0f}, g_font_size, 0, gfx::White);
     }
 
+    // The outer pipes (org_table_conceals above), painted out before the
+    // rules so a horizontal rule still runs the full width of the box
+    // rather than stopping a cell short of the border at each end. Opaque
+    // first -- the pipe has to actually go -- then the band's own wash
+    // back over it, landing on exactly the color the row already shows.
+    for (const OrgTableConceal &tc : org_table_conceals) {
+        draw_org_table_band(tc.rect, tc.round_top, tc.round_bot, tc.inset_l, tc.inset_r, ResolveHlGroup("NormalBg"));
+        draw_org_table_band(tc.rect, tc.round_top, tc.round_bot, tc.inset_l, tc.inset_r, tc.wash);
+    }
+
     // Org table grid (see org_table_rules above): drawn after the row
     // text so a column rule merges with the `|` glyphs it runs through,
     // and a horizontal rule covers the `|---+---|` dashes it stands in
@@ -43016,9 +43913,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const gfx::Color rule_c = ResolveHlGroup("Comment");
         for (const OrgTableRule &tr : org_table_rules) {
             if (tr.horizontal) {
-                gfx::DrawRectangle(static_cast<int>(tr.rect.x), static_cast<int>(tr.rect.y),
-                              static_cast<int>(tr.rect.width), static_cast<int>(tr.rect.height),
-                              ResolveHlGroup("NormalBg"));
+                // The cover is opaque -- the dashes underneath have to go
+                // -- so the band's own wash goes back on over it, or the
+                // rule row would be the one strip of bare page in an
+                // otherwise washed table. Both are inset at the corners
+                // the outline rounds, exactly as the fill pass was.
+                draw_org_table_band(tr.rect, tr.round_top, tr.round_bot, true, true, ResolveHlGroup("NormalBg"));
+                draw_org_table_band(tr.rect, tr.round_top, tr.round_bot, true, true, tr.wash);
                 gfx::DrawRectangle(static_cast<int>(tr.rect.x),
                               static_cast<int>(tr.rect.y + tr.rect.height / 2.0f),
                               static_cast<int>(tr.rect.width), 1, rule_c);
@@ -43027,6 +43928,24 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                               static_cast<int>(tr.rect.height), rule_c);
             }
         }
+    }
+
+    // The rounded outline round each table (org_table_boxes above), last
+    // of the table passes so it stays crisp over both the row text and
+    // the rules that ran to the table's edge -- the same border a block
+    // card draws, and for the same reason: it is what makes the thing
+    // read as one object rather than as a run of pipe characters.
+    for (const auto &entry : org_table_boxes) {
+        const OrgTableBox &box = entry.second;
+        if (box.rect.width <= 0.0f || box.rect.height <= 0.0f) continue;
+        const gfx::Color accent = ResolveHlGroup("Accent");
+        const gfx::Color border = box.active ? gfx::Fade(accent, 0.55f) : gfx::Fade(ResolveHlGroup("Border"), 0.7f);
+        // roundness is a fraction of half the shorter side, so the fixed
+        // pixel radius has to be converted -- and clamped, for a table
+        // one row tall.
+        const float rr = std::min(1.0f, 2.0f * org_table_corner /
+                                            std::max(1.0f, std::min(box.rect.width, box.rect.height)));
+        gfx::DrawRectangleRoundedLinesEx(box.rect, rr, 6, box.active ? 2.0f : 1.0f, border);
     }
 
     // Org block cards (see org_card_boxes above): the title bar that
@@ -43159,17 +44078,177 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
         // The `#+end_` row, blanked to plain card floor: the bottom edge
-        // of the card *is* the "end" marker once the card is drawn.
+        // of the card *is* the "end" marker once the card is drawn --
+        // which frees the row it used to spell that out on, and that row
+        // is where a src block's language-server status goes (see
+        // Buffer::org_lsp_status_rows). Reusing it is what keeps this
+        // feature free of layout: no extra slot, so none of the four slot
+        // walkers that must agree on a row's height has to know about it.
         if (cb.conceal_footer) {
             clear_overflow(cb.footer);
             gfx::DrawRectangle(static_cast<int>(cb.footer.x), static_cast<int>(cb.footer.y),
                           static_cast<int>(cb.footer.width), static_cast<int>(cb.footer.height), opaque_bg);
             gfx::DrawRectangle(static_cast<int>(cb.footer.x), static_cast<int>(cb.footer.y),
                           static_cast<int>(cb.footer.width), static_cast<int>(cb.footer.height), card_wash);
+            // Only for a src block, and only while the cursor is off the
+            // `#+end_src` row: on it the raw text is revealed (that is
+            // what conceal_footer already means), and a status line
+            // painted over the line being edited would be the one thing
+            // the whole conceal/reveal bargain exists to avoid.
+            const OrgLspStatus *lsp = cb.is_src ? g_editor.OrgLspStatusForRow(buf, card.begin_row) : nullptr;
+            if (lsp != nullptr) {
+                // The rule the status hangs under, separating it from the
+                // code above. Inset at both ends so it reads as a divider
+                // inside the card rather than as a second border meeting
+                // the rounded outline at the corners.
+                const float rule_x = cb.footer.x + 8.0f;
+                const float rule_w = std::max(0.0f, cb.footer.width - 16.0f);
+                gfx::DrawRectangle(static_cast<int>(rule_x), static_cast<int>(cb.footer.y),
+                              static_cast<int>(rule_w), 1, gfx::Fade(accent, 0.35f));
+                const OrgLspStatusTone tone = OrgLspStatusToneOf(*lsp);
+                gfx::Color tone_c = ResolveHlGroup("MutedFg");
+                if (tone == OrgLspStatusTone::kError) tone_c = ResolveHlGroup("Error");
+                else if (tone == OrgLspStatusTone::kWarn) tone_c = ResolveHlGroup("Warn");
+                else if (tone == OrgLspStatusTone::kOk) tone_c = ResolveHlGroup("Green");
+                // A dot carries the severity so the line's state is
+                // readable without reading it; the text itself stays
+                // muted unless something is actually wrong, so a page of
+                // healthy blocks doesn't turn into a wall of color.
+                const float dot_r = std::max(2.0f, g_font_size * 0.16f);
+                const float dot_cx = cb.footer.x + 10.0f + dot_r;
+                gfx::DrawCircle(static_cast<int>(dot_cx), static_cast<int>(cb.footer.y + cb.footer.height / 2.0f),
+                           dot_r, tone_c);
+                const float sx = dot_cx + dot_r + 6.0f;
+                const float s_limit = cb.footer.x + cb.footer.width - 8.0f;
+                std::string s_text = FormatOrgLspStatus(*lsp);
+                // Elided rather than clipped mid-glyph by the scissor, the
+                // same bargain the title bar's own chips make: the full
+                // answer is a `:MepDiagShow`/cursor move away, and a
+                // status line that runs off its card reads as a bug.
+                float s_w = gfx::MeasureTextEx(g_font, s_text.c_str(), g_font_size, 0).x;
+                if (sx + s_w > s_limit) {
+                    const float ell_w = gfx::MeasureTextEx(g_font, "...", g_font_size, 0).x;
+                    const float avail = s_limit - sx;
+                    int cols = ByteOffsetToColumn(s_text, static_cast<int>(s_text.size()));
+                    bool fitted = false;
+                    while (cols > 0) {
+                        cols--;
+                        std::string cut = s_text.substr(0, ColumnToByteOffset(s_text, cols));
+                        if (gfx::MeasureTextEx(g_font, cut.c_str(), g_font_size, 0).x + ell_w <= avail) {
+                            s_text = cut + "...";
+                            fitted = true;
+                            break;
+                        }
+                    }
+                    // Not even an ellipsis fits (a very narrow split):
+                    // the dot alone still says how the block is doing.
+                    if (!fitted) s_text.clear();
+                }
+                if (!s_text.empty()) {
+                    const float s_y = cb.footer.y + (cb.footer.height - g_font_size) / 2.0f;
+                    gfx::DrawTextEx(g_font, s_text.c_str(), gfx::Vector2{sx, s_y}, g_font_size, 0,
+                               tone == OrgLspStatusTone::kError || tone == OrgLspStatusTone::kWarn
+                                   ? tone_c
+                                   : ResolveHlGroup("MutedFg"));
+                }
+            }
         }
         gfx::Color border = cb.is_src ? (cb.active ? accent : gfx::Fade(accent, 0.55f))
                                        : gfx::Fade(ResolveHlGroup("Border"), cb.active ? 1.0f : 0.7f);
         gfx::DrawRectangleRoundedLinesEx(cb.rect, card_rr, 6, cb.active ? 2.0f : 1.0f, border);
+        // End-of-line virtual text belonging to a row this card conceals
+        // (org_card_eol_texts above): a diagnostic on the `#+begin_src`
+        // line, most often. Drawn last of all -- after the title bar, the
+        // clear_overflow repaint and the outline, every one of which used
+        // to land on top of it -- and anchored a character past the card's
+        // right border rather than at the row's own (hidden) end, so it
+        // reads as an annotation hanging off the block instead of text
+        // buried inside it.
+        bool restroke_outline = false;  // set by the in-card fallback below, which paints over the card's top edge
+        for (const OrgCardEolText &et : org_card_eol_texts) {
+            if (et.box != static_cast<size_t>(&cb - org_card_boxes.data())) continue;
+            const float limit = x + w - static_cast<float>(kMarginX);
+            const float card_right = cb.rect.x + cb.rect.width;
+            float ex = card_right + g_char_width;
+            // A card only runs to the pane's own edge when its content (or
+            // `:set textwidth`) is as wide as the pane -- a big font, or a
+            // narrow split. There is no "after the border" left to draw in
+            // then, and falling back to nothing would leave exactly the
+            // invisible diagnostic this whole pass exists to fix, so the
+            // message moves *inside* the card's right end instead, over
+            // its own band of card background. The band stops short of the
+            // border so the outline stays unbroken, and the title bar's
+            // chips are laid out from the left and already elide
+            // themselves (see `fits` above), so what it covers is the
+            // empty tail of the bar in all but the busiest headers.
+            const bool after_border = ex + gfx::MeasureTextEx(g_font, "...", g_font_size, 0).x < limit;
+            float avail = limit - ex;
+            if (!after_border) {
+                avail = std::max(0.0f, (card_right - 8.0f) - (cb.rect.x + 8.0f));
+                avail = std::min(avail, cb.rect.width * 0.5f);  // never more than the bar's right half
+            }
+            if (avail < g_char_width * 4.0f) continue;  // nowhere to put it; the gutter badge still marks the row
+            // The message is one line of prose and the space it has is
+            // whatever is left over, so it is elided to fit rather than
+            // clipped mid-glyph by the scissor -- the full text is one
+            // `:MepDiagShow` (or cursor move) away.
+            std::string et_text = et.text;
+            float tw = gfx::MeasureTextEx(g_font, et_text.c_str(), g_font_size, 0).x;
+            if (tw > avail) {
+                const float ell_w = gfx::MeasureTextEx(g_font, "...", g_font_size, 0).x;
+                int cols = ByteOffsetToColumn(et_text, static_cast<int>(et_text.size()));
+                bool fitted = false;
+                while (cols > 0) {
+                    cols--;
+                    std::string cut = et_text.substr(0, ColumnToByteOffset(et_text, cols));
+                    const float cut_w = gfx::MeasureTextEx(g_font, cut.c_str(), g_font_size, 0).x;
+                    if (cut_w + ell_w <= avail) {
+                        et_text = cut + "...";
+                        tw = cut_w + ell_w;
+                        fitted = true;
+                        break;
+                    }
+                }
+                if (!fitted) continue;  // not even an ellipsis fits
+            }
+            if (!after_border) {
+                // Right-aligned against the card's inner edge: the end the
+                // bar's own content is furthest from.
+                ex = card_right - 8.0f - tw;
+                // Clamped to the concealed band's own rect, not just to
+                // the row: painting a plain row-height rectangle here
+                // overshot the bar by a pixel at the top and swallowed
+                // the accent rule along its bottom, so the title bar
+                // visibly broke apart around the message.
+                const gfx::Rectangle &owner = et.on_header ? cb.header : cb.footer;
+                const float band_top = std::max(et.y, owner.y);
+                const float band_bottom = std::min(et.y + static_cast<float>(line_height), owner.y + owner.height);
+                const gfx::Rectangle band{ex - 6.0f, band_top, tw + 12.0f, band_bottom - band_top};
+                if (band.height <= 0.0f) continue;
+                gfx::DrawRectangle(static_cast<int>(band.x), static_cast<int>(band.y), static_cast<int>(band.width),
+                              static_cast<int>(band.height), opaque_bg);
+                gfx::DrawRectangle(static_cast<int>(band.x), static_cast<int>(band.y), static_cast<int>(band.width),
+                              static_cast<int>(band.height), et.on_header ? header_wash : card_wash);
+                // ...and the rule itself back on over the band's own
+                // width. A no-op when the band does not reach it.
+                if (et.on_header) {
+                    gfx::DrawRectangle(static_cast<int>(band.x), static_cast<int>(cb.header.y + cb.header.height - 1.0f),
+                                  static_cast<int>(band.width), 1, gfx::Fade(accent, cb.is_src ? 0.45f : 0.25f));
+                }
+                restroke_outline = true;
+            }
+            gfx::DrawTextEx(g_font, et_text.c_str(), gfx::Vector2{ex, et.y}, g_font_size, 0, et.color);
+        }
+        // The fallback band lands on the header row, which *is* the card's
+        // top row, so it paints out the stretch of rounded outline running
+        // along it. Cheaper and more exact than trying to inset the band
+        // by the stroke's own width (1px, or 2 for the active card, and
+        // rounded at the corners): stroke the outline again, over the
+        // band. The message ends well short of the right edge, so this
+        // cannot land on the text it was drawn for.
+        if (restroke_outline) {
+            gfx::DrawRectangleRoundedLinesEx(cb.rect, card_rr, 6, cb.active ? 2.0f : 1.0f, border);
+        }
     }
 
     // Notebook cell-card borders (see nb_cell_boxes above): stroked last,
@@ -44238,6 +45317,8 @@ void DrawEditor() {
     DrawRunButtonMenu();
     // A notebook code cell's kernel dropdown -- same on-top treatment.
     DrawNotebookKernelMenu();
+    // An org pane's insert-block language dropdown -- likewise.
+    DrawOrgInsertBlockMenu();
     // Same reasoning as the comment just above (drawn after sidebars, not
     // before, so it sits on top instead of being painted over by one) --
     // this used to be drawn inline with the command-line text itself,
@@ -44921,6 +46002,16 @@ void DispatchChromeClicks() {
         g_notebook_kernel_menu_buffer = -1;
         g_notebook_kernel_menu_cell = -1;
         g_notebook_kernel_menu_rect = {};
+    }
+    // Same for an open org insert-block dropdown, with one addition: a
+    // click on the button that opened it is left alone, so that button's
+    // own toggle region (DrawPane's header controls) closes the menu
+    // instead of this dismissing it and the toggle reopening it in the
+    // same click.
+    if (g_org_block_menu_pane != -1 && !PointInRect(mouse, g_org_block_menu_rect) &&
+        !PointInRect(mouse, g_org_block_menu_anchor)) {
+        g_org_block_menu_pane = -1;
+        g_org_block_menu_rect = {};
     }
     for (const ClickRegion &r : g_click_regions) {
         if (PointInRect(mouse, r.rect)) {
@@ -46639,6 +47730,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgAgenda);
     lua->DoString(kBuiltinOrgClock);
     lua->DoString(kBuiltinOrgBabel);
+    lua->DoString(kBuiltinOrgInsertBlock);
     lua->DoString(kBuiltinOrgPolyglot);
     lua->DoString(kBuiltinOrgLatex);
     lua->DoString(kBuiltinPdfAnnot);

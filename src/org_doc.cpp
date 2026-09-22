@@ -1265,6 +1265,159 @@ std::string OrgPadCols(const std::string &s, int width) {
     return s + std::string(static_cast<size_t>(width - have), ' ');
 }
 
+// --- Wrapping a cell while keeping track of where its text came from ---
+// The wrap drops the spaces it breaks on and hard-splits an over-wide
+// word, so an offset into a wrapped line is not an offset into the cell.
+// A link's span is in the cell's coordinates, though, which leaves the
+// planner needing the map back: each word is recorded as one chunk of
+// `len` bytes drawn at `out` in its line and taken from `src` in the
+// cell, and a link span intersected against those chunks comes out as
+// the columns it occupies on each line it reaches.
+struct OrgCellChunk {
+    int out = 0;  // byte offset into the wrapped line
+    int src = 0;  // byte offset into the cell's text
+    int len = 0;
+};
+
+struct OrgCellLine {
+    std::string text;
+    std::vector<OrgCellChunk> chunks;
+};
+
+// The wrap itself: greedy at `width` display columns, breaking on spaces
+// and splitting a word only when the word alone is wider than the
+// column. OrgTableWrapCell is this with the chunks dropped, and the two
+// must stay one algorithm -- a cell whose text and whose link columns
+// disagreed would paint a link face over the wrong characters.
+/**
+ * @brief Word-wraps a cell to a column width, recording where each placed word came from.
+ * @param text the cell's text
+ * @param width the target width in display columns (values below 1 are treated as 1)
+ * @param out_lines the wrapped lines with their source chunks, never empty
+ */
+void WrapCellTracked(const std::string &text, int width, std::vector<OrgCellLine> *out_lines) {
+    const int w = std::max(1, width);
+    std::vector<OrgCellLine> &out = *out_lines;
+    out.clear();
+    // Split on runs of spaces: the cell text arrives already trimmed, and
+    // interior runs collapse to one space, which is what makes a wrapped
+    // cell read as prose instead of keeping the column padding of
+    // whatever the author happened to type.
+    struct Word {
+        std::string text;
+        int src = 0;
+    };
+    std::vector<Word> words;
+    for (size_t i = 0; i < text.size();) {
+        if (text[i] == ' ' || text[i] == '\t') {
+            i++;
+            continue;
+        }
+        size_t k = i;
+        while (k < text.size() && text[k] != ' ' && text[k] != '\t') k++;
+        words.push_back(Word{text.substr(i, k - i), static_cast<int>(i)});
+        i = k;
+    }
+    OrgCellLine cur;
+    for (const Word &word : words) {
+        std::string piece = word.text;
+        int piece_src = word.src;
+        // A word wider than the whole column can't be placed by breaking
+        // on spaces: flush what we have and hard-split it across as many
+        // lines as it needs (a long URL, a path, a chemical name).
+        if (OrgTableDisplayWidth(piece) > w) {
+            if (!cur.text.empty()) {
+                out.push_back(std::move(cur));
+                cur = OrgCellLine();
+            }
+            while (OrgTableDisplayWidth(piece) > w) {
+                const std::string head = OrgTakeCols(piece, w);
+                OrgCellLine line;
+                line.chunks.push_back(OrgCellChunk{0, piece_src, static_cast<int>(head.size())});
+                line.text = head;
+                out.push_back(std::move(line));
+                piece_src += static_cast<int>(head.size());
+                piece = piece.substr(head.size());
+            }
+            if (!piece.empty()) {
+                cur.chunks.push_back(OrgCellChunk{0, piece_src, static_cast<int>(piece.size())});
+                cur.text = piece;
+            }
+            continue;
+        }
+        const int extra = cur.text.empty() ? 0 : 1;
+        if (OrgTableDisplayWidth(cur.text) + extra + OrgTableDisplayWidth(piece) > w) {
+            out.push_back(std::move(cur));
+            cur = OrgCellLine();
+            cur.chunks.push_back(OrgCellChunk{0, piece_src, static_cast<int>(piece.size())});
+            cur.text = piece;
+        } else {
+            if (!cur.text.empty()) cur.text += " ";
+            cur.chunks.push_back(
+                OrgCellChunk{static_cast<int>(cur.text.size()), piece_src, static_cast<int>(piece.size())});
+            cur.text += piece;
+        }
+    }
+    if (!cur.text.empty() || out.empty()) out.push_back(std::move(cur));
+}
+
+// Where `link` lands on one wrapped line, appended to `into` with
+// `base` (the cell's own offset within the assembled line) added on.
+// One chunk per word, so a description of three words comes back as
+// three spans separated by the single space the wrap joined them with;
+// the caller merges those back together.
+/**
+ * @brief Appends the spans a cell link occupies on one wrapped line.
+ * @param line the wrapped line and its source chunks
+ * @param link the link's span in the cell's own text
+ * @param base the byte offset the cell's text starts at in the assembled line
+ * @param into the span list to append to
+ */
+void AppendCellLinkSpans(const OrgCellLine &line, const OrgTableCellLink &link, int base,
+                         std::vector<OrgTableWrapLink> *into) {
+    for (const OrgCellChunk &ch : line.chunks) {
+        const int lo = std::max(link.start, ch.src);
+        const int hi = std::min(link.end, ch.src + ch.len);
+        if (hi <= lo) continue;
+        into->push_back(OrgTableWrapLink{base + ch.out + (lo - ch.src), base + ch.out + (hi - ch.src), link.target,
+                                        link.concealed});
+    }
+}
+
+// Sorts one line's link spans into column order and joins the ones a
+// word break split, so a multi-word description underlines as one run
+// instead of a dotted sequence with a gap at every space.
+/**
+ * @brief Sorts a line's link spans and merges the pieces of a single link back together.
+ * @param links the spans to normalize, in place
+ */
+void MergeWrapLinks(std::vector<OrgTableWrapLink> *links) {
+    std::sort(links->begin(), links->end(), [](const OrgTableWrapLink &a, const OrgTableWrapLink &b) {
+        return a.col_start < b.col_start;
+    });
+    size_t kept = 0;
+    for (size_t i = 0; i < links->size(); i++) {
+        OrgTableWrapLink &cand = (*links)[i];
+        if (kept > 0) {
+            OrgTableWrapLink &prev = (*links)[kept - 1];
+            // `+ 1` is the joining space the wrap put between two words
+            // of the same description; anything further apart is a
+            // genuine gap and stays one.
+            if (prev.target == cand.target && prev.concealed == cand.concealed &&
+                cand.col_start <= prev.col_end + 1) {
+                prev.col_end = std::max(prev.col_end, cand.col_end);
+                continue;
+            }
+        }
+        // `kept == i` until the first merge, and moving an element onto
+        // itself would leave its target an empty string -- which then
+        // matches nothing and defeats every later merge.
+        if (kept != i) (*links)[kept] = std::move(cand);
+        kept++;
+    }
+    links->resize(kept);
+}
+
 }  // namespace
 
 int OrgTableDisplayWidth(const std::string &s) {
@@ -1278,52 +1431,43 @@ int OrgTableDisplayWidth(const std::string &s) {
 }
 
 std::vector<std::string> OrgTableWrapCell(const std::string &text, int width) {
-    const int w = std::max(1, width);
+    std::vector<OrgCellLine> lines;
+    WrapCellTracked(text, width, &lines);
     std::vector<std::string> out;
-    // Split on runs of spaces: the cell text arrives already trimmed, and
-    // interior runs collapse to one space, which is what makes a wrapped
-    // cell read as prose instead of keeping the column padding of
-    // whatever the author happened to type.
-    std::vector<std::string> words;
-    for (size_t i = 0; i < text.size();) {
-        if (text[i] == ' ' || text[i] == '\t') {
-            i++;
-            continue;
+    out.reserve(lines.size());
+    for (OrgCellLine &l : lines) out.push_back(std::move(l.text));
+    return out;
+}
+
+std::string OrgTableCellDisplayText(const std::string &cell, bool conceal, std::vector<OrgTableCellLink> *links) {
+    if (links) links->clear();
+    const std::vector<OrgLinkSpanInfo> spans = ScanOrgLinkSpans(cell);
+    if (spans.empty()) return cell;
+    std::string out;
+    size_t pos = 0;
+    for (const OrgLinkSpanInfo &sp : spans) {
+        const size_t a = std::min(static_cast<size_t>(std::max(0, sp.col_start)), cell.size());
+        const size_t b = std::min(static_cast<size_t>(std::max(0, sp.col_end)), cell.size());
+        // ScanOrgLinkSpans hands them back in column order and never
+        // overlapping, so a span that walks backwards can only be a
+        // clamped, degenerate one -- skipped rather than allowed to
+        // scramble the output.
+        if (b <= a || a < pos) continue;
+        out.append(cell, pos, a - pos);
+        // A bare URL's own `display` is the URL itself, so this stands
+        // only bracket links down -- and only while concealment is on,
+        // since with it off the renderer shows the markup and the
+        // columns have to be budgeted for it.
+        const bool concealed = conceal && sp.bracketed;
+        const std::string shown = concealed ? sp.display : cell.substr(a, b - a);
+        if (links && !shown.empty()) {
+            links->push_back(OrgTableCellLink{static_cast<int>(out.size()),
+                                              static_cast<int>(out.size() + shown.size()), sp.target, concealed});
         }
-        size_t k = i;
-        while (k < text.size() && text[k] != ' ' && text[k] != '\t') k++;
-        words.push_back(text.substr(i, k - i));
-        i = k;
+        out += shown;
+        pos = b;
     }
-    std::string cur;
-    for (const std::string &word : words) {
-        std::string piece = word;
-        // A word wider than the whole column can't be placed by breaking
-        // on spaces: flush what we have and hard-split it across as many
-        // lines as it needs (a long URL, a path, a chemical name).
-        if (OrgTableDisplayWidth(piece) > w) {
-            if (!cur.empty()) {
-                out.push_back(cur);
-                cur.clear();
-            }
-            while (OrgTableDisplayWidth(piece) > w) {
-                std::string head = OrgTakeCols(piece, w);
-                out.push_back(head);
-                piece = piece.substr(head.size());
-            }
-            cur = piece;
-            continue;
-        }
-        const int extra = cur.empty() ? 0 : 1;
-        if (OrgTableDisplayWidth(cur) + extra + OrgTableDisplayWidth(piece) > w) {
-            out.push_back(cur);
-            cur = piece;
-        } else {
-            if (!cur.empty()) cur += " ";
-            cur += piece;
-        }
-    }
-    if (!cur.empty() || out.empty()) out.push_back(cur);
+    out.append(cell, pos, std::string::npos);
     return out;
 }
 
@@ -1427,36 +1571,55 @@ OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int bu
 
     const std::string lead(static_cast<size_t>(std::max(0, indent)), ' ');
     plan.rows.reserve(rows.size());
+    static const std::vector<OrgTableCellLink> kNoCellLinks;
     for (const OrgTableCells &r : rows) {
-        std::vector<std::string> out;
+        std::vector<OrgTableWrapLine> out;
         if (r.is_sep) {
-            std::string line = lead + "|";
+            OrgTableWrapLine line;
+            line.text = lead + "|";
             for (size_t c = 0; c < cols; c++) {
-                if (c > 0) line += "+";
-                line += std::string(static_cast<size_t>(widths[c] + 2), '-');
+                if (c > 0) line.text += "+";
+                line.text += std::string(static_cast<size_t>(widths[c] + 2), '-');
             }
-            line += "|";
+            line.text += "|";
             out.push_back(std::move(line));
             plan.rows.push_back(std::move(out));
             continue;
         }
         // Wrap every cell first: the row draws as however many lines its
         // tallest cell needs, with the shorter cells blank underneath.
-        std::vector<std::vector<std::string>> cell_lines(cols);
+        std::vector<std::vector<OrgCellLine>> cell_lines(cols);
         size_t height = 1;
         for (size_t c = 0; c < cols; c++) {
             const std::string &txt = c < r.cells.size() ? r.cells[c] : std::string();
-            cell_lines[c] = OrgTableWrapCell(txt, widths[c]);
+            WrapCellTracked(txt, widths[c], &cell_lines[c]);
             height = std::max(height, cell_lines[c].size());
         }
         for (size_t l = 0; l < height; l++) {
-            std::string line = lead + "|";
+            OrgTableWrapLine line;
+            line.text = lead + "|";
             for (size_t c = 0; c < cols; c++) {
-                if (c > 0) line += "|";
-                const std::string piece = l < cell_lines[c].size() ? cell_lines[c][l] : std::string();
-                line += " " + OrgPadCols(piece, widths[c]) + " ";
+                if (c > 0) line.text += "|";
+                line.text += " ";
+                // Where this cell's text starts in the assembled line,
+                // which is what a link span inside it has to be offset
+                // by to come out in the line's own columns.
+                const int cell_base = static_cast<int>(line.text.size());
+                if (l < cell_lines[c].size()) {
+                    const OrgCellLine &cl = cell_lines[c][l];
+                    const std::vector<OrgTableCellLink> &cell_links =
+                        c < r.links.size() ? r.links[c] : kNoCellLinks;
+                    for (const OrgTableCellLink &lk : cell_links) {
+                        AppendCellLinkSpans(cl, lk, cell_base, &line.links);
+                    }
+                    line.text += OrgPadCols(cl.text, widths[c]);
+                } else {
+                    line.text += OrgPadCols(std::string(), widths[c]);
+                }
+                line.text += " ";
             }
-            line += "|";
+            line.text += "|";
+            MergeWrapLinks(&line.links);
             out.push_back(std::move(line));
         }
         plan.rows.push_back(std::move(out));
@@ -1515,4 +1678,89 @@ OrgImageLayout OrgImageLayoutFor(int px_w, int px_h, float char_width, float lin
     out.slots = std::max(1, static_cast<int>(std::ceil(rows - 0.001f)));
     out.offset_x = std::max(0.0f, (box_w - out.width) * 0.5f);
     return out;
+}
+
+// --- Per-src-block language-server status (<leader>ots) ---
+
+namespace {
+
+/**
+ * @brief Renders a count with a singular/plural noun ("1 error", "2 errors").
+ * @param n The count.
+ * @param noun The singular noun; an "s" is appended for any other count.
+ * @return The formatted phrase.
+ */
+std::string CountPhrase(int n, const char *noun) {
+    std::string out = std::to_string(n) + " " + noun;
+    if (n != 1) out += "s";
+    return out;
+}
+
+}  // namespace
+
+std::string FormatOrgLspStatus(const OrgLspStatus &st) {
+    // A block with nothing to attach says why in plain words rather than
+    // naming a server that doesn't exist. The language is only worth
+    // repeating here in the case the title bar can't already show it --
+    // a block with no language tag at all has an "src" chip up there and
+    // nothing else, so "no language set" is the whole answer.
+    if (st.state == OrgLspState::kUnsupported || st.server.empty()) {
+        if (st.lang.empty()) return "LSP: no language set";
+        return "LSP: no server for " + st.lang;
+    }
+    // Everywhere else the language is already on the card's title bar, so
+    // the line leads with the one thing that bar doesn't carry: which
+    // server, and what it is doing.
+    std::string out = st.server + ": ";
+    switch (st.state) {
+        case OrgLspState::kIdle:
+            // Not "off": the bridge attaches the first time an LSP
+            // feature actually runs inside the block (hover, completion,
+            // goto-definition -- mep_polyglot_context_at_cursor's callers),
+            // and saying so is the difference between an idle block and a
+            // broken one.
+            return out + "idle (attaches on first use)";
+        case OrgLspState::kStarting:
+            return out + "starting...";
+        case OrgLspState::kExited:
+            return out + "not running";
+        case OrgLspState::kReady:
+            break;
+        case OrgLspState::kUnsupported:
+            break;
+    }
+    out += "ready";
+    std::vector<std::string> counts;
+    if (st.errors > 0) counts.push_back(CountPhrase(st.errors, "error"));
+    if (st.warnings > 0) counts.push_back(CountPhrase(st.warnings, "warning"));
+    if (st.hints > 0) counts.push_back(CountPhrase(st.hints, "hint"));
+    if (counts.empty()) return out + ", no diagnostics";
+    out += ", ";
+    for (size_t i = 0; i < counts.size(); i++) {
+        if (i > 0) out += ", ";
+        out += counts[i];
+    }
+    return out;
+}
+
+OrgLspStatusTone OrgLspStatusToneOf(const OrgLspStatus &st) {
+    // Counts first: what the server found matters more than the fact that
+    // it is running, and a block whose code is broken should read as
+    // broken even though its client is perfectly healthy.
+    if (st.errors > 0) return OrgLspStatusTone::kError;
+    if (st.warnings > 0) return OrgLspStatusTone::kWarn;
+    // A client that was started and is gone is a real fault (a crashed
+    // server, a failed spawn) -- unlike kIdle, which is the normal
+    // resting state of a block the cursor hasn't visited.
+    if (st.state == OrgLspState::kExited) return OrgLspStatusTone::kWarn;
+    if (st.state == OrgLspState::kReady) return OrgLspStatusTone::kOk;
+    return OrgLspStatusTone::kMuted;
+}
+
+OrgLspState OrgLspStateFromName(const std::string &name) {
+    if (name == "idle") return OrgLspState::kIdle;
+    if (name == "starting") return OrgLspState::kStarting;
+    if (name == "ready") return OrgLspState::kReady;
+    if (name == "exited") return OrgLspState::kExited;
+    return OrgLspState::kUnsupported;
 }

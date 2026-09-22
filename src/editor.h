@@ -461,14 +461,19 @@ struct Decoration {
                         // single ASCII char -- main.cpp's DrawUiText is
                         // what actually renders it.
     std::string sign_hl;
-    // Draws a small filled circle (sign_hl's own color) behind `sign` in
-    // the gutter instead of just plain colored text -- a "badge" look
-    // for e.g. a diagnostic count, so more than one stacked signal on a
-    // line (2 errors vs. 1) is visually distinguishable at a glance, not
-    // just by which single glyph happened to win priority.
+    // Draws a small filled shape (sign_hl's own color) behind `sign` in
+    // the gutter instead of just plain colored text -- a "badge" look,
+    // so a signal reads as a marked-up symbol rather than as one more
+    // character in the margin. `sign_shape` picks the outline here
+    // ("triangle" for a hazard sign, a disc otherwise) instead of
+    // replacing `sign` the way it does on its own; the diagnostics
+    // renderer uses the pair to say a severity with a shape and a glyph
+    // rather than with a color alone (mep.lsp_render_diagnostics).
     bool sign_badge = false;
     // Draws a geometric mark in the sign column instead of a text glyph
-    // (`sign` is ignored when this is set): "bar" is a full-height
+    // (`sign` is ignored when this is set, unless `sign_badge` is also
+    // set -- then this names the badge's outline and `sign` is the glyph
+    // drawn inside it): "bar" is a full-height
     // vertical stripe, "delete"/"topdelete" a short horizontal stripe
     // along the row's bottom/top edge, "changedelete" both a bar and a
     // bottom stripe. This is what the git gutter draws its hunk marks
@@ -1006,13 +1011,18 @@ struct Buffer {
     };
     std::unordered_map<int, OrgLatexRender> org_latex_rows;
 
-    // Org tables rendered wrapped (Editor::OrgTableWrapScan): a table
-    // whose aligned width runs past `:set textwidth` draws with
-    // re-budgeted columns and its long cells wrapped, so one stored row
-    // takes several screen rows. Display-only -- the file keeps its long
-    // lines (see org_doc.h's own section for why wrapping *into* the
-    // buffer was rejected), and these strings are the only thing the
-    // renderer draws for such a row.
+    // Org tables laid out for the screen (Editor::OrgTableWrapScan),
+    // for either of two reasons. A table whose width runs past `:set
+    // textwidth` draws with re-budgeted columns and its long cells
+    // wrapped, so one stored row takes several screen rows. A table
+    // whose cells are *narrower* drawn than stored -- one holding
+    // `[[file:x][desc]]` links, padded in the file to its markup's width
+    // -- draws at its rendered widths instead, which closes the dead
+    // gutter that padding leaves in the link column; such a row is
+    // usually one line, not several. Display-only either way -- the file
+    // keeps its own text (see org_doc.h's own section for why wrapping
+    // *into* the buffer was rejected), and these strings are the only
+    // thing the renderer draws for such a row.
     //
     // Same "one row, more than one slot" shape as org_latex_rows above,
     // and the same four-site agreement: DrawPane's row loop, its own
@@ -1028,9 +1038,13 @@ struct Buffer {
     // is the single signal that a row draws its own text, which is why
     // the four sites above need no cursor test of their own.
     struct OrgTableWrapRow {
-        std::vector<std::string> lines;  // what this row draws as, top to bottom
-        int indent = 0;                  // display column the rendered leading `|` sits at
-        int width = 0;                   // rendered columns from `indent` to the trailing `|`
+        // What this row draws as, top to bottom -- each line carrying
+        // the links on it (OrgTableWrapLine, org_doc.h), since the
+        // row's own link decorations are skipped along with the rest of
+        // them and this layout is the only thing the renderer has.
+        std::vector<OrgTableWrapLine> lines;
+        int indent = 0;  // display column the rendered leading `|` sits at
+        int width = 0;   // rendered columns from `indent` to the trailing `|`
     };
     std::unordered_map<int, OrgTableWrapRow> org_table_wrap_rows;
 
@@ -1084,6 +1098,20 @@ struct Buffer {
         bool bracketed = false;
     };
     std::unordered_map<int, std::vector<OrgLinkSpan>> org_link_spans;
+
+    // Per-src-block language-server status (<leader>ots): the `#+begin_src`
+    // row (0-based, matching OrgBlockCard::begin_row) -> what that block's
+    // language server is doing, drawn as one line along the bottom edge of
+    // the block's card. Populated by Lua's mep.org_lsp_status_scan
+    // (kBuiltinOrgPolyglot, main.cpp), which is the only side that can see
+    // the shadow files/clients/server registry the status describes;
+    // rebuilt wholesale on every scan, the same "one provider replaces its
+    // own entries" convention as org_image_rows above. Only ever populated
+    // while the toggle is on -- the scan clears it and returns otherwise,
+    // and, like every other org scan here, it only ever runs for the
+    // buffer that is current when it fires, so a background pane's org
+    // buffer keeps whatever it was last scanned with.
+    std::unordered_map<int, OrgLspStatus> org_lsp_status_rows;
 
     /**
      * @brief Returns the number of lines currently in the buffer.
@@ -1187,6 +1215,33 @@ struct Pane {
     // UpdateScrollForPane's own comment for how this drives its
     // smoothing.
     int scroll_follow_last_cursor_row = -1;
+
+    // Sub-row scroll offset (TODO.org "smooth scroll"): how many of
+    // `scroll_row`'s own visual slots are scrolled off above the top of
+    // the pane. Almost always 0 -- an ordinary row is one slot tall, so
+    // there is nothing to be part-way through -- and nonzero only while
+    // the view is sliding over a tall org inline image, which claims as
+    // many slots as the figure is line-heights tall (OrgImageLayoutFor).
+    // Editor::ScrollFigureStep advances it by one slot per j/k so a
+    // figure taller than the pane scrolls past one line at a time instead
+    // of being skipped whole by a single row step; DrawPane (main.cpp)
+    // applies it once, as a shift of its whole slot grid, so none of the
+    // four slot-counting walkers has to learn about a partial top row.
+    int scroll_sub = 0;
+    // The row `scroll_sub` was measured against. A sub-row offset only
+    // means anything paired with the row it is an offset *into*, and
+    // plenty of code moves `scroll_row` on its own (gg, a search, Ctrl-D,
+    // a buffer switch -- every `scroll_row = 0` in editor.cpp), so
+    // UpdateScrollForPane drops a stale offset rather than applying it to
+    // whatever row the view landed on.
+    int scroll_sub_row = -1;
+    // The soft-wrap budget (DrawPane's own `wrap_cols`) as of this pane's
+    // last render, recorded by UpdateScrollForPane. Key handling --
+    // ScrollFigureStep and the mouse wheel -- has to count visual slots
+    // too, and unlike the render path it has no pixel geometry of its own
+    // to derive the budget from. 0 (wrap off) until first drawn, matching
+    // main.cpp's own "wrap_cols <= 0 means wrap is off" convention.
+    int wrap_cols = 0;
 };
 
 enum class SplitDir { Leaf, Horizontal, Vertical };
@@ -2819,6 +2874,48 @@ public:
      */
     void UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols = 0);
 
+    // --- Smooth scroll over a tall org figure (TODO.org "smooth scroll") ---
+    //
+    // An org inline image claims as many visual slots as the figure is
+    // drawn tall (OrgImageLayoutFor), routinely more than a pane holds,
+    // yet it is still exactly one buffer row -- so plain j/k has nothing
+    // to step through while going over it: one press takes the cursor
+    // from above the figure to below it and the view jumps a screenful or
+    // more to keep up. These three turn that row into something with a
+    // middle: while the cursor is on it, j/k scroll the *view* by one
+    // visual line per press (Pane::scroll_sub carries the part of a row
+    // that is scrolled off), and the cursor only steps off the figure
+    // once the edge it is travelling toward -- the figure's bottom going
+    // down, its top going up -- has passed the middle of the pane, which
+    // is where the caret conceptually rides while it is over a figure.
+    /**
+     * @brief Scrolls the focused pane one visual line over the tall org figure its cursor is on,
+     * if it is on one and the figure's trailing edge has not yet passed the middle of the pane.
+     * @param down True for a downward step (j), false for upward (k).
+     * @return True if the key was consumed by scrolling; false to let it move the cursor normally.
+     */
+    bool ScrollFigureStep(bool down);
+    /**
+     * @brief Returns how many visual slots the org inline image on `row` claims, or 0 if that row
+     * does not render as one (including when inline images are toggled off).
+     * @param pane The pane whose text width the figure is laid out against.
+     * @param buf The buffer `row` belongs to.
+     * @param row The buffer row to test.
+     * @return The figure's slot count, or 0 when the row is not a rendered figure.
+     */
+    int PaneFigureSlots(const Pane &pane, const Buffer &buf, int row) const;
+    /**
+     * @brief Counts the visual slots one buffer row occupies in a pane: 1 for an ordinary row, more
+     * for an org image/LaTeX/wide-table row, a soft-wrapped row, an org headline or a notebook cell
+     * with an output block.
+     * @param pane The pane the row is rendered in (its text width and cursor row).
+     * @param buf The buffer `row` belongs to.
+     * @param row The buffer row to measure.
+     * @param wrap_cols The pane's soft-wrap budget in characters; 0 disables wrap-aware counting.
+     * @return The number of visual slots the row claims.
+     */
+    int PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_cols) const;
+
     /**
      * @brief Returns the editor's current mode.
      * @return The current Mode.
@@ -2909,6 +3006,21 @@ public:
      * @return True if org block-card rendering is toggled on.
      */
     bool OrgBlockCardsVisible() const { return org_block_cards_visible_; }
+    // <leader>ots / mep.org_lsp_status_visible -- whether a `#+begin_src`
+    // block's card carries a language-server status line along its bottom
+    // edge (Buffer::org_lsp_status_rows). Like OrgLatexVisible() above
+    // this needs a real Lua-visible getter rather than being consulted
+    // only by the renderer: the scan that fills the registry lives in
+    // Lua (kBuiltinOrgPolyglot), and it has to clear its rows and stop
+    // polling the polyglot bridge while this is off rather than keep
+    // producing state nothing draws. Defaults on -- the line is one row
+    // of text inside space the card already reserves for `#+end_src`,
+    // so it costs no layout and hides nothing.
+    /**
+     * @brief Returns whether org src blocks show a language-server status line.
+     * @return True if org src-block LSP status rendering is toggled on.
+     */
+    bool OrgLspStatusVisible() const { return org_lsp_status_visible_; }
     // <leader>otm / mep.org_conceal_toggle -- whether org markup is
     // hidden behind what it marks up: `[[file:x][Notes]]` drawn as
     // `Notes`, `*bold*` as `bold`, a `|---+---|` rule as a drawn line.
@@ -2964,16 +3076,19 @@ public:
      * @return True if plain-cursor-line rendering is on.
      */
     bool OrgPlainCursorLineVisible() const { return org_plain_cursor_line_; }
-    // <leader>otw / mep.org_table_wrap_toggle -- whether a table too
-    // wide for `:set textwidth` renders with re-budgeted columns and its
-    // long cells wrapped (Buffer::org_table_wrap_rows) instead of running
-    // off past the margin. Defaults on, like the rest of the org
-    // rendering; consulted both by Editor::OrgTableWrapScan (which
-    // clears its rows and no-ops while off, so the raw lines come back)
-    // and by every one of the four slot walkers.
+    // <leader>otw / mep.org_table_wrap_toggle -- whether an org table
+    // renders from a layout fitted to the screen
+    // (Buffer::org_table_wrap_rows) instead of from its own text: a
+    // table too wide for `:set textwidth` with re-budgeted columns and
+    // its long cells wrapped, a table whose link markup conceals with
+    // its columns closed up to what they draw as. Defaults on, like the
+    // rest of the org rendering; consulted both by
+    // Editor::OrgTableWrapScan (which clears its rows and no-ops while
+    // off, so the raw lines come back) and by every one of the four slot
+    // walkers.
     /**
-     * @brief Returns whether over-wide org tables are rendered with wrapped cells and re-budgeted columns.
-     * @return True if wrapped table rendering is on.
+     * @brief Returns whether org tables render from a screen-fitted layout (wrapped cells, rendered-width columns).
+     * @return True if laid-out table rendering is on.
      */
     bool OrgTableWrapVisible() const { return org_table_wrap_visible_; }
     // Active pane/buffer -- what most of the UI (statusline, blinking
@@ -6194,6 +6309,20 @@ public:
      * @return True if a link was found there and followed.
      */
     bool OrgFollowLinkAt(int row, int col);
+    // The same follow, addressed by target instead of by column: a click
+    // inside a table rendered wrapped (Buffer::org_table_wrap_rows) lands
+    // on the *plan's* columns, which are nowhere near the stored line's,
+    // so there is no column to hand OrgFollowLinkAt -- but the plan does
+    // carry each link's target through the wrap (OrgTableWrapLink,
+    // org_doc.h). Follows the first link on the row with that target;
+    // two links to the same place are the same jump either way.
+    /**
+     * @brief Follows the first link on a row whose target matches, wherever its markup sits.
+     * @param row The 0-based row the link is on.
+     * @param target The link target to follow.
+     * @return True if a link with that target was found on the row and followed.
+     */
+    bool OrgFollowLinkTargetOn(int row, const std::string &target);
 
     // --- Org tables: the drawn grid (DrawPane, main.cpp) ---
     // A run of consecutive `|`-delimited rows, parsed into what it takes
@@ -7554,10 +7683,11 @@ public:
     /**
      * @brief Opens a vim.ui.select-equivalent modal item picker, taking over input until confirmed or cancelled.
      * @param title The picker's title text.
-     * @param items The selectable item labels.
+     * @param items The selectable item labels, each of which may contain '\\n's the renderer draws as its own rows.
      * @param on_done_ref A Lua function ref, called with the 1-indexed chosen index on Enter or with nil on Escape, then unrefed.
+     * @param on_key_ref Optional Lua function ref for keys the overlay itself does not use, called with (key, 1-indexed highlighted item); returning true keeps the overlay open. Unrefed with on_done_ref.
      */
-    void BeginSelect(const std::string &title, std::vector<std::string> items, int on_done_ref);
+    void BeginSelect(const std::string &title, std::vector<std::string> items, int on_done_ref, int on_key_ref = 0);
     // Preview: no callback -- purely informational (e.g. git-gutter's
     // hunk preview), dismissed by any keypress or a click, restoring
     // whatever mode was active before it opened. `text` may contain
@@ -7946,6 +8076,45 @@ public:
      */
     bool ToggleOrgBlockCards();
 
+    // --- Org src-block LSP status (<leader>ots / mep.org_lsp_status_toggle) ---
+    // Registers/replaces one `#+begin_src` block's language-server status
+    // in the current buffer's org_lsp_status_rows, keyed by the block's
+    // own `#+begin_src` row -- called once per block by Lua's
+    // mep.org_lsp_status_scan (kBuiltinOrgPolyglot, main.cpp), the same
+    // "one call per match" shape SetOrgImageRow and SetOrgLatexRow use.
+    /**
+     * @brief Registers or replaces one org src block's language-server status.
+     * @param row The block's `#+begin_src` row (0-based).
+     * @param status What that block's server is doing, and what it has reported.
+     */
+    void SetOrgLspStatusRow(int row, const OrgLspStatus &status);
+    // Drops every registered status in the current buffer -- the scan
+    // calls this before refilling (and instead of refilling, when the
+    // toggle is off), so a block that stopped existing, or a whole
+    // registry the toggle just turned off, leaves nothing stale behind.
+    /**
+     * @brief Clears the current buffer's whole org src-block LSP status registry.
+     */
+    void ClearOrgLspStatusRows();
+    // The status DrawPane (main.cpp) should draw along a block card's
+    // bottom edge, or nullptr for a block with none registered (a
+    // non-src block, one the scan hasn't reached yet, or the toggle
+    // being off).
+    /**
+     * @brief Looks up the registered language-server status for a src block's `#+begin_src` row.
+     * @param buf The buffer the block lives in.
+     * @param row The block's `#+begin_src` row (0-based).
+     * @return The status, or nullptr when the row has none.
+     */
+    const OrgLspStatus *OrgLspStatusForRow(const Buffer &buf, int row) const;
+    // <leader>ots: flips org_lsp_status_visible_ and returns the new
+    // state, same shape as ToggleOrgBlockCards above.
+    /**
+     * @brief Toggles org src-block LSP status rendering.
+     * @return The new visibility state.
+     */
+    bool ToggleOrgLspStatus();
+
     // --- Org LaTeX/math-mode rendering (<leader>otl / mep.org_latex_toggle) ---
     // Registers/replaces the rendered-PNG path, slot count, and last raw
     // source row (see Buffer::OrgLatexRender) for `row` -- called once per
@@ -8257,7 +8426,8 @@ public:
     // Command path (and the status line, :w, the mouse wheel) works on it
     // exactly as on a docked pane. It is not part of any tab's split tree
     // -- the tab's own active_pane_id is left alone underneath -- so
-    // closing it (Escape with nothing pending, :q/:close/:wq, the
+    // closing it (Escape with nothing pending unless the float opted out
+    // of that with escape_dismiss=false, :q/:close/:wq, the
     // header's x, a click outside the box) simply drops the node and
     // returns focus to wherever it came from: the sidebar row it was
     // opened from (the Todo panel's 'e') or the tab's active pane. Any
@@ -8269,9 +8439,13 @@ public:
      * @brief Opens `path` in a floating pane with the cursor on `row` (0-based), replacing any open float.
      * @param save_on_close Whether closing the float writes the buffer if it was modified.
      * @param on_close_ref Lua function ref called once on close with `true` if the buffer was written by that close (0 = none); released afterwards.
+     * @param escape_dismiss Whether a "nothing pending" Escape dismisses the float (default true). False is for a float
+     * whose typed content is worth protecting from a stray Escape -- the git commit message, where mod1+d (or :bd) is
+     * the deliberate abort and ZZ the deliberate confirm.
      * @return true if the float opened.
      */
-    bool OpenFloatPane(const std::string &path, int row, bool save_on_close, int on_close_ref = 0);
+    bool OpenFloatPane(const std::string &path, int row, bool save_on_close, int on_close_ref = 0,
+                       bool escape_dismiss = true);
     /**
      * @brief Closes the floating pane, restoring the prior focus.
      * @param force_write When true, writes the buffer unconditionally (ignoring save_on_close and whether it was
@@ -10326,6 +10500,65 @@ private:
     // uses (StepVisibleRow, goto_page, pan clamps, etc.) so wheel
     // scrolling can never drift out of sync with keyboard scrolling.
     void HandleMouseWheel(float dx, float dy);
+
+    // --- Pane::scroll_sub plumbing (ScrollFigureStep's own helpers) -----
+    //
+    // Everything below counts in *visual slots* (line-heights) measured
+    // from the view's top edge, which is (scroll_row, scroll_sub): the
+    // top row's own first `scroll_sub` slots are above the pane. They
+    // walk the buffer one drawn row at a time exactly the way DrawPane's
+    // row loop and its cursor-Y lookup do (main.cpp), so a closed fold or
+    // a multi-row LaTeX fragment costs the one slot it is drawn as rather
+    // than its raw row span.
+    /**
+     * @brief Returns where `row`'s top edge sits relative to a pane's top edge, in visual slots
+     * (negative above it), saturating at +/-`cap` so a far-off row costs a bounded walk.
+     * @param pane The pane whose scroll position the offset is measured from.
+     * @param buf The buffer `row` belongs to.
+     * @param row The buffer row to locate.
+     * @param wrap_cols The pane's soft-wrap budget in characters; 0 disables wrap-aware counting.
+     * @param cap The magnitude to stop walking at; the result is clamped to it before the
+     * sub-row offset is applied.
+     * @return The slot offset of `row`'s top edge from the pane's own top edge.
+     */
+    int PaneSlotOffsetOfRow(const Pane &pane, const Buffer &buf, int row, int wrap_cols, int cap) const;
+    /**
+     * @brief Returns the next row DrawPane would draw after `row`, skipping a closed fold's hidden
+     * interior and a rendered LaTeX fragment's remaining source rows.
+     * @param pane The pane being walked (its cursor row resolves the LaTeX reveal rule).
+     * @param buf The buffer `row` belongs to.
+     * @param row The row to step from.
+     * @return The next drawn row (never <= `row`, so every walk terminates).
+     */
+    int PaneNextDrawnRow(const Pane &pane, const Buffer &buf, int row) const;
+    /**
+     * @brief Returns the previous row DrawPane would draw before `row`, rewinding into a closed
+     * fold's start row or a rendered LaTeX fragment's start row when the step lands inside one.
+     * @param pane The pane being walked (its cursor row resolves the LaTeX reveal rule).
+     * @param buf The buffer `row` belongs to.
+     * @param row The row to step from.
+     * @return The previous drawn row, or 0 at the top of the buffer.
+     */
+    int PanePrevDrawnRow(const Pane &pane, const Buffer &buf, int row) const;
+    /**
+     * @brief Moves a pane's view by `slots` visual lines (negative = back up), walking through a
+     * tall row's own slots via Pane::scroll_sub and stopping at either end of the buffer.
+     * @param pane The pane to scroll.
+     * @param buf The pane's buffer.
+     * @param slots How many visual lines to move; negative scrolls back.
+     * @param wrap_cols The pane's soft-wrap budget in characters; 0 disables wrap-aware counting.
+     * @return True if the view moved at all.
+     */
+    bool ScrollPaneBySlots(Pane &pane, const Buffer &buf, int slots, int wrap_cols);
+    /**
+     * @brief Sets a pane's view top to `row` plus `sub` scrolled-off slots, keeping
+     * Pane::scroll_sub_row paired with it.
+     * @param pane The pane to reposition.
+     * @param row The row to put at the top of the pane.
+     * @param sub How many of that row's own leading slots are scrolled off above the pane.
+     */
+    void SetPaneScrollTop(Pane &pane, int row, int sub);
+
     // Accumulates fractional wheel input into whole-unit steps for a
     // content type whose scroll position is fundamentally discrete (a
     // text/paragraph/grid row or column, not a pixel offset) -- without
@@ -10733,6 +10966,15 @@ private:
     std::vector<std::string> select_items_;
     int select_index_ = 0;
     int select_callback_ref_ = 0;
+    // mep.ui_select's opts.on_key: every printable key the overlay does
+    // not already spend on navigation (j/k, Ctrl-N/Ctrl-P, arrows) or on
+    // Enter/Escape is handed to this ref along with the highlighted item's
+    // own index, so a caller can hang extra actions off the list without
+    // the overlay needing to know what they are (the LSP diagnostics
+    // popup's "y" = copy this message to the clipboard is the first).
+    // The overlay stays open across one; it is unrefed alongside
+    // select_callback_ref_ so a cancelled select leaks neither.
+    int select_on_key_ref_ = 0;
     std::string preview_title_, preview_text_;
 
     std::vector<SidebarInstance> sidebars_;
@@ -10768,6 +11010,12 @@ private:
     int float_tab_index_ = 0;
     bool float_save_on_close_ = false;
     int float_on_close_ref_ = 0;
+    // Whether a bare Escape dismisses this float (OpenFloatPane's
+    // escape_dismiss). False for the git commit message float: a stray
+    // Escape there would throw away a message that was just typed, so
+    // aborting it is deliberate (mod1+d / :bd), as committing already was
+    // (ZZ).
+    bool float_escape_dismiss_ = true;
     // Popout (see ToggleSidebarPopout): which sidebar is popped out (0 =
     // none), and the single preview slot it shows -- one slot, not
     // per-instance, since only one sidebar can be popped out at a time.
@@ -11092,6 +11340,9 @@ private:
     // Org block cards (<leader>otb / mep.org_block_cards_toggle): see
     // OrgBlockCardsVisible()'s own comment for why this one starts on.
     bool org_block_cards_visible_ = true;
+    // Org src-block LSP status (<leader>ots / mep.org_lsp_status_toggle):
+    // see OrgLspStatusVisible() for why this one starts on too.
+    bool org_lsp_status_visible_ = true;
     // Plain cursor line (<leader>otc): see OrgPlainCursorLineVisible()'s
     // own comment. On by default -- the raw text of the row being edited
     // is what an editor should show.

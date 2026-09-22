@@ -15,7 +15,7 @@ stale copy from disk.
 |----------------------+----------------|
 | C, C++ and friends   | =clang-format= |
 | Python               | =black=        |
-| R                    | =styler=       |
+| R                    | =air=          |
 | anything else        | =mep.lsp_format=, if a server is attached |
 
 That is a deliberately short table. Most languages already have a formatter
@@ -49,6 +49,24 @@ to that block's own language server -- the one already answering
 whole-file sweep does not: it only runs the table, and reports those blocks
 as skipped.
 
+* Line width
+
+=air= wraps R at *80 columns*. It is the only formatter in the table with a
+line width of its own: =clang-format= and =black= take theirs from the
+project's =.clang-format= / =pyproject.toml=, and =styler=, R's other
+formatter, has no line width at all -- it fixes spacing and indentation but
+never breaks a long call across lines, which is why =air= is the R entry.
+
+The margin comes from an =air.toml= beside the file:
+
+#+begin_src toml
+[format]
+line-width = 80
+#+end_src
+
+mep's own repository root carries one. =air= walks up from the file it is
+formatting to find the nearest, so a project can set its own.
+
 * Adding one
 
 #+begin_src lua
@@ -72,11 +90,11 @@ needs its own key -- which is why the built-in table aliases =.h=, =.cc=,
 
 * Why the placeholder matters
 
-A formatter reading stdin has no idea what file it is looking at. Both
-=clang-format= and =black= have to be told -- =--assume-filename= and
-=--stdin-filename= -- or they cannot find the =.clang-format= or
-=pyproject.toml= the project configures them with, and they silently format
-to their own defaults instead.
+A formatter reading stdin has no idea what file it is looking at.
+=clang-format=, =black= and =air= all have to be told -- =--assume-filename=,
+=--stdin-filename= and =--stdin-file-path= -- or they cannot find the
+=.clang-format=, =pyproject.toml= or =air.toml= the project configures them
+with, and they silently format to their own defaults instead.
 
 So a filter-mode entry should almost always pass =\{\}= somewhere.
 

@@ -293,6 +293,12 @@ Json PaneJson(const Pane &pane) {
     j["cursor"] = CursorJson(pane.cursor.row, pane.cursor.col);
     j["visual_anchor"] = CursorJson(pane.visual_anchor.row, pane.visual_anchor.col);
     j["scroll_row"] = pane.scroll_row;
+    // The sub-row part of that scroll position: how many of scroll_row's
+    // own visual slots are above the top of the pane (Pane::scroll_sub,
+    // nonzero only part-way over a tall org figure). Reported so a test
+    // driving j/k over a figure can see the view move at all -- scroll_row
+    // alone stays put for the whole slide.
+    j["scroll_sub"] = pane.scroll_sub;
     return j;
 }
 

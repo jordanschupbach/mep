@@ -452,11 +452,18 @@ bool OrgParseClockTimestamp(const std::string &s, int *y, int *mo, int *d, int *
  */
 OrgOpenClock OrgFindOpenClock(const std::vector<std::string> &lines);
 
-// --- Org tables: the wrapped display layout (Editor::OrgTableWrapScan) ---
-// A table whose aligned width runs past `:set textwidth` is *rendered*
-// narrower than it is stored: the columns are re-budgeted to fit the line
-// width and any cell too long for its column wraps onto continuation
-// lines, so one stored row draws as several. Display-only, deliberately:
+// --- Org tables: the rendered display layout (Editor::OrgTableWrapScan) ---
+// A table is *rendered* narrower than it is stored, for either of two
+// reasons: its aligned width runs past `:set textwidth`, so the columns
+// are re-budgeted to fit the line width and any cell too long for its
+// column wraps onto continuation lines (one stored row drawing as
+// several); or its cells are simply narrower drawn than stored, because
+// concealment stood their link markup down to a description, and laying
+// the columns out on the rendered widths closes the gutter the file's
+// own padding leaves behind. The caller decides which applies -- the
+// planner reports the first as `wrapped` and the second falls out of
+// comparing its layout against the stored rows. Display-only,
+// deliberately:
 // wrapping in the file would be valid org (a continuation row is an
 // ordinary row with an empty first cell, which is what Emacs'
 // `org-table-wrap-region` writes) but it is a *semantic* edit -- it adds
@@ -469,20 +476,90 @@ OrgOpenClock OrgFindOpenClock(const std::vector<std::string> &lines);
 // in editor.cpp, which had it first) so the whole width/wrap policy is
 // testable without a GL context -- org_doc_test.cpp.
 
+// One link inside a table cell, as it lands in the text the cell is
+// *planned* from -- which is the cell as drawn, so a bracket link
+// concealed down to its description spans the description and not the
+// markup (byte offsets, half-open, the same convention OrgLinkSpanInfo
+// uses).
+struct OrgTableCellLink {
+    int start = 0;
+    int end = 0;
+    std::string target;
+    // True when the span is a description standing in for hidden markup,
+    // false when it is the link's own raw text (a bare URL, or a bracket
+    // link with concealment off). Editor::OrgLinkScan underlines the
+    // second and not the first -- the underline is what tells you an
+    // unconcealed run of text is a link -- and the table layout has to
+    // make the same distinction or the two renderers disagree about what
+    // the same link looks like.
+    bool concealed = false;
+};
+
+// A table cell as it is drawn: every `[[target][description]]` on it
+// stood down to `description` when `conceal` is set, and every bare
+// `http(s)://...` left as its own text either way -- exactly what
+// Editor::OrgLinkScan conceals and leaves alone on an ordinary row.
+//
+// This is what the wrap planner below has to be fed, and the reason this
+// exists at all: a cell measured and wrapped as its raw markup is
+// budgeted columns for characters that never reach the screen, so a
+// table of `[[file:docs/lua-api.org][Lua API]]` links is re-budgeted as
+// if its first column held fifty columns of text instead of the seven it
+// draws as -- wrapping a table that fits, and hard-splitting the URL
+// inside the markup across two rendered lines when it really doesn't.
+// Link formatting comes first; the columns are then laid out around what
+// it leaves.
+/**
+ * @brief Renders a table cell as drawn, standing each bracket link down to its description.
+ * @param cell the cell's stored text, already trimmed
+ * @param conceal true when markup concealment is on (Editor::OrgConcealVisible)
+ * @param links optional; set to each link's span in the returned text, in column order
+ * @return the cell's display text (`cell` itself when it holds no links)
+ */
+std::string OrgTableCellDisplayText(const std::string &cell, bool conceal, std::vector<OrgTableCellLink> *links);
+
 // One table row as the planner sees it: either a `|---+---|` rule or a
 // row of trimmed cell texts.
 struct OrgTableCells {
     bool is_sep = false;
     std::vector<std::string> cells;
+    // Links inside `cells`, one entry per cell, as spans into that
+    // cell's own text (OrgTableCellDisplayText's output). Left short or
+    // empty by a caller with no links to report -- a cell index past the
+    // end of this simply carries none.
+    std::vector<std::vector<OrgTableCellLink>> links;
+};
+
+// One link on a rendered line, in that line's own columns: the planner
+// carries each cell's links through the wrap so the renderer has
+// something to style and follow. A link whose description wraps onto two
+// lines is reported once per line, over just the part that landed there.
+struct OrgTableWrapLink {
+    int col_start = 0;  // byte offset into the line's text
+    int col_end = 0;
+    std::string target;
+    bool concealed = false;  // see OrgTableCellLink::concealed
+};
+
+// One line a stored row draws as: its text, plus the links on it. A
+// wrapped row's own text never reaches the screen and its decorations
+// are skipped (see Buffer::org_table_wrap_rows, editor.h), so anything
+// the renderer needs to style has to arrive here.
+struct OrgTableWrapLine {
+    std::string text;
+    std::vector<OrgTableWrapLink> links;
 };
 
 struct OrgTableWrapPlan {
-    // False when the table already fits the budget, in which case the
-    // caller should leave the rows alone and render them as stored --
-    // `col_widths`/`rows` still hold the (unwrapped) layout.
+    // True when the table did not fit the budget and its columns had to
+    // be re-budgeted (so some cell wrapped onto continuation lines).
+    // False does *not* mean the layout is unusable: `col_widths`/`rows`
+    // always hold a complete one, at the table's natural rendered
+    // widths, which is exactly what a caller wanting to close a
+    // concealed table's gutter draws. It only means nothing had to give.
     bool wrapped = false;
-    std::vector<int> col_widths;                 // content columns, excluding each cell's ` ` padding
-    std::vector<std::vector<std::string>> rows;  // per input row, the line(s) it draws as
+    std::vector<int> col_widths;                      // content columns, excluding each cell's ` ` padding
+    std::vector<std::vector<OrgTableWrapLine>> rows;  // per input row, the line(s) it draws as
 };
 
 /**
@@ -618,5 +695,77 @@ struct OrgImageLayout {
  */
 OrgImageLayout OrgImageLayoutFor(int px_w, int px_h, float char_width, float line_height, int avail_cols,
                                  int text_cols);
+
+// --- Per-src-block language-server status (<leader>ots) ---
+// One `#+begin_src` block's language-server state, rendered as a line of
+// text along the bottom edge of the block's card (DrawPane, main.cpp),
+// under a rule separating it from the code above.
+//
+// The facts themselves can only come from Lua: the org->LSP bridge
+// (kBuiltinOrgPolyglot, main.cpp) owns the shadow files, the per-block
+// clients and the server registry, none of which C++ has a view of. Lua
+// reports them per block (mep.buf_set_org_lsp_status) and this pure half
+// turns them into the one line actually drawn -- kept here rather than in
+// the Lua chunk or inline in DrawPane so the wording, the pluralization
+// and the severity ranking are testable without a GL context
+// (org_doc_test.cpp).
+enum class OrgLspState {
+    // The block has no language tag, no org-babel entry, or no LSP server
+    // registered for its language -- nothing will ever attach.
+    kUnsupported,
+    // A server is registered, but this block has no client yet. The bridge
+    // attaches lazily (the first time an LSP feature runs inside the block),
+    // so this is the resting state of an untouched block, not a failure.
+    kIdle,
+    // Client process spawned; its `initialize` response hasn't come back.
+    kStarting,
+    // Initialized and answering.
+    kReady,
+    // A client was started for this block and is gone now -- the process
+    // exited, or the spawn itself failed.
+    kExited,
+};
+
+struct OrgLspStatus {
+    OrgLspState state = OrgLspState::kUnsupported;
+    // `#+begin_src <lang>`'s language tag as written, "" when the block has
+    // none (which is itself a reason for kUnsupported).
+    std::string lang;
+    // The mep.lsp_servers registry key that resolved for `lang`
+    // ("pyright", "clangd", ...), "" when none did.
+    std::string server;
+    // Diagnostics whose range starts on one of the block's body rows,
+    // already translated back to org line numbers by the bridge. `hints`
+    // merges LSP severity 3 (Information) and 4 (Hint), which a one-line
+    // status has no room to tell apart.
+    int errors = 0;
+    int warnings = 0;
+    int hints = 0;
+};
+
+// How loudly the line is drawn. The counts outrank the state: a `ready`
+// server reporting three errors is an error line, not a healthy one.
+enum class OrgLspStatusTone { kMuted, kOk, kWarn, kError };
+
+/**
+ * @brief Renders one block's language-server status as the single line drawn under its code.
+ * @param st The block's reported state, server and diagnostic counts.
+ * @return The status line; never empty.
+ */
+std::string FormatOrgLspStatus(const OrgLspStatus &st);
+
+/**
+ * @brief Picks the color bucket a status line is drawn in.
+ * @param st The block's reported state, server and diagnostic counts.
+ * @return kError/kWarn when diagnostics or a dead client say so, kOk for a healthy attached server, kMuted otherwise.
+ */
+OrgLspStatusTone OrgLspStatusToneOf(const OrgLspStatus &st);
+
+/**
+ * @brief Maps the bridge's state name ("idle", "starting", "ready", "exited") to its enum.
+ * @param name The state name as Lua reports it; anything unrecognized is kUnsupported.
+ * @return The parsed state.
+ */
+OrgLspState OrgLspStateFromName(const std::string &name);
 
 #endif

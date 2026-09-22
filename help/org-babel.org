@@ -3,6 +3,28 @@
 #+HTML_HEAD: <meta name="help-order" content="80">
 #+HTML_HEAD: <link rel="stylesheet" href="help.css">
 
+* Inserting a block
+
+The =</>= button in an org buffer's pane header drops down a dozen common
+languages; picking one writes an empty block at the cursor and puts you on
+its body line.
+
+| Key          | Does                                        |
+|--------------+---------------------------------------------|
+| =<leader>oi= | pick a language from every one babel knows  |
+
+=:MepOrgInsertBlock= is the same picker, and =:MepOrgInsertBlock rust= skips
+it for a language you already know you want -- any tag is accepted, listed
+or not.
+
+A blank line under the cursor becomes the block itself; any other line keeps
+its text and the block goes in below it. With the cursor already inside a
+block, the new one lands after that block's =#+end_src= rather than nesting
+inside it.
+
+Typing =<s= and expanding it (see [[file:org-capture.html][Capture]]) does the same without the
+mouse, for a block with no language tag.
+
 * Running a block
 
 Put the cursor in a =#+begin_src= block and press =C-c C-c=

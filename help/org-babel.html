@@ -12,6 +12,23 @@
 </head>
 <body>
 <h1>Executing code blocks</h1>
+<h1>Inserting a block</h1>
+<p>The <code>&lt;/&gt;</code> button in an org buffer's pane header drops down a dozen common
+languages; picking one writes an empty block at the cursor and puts you on
+its body line.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;oi</code></td><td>pick a language from every one babel knows</td></tr>
+</table>
+<p><code>:MepOrgInsertBlock</code> is the same picker, and <code>:MepOrgInsertBlock rust</code> skips
+it for a language you already know you want -- any tag is accepted, listed
+or not.</p>
+<p>A blank line under the cursor becomes the block itself; any other line keeps
+its text and the block goes in below it. With the cursor already inside a
+block, the new one lands after that block's <code>#+end_src</code> rather than nesting
+inside it.</p>
+<p>Typing <code>&lt;s</code> and expanding it (see <a href="org-capture.html">Capture</a>) does the same without the
+mouse, for a block with no language tag.</p>
 <h1>Running a block</h1>
 <p>Put the cursor in a <code>#+begin_src</code> block and press <code>C-c C-c</code>
 (<code>:MepOrgBabelExecute</code>). The result is written back into the file as a

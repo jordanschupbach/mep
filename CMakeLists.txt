@@ -650,6 +650,32 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
     target_link_options(mep-mcp PRIVATE ${MEP_SANITIZE_FLAGS})
 endif()
 
+# mep's own org-mode language server (src/org_lsp_server.cpp + the pure
+# analysis half in src/org_lsp.cpp). Like mep-mcp above it needs none of
+# mep_core -- just json.h/rpc_framing.h plus org_doc.cpp's outline reader
+# -- and it is built by default rather than EXCLUDE_FROM_ALL because
+# kBuiltinLsp's `org_ls` registry entry spawns it out of mep's own bin
+# directory (mep.bundled_tool / l_bundled_tool, lua_env.cpp), so a `mep`
+# without it sitting beside it silently has no org diagnostics. Skipped on
+# Emscripten, which cannot spawn a subprocess at all (the whole LSP client
+# is inert there).
+if(NOT EMSCRIPTEN)
+    add_executable(mep-org-lsp src/org_lsp_server.cpp src/org_lsp.cpp src/org_doc.cpp)
+    target_include_directories(mep-org-lsp PRIVATE src)
+    target_compile_options(mep-org-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-org-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-org-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# The org language server's analysis half (diagnostics, completion, hover,
+# symbols, folding, definition) driven directly -- no process, no JSON-RPC
+# client. Same CHECK()-based shape as mep-org-doc-test.
+add_executable(mep-org-lsp-test EXCLUDE_FROM_ALL src/org_lsp_test.cpp src/org_lsp.cpp src/org_doc.cpp)
+target_include_directories(mep-org-lsp-test PRIVATE src)
+target_compile_options(mep-org-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-org-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-org-lsp-test)
+
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
 # cascade behavior can be verified without opening a window.
 add_executable(mep-html-doc-test EXCLUDE_FROM_ALL src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp)

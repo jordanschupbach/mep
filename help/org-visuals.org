@@ -27,6 +27,17 @@ reserves exactly as many lines as it is tall: no empty band above or below
 it, and widening the window doesn't stretch it. A picture tall enough to
 run past 40 lines is scaled down to fit rather than cropped.
 
+A figure is one buffer row but many lines tall, so =j= and =k= scroll
+*over* one rather than past it: while the cursor is on a figure, each
+press moves the view by a single line and leaves the cursor where it is,
+until the edge you are heading for -- the figure's bottom going down, its
+top going up -- has passed the middle of the window, which is where the
+caret rides while it is over a picture. The next press steps off the
+figure onto the row after (or before) it. The mouse wheel scrolls a
+figure the same way, three lines to a notch. A counted motion (=10j=), an
+operator (=dj=), Visual mode and the explicit scroll commands (=Ctrl-D=,
+=zz=, =zt=, =zb=) all treat a figure as the single row it is.
+
 A link whose target is not on disk yet -- a plot a code block has still to
 produce -- stays plain text, and turns into the picture on the next edit
 after the file appears.

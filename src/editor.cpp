@@ -4616,6 +4616,204 @@ void Editor::HandleInput() {
     TickCollaboration();
 }
 
+// How many visual slots one buffer row occupies. Extracted from
+// UpdateScrollForPane's own `row_slots` lambda (below) so the scroll-by-
+// slot walks ScrollFigureStep needs measure a row through the exact same
+// rule the scroll-follow pass does -- there is no second definition of a
+// row's drawn height for them to drift apart on.
+//
+// The branch order is DrawPane's row loop's own (main.cpp), which is what
+// makes this agree with the render: a closed fold's start row is drawn as
+// a single summary line no matter what else that row is or how many rows
+// it hides, so it comes first and short-circuits everything; an org
+// inline image *expands* one row into however many line-heights the
+// figure is drawn at (OrgImageLayoutFor) and replaces the row's own text,
+// as do a rendered LaTeX fragment and an over-wide table's wrapped
+// layout; only a row none of those claim is measured by soft-wrap, plus
+// an org headline's own extra slot.
+int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_cols) const {
+    if (row < 0 || row >= static_cast<int>(buf.lines.size())) return 1;
+    // A closed fold collapses its whole range into one drawn line, and
+    // that line is the summary -- not the row's own text, image, formula
+    // or wrapped table -- so nothing below applies to it.
+    for (const Fold &f : buf.folds) {
+        if (f.closed && f.start_row == row) return 1;
+    }
+    // A notebook code cell's output block hangs under its last
+    // row (Editor::NotebookTrailingSlots, rebuilt each frame by
+    // NotebookRefresh before this runs) -- those slots belong to
+    // that row for scroll purposes, so running a cell scrolls its
+    // output into view the same way stepping onto an org image
+    // brings the whole image up.
+    int trailing = NotebookTrailingSlots(pane.buffer_id, row);
+    // The filetype sniff is per row here rather than hoisted per buffer
+    // the way the old lambda had it: a few bytes of extension matching is
+    // nothing next to the per-row work every caller is already doing, and
+    // hoisting it would mean threading it through every helper below.
+    const bool org_buffer = LspFiletype(buf.filename) == "org";
+    // An org headline claims an extra slot at the shallower
+    // depths (kOrgHeadingStyles) -- the room its larger text is
+    // drawn in. Same "one row, more than one slot" shape as an
+    // image, just by one instead of twenty-five, and unlike an
+    // image it doesn't replace the row's own text, so it adds to
+    // whatever the branches below work out rather than
+    // short-circuiting them.
+    const int heading_extra =
+        (org_heading_scale_visible_ && org_buffer) ? OrgHeadingExtraSlotsFor(buf.lines[static_cast<size_t>(row)]) : 0;
+    if (org_images_visible_) {
+        auto img_it = buf.org_image_rows.find(row);
+        if (img_it != buf.org_image_rows.end()) {
+            return OrgImageLayoutForRow(img_it->second, pane.text_cols).slots + trailing;
+        }
+    }
+    if (const Buffer::OrgLatexRender *latex = OrgLatexRenderForRow(buf, row, pane.cursor.row)) {
+        return latex->slots + trailing;
+    }
+    // A row of an over-wide org table draws as however many
+    // lines its wrapped layout needs (Buffer::org_table_wrap_rows)
+    // -- the same "one row, N slots" shape as the two above, and
+    // like them it replaces the row's own text, so soft-wrap
+    // below must not also measure it.
+    if (org_table_wrap_visible_ && org_buffer) {
+        auto it = buf.org_table_wrap_rows.find(row);
+        if (it != buf.org_table_wrap_rows.end() && !it->second.lines.empty()) {
+            return static_cast<int>(it->second.lines.size()) + trailing;
+        }
+    }
+    // Soft-wrap (:set wrap, wrap_cols>0): a row's *raw* text length
+    // determines how many visual slots it claims, same "one row ->
+    // N slots" shape as the image/table cases above.
+    if (wrap_cols > 0) {
+        int len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
+        return std::max(1, (len + wrap_cols - 1) / wrap_cols) + trailing + heading_extra;
+    }
+    return 1 + trailing + heading_extra;
+}
+
+int Editor::PaneFigureSlots(const Pane &pane, const Buffer &buf, int row) const {
+    if (!org_images_visible_) return 0;
+    auto it = buf.org_image_rows.find(row);
+    if (it == buf.org_image_rows.end()) return 0;
+    // A closed fold over the row wins in the render (see PaneRowSlots),
+    // so the figure isn't on screen to be scrolled over at all.
+    for (const Fold &f : buf.folds) {
+        if (f.closed && f.start_row <= row && f.end_row >= row) return 0;
+    }
+    return OrgImageLayoutForRow(it->second, pane.text_cols).slots;
+}
+
+int Editor::PaneNextDrawnRow(const Pane &pane, const Buffer &buf, int row) const {
+    int next = row + 1;
+    for (const Fold &f : buf.folds) {
+        if (f.closed && f.start_row == row) next = std::max(next, f.end_row + 1);
+    }
+    if (const Buffer::OrgLatexRender *latex = OrgLatexRenderForRow(buf, row, pane.cursor.row)) {
+        next = std::max(next, latex->end_row + 1);  // its remaining source rows are never drawn
+    }
+    return next;
+}
+
+int Editor::PanePrevDrawnRow(const Pane &pane, const Buffer &buf, int row) const {
+    int prev = row - 1;
+    if (prev <= 0) return std::max(0, prev);
+    // A row hidden inside a closed fold is never drawn; the fold's own
+    // start row (its summary line) is what the view sits on instead.
+    // Checked against this pane's buffer rather than through
+    // IsRowHiddenByFold, which only ever answers for the active one.
+    for (const Fold &f : buf.folds) {
+        if (f.closed && prev > f.start_row && prev <= f.end_row) {
+            prev = f.start_row;
+            break;
+        }
+    }
+    // Landing inside a rendered LaTeX fragment's source range means
+    // landing on a row DrawPane skips outright, so rewind to the row the
+    // fragment is actually drawn on -- the same jump-back
+    // UpdateScrollForPane's own upward walk does.
+    if (org_latex_visible_) {
+        for (const auto &kv : buf.org_latex_rows) {
+            if (prev > kv.first && prev <= kv.second.end_row &&
+                OrgLatexRenderForRow(buf, kv.first, pane.cursor.row) != nullptr) {
+                prev = kv.first;
+                break;
+            }
+        }
+    }
+    return std::max(0, prev);
+}
+
+int Editor::PaneSlotOffsetOfRow(const Pane &pane, const Buffer &buf, int row, int wrap_cols, int cap) const {
+    cap = std::max(1, cap);
+    int slots = 0;
+    if (row >= pane.scroll_row) {
+        for (int r = pane.scroll_row; r < row && slots <= cap; r = PaneNextDrawnRow(pane, buf, r)) {
+            slots += PaneRowSlots(pane, buf, r, wrap_cols);
+        }
+    } else {
+        for (int r = row; r < pane.scroll_row && -slots <= cap; r = PaneNextDrawnRow(pane, buf, r)) {
+            slots -= PaneRowSlots(pane, buf, r, wrap_cols);
+        }
+    }
+    return std::clamp(slots, -cap, cap) - pane.scroll_sub;
+}
+
+void Editor::SetPaneScrollTop(Pane &pane, int row, int sub) {
+    pane.scroll_row = std::max(0, row);
+    pane.scroll_sub = std::max(0, sub);
+    pane.scroll_sub_row = pane.scroll_row;
+}
+
+bool Editor::ScrollPaneBySlots(Pane &pane, const Buffer &buf, int slots, int wrap_cols) {
+    const int last_row = std::max(0, static_cast<int>(buf.lines.size()) - 1);
+    const int steps = std::abs(slots);
+    bool moved = false;
+    for (int i = 0; i < steps; i++) {
+        if (slots > 0) {
+            // Still inside the top row's own slots (a tall figure): one
+            // more of them goes above the pane. Otherwise the next drawn
+            // row becomes the top one, from its first slot.
+            if (pane.scroll_sub + 1 < PaneRowSlots(pane, buf, pane.scroll_row, wrap_cols)) {
+                pane.scroll_sub++;
+            } else {
+                const int next = PaneNextDrawnRow(pane, buf, pane.scroll_row);
+                if (next > last_row) break;  // the last row is already at the top: nothing left to reveal
+                pane.scroll_row = next;
+                pane.scroll_sub = 0;
+            }
+        } else {
+            if (pane.scroll_sub > 0) {
+                pane.scroll_sub--;
+            } else {
+                if (pane.scroll_row <= 0) break;  // already at the top of the buffer
+                pane.scroll_row = PanePrevDrawnRow(pane, buf, pane.scroll_row);
+                // Back into the previous row from its *last* slot, so a
+                // tall figure above scrolls back into view one line at a
+                // time rather than all at once.
+                pane.scroll_sub = std::max(0, PaneRowSlots(pane, buf, pane.scroll_row, wrap_cols) - 1);
+            }
+        }
+        moved = true;
+    }
+    pane.scroll_sub_row = pane.scroll_row;
+    return moved;
+}
+
+bool Editor::ScrollFigureStep(bool down) {
+    Pane &pane = CurPane();
+    const Buffer &buf = Buf();
+    const int fig_slots = PaneFigureSlots(pane, buf, pane.cursor.row);
+    if (fig_slots <= 1) return false;  // not on a figure (or one no taller than an ordinary row)
+    const int visible = std::max(1, pane.visible_lines);
+    // Where the caret conceptually rides while it is over a figure: the
+    // middle of the pane. Going down, the figure is "passed" once its
+    // bottom edge has risen above that line; going up, once its top edge
+    // has fallen below it. Until then every press belongs to the view.
+    const int middle = visible / 2;
+    const int top = PaneSlotOffsetOfRow(pane, buf, pane.cursor.row, pane.wrap_cols, 2 * visible + 2);
+    if (down ? (top + fig_slots <= middle) : (top >= middle)) return false;
+    return ScrollPaneBySlots(pane, buf, down ? 1 : -1, pane.wrap_cols);
+}
+
 void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) {
     SplitNode *node = (float_node_ && float_node_->pane.id == pane_id) ? float_node_.get()
                                                                         : FindNode(ActiveTab().root.get(), pane_id);
@@ -4626,6 +4824,23 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
     if (pane.buffer_id < 0 || pane.buffer_id >= static_cast<int>(buffers_.size())) return;
     const Buffer &buf = buffers_[static_cast<size_t>(pane.buffer_id)];
 
+    // Remembered for the key-handling path (ScrollFigureStep and the
+    // wheel), which counts the same visual slots this pass does but has
+    // no pixel geometry of its own to derive the wrap budget from.
+    pane.wrap_cols = wrap_cols;
+    // Pane::scroll_sub is an offset *into* the row at the top of the
+    // view, so it means nothing once something else has moved that row
+    // (every `scroll_row = 0` in this file, a search, Ctrl-D, zz): drop
+    // it rather than apply it to whatever row the view landed on, and
+    // clamp what survives to the room its row actually has. Done before
+    // anything below reads it, and before this frame's render does --
+    // DrawPane calls this pass just ahead of its own row loop -- so a
+    // stale offset can never reach the screen.
+    if (pane.scroll_sub_row != pane.scroll_row) pane.scroll_sub = 0;
+    pane.scroll_sub =
+        std::clamp(pane.scroll_sub, 0, std::max(0, PaneRowSlots(pane, buf, pane.scroll_row, wrap_cols) - 1));
+    pane.scroll_sub_row = pane.scroll_row;
+
     // How far the cursor's own row moved since the last call -- feeds the
     // smoothing cap below. A pane that's never run this before (-1) is
     // "just arrived here" (a fresh buffer switch, which already resets
@@ -4635,6 +4850,73 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
                             ? std::max(1, visible_lines)
                             : std::abs(pane.cursor.row - pane.scroll_follow_last_cursor_row);
     pane.scroll_follow_last_cursor_row = pane.cursor.row;
+
+    // How far outside the view a row may be before sliding to it stops
+    // being a transition between related content -- the same screenful
+    // the smoothing cap's safety valve below draws the line at, and the
+    // cap the slot walks saturate at so a cursor half a document away
+    // costs a bounded walk rather than one step per row.
+    const int slot_cap = 2 * visible_lines + 2;
+
+    // --- The cursor is on a tall org figure (TODO.org "smooth scroll") ---
+    //
+    // The figure is routinely taller than the pane, so "fit the cursor's
+    // whole row on screen" -- what the targeting below means by keeping
+    // the cursor visible -- has no answer here that isn't a jump: it
+    // would pin the figure's bottom to the bottom of the pane and undo
+    // whatever line-by-line slide ScrollFigureStep is part-way through.
+    // While any part of the figure is on screen the traversal owns the
+    // scroll and this pass leaves it alone. When the cursor arrives from
+    // somewhere the figure isn't visible at all -- the step onto it from
+    // the row above or below -- the figure is brought in by exactly one
+    // line, its leading edge on the pane's first or last line, so the
+    // next j/k continues the slide from there instead of starting with a
+    // screenful of figure already scrolled past. A jump from further off
+    // than a screenful (G, a search, a link) has no continuity to keep,
+    // so it snaps to the figure's top like any other big jump.
+    if (const int fig_slots = PaneFigureSlots(pane, buf, pane.cursor.row); fig_slots > 1) {
+        const int top = PaneSlotOffsetOfRow(pane, buf, pane.cursor.row, wrap_cols, slot_cap);
+        const int bottom = top + fig_slots;
+        if (bottom <= 0) {  // entirely above the view: reveal its last line at the top
+            const int need = 1 - bottom;
+            if (need > visible_lines) SetPaneScrollTop(pane, pane.cursor.row, 0);
+            else ScrollPaneBySlots(pane, buf, -need, wrap_cols);
+        } else if (top >= visible_lines) {  // entirely below it: reveal its first line at the bottom
+            const int need = top - visible_lines + 1;
+            if (need > visible_lines) SetPaneScrollTop(pane, pane.cursor.row, 0);
+            else ScrollPaneBySlots(pane, buf, need, wrap_cols);
+        }
+        if (pane.scroll_row < 0) pane.scroll_row = 0;
+        return;
+    }
+
+    // --- The view's top row is part-way scrolled off -------------------
+    //
+    // Which happens after a figure traversal: the cursor has stepped off
+    // the figure onto the row below it, but the figure itself is still
+    // hanging above the top of the pane with its first `scroll_sub` lines
+    // cut off. A *row* target cannot express that position, so following
+    // the cursor through one would jerk the whole figure off screen (its
+    // remaining slots all at once) the moment the cursor needs one more
+    // line at the bottom. Move by the fewest visual *lines* that bring
+    // the cursor's own row back inside the view instead, which leaves the
+    // partial top row partial and scrolls the figure off one line at a
+    // time exactly as the traversal did. Only while something is actually
+    // part-way off: at scroll_sub == 0 the row-based targeting below is
+    // equivalent, and it carries the smoothing/fold/jump behavior every
+    // other navigation depends on.
+    if (pane.scroll_sub > 0) {
+        const int top = PaneSlotOffsetOfRow(pane, buf, pane.cursor.row, wrap_cols, slot_cap);
+        const int bottom = top + PaneRowSlots(pane, buf, pane.cursor.row, wrap_cols);
+        const int move = (bottom > visible_lines) ? bottom - visible_lines : std::min(0, top);
+        if (std::abs(move) <= visible_lines) {
+            if (move != 0) ScrollPaneBySlots(pane, buf, move, wrap_cols);
+            return;
+        }
+        // Further than a screenful: nothing to keep continuity with, so
+        // give the partial row up and let the targeting below snap.
+        SetPaneScrollTop(pane, pane.scroll_row, 0);
+    }
 
     int target;
     if (pane.cursor.row < pane.scroll_row) {
@@ -4662,73 +4944,11 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
         // must stay in exact agreement with DrawPane's row loop and its
         // cursor-Y lookup (main.cpp), the same three-way constraint the
         // comment above already calls out for folds.
-        // Hoisted out of row_slots: the filetype lookup is a per-buffer
-        // answer, and row_slots runs once per row walked.
-        const bool org_buffer = LspFiletype(buf.filename) == "org";
-        /**
-         * @brief Computes how many visual scroll "slots" a given buffer row occupies (folds/org images/LaTeX fragments expand or collapse a row; org headlines and soft-wrap can expand it too).
-         * @param r The buffer row to measure.
-         * @return The number of visual slots the row contributes.
-         */
-        auto row_slots = [&](int r) {
-            // A notebook code cell's output block hangs under its last
-            // row (Editor::NotebookTrailingSlots, rebuilt each frame by
-            // NotebookRefresh before this runs) -- those slots belong to
-            // that row for scroll purposes, so running a cell scrolls its
-            // output into view the same way stepping onto an org image
-            // brings the whole image up.
-            int trailing = NotebookTrailingSlots(pane.buffer_id, r);
-            // An org headline claims an extra slot at the shallower
-            // depths (kOrgHeadingStyles) -- the room its larger text is
-            // drawn in. Same "one row, more than one slot" shape as an
-            // image, just by one instead of twenty-five, and unlike an
-            // image it doesn't replace the row's own text, so it adds to
-            // whatever the branches below work out rather than
-            // short-circuiting them.
-            const int heading_extra =
-                (org_heading_scale_visible_ && org_buffer) ? OrgHeadingExtraSlotsFor(buf.lines[static_cast<size_t>(r)]) : 0;
-            if (org_images_visible_) {
-                auto img_it = buf.org_image_rows.find(r);
-                if (img_it != buf.org_image_rows.end()) {
-                    return OrgImageLayoutForRow(img_it->second, pane.text_cols).slots + trailing;
-                }
-            }
-            if (const Buffer::OrgLatexRender *latex = OrgLatexRenderForRow(buf, r, pane.cursor.row)) {
-                return latex->slots + trailing;
-            }
-            // A row of an over-wide org table draws as however many
-            // lines its wrapped layout needs (Buffer::org_table_wrap_rows)
-            // -- the same "one row, N slots" shape as the two above, and
-            // like them it replaces the row's own text, so soft-wrap
-            // below must not also measure it.
-            if (org_table_wrap_visible_ && org_buffer) {
-                auto it = buf.org_table_wrap_rows.find(r);
-                if (it != buf.org_table_wrap_rows.end() && !it->second.lines.empty()) {
-                    return static_cast<int>(it->second.lines.size()) + trailing;
-                }
-            }
-            // Soft-wrap (:set wrap, wrap_cols>0): a row's *raw* text length
-            // determines how many visual slots it claims, same "one row ->
-            // N slots" shape as the fold/org-image cases above -- except a
-            // closed fold's own start row never soft-wraps (its rendered
-            // content is the one-line "+-- N lines: ... ---" summary, not
-            // buf.lines[r] itself), so it's excluded here the same way
-            // DrawPane's row loop (main.cpp) excludes it from wrapping.
-            if (wrap_cols > 0) {
-                bool fold_start = false;
-                for (const Fold &f : buf.folds) {
-                    if (f.closed && f.start_row == r) {
-                        fold_start = true;
-                        break;
-                    }
-                }
-                if (!fold_start) {
-                    int len = static_cast<int>(buf.lines[static_cast<size_t>(r)].size());
-                    return std::max(1, (len + wrap_cols - 1) / wrap_cols) + trailing + heading_extra;
-                }
-            }
-            return 1 + trailing + heading_extra;
-        };
+        // The measurement itself lives in Editor::PaneRowSlots (this
+        // file, just above): the walks ScrollFigureStep's own scrolling
+        // needs measure a row through the same function, so the two can
+        // never disagree about how tall a row is.
+        auto row_slots = [&](int r) { return PaneRowSlots(pane, buf, r, wrap_cols); };
         int slots = row_slots(pane.cursor.row);  // the cursor's own row (with any output block) is the first slot(s)
         int row = pane.cursor.row;
         // Walk up from the cursor, admitting a row above it only while the
@@ -4795,6 +5015,11 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
     // jump (G, gg, a search, a counted motion like 15j) moves
     // cursor_delta by roughly the same amount target needs to move, so
     // it stays effectively uncapped and still lands in a single frame.
+    // The inline-image half of that now belongs to the two branches
+    // above (they own the scroll while the cursor is on a figure, and
+    // move by whole visual lines once it has stepped off one); what is
+    // left for this cap is a LaTeX fragment, and a figure whose slide
+    // happened to end on a whole row.
     int cap = std::max(1, cursor_delta);
     int jump = target - pane.scroll_row;
     // Safety valve: a gap wider than the pane itself shares no content
@@ -4820,6 +5045,10 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
 // essentially never changes frame-to-frame, so that's not a real gap.
 void Editor::ScrollHalfPage(bool down) {
     Pane &p = CurPane();
+    // Every explicit reposition below lands on a whole row: any sub-row
+    // offset a figure traversal left behind (Pane::scroll_sub) is exactly
+    // what the user just asked to be moved away from.
+    SetPaneScrollTop(p, p.scroll_row, 0);
     int delta = std::max(1, p.visible_lines / 2) * (down ? 1 : -1);
     int max_row = Buf().LineCount() - 1;
     p.cursor.row = std::max(0, std::min(p.cursor.row + delta, max_row));
@@ -4829,6 +5058,7 @@ void Editor::ScrollHalfPage(bool down) {
 
 void Editor::ScrollFullPage(bool down) {
     Pane &p = CurPane();
+    SetPaneScrollTop(p, p.scroll_row, 0);  // see ScrollHalfPage
     int delta = p.visible_lines * (down ? 1 : -1);
     int max_row = Buf().LineCount() - 1;
     p.cursor.row = std::max(0, std::min(p.cursor.row + delta, max_row));
@@ -4838,6 +5068,7 @@ void Editor::ScrollFullPage(bool down) {
 
 void Editor::ScrollCursorTo(char where) {
     Pane &p = CurPane();
+    SetPaneScrollTop(p, p.scroll_row, 0);  // see ScrollHalfPage
     if (where == 'z') {
         p.scroll_row = p.cursor.row - p.visible_lines / 2;
     } else if (where == 't') {
@@ -4897,10 +5128,18 @@ void Editor::WheelScrollTextBuffer(float dx, float dy) {
     if (dy != 0.0f) {
         int steps = WheelSteps(wheel_accum_text_row_, -dy, kWheelLinesPerNotch);
         if (steps != 0) {
-            int row = p.cursor.row;
             int dir = steps > 0 ? 1 : -1;
-            for (int i = 0; i < std::abs(steps); i++) row = StepVisibleRow(row, dir);
-            p.cursor.row = row;
+            for (int i = 0; i < std::abs(steps); i++) {
+                // A step that lands on (or is already on) a tall org
+                // figure scrolls the view one line instead of moving the
+                // cursor, exactly as j/k does -- the wheel would
+                // otherwise skip a whole figure per notch. Written
+                // against p.cursor.row rather than a local copy so each
+                // step sees where the one before it left the cursor,
+                // which is what ScrollFigureStep tests.
+                if (ScrollFigureStep(dir > 0)) continue;
+                p.cursor.row = StepVisibleRow(p.cursor.row, dir);
+            }
             ClampCursor();
         }
     }
@@ -17421,6 +17660,19 @@ bool Editor::DispatchNormalKey(int cp) {
 
     CursorPos &cursor = CurPane().cursor;
 
+    // j/k while the cursor is on a tall org figure (TODO.org "smooth
+    // scroll"): the figure is one buffer row but many lines tall, so a
+    // row step has nothing to step *through* -- one press would take the
+    // cursor from above the figure to below it and drag the view a
+    // screenful to keep up. ScrollFigureStep slides the view one line per
+    // press instead and hands the key back (false) once the edge the
+    // press is travelling toward has passed the middle of the pane, so
+    // the cursor then steps off the figure exactly as it would off any
+    // other row. Only the bare motion: a counted "10j" is a jump, and the
+    // operator-pending/Visual dispatches (above and in their own handlers)
+    // never reach here -- their motion has to move the cursor, not the
+    // view.
+    if ((c == 'j' || c == 'k') && pending_count_ == 0 && ScrollFigureStep(c == 'j')) return true;
     // Single-key motions shared with operator-pending dispatch above and
     // with Visual mode's own motion handling; peek (don't consume) the
     // pending count so an unrecognized key below still sees it -- e.g.

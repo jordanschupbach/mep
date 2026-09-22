@@ -104,13 +104,38 @@ I'd like an inhouse version of a formatter for R. Can you implement one? I'd
 like it to run without previously exisiting linters (i.e. entirely inhouse).
 
 
-* TODO smooth scroll
+* DONE smooth scroll
 
 I'd like smooth scrolling in org files. When going over a figure, I'd like j,k
 to scroll one line at a time until the position of the top or bottom of the
 figure scrolls past the center of the height of the window (i.e. where the
 cursor should be emulated from (but not visible, while going over the image),
 depending how on which way the user is scrolling.
+  - A pane's scroll position now has a sub-row part (Pane::scroll_sub,
+    editor.h): how many of the top row's own visual slots are above the top
+    of the pane. It is 0 everywhere except over an org inline image, which
+    is one buffer row drawn many line-heights tall (OrgImageLayoutFor), and
+    DrawPane applies it once as a shift of the slot grid all four of its
+    walkers share, so nothing else had to learn about a partial top row.
+    Editor::ScrollFigureStep is the rule this task asked for: while the
+    cursor is on a figure, j/k (and each mouse-wheel step) move the *view*
+    by one visual line and leave the cursor where it is, until the edge the
+    press is travelling toward -- the figure's bottom going down, its top
+    going up -- has passed the middle of the pane, which is where the caret
+    conceptually rides while it is over a figure; the next press then steps
+    the cursor off the figure as it would off any other row. Stepping onto
+    a figure from the row above or below reveals exactly one line of it, at
+    the edge it came from, so the slide starts from there rather than from
+    a screenful already scrolled past, and stepping off it scrolls the
+    remainder away one line per press instead of jerking it off in one go.
+    A counted "10j", an operator's motion ("dj"), Visual mode and the
+    explicit scroll commands (Ctrl-D/zz/zt/zb, which reset the sub-row
+    offset) all behave exactly as before. Verified in a spawned instance
+    over the agent socket, on a 13-slot figure in a 12-line pane: j held
+    the cursor on the figure row for 18 presses while scroll_row/scroll_sub
+    advanced one slot each, released it once the bottom edge crossed the
+    middle, and k retraced the same path in reverse; state.dump now reports
+    `scroll_sub` alongside `scroll_row` so this is observable.
 
 * DONE error binding
 

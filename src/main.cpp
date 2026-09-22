@@ -12336,26 +12336,30 @@ const char *kBuiltinRun =
     "mep.command('MepReplSendBuffer', mep.repl_send_buffer)\n";
 
 // "gf" ("go format"): run the current buffer's own language formatter
-// over it in place -- clang-format for C/C++, black for Python, air
-// for R (TODO.org's list, whose R entry said styler -- see the R entry
-// below for why air replaced it). Modeled on kBuiltinRun's mep.run_languages
+// over it in place -- clang-format for C/C++, black for Python, and for
+// R mep's own (TODO.org's "r formatter", src/r_format.cpp; the entry
+// below says why it replaced the styler TODO.org's earlier gf entry
+// named, and then air). Modeled on kBuiltinRun's mep.run_languages
 // above: one filetype -> argv table (keyed by mep_lsp_filetype's bare
 // extension, with the usual aliases) a user's config can extend or
 // override, rather than the three commands being hardcoded in the
 // dispatch below.
 //
-// Two shapes of formatter exist and both are supported, because neither
-// covers the other: a stdin/stdout filter (the default -- clang-format,
-// black, air) and an in-place file rewriter (mode = 'file'), which every
-// entry here happens not to need any more but which a user's config
-// still reaches for whenever a formatter has no stdin mode at all --
-// styler::style_file(), R's other formatter, is exactly that shape.
-// Either way the text that gets formatted is the *buffer's* current
-// text, unsaved edits included: the filter gets it on stdin, the file
-// rewriter gets it in a temp file carrying the buffer's own extension
-// (a style_file()-shaped formatter dispatches on that, and errors
-// without it), so gf never needs the buffer written to disk first and
-// never formats a stale copy.
+// Three shapes of formatter exist and all three are supported, because
+// none covers the others: a stdin/stdout filter (the default --
+// clang-format, black, air), an in-place file rewriter (mode = 'file'),
+// which no entry here needs any more but which a user's config still
+// reaches for whenever a formatter has no stdin mode at all --
+// styler::style_file(), R's other formatter, is exactly that shape --
+// and a builtin (builtin = '<mep function name>'), a formatter compiled
+// into mep that needs no process at all.
+//
+// Whichever it is, the text that gets formatted is the *buffer's*
+// current text, unsaved edits included: the filter gets it on stdin, the
+// file rewriter gets it in a temp file carrying the buffer's own
+// extension (a style_file()-shaped formatter dispatches on that, and
+// errors without it), the builtin gets it as a string. So gf never needs
+// the buffer written to disk first and never formats a stale copy.
 //
 // '{}' anywhere in an argv element is replaced by a path: the buffer's
 // real (absolute) filename in filter mode, the temp file in file mode.
@@ -12396,20 +12400,22 @@ const char *kBuiltinFormat =
     "mep.format_languages = {\n"
     "  c = {'clang-format', '--assume-filename={}'},\n"
     "  py = {'black', '--quiet', '--stdin-filename={}', '-'},\n"
-    // air, not styler (which TODO.org's list named): styler has no line
-    // width at all -- it fixes spacing, indentation and `=` vs `<-`, but
-    // it never breaks a long call across lines, at any width, so an R
-    // buffer was the one language here where gf could not bring a
-    // 300-column line back inside a margin. air is Posit's own tidyverse
-    // formatter and the only R one with a line width; it subsumes what
-    // styler did for gf's purposes (`y = x + 1` still becomes
-    // `y <- x + 1`) and wraps at 80 by default. --stdin-file-path is the
-    // same argument clang-format and black need above and for the same
-    // reason: in filter mode air is reading a nameless stream, and the
-    // path is what it walks up from to find the project's air.toml (the
-    // repo's own is at the workspace root, pinning [format] line-width =
-    // 80 rather than leaning on air's default staying 80).
-    "  R = {'air', 'format', '--stdin-file-path={}'},\n"
+    // R is the one language here that needs nothing installed: the
+    // formatter is mep's own (src/r_format.cpp, TODO.org's "r formatter"
+    // -- a tidyverse-style lexer/parser/printer, no `air`, no `styler`,
+    // no R). A `builtin` entry names a mep.* function taking the text
+    // and a width and returning the formatted text (or nil + message +
+    // line), which mep_format_run below calls in-process instead of
+    // spawning anything, so gf on an R buffer is instant and works on a
+    // machine with no R toolchain at all.
+    //
+    // Swapping in an external formatter is still one line of config --
+    //   mep.format_languages.R = {'air', 'format', '--stdin-file-path={}'}
+    // (air, Posit's own, is the tidyverse formatter this style follows;
+    // styler is the other one, and being style_file()-shaped it needs
+    // mode = 'file' -- see mep_format_run) -- and `width` here is what
+    // the builtin wraps at.
+    "  R = {builtin = 'format_r', name = \"mep's R formatter\", width = 80},\n"
     "}\n"
     // Same aliasing as mep.run_languages': entries are looked up by bare
     // extension, so every extension of a language needs its own key.
@@ -12488,6 +12494,27 @@ const char *kBuiltinFormat =
     // only in what text goes in, what path '{}' expands to, and where
     // the result is written back.
     "local function mep_format_run(spec, ft, subst, text, on_done)\n"
+    // A builtin formatter is a mep.* function, not a program: it runs
+    // here and now rather than on a job, so on_done fires before this
+    // call even returns. Everything downstream (the buffer/edit checks
+    // in mep_format_apply, the org block sweep) is written against an
+    // asynchronous callback and is happy either way.
+    "  if spec.builtin then\n"
+    "    local name = spec.name or spec.builtin\n"
+    "    local fn = mep[spec.builtin]\n"
+    "    if type(fn) ~= 'function' then\n"
+    "      on_done(nil, name, 'gf: no builtin formatter named ' .. tostring(spec.builtin))\n"
+    "      return\n"
+    "    end\n"
+    "    local out, err, line = fn(text, spec.width)\n"
+    "    if not out then\n"
+    "      local where = (line and line > 0) and (' (line ' .. line .. ')') or ''\n"
+    "      on_done(nil, name, 'gf: ' .. name .. ': ' .. tostring(err) .. where)\n"
+    "      return\n"
+    "    end\n"
+    "    on_done(mep_format_split(out), name)\n"
+    "    return\n"
+    "  end\n"
     "  local tmp = nil\n"
     "  if spec.mode == 'file' then\n"
     // os.tmpname() creates the file it names, but with no extension --

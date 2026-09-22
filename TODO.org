@@ -98,10 +98,49 @@ like it to run without previously exisiting linters (i.e. entirely inhouse).
 I'd like an inhouse version of a formatter for python. Can you implement one? I'd
 like it to run without previously exisiting linters (i.e. entirely inhouse).
 
-* TODO r formatter
+* DONE r formatter
 
 I'd like an inhouse version of a formatter for R. Can you implement one? I'd
 like it to run without previously exisiting linters (i.e. entirely inhouse).
+  - Landed as src/r_format.{h,cpp}: a complete R formatter of mep's own --
+    lexer, recursive-descent parser over R's real precedence table
+    (?Syntax), and a width-driven printer -- with no dependency on `air`,
+    `styler` or an R installation. `gf` on an R buffer now runs it
+    in-process: mep.format_languages.R is `{builtin = 'format_r', width =
+    80}`, a third entry shape alongside the existing filter/`mode = 'file'`
+    ones, dispatched at the top of mep_format_run (kBuiltinFormat,
+    main.cpp) and exposed to Lua as mep.format_r(text[, width]). Org
+    `#+begin_src R` blocks get it through the same table.
+  - The style is tidyverse/air's: two-space indent, spaces around binary
+    operators except the tight ones (^ : :: ::: $ @), statement `=` to
+    `<-`, single- to double-quoted strings, `#comment` to `# comment`
+    (roxygen `#'` and shebangs untouched), and an 80-column margin that
+    argument lists, operator chains and pipelines break to respect -- with
+    the "hug" rule that keeps a trailing block on the call's own line
+    (`test_that("x", {`). On the samples checked against real `air`, the
+    only layout difference is a mixed `&&`/`||` condition, which air breaks
+    at every operator and this breaks only where it has to.
+  - Deliberately *not* done: it never adds braces to a brace-less if/for
+    body (air does) and never rewrites `%>%` to `|>`. Both change the code
+    rather than its layout.
+  - Comments survive wherever they were written -- above a statement,
+    trailing it, after the operator they follow (`x <- a + # why`), or
+    alone before a closing delimiter -- as do single blank lines between
+    statements (runs of them collapse to one).
+  - Two safety properties, because this rewrites the buffer in place and
+    runs inside the editor: Format() re-tokenizes its own output and
+    compares it token-for-token against the input (Signature), returning
+    the input untouched if anything but its own intended rewrites moved;
+    and nesting deeper than kMaxNest is refused rather than recursed into,
+    so a pathological file is an error message instead of a stack
+    overflow. A file that does not parse comes back byte-identical with
+    the failing line reported.
+  - Covered by mep-r-format-test (src/r_format_test.cpp, in `just test`),
+    every case asserted for both output and idempotency. Beyond that, the
+    formatter was run over 153 real R files (base R's own demos/scripts
+    plus package sources) and each result fed to R itself: `parse()` of the
+    input and of the output are `identical` for all 153, and formatting
+    twice is a no-op for all 153.
 
 
 * DONE smooth scroll

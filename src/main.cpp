@@ -694,6 +694,28 @@ int g_notebook_kernel_menu_cell = -1;
 gfx::Rectangle g_notebook_kernel_menu_anchor{};
 gfx::Rectangle g_notebook_kernel_menu_rect{};
 
+// Which pane's org insert-block dropdown (DrawPane's header controls --
+// the code-block button next to Run) is open, keyed by Pane::id; -1 =
+// none. Same single-target convention as the two menus above. The anchor
+// is that button's rect as of the frame it was last drawn (refreshed
+// every frame rather than only on the opening click, so the list stays
+// glued to the button when a split resizes underneath it); the rect is
+// the dropdown's own bounds, for the click-away-closes test in
+// DispatchChromeClicks -- which deliberately spares the anchor too, so a
+// second click on the button toggles the menu shut instead of closing it
+// and having the button's own region reopen it in the same click.
+int g_org_block_menu_pane = -1;
+gfx::Rectangle g_org_block_menu_anchor{};
+gfx::Rectangle g_org_block_menu_rect{};
+// Set by DrawPane while the *owning* pane draws that button, and cleared
+// by DrawOrgInsertBlockMenu (which runs after every pane, once per frame)
+// as it reads it: an open menu whose button wasn't drawn this frame has
+// nothing left to hang off -- the pane was closed or zoomed away, its
+// buffer was switched to a non-org one, a viewer session took the buffer
+// over, the tab strip got too narrow for the controls -- so the menu
+// closes itself instead of floating over whatever replaced it.
+bool g_org_block_button_drawn = false;
+
 // Populated by DrawPane's office branch (a full-document wrap-height scan
 // -- see the comment where it's filled in) and consumed by that same
 // pane's own Docs-style status footer (word/page count, zoom) right after,
@@ -15557,6 +15579,74 @@ const char *kBuiltinOrgBabel =
 //    stays running until mep exits, rather than being torn down when
 //    its org buffer is. Simpler, and consistent with mep.nvim's own
 //    "don't autostart eagerly, do nothing clever about stopping" bias.
+
+// The Lua half of the pane-header insert-block button (its C++ half is
+// DrawPane's header controls plus DrawOrgInsertBlockMenu, above): writes
+// an empty `#+begin_src <lang>` / `#+end_src` pair into the current org
+// buffer and parks the cursor on its blank body line, ready to type in.
+// Deliberately language-agnostic -- the button's own dropdown
+// (kOrgBlockLanguages) lists a curated dozen, mep.org_insert_src_block_
+// pick offers every registered babel language, and both just hand this a
+// tag string, so nothing is reachable from one entry point only.
+const char *kBuiltinOrgInsertBlock =
+    "function mep.org_insert_src_block(lang)\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then\n"
+    "    mep.notify('Insert block: not an org buffer', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  lang = (lang or ''):match('^%s*(.-)%s*$')\n"
+    "  local row = mep.cursor()\n"
+    "  local line = mep.get_line(row) or ''\n"
+    "  local indent = line:match('^%s*') or ''\n"
+    "  local header = '#+begin_src'\n"
+    "  if lang ~= '' then header = header .. ' ' .. lang end\n"
+    "  local block = {indent .. header, indent, indent .. '#+end_src'}\n"
+    // An all-whitespace cursor line becomes the block's own opening line
+    // (the common case: a blank line left under a headline); any other
+    // line keeps its text and the block goes in right below it. Either
+    // way the cursor lands on the block's empty body line.
+    "  local at, upto = row, row + 1\n"
+    "  if not line:match('^%s*$') then at, upto = row + 1, row + 1 end\n"
+    // ...unless the cursor is inside an existing source block (its own
+    // blank body line very much included -- that's where it lands right
+    // after inserting one), in which case the new block goes just past
+    // that block's #+end_src. Splitting a block in half around a nested
+    // one is never what the click meant, and the result isn't valid org.
+    "  local blk = mep_org_src_block_at(row)\n"
+    "  if blk then\n"
+    "    indent = (mep.get_line(blk.start_row) or ''):match('^%s*') or ''\n"
+    "    at, upto = blk.end_row + 1, blk.end_row + 1\n"
+    "  end\n"
+    "  mep.replace_lines(at, upto, block)\n"
+    "  mep.set_cursor(at + 1, #indent + 1)\n"
+    "  mep.notify('Inserted ' .. (lang ~= '' and lang or 'source') .. ' block')\n"
+    "end\n"
+    // Every babel language, alphabetically, with a free-text escape hatch
+    // last for one babel doesn't know (an export-only or hand-run block).
+    "function mep.org_insert_src_block_pick()\n"
+    "  local langs = {}\n"
+    "  for name in pairs(mep.org_babel_langs or {}) do langs[#langs + 1] = name end\n"
+    "  table.sort(langs)\n"
+    "  local other = #langs + 1\n"
+    "  langs[other] = 'other (type a language)'\n"
+    "  mep.ui_select(langs, 'Insert source block', function(idx)\n"
+    "    if not idx then return end\n"
+    "    if idx == other then\n"
+    "      mep.ui_input('Source block language:', '', function(lang)\n"
+    "        if lang then mep.org_insert_src_block(lang) end\n"
+    "      end)\n"
+    "      return\n"
+    "    end\n"
+    "    mep.org_insert_src_block(langs[idx])\n"
+    "  end)\n"
+    "end\n"
+    // Bare `:MepOrgInsertBlock` opens the picker; with an argument it
+    // inserts that language directly (`:MepOrgInsertBlock rust`).
+    "mep.command('MepOrgInsertBlock', function(args)\n"
+    "  if args and args:match('%S') then mep.org_insert_src_block(args) else mep.org_insert_src_block_pick() end\n"
+    "end)\n"
+    "mep.leader_map('oi', 'Org: insert source block', mep.org_insert_src_block_pick)\n";
+
 const char *kBuiltinOrgPolyglot =
     "mep.org_polyglot_enabled = true\n"
     // key -> {path, dir, lang, per_block, start_row, end_row, prefix_len,
@@ -27401,6 +27491,109 @@ void DrawNotebookKernelMenu() {
                             ResolveHlGroup("PickerBorder"));
 }
 
+// The languages DrawPane's org insert-block button offers, in menu order:
+// the common head of mep.org_babel_langs (kBuiltinOrgBabel), whose full
+// ~27-language set would make a dropdown taller than the window under a
+// pane header low in a split. `label` is what the menu shows, `tag` what
+// gets written after `#+begin_src`; the tag is handed straight to
+// mep.org_insert_src_block (kBuiltinOrgInsertBlock), which accepts any
+// string, so this list is pure menu curation -- the "Other language..."
+// row appended after it reaches the rest of the babel set (and anything
+// else, typed) through that same module's picker.
+struct OrgBlockLanguage {
+    const char *label;
+    const char *tag;
+};
+constexpr OrgBlockLanguage kOrgBlockLanguages[] = {
+    {"Python", "python"},          {"R", "r"},       {"C", "c"},           {"C++", "cpp"},
+    {"Rust", "rust"},              {"Go", "go"},     {"Lua", "lua"},       {"JavaScript", "javascript"},
+    {"TypeScript", "typescript"},  {"Java", "java"}, {"Shell", "sh"},      {"Julia", "julia"},
+};
+constexpr const char *kOrgBlockOtherLabel = "Other language...";
+
+/**
+ * @brief Draws the pane-header org insert-block button's language dropdown when one is open,
+ * anchored under the button that opened it.
+ */
+void DrawOrgInsertBlockMenu() {
+    if (g_org_block_menu_pane == -1) return;
+    // The button this menu belongs to is gone (see g_org_block_button_drawn).
+    if (!g_org_block_button_drawn) {
+        g_org_block_menu_pane = -1;
+        g_org_block_menu_rect = {};
+        return;
+    }
+    g_org_block_button_drawn = false;
+    const int pane_id = g_org_block_menu_pane;
+    const float font_size = MenuFontSize();
+    const int item_h = MenuItemHeight();
+    // Reuses DrawMenuBar's dropdown look (the Picker/PickerBorder/
+    // MenuHighlight/MenuBarFg groups, kMenuItemPaddingX, MenuItemHeight),
+    // same as DrawRunButtonMenu and DrawNotebookKernelMenu above.
+    const size_t item_count = std::size(kOrgBlockLanguages) + 1;  // + the "Other language..." row
+    float dd_w = g_org_block_menu_anchor.width;
+    for (const OrgBlockLanguage &lang : kOrgBlockLanguages) {
+        dd_w = std::max(dd_w, MeasureUiText(lang.label, font_size) + 2.0f * static_cast<float>(kMenuItemPaddingX));
+    }
+    dd_w = std::max(dd_w, MeasureUiText(kOrgBlockOtherLabel, font_size) + 2.0f * static_cast<float>(kMenuItemPaddingX));
+    // Right-aligned under the button, like the notebook kernel menu: the
+    // header controls are docked at the pane's right edge, so a list grown
+    // rightwards from the button would hang off it. Clamped to the window
+    // on both axes -- a pane header near the bottom of a stacked split
+    // flips the list above itself rather than drawing it off-screen.
+    float dd_x = g_org_block_menu_anchor.x + g_org_block_menu_anchor.width - dd_w;
+    if (dd_x < static_cast<float>(kMarginX)) dd_x = static_cast<float>(kMarginX);
+    const float dd_h = static_cast<float>(item_count) * static_cast<float>(item_h);
+    float dd_y = g_org_block_menu_anchor.y + g_org_block_menu_anchor.height;
+    if (dd_y + dd_h > static_cast<float>(gfx::GetScreenHeight())) {
+        // Doesn't fit below the header: flip above it when there's room
+        // there, else pin the list to the bottom of the window. Pinning is
+        // the last resort (a window barely taller than the list itself, so
+        // a mid-window pane header has room on neither side) and the list
+        // can then cover its own button -- the button's toggle-to-close
+        // stops working for as long as it does, since the menu's own rows
+        // are registered on top of it, but clicking anywhere else still
+        // closes it and every language stays reachable, which a list
+        // running off the bottom of the window would not be.
+        const float above = g_org_block_menu_anchor.y - dd_h;
+        dd_y = above >= 0.0f ? above : std::max(0.0f, static_cast<float>(gfx::GetScreenHeight()) - dd_h);
+    }
+    g_org_block_menu_rect = gfx::Rectangle{dd_x, dd_y, dd_w, dd_h};
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+    gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
+                       ResolveHlGroup("Picker"));
+    for (size_t i = 0; i < item_count; i++) {
+        const bool is_other = (i == item_count - 1);
+        const std::string label = is_other ? std::string(kOrgBlockOtherLabel) : std::string(kOrgBlockLanguages[i].label);
+        const float item_y = dd_y + static_cast<float>(i) * static_cast<float>(item_h);
+        const gfx::Rectangle item_rect{dd_x, item_y, dd_w, static_cast<float>(item_h)};
+        if (PointInRect(mouse, item_rect)) {
+            gfx::DrawRectangle(static_cast<int>(dd_x), static_cast<int>(item_y), static_cast<int>(dd_w), item_h,
+                               ResolveHlGroup("MenuHighlight"));
+        }
+        const float text_y = item_y + (static_cast<float>(item_h) - font_size) / 2.0f;
+        gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{dd_x + kMenuItemPaddingX, text_y}, font_size, 0,
+                        ResolveHlGroup(is_other ? "Comment" : "MenuBarFg"));
+        // Every language row is the same one-line Lua call with a different
+        // tag; the last row hands over to the picker instead, which covers
+        // the languages this menu doesn't list.
+        const std::string cmd = is_other ? std::string("lua mep.org_insert_src_block_pick()")
+                                         : std::string("lua mep.org_insert_src_block('") + kOrgBlockLanguages[i].tag + "')";
+        // The pane registered its broad focus region while drawing its own
+        // content, before this floating menu -- so these go on top, or a
+        // pick would be swallowed as a plain focus click (same reasoning as
+        // DrawNotebookKernelMenu's items).
+        RegisterClickRegionOnTop(item_rect, [pane_id, cmd] {
+            g_editor.FocusPaneById(pane_id);
+            g_editor.RunCommand(cmd);
+            g_org_block_menu_pane = -1;
+            g_org_block_menu_rect = {};
+        });
+    }
+    gfx::DrawRectangleLines(static_cast<int>(dd_x), static_cast<int>(dd_y), static_cast<int>(dd_w), static_cast<int>(dd_h),
+                            ResolveHlGroup("PickerBorder"));
+}
+
 // Generic floating overlay frame: dims the screen, draws a centered
 // bordered box with an optional title line, returns where content should
 // start drawing. Shared by the Prompt/Confirm/Select overlays below and
@@ -36454,10 +36647,25 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                    RunButtonSupportsExtension(LspFiletype(buf.filename));
     const std::string run_label = " " + Utf8FromCodepoint(0xf04b) + " ";  // nf-fa-play
     const float run_w = show_run_button ? MeasureUiText(run_label, font_size) : 0.0f;
+    // Insert-block button: leftmost of the header controls, shown only on
+    // a plain .org text pane (the same "no other session owns this
+    // buffer" gate the Run button uses, plus the org filetype itself --
+    // an org buffer showing its Kanban/Gantt view has no cursor row to
+    // insert at). A left click opens the language dropdown
+    // (DrawOrgInsertBlockMenu); picking a language writes an empty
+    // `#+begin_src <lang>`/`#+end_src` pair at the cursor. Drawn at
+    // font_size like the Run button rather than the smaller
+    // control_font_size the split/close chrome uses -- both act on the
+    // buffer's *contents*, not on the pane, and read as a pair.
+    const bool show_org_block_button = !term_sess && !img_sess && !pdf_sess && !video_sess && !office_sess &&
+                                       !sheet_sess && !html_sess && !kanban_sess && !gantt_sess &&
+                                       LspFiletype(buf.filename) == "org";
+    const std::string org_block_label = " " + Utf8FromCodepoint(0xf121) + " ";  // nf-fa-code
+    const float org_block_w = show_org_block_button ? MeasureUiText(org_block_label, font_size) : 0.0f;
     const float vsplit_w = MeasureUiText(vsplit_label, control_font_size);
     const float hsplit_w = MeasureUiText(hsplit_label, control_font_size);
     const float close_w = MeasureUiText(close_label, control_font_size);
-    const float controls_w = run_w + vsplit_w + hsplit_w + close_w;
+    const float controls_w = org_block_w + run_w + vsplit_w + hsplit_w + close_w;
     const gfx::Vector2 header_mouse = gfx::GetMousePosition();
     // Draws the three controls over `bg` filling controls_rect (each
     // brightened while hovered) and registers their click regions.
@@ -36488,6 +36696,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (on_right_click && hovered && gfx::IsMouseButtonPressed(gfx::MouseButton::Right)) on_right_click(rect);
             bx += bw;
         };
+        if (show_org_block_button) {
+            // `bx` is exactly where `button` will place this control's own
+            // rect (it builds the rect from bx, then advances it), so the
+            // dropdown's anchor can be captured here -- the click action
+            // needs the rect, and `button` only ever hands one to its
+            // right-click callback.
+            const gfx::Rectangle org_block_rect{bx, controls_rect.y, org_block_w, controls_rect.height};
+            // Focuses this pane, then toggles its insert-block dropdown
+            // (same "a second click on the open menu's own button closes
+            // it" convention as the Run button's Setup menu).
+            button(
+                org_block_label, org_block_w, "Purple", "Insert code block (<Space>oi)",
+                [pane_id, org_block_rect] {
+                    g_editor.FocusPaneById(pane_id);
+                    g_org_block_menu_pane = (g_org_block_menu_pane == pane_id) ? -1 : pane_id;
+                    g_org_block_menu_anchor = org_block_rect;
+                },
+                nullptr, font_size, label_y);
+            if (pane_id == g_org_block_menu_pane) g_org_block_button_drawn = true;
+        }
         if (show_run_button) {
             // Focuses this pane, then runs/compiles its current file in
             // this tab's popup terminal.
@@ -43098,6 +43326,8 @@ void DrawEditor() {
     DrawRunButtonMenu();
     // A notebook code cell's kernel dropdown -- same on-top treatment.
     DrawNotebookKernelMenu();
+    // An org pane's insert-block language dropdown -- likewise.
+    DrawOrgInsertBlockMenu();
     // Same reasoning as the comment just above (drawn after sidebars, not
     // before, so it sits on top instead of being painted over by one) --
     // this used to be drawn inline with the command-line text itself,
@@ -43781,6 +44011,16 @@ void DispatchChromeClicks() {
         g_notebook_kernel_menu_buffer = -1;
         g_notebook_kernel_menu_cell = -1;
         g_notebook_kernel_menu_rect = {};
+    }
+    // Same for an open org insert-block dropdown, with one addition: a
+    // click on the button that opened it is left alone, so that button's
+    // own toggle region (DrawPane's header controls) closes the menu
+    // instead of this dismissing it and the toggle reopening it in the
+    // same click.
+    if (g_org_block_menu_pane != -1 && !PointInRect(mouse, g_org_block_menu_rect) &&
+        !PointInRect(mouse, g_org_block_menu_anchor)) {
+        g_org_block_menu_pane = -1;
+        g_org_block_menu_rect = {};
     }
     for (const ClickRegion &r : g_click_regions) {
         if (PointInRect(mouse, r.rect)) {
@@ -45499,6 +45739,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgAgenda);
     lua->DoString(kBuiltinOrgClock);
     lua->DoString(kBuiltinOrgBabel);
+    lua->DoString(kBuiltinOrgInsertBlock);
     lua->DoString(kBuiltinOrgPolyglot);
     lua->DoString(kBuiltinOrgLatex);
     lua->DoString(kBuiltinPdfAnnot);

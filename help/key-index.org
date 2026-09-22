@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 112 =<leader>= sequences registered at startup. Press
+All 113 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -83,6 +83,7 @@ the features live.
 | =<leader>oem= | Org: export to Markdown | [[file:org-export.html][Exporting]] |
 | =<leader>oeo= | Org: export to ODT | [[file:office.html][Word processor documents]] |
 | =<leader>oep= | Org: export to PDF | [[file:org-export.html][Exporting]] |
+| =<leader>oi= | Org: insert source block | [[file:org-babel.html][Executing code blocks]] |
 | =<leader>ol= | Learn: pick a game for this deck | [[file:learn-games.html][Playing]] |
 | =<leader>oo= | Org: follow link at point | [[file:org-links.html][Links, footnotes and citations]] |
 | =<leader>ora= | Org-roam: add note | [[file:org-roam.html][Org-roam]] |

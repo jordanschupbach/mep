@@ -183,10 +183,28 @@ have a dropdown menu with options: html, pdf, odt, markdown,
 ascii, etc... When I select one of these options, it should export the org document to
 that format and open it in a new pane. Can you implement this?
 
-* TODO org insert block
+* DONE org insert block
 
 I'd like a button at the top of an org mode buffer (pane bar), I'd like to be
 able to insert a code block (e.g. R, python, C/C++, etc.) into the org mode buffer. Can you implement this?
+  - A `</>` button now sits in an org buffer's pane header, left of the Run
+    button and shown under the same conditions (a plain .org text pane, no
+    viewer session on the buffer). Clicking it drops down twelve common
+    languages -- Python, R, C, C++, Rust, Go, Lua, JavaScript, TypeScript,
+    Java, Shell, Julia -- plus an "Other language..." row; picking one
+    writes an empty `#+begin_src <lang>` / `#+end_src` pair at the cursor
+    and leaves the cursor on its body line. The same insert is reachable
+    without the mouse as `<leader>oi` and `:MepOrgInsertBlock` (a picker
+    over every language org-babel registers, with a free-text entry for one
+    it doesn't), or directly as `:MepOrgInsertBlock rust`. A blank cursor
+    line becomes the block itself, any other line keeps its text and the
+    block goes below it, and with the cursor already inside a block the new
+    one lands after that block's `#+end_src` instead of nesting inside it.
+    The insert itself is Lua (kBuiltinOrgInsertBlock, main.cpp) so any
+    language tag works, listed or not; the button and its dropdown are
+    DrawPane's header controls and DrawOrgInsertBlockMenu, built the same
+    way the Run button's Setup menu and a notebook cell's kernel dropdown
+    already were. Documented in help/org-babel.org.
 
 * TODO link formatting
 Change links in org mode to be rendered to have an underline underneath it. 

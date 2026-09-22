@@ -16716,7 +16716,7 @@ const char *kBuiltinOrgExport =
     "local MEP_ORG_EMPH_PRE = mep_org_emph_set{32, 9, 40, 39, 34, 123}\n"
     "local MEP_ORG_EMPH_POST = mep_org_emph_set{45, 32, 9, 46, 44, 58, 33, 63, 59, 39, 34, 41, 125, 91}\n"
     "local MEP_ORG_EMPH_BORDER = mep_org_emph_set{32, 9, 13, 10, 44, 34, 39}\n"
-    "function mep_org_convert_emphasis(text, marks, stash_out)\n"
+    "function mep_org_convert_emphasis(text, marks, stash_out, only)\n"
     "  local pairs_for = {\n"
     "    ['*'] = {marks.bold_open, marks.bold_close},\n"
     "    ['/'] = {marks.italic_open, marks.italic_close},\n"
@@ -16725,6 +16725,9 @@ const char *kBuiltinOrgExport =
     "    ['='] = {marks.code_open, marks.code_close},\n"
     "    ['~'] = {marks.code_open, marks.code_close},\n"
     "  }\n"
+    "  if only then\n"
+    "    for ch in pairs(pairs_for) do if not only[ch] then pairs_for[ch] = nil end end\n"
+    "  end\n"
     "  local out, i, n = {}, 1, #text\n"
     "  while i <= n do\n"
     "    local ch = text:sub(i, i)\n"
@@ -16759,8 +16762,30 @@ const char *kBuiltinOrgExport =
     // contains a `/`) would be visible to the *next* pattern (italic's
     // bare `/.../`) and get wrongly re-matched into it, corrupting the
     // generated markup. The trailing `\0` in each placeholder makes
-    // `\0M1\0` and `\0M12\0` mutually non-overlapping substrings, so
-    // restoring in any order is safe.
+    // `\0M1\0` and `\0M12\0` mutually non-overlapping substrings.
+    //
+    // Restoring runs *backwards*, and has to: a stash entry can hold a
+    // placeholder of its own, since the construct it came from wrapped
+    // one that was already stashed -- `=[[url][desc]]=` stashes the link
+    // first, then stashes `<code>\0M1\0</code>` around it. An entry can
+    // only ever contain indices lower than its own (they were stashed
+    // earlier), so counting down means every placeholder is back in
+    // `text` by the time its own index comes up. Counting up instead
+    // left the inner one buried in a stash entry during its only pass,
+    // and it reached the output raw -- a literal NUL in the HTML, which
+    // also made git treat the exported page as binary.
+    // `=` and `~` are org's *verbatim* markers: what they enclose is not
+    // parsed, so they run before links rather than after. The manual's
+    // own pages depend on it -- `=[[file:x][Notes]]=` in help/org-visuals
+    // is showing the reader what link markup looks like, and
+    // `=[[target=` in help/org-lsp is deliberately malformed, quoted as
+    // an example of an error. Converting either into a live link is
+    // wrong. Stashing the verbatim span first hides its body from the
+    // link patterns below, which is exactly the protection org gives it.
+    // The other four markers still run last, so a link inside `*...*`
+    // keeps working.
+    "local MEP_ORG_VERBATIM_ONLY = {['='] = true, ['~'] = true}\n"
+    "local MEP_ORG_EMPH_ONLY = {['*'] = true, ['/'] = true, ['_'] = true, ['+'] = true}\n"
     "local function mep_org_inline_convert(text, marks)\n"
     "  local stash = {}\n"
     "  local function stash_out(html)\n"
@@ -16769,18 +16794,24 @@ const char *kBuiltinOrgExport =
     "  end\n"
     // The hl highlight macro is stashed first of all: its inner text is
     // emitted verbatim (org's \, comma escapes undone), and running it
-    // before the emphasis passes keeps a '*'/'/' inside a highlighted
-    // phrase from splitting the generated span. Runs after the #+MACRO
-    // pass, which leaves hl untouched unless the buffer defines its own.
+    // before every emphasis/link pass keeps a '*'/'/' (or a link) inside a
+    // highlighted phrase from splitting the generated span. Runs after the
+    // #+MACRO pass, which leaves hl untouched unless the buffer defines its
+    // own.
     "  if marks.hl then\n"
     "    text = text:gsub('{{{hl%(%s*(%w+)%s*,(.-)%)}}}', function(c, t)\n"
     "      return stash_out(marks.hl(c, (t:gsub('\\\\,', ','))))\n"
     "    end)\n"
     "  end\n"
+    // origin/main's verbatim-first emphasis pass (=code=/~verbatim~ before
+    // links, so a link-like body inside verbatim stays literal); the
+    // EMPH_ONLY pass runs after the links below.
+    "  text = mep_org_convert_emphasis(text, marks, stash_out, MEP_ORG_VERBATIM_ONLY)\n"
     "  text = text:gsub('%[%[([^%]]+)%]%[([^%]]+)%]%]', function(u, d) return stash_out(marks.link(u, d)) end)\n"
     "  text = text:gsub('%[%[([^%]]+)%]%]', function(u) return stash_out(marks.link(u, u)) end)\n"
-    "  text = mep_org_convert_emphasis(text, marks, stash_out)\n"
-    "  for idx, html in ipairs(stash) do\n"
+    "  text = mep_org_convert_emphasis(text, marks, stash_out, MEP_ORG_EMPH_ONLY)\n"
+    "  for idx = #stash, 1, -1 do\n"
+    "    local html = stash[idx]\n"
     "    text = text:gsub('\\0M' .. idx .. '\\0', function() return html end)\n"
     "  end\n"
     "  return text\n"
@@ -43982,6 +44013,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::DrawRectangle(static_cast<int>(from), static_cast<int>(band.y), static_cast<int>(to - from),
                           static_cast<int>(band.height), ResolveHlGroup("NormalBg"));
         };
+        // The play button's own left edge once it has been laid out
+        // below, 0 when this card has none: the end-of-line virtual text
+        // pass at the bottom of this loop has to right-align *inside* the
+        // bar in a pane-wide card, and that is exactly where the button
+        // sits (it draws later, so it would simply paint over it).
+        float play_left = 0.0f;
         if (cb.conceal_header) {
             clear_overflow(cb.header);
             gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y),
@@ -44002,7 +44039,77 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const float text_y = bar_y + (static_cast<float>(line_height) - g_font_size) / 2.0f;
             const float chip_h = std::max(8.0f, static_cast<float>(line_height) - 5.0f);
             const float chip_y = bar_y + (static_cast<float>(line_height) - chip_h) / 2.0f;
-            const float right_limit = cb.header.x + cb.header.width - 8.0f;
+            // The play button: this card's own "run this block", docked
+            // against the bar's right edge so a page of cards lines its
+            // buttons up in one column instead of putting each one
+            // wherever that block's title happens to end. Laid out before
+            // the chip run below because that run's own `right_limit` has
+            // to stop short of it.
+            float right_limit = cb.header.x + cb.header.width - 8.0f;
+            const OrgBlockPlayInput play_in = OrgBlockPlayInputOf(card);
+            const OrgBlockPlay play = OrgBlockPlayFor(play_in);
+            if (play != OrgBlockPlay::kHidden) {
+                const float play_w = std::max(20.0f, chip_h + 4.0f);
+                const gfx::Rectangle play_rect{right_limit - play_w, chip_y, play_w, chip_h};
+                // Dropped entirely rather than overlapping the kind chip,
+                // which is the one piece of the bar that is always there:
+                // a card squeezed this narrow (a split a few columns
+                // wide) has no room for both, and the block's identity
+                // outranks a control C-c C-c already covers.
+                if (play_rect.x >= cb.header.x + 9.0f + g_char_width * 3.0f) {
+                    const bool play_ready = play == OrgBlockPlay::kReady;
+                    const gfx::Color play_c = play_ready ? accent : ResolveHlGroup("MutedFg");
+                    const bool play_hover = PointInRect(gfx::GetMousePosition(), play_rect);
+                    gfx::DrawRectangleRounded(play_rect, 0.5f, 6, gfx::Fade(play_c, play_hover ? 0.35f : 0.12f));
+                    gfx::DrawRectangleRoundedLinesEx(play_rect, 0.5f, 6, 1.0f,
+                                                 gfx::Fade(play_c, play_ready ? 0.75f : 0.45f));
+                    // A drawn triangle, not a glyph: g_font carries only
+                    // ASCII, so a unicode play symbol renders as tofu
+                    // (the notebook kernel chip's caret is drawn for the
+                    // same reason). Wound top-left -> bottom-left -> apex,
+                    // the same winding direction as every other working
+                    // DrawTriangle call in this file.
+                    const float tri_h = chip_h * 0.46f;
+                    const float tri_w = tri_h * 0.88f;
+                    // Nudged left of center so the triangle's own visual
+                    // weight -- all of it in the flat left edge -- reads
+                    // as centered in the button rather than trailing.
+                    const float tri_cx = play_rect.x + play_rect.width / 2.0f - tri_w * 0.15f;
+                    const float tri_cy = play_rect.y + play_rect.height / 2.0f;
+                    gfx::DrawTriangle(gfx::Vector2{tri_cx - tri_w / 2.0f, tri_cy - tri_h / 2.0f},
+                                      gfx::Vector2{tri_cx - tri_w / 2.0f, tri_cy + tri_h / 2.0f},
+                                      gfx::Vector2{tri_cx + tri_w / 2.0f, tri_cy}, play_c);
+                    if (play_hover) {
+                        g_pane_control_tooltip_text = OrgBlockPlayHint(play_in);
+                        // The button's own rect, but a full row tall: the
+                        // shared tooltip draws itself `anchor.height` tall
+                        // just under the anchor's bottom edge (see
+                        // DrawSimpleTooltip), and the chip is deliberately
+                        // shorter than a row -- handing it that height
+                        // would squeeze the label into it.
+                        g_pane_control_tooltip_anchor =
+                            gfx::Rectangle{play_rect.x, play_rect.y, play_rect.width, static_cast<float>(line_height)};
+                    }
+                    // OnTop: DrawPane has already registered this pane's
+                    // own click-to-focus region, which covers every row of
+                    // it -- a control drawn inside the text area has to
+                    // take precedence over that fallback or it can never
+                    // be clicked (same as the notebook cell's Run chip).
+                    const int play_pane = pane.id;
+                    const int play_row = card.begin_row;
+                    RegisterClickRegionOnTop(play_rect, [play_pane, play_row] {
+                        // Focus first: the babel path works on the active
+                        // pane's buffer, so a click in a background split
+                        // would otherwise run a block out of whichever
+                        // buffer happened to be focused -- the same
+                        // ordering an org link click needs.
+                        g_editor.FocusPaneById(play_pane);
+                        g_editor.RunOrgBabelBlockAt(play_row);
+                    });
+                    right_limit = play_rect.x - 8.0f;
+                    play_left = play_rect.x;
+                }
+            }
             float cx = cb.header.x + 9.0f;
             /**
              * @brief Checks whether a bar element of the given width still fits before the card's right edge.
@@ -44183,8 +44290,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // empty tail of the bar in all but the busiest headers.
             const bool after_border = ex + gfx::MeasureTextEx(g_font, "...", g_font_size, 0).x < limit;
             float avail = limit - ex;
+            // On the header band, the bar's right end is the play button's,
+            // not the card's -- stop short of it (and of the gap it keeps)
+            // rather than painting the message over a control.
+            const float inner_right =
+                (et.on_header && play_left > 0.0f) ? (play_left - 6.0f) : (card_right - 8.0f);
             if (!after_border) {
-                avail = std::max(0.0f, (card_right - 8.0f) - (cb.rect.x + 8.0f));
+                avail = std::max(0.0f, inner_right - (cb.rect.x + 8.0f));
                 avail = std::min(avail, cb.rect.width * 0.5f);  // never more than the bar's right half
             }
             if (avail < g_char_width * 4.0f) continue;  // nowhere to put it; the gutter badge still marks the row
@@ -44214,7 +44326,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (!after_border) {
                 // Right-aligned against the card's inner edge: the end the
                 // bar's own content is furthest from.
-                ex = card_right - 8.0f - tw;
+                ex = inner_right - tw;
                 // Clamped to the concealed band's own rect, not just to
                 // the row: painting a plain row-height rectangle here
                 // overshot the bar by a pixel at the top and swallowed

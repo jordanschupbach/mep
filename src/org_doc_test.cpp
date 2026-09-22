@@ -891,6 +891,50 @@ int main() {
         CHECK(OrgLspStateFromName("") == OrgLspState::kUnsupported);
         CHECK(OrgLspStateFromName("Ready") == OrgLspState::kUnsupported);
     }
+    {
+        // The card play button (DrawPane's own control): what it decides,
+        // and the wording of the tooltip that explains it.
+        OrgBlockPlayInput in;
+        in.is_src = true;
+        in.closed = true;
+        in.lang = "python";
+        CHECK(OrgBlockPlayFor(in) == OrgBlockPlay::kReady);
+        CHECK(OrgBlockPlayHint(in) == "Run this python block (C-c C-c)");
+        // A block still being typed has no body to run yet.
+        in.closed = false;
+        CHECK(OrgBlockPlayFor(in) == OrgBlockPlay::kHidden);
+        CHECK(OrgBlockPlayHint(in).empty());
+        // Nothing but src runs -- `quote`/`example`/`export` get a card,
+        // not a button.
+        in.closed = true;
+        in.is_src = false;
+        CHECK(OrgBlockPlayFor(in) == OrgBlockPlay::kHidden);
+        in.is_src = true;
+        // No language tag: mep_org_babel_resolve_lang has nothing to look
+        // up, so the button must not offer a run it can't make.
+        in.lang = "";
+        CHECK(OrgBlockPlayFor(in) == OrgBlockPlay::kDisabled);
+        CHECK(OrgBlockPlayHint(in) == "No language on this block -- nothing to run");
+        // The `:eval` gate, exactly as mep.org_babel_execute reads it:
+        // `no`/`never` refuse, and every other value (`no-export`,
+        // `query`, ...) still runs on an explicit request.
+        in.lang = "sh";
+        in.eval_arg = "no";
+        CHECK(OrgBlockPlayFor(in) == OrgBlockPlay::kDisabled);
+        CHECK(OrgBlockPlayHint(in) == "Blocked by :eval no");
+        in.eval_arg = "never";
+        CHECK(OrgBlockPlayFor(in) == OrgBlockPlay::kDisabled);
+        CHECK(OrgBlockPlayHint(in) == "Blocked by :eval never");
+        in.eval_arg = "no-export";
+        CHECK(OrgBlockPlayFor(in) == OrgBlockPlay::kReady);
+        in.eval_arg = "query";
+        CHECK(OrgBlockPlayFor(in) == OrgBlockPlay::kReady);
+        // Deliberately literal: the execution path matches these two
+        // words verbatim, so a case-folding button here would claim a
+        // block is blocked while C-c C-c happily ran it.
+        in.eval_arg = "NO";
+        CHECK(OrgBlockPlayFor(in) == OrgBlockPlay::kReady);
+    }
 
     std::printf("org_doc_test: all checks passed\n");
     return 0;

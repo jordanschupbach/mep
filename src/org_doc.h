@@ -768,4 +768,58 @@ OrgLspStatusTone OrgLspStatusToneOf(const OrgLspStatus &st);
  */
 OrgLspState OrgLspStateFromName(const std::string &name);
 
+// The play button a `#+begin_src` card's title bar carries (DrawPane,
+// main.cpp): clicking it runs that block through the same org-babel
+// machinery C-c C-c / `:MepOrgBabelExecute` already drives.
+//
+// Whether the button is there at all -- and whether it is drawn live or
+// muted -- is decided from the block's own header, which is the one part
+// of this worth testing without a GL context: the rules are exactly the
+// ones the *execution* path enforces (a language it can resolve, and org's
+// own `:eval` gate), so the button must not promise a run that
+// mep.org_babel_execute would then refuse.
+enum class OrgBlockPlay {
+    // Not a src block (`quote`, `example`, `export`, ...), or one still
+    // being typed with no `#+end_src` yet -- there is nothing to run.
+    kHidden,
+    // A src block whose run would fail or be refused before it started:
+    // no language tag, or `:eval no`/`:eval never`. Drawn muted, and still
+    // clickable -- the click produces the warn toast that says which of
+    // the two it is, which is more use than a control that does nothing.
+    kDisabled,
+    // Runnable as far as the header can tell. Whether the interpreter is
+    // actually on $PATH is mep_org_babel_resolve_lang's business, at click
+    // time; the card is drawn once per frame and must not shell out.
+    kReady,
+};
+
+// One block's header as the play button reads it.
+struct OrgBlockPlayInput {
+    bool is_src = false;
+    // A `#+end_src` was found for this block (OrgBlockCard::end_row >= 0).
+    bool closed = false;
+    // `#+begin_src <lang>`'s tag as written ("python", "C++"), "" when the
+    // block has none.
+    std::string lang;
+    // The `:eval` header arg's value, "" when the block has no `:eval`.
+    // Only `no`/`never` disable the button, matching the check in
+    // mep.org_babel_execute: `no-export`/`query` and friends still run
+    // when the user asks for this one block by hand.
+    std::string eval_arg;
+};
+
+/**
+ * @brief Decides whether a block card draws a play button, and whether it is live or muted.
+ * @param in The block's header as parsed for its card.
+ * @return kHidden for anything unrunnable by kind, kDisabled for a src block whose run would be refused, kReady otherwise.
+ */
+OrgBlockPlay OrgBlockPlayFor(const OrgBlockPlayInput &in);
+
+/**
+ * @brief Renders the play button's hover tooltip: what a click will do, or why it won't.
+ * @param in The block's header as parsed for its card.
+ * @return The tooltip text; "" when the block has no button (kHidden).
+ */
+std::string OrgBlockPlayHint(const OrgBlockPlayInput &in);
+
 #endif

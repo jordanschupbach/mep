@@ -1764,3 +1764,34 @@ OrgLspState OrgLspStateFromName(const std::string &name) {
     if (name == "exited") return OrgLspState::kExited;
     return OrgLspState::kUnsupported;
 }
+
+OrgBlockPlay OrgBlockPlayFor(const OrgBlockPlayInput &in) {
+    // Only src blocks run, and only once their closer exists: a block
+    // still being typed has no body for Editor::OrgSrcBlockAt to find, so
+    // a button on it could only ever produce "Not in a src block".
+    if (!in.is_src || !in.closed) return OrgBlockPlay::kHidden;
+    if (in.lang.empty()) return OrgBlockPlay::kDisabled;
+    // Exactly the two values mep.org_babel_execute itself refuses, spelled
+    // the same way (lowercase, no trimming beyond the header parse) -- the
+    // button's job is to predict that path's answer, so matching it
+    // loosely here would only let the two disagree.
+    if (in.eval_arg == "no" || in.eval_arg == "never") return OrgBlockPlay::kDisabled;
+    return OrgBlockPlay::kReady;
+}
+
+std::string OrgBlockPlayHint(const OrgBlockPlayInput &in) {
+    switch (OrgBlockPlayFor(in)) {
+        case OrgBlockPlay::kHidden:
+            return "";
+        case OrgBlockPlay::kDisabled:
+            // Which of the two reasons it is: the `:eval` gate is a
+            // deliberate choice someone made about this block, and saying
+            // so is the difference between "you told me not to" and "I
+            // can't tell what this is".
+            if (in.lang.empty()) return "No language on this block -- nothing to run";
+            return "Blocked by :eval " + in.eval_arg;
+        case OrgBlockPlay::kReady:
+            break;
+    }
+    return "Run this " + in.lang + " block (C-c C-c)";
+}

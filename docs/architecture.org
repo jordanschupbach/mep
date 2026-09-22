@@ -118,6 +118,21 @@ ships two *servers* of its own:
 - =src/python_lsp_server.cpp= — the =mep-python-lsp= binary, the same
   stdio JSON-RPC shape as the org one. It claims =py= in the registry;
   pyright stays registered without a filetype.
+- =src/c_ast.cpp= — a C lexer, preprocessor model and recursive-descent
+  parser. The preprocessor is the part with no Python counterpart: it is
+  never *run*, because an editor sees unpreprocessed source and a server
+  that needed =-I= flags would say nothing in most buffers. Instead each
+  =#if= group contributes one arm, chosen by evaluating the condition
+  where the file settles it and by bracket balance where it does not.
+- =src/c_lsp.cpp= — the scope model and every feature over it, again as
+  pure functions over plain lines; =src/c_lsp_vocab.cpp= holds the
+  keywords and the prose, and =src/c_lsp_std_names.cpp= the standard
+  library's real declarations, read out of the real headers by
+  =scripts/gen_c_names.py= and committed so no compiler is needed to
+  build.
+- =src/c_lsp_server.cpp= — the =mep-c-lsp= binary, the same stdio
+  JSON-RPC shape again. It claims =c= and =h= in the registry; clangd
+  stays registered and keeps every C++ filetype.
 
 Code *inside* a =#+begin_src= block is handled separately, by
 =kBuiltinOrgPolyglot='s per-block shadow buffers talking to a real server
@@ -127,10 +142,10 @@ diagnostics are merged (=mep_org_diag_set=).
 * Build targets
 
 =mep= (the editor), =mep-mcp= (MCP bridge), =mep-collabd= (collab relay),
-=mep-org-lsp=, =mep-r-lsp= and =mep-python-lsp= (the language servers mep
-ships), plus around thirty =*-test= and =*-bench= binaries. Every test and
-benchmark target is =EXCLUDE_FROM_ALL=, so a plain build produces only the
-six shipped binaries; =just test= builds and runs the windowless ones,
+=mep-org-lsp=, =mep-r-lsp=, =mep-python-lsp= and =mep-c-lsp= (the language
+servers mep ships), plus around thirty =*-test= and =*-bench= binaries.
+Every test and benchmark target is =EXCLUDE_FROM_ALL=, so a plain build
+produces only the seven shipped binaries; =just test= builds and runs the windowless ones,
 =just test-gui= the two that drive a real window, and =just bench= the
 performance suite.
 

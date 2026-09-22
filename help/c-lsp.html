@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The C language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="12">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The C language server</h1>
+<h1>What it is</h1>
+<p>C files get a language server of their own, <code>mep-c-lsp</code>, built and
+shipped with mep. Open a <code>.c</code> or <code>.h</code> file and it attaches by itself --
+there is nothing to install, no compiler, no <code>-I</code> flags and no
+<code>compile_commands.json</code>. It is mep's own lexer, preprocessor model,
+parser and scope analyser, with the declarations of the C standard
+library and the common POSIX headers compiled into it.</p>
+<p>That last point is the whole design. Every other C tool starts by running
+the preprocessor, which means it starts by needing to know how your
+project is built. An editor is looking at unpreprocessed source, in a
+buffer that may not even be saved yet, so this one never runs the
+preprocessor at all -- and says exactly what it does instead, below.</p>
+<h1>The preprocessor, without a preprocessor</h1>
+<p>Directives are read, not executed. A conditional group contributes
+exactly <b>one</b> arm to what the rest of the server sees, chosen like this:</p>
+<ul>
+<li>If the file itself settles the condition, that decides it. <code>#if 0</code> is dead, <code>#if VERSION &gt; 2</code> is live when the file defines <code>VERSION</code> as <code>3</code> above it, and <code>__cplusplus</code> is false by construction -- this is a C server.</li>
+<li>Otherwise the <b>shape</b> decides. A group with a written <code>#else</code> takes its first arm, since both arms spell the same construct. A group without one takes its arm only if that arm closes every bracket it opened.</li>
+</ul>
+<p>That second rule is what keeps the prologue every public header opens
+with from unbalancing the file:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">c</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="c"><span class="tok-purple">#ifdef</span> __cplusplus
+<span class="tok-purple">extern</span> <span class="tok-green">"C"</span> {
+<span class="tok-purple">#endif</span></code></pre></div>
+<p>Object-like macros are known by name and by body; function-like macros
+are never expanded, because a call to one looks exactly like a call and
+reads perfectly well as one.</p>
+<p>The cost is stated rather than hidden: *a name that exists only in an arm
+this server did not take is invisible to it*, exactly as it is to a
+compiler that took the other branch. Nothing in such an arm is reported,
+and nothing that only such an arm uses is ever called unused.</p>
+<h1>What it catches</h1>
+<p>Syntax and the preprocessor, first -- with messages that say what
+happened:</p>
+<table>
+<tr><th>Problem</th><th>Severity</th></tr>
+<tr><td>A string, character constant or <code>/* */</code> never closed</td><td>error</td></tr>
+<tr><td><code>(</code>, <code>[</code> or <code>{</code> that is never closed</td><td>error</td></tr>
+<tr><td>A missing <code>;</code> after a declaration or statement</td><td>error</td></tr>
+<tr><td><code>struct</code> with neither a tag nor a member list</td><td>error</td></tr>
+<tr><td><code>10xac0a</code>, <code>019</code>, <code>1e</code> -- a number C has no reading for</td><td>error</td></tr>
+<tr><td><code>#endif</code>, <code>#else</code> or <code>#elif</code> with no <code>#if</code></td><td>error</td></tr>
+<tr><td>An <code>#if</code> never closed, or a second <code>#else</code></td><td>error</td></tr>
+<tr><td><code>#incldue</code>, or an <code>#include</code> with no header name</td><td>error</td></tr>
+<tr><td>A macro redefined with a different body</td><td>warning</td></tr>
+<tr><td>=#include "x.h"= that resolves to no file</td><td>hint</td></tr>
+</table>
+<p>Names and scopes:</p>
+<table>
+<tr><th>Problem</th><th>Severity</th></tr>
+<tr><td>A name nothing declares</td><td>error</td></tr>
+<tr><td>A member the struct does not have</td><td>error</td></tr>
+<tr><td>A <code>goto</code> whose label does not exist</td><td>error</td></tr>
+<tr><td>A second definition of the same name</td><td>error</td></tr>
+<tr><td>A duplicate member, parameter or enumeration constant</td><td>error</td></tr>
+<tr><td>A local set up and never read</td><td>warning</td></tr>
+<tr><td>A <code>static</code> function or object nothing in this file uses</td><td>warning</td></tr>
+<tr><td>A label nothing jumps to</td><td>warning</td></tr>
+<tr><td>A local that hides one from an outer block</td><td>hint</td></tr>
+</table>
+<p>And the mistakes C makes easy and a compiler stays quiet about:</p>
+<table>
+<tr><th>Problem</th><th>Severity</th></tr>
+<tr><td><code>if (x = 0)</code> -- an assignment where a comparison goes</td><td>warning</td></tr>
+<tr><td><code>a &amp; b =</code> c= -- it parses as <code>a &amp; (b =</code> c)=</td><td>warning</td></tr>
+<tr><td><code>if (cond);</code> -- the <code>;</code> is the whole body</td><td>warning</td></tr>
+<tr><td>A duplicated <code>case</code> label, or a second <code>default</code></td><td>error</td></tr>
+<tr><td><code>x = x;</code></td><td>warning</td></tr>
+<tr><td>A statement that computes a value and discards it</td><td>warning</td></tr>
+<tr><td>Code after a <code>return</code>, <code>break</code>, <code>continue</code> or <code>goto</code></td><td>warning</td></tr>
+<tr><td><code>return x;</code> in a <code>void</code> function, <code>return;</code> in one that is not</td><td>error / warning</td></tr>
+<tr><td>A non-=void= function that never returns a value</td><td>warning</td></tr>
+<tr><td>='ab'= -- a character constant with two characters in it</td><td>warning</td></tr>
+<tr><td>A <code>printf</code> or <code>scanf</code> whose argument count does not match its format</td><td>warning</td></tr>
+</table>
+<p>That last one is worth its own sentence: it counts the conversions in the
+format string, handles <code>%%</code>, <code>*</code> widths (which add an argument when
+printing and remove one when scanning), scansets like <code>%[^\n]</code>, and the
+length modifiers -- and it says nothing at all when the format is built
+out of macros, or uses positional <code>%2$d</code> conversions, because then the
+count is not the conversion count.</p>
+<h2>What it deliberately stays quiet about</h2>
+<p>A linter that cries wolf gets switched off, and then its true reports go
+unseen too. So:</p>
+<ul>
+<li>The undeclared-name check is off entirely for a file that includes a header this server has no declarations for -- which is the honest answer, since the name may well be in it.</li>
+<li>It is off for a file with a syntax error in it, because mid-edit is exactly when a screenful of invented "undeclared" errors would be least welcome.</li>
+<li>It is off for a file with six or more distinct unplaceable names: that is not six typos, that is a file whose declarations live somewhere this server cannot reach.</li>
+<li>A name spelled <code>__like_this</code> or <code>_LikeThis</code> belongs to the implementation, so the implementation declared it -- somewhere.</li>
+<li>A parameter that goes unused is an interface, not a mistake.</li>
+<li>A name mentioned anywhere this server does not read -- inside a <code>#if</code> arm it did not take, or inside a macro body -- is never reported as unused, because the mention it cannot see is the one that makes the name used.</li>
+<li>The arguments of a function-like macro are text, not values, so <code>FIX(gecos)</code> is not a use of a variable called <code>gecos</code>.</li>
+<li>A name used four or more times and declared nowhere is one a macro brought into scope, not a typo -- nobody misspells the same identifier four times.</li>
+<li>A quoted <code>#include</code> that does not resolve is only mentioned when <b>another</b> one in the same file did. If none of them resolve, the headers are somewhere a build system knows about and this server does not, and saying so once per line would help nobody.</li>
+<li><code>while ((c = getchar()) !</code> EOF)= is the idiom, not the bug: a second pair of parentheses around a deliberate assignment is respected.</li>
+<li><code>(void)unused;</code> is how C says "I know", and passes without comment.</li>
+<li>Two <code>static int x;</code> at file scope are two tentative definitions, which C explicitly allows.</li>
+<li>A <code>.h</code> file has nothing unused in it, since it declares things for other files.</li>
+<li>A function whose return type came out of a macro gets no return checking, because "declared to return <code>RTDECL</code>" is nonsense.</li>
+</ul>
+<p>A line-length hint exists but is off unless asked for:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.c_ls.init_options = <span class="tok-blue">{</span>maxLineLength = <span class="tok-cyan">100</span>}</code></pre></div>
+<h1>Completion</h1>
+<p>Completion is context-aware rather than a word list:</p>
+<table>
+<tr><th>Where you are</th><th>What you get</th></tr>
+<tr><td>anywhere in code</td><td>names in scope, then this file's, then macros, then keywords, then the standard library</td></tr>
+<tr><td>after <code>p-&gt;</code> or <code>s.</code></td><td>that struct's members, through typedefs and chains</td></tr>
+<tr><td>after <code>struct</code></td><td>the tags this file and its headers define</td></tr>
+<tr><td>after <code>#</code></td><td>the preprocessor directives</td></tr>
+<tr><td>after <code>#include &lt;</code></td><td>the standard headers</td></tr>
+<tr><td>after =#include "=</td><td>the headers and directories beside this file</td></tr>
+<tr><td>after <code>#ifdef</code></td><td>the macros this file and its headers define</td></tr>
+</table>
+<p>Inside a comment or a string it offers nothing.</p>
+<h1>Hover, signatures, outline, jumps</h1>
+<p><code>K</code> over a name gives its declaration: a function's full signature, a
+variable and its type, a member and the struct it belongs to, a macro and
+its replacement text. Over a standard-library name it answers from the
+compiled-in table -- the real signature, read out of the real headers,
+plus which header it comes from and, for the ones worth explaining, a
+sentence about what to watch for. Over the header name in an <code>#include</code>
+it tells you which file that resolved to.</p>
+<p><code>&lt;leader&gt;lk</code> (signature help) shows the signature of the call the cursor
+is inside, with the parameter you are on highlighted. It works for
+functions this file declares, for function-like macros, and for the
+standard library. It fires by itself as you type <code>(</code> and =,=.</p>
+<p><code>gd</code> jumps to where a name is declared -- including into a
+=#include "sibling.h"= that resolved, and from the header name in an
+<code>#include</code> line to the file itself.</p>
+<p><code>:MepLspReferences</code> lists every use of the binding under the cursor. A
+local is listed only within its own function, so two functions that each
+have a <code>count</code> stay separate. <code>&lt;leader&gt;rn</code> renames the same set, and
+refuses what it cannot rename safely: a keyword, a name from the standard
+library, or one declared in another file.</p>
+<p>Functions, types, macros, file-scope objects, struct members and
+enumeration constants are the document outline, so <a href="structure-symbols.html">the symbol views</a> work
+from the server. Folding covers every braced block, each <code>#if</code> group, the
+<code>#include</code> block at the top, and runs of comment lines.</p>
+<h1>What it does not do</h1>
+<ul>
+<li><b>No preprocessing.</b> See the opening sections.</li>
+<li><b>No type checking.</b> It will tell you a struct has no such member, and it will not tell you that you passed an <code>int</code> where a <code>char *</code> was wanted -- because it cannot see the headers you include, and a checker that guessed about them would be wrong far more often than right.</li>
+<li><b>One file plus its neighbours is the whole world.</b> =#include "x.h"= next to the file is read; <code>#include &lt;x.h&gt;</code> is known only if it is one of the standard or POSIX headers in the compiled-in table.</li>
+<li><b>No project-wide rename or references.</b> Both stop at the file's edge, which is why a rename that cannot see the other users is refused rather than half-done.</li>
+<li><b>No C++.</b> clangd still owns every C++ filetype; see below.</li>
+<li><b>No formatting.</b> <code>mep.lsp_format</code> falls through to the configured formatter for C; the server does not claim the capability.</li>
+</ul>
+<h1>Turning it off</h1>
+<p>It is an ordinary entry in the server registry, so <code>init.lua</code> can drop
+it, or hand <code>c</code> and <code>h</code> back to clangd:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.c_ls = <span class="tok-cyan">nil</span>
+mep.lsp_servers.clangd.filetypes = <span class="tok-blue">{</span><span class="tok-green">'c'</span>, <span class="tok-green">'cpp'</span>, <span class="tok-green">'h'</span>, <span class="tok-green">'hpp'</span>, <span class="tok-green">'cc'</span>, <span class="tok-green">'cxx'</span><span class="tok-blue">}</span></code></pre></div>
+<p>Or point it at your own build:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.c_ls.cmd = {<span class="tok-green">'/path/to/mep-c-lsp'</span><span class="tok-blue">}</span></code></pre></div>
+<p>It also runs standalone, over stdio, in any editor that speaks LSP.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the client, the keys and the other servers.</li>
+<li><a href="c-mode.html">C and C++ mode</a> -- what mep does with a <code>.c</code> file besides this.</li>
+<li><a href="python-lsp.html">The Python language server</a> -- the same shape, for Python.</li>
+<li><a href="r-lsp.html">The R language server</a> -- and for R.</li>
+</ul>
+</body>
+</html>

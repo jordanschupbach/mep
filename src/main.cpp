@@ -6037,7 +6037,14 @@ const char *kBuiltinTodo =
 const char *kBuiltinLsp =
     "mep.lsp_servers = {\n"
     "  lua = {cmd = {'lua-language-server'}, filetypes = {'lua'}},\n"
-    "  clangd = {cmd = {'clangd'}, filetypes = {'c', 'cpp', 'h', 'hpp', 'cc', 'cxx'}},\n"
+    // clangd keeps its entry but no longer claims `c` or `h`: mep's own
+    // C server (c_ls below) does, so a fresh checkout gets C
+    // diagnostics with nothing installed. Select clangd instead by
+    // giving it the filetypes back -- `mep.lsp_servers.clangd.filetypes
+    // = {'c', 'cpp', 'h', 'hpp', 'cc', 'cxx'}` (and clearing c_ls's) in
+    // init.lua. It still owns every C++ filetype, which mep has no
+    // in-house server for.
+    "  clangd = {cmd = {'clangd'}, filetypes = {'cpp', 'hpp', 'cc', 'cxx'}},\n"
     // pyright keeps its entry but no longer claims `py`: mep's own
     // Python server (python_ls below) does, so a fresh checkout gets
     // Python diagnostics with nothing installed. Select pyright instead
@@ -6194,6 +6201,23 @@ const char *kBuiltinLsp =
     // that guesses about them would be wrong far more often than right
     // (python_lsp.h states the whole scope).
     "  python_ls = {cmd = {mep.bundled_tool('mep-python-lsp')}, filetypes = {'py', 'pyi'}},\n"
+    // mep's own C server (src/c_lsp_server.cpp, the `mep-c-lsp` target
+    // beside `mep` itself) -- the fourth entry here that is not an
+    // external project's binary, resolved through mep.bundled_tool the
+    // same way org_ls, r_ls and python_ls are. It ships with mep and
+    // needs no compiler, no `-I` flags and no compile_commands.json: it
+    // reads C itself, carries the standard library's declarations
+    // compiled in, and resolves `#include "sibling.h"` against the
+    // file's own directory.
+    //
+    // It claims `c` and `h`, which clangd used to (see its entry above);
+    // both are still registered, and swapping them back is a filetypes
+    // edit in init.lua. What it deliberately does not do is run the
+    // preprocessor or type-check: an editor is looking at unpreprocessed
+    // source, and a checker that cannot see the included headers would
+    // be wrong far more often than right (c_lsp.h states the whole
+    // scope).
+    "  c_ls = {cmd = {mep.bundled_tool('mep-c-lsp')}, filetypes = {'c', 'h'}},\n"
     "}\n"
     // (filetype .. '@' .. workspace root) -> client_id: one client per
     // filetype *per workspace root* (WORKSPACES_PLAN.md Phase 5), since

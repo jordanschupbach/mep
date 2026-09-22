@@ -261,8 +261,69 @@ I'd like an inhouse LSP engine for Java. Can you implement one? I'd like it to r
 I'd like an inhouse LSP engine for C++. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
 
 
-* TODO c lsp engine
+* DONE c lsp engine
 I'd like an inhouse LSP engine for C. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+  - =mep-c-lsp= now ships beside =mep= the way =mep-org-lsp=,
+    =mep-r-lsp= and =mep-python-lsp= do, and attaches to any =.c= or =.h=
+    file by itself (=c_ls= in =kBuiltinLsp=). Entirely in-house: no
+    compiler, no =-I= flags, no =compile_commands.json=, nothing on
+    =$PATH=. clangd keeps its entry and every C++ filetype but no longer
+    claims =c=/=h=; swapping them back is a =filetypes= edit in
+    =init.lua=.
+  - The front end is =src/c_ast.cpp=: a lexer that follows backslash
+    splices, a *model* of the preprocessor, and a recursive-descent
+    parser. The preprocessor is the part that has no counterpart in the
+    Python server and the part the whole design turns on -- it is never
+    run. Each =#if= group contributes exactly one arm, chosen by
+    evaluating the condition where the file itself settles it (=#if 0=,
+    a macro this file =#define=s earlier, =__cplusplus= which is false
+    by construction) and by bracket balance where it does not. That last
+    rule is what keeps the =#ifdef __cplusplus= / =extern "C" {=
+    prologue of every public header from unbalancing the file.
+  - Verified against 2,281 hand-written C files from the nix store
+    (generated Nim output excluded, since one generator's idioms would
+    otherwise drive the whole calibration): 97.5% parse with no syntax
+    error at all, and the remainder are macro-hostile long tail --
+    MinGW's declarator macros, C++ in a =.c= file, template files with
+    ={placeholders}= in them.
+  - Accepting valid code proves nothing about reporting invalid code, so
+    the parser is also mutation-tested: delete one token from a file
+    =gcc -fsyntax-only= accepts, keep the mutants gcc then rejects, and
+    require a diagnostic on each. 69% caught, the misses being type
+    errors and platform-header questions this server says outright it
+    does not answer.
+  - 28 diagnostics, calibrated against the same corpus rather than
+    against taste: 574 reports over 275,000 lines with 2,111 of the
+    2,281 files completely silent, and 1,028 reports with 1,885 files
+    silent once =#include "sibling.h"= resolution is on too (the mode a
+    real editor session runs in). The rules that got it there are in
+    help/c-lsp.org -- the undeclared-name check switches off for a file
+    that includes a header with no table, for a file with a syntax
+    error, and for a file with six or more distinct unplaceable names;
+    a function-like macro's arguments are text, not values; a name used
+    four or more times and declared nowhere came from a macro rather
+    than a typo; a name mentioned in a =#if= arm this server did not
+    take is never unused; a return type that came out of a macro gets no
+    return checking; and a quoted include that does not resolve is only
+    mentioned when another one in the same file did.
+  - The standard library is *generated*, not remembered
+    (=scripts/gen_c_names.py= -> =src/c_lsp_std_names.cpp=, committed):
+    10,738 names and 7,483 real declarations read out of the real
+    headers of 92 standard and POSIX headers with =gcc -E -dD
+    -D_GNU_SOURCE=. So hover over =memcpy= shows the signature glibc
+    actually declares, and nothing had to be typed from memory.
+  - Everything else the client asks for: completion (scope, struct
+    members through typedefs and chains, tags, directives, standard and
+    sibling headers), hover, signature help (in-file functions,
+    function-like macros, and the standard library), document symbols,
+    folding, go-to-definition (including into a resolved
+    =#include "sibling.h"=), references, and rename that refuses what it
+    cannot rename safely.
+  - =mep-c-lsp-test= (=src/c_lsp_test.cpp=, in =just test=) drives all
+    of it directly -- no process, no client, no compiler -- and asserts
+    the silence as deliberately as the reports, including that a
+    realistic =.c= file and a realistic =.h= file both lint completely
+    silent. Documented in help/c-lsp.org.
 
 
 * DONE python lsp engine

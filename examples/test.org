@@ -6,33 +6,28 @@ Now, here's some latex in a block:
 \int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
 \]
 
-
-
 #+begin_src R :results graphics :file ./test.png :exports both
-data(iris)
-head(iris)
-plot(
-  iris$Sepal.Length,
-  iris$Sepal.Width,
-  col = iris$Species,
-  pch = 19,
-  xlab = "Sepal Length",
-  ylab = "Sepal Width"
-)
+library(splines)
+n <- 1000
+x <- runif(n, 0, 1)
+doppler <- function(x) {
+  sin(20 / (x + 0.2))
+}
+ytrue <- doppler(x)
+epsilon <- rnorm(n, 0, 0.1)
+y <- ytrue + epsilon
+xseq <- seq(0, 1, length.out = n)
+yseq <- doppler(xseq)
+plot(x, y, col = rgb(0.4, 0.1, 0.1, 0.5), pch = 19, xlab = "x", ylab = "y")
+lines(xseq, yseq, col = "blue", lwd = 2)
+nk <- 100
+kseq <- seq(0, 1, length.out = nk)
+xmat <- spline.des(kseq, x, ord = 4, outer.ok = TRUE)$design
+lm1 <- lm(y ~ xmat - 1)
+beta <- as.matrix(coef(lm1), ncol = 1)
+xseqmat <- spline.des(kseq, xseq, ord = 4, outer.ok = TRUE)$design
+yhat <- xseqmat %*% beta
+lines(xseq, yhat, col = "red", lwd = 2)
 #+end_src
 #+RESULTS:
-#+begin_example
-  Sepal.Length Sepal.Width Petal.Length Petal.Width Species
-1          5.1         3.5          1.4         0.2  setosa
-2          4.9         3.0          1.4         0.2  setosa
-3          4.7         3.2          1.3         0.2  setosa
-4          4.6         3.1          1.5         0.2  setosa
-5          5.0         3.6          1.4         0.2  setosa
-6          5.4         3.9          1.7         0.4  setosa
-NULL
-#+end_example
-
-
-[[file:test.png]]
-
-
+[[file:./test.png]]

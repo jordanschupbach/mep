@@ -415,6 +415,7 @@
                 rpart_plot
                 rmarkdown
                 knitr
+                fda
               ] ++ [ vscDebuggerR ]; # mep.dap_adapters.r (see vscDebuggerR above)
             })
             # air is gf's R formatter (mep.format_languages.R, kBuiltinFormat

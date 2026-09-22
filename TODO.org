@@ -1,3 +1,6 @@
+* TODO commit popup binding
+
+In commit messages, I can quit by pressing escape. I'd like this to not be the case. To abort, I can press mod+d (alt+d), or do :bd. Implement this.
 
 * TODO org table formatting
 There's a bug in org table formatting, where, links dont get properly formatted. May be related to precedence when formatting org tables between link formatting and column formatting (w auto page wrapping).  Investigate and fix.

@@ -1673,12 +1673,19 @@ int l_ui_confirm(lua_State *L) {
     return 0;
 }
 
-// mep.ui_select(items, title, on_done): vim.ui.select equivalent (a
+// mep.ui_select(items, title, on_done, opts): vim.ui.select equivalent (a
 // simpler fixed-list chooser, distinct from the fuzzy mep.picker widget).
-// on_done(1-indexed index) on Enter, on_done() [nil] on Escape.
+// on_done(1-indexed index) on Enter, on_done() [nil] on Escape. An item
+// may contain '\n's, which DrawSelectOverlay draws as further rows of that
+// same (single, still separately selectable) item -- a wrapped multi-line
+// message stays one choice instead of becoming one choice per line.
+// opts.on_key(key, 1-indexed highlighted item) receives every other
+// printable key typed over the list; returning true from it closes the
+// overlay without on_done firing (see HandleSelectInput). Ctrl-N/Ctrl-P
+// move the highlight like j/k, so a handler never sees those either.
 /**
- * @brief Implements mep.ui_select(items, title, on_done): shows a fixed-list chooser and calls on_done with the chosen 1-indexed index (or nothing on Escape).
- * @param L Lua state; arg 1 is an array of item strings, arg 2 the title, arg 3 the callback.
+ * @brief Implements mep.ui_select(items, title, on_done, opts): shows a fixed-list chooser and calls on_done with the chosen 1-indexed index (or nothing on Escape).
+ * @param L Lua state; arg 1 is an array of item strings, arg 2 the title, arg 3 the callback, arg 4 an optional table with on_key.
  * @return Number of values pushed (0).
  */
 int l_ui_select(lua_State *L) {
@@ -1692,9 +1699,18 @@ int l_ui_select(lua_State *L) {
         items.emplace_back(luaL_checkstring(L, -1));
         lua_pop(L, 1);
     }
+    int on_key_ref = 0;
+    if (lua_istable(L, 4)) {
+        lua_getfield(L, 4, "on_key");
+        if (lua_isfunction(L, -1)) {
+            on_key_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        } else {
+            lua_pop(L, 1);
+        }
+    }
     lua_pushvalue(L, 3);
     int ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    GetEditor(L)->BeginSelect(title, std::move(items), ref);
+    GetEditor(L)->BeginSelect(title, std::move(items), ref, on_key_ref);
     return 0;
 }
 
@@ -10658,6 +10674,22 @@ bool LuaEnv::CallRefWithBoolForBool(int ref, bool arg) {
     lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
     lua_pushboolean(L_, arg);
     if (lua_pcall(L_, 1, 1, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+        return false;
+    }
+    bool result = lua_toboolean(L_, -1);
+    lua_pop(L_, 1);
+    return result;
+}
+
+bool LuaEnv::CallRefWithStringIntForBool(int ref, const std::string &arg, long long index) {
+    if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return false;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    lua_pushlstring(L_, arg.data(), arg.size());
+    lua_pushinteger(L_, static_cast<lua_Integer>(index));
+    if (lua_pcall(L_, 2, 1, 0) != LUA_OK) {
         const char *msg = lua_tostring(L_, -1);
         if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
         lua_pop(L_, 1);

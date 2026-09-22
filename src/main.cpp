@@ -6689,21 +6689,55 @@ const char *kBuiltinLsp =
     "  table.sort(row_diags, function(a, b) return (a.severity or 1) < (b.severity or 1) end)\n"
     "  return row_diags\n"
     "end\n"
-    // More than 2 diagnostics on one line can't be conveyed by a single
-    // gutter badge + one line of virt_text -- pop up all of them
-    // instead, word-wrapped (mep.float_preview itself does not wrap --
-    // see mep_diag_wrap's own comment) so a long message is actually
-    // readable rather than running off the edge of the box.
+    // The diagnostics on a row, as a *selectable* list rather than a block
+    // of text: one entry per diagnostic, word-wrapped (nothing in the
+    // overlay wraps for us -- see mep_diag_wrap's own comment) with each
+    // entry's wrapped lines joined by '\n', which mep.ui_select draws as
+    // extra rows of that same single entry. So a long message stays one
+    // thing you step over with Ctrl-N/Ctrl-P (or j/k), and:
+    //   Enter -- jump the cursor to that diagnostic's own line:column
+    //   y     -- copy that one message to the system clipboard
+    //   Y     -- copy every message on the row
+    //   Esc   -- dismiss
+    // A gutter badge plus one line of virt_text can only ever show the
+    // worst diagnostic on a row; this is where the rest of them (and the
+    // full text of a message too long for the virt_text line) live.
     "local function mep_diag_popup(row_diags)\n"
-    "  local wrapped = {}\n"
+    "  local items, messages = {}, {}\n"
+    // MEP_DIAG_WRAP_WIDTH is the width a message *wants*; the popup can
+    // only actually show what fits the window, and nothing downstream
+    // re-wraps (DrawSelectOverlay clamps the box to the screen and lets a
+    // too-long row run off its right edge). The focused pane's own text
+    // width is the closest thing Lua has to "how many columns fit", and is
+    // never wider than the window the box is centered in -- so wrap to
+    // whichever of the two is narrower, leaving room for the box's border
+    // and padding.
+    "  local cols = mep.buffer_text_cols(mep.current_buffer())\n"
+    "  local width = math.max(24, math.min(MEP_DIAG_WRAP_WIDTH, (cols or MEP_DIAG_WRAP_WIDTH) - 6))\n"
     "  for i, d in ipairs(row_diags) do\n"
-    "    if i > 1 then wrapped[#wrapped + 1] = '' end\n"
     "    local sev = MEP_DIAG_SEVERITY[d.severity or 1] or 'Error'\n"
-    "    for _, l in ipairs(mep_diag_wrap(i .. '. [' .. sev .. '] ' .. d.message, MEP_DIAG_WRAP_WIDTH)) do\n"
-    "      wrapped[#wrapped + 1] = l\n"
-    "    end\n"
+    "    local lines = mep_diag_wrap(i .. '. [' .. sev .. '] ' .. d.message, width)\n"
+    "    items[#items + 1] = table.concat(lines, '\\n')\n"
+    "    messages[#messages + 1] = d.message\n"
     "  end\n"
-    "  mep.float_preview('Diagnostics on this line (' .. #row_diags .. ')', table.concat(wrapped, '\\n'))\n"
+    "  local title = 'Diagnostics on this line (' .. #row_diags .. ')  C-n/C-p move, y yank, Esc close'\n"
+    "  mep.ui_select(items, title, function(idx)\n"
+    "    local d = idx and row_diags[idx]\n"
+    "    if d then mep.set_cursor(d.range.start.line + 1, d.range.start.character + 1) end\n"
+    "  end, {on_key = function(key, idx)\n"
+    "    if key == 'y' then\n"
+    "      local msg = messages[idx]\n"
+    "      if not msg then return false end\n"
+    "      mep.clipboard_set(msg)\n"
+    "      mep.notify('Yanked diagnostic to clipboard')\n"
+    "      return true\n"
+    "    elseif key == 'Y' then\n"
+    "      mep.clipboard_set(table.concat(messages, '\\n'))\n"
+    "      mep.notify('Yanked ' .. #messages .. ' diagnostics to clipboard')\n"
+    "      return true\n"
+    "    end\n"
+    "    return false\n"
+    "  end})\n"
     "end\n"
     // One underline decoration per diagnostic (its own exact span, as
     // before), but only *one* sign+virt_text decoration per row instead
@@ -6746,10 +6780,11 @@ const char *kBuiltinLsp =
     "    })\n"
     "  end\n"
     "end\n"
-    // :MepDiagShow: pop up the full (wrapped) list once there are more
-    // than 2 diagnostics on the cursor's own line (matching the same
-    // threshold mep_diag_nav's own jump-then-maybe-popup uses below),
-    // otherwise the original one-line notify is still plenty.
+    // :MepDiagShow: pop up the (selectable, yankable) list once there are
+    // more than 2 diagnostics on the cursor's own line -- for one or two,
+    // the original one-line notify is still plenty and doesn't take over
+    // input the way the popup does. "[e"/"]e" below pop up unconditionally
+    // instead: there, the popup is the point of having jumped.
     "function mep.lsp_diagnostic_at_cursor()\n"
     "  local row_diags = mep_diag_at_row(mep.cursor())\n"
     "  if #row_diags == 0 then mep.notify('No diagnostic on this line') return end\n"
@@ -6764,7 +6799,7 @@ const char *kBuiltinLsp =
     // Unlike mep.lsp_diagnostic_at_cursor above (popup only past the
     // 2-diagnostic threshold, else a one-line notify), this always pops
     // up the full list -- the point of a dedicated "show me everything
-    // on this line" key.
+    // on this line" key (and the way to get at y/Y for a lone diagnostic).
     "function mep.lsp_line_diagnostics_popup()\n"
     "  local row_diags = mep_diag_at_row(mep.cursor())\n"
     "  if #row_diags == 0 then mep.notify('No diagnostics on this line') return end\n"
@@ -6774,11 +6809,15 @@ const char *kBuiltinLsp =
     // deduped (a real, if minor, pre-existing gap: multiple diagnostics
     // sharing a row used to make that row count once per diagnostic, so
     // "next" could re-land on the same row more than once in a row
-    // before actually advancing) -- then, once landed, pop up the full
-    // list if that line turns out to have more than 2 (errors_only
-    // narrows which diagnostics count toward that threshold too, so "[e"
-    // popping up means more than 2 *errors*, not diagnostics of any
-    // severity, matching what "next/previous error" itself already means).
+    // before actually advancing) -- then, once landed, pop up that row's
+    // list (mep_diag_popup: Ctrl-N/Ctrl-P to move over it, y/Y to yank a
+    // message, Enter to land on the exact column, Escape to dismiss).
+    // Unconditionally, not past some count: the reason to jump to an error
+    // is to read it, and a row's badge + single virt_text line is exactly
+    // what can't show a wrapped message or a second diagnostic. errors_only
+    // narrows which diagnostics reach the popup too, so "[e" shows the
+    // *errors* on the row rather than diagnostics of any severity, matching
+    // what "next/previous error" itself already means.
     "local function mep_diag_nav(delta, errors_only)\n"
     "  local diags = mep_lsp_diagnostics[mep_lsp_abspath(mep.filename())] or {}\n"
     "  if #diags == 0 then mep.notify('No diagnostics') return end\n"
@@ -6822,7 +6861,7 @@ const char *kBuiltinLsp =
     "    end\n"
     "    row_diags = errors_here\n"
     "  end\n"
-    "  if #row_diags > 2 then mep_diag_popup(row_diags) end\n"
+    "  if #row_diags > 0 then mep_diag_popup(row_diags) end\n"
     "end\n"
     "function mep.lsp_next_diagnostic() mep_diag_nav(1, false) end\n"
     "function mep.lsp_prev_diagnostic() mep_diag_nav(-1, false) end\n"
@@ -27312,18 +27351,67 @@ void DrawSelectOverlay() {
     const std::vector<std::string> &items = g_editor.SelectItems();
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 6;
+    // An item may carry embedded '\n's (mep.ui_select's own contract): each
+    // becomes another *row* of the same item, not another item -- what lets
+    // the LSP diagnostics popup wrap a long message and still have the whole
+    // message be one thing Ctrl-N/Ctrl-P steps over and "y" yanks. So the
+    // list is laid out in rows while selection stays per item.
+    std::vector<std::vector<std::string>> item_rows;
+    item_rows.reserve(items.size());
+    int total_rows = 0;
     float max_w = gfx::MeasureTextEx(g_font, g_editor.SelectTitle().c_str(), MenuFontSize(), 0).x;
-    for (const auto &it : items) max_w = std::max(max_w, gfx::MeasureTextEx(g_font, it.c_str(), font_size, 0).x);
+    for (const auto &it : items) {
+        std::vector<std::string> lines = SplitLines(it);
+        if (lines.empty()) lines.emplace_back("");
+        for (const auto &line : lines) {
+            max_w = std::max(max_w, gfx::MeasureTextEx(g_font, line.c_str(), font_size, 0).x);
+        }
+        total_rows += static_cast<int>(lines.size());
+        item_rows.push_back(std::move(lines));
+    }
     int box_w = std::min(gfx::GetScreenWidth() - 80, static_cast<int>(max_w) + 60);
-    int box_h = std::min(gfx::GetScreenHeight() - 80, static_cast<int>(items.size()) * line_h + 60);
+    // DrawFloatFrame draws its title *inside* the box and starts the content
+    // below it, so the title's row has to come out of the height budget here
+    // too -- left out of it, the last row of a list tall enough to fill the
+    // screen was drawn past the box's own bottom border.
+    int title_h = g_editor.SelectTitle().empty() ? 0 : static_cast<int>(MenuFontSize()) + 8;
+    int max_rows = std::max(1, (gfx::GetScreenHeight() - 80 - 60 - title_h) / line_h);
+    int visible_rows = std::min(total_rows, max_rows);
+    int box_h = visible_rows * line_h + 60 + title_h;
     FloatFrame f = DrawFloatFrame(box_w, box_h, g_editor.SelectTitle());
     int sel = g_editor.SelectIndex();
-    for (size_t i = 0; i < items.size(); i++) {
-        float y = f.content_y + static_cast<float>(i) * static_cast<float>(line_h);
+    // Where the highlighted item starts, and from which row the box is
+    // drawn so that item is on screen -- recomputed from `sel` every frame
+    // rather than kept as scroll state, since the only thing that moves the
+    // view here is the selection itself.
+    int sel_row = 0;
+    for (int i = 0; i < sel && i < static_cast<int>(item_rows.size()); i++) {
+        sel_row += static_cast<int>(item_rows[static_cast<size_t>(i)].size());
+    }
+    int sel_h = sel < static_cast<int>(item_rows.size())
+                    ? static_cast<int>(item_rows[static_cast<size_t>(sel)].size())
+                    : 1;
+    int first_row = 0;
+    if (sel_row + sel_h > visible_rows) first_row = sel_row + sel_h - visible_rows;
+    if (first_row > sel_row) first_row = sel_row;
+    int row = 0;
+    for (size_t i = 0; i < item_rows.size(); i++) {
+        const std::vector<std::string> &lines = item_rows[i];
         if (static_cast<int>(i) == sel) {
-            gfx::DrawRectangle(f.box_x + 6, static_cast<int>(y) - 1, f.box_w - 12, line_h, ResolveHlGroup("PickerSelected"));
+            int top = std::max(row, first_row);
+            int bottom = std::min(row + static_cast<int>(lines.size()), first_row + visible_rows);
+            if (bottom > top) {
+                float y = f.content_y + static_cast<float>(top - first_row) * static_cast<float>(line_h);
+                gfx::DrawRectangle(f.box_x + 6, static_cast<int>(y) - 1, f.box_w - 12, (bottom - top) * line_h,
+                              ResolveHlGroup("PickerSelected"));
+            }
         }
-        gfx::DrawTextEx(g_font, items[i].c_str(), gfx::Vector2{f.content_x, y}, font_size, 0, ResolveHlGroup("Normal"));
+        for (size_t j = 0; j < lines.size(); j++, row++) {
+            if (row < first_row || row >= first_row + visible_rows) continue;
+            float y = f.content_y + static_cast<float>(row - first_row) * static_cast<float>(line_h);
+            gfx::DrawTextEx(g_font, lines[j].c_str(), gfx::Vector2{f.content_x, y}, font_size, 0,
+                       ResolveHlGroup("Normal"));
+        }
     }
 }
 

@@ -7549,10 +7549,11 @@ public:
     /**
      * @brief Opens a vim.ui.select-equivalent modal item picker, taking over input until confirmed or cancelled.
      * @param title The picker's title text.
-     * @param items The selectable item labels.
+     * @param items The selectable item labels, each of which may contain '\\n's the renderer draws as its own rows.
      * @param on_done_ref A Lua function ref, called with the 1-indexed chosen index on Enter or with nil on Escape, then unrefed.
+     * @param on_key_ref Optional Lua function ref for keys the overlay itself does not use, called with (key, 1-indexed highlighted item); returning true keeps the overlay open. Unrefed with on_done_ref.
      */
-    void BeginSelect(const std::string &title, std::vector<std::string> items, int on_done_ref);
+    void BeginSelect(const std::string &title, std::vector<std::string> items, int on_done_ref, int on_key_ref = 0);
     // Preview: no callback -- purely informational (e.g. git-gutter's
     // hunk preview), dismissed by any keypress or a click, restoring
     // whatever mode was active before it opened. `text` may contain
@@ -10728,6 +10729,15 @@ private:
     std::vector<std::string> select_items_;
     int select_index_ = 0;
     int select_callback_ref_ = 0;
+    // mep.ui_select's opts.on_key: every printable key the overlay does
+    // not already spend on navigation (j/k, Ctrl-N/Ctrl-P, arrows) or on
+    // Enter/Escape is handed to this ref along with the highlighted item's
+    // own index, so a caller can hang extra actions off the list without
+    // the overlay needing to know what they are (the LSP diagnostics
+    // popup's "y" = copy this message to the clipboard is the first).
+    // The overlay stays open across one; it is unrefed alongside
+    // select_callback_ref_ so a cancelled select leaks neither.
+    int select_on_key_ref_ = 0;
     std::string preview_title_, preview_text_;
 
     std::vector<SidebarInstance> sidebars_;

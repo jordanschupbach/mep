@@ -18949,12 +18949,14 @@ void Editor::BeginConfirm(const std::string &message, bool default_yes, int on_d
     mode_ = Mode::Confirm;
 }
 
-void Editor::BeginSelect(const std::string &title, std::vector<std::string> items, int on_done_ref) {
+void Editor::BeginSelect(const std::string &title, std::vector<std::string> items, int on_done_ref,
+                          int on_key_ref) {
     overlay_previous_mode_ = mode_;
     select_title_ = title;
     select_items_ = std::move(items);
     select_index_ = 0;
     select_callback_ref_ = on_done_ref;
+    select_on_key_ref_ = on_key_ref;
     mode_ = Mode::Select;
 }
 
@@ -19311,27 +19313,71 @@ void Editor::HandleSelectInput() {
     }
     if (escape) {
         int ref = select_callback_ref_;
+        int key_ref = select_on_key_ref_;
+        select_on_key_ref_ = 0;
         RestoreFromOverlay();
         if (lua_) {
             lua_->CallRef(ref);
             lua_->UnrefFunction(ref);
+            if (key_ref) lua_->UnrefFunction(key_ref);
         }
         return;
     }
     if (enter) {
         int ref = select_callback_ref_;
+        int key_ref = select_on_key_ref_;
+        select_on_key_ref_ = 0;
         int idx = select_index_ + 1;  // 1-indexed, matching Lua convention
         RestoreFromOverlay();
         if (lua_) {
             lua_->CallRefWithInt(ref, idx);
             lua_->UnrefFunction(ref);
+            if (key_ref) lua_->UnrefFunction(key_ref);
         }
         return;
+    }
+    // Ctrl-N/Ctrl-P alongside j/k and the arrows: the file picker
+    // (HandlePickerInput) already spends those two on "next/previous
+    // result", and a select overlay is the same shape of list -- they also
+    // reach it from Insert-style muscle memory, where j/k are just letters.
+    // Read as keys rather than chars because a Ctrl-held letter produces no
+    // character event at all (which is also why the on_key dispatch below
+    // can't accidentally see them).
+    bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (ctrl && (gfx::IsKeyPressed(gfx::Key::N) || gfx::IsKeyPressedRepeat(gfx::Key::N)) &&
+        select_index_ + 1 < static_cast<int>(select_items_.size())) {
+        select_index_++;
+    }
+    if (ctrl && (gfx::IsKeyPressed(gfx::Key::P) || gfx::IsKeyPressedRepeat(gfx::Key::P)) && select_index_ > 0) {
+        select_index_--;
     }
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if ((cp == 'j') && select_index_ + 1 < static_cast<int>(select_items_.size())) select_index_++;
         if (cp == 'k' && select_index_ > 0) select_index_--;
+        // Anything else printable goes to opts.on_key, with the item it was
+        // typed over (mep.ui_select's extra-actions hook -- "y" = yank this
+        // diagnostic in the LSP popup). A true return means the key finished
+        // with the overlay, so it closes *without* on_done: the handler
+        // already did whatever the key meant, and on_done's contract is "the
+        // user chose this item", which y/Y did not. Guarded on still being in
+        // Select mode so a handler that opened its own overlay (a prompt, a
+        // confirm) doesn't have it yanked back out from under it here.
+        if (cp != 'j' && cp != 'k' && cp >= 32 && cp < 127 && select_on_key_ref_ != 0 && lua_) {
+            bool close = lua_->CallRefWithStringIntForBool(select_on_key_ref_, std::string(1, static_cast<char>(cp)),
+                                                            select_index_ + 1);
+            if (close && mode_ == Mode::Select) {
+                int ref = select_callback_ref_;
+                int key_ref = select_on_key_ref_;
+                select_on_key_ref_ = 0;
+                RestoreFromOverlay();
+                lua_->UnrefFunction(ref);
+                if (key_ref) lua_->UnrefFunction(key_ref);
+                while (gfx::GetCharPressed() > 0) {
+                }
+                return;
+            }
+        }
         cp = gfx::GetCharPressed();
     }
     if ((gfx::IsKeyPressed(gfx::Key::Down) || gfx::IsKeyPressedRepeat(gfx::Key::Down)) &&

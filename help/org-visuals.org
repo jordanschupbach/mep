@@ -241,9 +241,30 @@ A row showing its stored text is left out of the grid: no header tint, no
 column rules and, on a =|---+---|= row, no drawn rule over the dashes --
 the rules above and below it simply stop there, because the columns it is
 showing are not the ones the rest of the table is drawn in. Because a
-wrapped row's drawn text is not the row's own text, its syntax colouring
-and concealment are skipped for as long as it is wrapped, and it comes back
-fully decorated the moment the cursor leaves it.
+wrapped row's drawn text is not the row's own text, its syntax colouring is
+skipped for as long as it is wrapped, and it comes back fully decorated the
+moment the cursor leaves it.
+
+Links are the exception, because the layout resolves them itself. A cell's
+link markup is turned into its display text *before* the columns are
+budgeted, so a =[[https://orgmode.org/manual/Tables.html][Tables]]= cell
+costs the table the six columns of =Tables= rather than the fifty of its
+markup -- no other column is shaved to pay for a URL that is never drawn --
+and the link is then coloured and clickable exactly where the layout put
+it, underlined when its markup is showing just as a link in prose is. A
+description the wrap breaks across lines stays a link on every line it
+lands on. With concealment off (=<leader>otm=) the markup is what gets
+measured, wrapped and drawn, and flipping the setting re-lays out the
+table.
+
+This is also why a table that *fits* can still be laid out. A table of
+link cells is padded in the file to its markup's width -- which is what
+=:MepOrgTableAlign= should write, since the file's own columns have to line
+up -- so the drawn cell is a short description followed by a stretch of
+dead gutter before the =|=. Whenever the layout comes out genuinely
+narrower than the stored rows, the table is drawn from the layout and the
+columns close up. A table already as tight as its layout, and an unaligned
+one whose layout comes out *wider*, are both left alone.
 
 * See also
 

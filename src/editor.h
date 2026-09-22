@@ -1192,6 +1192,33 @@ struct Pane {
     // UpdateScrollForPane's own comment for how this drives its
     // smoothing.
     int scroll_follow_last_cursor_row = -1;
+
+    // Sub-row scroll offset (TODO.org "smooth scroll"): how many of
+    // `scroll_row`'s own visual slots are scrolled off above the top of
+    // the pane. Almost always 0 -- an ordinary row is one slot tall, so
+    // there is nothing to be part-way through -- and nonzero only while
+    // the view is sliding over a tall org inline image, which claims as
+    // many slots as the figure is line-heights tall (OrgImageLayoutFor).
+    // Editor::ScrollFigureStep advances it by one slot per j/k so a
+    // figure taller than the pane scrolls past one line at a time instead
+    // of being skipped whole by a single row step; DrawPane (main.cpp)
+    // applies it once, as a shift of its whole slot grid, so none of the
+    // four slot-counting walkers has to learn about a partial top row.
+    int scroll_sub = 0;
+    // The row `scroll_sub` was measured against. A sub-row offset only
+    // means anything paired with the row it is an offset *into*, and
+    // plenty of code moves `scroll_row` on its own (gg, a search, Ctrl-D,
+    // a buffer switch -- every `scroll_row = 0` in editor.cpp), so
+    // UpdateScrollForPane drops a stale offset rather than applying it to
+    // whatever row the view landed on.
+    int scroll_sub_row = -1;
+    // The soft-wrap budget (DrawPane's own `wrap_cols`) as of this pane's
+    // last render, recorded by UpdateScrollForPane. Key handling --
+    // ScrollFigureStep and the mouse wheel -- has to count visual slots
+    // too, and unlike the render path it has no pixel geometry of its own
+    // to derive the budget from. 0 (wrap off) until first drawn, matching
+    // main.cpp's own "wrap_cols <= 0 means wrap is off" convention.
+    int wrap_cols = 0;
 };
 
 enum class SplitDir { Leaf, Horizontal, Vertical };
@@ -2823,6 +2850,48 @@ public:
      * @param wrap_cols The pane's soft-wrap budget in characters; 0 disables wrap-aware slot counting.
      */
     void UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols = 0);
+
+    // --- Smooth scroll over a tall org figure (TODO.org "smooth scroll") ---
+    //
+    // An org inline image claims as many visual slots as the figure is
+    // drawn tall (OrgImageLayoutFor), routinely more than a pane holds,
+    // yet it is still exactly one buffer row -- so plain j/k has nothing
+    // to step through while going over it: one press takes the cursor
+    // from above the figure to below it and the view jumps a screenful or
+    // more to keep up. These three turn that row into something with a
+    // middle: while the cursor is on it, j/k scroll the *view* by one
+    // visual line per press (Pane::scroll_sub carries the part of a row
+    // that is scrolled off), and the cursor only steps off the figure
+    // once the edge it is travelling toward -- the figure's bottom going
+    // down, its top going up -- has passed the middle of the pane, which
+    // is where the caret conceptually rides while it is over a figure.
+    /**
+     * @brief Scrolls the focused pane one visual line over the tall org figure its cursor is on,
+     * if it is on one and the figure's trailing edge has not yet passed the middle of the pane.
+     * @param down True for a downward step (j), false for upward (k).
+     * @return True if the key was consumed by scrolling; false to let it move the cursor normally.
+     */
+    bool ScrollFigureStep(bool down);
+    /**
+     * @brief Returns how many visual slots the org inline image on `row` claims, or 0 if that row
+     * does not render as one (including when inline images are toggled off).
+     * @param pane The pane whose text width the figure is laid out against.
+     * @param buf The buffer `row` belongs to.
+     * @param row The buffer row to test.
+     * @return The figure's slot count, or 0 when the row is not a rendered figure.
+     */
+    int PaneFigureSlots(const Pane &pane, const Buffer &buf, int row) const;
+    /**
+     * @brief Counts the visual slots one buffer row occupies in a pane: 1 for an ordinary row, more
+     * for an org image/LaTeX/wide-table row, a soft-wrapped row, an org headline or a notebook cell
+     * with an output block.
+     * @param pane The pane the row is rendered in (its text width and cursor row).
+     * @param buf The buffer `row` belongs to.
+     * @param row The buffer row to measure.
+     * @param wrap_cols The pane's soft-wrap budget in characters; 0 disables wrap-aware counting.
+     * @return The number of visual slots the row claims.
+     */
+    int PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_cols) const;
 
     /**
      * @brief Returns the editor's current mode.
@@ -10321,6 +10390,65 @@ private:
     // uses (StepVisibleRow, goto_page, pan clamps, etc.) so wheel
     // scrolling can never drift out of sync with keyboard scrolling.
     void HandleMouseWheel(float dx, float dy);
+
+    // --- Pane::scroll_sub plumbing (ScrollFigureStep's own helpers) -----
+    //
+    // Everything below counts in *visual slots* (line-heights) measured
+    // from the view's top edge, which is (scroll_row, scroll_sub): the
+    // top row's own first `scroll_sub` slots are above the pane. They
+    // walk the buffer one drawn row at a time exactly the way DrawPane's
+    // row loop and its cursor-Y lookup do (main.cpp), so a closed fold or
+    // a multi-row LaTeX fragment costs the one slot it is drawn as rather
+    // than its raw row span.
+    /**
+     * @brief Returns where `row`'s top edge sits relative to a pane's top edge, in visual slots
+     * (negative above it), saturating at +/-`cap` so a far-off row costs a bounded walk.
+     * @param pane The pane whose scroll position the offset is measured from.
+     * @param buf The buffer `row` belongs to.
+     * @param row The buffer row to locate.
+     * @param wrap_cols The pane's soft-wrap budget in characters; 0 disables wrap-aware counting.
+     * @param cap The magnitude to stop walking at; the result is clamped to it before the
+     * sub-row offset is applied.
+     * @return The slot offset of `row`'s top edge from the pane's own top edge.
+     */
+    int PaneSlotOffsetOfRow(const Pane &pane, const Buffer &buf, int row, int wrap_cols, int cap) const;
+    /**
+     * @brief Returns the next row DrawPane would draw after `row`, skipping a closed fold's hidden
+     * interior and a rendered LaTeX fragment's remaining source rows.
+     * @param pane The pane being walked (its cursor row resolves the LaTeX reveal rule).
+     * @param buf The buffer `row` belongs to.
+     * @param row The row to step from.
+     * @return The next drawn row (never <= `row`, so every walk terminates).
+     */
+    int PaneNextDrawnRow(const Pane &pane, const Buffer &buf, int row) const;
+    /**
+     * @brief Returns the previous row DrawPane would draw before `row`, rewinding into a closed
+     * fold's start row or a rendered LaTeX fragment's start row when the step lands inside one.
+     * @param pane The pane being walked (its cursor row resolves the LaTeX reveal rule).
+     * @param buf The buffer `row` belongs to.
+     * @param row The row to step from.
+     * @return The previous drawn row, or 0 at the top of the buffer.
+     */
+    int PanePrevDrawnRow(const Pane &pane, const Buffer &buf, int row) const;
+    /**
+     * @brief Moves a pane's view by `slots` visual lines (negative = back up), walking through a
+     * tall row's own slots via Pane::scroll_sub and stopping at either end of the buffer.
+     * @param pane The pane to scroll.
+     * @param buf The pane's buffer.
+     * @param slots How many visual lines to move; negative scrolls back.
+     * @param wrap_cols The pane's soft-wrap budget in characters; 0 disables wrap-aware counting.
+     * @return True if the view moved at all.
+     */
+    bool ScrollPaneBySlots(Pane &pane, const Buffer &buf, int slots, int wrap_cols);
+    /**
+     * @brief Sets a pane's view top to `row` plus `sub` scrolled-off slots, keeping
+     * Pane::scroll_sub_row paired with it.
+     * @param pane The pane to reposition.
+     * @param row The row to put at the top of the pane.
+     * @param sub How many of that row's own leading slots are scrolled off above the pane.
+     */
+    void SetPaneScrollTop(Pane &pane, int row, int sub);
+
     // Accumulates fractional wheel input into whole-unit steps for a
     // content type whose scroll position is fundamentally discrete (a
     // text/paragraph/grid row or column, not a pixel offset) -- without

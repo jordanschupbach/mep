@@ -38913,6 +38913,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                       static_cast<int>(content_h));
 
+    // Sub-row scroll offset (Pane::scroll_sub, set by
+    // Editor::ScrollFigureStep): how many of the top row's own visual
+    // slots are scrolled off above the pane. Nonzero only part-way
+    // through a tall org figure -- and rather than teach each of the
+    // walkers below about a partial top row, it is applied once, here, as
+    // a shift of the whole slot grid they share: content_y moves up by
+    // that many line-heights while content_h grows by the same amount, so
+    // `content_y + content_h` -- the bottom edge every off-screen cull
+    // below compares against -- doesn't move, and visible_lines grows to
+    // match so the row loop keeps drawing down to that same last pixel.
+    // The scissor above was begun from the *unshifted* content_y, so the
+    // figure's scrolled-off part is clipped rather than spilling up into
+    // the pane header.
+    if (pane.scroll_sub > 0) {
+        const float sub_px = static_cast<float>(pane.scroll_sub * line_height);
+        content_y -= sub_px;
+        content_h += sub_px;
+        visible_lines += pane.scroll_sub;
+    }
+
     // Scope guides are derived from the buffer rather than its syntax
     // decorations, so they work in every text mode (including a filetype
     // which has no tree-sitter query).  They are painted with row

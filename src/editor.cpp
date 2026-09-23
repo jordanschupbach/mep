@@ -6690,6 +6690,69 @@ void Editor::PollTerminals() {
     // branch) -- nothing to do here for them.
 }
 
+bool Editor::AnyOtherRealBuffer(int except) const {
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        const int id = static_cast<int>(i);
+        if (id == except) continue;
+        const Buffer &b = buffers_[i];
+        if (b.deleted || b.unlisted) continue;  // file tree/helper panes aren't "somewhere to land"
+        // A still-running terminal is real even though its buffer's `lines`
+        // stay the empty placeholder (its output lives in the VTerm, not
+        // Buffer::lines) -- exiting one terminal must not quit while another
+        // shell is still alive. An exited terminal, though, is on its own
+        // reap list and counts as nothing.
+        auto t = terminals_.find(id);
+        if (t != terminals_.end()) {
+            if (!t->second.exited) return true;
+            continue;
+        }
+        const bool empty_scratch =
+            b.filename.empty() && !b.modified && (b.lines.empty() || (b.lines.size() == 1 && b.lines[0].empty()));
+        if (empty_scratch) continue;  // a blank unnamed buffer is nothing to keep the app open for
+        return true;
+    }
+    return false;
+}
+
+void Editor::ReapExitedTerminals() {
+    // Snapshot the dead buffer ids first: BufferDeleteById below rewrites
+    // pane state but never touches terminals_, yet erasing entries mid-loop
+    // would still invalidate the iterator, so decide the whole worklist up
+    // front.
+    std::vector<int> dead;
+    for (const auto &kv : terminals_) {
+        if (kv.second.exited) dead.push_back(kv.first);
+    }
+    for (int bid : dead) {
+        const bool live_buffer =
+            bid >= 0 && bid < static_cast<int>(buffers_.size()) && !buffers_[static_cast<size_t>(bid)].deleted;
+        // "type `exit` and the whole app closes": there's no real buffer
+        // left to fall back to (only the docked file tree, which is
+        // unlisted, and/or blank scratch buffers), so this shell exiting
+        // means the session is over. Quit rather than dropping the user
+        // onto a fresh blank buffer (BufferDeleteById's "never leave a pane
+        // with none" rule) -- which is exactly the "app didn't close /
+        // feels broken" state reported. Deliberately NOT gated on a single
+        // pane overall: the file tree is usually docked in its own pane, so
+        // the terminal is rarely the *only* pane even when it is the only
+        // real thing open. Left in place; the app is on its way out.
+        if (live_buffer && !AnyOtherRealBuffer(bid)) {
+            should_quit_ = true;
+            return;
+        }
+#if !defined(__EMSCRIPTEN__)
+        auto it = terminals_.find(bid);
+        if (it != terminals_.end() && it->second.job_id > 0) JobManager::Instance().Kill(it->second.job_id);
+#endif
+        // force: a dead PTY can never be "saved", and its buffer carries no
+        // on-disk file to protect, so the modified guard must not block the
+        // close (it never would today -- terminals aren't marked modified --
+        // but keep it unconditional so a future change can't strand one).
+        if (live_buffer) BufferDeleteById(bid, /*force=*/true);
+        terminals_.erase(bid);
+    }
+}
+
 TerminalSession *Editor::FindTerminal(int buffer_id) {
     auto it = terminals_.find(buffer_id);
     return it == terminals_.end() ? nullptr : &it->second;

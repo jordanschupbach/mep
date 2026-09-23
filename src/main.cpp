@@ -48249,6 +48249,10 @@ void UpdateDrawFrame() {
         mep::agent::PollOnce(g_editor);
         DrainUiInputQueueOneStep();
         g_editor.PollTerminals();
+        // After this frame's exit callbacks (native: JobManager::PollAll
+        // above; wasm: PollTerminals just now) have marked any newly-dead
+        // shells: close their panes, or quit if the last one just exited.
+        g_editor.ReapExitedTerminals();
         g_editor.PruneExpiredToasts(gfx::GetTime());
         g_editor.SetNow(gfx::GetTime());
         if (g_editor.Lua()) g_editor.Lua()->RunFrameHooks();

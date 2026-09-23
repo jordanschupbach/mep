@@ -3716,6 +3716,21 @@ public:
      * @brief Pumps buffered output for wasm-backed terminal sessions into their VTerm state; a no-op on native builds.
      */
     void PollTerminals();
+    // Called once per frame right after PollTerminals: a terminal whose
+    // shell process has exited is a dead PTY that can neither take input
+    // (every SendTerminalKey is guarded by !exited) nor produce more
+    // output, so its pane just traps focus in Terminal mode over a corpse.
+    // Close it the way a terminal-emulator window closes when its shell
+    // exits; if it was the last listed buffer, quit mep entirely (the
+    // ":terminal as your whole session, type `exit` to leave" flow).
+    void ReapExitedTerminals();
+    // True if some non-deleted, listed buffer other than `except` holds
+    // real content the user would want to land on -- a filename, unsaved
+    // edits, or any non-empty text. An empty, unnamed, unmodified scratch
+    // buffer counts as nothing (it's what a fresh mep or `:terminal` leaves
+    // behind), so a terminal that is the only real thing open can still be
+    // recognized as "the whole session" when its shell exits.
+    bool AnyOtherRealBuffer(int except) const;
 
     // --- Image-viewer panes (opened via LoadFile for a png/jpg/bmp/gif
     // path -- see IsImagePath in image_doc.h) ---

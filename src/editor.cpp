@@ -1,6 +1,7 @@
 #include "editor.h"
 #include "http_client.h"
 #include "agent_rpc.h"
+#include "indent.h"
 #include "lua_env.h"
 #include "job.h"
 #include "regex.h"
@@ -17352,6 +17353,17 @@ std::string Editor::RegisterTextForPaste(int name) {
 }
 
 void Editor::InsertTextAsTyped(const std::string &text) {
+    // Pasted/register text arrives with its own indentation baked in, so the
+    // newline auto-indent and dedent-clause re-align that ProcessInsertKey now
+    // applies to typed input must be suppressed here -- otherwise every line of
+    // a pasted block gets re-indented on top of what it already has.
+    bool prev_suppress = suppress_type_indent_;
+    suppress_type_indent_ = true;
+    struct Restore {
+        Editor *e;
+        bool prev;
+        ~Restore() { e->suppress_type_indent_ = prev; }
+    } restore{this, prev_suppress};
     // Decode UTF-8 to codepoints -- ProcessInsertKey speaks codepoints
     // (it's what gfx::GetCharPressed() hands HandleInsertInput), not bytes.
     // Malformed sequences are skipped byte-by-byte rather than inserted
@@ -18006,23 +18018,36 @@ bool Editor::DispatchNormalKey(int cp) {
             break;
         case 'I': PushUndo(); cursor = FirstNonBlank(cursor.row); EnterInsert(); break;
         case 'A': PushUndo(); cursor.col = LineLen(cursor.row); EnterInsert(); break;
-        case 'o':
+        case 'o': {
             PushUndo();
-            Buf().lines.insert(Buf().lines.begin() + cursor.row + 1, "");
+            // The opened line inherits the current line's indent (and one level
+            // deeper after a Python block opener), same policy as pressing Enter
+            // at its end -- ComputeNewlineIndent reads the whole current line.
+            std::string indent = mepindent::ComputeNewlineIndent(
+                Buf().lines[static_cast<size_t>(cursor.row)], LspFiletype(Buf().filename));
+            Buf().lines.insert(Buf().lines.begin() + cursor.row + 1, indent);
             ShiftMarksForLineEdit(cursor.row + 1, 1);
             ShiftFoldsForLineEdit(cursor.row + 1, 1);
             cursor.row++;
-            cursor.col = 0;
+            cursor.col = static_cast<int>(indent.size());
             EnterInsert();
             break;
-        case 'O':
+        }
+        case 'O': {
             PushUndo();
-            Buf().lines.insert(Buf().lines.begin() + cursor.row, "");
+            // Open above: match the current line's own indentation (no block-
+            // opener bonus -- the new line precedes it, it isn't its body).
+            const std::string &cur = Buf().lines[static_cast<size_t>(cursor.row)];
+            size_t n = 0;
+            while (n < cur.size() && (cur[n] == ' ' || cur[n] == '\t')) n++;
+            std::string indent = cur.substr(0, n);
+            Buf().lines.insert(Buf().lines.begin() + cursor.row, indent);
             ShiftMarksForLineEdit(cursor.row, 1);
             ShiftFoldsForLineEdit(cursor.row, 1);
-            cursor.col = 0;
+            cursor.col = static_cast<int>(indent.size());
             EnterInsert();
             break;
+        }
         case 'R':
             PushUndo();
             replace_mode_ = true;
@@ -18250,7 +18275,7 @@ void Editor::ProcessInsertKey(int key) {
 
     switch (key) {
         case kReplayEscape: EnterNormal(); break;
-        case kReplayEnter: InsertNewline(); break;
+        case kReplayEnter: InsertNewline(/*auto_indent=*/!suppress_type_indent_); break;
         case kReplayBackspace:
             if (replace_mode_) ReplaceBackspace(); else Backspace();
             break;
@@ -18260,6 +18285,12 @@ void Editor::ProcessInsertKey(int key) {
         default:
             if (key > 0) {
                 if (replace_mode_) ReplaceChar(key); else InsertChar(key);
+                // Re-align a Python else/elif/except/finally clause the moment
+                // its ':' is typed -- a newline hook can't see the line will
+                // become a dedent clause. The whitespace change goes straight
+                // into the buffer (not recorded), so macro/`.`-repeat re-derive
+                // it rather than double-dedenting.
+                if (key == ':' && !replace_mode_ && !suppress_type_indent_) ReindentDedentClause();
             }
             break;
     }
@@ -18644,16 +18675,35 @@ void Editor::InsertChar(int codepoint) {
     Buf().modified = true;
 }
 
-void Editor::InsertNewline() {
+void Editor::InsertNewline(bool auto_indent) {
     CursorPos &cursor = CurPane().cursor;
     std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
-    std::string remainder = line.substr(static_cast<size_t>(cursor.col));
+    std::string indent;
+    if (auto_indent) {
+        indent = mepindent::ComputeNewlineIndent(
+            line.substr(0, static_cast<size_t>(cursor.col)), LspFiletype(Buf().filename));
+    }
+    std::string remainder = indent + line.substr(static_cast<size_t>(cursor.col));
     line.erase(static_cast<size_t>(cursor.col));
     Buf().lines.insert(Buf().lines.begin() + cursor.row + 1, remainder);
     ShiftMarksForLineEdit(cursor.row + 1, 1);
     ShiftFoldsForLineEdit(cursor.row + 1, 1);
     cursor.row++;
-    cursor.col = 0;
+    cursor.col = static_cast<int>(indent.size());
+    Buf().modified = true;
+}
+
+void Editor::ReindentDedentClause() {
+    CursorPos &cursor = CurPane().cursor;
+    std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
+    std::optional<std::string> new_indent =
+        mepindent::ReindentDedentKeyword(line, LspFiletype(Buf().filename));
+    if (!new_indent) return;
+    size_t old_ws = 0;
+    while (old_ws < line.size() && (line[old_ws] == ' ' || line[old_ws] == '\t')) old_ws++;
+    int delta = static_cast<int>(new_indent->size()) - static_cast<int>(old_ws);
+    line.replace(0, old_ws, *new_indent);
+    cursor.col = std::max(0, cursor.col + delta);
     Buf().modified = true;
 }
 

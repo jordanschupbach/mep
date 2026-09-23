@@ -434,6 +434,7 @@ add_library(mep_core STATIC
     src/http_server.cpp
     src/editor.cpp
     src/spell.cpp
+    src/indent.cpp
     src/r_format.cpp
     src/python_format.cpp
     src/cpp_format.cpp
@@ -734,6 +735,14 @@ target_include_directories(mep-python-lsp-test PRIVATE src)
 target_compile_options(mep-python-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-python-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-python-lsp-test)
+
+# The auto-indent policy (src/indent.cpp) driven directly -- pure string->string
+# helpers, no mep_core, no editor, no display. Same CHECK()-based shape.
+add_executable(mep-indent-test EXCLUDE_FROM_ALL src/indent_test.cpp src/indent.cpp)
+target_include_directories(mep-indent-test PRIVATE src)
+target_compile_options(mep-indent-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-indent-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-indent-test)
 
 # mep's own C++ language server: the wire half (src/cpp_lsp_server.cpp) over
 # the analysis half (src/cpp_lsp.cpp's scope model, src/cpp_lsp_diagnostics.cpp

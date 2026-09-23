@@ -10438,7 +10438,16 @@ private:
     void ClampCursor();
 
     void InsertChar(int codepoint);
-    void InsertNewline();
+    // auto_indent (interactive Enter only, not paste/streamed text) gives the
+    // new line the leading whitespace mepindent::ComputeNewlineIndent derives
+    // from the split line and the buffer's filetype. Inserted straight into the
+    // buffer rather than as recorded keystrokes, so macro/`.`-repeat re-derive
+    // it from context instead of double-applying it.
+    void InsertNewline(bool auto_indent = false);
+    // Called after a ':' is typed in Insert mode: if the current line is a
+    // Python else/elif/except/finally clause, snap its indentation one level
+    // out (mepindent::ReindentDedentKeyword). No-op otherwise.
+    void ReindentDedentClause();
     void Backspace();
     void DeleteForward();
 
@@ -11746,6 +11755,13 @@ private:
     // in-progress macro recording a second time (the literal '.' keystroke
     // that triggered the replay was already recorded by the outer call).
     bool replaying_change_ = false;
+
+    // Set while InsertTextAsTyped is splicing pasted/register text through
+    // ProcessInsertKey: a paste carries its own indentation, so the newline
+    // auto-indent and the else/elif/except/finally re-align must NOT fire
+    // (they would double-indent the paste). Macro/`.`-repeat replays don't set
+    // this -- there, recomputing the indent from context is exactly right.
+    bool suppress_type_indent_ = false;
 
     // --- Macro state ---------------------------------------------------
     // q{a-z}/q{A-Z}: recorded keystrokes (ReplayKey encoding, same as

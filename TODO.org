@@ -682,6 +682,9 @@ Add a play button to org mode code blocks that will run the code block in the ap
     section) with a pointer from help/org-babel.org.
 
 * DONE org settings
+  :LOGBOOK:
+  CLOCK: [2026-09-23 Wed 08:07]
+  :END:
 Add a settings button to orgmode code blocks that will allow the user to set the settings for the code block (e.g. results, exports, etc.). On click, it should bring up an options setting popup with any possible options for the language specific (or options for other types of blocks) options. This should allow for changing numbers, input string, or dropdown selection, depending on the type of option. Id like the popup to list all options, with the appropriate input. Make sure to add keyboard navigation in normal mode, h,j,k,l for selecting option by direction, ctrl+n and ctrl+p for selecting from dropdown, i to insert mode on text input, and j,k for incrementing/decrementing number.
   - Every =src= (and =example=) block card's title bar now carries a gear
     button, left of the play button and dropped under the same

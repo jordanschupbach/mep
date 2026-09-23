@@ -21,7 +21,6 @@ It is a pane rather than a sidebar, so the usual pane keys work on it.
 | =d=       | delete                                          |
 | =c=       | copy                                            |
 | =Y=       | copy the path to the clipboard                  |
-| =e=       | edit the directory as text (oil-style)          |
 | =o=       | open with the operating system                  |
 | =-=       | move the root up one directory                  |
 | =C=       | make the directory under the cursor the root    |
@@ -41,14 +40,6 @@ Navigation keys:
 
 The bottom row always hints =?: help=. Pressing =?= swaps the tree for its
 key list; =Esc=, =?= or =q= go back.
-
-* Editing a directory as text
-
-=e= turns the directory into a text buffer, one entry per line
-(=:MepOil=). Rename by editing a line, delete by deleting a line, create by
-adding one. Write the buffer and the changes are applied to disk.
-
-This is much the fastest way to make several changes at once.
 
 * Dragging onto a pane
 

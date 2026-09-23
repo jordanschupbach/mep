@@ -18515,6 +18515,20 @@ void Editor::HandleInsertInput() {
         bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
         if (lua_->CallRefWithBoolForBool(insert_tab_hook_ref_, shift)) return;
     }
+    // Insert-mode Tab, once nothing above has claimed it (no completion
+    // popup, inline suggestion, or snippet hook): mep uses soft tabs -- a
+    // fixed 4-space shiftwidth (see kShift) -- so expand it to spaces here.
+    // This is the ONLY thing that makes Tab insert anything: the backend
+    // does queue Tab as a raw 0x09 char event, but InsertChar's control-char
+    // guard (< 32) silently drops it, so the GetCharPressed loop below never
+    // produces a tab. Routed through ProcessInsertKey so the run records for
+    // macros and `.` repeat exactly like typed spaces; we return without
+    // draining that 0x09 (harmless -- InsertChar discards it next frame),
+    // mirroring the early return of every other tab_key branch above.
+    if (tab_key) {
+        for (int i = 0; i < 4; i++) ProcessInsertKey(' ');
+        return;
+    }
     if (escape) {
         ProcessInsertKey(kReplayEscape);
         return;

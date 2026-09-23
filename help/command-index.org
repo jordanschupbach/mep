@@ -132,7 +132,6 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepNotifyClear= | [[file:notifications.html][Notifications]] |
 | =:MepNotifyDismiss= | [[file:notifications.html][Notifications]] |
 | =:MepNotifyPanel= | [[file:notifications.html][Notifications]] |
-| =:MepOil= | [[file:file-tree.html][The file tree]] |
 | =:MepOpenFile= | -- |
 | =:MepOpenInFirefox= | -- |
 | =:MepOrgAgendaAddFile= | [[file:org-agenda.html][Agenda]] |

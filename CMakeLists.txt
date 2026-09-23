@@ -437,6 +437,8 @@ add_library(mep_core STATIC
     src/r_format.cpp
     src/python_format.cpp
     src/cpp_format.cpp
+    src/maxima_format.cpp
+    src/maxima_ast.cpp
     src/workspace_git.cpp
     ${MEP_GFX_NATIVE_SOURCES}
 )
@@ -790,6 +792,36 @@ target_compile_options(mep-c-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE
 target_link_options(mep-c-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-c-lsp-test)
 
+# mep's own Maxima language server: the wire half (src/maxima_lsp_server.cpp)
+# over the analysis half (src/maxima_lsp.cpp), the hand-written reader under
+# both (src/maxima_ast.cpp -- lexer plus a Pratt parser using Maxima's own
+# binding powers), the prose vocabulary (src/maxima_lsp_vocab.cpp) and the
+# generated name/signature table (src/maxima_lsp_builtin_names.cpp, produced
+# by scripts/gen_maxima_names.py from a real Maxima's documentation index and
+# committed, so building mep never needs Maxima installed). Same reasoning as
+# mep-org-lsp above, point for point: no mep_core, built by default rather
+# than EXCLUDE_FROM_ALL because kBuiltinLsp's `maxima_ls` entry spawns it out
+# of mep's own bin directory, and skipped on Emscripten, which cannot spawn a
+# subprocess at all.
+set(MEP_MAXIMA_LSP_SOURCES src/maxima_lsp.cpp src/maxima_lsp_vocab.cpp src/maxima_lsp_builtin_names.cpp
+    src/maxima_ast.cpp)
+if(NOT EMSCRIPTEN)
+    add_executable(mep-maxima-lsp src/maxima_lsp_server.cpp ${MEP_MAXIMA_LSP_SOURCES})
+    target_include_directories(mep-maxima-lsp PRIVATE src)
+    target_compile_options(mep-maxima-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-maxima-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-maxima-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# The Maxima language server's reader and analysis halves driven directly --
+# no process, no JSON-RPC client, no Maxima. Same CHECK()-based shape as
+# mep-org-lsp-test.
+add_executable(mep-maxima-lsp-test EXCLUDE_FROM_ALL src/maxima_lsp_test.cpp ${MEP_MAXIMA_LSP_SOURCES})
+target_include_directories(mep-maxima-lsp-test PRIVATE src)
+target_compile_options(mep-maxima-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-maxima-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-maxima-lsp-test)
+
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
 # cascade behavior can be verified without opening a window.
 add_executable(mep-html-doc-test EXCLUDE_FROM_ALL src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp)
@@ -840,6 +872,16 @@ target_include_directories(mep-r-format-test PRIVATE src)
 target_compile_options(mep-r-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-r-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-r-format-test)
+
+# mep's own Maxima formatter (maxima_format.cpp), over the same reader the
+# Maxima language server uses (maxima_ast.cpp) -- so this test links both,
+# unlike the R one next to it, which carries its own lexer.
+add_executable(mep-maxima-format-test EXCLUDE_FROM_ALL src/maxima_format_test.cpp src/maxima_format.cpp
+               src/maxima_ast.cpp)
+target_include_directories(mep-maxima-format-test PRIVATE src)
+target_compile_options(mep-maxima-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-maxima-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-maxima-format-test)
 
 # The dependency-free spell checker (spell.cpp): edit-distance/Soundex
 # helpers, case-insensitive IsMisspelled with its skip rules and personal

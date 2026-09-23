@@ -16,6 +16,7 @@ stale copy from disk.
 | C++ and friends      | *built in* -- mep's own, nothing to install |
 | Python               | *built in* -- mep's own, nothing to install |
 | R                    | *built in* -- mep's own, nothing to install |
+| Maxima               | *built in* -- mep's own, nothing to install |
 | C                    | =clang-format=                            |
 | anything else        | =mep.lsp_format=, if a server is attached |
 
@@ -23,10 +24,11 @@ That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.
 
-C++, Python and R need nothing installed at all: all three formatters are
-built into mep, so =gf= on a =.cpp=, =.h=, =.py= or =.R= buffer works on a
-machine with no =clang-format=, no =black=, no =air= and no Python or R
-toolchain, and answers instantly because nothing is spawned.
+C++, Python, R and Maxima need nothing installed at all: all four
+formatters are built into mep, so =gf= on a =.cpp=, =.h=, =.py=, =.R= or
+=.mac= buffer works on a machine with no =clang-format=, no =black=, no
+=air= and no Python, R or Maxima toolchain, and answers instantly because
+nothing is spawned.
 
 * Org code blocks
 
@@ -218,6 +220,48 @@ To go back to =black= instead, replace the entry with an ordinary argv one:
 #+begin_src lua
 mep.format_languages.py = {'black', '--quiet', '--stdin-filename={}', '-'}
 #+end_src
+
+* The Maxima formatter
+
+Maxima has no formatter of its own to defer to -- its =grind= is a printer
+for *values*, and running a file through it would lose the file's comments
+and its =$= terminators. So mep's own follows the style =grind= prints in
+where that style is also what real Maxima is written in, measured against
+the 657 =.mac= files Maxima's distribution ships:
+
+| Written        | Because                                          |
+|----------------+--------------------------------------------------|
+| =f(x)=         | a call's parenthesis is tight (113,051 files to 22,752) |
+| =a+b=, =u^2=   | arithmetic is dense (18,040 to 3,378)            |
+| =a > 0=, =p and q= | comparisons and logic are spaced             |
+| =x : 1=, =f(u) := u^2= | assignment and definition are spaced     |
+| =f(a, b)=      | a comma is followed by a space                   |
+
+The rule behind the last two is *structure is spaced, arithmetic is
+dense*, so =a : x+y= shows at a glance which part is the assignment and
+which is the sum.
+
+#+begin_src maxima
+f(x,y):=block([a:1,b],a:x+y,if a>0 then b:a else b:-a,return(b))$
+#+end_src
+
+becomes
+
+#+begin_src maxima
+f(x, y) := block([a : 1, b],
+  a : x+y,
+  if a > 0 then b : a else b : -a,
+  return(b))$
+#+end_src
+
+A =block= keeps its local list on the opening line and puts one statement
+per line under it. A list packs to the margin instead, because a list is
+usually data. A long conditional breaks before =then= and =else=.
+
+Three things are never touched, because in Maxima they are meaning rather
+than layout: a statement's terminator (=;= displays the result, =$= does
+not), a string's escapes, and the spelling of a loop clause (=for i : 1=
+and =for i from 1= are the same loop, and each is left as it was written).
 
 * The R formatter
 

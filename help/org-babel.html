@@ -43,13 +43,21 @@ print(40 + 2)
 (<a href="org-visuals.html">block cards</a>): same execution, same block, no
 need to put the cursor there first.</p>
 <h1>Languages</h1>
-<p>Twenty-seven, each used when its toolchain is on <code>$PATH</code>:</p>
+<p>Thirty, each used when its toolchain is on <code>$PATH</code>:</p>
 <p><code>lua</code>, <code>python</code>, <code>sh</code> / <code>bash</code>, <code>javascript</code> / <code>js</code>, <code>typescript</code> / <code>ts</code>,
 <code>c</code>, <code>cpp</code> / <code>c++</code>, <code>csharp</code> / <code>cs</code> / <code>c#</code>, <code>ruby</code>, <code>elixir</code>, <code>julia</code>,
 <code>clojure</code>, <code>perl</code>, <code>r</code>, <code>php</code>, <code>rust</code>, <code>go</code>, <code>fortran</code>, <code>scala</code>, <code>zig</code>,
-<code>nim</code>, <code>crystal</code>, <code>java</code>, <code>kotlin</code>, <code>haskell</code>, <code>ocaml</code>, <code>d</code>.</p>
+<code>nim</code>, <code>crystal</code>, <code>java</code>, <code>kotlin</code>, <code>haskell</code>, <code>ocaml</code>, <code>d</code>, <code>maxima</code>,
+<code>sql</code> / <code>sqlite</code>, <code>latex</code> / <code>tex</code>.</p>
 <p>Compiled languages go through a real compile-then-run step rather than
 being interpreted.</p>
+<p>A <code>maxima</code> block is piped into the computer-algebra system on stdin, so
+every statement the body ends with <code>;</code> prints its value and every <code>$</code> one
+stays quiet -- no <code>print()</code> around each line, unlike org's own maxima
+backend. Results come back as one line each; <code>:display2d yes</code> asks for
+maxima's centred 2D art instead, and <code>:linel</code> sets the width it wraps at.
+Maxima reports a bad block by writing the error into its results rather
+than by failing: it exits successfully whatever happened.</p>
 <h1>mep-lua blocks</h1>
 <p>One language is special. A <code>mep-lua</code> block runs inside <b>mep's own</b> Lua
 state, with the whole <code>mep.*</code> API available -- org-babel's <code>emacs-lisp</code>
@@ -113,9 +121,13 @@ whether or not the block ran.</p>
 <p><code>:file</code> names what the block produces, and the results become a link to it.
 <code>:file-ext</code> derives that name from the block's <code>#+NAME:</code> instead,
 <code>:output-dir</code> puts it in a directory, and <code>:file-desc</code> gives the link its
-text. For a language with a graphics device (R, LaTeX), =:results graphics
-file= opens it around the body for you, sized by <code>:width</code> / <code>:height</code> /
-<code>:units</code> / <code>:res</code>.</p>
+text. For a language with a graphics device (R, LaTeX, Maxima), =:results
+graphics file= opens it around the body for you, sized by <code>:width</code> /
+<code>:height</code> / <code>:units</code> / <code>:res</code>. A maxima block has both of its plotting
+front ends pointed at the target -- <code>plot2d</code> / <code>plot3d</code> and the <code>draw</code>
+package's <code>draw2d</code> / <code>draw3d</code> -- and the file's own extension picks the
+terminal, so <code>:file plot.svg</code> really is an SVG. It needs <code>gnuplot</code> on
+<code>$PATH</code> as well as <code>maxima</code>.</p>
 <h2>Line switches</h2>
 <p><code>-n</code> numbers the block's lines when it is displayed or exported, <code>+n</code>
 continues the numbering from the previous numbered block, and <code>-r</code> / <code>-k</code>
@@ -130,7 +142,7 @@ whether or not the block sets it: the common ones first, grouped into
 Results, Execution, Output, Tangle and Noweb, then the ones only that
 language takes (<code>:width</code> / <code>:height</code> / <code>:res</code> for R, <code>:includes</code> /
 <code>:flags</code> / <code>:libs</code> for anything that compiles, <code>:return</code> for Python,
-<code>:engine</code> / <code>:database</code> for SQL, and so on), then the line switches.</p>
+<code>:engine</code> / <code>:database</code> for SQL, <code>:display2d</code> for Maxima, and so on), then the line switches.</p>
 <p>Each row is the kind of input the argument actually takes -- a dropdown
 of the words org accepts, a number, or free text -- so the popup will not
 let you write <code>:exports bth</code>. <code>:results</code> gets four rows rather than one,

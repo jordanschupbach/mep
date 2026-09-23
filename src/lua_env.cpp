@@ -8,6 +8,7 @@
 #include "editor.h"
 #include "job.h"
 #include "org_doc.h"
+#include "maxima_format.h"
 #include "r_format.h"
 #include "tcp_client.h"
 #include "treesitter.h"
@@ -414,6 +415,30 @@ int l_format_r(lua_State *L) {
     rfmt::Options opt;
     if (!lua_isnoneornil(L, 2)) opt.width = static_cast<int>(luaL_checkinteger(L, 2));
     rfmt::Result r = rfmt::Format(std::string(src, len), opt);
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        lua_pushinteger(L, r.error_line);
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
+    return 1;
+}
+
+// mep.format_maxima(text[, width]) -> the text formatted as Maxima, or nil plus an error message
+//
+// mep's own Maxima formatter (maxima_format.h), the builtin behind `gf`
+// in a `.mac` buffer and in an org `#+begin_src maxima` block -- no
+// Maxima installation involved, and no subprocess, so like the R one
+// above it answers synchronously. On a file it cannot read it returns
+// nil plus a message and the 1-indexed line, and the caller leaves the
+// buffer alone.
+int l_format_maxima(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    mxfmt::Options opt;
+    if (!lua_isnoneornil(L, 2)) opt.width = static_cast<int>(luaL_checkinteger(L, 2));
+    mxfmt::Result r = mxfmt::Format(std::string(src, len), opt);
     if (!r.ok) {
         lua_pushnil(L);
         lua_pushlstring(L, r.error.data(), r.error.size());
@@ -10503,6 +10528,7 @@ const luaL_Reg kMepFuncs[] = {
     {"spell_fix_selection", l_spell_fix_selection},
     {"spell_fix_word", l_spell_fix_word},
     {"format_r", l_format_r},
+    {"format_maxima", l_format_maxima},
     {"cursor", l_cursor},
     {"set_cursor", l_set_cursor},
     {"current_buffer", l_current_buffer},

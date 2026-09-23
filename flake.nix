@@ -470,6 +470,13 @@
             # reason). Drop this once nixpkgs' dmd derivation itself
             # accounts for gcc 15 headers.
             (pkgs.dmd.override { stdenv = pkgs.gcc14Stdenv; })
+            # Maxima is the `maxima` babel backend's own interpreter; gnuplot
+            # is what its plotting front ends (plot2d/plot3d, and the draw
+            # package's draw2d/draw3d) shell out to, so a `:results graphics
+            # :file plot.png` maxima block needs both on PATH -- maxima alone
+            # runs the block and silently produces no image.
+            pkgs.maxima
+            pkgs.gnuplot
 
             # LSP servers (mep.lsp_servers in src/main.cpp's kBuiltinLsp,
             # mep.lsp_attach) -- a completely separate concern from the

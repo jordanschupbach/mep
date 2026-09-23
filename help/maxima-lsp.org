@@ -1,0 +1,126 @@
+#+TITLE: The Maxima language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="13">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Maxima files get a language server of their own, =mep-maxima-lsp=, built
+and shipped with mep. Open a =.mac= file and it attaches by itself --
+there is nothing to install, and *Maxima itself is never started*. It is
+mep's own reader and scope analyser, with the 2,846 names Maxima's manual
+documents compiled into it.
+
+=.dem=, =.mc= and =.max= attach to it too. There is no other Maxima
+language server to prefer over this one; it is the only one there is.
+
+* Never evaluating the file
+
+Every answer is a property of the source text. That matters more here than
+for most languages: a Maxima file is a program that computes, and opening
+one in an editor should not start it. Nothing below runs a line of it.
+
+The trade is named rather than hidden. This server does not know what an
+expression's *value* is, cannot simplify, and has no type inference.
+
+* Reading Maxima
+
+The reader is Maxima's own grammar, with the binding powers read out of a
+live Maxima rather than guessed. That is what makes the parse agree with
+what the language actually does:
+
+| Written    | Means             | Because                          |
+|------------+-------------------+----------------------------------|
+| =-x^2=     | =-(x^2)=          | =^= binds tighter than unary minus |
+| =a^b^c=    | =a^(b^c)=         | =^= groups to the right          |
+| =a : b : c= | =a : (b : c)=    | =:= groups to the right          |
+| =for i : 1= | =for i from 1=   | inside a loop header, =:= is =from= |
+| =2.3.4=    | two numbers       | a dot before a digit starts one  |
+
+Nested comments, =\= line continuations in the middle of a name or a
+number, form feeds, =?lisp_symbols=, =:lisp= escapes and =name && expr=
+statement tags are all read the way Maxima reads them. Checked file by
+file against Maxima's own reader over the 657 =.mac= files its
+distribution ships: every file this server rejects, Maxima rejects too.
+
+** Operators a file invents
+
+Maxima lets a program extend its own grammar, and its packages use that:
+
+#+begin_src maxima
+infix("~")$
+a ~ b$
+#+end_src
+
+Those declarations are found before the file is read, so the rest of it
+parses with them. A =load("vect.mac")= counts as a declaration too -- the
+operators the shipped packages define (=~=, =grad=, =div=, =curl=,
+=cross=, ``` `` ```, =>=) come in with the package that declares them.
+
+An operator nothing declares is still read as one, and reported once as a
+note: the spelling is nearly always one a package brings in.
+
+* What it reports
+
+Maxima is a computer-algebra system, and that changes what is worth
+reporting. An unbound name is not a mistake -- =integrate(x^2, x)= binds
+neither =x= nor anything else, and a call to an undefined =f= is a
+perfectly good unevaluated expression. So there is no "undefined
+variable" check here at all, deliberately.
+
+| Code                      | What it means                                    |
+|---------------------------+--------------------------------------------------|
+| =syntax-error=            | Maxima would not read this                       |
+| =missing-terminator=      | the file ends without a =;= or =$=               |
+| =unclosed-paren=, =unclosed-bracket= | a bracket opened and never closed     |
+| =unterminated-string=, =unterminated-comment= | ran to the end of the file  |
+| =missing-then=, =missing-do= | an =if= or a loop left unfinished             |
+| =loop-clause-conflict=    | =for x in L step 2=: clauses that cannot combine |
+| =assign-to-protected=     | =%pi : 3=, which fails at run time               |
+| =bad-definition-lhs=      | =:== on something that cannot be defined         |
+| =wrong-argument-count=    | a call to a function *this file* defines         |
+| =duplicate-parameter=, =duplicate-local= | the same name declared twice      |
+| =unused-local=            | a =block= local declared bare and never touched  |
+| =unreachable-after-return= | code after a =return= in the same block         |
+| =equation-as-statement=   | =x = 1= where =x : 1= was meant                  |
+| =undeclared-operator=     | an operator no visible declaration introduces    |
+| =unknown-function=        | a one-off name one edit from a real one          |
+
+Each of those survived a calibration pass over Maxima's own 657-file
+share tree. Checks that did not survive were removed rather than
+softened, and the two worth naming are:
+
+- *No argument-count check against the manual.* Its argument lists are a
+  sample, not the whole set: =subst= has three forms and documents one,
+  =reset= takes any number, and =return()= is legal while the manual
+  writes =return(value)=. Only calls to functions the file itself defines
+  are checked, where the definition is right there.
+- *No unused-parameter check.* A function that has to match a caller's
+  protocol -- an ODE right-hand side that ignores =t= -- declares the
+  parameter because the interface has it.
+
+=block= locals get the same treatment from the other direction. One that
+is given a value is never reported, because Maxima binds globals
+dynamically and =block([ratprint : false], ...)= is how a caller passes a
+setting to something it calls.
+
+* What else it does
+
+- *Hover* on a name gives its argument lists and an explanation; on an
+  operator, what that operator actually does -- which for =:= against
+  === and =.= against =*= is the thing most worth knowing.
+- *Completion* offers what is in scope here first, then what Maxima has.
+- *Go to definition* and *references* follow a name to where it is bound,
+  and a =load("file.mac")= to that file.
+- *Signature help* shows the argument list being typed, and Maxima
+  overloads on arity so heavily that the other forms are offered beside
+  it.
+- The *outline* lists =/* ----- Section ----- */= banner comments, and
+  every function, array function, operator and top-level binding under
+  the banner it falls beneath.
+- *Folding* covers multi-line blocks, calls, lists and comments.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:org-babel.html][Executing code blocks]] -- running Maxima from an Org file.

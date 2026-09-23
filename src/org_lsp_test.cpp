@@ -283,6 +283,9 @@ int main() {
     }
     // A language babel cannot run but org still knows is not a typo.
     CHECK(!HasCode(Lint({"#+begin_src emacs-lisp", "(+ 1 1)", "#+end_src"}), "unknown-src-language"));
+    // maxima moved the other way: it used to be one of those, and now
+    // has a real backend of its own.
+    CHECK(!HasCode(Lint({"#+begin_src maxima", "integrate(x^2, x);", "#+end_src"}), "unknown-src-language"));
     CHECK(HasCode(Lint({"#+begin_src python :reslts output", "x", "#+end_src"}), "unknown-header-arg"));
     CHECK(HasCode(Lint({"#+begin_src python :results ouput", "x", "#+end_src"}), "unknown-header-value"));
     CHECK(HasCode(Lint({"#+begin_src python :var x", "x", "#+end_src"}), "bad-var"));
@@ -410,6 +413,11 @@ int main() {
     {
         const OrgLspHoverInfo h = OrgLspHover({"#+begin_src python :results output", "x", "#+end_src"}, 0, 21);
         CHECK(h.found && h.text.find("results") != std::string::npos);
+    }
+    {
+        // A language tag hovers as what mep will actually run it with.
+        const OrgLspHoverInfo h = OrgLspHover({"#+begin_src maxima", "1+1;", "#+end_src"}, 0, 14);
+        CHECK(h.found && h.text.find("Runs with maxima") != std::string::npos);
     }
     {
         const OrgLspHoverInfo h = OrgLspHover({"An \\alpha particle"}, 0, 5);

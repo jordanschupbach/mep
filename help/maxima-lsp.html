@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Maxima language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="13">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Maxima language server</h1>
+<h1>What it is</h1>
+<p>Maxima files get a language server of their own, <code>mep-maxima-lsp</code>, built
+and shipped with mep. Open a <code>.mac</code> file and it attaches by itself --
+there is nothing to install, and <b>Maxima itself is never started</b>. It is
+mep's own reader and scope analyser, with the 2,846 names Maxima's manual
+documents compiled into it.</p>
+<p><code>.dem</code>, <code>.mc</code> and <code>.max</code> attach to it too. There is no other Maxima
+language server to prefer over this one; it is the only one there is.</p>
+<h1>Never evaluating the file</h1>
+<p>Every answer is a property of the source text. That matters more here than
+for most languages: a Maxima file is a program that computes, and opening
+one in an editor should not start it. Nothing below runs a line of it.</p>
+<p>The trade is named rather than hidden. This server does not know what an
+expression's <b>value</b> is, cannot simplify, and has no type inference.</p>
+<h1>Reading Maxima</h1>
+<p>The reader is Maxima's own grammar, with the binding powers read out of a
+live Maxima rather than guessed. That is what makes the parse agree with
+what the language actually does:</p>
+<table>
+<tr><th>Written</th><th>Means</th><th>Because</th></tr>
+<tr><td><code>-x^2</code></td><td><code>-(x^2)</code></td><td><code>^</code> binds tighter than unary minus</td></tr>
+<tr><td><code>a^b^c</code></td><td><code>a^(b^c)</code></td><td><code>^</code> groups to the right</td></tr>
+<tr><td><code>a : b : c</code></td><td><code>a : (b : c)</code></td><td><code>:</code> groups to the right</td></tr>
+<tr><td><code>for i : 1</code></td><td><code>for i from 1</code></td><td>inside a loop header, <code>:</code> is <code>from</code></td></tr>
+<tr><td><code>2.3.4</code></td><td>two numbers</td><td>a dot before a digit starts one</td></tr>
+</table>
+<p>Nested comments, <code>\</code> line continuations in the middle of a name or a
+number, form feeds, <code>?lisp_symbols</code>, <code>:lisp</code> escapes and <code>name &amp;&amp; expr</code>
+statement tags are all read the way Maxima reads them. Checked file by
+file against Maxima's own reader over the 657 <code>.mac</code> files its
+distribution ships: every file this server rejects, Maxima rejects too.</p>
+<h2>Operators a file invents</h2>
+<p>Maxima lets a program extend its own grammar, and its packages use that:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">maxima</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="maxima">infix("~")$
+a ~ b$</code></pre></div>
+<p>Those declarations are found before the file is read, so the rest of it
+parses with them. A <code>load("vect.mac")</code> counts as a declaration too -- the
+operators the shipped packages define (<code>~</code>, <code>grad</code>, <code>div</code>, <code>curl</code>,
+<code>cross</code>, ``` `` ```, <code>&gt;</code>) come in with the package that declares them.</p>
+<p>An operator nothing declares is still read as one, and reported once as a
+note: the spelling is nearly always one a package brings in.</p>
+<h1>What it reports</h1>
+<p>Maxima is a computer-algebra system, and that changes what is worth
+reporting. An unbound name is not a mistake -- <code>integrate(x^2, x)</code> binds
+neither <code>x</code> nor anything else, and a call to an undefined <code>f</code> is a
+perfectly good unevaluated expression. So there is no "undefined
+variable" check here at all, deliberately.</p>
+<table>
+<tr><th>Code</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>Maxima would not read this</td></tr>
+<tr><td><code>missing-terminator</code></td><td>the file ends without a <code>;</code> or <code>$</code></td></tr>
+<tr><td><code>unclosed-paren</code>, <code>unclosed-bracket</code></td><td>a bracket opened and never closed</td></tr>
+<tr><td><code>unterminated-string</code>, <code>unterminated-comment</code></td><td>ran to the end of the file</td></tr>
+<tr><td><code>missing-then</code>, <code>missing-do</code></td><td>an <code>if</code> or a loop left unfinished</td></tr>
+<tr><td><code>loop-clause-conflict</code></td><td><code>for x in L step 2</code>: clauses that cannot combine</td></tr>
+<tr><td><code>assign-to-protected</code></td><td><code>%pi : 3</code>, which fails at run time</td></tr>
+<tr><td><code>bad-definition-lhs</code></td><td><code>:=</code> on something that cannot be defined</td></tr>
+<tr><td><code>wrong-argument-count</code></td><td>a call to a function <b>this file</b> defines</td></tr>
+<tr><td><code>duplicate-parameter</code>, <code>duplicate-local</code></td><td>the same name declared twice</td></tr>
+<tr><td><code>unused-local</code></td><td>a <code>block</code> local declared bare and never touched</td></tr>
+<tr><td><code>unreachable-after-return</code></td><td>code after a <code>return</code> in the same block</td></tr>
+<tr><td><code>equation-as-statement</code></td><td><code>x = 1</code> where <code>x : 1</code> was meant</td></tr>
+<tr><td><code>undeclared-operator</code></td><td>an operator no visible declaration introduces</td></tr>
+<tr><td><code>unknown-function</code></td><td>a one-off name one edit from a real one</td></tr>
+</table>
+<p>Each of those survived a calibration pass over Maxima's own 657-file
+share tree. Checks that did not survive were removed rather than
+softened, and the two worth naming are:</p>
+<ul>
+<li><b>No argument-count check against the manual.</b> Its argument lists are a sample, not the whole set: <code>subst</code> has three forms and documents one, <code>reset</code> takes any number, and <code>return()</code> is legal while the manual writes <code>return(value)</code>. Only calls to functions the file itself defines are checked, where the definition is right there.</li>
+<li><b>No unused-parameter check.</b> A function that has to match a caller's protocol -- an ODE right-hand side that ignores <code>t</code> -- declares the parameter because the interface has it.</li>
+</ul>
+<p><code>block</code> locals get the same treatment from the other direction. One that
+is given a value is never reported, because Maxima binds globals
+dynamically and <code>block([ratprint : false], ...)</code> is how a caller passes a
+setting to something it calls.</p>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> on a name gives its argument lists and an explanation; on an operator, what that operator actually does -- which for <code>:</code> against <code>=</code> and <code>.</code> against <code>*</code> is the thing most worth knowing.</li>
+<li><b>Completion</b> offers what is in scope here first, then what Maxima has.</li>
+<li><b>Go to definition</b> and <b>references</b> follow a name to where it is bound, and a <code>load("file.mac")</code> to that file.</li>
+<li><b>Signature help</b> shows the argument list being typed, and Maxima overloads on arity so heavily that the other forms are offered beside it.</li>
+<li>The <b>outline</b> lists <code>/* ----- Section ----- */</code> banner comments, and every function, array function, operator and top-level binding under the banner it falls beneath.</li>
+<li><b>Folding</b> covers multi-line blocks, calls, lists and comments.</li>
+</ul>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="org-babel.html">Executing code blocks</a> -- running Maxima from an Org file.</li>
+</ul>
+</body>
+</html>

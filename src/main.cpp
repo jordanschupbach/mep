@@ -6245,6 +6245,13 @@ const char *kBuiltinLsp =
     // checker that cannot see the included headers would be wrong far
     // more often than right (c_lsp.h states the whole scope).
     "  c_ls = {cmd = {mep.bundled_tool('mep-c-lsp')}, filetypes = {'c'}},\n"
+    // mep's own Maxima server (src/maxima_lsp_server.cpp), bundled the
+    // same way org_ls, r_ls, python_ls, cpp_ls and c_ls are. Nothing else
+    // claims these extensions: `.mac` is Maxima's own batch-file suffix,
+    // `.dem` its demo files, and `.mc`/`.max` the two spellings older
+    // material uses. There is no third-party Maxima language server to
+    // defer to -- this is the only one there is.
+    "  maxima_ls = {cmd = {mep.bundled_tool('mep-maxima-lsp')}, filetypes = {'mac', 'dem', 'mc', 'max'}},\n"
     "}\n"
     // (filetype .. '@' .. workspace root) -> client_id: one client per
     // filetype *per workspace root* (WORKSPACES_PLAN.md Phase 5), since
@@ -12531,6 +12538,12 @@ const char *kBuiltinFormat =
     "  py = {builtin = 'format_python', name = \"mep's Python formatter\", width = 88},\n"
     "  R = {builtin = 'format_r', name = \"mep's R formatter\", width = 80},\n"
     "  cpp = {builtin = 'format_cpp', name = \"mep's C++ formatter\", width = 100},\n"
+    // Maxima has no formatter of its own to shell out to -- `grind` is a
+    // printer for values, not for source files, and rewriting a file
+    // through it would lose its comments and its `$` terminators. This
+    // one is mep's (src/maxima_format.cpp), and like the R and C++
+    // entries it is a function call rather than a subprocess.
+    "  mac = {builtin = 'format_maxima', name = \"mep's Maxima formatter\", width = 80},\n"
     "}\n"
     // Same aliasing as mep.run_languages': entries are looked up by bare
     // extension, so every extension of a language needs its own key. `c`
@@ -12549,6 +12562,12 @@ const char *kBuiltinFormat =
     "mep.format_languages.cuh = mep.format_languages.cpp\n"
     "mep.format_languages.pyi = mep.format_languages.py\n"
     "mep.format_languages.r = mep.format_languages.R\n"
+    // The other spellings a Maxima file is saved under: `.dem` for a
+    // demo, `.mc`/`.max` for older material. Same set mep's Maxima
+    // language server claims (kBuiltinLsp's `maxima_ls`).
+    "mep.format_languages.dem = mep.format_languages.mac\n"
+    "mep.format_languages.mc = mep.format_languages.mac\n"
+    "mep.format_languages.max = mep.format_languages.mac\n"
     "local function mep_format_buffer_text()\n"
     "  local lines = {}\n"
     "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) or '' end\n"
@@ -17068,6 +17087,131 @@ const char *kBuiltinOrgBabelSqlTex =
     "}\n"
     "L.tex = L.latex\n"
     "L.sqlite = L.sql\n";
+
+// Maxima (org-babel's own `maxima` backend -- a computer-algebra system,
+// so a block is an integral or a factorization rather than a program): a
+// block is piped into `maxima --very-quiet` on stdin rather than handed
+// over as a file argument, the same `reads_script_on_stdin` shape the SQL
+// clients above use. That is a
+// deliberate departure from org-babel-maxima's own `-r batchload("<file>")$`
+// invocation, and the only one that makes a block's results useful here:
+// batchload evaluates a file *without displaying anything at all*, so under
+// it a block whose body is a plain `integrate(x^2, x);` writes an empty
+// #+RESULTS: unless every line the author wanted to see was wrapped in
+// print() by hand. Fed the same statements on stdin, maxima displays each
+// one's value the way it would interactively -- `$`-terminated lines stay
+// silent, `;`-terminated ones print -- so `:results output` means what it
+// means for every other language here. It also keeps `-r`'s own echo of the
+// command it was given ("batchload(...)" on stdout, which ob-maxima then has
+// to filter back out) from ever reaching the results in the first place.
+//
+// Maxima exits 0 whatever happened -- a syntax error, an unparseable
+// expression and a clean run are indistinguishable by exit status -- and
+// it writes the error text to stderr, which for a run that "succeeded" is
+// a channel nothing here ever surfaces (mep_org_babel_spawn's own
+// `err_lines` only reaches a notification on a non-zero exit). Left alone
+// that means a block with a typo in it writes an empty #+RESULTS: and
+// says nothing at all, so the run command merges stderr into stdout: the
+// error text lands in the block's own results, which is the only place
+// anyone would think to look for it. Maxima's non-fatal notes ("rat:
+// replaced 0.5 by 1/2") are already on stdout, so this changes nothing
+// about where those show up.
+const char *kBuiltinOrgBabelMaxima =
+    "local L = mep.org_babel_langs\n"
+    // kBuiltinOrgBabel's own mep_org_babel_extend/mep_org_babel_format_
+    // literal are chunk-locals, not globals, so a separate chunk cannot
+    // reach either one: this has its own extend, and calls the same C
+    // binding (mep.org_babel_format_literal) the other wraps. The bare
+    // mep_org_babel_arg it uses below *is* a real global, so that one is
+    // shared rather than duplicated.
+    "local function mep_maxima_extend(dst, src)\n"
+    "  for _, v in ipairs(src) do dst[#dst + 1] = v end\n"
+    "end\n"
+    "local function mep_maxima_literal(raw) return mep.org_babel_format_literal(tostring(raw)) end\n"
+    "-- The terminal a `:file` target's own extension asks for, in gnuplot's\n"
+    "-- spelling (what plot2d/plot3d write through) and in the draw package's\n"
+    "-- (what draw2d/draw3d write through). The two vocabularies only mostly\n"
+    "-- overlap -- gnuplot spells it `jpeg`, draw `jpg`; gnuplot's PDF terminal\n"
+    "-- is `pdfcairo`, draw's is `pdf` -- so they are two tables, not one.\n"
+    "local MEP_MAXIMA_GNUPLOT_TERM = {\n"
+    "  png = 'png', svg = 'svg', gif = 'gif', jpg = 'jpeg', jpeg = 'jpeg',\n"
+    "  pdf = 'pdfcairo', eps = 'postscript eps color', ps = 'postscript color',\n"
+    "}\n"
+    "local MEP_MAXIMA_DRAW_TERM = {\n"
+    "  png = 'png', svg = 'svg', gif = 'gif', jpg = 'jpg', jpeg = 'jpg',\n"
+    "  pdf = 'pdf', eps = 'eps_color', ps = 'eps_color',\n"
+    "}\n"
+    "local function mep_maxima_ext(path) return (path:match('%.(%w+)$') or 'png'):lower() end\n"
+    "L.maxima = {\n"
+    "  executable = 'maxima', extension = '.mac',\n"
+    "  var_stmt = function(n, l) return string.format('%s: %s$', n, l) end,\n"
+    // A maxima statement carries its own terminator, so the body's last
+    // line -- which is exactly what :results value hands over as "the
+    // expression" -- has to lose it again before it can go inside a
+    // print(...) call: `print(integrate(x^2, x);)$` is a syntax error.
+    "  print_stmt = function(e) return string.format('print(%s)$', (tostring(e):gsub('%s*[;$]%s*$', ''))) end,\n"
+    // maxima's interactive default, display2d:true, renders every result
+    // as centred ASCII art -- an expression padded out to the middle of
+    // `linel` columns, which inside a `: `-prefixed #+RESULTS: block is
+    // thirty-odd leading spaces per line and a fraction spread over four
+    // of them. Flush-left one-line output is the useful default here (and
+    // the only shape :results table/scalar/list can read back at all);
+    // `:display2d yes` asks for maxima's own art when the block is
+    // showing off a matrix or an integral rather than feeding something.
+    "  header_lines = function(args_str, _)\n"
+    "    local lines = {\n"
+    "      'display2d: ' .. (mep_org_babel_arg(args_str, 'display2d') == 'yes' and 'true' or 'false') .. '$',\n"
+    "    }\n"
+    "    local linel = mep_org_babel_arg(args_str, 'linel')\n"
+    "    if linel then lines[#lines + 1] = 'linel: ' .. linel .. '$' end\n"
+    "    return lines\n"
+    "  end,\n"
+    // `:results graphics :file plot.png`, the same convenience L.r's own
+    // graphics_wrap gives an R block: point maxima's plotting at the
+    // block's own target so the body is nothing but the plot call. Both
+    // plotting front ends are aimed at it, since which one a block uses is
+    // its own business: set_plot_option covers plot2d/plot3d, and draw's
+    // own defaults cover draw2d/draw3d. Without this a `plot2d` with no
+    // path of its own writes into maxima_tempdir (/tmp) and a relative one
+    // resolves *against* that directory rather than the block's cwd, so
+    // the file the results link to would never appear.
+    "  graphics_wrap = function(path, body, args_str)\n"
+    "    local ext = mep_maxima_ext(path)\n"
+    "    local term = MEP_MAXIMA_GNUPLOT_TERM[ext] or 'png'\n"
+    "    local w = mep_org_babel_arg(args_str, 'width')\n"
+    "    local h = mep_org_babel_arg(args_str, 'height')\n"
+    // gnuplot takes the size as part of the terminal line itself ("png
+    // size 400,300"), which is why gnuplot_term is handed a string rather
+    // than the bare symbol org-babel-maxima writes.
+    "    if w and h then term = term .. ' size ' .. w .. ',' .. h end\n"
+    // draw appends the extension to file_name itself, so it is given the
+    // target with its own one stripped back off.
+    "    local draw = { 'terminal = ' .. (MEP_MAXIMA_DRAW_TERM[ext] or 'png'),\n"
+    "      'file_name = ' .. mep_maxima_literal((path:gsub('%.%w+$', ''))) }\n"
+    "    if w and h then draw[#draw + 1] = 'dimensions = [' .. w .. ',' .. h .. ']' end\n"
+    "    local lines = {\n"
+    "      'load(draw)$',\n"
+    "      string.format('set_draw_defaults(%s)$', table.concat(draw, ', ')),\n"
+    "      string.format('set_plot_option([gnuplot_term, %s])$', mep_maxima_literal(term)),\n"
+    "      string.format('set_plot_option([gnuplot_out_file, %s])$', mep_maxima_literal(path)),\n"
+    "    }\n"
+    "    mep_maxima_extend(lines, body)\n"
+    // The same line org-babel-maxima ends every block with: gnuplot's
+    // pipe is only flushed to the output file when it is closed, and a
+    // block that plotted nothing is unharmed by closing a pipe it never
+    // opened.
+    "    lines[#lines + 1] = 'gnuplot_close()$'\n"
+    "    return lines\n"
+    "  end,\n"
+    // `sh -c` only for that stderr merge -- `exec` so no extra process is
+    // left in the middle, `"$0"`/`"$@"` so the interpreter and whatever
+    // `:cmdline` appended stay separate argv entries rather than being
+    // spliced into a command line the shell would re-split.
+    "  run_cmd = function(exe) return { 'sh', '-c', 'exec \"$0\" --very-quiet \"$@\" 2>&1', exe } end,\n"
+    // The script *is* maxima's stdin, so -- as for a SQL block -- `:stdin`
+    // has nowhere left to go and is not read for this language.
+    "  reads_script_on_stdin = true,\n"
+    "}\n";
 
 const char *kBuiltinOrgLatex =
     // mep_org_latex_trim/mep_org_latex_wrapped/mep_org_latex_scan_inline,
@@ -49115,6 +49259,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgPolyglot);
     lua->DoString(kBuiltinOrgLatex);
     lua->DoString(kBuiltinOrgBabelSqlTex);
+    lua->DoString(kBuiltinOrgBabelMaxima);
     lua->DoString(kBuiltinPdfAnnot);
     lua->DoString(kBuiltinOrgExport);
     lua->DoString(kBuiltinOrgRoam);

@@ -49,3 +49,22 @@ Iteration 3
 Iteration 4
 #+end_example
 
+
+#+begin_src maxima :results value 
+tex(integrate(x^2+y^2, x));
+tex(integrate(e^{-x^2}, x, -inf, inf));
+#+end_src
+#+RESULTS:
+#+begin_example
+$$x\,y^2+{{x^3}\over{3}}$$
+false
+$$\int_{-\infty }^{\infty }{e^{\left \{-x^2 \right \}}\;dx}$$
+nil 
+#+end_example
+
+$$\int  \, x^2 + y^2 dx = x\,y^2+{{x^3}\over{3}} + C$$
+
+
+$$\int_{-\infty }^{\infty }{e^{\left \{-x^2 \right \}}\;dx}$$
+
+

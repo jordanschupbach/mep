@@ -2234,7 +2234,7 @@ void AddDisplaySwitches(std::vector<OrgHeaderArgSpec> *out) {
 /**
  * @brief Maps a block's language tag onto the header-arg family it belongs to.
  * @param lang the language tag as written on the `#+begin_src` line
- * @return one of "r", "python", "c", "shell", "sql", "latex", or "" for a language with no extra options
+ * @return one of "r", "python", "c", "shell", "sql", "latex", "maxima", or "" for a language with no extra options
  */
 std::string LanguageFamily(const std::string &lang) {
     const std::string l = LowerAscii(lang);
@@ -2243,6 +2243,7 @@ std::string LanguageFamily(const std::string &lang) {
     if (l == "c" || l == "cpp" || l == "c++") return "c";
     if (l == "sql" || l == "sqlite") return "sql";
     if (l == "latex" || l == "tex") return "latex";
+    if (l == "maxima") return "maxima";
     return "";
 }
 
@@ -2405,6 +2406,12 @@ std::vector<OrgHeaderArgSpec> OrgHeaderArgSpecsFor(const std::string &block_kind
                    "Crop the output to the drawing's own bounds; no renders a full page.");
         AddText(&out, "", "border", "Border left around a fitted drawing (e.g. 1cm).");
         AddNumber(&out, "", "res", 36.0, 1200.0, 12.0, 300.0, "Rasterization resolution, in dpi.");
+    } else if (family == "maxima") {
+        AddChoice(&out, "Language: Maxima", "display2d", ":display2d", {"", "yes", "no"},
+                   "Show results as maxima's own centred 2D art instead of one line each.");
+        AddNumber(&out, "", "linel", 20.0, 400.0, 5.0, 79.0, "Width maxima wraps its output at, in columns.");
+        AddNumber(&out, "", "width", 100.0, 4000.0, 20.0, 640.0, "Plot width, in pixels.");
+        AddNumber(&out, "", "height", 100.0, 4000.0, 20.0, 480.0, "Plot height, in pixels.");
     }
     AddDisplaySwitches(&out);
     return out;

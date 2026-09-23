@@ -22,16 +22,18 @@ stale copy from disk.</p>
 <tr><td>C++ and friends</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Python</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>R</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>Maxima</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>C</td><td><code>clang-format</code></td></tr>
 <tr><td>anything else</td><td><code>mep.lsp_format</code>, if a server is attached</td></tr>
 </table>
 <p>That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.</p>
-<p>C++, Python and R need nothing installed at all: all three formatters are
-built into mep, so <code>gf</code> on a <code>.cpp</code>, <code>.h</code>, <code>.py</code> or <code>.R</code> buffer works on a
-machine with no <code>clang-format</code>, no <code>black</code>, no <code>air</code> and no Python or R
-toolchain, and answers instantly because nothing is spawned.</p>
+<p>C++, Python, R and Maxima need nothing installed at all: all four
+formatters are built into mep, so <code>gf</code> on a <code>.cpp</code>, <code>.h</code>, <code>.py</code>, <code>.R</code> or
+<code>.mac</code> buffer works on a machine with no <code>clang-format</code>, no <code>black</code>, no
+<code>air</code> and no Python, R or Maxima toolchain, and answers instantly because
+nothing is spawned.</p>
 <h1>Org code blocks</h1>
 <p>In an <code>.org</code> file <code>gf</code> formats <b>code</b>, never the prose around it.</p>
 <table>
@@ -152,6 +154,36 @@ names its line, so the cursor can be put on it.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.py.width = <span class="tok-cyan">100</span>   <span class="tok-comment">-- default 88</span></code></pre></div>
 <p>To go back to <code>black</code> instead, replace the entry with an ordinary argv one:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.py = <span class="tok-blue">{</span><span class="tok-green">'black'</span>, <span class="tok-green">'--quiet'</span>, <span class="tok-green">'--stdin-filename={}'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span></code></pre></div>
+<h1>The Maxima formatter</h1>
+<p>Maxima has no formatter of its own to defer to -- its <code>grind</code> is a printer
+for <b>values</b>, and running a file through it would lose the file's comments
+and its <code>$</code> terminators. So mep's own follows the style <code>grind</code> prints in
+where that style is also what real Maxima is written in, measured against
+the 657 <code>.mac</code> files Maxima's distribution ships:</p>
+<table>
+<tr><th>Written</th><th>Because</th></tr>
+<tr><td><code>f(x)</code></td><td>a call's parenthesis is tight (113,051 files to 22,752)</td></tr>
+<tr><td><code>a+b</code>, <code>u^2</code></td><td>arithmetic is dense (18,040 to 3,378)</td></tr>
+<tr><td><code>a &gt; 0</code>, <code>p and q</code></td><td>comparisons and logic are spaced</td></tr>
+<tr><td><code>x : 1</code>, <code>f(u) :</code> u^2=</td><td>assignment and definition are spaced</td></tr>
+<tr><td><code>f(a, b)</code></td><td>a comma is followed by a space</td></tr>
+</table>
+<p>The rule behind the last two is *structure is spaced, arithmetic is
+dense*, so <code>a : x+y</code> shows at a glance which part is the assignment and
+which is the sum.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">maxima</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="maxima">f(x,y):=block([a:1,b],a:x+y,if a&gt;0 then b:a else b:-a,return(b))$</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">maxima</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="maxima">f(x, y) := block([a : 1, b],
+  a : x+y,
+  if a &gt; 0 then b : a else b : -a,
+  return(b))$</code></pre></div>
+<p>A <code>block</code> keeps its local list on the opening line and puts one statement
+per line under it. A list packs to the margin instead, because a list is
+usually data. A long conditional breaks before <code>then</code> and <code>else</code>.</p>
+<p>Three things are never touched, because in Maxima they are meaning rather
+than layout: a statement's terminator (<code>;</code> displays the result, <code>$</code> does
+not), a string's escapes, and the spelling of a loop clause (<code>for i : 1</code>
+and <code>for i from 1</code> are the same loop, and each is left as it was written).</p>
 <h1>The R formatter</h1>
 <p>mep's R formatter follows the tidyverse style: two-space indent, spaces
 around binary operators (but not around <code>^</code>, <code>:</code>, <code>::</code>, <code>$</code> or <code>@</code>), <code>&lt;-</code>

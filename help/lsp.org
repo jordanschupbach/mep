@@ -81,8 +81,8 @@ the colours follow your theme.
 
 * Servers mep knows about
 
-Thirty-nine. Each is used when its command is on =$PATH=; the org, R,
-Python and C ones ship with mep itself:
+Forty. Each is used when its command is on =$PATH=; the org, R, Python,
+C++, C and Maxima ones ship with mep itself:
 
 | Language        | Command                            |
 |-----------------+------------------------------------|
@@ -123,17 +123,19 @@ Python and C ones ship with mep itself:
 | TOML            | =taplo=                            |
 | Vimscript       | =vim-language-server=              |
 | Org             | =mep-org-lsp= (ships with mep)     |
+| Maxima          | =mep-maxima-lsp= (ships with mep)  |
 
 If a server is missing, nothing breaks -- the file simply opens without one.
 
-* The five mep brings itself
+* The six mep brings itself
 
-=mep-org-lsp=, =mep-r-lsp=, =mep-python-lsp=, =mep-cpp-lsp= and
-=mep-c-lsp= are mep's own servers, built and installed alongside =mep=,
-so org, R, Python, C++ and C files get diagnostics and completion with
-nothing to install. See [[file:org-lsp.html][The org language server]],
+=mep-org-lsp=, =mep-r-lsp=, =mep-python-lsp=, =mep-cpp-lsp=, =mep-c-lsp=
+and =mep-maxima-lsp= are mep's own servers, built and installed alongside
+=mep=, so org, R, Python, C++, C and Maxima files get diagnostics and
+completion with nothing to install. See [[file:org-lsp.html][The org language server]],
 [[file:r-lsp.html][The R language server]], [[file:python-lsp.html][The Python language server]],
-[[file:cpp-lsp.html][The C++ language server]] and [[file:c-lsp.html][The C language server]].
+[[file:cpp-lsp.html][The C++ language server]], [[file:c-lsp.html][The C language server]] and
+[[file:maxima-lsp.html][The Maxima language server]].
 
 Python, C++ and C are the three languages where mep's own server is
 preferred over an external one out of the box: =pyright= and =clangd=
@@ -144,7 +146,8 @@ as well; a project whose headers are all C can hand it over with
 
 The R one never starts R: it parses the language itself, so a =.R= file
 gets diagnostics, completion, hover and signature help on a machine with
-no R installed at all.
+no R installed at all. The Maxima one is the same -- and it is the only
+Maxima language server there is, so nothing competes with it for =.mac=.
 
 R's own =languageserver= package is still registered, under
 =r_languageserver=, with no file types claimed. It knows what an installed

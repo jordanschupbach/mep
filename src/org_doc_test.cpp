@@ -1016,6 +1016,11 @@ int main() {
         CHECK(find(OrgHeaderArgSpecsFor("src", "C++"), "namespaces") != nullptr);
         CHECK(find(OrgHeaderArgSpecsFor("src", "bash"), "cmdline") != nullptr);
         CHECK(find(OrgHeaderArgSpecsFor("src", "sqlite"), "engine") != nullptr);
+        CHECK(find(OrgHeaderArgSpecsFor("src", "maxima"), "display2d") != nullptr);
+        // `:width`/`:height` are R's *and* maxima's, sized in different
+        // units by different graphics devices -- one key, two families.
+        CHECK(find(OrgHeaderArgSpecsFor("src", "maxima"), "width") != nullptr);
+        CHECK(find(OrgHeaderArgSpecsFor("src", "maxima"), "units") == nullptr);
         // A language with no backend-specific args still gets the common
         // list rather than an invented one.
         const std::vector<OrgHeaderArgSpec> lua_specs = OrgHeaderArgSpecsFor("src", "lua");

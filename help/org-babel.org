@@ -46,15 +46,24 @@ need to put the cursor there first.
 
 * Languages
 
-Twenty-seven, each used when its toolchain is on =$PATH=:
+Thirty, each used when its toolchain is on =$PATH=:
 
 =lua=, =python=, =sh= / =bash=, =javascript= / =js=, =typescript= / =ts=,
 =c=, =cpp= / =c++=, =csharp= / =cs= / =c#=, =ruby=, =elixir=, =julia=,
 =clojure=, =perl=, =r=, =php=, =rust=, =go=, =fortran=, =scala=, =zig=,
-=nim=, =crystal=, =java=, =kotlin=, =haskell=, =ocaml=, =d=.
+=nim=, =crystal=, =java=, =kotlin=, =haskell=, =ocaml=, =d=, =maxima=,
+=sql= / =sqlite=, =latex= / =tex=.
 
 Compiled languages go through a real compile-then-run step rather than
 being interpreted.
+
+A =maxima= block is piped into the computer-algebra system on stdin, so
+every statement the body ends with =;= prints its value and every =$= one
+stays quiet -- no =print()= around each line, unlike org's own maxima
+backend. Results come back as one line each; =:display2d yes= asks for
+maxima's centred 2D art instead, and =:linel= sets the width it wraps at.
+Maxima reports a bad block by writing the error into its results rather
+than by failing: it exits successfully whatever happened.
 
 * mep-lua blocks
 
@@ -135,9 +144,13 @@ whether or not the block ran.
 =:file= names what the block produces, and the results become a link to it.
 =:file-ext= derives that name from the block's =#+NAME:= instead,
 =:output-dir= puts it in a directory, and =:file-desc= gives the link its
-text. For a language with a graphics device (R, LaTeX), =:results graphics
-file= opens it around the body for you, sized by =:width= / =:height= /
-=:units= / =:res=.
+text. For a language with a graphics device (R, LaTeX, Maxima), =:results
+graphics file= opens it around the body for you, sized by =:width= /
+=:height= / =:units= / =:res=. A maxima block has both of its plotting
+front ends pointed at the target -- =plot2d= / =plot3d= and the =draw=
+package's =draw2d= / =draw3d= -- and the file's own extension picks the
+terminal, so =:file plot.svg= really is an SVG. It needs =gnuplot= on
+=$PATH= as well as =maxima=.
 
 ** Line switches
 
@@ -156,7 +169,7 @@ whether or not the block sets it: the common ones first, grouped into
 Results, Execution, Output, Tangle and Noweb, then the ones only that
 language takes (=:width= / =:height= / =:res= for R, =:includes= /
 =:flags= / =:libs= for anything that compiles, =:return= for Python,
-=:engine= / =:database= for SQL, and so on), then the line switches.
+=:engine= / =:database= for SQL, =:display2d= for Maxima, and so on), then the line switches.
 
 Each row is the kind of input the argument actually takes -- a dropdown
 of the words org accepts, a number, or free text -- so the popup will not

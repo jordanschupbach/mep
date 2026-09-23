@@ -10828,6 +10828,12 @@ private:
     void QuitAll(bool force);
     bool IsOnlyPaneOverall() const;
     bool AnyBufferModified() const;
+    // Index into buffers_ of the first buffer :qa would refuse to quit over
+    // (modified, not deleted, actually savable), or -1 if none. Shares the
+    // exact skip set with AnyBufferModified so the two never disagree; QuitAll
+    // uses it to jump the active pane onto that buffer instead of only
+    // printing E37.
+    int FirstModifiedBufferId() const;
     // :wa  -- writes every modified buffer that has a filename. Returns
     // true only if all modified buffers were written (used to gate :wqa).
     bool WriteAllModified();

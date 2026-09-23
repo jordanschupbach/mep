@@ -28918,7 +28918,7 @@ bool Editor::WriteAllModified() {
 
 bool Editor::IsOnlyPaneOverall() const { return Tabs().size() == 1 && Tabs()[0].root->dir == SplitDir::Leaf; }
 
-bool Editor::AnyBufferModified() const {
+int Editor::FirstModifiedBufferId() const {
     // Same skips as WriteAllModified/WorkspaceHasModifiedBuffers: a deleted
     // buffer or one with no possible save (terminal snapshot, PDF viewer)
     // has a `modified` flag nothing can clear, so counting it here would
@@ -28927,10 +28927,12 @@ bool Editor::AnyBufferModified() const {
         const Buffer &buf = buffers_[i];
         if (!buf.modified || buf.deleted) continue;
         if (BufferUnsavable(static_cast<int>(i))) continue;
-        return true;
+        return static_cast<int>(i);
     }
-    return false;
+    return -1;
 }
+
+bool Editor::AnyBufferModified() const { return FirstModifiedBufferId() >= 0; }
 
 void Editor::QuitCurrent(bool force) {
     if (!force && Buf().modified && !Buf().deleted && !BufferUnsavable(CurrentBufferId())) {
@@ -28949,9 +28951,21 @@ void Editor::QuitCurrent(bool force) {
 }
 
 void Editor::QuitAll(bool force) {
-    if (!force && AnyBufferModified()) {
-        status_message_ = "E37: Some buffers have unsaved changes (add ! to override)";
-        return;
+    if (!force) {
+        int id = FirstModifiedBufferId();
+        if (id >= 0) {
+            // Instead of only printing E37 and leaving the user to hunt for
+            // the offending buffer (deleted/unsavable ones are hidden from
+            // the buffer list, so it can be invisible), jump the active pane
+            // onto the first unsaved buffer so :w or :q! acts on it directly.
+            // Re-running :qa then lands on the next one, until none remain and
+            // this guard finally lets should_quit_ through.
+            if (id != CurrentBufferId()) SwitchToBufferForLua(id);
+            status_message_ = "E37: unsaved buffer \"" +
+                              (Buf().filename.empty() ? "[No Name]" : Buf().filename) +
+                              "\" (:w to save, :q! to discard, then :qa again)";
+            return;
+        }
     }
     should_quit_ = true;
 }

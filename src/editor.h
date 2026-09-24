@@ -10513,6 +10513,21 @@ private:
     // press right at a now-misaligned block boundary.
     void ShiftFoldsForLineEdit(int at_row, int count);
 
+    // Same idea as ShiftMarksForLineEdit/ShiftFoldsForLineEdit, but for the
+    // current buffer's decorations (every namespace: syntax highlighting,
+    // spell squiggles, LSP diagnostics, colorizer swatches, git gutter, ...).
+    // Each Decoration carries an absolute `row`; without this a line
+    // inserted/removed above a decoration leaves every decoration below it
+    // pointing at the wrong line, so syntax colors land on the wrong (or a
+    // now-blank) row and read as uncolored until the next debounced
+    // mep.syntax_highlight() rebuild catches up -- the "text reverts to white
+    // while I delete lines" symptom. Shifting here keeps colors glued to
+    // their text through an edit, independent of that rebuild's timing.
+    // Decorations that lived on a deleted line are dropped (their text is
+    // gone); a later rebuild re-adds whatever the new content warrants. Call
+    // *after* the underlying Buf().lines.insert/erase, same as the two above.
+    void ShiftDecorationsForLineEdit(int at_row, int count);
+
     int LineLen(int row) const;
     void ClampCursor();
 

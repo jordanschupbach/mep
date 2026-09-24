@@ -11870,7 +11870,20 @@ const char *kBuiltinSyntax =
     // itself: switching to a different file re-highlights immediately,
     // exactly once, regardless of the edit-debounce interval.
     "mep.syntax_auto = true\n"
-    "mep.on_buffer_changed(function() if mep.syntax_auto then mep.syntax_highlight() end end)\n"
+    // A much shorter re-highlight interval than on_buffer_changed's 0.3s
+    // default: syntax coloring is the one hook you watch update as you type,
+    // so at 0.3s freshly typed text visibly stays uncolored until you pause
+    // ("highlighting only shows up after I finish the line"). ts_captures
+    // reparses incrementally against its cached tree (treesitter.cpp), so a
+    // rerun is cheap; 0.03s (~a couple frames) reads as live without turning
+    // into a full re-highlight *every* frame during a held key. Existing
+    // colors already follow the text through inserts/deletes on their own
+    // (Editor::ShiftDecorationsForLineEdit), so this interval only governs
+    // how fast *new* content picks up color, not whether old content keeps
+    // it. Tunable: :lua mep.syntax_interval = <sec> before this loads, or
+    // re-register the hook, to trade latency for rebuild frequency.
+    "mep.syntax_interval = mep.syntax_interval or 0.03\n"
+    "mep.on_buffer_changed(function() if mep.syntax_auto then mep.syntax_highlight() end end, mep.syntax_interval)\n"
     "local mep_syntax_last_file = nil\n"
     "mep.on_frame(function()\n"
     "  if not mep.syntax_auto then return end\n"
@@ -41482,8 +41495,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     int cx0 = static_cast<int>(pos.x + cdr[0].x0 * pdf_sess->zoom);
                     int cy0 = static_cast<int>(pos.y + cdr[0].y0 * pdf_sess->zoom);
                     int chh = static_cast<int>((cdr[0].y1 - cdr[0].y0) * pdf_sess->zoom);
+                    // Pick a caret color that reads against the page. The theme
+                    // "Cursor" color is tuned for the dark (themed) page; on a
+                    // light page use black. Effective paper is NormalBg when
+                    // theme recoloring is on, otherwise the PDF's real white.
+                    gfx::Color paper = pdf_sess->theme_colors ? ResolveHlGroup("NormalBg") : gfx::White;
+                    float paper_lum = 0.299f * paper.r + 0.587f * paper.g + 0.114f * paper.b;
+                    gfx::Color caret_c = paper_lum > 127.5f ? gfx::Color{0, 0, 0, 255}
+                                                            : ResolveHlGroup("Cursor");
                     gfx::DrawRectangle(cx0, cy0, std::max(2, static_cast<int>(font_size * 0.12f)), chh,
-                                       ResolveHlGroup("Cursor"));
+                                       caret_c);
                 }
             }
             for (const PdfHighlightRect &hr : pr.highlights) {

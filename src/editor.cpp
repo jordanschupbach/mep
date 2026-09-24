@@ -17914,6 +17914,7 @@ bool Editor::DispatchNormalKey(int cp) {
             Buf().lines.insert(Buf().lines.begin() + cursor.row + 1, indent);
             ShiftMarksForLineEdit(cursor.row + 1, 1);
             ShiftFoldsForLineEdit(cursor.row + 1, 1);
+            ShiftDecorationsForLineEdit(cursor.row + 1, 1);
             cursor.row++;
             cursor.col = static_cast<int>(indent.size());
             EnterInsert();
@@ -17930,6 +17931,7 @@ bool Editor::DispatchNormalKey(int cp) {
             Buf().lines.insert(Buf().lines.begin() + cursor.row, indent);
             ShiftMarksForLineEdit(cursor.row, 1);
             ShiftFoldsForLineEdit(cursor.row, 1);
+            ShiftDecorationsForLineEdit(cursor.row, 1);
             cursor.col = static_cast<int>(indent.size());
             EnterInsert();
             break;
@@ -18574,6 +18576,7 @@ void Editor::InsertNewline(bool auto_indent) {
     Buf().lines.insert(Buf().lines.begin() + cursor.row + 1, remainder);
     ShiftMarksForLineEdit(cursor.row + 1, 1);
     ShiftFoldsForLineEdit(cursor.row + 1, 1);
+    ShiftDecorationsForLineEdit(cursor.row + 1, 1);
     cursor.row++;
     cursor.col = static_cast<int>(indent.size());
     Buf().modified = true;
@@ -18606,6 +18609,7 @@ void Editor::Backspace() {
         Buf().lines.erase(Buf().lines.begin() + cursor.row);
         ShiftMarksForLineEdit(cursor.row, -1);
         ShiftFoldsForLineEdit(cursor.row, -1);
+        ShiftDecorationsForLineEdit(cursor.row, -1);
         cursor.row--;
         cursor.col = LineLen(cursor.row);
         Buf().lines[static_cast<size_t>(cursor.row)] += current;
@@ -18623,6 +18627,7 @@ void Editor::DeleteForward() {
         Buf().lines.erase(Buf().lines.begin() + cursor.row + 1);
         ShiftMarksForLineEdit(cursor.row + 1, -1);
         ShiftFoldsForLineEdit(cursor.row + 1, -1);
+        ShiftDecorationsForLineEdit(cursor.row + 1, -1);
         line += next;
     }
     Buf().modified = true;
@@ -22713,6 +22718,7 @@ bool Editor::AcceptInlineSuggestion() {
     if (inserted_rows > 0) {
         ShiftMarksForLineEdit(cursor.row + 1, inserted_rows);
         ShiftFoldsForLineEdit(cursor.row + 1, inserted_rows);
+        ShiftDecorationsForLineEdit(cursor.row + 1, inserted_rows);
         cursor.row += inserted_rows;
     }
     Buf().lines[static_cast<size_t>(cursor.row)] += tail;
@@ -24137,6 +24143,39 @@ void Editor::ShiftFoldsForLineEdit(int at_row, int count) {
                 folds.end());
 }
 
+// Shifts the active buffer's decorations to follow the same line insert/delete
+// the marks/folds shifters above track, so highlight (and every other)
+// decoration stays glued to its text between rebuilds. See the declaration in
+// editor.h for the full rationale (the "text reverts to white while deleting
+// lines" symptom) and the at_row/count sign convention.
+void Editor::ShiftDecorationsForLineEdit(int at_row, int count) {
+    if (count == 0 || Buf().decorations.empty()) return;
+    int n = Buf().LineCount();
+    for (auto &ns_decos : Buf().decorations) {
+        auto &decos = ns_decos.second;
+        if (count < 0) {
+            // Drop decorations that lived on the deleted lines -- their text is
+            // gone, so keeping (and clamping) them would pile stale colored
+            // spans onto whatever line survives at at_row.
+            const int removed = -count;
+            decos.erase(std::remove_if(decos.begin(), decos.end(),
+                                       [&](const Decoration &d) {
+                                           return d.row >= at_row && d.row < at_row + removed;
+                                       }),
+                        decos.end());
+        }
+        for (Decoration &d : decos) {
+            if (count > 0) {
+                if (d.row >= at_row) d.row += count;
+            } else {
+                const int removed = -count;
+                if (d.row >= at_row + removed) d.row += count;  // count already negative
+            }
+            d.row = std::max(0, std::min(d.row, n - 1));
+        }
+    }
+}
+
 // Records where a "big jump" (G, gg, a mark jump, a search) started from,
 // so `` `` ``/`''` can return to it. Called with the pre-jump cursor.
 void Editor::RecordJumpFrom(CursorPos pos) {
@@ -24443,9 +24482,11 @@ void Editor::FormatLines(int start_row, int end_row) {
         Buf().lines.erase(Buf().lines.begin() + para_start, Buf().lines.begin() + para_end + 1);
         ShiftMarksForLineEdit(para_start, -old_count);
         ShiftFoldsForLineEdit(para_start, -old_count);
+        ShiftDecorationsForLineEdit(para_start, -old_count);
         Buf().lines.insert(Buf().lines.begin() + para_start, wrapped.begin(), wrapped.end());
         ShiftMarksForLineEdit(para_start, new_count);
         ShiftFoldsForLineEdit(para_start, new_count);
+        ShiftDecorationsForLineEdit(para_start, new_count);
 
         end_row += new_count - old_count;
         row = para_start + new_count;
@@ -24466,6 +24507,7 @@ void Editor::JoinLines(int count, bool with_space) {
         Buf().lines.erase(Buf().lines.begin() + row + 1);
         ShiftMarksForLineEdit(row + 1, -1);
         ShiftFoldsForLineEdit(row + 1, -1);
+        ShiftDecorationsForLineEdit(row + 1, -1);
         size_t s = 0;
         while (s < next.size() && std::isspace(static_cast<unsigned char>(next[s]))) s++;
         next = next.substr(s);
@@ -24489,6 +24531,7 @@ void Editor::DeleteRange(CursorPos start, CursorPos end, bool linewise) {
         Buf().lines.erase(Buf().lines.begin() + first, Buf().lines.begin() + last + 1);
         ShiftMarksForLineEdit(first, -(last - first + 1));
         ShiftFoldsForLineEdit(first, -(last - first + 1));
+        ShiftDecorationsForLineEdit(first, -(last - first + 1));
         if (Buf().lines.empty()) Buf().lines.emplace_back("");
         Buf().modified = true;
         return;
@@ -24515,6 +24558,7 @@ void Editor::DeleteRange(CursorPos start, CursorPos end, bool linewise) {
         Buf().lines.erase(Buf().lines.begin() + start.row + 1, Buf().lines.begin() + end_row + 1);
         ShiftMarksForLineEdit(start.row + 1, -(end_row - start.row));
         ShiftFoldsForLineEdit(start.row + 1, -(end_row - start.row));
+        ShiftDecorationsForLineEdit(start.row + 1, -(end_row - start.row));
     }
     Buf().modified = true;
 }
@@ -24651,6 +24695,7 @@ CursorPos Editor::InsertCharwiseTextAt(CursorPos pos, const std::string &text) {
     Buf().lines.insert(Buf().lines.begin() + pos.row + 1, to_insert.begin(), to_insert.end());
     ShiftMarksForLineEdit(pos.row + 1, static_cast<int>(to_insert.size()));
     ShiftFoldsForLineEdit(pos.row + 1, static_cast<int>(to_insert.size()));
+    ShiftDecorationsForLineEdit(pos.row + 1, static_cast<int>(to_insert.size()));
 
     int end_row = pos.row + static_cast<int>(parts.size()) - 1;
     int end_col = static_cast<int>(parts.back().size());
@@ -24676,6 +24721,7 @@ void Editor::PasteAfter(int count, char reg_name) {
         Buf().lines.insert(Buf().lines.begin() + insert_at, new_lines.begin(), new_lines.end());
         ShiftMarksForLineEdit(insert_at, static_cast<int>(new_lines.size()));
         ShiftFoldsForLineEdit(insert_at, static_cast<int>(new_lines.size()));
+        ShiftDecorationsForLineEdit(insert_at, static_cast<int>(new_lines.size()));
         cursor = {insert_at, 0};
     } else {
         std::string text;
@@ -24707,6 +24753,7 @@ void Editor::PasteBefore(int count, char reg_name) {
         Buf().lines.insert(Buf().lines.begin() + insert_at, new_lines.begin(), new_lines.end());
         ShiftMarksForLineEdit(insert_at, static_cast<int>(new_lines.size()));
         ShiftFoldsForLineEdit(insert_at, static_cast<int>(new_lines.size()));
+        ShiftDecorationsForLineEdit(insert_at, static_cast<int>(new_lines.size()));
         cursor = {insert_at, 0};
     } else {
         std::string text;

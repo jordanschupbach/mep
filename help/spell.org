@@ -8,6 +8,30 @@
 Misspelled words get a red underline, drawn through the same [[file:highlight-groups.html][decoration]]
 pipeline as syntax and diagnostics.
 
+Prose filetypes are checked automatically (=.org=, =.md=, =.txt=, =.tex=,
+=.rst= and friends, plus any file with no extension at all); code buffers
+are not, so identifiers are not flagged wholesale. =<leader>zt= turns it on
+for the current buffer whatever its type.
+
+* What is not checked in an org file
+
+An org document is prose *and* code, so the code is left alone. No squiggle
+is drawn -- and none of the bulk actions below touch anything -- inside:
+
+- a =#+begin_src=, =#+begin_example= or =#+begin_export= block, the
+  =#+begin_=/=#+end_= lines included, since those carry a language and
+  header arguments rather than words;
+- a fixed-width =: = line, which is the shape a =#+RESULTS:= block takes;
+- an inline =verbatim= or ~code~ span (written =\=like this\== or
+  =~like this~=).
+
+A =#+begin_quote=, =#+begin_verse= or =#+begin_abstract= block *is* checked:
+fencing prose does not stop it being prose.
+
+The point is that no dictionary was ever going to accept
+=iris$Sepal.Length=. Flagging it costs you the signal from the real typo two
+lines up, which is the whole reason to have a squiggle at all.
+
 * The keys
 
 Everything is on the =<leader>z= group, and it works in Visual mode too.
@@ -23,7 +47,18 @@ Everything is on the =<leader>z= group, and it works in Visual mode too.
 | =<leader>zw= | mark the word wrong                     |
 
 =<leader>zf= is the fast path when the intended word is obvious; =zs= is for
-when it is not.
+when it is not. In Visual mode =zf= corrects every flagged word in the
+selection in one step -- a selection that runs across a code block corrects
+the prose and leaves the code as it stands.
+
+=zn= and =zp= visit exactly the words that are underlined, so they never
+park the cursor inside a code block either, and =zf= only ever corrects a
+word that *is* underlined -- put the cursor on an identifier in a code block
+and it reports nothing to fix rather than quietly rewriting your code.
+
+=zs=, =zg= and =zw= are the exceptions, and deliberately so: those aim at
+whatever word you put the cursor on, code or not, because adding a project's
+jargon to your dictionary is a reason to go looking for it.
 
 * Your dictionary
 

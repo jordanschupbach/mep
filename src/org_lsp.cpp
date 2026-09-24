@@ -269,6 +269,9 @@ const std::vector<OrgLspVocabEntry> kHeaderArgs = {
     {"includes", "#include lines", "Extra include directives for a C/C++ block."},
     {"cmdline", "program arguments", "Arguments appended to the program invocation."},
     {"stdin", "stdin text", "Text fed to the block's standard input."},
+    {"screen-width", "columns", "Width GAP displays values at before wrapping them (mep's `gap` backend)."},
+    {"memory", "workspace limit", "Size a `gap` block's workspace will not grow past, e.g. `2g` (mep's `gap` backend)."},
+    {"packages", "yes|no", "Whether a `gap` block autoloads GAP's packages (mep's `gap` backend)."},
 };
 
 // Enumerated header-argument values, for both completion and the
@@ -285,6 +288,7 @@ const std::map<std::string, std::vector<const char *>> kHeaderArgValues = {
     {"padline", {"yes", "no"}},
     {"mkdirp", {"yes", "no"}},
     {"main", {"yes", "no"}},
+    {"packages", {"yes", "no"}},
     {"noweb", {"no", "yes", "tangle", "no-export", "strip-export", "eval"}},
     {"eval", {"never", "query", "no-export", "never-export", "query-export", "yes", "no"}},
     {"comments", {"no", "link", "yes", "org", "both", "noweb"}},
@@ -400,6 +404,7 @@ const std::vector<OrgLspVocabEntry> kBabelLangs = {
     {"crystal", "compiled", "Runs with crystal."}, {"cs", "alias of csharp", "Runs with dotnet."},
     {"csharp", "compiled", "Runs with dotnet."}, {"d", "compiled", "Runs with dmd/ldc."},
     {"elixir", "BEAM", "Runs with elixir."},     {"fortran", "compiled", "Compiled and run with gfortran."},
+    {"gap", "computer algebra", "Runs with gap."},
     {"go", "compiled", "Runs with go."},         {"haskell", "compiled", "Runs with runghc/ghc."},
     {"java", "compiled", "Compiled and run with javac/java."},
     {"javascript", "Node", "Runs with node."},   {"js", "alias of javascript", "Runs with node."},

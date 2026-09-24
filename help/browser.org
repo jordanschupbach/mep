@@ -47,6 +47,43 @@ with checkbox and submit default actions -- and a cancelled click on a link
 is not followed. Clicking a text field gives it the keyboard: typing raises
 =input=, =Enter= submits the form, and =Esc= or =Tab= leaves the field.
 
+* Maths
+
+A page's LaTeX maths is typeset in the pane, with no JavaScript and nothing
+fetched: the parser pulls =$...$=, =$$...$$=, =\(...\)= and =\[...\]= spans
+out of the page's prose -- skipping =<script>=, =<style>=, =<pre>=, =<code>=
+and =<textarea>=, the same list MathJax skips -- and mep's own small TeX
+engine lays each one out. A span on its own line is centred as display
+maths; one inside a sentence is set inline with the text.
+
+So a MathJax-targeting page (org-mode's HTML export, most course notes)
+renders its formulae here even offline, and a page that ships MathJax gets
+the same result without running it.
+
+Equations are set in a serif with real italics -- variables and lowercase
+Greek slant, digits, operators and =\text= runs stand upright -- and an
+inline fragment sits on the same baseline as the words around it.
+
+It covers superscripts and subscripts (with TeX's own script/scriptscript
+sizing), =\frac=, =\binom= and plain TeX's =\over=, =\sqrt=, big
+operators that grow in display maths and take their limits over and under
+(=\sum=, =\prod=, =\lim=), =\left=/=\right= fences that stretch to
+whatever they wrap, radicals drawn to fit their radicand, accents
+(=\hat=, =\bar=, =\vec=, =\overline=), the upright operator names
+(=\sin=, =\log=, =\max=), =\mathrm=/=\mathbf=/=\mathbb= and the other
+font commands, =\text= with its spaces intact, several hundred symbols,
+the matrix environments (=pmatrix=, =bmatrix=, =cases=, =aligned= and
+friends), the spacing commands (=\,=, =\;=, =\quad=), and TeX's own
+inter-atom spacing and unary-sign rules -- so
+=\int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}= reads as that formula.
+
+It is still not TeX: there is no kerning or italic-correction table, no
+line breaking inside an expression, no =\newcommand=, and the rows of an
+=align= are set independently rather than aligned to each other. A symbol
+neither embedded font has a glyph for, and any unknown command, shows its
+own name rather than vanishing -- so a page using something unsupported is
+legible rather than silently wrong.
+
 * How much of a browser is it?
 
 Measured, not claimed -- see [[file:web-ladder.html][Measuring the engine]].

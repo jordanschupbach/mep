@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -2234,7 +2235,7 @@ void AddDisplaySwitches(std::vector<OrgHeaderArgSpec> *out) {
 /**
  * @brief Maps a block's language tag onto the header-arg family it belongs to.
  * @param lang the language tag as written on the `#+begin_src` line
- * @return one of "r", "python", "c", "shell", "sql", "latex", "maxima", or "" for a language with no extra options
+ * @return one of "r", "python", "c", "shell", "sql", "latex", "maxima", "gap", or "" for a language with no extra options
  */
 std::string LanguageFamily(const std::string &lang) {
     const std::string l = LowerAscii(lang);
@@ -2244,6 +2245,7 @@ std::string LanguageFamily(const std::string &lang) {
     if (l == "sql" || l == "sqlite") return "sql";
     if (l == "latex" || l == "tex") return "latex";
     if (l == "maxima") return "maxima";
+    if (l == "gap") return "gap";
     return "";
 }
 
@@ -2412,6 +2414,17 @@ std::vector<OrgHeaderArgSpec> OrgHeaderArgSpecsFor(const std::string &block_kind
         AddNumber(&out, "", "linel", 20.0, 400.0, 5.0, 79.0, "Width maxima wraps its output at, in columns.");
         AddNumber(&out, "", "width", 100.0, 4000.0, 20.0, 640.0, "Plot width, in pixels.");
         AddNumber(&out, "", "height", 100.0, 4000.0, 20.0, 480.0, "Plot height, in pixels.");
+    } else if (family == "gap") {
+        // GAP clamps a width to 20..4096 itself rather than rejecting it,
+        // so the slider's range is GAP's own; the default shown is the
+        // widest, which is what the backend runs `gap -x` with when the
+        // argument is absent (see kBuiltinOrgBabelGap, main.cpp) -- GAP's
+        // own 80 is what a block asks for when it *wants* wrapped output.
+        AddNumber(&out, "Language: GAP", "screen-width", 20.0, 4096.0, 16.0, 4096.0,
+                   "Width GAP displays values at before wrapping them, in columns.");
+        AddText(&out, "", "memory", "Size GAP will not grow its workspace past, e.g. 2g.");
+        AddChoice(&out, "", "packages", ":packages", {"", "yes", "no"},
+                   "Autoload GAP's packages; no starts faster and quieter.");
     }
     AddDisplaySwitches(&out);
     return out;
@@ -2560,6 +2573,147 @@ std::string OrgMergeHeaderArgs(const std::vector<std::string> &layers) {
     return out;
 }
 
+// --- Shell expansion inside a header argument -----------------------------
+
+namespace {
+
+// The characters a backslash is allowed to escape here. Every other
+// backslash is left alone (with its following character), so a flag like
+// `-DPATH=C:\tmp` or `-Wl,--defsym\=x` survives expansion untouched.
+/**
+ * @brief Reports whether a backslash escapes the character that follows it.
+ * @param c the character after the backslash
+ * @return true for `$`, a backtick and another backslash
+ */
+bool IsShellEscapable(char c) { return c == '$' || c == '`' || c == '\\'; }
+
+/**
+ * @brief Reports whether a character can appear in an unbraced `$NAME` reference.
+ * @param c the character to test
+ * @param first whether it is the first character after the `$`
+ * @return true for identifier characters (a digit may not lead)
+ */
+bool IsVarChar(char c, bool first) {
+    const unsigned char u = static_cast<unsigned char>(c);
+    if (std::isalpha(u) != 0 || c == '_') return true;
+    return !first && std::isdigit(u) != 0;
+}
+
+// A command's output, folded to one line: shell command substitution
+// strips every trailing newline and then word-splits on the rest, and the
+// caller here splits on whitespace too -- so interior newlines and tabs
+// become plain spaces rather than surviving into an argv word.
+/**
+ * @brief Normalizes a command's captured output into a single line of words.
+ * @param out the command's raw standard output
+ * @return the output without trailing newlines and with interior whitespace flattened to spaces
+ */
+std::string FoldCommandOutput(std::string out) {
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+    for (char &c : out) {
+        if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+    }
+    return out;
+}
+
+// The `)` that closes the `$(...)` whose `(` sits at `open`, counting
+// nested parentheses so `$(dirname $(which cc))` closes on its own `)`
+// rather than the inner one. Returns std::string::npos when the
+// substitution is never closed, which leaves the text literal instead of
+// swallowing the rest of the value.
+/**
+ * @brief Finds the closing parenthesis of a `$(...)` command substitution.
+ * @param s the value being scanned
+ * @param open the index of the opening `(`
+ * @return the index of the matching `)`, or std::string::npos when there is none
+ */
+size_t FindSubstitutionEnd(const std::string &s, size_t open) {
+    int depth = 1;
+    for (size_t i = open + 1; i < s.size(); i++) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            i++;
+            continue;
+        }
+        if (s[i] == '(') {
+            depth++;
+        } else if (s[i] == ')') {
+            depth--;
+            if (depth == 0) return i;
+        }
+    }
+    return std::string::npos;
+}
+
+}  // namespace
+
+bool OrgValueNeedsShellExpansion(const std::string &value) {
+    for (size_t i = 0; i < value.size(); i++) {
+        if (value[i] == '\\' && i + 1 < value.size() && IsShellEscapable(value[i + 1])) {
+            i++;
+            continue;
+        }
+        if (value[i] == '$' || value[i] == '`') return true;
+    }
+    return false;
+}
+
+std::string OrgExpandShellSubstitutions(const std::string &value, const OrgShellRunner &run) {
+    std::string out;
+    for (size_t i = 0; i < value.size(); i++) {
+        const char c = value[i];
+        if (c == '\\' && i + 1 < value.size() && IsShellEscapable(value[i + 1])) {
+            out += value[i + 1];
+            i++;
+            continue;
+        }
+        if (c == '`') {
+            const size_t end = value.find('`', i + 1);
+            if (end == std::string::npos) {
+                out += c;
+                continue;
+            }
+            if (run) out += FoldCommandOutput(run(value.substr(i + 1, end - i - 1)));
+            i = end;
+            continue;
+        }
+        if (c != '$' || i + 1 >= value.size()) {
+            out += c;
+            continue;
+        }
+        if (value[i + 1] == '(') {
+            const size_t end = FindSubstitutionEnd(value, i + 1);
+            if (end == std::string::npos) {
+                out += c;
+                continue;
+            }
+            if (run) out += FoldCommandOutput(run(value.substr(i + 2, end - i - 2)));
+            i = end;
+            continue;
+        }
+        if (value[i + 1] == '{') {
+            const size_t end = value.find('}', i + 2);
+            if (end == std::string::npos) {
+                out += c;
+                continue;
+            }
+            const char *env = std::getenv(value.substr(i + 2, end - i - 2).c_str());
+            if (env != nullptr) out += env;
+            i = end;
+            continue;
+        }
+        if (!IsVarChar(value[i + 1], true)) {
+            out += c;
+            continue;
+        }
+        size_t j = i + 1;
+        while (j < value.size() && IsVarChar(value[j], j == i + 1)) j++;
+        const char *env = std::getenv(value.substr(i + 1, j - i - 1).c_str());
+        if (env != nullptr) out += env;
+        i = j - 1;
+    }
+    return out;
+}
+
 // --- Results blocks -------------------------------------------------------
 
 OrgResultsOptions OrgResultsOptionsFrom(const std::string &args, const std::string &lang) {
@@ -2681,7 +2835,7 @@ bool OrgResultsBodyIsRaw(const OrgResultsOptions &opts) {
     if (f == "raw" || f == "org" || f == "link" || f == "graphics") return true;
     if (f == "html" || f == "latex" || f == "code" || f == "drawer") return true;
     const std::string t = LowerAscii(opts.type);
-    if (t == "table" || t == "list" || t == "file") return true;
+    if (t == "table" || t == "list" || t == "file" || t == "verbatim") return true;
     return false;
 }
 
@@ -2702,7 +2856,7 @@ std::vector<std::string> OrgFormatResultsBody(const std::vector<std::string> &ou
         body.clear();
         for (const std::string &l : out_lines) body.push_back("- " + l);
         if (body.empty()) body.emplace_back("-");
-    } else if (type == "scalar" || type == "verbatim") {
+    } else if (type == "scalar") {
         // Explicitly *not* interpreted: one `: `-prefixed example line per
         // output line, even when the output looks like a table or is a
         // single line that would otherwise be fenced.
@@ -2711,6 +2865,15 @@ std::vector<std::string> OrgFormatResultsBody(const std::vector<std::string> &ou
         for (const std::string &l : out_lines) quoted.push_back(": " + l);
         if (quoted.empty()) quoted.emplace_back(": ");
         return quoted;
+    } else if (type == "verbatim") {
+        // `verbatim` is the *other* half of "not interpreted": the output
+        // goes in exactly as the block wrote it -- no table or list
+        // reading, and no `: ` quoting or example fence either. Org treats
+        // it as a synonym for `scalar`; here it is the way to get output
+        // that is already meant to be read as org (a maxima block's
+        // `tex(...)`, say, writing `$$...$$` for the math renderer) into
+        // the buffer intact, with `scalar` left as the quoted form.
+        return out_lines;
     }
 
     // Step two: the *wrapper*, which `:wrap` decides, then `:results
@@ -3079,9 +3242,31 @@ bool ResultsPlainLine(const std::string &line) {
     return l.compare(0, 7, "[[file:") == 0;
 }
 
+// The shapes above are the ones that announce themselves line by line.
+// An unquoted body (`:results raw`/`org`/`verbatim`) announces nothing --
+// it is whatever org markup the block wrote -- so it is read the way org
+// reads the paragraph after a `#+RESULTS:` keyword: everything up to the
+// first blank line or the start of the next element. Without this a
+// re-run of such a block leaves its old output sitting under the new one.
+/**
+ * @brief Reports whether a line continues an unquoted (raw org markup) results body.
+ * @param line the line to test
+ * @return true unless the line is blank, a keyword, or a heading
+ */
+bool ResultsRawLine(const std::string &line) {
+    const std::string l = LStrip(line);
+    if (l.empty()) return false;
+    if (l.compare(0, 2, "#+") == 0) return false;
+    // An org heading: `*`s from column zero, then a space.
+    size_t stars = 0;
+    while (stars < line.size() && line[stars] == '*') stars++;
+    return !(stars > 0 && stars < line.size() && line[stars] == ' ');
+}
+
 }  // namespace
 
-bool OrgFindResultsBlock(const std::vector<std::string> &lines, int after_row, int *start, int *end) {
+bool OrgFindResultsBlock(const std::vector<std::string> &lines, int after_row, int *start, int *end,
+                         bool raw_body) {
     const int n = static_cast<int>(lines.size());
     const int head = after_row + 1;
     if (head < 1 || head > n) return false;
@@ -3107,16 +3292,24 @@ bool OrgFindResultsBlock(const std::vector<std::string> &lines, int after_row, i
     }
     int i = head + 1;
     while (i <= n && ResultsPlainLine(lines[static_cast<size_t>(i - 1)])) i++;
+    // Only when the caller knows this block writes an unquoted body: the
+    // lines of one are indistinguishable from the prose that could just
+    // as well be sitting under an empty `#+RESULTS:`, and eating that
+    // prose on a re-run would be far worse than leaving a stale result.
+    if (raw_body && i == head + 1) {
+        while (i <= n && ResultsRawLine(lines[static_cast<size_t>(i - 1)])) i++;
+    }
     *end = i - 1;
     return true;
 }
 
 std::vector<std::string> OrgSpliceResultsBlock(const std::vector<std::string> &lines, int after_row,
-                                               const std::vector<std::string> &block, const std::string &handling) {
+                                               const std::vector<std::string> &block, const std::string &handling,
+                                               bool raw_body) {
     const std::string how = LowerAscii(handling);
     if (how == "none" || how == "silent") return lines;
     int start = 0, end = 0;
-    const bool existing = OrgFindResultsBlock(lines, after_row, &start, &end);
+    const bool existing = OrgFindResultsBlock(lines, after_row, &start, &end, raw_body);
     std::vector<std::string> out;
     out.reserve(lines.size() + block.size());
     const int n = static_cast<int>(lines.size());
@@ -3303,7 +3496,9 @@ std::vector<std::string> OrgApplyExportGates(const std::vector<std::string> &lin
         }
         layers.insert(layers.end(), header_layers.begin(), header_layers.end());
         layers.push_back(own_args);
-        const std::string exports = OrgHeaderArgValue(OrgMergeHeaderArgs(layers), "exports");
+        const std::string merged_args = OrgMergeHeaderArgs(layers);
+        const std::string exports = OrgHeaderArgValue(merged_args, "exports");
+        const bool raw_results = OrgResultsBodyIsRaw(OrgResultsOptionsFrom(merged_args, lang));
 
         // The affiliated lines were already emitted; unwind them when the
         // code they belong to is not being exported.
@@ -3314,11 +3509,492 @@ std::vector<std::string> OrgApplyExportGates(const std::vector<std::string> &lin
             for (int k = i; k <= end_row; k++) out.push_back(lines[static_cast<size_t>(k - 1)]);
         }
         int res_start = 0, res_end = 0;
-        const bool has_results = OrgFindResultsBlock(lines, end_row, &res_start, &res_end);
+        const bool has_results = OrgFindResultsBlock(lines, end_row, &res_start, &res_end, raw_results);
         i = has_results ? res_end + 1 : end_row + 1;
         if (has_results && OrgExportsResults(exports)) {
             for (int k = res_start; k <= res_end; k++) out.push_back(lines[static_cast<size_t>(k - 1)]);
         }
+    }
+    return out;
+}
+
+// --- LaTeX/math fragments (OrgLatexScan) ---------------------------------
+
+namespace {
+
+// Display-math environments recognized as whole fragments: the amsmath
+// family (all of them in the preview's own \usepackage{amsmath} set, so the
+// render actually compiles) plus core LaTeX's displaymath/equation/eqnarray.
+const char *const kLatexMathEnvs[] = {"equation", "align",   "alignat",  "gather",
+                                      "multline", "flalign", "eqnarray", "displaymath"};
+
+// A fragment is allowed to cross a line break but never an *element*
+// boundary, which is what real org-mode's own parser enforces (a fragment
+// is an object, and an object lives inside one element). It is also the
+// whole safety story for the multi-row delimiter forms: an unbalanced `$$`
+// reaches the end of its paragraph and stops, instead of swallowing every
+// row below it into one image. A blank line is additionally a `\par`, which
+// no math mode accepts.
+//
+// A headline and a `#+keyword:` line are elements in their own right, so
+// they are scanned -- `* Background: \(t\)-SNE` and `#+caption: $x^2$` both
+// preview in org -- but only ever on their own, never joined to the rows
+// around them.
+/** @brief Reports whether a row is an element of its own, which a fragment may not be joined across. */
+bool LatexStandaloneRow(const std::string &line) {
+    const std::string t = Trim(line);
+    return IsAnyHeadlineLine(line) || (t.size() >= 2 && t[0] == '#' && t[1] == '+');
+}
+
+/** @brief Reports whether a row holds nothing a fragment could start in. */
+bool LatexBlankRow(const std::string &line) { return Trim(line).empty(); }
+
+/** @brief Compares two strings for equality ignoring ASCII case, at an offset in the first. */
+bool LatexEqCiAt(const std::string &s, size_t pos, const std::string &lit) {
+    if (pos + lit.size() > s.size()) return false;
+    for (size_t k = 0; k < lit.size(); k++) {
+        if (std::tolower(static_cast<unsigned char>(s[pos + k])) !=
+            std::tolower(static_cast<unsigned char>(lit[k]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** @brief Checks whether a line is a `#+`-keyword line whose keyword starts with `marker`. */
+bool LatexKeywordLine(const std::string &line, const std::string &marker) {
+    const std::string t = Trim(line);
+    return t.size() >= marker.size() + 2 && t[0] == '#' && t[1] == '+' && LatexEqCiAt(t, 2, marker);
+}
+
+/** @brief Checks whether a line opens or closes an org block (`#+begin_<name>` / `#+end_<name>`). */
+bool LatexBlockMarker(const std::string &line, const std::string &marker) {
+    if (!LatexKeywordLine(line, marker)) return false;
+    const std::string t = Trim(line);
+    // `#+begin_src`, not a bare `#+begin_`: the block's own name has to be
+    // there, the same requirement the rest of mep's block matching makes.
+    return t.size() > marker.size() + 2 && std::isalpha(static_cast<unsigned char>(t[marker.size() + 2]));
+}
+
+/** @brief Checks whether a line is a standalone `#+BEGIN_LATEX` line (nothing after the keyword). */
+bool IsLatexBlockOpen(const std::string &line) {
+    static const std::string kKeyword = "BEGIN_LATEX";
+    return LatexKeywordLine(line, kKeyword) && Trim(line).size() == kKeyword.size() + 2;
+}
+
+/** @brief Checks whether a line is a `#+BEGIN_SRC latex` line. */
+bool IsSrcLatexOpen(const std::string &line) {
+    static const std::string kKeyword = "BEGIN_SRC";
+    if (!LatexKeywordLine(line, kKeyword)) return false;
+    const std::string t = Trim(line);
+    // The language argument has to be separated from the keyword, so
+    // `#+begin_srclatex` is not a latex block.
+    size_t i = kKeyword.size() + 2;
+    const size_t before_ws = i;
+    while (i < t.size() && std::isspace(static_cast<unsigned char>(t[i]))) i++;
+    return i > before_ws && LatexEqCiAt(t, i, "latex");
+}
+
+/**
+ * @brief If a trimmed line opens a display-math environment, returns the environment name as written.
+ * @param trimmed The whitespace-trimmed line to check.
+ * @return The name (star included), or "" when this isn't a display-math `\begin` line.
+ */
+std::string LatexMathEnvOpen(const std::string &trimmed) {
+    const std::string kBegin = "\\begin{";
+    if (trimmed.compare(0, kBegin.size(), kBegin) != 0) return "";
+    const size_t close = trimmed.find('}', kBegin.size());
+    if (close == std::string::npos) return "";
+    const std::string name = trimmed.substr(kBegin.size(), close - kBegin.size());
+    std::string base = name;
+    if (!base.empty() && base.back() == '*') base.pop_back();
+    for (const char *env : kLatexMathEnvs) {
+        if (base == env) return name;
+    }
+    return "";
+}
+
+// One paragraph's rows, flattened into a single string so a delimiter scan
+// can cross a line break: `text` is the rows joined with '\n', and
+// `row_start[k]` is where row `first_row + k` begins in it.
+struct LatexScanRun {
+    std::string text;
+    int first_row = 0;
+    std::vector<size_t> row_start;
+};
+
+/** @brief The 1-based row an offset into a run's flattened text falls on. */
+int LatexRunRow(const LatexScanRun &run, size_t off) {
+    size_t lo = 0, hi = run.row_start.size() - 1;
+    while (lo < hi) {
+        const size_t mid = (lo + hi + 1) / 2;
+        if (run.row_start[mid] <= off) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return run.first_row + static_cast<int>(lo);
+}
+
+/**
+ * @brief Finds the `$..$` fragment opening at an offset, if this bare `$` really opens one.
+ * @param text The run's flattened text.
+ * @param i The offset of the candidate opening `$`.
+ * @return The offset one past the closing `$`, or 0 when this `$` opens nothing.
+ *
+ * Bare `$` is the one math delimiter that is also ordinary punctuation, so
+ * it is the only one that needs rules about its neighbours, and each of
+ * these earns its keep against real documents:
+ *   - The character just inside either delimiter is neither blank nor
+ *     sentence punctuation, so "$ 5" opens nothing and
+ *     "($H_{ii} \mathrel{+}= $ =damping=" does not close at that second `$`.
+ *   - The character after the closer is not a digit, which is what keeps
+ *     "$5 and $10" from typesetting "5 and " as a formula. (Org is stricter
+ *     -- it wants punctuation or whitespace there -- but that also refuses
+ *     the `$t$/$p$` and `$R^2$/RMSE` that prose about statistics is full of,
+ *     which are real formulae and do render here.)
+ *   - The body holds no `$` of its own, org's rule and the one that keeps a
+ *     failed guess from becoming a wild one: a candidate closer that fails
+ *     the tests above *ends* the search rather than being stepped over, so
+ *     "$\sim$8500 evaluations" cannot reach for a closer on the next line
+ *     and swallow the sentence in between.
+ *
+ * One embedded line break, org's own limit for this delimiter and no
+ * accident: at two the guess stops being a guess about a formula and starts
+ * being a guess about a whole paragraph.
+ */
+size_t LatexDollarSpan(const std::string &text, size_t i) {
+    const size_t n = text.size();
+    // What may not sit just inside either delimiter.
+    static const std::string kNotInside = " \t\r\n,;.$";
+    const char next_char = (i + 1 < n) ? text[i + 1] : '\0';
+    if (next_char == '\0' || kNotInside.find(next_char) != std::string::npos) return 0;
+    int newlines = 0;
+    for (size_t s = i + 1; s < n; s++) {
+        if (text[s] == '\n') {
+            if (++newlines > 1) return 0;
+            continue;
+        }
+        if (text[s] != '$') continue;
+        const char prev_char = text[s - 1];
+        const char after_char = (s + 1 < n) ? text[s + 1] : '\0';
+        if (kNotInside.find(prev_char) != std::string::npos) return 0;
+        if (std::isdigit(static_cast<unsigned char>(after_char))) return 0;
+        return s + 1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Finds the fragment opening at an offset in a run's flattened text.
+ * @param text The run's flattened text.
+ * @param i The offset to test as a fragment start.
+ * @return The offset one past the fragment's closing delimiter, or 0 when nothing opens at `i`.
+ */
+size_t LatexFragmentEnd(const std::string &text, size_t i) {
+    struct Pair {
+        const char *open;
+        const char *close;
+    };
+    // `$$` before the bare `$` below, so a display fragment is never read
+    // as an empty inline one.
+    static const Pair kPairs[] = {{"\\[", "\\]"}, {"$$", "$$"}, {"\\(", "\\)"}};
+    for (const Pair &p : kPairs) {
+        const size_t open_len = std::strlen(p.open);
+        if (text.compare(i, open_len, p.open) != 0) continue;
+        const size_t close = text.find(p.close, i + open_len);
+        // `$$$$` and `\[\]` are not fragments: there is nothing between the
+        // delimiters to typeset.
+        if (close == std::string::npos || close == i + open_len) return 0;
+        return close + std::strlen(p.close);
+    }
+    if (text[i] == '$') return LatexDollarSpan(text, i);
+    return 0;
+}
+
+}  // namespace
+
+OrgLatexFragments OrgLatexScan(const std::vector<std::string> &lines) {
+    OrgLatexFragments out;
+    const int n = static_cast<int>(lines.size());
+    auto line_at = [&](int row) -> const std::string & { return lines[static_cast<size_t>(row - 1)]; };
+    // Rows a block form has already claimed, or that sit inside a
+    // non-LaTeX `#+begin_X`, are not scanned for delimiters afterwards.
+    std::vector<bool> scannable(static_cast<size_t>(n) + 1, true);
+    auto claim = [&](int from, int to) {
+        for (int r = std::max(1, from); r <= to && r <= n; r++) scannable[static_cast<size_t>(r)] = false;
+    };
+
+    // Pass 1: the block forms -- a LaTeX block, a `latex` src block, or a
+    // display-math environment -- each of which is a whole fragment on its
+    // own rows, and each of which takes those rows out of the delimiter
+    // scan below.
+    int row = 1;
+    while (row <= n) {
+        const std::string &line = line_at(row);
+        const std::string trimmed = Trim(line);
+
+        // A `#+begin_X ... #+end_X` block that isn't itself LaTeX is
+        // literal text, so nothing inside it is a math fragment: a `$` in
+        // `iris$Sepal.Length` in an R block, every `$var` in a shell
+        // block, or a `$` in a `#+begin_example` of shell output would all
+        // otherwise open one.
+        if (!IsLatexBlockOpen(line) && !IsSrcLatexOpen(line) && LatexBlockMarker(line, "begin_")) {
+            int j = row + 1;
+            while (j <= n && !LatexBlockMarker(line_at(j), "end_")) j++;
+            claim(row, j);
+            row = j + 1;
+            continue;
+        }
+
+        std::string body;
+        int end_row = 0;
+        if (IsLatexBlockOpen(line) || IsSrcLatexOpen(line)) {
+            const std::string close_kw = IsSrcLatexOpen(line) ? "END_SRC" : "END_LATEX";
+            std::vector<std::string> inner;
+            int j = row + 1;
+            while (j <= n && !LatexKeywordLine(line_at(j), close_kw)) {
+                inner.push_back(line_at(j));
+                j++;
+            }
+            if (j <= n) {
+                for (size_t k = 0; k < inner.size(); k++) {
+                    if (k > 0) body += '\n';
+                    body += inner[k];
+                }
+                end_row = j;
+            }
+        } else if (const std::string env = LatexMathEnvOpen(trimmed); !env.empty()) {
+            // The whole environment, `\begin`/`\end` lines included, is the
+            // body -- unlike a delimiter pair there is nothing to re-wrap,
+            // it already compiles as written.
+            const std::string close = "\\end{" + env + "}";
+            if (trimmed.size() > close.size() &&
+                trimmed.compare(trimmed.size() - close.size(), close.size(), close) == 0) {
+                body = trimmed;
+                end_row = row;
+            } else {
+                std::string acc = line;
+                int j = row + 1;
+                while (j <= n && Trim(line_at(j)) != close) {
+                    acc += '\n';
+                    acc += line_at(j);
+                    j++;
+                }
+                if (j <= n) {
+                    acc += '\n';
+                    acc += line_at(j);
+                    body = acc;
+                    end_row = j;
+                }
+            }
+        }
+
+        if (body.empty()) {
+            row++;
+            continue;
+        }
+        out.blocks.push_back({row, end_row, body});
+        claim(row, end_row);
+        row = end_row + 1;
+    }
+
+    // Pass 2: the delimiter forms, one element at a time -- each maximal
+    // stretch of scannable rows that belong to the same element is
+    // flattened and scanned as a single string, which is what lets a
+    // fragment cross a line break without letting it cross anything else.
+    row = 1;
+    while (row <= n) {
+        if (!scannable[static_cast<size_t>(row)] || LatexBlankRow(line_at(row))) {
+            row++;
+            continue;
+        }
+        LatexScanRun run;
+        run.first_row = row;
+        auto take_row = [&]() {
+            if (!run.row_start.empty()) run.text += '\n';
+            run.row_start.push_back(run.text.size());
+            run.text += line_at(row);
+            row++;
+        };
+        // A standalone row is a run of exactly one: it is scanned, but
+        // nothing pairs across its edges.
+        const bool standalone = LatexStandaloneRow(line_at(row));
+        take_row();
+        if (!standalone) {
+            while (row <= n && scannable[static_cast<size_t>(row)] && !LatexBlankRow(line_at(row)) &&
+                   !LatexStandaloneRow(line_at(row))) {
+                take_row();
+            }
+        }
+
+        size_t i = 0;
+        while (i < run.text.size()) {
+            const size_t frag_end = LatexFragmentEnd(run.text, i);
+            if (frag_end == 0) {
+                i++;
+                continue;
+            }
+            const int start_row = LatexRunRow(run, i);
+            const int stop_row = LatexRunRow(run, frag_end - 1);
+            const size_t start_base = run.row_start[static_cast<size_t>(start_row - run.first_row)];
+            const size_t stop_base = run.row_start[static_cast<size_t>(stop_row - run.first_row)];
+            const int col_start = static_cast<int>(i - start_base) + 1;
+            const int col_end = static_cast<int>(frag_end - stop_base) + 1;
+            // A fragment with nothing but whitespace outside it on its
+            // first and last row is a block: the preview replaces those
+            // rows with the render, so a display equation is not squeezed
+            // into a line of prose's worth of height. Anything else shares
+            // its rows with text and is drawn into its own columns.
+            const bool starts_row = Trim(line_at(start_row).substr(0, static_cast<size_t>(col_start) - 1)).empty();
+            const bool ends_row = Trim(line_at(stop_row).substr(static_cast<size_t>(col_end) - 1)).empty();
+            if (starts_row && ends_row) {
+                out.blocks.push_back({start_row, stop_row, run.text.substr(i, frag_end - i)});
+            } else {
+                OrgLatexInlineFragment frag;
+                frag.body = run.text.substr(i, frag_end - i);
+                for (int r = start_row; r <= stop_row; r++) {
+                    const int cs = (r == start_row) ? col_start : 1;
+                    const int ce = (r == stop_row) ? col_end : static_cast<int>(line_at(r).size()) + 1;
+                    frag.parts.push_back({r, cs, ce});
+                }
+                out.inlines.push_back(std::move(frag));
+            }
+            i = frag_end;
+        }
+    }
+
+    // Pass 2 walks paragraphs, pass 1 walked rows, so the two lists have to
+    // be merged back into document order for the callers that care (the
+    // preview's fold provider, and every test below that reads blocks[0]).
+    std::stable_sort(out.blocks.begin(), out.blocks.end(),
+                     [](const OrgLatexBlockFragment &a, const OrgLatexBlockFragment &b) {
+                         return a.start_row < b.start_row;
+                     });
+    return out;
+}
+
+// --- Literal (non-prose) regions (OrgLiteralSpans) -----------------------
+
+namespace {
+
+// The greater-block types whose contents are literal rather than prose.
+// `quote`, `verse`, `center`, `abstract` and any other block are prose and
+// are deliberately absent: fencing text does not stop it being text.
+const char *const kOrgLiteralBlocks[] = {"src", "example", "export"};
+
+/**
+ * @brief If a line opens a literal greater block, returns its type lowercased.
+ * @param line The line to check.
+ * @return "src", "example", "export", or "" when the line opens no literal block.
+ */
+std::string OrgLiteralBlockOpen(const std::string &line) {
+    static const std::string kBegin = "begin_";
+    if (!LatexKeywordLine(line, kBegin)) return "";
+    const std::string t = Trim(line);
+    const size_t name_start = kBegin.size() + 2;
+    size_t i = name_start;
+    while (i < t.size() && (std::isalnum(static_cast<unsigned char>(t[i])) || t[i] == '-')) i++;
+    const std::string name = LowerAscii(t.substr(name_start, i - name_start));
+    for (const char *lit : kOrgLiteralBlocks) {
+        if (name == lit) return name;
+    }
+    return "";
+}
+
+// A fixed-width row: org's literal-output element, written as a line whose
+// first non-blank is a colon followed by a space (or nothing at all). The
+// space is what tells it apart from a drawer line such as `:PROPERTIES:`.
+/** @brief Reports whether a row is an org fixed-width (literal output) row. */
+bool OrgFixedWidthRow(const std::string &line) {
+    const std::string t = Trim(line);
+    return t == ":" || (t.size() >= 2 && t[0] == ':' && t[1] == ' ');
+}
+
+/**
+ * @brief Appends every inline `=verbatim=`/`~code~` span on a row.
+ * @param line The row's text.
+ * @param row The row's 1-based number.
+ * @param out Receives one span per code object found.
+ *
+ * Org's own rule for these two markers, kept deliberately narrow because a
+ * bare `=` and a bare `~` are both ordinary characters: the opening marker
+ * is preceded by the start of the line or by whitespace or opening
+ * punctuation, the closing one is followed by the end of the line or by
+ * whitespace or closing punctuation, and neither the character just inside
+ * the markers may be whitespace. Anything looser turns `x = y` and a
+ * `~/path` into code.
+ */
+void AddOrgCodeSpans(const std::string &line, int row, std::vector<OrgLiteralSpan> *out) {
+    static const std::string kPre = " \t-(['\"{";
+    static const std::string kPost = " \t-.,:!?;')\"}[";
+    const size_t n = line.size();
+    size_t i = 0;
+    while (i < n) {
+        const char marker = line[i];
+        if (marker != '=' && marker != '~') {
+            i++;
+            continue;
+        }
+        const bool pre_ok = (i == 0) || kPre.find(line[i - 1]) != std::string::npos;
+        const char inside = (i + 1 < n) ? line[i + 1] : '\0';
+        if (!pre_ok || inside == '\0' || std::isspace(static_cast<unsigned char>(inside))) {
+            i++;
+            continue;
+        }
+        size_t close = std::string::npos;
+        for (size_t s = i + 1; s < n; s++) {
+            if (line[s] != marker) continue;
+            if (std::isspace(static_cast<unsigned char>(line[s - 1]))) continue;
+            const char after = (s + 1 < n) ? line[s + 1] : '\0';
+            if (after != '\0' && kPost.find(after) == std::string::npos) continue;
+            close = s;
+            break;
+        }
+        if (close == std::string::npos) {
+            i++;
+            continue;
+        }
+        out->push_back({row, static_cast<int>(i) + 1, static_cast<int>(close) + 2});
+        i = close + 1;
+    }
+}
+
+}  // namespace
+
+std::vector<OrgLiteralSpan> OrgLiteralSpans(const std::vector<std::string> &lines) {
+    std::vector<OrgLiteralSpan> out;
+    const int n = static_cast<int>(lines.size());
+    auto whole_row = [&](int row) {
+        out.push_back({row, 1, static_cast<int>(lines[static_cast<size_t>(row - 1)].size()) + 1});
+    };
+    int row = 1;
+    while (row <= n) {
+        const std::string &line = lines[static_cast<size_t>(row - 1)];
+        if (!OrgLiteralBlockOpen(line).empty()) {
+            // The `#+end_` row closes it, whatever its name -- an org file
+            // with mismatched markers is already broken, and treating the
+            // first `#+end_` as the close is what every other block walk in
+            // mep does. An unterminated block runs to the end of the
+            // document, which is also what it looks like on screen.
+            whole_row(row);
+            int j = row + 1;
+            while (j <= n && !LatexBlockMarker(lines[static_cast<size_t>(j - 1)], "end_")) {
+                whole_row(j);
+                j++;
+            }
+            if (j <= n) whole_row(j);
+            row = j + 1;
+            continue;
+        }
+        if (OrgFixedWidthRow(line)) {
+            whole_row(row);
+            row++;
+            continue;
+        }
+        AddOrgCodeSpans(line, row, &out);
+        row++;
     }
     return out;
 }

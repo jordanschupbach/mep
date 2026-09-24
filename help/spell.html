@@ -15,6 +15,23 @@
 <h1>The squiggle</h1>
 <p>Misspelled words get a red underline, drawn through the same <a href="highlight-groups.html">decoration</a>
 pipeline as syntax and diagnostics.</p>
+<p>Prose filetypes are checked automatically (<code>.org</code>, <code>.md</code>, <code>.txt</code>, <code>.tex</code>,
+<code>.rst</code> and friends, plus any file with no extension at all); code buffers
+are not, so identifiers are not flagged wholesale. <code>&lt;leader&gt;zt</code> turns it on
+for the current buffer whatever its type.</p>
+<h1>What is not checked in an org file</h1>
+<p>An org document is prose <b>and</b> code, so the code is left alone. No squiggle
+is drawn -- and none of the bulk actions below touch anything -- inside:</p>
+<ul>
+<li>a <code>#+begin_src</code>, <code>#+begin_example</code> or <code>#+begin_export</code> block, the <code>#+begin_=/=#+end_</code> lines included, since those carry a language and header arguments rather than words;</li>
+<li>a fixed-width <code>: = line, which is the shape a =#+RESULTS:</code> block takes;</li>
+<li>an inline <code>verbatim</code> or <code>code</code> span (written <code>\=like this\=</code> or <code>~like this~</code>).</li>
+</ul>
+<p>A <code>#+begin_quote</code>, <code>#+begin_verse</code> or <code>#+begin_abstract</code> block <b>is</b> checked:
+fencing prose does not stop it being prose.</p>
+<p>The point is that no dictionary was ever going to accept
+<code>iris$Sepal.Length</code>. Flagging it costs you the signal from the real typo two
+lines up, which is the whole reason to have a squiggle at all.</p>
 <h1>The keys</h1>
 <p>Everything is on the <code>&lt;leader&gt;z</code> group, and it works in Visual mode too.</p>
 <table>
@@ -28,7 +45,16 @@ pipeline as syntax and diagnostics.</p>
 <tr><td><code>&lt;leader&gt;zw</code></td><td>mark the word wrong</td></tr>
 </table>
 <p><code>&lt;leader&gt;zf</code> is the fast path when the intended word is obvious; <code>zs</code> is for
-when it is not.</p>
+when it is not. In Visual mode <code>zf</code> corrects every flagged word in the
+selection in one step -- a selection that runs across a code block corrects
+the prose and leaves the code as it stands.</p>
+<p><code>zn</code> and <code>zp</code> visit exactly the words that are underlined, so they never
+park the cursor inside a code block either, and <code>zf</code> only ever corrects a
+word that <b>is</b> underlined -- put the cursor on an identifier in a code block
+and it reports nothing to fix rather than quietly rewriting your code.</p>
+<p><code>zs</code>, <code>zg</code> and <code>zw</code> are the exceptions, and deliberately so: those aim at
+whatever word you put the cursor on, code or not, because adding a project's
+jargon to your dictionary is a reason to go looking for it.</p>
 <h1>Your dictionary</h1>
 <p><code>&lt;leader&gt;zg</code> adds a word permanently, so a project's jargon stops being
 flagged. <code>&lt;leader&gt;zw</code> does the opposite, marking a word wrong even though

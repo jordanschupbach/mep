@@ -48,6 +48,37 @@ after load.</p>
 with checkbox and submit default actions -- and a cancelled click on a link
 is not followed. Clicking a text field gives it the keyboard: typing raises
 <code>input</code>, <code>Enter</code> submits the form, and <code>Esc</code> or <code>Tab</code> leaves the field.</p>
+<h1>Maths</h1>
+<p>A page's LaTeX maths is typeset in the pane, with no JavaScript and nothing
+fetched: the parser pulls <code>$...$</code>, <code>$$...$$</code>, <code>\(...\)</code> and <code>\[...\]</code> spans
+out of the page's prose -- skipping <code>&lt;script&gt;</code>, <code>&lt;style&gt;</code>, <code>&lt;pre&gt;</code>, <code>&lt;code&gt;</code>
+and <code>&lt;textarea&gt;</code>, the same list MathJax skips -- and mep's own small TeX
+engine lays each one out. A span on its own line is centred as display
+maths; one inside a sentence is set inline with the text.</p>
+<p>So a MathJax-targeting page (org-mode's HTML export, most course notes)
+renders its formulae here even offline, and a page that ships MathJax gets
+the same result without running it.</p>
+<p>Equations are set in a serif with real italics -- variables and lowercase
+Greek slant, digits, operators and <code>\text</code> runs stand upright -- and an
+inline fragment sits on the same baseline as the words around it.</p>
+<p>It covers superscripts and subscripts (with TeX's own script/scriptscript
+sizing), <code>\frac</code>, <code>\binom</code> and plain TeX's <code>\over</code>, <code>\sqrt</code>, big
+operators that grow in display maths and take their limits over and under
+(<code>\sum</code>, <code>\prod</code>, <code>\lim</code>), <code>\left=/=\right</code> fences that stretch to
+whatever they wrap, radicals drawn to fit their radicand, accents
+(<code>\hat</code>, <code>\bar</code>, <code>\vec</code>, <code>\overline</code>), the upright operator names
+(<code>\sin</code>, <code>\log</code>, <code>\max</code>), <code>\mathrm=/=\mathbf=/=\mathbb</code> and the other
+font commands, <code>\text</code> with its spaces intact, several hundred symbols,
+the matrix environments (<code>pmatrix</code>, <code>bmatrix</code>, <code>cases</code>, <code>aligned</code> and
+friends), the spacing commands (<code>\,=, =\;</code>, <code>\quad</code>), and TeX's own
+inter-atom spacing and unary-sign rules -- so
+<code>\int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}</code> reads as that formula.</p>
+<p>It is still not TeX: there is no kerning or italic-correction table, no
+line breaking inside an expression, no <code>\newcommand</code>, and the rows of an
+<code>align</code> are set independently rather than aligned to each other. A symbol
+neither embedded font has a glyph for, and any unknown command, shows its
+own name rather than vanishing -- so a page using something unsupported is
+legible rather than silently wrong.</p>
 <h1>How much of a browser is it?</h1>
 <p>Measured, not claimed -- see <a href="web-ladder.html">Measuring the engine</a>.</p>
 <h1>See also</h1>

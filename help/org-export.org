@@ -57,11 +57,14 @@ aliases. A bare =:MepOrgExportOpen= with no argument uses the same keyword.
 ,#+AUTHOR: Your name
 ,#+DATE: 2026-09-20
 ,#+HTML_HEAD: <link rel="stylesheet" href="custom.css">
+,#+HTML_MATHJAX: nil
 #+end_src
 
 =#+HTML_HEAD:= lines are inserted into the exported =<head>=, after the
 generated stylesheet, so a page can override the defaults rather than only
 add to them. It is repeatable.
+
+=#+HTML_MATHJAX: nil= suppresses the MathJax loader described below.
 
 * HTML
 
@@ -70,6 +73,29 @@ stylesheet. Code blocks are syntax-highlighted with a copy button, and
 tables become real HTML tables.
 
 This manual is built with it -- see [[file:writing-help.html][Writing help pages]].
+
+** Maths in the exported page
+
+A document with maths in it gets a MathJax loader in its =<head>=, so
+=$\alpha$= arrives as a formula in a browser instead of as four
+characters. Only a document that really has maths gets it: code blocks are
+excluded from the search first, so an R block full of =iris$Sepal.Length=
+does not count, and neither does a price of =$5= in a sentence.
+
+The loader adds =$...$= to MathJax's default set of inline delimiters
+(=\(...\)=, =$$...$$= and =\[...\]= are on by default), because that is the
+form org files are usually written in. Two things follow from it:
+
+- The page fetches MathJax from a CDN, so it needs a network connection to
+  typeset. =#+HTML_MATHJAX: nil= turns it off for an export that has to
+  work offline or that is going somewhere with its own typesetter.
+- Since =$...$= is enabled, a stray lone =$= in the same document's prose
+  can be read as the start of a formula by MathJax, which is the usual
+  cost of that delimiter. Write =\(...\)= if a document mixes maths and
+  literal dollar signs.
+
+None of this applies to reading the page *in mep*, which needs no
+JavaScript for maths at all -- see [[file:browser.html][the browser]].
 
 * PDF, LaTeX and ODT
 

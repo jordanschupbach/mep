@@ -440,6 +440,7 @@ add_library(mep_core STATIC
     src/cpp_format.cpp
     src/maxima_format.cpp
     src/maxima_ast.cpp
+    src/math_tex.cpp
     src/workspace_git.cpp
     ${MEP_GFX_NATIVE_SOURCES}
 )
@@ -854,6 +855,15 @@ target_link_options(mep-web-ladder-test PRIVATE ${MEP_SANITIZE_FLAGS})
 find_package(Threads REQUIRED)
 target_link_libraries(mep-web-ladder-test PRIVATE Threads::Threads)
 add_dependencies(tests mep-web-ladder-test)
+
+# mep's LaTeX-math parser (src/math_tex.cpp) -- the pure half of the math
+# engine behind org/HTML `$..$` spans, split out of main.cpp precisely so it
+# could be tested: the layout half needs font metrics, this half does not.
+add_executable(mep-math-tex-test EXCLUDE_FROM_ALL src/math_tex_test.cpp src/math_tex.cpp)
+target_include_directories(mep-math-tex-test PRIVATE src)
+target_compile_options(mep-math-tex-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-math-tex-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-math-tex-test)
 
 add_executable(mep-org-doc-test EXCLUDE_FROM_ALL src/org_doc_test.cpp src/org_doc.cpp)
 target_include_directories(mep-org-doc-test PRIVATE src)

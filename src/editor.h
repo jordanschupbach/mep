@@ -927,6 +927,19 @@ struct Buffer {
     // global ones (:wa, the :qa guard) deliberately don't.
     int workspace_id = -1;
 
+    // The absolute directory a relative `filename` is relative TO: the
+    // process cwd at the moment the buffer was created (CreateEmptyBuffer
+    // / FindOrCreateBuffer). Buffer::filename is stored exactly as the file was
+    // reached (DisplayPathForBuffer's own comment), so `:e notes/x.org`
+    // leaves a name that only means anything against the directory mep was
+    // sitting in then -- and ChdirToActiveRoot moves that on every
+    // workspace switch. Recorded once so BufferAbsolutePath (and through
+    // it every org path: inline images, [[file:...]] links, :file/:dir/
+    // :tangle targets, #+INCLUDE:, export output) keeps resolving against
+    // the document's real location rather than the newest project's root.
+    // Empty when unknown, in which case the workspace root / cwd is used.
+    std::string base_dir;
+
     std::vector<std::vector<std::string>> undo_stack;
     std::vector<std::vector<std::string>> redo_stack;
 
@@ -1072,7 +1085,11 @@ struct Buffer {
     // A span whose texture hasn't baked yet gets no run and keeps showing
     // its raw source, as does a table cell with no slack to give back
     // before its `|` (that one falls back to painting a background-color
-    // cover over the markup). Populated by
+    // cover over the markup). An *empty* path is a span to conceal and
+    // not draw: a fragment that wraps across a line break has one span
+    // per row it touches but only one render, which goes on the row the
+    // fragment started on, so the continuation rows' source is collapsed
+    // to nothing rather than left showing as leftover TeX. Populated by
     // mep_org_latex_register_inline (kBuiltinOrgLatex), only while the
     // toggle is on (see org_latex_rows' own comment for why that's a hard
     // requirement here, not just a nicety -- unlike that field this one
@@ -3617,9 +3634,10 @@ public:
     // *which* buffers need saving instead of leaving the user to hunt for
     // a [+] marker. Empty string when there are none.
     std::string WorkspaceModifiedBufferNames(int id) const;
-    // A relative buffer path resolved against the buffer's own workspace
-    // root when that workspace isn't the active one (whose root is the
-    // process cwd already); absolute paths and unscoped buffers pass through.
+    // A relative buffer path resolved against the directory the buffer was
+    // reached from (Buffer::base_dir), else against its own workspace root
+    // when that workspace isn't the active one; absolute paths and buffers
+    // with neither pass through.
     std::string ResolveBufferPath(const Buffer &buf, const std::string &path) const;
     // Bumped on every switch/create/delete/rename so Lua's
     // mep.on_workspace_changed can poll it (same idiom as
@@ -6327,12 +6345,49 @@ public:
      * @param todo_keywords The configured TODO keywords used to identify headlines.
      */
     void OrgDrillGrade(int row, int quality, const std::vector<std::string> &todo_keywords);
+    // A buffer's own absolute path: its filename when that is already
+    // absolute, else resolved against the directory it was reached from
+    // (Buffer::base_dir), then the buffer's *own* workspace root
+    // (ResolveBufferPath's rule -- see its comment), and only then the
+    // process cwd. Deliberately not LspAbspath, which always uses the
+    // process cwd: ChdirToActiveRoot moves that on every workspace switch,
+    // so a document opened by a relative name would otherwise start
+    // resolving its own relative paths against whichever project became
+    // active last.
+    /**
+     * @brief Returns a buffer's absolute filesystem path, resolving a relative name against the directory it was reached from.
+     * @param buf The buffer whose path to resolve.
+     * @return The absolute path, or the raw filename if no base directory could be determined.
+     */
+    std::string BufferAbsolutePath(const Buffer &buf) const;
+    // The directory the current document lives in -- the one org resolves
+    // every relative path against (inline images, [[file:...]] links,
+    // :file/:dir/:tangle header args, #+INCLUDE:, export output). Bare Lua
+    // global mep_org_doc_dir() for the same reason as mep_org_resolve_path
+    // below: several separate kBuiltin* DoString chunks need it.
+    /**
+     * @brief Returns the absolute directory containing the current buffer's file.
+     * @return The directory path with no trailing slash ("/" for a file at the root), or "" if unknown.
+     */
+    std::string OrgDocumentDir() const;
+    // The extension-less absolute path everything derived FROM the current
+    // document is written to: its own directory (OrgDocumentDir) plus its
+    // own basename with a trailing ".org" removed -- an export's .html/
+    // .tex/.pdf/.odt, `mep.org_archive`'s _archive.org. Absolute, because
+    // a relative one means one directory to io.open (mep's cwd) and a
+    // different one to a job started in the document's directory (what
+    // tectonic is handed), which only ever agreed by accident.
+    /**
+     * @brief Returns the current document's absolute path with a trailing ".org" removed.
+     * @return The extension-less absolute base path.
+     */
+    std::string OrgDocumentBase() const;
     // mep_org_resolve_path's own port (LUA_TO_CPP_PLAN.md Phase 5):
     // resolves a link/header-arg path against the org file's own
-    // directory (LspAbspath(mep.filename())-derived), unless already
-    // absolute (a leading '/') or ~-relative. Bare Lua global for the
-    // same reason as Org-0/mep_lsp_*: kBuiltinOrgBabel (a separate
-    // DoString chunk) reuses it for :file/:tangle header-arg resolution.
+    // directory (OrgDocumentDir), unless already absolute (a leading '/')
+    // or ~-relative. Bare Lua global for the same reason as
+    // Org-0/mep_lsp_*: kBuiltinOrgBabel (a separate DoString chunk)
+    // reuses it for :file/:tangle header-arg resolution.
     /**
      * @brief Resolves a link/header-arg path against the current org file's own directory.
      * @param path The path to resolve (already-absolute or ~-relative paths pass through unchanged).
@@ -6554,36 +6609,20 @@ public:
      */
     int OrgRefileMove(int target_row, const std::vector<std::string> &todo_keywords);
     // kBuiltinOrgLatex's own fragment-detection port (LUA_TO_CPP_PLAN.md
-    // Phase 5): finds every whole-line/whole-block LaTeX fragment
-    // (#+BEGIN_LATEX/#+BEGIN_SRC latex blocks, \[..\]/$$..$$/\(..\) --
-    // single-line or multi-line -- and a bare single-line $..$) plus,
-    // on any line that isn't wholly one of those, every *inline*
-    // fragment embedded within it ("the value $x^2$ matters here").
-    // Pure buffer-scan -- deliberately does *not* cover the actual
-    // render pipeline (mep_org_latex_render's tectonic-compile ->
-    // pdftoppm-rasterize -> cache -> callback chain, main.cpp): that's
-    // a substantial async job-orchestration-and-caching subsystem in
-    // its own right, out of proportion to port opportunistically here.
-    struct OrgLatexBlock {
-        int start_row = 0;  // 1-indexed
-        int end_row = 0;    // 1-indexed, inclusive
-        std::string body;
-    };
-    struct OrgLatexInlineSpan {
-        int row = 0;        // 1-indexed
-        int col_start = 0;  // 1-indexed, inclusive
-        int col_end = 0;    // 1-indexed, exclusive
-        std::string body;
-    };
-    struct OrgLatexScanResult {
-        std::vector<OrgLatexBlock> blocks;
-        std::vector<OrgLatexInlineSpan> inlines;
-    };
+    // Phase 5). The scan itself lives in org_doc.cpp (OrgLatexScan) --
+    // it is pure line analysis, so it belongs with the rest of the org
+    // document model, where mep-org-doc-test can reach it; this is the
+    // one-line "run it over the current buffer" wrapper.
+    // Deliberately does *not* cover the actual render pipeline
+    // (mep_org_latex_render's tectonic-compile -> pdftoppm-rasterize ->
+    // cache -> callback chain, main.cpp): that's a substantial async
+    // job-orchestration-and-caching subsystem in its own right, out of
+    // proportion to port opportunistically here.
     /**
-     * @brief Scans the current buffer for whole-block and inline LaTeX fragments.
-     * @return Every LaTeX block and inline span found in the buffer.
+     * @brief Scans the current buffer for whole-row and prose-embedded LaTeX fragments.
+     * @return Every LaTeX fragment found in the buffer (see OrgLatexScan, org_doc.h).
      */
-    OrgLatexScanResult OrgLatexScanFragments() const;
+    OrgLatexFragments OrgLatexScanFragments() const;
     // kBuiltinOrgBib's own hand-rolled BibTeX parser port
     // (LUA_TO_CPP_PLAN.md Phase 5): mep_org_bib_split_top_level/
     // mep_org_bib_expand_value/mep_org_bib_parse/
@@ -7968,6 +8007,14 @@ public:
     // top suggestion, in one undo step; returns how many were changed. A no-op
     // (returns 0) if there is no selection or the checker isn't ready.
     int FixSpellingInVisualSelection();
+    // The buffer's literal (non-prose) spans -- an org buffer's code
+    // blocks, literal-output rows and inline `=verbatim=`/`~code~` spans
+    // (OrgLiteralSpans, org_doc.h). Empty for every other filetype, so
+    // nothing else pays for the scan. Read by every spell path that acts
+    // in bulk rather than on a word the user pointed at: the squiggle
+    // pass and the misspelling jumps (via mep.org_literal_spans,
+    // kBuiltinSpell) and the fix-the-whole-selection command below.
+    std::vector<OrgLiteralSpan> BufferLiteralSpans() const;
     // Replaces the misspelled word under the cursor with its top suggestion,
     // in one undo step; returns 1 if a word was changed, else 0.
     int FixSpellingWordUnderCursor();
@@ -11103,7 +11150,7 @@ private:
     bool spell_enabled_ = true;
     // Corrects misspellings whose start is in [a, b) on `row` (caller pushes
     // one undo entry first). Shared by the two public fix helpers.
-    int FixSpellingInLineSpan(int row, int a, int b);
+    int FixSpellingInLineSpan(int row, int a, int b, const std::vector<OrgLiteralSpan> &literal);
 
     // Theme engine state. current_theme_groups_ is rebuilt (BuildHighlightGroups
     // in editor.cpp) whenever ApplyTheme() succeeds; main.cpp's ResolveHlGroup

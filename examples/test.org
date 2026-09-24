@@ -6,7 +6,9 @@ Now, here's some latex in a block:
 \int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
 \]
 
-#+begin_src R -n :results graphics :file ./test.png :exports results :width 800 :height  600
+* R
+
+#+begin_src R -n :results graphics :file ./test.png :exports both :width 800 :height  600
 library(splines)
 n <- 1000
 x <- runif(n, 0, 1)
@@ -32,6 +34,7 @@ lines(xseq, yhat, col = "red", lwd = 2)
 #+RESULTS:
 [[file:./test.png]]
 
+* Python
 
 #+begin_src python -n
 print("Hello, world")
@@ -49,22 +52,12 @@ Iteration 3
 Iteration 4
 #+end_example
 
+* Maxima
 
-#+begin_src maxima :results value 
+#+begin_src maxima :results verbatim 
 tex(integrate(x^2+y^2, x));
-tex(integrate(e^{-x^2}, x, -inf, inf));
 #+end_src
 #+RESULTS:
-#+begin_example
 $$x\,y^2+{{x^3}\over{3}}$$
-false
-$$\int_{-\infty }^{\infty }{e^{\left \{-x^2 \right \}}\;dx}$$
-nil 
-#+end_example
-
-$$\int  \, x^2 + y^2 dx = x\,y^2+{{x^3}\over{3}} + C$$
-
 
 $$\int_{-\infty }^{\infty }{e^{\left \{-x^2 \right \}}\;dx}$$
-
-

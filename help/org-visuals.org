@@ -38,6 +38,15 @@ figure the same way, three lines to a notch. A counted motion (=10j=), an
 operator (=dj=), Visual mode and the explicit scroll commands (=Ctrl-D=,
 =zz=, =zt=, =zb=) all treat a figure as the single row it is.
 
+A relative target is resolved against the *org file's own directory*, never
+against mep's working directory: =[[file:diagram.png]]= in
+=~/notes/index.org= is =~/notes/diagram.png= however the file was reached
+(=:e notes/index.org= or a file-tree click) and whichever project or
+workspace is active. A target starting with =/= or =~/= is taken as
+written. The same rule governs every other path an org document names --
+=[[file:other.org]]= links, a block's =:file= / =:dir= / =:tangle=
+targets, =#+INCLUDE:=, and where an export writes its output.
+
 A link whose target is not on disk yet -- a plot a code block has still to
 produce -- stays plain text, and turns into the picture on the next edit
 after the file appears.
@@ -188,7 +197,38 @@ cursor entering it -- which is why an untouched block reads =idle=.
 | =:MepOrgLatexScan=        | rescan for fragments              |
 
 Fragments written =\(...\)=, =\[...\]=, =$...$= or =$$...$$= are rendered
-and drawn in place of the source. It works in =.tex= files as well as org.
+and drawn in place of the source, as are the display-math environments
+(=\begin{equation}=, =\begin{align}= and friends), a =#+begin_latex= block
+and a =#+begin_src latex= block. It works in =.tex= files as well as org.
+
+A fragment alone on its lines is drawn *as* those lines, at its own height,
+so a display equation gets the room it needs. One sharing a line with prose
+is drawn into its own columns instead, with the text around it closing up
+against it the way concealed markup does.
+
+A fragment may be written across a line break, which long equations and
+wrapped paragraphs both need:
+
+#+begin_src org
+,$$p(\theta \mid y) = \frac{p(y \mid \theta)\,p(\theta)}{p(y)}
+\propto p(y \mid \theta)\,p(\theta)$$
+
+points \(x_i \in
+\mathbb{R}^4\) lie in the plane
+#+end_src
+
+Both of those render as one fragment each. Where the fragment shares its
+rows with prose, the render is drawn on the row it starts on and the rest of
+its source is hidden -- one formula, drawn once. What a fragment may *not*
+cross is a blank line or a headline: those end the paragraph it belongs to,
+which is also what stops a single unbalanced =$$= from pulling the rest of
+the document into one image.
+
+A bare =$= is the one delimiter that is also punctuation, so it is read
+conservatively: no whitespace or sentence punctuation immediately inside
+either =$=, no digit right after the closing one (so "$5 and $10" stays
+prose), no =$= within the fragment itself, and at most one line break. The
+other three delimiters are unambiguous and carry none of those conditions.
 
 This is *on by default* too. Rendering shells out to =tectonic= and
 =pdftoppm= (both in the flake's dev shell); without them on =PATH= the

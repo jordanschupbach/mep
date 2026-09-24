@@ -15,6 +15,7 @@
 #include "svg_doc.h"
 #include "job.h"
 #include "lua_env.h"
+#include "math_tex.h"
 #include "org_doc.h"
 #include "tcp_client.h"
 #include "sheet_doc.h"
@@ -471,6 +472,21 @@ bool IsSymbolCodepoint(int cp) {
 // never has to change.
 gfx::Font g_math_font{};
 
+// The serif tier of the LaTeX-math typesetter, from the same embedded
+// Liberation faces the office panes use. Maths is set in a serif with real
+// italics -- which is what a reader recognises as an equation rather than
+// as a line of code -- so a variable draws from the italic face and an
+// operator, a digit or a \text run from the upright one, with g_math_font
+// above kept only as the fallback for the symbols Liberation Serif has no
+// glyph for (kMathSerifCodepoints says which is which). Baked once at
+// startup at a fixed oversampled size rather than per-zoom like
+// g_math_font: math font sizes come from the *document* (an HTML page's
+// CSS, an org heading's scale), not from the UI font size, so there is no
+// single size to track.
+gfx::Font g_math_serif_font{};
+gfx::Font g_math_serif_italic_font{};
+gfx::Font g_math_serif_bold_font{};
+
 // Greek letters (lower+upper) + a curated set of common LaTeX math
 // operators/relations/arrows, *beyond* the ASCII 32..126 range ApplyFontSize
 // prepends when baking g_math_font (below) -- covers \alpha.. \omega,
@@ -480,29 +496,40 @@ gfx::Font g_math_font{};
 // command falls back to showing its own name as plain text (see
 // LayoutMathCommand), a legible degradation rather than a missing glyph.
 constexpr int kMathCodepoints[] = {
-    // Greek lowercase alpha..omega (includes the rarely-used final-sigma).
-    0x3b1, 0x3b2, 0x3b3, 0x3b4, 0x3b5, 0x3b6, 0x3b7, 0x3b8, 0x3b9, 0x3ba, 0x3bb, 0x3bc, 0x3bd, 0x3be, 0x3bf, 0x3c0,
-    0x3c1, 0x3c2, 0x3c3, 0x3c4, 0x3c5, 0x3c6, 0x3c7, 0x3c8, 0x3c9,
-    // Greek uppercase Alpha..Omega.
-    0x391, 0x392, 0x393, 0x394, 0x395, 0x396, 0x397, 0x398, 0x399, 0x39a, 0x39b, 0x39c, 0x39d, 0x39e, 0x39f, 0x3a0,
-    0x3a1, 0x3a3, 0x3a4, 0x3a5, 0x3a6, 0x3a7, 0x3a8, 0x3a9,
-    // Operators/relations/misc.
-    0xd7, 0xf7, 0xb1, 0xb7, 0xb0, 0x2213, 0x2264, 0x2265, 0x2260, 0x2248, 0x2261, 0x223c, 0x221d, 0x221e, 0x2202,
-    0x2207, 0x2211, 0x220f, 0x222b, 0x221a, 0x2032, 0x2033, 0x2234, 0x2235, 0x22a5, 0x2225, 0x2218, 0x2297, 0x2295,
-    0x230a, 0x230b, 0x2308, 0x2309, 0x22ef, 0x2026,
-    // Arrows/logic/set theory.
-    0x2192, 0x2190, 0x2194, 0x21d2, 0x21d0, 0x21d4, 0x2200, 0x2203, 0x2208, 0x2209, 0x2282, 0x2286, 0x2283, 0x2287,
-    0x222a, 0x2229, 0x2205,
-    // kBuiltinSnippetHelp's cheatsheet glyph column (DrawUiText's math
-    // tier -- see IsMathCodepoint below): logic/rings, letterlike +
-    // double-struck sets, extra arrows/dots/marks. Every codepoint here
-    // was verified present in the embedded JetBrains Mono via fc-query
-    // on the extracted TTF (the font has NO \hbar \Re \Im \wp \aleph
-    // \setminus \angle \triangleq U+2AEB or the Mathematical
-    // Alphanumeric plane -- those rows stay name-only).
-    0xac, 0x2016, 0x2020, 0x2022, 0x2102, 0x2113, 0x2115, 0x211a, 0x211d, 0x2124,
-    0x2191, 0x2193, 0x21a6, 0x2223, 0x2227, 0x2228, 0x2254, 0x2296, 0x2299, 0x22a4,
-    0x22c2, 0x22c3, 0x22c6, 0x22ee, 0x22f1, 0x2dc,
+    0xa3, 0xa7, 0xa8, 0xa9, 0xac, 0xb0, 0xb1, 0xb4, 0xb6, 0xb7, 0xd7, 0xf7,
+    0x127, 0x2c7, 0x2d8, 0x2dc, 0x391, 0x393, 0x394, 0x398, 0x39b, 0x39e, 0x3a0, 0x3a3,
+    0x3a5, 0x3a6, 0x3a8, 0x3a9, 0x3b1, 0x3b2, 0x3b3, 0x3b4, 0x3b5, 0x3b6, 0x3b7, 0x3b8,
+    0x3b9, 0x3ba, 0x3bb, 0x3bc, 0x3bd, 0x3be, 0x3bf, 0x3c0, 0x3c1, 0x3c2, 0x3c3, 0x3c4,
+    0x3c5, 0x3c6, 0x3c7, 0x3c8, 0x3c9, 0x3d6, 0x2016, 0x2020, 0x2021, 0x2022, 0x2026, 0x2032,
+    0x2033, 0x2102, 0x210d, 0x2113, 0x2115, 0x2119, 0x211a, 0x211d, 0x2124, 0x2190, 0x2191, 0x2192,
+    0x2193, 0x2194, 0x2195, 0x2196, 0x2197, 0x2198, 0x2199, 0x21a6, 0x21a9, 0x21aa, 0x21d0, 0x21d2,
+    0x21d4, 0x2200, 0x2201, 0x2202, 0x2203, 0x2205, 0x2207, 0x2208, 0x2209, 0x220b, 0x220f, 0x2210,
+    0x2211, 0x2212, 0x2213, 0x2218, 0x2219, 0x221a, 0x221e, 0x2223, 0x2224, 0x2225, 0x2227, 0x2228,
+    0x2229, 0x222a, 0x222b, 0x2234, 0x2235, 0x223c, 0x2243, 0x2245, 0x2248, 0x224d, 0x2254, 0x2260,
+    0x2261, 0x2264, 0x2265, 0x226a, 0x226b, 0x227a, 0x227b, 0x2282, 0x2283, 0x2286, 0x2287, 0x2288,
+    0x228e, 0x2291, 0x2292, 0x2293, 0x2294, 0x2295, 0x2296, 0x2297, 0x2298, 0x2299, 0x22a2, 0x22a3,
+    0x22a4, 0x22a5, 0x22c2, 0x22c3, 0x22c4, 0x22c6, 0x22ee, 0x22ef, 0x22f1, 0x2308, 0x2309, 0x230a,
+    0x230b, 0x25a1, 0x25b3, 0x25b7, 0x25c1, 0x266d, 0x266f, 0x2713, 0x27e8, 0x27e9, 0x27f5, 0x27f6,
+    0x27f7,
+};
+
+// The subset of the same set that the embedded Liberation Serif faces
+// cover, and which the LaTeX-math typesetter therefore sets in serif
+// rather than in the JetBrains Mono fallback above (see MathGlyphFont).
+// Greek, the arrows, the common relations and the big operators are all
+// here; the set-theory and logic symbols mostly are not, which is exactly
+// why the fallback tier exists at all. Both lists were generated against
+// the embedded TTFs' own cmaps, so neither can name a glyph its font
+// hasn't got.
+constexpr int kMathSerifCodepoints[] = {
+    0xa3, 0xa7, 0xa8, 0xa9, 0xac, 0xb0, 0xb1, 0xb4, 0xb6, 0xb7, 0xd7, 0xf7,
+    0x127, 0x2c7, 0x2d8, 0x2dc, 0x391, 0x393, 0x394, 0x398, 0x39b, 0x39e, 0x3a0, 0x3a3,
+    0x3a5, 0x3a6, 0x3a8, 0x3a9, 0x3b1, 0x3b2, 0x3b3, 0x3b4, 0x3b5, 0x3b6, 0x3b7, 0x3b8,
+    0x3b9, 0x3ba, 0x3bb, 0x3bc, 0x3bd, 0x3be, 0x3bf, 0x3c0, 0x3c1, 0x3c2, 0x3c3, 0x3c4,
+    0x3c5, 0x3c6, 0x3c7, 0x3c8, 0x3c9, 0x3d1, 0x3d6, 0x5d0, 0x2016, 0x2020, 0x2021, 0x2022,
+    0x2026, 0x2032, 0x2033, 0x2113, 0x2190, 0x2191, 0x2192, 0x2193, 0x2194, 0x2195, 0x21d4, 0x2202,
+    0x220f, 0x2211, 0x2212, 0x2219, 0x221a, 0x221e, 0x2229, 0x222b, 0x2248, 0x2260, 0x2261, 0x2264,
+    0x2265, 0x25a1, 0x2660, 0x2663, 0x266f,
 };
 
 /**
@@ -2434,6 +2461,37 @@ void LoadOfficeFonts() {
                                        &g_office_font_mono_regular,  &g_office_font_mono_bold,
                                        &g_office_font_mono_italic,   &g_office_font_mono_bolditalic};
     for (const gfx::Font *f : all_office_fonts) gfx::SetTextureFilter(f->texture, gfx::TextureFilter::Bilinear);
+}
+
+// Bakes the three serif faces the LaTeX-math typesetter sets equations in
+// (see g_math_serif_font's own comment). Same one-shot-at-startup,
+// fixed-oversampled-size pattern as LoadOfficeFonts just above, and for
+// the same reason: nothing about these depends on the UI font size, so
+// there is no reload point to hang them off. ASCII plus only the math
+// codepoints Liberation Serif actually has -- a codepoint it lacks is
+// routed to g_math_font instead (MathGlyphFont), never baked as a box
+// here.
+/**
+ * @brief Bakes the three Liberation Serif faces (upright, italic, bold) used for LaTeX math.
+ */
+void LoadMathFonts() {
+    constexpr int kMathFontBasePt = 64;
+    constexpr int kSerifExtraCount = sizeof(kMathSerifCodepoints) / sizeof(kMathSerifCodepoints[0]);
+    constexpr int kCodepointCount = 95 + kSerifExtraCount;
+    static int codepoints[kCodepointCount];
+    for (int c = 32; c <= 126; c++) codepoints[c - 32] = c;
+    for (int i = 0; i < kSerifExtraCount; i++) codepoints[95 + i] = kMathSerifCodepoints[i];
+    g_math_serif_font = gfx::LoadFontFromMemory(".ttf", kLiberationSerifRegularTtf,
+                                                static_cast<int>(kLiberationSerifRegularTtfLen), kMathFontBasePt,
+                                                codepoints, kCodepointCount);
+    g_math_serif_italic_font = gfx::LoadFontFromMemory(".ttf", kLiberationSerifItalicTtf,
+                                                       static_cast<int>(kLiberationSerifItalicTtfLen), kMathFontBasePt,
+                                                       codepoints, kCodepointCount);
+    g_math_serif_bold_font = gfx::LoadFontFromMemory(".ttf", kLiberationSerifBoldTtf,
+                                                     static_cast<int>(kLiberationSerifBoldTtfLen), kMathFontBasePt,
+                                                     codepoints, kCodepointCount);
+    const gfx::Font *const faces[] = {&g_math_serif_font, &g_math_serif_italic_font, &g_math_serif_bold_font};
+    for (const gfx::Font *f : faces) gfx::SetTextureFilter(f->texture, gfx::TextureFilter::Bilinear);
 }
 
 // Which of the 12 baked fonts (3 families x 4 weight/style) a run of text
@@ -11862,15 +11920,48 @@ const char *kBuiltinSpell =
     "    if we >= ws then fn(line:sub(ws, we), ws, we) end\n"
     "  end\n"
     "end\n"
+    // The columns no squiggle may land on: in an org buffer everything
+    // literal -- `#+begin_src`/`example`/`export` blocks, fixed-width
+    // `: ` output rows, and inline `=verbatim=`/`~code~` spans (see
+    // OrgLiteralSpans, org_doc.h). Identifiers are not words, and no
+    // dictionary is ever going to make `iris$Sepal.Length` or
+    // `=weighted_mean_of()=` spell correctly, so the answer is not to
+    // flag them and lose. mep.org_literal_spans answers empty for any
+    // other filetype, so this costs a prose buffer one call.
+    //
+    // Keyed by row into an array of spans, because the squiggle pass and
+    // both jumps below each walk every row and would otherwise re-scan
+    // the whole list per word.
+    "local function mep_spell_skip_index()\n"
+    "  local rows = {}\n"
+    "  for _, sp in ipairs(mep.org_literal_spans()) do\n"
+    "    local at = rows[sp.row]\n"
+    "    if not at then at = {} rows[sp.row] = at end\n"
+    "    at[#at + 1] = sp\n"
+    "  end\n"
+    "  return rows\n"
+    "end\n"
+    // `ws`/`we` are the word's own 1-indexed inclusive columns; a span's
+    // col_end is exclusive. Any overlap at all disqualifies the word --
+    // half of one inside a code span is not a word either.
+    "local function mep_spell_skipped(rows, row, ws, we)\n"
+    "  local spans = rows[row]\n"
+    "  if not spans then return false end\n"
+    "  for _, sp in ipairs(spans) do\n"
+    "    if ws < sp.col_end and we + 1 > sp.col_start then return true end\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
     "function mep.spell_highlight()\n"
     "  if not mep_spell_ns then mep_spell_ns = mep.ns_create('spell') end\n"
     "  mep.ns_clear(mep_spell_ns)\n"
     "  if not mep_spell_active_here() then return end\n"
+    "  local skip = mep_spell_skip_index()\n"
     "  local n = mep.line_count()\n"
     "  for row = 1, n do\n"
     "    local line = mep.get_line(row) or ''\n"
     "    mep_spell_each_word(line, function(word, ws, we)\n"
-    "      if mep.spell_bad(word) then\n"
+    "      if mep.spell_bad(word) and not mep_spell_skipped(skip, row, ws, we) then\n"
     "        mep.deco_add(mep_spell_ns, {row=row, col_start=ws, col_end=we+1, hl_group='SpellBad', underline=true})\n"
     "      end\n"
     "    end)\n"
@@ -11933,11 +12024,16 @@ const char *kBuiltinSpell =
     "  if not mep.spell_ready() then return end\n"
     "  local crow, ccol = mep.cursor()\n"
     "  local n = mep.line_count()\n"
+    "  local skip = mep_spell_skip_index()\n"
     "  local hits = {}\n"
     "  for row = 1, n do\n"
     "    local line = mep.get_line(row) or ''\n"
     "    mep_spell_each_word(line, function(word, ws, we)\n"
-    "      if mep.spell_bad(word) then hits[#hits + 1] = {row = row, col = ws} end\n"
+    // The same spans the squiggles honour: a jump that stopped on a word
+    // nothing had underlined would just look broken.
+    "      if mep.spell_bad(word) and not mep_spell_skipped(skip, row, ws, we) then\n"
+    "        hits[#hits + 1] = {row = row, col = ws}\n"
+    "      end\n"
     "    end)\n"
     "  end\n"
     "  if #hits == 0 then mep.notify('Spell: no misspellings'); return end\n"
@@ -14247,7 +14343,7 @@ const char *kBuiltinOrgCapture =
     "  local lines = {}\n"
     "  for i = row, e - 1 do lines[#lines + 1] = mep.get_line(i) end\n"
     "  local src_file = mep.filename()\n"
-    "  local archive_file = (src_file:gsub('%.org$', '')) .. '_archive.org'\n"
+    "  local archive_file = mep_org_doc_base() .. '_archive.org'\n"
     "  local out = {lines[1],\n"
     "    '  :PROPERTIES:',\n"
     "    '  :ARCHIVE_TIME: ' .. os.date('%Y-%m-%d %a %H:%M'),\n"
@@ -14530,6 +14626,44 @@ const char *kBuiltinOrgBabel =
     "  return out\n"
     "end\n"
     "\n"
+    // The words of a list-valued header argument whose value may name a
+    // program to ask for them: `:flags $(pkg-config --cflags datamunge)`.
+    // Babel builds argv itself and hands it to mep.job_start, which
+    // execs it directly -- there is no shell anywhere in that chain, so
+    // without this pass the compiler is literally given the four words
+    // `$(pkg-config`, `--cflags`, `datamunge)`. mep.org_shell_expand
+    // (OrgExpandShellSubstitutions, org_doc.cpp) runs the substitutions
+    // in `cwd`, which is the block's own run directory, so a
+    // substitution may name a relative path exactly as the block's own
+    // code would.
+    //
+    // `cached` is for the LSP side alone (mep_polyglot_write_compile_db,
+    // below): that runs on every buffer change, and re-running
+    // pkg-config per keystroke is not acceptable. The execution path
+    // never caches -- a `:cmdline $(date +%s)` must mean what it says on
+    // the run that reads it.
+    "mep_org_babel_shell_cache = {}\n"
+    "function mep_org_babel_shell_word_arg(args_str, key, cwd, cached)\n"
+    "  local out = {}\n"
+    "  local v = mep_org_babel_arg(args_str, key)\n"
+    "  if not v then return out end\n"
+    "  local expanded\n"
+    "  if cached then\n"
+    // Length-prefixed so a cwd ending in the separator cannot collide
+    // with a different cwd/value split of the same characters.
+    "    local ck = tostring(#(cwd or '')) .. ':' .. (cwd or '') .. v\n"
+    "    expanded = mep_org_babel_shell_cache[ck]\n"
+    "    if not expanded then\n"
+    "      expanded = mep.org_shell_expand(v, cwd)\n"
+    "      mep_org_babel_shell_cache[ck] = expanded\n"
+    "    end\n"
+    "  else\n"
+    "    expanded = mep.org_shell_expand(v, cwd)\n"
+    "  end\n"
+    "  for w in expanded:gmatch('%S+') do out[#out + 1] = w end\n"
+    "  return out\n"
+    "end\n"
+    "\n"
     "-- A `#+begin_src` that is itself a block's *results* (`:results code`\n"
     "-- writes one) is not a block to run, reference or name -- it is output.\n"
     "-- The `#+RESULTS:` keyword directly above it is what says so.\n"
@@ -14616,7 +14750,8 @@ const char *kBuiltinOrgBabel =
     "function mep_org_babel_results_text(blk)\n"
     "  local lines = {}\n"
     "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) or '' end\n"
-    "  local start_row, end_row = mep.org_find_results(lines, blk.end_row)\n"
+    "  local start_row, end_row = mep.org_find_results(lines, blk.end_row,\n"
+    "    mep.org_results_is_raw(blk.args_str or '', blk.lang or ''))\n"
     "  if not start_row then return nil end\n"
     "  local out = {}\n"
     "  for i = start_row + 1, end_row do\n"
@@ -14654,7 +14789,9 @@ const char *kBuiltinOrgBabel =
     "-- overrides (see the go/java entries below). wrap_main, when present, is\n"
     "-- applied only when mep_org_babel_should_wrap_main(lang_key, args) says so\n"
     "-- (an explicit :main yes/no header-arg, else each language's own default --\n"
-    "-- see MEP_ORG_BABEL_WRAP_DEFAULT below).\n"
+    "-- see MEP_ORG_BABEL_WRAP_DEFAULT below). body_filter(body_lines, args_str)\n"
+    "-- rewrites the body in the language's own terms before any of that runs\n"
+    "-- (maxima's is the only one -- see kBuiltinOrgBabelMaxima).\n"
     "L.lua = {\n"
     "  executable = 'lua', extension = '.lua',\n"
     "  var_stmt = function(n, l) return string.format('local %s = %s', n, l) end,\n"
@@ -15141,7 +15278,12 @@ const char *kBuiltinOrgBabel =
     "  local lines = {}\n"
     "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) or '' end\n"
     "  local block = mep_org_babel_format_results_block(body_lines, blk.name)\n"
-    "  local updated = mep.org_splice_results(lines, blk.end_row, block, handling)\n"
+    // The last run's body is found by the shape *this* block writes: an
+    // unquoted one (`:results raw`/`org`/`verbatim`) has no `: `/`|`/fence
+    // to recognize it by, so without this a re-run leaves it behind and
+    // stacks the new results on top.
+    "  local raw = mep.org_results_is_raw(blk.args_str or '', blk.lang or '')\n"
+    "  local updated = mep.org_splice_results(lines, blk.end_row, block, handling, raw)\n"
     "  -- Rewrite only from the block's end onward: replacing the whole buffer\n"
     "  -- would move every cursor and fold above it for no reason.\n"
     "  local tail = {}\n"
@@ -15182,6 +15324,12 @@ const char *kBuiltinOrgBabel =
     "  -- `<<reference>>` expansion happens first: everything below works on\n"
     "  -- the body the interpreter will actually see.\n"
     "  body_lines = mep_org_babel_expand_noweb(body_lines, args_str, 'eval')\n"
+    // A last rewrite of the body in the language's own terms, before
+    // anything downstream (the :results value split, graphics_wrap,
+    // wrap_main) looks at it -- maxima's is the only one so far, silencing
+    // the value maxima would otherwise echo under a `tex(...)`/`disp(...)`
+    // that has already printed.
+    "  if lang_def.body_filter then body_lines = lang_def.body_filter(body_lines, args_str) end\n"
     "  local wrapping = (lang_def.wrap_main and mep_org_babel_should_wrap_main(lang_key, args_str)) and true or false\n"
     "\n"
     "  local prelude = {}\n"
@@ -15280,7 +15428,7 @@ const char *kBuiltinOrgBabel =
     "  -- `:stdin` is what it reads. Both are appended to whatever invocation\n"
     "  -- the language descriptor builds, so they work for an interpreted and a\n"
     "  -- compiled language alike.\n"
-    "  local cmdline = mep_org_babel_word_arg(args_str, 'cmdline')\n"
+    "  local cmdline = mep_org_babel_shell_word_arg(args_str, 'cmdline', cwd)\n"
     "  local stdin_text = mep_org_babel_stdin_text(args_str)\n"
     "  -- A client that takes its script on stdin rather than as a file\n"
     "  -- argument (every SQL client) gets it there instead of whatever\n"
@@ -15297,8 +15445,8 @@ const char *kBuiltinOrgBabel =
     "    -- `:flags` then `:libs`: a linker flag has to follow the objects that\n"
     "    -- need it for ld's own left-to-right resolution, which is why they\n"
     "    -- are not one list.\n"
-    "    mep_org_babel_extend(compile_cmd, mep_org_babel_word_arg(args_str, 'flags'))\n"
-    "    mep_org_babel_extend(compile_cmd, mep_org_babel_word_arg(args_str, 'libs'))\n"
+    "    mep_org_babel_extend(compile_cmd, mep_org_babel_shell_word_arg(args_str, 'flags', cwd))\n"
+    "    mep_org_babel_extend(compile_cmd, mep_org_babel_shell_word_arg(args_str, 'libs', cwd))\n"
     "    local compile_err = {}\n"
     "    mep.job_start(compile_cmd, {\n"
     "      cwd = cwd,\n"
@@ -15526,7 +15674,8 @@ const char *kBuiltinOrgBabel =
     "  -- (`:python` for Python) lets a block pick its own -- a virtualenv's,\n"
     "  -- typically, which is otherwise unreachable from a block.\n"
     "  if lang_def.exe_arg then exe = mep_org_babel_arg(blk.args_str, lang_def.exe_arg) or exe end\n"
-    // `blk_dir` (the org file's own directory) becomes the spawned
+    // `blk_dir` (the org file's own directory -- mep_org_doc_dir,
+    // Editor::OrgDocumentDir, never mep's own cwd) becomes the spawned
     // subprocess's own cwd (mep_org_babel_spawn's own `cwd` param) --
     // this, not resolved_file below, is what actually makes a plain
     // relative save path in the block's *own source code* (Python's
@@ -15539,7 +15688,7 @@ const char *kBuiltinOrgBabel =
     // mep_org_babel_file_exists check below) -- see mep_org_resolve_path's
     // own comment (kBuiltinOrgImages) for why both matter and neither
     // alone is enough.
-    "  local blk_dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$')\n"
+    "  local blk_dir = mep_org_doc_dir()\n"
     "  -- `:dir` moves the subprocess somewhere else entirely; without one the\n"
     "  -- org file's own directory stays the cwd, as before.\n"
     "  local run_dir = mep_org_babel_run_dir(blk, blk_dir)\n"
@@ -15630,7 +15779,12 @@ const char *kBuiltinOrgBabel =
     "      and not mep_org_babel_is_results_block(mep.get_line, i) then\n"
     "      local blk = mep_org_src_block_at(i)\n"
     "      if blk and blk.tangle and blk.tangle ~= 'no' then\n"
-    "        local name = (blk.tangle == 'yes') and ((mep.filename() or 'tangled'):gsub('%.org$', '') .. '.' ..\n"
+    // `:tangle yes` means "next to the document, named after it" --
+    // mep_org_doc_base is already the document's own directory plus its
+    // own basename, where mep.filename() may be a relative name that
+    // mep_org_resolve_path below would then append to that directory a
+    // second time (<doc dir>/notes/x.py for a `:e notes/x.org`).
+    "        local name = (blk.tangle == 'yes') and (mep_org_doc_base() .. '.' ..\n"
     "          ((mep.org_babel_langs[blk.lang] and mep.org_babel_langs[blk.lang].extension or '.txt'):sub(2)))\n"
     "          or blk.tangle\n"
     "        local target = mep_org_resolve_path(name)\n"
@@ -15833,7 +15987,7 @@ const char *kBuiltinOrgBabel =
     "    callback(base_lines)\n"
     "    return\n"
     "  end\n"
-    "  local blk_dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$') or '.'\n"
+    "  local blk_dir = mep_org_doc_dir()\n"
     "  local results = {}\n"
     "  local plan, group_at = {}, {}\n"
     "  for _, blk in ipairs(blocks) do\n"
@@ -15932,10 +16086,13 @@ const char *kBuiltinOrgBabel =
     "  -- Per `#+end_src` row: whether the block's code and its results belong\n"
     "  -- in the exported document at all (`:exports`, which nothing used to\n"
     "  -- read), and the freshly formatted results block when one was produced.\n"
-    "  local by_row = {}\n"
+    "  local by_row, raw_by_row = {}, {}\n"
     "  for _, blk in ipairs(blocks) do\n"
     "    local r = results[blk.end_row]\n"
-    "    if r then by_row[blk.end_row] = mep_org_babel_format_results_block(r.lines, blk.name) end\n"
+    "    if r then\n"
+    "      by_row[blk.end_row] = mep_org_babel_format_results_block(r.lines, blk.name)\n"
+    "      raw_by_row[blk.end_row] = mep.org_results_is_raw(blk.args_str or '', blk.lang or '')\n"
+    "    end\n"
     "  end\n"
     "  local out, i, n = {}, 1, #base_lines\n"
     "  while i <= n do\n"
@@ -15945,7 +16102,7 @@ const char *kBuiltinOrgBabel =
     "      -- Replace whatever results block is already there, whatever shape\n"
     "      -- `:wrap`/`:results` gave it -- mep.org_find_results knows them all,\n"
     "      -- which the hand-rolled matcher this replaced did not.\n"
-    "      local res_start, res_end = mep.org_find_results(base_lines, i)\n"
+    "      local res_start, res_end = mep.org_find_results(base_lines, i, raw_by_row[i])\n"
     "      i = res_start and (res_end + 1) or (i + 1)\n"
     "      for _, l in ipairs(formatted) do out[#out + 1] = l end\n"
     "    else\n"
@@ -16251,6 +16408,30 @@ const char *kBuiltinOrgPolyglot =
     "  if shadow_line <= shadow.prefix_len or shadow_line > shadow.prefix_len + body_len then return nil end\n"
     "  return shadow_line - shadow.prefix_len + shadow.start_row\n"
     "end\n"
+    // The directory the block's own `$(...)` header-argument
+    // substitutions resolve in: the same one mep.org_babel_execute would
+    // run the block in (`:dir`, else the org file's own directory), so
+    // clangd's flags and the compiler's cannot disagree about what a
+    // relative path in a substitution means.
+    // Both callers work on the *current* buffer's blocks
+    // (mep_org_src_block_at), so this is the same document mep_org_doc_dir
+    // reports -- and it has to be that one rather than `org_abspath`'s own
+    // directory, since that path came from mep_lsp_abspath (the LSP key,
+    // process-cwd-derived) and so can name a different directory than the
+    // one mep.org_babel_execute will actually run the block in.
+    "local function mep_polyglot_block_dir(blk, _org_abspath)\n"
+    "  local explicit = mep_org_babel_arg(blk.args_str, 'dir')\n"
+    "  if explicit then return mep_org_resolve_path(explicit) end\n"
+    "  return mep_org_doc_dir()\n"
+    "end\n"
+    // `c++` is a real language key of its own in the babel table (an
+    // alias of `cpp`, but the tag a block is far more likely to be
+    // written with), so a literal `lang == 'cpp'` test silently left
+    // every `#+begin_src c++` block without a compilation database --
+    // and therefore without the `:flags` its headers live behind.
+    "local function mep_polyglot_wants_compile_db(lang)\n"
+    "  return lang == 'c' or lang == 'cpp' or lang == 'c++'\n"
+    "end\n"
     // c/cpp only: a single-entry compile_commands.json in the shadow's
     // own directory, built from the exact compiler+flags
     // mep.org_babel_execute would actually use (lang_def.compile_cmd,
@@ -16266,6 +16447,16 @@ const char *kBuiltinOrgPolyglot =
     "  local dummy_bin = shadow.dir .. '/a.out'\n"
     "  local argv = lang_def.compile_cmd and lang_def.compile_cmd(exe, shadow.path, dummy_bin)\n"
     "    or {exe, shadow.path, '-o', dummy_bin}\n"
+    // Same two lists, in the same order, mep_org_babel_spawn appends --
+    // cached here (this runs on every buffer change, and a `:flags`
+    // naming pkg-config must not re-run it per keystroke).
+    // (mep_org_babel_extend is a chunk-local of kBuiltinOrgBabel and does
+    // not reach this chunk, hence the explicit loop.)
+    "  for _, key in ipairs({'flags', 'libs'}) do\n"
+    "    for _, w in ipairs(mep_org_babel_shell_word_arg(shadow.args_str, key, shadow.run_dir, true)) do\n"
+    "      argv[#argv + 1] = w\n"
+    "    end\n"
+    "  end\n"
     "  local argv_key = table.concat(argv, '\\1')\n"
     "  if shadow.compile_argv == argv_key then return end\n"
     "  local restart = shadow.compile_argv ~= nil\n"
@@ -16405,13 +16596,20 @@ const char *kBuiltinOrgPolyglot =
     "    path = path, dir = dir, lang = blk.lang, per_block = per_block,\n"
     "    start_row = blk.start_row, end_row = blk.end_row, prefix_len = prefix_len,\n"
     "    org_abspath = org_abspath, client = nil, compile_argv = nil,\n"
+    // The block's own header arguments and run directory, kept so
+    // mep_polyglot_write_compile_db can give clangd the same `:flags`
+    // the compiler would actually be run with (a `#+begin_src c++` whose
+    // headers live behind `$(pkg-config --cflags ...)` is nothing but
+    // "file not found" diagnostics otherwise). Refreshed on resync,
+    // since editing the `#+begin_src` line is exactly how they change.
+    "    args_str = blk.args_str, run_dir = mep_polyglot_block_dir(blk, org_abspath),\n"
     "  }\n"
     "  mep_polyglot_epoch = mep_polyglot_epoch + 1\n"
     "  mep_polyglot_shadows[key] = shadow\n"
     "  mep_polyglot_shadow_by_path[mep_lsp_abspath(path)] = key\n"
     "  mep_polyglot_shadows_by_file[org_abspath] = mep_polyglot_shadows_by_file[org_abspath] or {}\n"
     "  table.insert(mep_polyglot_shadows_by_file[org_abspath], key)\n"
-    "  if blk.lang == 'c' or blk.lang == 'cpp' then mep_polyglot_write_compile_db(shadow, lang_def) end\n"
+    "  if mep_polyglot_wants_compile_db(blk.lang) then mep_polyglot_write_compile_db(shadow, lang_def) end\n"
     "  mep_polyglot_start_client(shadow, lang_def, server)\n"
     "  return shadow\n"
     "end\n"
@@ -16574,6 +16772,8 @@ const char *kBuiltinOrgPolyglot =
     "        if blk and blk.lang == shadow.lang then\n"
     "          content, shadow.prefix_len = mep_polyglot_per_block_content(blk, lang_def)\n"
     "          shadow.end_row = blk.end_row\n"
+    "          shadow.args_str = blk.args_str\n"
+    "          shadow.run_dir = mep_polyglot_block_dir(blk, shadow.org_abspath)\n"
     "        end\n"
     "      else\n"
     "        content = mep_polyglot_shared_content(shadow.lang)\n"
@@ -16581,7 +16781,7 @@ const char *kBuiltinOrgPolyglot =
     "      if content then\n"
     "        local f = io.open(shadow.path, 'w')\n"
     "        if f then f:write(content) f:close() end\n"
-    "        if shadow.lang == 'c' or shadow.lang == 'cpp' then mep_polyglot_write_compile_db(shadow, lang_def) end\n"
+    "        if mep_polyglot_wants_compile_db(shadow.lang) then mep_polyglot_write_compile_db(shadow, lang_def) end\n"
     "        if shadow.client and mep.lsp_is_running(shadow.client) then\n"
     "          shadow.version = shadow.version + 1\n"
     "          mep.lsp_notify(shadow.client, 'textDocument/didChange', {\n"
@@ -16927,6 +17127,28 @@ const char *kBuiltinOrgBabelMaxima =
     "  pdf = 'pdf', eps = 'eps_color', ps = 'eps_color',\n"
     "}\n"
     "local function mep_maxima_ext(path) return (path:match('%.(%w+)$') or 'png'):lower() end\n"
+    // Maxima functions whose *job* is to write something out, and whose
+    // return value is therefore noise: `tex`/`printf` hand back `false`,
+    // `disp`/`grind`/`display` hand back `done`, `ldisp`/`ldisplay` hand
+    // back their `%t` labels, and `print` hands back its own argument --
+    // so a `;`-terminated `tex(integrate(...))` prints the TeX and then
+    // makes maxima echo a bare `false` underneath it. Nothing else here
+    // shows that echo, because for every other statement the echo *is*
+    // the result; only these have already said their piece by the time
+    // maxima gets to display anything.
+    "local MEP_MAXIMA_DISPLAY_FNS = {\n"
+    "  tex = true, print = true, disp = true, ldisp = true, display = true,\n"
+    "  ldisplay = true, grind = true, printf = true, print2d = true,\n"
+    "}\n"
+    "local function mep_maxima_strip_term(stmt) return (tostring(stmt):gsub('%s*[;$]%s*$', '')) end\n"
+    // True only when the *whole* statement is one such call: `%b()` spans
+    // the balanced parentheses and `%s*$` anchors them to the end, so
+    // `tex(f(x))` matches while `tex(x) + 1` (whose value really is the
+    // result) and `y: tex(x)` do not.
+    "local function mep_maxima_is_display_call(stmt)\n"
+    "  local name = mep_maxima_strip_term(stmt):match('^%s*([%a_][%w_]*)%s*%b()%s*$')\n"
+    "  return name ~= nil and MEP_MAXIMA_DISPLAY_FNS[name:lower()] == true\n"
+    "end\n"
     "L.maxima = {\n"
     "  executable = 'maxima', extension = '.mac',\n"
     "  var_stmt = function(n, l) return string.format('%s: %s$', n, l) end,\n"
@@ -16934,7 +17156,27 @@ const char *kBuiltinOrgBabelMaxima =
     // line -- which is exactly what :results value hands over as "the
     // expression" -- has to lose it again before it can go inside a
     // print(...) call: `print(integrate(x^2, x);)$` is a syntax error.
-    "  print_stmt = function(e) return string.format('print(%s)$', (tostring(e):gsub('%s*[;$]%s*$', ''))) end,\n"
+    // A display call already printed what the block is after, so wrapping
+    // it in print() would only add that second line back (`print(tex(e))`
+    // writes the TeX, then `nil`) -- it is re-emitted `$`-terminated
+    // instead, which keeps the output and drops the echo.
+    "  print_stmt = function(e)\n"
+    "    local expr = mep_maxima_strip_term(e)\n"
+    "    if mep_maxima_is_display_call(expr) then return expr .. '$' end\n"
+    "    return string.format('print(%s)$', expr)\n"
+    "  end,\n"
+    // Every *other* statement in the body keeps whatever terminator it
+    // was written with; a display call ends up `$`-terminated whichever
+    // one it had, so it prints once instead of twice. A statement split
+    // over several lines is left alone (the match is per line, and one
+    // that does not look like a whole call never matches).
+    "  body_filter = function(body_lines)\n"
+    "    local out = {}\n"
+    "    for i, line in ipairs(body_lines) do\n"
+    "      out[i] = mep_maxima_is_display_call(line) and (mep_maxima_strip_term(line) .. '$') or line\n"
+    "    end\n"
+    "    return out\n"
+    "  end,\n"
     // maxima's interactive default, display2d:true, renders every result
     // as centred ASCII art -- an expression padded out to the middle of
     // `linel` columns, which inside a `: `-prefixed #+RESULTS: block is
@@ -16995,6 +17237,105 @@ const char *kBuiltinOrgBabelMaxima =
     "  run_cmd = function(exe) return { 'sh', '-c', 'exec \"$0\" --very-quiet \"$@\" 2>&1', exe } end,\n"
     // The script *is* maxima's stdin, so -- as for a SQL block -- `:stdin`
     // has nowhere left to go and is not read for this language.
+    "  reads_script_on_stdin = true,\n"
+    "}\n";
+
+// GAP (Groups, Algorithms, Programming -- a computer-algebra system for
+// computational discrete algebra, so a block is a group order or a
+// character table rather than a program): like the maxima backend above, a
+// block is piped into `gap` on stdin rather than handed over as a file
+// argument, the `reads_script_on_stdin` shape the SQL clients use. GAP
+// does read a file named on its command line, but it then goes on reading
+// stdin as an interactive session, so the file form buys nothing here and
+// costs the block its own `:stdin` for no gain. Fed the statements on
+// stdin under `-q` (no banner, no prompts) GAP evaluates and displays each
+// one the way it would interactively -- `;`-terminated lines print their
+// value, `;;`-terminated ones stay silent -- which is exactly what
+// `:results output` means for every other language here, with no `Print()`
+// wrapped around each line by hand.
+//
+// `-T` is what makes it a batch run at all: without it GAP answers an
+// error by entering its break loop, which reads from the same stdin the
+// rest of the block is arriving on -- the remaining statements would be
+// read as answers to a `brk>` prompt. With `-T` the error is reported and
+// the top level carries on.
+//
+// GAP, again like maxima, exits 0 whatever happened -- a syntax error, a
+// division by zero and a clean run are indistinguishable by exit status --
+// and writes the error text to stderr, a channel that for a "successful"
+// run nothing here surfaces (mep_org_babel_spawn's own `err_lines` only
+// reaches a notification on a non-zero exit). Left alone, a block with a
+// typo in it would write an empty #+RESULTS: and say nothing, so the run
+// command merges stderr into stdout and the error lands in the block's own
+// results, where anyone would think to look for it.
+//
+// Every knob this backend has is a command-line option rather than a
+// generated statement, so the script GAP runs is the block's own body and
+// nothing else (`:var` aside) -- which keeps `:results value`'s
+// last-line-is-the-expression rule reading the line the author actually
+// wrote.
+const char *kBuiltinOrgBabelGap =
+    "local L = mep.org_babel_langs\n"
+    // GAP's own output width, not org's: GAP breaks any displayed value
+    // wider than the screen across lines with a trailing backslash, and
+    // its default screen is 80 columns, so `Factorial(100);` arrives as
+    // three backslash-continued fragments inside the `: `-prefixed
+    // #+RESULTS: block. One value per line is the useful default here (and
+    // the only shape `:results table`/`scalar`/`list` can read back at
+    // all), so every block runs with `-x` at GAP's own maximum;
+    // `:screen-width 80` asks for GAP's wrapping back. GAP clamps a width
+    // to its accepted 20..4096 itself rather than rejecting it, so any
+    // number is safe -- but a non-number is a usage error that would keep
+    // GAP from starting at all, so anything else falls back to the
+    // default.
+    "local MEP_GAP_SCREEN_WIDTH = '4096'\n"
+    "L.gap = {\n"
+    "  executable = 'gap', extension = '.g',\n"
+    // `:=` is assignment (`=` is equality in GAP), and `;;` keeps the
+    // prelude from displaying every bound variable ahead of the block's
+    // own first result.
+    "  var_stmt = function(n, l) return string.format('%s := %s;;', n, l) end,\n"
+    // A GAP statement carries its own terminator, so the body's last line
+    // -- which is what :results value hands over as "the expression" --
+    // has to lose it again before it can go inside a Print() call:
+    // `Print(Size(g);, "\n")` is a syntax error. Both terminators are
+    // stripped, since a `;;`-terminated last line is still the expression
+    // the block was asking about. Print (not Display/View) is the one that
+    // writes a string as its own characters rather than as a quoted
+    // literal, which is what a scalar result should be; it writes no
+    // trailing newline of its own, hence the explicit one.
+    "  print_stmt = function(e) return string.format('Print(%s, \"\\\\n\");', (tostring(e):gsub('%s*;;?%s*$', ''))) end,\n"
+    // `sh -c` only for that stderr merge -- `exec` so no extra process is
+    // left in the middle, `"$0"`/`"$@"` so the interpreter, the options
+    // below and whatever `:cmdline` appended stay separate argv entries
+    // rather than being spliced into a command line the shell would
+    // re-split.
+    "  run_cmd = function(exe, _, args_str)\n"
+    "    local cmd = { 'sh', '-c', 'exec \"$0\" -q -b -T \"$@\" 2>&1', exe }\n"
+    "    local width = mep_org_babel_arg(args_str, 'screen-width')\n"
+    "    if not (width and width:match('^%d+$')) then width = MEP_GAP_SCREEN_WIDTH end\n"
+    "    cmd[#cmd + 1] = '-x' cmd[#cmd + 1] = width\n"
+    // `:packages no` -> -A: skip the packages GAP would otherwise
+    // autoload. Faster to start, and quiet on an installation whose
+    // autoload list names packages it does not actually have (each one is
+    // an `#I ... is not available` line on *stdout*, so they would
+    // otherwise land in the block's results). Loading them is GAP's own
+    // default, and several of the autoloaded ones are what make
+    // SmallGroup/PrimitiveGroup/CharacterTable work at all, so that is
+    // the default here too.
+    "    if mep_org_babel_arg(args_str, 'packages') == 'no' then cmd[#cmd + 1] = '-A' end\n"
+    // `:memory 2g` -> -K 2g, the size GAP will never grow its workspace
+    // past (not -o, which only warns and carries on). Worth having on a
+    // block that might run away, since without one GAP will happily take
+    // most of the machine before giving up. Hitting it aborts the run with
+    // a message, which -- stderr being merged above -- lands in the
+    // block's results like any other failure.
+    "    local mem = mep_org_babel_arg(args_str, 'memory')\n"
+    "    if mem then cmd[#cmd + 1] = '-K' cmd[#cmd + 1] = mem end\n"
+    "    return cmd\n"
+    "  end,\n"
+    // The script *is* GAP's stdin, so -- as for a maxima or SQL block --
+    // `:stdin` has nowhere left to go and is not read for this language.
     "  reads_script_on_stdin = true,\n"
     "}\n";
 
@@ -17130,16 +17471,26 @@ const char *kBuiltinOrgLatex =
     "  end)\n"
     "end\n"
     "\n"
-    "-- Same idea as mep_org_latex_register, but for one inline span rather than\n"
-    "-- a whole row -- no slot math (an inline fragment is always drawn to fit\n"
-    "-- within one line, see the C++ draw-time scaling, main.cpp).\n"
-    "local function mep_org_latex_register_inline(row, col_start, col_end, tex_body)\n"
-    "  mep_org_latex_render(tex_body, function(png_path, err)\n"
+    "-- Same idea as mep_org_latex_register, but for one inline fragment rather\n"
+    "-- than a whole row -- no slot math (an inline fragment is always drawn to\n"
+    "-- fit within one line, see the C++ draw-time scaling, main.cpp).\n"
+    // `frag.parts` is one entry per row the fragment touches (see
+    // OrgLatexScan, org_doc.h): all but the first exist only to be
+    // concealed, since a fragment that wraps across a line break still
+    // has exactly one render and mep's row renderer can only draw it on
+    // one row. An empty path is what says "conceal, draw nothing" -- and
+    // every part is registered from inside this one callback, never
+    // before it, so a fragment whose TeX does not compile leaves its
+    // source fully visible instead of hiding half of it behind nothing.
+    "local function mep_org_latex_register_inline(frag)\n"
+    "  mep_org_latex_render(frag.body, function(png_path, err)\n"
     "    if not png_path then\n"
     "      mep_org_latex_notify_err(err)\n"
     "      return\n"
     "    end\n"
-    "    mep.buf_add_latex_inline(row, col_start, col_end, png_path)\n"
+    "    for i, part in ipairs(frag.parts) do\n"
+    "      mep.buf_add_latex_inline(part.row, part.col_start, part.col_end, i == 1 and png_path or '')\n"
+    "    end\n"
     "  end)\n"
     "end\n"
     "\n"
@@ -17169,7 +17520,7 @@ const char *kBuiltinOrgLatex =
     "    mep_org_latex_register(b.start_row, b.end_row, b.body)\n"
     "  end\n"
     "  for _, s in ipairs(fragments.inlines) do\n"
-    "    mep_org_latex_register_inline(s.row, s.col_start, s.col_end, s.body)\n"
+    "    mep_org_latex_register_inline(s)\n"
     "  end\n"
     "end\n"
     "\n"
@@ -17624,7 +17975,7 @@ const char *kBuiltinOrgExport =
     "  return out\n"
     "end\n"
     "function mep.org_resolve_includes()\n"
-    "  local base_dir = (mep.filename() or ''):match('^(.*)/[^/]*$') or '.'\n"
+    "  local base_dir = mep_org_doc_dir()\n"
     "  local lines = {}\n"
     "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
     "  return mep_org_resolve_includes_lines(lines, base_dir)\n"
@@ -17948,8 +18299,12 @@ const char *kBuiltinOrgExport =
     "  end\n"
     "  return table.concat(out, '\\n')\n"
     "end\n"
+    // mep_org_doc_base (Editor::OrgDocumentBase) is the document's own
+    // directory plus its own basename, extension stripped -- absolute, so
+    // the file lands next to the .org source rather than next to mep's
+    // process cwd, which a relative mep.filename() would have meant.
     "local function mep_org_export_to_file(text, ext)\n"
-    "  local out_file = (mep.filename():gsub('%.org$', '')) .. '.' .. ext\n"
+    "  local out_file = mep_org_doc_base() .. '.' .. ext\n"
     "  local f = io.open(out_file, 'w')\n"
     "  f:write(text)\n"
     "  f:close()\n"
@@ -17991,6 +18346,14 @@ const char *kBuiltinOrgExport =
     "      meta.html_head = meta.html_head or {}\n"
     "      meta.html_head[#meta.html_head + 1] = hh\n"
     "    end\n"
+    // `#+HTML_MATHJAX: nil` (or no/off/none) suppresses the MathJax
+    // <script> the wrapper otherwise adds to a document containing maths
+    // -- for an export that has to work offline, or one going somewhere
+    // that supplies its own typesetter. The keyword is org's own name for
+    // this knob (and the one mep's org language server already offers as a
+    // completion), so a file that sets it means the same thing in both.
+    "    local mj = l:match('^%s*#%+[Hh][Tt][Mm][Ll]_[Mm][Aa][Tt][Hh][Jj][Aa][Xx]:%s*(.*)$')\n"
+    "    if mj then meta.mathjax = mj:gsub('%s+$', '') end\n"
     "  end\n"
     "  return meta\n"
     "end\n"
@@ -18039,9 +18402,58 @@ const char *kBuiltinOrgExport =
     // (dark-themed) background behind an HTML doc with no explicit one,
     // which made every one of these light-palette colors (color:#222
     // included) nearly illegible against it before this line existed.
+    // Whether an exported body actually contains maths, so the MathJax
+    // <script> below is only pulled into a document that needs it rather
+    // than into every export. Code blocks are stripped before looking:
+    // `iris$Sepal.Length` in an R block is not maths, and a document whose
+    // only dollar signs look like that gets no script at all. (MathJax's
+    // own default skip list covers <pre>/<code> too, so it would not
+    // typeset them either way -- this is about not loading it needlessly.)
+    "function mep_org_html_has_math(fragment)\n"
+    "  local prose = fragment:gsub('<pre.-</pre>', ''):gsub('<code.-</code>', '')\n"
+    "  if prose:find('\\\\%(') or prose:find('\\\\%[') then return true end\n"
+    "  if prose:find('%$%$') then return true end\n"
+    // The same rule html_doc.cpp's own FindNextMathSpan applies to a bare
+    // `$`: no whitespace just inside either delimiter, and no line break
+    // between them. Without the closing half of it, "a price of $5 and
+    // $10" reads as maths and would pull in a typesetter that then really
+    // does set "5 and " as a formula -- worse than the raw source.
+    "  if prose:find('%$[^%s%$]%$') then return true end\n"
+    // `%c` (control characters) rather than a spelled-out newline: a math
+    // span holds neither, and keeping the pattern free of backslashes
+    // keeps it readable through two levels of string literal.
+    "  return prose:find('%$[^%s%$][^%$%c]-[^%s%$]%$') ~= nil\n"
+    "end\n"
+    // The MathJax loader for the real-browser case. mep's own viewer needs
+    // none of it -- html_doc.cpp's ExtractMathSpans pulls the same
+    // delimiters out into <math> nodes and main.cpp's own layout typesets
+    // them with no JavaScript at all -- but every other browser shows a
+    // `$\alpha$` as the four characters "$\alpha$" unless something
+    // converts it, which is what makes an exported file look unfinished
+    // anywhere but here.
+    //
+    // The config adds `$..$` to MathJax's *default* inline list rather
+    // than replacing it: single-dollar inline maths is off by default in
+    // MathJax 3, while `\(..\)`, `$$..$$` and `\[..\]` are all on. Written
+    // with the `[+]` array-append modifier so the whole config needs no
+    // backslashes -- which matters more than it looks, since every one
+    // would have to survive being a Lua string inside a C string literal
+    // on the way here.
+    "local MEP_ORG_HTML_MATHJAX = table.concat({\n"
+    "  \"<script>window.MathJax = {tex: {inlineMath: {'[+]': [['$', '$']]}}};</script>\",\n"
+    "  '<script id=\"MathJax-script\" async'\n"
+    "    .. ' src=\"https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js\"></script>',\n"
+    "}, '\\n')\n"
+    "local function mep_org_html_mathjax_head(fragment, meta)\n"
+    "  local setting = (meta.mathjax or ''):lower()\n"
+    "  if setting == 'nil' or setting == 'no' or setting == 'off' or setting == 'none' then return '' end\n"
+    "  if not mep_org_html_has_math(fragment) then return '' end\n"
+    "  return MEP_ORG_HTML_MATHJAX .. '\\n'\n"
+    "end\n"
     "function mep_org_html_wrap_document(fragment, meta)\n"
     "  local title = meta.title and mep_org_html_escape(meta.title) or 'Untitled'\n"
     "  local head_extra = meta.html_head and (table.concat(meta.html_head, '\\n') .. '\\n') or ''\n"
+    "  head_extra = head_extra .. mep_org_html_mathjax_head(fragment, meta)\n"
     "  return '<!DOCTYPE html>\\n<html lang=\"en\">\\n<head>\\n<meta charset=\"utf-8\">\\n'\n"
     "    .. '<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\\n'\n"
     "    .. '<title>' .. title .. '</title>\\n'\n"
@@ -18146,7 +18558,7 @@ const char *kBuiltinOrgExport =
     "function mep_org_export_prepare(on_lines)\n"
     "  mep.notify('Org export: running code blocks...')\n"
     "  mep.org_babel_run_for_export(function(spliced_lines)\n"
-    "    local base_dir = (mep.filename() or ''):match('^(.*)/[^/]*$') or '.'\n"
+    "    local base_dir = mep_org_doc_dir()\n"
     "    local resolved = mep_org_resolve_includes_lines(mep.org_apply_export_gates(spliced_lines), base_dir)\n"
     "    local macros = mep_org_collect_macros(function(i) return resolved[i] end, #resolved)\n"
     "    local expanded = {}\n"
@@ -18210,9 +18622,13 @@ const char *kBuiltinOrgExport =
     "local function mep_org_export_write_tex(lines)\n"
     "  local meta = mep_org_extract_meta(lines)\n"
     "  local html = mep.org_export('html', lines)\n"
-    "  local base_dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$') or '.'\n"
+    "  local base_dir = mep_org_doc_dir()\n"
     "  local latex = mep.doc_export_html_to_latex(html, meta.title or '', meta.author or '', base_dir)\n"
-    "  local base = (mep.filename():gsub('%.org$', ''))\n"
+    // Absolute, so the path handed to tectonic below means the same thing
+    // in the job's own cwd (`base_dir`) as it did to io.open here -- a
+    // relative one resolved against mep's cwd on write and against the
+    // document's directory on compile, which only ever agreed by accident.
+    "  local base = mep_org_doc_base()\n"
     "  local tex_path = base .. '.tex'\n"
     "  local f = io.open(tex_path, 'w')\n"
     "  if not f then error('cannot write ' .. tex_path) end\n"
@@ -18318,7 +18734,7 @@ const char *kBuiltinOrgExport =
     "mep.on_buffer_saved(function()\n"
     "  local src = mep.filename() or ''\n"
     "  if src == '' or not src:match('%.org$') then return end\n"
-    "  local pdf = (src:gsub('%.org$', '')) .. '.pdf'\n"
+    "  local pdf = mep_org_doc_base() .. '.pdf'\n"
     "  if mep_org_pdf_pane(pdf) then mep_org_export_pdf_run(true) end\n"
     "end)\n"
     // ODT: org -> HTML (in-process) -> a real .odt written directly by
@@ -18328,8 +18744,8 @@ const char *kBuiltinOrgExport =
     "  mep_org_export_prepare(function(lines)\n"
     "    local meta = mep_org_extract_meta(lines)\n"
     "    local html = mep.org_export('html', lines)\n"
-    "    local base_dir = mep_lsp_abspath(mep.filename()):match('^(.*)/[^/]*$') or '.'\n"
-    "    local base = (mep.filename():gsub('%.org$', ''))\n"
+    "    local base_dir = mep_org_doc_dir()\n"
+    "    local base = mep_org_doc_base()\n"
     "    local ok, err = mep.doc_export_html_to_odt(html, base .. '.odt', meta.title or '', meta.author or '', base_dir)\n"
     "    if ok then\n"
     "      mep.notify('Exported to ' .. base .. '.odt')\n"
@@ -21797,8 +22213,8 @@ const char *kBuiltinOrgBib =
     "    if f:sub(1, 1) == '/' then\n"
     "      files[#files + 1] = f\n"
     "    else\n"
-    "      local dir = mep.filename():match('^(.*)/[^/]+$') or '.'\n"
-    "      local candidate = dir .. '/' .. f\n"
+    "      local dir = mep_org_doc_dir()\n"
+    "      local candidate = (dir == '' and '.' or dir) .. '/' .. f\n"
     "      local test = io.open(candidate, 'r')\n"
     "      if test then\n"
     "        test:close()\n"
@@ -22227,9 +22643,11 @@ const char *kBuiltinMathSnippets =
     "  for _, b in ipairs(frags.blocks) do\n"
     "    if row >= b.start_row and row <= b.end_row then return true end\n"
     "  end\n"
-    "  for _, sp in ipairs(frags.inlines) do\n"
-    "    if sp.row == row and col > sp.col_start and col < sp.col_end then\n"
-    "      return true\n"
+    "  for _, frag in ipairs(frags.inlines) do\n"
+    "    for _, sp in ipairs(frag.parts) do\n"
+    "      if sp.row == row and col > sp.col_start and col < sp.col_end then\n"
+    "        return true\n"
+    "      end\n"
     "    end\n"
     "  end\n"
     // Unclosed fallback: walk up to the nearest blank line / org heading
@@ -33395,255 +33813,66 @@ void DrawPaneBorder(float x, float y, float w, float h, bool is_active) {
 
 // --- Mini LaTeX math layout -------------------------------------------------
 //
-// A from-scratch, intentionally small LaTeX-math typesetter for the
-// \(..\)/\[..\]/$..$/$$..$$ spans html_doc.cpp's ExtractMathSpans pulls out
-// of org-mode's (and any other MathJax-targeting page's) exported HTML into
-// synthetic <math> DOM nodes. Not real TeX math typesetting (no proper
-// italic-correction/kerning tables, no real radical-stretching, no matrix/
-// align environments) -- just enough of superscript/subscript/fraction/
-// sqrt/Greek-and-operator-symbol layout that a real equation reads as an
-// equation rather than raw "\alpha^2 + \beta^2" source text. Lives here
-// rather than html_doc.h/.cpp for the same reason the rest of this file's
-// own HTML layout does (see that section's header, just below): it needs
-// real font metrics (MeasureTextEx against g_math_font), which the
-// raylib-free DOM layer doesn't have access to.
-enum class MathKind { Text, Row, Frac, Sqrt };
+// The back half of mep's small LaTeX-math typesetter: turning the tree
+// ParseTexMath (math_tex.h) produced into positioned glyph runs, rules and
+// stretched delimiters. Only this half lives here, and only because it
+// needs real font metrics (MeasureTextEx against the baked math faces) --
+// the parse, the atom classes and the inter-atom spacing table are pure
+// text handling and sit in math_tex.cpp where mep-math-tex-test can reach
+// them. See math_tex.h's own header for what this engine deliberately does
+// not do.
 
-// One node in a parsed (but not yet laid-out) math expression tree. A
-// std::vector<MathNode> member on a type that also contains MathNode
-// members is fine in C++17 (vector supports incomplete element types) --
-// no indirection/unique_ptr needed for this self-referential shape.
-struct MathNode {
-    MathKind kind = MathKind::Text;
-    std::string text;                // Text kind only: literal glyph(s) to draw
-    bool italic = true;              // Text kind only: bare variables slant, digits/operators/symbols stay upright
-    std::vector<MathNode> children;  // Row: the sequence; Frac: [numerator, denominator]; Sqrt: [radicand]
-    std::vector<MathNode> sup;       // trailing ^{...} attached to *this* node, 0 or 1 element (itself Row-kind)
-    std::vector<MathNode> sub;       // trailing _{...} attached to *this* node, 0 or 1 element (itself Row-kind)
-};
+// TeX's four styles. Everything that makes a formula read as *typeset*
+// rather than merely correct is a function of this: how big a big operator
+// is drawn, whether its limits go over it or beside it, how much a script
+// shrinks, and -- the one that fixes the worst of it -- whether the
+// inter-atom spacing table's parenthesized entries apply at all, which is
+// the difference between a subscript reading `i=1` and `i = 1`.
+enum class MathStyle { Display, Text, Script, ScriptScript };
 
-// Recursive-descent parser over the raw LaTeX source between the \(../\[..
-// delimiters ExtractMathSpans already stripped -- no separate tokenizer,
-// the grammar is small enough to scan character-by-character directly.
-struct MathParser {
-    const std::string &s;
-    size_t i = 0;
-    /**
-     * @brief Constructs a parser over `src`, starting at offset 0.
-     * @param src The raw LaTeX math source to parse (a reference kept for the parser's lifetime).
-     */
-    explicit MathParser(const std::string &src) : s(src) {}
+/**
+ * @brief Returns the style a superscript/subscript of an expression in `s` is set in.
+ * @param s The enclosing style.
+ * @return Script for display/text style, ScriptScript for either script style (TeX never shrinks further).
+ */
+MathStyle MathScriptStyle(MathStyle s) {
+    return s == MathStyle::Display || s == MathStyle::Text ? MathStyle::Script : MathStyle::ScriptScript;
+}
 
-    /**
-     * @brief Advances the cursor past any run of whitespace at the current position.
-     */
-    void SkipSpace() {
-        while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) i++;
+/**
+ * @brief Returns the style a \\frac's numerator and denominator are set in.
+ * @param s The style the fraction itself is set in.
+ * @return Text for a display fraction, otherwise one step smaller.
+ */
+MathStyle MathFracStyle(MathStyle s) {
+    if (s == MathStyle::Display) return MathStyle::Text;
+    return MathScriptStyle(s);
+}
+
+/**
+ * @brief Returns a style's font size as a fraction of the expression's base size.
+ * @param s The style.
+ * @return 1.0 for display/text, TeX's 0.7 for script, 0.5 for scriptscript.
+ */
+float MathStyleScale(MathStyle s) {
+    switch (s) {
+        case MathStyle::Script:
+            return 0.7f;
+        case MathStyle::ScriptScript:
+            return 0.5f;
+        default:
+            return 1.0f;
     }
+}
 
-    // One command name's macro-expansion, name -> Unicode codepoint (must
-    // also be in kMathCodepoints above, or it'll draw as a missing glyph).
-    /**
-     * @brief Returns the static lookup table mapping LaTeX command names (e.g. "alpha") to
-     * their Unicode codepoint, built once on first call.
-     * @return Reference to the shared name-to-codepoint symbol table.
-     */
-    static const std::unordered_map<std::string, int> &SymbolTable() {
-        static const std::unordered_map<std::string, int> kTable = {
-            {"alpha", 0x3b1},    {"beta", 0x3b2},     {"gamma", 0x3b3},   {"delta", 0x3b4},
-            {"epsilon", 0x3b5},  {"varepsilon", 0x3b5}, {"zeta", 0x3b6},  {"eta", 0x3b7},
-            {"theta", 0x3b8},    {"iota", 0x3b9},      {"kappa", 0x3ba},  {"lambda", 0x3bb},
-            {"mu", 0x3bc},       {"nu", 0x3bd},         {"xi", 0x3be},     {"pi", 0x3c0},
-            {"rho", 0x3c1},      {"sigma", 0x3c3},      {"tau", 0x3c4},    {"upsilon", 0x3c5},
-            {"phi", 0x3c6},      {"varphi", 0x3c6},     {"chi", 0x3c7},    {"psi", 0x3c8},
-            {"omega", 0x3c9},
-            {"Gamma", 0x393},    {"Delta", 0x394},      {"Theta", 0x398},  {"Lambda", 0x39b},
-            {"Xi", 0x39e},       {"Pi", 0x3a0},          {"Sigma", 0x3a3},  {"Upsilon", 0x3a5},
-            {"Phi", 0x3a6},      {"Psi", 0x3a8},         {"Omega", 0x3a9},
-            {"times", 0xd7},     {"div", 0xf7},          {"pm", 0xb1},      {"mp", 0x2213},
-            {"cdot", 0xb7},      {"circ", 0x2218},       {"leq", 0x2264},   {"le", 0x2264},
-            {"geq", 0x2265},     {"ge", 0x2265},         {"neq", 0x2260},   {"ne", 0x2260},
-            {"approx", 0x2248},  {"equiv", 0x2261},      {"sim", 0x223c},   {"propto", 0x221d},
-            {"infty", 0x221e},   {"partial", 0x2202},    {"nabla", 0x2207}, {"sum", 0x2211},
-            {"prod", 0x220f},    {"int", 0x222b},        {"degree", 0xb0},  {"circ", 0x2218},
-            {"to", 0x2192},      {"rightarrow", 0x2192}, {"gets", 0x2190},  {"leftarrow", 0x2190},
-            {"leftrightarrow", 0x2194}, {"Rightarrow", 0x21d2}, {"Leftarrow", 0x21d0},
-            {"Leftrightarrow", 0x21d4}, {"iff", 0x21d4},
-            {"forall", 0x2200},  {"exists", 0x2203},     {"in", 0x2208},    {"notin", 0x2209},
-            {"subset", 0x2282},  {"subseteq", 0x2286},   {"supset", 0x2283}, {"supseteq", 0x2287},
-            {"cup", 0x222a},     {"cap", 0x2229},        {"emptyset", 0x2205}, {"varnothing", 0x2205},
-            {"cdots", 0x22ef},   {"ldots", 0x2026},      {"dots", 0x2026},
-            {"therefore", 0x2234}, {"because", 0x2235},  {"perp", 0x22a5},  {"parallel", 0x2225},
-            {"otimes", 0x2297},  {"oplus", 0x2295},      {"lfloor", 0x230a}, {"rfloor", 0x230b},
-            {"lceil", 0x2308},   {"rceil", 0x2309},      {"prime", 0x2032},
-        };
-        return kTable;
-    }
-
-    // Parses "{ row }" (consuming both braces) or, absent a brace, a single
-    // ParseAtom() -- used for both sup/sub arguments and \frac/\sqrt args,
-    // matching real LaTeX's "one token or a braced group" argument rule.
-    /**
-     * @brief Parses a braced group "{ row }" (consuming both braces) or, absent a brace, a
-     * single ParseAtom() result -- the "one token or a braced group" argument rule shared by
-     * sup/sub arguments and \\frac/\\sqrt arguments.
-     * @return The parsed group's or atom's node.
-     */
-    MathNode ParseGroupOrAtom() {
-        SkipSpace();
-        if (i < s.size() && s[i] == '{') {
-            i++;
-            MathNode row = ParseRow('}');
-            if (i < s.size() && s[i] == '}') i++;
-            return row;
-        }
-        return ParseAtom();
-    }
-
-    /**
-     * @brief Parses a backslash command at the current position (a Greek/symbol name, \\frac,
-     * \\sqrt, \\text-like upright-run commands, a sizing hint, an escaped literal character, or
-     * an unrecognized name shown literally) and returns the resulting node.
-     * @return The parsed command's resulting math node.
-     */
-    MathNode ParseCommand() {
-        i++;  // consume '\'
-        size_t start = i;
-        while (i < s.size() && std::isalpha(static_cast<unsigned char>(s[i]))) i++;
-        std::string name = s.substr(start, i - start);
-        if (name.empty()) {
-            // "\\{", "\\}", "\\%", "\\,", "\\;", "\\ ", a literal-escape or
-            // a spacing command -- neither has a dedicated glyph here, so
-            // render the escaped char itself (harmless for the common
-            // "\{"/"\}"/"\%" case; spacing commands like "\," just show as
-            // a small stray character, an accepted cosmetic gap).
-            MathNode n;
-            n.kind = MathKind::Text;
-            n.italic = false;
-            if (i < s.size()) n.text = std::string(1, s[i++]);
-            return n;
-        }
-        if (name == "left" || name == "right") return ParseAtom();  // sizing hint -- render the delimiter plain
-        if (name == "frac" || name == "dfrac" || name == "tfrac") {
-            MathNode n;
-            n.kind = MathKind::Frac;
-            n.children.push_back(ParseGroupOrAtom());
-            n.children.push_back(ParseGroupOrAtom());
-            return n;
-        }
-        if (name == "sqrt") {
-            MathNode n;
-            n.kind = MathKind::Sqrt;
-            n.children.push_back(ParseGroupOrAtom());
-            return n;
-        }
-        if (name == "text" || name == "mathrm" || name == "operatorname" || name == "mathbf") {
-            MathNode grp = ParseGroupOrAtom();
-            MathNode n;
-            n.kind = MathKind::Row;
-            /**
-             * @brief Returns a copy of `m` with italics forced off, for rendering \\text-like
-             * upright-run command bodies.
-             * @param m The node to copy.
-             * @return Copy of `m` with MathNode::italic cleared.
-             */
-            auto upright_copy = [](MathNode m) {
-                m.italic = false;
-                return m;
-            };
-            if (grp.kind == MathKind::Row) {
-                for (auto &c : grp.children) n.children.push_back(upright_copy(c));
-            } else {
-                n.children.push_back(upright_copy(grp));
-            }
-            return n;
-        }
-        auto it = SymbolTable().find(name);
-        if (it != SymbolTable().end()) {
-            MathNode n;
-            n.kind = MathKind::Text;
-            n.italic = false;
-            n.text = Utf8FromCodepoint(it->second);
-            return n;
-        }
-        // Unknown command -- show its name literally rather than dropping
-        // it silently, so an unrecognized macro is at least legible/
-        // debuggable instead of just vanishing from the equation.
-        MathNode n;
-        n.kind = MathKind::Text;
-        n.italic = false;
-        n.text = name;
-        return n;
-    }
-
-    // One atom, *without* consuming a trailing ^/_ (ParseRow attaches
-    // those to whatever atom precedes them).
-    /**
-     * @brief Parses one atom (a command, or a single literal character) without consuming a
-     * trailing ^/_ -- ParseRow attaches those to whatever atom precedes them.
-     * @return The parsed atom's math node.
-     */
-    MathNode ParseAtom() {
-        SkipSpace();
-        if (i >= s.size()) return MathNode{};
-        if (s[i] == '\\') return ParseCommand();
-        char c = s[i++];
-        MathNode n;
-        n.kind = MathKind::Text;
-        n.text = std::string(1, c);
-        n.italic = std::isalpha(static_cast<unsigned char>(c)) != 0;
-        return n;
-    }
-
-    // A left-to-right sequence of atoms (each optionally followed by ^/_),
-    // stopping at `end` (or end-of-string if `end` is '\0', the top-level
-    // call's own sentinel).
-    /**
-     * @brief Parses a left-to-right sequence of atoms, each optionally followed by ^/_, stopping
-     * at the `end` delimiter (or end-of-string if `end` is '\\0'). Recovers from a
-     * non-progressing parse by consuming one literal byte, so malformed/in-progress input can't
-     * stall the layout loop.
-     * @param end Delimiter character to stop before (or '\\0' to parse to end-of-string).
-     * @return The parsed row's math node.
-     */
-    MathNode ParseRow(char end) {
-        MathNode row;
-        row.kind = MathKind::Row;
-        while (true) {
-            SkipSpace();
-            if (i >= s.size() || (end != '\0' && s[i] == end)) break;
-            // Every parser branch is expected to consume input, but this is
-            // also exercised continuously while an Office user is typing an
-            // incomplete LaTeX expression. Keep that transient, malformed
-            // state fail-safe: one byte of literal text is better than an
-            // accidental non-progressing render loop freezing the UI.
-            const size_t before_atom = i;
-            MathNode atom = ParseGroupOrAtom();
-            if (i == before_atom) {
-                MathNode literal;
-                literal.kind = MathKind::Text;
-                literal.italic = false;
-                literal.text = std::string(1, s[i++]);
-                row.children.push_back(std::move(literal));
-                continue;
-            }
-            for (;;) {
-                SkipSpace();
-                if (i < s.size() && s[i] == '^') {
-                    i++;
-                    atom.sup.push_back(ParseGroupOrAtom());
-                } else if (i < s.size() && s[i] == '_') {
-                    i++;
-                    atom.sub.push_back(ParseGroupOrAtom());
-                } else {
-                    break;
-                }
-            }
-            row.children.push_back(std::move(atom));
-        }
-        return row;
-    }
-};
+/**
+ * @brief Checks whether a style suppresses the spacing table's parenthesized entries.
+ * @param s The style.
+ * @return True in script and scriptscript style.
+ */
+bool MathIsScriptStyle(MathStyle s) {
+    return s == MathStyle::Script || s == MathStyle::ScriptScript;
+}
 
 // A relative glyph run inside a laid-out math expression -- (rel_x, rel_y)
 // are offsets from the expression's own top-left, filled in once and never
@@ -33652,12 +33881,30 @@ struct MathParser {
 struct MathGlyphRun {
     float rel_x = 0, rel_y = 0, font_size = 0;
     std::string text;
-    bool italic = false;
+    const gfx::Font *font = nullptr;
 };
-// A horizontal bar (a fraction's rule, or a sqrt's overline), same
-// relative-offset convention as MathGlyphRun.
+// A \left..\right delimiter that had to grow past its natural size, drawn
+// from strokes rather than set from a glyph. Two reasons, and either alone
+// would be enough: a bitmap glyph scaled 3x vertically is visibly blurred
+// and wrongly weighted, and gfx::MultMatrix composes into the *3D*
+// renderer's matrix stack, which gfx::DrawTextEx (2D) never reads -- so
+// there is no transform to stretch a glyph with in the first place.
+enum class MathDelimKind { Paren, Bracket, Brace, Bar, DoubleBar, Floor, Ceil, Angle, Slash };
+struct MathDelimRun {
+    float rel_x = 0, rel_y = 0, w = 0, h = 0, thickness = 1;
+    MathDelimKind kind = MathDelimKind::Paren;
+    bool mirrored = false;  // the closing half of the pair
+};
+// A horizontal rule (a fraction's bar, an \overline, the top of a radical),
+// same relative-offset convention as MathGlyphRun.
 struct MathBarRun {
-    float rel_x = 0, rel_y = 0, w = 0;
+    float rel_x = 0, rel_y = 0, w = 0, thickness = 1;
+};
+// The two diagonal strokes of a radical sign, drawn rather than set from a
+// glyph so the sign actually grows with what it covers. Coordinates are
+// relative, like everything else here.
+struct MathRadicalRun {
+    float rel_x = 0, rel_y = 0, w = 0, h = 0, thickness = 1;
 };
 struct MathLayoutResult {
     float width = 0, height = 0;
@@ -33668,25 +33915,259 @@ struct MathLayoutResult {
     float baseline = 0;
     std::vector<MathGlyphRun> glyphs;
     std::vector<MathBarRun> bars;
+    std::vector<MathRadicalRun> radicals;
+    std::vector<MathDelimRun> delims;
 };
 
-MathLayoutResult LayoutMathAtom(const MathNode &n, float font_size);
+MathLayoutResult LayoutMathAtom(const MathNode &n, float base_size, MathStyle style);
+
+// Which baked face a glyph draws from. Liberation Serif carries the
+// letters, the digits, the Greek and most of the common operators, which
+// is what makes an equation read as an equation; the set-theory and logic
+// symbols it has no glyph for fall back to JetBrains Mono rather than to a
+// missing-glyph box (kMathSerifCodepoints, above, is the generated split).
+/**
+ * @brief Selects the baked font a math glyph run draws from.
+ * @param text The run's UTF-8 text (its first codepoint decides).
+ * @param face The face the parser asked for.
+ * @return Reference to the baked font to draw with.
+ */
+const gfx::Font &MathGlyphFont(const std::string &text, MathFace face) {
+    if (face == MathFace::Mono) return g_math_font;
+    int cp_size = 0;
+    const int cp = text.empty() ? 0 : gfx::GetCodepointNext(text.c_str(), &cp_size);
+    bool serif_has = cp < 0x80;
+    if (!serif_has) {
+        for (int c : kMathSerifCodepoints) {
+            if (c == cp) {
+                serif_has = true;
+                break;
+            }
+        }
+    }
+    // Only the fallback face has this glyph. It has no italic cut, so an
+    // italic symbol that lands here draws upright -- which in practice is
+    // never a variable: every ASCII letter and every Greek letter is in
+    // the serif set above, and what falls back is set theory and logic
+    // symbols, upright in any case.
+    if (!serif_has) return g_math_font;
+    switch (face) {
+        case MathFace::Italic:
+        case MathFace::BoldItalic:
+            return g_math_serif_italic_font;
+        case MathFace::Bold:
+            return g_math_serif_bold_font;
+        default:
+            return g_math_serif_font;
+    }
+}
+
+// The top and bottom of a run's actual *ink*, as offsets from the box
+// DrawTextEx would draw it in. Accents need this: `\hat{x}` and
+// `\hat{\beta}` must put the mark the same small distance above the
+// letter, and those two letters' ink tops are half an em apart. Read
+// straight out of the baked atlas (GlyphInfo::offsetY is the gap from the
+// line-box top to the glyph bitmap, Rectangle::height the bitmap's own
+// height), scaled from the bake size to the drawn size.
+/**
+ * @brief Measures the vertical extent of a run's ink within its drawn box.
+ * @param font The font the run draws from.
+ * @param text The run's UTF-8 text.
+ * @param size The drawn font size.
+ * @param out_top Set to the distance from the box top down to the first ink.
+ * @param out_bottom Set to the distance from the box top down to the last ink.
+ */
+void MathInkExtent(const gfx::Font &font, const std::string &text, float size, float *out_top, float *out_bottom) {
+    *out_top = size * 0.25f;
+    *out_bottom = size * 0.75f;
+    if (font.baseSize <= 0 || font.glyphs == nullptr || font.recs == nullptr || text.empty()) return;
+    const float scale = size / static_cast<float>(font.baseSize);
+    bool any = false;
+    float top = 0, bottom = 0;
+    for (size_t i = 0; i < text.size();) {
+        int cp_size = 1;
+        const int cp = gfx::GetCodepointNext(text.c_str() + i, &cp_size);
+        i += static_cast<size_t>(cp_size);
+        const int index = gfx::GetGlyphIndex(font, cp);
+        if (index < 0 || index >= font.glyphCount) continue;
+        const float glyph_top = static_cast<float>(font.glyphs[index].offsetY) * scale;
+        const float glyph_bottom = glyph_top + font.recs[index].height * scale;
+        top = any ? std::min(top, glyph_top) : glyph_top;
+        bottom = any ? std::max(bottom, glyph_bottom) : glyph_bottom;
+        any = true;
+    }
+    if (!any) return;
+    *out_top = top;
+    *out_bottom = bottom;
+}
+
+// Every vertical measurement in this engine is expressed against these two
+// numbers rather than against the font's own metrics: the faces involved
+// disagree (a JetBrains Mono fallback glyph and a Liberation Serif letter
+// have different ascents), and an equation only looks right if every piece
+// of it sits on one shared notion of where the baseline and the axis are.
+// kMathAxis is TeX's "math axis": the height a fraction bar and a minus
+// sign centre on, which is what every stacked construct here aligns to.
+constexpr float kMathBaselineRatio = 0.78f;  // top of the em box to the baseline
+constexpr float kMathAxisRatio = 0.25f;      // baseline up to the math axis
+
+/**
+ * @brief Pulls a laid-out box's contents down so nothing sits above its own top edge.
+ * @param m The layout to adjust in place.
+ */
+void MathNormalizeBox(MathLayoutResult *m) {
+    float min_y = 0;
+    for (const MathGlyphRun &g : m->glyphs) min_y = std::min(min_y, g.rel_y);
+    for (const MathBarRun &b : m->bars) min_y = std::min(min_y, b.rel_y);
+    for (const MathRadicalRun &r : m->radicals) min_y = std::min(min_y, r.rel_y);
+    for (const MathDelimRun &d : m->delims) min_y = std::min(min_y, d.rel_y);
+    if (min_y < 0) {
+        const float dy = -min_y;
+        for (MathGlyphRun &g : m->glyphs) g.rel_y += dy;
+        for (MathBarRun &b : m->bars) b.rel_y += dy;
+        for (MathRadicalRun &r : m->radicals) r.rel_y += dy;
+        for (MathDelimRun &d : m->delims) d.rel_y += dy;
+        m->baseline += dy;
+        m->height += dy;
+    }
+    for (const MathGlyphRun &g : m->glyphs) m->height = std::max(m->height, g.rel_y + g.font_size);
+    for (const MathBarRun &b : m->bars) m->height = std::max(m->height, b.rel_y + b.thickness);
+    for (const MathRadicalRun &r : m->radicals) m->height = std::max(m->height, r.rel_y + r.h);
+    for (const MathDelimRun &d : m->delims) m->height = std::max(m->height, d.rel_y + d.h);
+}
+
+/**
+ * @brief Copies one laid-out box's glyphs, bars and radicals into another at an offset.
+ * @param dst The layout to append to.
+ * @param src The layout to copy from.
+ * @param dx X offset to add to everything copied.
+ * @param dy Y offset to add to everything copied.
+ */
+void MathAppendShifted(MathLayoutResult *dst, const MathLayoutResult &src, float dx, float dy) {
+    for (MathGlyphRun g : src.glyphs) {
+        g.rel_x += dx;
+        g.rel_y += dy;
+        dst->glyphs.push_back(std::move(g));
+    }
+    for (MathBarRun b : src.bars) {
+        b.rel_x += dx;
+        b.rel_y += dy;
+        dst->bars.push_back(b);
+    }
+    for (MathRadicalRun r : src.radicals) {
+        r.rel_x += dx;
+        r.rel_y += dy;
+        dst->radicals.push_back(r);
+    }
+    for (MathDelimRun d : src.delims) {
+        d.rel_x += dx;
+        d.rel_y += dy;
+        dst->delims.push_back(d);
+    }
+}
+
+// The same measurement one level up: where a whole laid-out box's ink
+// starts and stops. An accent sits against the ink, not against the em
+// box, or `\bar{x}` floats half an em above the x.
+/**
+ * @brief Measures the vertical extent of a laid-out box's ink.
+ * @param m The laid-out box.
+ * @param out_top Set to the distance from the box top down to its first ink.
+ * @param out_bottom Set to the distance from the box top down to its last ink.
+ */
+void MathLayoutInkExtent(const MathLayoutResult &m, float *out_top, float *out_bottom) {
+    bool any = false;
+    float top = 0, bottom = 0;
+    auto note = [&](float t, float b) {
+        top = any ? std::min(top, t) : t;
+        bottom = any ? std::max(bottom, b) : b;
+        any = true;
+    };
+    for (const MathGlyphRun &g : m.glyphs) {
+        float gt = 0, gb = 0;
+        MathInkExtent(g.font ? *g.font : g_math_font, g.text, g.font_size, &gt, &gb);
+        note(g.rel_y + gt, g.rel_y + gb);
+    }
+    for (const MathBarRun &b : m.bars) note(b.rel_y, b.rel_y + b.thickness);
+    for (const MathRadicalRun &r : m.radicals) note(r.rel_y, r.rel_y + r.h);
+    for (const MathDelimRun &d : m.delims) note(d.rel_y, d.rel_y + d.h);
+    if (!any) {
+        *out_top = 0;
+        *out_bottom = m.height;
+        return;
+    }
+    *out_top = top;
+    *out_bottom = bottom;
+}
+
+// Whether an accent's base slants, so the mark can be nudged right to sit
+// over the letter's visual centre rather than over its advance width --
+// the difference between a readable `\hat{\beta}` and one whose hat has
+// slid off to the left.
+/**
+ * @brief Checks whether the first Text atom of a subtree is set in an italic face.
+ * @param n The node to inspect.
+ * @return True when the subtree's leading glyph slants.
+ */
+bool MathNodeIsItalic(const MathNode &n) {
+    if (n.kind == MathKind::Text && !n.text.empty()) {
+        return n.face == MathFace::Italic || n.face == MathFace::BoldItalic;
+    }
+    for (const MathNode &c : n.children) {
+        if (c.kind == MathKind::Text && c.text.empty()) continue;
+        return MathNodeIsItalic(c);
+    }
+    return false;
+}
+
+// A big operator's scripts, stacked over and under it rather than set
+// beside it -- what display style does to `\sum_{i=1}^{n}` and `\lim_{x \to
+// 0}`, and the single most recognisable thing about a displayed formula.
+/**
+ * @brief Stacks a term's scripts over and under its core, centered, for a display-style big operator.
+ * @param core The operator's own laid-out box.
+ * @param t The term, whose sup/sub are laid out here.
+ * @param base_size The expression's base font size.
+ * @param style The style the operator itself is set in.
+ * @return The combined box, its baseline still the operator's own.
+ */
+MathLayoutResult MathStackLimits(const MathLayoutResult &core, const MathNode &t, float base_size, MathStyle style) {
+    const MathStyle script_style = MathScriptStyle(style);
+    MathLayoutResult above = t.sup.empty() ? MathLayoutResult{} : LayoutMathAtom(t.sup[0], base_size, script_style);
+    MathLayoutResult below = t.sub.empty() ? MathLayoutResult{} : LayoutMathAtom(t.sub[0], base_size, script_style);
+    const float gap = base_size * 0.12f;
+    MathLayoutResult r;
+    r.width = std::max({core.width, above.width, below.width});
+    float y = 0;
+    if (!t.sup.empty()) {
+        MathAppendShifted(&r, above, (r.width - above.width) / 2.0f, y);
+        y += above.height + gap;
+    }
+    MathAppendShifted(&r, core, (r.width - core.width) / 2.0f, y);
+    r.baseline = y + core.baseline;
+    y += core.height;
+    if (!t.sub.empty()) {
+        y += gap;
+        MathAppendShifted(&r, below, (r.width - below.width) / 2.0f, y);
+        y += below.height;
+    }
+    r.height = y;
+    return r;
+}
 
 // Composes `terms` left-to-right, each already carrying its own optional
 // sup/sub (see MathNode::sup/sub), aligning every term's own baseline to
 // the row's shared (tallest-above-baseline) value.
 /**
  * @brief Lays out `terms` left-to-right, placing each term's own optional sup/sub scripts
- * relative to it and aligning every term's baseline to the row's shared (tallest-above-baseline)
- * value.
+ * relative to it and aligning every term's baseline to the row's shared value.
  * @param terms The sequence of math nodes to compose into one row.
- * @param font_size Base font size to lay out at; sup/sub scripts are shrunk relative to this.
+ * @param base_size The expression's base font size; each style's own size derives from it.
+ * @param style The style this row is set in.
  * @return The composed row's glyph runs, bar runs, size, and baseline.
  */
-MathLayoutResult LayoutMathRow(const std::vector<MathNode> &terms, float font_size) {
-    constexpr float kScriptScale = 0.7f;    // sup/sub shrink factor, roughly TeX's own scriptstyle ratio
-    constexpr float kScriptRaise = 0.55f;   // superscript raised this fraction of font_size above the baseline
-    constexpr float kScriptDrop = 0.18f;    // subscript dropped this fraction of font_size below the baseline
+MathLayoutResult LayoutMathRow(const std::vector<MathNode> &terms, float base_size, MathStyle style) {
+    const float font_size = base_size * MathStyleScale(style);
     struct Placed {
         MathLayoutResult layout;
         float x = 0;
@@ -33694,8 +34175,20 @@ MathLayoutResult LayoutMathRow(const std::vector<MathNode> &terms, float font_si
     std::vector<Placed> placed;
     float x = 0;
     float shared_baseline = 0;
+    const std::vector<MathClass> classes = MathRowClasses(terms);
+    const bool script_style = MathIsScriptStyle(style);
+    size_t term_index = 0;
+    size_t prev_atom_index = terms.size();  // "no atom yet"
     for (const MathNode &t : terms) {
-        MathLayoutResult core = LayoutMathAtom(t, font_size);
+        const size_t here = term_index++;
+        if (t.kind != MathKind::Space) {
+            if (prev_atom_index < terms.size()) {
+                const int units = MathAtomSpaceUnits(classes[prev_atom_index], classes[here], script_style);
+                x += static_cast<float>(units) / 18.0f * font_size;
+            }
+            prev_atom_index = here;
+        }
+        MathLayoutResult core = LayoutMathAtom(t, base_size, style);
         if (t.sup.empty() && t.sub.empty()) {
             shared_baseline = std::max(shared_baseline, core.baseline);
             placed.push_back({std::move(core), x});
@@ -33703,44 +34196,37 @@ MathLayoutResult LayoutMathRow(const std::vector<MathNode> &terms, float font_si
             continue;
         }
         MathLayoutResult combined;
-        float script_x = core.width + 1.0f;
-        float max_script_w = 0;
-        for (const auto &g : core.glyphs) combined.glyphs.push_back(g);
-        for (const auto &b : core.bars) combined.bars.push_back(b);
-        if (!t.sup.empty()) {
-            MathLayoutResult sup = LayoutMathAtom(t.sup[0], font_size * kScriptScale);
-            float sup_y = core.baseline - font_size * kScriptRaise - sup.baseline;
-            for (auto g : sup.glyphs) {
-                g.rel_x += script_x;
-                g.rel_y += sup_y;
-                combined.glyphs.push_back(g);
+        if (t.limits_above && style == MathStyle::Display) {
+            combined = MathStackLimits(core, t, base_size, style);
+        } else {
+            // TeX's own script shifts, as fractions of the *base* size so
+            // a script never drifts as the nesting deepens: the
+            // superscript's baseline sits 0.45em above its base's, the
+            // subscript's 0.2em below, and each is pushed further out if
+            // the base is tall enough to need it (a fraction with a
+            // superscript, say).
+            const MathStyle script_style_here = MathScriptStyle(style);
+            const float axis = font_size * kMathAxisRatio;
+            const float script_x = core.width + font_size * 0.02f;
+            float max_script_w = 0;
+            MathAppendShifted(&combined, core, 0, 0);
+            if (!t.sup.empty()) {
+                MathLayoutResult sup = LayoutMathAtom(t.sup[0], base_size, script_style_here);
+                float shift = std::max(font_size * 0.45f, core.baseline - axis * 1.2f);
+                MathAppendShifted(&combined, sup, script_x, core.baseline - shift - sup.baseline);
+                max_script_w = std::max(max_script_w, sup.width);
             }
-            for (auto b : sup.bars) {
-                b.rel_x += script_x;
-                b.rel_y += sup_y;
-                combined.bars.push_back(b);
+            if (!t.sub.empty()) {
+                MathLayoutResult sub = LayoutMathAtom(t.sub[0], base_size, script_style_here);
+                float drop = std::max(font_size * 0.2f, core.height - core.baseline + font_size * 0.05f);
+                MathAppendShifted(&combined, sub, script_x, core.baseline + drop - sub.baseline);
+                max_script_w = std::max(max_script_w, sub.width);
             }
-            max_script_w = std::max(max_script_w, sup.width);
+            combined.width = script_x + max_script_w;
+            combined.baseline = core.baseline;
+            combined.height = core.height;
         }
-        if (!t.sub.empty()) {
-            MathLayoutResult sub = LayoutMathAtom(t.sub[0], font_size * kScriptScale);
-            float sub_y = core.baseline + font_size * kScriptDrop - sub.baseline;
-            for (auto g : sub.glyphs) {
-                g.rel_x += script_x;
-                g.rel_y += sub_y;
-                combined.glyphs.push_back(g);
-            }
-            for (auto b : sub.bars) {
-                b.rel_x += script_x;
-                b.rel_y += sub_y;
-                combined.bars.push_back(b);
-            }
-            max_script_w = std::max(max_script_w, sub.width);
-        }
-        combined.width = script_x + max_script_w;
-        combined.baseline = core.baseline;
-        combined.height = core.height;
-        for (const auto &g : combined.glyphs) combined.height = std::max(combined.height, g.rel_y + g.font_size);
+        MathNormalizeBox(&combined);
         shared_baseline = std::max(shared_baseline, combined.baseline);
         placed.push_back({std::move(combined), x});
         x += placed.back().layout.width;
@@ -33749,108 +34235,340 @@ MathLayoutResult LayoutMathRow(const std::vector<MathNode> &terms, float font_si
     row.width = x;
     float max_below = 0;
     for (const Placed &p : placed) {
-        float dy = shared_baseline - p.layout.baseline;
-        for (auto g : p.layout.glyphs) {
-            g.rel_x += p.x;
-            g.rel_y += dy;
-            row.glyphs.push_back(g);
-        }
-        for (auto b : p.layout.bars) {
-            b.rel_x += p.x;
-            b.rel_y += dy;
-            row.bars.push_back(b);
-        }
+        const float dy = shared_baseline - p.layout.baseline;
+        MathAppendShifted(&row, p.layout, p.x, dy);
         max_below = std::max(max_below, p.layout.height - p.layout.baseline + dy);
     }
     row.baseline = shared_baseline;
     row.height = shared_baseline + max_below;
+    MathNormalizeBox(&row);
     return row;
+}
+
+// Which delimiters this engine can draw at an arbitrary height. Anything
+// not here (a stray `/`, an unusual symbol) is set from its glyph at its
+// natural size, exactly as before.
+/**
+ * @brief Maps a delimiter's UTF-8 bytes to the stroked shape that can be drawn at any height.
+ * @param delim The delimiter.
+ * @param out_kind Set to the shape to draw.
+ * @param out_mirrored Set to true for the closing half of a pair.
+ * @return True when this delimiter can be stretched.
+ */
+bool MathDelimShape(const std::string &delim, MathDelimKind *out_kind, bool *out_mirrored) {
+    struct Entry {
+        const char *text;
+        MathDelimKind kind;
+        bool mirrored;
+    };
+    static const Entry kShapes[] = {
+        {"(", MathDelimKind::Paren, false},      {")", MathDelimKind::Paren, true},
+        {"[", MathDelimKind::Bracket, false},    {"]", MathDelimKind::Bracket, true},
+        {"{", MathDelimKind::Brace, false},      {"}", MathDelimKind::Brace, true},
+        {"|", MathDelimKind::Bar, false},        {"\xe2\x80\x96", MathDelimKind::DoubleBar, false},
+        {"\xe2\x8c\x8a", MathDelimKind::Floor, false},  {"\xe2\x8c\x8b", MathDelimKind::Floor, true},
+        {"\xe2\x8c\x88", MathDelimKind::Ceil, false},   {"\xe2\x8c\x89", MathDelimKind::Ceil, true},
+        {"\xe2\x9f\xa8", MathDelimKind::Angle, false},  {"\xe2\x9f\xa9", MathDelimKind::Angle, true},
+        {"/", MathDelimKind::Slash, false},      {"\\", MathDelimKind::Slash, true},
+    };
+    for (const Entry &e : kShapes) {
+        if (delim == e.text) {
+            *out_kind = e.kind;
+            *out_mirrored = e.mirrored;
+            return true;
+        }
+    }
+    return false;
+}
+
+// One delimiter of a \left..\right pair, at whatever height its body
+// turned out to need and centred on the math axis, the way TeX centres its
+// own extensible delimiters. Up to its natural size it is the font's own
+// glyph; past that it is stroked (see MathDelimRun).
+/**
+ * @brief Appends one delimiter to a layout, grown to `needed_h` and centered on the math axis.
+ * @param out The layout to append to.
+ * @param delim The delimiter's UTF-8 bytes (nothing is appended when empty).
+ * @param x The delimiter's left edge.
+ * @param axis_y The y of the math axis the delimiter centers on.
+ * @param needed_h The height the delimiter must span.
+ * @param font_size The natural font size of the surrounding row.
+ * @return The delimiter's advance width.
+ */
+float MathAppendDelimiter(MathLayoutResult *out, const std::string &delim, float x, float axis_y, float needed_h,
+                          float font_size) {
+    if (delim.empty()) return 0;
+    const gfx::Font &font = MathGlyphFont(delim, MathFace::Upright);
+    const float natural_w = gfx::MeasureTextEx(font, delim.c_str(), font_size, 0).x;
+    MathDelimKind kind = MathDelimKind::Paren;
+    bool mirrored = false;
+    if (needed_h > font_size * 1.05f && MathDelimShape(delim, &kind, &mirrored)) {
+        MathDelimRun d;
+        d.kind = kind;
+        d.mirrored = mirrored;
+        d.h = needed_h;
+        // Delimiters widen as they grow, but far more slowly than they
+        // grow tall -- a paren scaled uniformly to three lines reads as a
+        // bracket.
+        d.w = std::max(natural_w, std::min(font_size * 0.52f, needed_h * 0.2f));
+        d.thickness = std::max(1.0f, font_size * 0.055f);
+        d.rel_x = x;
+        d.rel_y = axis_y - needed_h / 2.0f;
+        out->delims.push_back(d);
+        return d.w + font_size * 0.06f;
+    }
+    MathGlyphRun g;
+    g.text = delim;
+    g.font_size = font_size;
+    g.font = &font;
+    g.rel_x = x;
+    // A glyph's baseline sits kMathBaselineRatio down its em box; place the
+    // box so the middle of the delimiter lands on the axis.
+    g.rel_y = axis_y - (font_size * kMathBaselineRatio - font_size * kMathAxisRatio);
+    out->glyphs.push_back(std::move(g));
+    return natural_w;
 }
 
 // Lays out `n` itself (ignoring any sup/sub attached to it -- LayoutMathRow
 // composes those onto whichever row this atom is a term of).
 /**
- * @brief Lays out node `n` itself (Row delegates to LayoutMathRow; Frac stacks numerator over
- * denominator with a dividing bar; Sqrt draws a radical glyph plus overline before the radicand;
- * Text measures and places one glyph run), ignoring any sup/sub attached to `n` -- LayoutMathRow
- * composes those onto whichever row this atom is a term of.
+ * @brief Lays out node `n` itself, ignoring any sup/sub attached to it.
  * @param n The math node to lay out.
- * @param font_size Font size to lay out at.
+ * @param base_size The expression's base font size.
+ * @param style The style `n` is set in.
  * @return The laid-out node's glyph runs, bar runs, size, and baseline.
  */
-MathLayoutResult LayoutMathAtom(const MathNode &n, float font_size) {
+MathLayoutResult LayoutMathAtom(const MathNode &n, float base_size, MathStyle style) {
+    const float font_size = base_size * MathStyleScale(style);
     switch (n.kind) {
         case MathKind::Row:
-            return LayoutMathRow(n.children, font_size);
+            return LayoutMathRow(n.children, base_size, style);
+        case MathKind::Phantom: {
+            MathLayoutResult inner =
+                n.children.empty() ? MathLayoutResult{} : LayoutMathAtom(n.children[0], base_size, style);
+            inner.glyphs.clear();
+            inner.bars.clear();
+            inner.radicals.clear();
+            inner.delims.clear();
+            return inner;
+        }
         case MathKind::Frac: {
-            constexpr float kFracScale = 0.92f;
-            float sub_fs = font_size * kFracScale;
-            MathLayoutResult num = n.children.size() > 0 ? LayoutMathAtom(n.children[0], sub_fs) : MathLayoutResult{};
-            MathLayoutResult den = n.children.size() > 1 ? LayoutMathAtom(n.children[1], sub_fs) : MathLayoutResult{};
-            float gap = std::max(2.0f, font_size * 0.12f);
-            float w = std::max(num.width, den.width) + 6.0f;
+            const MathStyle inner_style = MathFracStyle(style);
+            MathLayoutResult num =
+                n.children.size() > 0 ? LayoutMathAtom(n.children[0], base_size, inner_style) : MathLayoutResult{};
+            MathLayoutResult den =
+                n.children.size() > 1 ? LayoutMathAtom(n.children[1], base_size, inner_style) : MathLayoutResult{};
+            const float rule = std::max(1.0f, font_size * 0.045f);
+            // TeX's own clearances, generous in display style and tight in
+            // the others -- this is most of what makes a displayed
+            // fraction read as one and an inline one stay on its line.
+            const float gap = style == MathStyle::Display ? font_size * 0.18f : font_size * 0.09f;
+            const float pad = font_size * 0.12f;
             MathLayoutResult r;
-            r.width = w;
-            float num_x = (w - num.width) / 2.0f;
-            float den_x = (w - den.width) / 2.0f;
-            for (auto g : num.glyphs) {
-                g.rel_x += num_x;
-                r.glyphs.push_back(g);
-            }
-            for (auto b : num.bars) {
-                b.rel_x += num_x;
-                r.bars.push_back(b);
-            }
-            float bar_y = num.height + gap;
-            r.bars.push_back({0, bar_y, w});
-            float den_y = bar_y + gap;
-            for (auto g : den.glyphs) {
-                g.rel_x += den_x;
-                g.rel_y += den_y;
-                r.glyphs.push_back(g);
-            }
-            for (auto b : den.bars) {
-                b.rel_x += den_x;
-                b.rel_y += den_y;
-                r.bars.push_back(b);
-            }
+            r.width = std::max(num.width, den.width) + 2 * pad;
+            const float bar_y = num.height + gap;
+            MathAppendShifted(&r, num, (r.width - num.width) / 2.0f, 0);
+            if (n.frac_bar) r.bars.push_back({pad * 0.5f, bar_y, r.width - pad, rule});
+            const float den_y = bar_y + rule + gap;
+            MathAppendShifted(&r, den, (r.width - den.width) / 2.0f, den_y);
             r.height = den_y + den.height;
-            r.baseline = bar_y + gap * 0.4f;
+            // The bar sits on the math axis, which is what puts the whole
+            // fraction at the right height next to the rest of the row.
+            r.baseline = bar_y + rule / 2.0f + font_size * kMathAxisRatio;
             return r;
         }
         case MathKind::Sqrt: {
-            MathLayoutResult inner = n.children.empty() ? MathLayoutResult{} : LayoutMathAtom(n.children[0], font_size);
-            std::string radical = Utf8FromCodepoint(0x221a);
-            float rad_w = gfx::MeasureTextEx(g_math_font, radical.c_str(), font_size, 0).x;
-            constexpr float kOverlineGap = 3.0f;
+            MathLayoutResult inner =
+                n.children.empty() ? MathLayoutResult{} : LayoutMathAtom(n.children[0], base_size, style);
+            // Drawn, not set from a glyph: a fixed-size U+221A next to a
+            // two-line radicand is the one thing that reads as broken
+            // however good everything around it is.
+            const float rule = std::max(1.0f, font_size * 0.045f);
+            const float clearance = font_size * 0.12f;
+            const float pad = font_size * 0.1f;
+            const float body_h = inner.height + clearance;
+            const float rad_w = font_size * 0.55f;
             MathLayoutResult r;
-            float pad = 3.0f;
             r.width = rad_w + pad + inner.width + pad;
-            r.glyphs.push_back({0, kOverlineGap, font_size, radical, false});
-            for (auto g : inner.glyphs) {
-                g.rel_x += rad_w + pad;
-                g.rel_y += kOverlineGap;
-                r.glyphs.push_back(g);
+            r.radicals.push_back({0, 0, rad_w, body_h + rule, rule});
+            r.bars.push_back({rad_w, 0, inner.width + 2 * pad, rule});
+            MathAppendShifted(&r, inner, rad_w + pad, rule + clearance);
+            r.height = rule + clearance + inner.height;
+            r.baseline = rule + clearance + inner.baseline;
+            return r;
+        }
+        case MathKind::Fenced: {
+            MathLayoutResult body =
+                n.children.empty() ? MathLayoutResult{} : LayoutMathAtom(n.children[0], base_size, style);
+            const float axis_y = body.baseline - font_size * kMathAxisRatio;
+            // How far the body reaches from the axis, doubled: a delimiter
+            // is symmetric about the axis, so the taller half sets both.
+            const float reach = std::max(axis_y, body.height - axis_y);
+            const float needed = std::max(font_size, 2.0f * reach * 1.04f);
+            MathLayoutResult r;
+            float x = MathAppendDelimiter(&r, n.open_delim, 0, axis_y, needed, font_size);
+            MathAppendShifted(&r, body, x, 0);
+            x += body.width;
+            x += MathAppendDelimiter(&r, n.close_delim, x, axis_y, needed, font_size);
+            r.width = x;
+            r.baseline = body.baseline;
+            r.height = body.height;
+            MathNormalizeBox(&r);
+            return r;
+        }
+        case MathKind::Accent: {
+            MathLayoutResult base =
+                n.children.empty() ? MathLayoutResult{} : LayoutMathAtom(n.children[0], base_size, style);
+            const float rule = std::max(1.0f, font_size * 0.045f);
+            const float gap = font_size * 0.11f;
+            // The mark hangs off the base's *ink*, so that `\bar{x}` and
+            // `\bar{A}` both clear their letter by the same hair rather
+            // than by however tall that letter's em box happens to be.
+            float ink_top = 0, ink_bottom = base.height;
+            MathLayoutInkExtent(base, &ink_top, &ink_bottom);
+            MathLayoutResult r;
+            r.width = base.width;
+            r.baseline = base.baseline;
+            r.height = base.height;
+            MathAppendShifted(&r, base, 0, 0);
+            if (n.accent.empty()) {
+                // \overline / \underline: a rule the base's full width.
+                if (n.accent_below) {
+                    r.bars.push_back({0, ink_bottom + gap, base.width, rule});
+                } else {
+                    r.bars.push_back({0, ink_top - gap - rule, base.width, rule});
+                }
+                MathNormalizeBox(&r);
+                return r;
             }
-            for (auto b : inner.bars) {
-                b.rel_x += rad_w + pad;
-                b.rel_y += kOverlineGap;
-                r.bars.push_back(b);
+            const gfx::Font &font = MathGlyphFont(n.accent, MathFace::Upright);
+            // A stretchy accent (\widehat) grows with the base, up to the
+            // point where it would look like a tent rather than a hat.
+            const float mark_size =
+                n.accent_stretch ? std::min(font_size * 2.0f, std::max(font_size, base.width * 1.1f)) : font_size;
+            const float mark_w = gfx::MeasureTextEx(font, n.accent.c_str(), mark_size, 0).x;
+            float mark_ink_top = 0, mark_ink_bottom = mark_size;
+            MathInkExtent(font, n.accent, mark_size, &mark_ink_top, &mark_ink_bottom);
+            // An italic base's ink leans right of its advance box, so the
+            // mark has to follow it or it sits off the letter's shoulder.
+            const float italic_shift =
+                MathNodeIsItalic(n.children.empty() ? n : n.children[0]) ? font_size * 0.07f : 0.0f;
+            MathGlyphRun mark;
+            mark.text = n.accent;
+            mark.font_size = mark_size;
+            mark.font = &font;
+            mark.rel_x = std::max(0.0f, (base.width - mark_w) / 2.0f) + italic_shift;
+            if (n.accent_below) {
+                mark.rel_y = ink_bottom + gap - mark_ink_top;
+            } else {
+                mark.rel_y = ink_top - gap - mark_ink_bottom;
             }
-            r.bars.push_back({rad_w, kOverlineGap, inner.width + pad});
-            r.height = kOverlineGap + std::max(font_size, inner.height);
-            r.baseline = kOverlineGap + inner.baseline;
+            r.width = std::max(base.width, mark.rel_x + mark_w);
+            // Only the mark's ink counts toward the box, not the empty top
+            // half of its em square -- otherwise every accented letter
+            // reserves half a line of air it never draws in.
+            const float mark_top = mark.rel_y + mark_ink_top;
+            const float mark_bottom = mark.rel_y + mark_ink_bottom;
+            r.glyphs.push_back(std::move(mark));
+            if (mark_top < 0) {
+                const float dy = -mark_top;
+                for (MathGlyphRun &g : r.glyphs) g.rel_y += dy;
+                for (MathBarRun &b : r.bars) b.rel_y += dy;
+                for (MathRadicalRun &rad : r.radicals) rad.rel_y += dy;
+                for (MathDelimRun &d : r.delims) d.rel_y += dy;
+                r.baseline += dy;
+                r.height += dy;
+            }
+            r.height = std::max(r.height, mark_bottom + std::max(0.0f, -mark_top));
+            return r;
+        }
+        case MathKind::Matrix: {
+            // A plain grid: every column as wide as its widest cell, every
+            // row as tall as its tallest, with the whole thing centred on
+            // the math axis so a fenced matrix's brackets wrap it evenly.
+            const int cols = std::max(1, n.cols);
+            const int rows = cols > 0 ? static_cast<int>((n.cells.size() + static_cast<size_t>(cols) - 1) /
+                                                         static_cast<size_t>(cols))
+                                      : 0;
+            const MathStyle cell_style = style == MathStyle::Display ? MathStyle::Text : style;
+            std::vector<MathLayoutResult> cells;
+            cells.reserve(n.cells.size());
+            for (const MathNode &c : n.cells) cells.push_back(LayoutMathAtom(c, base_size, cell_style));
+            std::vector<float> col_w(static_cast<size_t>(cols), 0.0f);
+            std::vector<float> row_h(static_cast<size_t>(std::max(rows, 0)), 0.0f);
+            std::vector<float> row_base(static_cast<size_t>(std::max(rows, 0)), 0.0f);
+            for (size_t k = 0; k < cells.size(); k++) {
+                const size_t c = k % static_cast<size_t>(cols);
+                const size_t rr = k / static_cast<size_t>(cols);
+                col_w[c] = std::max(col_w[c], cells[k].width);
+                row_base[rr] = std::max(row_base[rr], cells[k].baseline);
+            }
+            for (size_t k = 0; k < cells.size(); k++) {
+                const size_t rr = k / static_cast<size_t>(cols);
+                row_h[rr] = std::max(row_h[rr], row_base[rr] + (cells[k].height - cells[k].baseline));
+            }
+            const float col_gap = font_size * 0.45f;
+            const float row_gap = font_size * 0.28f;
+            MathLayoutResult r;
+            float total_w = 0;
+            for (size_t c = 0; c < col_w.size(); c++) {
+                total_w += col_w[c];
+                if (c + 1 < col_w.size()) total_w += col_gap;
+            }
+            float y = 0;
+            for (size_t rr = 0; rr < row_h.size(); rr++) {
+                float x = 0;
+                for (size_t c = 0; c < col_w.size(); c++) {
+                    const size_t k = rr * static_cast<size_t>(cols) + c;
+                    if (k < cells.size()) {
+                        const float cell_x = n.cells_left_align ? x : x + (col_w[c] - cells[k].width) / 2.0f;
+                        MathAppendShifted(&r, cells[k], cell_x, y + row_base[rr] - cells[k].baseline);
+                    }
+                    x += col_w[c] + col_gap;
+                }
+                y += row_h[rr];
+                if (rr + 1 < row_h.size()) y += row_gap;
+            }
+            r.width = total_w;
+            r.height = y;
+            // Centre the grid on the axis: half its height above, half below.
+            r.baseline = y / 2.0f + font_size * kMathAxisRatio;
+            return r;
+        }
+        case MathKind::Space: {
+            // Pure advance: no glyph, but a baseline so the row it sits in
+            // still aligns around it.
+            MathLayoutResult r;
+            r.width = n.space_em * font_size;
+            r.height = font_size;
+            r.baseline = font_size * kMathBaselineRatio;
             return r;
         }
         case MathKind::Text:
         default: {
             MathLayoutResult r;
             if (n.text.empty()) return r;
-            gfx::Vector2 sz = gfx::MeasureTextEx(g_math_font, n.text.c_str(), font_size, 0);
-            r.width = sz.x;
-            r.height = font_size;
-            r.baseline = font_size * 0.78f;  // approximates cap-height-to-baseline for this bake
-            r.glyphs.push_back({0, 0, font_size, n.text, n.italic});
+            // A big operator is drawn oversized in display style -- TeX
+            // keeps two cuts of every one of them and this engine has one,
+            // so it scales the glyph instead.
+            const float glyph_size = n.big_op && style == MathStyle::Display ? font_size * 1.6f : font_size;
+            const gfx::Font &font = MathGlyphFont(n.text, n.face);
+            MathGlyphRun g;
+            g.text = n.text;
+            g.font_size = glyph_size;
+            g.font = &font;
+            r.width = gfx::MeasureTextEx(font, n.text.c_str(), glyph_size, 0).x;
+            r.height = glyph_size;
+            r.baseline = glyph_size * kMathBaselineRatio;
+            if (n.big_op) {
+                // Centre a big operator on the math axis rather than
+                // sitting it on the baseline, the way TeX does: an
+                // oversized sigma that grows only downwards looks dropped.
+                const float axis_shift = (glyph_size - font_size) * 0.5f;
+                r.baseline = glyph_size * kMathBaselineRatio - axis_shift;
+                g.rel_y = 0;
+            }
+            r.glyphs.push_back(std::move(g));
             return r;
         }
     }
@@ -33862,25 +34580,115 @@ MathLayoutResult LayoutMathAtom(const MathNode &n, float font_size) {
 // degrades to plain-looking text (see ParseCommand's own fallback) rather
 // than failing outright, same tolerance as the rest of this HTML renderer.
 /**
- * @brief Entry point that parses and lays out one \\(..\\)/\\[..\\]/$..$/$$..$$ span's raw LaTeX
- * source (delimiters already stripped by ExtractMathSpans) at `font_size`. Always succeeds --
- * an unparseable/unknown construct degrades to plain-looking text rather than failing outright.
+ * @brief Parses and lays out one math span's raw LaTeX source at `font_size`.
+ * @param latex The raw LaTeX math source, with delimiters already stripped.
+ * @param font_size Font size to lay out at.
+ * @param display True for a `\\[..\\]`/`$$..$$` span, which is set in display style.
+ * @return The laid-out expression's glyph runs, bar runs, size, and baseline.
+ */
+MathLayoutResult LayoutMathExpression(const std::string &latex, float font_size, bool display) {
+    return LayoutMathAtom(ParseTexMath(latex), font_size, display ? MathStyle::Display : MathStyle::Text);
+}
+
+/**
+ * @brief Parses and lays out one inline math span's raw LaTeX source at `font_size`.
  * @param latex The raw LaTeX math source, with delimiters already stripped.
  * @param font_size Font size to lay out at.
  * @return The laid-out expression's glyph runs, bar runs, size, and baseline.
  */
 MathLayoutResult LayoutMathExpression(const std::string &latex, float font_size) {
-    MathParser parser(latex);
-    MathNode top = parser.ParseRow('\0');
-    return LayoutMathAtom(top, font_size);
+    return LayoutMathExpression(latex, font_size, false);
 }
 
-// Same shear-for-italic technique as DrawHtmlRun (below) -- bare variables
-// (MathNode::italic) draw slanted, matching standard math-mode convention;
-// symbols/digits/operators stay upright.
+// A quadratic Bezier, stroked as a short polyline -- enough segments that
+// a delimiter's curve reads as a curve at any size this engine draws at.
 /**
- * @brief Draws a laid-out math expression's glyph runs and bar runs at (x, y), shearing italic
- * glyph runs to slant them the same way DrawHtmlRun does for italic text.
+ * @brief Strokes a quadratic Bezier curve as a polyline.
+ * @param a Start point.
+ * @param b Control point.
+ * @param c End point.
+ * @param thick Stroke width.
+ * @param color Stroke color.
+ */
+void DrawMathCurve(gfx::Vector2 a, gfx::Vector2 b, gfx::Vector2 c, float thick, gfx::Color color) {
+    constexpr int kSegments = 14;
+    gfx::Vector2 prev = a;
+    for (int i = 1; i <= kSegments; i++) {
+        const float t = static_cast<float>(i) / static_cast<float>(kSegments);
+        const float u = 1.0f - t;
+        const gfx::Vector2 p{u * u * a.x + 2 * u * t * b.x + t * t * c.x,
+                             u * u * a.y + 2 * u * t * b.y + t * t * c.y};
+        gfx::DrawLineEx(prev, p, thick, color);
+        prev = p;
+    }
+}
+
+// One stretched \left..\right delimiter, stroked into the box the layout
+// reserved for it. `mirrored` flips the shape horizontally, so each pair is
+// described once.
+/**
+ * @brief Strokes one stretchy delimiter into its reserved box.
+ * @param d The delimiter run, already positioned.
+ * @param x X offset of the enclosing layout.
+ * @param y Y offset of the enclosing layout.
+ * @param color Stroke color.
+ */
+void DrawMathDelimiter(const MathDelimRun &d, float x, float y, gfx::Color color) {
+    const float top = y + d.rel_y;
+    const float bottom = top + d.h;
+    const float mid = (top + bottom) / 2.0f;
+    const float thick = std::max(1.0f, d.thickness);
+    // Everything below is written for the opening half and read through
+    // `at`, which mirrors a 0..1 horizontal position for the closing one.
+    const float left = x + d.rel_x;
+    auto at = [&](float u) { return left + (d.mirrored ? 1.0f - u : u) * d.w; };
+    switch (d.kind) {
+        case MathDelimKind::Paren:
+            DrawMathCurve({at(0.82f), top}, {at(0.02f), mid}, {at(0.82f), bottom}, thick, color);
+            break;
+        case MathDelimKind::Bracket:
+            gfx::DrawLineEx({at(0.3f), top}, {at(0.3f), bottom}, thick, color);
+            gfx::DrawLineEx({at(0.3f), top + thick * 0.5f}, {at(0.85f), top + thick * 0.5f}, thick, color);
+            gfx::DrawLineEx({at(0.3f), bottom - thick * 0.5f}, {at(0.85f), bottom - thick * 0.5f}, thick, color);
+            break;
+        case MathDelimKind::Brace: {
+            // Four arcs: the two outer curls and the two that meet at the
+            // middle spike, which is what makes a brace a brace.
+            const float q1 = top + (mid - top) * 0.5f;
+            const float q2 = bottom - (bottom - mid) * 0.5f;
+            DrawMathCurve({at(0.9f), top}, {at(0.45f), top}, {at(0.45f), q1}, thick, color);
+            DrawMathCurve({at(0.45f), q1}, {at(0.45f), mid}, {at(0.05f), mid}, thick, color);
+            DrawMathCurve({at(0.05f), mid}, {at(0.45f), mid}, {at(0.45f), q2}, thick, color);
+            DrawMathCurve({at(0.45f), q2}, {at(0.45f), bottom}, {at(0.9f), bottom}, thick, color);
+            break;
+        }
+        case MathDelimKind::Bar:
+            gfx::DrawLineEx({at(0.5f), top}, {at(0.5f), bottom}, thick, color);
+            break;
+        case MathDelimKind::DoubleBar:
+            gfx::DrawLineEx({at(0.3f), top}, {at(0.3f), bottom}, thick, color);
+            gfx::DrawLineEx({at(0.7f), top}, {at(0.7f), bottom}, thick, color);
+            break;
+        case MathDelimKind::Floor:
+            gfx::DrawLineEx({at(0.3f), top}, {at(0.3f), bottom}, thick, color);
+            gfx::DrawLineEx({at(0.3f), bottom - thick * 0.5f}, {at(0.85f), bottom - thick * 0.5f}, thick, color);
+            break;
+        case MathDelimKind::Ceil:
+            gfx::DrawLineEx({at(0.3f), top}, {at(0.3f), bottom}, thick, color);
+            gfx::DrawLineEx({at(0.3f), top + thick * 0.5f}, {at(0.85f), top + thick * 0.5f}, thick, color);
+            break;
+        case MathDelimKind::Angle:
+            gfx::DrawLineEx({at(0.9f), top}, {at(0.1f), mid}, thick, color);
+            gfx::DrawLineEx({at(0.1f), mid}, {at(0.9f), bottom}, thick, color);
+            break;
+        case MathDelimKind::Slash:
+            gfx::DrawLineEx({at(0.1f), bottom}, {at(0.9f), top}, thick, color);
+            break;
+    }
+}
+
+/**
+ * @brief Draws a laid-out math expression's glyphs, rules, radicals and delimiters at (x, y).
  * @param x X offset to draw the layout's origin at.
  * @param y Y offset to draw the layout's origin at.
  * @param m The laid-out expression to draw (from LayoutMathExpression/LayoutMathAtom).
@@ -33889,31 +34697,25 @@ MathLayoutResult LayoutMathExpression(const std::string &latex, float font_size)
 void DrawMathLayout(float x, float y, const MathLayoutResult &m, gfx::Color color) {
     for (const MathGlyphRun &g : m.glyphs) {
         if (g.text.empty()) continue;
-        gfx::Vector2 pos{x + g.rel_x, y + g.rel_y};
-        if (!g.italic) {
-            gfx::DrawTextEx(g_math_font, g.text.c_str(), pos, g.font_size, 0, color);
-            continue;
-        }
-        gfx::PushMatrix();
-        float baseline_y = pos.y + g.font_size;
-        gfx::TranslateMatrix(pos.x, baseline_y, 0);
-        // clang-format off
-        const float shear[16] = {
-            1.0f,   0.0f, 0.0f, 0.0f,
-            -0.22f, 1.0f, 0.0f, 0.0f,
-            0.0f,   0.0f, 1.0f, 0.0f,
-            0.0f,   0.0f, 0.0f, 1.0f,
-        };
-        // clang-format on
-        gfx::MultMatrix(shear);
-        gfx::TranslateMatrix(-pos.x, -baseline_y, 0);
-        gfx::DrawTextEx(g_math_font, g.text.c_str(), pos, g.font_size, 0, color);
-        gfx::PopMatrix();
+        const gfx::Font &font = g.font ? *g.font : g_math_font;
+        gfx::DrawTextEx(font, g.text.c_str(), gfx::Vector2{x + g.rel_x, y + g.rel_y}, g.font_size, 0, color);
     }
     for (const MathBarRun &b : m.bars) {
-        gfx::DrawRectangle(static_cast<int>(x + b.rel_x), static_cast<int>(y + b.rel_y), static_cast<int>(std::max(1.0f, b.w)),
-                      1, color);
+        gfx::DrawRectangle(static_cast<int>(x + b.rel_x), static_cast<int>(y + b.rel_y),
+                           static_cast<int>(std::max(1.0f, b.w)), static_cast<int>(std::max(1.0f, b.thickness)), color);
     }
+    // The radical sign: a short rising stroke into a tall descending one,
+    // meeting the overline (a MathBarRun, drawn above) at the top right.
+    for (const MathRadicalRun &r : m.radicals) {
+        const float left = x + r.rel_x;
+        const float top = y + r.rel_y;
+        const float bottom = top + r.h;
+        const float thick = std::max(1.0f, r.thickness);
+        gfx::DrawLineEx({left, bottom - r.h * 0.38f}, {left + r.w * 0.32f, bottom - r.h * 0.18f}, thick, color);
+        gfx::DrawLineEx({left + r.w * 0.32f, bottom - r.h * 0.18f}, {left + r.w * 0.55f, bottom}, thick, color);
+        gfx::DrawLineEx({left + r.w * 0.55f, bottom}, {left + r.w, top + thick * 0.5f}, thick, color);
+    }
+    for (const MathDelimRun &d : m.delims) DrawMathDelimiter(d, x, y, color);
 }
 
 // --- HTML-preview pane layout ---------------------------------------------
@@ -34230,8 +35032,22 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
      */
     auto word_line_height = [](const HtmlPendingWord &w) -> float {
         if (w.is_image) return w.image_h + 6.0f;
-        if (w.is_math) return std::max(w.math.height, w.font_size) + 6.0f;
+        if (w.is_math) return w.math.height + 6.0f;
         return w.line_height > 0.0f ? w.line_height : HtmlLineHeight(w.font_size);
+    };
+    // How far above its own box's top edge a word's baseline sits. Text
+    // and math have to agree on this or inline maths floats: a laid-out
+    // math box reports its own baseline (MathLayoutResult::baseline),
+    // while a text run is drawn from the top of its em box, so its
+    // baseline is the same fraction down that box the math engine uses
+    // (kMathBaselineRatio). Images have no baseline of their own -- they
+    // keep the centered placement they have always had, via `lh` below.
+    auto word_ascent = [](const HtmlPendingWord &w) -> float {
+        if (w.is_math) return w.math.baseline + 3.0f;
+        return w.font_size * kMathBaselineRatio;
+    };
+    auto word_descent = [&](const HtmlPendingWord &w) -> float {
+        return word_line_height(w) - word_ascent(w);
     };
     float x = indent_x;
     struct PlacedWord {
@@ -34246,7 +35062,20 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
     auto flush_line = [&](bool is_last_line = false) {
         if (line.empty()) return;
         float lh = 0;
-        for (const PlacedWord &pw : line) lh = std::max(lh, word_line_height(*pw.w));
+        // The line's own baseline: deep enough for every non-image word's
+        // ascent, with room under it for the deepest descent. An image
+        // only ever grows the line (it is centered in it, as before).
+        float line_ascent = 0, line_descent = 0;
+        for (const PlacedWord &pw : line) {
+            lh = std::max(lh, word_line_height(*pw.w));
+            if (pw.w->is_image) continue;
+            line_ascent = std::max(line_ascent, word_ascent(*pw.w));
+            line_descent = std::max(line_descent, word_descent(*pw.w));
+        }
+        lh = std::max(lh, line_ascent + line_descent);
+        // When an image made the line taller than the text needed, the
+        // text+math block centers within it rather than clinging to the top.
+        const float baseline_y = line_ascent + (lh - line_ascent - line_descent) / 2.0f;
         // `x` is just past the final word, so it includes the ordinary
         // inter-word spacing inserted by this layout pass.  Shift the whole
         // completed line as one unit; this naturally preserves mixed font
@@ -34265,12 +35094,16 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
         for (size_t word_index = 0; word_index < line.size(); ++word_index) {
             const PlacedWord &pw = line[word_index];
             const HtmlPendingWord &w = *pw.w;
-            float y = cursor_y + (lh - word_line_height(w)) / 2.0f;
+            float y = w.is_image ? cursor_y + (lh - word_line_height(w)) / 2.0f
+                                 : cursor_y + baseline_y - word_ascent(w);
             const float placed_x = pw.x + align_offset + static_cast<float>(word_index) * justify_gap;
             if (w.is_image) {
                 out.images.push_back({placed_x, y, w.image_w, w.image_h, w.image_path, w.link_href, w.link_node});
             } else if (w.is_math) {
-                out.math_runs.push_back({placed_x, y, w.color, w.math});
+                // word_ascent padded the math box by 3px at the top; take
+                // that back off so the expression's own baseline lands
+                // exactly on the line's.
+                out.math_runs.push_back({placed_x, y + 3.0f, w.color, w.math});
             } else {
                 HtmlRun run{placed_x, y, w.font_size, w.text, w.color, w.bold, w.italic, w.underline,
                             w.strikethrough, w.link_href, w.link_node};
@@ -34707,7 +35540,15 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         // No light-DOM assignment: use normal fallback children below.
     }
     float line_h = HtmlLineHeight(ctx.base_font_size * node->style.font_scale);
-    cursor_y += static_cast<float>(node->style.margin_top_lines) * line_h;
+    // The UA stylesheet's own block spacing (html_doc.cpp's TagDefaults,
+    // in *lines* rather than pixels). Collapsed against the previous
+    // sibling's trailing margin and against this node's CSS margin, the
+    // way a real browser collapses adjacent vertical margins -- added
+    // straight to cursor_y here instead, two adjacent <p>s got two blank
+    // lines between them, and an org export's `<p>$$..$$</p>` got four
+    // around every displayed equation.
+    const float ua_margin_t = static_cast<float>(node->style.margin_top_lines) * line_h;
+    const float ua_margin_b = static_cast<float>(node->style.margin_bottom_lines) * line_h;
 
     // "max-width: Nem" + a horizontal auto margin (ComputedStyle::
     // has_max_width/margin_h_auto, html_doc.cpp) -- the standard idiom a
@@ -34785,7 +35626,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     box_ctx.layout_width = content_x + std::max(0.0f, border_w - extras_w);
     box_ctx.text_align = cs.text_align;
     box_ctx.no_wrap = cs.white_space == HtmlWhiteSpace::NoWrap;
-    cursor_y += std::max(out.pending_margin_bottom, margin_t);
+    cursor_y += std::max({out.pending_margin_bottom, margin_t, ua_margin_t});
     out.pending_margin_bottom = 0.0f;
 
     // Pushed *before* this node's own content is laid out (a child's own
@@ -34874,8 +35715,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += tail_inset;
         finish_bg();
         finish_border();
-        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
-        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
         return;
     }
     if (node->style.preserve_whitespace) {
@@ -34884,8 +35724,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += tail_inset;
         finish_bg();
         finish_border();
-        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
-        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
         return;
     }
     if (node->tag == "math") {
@@ -34895,7 +35734,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         std::string latex;
         HtmlCollectRawText(node, latex);
         float fs = box_ctx.base_font_size * node->style.font_scale;
-        MathLayoutResult ml = LayoutMathExpression(latex, fs);
+        MathLayoutResult ml = LayoutMathExpression(latex, fs, true);
         float box_x = content_x + std::max(0.0f, (box_ctx.layout_width - content_x - ml.width) / 2.0f);
         out.math_runs.push_back({box_x, cursor_y, HtmlResolveColor(node->style, box_ctx), std::move(ml)});
         cursor_y += out.math_runs.back().layout.height;
@@ -34903,8 +35742,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += tail_inset;
         finish_bg();
         finish_border();
-        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
-        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
         return;
     }
     if (node->tag == "canvas") {
@@ -34927,8 +35765,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += tail_inset;
         finish_bg();
         finish_border();
-        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
-        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
         return;
     }
     if (node->tag == "svg") {
@@ -34942,8 +35779,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         if (!cs.width.set && svg_w > box_ctx.layout_width - content_x) { float scale = (box_ctx.layout_width - content_x) / svg_w; svg_w *= scale; svg_h *= scale; }
         out.svgs.push_back({content_x, cursor_y, svg_w, svg_h, node}); cursor_y += svg_h;
         enforce_height(); cursor_y += tail_inset; finish_bg(); finish_border();
-        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
-        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
         return;
     }
     if (node->tag == "table") {
@@ -34952,8 +35788,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += tail_inset;
         finish_bg();
         finish_border();
-        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
-        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
         return;
     }
     if (node->tag == "iframe") {
@@ -34973,8 +35808,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += tail_inset;
         finish_bg();
         finish_border();
-        out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
-        cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
         return;
     }
 
@@ -35021,8 +35855,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     cursor_y += tail_inset;
     finish_bg();
     finish_border();
-    out.pending_margin_bottom = std::max(out.pending_margin_bottom, margin_b);
-    cursor_y += static_cast<float>(node->style.margin_bottom_lines) * line_h;
+    out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
 }
 
 // Basic table grid layout. Cells first occupy a coordinate grid, so a rowspan
@@ -43537,14 +44370,27 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // "$...$" stays visible until there is something to put in
             // its place. The draw pass below looks the texture up the
             // same way, in the same frame, so the two never disagree.
+            //
+            // A span with no path at all is the other half of a fragment
+            // that wraps across a line break (mep_org_latex_register_
+            // inline, kBuiltinOrgLatex): its render was drawn on the row
+            // the fragment started on, so here there is nothing to draw
+            // and nothing to reserve -- the columns collapse to zero and
+            // the rest of the row closes over them, which is as close to
+            // "the formula continues above" as a row-at-a-time renderer
+            // gets.
             if (g_editor.OrgLatexVisible() && !latex_plain_row) {
                 auto latex_inline_it = buf.org_latex_inline.find(row);
                 if (latex_inline_it != buf.org_latex_inline.end()) {
                     for (const Buffer::OrgLatexInlineSpan &span : latex_inline_it->second) {
                         if (span.col_end <= span.col_start) continue;
-                        const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
-                        if (!tex) continue;
-                        ConcealRun run{span.col_start, span.col_end, OrgLatexInlineCols(*tex),
+                        int draw_cols = 0;
+                        if (!span.path.empty()) {
+                            const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
+                            if (!tex) continue;
+                            draw_cols = OrgLatexInlineCols(*tex);
+                        }
+                        ConcealRun run{span.col_start, span.col_end, draw_cols,
                                        std::numeric_limits<int>::max()};
                         // Same cell-local bargain a table row strikes
                         // above, including its "a replacement with no
@@ -48967,6 +49813,7 @@ int main(int argc, char **argv) {
 
     ApplyFontSize(kDefaultFontSize);
     LoadOfficeFonts();
+    LoadMathFonts();
     BuildMenus();
     RecomputeMenuLabelLayout();
 
@@ -49052,6 +49899,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgLatex);
     lua->DoString(kBuiltinOrgBabelSqlTex);
     lua->DoString(kBuiltinOrgBabelMaxima);
+    lua->DoString(kBuiltinOrgBabelGap);
     lua->DoString(kBuiltinPdfAnnot);
     lua->DoString(kBuiltinOrgExport);
     lua->DoString(kBuiltinOrgRoam);

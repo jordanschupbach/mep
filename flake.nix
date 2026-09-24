@@ -477,6 +477,17 @@
             # runs the block and silently produces no image.
             pkgs.maxima
             pkgs.gnuplot
+            # GAP is the `gap` babel backend's interpreter. The full package
+            # rather than the much smaller `gap-minimal` (this one is ~400 MiB
+            # unpacked): the standard package set is what makes a GAP block
+            # behave the way a GAP user expects -- SmallGroup, PrimitiveGroup
+            # and CharacterTable all live in
+            # autoloaded packages -- and an install whose autoload list names
+            # packages it does not ship greets every block with a screenful of
+            # `#I  ... is not available` on *stdout*, which lands in the
+            # block's own #+RESULTS:. (`:packages no` is the per-block way out
+            # of that; see help/org-babel.org.)
+            pkgs.gap
 
             # LSP servers (mep.lsp_servers in src/main.cpp's kBuiltinLsp,
             # mep.lsp_attach) -- a completely separate concern from the

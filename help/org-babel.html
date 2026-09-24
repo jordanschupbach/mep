@@ -43,14 +43,39 @@ print(40 + 2)
 (<a href="org-visuals.html">block cards</a>): same execution, same block, no
 need to put the cursor there first.</p>
 <h1>Languages</h1>
-<p>Thirty, each used when its toolchain is on <code>$PATH</code>:</p>
+<p>Thirty-one, each used when its toolchain is on <code>$PATH</code>:</p>
 <p><code>lua</code>, <code>python</code>, <code>sh</code> / <code>bash</code>, <code>javascript</code> / <code>js</code>, <code>typescript</code> / <code>ts</code>,
 <code>c</code>, <code>cpp</code> / <code>c++</code>, <code>csharp</code> / <code>cs</code> / <code>c#</code>, <code>ruby</code>, <code>elixir</code>, <code>julia</code>,
 <code>clojure</code>, <code>perl</code>, <code>r</code>, <code>php</code>, <code>rust</code>, <code>go</code>, <code>fortran</code>, <code>scala</code>, <code>zig</code>,
 <code>nim</code>, <code>crystal</code>, <code>java</code>, <code>kotlin</code>, <code>haskell</code>, <code>ocaml</code>, <code>d</code>, <code>maxima</code>,
-<code>sql</code> / <code>sqlite</code>, <code>latex</code> / <code>tex</code>.</p>
+<code>gap</code>, <code>sql</code> / <code>sqlite</code>, <code>latex</code> / <code>tex</code>.</p>
 <p>Compiled languages go through a real compile-then-run step rather than
-being interpreted.</p>
+being interpreted. <code>:flags</code> are handed to the compiler, <code>:libs</code> follow the
+source file (so a linker flag resolves against it), and for the C family
+<code>:includes</code>, <code>:defines</code> and <code>:namespaces</code> write the <code>#include</code> /
+<code>#define</code> / <code>using namespace</code> lines for you. A block that supplies its
+own <code>main</code> says <code>:main no</code>; one that does not gets the language's own
+entry point wrapped around its body.</p>
+<p><code>:flags</code>, <code>:libs</code> and <code>:cmdline</code> are shell-expanded before the command is
+built, which is the practical way to compile against a real library:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">org</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="org">#+header: :main no :flags -std=c++20 $(pkg-config --cflags datamunge)
+#+header: :libs $(pkg-config --libs datamunge)
+#+begin_src C++
+#include &lt;datamunge/datamunge.hpp&gt;
+int main() { return 0; }
+#+end_src</code></pre></div>
+<p><code>$(command)</code> and <code>`command`</code> run the command and substitute its output
+(a command's own nested substitutions are its business -- the whole thing
+is handed to <code>/bin/sh</code>), <code>${NAME}</code> and <code>$NAME</code> substitute an environment
+variable, and a backslash before <code>$</code> or a backtick keeps it literal.
+Everything runs in the block's own <code>:dir</code>, so a substitution may name a
+relative path exactly as the block's code would. Nothing else in a header
+argument is touched, and a value with no <code>$</code> or backtick in it never
+starts a shell at all.</p>
+<p>The same expansion feeds the language server: a C or C++ block's
+<code>:flags</code> become the compile flags clangd is given for it, so headers
+behind a <code>pkg-config</code> <code>-I</code> are found by completion and hover too, not
+only by the compiler.</p>
 <p>A <code>maxima</code> block is piped into the computer-algebra system on stdin, so
 every statement the body ends with <code>;</code> prints its value and every <code>$</code> one
 stays quiet -- no <code>print()</code> around each line, unlike org's own maxima
@@ -58,6 +83,32 @@ backend. Results come back as one line each; <code>:display2d yes</code> asks fo
 maxima's centred 2D art instead, and <code>:linel</code> sets the width it wraps at.
 Maxima reports a bad block by writing the error into its results rather
 than by failing: it exits successfully whatever happened.</p>
+<p>A statement whose whole job is to write something out -- <code>tex</code>, <code>print</code>,
+<code>disp</code>, <code>ldisp</code>, <code>display</code>, <code>ldisplay</code>, <code>grind</code>, <code>printf</code> -- is run as if
+it were <code>$</code>-terminated however it was written, so it prints once instead
+of printing and then having maxima echo the value it handed back
+(<code>false</code>, <code>done</code>, or a <code>%t</code> label). With <code>:results verbatim</code> that makes a
+<code>tex(...)</code> block write bare <code>$$...$$</code> into the document, which is what the
+math renderer reads.</p>
+<p>A <code>gap</code> block works the same way -- piped into GAP on stdin, so a
+<code>;</code>-terminated line displays its value and a <code>;;</code>-terminated one stays
+quiet, and an error is written into the results rather than reported as a
+failed run. Two things are worth knowing:</p>
+<ul>
+<li>Every block runs with GAP's line width at its maximum, so a long value arrives as one line instead of GAP's default 80-column fragments joined by backslashes. <code>:screen-width 80</code> asks for that wrapping back; any width is clamped to GAP's own 20..4096.</li>
+<li><code>:packages no</code> skips the packages GAP autoloads -- a faster start, and quiet on an installation whose autoload list names packages it does not have (GAP writes an <code>#I ... is not available</code> line per package, on stdout, which would otherwise land in the results). Bear in mind that <code>SmallGroup</code>, <code>PrimitiveGroup</code> and <code>CharacterTable</code> are among the things those packages provide.</li>
+<li><code>:memory 2g</code> is a size GAP will not grow its workspace past. Hitting it ends the run, with the message in the results.</li>
+</ul>
+<p>Each of those is a <code>gap</code> option (<code>-x</code>, <code>-A</code>, <code>-K</code>) rather than a line added
+to the block, so what GAP runs is the body as written plus any <code>:var</code>
+bindings.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">org</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="org">#+begin_src gap :results value
+G := SymmetricGroup(5);;
+Size(G);
+#+end_src</code></pre></div>
+<p>GAP's break loop is disabled for these runs (<code>-T</code>): an error in the middle
+of a block is reported and the statements after it still run, rather than
+the rest of the block being read as answers to a <code>brk&gt;</code> prompt.</p>
 <h1>mep-lua blocks</h1>
 <p>One language is special. A <code>mep-lua</code> block runs inside <b>mep's own</b> Lua
 state, with the whole <code>mep.*</code> API available -- org-babel's <code>emacs-lisp</code>
@@ -87,7 +138,8 @@ spaces; quote it if it contains a colon.</p>
 <tr><td><code>:results output</code></td><td>whatever the block printed</td></tr>
 <tr><td><code>:results table</code></td><td>read the output as a table (<code>:sep</code> sets the field separator)</td></tr>
 <tr><td><code>:results list</code></td><td>one org list item per output line</td></tr>
-<tr><td><code>:results verbatim</code></td><td>no interpretation at all, just quoted lines</td></tr>
+<tr><td><code>:results scalar</code></td><td>no interpretation at all, just quoted =: = lines</td></tr>
+<tr><td><code>:results verbatim</code></td><td>the output exactly as the block wrote it, unquoted</td></tr>
 <tr><td><code>:results raw</code> / <code>org</code></td><td>insert the output as org markup, unfenced</td></tr>
 <tr><td><code>:results html</code> / <code>latex</code></td><td>fence it as an export block for that backend</td></tr>
 <tr><td><code>:results code</code></td><td>fence it as a <code>src</code> block in the block's own language</td></tr>
@@ -107,6 +159,8 @@ spaces; quote it if it contains a colon.</p>
 <tr><td><code>:dir PATH</code></td><td>run the block in that directory</td></tr>
 <tr><td><code>:prologue</code> / <code>:epilogue</code></td><td>code around the body (<code>\n</code> separates lines)</td></tr>
 <tr><td><code>:cmdline ARGS</code></td><td>arguments the block's own program is run with</td></tr>
+<tr><td><code>:flags</code> / <code>:libs</code></td><td>compiler and linker arguments (compiled languages)</td></tr>
+<tr><td><code>:main no</code></td><td>the body supplies its own entry point</td></tr>
 <tr><td><code>:stdin NAME</code></td><td>feed another block's results in on stdin</td></tr>
 <tr><td><code>:cache yes</code></td><td>re-run only when the body or arguments change</td></tr>
 <tr><td><code>:session NAME</code></td><td>share state with the other blocks in that session (export only)</td></tr>
@@ -128,6 +182,12 @@ front ends pointed at the target -- <code>plot2d</code> / <code>plot3d</code> an
 package's <code>draw2d</code> / <code>draw3d</code> -- and the file's own extension picks the
 terminal, so <code>:file plot.svg</code> really is an SVG. It needs <code>gnuplot</code> on
 <code>$PATH</code> as well as <code>maxima</code>.</p>
+<p>A relative <code>:file</code> (or <code>:output-dir</code>, <code>:dir</code>, <code>:tangle</code>) is relative to the
+<b>org file's own directory</b>, not to mep's working directory, and the block's
+own subprocess is run there too -- so a bare <code>plt.savefig("plot.png")</code> or
+<code>write.csv(d, "out.csv")</code> in the body lands next to the document as well,
+and the resulting <code>[[file:plot.png]]</code> link points at what was written.
+Name an absolute (or <code>~/...</code>) path to put a file anywhere else.</p>
 <h2>Line switches</h2>
 <p><code>-n</code> numbers the block's lines when it is displayed or exported, <code>+n</code>
 continues the numbering from the previous numbered block, and <code>-r</code> / <code>-k</code>
@@ -142,7 +202,8 @@ whether or not the block sets it: the common ones first, grouped into
 Results, Execution, Output, Tangle and Noweb, then the ones only that
 language takes (<code>:width</code> / <code>:height</code> / <code>:res</code> for R, <code>:includes</code> /
 <code>:flags</code> / <code>:libs</code> for anything that compiles, <code>:return</code> for Python,
-<code>:engine</code> / <code>:database</code> for SQL, <code>:display2d</code> for Maxima, and so on), then the line switches.</p>
+<code>:engine</code> / <code>:database</code> for SQL, <code>:display2d</code> for Maxima,
+<code>:screen-width</code> for GAP, and so on), then the line switches.</p>
 <p>Each row is the kind of input the argument actually takes -- a dropdown
 of the words org accepts, a number, or free text -- so the popup will not
 let you write <code>:exports bth</code>. <code>:results</code> gets four rows rather than one,

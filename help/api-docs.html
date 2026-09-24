@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (175)</h1>
+<h1>The bindings (177)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -157,6 +157,7 @@ that it does nothing.</p>
 <tr><td><code>mep.org_latex_visible</code></td><td>reports whether inline org LaTeX rendering is currently on</td></tr>
 <tr><td><code>mep.org_link_at_cursor</code></td><td>reads the org link under the cursor, if any</td></tr>
 <tr><td><code>mep.org_link_scan</code></td><td>rescans the current org buffer's links</td></tr>
+<tr><td><code>mep.org_literal_spans</code></td><td>the current buffer's literal (non-prose) spans</td></tr>
 <tr><td><code>mep.org_lsp_status_toggle</code></td><td>toggles org src-block LSP status rendering on/off</td></tr>
 <tr><td><code>mep.org_lsp_status_visible</code></td><td>reports whether org src-block LSP status rendering is on</td></tr>
 <tr><td><code>mep.org_merge_header_args</code></td><td>merges header-arg layers in precedence order</td></tr>
@@ -170,6 +171,7 @@ that it does nothing.</p>
 <tr><td><code>mep.org_property_set</code></td><td>writes an org property drawer value on a headline</td></tr>
 <tr><td><code>mep.org_refile_move</code></td><td>moves the current subtree under a target headline</td></tr>
 <tr><td><code>mep.org_results_handling</code></td><td>reads the `:results` handling facet</td></tr>
+<tr><td><code>mep.org_results_is_raw</code></td><td>reports whether a block's results body is unquoted org markup</td></tr>
 <tr><td><code>mep.org_roam_ensure_id</code></td><td>ensures the current org-roam note has an :ID:, generating one if missing</td></tr>
 <tr><td><code>mep.org_roam_files_in</code></td><td>lists org-roam note files under the given directories</td></tr>
 <tr><td><code>mep.org_roam_find_backlink_lines</code></td><td>finds lines linking to a given org-roam ID</td></tr>

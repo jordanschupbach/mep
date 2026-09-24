@@ -46,16 +46,47 @@ need to put the cursor there first.
 
 * Languages
 
-Thirty, each used when its toolchain is on =$PATH=:
+Thirty-one, each used when its toolchain is on =$PATH=:
 
 =lua=, =python=, =sh= / =bash=, =javascript= / =js=, =typescript= / =ts=,
 =c=, =cpp= / =c++=, =csharp= / =cs= / =c#=, =ruby=, =elixir=, =julia=,
 =clojure=, =perl=, =r=, =php=, =rust=, =go=, =fortran=, =scala=, =zig=,
 =nim=, =crystal=, =java=, =kotlin=, =haskell=, =ocaml=, =d=, =maxima=,
-=sql= / =sqlite=, =latex= / =tex=.
+=gap=, =sql= / =sqlite=, =latex= / =tex=.
 
 Compiled languages go through a real compile-then-run step rather than
-being interpreted.
+being interpreted. =:flags= are handed to the compiler, =:libs= follow the
+source file (so a linker flag resolves against it), and for the C family
+=:includes=, =:defines= and =:namespaces= write the =#include= /
+=#define= / =using namespace= lines for you. A block that supplies its
+own =main= says =:main no=; one that does not gets the language's own
+entry point wrapped around its body.
+
+=:flags=, =:libs= and =:cmdline= are shell-expanded before the command is
+built, which is the practical way to compile against a real library:
+
+#+begin_src org
+,#+header: :main no :flags -std=c++20 $(pkg-config --cflags datamunge)
+,#+header: :libs $(pkg-config --libs datamunge)
+,#+begin_src C++
+#include <datamunge/datamunge.hpp>
+int main() { return 0; }
+,#+end_src
+#+end_src
+
+=$(command)= and =`command`= run the command and substitute its output
+(a command's own nested substitutions are its business -- the whole thing
+is handed to =/bin/sh=), =${NAME}= and =$NAME= substitute an environment
+variable, and a backslash before =$= or a backtick keeps it literal.
+Everything runs in the block's own =:dir=, so a substitution may name a
+relative path exactly as the block's code would. Nothing else in a header
+argument is touched, and a value with no =$= or backtick in it never
+starts a shell at all.
+
+The same expansion feeds the language server: a C or C++ block's
+=:flags= become the compile flags clangd is given for it, so headers
+behind a =pkg-config= =-I= are found by completion and hover too, not
+only by the compiler.
 
 A =maxima= block is piped into the computer-algebra system on stdin, so
 every statement the body ends with =;= prints its value and every =$= one
@@ -64,6 +95,47 @@ backend. Results come back as one line each; =:display2d yes= asks for
 maxima's centred 2D art instead, and =:linel= sets the width it wraps at.
 Maxima reports a bad block by writing the error into its results rather
 than by failing: it exits successfully whatever happened.
+
+A statement whose whole job is to write something out -- =tex=, =print=,
+=disp=, =ldisp=, =display=, =ldisplay=, =grind=, =printf= -- is run as if
+it were =$=-terminated however it was written, so it prints once instead
+of printing and then having maxima echo the value it handed back
+(=false=, =done=, or a =%t= label). With =:results verbatim= that makes a
+=tex(...)= block write bare =$$...$$= into the document, which is what the
+math renderer reads.
+
+A =gap= block works the same way -- piped into GAP on stdin, so a
+=;=-terminated line displays its value and a =;;=-terminated one stays
+quiet, and an error is written into the results rather than reported as a
+failed run. Two things are worth knowing:
+
+- Every block runs with GAP's line width at its maximum, so a long value
+  arrives as one line instead of GAP's default 80-column fragments joined
+  by backslashes. =:screen-width 80= asks for that wrapping back; any width
+  is clamped to GAP's own 20..4096.
+- =:packages no= skips the packages GAP autoloads -- a faster start, and
+  quiet on an installation whose autoload list names packages it does not
+  have (GAP writes an =#I ... is not available= line per package, on
+  stdout, which would otherwise land in the results). Bear in mind that
+  =SmallGroup=, =PrimitiveGroup= and =CharacterTable= are among the things
+  those packages provide.
+- =:memory 2g= is a size GAP will not grow its workspace past. Hitting it
+  ends the run, with the message in the results.
+
+Each of those is a =gap= option (=-x=, =-A=, =-K=) rather than a line added
+to the block, so what GAP runs is the body as written plus any =:var=
+bindings.
+
+#+begin_src org
+,#+begin_src gap :results value
+G := SymmetricGroup(5);;
+Size(G);
+,#+end_src
+#+end_src
+
+GAP's break loop is disabled for these runs (=-T=): an error in the middle
+of a block is reported and the statements after it still run, rather than
+the rest of the block being read as answers to a =brk>= prompt.
 
 * mep-lua blocks
 
@@ -107,7 +179,8 @@ spaces; quote it if it contains a colon.
 | =:results output=     | whatever the block printed                          |
 | =:results table=      | read the output as a table (=:sep= sets the field separator) |
 | =:results list=       | one org list item per output line                   |
-| =:results verbatim=   | no interpretation at all, just quoted lines         |
+| =:results scalar=     | no interpretation at all, just quoted =: = lines    |
+| =:results verbatim=   | the output exactly as the block wrote it, unquoted  |
 | =:results raw= / =org= | insert the output as org markup, unfenced          |
 | =:results html= / =latex= | fence it as an export block for that backend    |
 | =:results code=       | fence it as a =src= block in the block's own language |
@@ -128,6 +201,8 @@ spaces; quote it if it contains a colon.
 | =:dir PATH=           | run the block in that directory                     |
 | =:prologue= / =:epilogue= | code around the body (=\n= separates lines)      |
 | =:cmdline ARGS=       | arguments the block's own program is run with       |
+| =:flags= / =:libs=    | compiler and linker arguments (compiled languages)  |
+| =:main no=            | the body supplies its own entry point               |
 | =:stdin NAME=         | feed another block's results in on stdin            |
 | =:cache yes=          | re-run only when the body or arguments change       |
 | =:session NAME=       | share state with the other blocks in that session (export only) |
@@ -152,6 +227,13 @@ package's =draw2d= / =draw3d= -- and the file's own extension picks the
 terminal, so =:file plot.svg= really is an SVG. It needs =gnuplot= on
 =$PATH= as well as =maxima=.
 
+A relative =:file= (or =:output-dir=, =:dir=, =:tangle=) is relative to the
+*org file's own directory*, not to mep's working directory, and the block's
+own subprocess is run there too -- so a bare =plt.savefig("plot.png")= or
+=write.csv(d, "out.csv")= in the body lands next to the document as well,
+and the resulting =[[file:plot.png]]= link points at what was written.
+Name an absolute (or =~/...=) path to put a file anywhere else.
+
 ** Line switches
 
 =-n= numbers the block's lines when it is displayed or exported, =+n=
@@ -169,7 +251,8 @@ whether or not the block sets it: the common ones first, grouped into
 Results, Execution, Output, Tangle and Noweb, then the ones only that
 language takes (=:width= / =:height= / =:res= for R, =:includes= /
 =:flags= / =:libs= for anything that compiles, =:return= for Python,
-=:engine= / =:database= for SQL, =:display2d= for Maxima, and so on), then the line switches.
+=:engine= / =:database= for SQL, =:display2d= for Maxima,
+=:screen-width= for GAP, and so on), then the line switches.
 
 Each row is the kind of input the argument actually takes -- a dropdown
 of the words org accepts, a number, or free text -- so the popup will not

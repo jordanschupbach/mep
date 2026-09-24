@@ -1293,6 +1293,19 @@ std::string LspAbspath(const std::string &fname) {
     return cwd + "/" + fname;
 }
 
+// The process's current working directory, or "" when it can't be read
+// (and always under wasm, which has no meaningful one).
+std::string ProcessCwd() {
+#if !defined(__EMSCRIPTEN__)
+    std::error_code ec;
+    std::string cwd = std::filesystem::current_path(ec).string();
+    if (ec) return "";
+    return cwd;
+#else
+    return "";
+#endif
+}
+
 std::string OrgRoamSlugify(const std::string &title) {
     std::string lower = title;
     for (char &c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -1522,17 +1535,16 @@ std::string OrgExpandMacroLine(const std::string &line, const std::map<std::stri
 }
 
 namespace {
-// Forward declarations -- defined later in this file (OrgLatex/OrgBib
-// sections); same anonymous namespace, just needed here ahead of their
-// definitions.
+// Forward declarations -- defined later in this file; same anonymous
+// namespace, just needed here ahead of their definitions.
 bool MatchCiLiteral(const std::string &s, size_t pos, const std::string &lit);
 bool IsSrcClose(const std::string &line);
 std::string JoinNewline(const std::vector<std::string> &lines);
 
 // kBuiltinOrgBabel's own `'#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]'` open-
-// line port. Generic (no language requirement), unlike OrgLatex's own
-// IsSrcLatexOpen -- reused here plus IsSrcClose above (identical to
-// what that check already needs).
+// line port. Generic: no language requirement, unlike the math preview's
+// own `#+begin_src latex` check (OrgLatexScan, org_doc.cpp). Paired with
+// IsSrcClose, declared above.
 /**
  * @brief Checks whether a line opens an org `#+BEGIN_SRC` block, case-insensitively and for any language.
  * @param line The line to check.
@@ -3071,6 +3083,53 @@ void Editor::OrgDrillGrade(int row, int quality, const std::vector<std::string> 
     OrgPropertySet(row, "DRILL_DUE", datebuf, todo_keywords);
 }
 
+std::string Editor::BufferAbsolutePath(const Buffer &buf) const {
+    const std::string &fname = buf.filename;
+    if (!fname.empty() && fname[0] == '/') return fname;
+    // A relative buffer path belongs to the directory it was *reached*
+    // from (Buffer::base_dir, recorded at creation), falling back to the
+    // buffer's own workspace root (ResolveBufferPath's own rule) and only
+    // then to mep's process cwd -- ChdirToActiveRoot moves that on every
+    // workspace switch, so LspAbspath alone would silently re-point an
+    // already-open document's relative name at the newly-active project.
+    std::string base = buf.base_dir;
+    if (base.empty() && buf.workspace_id >= 0) {
+        const Workspace *ws = FindWorkspace(buf.workspace_id);
+        if (ws && !ws->root.empty()) base = ws->root;
+    }
+    if (base.empty()) base = ProcessCwd();
+    if (base.empty()) return fname;
+    if (fname.empty()) return base;
+    if (base.back() == '/') return base + fname;
+    return base + "/" + fname;
+}
+
+std::string Editor::OrgDocumentDir() const {
+    const Buffer &buf = CurrentBuffer();
+    const std::string abs = BufferAbsolutePath(buf);
+    // A buffer with no file of its own has no document directory to speak
+    // of; BufferAbsolutePath already handed back its base directory, so
+    // return that rather than stripping a component off it.
+    if (buf.filename.empty()) return abs;
+    size_t slash = abs.find_last_of('/');
+    if (slash == std::string::npos) return "";
+    if (slash == 0) return "/";
+    return abs.substr(0, slash);
+}
+
+std::string Editor::OrgDocumentBase() const {
+    const std::string &fname = CurrentBuffer().filename;
+    std::string stem = fname;
+    size_t slash = stem.find_last_of('/');
+    if (slash != std::string::npos) stem = stem.substr(slash + 1);
+    if (stem.size() > 4 && stem.compare(stem.size() - 4, 4, ".org") == 0) stem.resize(stem.size() - 4);
+    if (stem.empty()) stem = "untitled";
+    const std::string dir = OrgDocumentDir();
+    if (dir.empty()) return stem;
+    if (dir == "/") return "/" + stem;
+    return dir + "/" + stem;
+}
+
 std::string Editor::OrgResolvePath(const std::string &path) const {
     if (!path.empty() && path[0] == '/') return path;
     if (!path.empty() && path[0] == '~') {
@@ -3078,10 +3137,10 @@ std::string Editor::OrgResolvePath(const std::string &path) const {
         if (home) return std::string(home) + path.substr(1);
         return path;
     }
-    std::string abs = LspAbspath(CurrentBuffer().filename);
-    size_t slash = abs.find_last_of('/');
-    if (slash == std::string::npos) return path;
-    return abs.substr(0, slash) + "/" + path;
+    const std::string dir = OrgDocumentDir();
+    if (dir.empty()) return path;
+    if (dir == "/") return "/" + path;
+    return dir + "/" + path;
 }
 
 namespace {
@@ -3365,19 +3424,6 @@ std::string LatexTrim(const std::string &s) {
 }
 
 /**
- * @brief Checks whether a string is wrapped in a given open/close delimiter pair with non-empty content between.
- * @param s The string to check.
- * @param open The required prefix delimiter.
- * @param close The required suffix delimiter.
- * @return True if `s` starts with `open`, ends with `close`, and has content between them.
- */
-bool LatexWrapped(const std::string &s, const std::string &open, const std::string &close) {
-    if (s.size() <= open.size() + close.size()) return false;
-    if (s.compare(0, open.size(), open) != 0) return false;
-    return s.compare(s.size() - close.size(), close.size(), close) == 0;
-}
-
-/**
  * @brief Checks whether a literal appears case-insensitively at a given position in a string.
  * @param s The string to check within.
  * @param pos The position in `s` where the literal must start.
@@ -3427,49 +3473,6 @@ size_t SkipWs(const std::string &s, size_t pos) {
     return pos;
 }
 
-// kBuiltinOrgLatex's own case-insensitive `#+BEGIN_LATEX`/`#+END_LATEX`/
-// `#+BEGIN_SRC latex`/`#+END_SRC` line matchers.
-/**
- * @brief Checks whether a line is a standalone `#+BEGIN_LATEX` line.
- * @param line The line to check.
- * @return True if `line` is (ignoring leading/trailing whitespace) exactly `#+BEGIN_LATEX`.
- */
-bool IsLatexBlockOpen(const std::string &line) {
-    size_t i = SkipWs(line, 0);
-    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
-    i += 2;
-    if (!MatchCiLiteral(line, i, "BEGIN_LATEX")) return false;
-    i = SkipWs(line, i + 11);
-    return i == line.size();
-}
-
-/**
- * @brief Checks whether a line is a `#+END_LATEX` line.
- * @param line The line to check.
- * @return True if `line` starts (after leading whitespace) with `#+END_LATEX`.
- */
-bool IsLatexBlockClose(const std::string &line) {
-    size_t i = SkipWs(line, 0);
-    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
-    return MatchCiLiteral(line, i + 2, "END_LATEX");
-}
-
-/**
- * @brief Checks whether a line is a `#+BEGIN_SRC latex` line.
- * @param line The line to check.
- * @return True if `line` is a `#+BEGIN_SRC` line whose language argument is `latex`.
- */
-bool IsSrcLatexOpen(const std::string &line) {
-    size_t i = SkipWs(line, 0);
-    if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
-    i += 2;
-    if (!MatchCiLiteral(line, i, "BEGIN_SRC")) return false;
-    size_t ws_start = i + 9;
-    size_t after_ws = SkipWs(line, ws_start);
-    if (after_ws == ws_start) return false;
-    return MatchCiLiteral(line, after_ws, "latex");
-}
-
 /**
  * @brief Checks whether a line is a `#+END_SRC` line.
  * @param line The line to check.
@@ -3479,39 +3482,6 @@ bool IsSrcClose(const std::string &line) {
     size_t i = SkipWs(line, 0);
     if (i + 1 >= line.size() || line[i] != '#' || line[i + 1] != '+') return false;
     return MatchCiLiteral(line, i + 2, "END_SRC");
-}
-
-// Display-math environments recognized as whole preview blocks -- the
-// amsmath family (all in MEP_ORG_LATEX_PREAMBLE's own \usepackage
-// {amsmath} set, so the rendered preview actually compiles) plus core
-// LaTeX's displaymath/equation/eqnarray. Added alongside the .tex-buffer
-// preview (mep.org_latex_scan's tex gating, kBuiltinOrgLatex): a real
-// LaTeX document writes its display math as environments far more often
-// than as bare \[..\]/$$..$$, which were the only whole-line block forms
-// this scanner knew. Org files get the same recognition for free --
-// real org-mode treats \begin{equation}..\end{equation} at line start
-// as a LaTeX fragment too, so this is parity there, not a behavior fork.
-/**
- * @brief If `trimmed` opens a display-math environment (`\begin{align}`,
- * `\begin{equation*}`, ...), returns the environment name as written
- * (star included); otherwise returns an empty string.
- * @param trimmed The whitespace-trimmed line to check.
- * @return The environment name, or "" if this isn't a display-math `\begin` line.
- */
-std::string MathEnvOpen(const std::string &trimmed) {
-    static const char *kMathEnvs[] = {"equation", "align",   "alignat", "gather",     "multline",
-                                      "flalign",  "eqnarray", "displaymath"};
-    const std::string kBegin = "\\begin{";
-    if (trimmed.compare(0, kBegin.size(), kBegin) != 0) return "";
-    size_t close = trimmed.find('}', kBegin.size());
-    if (close == std::string::npos) return "";
-    std::string name = trimmed.substr(kBegin.size(), close - kBegin.size());
-    std::string base = name;
-    if (!base.empty() && base.back() == '*') base.pop_back();
-    for (const char *env : kMathEnvs) {
-        if (base == env) return name;
-    }
-    return "";
 }
 
 /**
@@ -3527,210 +3497,12 @@ std::string JoinNewline(const std::vector<std::string> &lines) {
     }
     return out;
 }
-
-// kBuiltinOrgLatex's own `mep_org_latex_scan_inline` port: every
-// $..$/\(..\)/\[..\]/$$..$$ fragment embedded *within* a line that isn't
-// wholly consumed by one (Editor::OrgLatexScanFragments' whole-line
-// forms already handle that case). `row` is left unset (0); the caller
-// fills it in, since this scans one already-extracted line at a time.
-// Bare `$` is the only ambiguous delimiter -- see this function's own
-// Lua-source comment (main.cpp, kBuiltinOrgLatex) for the disambiguation
-// rule this mirrors exactly.
-/**
- * @brief Scans a single line for inline LaTeX fragments (`$..$`, `$$..$$`, `\(..\)`, `\[..\]`).
- * @param line The line to scan.
- * @return The inline spans found, in left-to-right order, with `row` left unset (0).
- */
-std::vector<Editor::OrgLatexInlineSpan> ScanLatexInlineSpans(const std::string &line) {
-    std::vector<Editor::OrgLatexInlineSpan> spans;
-    size_t n = line.size();
-    size_t i = 0;
-    while (i < n) {
-        std::string body;
-        size_t span_end = 0;  // 0-indexed position of the span's last included char
-
-        if (i + 1 < n && line[i] == '\\' && line[i + 1] == '[') {
-            size_t s = line.find("\\]", i + 2);
-            if (s != std::string::npos) {
-                span_end = s + 1;
-                body = line.substr(i, span_end - i + 1);
-            }
-        } else if (i + 1 < n && line[i] == '$' && line[i + 1] == '$') {
-            size_t s = line.find("$$", i + 2);
-            if (s != std::string::npos) {
-                span_end = s + 1;
-                body = line.substr(i, span_end - i + 1);
-            }
-        } else if (i + 1 < n && line[i] == '\\' && line[i + 1] == '(') {
-            size_t s = line.find("\\)", i + 2);
-            if (s != std::string::npos) {
-                span_end = s + 1;
-                body = line.substr(i, span_end - i + 1);
-            }
-        } else if (line[i] == '$') {
-            char next_char = (i + 1 < n) ? line[i + 1] : '\0';
-            if (next_char != '\0' && next_char != ' ' && next_char != '$') {
-                size_t search_from = i + 1;
-                while (true) {
-                    size_t s = line.find('$', search_from);
-                    if (s == std::string::npos) break;
-                    char prev_char = (s > 0) ? line[s - 1] : '\0';
-                    char after_char = (s + 1 < n) ? line[s + 1] : '\0';
-                    bool after_is_digit = after_char != '\0' && std::isdigit(static_cast<unsigned char>(after_char));
-                    if (prev_char != ' ' && !after_is_digit) {
-                        span_end = s;
-                        body = line.substr(i, span_end - i + 1);
-                        break;
-                    }
-                    search_from = s + 1;
-                }
-            }
-        }
-
-        if (body.size() > 2) {
-            Editor::OrgLatexInlineSpan sp;
-            sp.row = 0;
-            sp.col_start = static_cast<int>(i) + 1;
-            sp.col_end = static_cast<int>(span_end) + 2;
-            sp.body = std::move(body);
-            spans.push_back(std::move(sp));
-            i = span_end + 1;
-        } else {
-            i++;
-        }
-    }
-    return spans;
-}
 }  // namespace
 
-Editor::OrgLatexScanResult Editor::OrgLatexScanFragments() const {
-    OrgLatexScanResult result;
-    const int n = Buf().LineCount();
-    int i = 1;
-    while (i <= n) {
-        const std::string &line = Buf().lines[static_cast<size_t>(i - 1)];
-        std::string trimmed = LatexTrim(line);
-        std::string body;
-        int end_row = 0;
-
-        // A `#+begin_X ... #+end_X` block that isn't itself LaTeX is
-        // literal text, so nothing inside it is a math fragment -- the
-        // same skip Editor::OrgHighlightEmphasis and OrgLinkScan make,
-        // for the same reason. Without it a `$` anywhere in a code block
-        // opens an inline-math span: `plot(iris$Sepal.Length, iris$Sepal.
-        // Width)` in an R block had `$Sepal.Length, iris$` typeset as
-        // math and painted over the source (reported live), and every
-        // `$var`/`$1` in a shell block, `$_` in perl, or `$` in a
-        // `#+begin_example` of shell output was the same bug waiting.
-        // The two LaTeX-bearing block forms are excluded from the skip:
-        // they are handled as whole fragments by the branches below.
-        if (!IsLatexBlockOpen(line) && !IsSrcLatexOpen(line) && MatchesOrgBlockMarker(line, "begin_")) {
-            int j = i + 1;
-            while (j <= n && !MatchesOrgBlockMarker(Buf().lines[static_cast<size_t>(j - 1)], "end_")) j++;
-            // An unterminated block runs to the end of the buffer (j ==
-            // n + 1 here), which ends the walk -- matching what the two
-            // scans above do with their own `in_block` flag.
-            i = j + 1;
-            continue;
-        }
-
-        if (IsLatexBlockOpen(line)) {
-            std::vector<std::string> lines;
-            int j = i + 1;
-            while (j <= n && !IsLatexBlockClose(Buf().lines[static_cast<size_t>(j - 1)])) {
-                lines.push_back(Buf().lines[static_cast<size_t>(j - 1)]);
-                j++;
-            }
-            if (j <= n) {
-                body = JoinNewline(lines);
-                end_row = j;
-            }
-        } else if (IsSrcLatexOpen(line)) {
-            std::vector<std::string> lines;
-            int j = i + 1;
-            while (j <= n && !IsSrcClose(Buf().lines[static_cast<size_t>(j - 1)])) {
-                lines.push_back(Buf().lines[static_cast<size_t>(j - 1)]);
-                j++;
-            }
-            if (j <= n) {
-                body = JoinNewline(lines);
-                end_row = j;
-            }
-        } else if (std::string env = MathEnvOpen(trimmed); !env.empty()) {
-            // \begin{equation}..\end{equation} and friends: the whole
-            // environment, \begin/\end lines included, is the body --
-            // unlike the \[..\]/$$..$$ branches below there's nothing to
-            // re-wrap, the environment already compiles as-is under
-            // MEP_ORG_LATEX_PREAMBLE.
-            const std::string close = "\\end{" + env + "}";
-            if (trimmed.size() > close.size() &&
-                trimmed.compare(trimmed.size() - close.size(), close.size(), close) == 0) {
-                body = trimmed;
-                end_row = i;
-            } else {
-                std::vector<std::string> lines;
-                lines.push_back(line);
-                int j = i + 1;
-                while (j <= n && LatexTrim(Buf().lines[static_cast<size_t>(j - 1)]) != close) {
-                    lines.push_back(Buf().lines[static_cast<size_t>(j - 1)]);
-                    j++;
-                }
-                if (j <= n) {
-                    lines.push_back(Buf().lines[static_cast<size_t>(j - 1)]);
-                    body = JoinNewline(lines);
-                    end_row = j;
-                }
-            }
-        } else if (LatexWrapped(trimmed, "\\[", "\\]")) {
-            body = trimmed;
-            end_row = i;
-        } else if (trimmed == "\\[") {
-            std::vector<std::string> lines;
-            int j = i + 1;
-            while (j <= n && LatexTrim(Buf().lines[static_cast<size_t>(j - 1)]) != "\\]") {
-                lines.push_back(Buf().lines[static_cast<size_t>(j - 1)]);
-                j++;
-            }
-            if (j <= n) {
-                body = "\\[" + JoinNewline(lines) + "\\]";
-                end_row = j;
-            }
-        } else if (LatexWrapped(trimmed, "$$", "$$")) {
-            body = trimmed;
-            end_row = i;
-        } else if (trimmed == "$$") {
-            std::vector<std::string> lines;
-            int j = i + 1;
-            while (j <= n && LatexTrim(Buf().lines[static_cast<size_t>(j - 1)]) != "$$") {
-                lines.push_back(Buf().lines[static_cast<size_t>(j - 1)]);
-                j++;
-            }
-            if (j <= n) {
-                body = "$$" + JoinNewline(lines) + "$$";
-                end_row = j;
-            }
-        } else if (LatexWrapped(trimmed, "\\(", "\\)")) {
-            body = trimmed;
-            end_row = i;
-        } else if (trimmed.size() > 2 && trimmed.front() == '$' && trimmed.back() == '$' &&
-                   trimmed[1] != '$' && trimmed[trimmed.size() - 2] != '$') {
-            body = trimmed;
-            end_row = i;
-        }
-
-        if (!body.empty()) {
-            result.blocks.push_back({i, end_row, body});
-            i = end_row + 1;
-        } else {
-            for (OrgLatexInlineSpan &span : ScanLatexInlineSpans(line)) {
-                span.row = i;
-                result.inlines.push_back(std::move(span));
-            }
-            i++;
-        }
-    }
-    return result;
-}
+// The scan itself is pure line analysis and lives in org_doc.cpp
+// (OrgLatexScan), where mep-org-doc-test can reach it; this only points it
+// at the current buffer.
+OrgLatexFragments Editor::OrgLatexScanFragments() const { return OrgLatexScan(Buf().lines); }
 
 namespace {
 // kBuiltinOrgBib's own `mep_org_bib_split_top_level` port: splits `s` on
@@ -5789,13 +5561,40 @@ std::vector<SpellTok> TokenizeSpellWords(const std::string &line, int a, int b) 
 // Replaces each misspelled word whose start is in [a, b) on `row` with its top
 // suggestion, right-to-left so earlier columns stay valid. Assumes the caller
 // already pushed one undo entry. Returns how many words were changed.
-int Editor::FixSpellingInLineSpan(int row, int a, int b) {
+std::vector<OrgLiteralSpan> Editor::BufferLiteralSpans() const {
+    if (!IsOrgBuffer()) return {};
+    return OrgLiteralSpans(Buf().lines);
+}
+
+namespace {
+/**
+ * @brief Reports whether a word's columns touch any literal span on its row.
+ * @param spans The buffer's literal spans (1-based rows, 1-based half-open columns).
+ * @param row The word's 0-based row.
+ * @param start The word's 0-based start column.
+ * @param len The word's length in bytes.
+ * @return True when the word overlaps a span, so spell checking must leave it alone.
+ */
+bool SpellWordIsLiteral(const std::vector<OrgLiteralSpan> &spans, int row, int start, size_t len) {
+    const int col_start = start + 1;
+    const int col_end = start + static_cast<int>(len) + 1;
+    for (const OrgLiteralSpan &sp : spans) {
+        if (sp.row != row + 1) continue;
+        // Any overlap at all: a word half inside a code span is not a word.
+        if (col_start < sp.col_end && col_end > sp.col_start) return true;
+    }
+    return false;
+}
+}  // namespace
+
+int Editor::FixSpellingInLineSpan(int row, int a, int b, const std::vector<OrgLiteralSpan> &literal) {
     if (row < 0 || row >= Buf().LineCount()) return 0;
     std::string &line = Buf().lines[static_cast<size_t>(row)];
     std::vector<SpellTok> toks = TokenizeSpellWords(line, a, b);
     int count = 0;
     for (auto it = toks.rbegin(); it != toks.rend(); ++it) {
         if (!spell_.IsMisspelled(it->word)) continue;
+        if (SpellWordIsLiteral(literal, row, it->start, it->word.size())) continue;
         std::vector<std::string> sugg = spell_.Suggest(it->word);
         if (sugg.empty()) continue;
         line.replace(static_cast<size_t>(it->start), it->word.size(), sugg[0]);
@@ -5808,12 +5607,16 @@ int Editor::FixSpellingInVisualSelection() {
     if (!spell_.ready() || !HasVisualSelection()) return 0;
     PushUndo();
     int total = 0;
+    // Scanned once for the whole selection, not once per row: a block's
+    // rows are only literal because of the `#+begin_` line above them, so
+    // the answer is a property of the buffer rather than of a row.
+    const std::vector<OrgLiteralSpan> literal = BufferLiteralSpans();
     if (IsVisualBlock()) {
         int top, bottom, left, right;
         VisualBlockRange(top, bottom, left, right);
         for (int r = top; r <= bottom; r++) {
             int b = (right < 0) ? LineLen(r) : right + 1;
-            total += FixSpellingInLineSpan(r, left, b);
+            total += FixSpellingInLineSpan(r, left, b, literal);
         }
     } else {
         CursorPos s, e;
@@ -5822,7 +5625,7 @@ int Editor::FixSpellingInVisualSelection() {
         for (int r = s.row; r <= e.row; r++) {
             int a = (linewise || r > s.row) ? 0 : s.col;
             int b = (linewise || r < e.row) ? LineLen(r) : e.col + 1;
-            total += FixSpellingInLineSpan(r, a, b);
+            total += FixSpellingInLineSpan(r, a, b, literal);
         }
     }
     if (total > 0) Buf().modified = true;
@@ -5836,10 +5639,17 @@ int Editor::FixSpellingWordUnderCursor() {
     if (c.row < 0 || c.row >= Buf().LineCount()) return 0;
     const std::string &line = Buf().lines[static_cast<size_t>(c.row)];
     std::vector<SpellTok> toks = TokenizeSpellWords(line, 0, LineLen(c.row));
+    // Only ever fixes a word the squiggle pass would have underlined: a
+    // word inside a code block or an inline `=verbatim=` span is not
+    // marked, so silently rewriting it on a keypress -- with nothing on
+    // screen having claimed it was wrong -- would be a way to corrupt code
+    // by accident. `zf` there reports nothing to fix, which is the truth.
+    const std::vector<OrgLiteralSpan> literal = BufferLiteralSpans();
     for (const SpellTok &t : toks) {
         int end = t.start + static_cast<int>(t.word.size());
         if (c.col < t.start || c.col > end) continue;  // cursor not on this word
         if (!spell_.IsMisspelled(t.word)) return 0;
+        if (SpellWordIsLiteral(literal, c.row, t.start, t.word.size())) return 0;
         std::vector<std::string> sugg = spell_.Suggest(t.word);
         if (sugg.empty()) return 0;
         PushUndo();
@@ -6082,6 +5892,9 @@ bool Editor::RemovePaneNode(std::unique_ptr<SplitNode> &node_ptr, int pane_id) {
 
 int Editor::CreateEmptyBuffer() {
     buffers_.emplace_back();
+    // See Buffer::base_dir: the directory any relative name this buffer is
+    // later given (`:e notes/x.org`, `:w out.txt`) is relative to.
+    buffers_.back().base_dir = ProcessCwd();
     // Scoped to the active workspace (WORKSPACES_PLAN.md Phase 4); the
     // few deliberately unscoped buffers (startup buffer 0, :MepScratch)
     // reset this to -1 themselves.
@@ -6214,6 +6027,7 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
 
     Buffer buf;
     buf.filename = path;
+    buf.base_dir = ProcessCwd();  // see Buffer::base_dir
     /**
      * @brief Stores the freshly read `buf`: over the revived deleted buffer when there is one, else as a new buffer.
      * @return The buffer's id.
@@ -14885,6 +14699,15 @@ void Editor::WorkspacePrevious() {
 
 std::string Editor::ResolveBufferPath(const Buffer &buf, const std::string &path) const {
     if (path.empty() || path[0] == '/') return path;
+    // The directory this buffer's own relative names actually mean
+    // (Buffer::base_dir -- the cwd it was reached from). Needed even for a
+    // buffer in the *active* workspace, because a file buffer loaded from
+    // a relative path never gets a workspace_id at all (FindOrCreateBuffer
+    // leaves it -1), so the workspace leg below never fired for one and
+    // `:w` after a workspace switch wrote to (or failed against) the newly
+    // active project's root instead -- the same cwd coupling
+    // Editor::OrgDocumentDir fixes on the org side.
+    if (!buf.base_dir.empty()) return buf.base_dir + "/" + path;
     if (buf.workspace_id < 0 || buf.workspace_id == ActiveWorkspace().id) return path;
     const Workspace *ws = FindWorkspace(buf.workspace_id);
     if (!ws || ws->root.empty()) return path;

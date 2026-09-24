@@ -286,6 +286,12 @@ int main() {
     // maxima moved the other way: it used to be one of those, and now
     // has a real backend of its own.
     CHECK(!HasCode(Lint({"#+begin_src maxima", "integrate(x^2, x);", "#+end_src"}), "unknown-src-language"));
+    CHECK(!HasCode(Lint({"#+begin_src gap", "Size(SymmetricGroup(4));", "#+end_src"}), "unknown-src-language"));
+    // gap's own header arguments are header arguments -- the linter's list
+    // is language-agnostic, so they are accepted the way `:includes` and
+    // `:main` already are.
+    CHECK(Lint({"#+begin_src gap :screen-width 80 :packages no :memory 2g", "1+1;", "#+end_src"}).empty());
+    CHECK(HasCode(Lint({"#+begin_src gap :packages maybe", "1+1;", "#+end_src"}), "unknown-header-value"));
     CHECK(HasCode(Lint({"#+begin_src python :reslts output", "x", "#+end_src"}), "unknown-header-arg"));
     CHECK(HasCode(Lint({"#+begin_src python :results ouput", "x", "#+end_src"}), "unknown-header-value"));
     CHECK(HasCode(Lint({"#+begin_src python :var x", "x", "#+end_src"}), "bad-var"));
@@ -418,6 +424,10 @@ int main() {
         // A language tag hovers as what mep will actually run it with.
         const OrgLspHoverInfo h = OrgLspHover({"#+begin_src maxima", "1+1;", "#+end_src"}, 0, 14);
         CHECK(h.found && h.text.find("Runs with maxima") != std::string::npos);
+    }
+    {
+        const OrgLspHoverInfo h = OrgLspHover({"#+begin_src gap", "1+1;", "#+end_src"}, 0, 13);
+        CHECK(h.found && h.text.find("Runs with gap") != std::string::npos);
     }
     {
         const OrgLspHoverInfo h = OrgLspHover({"An \\alpha particle"}, 0, 5);

@@ -1299,6 +1299,29 @@ void ApplyMatchingRules(const DomNode *n, ComputedStyle &style, const std::vecto
     for (const Match &match : matches) ApplyDeclarations(style, match.rule->decls);
 }
 
+// Whether a display-math span is the entirety of its parent block -- the
+// shape `<p>$$..$$</p>` that org-mode's HTML export (and every other
+// MathJax-targeting page) writes a displayed equation as. Whitespace-only
+// text siblings do not count: the export routinely leaves a newline on
+// either side of the span.
+/**
+ * @brief Checks whether `n` is its parent's only non-whitespace child.
+ * @param n The node to test.
+ * @return True when every sibling is whitespace-only text (or `n` has no parent).
+ */
+bool MathIsOnlyChild(const DomNode *n) {
+    if (n->parent == nullptr) return true;
+    for (const auto &sib : n->parent->children) {
+        if (sib.get() == n) continue;
+        if (sib->type == DomNodeType::Text) {
+            if (sib->text.find_first_not_of(" \t\r\n") != std::string::npos) return false;
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
 /**
  * @brief Recursively computes and assigns the ComputedStyle for `n` and its descendants: tag defaults, inheritance from `parent`, matching CSS rules, then the inline style="" attribute, plus list-item nesting/marker bookkeeping.
  * @param n Node to style (no-op if it isn't an Element).
@@ -1315,8 +1338,15 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
         bool display = n->attrs.count("display") && n->attrs.at("display") == "1";
         s.block = display;
         if (display) {
-            s.margin_top_lines = 1;
-            s.margin_bottom_lines = 1;
+            // Air above and below, like every other block -- except when
+            // the span is the whole of its parent paragraph, which is what
+            // an org/MathJax export's `<p>$$..$$</p>` always is. There the
+            // paragraph's own margins already provide it, and adding these
+            // on top (this layout has no general margin collapsing) put
+            // four blank lines around every displayed equation.
+            const bool alone = MathIsOnlyChild(n);
+            s.margin_top_lines = alone ? 0 : 1;
+            s.margin_bottom_lines = alone ? 0 : 1;
         }
     }
     if (!s.has_color && parent.has_color) {

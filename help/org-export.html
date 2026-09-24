@@ -51,15 +51,32 @@ aliases. A bare <code>:MepOrgExportOpen</code> with no argument uses the same ke
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">org</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="org">#+TITLE: The document's title
 #+AUTHOR: Your name
 #+DATE: 2026-09-20
-#+HTML_HEAD: &lt;link rel="stylesheet" href="custom.css"&gt;</code></pre></div>
+#+HTML_HEAD: &lt;link rel="stylesheet" href="custom.css"&gt;
+#+HTML_MATHJAX: nil</code></pre></div>
 <p><code>#+HTML_HEAD:</code> lines are inserted into the exported <code>&lt;head&gt;</code>, after the
 generated stylesheet, so a page can override the defaults rather than only
 add to them. It is repeatable.</p>
+<p><code>#+HTML_MATHJAX: nil</code> suppresses the MathJax loader described below.</p>
 <h1>HTML</h1>
 <p>A complete document: doctype, charset, title, and a readable default
 stylesheet. Code blocks are syntax-highlighted with a copy button, and
 tables become real HTML tables.</p>
 <p>This manual is built with it -- see <a href="writing-help.html">Writing help pages</a>.</p>
+<h2>Maths in the exported page</h2>
+<p>A document with maths in it gets a MathJax loader in its <code>&lt;head&gt;</code>, so
+<code>$\alpha$</code> arrives as a formula in a browser instead of as four
+characters. Only a document that really has maths gets it: code blocks are
+excluded from the search first, so an R block full of <code>iris$Sepal.Length</code>
+does not count, and neither does a price of <code>$5</code> in a sentence.</p>
+<p>The loader adds <code>$...$</code> to MathJax's default set of inline delimiters
+(<code>\(...\)</code>, <code>$$...$$</code> and <code>\[...\]</code> are on by default), because that is the
+form org files are usually written in. Two things follow from it:</p>
+<ul>
+<li>The page fetches MathJax from a CDN, so it needs a network connection to typeset. <code>#+HTML_MATHJAX: nil</code> turns it off for an export that has to work offline or that is going somewhere with its own typesetter.</li>
+<li>Since <code>$...$</code> is enabled, a stray lone <code>$</code> in the same document's prose can be read as the start of a formula by MathJax, which is the usual cost of that delimiter. Write <code>\(...\)</code> if a document mixes maths and literal dollar signs.</li>
+</ul>
+<p>None of this applies to reading the page <b>in mep</b>, which needs no
+JavaScript for maths at all -- see <a href="browser.html">the browser</a>.</p>
 <h1>PDF, LaTeX and ODT</h1>
 <p>PDF goes org → HTML → LaTeX → <code>tectonic</code>, leaving the <code>.tex</code> on disk as a
 real artifact rather than scratch. Exporting to LaTeX stops one step

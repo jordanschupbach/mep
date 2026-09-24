@@ -39,6 +39,14 @@ figure onto the row after (or before) it. The mouse wheel scrolls a
 figure the same way, three lines to a notch. A counted motion (<code>10j</code>), an
 operator (<code>dj</code>), Visual mode and the explicit scroll commands (<code>Ctrl-D</code>,
 <code>zz</code>, <code>zt</code>, <code>zb</code>) all treat a figure as the single row it is.</p>
+<p>A relative target is resolved against the <b>org file's own directory</b>, never
+against mep's working directory: <code>[[file:diagram.png]]</code> in
+<code>~/notes/index.org</code> is <code>~/notes/diagram.png</code> however the file was reached
+(<code>:e notes/index.org</code> or a file-tree click) and whichever project or
+workspace is active. A target starting with <code>/</code> or <code>~/</code> is taken as
+written. The same rule governs every other path an org document names --
+<code>[[file:other.org]]</code> links, a block's <code>:file</code> / <code>:dir</code> / <code>:tangle</code>
+targets, <code>#+INCLUDE:</code>, and where an export writes its output.</p>
 <p>A link whose target is not on disk yet -- a plot a code block has still to
 produce -- stays plain text, and turns into the picture on the next edit
 after the file appears.</p>
@@ -159,7 +167,31 @@ cursor entering it -- which is why an untouched block reads <code>idle</code>.</
 <tr><td><code>:MepOrgLatexScan</code></td><td>rescan for fragments</td></tr>
 </table>
 <p>Fragments written <code>\(...\)</code>, <code>\[...\]</code>, <code>$...$</code> or <code>$$...$$</code> are rendered
-and drawn in place of the source. It works in <code>.tex</code> files as well as org.</p>
+and drawn in place of the source, as are the display-math environments
+(<code>\begin{equation}</code>, <code>\begin{align}</code> and friends), a <code>#+begin_latex</code> block
+and a <code>#+begin_src latex</code> block. It works in <code>.tex</code> files as well as org.</p>
+<p>A fragment alone on its lines is drawn <b>as</b> those lines, at its own height,
+so a display equation gets the room it needs. One sharing a line with prose
+is drawn into its own columns instead, with the text around it closing up
+against it the way concealed markup does.</p>
+<p>A fragment may be written across a line break, which long equations and
+wrapped paragraphs both need:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">org</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="org">,$$p(\theta \mid y) = \frac{p(y \mid \theta)\,p(\theta)}{p(y)}
+\propto p(y \mid \theta)\,p(\theta)$$
+
+points \(x_i \in
+\mathbb{R}^4\) lie in the plane</code></pre></div>
+<p>Both of those render as one fragment each. Where the fragment shares its
+rows with prose, the render is drawn on the row it starts on and the rest of
+its source is hidden -- one formula, drawn once. What a fragment may <b>not</b>
+cross is a blank line or a headline: those end the paragraph it belongs to,
+which is also what stops a single unbalanced <code>$$</code> from pulling the rest of
+the document into one image.</p>
+<p>A bare <code>$</code> is the one delimiter that is also punctuation, so it is read
+conservatively: no whitespace or sentence punctuation immediately inside
+either <code>$</code>, no digit right after the closing one (so "$5 and $10" stays
+prose), no <code>$</code> within the fragment itself, and at most one line break. The
+other three delimiters are unambiguous and carry none of those conditions.</p>
 <p>This is <b>on by default</b> too. Rendering shells out to <code>tectonic</code> and
 <code>pdftoppm</code> (both in the flake's dev shell); without them on <code>PATH</code> the
 maths simply stays as source text, and mep says so once per session rather

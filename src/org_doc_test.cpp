@@ -1021,6 +1021,12 @@ int main() {
         // units by different graphics devices -- one key, two families.
         CHECK(find(OrgHeaderArgSpecsFor("src", "maxima"), "width") != nullptr);
         CHECK(find(OrgHeaderArgSpecsFor("src", "maxima"), "units") == nullptr);
+        CHECK(find(OrgHeaderArgSpecsFor("src", "gap"), "screen-width") != nullptr);
+        CHECK(find(OrgHeaderArgSpecsFor("src", "gap"), "packages") != nullptr);
+        // GAP's own display width, not maxima's -- neither family sees the
+        // other's spelling of "how wide is the output".
+        CHECK(find(OrgHeaderArgSpecsFor("src", "gap"), "linel") == nullptr);
+        CHECK(find(OrgHeaderArgSpecsFor("src", "maxima"), "screen-width") == nullptr);
         // A language with no backend-specific args still gets the common
         // list rather than an invented one.
         const std::vector<OrgHeaderArgSpec> lua_specs = OrgHeaderArgSpecsFor("src", "lua");
@@ -1176,6 +1182,63 @@ int main() {
         CHECK(pairs[2].first == "eval");
     }
     {
+        // --- Shell expansion inside a header argument's value: what makes
+        // `:flags $(pkg-config --cflags foo)` reach the compiler as real
+        // flags. The runner is faked here; lua_env.cpp supplies the real
+        // one (a `/bin/sh -c` capture).
+        std::vector<std::string> ran;
+        OrgShellRunner run = [&ran](const std::string &cmd) {
+            ran.push_back(cmd);
+            if (cmd == "pkg-config --cflags foo") return std::string("-I/opt/foo/include\n");
+            if (cmd == "echo a") return std::string("a\n");
+            if (cmd == "dirname $(which cc)") return std::string("/usr/bin\n");
+            return std::string("<" + cmd + ">");
+        };
+        CHECK(OrgExpandShellSubstitutions("$(pkg-config --cflags foo)", run) == "-I/opt/foo/include");
+        // Surrounding literal text is kept, and the trailing newline is not.
+        CHECK(OrgExpandShellSubstitutions("-O2 $(echo a) -Wall", run) == "-O2 a -Wall");
+        // Backticks are the same substitution, and nested `$(...)` closes on
+        // its own parenthesis rather than the inner one.
+        CHECK(OrgExpandShellSubstitutions("`echo a`", run) == "a");
+        // The nested command is handed over whole -- the shell does its own
+        // nesting -- so that is one run, not two.
+        CHECK(OrgExpandShellSubstitutions("$(dirname $(which cc))", run) == "/usr/bin");
+        CHECK(ran.size() == 4);
+        // Interior newlines fold to spaces so a multi-line output still
+        // splits into plain words; trailing ones are dropped outright.
+        OrgShellRunner lines = [](const std::string &) { return std::string("-a\n-b\n\n"); };
+        CHECK(OrgExpandShellSubstitutions("$(x)", lines) == "-a -b");
+        // Environment variables, braced and bare, with no command run at all.
+        OrgShellRunner never = [](const std::string &cmd) {
+            CHECK(cmd.empty());  // never reached
+            return std::string();
+        };
+        setenv("MEP_TEST_EXPAND", "/opt/mep", 1);
+        CHECK(OrgExpandShellSubstitutions("-I${MEP_TEST_EXPAND}/include", never) == "-I/opt/mep/include");
+        CHECK(OrgExpandShellSubstitutions("-I$MEP_TEST_EXPAND/include", never) == "-I/opt/mep/include");
+        // An unset variable expands to nothing, the way the shell does.
+        unsetenv("MEP_TEST_UNSET");
+        CHECK(OrgExpandShellSubstitutions("$MEP_TEST_UNSET-x", never) == "-x");
+        // A backslash escapes the next `$`/backtick/backslash and nothing
+        // else, so ordinary flags carrying either survive untouched.
+        CHECK(OrgExpandShellSubstitutions("\\$(echo a)", never) == "$(echo a)");
+        CHECK(OrgExpandShellSubstitutions("-DPATH=C:\\tmp", never) == "-DPATH=C:\\tmp");
+        // A `$` that opens nothing, and an unterminated substitution, stay
+        // literal rather than swallowing the rest of the value.
+        CHECK(OrgExpandShellSubstitutions("-Wl,-z,$ -O2", never) == "-Wl,-z,$ -O2");
+        CHECK(OrgExpandShellSubstitutions("$(echo a", never) == "$(echo a");
+        CHECK(OrgExpandShellSubstitutions("`echo a", never) == "`echo a");
+        // The cheap pre-check the caller uses to skip the whole pass.
+        CHECK(OrgValueNeedsShellExpansion("$(pkg-config --libs foo)"));
+        CHECK(OrgValueNeedsShellExpansion("`uname`"));
+        CHECK(OrgValueNeedsShellExpansion("$HOME/x"));
+        CHECK(!OrgValueNeedsShellExpansion("-O2 -Wall -lm"));
+        CHECK(!OrgValueNeedsShellExpansion("\\$(echo a)"));
+        // The value as OrgHeaderArgValue hands it over: quotes already gone.
+        CHECK(OrgExpandShellSubstitutions(OrgHeaderArgValue(":flags $(pkg-config --cflags foo) :eval yes", "flags"),
+                                          run) == "-I/opt/foo/include");
+    }
+    {
         // --- Merging the layers a block's arguments come from: a
         // file-wide `#+PROPERTY:`, then `#+HEADER:` lines, then the
         // `#+begin_src` line itself. Later wins, except `:var`, which
@@ -1232,12 +1295,17 @@ int main() {
         OrgResultsOptions opts;
         opts.type = "list";
         CHECK((OrgFormatResultsBody({"x", "y"}, opts) == Lines{"- x", "- y"}));
-        // `verbatim`/`scalar` refuse every interpretation, including the
-        // example fence a multi-line result would otherwise get.
-        opts.type = "verbatim";
-        CHECK((OrgFormatResultsBody({"a,b", "c,d"}, opts) == Lines{": a,b", ": c,d"}));
+        // `scalar` refuses every interpretation, including the example
+        // fence a multi-line result would otherwise get.
         opts.type = "scalar";
+        CHECK((OrgFormatResultsBody({"a,b", "c,d"}, opts) == Lines{": a,b", ": c,d"}));
         CHECK((OrgFormatResultsBody({"1"}, opts) == Lines{": 1"}));
+        // `verbatim` refuses the interpretation *and* the quoting: the
+        // output lands exactly as the block wrote it, which is what gets
+        // a maxima block's own `$$...$$` into the buffer as math.
+        opts.type = "verbatim";
+        CHECK((OrgFormatResultsBody({"a,b", "c,d"}, opts) == Lines{"a,b", "c,d"}));
+        CHECK(OrgResultsBodyIsRaw(opts));
         // A `:file` link is inserted untouched whatever else is set.
         opts.type = "";
         opts.format = "raw";
@@ -1404,6 +1472,24 @@ int main() {
         const Lines bare = {"#+end_src", "#+RESULTS:", "", "prose"};
         CHECK(OrgFindResultsBlock(bare, 1, &start, &end));
         CHECK(start == 2 && end == 2);
+        // An unquoted body (`:results raw`/`org`/`verbatim`) has no marker
+        // of its own, so it runs to the blank line the way org's own
+        // paragraph does -- otherwise a re-run stacks a second copy under
+        // the first.
+        const Lines raw = {"#+end_src", "#+RESULTS:", "$$x^2$$", "more", "", "after"};
+        CHECK(OrgFindResultsBlock(raw, 1, &start, &end, true));
+        CHECK(start == 2 && end == 4);
+        // ... and stops at the next element even with no blank line.
+        const Lines upto = {"#+end_src", "#+RESULTS:", "$$x^2$$", "* Heading"};
+        CHECK(OrgFindResultsBlock(upto, 1, &start, &end, true));
+        CHECK(start == 2 && end == 3);
+        // Without that flag the same lines are prose that happens to sit
+        // under an empty keyword, and stay untouched.
+        CHECK(OrgFindResultsBlock(raw, 1, &start, &end));
+        CHECK(start == 2 && end == 2);
+        // A re-run replaces the unquoted body rather than stacking on it.
+        CHECK((OrgSpliceResultsBlock(raw, 1, {"#+RESULTS:", "$$y^2$$"}, "replace", true) ==
+               Lines{"#+end_src", "#+RESULTS:", "$$y^2$$", "", "after"}));
         // Nothing there at all.
         CHECK(!OrgFindResultsBlock({"#+end_src", "prose"}, 1, &start, &end));
     }
@@ -1488,6 +1574,254 @@ int main() {
         // An unterminated block is left exactly as it stands.
         const Lines open_block = {"#+begin_src sh :exports none", "echo hi"};
         CHECK(OrgApplyExportGates(open_block) == open_block);
+    }
+
+    {
+        // --- LaTeX/math fragments (OrgLatexScan) ----------------------
+        // Helpers: a fragment's body by the row it starts on, so a check
+        // reads as "this row previews this TeX" rather than as index
+        // arithmetic over two vectors.
+        auto block_at = [](const OrgLatexFragments &f, int row) -> const OrgLatexBlockFragment * {
+            for (const OrgLatexBlockFragment &b : f.blocks) {
+                if (b.start_row == row) return &b;
+            }
+            return nullptr;
+        };
+        auto inline_at = [](const OrgLatexFragments &f, int row, int col) -> const OrgLatexInlineFragment * {
+            for (const OrgLatexInlineFragment &s : f.inlines) {
+                if (!s.parts.empty() && s.parts.front().row == row && s.parts.front().col_start == col) return &s;
+            }
+            return nullptr;
+        };
+
+        // A fragment alone on its line is a block: the preview replaces
+        // the row rather than drawing into it.
+        const Lines whole = {"$$x = 1$$", "\\[y = 2\\]", "\\(z = 3\\)", "$w = 4$"};
+        const OrgLatexFragments wf = OrgLatexScan(whole);
+        CHECK(wf.blocks.size() == 4);
+        CHECK(wf.inlines.empty());
+        CHECK(block_at(wf, 1)->body == "$$x = 1$$");
+        CHECK(block_at(wf, 2)->body == "\\[y = 2\\]");
+        CHECK(block_at(wf, 4)->body == "$w = 4$");
+        CHECK(block_at(wf, 4)->end_row == 4);
+
+        // Indentation does not change that, and the body is the fragment
+        // itself, not the row.
+        const OrgLatexFragments indented = OrgLatexScan({"    $$x = 1$$   "});
+        CHECK(indented.blocks.size() == 1);
+        CHECK(indented.blocks[0].body == "$$x = 1$$");
+
+        // A fragment sharing its row with prose is inline, with the
+        // columns the render is drawn into.
+        const OrgLatexFragments mid = OrgLatexScan({"the value $x^2$ matters"});
+        CHECK(mid.blocks.empty());
+        CHECK(mid.inlines.size() == 1);
+        CHECK(mid.inlines[0].body == "$x^2$");
+        CHECK(mid.inlines[0].parts.size() == 1);
+        CHECK(mid.inlines[0].parts[0].row == 1);
+        CHECK(mid.inlines[0].parts[0].col_start == 11);
+        CHECK(mid.inlines[0].parts[0].col_end == 16);
+
+        // The regression this scanner was rewritten for: display math
+        // whose `$$` delimiters carry content on their own lines. Org
+        // previews it; mep used to require the `$$` to be alone on a line
+        // and so showed the whole equation as raw source.
+        const Lines display = {"Bayes' theorem:", "", "$$p(\\theta \\mid y) = \\frac{a}{b}",
+                               "\\propto p(y \\mid \\theta)$$", "", "and so on"};
+        const OrgLatexFragments df = OrgLatexScan(display);
+        CHECK(df.blocks.size() == 1);
+        CHECK(df.blocks[0].start_row == 3);
+        CHECK(df.blocks[0].end_row == 4);
+        CHECK(df.blocks[0].body == "$$p(\\theta \\mid y) = \\frac{a}{b}\n\\propto p(y \\mid \\theta)$$");
+        CHECK(df.inlines.empty());
+
+        // The `$$` alone on its own line still works, which is what it
+        // did before.
+        const OrgLatexFragments fenced = OrgLatexScan({"$$", "x = 1", "$$"});
+        CHECK(fenced.blocks.size() == 1);
+        CHECK(fenced.blocks[0].end_row == 3);
+        CHECK(fenced.blocks[0].body == "$$\nx = 1\n$$");
+
+        // An inline fragment that wraps across a line break gets one part
+        // per row: the first is where the single render is drawn, the rest
+        // exist so their source can be concealed instead of showing as
+        // leftover TeX.
+        const Lines wrapped = {"points \\(x_i \\in", "\\mathbb{R}^4\\) in the plane"};
+        const OrgLatexFragments wr = OrgLatexScan(wrapped);
+        CHECK(wr.blocks.empty());
+        CHECK(wr.inlines.size() == 1);
+        CHECK(wr.inlines[0].body == "\\(x_i \\in\n\\mathbb{R}^4\\)");
+        CHECK(wr.inlines[0].parts.size() == 2);
+        CHECK(wr.inlines[0].parts[0].row == 1);
+        CHECK(wr.inlines[0].parts[0].col_start == 8);
+        CHECK(wr.inlines[0].parts[0].col_end == 17);  // through the row's end
+        CHECK(wr.inlines[0].parts[1].row == 2);
+        CHECK(wr.inlines[0].parts[1].col_start == 1);
+        CHECK(wr.inlines[0].parts[1].col_end == 15);
+
+        // `$..$` wraps the same way, and -- the reason it used to render
+        // *wrongly* rather than not at all -- the closing `$` on the
+        // second row is no longer free to pair with the next `$` after
+        // it, which put a little rendered ", " in the middle of the prose
+        // and left the real formula as text.
+        const Lines dollar_wrap = {"damping $x \\leftarrow x +", "\\eta v$, $y = 1$ throughout"};
+        const OrgLatexFragments dw = OrgLatexScan(dollar_wrap);
+        CHECK(dw.inlines.size() == 2);
+        CHECK(dw.inlines[0].body == "$x \\leftarrow x +\n\\eta v$");
+        CHECK(dw.inlines[0].parts.size() == 2);
+        CHECK(dw.inlines[1].body == "$y = 1$");
+        CHECK(dw.inlines[1].parts.size() == 1);
+
+        // Two line breaks inside a `$..$` is where the guess stops being
+        // about a formula, so that one is left alone (org's own limit).
+        const OrgLatexFragments three = OrgLatexScan({"a $x +", "y +", "z$ b"});
+        CHECK(three.inlines.empty());
+        CHECK(three.blocks.empty());
+
+        // No fragment crosses a paragraph break, which is what stops one
+        // unbalanced `$$` from swallowing the rest of the document.
+        const OrgLatexFragments unbalanced = OrgLatexScan({"$$x = 1", "", "prose", "", "more $$ prose"});
+        CHECK(unbalanced.blocks.empty());
+        CHECK(unbalanced.inlines.empty());
+        // A headline is the same kind of wall.
+        const OrgLatexFragments across_head = OrgLatexScan({"text \\(x", "* Heading", "y\\) text"});
+        CHECK(across_head.blocks.empty());
+        CHECK(across_head.inlines.empty());
+
+        // Money is not maths: the disambiguation rules for bare `$`.
+        CHECK(OrgLatexScan({"it cost $5 and then $10 more"}).inlines.empty());
+        CHECK(OrgLatexScan({"pay $ x $ now"}).inlines.empty());
+
+        // A `$` inside a non-LaTeX block is source code, not maths -- an R
+        // block's `iris$Sepal.Length` used to be typeset over the code.
+        const Lines src = {"#+begin_src R", "plot(iris$Sepal.Length, iris$Sepal.Width)", "#+end_src"};
+        CHECK(OrgLatexScan(src).inlines.empty());
+        CHECK(OrgLatexScan(src).blocks.empty());
+        // A `latex` src block, by contrast, is the fragment.
+        const Lines tex_src = {"#+begin_src latex", "\\frac{a}{b}", "#+end_src"};
+        const OrgLatexFragments ts = OrgLatexScan(tex_src);
+        CHECK(ts.blocks.size() == 1);
+        CHECK(ts.blocks[0].body == "\\frac{a}{b}");
+        CHECK(ts.blocks[0].end_row == 3);
+        const Lines latex_block = {"#+BEGIN_LATEX", "\\alpha", "#+END_LATEX"};
+        CHECK(OrgLatexScan(latex_block).blocks.size() == 1);
+
+        // Display-math environments are whole fragments, `\begin`/`\end`
+        // lines included, over however many rows they take.
+        const Lines env = {"\\begin{align}", "a &= b \\\\", "c &= d", "\\end{align}"};
+        const OrgLatexFragments ef = OrgLatexScan(env);
+        CHECK(ef.blocks.size() == 1);
+        CHECK(ef.blocks[0].start_row == 1);
+        CHECK(ef.blocks[0].end_row == 4);
+        CHECK(ef.blocks[0].body.find("\\end{align}") != std::string::npos);
+        // A starred one too, and an environment that is not display maths
+        // is not a fragment at all.
+        CHECK(OrgLatexScan({"\\begin{equation*}", "x", "\\end{equation*}"}).blocks.size() == 1);
+        CHECK(OrgLatexScan({"\\begin{itemize}", "\\item x", "\\end{itemize}"}).blocks.empty());
+
+        // Blocks come back in document order even though the two kinds are
+        // found in separate passes.
+        const Lines mixed = {"$$a$$", "\\begin{equation}", "b", "\\end{equation}", "$$c$$"};
+        const OrgLatexFragments mf = OrgLatexScan(mixed);
+        CHECK(mf.blocks.size() == 3);
+        CHECK(mf.blocks[0].start_row == 1);
+        CHECK(mf.blocks[1].start_row == 2);
+        CHECK(mf.blocks[2].start_row == 5);
+
+        // Several fragments on one row, in column order, and an unclosed
+        // delimiter between them does not eat them.
+        const OrgLatexFragments many = OrgLatexScan({"$a$ and \\(b\\) and $c$"});
+        CHECK(many.inlines.size() == 3);
+        CHECK(many.inlines[0].parts[0].col_start == 1);
+        CHECK(many.inlines[1].body == "\\(b\\)");
+        CHECK(many.inlines[2].body == "$c$");
+        CHECK(inline_at(many, 1, 19) != nullptr);
+        CHECK(OrgLatexScan({"an unclosed \\( and $x$ after"}).inlines.size() == 1);
+
+        // An empty document, one whose fragment is never closed, and
+        // delimiters with nothing between them to typeset.
+        CHECK(OrgLatexScan({}).blocks.empty());
+        CHECK(OrgLatexScan({"$$"}).blocks.empty());
+        CHECK(OrgLatexScan({"$"}).inlines.empty());
+        CHECK(OrgLatexScan({"$$$$"}).blocks.empty());
+        CHECK(OrgLatexScan({"a \\[\\] b"}).inlines.empty());
+        // `#+begin_srclatex` is not a latex block.
+        CHECK(OrgLatexScan({"#+begin_srclatex", "\\alpha", "#+end_src"}).blocks.empty());
+        CHECK(OrgLatexScan({"#+BEGIN_SRC LaTeX", "\\alpha", "#+END_SRC"}).blocks.size() == 1);
+    }
+
+    {
+        // --- Literal (non-prose) regions (OrgLiteralSpans) ------------
+        // What spell checking has to leave alone. `covers` asks the
+        // question the callers ask: is this word's column range literal?
+        auto covers = [](const Lines &doc, int row, int col_start, int col_end) {
+            for (const OrgLiteralSpan &sp : OrgLiteralSpans(doc)) {
+                if (sp.row == row && col_start < sp.col_end && col_end > sp.col_start) return true;
+            }
+            return false;
+        };
+
+        // A src block is literal from its `#+begin_src` through its
+        // `#+end_src`, both markers included -- the header line carries a
+        // language and arguments, not prose.
+        const Lines src = {"Prose above.", "#+begin_src R :results output",
+                           "plot(iris$Sepal.Length, iris$Sepal.Width)", "#+end_src", "Prose below."};
+        CHECK(!covers(src, 1, 1, 13));
+        CHECK(covers(src, 2, 1, 10));
+        CHECK(covers(src, 3, 1, 42));
+        CHECK(covers(src, 4, 1, 10));
+        CHECK(!covers(src, 5, 1, 13));
+
+        // `example` and `export` blocks are literal too.
+        CHECK(covers({"#+begin_example", "Iteration 3", "#+end_example"}, 2, 1, 12));
+        CHECK(covers({"#+begin_export html", "<hr>", "#+end_export"}, 2, 1, 5));
+        // A `quote`, `verse` or any other block is prose and stays checked:
+        // fencing text does not stop it being text.
+        CHECK(!covers({"#+begin_quote", "Teh quoted sentance.", "#+end_quote"}, 2, 1, 21));
+        CHECK(!covers({"#+begin_abstract", "Teh abstract.", "#+end_abstract"}, 2, 1, 14));
+        CHECK(!covers({"#+begin_verse", "Teh verse.", "#+end_verse"}, 2, 1, 11));
+        // Case and indentation do not matter.
+        CHECK(covers({"  #+BEGIN_SRC python", "  x = 1", "  #+END_SRC"}, 2, 3, 8));
+        // An unterminated block runs to the end of the document, which is
+        // also what it looks like on screen.
+        CHECK(covers({"#+begin_src sh", "echo hi", "echo there"}, 3, 1, 11));
+
+        // Fixed-width rows: org's literal output, the shape a `#+RESULTS:`
+        // takes. The `#+RESULTS:` keyword itself is not one.
+        const Lines res = {"#+RESULTS:", ": posteriro mean 2.07", ":", "after"};
+        CHECK(covers(res, 2, 3, 12));
+        CHECK(covers(res, 3, 1, 2));
+        CHECK(!covers(res, 4, 1, 6));
+        // A drawer line is not a fixed-width row -- no space after the colon.
+        CHECK(!covers({":PROPERTIES:"}, 1, 1, 13));
+
+        // Inline code objects: org's `=verbatim=` and `~code~`.
+        const Lines inl = {"the =weighted_mean_of()= helper and ~iris$Sepal~ too"};
+        CHECK(covers(inl, 1, 5, 25));
+        CHECK(covers(inl, 1, 37, 49));
+        CHECK(!covers(inl, 1, 1, 4));    // "the"
+        CHECK(!covers(inl, 1, 26, 32));  // "helper"
+        // The markers have to look like markup: a bare `=` in prose or
+        // maths, and a `~` in a path, are not code.
+        CHECK(!covers({"set x = y and z = w here"}, 1, 1, 25));
+        CHECK(!covers({"it lives in ~/src and ~/bin"}, 1, 1, 28));
+        CHECK(!covers({"a = b"}, 1, 1, 6));
+        // An unclosed marker opens nothing.
+        CHECK(!covers({"the =unclosed marker here"}, 1, 1, 26));
+        // Adjacent spans on one row are found separately.
+        const std::vector<OrgLiteralSpan> two = OrgLiteralSpans({"=a= and =b="});
+        CHECK(two.size() == 2);
+        CHECK(two[0].col_start == 1);
+        CHECK(two[1].col_start == 9);
+
+        // Inline markup inside a src block is not double-counted as its own
+        // span -- the whole row is already literal.
+        const std::vector<OrgLiteralSpan> nested = OrgLiteralSpans({"#+begin_src sh", "x = ~a~", "#+end_src"});
+        CHECK(nested.size() == 3);
+
+        // An empty document, and a document with nothing literal in it.
+        CHECK(OrgLiteralSpans({}).empty());
+        CHECK(OrgLiteralSpans({"Just prose.", "", "More prose."}).empty());
     }
 
     std::printf("org_doc_test: all checks passed\n");

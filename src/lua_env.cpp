@@ -7000,20 +7000,50 @@ int l_org_refile_move(lua_State *L) {
     return 1;
 }
 
+// mep.org_literal_spans() -> {{row=,col_start=,col_end=}, ...}: the
+// current buffer's literal (non-prose) spans -- see OrgLiteralSpans
+// (org_doc.h) for what counts as one. Empty for a buffer that is not an
+// org file, so a caller needs no filetype test of its own.
+/**
+ * @brief Implements mep.org_literal_spans(): the current buffer's literal (non-prose) spans.
+ * @param L Lua state.
+ * @return Number of values pushed (1: an array of {row=,col_start=,col_end=} tables).
+ */
+int l_org_literal_spans(lua_State *L) {
+    const std::vector<OrgLiteralSpan> spans = GetEditor(L)->BufferLiteralSpans();
+    lua_createtable(L, static_cast<int>(spans.size()), 0);
+    for (size_t i = 0; i < spans.size(); i++) {
+        lua_createtable(L, 0, 3);
+        lua_pushinteger(L, spans[i].row);
+        lua_setfield(L, -2, "row");
+        lua_pushinteger(L, spans[i].col_start);
+        lua_setfield(L, -2, "col_start");
+        lua_pushinteger(L, spans[i].col_end);
+        lua_setfield(L, -2, "col_end");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
 // mep.org_latex_scan_fragments() -> {blocks = {{start_row=,end_row=,
-// body=}, ...}, inlines = {{row=,col_start=,col_end=,body=}, ...}}: see
-// Editor::OrgLatexScanFragments.
+// body=}, ...}, inlines = {{body=, parts={{row=,col_start=,col_end=},
+// ...}}, ...}}: see OrgLatexScan (org_doc.h). An inline fragment carries
+// one `parts` entry per row it touches -- nearly always exactly one, more
+// only when the fragment crosses a line break -- rather than being one
+// flat span, because all of its parts share a single render: the first
+// part is where that render is drawn and the rest have to be concealed,
+// which the caller can only get right if it knows they belong together.
 /**
  * @brief Implements mep.org_latex_scan_fragments(): scans the buffer for LaTeX fragments (block and inline).
  * @param L Lua state.
- * @return Number of values pushed (1: a {blocks={{start_row=,end_row=,body=},...}, inlines={{row=,col_start=,col_end=,body=},...}} table).
+ * @return Number of values pushed (1: a {blocks={{start_row=,end_row=,body=},...}, inlines={{body=,parts={{row=,col_start=,col_end=},...}},...}} table).
  */
 int l_org_latex_scan_fragments(lua_State *L) {
-    Editor::OrgLatexScanResult result = GetEditor(L)->OrgLatexScanFragments();
+    OrgLatexFragments result = GetEditor(L)->OrgLatexScanFragments();
     lua_createtable(L, 0, 2);
     lua_createtable(L, static_cast<int>(result.blocks.size()), 0);
     for (size_t i = 0; i < result.blocks.size(); i++) {
-        const Editor::OrgLatexBlock &b = result.blocks[i];
+        const OrgLatexBlockFragment &b = result.blocks[i];
         lua_createtable(L, 0, 3);
         lua_pushinteger(L, b.start_row);
         lua_setfield(L, -2, "start_row");
@@ -7026,16 +7056,23 @@ int l_org_latex_scan_fragments(lua_State *L) {
     lua_setfield(L, -2, "blocks");
     lua_createtable(L, static_cast<int>(result.inlines.size()), 0);
     for (size_t i = 0; i < result.inlines.size(); i++) {
-        const Editor::OrgLatexInlineSpan &s = result.inlines[i];
-        lua_createtable(L, 0, 4);
-        lua_pushinteger(L, s.row);
-        lua_setfield(L, -2, "row");
-        lua_pushinteger(L, s.col_start);
-        lua_setfield(L, -2, "col_start");
-        lua_pushinteger(L, s.col_end);
-        lua_setfield(L, -2, "col_end");
+        const OrgLatexInlineFragment &s = result.inlines[i];
+        lua_createtable(L, 0, 2);
         lua_pushlstring(L, s.body.data(), s.body.size());
         lua_setfield(L, -2, "body");
+        lua_createtable(L, static_cast<int>(s.parts.size()), 0);
+        for (size_t k = 0; k < s.parts.size(); k++) {
+            const OrgLatexInlinePart &part = s.parts[k];
+            lua_createtable(L, 0, 3);
+            lua_pushinteger(L, part.row);
+            lua_setfield(L, -2, "row");
+            lua_pushinteger(L, part.col_start);
+            lua_setfield(L, -2, "col_start");
+            lua_pushinteger(L, part.col_end);
+            lua_setfield(L, -2, "col_end");
+            lua_rawseti(L, -2, static_cast<int>(k + 1));
+        }
+        lua_setfield(L, -2, "parts");
         lua_rawseti(L, -2, static_cast<int>(i + 1));
     }
     lua_setfield(L, -2, "inlines");
@@ -7526,6 +7563,84 @@ int l_org_header_arg(lua_State *L) {
     return 1;
 }
 
+// mep.org_shell_expand(value, cwd?) -> expanded value: runs the `$(...)`
+// / backtick command substitutions and `$VAR` references in one header
+// argument's value (OrgExpandShellSubstitutions) and hands back the
+// result. What makes `:flags $(pkg-config --cflags foo)` reach the
+// compiler as real include flags -- babel spawns argv directly, with no
+// shell anywhere in the chain to do this for it.
+//
+// Each command runs synchronously under `/bin/sh -c` in `cwd` (the
+// block's own run directory, so a substitution can name a relative path
+// the block itself would), because the value is needed to *build* the
+// argv that mep.job_start is then given -- there is nothing to defer it
+// into. They are expected to be small (`pkg-config`, `uname`,
+// `llvm-config`); a command that blocks blocks the UI thread, same as any
+// other synchronous call from Lua.
+namespace {
+/**
+ * @brief Runs one command under `/bin/sh -c` in a directory and captures its standard output.
+ * @param command The command text, as written between the substitution's delimiters.
+ * @param cwd The directory to run it in; empty means mep's own current directory.
+ * @return The command's standard output; "" when the shell could not be started at all.
+ */
+std::string RunShellCapture(const std::string &command, const std::string &cwd) {
+#if defined(__EMSCRIPTEN__)
+    (void)command;
+    (void)cwd;
+    return std::string();
+#else
+    // `cd` in the same shell rather than chdir() here: mep's own working
+    // directory is shared with every other thread, and the substitution
+    // must not move it. A single-quoted path with `'` escaped the POSIX
+    // way ('\'') so a directory name may contain anything at all.
+    std::string script;
+    if (!cwd.empty()) {
+        std::string quoted = "'";
+        for (const char c : cwd) {
+            if (c == '\'') {
+                quoted += "'\\''";
+            } else {
+                quoted += c;
+            }
+        }
+        quoted += "'";
+        script = "cd " + quoted + " && ";
+    }
+    script += command;
+    // NOLINTBEGIN(cert-env33-c) -- running the document's own command is
+    // the entire point here; the block it came from is about to be
+    // compiled and executed anyway.
+    FILE *pipe = popen(script.c_str(), "r");
+    // NOLINTEND(cert-env33-c)
+    if (pipe == nullptr) return std::string();
+    std::string out;
+    std::array<char, 1024> buf{};
+    while (std::fgets(buf.data(), static_cast<int>(buf.size()), pipe) != nullptr) out += buf.data();
+    pclose(pipe);
+    return out;
+#endif
+}
+}  // namespace
+
+/**
+ * @brief Implements mep.org_shell_expand(value, cwd?): expands command substitutions and $VARs in a header-arg value.
+ * @param L Lua state; arg 1 is the value, optional arg 2 the directory the commands run in.
+ * @return Number of values pushed (1: the expanded value).
+ */
+int l_org_shell_expand(lua_State *L) {
+    const std::string value = luaL_checkstring(L, 1);
+    if (!OrgValueNeedsShellExpansion(value)) {
+        lua_pushlstring(L, value.data(), value.size());
+        return 1;
+    }
+    const std::string cwd = lua_isstring(L, 2) ? lua_tostring(L, 2) : "";
+    const std::string expanded = OrgExpandShellSubstitutions(
+        value, [&cwd](const std::string &command) { return RunShellCapture(command, cwd); });
+    lua_pushlstring(L, expanded.data(), expanded.size());
+    return 1;
+}
+
 // mep.org_merge_header_args({args1, args2, ...}) -> merged args string:
 // see OrgMergeHeaderArgs.
 /**
@@ -7572,6 +7687,23 @@ int l_org_format_results(lua_State *L) {
     PushStringArray(L, OrgFormatResultsBody(out_lines, opts));
     lua_pushboolean(L, OrgResultsBodyIsRaw(opts) ? 1 : 0);
     return 2;
+}
+
+// mep.org_results_is_raw(args_str, lang) -> bool: whether a block with
+// those header args writes its results as unquoted org markup (`:results
+// raw`/`org`/`verbatim`, a `:wrap`, a table/list/file). The same answer
+// mep.org_format_results returns second, for the callers that have to
+// know before they have any output to format -- finding the results
+// already written needs it, since an unquoted body carries no marker.
+/**
+ * @brief Implements mep.org_results_is_raw(args_str, lang): reports whether a block's results body is unquoted org markup.
+ * @param L Lua state; arg 1 is the header-args text, arg 2 the language.
+ * @return Number of values pushed (1: the boolean).
+ */
+int l_org_results_is_raw(lua_State *L) {
+    lua_pushboolean(L, OrgResultsBodyIsRaw(OrgResultsOptionsFrom(luaL_checkstring(L, 1), luaL_optstring(L, 2, ""))) ? 1
+                                                                                                                   : 0);
+    return 1;
 }
 
 // mep.org_results_handling(args_str) -> "replace"|"append"|"prepend"|
@@ -7700,13 +7832,16 @@ int l_org_exports(lua_State *L) {
 }
 
 // mep.org_splice_results({line, ...}, after_row, {block line, ...},
-// handling) -> {line, ...}: see OrgSpliceResultsBlock. One writer for
-// both the live buffer and the export-time scratch copy, so `:wrap`,
-// `:results drawer` and the rest are recognized as an existing results
-// block by both rather than only by whichever grew its own matcher.
+// handling[, raw_body]) -> {line, ...}: see OrgSpliceResultsBlock. One
+// writer for both the live buffer and the export-time scratch copy, so
+// `:wrap`, `:results drawer` and the rest are recognized as an existing
+// results block by both rather than only by whichever grew its own
+// matcher. `raw_body` says the block writes an unquoted body (the
+// mep.org_format_results second return), which has no per-line marker
+// to recognize it by.
 /**
- * @brief Implements mep.org_splice_results(lines, after_row, block, handling): writes a results block into a document copy.
- * @param L Lua state; arg 1 is the document lines, arg 2 the `#+end_src` row, arg 3 the results block, arg 4 the `:results` handling word.
+ * @brief Implements mep.org_splice_results(lines, after_row, block, handling, raw_body): writes a results block into a document copy.
+ * @param L Lua state; arg 1 is the document lines, arg 2 the `#+end_src` row, arg 3 the results block, arg 4 the `:results` handling word, arg 5 whether the body is unquoted org markup.
  * @return Number of values pushed (1: the document with the results written).
  */
 int l_org_splice_results(lua_State *L) {
@@ -7715,22 +7850,24 @@ int l_org_splice_results(lua_State *L) {
     const std::vector<std::string> lines = ReadStringArray(L, 1);
     const int after_row = static_cast<int>(luaL_checkinteger(L, 2));
     const std::vector<std::string> block = ReadStringArray(L, 3);
-    PushStringArray(L, OrgSpliceResultsBlock(lines, after_row, block, luaL_optstring(L, 4, "replace")));
+    PushStringArray(L, OrgSpliceResultsBlock(lines, after_row, block, luaL_optstring(L, 4, "replace"),
+                                             lua_toboolean(L, 5) != 0));
     return 1;
 }
 
-// mep.org_find_results({line, ...}, after_row) -> start_row, end_row (or
-// nil): see OrgFindResultsBlock.
+// mep.org_find_results({line, ...}, after_row[, raw_body]) -> start_row,
+// end_row (or nil): see OrgFindResultsBlock.
 /**
- * @brief Implements mep.org_find_results(lines, after_row): locates the results block under a src block.
- * @param L Lua state; arg 1 is the document lines, arg 2 the `#+end_src` row.
+ * @brief Implements mep.org_find_results(lines, after_row, raw_body): locates the results block under a src block.
+ * @param L Lua state; arg 1 is the document lines, arg 2 the `#+end_src` row, arg 3 whether the body is unquoted org markup.
  * @return Number of values pushed (2 rows, or 1 nil when no results block follows).
  */
 int l_org_find_results(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     const std::vector<std::string> lines = ReadStringArray(L, 1);
     int start = 0, end = 0;
-    if (!OrgFindResultsBlock(lines, static_cast<int>(luaL_checkinteger(L, 2)), &start, &end)) {
+    if (!OrgFindResultsBlock(lines, static_cast<int>(luaL_checkinteger(L, 2)), &start, &end,
+                             lua_toboolean(L, 3) != 0)) {
         lua_pushnil(L);
         return 1;
     }
@@ -8003,6 +8140,35 @@ int l_org_resolve_path_global(lua_State *L) {
     const char *path = luaL_checkstring(L, 1);
     std::string resolved = GetEditor(L)->OrgResolvePath(path);
     lua_pushlstring(L, resolved.data(), resolved.size());
+    return 1;
+}
+
+// mep_org_doc_dir() -> the current document's own directory: see
+// Editor::OrgDocumentDir. Bare global, same reason as
+// mep_org_resolve_path -- kBuiltinOrgBabel/kBuiltinOrgExport/
+// kBuiltinOrgBib are separate DoString chunks that each need it.
+/**
+ * @brief Implements the bare global mep_org_doc_dir(): the absolute directory of the current buffer's file.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the directory string).
+ */
+int l_org_doc_dir_global(lua_State *L) {
+    std::string dir = GetEditor(L)->OrgDocumentDir();
+    lua_pushlstring(L, dir.data(), dir.size());
+    return 1;
+}
+
+// mep_org_doc_base() -> the current document's extension-less absolute
+// path: see Editor::OrgDocumentBase. Bare global, same reason as
+// mep_org_doc_dir.
+/**
+ * @brief Implements the bare global mep_org_doc_base(): the current document's absolute path with ".org" stripped.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the base path string).
+ */
+int l_org_doc_base_global(lua_State *L) {
+    std::string base = GetEditor(L)->OrgDocumentBase();
+    lua_pushlstring(L, base.data(), base.size());
     return 1;
 }
 
@@ -10712,6 +10878,7 @@ const luaL_Reg kMepFuncs[] = {
     {"org_capture_expand_template", l_org_expand_capture_template},
     {"org_refile_move", l_org_refile_move},
     {"org_latex_scan_fragments", l_org_latex_scan_fragments},
+    {"org_literal_spans", l_org_literal_spans},
     {"org_bib_parse_files", l_org_bib_parse_files},
     {"org_roam_files_in", l_org_roam_files_in},
     {"org_roam_title_of", l_org_roam_title_of},
@@ -10735,6 +10902,7 @@ const luaL_Reg kMepFuncs[] = {
     {"org_parse_vars", l_org_parse_vars},
     {"org_parse_results", l_org_parse_results},
     {"org_header_arg", l_org_header_arg},
+    {"org_shell_expand", l_org_shell_expand},
     {"org_merge_header_args", l_org_merge_header_args},
     {"org_format_results", l_org_format_results},
     {"org_results_handling", l_org_results_handling},
@@ -10744,6 +10912,7 @@ const luaL_Reg kMepFuncs[] = {
     {"org_tangle_options", l_org_tangle_options},
     {"org_tangle_comment", l_org_tangle_comment},
     {"org_exports", l_org_exports},
+    {"org_results_is_raw", l_org_results_is_raw},
     {"org_splice_results", l_org_splice_results},
     {"org_find_results", l_org_find_results},
     {"org_apply_export_gates", l_org_apply_export_gates},
@@ -11063,6 +11232,14 @@ LuaEnv::LuaEnv(Editor *editor) : editor_(editor) {
     // the other bare globals above.
     lua_pushcfunction(L_, l_org_resolve_path_global);
     lua_setglobal(L_, "mep_org_resolve_path");
+
+    // mep_org_doc_dir: the directory half of the same rule -- every org
+    // path (image link, :file/:dir target, #+INCLUDE:, export output)
+    // resolves against the document's own location, never mep's cwd.
+    lua_pushcfunction(L_, l_org_doc_dir_global);
+    lua_setglobal(L_, "mep_org_doc_dir");
+    lua_pushcfunction(L_, l_org_doc_base_global);
+    lua_setglobal(L_, "mep_org_doc_base");
 
     // mep_org_bib_cite_at_cursor (LUA_TO_CPP_PLAN.md Phase 5):
     // kBuiltinOrgBib and kBuiltinOrgLinks (two separate DoString chunks)

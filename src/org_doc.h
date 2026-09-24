@@ -1,6 +1,7 @@
 #ifndef MEP_ORG_DOC_H
 #define MEP_ORG_DOC_H
 
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -1053,6 +1054,45 @@ std::vector<std::pair<std::string, std::string>> OrgHeaderArgPairs(const std::st
  */
 std::string OrgMergeHeaderArgs(const std::vector<std::string> &layers);
 
+// --- Shell expansion inside a header argument ----------------------------
+//
+// `:flags $(pkg-config --cflags datamunge)` is the only practical way to
+// give a compiled block the include/library flags a real project is
+// described by, so the compile/run argument lists (`:flags`, `:libs`,
+// `:cmdline`) run their value through the expansion below before it is
+// split into words. Org itself spells this with an Emacs-Lisp value; mep
+// has no Emacs, so it spells it the way the shell does.
+//
+// What expands: `$(command)` and `` `command` `` (command substitution,
+// nesting-aware for the former), `${NAME}` and `$NAME` (environment
+// variables, from mep's own environment). A backslash before `$`, a
+// backtick or another backslash escapes it, and nothing else is touched --
+// quotes in particular are left exactly where they are, since a header
+// argument's own quoting was already resolved by OrgHeaderArgValue.
+
+/**
+ * @brief The callback OrgExpandShellSubstitutions runs a `$(...)`/backtick command through.
+ * @param command The command text between the delimiters, unexpanded.
+ * @return The command's standard output; whatever a failed command produced is used as-is.
+ */
+using OrgShellRunner = std::function<std::string(const std::string &command)>;
+
+/**
+ * @brief Reports whether a header-argument value contains anything the shell expander would act on.
+ * @param value The header argument's value.
+ * @return True when a `$` or a backtick appears unescaped, i.e. when expanding could change the value.
+ */
+bool OrgValueNeedsShellExpansion(const std::string &value);
+
+/**
+ * @brief Expands command substitutions and environment variables in a header-argument value.
+ * @param value The header argument's value, as OrgHeaderArgValue returned it.
+ * @param run Runs one command and returns its standard output (trailing newlines are trimmed
+ * and interior newlines/tabs become spaces, so the result stays one line of words).
+ * @return The value with every `$(...)`, backtick and `$NAME` replaced; escapes resolved.
+ */
+std::string OrgExpandShellSubstitutions(const std::string &value, const OrgShellRunner &run);
+
 // --- Results blocks: what a finished run actually writes back ------------
 //
 // Org's `:results` value is up to four independent words plus `:wrap`,
@@ -1231,9 +1271,12 @@ bool OrgExportsResults(const std::string &exports);
  * @param after_row The block's `#+end_src` row, 1-based; the results start on the row after it.
  * @param start Receives the `#+RESULTS:` row, 1-based.
  * @param end Receives the results' last row, 1-based (equal to `start` for a keyword with nothing under it).
+ * @param raw_body True when the block writes an unquoted body (`:results raw`/`org`/`verbatim`), which carries no
+ * per-line marker and so is read as an org paragraph -- up to the first blank line, keyword, or heading.
  * @return True when a results block follows the given row.
  */
-bool OrgFindResultsBlock(const std::vector<std::string> &lines, int after_row, int *start, int *end);
+bool OrgFindResultsBlock(const std::vector<std::string> &lines, int after_row, int *start, int *end,
+                         bool raw_body = false);
 
 /**
  * @brief Splices a formatted results block into a copy of a document.
@@ -1241,10 +1284,12 @@ bool OrgFindResultsBlock(const std::vector<std::string> &lines, int after_row, i
  * @param after_row The `#+end_src` row the results belong under, 1-based.
  * @param block The results block's lines, `#+RESULTS:` keyword included.
  * @param handling The `:results` handling word ("replace", "append", "prepend", "none", "silent").
+ * @param raw_body True when the block writes an unquoted body -- see OrgFindResultsBlock.
  * @return The document with the results written; unchanged for a handling that writes nothing.
  */
 std::vector<std::string> OrgSpliceResultsBlock(const std::vector<std::string> &lines, int after_row,
-                                               const std::vector<std::string> &block, const std::string &handling);
+                                               const std::vector<std::string> &block, const std::string &handling,
+                                               bool raw_body = false);
 
 /**
  * @brief Applies every src block's `:exports` to a document, dropping what an export leaves out.
@@ -1254,5 +1299,94 @@ std::vector<std::string> OrgSpliceResultsBlock(const std::vector<std::string> &l
  * block's own `#+HEADER:` lines are both read, in org's precedence order.
  */
 std::vector<std::string> OrgApplyExportGates(const std::vector<std::string> &lines);
+
+// --- LaTeX/math fragments (the in-buffer preview's own scanner) ----------
+//
+// Every LaTeX fragment in an org (or .tex) buffer, for the math preview
+// Editor::OrgLatexScanFragments drives: `#+BEGIN_LATEX`/`#+BEGIN_SRC latex`
+// blocks, the display-math environments (`\begin{align}` and friends), and
+// the four delimiter pairs `$..$`, `$$..$$`, `\(..\)`, `\[..\]`.
+//
+// A fragment is reported one of two ways, because mep's row renderer draws
+// one buffer row as one run of text and can neither reflow it nor place a
+// texture mid-row by itself:
+//   - `blocks` -- the fragment occupies its rows *entirely* (nothing but
+//     whitespace outside it on the first and last row), so the preview can
+//     replace those rows with the rendered image.
+//   - `inlines` -- the fragment shares a row with prose ("the value $x^2$
+//     matters here"), so the image is drawn into the fragment's own columns
+//     with the text around it sliding against it. A fragment that crosses a
+//     line break has one `parts` entry per row it touches: the first part
+//     is where the image goes, and the rest exist to be concealed, since
+//     their source text is the same fragment's continuation.
+//
+// Multi-row fragments are bounded the way real org-mode bounds them: a
+// fragment is an *object* inside one element, so it can never cross a blank
+// line or a headline. That is also what keeps a document with one unbalanced
+// `$$` in it from swallowing everything below it into a single image -- and
+// it is why `$..$`, whose delimiter is by far the most ambiguous, is capped
+// tighter still, at org's own one-embedded-newline limit.
+struct OrgLatexBlockFragment {
+    int start_row = 0;  // 1-based
+    int end_row = 0;    // 1-based, inclusive
+    std::string body;   // the fragment's source, delimiters included
+};
+
+// One row's worth of an inline fragment's columns. Byte offsets used as
+// columns, the same equivalence every decoration span in mep assumes.
+struct OrgLatexInlinePart {
+    int row = 0;        // 1-based
+    int col_start = 0;  // 1-based, inclusive
+    int col_end = 0;    // 1-based, exclusive
+};
+
+struct OrgLatexInlineFragment {
+    std::string body;  // the fragment's source, delimiters and any newlines included
+    std::vector<OrgLatexInlinePart> parts;
+};
+
+struct OrgLatexFragments {
+    std::vector<OrgLatexBlockFragment> blocks;
+    std::vector<OrgLatexInlineFragment> inlines;
+};
+
+/**
+ * @brief Scans a document for every LaTeX/math fragment the in-buffer preview can render.
+ * @param lines The document's lines.
+ * @return The whole-row fragments and the prose-embedded ones, each in document order.
+ */
+OrgLatexFragments OrgLatexScan(const std::vector<std::string> &lines);
+
+// --- Literal (non-prose) regions ----------------------------------------
+//
+// Where an org document stops being prose and starts being code, output or
+// markup arguments. Spell checking is the consumer that made this worth
+// naming: a squiggle under every identifier in a `#+begin_src` block, or
+// under `=Petal.Length=`, is noise no dictionary can fix, and the words in
+// those places are not words.
+//
+// What counts as literal, in org's own terms:
+//   - every row of a `src`, `example` or `export` block, its `#+begin_`/
+//     `#+end_` rows included (those carry a language and header arguments).
+//     A `quote`, `verse` or other block is prose and is *not* listed, which
+//     is the whole reason this is a block-type test rather than a blanket
+//     "anything fenced" one;
+//   - a fixed-width row (`: ` ...), org's literal-output element, which is
+//     the shape a `#+RESULTS:` block takes;
+//   - an inline `=verbatim=` or `~code~` span, org's two code objects.
+// Everything else -- including a `#+title:`/`#+caption:` line, which is
+// prose that deserves checking -- is left alone.
+struct OrgLiteralSpan {
+    int row = 0;        // 1-based
+    int col_start = 0;  // 1-based, inclusive
+    int col_end = 0;    // 1-based, exclusive
+};
+
+/**
+ * @brief Finds every literal (non-prose) span in an org document.
+ * @param lines The document's lines.
+ * @return The spans, in document order; a whole literal row is one span covering it.
+ */
+std::vector<OrgLiteralSpan> OrgLiteralSpans(const std::vector<std::string> &lines);
 
 #endif

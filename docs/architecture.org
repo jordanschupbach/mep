@@ -61,6 +61,7 @@ implemented here rather than bound to a library:
 |--------+-------|
 | PDF | =pdf_{object,xref,crypt,filters,document,content,font,encodings,text,outline,links,doc}.cpp= |
 | HTML/CSS/JS (the browser pane) | =html_doc.cpp=, =js_engine.cpp=, =svg_doc.cpp=, =http_client.cpp=, =http_server.cpp= |
+| LaTeX maths (org and HTML =$..$= spans) | =math_tex.cpp= parses; =main.cpp= lays the tree out, since that needs font metrics |
 | Images | =image_codec.cpp=, =png_codec.cpp=, =jpeg_codec.cpp=, =gif_codec.cpp=, =bmp_codec.cpp=, =image_doc.cpp=, =image_procgen.cpp= |
 | 3D scenes | =model3d_doc.cpp=, =model3d_blend_import.cpp= |
 | Org | =org_doc.cpp=, =org_lsp.cpp= |

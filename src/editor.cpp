@@ -28804,24 +28804,70 @@ bool Editor::WriteAllModified() {
 
 bool Editor::IsOnlyPaneOverall() const { return Tabs().size() == 1 && Tabs()[0].root->dir == SplitDir::Leaf; }
 
-int Editor::FirstModifiedBufferId() const {
+bool Editor::IsUnsavedForQuit(int buffer_id) const {
     // Same skips as WriteAllModified/WorkspaceHasModifiedBuffers: a deleted
     // buffer or one with no possible save (terminal snapshot, PDF viewer)
-    // has a `modified` flag nothing can clear, so counting it here would
-    // make :qa refuse forever even right after a successful :wa.
+    // has a `modified` flag nothing can clear, so counting it would make
+    // :qa refuse forever even right after a successful :wa.
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (!buf.modified || buf.deleted) return false;
+    if (BufferUnsavable(buffer_id)) return false;
+    return true;
+}
+
+int Editor::FirstModifiedBufferId() const {
     for (size_t i = 0; i < buffers_.size(); i++) {
-        const Buffer &buf = buffers_[i];
-        if (!buf.modified || buf.deleted) continue;
-        if (BufferUnsavable(static_cast<int>(i))) continue;
-        return static_cast<int>(i);
+        if (IsUnsavedForQuit(static_cast<int>(i))) return static_cast<int>(i);
     }
     return -1;
 }
 
 bool Editor::AnyBufferModified() const { return FirstModifiedBufferId() >= 0; }
 
+std::vector<std::pair<int, std::string>> Editor::UnsavedBufferList() const {
+    std::vector<std::pair<int, std::string>> out;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        if (!IsUnsavedForQuit(static_cast<int>(i))) continue;
+        const Buffer &buf = buffers_[i];
+        out.emplace_back(static_cast<int>(i), buf.filename.empty() ? "[No Name]" : DisplayPathForBuffer(buf));
+    }
+    return out;
+}
+
+bool Editor::SaveBufferById(int buffer_id) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (buf.filename.empty()) {
+        // No target path -- the save/discard popup surfaces this and leaves
+        // the buffer in its list rather than silently losing it.
+        status_message_ = "E32: No file name";
+        return false;
+    }
+    return SaveBuffer(buf, buf.filename);
+}
+
+bool Editor::ReadDiskLines(const std::string &path, std::vector<std::string> *out) const {
+    if (!out) return false;
+    out->clear();
+    // ReadFileLines (this TU) is the raw disk read ReadLinesForPath falls
+    // back to; call it directly so an open buffer's unsaved edits never
+    // shadow the file the popup wants to diff against.
+    return ReadFileLines(path, *out);
+}
+
 void Editor::QuitCurrent(bool force) {
-    if (!force && Buf().modified && !Buf().deleted && !BufferUnsavable(CurrentBufferId())) {
+    if (!force && IsUnsavedForQuit(CurrentBufferId())) {
+        // Hand off to the save/discard popup (mep.set_on_quit_unsaved) with
+        // scope "current": it lists just this buffer, lets the user save or
+        // discard via a yes/no, then closes the window (:q!) for them. This
+        // replaces the bare E37 -- and the old advice to press ":q! to
+        // discard", which actually only closed the pane and left the buffer
+        // dirty, so the next :qa kept re-prompting for it.
+        if (quit_unsaved_hook_ref_ != 0 && lua_) {
+            lua_->CallRefWithString(quit_unsaved_hook_ref_, "current");
+            return;
+        }
         status_message_ = "E37: No write since last change (add ! to override)";
         return;
     }
@@ -28837,21 +28883,17 @@ void Editor::QuitCurrent(bool force) {
 }
 
 void Editor::QuitAll(bool force) {
-    if (!force) {
-        int id = FirstModifiedBufferId();
-        if (id >= 0) {
-            // Instead of only printing E37 and leaving the user to hunt for
-            // the offending buffer (deleted/unsavable ones are hidden from
-            // the buffer list, so it can be invisible), jump the active pane
-            // onto the first unsaved buffer so :w or :q! acts on it directly.
-            // Re-running :qa then lands on the next one, until none remain and
-            // this guard finally lets should_quit_ through.
-            if (id != CurrentBufferId()) SwitchToBufferForLua(id);
-            status_message_ = "E37: unsaved buffer \"" +
-                              (Buf().filename.empty() ? "[No Name]" : Buf().filename) +
-                              "\" (:w to save, :q! to discard, then :qa again)";
+    if (!force && AnyBufferModified()) {
+        // Hand off to the save/discard popup (mep.set_on_quit_unsaved) with
+        // scope "all": a telescope-style list of every unsaved buffer with a
+        // preview, where the user saves or discards each one and the app
+        // quits once the list is empty. Replaces the bare E37 refusal.
+        if (quit_unsaved_hook_ref_ != 0 && lua_) {
+            lua_->CallRefWithString(quit_unsaved_hook_ref_, "all");
             return;
         }
+        status_message_ = "E37: Some buffers have unsaved changes (add ! to override)";
+        return;
     }
     should_quit_ = true;
 }

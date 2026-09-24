@@ -9111,6 +9111,61 @@ int l_filename(lua_State *L) {
     return 1;
 }
 
+// mep.set_on_quit_unsaved(fn): fn(scope) where scope is "all" (:qa/:wqa) or
+// "current" (:q). Editor::QuitAll/QuitCurrent call this instead of printing
+// E37 when they hit unsaved buffers -- kBuiltinPickerSources' save/discard
+// popup is the intended registrant.
+int l_set_on_quit_unsaved(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);
+    int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    GetEditor(L)->SetQuitUnsavedHookRef(ref);
+    return 0;
+}
+
+// mep.unsaved_buffers() -> array of {id=, name=}: every buffer with unsaved
+// changes a normal save could clear (Editor::IsUnsavedForQuit). Same skip
+// set as the :qa guard, so the popup and the guard never disagree.
+int l_unsaved_buffers(lua_State *L) {
+    std::vector<std::pair<int, std::string>> list = GetEditor(L)->UnsavedBufferList();
+    lua_createtable(L, static_cast<int>(list.size()), 0);
+    for (size_t i = 0; i < list.size(); i++) {
+        lua_createtable(L, 0, 2);
+        lua_pushinteger(L, list[i].first);
+        lua_setfield(L, -2, "id");
+        lua_pushstring(L, list[i].second.c_str());
+        lua_setfield(L, -2, "name");
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
+}
+
+// mep.buffer_save(id) -> bool: writes buffer `id` to its own filename.
+// false (with an E32/E141 status) on an unnamed buffer or a write error.
+int l_buffer_save(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, GetEditor(L)->SaveBufferById(id) ? 1 : 0);
+    return 1;
+}
+
+// mep.read_disk_lines(path) -> array of lines, or nil. Always reads the file
+// on disk, even when it's open as a buffer with unsaved edits (unlike
+// mep.read_lines). The save/discard popup diffs against this.
+int l_read_disk_lines(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    std::vector<std::string> lines;
+    if (!GetEditor(L)->ReadDiskLines(path, &lines)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, static_cast<int>(lines.size()), 0);
+    for (size_t i = 0; i < lines.size(); i++) {
+        lua_pushlstring(L, lines[i].data(), lines[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
+}
+
 // --- The browser pane's networking surface ---------------------------------
 // mep.http_get(url [, timeout_ms]) -> {ok=, status=, status_text=, url=,
 // content_type=, body=, error=}: a blocking GET (http_client.h). What
@@ -11108,6 +11163,10 @@ const luaL_Reg kMepFuncs[] = {
     {"accept_inline_suggestion", l_accept_inline_suggestion},
     {"set_inline_suggestion_accept_hook", l_set_inline_suggestion_accept_hook},
     {"set_on_directory_open", l_set_on_directory_open},
+    {"set_on_quit_unsaved", l_set_on_quit_unsaved},
+    {"unsaved_buffers", l_unsaved_buffers},
+    {"buffer_save", l_buffer_save},
+    {"read_disk_lines", l_read_disk_lines},
     {"lsp_start", l_lsp_start},
     {"lsp_request", l_lsp_request},
     {"lsp_symbols_flatten", l_lsp_symbols_flatten},

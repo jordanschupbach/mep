@@ -9572,6 +9572,23 @@ public:
     // SetInsertTabHookRef) rather than buffer-scoped -- kBuiltinFileTree's
     // mep.tree_open_in_pane is the first (and, so far, only) caller.
     void SetDirectoryOpenHookRef(int lua_ref) { directory_open_hook_ref_ = lua_ref; }
+    // mep.set_on_quit_unsaved(fn): fn(scope) where scope is "all" (:qa) or
+    // "current" (:q). QuitAll/QuitCurrent hand off to it when they hit
+    // unsaved buffers, so the save/discard popup replaces the bare E37.
+    void SetQuitUnsavedHookRef(int lua_ref) { quit_unsaved_hook_ref_ = lua_ref; }
+    // {buffer id, display name} for every IsUnsavedForQuit buffer -- backs
+    // mep.unsaved_buffers(), the source list for the save/discard popup.
+    std::vector<std::pair<int, std::string>> UnsavedBufferList() const;
+    // Save buffer `id` to its own filename (mep.buffer_save). Returns false
+    // (with an E32/E141 status) on an unnamed buffer or a write error, so
+    // the popup can leave it in the list instead of silently dropping it.
+    bool SaveBufferById(int buffer_id);
+    // mep.read_disk_lines(path): the on-disk contents of `path`, always read
+    // fresh from the file -- unlike ReadLinesForPath/mep.read_lines, which
+    // return an already-open buffer's live (unsaved) lines instead. The
+    // save/discard popup diffs against this to mark which lines a buffer has
+    // changed since it was last written.
+    bool ReadDiskLines(const std::string &path, std::vector<std::string> *out) const;
 
     // --- Command-line completion (`:` command bar) -----------------------
     // Same Tab/Ctrl-N/Ctrl-P/Enter/Escape shape as the Insert-mode popup
@@ -10892,10 +10909,16 @@ private:
     bool AnyBufferModified() const;
     // Index into buffers_ of the first buffer :qa would refuse to quit over
     // (modified, not deleted, actually savable), or -1 if none. Shares the
-    // exact skip set with AnyBufferModified so the two never disagree; QuitAll
-    // uses it to jump the active pane onto that buffer instead of only
-    // printing E37.
+    // exact skip set with AnyBufferModified so the two never disagree.
     int FirstModifiedBufferId() const;
+    // The one predicate the whole quit machinery (FirstModifiedBufferId,
+    // AnyBufferModified, the unsaved-buffers popup) agrees on: this buffer
+    // holds unsaved changes a normal save could clear -- modified, not
+    // deleted, and not BufferUnsavable (terminal/PDF/image sessions carry a
+    // `modified` flag nothing can clear). Keeping every site on this one
+    // method is what stops the recurring "invisible unsavable buffer blocks
+    // :qa forever" class of bug.
+    bool IsUnsavedForQuit(int buffer_id) const;
     // :wa  -- writes every modified buffer that has a filename. Returns
     // true only if all modified buffers were written (used to gate :wqa).
     bool WriteAllModified();
@@ -11432,6 +11455,8 @@ private:
     bool TryBufferKeyHook(int cp);
     // See SetDirectoryOpenHookRef's own comment above.
     int directory_open_hook_ref_ = 0;
+    // See SetQuitUnsavedHookRef's own comment above.
+    int quit_unsaved_hook_ref_ = 0;
     bool completion_open_ = false;
     std::vector<CompletionCandidate> completion_items_;
     int completion_selected_ = 0;

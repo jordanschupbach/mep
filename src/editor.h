@@ -8979,7 +8979,14 @@ public:
      * @brief Sets the open picker's own key hint, drawn in its footer ahead of the standard keys.
      * @param hint The hint text, e.g. "C-a: add current dir"; cleared by the next OpenPicker.
      */
-    void SetPickerHint(const std::string &hint) { picker_hint_ = hint; }
+    void SetPickerHint(const std::string &hint, bool replace_standard = false) {
+        picker_hint_ = hint;
+        picker_hint_replaces_standard_ = replace_standard;
+    }
+    /**
+     * @brief Whether the picker's own hint should be shown alone, without the standard "Enter: select..." suffix.
+     */
+    bool PickerHintReplacesStandard() const { return picker_hint_replaces_standard_; }
     /**
      * @brief Returns the open picker's current query text.
      * @return The picker query.
@@ -8990,6 +8997,14 @@ public:
      * @return The selected index.
      */
     int PickerSelected() const { return picker_selected_; }
+    /**
+     * @brief Sets the open picker's highlighted row (0-indexed into the filtered results), clamped to range.
+     * @param idx Desired 0-indexed selection.
+     */
+    void SetPickerSelected(int idx) {
+        int max_idx = static_cast<int>(PickerFilteredResults().size()) - 1;
+        picker_selected_ = std::max(0, std::min(idx, max_idx));
+    }
     // Items scoring < 0 (no match) are dropped, the rest sorted by score
     // desc. Cached until the query or the item list changes -- it's asked
     // for several times a frame, and scoring a large list (Find Files) every
@@ -11343,6 +11358,7 @@ private:
     bool picker_open_ = false;
     std::string picker_title_;
     std::string picker_hint_;
+    bool picker_hint_replaces_standard_ = false;
     std::string picker_query_;
     std::vector<PickerItem> picker_items_;
     // PickerFilteredResults() cache: valid while picker_items_generation_

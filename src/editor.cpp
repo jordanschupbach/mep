@@ -21734,6 +21734,7 @@ void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items,
     picker_open_ = true;
     picker_title_ = title;
     picker_hint_.clear();
+    picker_hint_replaces_standard_ = false;
     picker_query_.clear();
     picker_items_ = std::move(items);
     picker_items_generation_++;

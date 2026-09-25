@@ -4660,6 +4660,21 @@ int l_picker_set_items(lua_State *L) {
     return 0;
 }
 
+// mep.picker_set_selected(idx): move the open picker's highlighted row to the
+// 1-indexed `idx` (clamped to range). Lets a picker that reopens itself after
+// mutating its list -- e.g. the new-project wizard toggling a checkbox on
+// Enter -- restore the row the user was on instead of snapping back to the top.
+/**
+ * @brief Implements mep.picker_set_selected(idx): sets the open picker's highlighted row (1-indexed, clamped).
+ * @param L Lua state; arg 1 is the 1-indexed row to select.
+ * @return Number of values pushed (0).
+ */
+int l_picker_set_selected(lua_State *L) {
+    int idx = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    GetEditor(L)->SetPickerSelected(idx);
+    return 0;
+}
+
 // mep.picker_set_preview(text [, spans]): sets the text shown in the
 // picker's preview column (NVIM_PARITY_PLAN.md Phase 8 gap, closed) --
 // see Editor::SetPickerPreview's own comment. Pass "" to hide the column
@@ -4738,7 +4753,11 @@ int l_picker_close(lua_State *L) {
  * @return Number of values pushed (0).
  */
 int l_picker_set_hint(lua_State *L) {
-    GetEditor(L)->SetPickerHint(luaL_checkstring(L, 1));
+    // Optional 2nd arg (bool): when true, show only this hint -- suppress the
+    // standard "Enter: select   Esc: close ..." suffix (for pickers that rebind
+    // Enter, e.g. the new-project wizard's Enter-toggles-checkbox).
+    bool replace_standard = lua_gettop(L) >= 2 && lua_toboolean(L, 2);
+    GetEditor(L)->SetPickerHint(luaL_checkstring(L, 1), replace_standard);
     return 0;
 }
 
@@ -11043,6 +11062,7 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_focus_row", l_sidebar_focus_row},
     {"picker_open", l_picker_open},
     {"picker_set_items", l_picker_set_items},
+    {"picker_set_selected", l_picker_set_selected},
     {"picker_set_preview", l_picker_set_preview},
     {"picker_close", l_picker_close},
     {"picker_set_hint", l_picker_set_hint},

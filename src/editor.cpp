@@ -24789,7 +24789,7 @@ void Editor::PushUndo() {
 
 void Editor::Undo() {
     if (Buf().undo_stack.empty()) {
-        status_message_ = "Already at oldest change";
+        status_message_ = "Already at oldest version of the file";
         return;
     }
     Buf().redo_stack.push_back(Buf().lines);
@@ -24797,11 +24797,13 @@ void Editor::Undo() {
     Buf().undo_stack.pop_back();
     Buf().modified = true;
     ClampCursor();
+    // Let the user know when this undo lands them on the oldest change.
+    status_message_ = Buf().undo_stack.empty() ? "Reached oldest version of the file" : "";
 }
 
 void Editor::Redo() {
     if (Buf().redo_stack.empty()) {
-        status_message_ = "Already at newest change";
+        status_message_ = "Already at newest version of the file";
         return;
     }
     Buf().undo_stack.push_back(Buf().lines);
@@ -24809,6 +24811,8 @@ void Editor::Redo() {
     Buf().redo_stack.pop_back();
     Buf().modified = true;
     ClampCursor();
+    // Let the user know when this redo lands them on the most recent change.
+    status_message_ = Buf().redo_stack.empty() ? "Reached newest version of the file" : "";
 }
 
 // --- Command line ------------------------------------------------------

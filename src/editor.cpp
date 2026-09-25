@@ -10629,8 +10629,18 @@ void Editor::RebasePdfScroll(PdfSession &sess) {
     }
     if (sess.page == 0 && sess.scroll_y < 0) sess.scroll_y = 0;
     if (sess.page == page_count - 1) {
+        // Stop at the end of the document: the furthest the last page may
+        // scroll is with its bottom pulled up to half a viewport above the
+        // viewport's bottom edge -- so the user sees the page's end with a
+        // half-screen of breathing room after it, then nothing. The old
+        // clamp used bare `cur_h`, which let scroll_y reach a full page
+        // height and scroll the entire last page off the top into an empty
+        // viewport. A page shorter than that half-screen tail can't scroll
+        // past its own top at all (max_scroll floors at 0).
         float cur_h = page_screen_h(sess.page);
-        if (sess.scroll_y > cur_h) sess.scroll_y = cur_h;
+        float end_gap = static_cast<float>(sess.viewport_h) * 0.5f;
+        float max_scroll = std::max(0.0f, cur_h + end_gap - static_cast<float>(sess.viewport_h));
+        if (sess.scroll_y > max_scroll) sess.scroll_y = max_scroll;
     }
 }
 
@@ -25011,6 +25021,17 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
                                    [](char c) { return std::isdigit(static_cast<unsigned char>(c)); });
     if (all_digits) {
         int n = std::stoi(cmd);
+        // Over a PDF pane a buffer row means nothing (Buffer::lines is a
+        // dummy single empty line), so ":N" jumps to page N instead --
+        // vim's ":<line>" spelled for a paginated document, 1-indexed to
+        // match the pane header's "page N/M" and the nav-mode 'g' prompt.
+        // HandleCommandInput ran EnterNormal() before dispatching here, so
+        // re-sync the mode back to Mode::Pdf for the PDF buffer we're on.
+        if (IsPdfBuffer(CurPane().buffer_id)) {
+            GotoPdfPage(CurPane().buffer_id, n - 1);
+            SyncModeToActivePaneBuffer();
+            return;
+        }
         CursorPos &cursor = CurPane().cursor;
         cursor.row = std::max(0, std::min(n - 1, Buf().LineCount() - 1));
         cursor.col = 0;

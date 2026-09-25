@@ -5271,6 +5271,22 @@ int l_fs_mkdirp(lua_State *L) {
 }
 
 /**
+ * @brief Implements mep.fs_exists(path): reports whether a file or directory exists at `path`.
+ * @param L Lua state; arg 1 is the path to test.
+ * @return Number of values pushed (1: true if something exists at that path, false otherwise or under wasm).
+ */
+int l_fs_exists(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+#if !defined(__EMSCRIPTEN__)
+    std::error_code ec;
+    lua_pushboolean(L, std::filesystem::exists(path, ec) && !ec);
+#else
+    lua_pushboolean(L, false);
+#endif
+    return 1;
+}
+
+/**
  * @brief Implements mep.fs_chmod(path, mode): sets a file's permission bits (native builds only).
  * @param L Lua state; arg 1 is the file path, arg 2 the mode as an integer (already octal-decoded).
  * @return Number of values pushed (1: true on success, false on error or under wasm).
@@ -11109,6 +11125,7 @@ const luaL_Reg kMepFuncs[] = {
     {"is_image_path", l_is_image_path},
     {"fs_mkdir", l_fs_mkdir},
     {"fs_mkdirp", l_fs_mkdirp},
+    {"fs_exists", l_fs_exists},
     {"fs_chmod", l_fs_chmod},
     {"fs_create_file", l_fs_create_file},
     {"fs_rename", l_fs_rename},

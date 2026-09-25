@@ -4752,10 +4752,55 @@ const char *kBuiltinFileTree =
     "function mep.new_project()\n"
     "  mep.new_project_browse(mep.getcwd())\n"
     "end\n"
+    // A stored project is just a path, and the folder behind it can vanish
+    // between sessions (moved, renamed, deleted, an unmounted drive). Opening
+    // such a project would fail confusingly, so when the user picks a project
+    // whose path no longer exists we warn -- front and centre in a modal --
+    // and offer the only two sensible recoveries: drop the stale entry, or
+    // point it at a new valid path. Deleting reopens the picker (the user came
+    // from it and likely wants to pick another project) rather than dropping
+    // them to the bare startup page; re-assigning opens the fixed project.
+    "function mep.project_open_or_warn(item)\n"
+    "  if mep.fs_exists(item) then\n"
+    "    mep.project_open(item)\n"
+    "    return\n"
+    "  end\n"
+    "  mep.ui_select({\n"
+    "    'The folder for this project no longer exists:\\n    ' .. item .. '\\nIt may have been moved, renamed, or deleted.',\n"
+    "    'Delete this project from the list',\n"
+    "    'Re-assign a new valid path...',\n"
+    "    'Cancel',\n"
+    "  }, 'Project location not found', function(choice)\n"
+    "    if choice == 2 then\n"
+    "      mep.project_remove(item)\n"
+    "      mep.notify('Removed missing project: ' .. item)\n"
+    "      mep.projects()\n"
+    "    elseif choice == 3 then\n"
+    "      mep.ui_input('New path for project:', item, function(path)\n"
+    "        if not path or path == '' then return end\n"
+    "        if not mep.fs_exists(path) then\n"
+    "          mep.notify('That path does not exist either: ' .. path)\n"
+    "          return\n"
+    "        end\n"
+    "        mep.project_remove(item)\n"
+    "        mep.project_add(path)\n"
+    "        mep.notify('Re-assigned project to: ' .. path)\n"
+    "        mep.project_open(path)\n"
+    "      end)\n"
+    "    else\n"
+    // Cancel, Escape (choice is nil) or the info line: the user came from the
+    // picker and didn't recover this project, so drop them back into it rather
+    // than the bare startup page.
+    "      mep.projects()\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
     "function mep.projects()\n"
     "  local items = {}\n"
     "  for _, p in ipairs(mep.project_list()) do\n"
-    "    items[#items + 1] = {display = mep_project_basename(p), data = p}\n"
+    "    local label = mep_project_basename(p)\n"
+    "    if not mep.fs_exists(p) then label = label .. '   (missing)' end\n"
+    "    items[#items + 1] = {display = label, data = p}\n"
     "  end\n"
     "  items[#items + 1] = '+ Add current directory'\n"
     "  items[#items + 1] = '+ New project...'\n"
@@ -4801,7 +4846,7 @@ const char *kBuiltinFileTree =
     "    elseif item == '- Remove a project...' then\n"
     "      mep.projects_remove_picker()\n"
     "    else\n"
-    "      mep.project_open(item)\n"
+    "      mep.project_open_or_warn(item)\n"
     "    end\n"
     "  end, nil, function(key)\n"
     "    if key == 'a' then\n"
@@ -42065,6 +42110,29 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::DrawRectangleLines(static_cast<int>(bx), static_cast<int>(by), static_cast<int>(bw),
                                     static_cast<int>(bh), ResolveHlGroup("FloatBorder"));
             DrawUiText(note_popup_text, gfx::Vector2{bx + pad, by + pad}, fs, ResolveHlGroup("Normal"));
+        }
+
+        // Floating page indicator -- a small "N / M" chip pinned to the
+        // pane's bottom-right corner so the current page is always visible
+        // over the page itself, not only in the (shared, easily-missed)
+        // status bar. Same FloatBg/FloatBorder idiom as the sticky-note
+        // popup above; drawn last so it sits on top of the page stack. Reads
+        // the same 1-indexed page/PageCount() the status bar does, so a
+        // ":N" jump or a scroll is reflected here immediately.
+        {
+            std::string page_label = std::to_string(pdf_sess->page + 1) + " / " +
+                                     std::to_string(pdf_sess->doc->PageCount());
+            float fs = std::max(14.0f, font_size);
+            float tw = DrawUiText(page_label, gfx::Vector2{0, 0}, fs, gfx::Blank, /*measure_only=*/true);
+            float pad = 7.0f;
+            float bw = tw + pad * 2, bh = fs + pad * 2;
+            float bx = x + w - bw - 12.0f;
+            float by = content_y + content_h - bh - 12.0f;
+            gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(by), static_cast<int>(bw),
+                               static_cast<int>(bh), ResolveHlGroup("FloatBg"));
+            gfx::DrawRectangleLines(static_cast<int>(bx), static_cast<int>(by), static_cast<int>(bw),
+                                    static_cast<int>(bh), ResolveHlGroup("FloatBorder"));
+            DrawUiText(page_label, gfx::Vector2{bx + pad, by + pad}, fs, ResolveHlGroup("Normal"));
         }
         gfx::EndScissorMode();
 

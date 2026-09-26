@@ -289,6 +289,10 @@ public:
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     }
     void MaximizeWindow() override { glfwMaximizeWindow(ctx_->window); }
+    bool IsWindowMaximized() override {
+        if (ctx_->window == nullptr) return false;
+        return glfwGetWindowAttrib(ctx_->window, GLFW_MAXIMIZED) == GLFW_TRUE;
+    }
     void SetTargetFPS(int fps) override { ctx_->target_fps = fps; }
     int GetScreenWidth() override {
         int w = 0, h = 0;

@@ -1,5 +1,6 @@
 // mep-workspace-test: windowless unit tests for WORKSPACES_PLAN.md's pure
-// helpers (workspace_git.cpp) and the session-file JSON shape. Links only
+// helpers (workspace_git.cpp), the session-file JSON shape, and persist.h's
+// other small per-user state file (window geometry). Links only
 // workspace_git.cpp + json.h/persist.h, so it runs anywhere -- no raylib,
 // no display, no git. CHECK(), never assert(): the Release build strips
 // assert() (see agent_rpc_test.cpp's own comment on exactly this bug).
@@ -12,6 +13,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 
 namespace {
@@ -308,6 +310,110 @@ int main() {
             rootless.push_back(Json::Object());
             CHECK(!ValidWorkspaceStateTabs(rootless));
         }
+    }
+
+    // --- Window geometry (persist.h) -----------------------------------------
+    // The size mep reopens at. A bad value here is not cosmetic: restoring an
+    // implausible one opens a window the user may not be able to resize out
+    // of, which is what ValidWindowSize exists to prevent on both the way out
+    // and the way back in.
+    {
+        CHECK(ValidWindowSize(1280, 720));
+        CHECK(ValidWindowSize(kMinWindowDimension, kMinWindowDimension));
+        CHECK(ValidWindowSize(kMaxWindowDimension, kMaxWindowDimension));
+        // A window manager reports 0x0 for a window it has not mapped yet.
+        CHECK(!ValidWindowSize(0, 0));
+        CHECK(!ValidWindowSize(1280, 0));
+        CHECK(!ValidWindowSize(kMinWindowDimension - 1, 720));
+        CHECK(!ValidWindowSize(1280, kMinWindowDimension - 1));
+        CHECK(!ValidWindowSize(kMaxWindowDimension + 1, 720));
+        CHECK(!ValidWindowSize(-100, -100));
+
+        // The zoom's own sanity range: a wide one, since main.cpp's
+        // ApplyFontSize clamps to the real limits -- what this rejects is a
+        // value that is not a font size at all.
+        CHECK(ValidPersistedFontSize(33.75f));
+        CHECK(ValidPersistedFontSize(0.5f));
+        CHECK(ValidPersistedFontSize(kMaxPersistedFontSize));
+        CHECK(!ValidPersistedFontSize(0.0f));
+        CHECK(!ValidPersistedFontSize(-12.0f));
+        CHECK(!ValidPersistedFontSize(kMaxPersistedFontSize + 1.0f));
+        CHECK(!ValidPersistedFontSize(std::numeric_limits<float>::quiet_NaN()));
+        CHECK(!ValidPersistedFontSize(std::numeric_limits<float>::infinity()));
+
+        char tmpl[] = "/tmp/mep-window-XXXXXX";
+        const char *dir = mkdtemp(tmpl);
+        CHECK(dir != nullptr);
+        const std::string data(dir);
+        CHECK(WindowStatePath(data) == data + "/window.json");
+
+        // Nothing saved yet -> "use the defaults", not an error.
+        WindowState loaded;
+        CHECK(!ReadWindowState(data, &loaded));
+
+        // Round trip, both maximized states, zoom included.
+        CHECK(WriteWindowState(data, WindowState{1280, 720, false, 33.75f}));
+        CHECK(ReadWindowState(data, &loaded));
+        CHECK(loaded.width == 1280 && loaded.height == 720 && !loaded.maximized);
+        CHECK(loaded.font_size > 33.7f && loaded.font_size < 33.8f);
+        CHECK(WriteWindowState(data, WindowState{900, 500, true, 48.0f}));
+        CHECK(ReadWindowState(data, &loaded));
+        // The size is the un-maximized one even when maximized is set: that
+        // pair is the restore geometry, never the screen's own size.
+        CHECK(loaded.width == 900 && loaded.height == 500 && loaded.maximized);
+        CHECK(loaded.font_size > 47.9f && loaded.font_size < 48.1f);
+
+        // An unusable zoom is omitted rather than blocking the size, and comes
+        // back as 0 so the caller keeps its own default.
+        CHECK(WriteWindowState(data, WindowState{1024, 768, false, 0.0f}));
+        CHECK(ReadWindowState(data, &loaded));
+        CHECK(loaded.width == 1024 && loaded.height == 768);
+        CHECK(loaded.font_size == 0.0f);
+        // A file from a build that saved no zoom at all: same answer.
+        std::ofstream(WindowStatePath(data), std::ios::trunc) << R"({"width":1280,"height":800,"maximized":false})";
+        CHECK(ReadWindowState(data, &loaded));
+        CHECK(loaded.width == 1280 && loaded.height == 800 && loaded.font_size == 0.0f);
+        // A corrupt zoom likewise does not cost the size.
+        std::ofstream(WindowStatePath(data), std::ios::trunc)
+            << R"({"width":1280,"height":800,"maximized":false,"font_size":-4})";
+        CHECK(ReadWindowState(data, &loaded));
+        CHECK(loaded.width == 1280 && loaded.font_size == 0.0f);
+        CHECK(WriteWindowState(data, WindowState{900, 500, true, 48.0f}));
+
+        // An implausible size is refused on write rather than written and
+        // then silently ignored on the way back in.
+        CHECK(!WriteWindowState(data, WindowState{0, 0, false, 33.75f}));
+        CHECK(!WriteWindowState(data, WindowState{10, 10, false, 33.75f}));
+        // ...and the file the refused writes did not touch still reads back.
+        CHECK(ReadWindowState(data, &loaded));
+        CHECK(loaded.width == 900 && loaded.height == 500);
+
+        // A hand-edited or truncated file is "no saved geometry".
+        std::ofstream(WindowStatePath(data), std::ios::trunc) << R"({"width":12,"height":8,"maximized":false})";
+        CHECK(!ReadWindowState(data, &loaded));
+        std::ofstream(WindowStatePath(data), std::ios::trunc) << "{ not json";
+        CHECK(!ReadWindowState(data, &loaded));
+        std::ofstream(WindowStatePath(data), std::ios::trunc) << "[1,2,3]";
+        CHECK(!ReadWindowState(data, &loaded));
+        // A missing `maximized` defaults to "not maximized" rather than
+        // failing the whole read -- the size is the part that matters.
+        std::ofstream(WindowStatePath(data), std::ios::trunc) << R"({"width":1024,"height":768})";
+        CHECK(ReadWindowState(data, &loaded));
+        CHECK(loaded.width == 1024 && loaded.height == 768 && !loaded.maximized);
+        // `loaded` must be untouched by a failed read, so a caller that seeded
+        // it with its defaults keeps them.
+        std::ofstream(WindowStatePath(data), std::ios::trunc) << "{ not json";
+        CHECK(!ReadWindowState(data, &loaded));
+        CHECK(loaded.width == 1024 && loaded.height == 768);
+
+        // No data directory (no $HOME/$XDG_DATA_HOME resolved) is not a path
+        // to write to.
+        CHECK(!ReadWindowState("", &loaded));
+        CHECK(!WriteWindowState("", WindowState{1280, 720, false, 33.75f}));
+        CHECK(!ReadWindowState(data, nullptr));
+
+        std::error_code window_ec;
+        std::filesystem::remove_all(data, window_ec);
     }
 
     std::printf("workspace_test passed\n");

@@ -29,6 +29,11 @@ public:
     virtual bool WindowShouldClose() = 0;
     virtual void SetWindowResizable() = 0;
     virtual void MaximizeWindow() = 0;
+    // Whether the window manager currently has the window maximized. Needed
+    // to persist window geometry across runs: a maximized window's size is
+    // the screen's, so "maximized" has to be saved as a state of its own
+    // rather than as a size (see persist.h's WindowState).
+    virtual bool IsWindowMaximized() = 0;
     virtual void SetTargetFPS(int fps) = 0;
     virtual int GetScreenWidth() = 0;
     virtual int GetScreenHeight() = 0;

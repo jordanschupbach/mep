@@ -19,6 +19,7 @@ inline bool IsWindowReady() { return GetBackends().platform->IsWindowReady(); }
 inline bool WindowShouldClose() { return GetBackends().platform->WindowShouldClose(); }
 inline void SetWindowResizable() { GetBackends().platform->SetWindowResizable(); }
 inline void MaximizeWindow() { GetBackends().platform->MaximizeWindow(); }
+inline bool IsWindowMaximized() { return GetBackends().platform->IsWindowMaximized(); }
 inline void SetTargetFPS(int fps) { GetBackends().platform->SetTargetFPS(fps); }
 inline int GetScreenWidth() { return GetBackends().platform->GetScreenWidth(); }
 inline int GetScreenHeight() { return GetBackends().platform->GetScreenHeight(); }

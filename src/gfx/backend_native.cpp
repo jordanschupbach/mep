@@ -680,6 +680,36 @@ public:
                    SubstructureRedirectMask | SubstructureNotifyMask, &event);
         XFlush(ctx_->display);
     }
+    bool IsWindowMaximized() override {
+        // The read side of MaximizeWindow's EWMH protocol: the window
+        // manager publishes the states it has actually applied as a list of
+        // atoms in _NET_WM_STATE on the window itself, so this is a property
+        // read rather than anything mep tracks -- the user maximizing with a
+        // WM keybinding or a titlebar button never goes through
+        // MaximizeWindow() at all.
+        if (ctx_->display == nullptr || ctx_->window == 0 || ctx_->net_wm_state == 0) return false;
+        Atom actual_type = 0;
+        int actual_format = 0;
+        unsigned long count = 0, bytes_after = 0;
+        unsigned char *data = nullptr;
+        if (XGetWindowProperty(ctx_->display, ctx_->window, ctx_->net_wm_state, 0, 32, False, XA_ATOM, &actual_type,
+                               &actual_format, &count, &bytes_after, &data) != Success) {
+            return false;
+        }
+        bool horz = false, vert = false;
+        if (data != nullptr && actual_type == XA_ATOM && actual_format == 32) {
+            const Atom *states = reinterpret_cast<const Atom *>(data);
+            for (unsigned long i = 0; i < count; i++) {
+                if (states[i] == ctx_->net_wm_state_maximized_horz) horz = true;
+                if (states[i] == ctx_->net_wm_state_maximized_vert) vert = true;
+            }
+        }
+        if (data != nullptr) XFree(data);
+        // Both axes: a window maximized on one axis only (some WMs offer
+        // that) is a size the user chose, not the "maximized" state whose
+        // size must not be persisted as a restore size.
+        return horz && vert;
+    }
     void SetTargetFPS(int fps) override { ctx_->target_fps = fps; }
     int GetScreenWidth() override {
         int w = 0, h = 0;

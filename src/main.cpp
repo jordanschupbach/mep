@@ -103,8 +103,11 @@
 
 namespace {
 
+// The size mep opens at the very first time, before there is a saved state
+// to reopen with (see g_window_state below).
 constexpr int kInitialWidth = 1000;
 constexpr int kInitialHeight = 650;
+
 constexpr float kDefaultFontSize = 33.75f;
 constexpr float kMinFontSize = 6.0f;
 constexpr float kMaxFontSize = 96.0f;
@@ -117,6 +120,32 @@ Editor g_editor;
 gfx::Font g_font;
 float g_font_size = kDefaultFontSize;
 float g_char_width = 0;
+
+#if !defined(__EMSCRIPTEN__)
+// The window size and interface zoom to reopen with next run, tracked every
+// frame and written to persist.h's window.json. Seeded from that file at
+// startup (or from the constants above on a first run) so a session spent
+// entirely maximized still carries its un-maximized size forward instead of
+// forgetting it. Native-only: the wasm build fills whatever size the browser
+// gives its canvas, and has no filesystem to remember one in.
+WindowState g_window_state{kInitialWidth, kInitialHeight, /*maximized=*/true, kDefaultFontSize};
+// False for `--no-session`, which must not touch the real data dir at all
+// (tests spawn mep with it) -- read straight from argv before the window
+// opens, since all of this is needed before main()'s own argument loop runs.
+bool g_window_state_persist = true;
+// What is currently on disk, so an unchanged window writes nothing, and what
+// the previous frame saw, so a write waits until resizing/zooming has stopped.
+WindowState g_window_state_written{};
+WindowState g_window_state_last{};
+bool g_window_state_primed = false;
+// When the state last stopped changing, so a resize or a zoom burst is not
+// written a frame at a time.
+double g_window_state_settled_since = 0.0;
+
+bool SameWindowState(const WindowState &a, const WindowState &b) {
+    return a.width == b.width && a.height == b.height && a.maximized == b.maximized && a.font_size == b.font_size;
+}
+#endif
 
 // Ceiling on the icon font's *bake* size (not its draw size). g_icon_font
 // holds ~3,500 glyphs, so its atlas area grows quadratically with the bake
@@ -50660,6 +50689,57 @@ EM_JS(void, mep_js_request_native_quit, (), {
 });
 #endif
 
+#if !defined(__EMSCRIPTEN__)
+// Tracks the window's size, maximized state and zoom, and writes window.json
+// once they have settled, so the next run reopens the way this one was left.
+void TickWindowStatePersistence() {
+    if (!g_window_state_persist) return;
+    const int width = gfx::GetScreenWidth();
+    const int height = gfx::GetScreenHeight();
+    // 0x0 while the window manager has yet to map the window, and whatever a
+    // minimized window reports -- neither is a size to reopen at.
+    if (!ValidWindowSize(width, height)) return;
+    const bool maximized = gfx::IsWindowMaximized();
+    // Only a non-maximized size is recorded: see WindowState's comment -- a
+    // maximized window's size is the screen's, and the size worth keeping is
+    // the one the window goes back to when un-maximized.
+    if (!maximized) {
+        g_window_state.width = width;
+        g_window_state.height = height;
+    }
+    g_window_state.maximized = maximized;
+    // PreviewFontSize updates g_font_size on the keypress, well before the
+    // deferred re-bake that follows it (PollFontRebake), so this sees a zoom
+    // as soon as it happens and the debounce below collapses a held
+    // Ctrl+Shift+= into one write.
+    g_window_state.font_size = g_font_size;
+
+    // What needs writing is "differs from what is on disk"; holding still for
+    // half a second is only what decides *when*. Dragging a window edge
+    // produces a new size every frame, and that should cost one write, not a
+    // hundred -- the same debounce as the per-project session file's
+    // (Editor::TickWorkspacePersistence), but keyed off the file rather than
+    // off the last change, so a first run with nothing saved yet still
+    // records its state instead of waiting for a change that never comes.
+    const double now = gfx::GetTime();
+    if (!g_window_state_primed) {
+        g_window_state_primed = true;
+        g_window_state_last = g_window_state;
+        g_window_state_settled_since = now;
+        return;
+    }
+    if (!SameWindowState(g_window_state, g_window_state_last)) {
+        // Still moving: restart the clock.
+        g_window_state_last = g_window_state;
+        g_window_state_settled_since = now;
+        return;
+    }
+    if (SameWindowState(g_window_state, g_window_state_written)) return;
+    if (now - g_window_state_settled_since < 0.5) return;
+    if (WriteWindowState(MepDataDir(), g_window_state)) g_window_state_written = g_window_state;
+}
+#endif
+
 void UpdateDrawFrame() {
     // Last-resort safety net: this is the sole per-frame entry point (both
     // the native while-loop and the Emscripten main loop below call
@@ -51563,6 +51643,27 @@ int main(int argc, char **argv) {
     // thread starts, not just from here on the main thread.
     SetUpTraceLogFile();
 #if !defined(__EMSCRIPTEN__)
+    // Reopen the window the way the last run left it -- its size, whether it
+    // was maximized, and the interface zoom (persist.h's window.json). This
+    // has to happen here, ahead of the font bakes below rather than just
+    // before InitWindow: StartFontBakesAsync sizes its atlases from
+    // g_font_size, so a restored zoom that arrived after it would bake at the
+    // wrong size and ConsumeFontBake would throw the work away. It is also
+    // far ahead of main()'s own argument loop, so `--no-session` -- whose
+    // contract is that the run touches no per-user state at all -- is read
+    // straight from argv here.
+    for (int i = 1; i < argc; i++) {
+        if (std::string(argv[i]) == "--no-session") g_window_state_persist = false;
+    }
+    if (g_window_state_persist && ReadWindowState(MepDataDir(), &g_window_state)) {
+        g_window_state_written = g_window_state;
+        // 0 means the file held no usable zoom (an older file, or a corrupt
+        // value); keep the build default rather than the sentinel.
+        if (g_window_state.font_size <= 0.0f) g_window_state.font_size = kDefaultFontSize;
+        // ApplyFontSize clamps to kMinFontSize/kMaxFontSize when it runs; set
+        // g_font_size now so IconFontBaseSize() below bakes for the right one.
+        g_font_size = g_window_state.font_size;
+    }
     // Kicked off before InitWindow (before anything else in main(), in
     // fact) so its pure-CPU font-atlas work (icon + emoji bakes) has the
     // longest possible window to overlap with -- InitWindow's own
@@ -51627,7 +51728,13 @@ int main(int argc, char **argv) {
     g_editor.ApplyTheme("mep-dark");
 
     gfx::SetWindowResizable();
+#if !defined(__EMSCRIPTEN__)
+    // Whatever the saved state (read at the top of main()) says, or the
+    // first-run defaults.
+    gfx::InitWindow(g_window_state.width, g_window_state.height, "mep");
+#else
     gfx::InitWindow(kInitialWidth, kInitialHeight, "mep");
+#endif
     // raylib maps Escape to "close the window" by default; Escape is also
     // our Insert/Visual/Command -> Normal key, so that default must go.
     gfx::SetExitKey(gfx::Key::None);
@@ -51635,10 +51742,19 @@ int main(int argc, char **argv) {
 #if !defined(__EMSCRIPTEN__)
     // The web build fills whatever size the browser/webview gives its
     // canvas (see web/shell.html); there's no OS window to maximize.
-    gfx::MaximizeWindow();
+    // Maximized is the default for a first run (what mep has always done),
+    // and thereafter whatever the last run was left in.
+    if (g_window_state.maximized) gfx::MaximizeWindow();
 #endif
 
+#if defined(__EMSCRIPTEN__)
     ApplyFontSize(kDefaultFontSize);
+#else
+    // g_font_size is kDefaultFontSize unless the saved state replaced it at
+    // the top of main() -- which is also the size StartFontBakesAsync baked
+    // its atlases for, so this call consumes them instead of discarding them.
+    ApplyFontSize(g_font_size);
+#endif
     LoadOfficeFonts();
     LoadMathFonts();
     BuildMenus();
@@ -51764,6 +51880,9 @@ int main(int argc, char **argv) {
 #if !defined(__EMSCRIPTEN__)
     // Command line (WORKSPACES_PLAN.md Phase 9/10):
     //   mep [--project <dir>] [--no-session] [file]
+    // --no-session is also read far earlier, before the font bakes and the
+    // window open, since it gates the persisted window size and zoom too
+    // (see g_window_state).
     // $MEP_PROJECT is the launcher's equivalent of --project. The project
     // re-root happens before any file opens so `mep --project ~/x a.txt`
     // opens a.txt inside x's main workspace.
@@ -51783,7 +51902,8 @@ int main(int argc, char **argv) {
                         "       mep --export-org <in.org> <out.html>\n"
                         "  --project <dir>  open <dir> as the project (default: the current directory;\n"
                         "                   $MEP_PROJECT is honoured too)\n"
-                        "  --no-session     neither restore nor save the project's workspaces/tabs\n"
+                        "  --no-session     neither restore nor save the project's workspaces/tabs,\n"
+                        "                   nor the window size and zoom\n"
                         "  --export-org     render one Org file to standalone HTML and exit, with no\n"
                         "                   window (what `just help` runs over help/*.org)\n");
             return 0;
@@ -51865,6 +51985,7 @@ int main(int argc, char **argv) {
         } else {
             UpdateDrawFrame();
         }
+        TickWindowStatePersistence();
     }
 
     // Explicit, bounded teardown of every spawned child (:terminal shells,
@@ -51878,6 +51999,10 @@ int main(int argc, char **argv) {
     // Unconditional save on quit (WORKSPACES_PLAN.md Phase 10), before the
     // children go away so terminal panes are recorded as terminals.
     g_editor.SaveAllWorkspaceState();
+    // Same "write it on the way out regardless of the debounce" step as the
+    // session save above: a window resized in the last half-second before
+    // quitting should still reopen at that size.
+    if (g_window_state_persist) WriteWindowState(MepDataDir(), g_window_state);
     JobManager::Instance().ShutdownAll();
     TcpJsonRpcManager::Instance().ShutdownAll();
     mep::agent::Stop();

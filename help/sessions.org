@@ -7,8 +7,8 @@
 
 Close mep and reopen the project, and you get what you left: the same
 workspaces, the same tabs, the same split arrangement at the same sizes, the
-same files open at the same cursor positions, your file tree, and your
-terminals.
+same files open at the same cursor positions, your file tree, your terminals
+-- and the window itself back at the size and zoom you had it.
 
 Nothing has to be enabled, and layouts are not named or managed. This is why
 there is no "save layout" command worth having -- see
@@ -22,6 +22,7 @@ that did come back.
 
 * What is saved
 
+- the window's size, whether it was maximized, and the interface zoom (see below);
 - every workspace, and which one was active;
 - every tab, its split tree, and which pane was focused in each;
 - how each split was sized, when you have resized it;
@@ -61,6 +62,34 @@ means a burst of splitting and closing costs one write, not twenty.
 Closing a project saves its state on the way out, so a project you close and
 reopen within one session behaves the same as one you quit and relaunch.
 
+* The window itself
+
+The window's size comes back too, along with whether it was maximized and the
+interface zoom (=Ctrl+Shift+== / =Ctrl+Shift+-=). These are application-wide
+rather than per project -- there is only one window, and mep has to settle all
+three before it knows which project it will show -- so they live in their own
+file:
+
+#+begin_example
+$XDG_DATA_HOME/mep/window.json
+#+end_example
+
+The size recorded is the one the window has when it is *not* maximized. A
+maximized window's size is the screen's, so saving that as a size would mean
+reopening a plain window the size of the display, and un-maximizing would
+have nowhere to go back to. Maximized is saved as the state it is, and the
+size alongside it is what the window returns to when you un-maximize -- what
+a window manager calls the restore geometry.
+
+The first time you run mep there is nothing saved, and it opens maximized at
+the default zoom, as it always has. A file written by an older mep that saved
+no zoom still has its window size honoured; the zoom just falls back to the
+default.
+
+Window *position* is deliberately not saved. Window managers place windows by
+their own rules, and a saved position is the kind of thing that ends up
+slowly walking a window off the corner of the screen across launches.
+
 * Where it is saved
 
 #+begin_example
@@ -94,7 +123,7 @@ does not cost you the others.
 
 | How                                    | Effect                          |
 |----------------------------------------+---------------------------------|
-| =mep --no-session=                     | neither restore nor save, this run |
+| =mep --no-session=                     | neither restore nor save -- window size and zoom included -- this run |
 | =mep.opt.restore_workspaces = false=   | the same, permanently           |
 | =:wssave=                              | save now                        |
 | =:wsrestore=                           | rebuild this project's saved layout now |

@@ -201,6 +201,115 @@ int main() {
         std::filesystem::remove_all(dir, ec);
     }
 
+    // --- ValidWorkspaceStateTree / ValidWorkspaceStateTabs -------------------
+    // The gate Editor::RestoreWorkspaceLayout runs before rebuilding any of
+    // a saved tree, so that a file which fails it falls back to the default
+    // layout instead of leaving a half-built one on screen.
+    {
+        const auto leaf = [](const std::string &kind, const std::string &buffer) {
+            Json pane = Json::Object();
+            pane["id"] = 1;
+            pane["kind"] = kind;
+            if (!buffer.empty()) pane["buffer"] = buffer;
+            Json node = Json::Object();
+            node["dir"] = "leaf";
+            node["pane"] = pane;
+            return node;
+        };
+        const auto split = [](const std::string &dir, const std::vector<Json> &children,
+                              const std::vector<double> &shares) {
+            Json node = Json::Object();
+            node["dir"] = dir;
+            node["children"] = Json::Array();
+            for (const Json &c : children) node["children"].push_back(c);
+            node["shares"] = Json::Array();
+            for (double sh : shares) node["shares"].push_back(Json(sh));
+            return node;
+        };
+
+        // The three pane kinds Editor::SplitStateJson ever writes.
+        CHECK(ValidWorkspaceStateTree(leaf("file", "src/x.cpp")));
+        CHECK(ValidWorkspaceStateTree(leaf("terminal", "")));
+        CHECK(ValidWorkspaceStateTree(leaf("empty", "")));
+        // A file pane with no path would restore as a blank pane -- a
+        // silently different layout, so it counts as malformed.
+        CHECK(!ValidWorkspaceStateTree(leaf("file", "")));
+        // A kind this build doesn't know means a newer mep wrote the file.
+        CHECK(!ValidWorkspaceStateTree(leaf("sketch", "")));
+        // Neither a leaf nor a split.
+        {
+            Json bogus = Json::Object();
+            bogus["dir"] = "diagonal";
+            CHECK(!ValidWorkspaceStateTree(bogus));
+            CHECK(!ValidWorkspaceStateTree(Json::Object()));
+            CHECK(!ValidWorkspaceStateTree(Json::Array()));
+        }
+        // A leaf whose `pane` isn't an object at all.
+        {
+            Json node = Json::Object();
+            node["dir"] = "leaf";
+            node["pane"] = Json("nope");
+            CHECK(!ValidWorkspaceStateTree(node));
+        }
+        // Splits, nested, in both directions.
+        CHECK(ValidWorkspaceStateTree(split("horizontal", {leaf("file", "a"), leaf("terminal", "")}, {0.7, 0.3})));
+        CHECK(ValidWorkspaceStateTree(
+            split("vertical", {leaf("file", "a"), split("horizontal", {leaf("file", "b"), leaf("empty", "")}, {})},
+                  {0.45, 0.55})));
+        // A stale-sized `shares` is what a save taken between a split and
+        // the next resize legitimately holds (SplitNode::shares) -- valid,
+        // and dropped rather than applied when the tree is rebuilt.
+        CHECK(ValidWorkspaceStateTree(split("horizontal", {leaf("file", "a"), leaf("file", "b")}, {1.0})));
+        CHECK(ValidWorkspaceStateTree(split("horizontal", {leaf("file", "a"), leaf("file", "b")}, {})));
+        // A split with no children is not a layout.
+        CHECK(!ValidWorkspaceStateTree(split("horizontal", {}, {})));
+        // One bad leaf anywhere fails the whole tree, however deep.
+        CHECK(!ValidWorkspaceStateTree(split("vertical", {leaf("file", "a"), leaf("file", "")}, {})));
+        CHECK(!ValidWorkspaceStateTree(
+            split("vertical", {leaf("file", "a"), split("horizontal", {leaf("bogus", ""), leaf("file", "b")}, {})}, {})));
+        // Wrong types where an array belongs.
+        {
+            Json node = split("horizontal", {leaf("file", "a")}, {});
+            node["shares"] = Json("0.5");
+            CHECK(!ValidWorkspaceStateTree(node));
+            Json bad_children = Json::Object();
+            bad_children["dir"] = "horizontal";
+            bad_children["children"] = Json("two");
+            CHECK(!ValidWorkspaceStateTree(bad_children));
+            Json bad_tabs = leaf("file", "a");
+            bad_tabs["pane"]["buffer_tabs"] = Json("README.md");
+            CHECK(!ValidWorkspaceStateTree(bad_tabs));
+        }
+
+        // The whole-workspace form.
+        const auto tabs_of = [](const std::vector<Json> &roots) {
+            Json tabs = Json::Array();
+            for (const Json &r : roots) {
+                Json tab = Json::Object();
+                tab["active_pane"] = 1;
+                tab["root"] = r;
+                tabs.push_back(tab);
+            }
+            return tabs;
+        };
+        CHECK(ValidWorkspaceStateTabs(tabs_of({leaf("file", "a")})));
+        CHECK(ValidWorkspaceStateTabs(tabs_of({leaf("file", "a"), split("horizontal", {leaf("file", "b"), leaf("terminal", "")}, {})})));
+        // A workspace with no tabs saved has no layout to come back to, so
+        // it takes the default layout like a brand-new one.
+        CHECK(!ValidWorkspaceStateTabs(Json::Array()));
+        CHECK(!ValidWorkspaceStateTabs(Json::Object()));
+        CHECK(!ValidWorkspaceStateTabs(tabs_of({leaf("file", "")})));
+        // A tab that isn't an object, and one with no `root` at all.
+        {
+            Json tabs = Json::Array();
+            tabs.push_back(Json("tab"));
+            CHECK(!ValidWorkspaceStateTabs(tabs));
+            Json rootless = Json::Array();
+            rootless.push_back(Json::Object());
+            CHECK(!ValidWorkspaceStateTabs(rootless));
+        }
+    }
+
     std::printf("workspace_test passed\n");
     return 0;
 }

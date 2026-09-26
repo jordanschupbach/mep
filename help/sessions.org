@@ -6,24 +6,52 @@
 * Your layout comes back
 
 Close mep and reopen the project, and you get what you left: the same
-workspaces, the same tabs, the same split arrangement, the same files open
-at the same cursor positions, and your terminals.
+workspaces, the same tabs, the same split arrangement at the same sizes, the
+same files open at the same cursor positions, your file tree, and your
+terminals.
 
 Nothing has to be enabled, and layouts are not named or managed. This is why
 there is no "save layout" command worth having -- see
 [[file:layouts-zen.html][Layouts, zoom and zen]].
 
+The standard default layout -- a file tree, your readme, a terminal -- is
+what you get when there is nothing to restore: a project opened for the first
+time, a workspace created since the last save, or a saved layout that could
+not be rebuilt. It is a fallback, never something applied on top of a layout
+that did come back.
+
 * What is saved
 
 - every workspace, and which one was active;
-- every tab, and its split tree;
-- each pane's open files, recorded *relative to the workspace root*;
-- each buffer's cursor position;
-- terminals.
+- every tab, its split tree, and which pane was focused in each;
+- how each split was sized, when you have resized it;
+- each pane's file and its other buffer tabs, recorded *relative to the
+  workspace root*;
+- each pane's cursor position and scroll position;
+- which panes were terminals, and which was the file tree.
 
 Paths are stored relative to the workspace root, so a project that moves --
 or a worktree created at a different path on another machine -- still
 restores.
+
+* What does not come back exactly
+
+Three things are approximations rather than losses, and knowing which saves
+you looking for a bug:
+
+- *A terminal comes back as a fresh shell*, at the workspace root. Its
+  scrollback and whatever it was running are not saved, because they cannot
+  be -- the pane is restored, the process is not.
+- *A pane's extra buffer tabs come back in saved order*, with the one you
+  were looking at last, rather than each in the exact slot it held.
+- *Unsaved, unnamed buffers* have no path to reopen by, so their panes come
+  back empty. Save the buffer if you want it back.
+
+Opening a file on the command line (=mep --project <dir> <file>=) is
+deliberately not a restore: the file you asked for is what you get. The saved
+layout stays on disk, ready for the next plain launch, unless you go on to
+rearrange panes in that session -- at which point the autosave records what
+you built, as it does in any other.
 
 * When it is saved
 
@@ -48,12 +76,19 @@ both called =mep= -- from overwriting each other's state.
 
 Restoring is forgiving by design, because the world moves between sessions:
 
-- a file that no longer exists is skipped, with a message;
+- a file that no longer exists is skipped -- its pane comes back empty, and
+  you get one message saying how many were skipped;
 - a worktree that has vanished is pruned;
+- a saved layout that does not make sense -- a file hand-edited into an
+  impossible shape, or written by a newer mep -- is declined *whole*, and
+  that workspace opens with the standard default layout instead. A layout is
+  checked before any of it is rebuilt, so you never land in half of one;
 - a corrupt or unreadable state file is ignored, and you get a fresh start
   rather than an error.
 
-None of these stop the rest of the session restoring.
+None of these stop the rest of the session restoring: workspaces are
+restored independently, so one that has to fall back to the default layout
+does not cost you the others.
 
 * Turning it off, or doing it by hand
 
@@ -62,7 +97,13 @@ None of these stop the rest of the session restoring.
 | =mep --no-session=                     | neither restore nor save, this run |
 | =mep.opt.restore_workspaces = false=   | the same, permanently           |
 | =:wssave=                              | save now                        |
-| =:wsrestore=                           | restore now                     |
+| =:wsrestore=                           | rebuild this project's saved layout now |
+
+=:wsrestore= rebuilds the panes of the current project from the file on disk,
+so the arrangement you are looking at is replaced. Buffers are not: anything
+you have open stays open and stays in =:ls=, including unsaved work, even
+when no pane is left showing it. Terminals whose panes go away are closed,
+since nothing could show them again.
 
 =--no-session= is the one to reach for when you want to open a project
 without disturbing its saved state -- a quick look at someone else's

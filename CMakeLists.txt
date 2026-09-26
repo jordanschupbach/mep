@@ -1891,6 +1891,21 @@ if(NOT EMSCRIPTEN)
         target_link_libraries(mep-agent-rpc-test PRIVATE Threads::Threads)
         add_dependencies(tests mep-agent-rpc-test)
 
+        # WORKSPACES_PLAN.md Phase 10's other half: session *restore*, which
+        # only exists in a second process reading the first one's session
+        # file, so it needs two real mep instances rather than one. Same
+        # spawn-and-drive shape and harness as mep-agent-rpc-test above; run
+        # by hand the same way: `./mep-session-restore-test ./mep`. Links
+        # workspace_git.cpp for WorkspaceStatePath, so the test looks for the
+        # session file where mep actually writes it instead of rebuilding
+        # that slug-and-hash convention by hand.
+        add_executable(mep-session-restore-test EXCLUDE_FROM_ALL src/session_restore_test.cpp src/workspace_git.cpp)
+        target_include_directories(mep-session-restore-test PRIVATE src)
+        target_compile_options(mep-session-restore-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+        target_link_options(mep-session-restore-test PRIVATE ${MEP_SANITIZE_FLAGS})
+        target_link_libraries(mep-session-restore-test PRIVATE Threads::Threads)
+        add_dependencies(tests mep-session-restore-test)
+
         # Part D.5: the same "spawn a real mep and drive its socket" shape,
         # for the sketcher's whole stack -- RPC dispatch, the Editor
         # methods the keyboard also calls, the solver, and back out as

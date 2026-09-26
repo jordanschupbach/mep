@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+class Json;  // json.h
+
 // One entry of `git worktree list --porcelain`.
 struct WorktreeEntry {
     std::string path;    // absolute worktree path ("worktree <path>")
@@ -50,5 +52,23 @@ std::string ProjectHash(const std::string &root);
 // `<data_dir>/workspaces/<slug>-<hash>.json` -- the per-project session
 // file location (Phase 10). Does not create the directory.
 std::string WorkspaceStatePath(const std::string &data_dir, const std::string &root);
+
+// Shape check for one saved split-tree node (the `tabs[].root` written by
+// Editor::SplitStateJson): a leaf carries a `pane` object with a known
+// `kind`, and a split carries a non-empty `children` array. A `shares` entry
+// only has to *be* an array -- a size that doesn't match `children` is what a
+// save taken between a split and the next resize legitimately holds (see
+// SplitNode::shares), so it is dropped at rebuild time, not rejected here.
+// Checked up front, before any of
+// the tree is rebuilt, so a truncated or hand-edited session file makes
+// Editor::RestoreWorkspaceLayout decline the whole workspace and fall back
+// to the default layout rather than leaving a half-built one on screen.
+// Pure (no Editor, no filesystem) so workspace_test can cover the branches
+// a real session file never reaches.
+bool ValidWorkspaceStateTree(const Json &node);
+
+// The same check for a whole workspace's `tabs` array: non-empty, and
+// every entry an object whose `root` passes ValidWorkspaceStateTree.
+bool ValidWorkspaceStateTabs(const Json &tabs);
 
 #endif  // MEP_WORKSPACE_GIT_H

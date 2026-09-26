@@ -5431,7 +5431,7 @@ int l_project_remove(lua_State *L) {
 // --- Workspaces / projects (WORKSPACES_PLAN.md Phase 2) --------------------
 
 /**
- * @brief Pushes one workspace as a Lua table {id, name, root, branch, primary, creating, active, index}.
+ * @brief Pushes one workspace as a Lua table {id, name, root, branch, primary, creating, git_dirty, layout_restored, active, index}.
  * @param L Lua state.
  * @param ws The workspace to describe.
  * @param active Whether it is the active workspace of its project.
@@ -5453,6 +5453,8 @@ void PushWorkspaceTable(lua_State *L, const Workspace &ws, bool active, int inde
     lua_setfield(L, -2, "creating");
     lua_pushboolean(L, ws.git_dirty);
     lua_setfield(L, -2, "git_dirty");
+    lua_pushboolean(L, ws.layout_restored);
+    lua_setfield(L, -2, "layout_restored");
     lua_pushboolean(L, active);
     lua_setfield(L, -2, "active");
     lua_pushinteger(L, index);

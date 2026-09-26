@@ -1,5 +1,7 @@
 #include "workspace_git.h"
 
+#include "json.h"
+
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -117,4 +119,45 @@ std::string ProjectHash(const std::string &root) {
 
 std::string WorkspaceStatePath(const std::string &data_dir, const std::string &root) {
     return data_dir + "/workspaces/" + ProjectSlug(root) + "-" + ProjectHash(root) + ".json";
+}
+
+bool ValidWorkspaceStateTree(const Json &node) {
+    if (!node.is_object()) return false;
+    const std::string dir = node.get("dir").as_string("");
+    if (dir == "leaf") {
+        const Json &pane = node.get("pane");
+        if (!pane.is_object()) return false;
+        // `kind` is what tells a file pane from a terminal from a scratch
+        // pane; an unknown one means a newer mep wrote this file, which is
+        // exactly a case for declining rather than guessing.
+        const std::string kind = pane.get("kind").as_string("");
+        if (kind != "file" && kind != "terminal" && kind != "empty") return false;
+        // A file pane with no path would restore as an empty pane -- a
+        // silently different layout, so treat it as malformed instead.
+        if (kind == "file" && pane.get("buffer").as_string("").empty()) return false;
+        if (pane.contains("buffer_tabs") && !pane.get("buffer_tabs").is_array()) return false;
+        return true;
+    }
+    if (dir != "horizontal" && dir != "vertical") return false;
+    const Json &children = node.get("children");
+    if (!children.is_array() || children.items().empty()) return false;
+    // `shares` is legitimately absent or empty (SplitNode::shares means
+    // "equal shares" until something resizes the split), and legitimately
+    // stale-sized in the saved file for the same reason -- only a wrong
+    // *non-empty* size is treated as equal shares rather than a defect, so
+    // this checks the type alone.
+    if (node.contains("shares") && !node.get("shares").is_array()) return false;
+    for (const Json &child : children.items()) {
+        if (!ValidWorkspaceStateTree(child)) return false;
+    }
+    return true;
+}
+
+bool ValidWorkspaceStateTabs(const Json &tabs) {
+    if (!tabs.is_array() || tabs.items().empty()) return false;
+    for (const Json &tab : tabs.items()) {
+        if (!tab.is_object()) return false;
+        if (!ValidWorkspaceStateTree(tab.get("root"))) return false;
+    }
+    return true;
 }

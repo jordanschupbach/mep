@@ -4444,17 +4444,19 @@ const char *kBuiltinFileTree =
     // NavigatePaneDirection); this function's own final focus target.
     "  mep.nav_pane('up')\n"
     "end\n"
-    // Only the saved workspace *list* (name/root/branch) is restored on
-    // project load, never each workspace's saved panes/tabs -- every
-    // workspace mep.project_load produces (freshly created, or matched from
-    // the saved list) lands with a single fresh empty tab. This applies the
-    // standard default layout to each of them, leaving `skip_primary`'s
-    // workspace alone (used at startup when a file was already opened into
-    // it, so the layout step doesn't stomp it).
+    // The fallback half of session restore: a workspace whose saved
+    // tabs/panes came back (Editor::RestoreWorkspaceLayout, flagged
+    // `layout_restored`) is left exactly as the user built it, and only the
+    // ones that landed with the single fresh empty tab mep.project_load
+    // hands out -- nothing saved for them, a malformed session file, a
+    // brand-new workspace -- get the standard default layout. `skip_primary`
+    // leaves the primary workspace alone on top of that (used at startup
+    // when a file was already opened into it, so the layout step doesn't
+    // stomp it).
     "function mep.project_apply_default_layout_to_empty_workspaces(skip_primary)\n"
     "  local current = mep.workspace_current()\n"
     "  for _, ws in ipairs(mep.workspace_list()) do\n"
-    "    if not (skip_primary and ws.primary) then\n"
+    "    if not ws.layout_restored and not (skip_primary and ws.primary) then\n"
     "      mep.workspace_switch(ws.id)\n"
     "      mep.project_default_layout(mep.workspace_root())\n"
     "    end\n"
@@ -51816,13 +51818,13 @@ int main(int argc, char **argv) {
     // frame), then the async git detection confirms/adopts worktrees.
     //
     // Only an explicitly requested project (--project/$MEP_PROJECT) goes
-    // through workspace-list restore + the standard default layout; a bare
-    // `mep` leaves the pristine bootstrap workspace alone so the dashboard
-    // shows (Editor::ShouldShowDashboard), matching the pre-session-restore
-    // behavior. Restoring the workspace *list* is still list-only (see
-    // Editor::RestoreWorkspaceState) -- each resulting workspace gets a
-    // fresh default layout via project_apply_default_layout_to_empty_workspaces,
-    // skipping the primary workspace when a file was already loaded into it.
+    // through session restore; a bare `mep` leaves the pristine bootstrap
+    // workspace alone so the dashboard shows (Editor::ShouldShowDashboard),
+    // matching the pre-session-restore behavior. RestoreWorkspaceState
+    // brings each workspace's saved tabs/panes/files back where it can, and
+    // project_apply_default_layout_to_empty_workspaces then lays out only
+    // the workspaces it could not (skipping the primary one when a file was
+    // already loaded into it).
     if (!project_arg.empty() && g_editor.RestoreWorkspaces()) {
         g_editor.RestoreWorkspaceState(g_editor.ActiveProject().id, !file_arg.empty());
         lua->DoString(std::string("mep.project_apply_default_layout_to_empty_workspaces(") +

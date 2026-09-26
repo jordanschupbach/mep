@@ -16417,6 +16417,10 @@ bool Editor::WorkspaceReset(int id, bool force) {
             ws.tabs.clear();
             ws.tabs.push_back(std::move(tab));
             ws.active_tab = 0;
+            // Whatever is on screen after this is not the restored layout
+            // any more, and the flag is read from Lua (mep.workspace_list),
+            // so it must not keep claiming otherwise.
+            ws.layout_restored = false;
             const bool was_active = static_cast<int>(pi) == active_project_ &&
                                     static_cast<int>(wi) == project.active_workspace;
             if (was_active) {
@@ -16845,11 +16849,13 @@ int Editor::ProjectLoad(const std::string &root_arg, bool *restored) {
     const int id = projects_.back().id;
     active_project_ = static_cast<int>(projects_.size()) - 1;
     AfterWorkspaceActivated();
-    // Only restores the saved workspace *list* -- callers still apply the
-    // standard default layout to whatever comes out of this (see
-    // mep.project_apply_default_layout_to_empty_workspaces), so this does
-    // not count as "already has whatever layout the user built" and leaves
-    // *restored false.
+    // Restores the saved workspace list *and* each workspace's saved layout
+    // where it can (RestoreWorkspaceLayout). `*restored` stays false either
+    // way: it means "this project was already open, leave it alone", and the
+    // default layout that callers go on to apply is now skipped per
+    // workspace by mep.project_apply_default_layout_to_empty_workspaces
+    // rather than by this flag -- so a project that half-restored still gets
+    // its un-restored workspaces laid out.
     if (RestoreWorkspaces()) RestoreWorkspaceState(id, /*keep_primary_tabs=*/false);
     ProjectDetectGit(id);
     status_message_ = "project " + ActiveProject().name + " (" + root + ")";
@@ -17075,6 +17081,328 @@ void Editor::SaveAllWorkspaceState() {
     for (const Project &p : projects_) SaveWorkspaceState(p.id);
 }
 
+// --- Restore (the inverse of SplitStateJson/WorkspaceStateJson above) -------
+
+namespace {
+// Undoes RelativeToRoot: a saved `buffer` entry is relative to the
+// workspace root unless it lived outside it, in which case it was written
+// absolute and is used as-is.
+std::string AbsoluteFromRoot(const std::string &saved, const std::string &root) {
+    if (saved.empty() || saved[0] == '/' || root.empty()) return saved;
+    return root + "/" + saved;
+}
+}  // namespace
+
+std::unique_ptr<SplitNode> Editor::BuildSplitFromState(const Json &node, int workspace_id, const std::string &root,
+                                                      const std::map<std::string, int> &tree_buffers,
+                                                      std::vector<PendingPaneRestore> *pending) {
+    auto out = std::make_unique<SplitNode>();
+    const std::string dir = node.get("dir").as_string("");
+    if (dir == "leaf") {
+        const Json &pj = node.get("pane");
+        out->dir = SplitDir::Leaf;
+        // Every leaf starts on a placeholder empty buffer, the way
+        // OpenFileInPane's new leaf does, and for the same reason: the tree
+        // has to be a valid tree (every pane showing *some* buffer) before
+        // anything can focus a pane in it and load into it.
+        const int placeholder = CreateEmptyBuffer();
+        buffers_[static_cast<size_t>(placeholder)].workspace_id = workspace_id;
+        // Not ProcessCwd() as CreateEmptyBuffer left it: a workspace can be
+        // restored while a *different* one is still the process cwd, and an
+        // "empty" pane survives the restore as a real scratch buffer whose
+        // relative `:w` names should resolve against its own workspace.
+        if (!root.empty()) buffers_[static_cast<size_t>(placeholder)].base_dir = root;
+        out->pane.id = next_pane_id_++;
+        out->pane.buffer_id = placeholder;
+        out->pane.buffer_tabs = {placeholder};
+        out->pane.buffer_tab_index = 0;
+
+        PendingPaneRestore p;
+        p.pane_id = out->pane.id;
+        p.saved_pane_id = pj.get("id").as_int(-1);
+        p.placeholder_buffer = placeholder;
+        p.kind = pj.get("kind").as_string("empty");
+        p.file = pj.get("buffer").as_string("");
+        // A saved "file" pane whose path is one of the directories the first
+        // pass found is a file-tree pane, restored by placing that buffer
+        // rather than by opening the path.
+        if (p.kind == "file" && tree_buffers.count(AbsoluteFromRoot(p.file, root)) != 0) p.kind = "directory";
+        for (const Json &t : pj.get("buffer_tabs").items()) {
+            if (t.is_string() && !t.as_string().empty()) p.buffer_tabs.push_back(t.as_string());
+        }
+        const std::vector<Json> &cursor = pj.get("cursor").items();
+        if (cursor.size() == 2) {
+            p.cursor_row = cursor[0].as_int(0);
+            p.cursor_col = cursor[1].as_int(0);
+        }
+        p.scroll_row = pj.get("scroll").as_int(0);
+        pending->push_back(std::move(p));
+        return out;
+    }
+    out->dir = dir == "horizontal" ? SplitDir::Horizontal : SplitDir::Vertical;
+    for (const Json &child : node.get("children").items()) {
+        out->children.push_back(BuildSplitFromState(child, workspace_id, root, tree_buffers, pending));
+    }
+    // Only a `shares` array parallel to `children` means anything (see
+    // SplitNode::shares): a mismatched one is what a save taken after a
+    // split/close but before the next resize legitimately contains, and
+    // every reader treats that as equal shares, so drop it here rather
+    // than carry a vector into the rebuilt tree that only looks like sizes.
+    const std::vector<Json> &shares = node.get("shares").items();
+    if (shares.size() == out->children.size()) {
+        for (const Json &s : shares) out->shares.push_back(static_cast<float>(s.as_double(0.0)));
+    }
+    return out;
+}
+
+int Editor::DirectoryPaneBuffer(const std::string &dir) {
+    // A file-tree/navigator pane is saved as a "file" pane whose path is the
+    // directory it is rooted at, and LoadFile hands a directory to the
+    // on_directory_open hook (kBuiltinFileTree's mep.tree_open) rather than
+    // opening it in the current pane -- the hook picks its own pane, doing a
+    // split-left whenever nothing already shows the tree buffer. Running
+    // that in the middle of rebuilding a saved layout would add a *second*
+    // tree pane beside the restored one, so the hook is run once here purely
+    // to materialize the buffer, and RestoreWorkspaceLayout then places that
+    // buffer in the pane the session file actually put it in.
+    const auto find = [&]() {
+        for (size_t i = 0; i < buffers_.size(); i++) {
+            if (buffers_[i].deleted || buffers_[i].filename != dir) continue;
+            return static_cast<int>(i);
+        }
+        return -1;
+    };
+    const int existing = find();
+    if (existing >= 0) return existing;
+    LoadFile(dir);
+    return find();
+}
+
+void Editor::ApplyPaneRestore(const PendingPaneRestore &pending, const std::string &root,
+                              const std::map<std::string, int> &tree_buffers, int *missing_files) {
+    FocusPaneById(pending.pane_id);
+    if (ActiveTab().active_pane_id != pending.pane_id) return;
+    if (pending.kind == "directory") {
+        // Already materialized by RestoreWorkspaceLayout's first pass; all
+        // that is left is to show it here instead of letting the hook decide
+        // where it goes. The tree buffer is a singleton the file tree keeps
+        // across workspaces (mep_tree_buf), so two saved tree panes restore
+        // to the same buffer -- which is what opening the tree twice does in
+        // a running mep anyway.
+        const auto it = tree_buffers.find(AbsoluteFromRoot(pending.file, root));
+        if (it != tree_buffers.end() && it->second >= 0) {
+            Pane &tree_pane = CurPane();
+            tree_pane.buffer_id = it->second;
+            tree_pane.buffer_tabs = {it->second};
+            tree_pane.buffer_tab_index = 0;
+        }
+    } else if (pending.kind == "terminal") {
+        // A saved terminal restores as a fresh interactive shell in the
+        // same pane: neither the scrollback nor the process it was running
+        // is (or could be) persisted, so the pane comes back as a shell at
+        // the workspace root, which is where it started life anyway.
+        OpenTerminalInPlace("");
+    } else if (pending.kind == "file") {
+        // Background tabs first and the visible file last, so the pane
+        // lands on the buffer it was showing. Pane::buffer_tab_index isn't
+        // saved, so the restored tab order is the saved order with the
+        // visible file appended rather than exactly where it sat.
+        std::vector<int> tabs;
+        const auto load = [&](const std::string &relative) {
+            const std::string path = AbsoluteFromRoot(relative, root);
+            std::error_code ec;
+            if (path.empty() || !std::filesystem::exists(path, ec)) {
+                (*missing_files)++;
+                return false;
+            }
+            LoadFile(path);
+            const int bid = CurPane().buffer_id;
+            if (bid >= 0 && bid < static_cast<int>(buffers_.size()) &&
+                std::find(tabs.begin(), tabs.end(), bid) == tabs.end()) {
+                tabs.push_back(bid);
+            }
+            return true;
+        };
+        for (const std::string &relative : pending.buffer_tabs) load(relative);
+        load(pending.file);
+        if (!tabs.empty()) {
+            // `load` appends in call order, so the last entry is the file
+            // that was visible -- or, when that one alone has vanished, the
+            // last background tab that did load, which leaves the pane on
+            // something rather than on a blank.
+            Pane &pane = CurPane();
+            pane.buffer_tabs = tabs;
+            pane.buffer_tab_index = static_cast<int>(tabs.size()) - 1;
+            pane.buffer_id = tabs.back();
+        }
+    }
+    // "empty": the placeholder buffer *is* the restored pane, so there is
+    // nothing to load and nothing to retire.
+    Pane &pane = CurPane();
+    if (pane.buffer_id != pending.placeholder_buffer && pending.placeholder_buffer >= 0 &&
+        pending.placeholder_buffer < static_cast<int>(buffers_.size())) {
+        // Same retire-the-throwaway step as OpenFileInPane's, so a restore
+        // doesn't leave one stray [No Name] per pane behind in `:ls`.
+        buffers_[static_cast<size_t>(pending.placeholder_buffer)].deleted = true;
+        pane.buffer_tabs.erase(std::remove(pane.buffer_tabs.begin(), pane.buffer_tabs.end(), pending.placeholder_buffer),
+                               pane.buffer_tabs.end());
+        if (pane.buffer_tab_index >= static_cast<int>(pane.buffer_tabs.size())) {
+            pane.buffer_tab_index = static_cast<int>(pane.buffer_tabs.size()) - 1;
+        }
+        if (pane.buffer_tab_index < 0) pane.buffer_tab_index = 0;
+    }
+    EnsureBufferTabSeeded(pane);
+    // Cursor and scroll last: LoadFile resets both to the top of whatever
+    // it opened. ClampCursor because the file may have been edited by
+    // something else between the save and now (or shrunk on disk), and a
+    // saved row past its new end would otherwise be out of range.
+    pane.cursor = CursorPos{pending.cursor_row, pending.cursor_col};
+    pane.scroll_row = pending.scroll_row;
+    ClampCursor();
+}
+
+void Editor::ReleaseDiscardedPaneResources(int workspace_id) {
+    Workspace *ws = FindWorkspace(workspace_id);
+    if (!ws) return;
+    std::function<void(const SplitNode &)> walk = [&](const SplitNode &node) {
+        if (node.dir != SplitDir::Leaf) {
+            for (const auto &child : node.children) walk(*child);
+            return;
+        }
+        const int bid = node.pane.buffer_id;
+        if (bid < 0 || bid >= static_cast<int>(buffers_.size())) return;
+        auto it = terminals_.find(bid);
+        if (it != terminals_.end()) {
+            // Same argument ReleaseWorkspaceResources makes: the pane this
+            // terminal lived in is about to stop existing, and the PTY
+            // child would otherwise keep running with nothing able to ever
+            // show it again.
+#if !defined(__EMSCRIPTEN__)
+            if (it->second.job_id > 0) JobManager::Instance().Kill(it->second.job_id);
+#endif
+            terminals_.erase(it);
+            buffers_[static_cast<size_t>(bid)].deleted = true;
+            return;
+        }
+        // Otherwise only the untouched placeholder a fresh workspace comes
+        // with (MakeWorkspace/WorkspaceReset) is retired -- the same "empty,
+        // unnamed, unmodified" test DropUnusedInitialBuffer uses. A real
+        // buffer stays in the list even though no pane shows it any more,
+        // so `:wsrestore` can never be a way to lose work.
+        Buffer &buf = buffers_[static_cast<size_t>(bid)];
+        if (!buf.deleted && buf.filename.empty() && !buf.modified && buf.lines.size() == 1 && buf.lines[0].empty()) {
+            buf.deleted = true;
+        }
+    };
+    for (const Tab &tab : ws->tabs) {
+        if (tab.root) walk(*tab.root);
+    }
+}
+
+bool Editor::RestoreWorkspaceLayout(int workspace_id, const Json &wj, int *missing_files) {
+    // Validated as a whole before any of it is rebuilt, so a truncated or
+    // hand-edited session file leaves the workspace untouched for the
+    // caller to lay out by default, never half-restored on screen.
+    if (!ValidWorkspaceStateTabs(wj.get("tabs"))) return false;
+    int pi = -1, wi = -1;
+    for (size_t p = 0; p < projects_.size(); p++) {
+        for (size_t w = 0; w < projects_[p].workspaces.size(); w++) {
+            if (projects_[p].workspaces[w].id != workspace_id) continue;
+            pi = static_cast<int>(p);
+            wi = static_cast<int>(w);
+        }
+    }
+    if (pi < 0) return false;
+    // The target workspace has to *be* the active one for the rest of this:
+    // CreateEmptyBuffer scopes new buffers to the active workspace, and
+    // LoadFile/OpenTerminalInPlace fill the active pane of its active tab.
+    // The caller puts the intended active project/workspace back afterwards.
+    active_project_ = pi;
+    projects_[static_cast<size_t>(pi)].active_workspace = wi;
+    ChdirToActiveRoot();
+    const std::string root = projects_[static_cast<size_t>(pi)].workspaces[static_cast<size_t>(wi)].root;
+
+    // First pass, before a single pane is rebuilt: materialize the buffer
+    // behind every file-tree pane in the saved layout (see
+    // DirectoryPaneBuffer for why it cannot happen inline with the rest).
+    // The panes its hook splits off in the process belong to the tab this
+    // restore is about to replace, so they go away with it.
+    std::map<std::string, int> tree_buffers;
+    {
+        std::function<void(const Json &)> scan = [&](const Json &node) {
+            if (node.get("dir").as_string("") != "leaf") {
+                for (const Json &child : node.get("children").items()) scan(child);
+                return;
+            }
+            const Json &pj = node.get("pane");
+            if (pj.get("kind").as_string("") != "file") return;
+            const std::string path = AbsoluteFromRoot(pj.get("buffer").as_string(""), root);
+            std::error_code ec;
+            if (path.empty() || !std::filesystem::is_directory(path, ec)) return;
+            if (tree_buffers.count(path) != 0) return;
+            tree_buffers[path] = DirectoryPaneBuffer(path);
+        };
+        for (const Json &tj : wj.get("tabs").items()) scan(tj.get("root"));
+    }
+
+    // Build every tab before installing any of them.
+    std::vector<Tab> built;
+    std::vector<std::vector<PendingPaneRestore>> pending;
+    std::vector<int> active_panes;
+    for (const Json &tj : wj.get("tabs").items()) {
+        Tab tab;
+        tab.id = next_tab_id_++;
+        std::vector<PendingPaneRestore> leaves;
+        tab.root = BuildSplitFromState(tj.get("root"), workspace_id, root, tree_buffers, &leaves);
+        // Saved pane ids are last run's (Tab::id's own comment): the
+        // rebuilt tree has fresh ones, so the saved `active_pane` is
+        // matched through what the build just recorded, falling back to the
+        // first pane when it names one that no longer appears.
+        const int saved_active = tj.get("active_pane").as_int(-1);
+        int active = leaves.empty() ? 0 : leaves.front().pane_id;
+        for (const PendingPaneRestore &leaf : leaves) {
+            if (leaf.saved_pane_id == saved_active) active = leaf.pane_id;
+        }
+        tab.active_pane_id = active;
+        built.push_back(std::move(tab));
+        pending.push_back(std::move(leaves));
+        active_panes.push_back(active);
+    }
+
+    ReleaseDiscardedPaneResources(workspace_id);
+    {
+        Workspace &ws = projects_[static_cast<size_t>(pi)].workspaces[static_cast<size_t>(wi)];
+        ws.tabs = std::move(built);
+        ws.active_tab = 0;
+        ws.layout_restored = true;
+    }
+
+    // Content second, one tab at a time -- ActiveTab() is what LoadFile and
+    // OpenTerminalInPlace reach for, so each tab takes its turn as the
+    // active one.
+    for (size_t t = 0; t < pending.size(); t++) {
+        projects_[static_cast<size_t>(pi)].workspaces[static_cast<size_t>(wi)].active_tab = static_cast<int>(t);
+        for (const PendingPaneRestore &leaf : pending[t]) ApplyPaneRestore(leaf, root, tree_buffers, missing_files);
+    }
+
+    // Focus last: filling panes moved it around (every ApplyPaneRestore
+    // focuses the pane it loads into), so the saved active tab and pane are
+    // reapplied on top rather than being what survived the loop.
+    Workspace &ws = projects_[static_cast<size_t>(pi)].workspaces[static_cast<size_t>(wi)];
+    for (size_t t = 0; t < ws.tabs.size() && t < active_panes.size(); t++) {
+        ws.tabs[t].active_pane_id = active_panes[t];
+    }
+    const int saved_tab = wj.get("active_tab").as_int(0);
+    ws.active_tab = (saved_tab >= 0 && saved_tab < static_cast<int>(ws.tabs.size())) ? saved_tab : 0;
+    // A restored terminal pane left Mode::Terminal behind (see
+    // OpenTerminalInPlaceArgv's tail) even when the pane that ends up
+    // focused isn't one; AfterWorkspaceActivated's own guard, applied here
+    // because the caller may activate a different workspace entirely.
+    if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
+    SyncModeToActivePaneBuffer();
+    return true;
+}
+
 bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
 #if defined(__EMSCRIPTEN__)
     (void)project_id;
@@ -17096,16 +17424,20 @@ bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
         Notify("Ignoring workspace session file with unknown version", NotifyLevel::Warn);
         return false;
     }
-    // Only the workspace *list* (name/root/branch) is restored here, not
-    // each workspace's saved panes/tabs -- every restored (or newly created)
-    // non-primary workspace lands with a fresh single empty tab, and the
-    // caller is expected to apply the standard default layout to it (see
-    // mep.project_apply_default_layout_to_empty_workspaces).
+    // The workspace list (name/root/branch) *and*, for each workspace whose
+    // saved shape validates, its tabs/panes/files/cursors/terminals
+    // (RestoreWorkspaceLayout). A workspace whose layout does not come back
+    // -- no saved tabs, a malformed tree, a version this build predates --
+    // keeps the fresh single empty tab it was created with and is left for
+    // mep.project_apply_default_layout_to_empty_workspaces to lay out, which
+    // is why that function skips the ones flagged Workspace::layout_restored.
     const int saved_project = active_project_;
     for (size_t i = 0; i < projects_.size(); i++) {
         if (projects_[i].id == project_id) active_project_ = static_cast<int>(i);
     }
     int pruned = 0;
+    int missing_files = 0;
+    int restored_layouts = 0;
     bool any = false;
     for (const Json &wj : doc.get("workspaces").items()) {
         if (!wj.is_object()) continue;
@@ -17138,6 +17470,10 @@ bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
         }
         if (!target) continue;
         any = true;
+        // `target` is a pointer into project->workspaces, which the layout
+        // restore below both reads and writes (and whose buffers_ pushes can
+        // reallocate other things), so take the stable id and let it re-find.
+        if (RestoreWorkspaceLayout(target->id, wj, &missing_files)) restored_layouts++;
     }
     const std::string active_name = doc.get("active_workspace").as_string("");
     for (size_t i = 0; i < project->workspaces.size(); i++) {
@@ -17150,6 +17486,20 @@ bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
     AfterWorkspaceActivated();
     if (pruned > 0) Notify("Restored workspaces: " + std::to_string(pruned) + " workspace(s) pruned (worktree gone)",
                            NotifyLevel::Warn);
+    // One line per restore, not one per skipped file: a project that has
+    // moved on since the last session (a branch switched, a scratch file
+    // deleted) can easily have several, and each pane that lost its file is
+    // visibly empty anyway.
+    if (missing_files > 0) {
+        Notify("Restored layout: skipped " + std::to_string(missing_files) + " file(s) that no longer exist",
+               NotifyLevel::Warn);
+    }
+    // Reported rather than silent so `:wsrestore` says what it did, and so
+    // a startup that fell back to the default layout for everything is
+    // distinguishable from one that genuinely came back.
+    if (restored_layouts > 0) {
+        status_message_ = "Restored " + std::to_string(restored_layouts) + " workspace layout(s) from " + path;
+    }
     return any;
 #endif
 }

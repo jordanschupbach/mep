@@ -237,9 +237,15 @@ bench: build-native
 test-gui: build-native
     #!/usr/bin/env bash
     set -euo pipefail
-    cmake --build {{native_build_dir}} -j --target mep-agent-rpc-test mep-cad-live-test mep-cad-sketch-live-test mep-cad-fem-api-live-test mep-viewer-live-test
+    cmake --build {{native_build_dir}} -j --target mep-agent-rpc-test mep-session-restore-test mep-cad-live-test mep-cad-sketch-live-test mep-cad-fem-api-live-test mep-viewer-live-test
     echo "== mep-agent-rpc-test"
     "./{{native_build_dir}}/mep-agent-rpc-test" "./{{native_build_dir}}/mep"
+    # Session restore: needs two mep instances in sequence (the layout only
+    # comes back in a process that reads the previous one's session file), so
+    # it lives here rather than in `just test`. Uses a throwaway
+    # $XDG_DATA_HOME, never the real per-user session files.
+    echo "== mep-session-restore-test"
+    "./{{native_build_dir}}/mep-session-restore-test" "./{{native_build_dir}}/mep"
     echo "== mep-cad-live-test"
     "./{{native_build_dir}}/mep-cad-live-test" "./{{native_build_dir}}/mep"
     echo "== mep-cad-sketch-live-test"

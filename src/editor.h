@@ -1361,6 +1361,13 @@ struct Workspace {
     // poll (mep.opt.workspace_git_dirty); drawn as a `+` suffix. The `*`
     // suffix (modified buffers) is computed live instead, never from git.
     bool git_dirty = false;
+    // Runtime only, never persisted: this workspace's tabs/panes came back
+    // from the session file (Editor::RestoreWorkspaceLayout) rather than
+    // being the single empty tab MakeWorkspace hands out, so the standard
+    // default layout must not be stamped over them. Read from Lua through
+    // mep.workspace_list()'s `layout_restored` field, which is what
+    // mep.project_apply_default_layout_to_empty_workspaces skips on.
+    bool layout_restored = false;
     std::vector<Tab> tabs;
     int active_tab = 0;
 };
@@ -3875,11 +3882,25 @@ public:
     // Writes `MepDataDir()/workspaces/<slug>-<hash>.json` for the project.
     bool SaveWorkspaceState(int project_id);
     void SaveAllWorkspaceState();
-    // Best-effort restore (decision 10): missing files are skipped with a
-    // one-line summary, vanished worktrees pruned, malformed JSON ignored.
-    // `keep_primary_tabs`: leave the primary workspace's current tabs
-    // alone (`mep <file>` already put something there).
+    // Best-effort restore (decision 10) of the workspace list and, per
+    // workspace, its saved layout: missing files are skipped with a one-line
+    // summary, vanished worktrees pruned, malformed JSON ignored, and a
+    // workspace whose saved layout won't rebuild is left with its fresh
+    // empty tab for the default layout to fill (see RestoreWorkspaceLayout).
+    // `keep_primary_tabs`: leave the primary workspace alone entirely
+    // (`mep <file>` already put something there).
     bool RestoreWorkspaceState(int project_id, bool keep_primary_tabs);
+    // Rebuilds one workspace's saved tabs from `wj` (one element of the
+    // session file's `workspaces` array): the split tree with its share
+    // ratios, each pane's file, its background buffer tabs, cursor and
+    // scroll position, and its terminals -- the inverse of SplitStateJson.
+    // Returns false, having changed nothing, when the saved shape doesn't
+    // validate (ValidWorkspaceStateTabs), which is the caller's cue to fall
+    // back to the default layout for this workspace. Leaves the workspace
+    // active (filling panes has to); `missing_files` is incremented once
+    // per saved path that no longer exists, for the caller's one-line
+    // summary.
+    bool RestoreWorkspaceLayout(int workspace_id, const Json &wj, int *missing_files);
     // Per-frame: saves 500 ms after the last structural change
     // (workspace/tab/pane/buffer-in-pane changes; cursor moves don't count).
     void TickWorkspacePersistence(double now);
@@ -11450,6 +11471,46 @@ private:
     Pane &CurPane();
     const Pane &CurPane() const;
     SplitNode *FindNode(SplitNode *node, int pane_id) const;
+    // One leaf of a session file's split tree, recorded while the tree is
+    // being rebuilt and applied afterwards: LoadFile/OpenTerminalInPlace
+    // both fill the *active* pane, so there has to be a whole installed
+    // tree for them to be active in before any content can be loaded.
+    struct PendingPaneRestore {
+        int pane_id = 0;           // freshly allocated (next_pane_id_)
+        int saved_pane_id = -1;    // as written last run; maps `active_pane`
+        int placeholder_buffer = -1;
+        // "file" | "terminal" | "empty" as written, plus "directory" --
+        // derived at restore time for a saved path that turns out to be a
+        // directory, i.e. a file-tree/navigator pane (see
+        // DirectoryPaneBuffer). Never a kind the session file itself holds,
+        // so no format version rides on it.
+        std::string kind;
+        std::string file;          // relative to the workspace root
+        std::vector<std::string> buffer_tabs;
+        int cursor_row = 0;
+        int cursor_col = 0;
+        int scroll_row = 0;
+    };
+    // Rebuilds the structure of one saved split node (fresh pane ids, one
+    // placeholder empty buffer per leaf scoped to `workspace_id`), pushing
+    // a PendingPaneRestore per leaf. Infallible: RestoreWorkspaceLayout
+    // validates the whole tree first.
+    std::unique_ptr<SplitNode> BuildSplitFromState(const Json &node, int workspace_id, const std::string &root,
+                                                   const std::map<std::string, int> &tree_buffers,
+                                                   std::vector<PendingPaneRestore> *pending);
+    // Loads one rebuilt pane's content, with that pane focused.
+    // `tree_buffers` maps an already-materialized directory to its buffer
+    // (see DirectoryPaneBuffer), for the "directory" kind.
+    void ApplyPaneRestore(const PendingPaneRestore &pending, const std::string &root,
+                          const std::map<std::string, int> &tree_buffers, int *missing_files);
+    // The buffer a file-tree pane rooted at `dir` shows, running the
+    // on_directory_open hook once to create it if nothing has yet.
+    int DirectoryPaneBuffer(const std::string &dir);
+    // Called just before a workspace's tabs are replaced by a restore:
+    // kills terminals whose pane is about to stop existing and drops the
+    // untouched placeholder buffer a fresh workspace comes with, while
+    // leaving every real buffer in the list.
+    void ReleaseDiscardedPaneResources(int workspace_id);
     void CollectLeaves(const SplitNode *node, std::vector<int> &ids) const;
     // Same traversal as CollectLeaves, collecting each leaf's own
     // buffer_id instead of its pane id -- PaneBuffersInActiveTab's own

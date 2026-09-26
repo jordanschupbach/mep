@@ -11213,6 +11213,13 @@ void Editor::ResizePdfViewport(int buffer_id, int w, int h) {
 }
 
 void Editor::EnsurePdfPagesRastered(int buffer_id) {
+    static const bool kPdfProf = std::getenv("MEP_PDF_PROF") != nullptr;
+    auto prof_t0 = std::chrono::steady_clock::now();
+    auto prof_log = [&](const char *what) {
+        if (!kPdfProf) return;
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - prof_t0).count();
+        if (ms > 30.0) std::fprintf(stderr, "[PDFPROF] EnsurePdfPagesRastered %s: %.0f ms\n", what, ms);
+    };
     auto it = pdfs_.find(buffer_id);
     if (it == pdfs_.end()) return;
     PdfSession &sess = it->second;
@@ -11270,10 +11277,17 @@ void Editor::EnsurePdfPagesRastered(int buffer_id) {
             sess.render_job_scale = scale;
             sess.render_job_doc = doc.get();
             sess.render_job = std::async(std::launch::async, [doc, idx, scale]() {
+                static const bool kProf = std::getenv("MEP_PDF_PROF") != nullptr;
+                auto r0 = std::chrono::steady_clock::now();
                 PdfSession::RenderResult res;
                 res.ok = doc->RenderPage(idx, scale, res.rgba, res.w, res.h, &res.warning);
+                if (kProf) {
+                    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - r0).count();
+                    std::fprintf(stderr, "[PDFPROF] RenderPage(%d) worker: %.0f ms %dx%d\n", idx, ms, res.w, res.h);
+                }
                 return res;
             });
+            prof_log("started-render");
             break;
         }
     }
@@ -19643,6 +19657,19 @@ void Editor::ProcessInsertKey(int key) {
             break;
     }
 
+    // Live syntax highlighting while typing: mep.syntax_auto -- like every
+    // other mep.on_buffer_changed poller -- watches change_epoch_, but the
+    // only bumps around an insert session are PushUndo()'s at Insert *entry*
+    // and EnterNormal()'s on Escape (see EnterNormal's comment). Without a
+    // per-key bump here the buffer looks unchanged for the whole session, so
+    // freshly typed text stays uncolored until you leave Insert mode. Every
+    // branch of the switch above except the kReplayEscape mode switch (which
+    // EnterNormal already bumps for) edits the buffer, so bump for the rest.
+    // ts_captures reparses incrementally against its cached tree so the
+    // resulting re-highlight is cheap, and on_buffer_changed's 0.03s debounce
+    // (mep.syntax_interval, main.cpp) caps how often it actually rebuilds.
+    if (key != kReplayEscape) change_epoch_++;
+
     if (key == kReplayEscape) FinishVisualBlockInsert();
 
     if (!replaying_change_ && change_recording_active_ && key == kReplayEscape) {
@@ -20930,6 +20957,7 @@ void Editor::BeginPrompt(const std::string &title, const std::string &default_te
     overlay_previous_mode_ = mode_;
     prompt_title_ = title;
     prompt_input_ = default_text;
+    prompt_cursor_ = prompt_input_.size();
     prompt_callback_ref_ = on_done_ref;
     prompt_native_callback_ = nullptr;
     prompt_masked_ = masked;
@@ -20941,6 +20969,7 @@ void Editor::BeginPromptNative(const std::string &title, const std::string &defa
     overlay_previous_mode_ = mode_;
     prompt_title_ = title;
     prompt_input_ = default_text;
+    prompt_cursor_ = prompt_input_.size();
     prompt_callback_ref_ = 0;
     prompt_native_callback_ = std::move(on_done);
     prompt_masked_ = false;
@@ -21247,12 +21276,21 @@ void Editor::RestoreFromOverlay() {
 }
 
 void Editor::HandlePromptInput() {
-    // Same gfx::GetKeyPressed()-vs-gfx::IsKeyPressed() reasoning as HandleCommandInput.
+    // Same gfx::GetKeyPressed()-vs-gfx::IsKeyPressed() reasoning as
+    // HandleCommandInput -- the nav/edit keys are drained from the key queue
+    // (not read via IsKeyPressed) so a keydown+keyup inside one slow
+    // software-rendered frame isn't silently swallowed.
     bool escape = false, enter = false, backspace = false;
+    bool left = false, right = false, home = false, end = false, del = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Escape) escape = true;
         else if (key == gfx::Key::Enter) enter = true;
         else if (key == gfx::Key::Backspace) backspace = true;
+        else if (key == gfx::Key::Left) left = true;
+        else if (key == gfx::Key::Right) right = true;
+        else if (key == gfx::Key::Home) home = true;
+        else if (key == gfx::Key::End) end = true;
+        else if (key == gfx::Key::Delete) del = true;
     }
     if (escape) {
         int ref = prompt_callback_ref_;
@@ -21278,13 +21316,46 @@ void Editor::HandlePromptInput() {
         }
         return;
     }
+    // The caret (prompt_cursor_) is a byte offset kept on UTF-8 boundaries,
+    // same convention as HandlePdfNoteInput's note_caret. Left/Right step over
+    // whole codepoints; Home/End jump to the string's ends.
+    if (prompt_cursor_ > prompt_input_.size()) prompt_cursor_ = prompt_input_.size();
+    auto prev_boundary = [&](size_t i) -> size_t {
+        if (i == 0) return 0;
+        --i;
+        while (i > 0 && (static_cast<unsigned char>(prompt_input_[i]) & 0xC0) == 0x80) --i;
+        return i;
+    };
+    auto next_boundary = [&](size_t i) -> size_t {
+        if (i >= prompt_input_.size()) return prompt_input_.size();
+        ++i;
+        while (i < prompt_input_.size() && (static_cast<unsigned char>(prompt_input_[i]) & 0xC0) == 0x80) ++i;
+        return i;
+    };
+    if (left || gfx::IsKeyPressedRepeat(gfx::Key::Left)) prompt_cursor_ = prev_boundary(prompt_cursor_);
+    if (right || gfx::IsKeyPressedRepeat(gfx::Key::Right)) prompt_cursor_ = next_boundary(prompt_cursor_);
+    if (home) prompt_cursor_ = 0;
+    if (end) prompt_cursor_ = prompt_input_.size();
     if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
-        if (!prompt_input_.empty()) prompt_input_.pop_back();
-        return;
+        if (prompt_cursor_ > 0) {
+            size_t p = prev_boundary(prompt_cursor_);
+            prompt_input_.erase(p, prompt_cursor_ - p);
+            prompt_cursor_ = p;
+        }
     }
+    if (del || gfx::IsKeyPressedRepeat(gfx::Key::Delete)) {
+        if (prompt_cursor_ < prompt_input_.size())
+            prompt_input_.erase(prompt_cursor_, next_boundary(prompt_cursor_) - prompt_cursor_);
+    }
+    // Insert typed characters at the caret rather than only appending.
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
-        if (cp >= 32 && cp < 127) prompt_input_ += static_cast<char>(cp);
+        if (cp >= 32 && cp != 127) {
+            std::string enc;
+            AppendUtf8(enc, cp);
+            prompt_input_.insert(prompt_cursor_, enc);
+            prompt_cursor_ += enc.size();
+        }
         cp = gfx::GetCharPressed();
     }
 }

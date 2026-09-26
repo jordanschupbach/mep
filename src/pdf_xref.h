@@ -18,7 +18,9 @@
 #include <cstddef>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 namespace pdfxref {
 
@@ -30,6 +32,29 @@ struct Entry {
     int gen = 0;                    // InUse: generation number
     long long stream_num = 0;       // Compressed: object number of the containing ObjStm
     long long index_in_stream = 0;  // Compressed: this object's index within that ObjStm
+};
+
+// A single object stream (ObjStm), decompressed exactly once and kept for
+// the document's lifetime -- see GetDecodedObjStm. `body` is the fully
+// FlateDecoded stream content; `offset` maps every contained object's
+// number to the absolute byte position of its value within `body` (i.e.
+// the stream's /First plus that object's recorded relative offset), so a
+// resolve is a single hash lookup + ParseObject instead of re-inflating
+// and re-scanning the whole stream. An ObjStm that failed to decode is
+// still cached (empty `offset`) so a broken stream isn't retried once per
+// referring object.
+struct DecodedObjStm {
+    std::string body;
+    std::unordered_map<int, size_t> offset;
+};
+
+// Holds every decoded ObjStm behind one mutex. Reached through a
+// shared_ptr member so XrefTable stays movable (a bare std::mutex is not)
+// and so the render worker thread and the main thread -- which both call
+// ResolveObject on the same shared XrefTable -- see one shared cache.
+struct ObjStmCache {
+    std::mutex mtx;
+    std::unordered_map<int, std::shared_ptr<const DecodedObjStm>> map;
 };
 
 // The document-wide cross-reference table + merged trailer dict.
@@ -61,6 +86,16 @@ public:
     const pdfobj::Object &Trailer() const { return trailer_; }
     const std::map<int, Entry> &Entries() const { return entries_; }
 
+    // Returns the object stream with object number `stream_num`, decoded
+    // and indexed on first request and cached thereafter for the whole
+    // document lifetime. ResolveObject calls this for every Compressed
+    // entry, so without the cache a document that packs its page dicts
+    // into a shared ObjStm re-inflated that entire stream once per page --
+    // O(pages x stream_size), the ~20s freeze that opening a large
+    // object-stream PDF used to cause. Never returns null (a stream that
+    // can't be decoded is cached as an empty DecodedObjStm); thread-safe.
+    const DecodedObjStm *GetDecodedObjStm(const unsigned char *data, size_t len, int stream_num) const;
+
     // Whether the trailer has an /Encrypt entry at all (regardless of
     // whether SetupEncryption below actually managed to authenticate an
     // empty password against it) -- PDFIUM_REMOVAL_PLAN.md Phase 12.
@@ -87,6 +122,14 @@ private:
     pdfobj::Object trailer_;
     bool is_encrypted_ = false;
     std::unique_ptr<pdfcrypt::EncryptionState> encryption_;
+
+    // Decoded-ObjStm cache (see GetDecodedObjStm). Allocated up front so
+    // concurrent resolves never race to create it. Held via shared_ptr
+    // (not as a direct member) so XrefTable stays movable despite
+    // ObjStmCache's std::mutex; the moved-into table owns the cache and
+    // the moved-from temporary is left empty (only ever a discarded
+    // temporary, e.g. Load()'s own `table_ = XrefTable()` reset).
+    mutable std::shared_ptr<ObjStmCache> objstm_cache_ = std::make_shared<ObjStmCache>();
 
     // Reads /Encrypt (if any) off trailer_ and, if present, attempts to
     // authenticate an empty user password against it -- called at the

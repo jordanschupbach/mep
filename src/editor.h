@@ -8257,6 +8257,11 @@ public:
      */
     const std::string &PromptInput() const { return prompt_input_; }
     /**
+     * @brief Returns the byte offset of the prompt overlay's insertion caret within PromptInput().
+     * @return The caret byte offset (on a UTF-8 boundary).
+     */
+    size_t PromptCursor() const { return prompt_cursor_; }
+    /**
      * @brief Reports whether the active prompt overlay renders its input masked.
      * @return True if the input is masked.
      */
@@ -11663,6 +11668,11 @@ private:
     // --- Modal overlay state (Prompt/Confirm/Select) ---
     Mode overlay_previous_mode_ = Mode::Normal;
     std::string prompt_title_, prompt_input_;
+    // Insertion caret for prompt_input_, a byte offset kept on UTF-8
+    // boundaries (like HandlePdfNoteInput's note_caret), so Left/Right/Home/
+    // End/Delete edit mid-string instead of only appending at the end. Set to
+    // the end of the default text by BeginPrompt/BeginPromptNative.
+    size_t prompt_cursor_ = 0;
     int prompt_callback_ref_ = 0;
     // Set only by BeginPromptNative; HandlePromptInput checks this first
     // (and clears it right after, whichever branch fires) so a *later*

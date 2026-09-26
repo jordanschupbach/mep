@@ -327,6 +327,7 @@ private:
         Callbacks callbacks;
         bool exit_reported = false;
         bool spawn_failed = false;
+        std::string debug_cmd;  // argv joined, for MEP_PDF_PROF diagnostics only
     };
     std::vector<Entry> jobs_;
     int next_id_ = 1;

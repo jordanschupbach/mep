@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
 #define MEP_JOB_POSIX 1
@@ -348,6 +350,7 @@ int JobManager::Spawn(const std::vector<std::string> &argv, const std::string &c
                        bool use_pty, std::vector<std::pair<std::string, std::string>> extra_env) {
     Entry entry;
     entry.id = next_id_++;
+    for (const std::string &a : argv) { entry.debug_cmd += a; entry.debug_cmd += ' '; }
     entry.job = std::make_shared<Job>(argv, cwd, callbacks.on_stdout_raw != nullptr, use_pty, std::move(extra_env));
     entry.callbacks = std::move(callbacks);
     entry.spawn_failed = entry.job->SpawnFailed();
@@ -420,8 +423,12 @@ void JobManager::PollAll() {
     // ever grows mid-loop (erasing happens once, after), so `i < n <=
     // jobs_.size()` holds throughout -- every jobs_[i] access below is in
     // bounds no matter what a callback did to the tail of the vector.
+    static const bool kProf = std::getenv("MEP_PDF_PROF") != nullptr;
     size_t n = jobs_.size();
     for (size_t i = 0; i < n; i++) {
+        auto j0 = std::chrono::steady_clock::now();
+        double t_raw = 0, t_lines = 0, t_exit = 0;
+        size_t n_lines = 0;
         std::shared_ptr<Job> job = jobs_[i].job;
         auto on_stdout_raw = jobs_[i].callbacks.on_stdout_raw;
         if (on_stdout_raw) {
@@ -430,15 +437,20 @@ void JobManager::PollAll() {
                 for (const std::string &chunk : job->DrainRaw()) on_stdout_raw(chunk);
             }
         }
+        if (kProf) { t_raw = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - j0).count(); }
         auto on_stdout = jobs_[i].callbacks.on_stdout;
         auto on_stderr = jobs_[i].callbacks.on_stderr;
+        auto l0 = std::chrono::steady_clock::now();
         for (const JobLine &line : job->DrainLines()) {
+            ++n_lines;
             if (line.is_stderr) {
                 if (on_stderr) on_stderr(line.text);
             } else {
                 if (on_stdout) on_stdout(line.text);
             }
         }
+        if (kProf) { t_lines = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - l0).count(); }
+        auto e0 = std::chrono::steady_clock::now();
         if (job->Finished() && !jobs_[i].exit_reported) {
             jobs_[i].exit_reported = true;
             auto on_exit = jobs_[i].callbacks.on_exit;
@@ -446,6 +458,13 @@ void JobManager::PollAll() {
                 int code = job->Killed() || job->SpawnFailed() ? -1 : job->ExitCode();
                 on_exit(code);
             }
+        }
+        if (kProf) {
+            t_exit = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - e0).count();
+            double total = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - j0).count();
+            if (total > 500.0)
+                std::fprintf(stderr, "[PDFPROF] job[%d] '%s': total %.0f ms (raw %.0f, lines %.0f/%zu, exit %.0f)\n",
+                             jobs_[i].id, jobs_[i].debug_cmd.c_str(), total, t_raw, t_lines, n_lines, t_exit);
         }
     }
     // Selects entries whose exit callback has already fired, so they can be erased below.

@@ -399,70 +399,105 @@ pdfobj::Object ResolveObject(const unsigned char *data, size_t len, const XrefTa
     }
 
     if (entry->kind == EntryKind::Compressed) {
-        const Entry *stream_entry = table.Find(static_cast<int>(entry->stream_num));
-        if (!stream_entry || stream_entry->kind != EntryKind::InUse) return pdfobj::Object();
-        pdfobj::IndirectObject stream_ind;
-        auto resolver = [&](int rnum, int rgen, long long *out_length) -> bool {
-            pdfobj::Object length_obj = ResolveObject(data, len, table, rnum, rgen);
-            if (!length_obj.IsNumber()) return false;
-            *out_length = length_obj.AsInt();
-            return true;
-        };
-        if (!pdfobj::ParseIndirectObject(data, len, static_cast<size_t>(stream_entry->offset), &stream_ind,
-                                          resolver) ||
-            !stream_ind.has_stream || !stream_ind.value.IsDict()) {
-            return pdfobj::Object();
-        }
-        const pdfobj::Object &stream_obj = stream_ind.value;
-
-        // The ObjStm's own raw bytes are decrypted as a whole stream
-        // (using ITS OWN object number/generation, not the target
-        // object's -- num here is the object being looked UP inside
-        // this ObjStm, entirely different from the ObjStm's own
-        // identity) before FlateDecode; the individual objects extracted
-        // from the decompressed body below are never separately
-        // decrypted themselves -- spec 7.5.7: object-stream contents are
-        // already plaintext once the containing stream itself is
-        // decrypted. Cross-reference streams (LoadXrefStream, a
-        // sibling code path never reached from here) are the one stream
-        // type that's never encrypted at all, per the same spec section.
-        std::string raw = pdfcrypt::DecryptStreamBytes(
-            table.Encryption(), stream_ind.num, stream_ind.gen,
-            std::string(reinterpret_cast<const char *>(data) + stream_ind.stream_offset, stream_ind.stream_length));
-        std::string decoded;
-        if (!pdffilter::FlateDecode(raw, stream_obj.Find("DecodeParms"), &decoded)) return pdfobj::Object();
-
-        long long n = 0, first = 0;
-        if (const pdfobj::Object *n_obj = stream_obj.Find("N")) n = n_obj->AsInt();
-        if (const pdfobj::Object *first_obj = stream_obj.Find("First")) first = first_obj->AsInt();
-
-        const unsigned char *header = reinterpret_cast<const unsigned char *>(decoded.data());
-        size_t header_len = decoded.size();
-        size_t hpos = 0;
-        long long target_offset = -1;
-        for (long long i = 0; i < n; ++i) {
-            pdfobj::SkipWhitespaceAndComments(header, header_len, hpos);
-            long long obj_num = 0;
-            if (!ReadUInt(header, header_len, hpos, &obj_num)) break;
-            pdfobj::SkipWhitespaceAndComments(header, header_len, hpos);
-            long long obj_offset = 0;
-            if (!ReadUInt(header, header_len, hpos, &obj_offset)) break;
-            if (obj_num == num) {
-                target_offset = obj_offset;
-                break;
-            }
-        }
-        if (target_offset < 0) return pdfobj::Object();
-
-        size_t value_pos = static_cast<size_t>(first + target_offset);
-        if (value_pos >= decoded.size()) return pdfobj::Object();
+        // The whole ObjStm is decoded and indexed once (GetDecodedObjStm),
+        // then every object it contains is a hash lookup + a single
+        // ParseObject -- the pre-cache version re-inflated and re-scanned
+        // the entire stream on every one of these calls, which is what
+        // made opening a large object-stream PDF (hundreds of page dicts
+        // sharing one ObjStm) freeze for ~20s.
+        const DecodedObjStm *stm = table.GetDecodedObjStm(data, len, static_cast<int>(entry->stream_num));
+        if (!stm) return pdfobj::Object();  // cannot happen (see contract), but keep the resolve total
+        auto it = stm->offset.find(num);
+        if (it == stm->offset.end()) return pdfobj::Object();
+        size_t value_pos = it->second;
+        if (value_pos >= stm->body.size()) return pdfobj::Object();
         pdfobj::Object value;
-        pdfobj::ParseObject(reinterpret_cast<const unsigned char *>(decoded.data()), decoded.size(), value_pos,
+        pdfobj::ParseObject(reinterpret_cast<const unsigned char *>(stm->body.data()), stm->body.size(), value_pos,
                              &value);
         return value;
     }
 
     return pdfobj::Object();
+}
+
+const DecodedObjStm *XrefTable::GetDecodedObjStm(const unsigned char *data, size_t len, int stream_num) const {
+    // Fast path: already decoded. The stored shared_ptr keeps the
+    // DecodedObjStm alive for the table's lifetime, so returning a raw
+    // pointer out from under the lock is safe (entries are never erased).
+    {
+        std::lock_guard<std::mutex> lk(objstm_cache_->mtx);
+        auto it = objstm_cache_->map.find(stream_num);
+        if (it != objstm_cache_->map.end()) return it->second.get();
+    }
+
+    // Decode OUTSIDE the lock: resolving the ObjStm's own /Length (a rare
+    // but legal indirect reference) re-enters ResolveObject, which could
+    // reach GetDecodedObjStm again for a different stream -- holding the
+    // lock across that would risk deadlock. The cost of two threads
+    // occasionally decoding the same stream on a cold miss (one loses the
+    // emplace race below) is negligible next to that.
+    auto decoded = std::make_shared<DecodedObjStm>();
+
+    const Entry *stream_entry = Find(stream_num);
+    if (stream_entry && stream_entry->kind == EntryKind::InUse) {
+        pdfobj::IndirectObject stream_ind;
+        auto resolver = [&](int rnum, int rgen, long long *out_length) -> bool {
+            pdfobj::Object length_obj = ResolveObject(data, len, *this, rnum, rgen);
+            if (!length_obj.IsNumber()) return false;
+            *out_length = length_obj.AsInt();
+            return true;
+        };
+        if (pdfobj::ParseIndirectObject(data, len, static_cast<size_t>(stream_entry->offset), &stream_ind, resolver) &&
+            stream_ind.has_stream && stream_ind.value.IsDict()) {
+            const pdfobj::Object &stream_obj = stream_ind.value;
+            // The ObjStm's own raw bytes are decrypted as a whole stream
+            // (using ITS OWN object number/generation) before FlateDecode;
+            // the individual objects extracted from the decompressed body
+            // are never separately decrypted -- spec 7.5.7: object-stream
+            // contents are already plaintext once the containing stream is
+            // decrypted. Cross-reference streams (LoadXrefStream) are the
+            // one stream type never encrypted at all, per the same section.
+            std::string raw = pdfcrypt::DecryptStreamBytes(
+                Encryption(), stream_ind.num, stream_ind.gen,
+                std::string(reinterpret_cast<const char *>(data) + stream_ind.stream_offset,
+                            stream_ind.stream_length));
+            std::string body;
+            if (pdffilter::FlateDecode(raw, stream_obj.Find("DecodeParms"), &body)) {
+                long long n = 0, first = 0;
+                if (const pdfobj::Object *n_obj = stream_obj.Find("N")) n = n_obj->AsInt();
+                if (const pdfobj::Object *first_obj = stream_obj.Find("First")) first = first_obj->AsInt();
+
+                // Index every "obj_num obj_offset" pair in the header once,
+                // storing each object's ABSOLUTE value position (/First +
+                // offset) so a later lookup is O(1).
+                const unsigned char *header = reinterpret_cast<const unsigned char *>(body.data());
+                size_t header_len = body.size();
+                size_t hpos = 0;
+                for (long long i = 0; i < n; ++i) {
+                    pdfobj::SkipWhitespaceAndComments(header, header_len, hpos);
+                    long long obj_num = 0;
+                    if (!ReadUInt(header, header_len, hpos, &obj_num)) break;
+                    pdfobj::SkipWhitespaceAndComments(header, header_len, hpos);
+                    long long obj_offset = 0;
+                    if (!ReadUInt(header, header_len, hpos, &obj_offset)) break;
+                    long long value_pos = first + obj_offset;
+                    if (value_pos >= 0 && static_cast<size_t>(value_pos) < body.size()) {
+                        // First occurrence wins if a stream lists a number
+                        // twice (matches the old early-break-on-match scan).
+                        decoded->offset.emplace(static_cast<int>(obj_num), static_cast<size_t>(value_pos));
+                    }
+                }
+                decoded->body = std::move(body);
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lk(objstm_cache_->mtx);
+    // Another thread may have decoded the same stream while we worked
+    // unlocked; keep whichever landed first, they are equivalent.
+    auto [it, inserted] = objstm_cache_->map.emplace(stream_num, std::move(decoded));
+    (void)inserted;
+    return it->second.get();
 }
 
 bool ResolveStream(const unsigned char *data, size_t len, const XrefTable &table, int num, int /*gen*/,

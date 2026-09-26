@@ -31206,7 +31206,12 @@ void DrawPromptOverlay() {
     std::string line = g_editor.PromptMasked() ? std::string(real.size(), '*') : real;
     gfx::DrawTextEx(g_font, line.c_str(), gfx::Vector2{f.content_x, f.content_y}, g_font_size, 0, ResolveHlGroup("Normal"));
     {
-        float cx = f.content_x + gfx::MeasureTextEx(g_font, line.c_str(), g_font_size, 0).x;
+        // Place the caret at the insertion cursor rather than always at the
+        // end -- measuring the rendered line up to that byte offset (one '*'
+        // per byte when masked keeps it aligned with the real byte cursor).
+        size_t caret = std::min(g_editor.PromptCursor(), line.size());
+        std::string before = line.substr(0, caret);
+        float cx = f.content_x + gfx::MeasureTextEx(g_font, before.c_str(), g_font_size, 0).x;
         gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(f.content_y), 2, static_cast<int>(g_font_size),
                       ResolveHlGroup("Normal"));
     }
@@ -50605,20 +50610,26 @@ void UpdateDrawFrame() {
     // unknown non-exception throw (not used anywhere in this codebase)
     // still terminates, rather than silently swallowing something a
     // std::exception& can't describe via what().
+    static const bool kUdfProf = std::getenv("MEP_PDF_PROF") != nullptr;
+#define UDF_TIME(label, stmt) do { \
+        if (kUdfProf) { auto _t = std::chrono::steady_clock::now(); stmt; \
+            double _ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _t).count(); \
+            if (_ms > 500.0) std::fprintf(stderr, "[PDFPROF] %s: %.0f ms\n", label, _ms); } \
+        else { stmt; } } while (0)
     try {
-        JobManager::Instance().PollAll();
-        TcpJsonRpcManager::Instance().PollAll();
-        mep::agent::PollOnce(g_editor);
-        DrainUiInputQueueOneStep();
-        g_editor.PollTerminals();
+        UDF_TIME("JobManager::PollAll", JobManager::Instance().PollAll());
+        UDF_TIME("TcpJsonRpc::PollAll", TcpJsonRpcManager::Instance().PollAll());
+        UDF_TIME("agent::PollOnce", mep::agent::PollOnce(g_editor));
+        UDF_TIME("DrainUiInputQueue", DrainUiInputQueueOneStep());
+        UDF_TIME("PollTerminals", g_editor.PollTerminals());
         // After this frame's exit callbacks (native: JobManager::PollAll
         // above; wasm: PollTerminals just now) have marked any newly-dead
         // shells: close their panes, or quit if the last one just exited.
-        g_editor.ReapExitedTerminals();
+        UDF_TIME("ReapExitedTerminals", g_editor.ReapExitedTerminals());
         g_editor.PruneExpiredToasts(gfx::GetTime());
         g_editor.SetNow(gfx::GetTime());
-        if (g_editor.Lua()) g_editor.Lua()->RunFrameHooks();
-        HandleFontSizeShortcuts();
+        if (g_editor.Lua()) UDF_TIME("Lua::RunFrameHooks", g_editor.Lua()->RunFrameHooks());
+        UDF_TIME("HandleFontSizeShortcuts", HandleFontSizeShortcuts());
         // Tapping mod1 (Alt) on its own shows/hides the top menu bar --
         // the gesture Windows and GTK apps already use to summon a hidden
         // menu bar, and the only one that doesn't cost a keybinding, since
@@ -50684,9 +50695,11 @@ void UpdateDrawFrame() {
         // hint system, gated the same way -- once a window letter is showing
         // it eats the keystroke that picks (or cancels) it before the menu
         // bar or editor get a look. Armed below, after HandleInput().
-        bool pane_pick_consumed = !hint_consumed && HandlePanePickInput();
-        bool menu_consumed = !hint_consumed && !pane_pick_consumed && HandleMenuInput();
-        if (!hint_consumed && !pane_pick_consumed && !menu_consumed) g_editor.HandleInput();
+        bool pane_pick_consumed = false;
+        UDF_TIME("HandlePanePickInput", pane_pick_consumed = !hint_consumed && HandlePanePickInput());
+        bool menu_consumed = false;
+        UDF_TIME("HandleMenuInput", menu_consumed = !hint_consumed && !pane_pick_consumed && HandleMenuInput());
+        if (!hint_consumed && !pane_pick_consumed && !menu_consumed) UDF_TIME("HandleInput", g_editor.HandleInput());
         // The html viewer's plain-'f' link hints (Editor::HandleHtmlInput
         // -> TakeLinkHintRequest): answered here, after HandleInput() has
         // had its say this frame, with a pane-scoped collection instead
@@ -50736,7 +50749,7 @@ void UpdateDrawFrame() {
                 }
             }
         }
-        DrawEditor();
+        UDF_TIME("DrawEditor", DrawEditor());
         if (g_pending_gantt_raster_export.buffer_id >= 0) {
             ExportGanttRaster(g_pending_gantt_raster_export.buffer_id, g_pending_gantt_raster_export.format.c_str());
             g_pending_gantt_raster_export = {};
@@ -50751,8 +50764,8 @@ void UpdateDrawFrame() {
         // per-frame update function, not a copy-pasted branch; sharing the
         // same guard is intentional (see the reasoning comments above/below
         // each call).
-        if (!hint_consumed && !menu_consumed) DispatchHtmlLinkClicks();
-        if (!hint_consumed && !menu_consumed) DispatchChromeClicks();
+        if (!hint_consumed && !menu_consumed) UDF_TIME("DispatchHtmlLinkClicks", DispatchHtmlLinkClicks());
+        if (!hint_consumed && !menu_consumed) UDF_TIME("DispatchChromeClicks", DispatchChromeClicks());
         // Same reasoning (needs this frame's freshly (re)populated pane/
         // border/chip geometry, and shouldn't fire under an open menu
         // dropdown either) -- also runs every frame regardless of a
@@ -50760,7 +50773,7 @@ void UpdateDrawFrame() {
         // in progress needs its own continuous per-frame update even
         // when IsMouseButtonPressed() is false this frame.
         // cppcheck-suppress duplicateCondition
-        if (!hint_consumed && !menu_consumed) UpdatePaneMouseInteraction();
+        if (!hint_consumed && !menu_consumed) UDF_TIME("UpdatePaneMouseInteraction", UpdatePaneMouseInteraction());
         // After pane-chrome dragging (so a border/tab-chip drag near the
         // grid edge wins), forward/select the focused terminal's mouse.
         // cppcheck-suppress duplicateCondition
@@ -51762,8 +51775,18 @@ int main(int argc, char **argv) {
     return 0;
 #else
     gfx::SetTargetFPS(60);
+    static const bool kPdfProf = std::getenv("MEP_PDF_PROF") != nullptr;
+    int prof_frame = 0;
     while (!gfx::WindowShouldClose() && !g_editor.ShouldQuit()) {
-        UpdateDrawFrame();
+        if (kPdfProf) {
+            auto pf0 = std::chrono::steady_clock::now();
+            UpdateDrawFrame();
+            double pfms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pf0).count();
+            if (pfms > 100.0) std::fprintf(stderr, "[PDFPROF] frame %d: %.0f ms\n", prof_frame, pfms);
+            ++prof_frame;
+        } else {
+            UpdateDrawFrame();
+        }
     }
 
     // Explicit, bounded teardown of every spawned child (:terminal shells,

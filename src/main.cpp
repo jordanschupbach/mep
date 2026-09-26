@@ -50213,6 +50213,47 @@ void UpdateTerminalMouseInteraction() {
     }
 }
 
+// Tells Editor which window the mouse is currently over, so a wheel/
+// trackpad gesture scrolls *that* window rather than the focused one
+// (Editor::SetWheelHoverTarget). Called once per frame immediately before
+// g_editor.HandleInput(), which is where the wheel is read.
+//
+// Uses g_pane_screen_rects/g_sidebar_panel_rects as populated by the
+// PREVIOUS frame's DrawEditor -- the same one-frame-stale geometry
+// g_click_regions and the hint/pane-pick collectors already run on (see
+// their own comments), and for the same reason: this frame's layout
+// hasn't been computed yet at input time. A pointer sitting still across
+// a layout change picks up the new rect one frame later, which is
+// imperceptible; a pointer in motion is re-hit-tested every frame anyway.
+//
+// A float pane deliberately gets no entry here: it covers the panes
+// beneath it and holds the cursor while open, and HandleMouseWheel
+// ignores hover targeting entirely while one is up.
+void UpdateWheelHoverTarget() {
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+    int pane_id = -1, sidebar_id = -1;
+    for (const PaneScreenRect &pr : g_pane_screen_rects) {
+        if (PointInRect(mouse, pr.rect)) {
+            pane_id = pr.pane_id;
+            break;
+        }
+    }
+    // Checked second, and only when no pane claimed the point: docked
+    // sidebars occupy their own column outside every pane rect, so the
+    // two can't both match, but preferring the pane keeps a pane-hosted
+    // sidebar (Mode::SidebarPane, whose rect IS a pane rect) on the pane
+    // path where it belongs.
+    if (pane_id < 0) {
+        for (const SidebarPanelRect &panel : g_sidebar_panel_rects) {
+            if (PointInRect(mouse, panel.rect)) {
+                sidebar_id = panel.sidebar_id;
+                break;
+            }
+        }
+    }
+    g_editor.SetWheelHoverTarget(pane_id, sidebar_id);
+}
+
 void UpdatePaneMouseInteraction() {
     Mode mode = g_editor.CurrentMode();
     if (IsModalOverlayMode(mode) && mode != Mode::Sidebar) {
@@ -50730,6 +50771,9 @@ void UpdateDrawFrame() {
         UDF_TIME("HandlePanePickInput", pane_pick_consumed = !hint_consumed && HandlePanePickInput());
         bool menu_consumed = false;
         UDF_TIME("HandleMenuInput", menu_consumed = !hint_consumed && !pane_pick_consumed && HandleMenuInput());
+        // Must precede HandleInput(): that's where the wheel is read, and
+        // it scrolls whichever window this hit-test names.
+        UpdateWheelHoverTarget();
         if (!hint_consumed && !pane_pick_consumed && !menu_consumed) UDF_TIME("HandleInput", g_editor.HandleInput());
         // The html viewer's plain-'f' link hints (Editor::HandleHtmlInput
         // -> TakeLinkHintRequest): answered here, after HandleInput() has

@@ -5353,17 +5353,7 @@ void Editor::WheelScrollTerminal(float dy) {
     if (steps != 0) sess->scroll_offset = std::clamp(sess->scroll_offset + steps, 0, sess->vterm->ScrollbackLines());
 }
 
-void Editor::WheelScrollSidebar(float dy) {
-    SidebarInstance *sb = FindSidebarMut(focused_sidebar_id_);
-    if (!sb) return;
-    int steps = WheelSteps(wheel_accum_sidebar_, -dy, kWheelLinesPerNotch);
-    if (steps == 0) return;
-    int max_scroll = std::max(0, static_cast<int>(FlattenSidebar(focused_sidebar_id_).size()) - 1);
-    sb->scroll_offset = std::clamp(sb->scroll_offset + steps, 0, max_scroll);
-}
-
-void Editor::WheelScrollSidebarPane(float dy) {
-    int sidebar_id = SidebarIdForPaneBuffer(CurPane().buffer_id);
+void Editor::WheelScrollSidebarById(int sidebar_id, float dy) {
     SidebarInstance *sb = FindSidebarMut(sidebar_id);
     if (!sb) return;
     int steps = WheelSteps(wheel_accum_sidebar_, -dy, kWheelLinesPerNotch);
@@ -5372,17 +5362,132 @@ void Editor::WheelScrollSidebarPane(float dy) {
     sb->scroll_offset = std::clamp(sb->scroll_offset + steps, 0, max_scroll);
 }
 
-// Dispatched once per frame from HandleInput(), before the mode-specific
-// handler -- see this method's own declaration (editor.h) for why. Modal
-// overlays (Picker/Sidebar/Prompt/Command/etc.) and the Insert-family
-// modes (Insert/OfficeInsert/SheetInsert) are deliberately excluded: an
-// overlay has its own separate input focus the wheel isn't wired into yet,
-// and every content type's scroll position here is cursor-derived (see
-// UpdateScrollForPane/the Office and Sheet scroll-follow passes in
-// main.cpp) -- silently relocating the actual text-insertion point out
-// from under an actively-typing user via a passive scroll gesture would be
-// far more surprising than the wheel simply doing nothing while typing.
+void Editor::WheelScrollSidebar(float dy) { WheelScrollSidebarById(focused_sidebar_id_, dy); }
+
+void Editor::WheelScrollSidebarPane(float dy) { WheelScrollSidebarById(SidebarIdForPaneBuffer(CurPane().buffer_id), dy); }
+
+// Answers "is the window under the pointer allowed to take this wheel
+// gesture instead of the focused one" -- see the declaration (editor.h).
+bool Editor::WheelHoverRetargetAllowed() const {
+    switch (mode_) {
+        case Mode::Command:
+        case Mode::SearchForward:
+        case Mode::SearchBackward:
+        case Mode::Prompt:
+        case Mode::Confirm:
+        case Mode::Select:
+        case Mode::Preview:
+        case Mode::OrgBlockSettings:
+        case Mode::Picker:
+        case Mode::RoamGraph:
+        case Mode::WhichKey:
+        case Mode::HintChar:
+        case Mode::HintLabel:
+        case Mode::QuickJump:
+        // Same reasoning as the overlays above -- main.cpp's own
+        // IsModalOverlayMode lists this one for the click path for
+        // exactly the same reason.
+        case Mode::HoverFocus:
+            return false;
+        default:
+            return true;
+    }
+}
+
+// Side-effect-free sibling of SyncModeToActivePaneBuffer -- see the
+// declaration (editor.h) for why this isn't just a call to that.
+Mode Editor::WheelModeForBuffer(int buffer_id) const {
+    if (IsTerminalBuffer(buffer_id)) return Mode::Terminal;
+    // Before the plain IsImageBuffer test for the same reason
+    // SyncModeToActivePaneBuffer orders them this way: an editor-active
+    // buffer is also an image buffer.
+    if (IsImageEditorActive(buffer_id)) return Mode::ImageEditor;
+    if (IsImageBuffer(buffer_id)) return Mode::Image;
+    if (IsModel3DBuffer(buffer_id)) return Mode::Model3D;
+    if (IsCadBuffer(buffer_id)) return Mode::Cad;
+    if (IsCadSketchBuffer(buffer_id)) return Mode::CadSketch;
+    if (IsViewerBuffer(buffer_id)) return Mode::Viewer;
+    if (IsPdfBuffer(buffer_id)) return Mode::Pdf;
+    if (IsVideoBuffer(buffer_id)) return Mode::Video;
+    if (IsHtmlBuffer(buffer_id)) return Mode::Html;
+    if (IsSidebarPaneBuffer(buffer_id)) return Mode::SidebarPane;
+    if (IsOfficeBuffer(buffer_id)) return Mode::OfficeNormal;
+    if (IsSheetBuffer(buffer_id)) return Mode::SheetNormal;
+    if (IsKanbanViewActive(buffer_id)) return Mode::KanbanNormal;
+    if (IsGanttViewActive(buffer_id)) return Mode::GanttNormal;
+    return Mode::Normal;
+}
+
+// Scroll follows the mouse: the wheel acts on whichever window the
+// pointer is over, focused or not, and never moves focus there -- so
+// reading a PDF in one window while an edit is in progress in another is
+// just a matter of pointing at it. Only when the pointer is over the
+// focused window (or over nothing identifiable) does this fall through to
+// the plain focused-window behavior it always had.
+//
+// The retarget is done by *temporarily* making the hovered pane the
+// active one (plus the mode its buffer implies) for the duration of
+// DispatchMouseWheel, then restoring both. Every WheelScroll* below
+// reaches for CurPane()/Buf()/ClampCursor()/the per-buffer session maps,
+// all of which key off exactly those two -- so this makes the whole
+// family hover-aware at once, and correctly, rather than threading a
+// pane id through a dozen call chains and their helpers. Nothing can
+// observe the swap in between: no rendering, no input dispatch and no
+// event pump runs inside that window, and both are restored
+// unconditionally on every path out.
+//
+// Deliberately NOT retargeted: a float pane (it is a modal-ish overlay
+// that holds the cursor and covers the panes under it), a modal overlay
+// owning input (WheelHoverRetargetAllowed), and a hover over the pane
+// that is already focused (nothing to do).
 void Editor::HandleMouseWheel(float dx, float dy) {
+    if (!WheelHoverRetargetAllowed() || float_node_ != nullptr) {
+        DispatchMouseWheel(dx, dy);
+        return;
+    }
+    // A docked sidebar sits outside every pane rect, so it's a separate
+    // hover target. Scrolling the sidebar you're pointing at doesn't focus
+    // it either -- same rule as panes.
+    if (wheel_hover_sidebar_id_ >= 0) {
+        if (mode_ == Mode::Sidebar && focused_sidebar_id_ == wheel_hover_sidebar_id_) {
+            DispatchMouseWheel(dx, dy);  // already the focused window
+        } else {
+            WheelScrollSidebarById(wheel_hover_sidebar_id_, dy);
+        }
+        return;
+    }
+    Tab &tab = ActiveTab();
+    const int hover = wheel_hover_pane_id_;
+    if (hover < 0 || hover == tab.active_pane_id || FindNode(tab.root.get(), hover) == nullptr) {
+        DispatchMouseWheel(dx, dy);
+        return;
+    }
+    const int saved_pane_id = tab.active_pane_id;
+    const Mode saved_mode = mode_;
+    tab.active_pane_id = hover;
+    mode_ = WheelModeForBuffer(CurPane().buffer_id);
+    DispatchMouseWheel(dx, dy);
+    tab.active_pane_id = saved_pane_id;
+    mode_ = saved_mode;
+}
+
+// Dispatched once per frame from HandleInput() (via HandleMouseWheel
+// above), before the mode-specific handler -- see HandleMouseWheel's own
+// declaration (editor.h) for why. Modal overlays
+// (Picker/Sidebar/Prompt/Command/etc.) and the Insert-family modes
+// (Insert/OfficeInsert/SheetInsert) fall through to `default:` and are
+// deliberately excluded: an overlay has its own separate input focus the
+// wheel isn't wired into yet, and every content type's scroll position
+// here is cursor-derived (see UpdateScrollForPane/the Office and Sheet
+// scroll-follow passes in main.cpp) -- silently relocating the actual
+// text-insertion point out from under an actively-typing user via a
+// passive scroll gesture would be far more surprising than the wheel
+// simply doing nothing while typing. Note that the Insert-family half of
+// that only ever applies to the window being typed in: pointing at a
+// *different* window while mid-insert retargets to it (HandleMouseWheel
+// above), whose own mode is never an insert one, and scrolling over there
+// disturbs nothing here.
+void Editor::DispatchMouseWheel(float dx, float dy) {
     switch (mode_) {
         case Mode::Normal:
         case Mode::Visual:

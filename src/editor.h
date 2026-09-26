@@ -3737,6 +3737,33 @@ public:
      * @return The active pane's id.
      */
     int ActivePaneId() const { return ActiveTab().active_pane_id; }
+    // --- Scroll-follows-the-mouse (hover targeting) --------------------
+    //
+    // Which window the mouse is currently over, refreshed once per frame
+    // by main.cpp right before HandleInput() from its own per-pane /
+    // per-sidebar pixel geometry (g_pane_screen_rects,
+    // g_sidebar_panel_rects -- the one-frame-stale, populated-by-the-
+    // previous-DrawEditor source every other mouse route here already
+    // uses). Editor itself has no notion of pixels, hence the setter
+    // rather than a hit test in here.
+    //
+    // HandleMouseWheel is the only consumer: a wheel/trackpad gesture
+    // scrolls the window under the pointer even when that window is not
+    // the focused one, and does so WITHOUT stealing focus -- the usual
+    // desktop-wide "scroll wherever you point" behavior. Everything else
+    // (keys, clicks) is untouched: clicking still focuses, typing still
+    // goes to the focused pane.
+    //
+    // -1 in either field means "not over one of those this frame".
+    /**
+     * @brief Records which pane and which docked sidebar the mouse is over this frame, for wheel hover targeting.
+     * @param pane_id The leaf pane under the pointer, or -1 if none.
+     * @param sidebar_id The docked sidebar panel under the pointer, or -1 if none.
+     */
+    void SetWheelHoverTarget(int pane_id, int sidebar_id) {
+        wheel_hover_pane_id_ = pane_id;
+        wheel_hover_sidebar_id_ = sidebar_id;
+    }
     /**
      * @brief Returns the stable id of the active tab (Tab::id), exposed to Lua as mep.current_tab_id().
      * @return The active tab's id.
@@ -11210,6 +11237,29 @@ private:
     // uses (StepVisibleRow, goto_page, pan clamps, etc.) so wheel
     // scrolling can never drift out of sync with keyboard scrolling.
     void HandleMouseWheel(float dx, float dy);
+    // The mode_-driven switch HandleMouseWheel used to *be*, split out so
+    // the hover-targeting wrapper above can run it against a pane that
+    // isn't the focused one (see SetWheelHoverTarget). Reads mode_ and
+    // CurPane() exactly as before -- the wrapper retargets both for the
+    // duration of the call and puts them back afterwards, so every
+    // WheelScroll* below keeps its single "whatever is current" source of
+    // truth rather than each growing a pane_id parameter.
+    void DispatchMouseWheel(float dx, float dy);
+    // What mode_ would be if focus landed on a pane showing `buffer_id` --
+    // the same buffer-type ladder SyncModeToActivePaneBuffer walks, minus
+    // its side effects (that one resets sidebar_pane_cursor_, resumes
+    // PdfAnnotate, etc., none of which may happen to a window the user is
+    // merely pointing at). Only ever used to pick which WheelScroll*
+    // applies, so it always answers with a content type's *normal* mode --
+    // an insert/visual sub-mode scrolls identically anyway.
+    Mode WheelModeForBuffer(int buffer_id) const;
+    // Whether a wheel gesture is allowed to retarget to the hovered window
+    // at all. False while a modal overlay owns input (the command line, a
+    // picker, a prompt, whichkey, hint/quickjump labels ...): those draw
+    // over the panes, so the pane under the pointer isn't meaningfully
+    // "the window you're pointing at", and they already swallow the wheel
+    // today via DispatchMouseWheel's own `default:` case.
+    bool WheelHoverRetargetAllowed() const;
 
     // --- Pane::scroll_sub plumbing (ScrollFigureStep's own helpers) -----
     //
@@ -11296,6 +11346,12 @@ private:
     // UpdateScrollForSidebar, the same lag ScrollHalfPage/ScrollFullPage's
     // own doc comment already accepts for pane scrolling.
     void WheelScrollSidebar(float dy);
+    // Shared body of WheelScrollSidebar/WheelScrollSidebarPane, also
+    // called directly by HandleMouseWheel for a sidebar the mouse is
+    // merely hovering over (a sidebar is a window too, and docked
+    // sidebars sit outside every pane rect so hover targeting has to name
+    // them separately -- see SetWheelHoverTarget).
+    void WheelScrollSidebarById(int sidebar_id, float dy);
     // Same as WheelScrollSidebar, for Mode::SidebarPane's pane-hosted view
     // (SidebarIdForPaneBuffer(CurPane().buffer_id) instead of
     // focused_sidebar_id_) -- shares its scroll_offset field and wheel_accum_
@@ -11310,6 +11366,11 @@ private:
     float wheel_accum_sheet_row_ = 0.0f, wheel_accum_sheet_col_ = 0.0f;
     float wheel_accum_term_ = 0.0f;
     float wheel_accum_sidebar_ = 0.0f;
+    // Hover targets for this frame's wheel gesture -- see
+    // SetWheelHoverTarget's own comment. Not persisted with a session:
+    // main.cpp rewrites both every frame.
+    int wheel_hover_pane_id_ = -1;
+    int wheel_hover_sidebar_id_ = -1;
     // Ctrl-A/Ctrl-X: adds `delta` (negative for Ctrl-X) to the first
     // number at or after the cursor on the current line, preserving
     // leading-zero padding the way Vim's default nrformats does, and

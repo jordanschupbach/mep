@@ -11382,13 +11382,29 @@ const char *kBuiltinDocs =
     // same way the dashboard's own hint row is. Added after the guard
     // above so that guard still means "neither registry had anything"
     // rather than becoming unreachable.
-    "  items[#items + 1] = string.format('%-8s %-14s %s', 'Global', mep.mod1_name() .. ' (tap)',\n"
-    "    (mep.menubar_visible() and 'Hide' or 'Show') .. ' the top menu bar (tap and release, no other key)')\n"
+    // Only advertised while the bare-mod1 tap is actually enabled -- it is
+    // off by default now (mep.menubar_tap_toggle_enabled), the deliberate
+    // <leader>um / :Menu binding having replaced it. Listing a dead gesture
+    // in the one view whose job is "what is bound right now" would mislead.
+    "  if mep.menubar_tap_toggle_enabled() then\n"
+    "    items[#items + 1] = string.format('%-8s %-14s %s', 'Global', mep.mod1_name() .. ' (tap)',\n"
+    "      (mep.menubar_visible() and 'Hide' or 'Show') .. ' the top menu bar (tap and release, no other key)')\n"
+    "  end\n"
     "  table.sort(items)\n"
     "  mep.picker_open('Keymaps', items, function() end)\n"
     "end\n"
     "mep.command('MepKeymaps', mep.keymaps)\n"
     "mep.leader_map('hk', 'Help: keymaps', mep.keymaps)\n";
+
+// Deliberate menu-bar toggle bindings. These replace the bare mod1 (Alt) tap
+// gesture, which is off by default now (Editor::MenuBarTapToggleEnabled --
+// a stray Alt press flipping the bar was more annoying than the gesture was
+// worth). ':Menu' and '<leader>um' (nested under the existing '<leader>u' UI
+// group alongside uu/ut) both call the same mep.menubar_toggle() the tap used
+// to. mep.menubar_tap_toggle_set(true) in init.lua brings the old tap back.
+const char *kBuiltinMenubarBindings =
+    "mep.command('Menu', mep.menubar_toggle)\n"
+    "mep.leader_map('um', 'Toggle the top menu bar', mep.menubar_toggle)\n";
 
 // DAP client (Phase 26, extended for full debugging support -- see
 // TODO.org's "Add DAP debugging capabilities"): reuses Phase 20's
@@ -48486,8 +48502,16 @@ void DrawDashboard(float x, float y, float w, float h) {
     // rather than appended to the row above so it can't push that row
     // (and, through max_w below, the action buttons) wider. Worded from
     // the current state, since the dashboard is reachable again long
-    // after someone has turned the bar on.
-    lines.emplace_back(g_editor.IsMenuBarVisible() ? "tap Alt to hide the menu bar" : "tap Alt to show the menu bar");
+    // after someone has turned the bar on. The gesture named depends on
+    // whether the bare-Alt tap is enabled: off by default now
+    // (Editor::MenuBarTapToggleEnabled), where :Menu / <leader>um is the
+    // discovery path instead; naming "tap Alt" there would point at a
+    // gesture that does nothing.
+    {
+        const char *verb = g_editor.IsMenuBarVisible() ? "hide" : "show";
+        const std::string how = g_editor.MenuBarTapToggleEnabled() ? "tap Alt" : ":Menu";
+        lines.emplace_back(how + " to " + verb + " the menu bar");
+    }
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 8;
     float max_w = 0;
@@ -50631,15 +50655,22 @@ void UpdateDrawFrame() {
         if (g_editor.Lua()) UDF_TIME("Lua::RunFrameHooks", g_editor.Lua()->RunFrameHooks());
         UDF_TIME("HandleFontSizeShortcuts", HandleFontSizeShortcuts());
         // Tapping mod1 (Alt) on its own shows/hides the top menu bar --
-        // the gesture Windows and GTK apps already use to summon a hidden
-        // menu bar, and the only one that doesn't cost a keybinding, since
-        // mod1 held with anything else keeps meaning exactly what it did.
-        // Polled here, before any other input handling, because
-        // Editor::ConsumeMod1Tap has to see this frame's key state
-        // untouched -- in particular before HandleMenuInput below, whose
-        // own dropdown handling would otherwise run against a bar that is
-        // about to disappear.
-        if (g_editor.ConsumeMod1Tap()) g_editor.ToggleMenuBar();
+        // the gesture Windows and GTK apps use to summon a hidden menu bar,
+        // costing no keybinding since mod1 held with anything else keeps
+        // meaning exactly what it did. Polled here, before any other input
+        // handling, because Editor::ConsumeMod1Tap has to see this frame's
+        // key state untouched -- in particular before HandleMenuInput below,
+        // whose own dropdown handling would otherwise run against a bar that
+        // is about to disappear.
+        // ConsumeMod1Tap() must run every frame regardless (it drives a
+        // press/release state machine that would desync if only polled
+        // conditionally), but whether a completed tap actually toggles the
+        // bar is gated on the opt-in flag -- off by default, since a stray
+        // Alt press flipping the menu bar is more annoying than useful. The
+        // deliberate toggle lives on <leader>um / :Menu instead
+        // (kBuiltinMenubarBindings); mep.menubar_tap_toggle_set(true)
+        // restores the old bare-Alt gesture.
+        if (g_editor.ConsumeMod1Tap() && g_editor.MenuBarTapToggleEnabled()) g_editor.ToggleMenuBar();
         // A dropdown left open when the bar goes away (tapped mod1 with
         // File open, or a Lua mep.menubar_set_visible(false)) would keep
         // drawing over, and swallowing clicks meant for, the pane that
@@ -51615,6 +51646,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinLanguageUiPython);
     lua->DoString(kBuiltinLanguageUiC);
     lua->DoString(kBuiltinCompletion);
+    lua->DoString(kBuiltinMenubarBindings);
     // After kBuiltinLsp: reuses its mep_lsp_uri/mep_lsp_result helpers.
     lua->DoString(kBuiltinCopilot);
     lua->DoString(kBuiltinSnippets);

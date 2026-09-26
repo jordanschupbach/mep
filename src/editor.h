@@ -9698,6 +9698,14 @@ public:
     bool IsMenuBarVisible() const { return menu_bar_visible_; }
     void ToggleMenuBar() { SetMenuBarVisible(!menu_bar_visible_); }
     void SetMenuBarVisible(bool visible);
+    // Whether a *bare* mod1 tap (ConsumeMod1Tap) toggles the menu bar. Off
+    // by default: a stray Alt press flipping the bar is more annoying than
+    // the gesture is useful, so the toggle lives on an explicit binding
+    // instead (<leader>m / :Menu, kBuiltinMenubarBindings in main.cpp).
+    // Call mep.menubar_tap_toggle_set(true) from Lua to restore the old
+    // GTK/Windows-style gesture; mep.menubar_tap_toggle_enabled() reads it.
+    bool MenuBarTapToggleEnabled() const { return menu_bar_tap_toggle_; }
+    void SetMenuBarTapToggle(bool on) { menu_bar_tap_toggle_ = on; }
     // The two physical keys mod1 currently maps to (both Alts by
     // default). False if mod1_ has no key pair, in which case neither
     // output is written.
@@ -11848,6 +11856,10 @@ private:
     // spells the gesture out on the empty-workspace screen every session
     // starts on (DrawDashboard, main.cpp).
     bool menu_bar_visible_ = false;
+    // See MenuBarTapToggleEnabled. Off by default so a bare Alt tap no
+    // longer flips the menu bar; the explicit <leader>m / :Menu binding
+    // replaces it.
+    bool menu_bar_tap_toggle_ = false;
     // ConsumeMod1Tap's state machine. `armed` means mod1 has gone down and
     // nothing has disqualified the press yet; `down_at` is when, so a mod1
     // held open as a modifier (or across an alt-tab the WM swallowed)

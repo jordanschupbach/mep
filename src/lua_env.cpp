@@ -9819,6 +9819,24 @@ int l_menubar_visible(lua_State *L) {
     lua_pushboolean(L, GetEditor(L)->IsMenuBarVisible() ? 1 : 0);
     return 1;
 }
+/**
+ * @brief Implements mep.menubar_tap_toggle_set(on): enables/disables the bare mod1 (Alt) tap that toggles the menu bar.
+ * @param L Lua state; arg 1 is whether a bare mod1 tap toggles the menu bar.
+ * @return Number of values pushed (0).
+ */
+int l_menubar_tap_toggle_set(lua_State *L) {
+    GetEditor(L)->SetMenuBarTapToggle(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+/**
+ * @brief Implements mep.menubar_tap_toggle_enabled(): returns whether a bare mod1 tap toggles the menu bar.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the flag).
+ */
+int l_menubar_tap_toggle_enabled(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->MenuBarTapToggleEnabled() ? 1 : 0);
+    return 1;
+}
 // mep.sheet_next() / mep.sheet_prev() -- Lua-reachable equivalent of the
 // Ctrl-PageDown/Ctrl-PageUp keys HandleSheetNormalInput already binds
 // (spreadsheet-pane Phase 4), for whichkey/custom-mapping consumers.
@@ -12145,6 +12163,8 @@ const luaL_Reg kMepFuncs[] = {
     {"menubar_toggle", l_menubar_toggle},
     {"menubar_set_visible", l_menubar_set_visible},
     {"menubar_visible", l_menubar_visible},
+    {"menubar_tap_toggle_set", l_menubar_tap_toggle_set},
+    {"menubar_tap_toggle_enabled", l_menubar_tap_toggle_enabled},
     {"sheet_next", l_sheet_next},
     {"sheet_prev", l_sheet_prev},
     {"on_frame", l_on_frame},

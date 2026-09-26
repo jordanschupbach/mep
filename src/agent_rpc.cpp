@@ -702,10 +702,7 @@ std::unordered_map<std::string, UiMethodHandler> &UiMethods() {
 // mesh, and two agents working on one part is the case the collaboration
 // machinery in this file exists for. It is the same posture as the
 // editor's buffers, which are also shared rather than per-client.
-cadfem::Session &CadFemSession() {
-    static cadfem::Session session;
-    return session;
-}
+cadfem::Session &CadFemSession() { return cadfem::SharedSession(); }
 
 Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const Json &params) {
     // Everything Part K declares, dispatched from one table rather than
@@ -1213,8 +1210,133 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
         if (params.contains("zoom")) {
             editor.CadZoom(buffer_id, static_cast<float>(params.get("zoom").as_double(1.0)));
         }
+        // Part L.1: a pan, in fractions of the viewport, so that a script
+        // asking for the same gesture the mouse makes writes the same
+        // numbers.
+        if (params.contains("pan_x") || params.contains("pan_y")) {
+            editor.CadPan(buffer_id, static_cast<float>(params.get("pan_x").as_double(0.0)),
+                          static_cast<float>(params.get("pan_y").as_double(0.0)));
+        }
         if (params.get("frame_all").as_bool(false)) editor.CadFrameAll(buffer_id);
         return Json::Object();
+    }
+    // --- The viewer (plans/CAD_FEM_PLAN.md Part L) -------------------------
+    //
+    // The *stateful* half of the viewer surface: open one, bind a script
+    // to it, run it, move the camera, move the time. Building a scene is
+    // deliberately not here -- a scene is built by a script, and the
+    // calls that fill one (`view.part`, `view.result`, ...) are bound in
+    // Lua where the script runs. An agent that wants a particular scene
+    // writes the script and binds it, which is also the thing a person
+    // does.
+    if (method == "view.new") {
+        Json j = Json::Object();
+        const int buffer_id = editor.NewViewer();
+        j["buffer_id"] = buffer_id;
+        const std::string script = params.get("script").as_string("");
+        if (!script.empty()) {
+            editor.ViewerBindScript(buffer_id, script);
+            j["ran"] = editor.ViewerRunScript(buffer_id);
+        }
+        j["summary"] = Json(editor.ViewerSummary(buffer_id));
+        return j;
+    }
+    if (method == "view.bind") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        if (editor.GetViewer(buffer_id) == nullptr) {
+            throw RpcError(-32602, "no viewer in buffer " + std::to_string(buffer_id));
+        }
+        const std::string script = params.get("script").as_string("");
+        if (script.empty()) throw RpcError(-32602, "view.bind needs a script path");
+        editor.ViewerBindScript(buffer_id, script);
+        Json j = Json::Object();
+        j["ran"] = editor.ViewerRunScript(buffer_id);
+        j["summary"] = Json(editor.ViewerSummary(buffer_id));
+        return j;
+    }
+    if (method == "view.run") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        if (editor.GetViewer(buffer_id) == nullptr) {
+            throw RpcError(-32602, "no viewer in buffer " + std::to_string(buffer_id));
+        }
+        Json j = Json::Object();
+        j["ran"] = editor.ViewerRunScript(buffer_id);
+        j["summary"] = Json(editor.ViewerSummary(buffer_id));
+        return j;
+    }
+    if (method == "view.camera") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        if (editor.GetViewer(buffer_id) == nullptr) {
+            throw RpcError(-32602, "no viewer in buffer " + std::to_string(buffer_id));
+        }
+        // Deltas, exactly as the mouse produces them, so a script that
+        // wants the gesture the drag makes writes the numbers the drag
+        // writes. An absolute camera goes through view.run's script.
+        if (params.contains("yaw") || params.contains("pitch")) {
+            editor.ViewerOrbit(buffer_id, static_cast<float>(params.get("yaw").as_double(0.0)),
+                               static_cast<float>(params.get("pitch").as_double(0.0)));
+        }
+        if (params.contains("zoom")) {
+            editor.ViewerZoom(buffer_id, static_cast<float>(params.get("zoom").as_double(1.0)));
+        }
+        if (params.contains("pan_x") || params.contains("pan_y")) {
+            editor.ViewerPan(buffer_id, static_cast<float>(params.get("pan_x").as_double(0.0)),
+                             static_cast<float>(params.get("pan_y").as_double(0.0)));
+        }
+        if (params.get("frame_all").as_bool(false)) editor.ViewerFrameAll(buffer_id);
+        return Json::Object();
+    }
+    if (method == "view.time") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        const ViewerSession *sess = editor.GetViewer(buffer_id);
+        if (sess == nullptr) {
+            throw RpcError(-32602, "no viewer in buffer " + std::to_string(buffer_id));
+        }
+        if (params.contains("from") && params.contains("to")) {
+            editor.ViewerSetTimeRange(buffer_id, params.get("from").as_double(0.0),
+                                      params.get("to").as_double(1.0));
+        }
+        if (params.contains("time")) {
+            editor.ViewerSetTime(buffer_id, params.get("time").as_double(0.0));
+        }
+        if (params.contains("playing")) {
+            editor.ViewerPlay(buffer_id, params.get("playing").as_bool(false));
+        }
+        sess = editor.GetViewer(buffer_id);
+        Json j = Json::Object();
+        j["time"] = sess->time;
+        j["from"] = sess->time_from;
+        j["to"] = sess->time_to;
+        j["playing"] = sess->playing;
+        return j;
+    }
+    if (method == "view.info") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        const ViewerSession *sess = editor.GetViewer(buffer_id);
+        if (sess == nullptr) {
+            throw RpcError(-32602, "no viewer in buffer " + std::to_string(buffer_id));
+        }
+        Json j = Json::Object();
+        j["summary"] = Json(editor.ViewerSummary(buffer_id));
+        j["items"] = static_cast<int>(sess->scene.items.size());
+        j["triangles"] = sess->scene.TriangleCount();
+        j["labels"] = static_cast<int>(sess->scene.labels.size());
+        j["time"] = sess->time;
+        j["from"] = sess->time_from;
+        j["to"] = sess->time_to;
+        j["playing"] = sess->playing;
+        j["animated"] = sess->on_frame_ref >= 0;
+        j["has_field"] = sess->scene.has_field;
+        j["field_min"] = sess->scene.field_min;
+        j["field_max"] = sess->scene.field_max;
+        j["units"] = Json(sess->scene.units);
+        j["caption"] = Json(sess->scene.caption);
+        j["script"] = Json(sess->script_path);
+        j["message"] = Json(sess->message);
+        j["yaw"] = static_cast<double>(sess->camera_yaw);
+        j["pitch"] = static_cast<double>(sess->camera_pitch);
+        j["distance"] = static_cast<double>(sess->camera_distance);
+        return j;
     }
     if (method == "cad.info") {
         const int buffer_id = params.get("buffer_id").as_int(-1);

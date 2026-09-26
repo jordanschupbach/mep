@@ -129,6 +129,23 @@ struct MovieView {
 };
 MovieView FitView(const AnalysisModel &model);
 
+// A caption pinned to a point in the world rather than to the frame:
+// drawn where that point projects, and hidden when it is behind the
+// camera. Part L.2's annotation labels arrive this way.
+struct Annotation {
+    cad::Vec3d at;
+    std::string text;
+    std::array<unsigned char, 3> color{235, 235, 240};
+};
+
+// Several meshes at once, which is what a scene is. `RenderFrame` below
+// is this with one mesh and an optional ghost, kept because that is what
+// a film of a single result wants and it reads better at the call site.
+bool RenderScene(const std::vector<const RenderMesh *> &meshes,
+                 const std::vector<Annotation> &labels, const MovieView &view,
+                 const MovieOptions &options, double turn, double frame_min, double frame_max,
+                 std::vector<unsigned char> *out, std::string *error);
+
 // One frame, as RGBA8, top row first, `width * height * 4` bytes. `turn`
 // is added to the camera's yaw.
 //

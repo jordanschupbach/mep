@@ -4623,6 +4623,9 @@ void Editor::HandleInput() {
         case Mode::Cad:
             HandleCadInput();
             break;
+        case Mode::Viewer:
+            HandleViewerInput();
+            break;
         case Mode::Pdf:
         case Mode::PdfNav:
         case Mode::PdfAnnotate:
@@ -5415,6 +5418,9 @@ void Editor::HandleMouseWheel(float dx, float dy) {
             // expects a wheel to do over a 3D view.
             CadZoom(CurPane().buffer_id, dy > 0.0f ? 1.1f : (dy < 0.0f ? 1.0f / 1.1f : 1.0f));
             break;
+        case Mode::Viewer:
+            ViewerZoom(CurPane().buffer_id, dy > 0.0f ? 1.1f : (dy < 0.0f ? 1.0f / 1.1f : 1.0f));
+            break;
         case Mode::CadSketch:
             if (CadSketchSession *sketch = GetCadSketchMutable(CurPane().buffer_id); sketch != nullptr) {
                 // Zoom about the view centre. Zooming about the pointer
@@ -5986,7 +5992,7 @@ bool Editor::BufferIsPristine(int buffer_id) const {
     // keep the dashboard up over it and, via BufferLabelForLua, stay out
     // of the buffer lists entirely.
     if (IsTerminalBuffer(buffer_id) || GetImageEditor(buffer_id) || IsModel3DBuffer(buffer_id) ||
-        IsCadSketchBuffer(buffer_id) || IsCadBuffer(buffer_id)) {
+        IsCadSketchBuffer(buffer_id) || IsCadBuffer(buffer_id) || IsViewerBuffer(buffer_id)) {
         return false;
     }
     return true;
@@ -9351,6 +9357,68 @@ bool Editor::IsCadBuffer(int buffer_id) const {
 // rule the whole part is built on: there is nothing the keyboard can do
 // that a script cannot, and nothing a script can do that the keyboard
 // cannot reach.
+// Keys in Mode::Viewer (plans/CAD_FEM_PLAN.md Part L).
+//
+// The same rule as Mode::Cad above: every one of them calls exactly one
+// Editor::Viewer* method, so the keyboard, the mouse, the slider and a
+// script are four ways of asking for the same operation.
+void Editor::HandleViewerInput() {
+    ViewerSession *sess = GetViewerMutable(CurPane().buffer_id);
+    if (sess == nullptr) {
+        mode_ = Mode::Normal;
+        return;
+    }
+    const int buffer_id = CurPane().buffer_id;
+    const bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+    const float step = shift ? 15.0f : 5.0f;
+
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+        mode_ = Mode::Normal;
+        return;
+    }
+    // Shift turns the arrows from an orbit into a pan, which is the same
+    // relationship the mouse has between a plain drag and a shifted one.
+    if (gfx::IsKeyPressed(gfx::Key::Left)) {
+        if (shift) { ViewerPan(buffer_id, 0.05f, 0.0f); } else { ViewerOrbit(buffer_id, -step, 0.0f); }
+    }
+    if (gfx::IsKeyPressed(gfx::Key::Right)) {
+        if (shift) { ViewerPan(buffer_id, -0.05f, 0.0f); } else { ViewerOrbit(buffer_id, step, 0.0f); }
+    }
+    if (gfx::IsKeyPressed(gfx::Key::Up)) {
+        if (shift) { ViewerPan(buffer_id, 0.0f, 0.05f); } else { ViewerOrbit(buffer_id, 0.0f, step); }
+    }
+    if (gfx::IsKeyPressed(gfx::Key::Down)) {
+        if (shift) { ViewerPan(buffer_id, 0.0f, -0.05f); } else { ViewerOrbit(buffer_id, 0.0f, -step); }
+    }
+    if (gfx::IsKeyPressed(gfx::Key::Equal)) ViewerZoom(buffer_id, 1.2f);
+    if (gfx::IsKeyPressed(gfx::Key::Minus)) ViewerZoom(buffer_id, 1.0f / 1.2f);
+    if (gfx::IsKeyPressed(gfx::Key::F)) ViewerFrameAll(buffer_id);
+    if (gfx::IsKeyPressed(gfx::Key::R)) {
+        ViewerRunScript(buffer_id);
+        status_message_ = ViewerSummary(buffer_id);
+    }
+    // `p` plays and pauses. Space would be the obvious key and gfx::Key
+    // does not have one -- it carries the keys this editor's keymaps
+    // actually name, and nothing has needed space as a *key* rather than
+    // as a character until now.
+    if (gfx::IsKeyPressed(gfx::Key::P)) ViewerPlay(buffer_id, !sess->playing);
+    // A step of a fiftieth of the range, so the two brackets walk the
+    // whole of it in about the time a play takes.
+    const double nudge = (sess->time_to - sess->time_from) / 50.0;
+    if (gfx::IsKeyPressed(gfx::Key::LeftBracket)) ViewerSetTime(buffer_id, sess->time - nudge);
+    if (gfx::IsKeyPressed(gfx::Key::RightBracket)) ViewerSetTime(buffer_id, sess->time + nudge);
+    if (gfx::IsKeyPressed(gfx::Key::L)) {
+        if (ViewerSession *again = GetViewerMutable(buffer_id); again != nullptr) {
+            again->show_legend = !again->show_legend;
+        }
+    }
+    if (gfx::IsKeyPressed(gfx::Key::W)) {
+        if (ViewerSession *again = GetViewerMutable(buffer_id); again != nullptr) {
+            again->show_mesh_lines = !again->show_mesh_lines;
+        }
+    }
+}
+
 void Editor::HandleCadInput() {
     CadSession *sess = GetCadMutable(CurPane().buffer_id);
     if (sess == nullptr) {
@@ -9402,6 +9470,272 @@ void Editor::HandleCadInput() {
     if (gfx::IsKeyPressed(gfx::Key::W)) {
         CadSetView(buffer_id, sess->view == CadView::Shaded ? "wireframe" : "shaded");
     }
+}
+
+// --- The viewer (plans/CAD_FEM_PLAN.md Part L) ---------------------------
+//
+// Every method here is one a script can call and one the pane calls.
+// That is Part F.5's rule carried forward: there is nothing the mouse or
+// the timeline can do that `view.*` cannot, and nothing `view.*` can do
+// that the pane cannot show.
+
+// The path argument of :Viewer and :ViewerBind, with `%` meaning the
+// file the current buffer holds.
+//
+// `%` IS THE WHOLE POINT OF TYPING IT: you are editing a viewer script
+// and you want a viewer for *this*. Nothing else in this editor expands
+// `%` in an ex command, so it is done here rather than in the command
+// parser -- expanding it generally would change the argument of every
+// command that takes a path, which is a far larger claim than this one
+// and would need its own pass over each of them.
+std::string Editor::ViewerScriptArgument(const std::string &args) const {
+    if (args != "%") return args;
+    return CurrentBuffer().filename;
+}
+
+int Editor::NewViewer() {
+    const int buffer_id = CreateEmptyBuffer();
+    ViewerSession sess;
+    sess.buffer_id = buffer_id;
+    viewer_sessions_[buffer_id] = std::move(sess);
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    mode_ = Mode::Viewer;
+    status_message_.clear();
+    return buffer_id;
+}
+
+bool Editor::IsViewerBuffer(int buffer_id) const {
+    return viewer_sessions_.count(buffer_id) > 0;
+}
+
+const ViewerSession *Editor::GetViewer(int buffer_id) const {
+    const auto it = viewer_sessions_.find(buffer_id);
+    return it == viewer_sessions_.end() ? nullptr : &it->second;
+}
+
+ViewerSession *Editor::GetViewerMutable(int buffer_id) {
+    const auto it = viewer_sessions_.find(buffer_id);
+    return it == viewer_sessions_.end() ? nullptr : &it->second;
+}
+
+void Editor::ResizeViewerViewport(int buffer_id, int w, int h) {
+    if (ViewerSession *sess = GetViewerMutable(buffer_id); sess != nullptr) {
+        sess->viewport_w = w;
+        sess->viewport_h = h;
+    }
+}
+
+void Editor::ViewerOrbit(int buffer_id, float yaw_delta, float pitch_delta) {
+    ViewerSession *sess = GetViewerMutable(buffer_id);
+    if (sess == nullptr) return;
+    sess->camera_yaw += yaw_delta;
+    sess->camera_pitch += pitch_delta;
+    // Stop just short of straight up and straight down, where an orbit
+    // rig's up vector stops meaning anything.
+    if (sess->camera_pitch > 89.0f) sess->camera_pitch = 89.0f;
+    if (sess->camera_pitch < -89.0f) sess->camera_pitch = -89.0f;
+}
+
+void Editor::ViewerZoom(int buffer_id, float factor) {
+    ViewerSession *sess = GetViewerMutable(buffer_id);
+    if (sess == nullptr || !(factor > 0.0f)) return;
+    sess->camera_distance /= factor;
+    if (sess->camera_distance < 1e-4f) sess->camera_distance = 1e-4f;
+    if (sess->camera_distance > 1e7f) sess->camera_distance = 1e7f;
+}
+
+void Editor::ViewerPan(int buffer_id, float dx, float dy) {
+    ViewerSession *sess = GetViewerMutable(buffer_id);
+    if (sess == nullptr) return;
+    const float yaw = sess->camera_yaw * 3.14159265358979f / 180.0f;
+    const float pitch = sess->camera_pitch * 3.14159265358979f / 180.0f;
+    const cad::Vec3d forward{-static_cast<double>(std::cos(pitch) * std::sin(yaw)),
+                             -static_cast<double>(std::cos(pitch) * std::cos(yaw)),
+                             -static_cast<double>(std::sin(pitch))};
+    cad::Vec3d up{0.0, 0.0, 1.0};
+    up = (up - forward * forward.Dot(up)).Normalized();
+    const cad::Vec3d right = up.Cross(forward).Normalized();
+    const double span = static_cast<double>(sess->camera_distance) / 1.2;
+    const cad::Vec3d move = right * (-static_cast<double>(dx) * span) +
+                            up * (static_cast<double>(dy) * span);
+    sess->camera_target.x += static_cast<float>(move.x);
+    sess->camera_target.y += static_cast<float>(move.y);
+    sess->camera_target.z += static_cast<float>(move.z);
+}
+
+void Editor::ViewerFrameAll(int buffer_id) {
+    ViewerSession *sess = GetViewerMutable(buffer_id);
+    if (sess == nullptr) return;
+    cad::Vec3d low, high;
+    if (!sess->scene.Bounds(&low, &high)) {
+        // Nothing in the scene: leave the camera where the user left it
+        // rather than snapping it to the origin, because a script that
+        // briefly clears its scene should not also reset the view.
+        sess->view_fitted = true;
+        return;
+    }
+    if (!sess->camera_target_pinned) {
+        const cad::Vec3d centre = (low + high) * 0.5;
+        sess->camera_target = Vec3f{static_cast<float>(centre.x), static_cast<float>(centre.y),
+                                    static_cast<float>(centre.z)};
+    }
+    if (!sess->camera_distance_pinned) {
+        const cad::Vec3d span = high - low;
+        const double radius = 0.5 * std::sqrt(span.Dot(span));
+        sess->camera_distance = static_cast<float>(radius > 0.0 ? radius * 2.6 : 1.0);
+    }
+    sess->view_fitted = true;
+}
+
+void Editor::ViewerSetTimeRange(int buffer_id, double from, double to) {
+    ViewerSession *sess = GetViewerMutable(buffer_id);
+    if (sess == nullptr) return;
+    if (!(to > from)) to = from + 1.0;
+    sess->time_from = from;
+    sess->time_to = to;
+    sess->time = std::clamp(sess->time, from, to);
+}
+
+void Editor::ViewerSetTime(int buffer_id, double time) {
+    ViewerSession *sess = GetViewerMutable(buffer_id);
+    if (sess == nullptr) return;
+    sess->time = std::clamp(time, sess->time_from, sess->time_to);
+    // THE CALLBACK IS WHAT MAKES THE SLIDER MEAN ANYTHING. Without it
+    // the time is a number nothing reads.
+    if (sess->on_frame_ref < 0 || lua_ == nullptr) return;
+    if (sess->running) return;  // no re-entry: on_frame must not move the time
+    sess->running = true;
+    const int was_running = viewer_running_;
+    viewer_running_ = buffer_id;
+    // The scene is rebuilt from scratch each frame, which is the
+    // contract that lets a callback be written as "what is here now"
+    // rather than as a diff against what was here before.
+    sess->scene.Clear();
+    std::string error;
+    const double at = sess->time;
+    if (!lua_->CallRefWithNumber(sess->on_frame_ref, at, &error)) {
+        // GetViewerMutable again: the callback may have created or
+        // closed viewers, and a map that rehashed has invalidated the
+        // pointer this function has been holding.
+        if (ViewerSession *again = GetViewerMutable(buffer_id); again != nullptr) {
+            again->message = "on_frame: " + error;
+            again->running = false;
+            ++again->generation;
+        }
+        viewer_running_ = was_running;
+        return;
+    }
+    if (ViewerSession *again = GetViewerMutable(buffer_id); again != nullptr) {
+        again->running = false;
+        again->message.clear();
+        ++again->generation;
+    }
+    viewer_running_ = was_running;
+}
+
+void Editor::ViewerPlay(int buffer_id, bool playing) {
+    if (ViewerSession *sess = GetViewerMutable(buffer_id); sess != nullptr) {
+        sess->playing = playing;
+    }
+}
+
+void Editor::ViewerTick(int buffer_id, double seconds) {
+    ViewerSession *sess = GetViewerMutable(buffer_id);
+    if (sess == nullptr || !sess->playing) return;
+    const double span = sess->time_to - sess->time_from;
+    double next = sess->time + seconds * sess->play_rate;
+    if (next > sess->time_to) {
+        if (sess->loop && span > 0.0) {
+            next = sess->time_from + std::fmod(next - sess->time_from, span);
+        } else {
+            next = sess->time_to;
+            sess->playing = false;
+        }
+    }
+    ViewerSetTime(buffer_id, next);
+}
+
+void Editor::ViewerBindScript(int buffer_id, const std::string &path) {
+    ViewerSession *sess = GetViewerMutable(buffer_id);
+    if (sess == nullptr) return;
+    sess->script_path = path;
+}
+
+bool Editor::ViewerRunScript(int buffer_id) {
+    ViewerSession *sess = GetViewerMutable(buffer_id);
+    if (sess == nullptr || sess->script_path.empty() || lua_ == nullptr) return false;
+    // THE CALLBACK IS DROPPED BEFORE THE SCRIPT RUNS AGAIN, so that a
+    // script edited to remove its on_frame stops animating instead of
+    // going on calling the version from before the edit.
+    if (sess->on_frame_ref >= 0) {
+        lua_->UnrefFunction(sess->on_frame_ref);
+        sess->on_frame_ref = -1;
+    }
+    sess->scene.Clear();
+    const std::string path = sess->script_path;
+    const int was_running = viewer_running_;
+    viewer_running_ = buffer_id;
+    const bool ok = lua_->DoFile(path);
+    viewer_running_ = was_running;
+    sess = GetViewerMutable(buffer_id);
+    if (sess == nullptr) return false;
+    ++sess->generation;
+    sess->message = ok ? std::string() : ("the script did not run: " + path);
+    // A script that declared a callback gets it called once, so that
+    // opening a viewer shows something without anyone touching the
+    // slider first.
+    if (ok && sess->on_frame_ref >= 0) ViewerSetTime(buffer_id, sess->time);
+    sess = GetViewerMutable(buffer_id);
+    if (sess != nullptr && !sess->view_fitted) ViewerFrameAll(buffer_id);
+    return ok;
+}
+
+int Editor::ViewerScriptSaved(const std::string &path) {
+    std::vector<int> to_run;
+    for (const auto &entry : viewer_sessions_) {
+        if (entry.second.script_path == path) to_run.push_back(entry.first);
+    }
+    for (const int buffer_id : to_run) ViewerRunScript(buffer_id);
+    return static_cast<int>(to_run.size());
+}
+
+void Editor::ViewerClear(int buffer_id) {
+    if (ViewerSession *sess = GetViewerMutable(buffer_id); sess != nullptr) {
+        sess->scene.Clear();
+        ++sess->generation;
+    }
+}
+
+view::Scene *Editor::ViewerScene(int buffer_id) {
+    ViewerSession *sess = GetViewerMutable(buffer_id);
+    return sess == nullptr ? nullptr : &sess->scene;
+}
+
+void Editor::ViewerSceneChanged(int buffer_id) {
+    if (ViewerSession *sess = GetViewerMutable(buffer_id); sess != nullptr) ++sess->generation;
+}
+
+std::string Editor::ViewerSummary(int buffer_id) const {
+    const ViewerSession *sess = GetViewer(buffer_id);
+    if (sess == nullptr) return "no viewer";
+    std::string summary = std::to_string(sess->scene.items.size()) + " item" +
+                          (sess->scene.items.size() == 1 ? "" : "s") + ", " +
+                          std::to_string(sess->scene.TriangleCount()) + " triangles";
+    if (sess->on_frame_ref >= 0) {
+        char buffer[96];
+        std::snprintf(buffer, sizeof(buffer), ", t = %.4g in [%.4g, %.4g]", sess->time,
+                      sess->time_from, sess->time_to);
+        summary += buffer;
+    }
+    if (!sess->script_path.empty()) {
+        const std::size_t slash = sess->script_path.find_last_of('/');
+        summary += ", " + (slash == std::string::npos ? sess->script_path
+                                                      : sess->script_path.substr(slash + 1));
+    }
+    if (!sess->message.empty()) summary += " -- " + sess->message;
+    return summary;
 }
 
 int Editor::NewCad() {
@@ -9736,6 +10070,31 @@ void Editor::CadOrbit(int buffer_id, float yaw_delta, float pitch_delta) {
     // rig's up vector stops meaning anything.
     if (sess->camera_pitch > 89.0f) sess->camera_pitch = 89.0f;
     if (sess->camera_pitch < -89.0f) sess->camera_pitch = -89.0f;
+}
+
+void Editor::CadPan(int buffer_id, float dx, float dy) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr) return;
+    // The camera's own frame, built exactly as DrawCadPane builds it --
+    // the same three lines, because a pan that used a different
+    // convention would slide the part sideways when you dragged it up.
+    const float yaw = sess->camera_yaw * 3.14159265358979f / 180.0f;
+    const float pitch = sess->camera_pitch * 3.14159265358979f / 180.0f;
+    const cad::Vec3d forward{-static_cast<double>(std::cos(pitch) * std::sin(yaw)),
+                             -static_cast<double>(std::cos(pitch) * std::cos(yaw)),
+                             -static_cast<double>(std::sin(pitch))};
+    cad::Vec3d up{0.0, 0.0, 1.0};
+    up = (up - forward * forward.Dot(up)).Normalized();
+    const cad::Vec3d right = up.Cross(forward).Normalized();
+    // A fraction of the viewport becomes a world distance through the
+    // same focal length the projection uses, so a drag moves the part by
+    // the number of pixels the pointer moved, at any zoom.
+    const double span = static_cast<double>(sess->camera_distance) / 1.2;
+    const cad::Vec3d move = right * (-static_cast<double>(dx) * span) +
+                            up * (static_cast<double>(dy) * span);
+    sess->camera_target.x += static_cast<float>(move.x);
+    sess->camera_target.y += static_cast<float>(move.y);
+    sess->camera_target.z += static_cast<float>(move.z);
 }
 
 void Editor::CadZoom(int buffer_id, float factor) {
@@ -23980,6 +24339,7 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::Model3D: return "3D-MODEL";
         case Mode::CadSketch: return "SKETCH";
         case Mode::Cad: return "CAD";
+        case Mode::Viewer: return "VIEWER";
         case Mode::Pdf: return "PDF";
         case Mode::PdfNav: return "PDF-NAV";
         case Mode::PdfAnnotate: return "PDF-ANNOT";
@@ -24056,7 +24416,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "bnext", "bn", "bprevious", "bprev", "bp", "bNext", "bN", "bdelete", "bd", "bdelete!", "bd!",
         "set", "normal", "norm", "normal!", "norm!", "MepNotifyClear", "MepNotifyDismiss",
         "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "MepPaneZoom", "colorscheme", "colo", "lua", "source",
-        "MepNextSheet", "MepPrevSheet", "Model3DNew", "SketchNew", "CadNew", "CadExport", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave",
+        "MepNextSheet", "MepPrevSheet", "Model3DNew", "SketchNew", "CadNew", "CadExport", "Viewer", "ViewerBind", "ViewerRun", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave",
         "CollabStatus", "AgentSocket",
     };
     return kNames;
@@ -26485,6 +26845,40 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
             status_message_ = "E: usage: :CadExport <step|stl|obj|gltf|svg|mepcad> <path>";
         } else {
             CadExport(CurPane().buffer_id, args.substr(0, space), args.substr(space + 1));
+        }
+    } else if (name == "Viewer") {
+        // :Viewer [script.lua] -- a new viewer, optionally bound to a
+        // script straight away, which is the common case: a viewer with
+        // nothing in it is only ever a step on the way to one with
+        // something in it.
+        // THE ARGUMENT IS RESOLVED BEFORE THE VIEWER EXISTS. NewViewer
+        // switches the current pane to its own fresh buffer, so a `%`
+        // expanded after that call means the viewer's empty buffer and
+        // comes back blank -- which is what it did.
+        const std::string script = ViewerScriptArgument(args);
+        const int buffer_id = NewViewer();
+        if (!script.empty()) {
+            ViewerBindScript(buffer_id, script);
+            ViewerRunScript(buffer_id);
+        }
+        status_message_ = ViewerSummary(buffer_id);
+    } else if (name == "ViewerBind") {
+        const std::string script = ViewerScriptArgument(args);
+        if (GetViewer(CurPane().buffer_id) == nullptr) {
+            status_message_ = "E: this pane is not a viewer; :Viewer opens one";
+        } else if (script.empty()) {
+            status_message_ = "E: usage: :ViewerBind <script.lua>";
+        } else {
+            ViewerBindScript(CurPane().buffer_id, script);
+            ViewerRunScript(CurPane().buffer_id);
+            status_message_ = ViewerSummary(CurPane().buffer_id);
+        }
+    } else if (name == "ViewerRun") {
+        if (GetViewer(CurPane().buffer_id) == nullptr) {
+            status_message_ = "E: this pane is not a viewer";
+        } else {
+            ViewerRunScript(CurPane().buffer_id);
+            status_message_ = ViewerSummary(CurPane().buffer_id);
         }
     } else if (name == "SketchNew") {
         NewCadSketch();
@@ -29839,6 +30233,22 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
     buf.modified = false;
     save_epoch_++;
     status_message_ = "\"" + path + "\" " + std::to_string(buf.LineCount()) + "L written";
+    // AFTER THE STREAM IS CLOSED, and that is not tidiness.
+    //
+    // Part L.4: saving a script a viewer is bound to rebuilds that
+    // viewer's scene -- edit the script in one pane, `:w`, and watch the
+    // other pane change. The rebuild *reads the file back*, and the
+    // first version of this ran while `out` was still open, so it read
+    // whatever had reached the disk so far. Usually nothing. An empty
+    // Lua chunk loads and runs perfectly happily, so the viewer reported
+    // no error at all: it simply went blank, lost its timeline, and came
+    // back the moment anything ran the script again. Closing the stream
+    // first is the whole fix.
+    out.close();
+    if (const int rebuilt = ViewerScriptSaved(path); rebuilt > 0) {
+        status_message_ += ", " + std::to_string(rebuilt) + " viewer" +
+                           (rebuilt == 1 ? "" : "s") + " rebuilt";
+    }
     return true;
 #endif
 }

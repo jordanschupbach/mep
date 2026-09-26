@@ -241,7 +241,7 @@ bool ReadTextFile(const std::string &path, std::string *out, std::string *error)
     return true;
 }
 
-fem::ScalarField FieldByName(const std::string &name, bool *ok) {
+fem::ScalarField ResolveField(const std::string &name, bool *ok) {
     *ok = true;
     for (const fem::ScalarField field : fem::AllScalarFields()) {
         if (name == fem::ScalarFieldName(field)) return field;
@@ -288,8 +288,36 @@ fem::ScalarField FieldByName(const std::string &name, bool *ok) {
 
 }  // namespace
 
+// The same resolver, on the outside. A caller that is not an adapter --
+// the viewer, which takes a field name from a script -- has to accept
+// exactly the spellings `fem.field` accepts, and a second table of
+// aliases would drift from this one the first time either grew.
+fem::ScalarField FieldByName(const std::string &name, bool *ok) {
+    return ResolveField(name, ok);
+}
+
+Session &SharedSession() {
+    static Session session;
+    return session;
+}
+
 Session::Session() = default;
 Session::~Session() = default;
+
+bool Session::LookUpResult(int handle, ResultView *out) const {
+    const auto found = results_.find(handle);
+    if (found == results_.end() || out == nullptr) return false;
+    out->model = &found->second.model;
+    out->statics = &found->second.result;
+    out->modes = &found->second.modes;
+    out->has_modes = found->second.has_modes;
+    return true;
+}
+
+const cad::Model *Session::LookUpDocument(int handle) const {
+    const auto found = documents_.find(handle);
+    return found == documents_.end() ? nullptr : &found->second.model;
+}
 
 int Session::DocumentCount() const { return static_cast<int>(documents_.size()); }
 int Session::StudyCount() const { return static_cast<int>(studies_.size()); }
@@ -1332,7 +1360,7 @@ bool Session::Call(const std::string &method, const Json &params, Json *out, std
         }
         bool known = false;
         const std::string name = params.get("field").as_string("von_mises");
-        const fem::ScalarField which = FieldByName(name, &known);
+        const fem::ScalarField which = ResolveField(name, &known);
         if (!known) {
             *error = "no field called '" + name + "'";
             return false;
@@ -1589,7 +1617,7 @@ bool Session::Call(const std::string &method, const Json &params, Json *out, std
         } else {
             bool known = false;
             const std::string name = params.get("field").as_string("von_mises");
-            const fem::ScalarField which = FieldByName(name, &known);
+            const fem::ScalarField which = ResolveField(name, &known);
             if (!known) {
                 *error = "no field called '" + name + "'";
                 return false;

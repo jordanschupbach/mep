@@ -10288,6 +10288,472 @@ int l_cad_view(lua_State *L) {
     return 0;
 }
 
+// Defined further down, beside the generated part.*/fem.* bindings.
+cadfem::Session &LuaCadFemSession();
+
+// --- The viewer (plans/CAD_FEM_PLAN.md Part L) ---------------------------
+//
+// Every one of these takes the viewer's buffer id *last* and optional,
+// because a bound script never chose one: the viewer a script is running
+// for is the viewer its calls belong to. The friendlier `view.part{...}`
+// form is Lua built on top of these (kBuiltinViewer), not a second C
+// surface -- one place for a thing to go wrong is better than two.
+
+// The viewer a script is currently running for, or the current pane's.
+int ViewerBufferFor(lua_State *L, int index) {
+    Editor *editor = GetEditor(L);
+    if (!lua_isnoneornil(L, index)) return static_cast<int>(luaL_checkinteger(L, index));
+    const int running = editor->ViewerRunningBuffer();
+    if (running >= 0) return running;
+    return editor->CurrentBufferId();
+}
+
+// mep.view_new() -> buffer_id.
+int l_view_new(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->NewViewer());
+    return 1;
+}
+
+// mep.view_current([buffer_id]) -> buffer_id or nil.
+int l_view_current(lua_State *L) {
+    const int buffer_id = ViewerBufferFor(L, 1);
+    if (GetEditor(L)->GetViewer(buffer_id) == nullptr) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushinteger(L, buffer_id);
+    return 1;
+}
+
+// mep.view_clear([buffer_id]).
+int l_view_clear(lua_State *L) {
+    GetEditor(L)->ViewerClear(ViewerBufferFor(L, 1));
+    return 0;
+}
+
+// mep.view_time_range(from, to, [buffer_id]).
+int l_view_time_range(lua_State *L) {
+    const double from = luaL_checknumber(L, 1);
+    const double to = luaL_checknumber(L, 2);
+    GetEditor(L)->ViewerSetTimeRange(ViewerBufferFor(L, 3), from, to);
+    return 0;
+}
+
+// mep.view_time([t], [buffer_id]) -> t. With no argument it reads.
+int l_view_time(lua_State *L) {
+    Editor *editor = GetEditor(L);
+    const int buffer_id = ViewerBufferFor(L, 2);
+    if (!lua_isnoneornil(L, 1)) editor->ViewerSetTime(buffer_id, luaL_checknumber(L, 1));
+    const ViewerSession *sess = editor->GetViewer(buffer_id);
+    lua_pushnumber(L, sess != nullptr ? sess->time : 0.0);
+    return 1;
+}
+
+// mep.view_play(playing, [buffer_id]).
+int l_view_play(lua_State *L) {
+    const bool playing = lua_toboolean(L, 1) != 0;
+    GetEditor(L)->ViewerPlay(ViewerBufferFor(L, 2), playing);
+    return 0;
+}
+
+// mep.view_on_frame(fn, [buffer_id]).
+//
+// THE ONE CALL ON THIS SURFACE THAT IS LUA-ONLY, and the reason is that
+// it takes a *function*. A function is not a JSON value, so it cannot
+// cross the agent socket or an MCP tool call, and pretending otherwise
+// -- by taking a string of Lua to compile, say -- would be a worse API
+// than admitting the asymmetry. Everything else a script does to a
+// viewer is on the RPC surface too.
+int l_view_on_frame(lua_State *L) {
+    Editor *editor = GetEditor(L);
+    const int buffer_id = ViewerBufferFor(L, 2);
+    ViewerSession *sess = editor->GetViewerMutable(buffer_id);
+    if (sess == nullptr) {
+        lua_pushnil(L);
+        lua_pushstring(L, "this buffer is not a viewer");
+        return 2;
+    }
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);
+    sess->on_frame_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// mep.view_camera({yaw=, pitch=, distance=, target={x,y,z}}, [buffer_id]).
+int l_view_camera(lua_State *L) {
+    Editor *editor = GetEditor(L);
+    const int buffer_id = ViewerBufferFor(L, 2);
+    ViewerSession *sess = editor->GetViewerMutable(buffer_id);
+    if (sess == nullptr) return 0;
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_getfield(L, 1, "yaw");
+    if (!lua_isnil(L, -1)) sess->camera_yaw = static_cast<float>(lua_tonumber(L, -1));
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "pitch");
+    if (!lua_isnil(L, -1)) {
+        sess->camera_pitch = std::clamp(static_cast<float>(lua_tonumber(L, -1)), -89.0f, 89.0f);
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "distance");
+    if (!lua_isnil(L, -1)) {
+        sess->camera_distance = static_cast<float>(lua_tonumber(L, -1));
+        sess->camera_distance_pinned = true;
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "target");
+    if (lua_istable(L, -1)) {
+        float xyz[3] = {sess->camera_target.x, sess->camera_target.y, sess->camera_target.z};
+        for (int i = 0; i < 3; ++i) {
+            lua_rawgeti(L, -1, i + 1);
+            if (!lua_isnil(L, -1)) xyz[static_cast<std::size_t>(i)] = static_cast<float>(lua_tonumber(L, -1));
+            lua_pop(L, 1);
+        }
+        sess->camera_target = Vec3f{xyz[0], xyz[1], xyz[2]};
+        sess->camera_target_pinned = true;
+    }
+    lua_pop(L, 1);
+    return 0;
+}
+
+// mep.view_frame_all([buffer_id]).
+int l_view_frame_all(lua_State *L) {
+    GetEditor(L)->ViewerFrameAll(ViewerBufferFor(L, 1));
+    return 0;
+}
+
+// mep.view_caption(text, [buffer_id]).
+int l_view_caption(lua_State *L) {
+    const char *text = luaL_checkstring(L, 1);
+    if (view::Scene *scene = GetEditor(L)->ViewerScene(ViewerBufferFor(L, 2)); scene != nullptr) {
+        scene->caption = text;
+    }
+    return 0;
+}
+
+// --- Scene builders ------------------------------------------------------
+
+std::array<unsigned char, 4> LuaColorAt(lua_State *L, int index,
+                                        std::array<unsigned char, 4> fallback) {
+    if (!lua_istable(L, index)) return fallback;
+    for (int i = 0; i < 4; ++i) {
+        lua_rawgeti(L, index, i + 1);
+        if (!lua_isnil(L, -1)) {
+            fallback[static_cast<std::size_t>(i)] =
+                static_cast<unsigned char>(std::clamp(lua_tonumber(L, -1), 0.0, 255.0));
+        }
+        lua_pop(L, 1);
+    }
+    return fallback;
+}
+
+std::array<unsigned char, 4> LuaColorField(lua_State *L, int table, const char *name,
+                                           std::array<unsigned char, 4> fallback) {
+    lua_getfield(L, table, name);
+    const std::array<unsigned char, 4> out = LuaColorAt(L, lua_gettop(L), fallback);
+    lua_pop(L, 1);
+    return out;
+}
+
+double LuaNumberField(lua_State *L, int table, const char *name, double fallback) {
+    lua_getfield(L, table, name);
+    if (!lua_isnil(L, -1)) fallback = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+    return fallback;
+}
+
+bool LuaBoolField(lua_State *L, int table, const char *name, bool fallback) {
+    lua_getfield(L, table, name);
+    if (!lua_isnil(L, -1)) fallback = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    return fallback;
+}
+
+std::string LuaTextField(lua_State *L, int table, const char *name, const std::string &fallback) {
+    lua_getfield(L, table, name);
+    std::string out = fallback;
+    if (lua_isstring(L, -1) != 0) out = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    return out;
+}
+
+cad::Vec3d LuaPointAt(lua_State *L, int index) {
+    if (!lua_istable(L, index)) return cad::Vec3d{0, 0, 0};
+    double xyz[3] = {0, 0, 0};
+    for (int i = 0; i < 3; ++i) {
+        lua_rawgeti(L, index, i + 1);
+        if (!lua_isnil(L, -1)) xyz[static_cast<std::size_t>(i)] = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+    return cad::Vec3d{xyz[0], xyz[1], xyz[2]};
+}
+
+// mep.view_add_part({document=, body=, color=, facets=, name=}, [buffer_id]).
+int l_view_add_part(lua_State *L) {
+    Editor *editor = GetEditor(L);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const int buffer_id = ViewerBufferFor(L, 2);
+    view::Scene *scene = editor->ViewerScene(buffer_id);
+    if (scene == nullptr) {
+        lua_pushnil(L);
+        lua_pushstring(L, "this buffer is not a viewer");
+        return 2;
+    }
+    const int document = static_cast<int>(LuaNumberField(L, 1, "document", -1.0));
+    const cad::EntityId body = static_cast<cad::EntityId>(LuaNumberField(L, 1, "body", 0.0));
+    const cad::Model *model = LuaCadFemSession().LookUpDocument(document);
+    if (model == nullptr) {
+        lua_pushnil(L);
+        lua_pushstring(L, "no such document");
+        return 2;
+    }
+    view::PartOptions options;
+    options.color = LuaColorField(L, 1, "color", options.color);
+    options.chord_tolerance = LuaNumberField(L, 1, "tolerance", 0.0);
+    options.facets = LuaBoolField(L, 1, "facets", false);
+    options.name = LuaTextField(L, 1, "name", "");
+    std::string error;
+    if (!view::AddPart(scene, *model, body, options, &error)) {
+        lua_pushnil(L);
+        lua_pushlstring(L, error.data(), error.size());
+        return 2;
+    }
+    editor->ViewerSceneChanged(buffer_id);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// mep.view_add_result({result=, field=, scale=, undeformed=, strength=, name=}, [buffer_id]).
+int l_view_add_result(lua_State *L) {
+    Editor *editor = GetEditor(L);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const int buffer_id = ViewerBufferFor(L, 2);
+    view::Scene *scene = editor->ViewerScene(buffer_id);
+    if (scene == nullptr) {
+        lua_pushnil(L);
+        lua_pushstring(L, "this buffer is not a viewer");
+        return 2;
+    }
+    cadfem::Session::ResultView held;
+    const int handle = static_cast<int>(LuaNumberField(L, 1, "result", -1.0));
+    if (!LuaCadFemSession().LookUpResult(handle, &held)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "no such result");
+        return 2;
+    }
+    if (held.has_modes) {
+        lua_pushnil(L);
+        lua_pushstring(L, "that is a modal result; view_add_mode draws one of its modes");
+        return 2;
+    }
+    view::ResultOptions options;
+    bool known = false;
+    options.field = cadfem::FieldByName(LuaTextField(L, 1, "field", "von_mises"), &known);
+    if (!known) {
+        lua_pushnil(L);
+        lua_pushstring(L, "no field by that name");
+        return 2;
+    }
+    options.strength = LuaNumberField(L, 1, "strength", 250e6);
+    options.name = LuaTextField(L, 1, "name", "");
+    options.render.undeformed = LuaBoolField(L, 1, "undeformed", false);
+    lua_getfield(L, 1, "scale");
+    if (!lua_isnil(L, -1)) {
+        options.render.auto_scale = false;
+        options.render.displacement_scale = lua_tonumber(L, -1);
+    }
+    lua_pop(L, 1);
+    options.render.auto_scale_fraction = LuaNumberField(L, 1, "amplitude", 0.08);
+    std::string error;
+    if (!view::AddResult(scene, *held.model, held.statics->displacement, held.statics->stress,
+                         options, &error)) {
+        lua_pushnil(L);
+        lua_pushlstring(L, error.data(), error.size());
+        return 2;
+    }
+    editor->ViewerSceneChanged(buffer_id);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// mep.view_add_mode({result=, mode=, phase=, amplitude=, name=}, [buffer_id]).
+int l_view_add_mode(lua_State *L) {
+    Editor *editor = GetEditor(L);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const int buffer_id = ViewerBufferFor(L, 2);
+    view::Scene *scene = editor->ViewerScene(buffer_id);
+    if (scene == nullptr) {
+        lua_pushnil(L);
+        lua_pushstring(L, "this buffer is not a viewer");
+        return 2;
+    }
+    cadfem::Session::ResultView held;
+    const int handle = static_cast<int>(LuaNumberField(L, 1, "result", -1.0));
+    if (!LuaCadFemSession().LookUpResult(handle, &held) || !held.has_modes) {
+        lua_pushnil(L);
+        lua_pushstring(L, "no such modal result");
+        return 2;
+    }
+    const int mode = static_cast<int>(LuaNumberField(L, 1, "mode", 0.0));
+    const double phase = LuaNumberField(L, 1, "phase", 0.0);
+    const double amplitude = LuaNumberField(L, 1, "amplitude", 0.08);
+    std::string error;
+    if (!view::AddMode(scene, *held.model, *held.modes, mode, phase, amplitude,
+                       fem::RenderOptions{}, LuaTextField(L, 1, "name", ""), &error)) {
+        lua_pushnil(L);
+        lua_pushlstring(L, error.data(), error.size());
+        return 2;
+    }
+    editor->ViewerSceneChanged(buffer_id);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// mep.view_add_mesh({positions=, indices=, lines=, colors=, color=, name=}, [buffer_id]).
+int l_view_add_mesh(lua_State *L) {
+    Editor *editor = GetEditor(L);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const int buffer_id = ViewerBufferFor(L, 2);
+    view::Scene *scene = editor->ViewerScene(buffer_id);
+    if (scene == nullptr) {
+        lua_pushnil(L);
+        lua_pushstring(L, "this buffer is not a viewer");
+        return 2;
+    }
+    view::RawMesh raw;
+    auto read_numbers = [&](const char *name, std::vector<double> *into) {
+        lua_getfield(L, 1, name);
+        if (lua_istable(L, -1)) {
+            const lua_Integer count = luaL_len(L, -1);
+            into->reserve(static_cast<std::size_t>(count));
+            for (lua_Integer i = 1; i <= count; ++i) {
+                lua_rawgeti(L, -1, i);
+                into->push_back(lua_tonumber(L, -1));
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+    };
+    auto read_ints = [&](const char *name, std::vector<int> *into) {
+        std::vector<double> numbers;
+        read_numbers(name, &numbers);
+        into->reserve(numbers.size());
+        // ONE-BASED IN LUA, ZERO-BASED HERE. A script written in Lua
+        // indexes its own positions from one, and silently taking them
+        // as zero-based would draw a mesh that is subtly wrong -- every
+        // triangle shifted by one vertex -- rather than failing.
+        for (const double v : numbers) into->push_back(static_cast<int>(v) - 1);
+    };
+    read_numbers("positions", &raw.positions);
+    read_ints("indices", &raw.indices);
+    read_ints("lines", &raw.line_indices);
+    std::vector<double> colors;
+    read_numbers("colors", &colors);
+    raw.colors.reserve(colors.size());
+    for (const double v : colors) {
+        raw.colors.push_back(static_cast<unsigned char>(std::clamp(v, 0.0, 255.0)));
+    }
+    raw.color = LuaColorField(L, 1, "color", raw.color);
+    raw.name = LuaTextField(L, 1, "name", "");
+    std::string error;
+    if (!view::AddMesh(scene, raw, &error)) {
+        lua_pushnil(L);
+        lua_pushlstring(L, error.data(), error.size());
+        return 2;
+    }
+    editor->ViewerSceneChanged(buffer_id);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// mep.view_add_line({x,y,z}, {x,y,z}, [{r,g,b,a}], [buffer_id]).
+int l_view_add_line(lua_State *L) {
+    Editor *editor = GetEditor(L);
+    const int buffer_id = ViewerBufferFor(L, 4);
+    view::Scene *scene = editor->ViewerScene(buffer_id);
+    if (scene == nullptr) return 0;
+    view::AddLine(scene, LuaPointAt(L, 1), LuaPointAt(L, 2),
+                  LuaColorAt(L, 3, {220, 120, 90, 255}));
+    editor->ViewerSceneChanged(buffer_id);
+    return 0;
+}
+
+// mep.view_add_point({x,y,z}, [size], [{r,g,b,a}], [buffer_id]).
+int l_view_add_point(lua_State *L) {
+    Editor *editor = GetEditor(L);
+    const int buffer_id = ViewerBufferFor(L, 4);
+    view::Scene *scene = editor->ViewerScene(buffer_id);
+    if (scene == nullptr) return 0;
+    double size = lua_isnoneornil(L, 2) ? 0.0 : lua_tonumber(L, 2);
+    // A size of zero means "work it out": a fiftieth of what is already
+    // in the scene, which reads at the zoom that scene is framed at.
+    if (!(size > 0.0)) {
+        cad::Vec3d low, high;
+        if (scene->Bounds(&low, &high)) {
+            const cad::Vec3d span = high - low;
+            size = std::sqrt(span.Dot(span)) * 0.02;
+        }
+        if (!(size > 0.0)) size = 0.1;
+    }
+    view::AddPoint(scene, LuaPointAt(L, 1), size, LuaColorAt(L, 3, {255, 220, 90, 255}));
+    editor->ViewerSceneChanged(buffer_id);
+    return 0;
+}
+
+// mep.view_add_label({x,y,z}, text, [{r,g,b,a}], [buffer_id]).
+int l_view_add_label(lua_State *L) {
+    Editor *editor = GetEditor(L);
+    const int buffer_id = ViewerBufferFor(L, 4);
+    view::Scene *scene = editor->ViewerScene(buffer_id);
+    if (scene == nullptr) return 0;
+    const char *text = luaL_checkstring(L, 2);
+    view::AddLabel(scene, LuaPointAt(L, 1), text, LuaColorAt(L, 3, {235, 235, 240, 255}));
+    editor->ViewerSceneChanged(buffer_id);
+    return 0;
+}
+
+// mep.view_info([buffer_id]) -> table.
+int l_view_info(lua_State *L) {
+    const int buffer_id = ViewerBufferFor(L, 1);
+    const ViewerSession *sess = GetEditor(L)->GetViewer(buffer_id);
+    if (sess == nullptr) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushinteger(L, buffer_id);
+    lua_setfield(L, -2, "buffer_id");
+    lua_pushinteger(L, static_cast<lua_Integer>(sess->scene.items.size()));
+    lua_setfield(L, -2, "items");
+    lua_pushinteger(L, sess->scene.TriangleCount());
+    lua_setfield(L, -2, "triangles");
+    lua_pushnumber(L, sess->time);
+    lua_setfield(L, -2, "time");
+    lua_pushnumber(L, sess->time_from);
+    lua_setfield(L, -2, "time_from");
+    lua_pushnumber(L, sess->time_to);
+    lua_setfield(L, -2, "time_to");
+    lua_pushboolean(L, sess->playing ? 1 : 0);
+    lua_setfield(L, -2, "playing");
+    lua_pushboolean(L, sess->scene.has_field ? 1 : 0);
+    lua_setfield(L, -2, "has_field");
+    lua_pushnumber(L, sess->scene.field_min);
+    lua_setfield(L, -2, "field_min");
+    lua_pushnumber(L, sess->scene.field_max);
+    lua_setfield(L, -2, "field_max");
+    lua_pushnumber(L, static_cast<double>(sess->camera_yaw));
+    lua_setfield(L, -2, "yaw");
+    lua_pushnumber(L, static_cast<double>(sess->camera_pitch));
+    lua_setfield(L, -2, "pitch");
+    lua_pushnumber(L, static_cast<double>(sess->camera_distance));
+    lua_setfield(L, -2, "distance");
+    lua_pushlstring(L, sess->script_path.data(), sess->script_path.size());
+    lua_setfield(L, -2, "script");
+    lua_pushlstring(L, sess->message.data(), sess->message.size());
+    lua_setfield(L, -2, "message");
+    return 1;
+}
+
 // mep.cad_orbit(buffer_id, yaw, pitch).
 int l_cad_orbit(lua_State *L) {
     GetEditor(L)->CadOrbit(static_cast<int>(luaL_checkinteger(L, 1)),
@@ -11295,10 +11761,11 @@ int l_model_flip_normals(lua_State *L) {
 // The Lua names are the method names with the dot replaced -- `cad.box`
 // becomes `mep.cad_box` -- so anyone who has read the agent-RPC
 // documentation can use the Lua surface without a second table to learn.
-cadfem::Session &LuaCadFemSession() {
-    static cadfem::Session session;
-    return session;
-}
+// THE SAME SESSION THE SOCKET USES, which it was not until Part L.0. A
+// part built here is one `part.list` over the agent socket can see, and
+// a result solved by an agent is one a Lua script in the same editor can
+// probe. See cadfem::SharedSession.
+cadfem::Session &LuaCadFemSession() { return cadfem::SharedSession(); }
 
 int l_cad_fem_call(lua_State *L) {
     const char *method = lua_tostring(L, lua_upvalueindex(1));
@@ -11800,6 +12267,24 @@ const luaL_Reg kMepFuncs[] = {
     {"cad_select", l_cad_select},
     {"cad_export", l_cad_export},
     {"cad_view", l_cad_view},
+    {"view_new", l_view_new},
+    {"view_current", l_view_current},
+    {"view_clear", l_view_clear},
+    {"view_time_range", l_view_time_range},
+    {"view_time", l_view_time},
+    {"view_play", l_view_play},
+    {"view_on_frame", l_view_on_frame},
+    {"view_camera", l_view_camera},
+    {"view_frame_all", l_view_frame_all},
+    {"view_caption", l_view_caption},
+    {"view_add_part", l_view_add_part},
+    {"view_add_result", l_view_add_result},
+    {"view_add_mode", l_view_add_mode},
+    {"view_add_mesh", l_view_add_mesh},
+    {"view_add_line", l_view_add_line},
+    {"view_add_point", l_view_add_point},
+    {"view_add_label", l_view_add_label},
+    {"view_info", l_view_info},
     {"cad_orbit", l_cad_orbit},
     {"cad_zoom", l_cad_zoom},
     {"cad_frame_all", l_cad_frame_all},
@@ -12003,6 +12488,20 @@ void LuaEnv::CallRef(int ref) {
         if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
         lua_pop(L_, 1);
     }
+}
+
+bool LuaEnv::CallRefWithNumber(int ref, double arg, std::string *out_error) {
+    if (out_error != nullptr) out_error->clear();
+    if (ref == LUA_NOREF || ref == LUA_REFNIL) return false;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    lua_pushnumber(L_, arg);
+    if (lua_pcall(L_, 1, 0, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (out_error != nullptr) *out_error = msg != nullptr ? msg : "?";
+        lua_pop(L_, 1);
+        return false;
+    }
+    return true;
 }
 
 void LuaEnv::CallRefWithString(int ref, const std::string &arg) {

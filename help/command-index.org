@@ -293,6 +293,9 @@ bindings instead. A dash means no page covers that command yet.
 | =:set= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:SketchNew= | [[file:sketch.html][The 2D sketcher]] |
 | =:source= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:Viewer= | [[file:viewer.html][The viewer]] |
+| =:ViewerBind= | [[file:viewer.html][The viewer]] |
+| =:ViewerRun= | [[file:viewer.html][The viewer]] |
 | =:sp= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:split= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:tabclose= | -- |

@@ -10,6 +10,7 @@
 #include "image_doc.h"
 #include "cad_constraint.h"
 #include "cad_doc.h"
+#include "view_scene.h"
 #include "cad_drawing.h"
 #include "cad_exchange.h"
 #include "cad_step.h"
@@ -167,6 +168,11 @@ enum class Mode {
     // the Editor::Cad* methods, so a part built by hand and one built by
     // a script take the same path.
     Cad,
+    // A focused viewer pane (plans/CAD_FEM_PLAN.md Part L): a scene a
+    // script built, a camera to turn it with and a time to scrub. Same
+    // rule again -- every key goes through an Editor::Viewer* method, so
+    // the slider and `view.time` are the same operation.
+    Viewer,
     // A focused PDF-viewer pane (a PdfSession buffer -- see below): same
     // shape as Mode::Image (h/j/k/l pan, ':'/leader forwarded, everything
     // else a no-op) plus zathura-style screenful scrolls (Ctrl-f/Ctrl-b/
@@ -1781,6 +1787,80 @@ enum class CadView { Shaded, Wireframe, Drawing };
 // and `document.tree` is empty. The pane says so rather than pretending,
 // because "you cannot change the extrude distance of this part" is a
 // thing the user needs told.
+// A viewer (plans/CAD_FEM_PLAN.md Part L).
+//
+// A camera, a time, and a script. The script says what is in the scene
+// at a given time; the pane lets you turn the scene about and scrub the
+// time while it does.
+//
+// WHY THIS IS NOT THE CAD PANE. The CAD pane shows one document -- a
+// feature tree and the body it builds -- and its sidebar is that tree. A
+// viewer shows whatever a script puts in it, which is routinely several
+// things at once and often nothing the kernel has ever heard of: a
+// result coloured by a field, a mode at a phase, a probe marker, a
+// caption. Making one pane serve both would mean a feature outliner
+// beside a scene that has no features.
+struct ViewerSession {
+    int buffer_id = 0;
+
+    // --- The scene ---------------------------------------------------
+    view::Scene scene;
+    // Bumped whenever the scene changes, so the pane knows its cached
+    // picture is stale without comparing geometry.
+    int generation = 0;
+
+    // --- The camera --------------------------------------------------
+    // The same idiom CadSession and Model3DSession use, so that turning
+    // a part in one pane and a result in another feel like one program.
+    Vec3f camera_target;
+    float camera_yaw = -45.0f;
+    float camera_pitch = 25.0f;
+    float camera_distance = 10.0f;
+    // Whether the automatic fit has run. A script that sets a yaw or a
+    // distance has *not* said where to look: `view.camera{distance=6}`
+    // means "six units back from whatever this is", and treating it as a
+    // full camera specification left the target at the origin and the
+    // scene half off the screen. Only a target pins the target.
+    bool view_fitted = false;
+    bool camera_target_pinned = false;
+    bool camera_distance_pinned = false;
+
+    // --- Time ----------------------------------------------------------
+    double time_from = 0.0;
+    double time_to = 1.0;
+    double time = 0.0;
+    bool playing = false;
+    // Seconds of scene time per second of wall clock.
+    double play_rate = 1.0;
+    bool loop = true;
+
+    // --- The script ------------------------------------------------------
+    // The .lua bound to this viewer, if any, and the buffer it is open
+    // in, so that saving it can rebuild the scene.
+    std::string script_path;
+    // A Lua registry reference to the on_frame callback, or -1. Owned by
+    // LuaEnv, which is what releases it.
+    int on_frame_ref = -1;
+    // What the last run of the script said, error or otherwise.
+    std::string message;
+    // Set while the script is running, so a scene-building call knows
+    // which viewer it belongs to without being told.
+    bool running = false;
+
+    // --- What the pane needs ----------------------------------------------
+    int viewport_w = 0;
+    int viewport_h = 0;
+    bool show_legend = true;
+    bool show_mesh_lines = true;
+    // What was last drawn, so a frame that changes nothing costs nothing.
+    int drawn_generation = -1;
+    double drawn_time = 0.0;
+    float drawn_yaw = 0.0f, drawn_pitch = 0.0f, drawn_distance = 0.0f;
+    Vec3f drawn_target;
+    int drawn_w = 0, drawn_h = 0;
+    bool drawn_reduced = false;
+};
+
 struct CadSession {
     int buffer_id = 0;
     cad::CadDocument document;
@@ -1803,7 +1883,14 @@ struct CadSession {
     float camera_yaw = -45.0f;
     float camera_pitch = 30.0f;
     float camera_distance = 10.0f;
+    // Whether the automatic fit has run. A script that sets a yaw or a
+    // distance has *not* said where to look: `view.camera{distance=6}`
+    // means "six units back from whatever this is", and treating it as a
+    // full camera specification left the target at the origin and the
+    // scene half off the screen. Only a target pins the target.
     bool view_fitted = false;
+    bool camera_target_pinned = false;
+    bool camera_distance_pinned = false;
 
     CadView view = CadView::Shaded;
     // Which feature the outliner has highlighted, or -1.
@@ -4228,6 +4315,7 @@ public:
     /** @brief Whether a buffer holds a 2D sketch (plans/CAD_FEM_PLAN.md Part D.5). */
     bool IsCadSketchBuffer(int buffer_id) const;
     bool IsCadBuffer(int buffer_id) const;
+    bool IsViewerBuffer(int buffer_id) const;
     /**
      * @brief Returns the 3D-modeler session for the given buffer id, if any.
      * @param buffer_id The buffer id to look up.
@@ -4276,11 +4364,45 @@ public:
     // functions and the `cad.*` agent-RPC methods all go through exactly
     // this surface and none of them can do something the others cannot.
     void HandleCadInput();
+    void HandleViewerInput();
     int NewCad();
     const CadSession *GetCad(int buffer_id) const;
     /** @brief Mutable overload of GetCad. */
     CadSession *GetCadMutable(int buffer_id);
     void ResizeCadViewport(int buffer_id, int w, int h);
+
+    // --- The viewer (plans/CAD_FEM_PLAN.md Part L) -----------------------
+    std::string ViewerScriptArgument(const std::string &args) const;
+    int NewViewer();
+    const ViewerSession *GetViewer(int buffer_id) const;
+    ViewerSession *GetViewerMutable(int buffer_id);
+    void ResizeViewerViewport(int buffer_id, int w, int h);
+    // Every camera move is one of these, and the mouse, the keyboard and
+    // a script all go through them -- the rule Part F.5 set and Part L.1
+    // keeps.
+    void ViewerOrbit(int buffer_id, float yaw_delta, float pitch_delta);
+    void ViewerZoom(int buffer_id, float factor);
+    void ViewerPan(int buffer_id, float dx, float dy);
+    void ViewerFrameAll(int buffer_id);
+    // Time. Setting it runs the script's on_frame callback, which is
+    // what makes the slider mean anything.
+    void ViewerSetTimeRange(int buffer_id, double from, double to);
+    void ViewerSetTime(int buffer_id, double time);
+    void ViewerPlay(int buffer_id, bool playing);
+    // Advances a playing viewer. Called once a frame from the draw loop.
+    void ViewerTick(int buffer_id, double seconds);
+    // The script.
+    void ViewerBindScript(int buffer_id, const std::string &path);
+    bool ViewerRunScript(int buffer_id);
+    // Every viewer bound to this path, so saving the file can rebuild
+    // them. Returns how many were run.
+    int ViewerScriptSaved(const std::string &path);
+    // Scene building, which the Lua and RPC surfaces both call.
+    void ViewerClear(int buffer_id);
+    view::Scene *ViewerScene(int buffer_id);
+    void ViewerSceneChanged(int buffer_id);
+    std::string ViewerSummary(int buffer_id) const;
+    int ViewerRunningBuffer() const { return viewer_running_; }
     // Opens a .mepcad, .step/.stp or .iges/.igs in the current pane.
     bool OpenCadInPlace(const std::string &path);
     bool SaveCad(int buffer_id, const std::string &path);
@@ -4306,6 +4428,12 @@ public:
     void CadSetView(int buffer_id, const std::string &view);
     void CadOrbit(int buffer_id, float yaw_delta, float pitch_delta);
     void CadZoom(int buffer_id, float factor);
+    // Slides the camera's target across the screen plane. `dx` and `dy`
+    // are fractions of the viewport, not world units, because a pan is a
+    // gesture on the screen and the world distance it corresponds to
+    // depends on how far away the camera is -- which is the whole reason
+    // this is a method rather than a field the caller writes.
+    void CadPan(int buffer_id, float dx, float dy);
     void CadFrameAll(int buffer_id);
     // A one-line summary for the status line and for a script asking what
     // is in the pane.
@@ -11374,6 +11502,10 @@ private:
     std::unordered_map<int, Model3DSession> model3d_sessions_;
     std::unordered_map<int, CadSketchSession> cad_sketch_sessions_;
     std::unordered_map<int, CadSession> cad_sessions_;
+    std::unordered_map<int, ViewerSession> viewer_sessions_;
+    // The viewer a running script belongs to, so that mep.view_* can
+    // default to it. -1 when no script is running.
+    int viewer_running_ = -1;
     // Keyed by buffer_id -- one entry per open PDF-viewer pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, PdfSession> pdfs_;

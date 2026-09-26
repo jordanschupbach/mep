@@ -4005,6 +4005,154 @@ fifth is the one that would be missing whatever was added last.
 
 ---
 
+## Part L — the viewer
+
+Part J.2 made the pictures and Part J.3 made the films, and the plan has
+carried an open box ever since: *nothing here is wired into an editor
+pane; the renderer returns arrays and no pane assembles them*. This is
+that pane. It is also the first thing in this plan whose content is
+decided by a **script** rather than by a document.
+
+The shape of it: a viewer holds a camera, a time, and a Lua script. The
+script says what is in the scene at a given time; the pane lets you turn
+the scene about and scrub the time while it does. Two panes side by side
+-- the script in one, the scene in the other -- and saving the script
+rebuilds the scene.
+
+- [x] **L.0 One session, not two.** `agent_rpc.cpp` and `lua_env.cpp`
+  each hold their own `cadfem::Session` singleton, so a document built
+  in Lua is invisible over the socket and the reverse -- which flatly
+  contradicts the comment on the first of them ("ONE PER PROCESS, NOT
+  ONE PER CONNECTION... a document an agent built is a thing a human in
+  the same editor should be able to mesh"). The viewer makes it matter:
+  its script runs in Lua and the handles it builds have to be the ones
+  the scene builder sees. `cadfem::SharedSession()` replaces both.
+- [x] **L.1 Navigation.** The CAD pane has an orbit camera and no mouse
+  handling at all -- arrows turn it, `+`/`-` zoom, and that is the whole
+  interaction. Left-drag orbits, middle-drag or shift-drag pans, the
+  wheel zooms, in the CAD pane and the viewer alike. A pan is a new
+  operation and goes on the surface with the rest, because the rule for
+  Part F.5 was that there is nothing the keyboard can do that a script
+  cannot, and a mouse is not an exception to it.
+- [x] **L.2 The scene.** `src/view_scene.{h,cpp}`: a `Scene` is a list
+  of drawables, some labels, and the colour range they share. A drawable
+  is a `fem::RenderMesh` -- deliberately the same type Part J.2 already
+  produces, rather than a parallel one, so a result goes into a scene
+  without conversion. Built from what the surface already has: a part
+  body, a result coloured by a field, a mode shape at a phase, a
+  transient history at a time -- and from raw arrays the script computes
+  itself, plus lines, points and labels for annotation.
+- [x] **L.3 Time.** A time range, a current time, play and pause, and a
+  slider. The script declares the range and a callback; the viewer calls
+  it as the time moves and caches the scenes it has built, so a cheap
+  parametric scene and an expensive solved one both scrub.
+- [x] **L.4 The script.** A `.lua` bound to a viewer, re-run when it is
+  saved and on a key. The scene-building calls are on the method table
+  like everything else, so they are Lua, RPC, MCP and documentation at
+  once -- with one honest exception: `view.on_frame` takes a *function*,
+  which is not a JSON value, so it is bound in Lua only and says so.
+- [x] **L.5 Rendering.** Through `fem_movie`'s rasteriser, the one the
+  films already use, into a texture that is re-rendered only when the
+  camera, the time or the scene changes -- and at reduced resolution
+  while a drag is in progress. One renderer for the pane, the still and
+  the film means the picture you turn around is the picture you export,
+  which two renderers could not promise.
+
+### Part L: what a viewer turned out to be
+
+| what was measured | result |
+|---|---|
+| the scene, as a value | `mep-view-scene-test`, **50 checks** |
+| the pane, in a running mep | `mep-viewer-live-test`, over the agent socket |
+| a frame of an 11k-node result | about 20 ms at pane resolution, so a drag runs |
+| renderers for the pane, the still and the film | **one** |
+| calls on the surface that Lua has and the socket does not | **one**, `view.on_frame` |
+
+**Two `cadfem::Session` singletons had been sitting in the tree**, one in
+`agent_rpc.cpp` and one in `lua_env.cpp`, so a document built by
+`mep.part_new` inside the editor was invisible to `part.list` over the
+socket and the reverse. The comment on the first of them said exactly
+what was intended -- "ONE PER PROCESS, NOT ONE PER CONNECTION... a
+document an agent built is a thing a human in the same editor should be
+able to mesh" -- and the second silently made it untrue. Nothing had
+noticed because nothing had needed both at once. The viewer needs both at
+once: its script runs in Lua and its scene builder resolves the handles.
+
+**A drawable is a `fem::RenderMesh` and not a type of the viewer's own.**
+Part J.2 already produces one for a result, so a CAD body, a raw array
+from a script and an annotation line are converted *into* one rather than
+a result being converted out of one -- the cheap direction, and one
+colour convention instead of two.
+
+**The pane draws through the film's rasteriser.** That is the decision
+most worth defending, because the obvious alternative -- OpenGL, as the
+3D modeller does -- is faster and was sitting right there. Two renderers
+cannot be kept in step: the day one of them shades a back face
+differently, the picture you turned around and the picture you exported
+stop being the same picture and nothing tells you. Rendering on the CPU
+costs about twenty milliseconds a frame, which is paid only when
+something changed, and halved again while a drag is in progress by
+rendering at half resolution. It also means the pane can be *tested*:
+`view_scene_test` asserts what is in a rendered frame, which no GL path
+could do without a display.
+
+**Three things came out wrong the first time and all three were about
+holding something fixed.**
+
+  * `view.camera{distance = 6}` set `view_fitted`, so the automatic fit
+    never ran and the camera looked at the origin instead of at the
+    scene -- a beam four metres long half off the screen. A partial
+    camera is not a camera: only naming a *target* pins the target.
+  * A mode coloured by its displacement *at the current phase* looks
+    right and collapses at the zero crossing, where every value is zero
+    and the colour bar reads a range of 2e-17. The amplitude of the
+    movement at a point is a property of the mode, not of the instant,
+    so that is what the colour means and the phase is shown by the shape
+    moving. The same trap as Part J.3's per-frame auto-scale, one level
+    up.
+  * **The live-coding loop read the script back before it had been
+    written.** Saving a bound script rebuilds the viewer, and the rebuild
+    re-reads the file -- while the editor's output stream was still open,
+    so it read whatever had reached the disk. Usually nothing. *An empty
+    Lua chunk loads and runs perfectly happily*, so there was no error to
+    report: the viewer simply went blank, lost its timeline, and came
+    back the moment anything ran the script again. One `out.close()`.
+    Nothing short of an end-to-end save would have found it, and
+    `mep-viewer-live-test` now does one -- verified by putting the bug
+    back and watching the test fail.
+  * The timeline's play button was drawn in the pane's foreground colour
+    on the status line's background, and in this theme the two are near
+    enough the same lightness that it was invisible. Ink is now derived
+    from the strip's own luminance rather than taken from a paired
+    highlight group, because a pairing that holds in one theme and not
+    another is not a pairing worth relying on for something that must
+    simply be seen.
+
+**The caption survives a clear and everything else does not**, which is
+the one exception in `Scene::Clear` and was earned the same way: the
+colour range, the units and the items are all decided by what is in the
+scene, and a caption is what the viewer is *called*. Clearing it with the
+contents made the title vanish the first time anybody touched the slider.
+
+**And the scene is cleared before every `on_frame`.** That is what lets a
+callback be written as "what is here now" rather than as a diff -- and it
+means anything a script adds *outside* the callback is wiped the moment
+the slider moves. It is the one rule of writing one of these, and the
+help page says so where somebody will read it.
+
+- [ ] The camera fit runs once, on the first load. A script whose scene
+  grows by an order of magnitude on a later run keeps the old framing
+  until `f`. Fitting on every run would be worse -- it would throw away a
+  pan on every `:w`, which is the whole live-coding loop.
+- [ ] Nothing picks. Clicking in the viewport turns the scene and cannot
+  identify what is under the pointer, so there is no probe-by-click and
+  no "what is this element". The renderer would have to carry an item id
+  per pixel, which the rasteriser could do and does not.
+- [ ] A scene is rebuilt from scratch on every frame, so a callback that
+  solves rather than scales is as slow as the solve. Caching by frame
+  index is in the plan for L.3 and is not written: the scenes that need
+  it are the ones too large to keep sixty of.
+
 ## The sweep: fixing what the parts left behind
 
 Five fixes, and the useful part is what each of them was *not*.

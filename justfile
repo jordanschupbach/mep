@@ -237,7 +237,7 @@ bench: build-native
 test-gui: build-native
     #!/usr/bin/env bash
     set -euo pipefail
-    cmake --build {{native_build_dir}} -j --target mep-agent-rpc-test mep-cad-live-test mep-cad-sketch-live-test mep-cad-fem-api-live-test
+    cmake --build {{native_build_dir}} -j --target mep-agent-rpc-test mep-cad-live-test mep-cad-sketch-live-test mep-cad-fem-api-live-test mep-viewer-live-test
     echo "== mep-agent-rpc-test"
     "./{{native_build_dir}}/mep-agent-rpc-test" "./{{native_build_dir}}/mep"
     echo "== mep-cad-live-test"
@@ -248,6 +248,10 @@ test-gui: build-native
     # socket, through Lua, and headless through `mep --cad-fem`.
     echo "== mep-cad-fem-api-live-test"
     "./{{native_build_dir}}/mep-cad-fem-api-live-test" "./{{native_build_dir}}/mep"
+    # Part L: the viewer -- its script, its timeline and its camera, in a
+    # real pane.
+    echo "== mep-viewer-live-test"
+    "./{{native_build_dir}}/mep-viewer-live-test" "./{{native_build_dir}}/mep"
     echo "== mcp/server_test.ts"
     MEP_BINARY="$(realpath {{native_build_dir}}/mep)" deno test --allow-all mcp/server_test.ts
 

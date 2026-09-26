@@ -9,6 +9,7 @@
 #include "gfx/text.h"
 #include "gfx/vecmath.h"
 #include "editor.h"
+#include "fem_movie.h"
 #include "formula.h"
 #include "html_doc.h"
 #include "url_util.h"
@@ -890,6 +891,18 @@ constexpr float kVideoTransportH = 32.0f;
 // Orbit/pan camera drag, grabbed at mouse-down -- same shape as
 // ImageEditorPanDragState above, but tracking yaw/pitch/target instead of
 // pixel pan offsets.
+// The CAD pane's camera drag (Part L.1). A separate one from the 3D
+// modeller's below rather than a shared one, because the two panes can
+// both be on screen and a drag belongs to the pane it started in -- which
+// the buffer id is what records.
+struct CadCameraDragState {
+    bool active = false;
+    bool panning = false;  // false = orbiting
+    int buffer_id = -1;
+    float last_x = 0.0f, last_y = 0.0f;
+};
+CadCameraDragState g_cad_camera_drag;
+
 struct Model3DCameraDragState {
     bool active = false;
     bool panning = false;  // false = orbiting
@@ -3349,6 +3362,68 @@ const char *kDefaultMod1Bindings =
 // invalidation) -- each of those phases now just calls
 // mep.on_buffer_changed/mep.on_buffer_saved instead of staying on-demand.
 // Defined first so every later kBuiltinXxx chunk can call it.
+// The `view` table a viewer script is written against (plans/
+// CAD_FEM_PLAN.md Part L.4).
+//
+// WHY THIS IS LUA AND NOT A SECOND C SURFACE. Every function below is
+// two lines over the mep.view_* binding it wraps, and every one of them
+// exists only to spare a bound script from repeating a buffer id it
+// never chose. Written in C that would be a second set of argument
+// checks, a second set of error messages and a second place for the
+// defaults to drift; written here it is a table of forwarders that
+// cannot disagree with what it forwards to.
+//
+// `view` is a global, deliberately. A viewer script is a script with one
+// job, run in a context that has already decided which viewer it belongs
+// to, and `local view = require("view")` would be ceremony for nothing.
+const char *kBuiltinViewer =
+    "view = {}\n"
+    "\n"
+    "-- The scene, cleared and refilled. A script says what is here now\n"
+    "-- rather than what changed, which is what makes on_frame simple.\n"
+    "function view.clear() mep.view_clear() end\n"
+    "function view.part(o) return mep.view_add_part(o or {}) end\n"
+    "function view.result(o) return mep.view_add_result(o or {}) end\n"
+    "function view.mode(o) return mep.view_add_mode(o or {}) end\n"
+    "function view.mesh(o) return mep.view_add_mesh(o or {}) end\n"
+    "function view.line(a, b, c) mep.view_add_line(a, b, c) end\n"
+    "function view.point(p, size, c) mep.view_add_point(p, size, c) end\n"
+    "function view.label(p, text, c) mep.view_add_label(p, text, c) end\n"
+    "function view.caption(text) mep.view_caption(text) end\n"
+    "\n"
+    "-- Time. `view.time_range(a, b)` declares what the slider spans and\n"
+    "-- `view.on_frame(fn)` says what is in the scene at a time in it.\n"
+    "function view.time_range(from, to) mep.view_time_range(from, to) end\n"
+    "function view.time(t) return mep.view_time(t) end\n"
+    "function view.play(on) mep.view_play(on ~= false) end\n"
+    "function view.on_frame(fn) return mep.view_on_frame(fn) end\n"
+    "\n"
+    "-- The camera. Degrees, and a distance in the scene's own units.\n"
+    "function view.camera(o) mep.view_camera(o or {}) end\n"
+    "function view.frame_all() mep.view_frame_all() end\n"
+    "function view.info() return mep.view_info() end\n"
+    "\n"
+    "-- A few colours by name, because {220, 90, 90, 255} in the middle of\n"
+    "-- a line of geometry is unreadable.\n"
+    "view.colors = {\n"
+    "  red = {220, 90, 90, 255}, green = {110, 200, 110, 255},\n"
+    "  blue = {110, 150, 230, 255}, yellow = {255, 220, 90, 255},\n"
+    "  white = {235, 235, 240, 255}, grey = {150, 155, 165, 255},\n"
+    "  steel = {150, 170, 200, 255}, orange = {235, 150, 70, 255},\n"
+    "}\n"
+    "\n"
+    "-- An axis triad at the origin, which is the annotation every scene\n"
+    "-- wants and nobody wants to write out three times.\n"
+    "function view.axes(length)\n"
+    "  local l = length or 1.0\n"
+    "  view.line({0,0,0}, {l,0,0}, view.colors.red)\n"
+    "  view.line({0,0,0}, {0,l,0}, view.colors.green)\n"
+    "  view.line({0,0,0}, {0,0,l}, view.colors.blue)\n"
+    "  view.label({l,0,0}, 'X', view.colors.red)\n"
+    "  view.label({0,l,0}, 'Y', view.colors.green)\n"
+    "  view.label({0,0,l}, 'Z', view.colors.blue)\n"
+    "end\n";
+
 const char *kBuiltinEditHooks =
     "function mep.on_buffer_changed(fn, interval_sec)\n"
     "  interval_sec = interval_sec or 0.3\n"
@@ -37376,6 +37451,311 @@ double CadSketchSnap(const CadSketchSession &sess, double v) {
 // front. It is exact for a convex solid and wrong only where two
 // triangles interpenetrate, which a valid B-rep's tessellation does not
 // do.
+// --- The viewer pane (plans/CAD_FEM_PLAN.md Part L) ----------------------
+//
+// A scene, a camera to turn it with, and a timeline to scrub. The
+// picture is made by the *same rasteriser the films are made by*
+// (fem_movie.h), rendered on the CPU into a texture and blitted -- not
+// by a second renderer built for the screen.
+//
+// WHY THAT IS WORTH THE COST. Two renderers cannot be kept in step: the
+// day one of them shades a back face differently, the picture you turned
+// around and the picture you exported stop being the same picture, and
+// nothing tells you. One renderer makes that impossible by construction.
+// The cost is that a frame is a few tens of milliseconds rather than
+// sub-millisecond, and it is paid only when something changed -- the
+// camera moved, the time moved, or the scene was rebuilt -- so a viewer
+// sitting still costs one texture blit a frame like any other pane.
+//
+// And while a drag is in progress it renders at half resolution, which
+// quarters the cost of exactly the frames where responsiveness matters
+// and nobody is reading the numbers.
+struct ViewerTexture {
+    gfx::Texture2D texture;
+    int width = 0;
+    int height = 0;
+};
+std::map<int, ViewerTexture> g_viewer_textures;
+
+struct ViewerDragState {
+    bool active = false;
+    bool panning = false;
+    bool scrubbing = false;
+    int buffer_id = -1;
+    float last_x = 0.0f, last_y = 0.0f;
+};
+ViewerDragState g_viewer_drag;
+
+constexpr float kViewerTimelineH = 32.0f;
+
+void DrawViewerPane(const Pane &pane, ViewerSession &sess, float x, float y, float w, float h,
+                    bool is_active) {
+    const int buffer_id = pane.buffer_id;
+    const gfx::Color bg = ResolveHlGroup("NormalBg");
+    const gfx::Color normal = ResolveHlGroup("Normal");
+    const gfx::Color comment = ResolveHlGroup("Comment");
+    const gfx::Color accent = ResolveHlGroup("Accent");
+    const gfx::Color border = ResolveHlGroup("Border");
+    const float font = MenuFontSize();
+    const float line_height = font + 4.0f;
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w),
+                       static_cast<int>(h), bg);
+
+    const bool has_time = sess.on_frame_ref >= 0;
+    const float timeline_h = has_time ? kViewerTimelineH : 0.0f;
+    const float view_w = w;
+    // The footer gets a row of its own under the timeline, with a gap on
+    // each side: the first version reserved `line_height` exactly and the
+    // summary came out sitting on the slider's track.
+    const float view_h = h - timeline_h - line_height - 10.0f;
+    if (view_w < 8.0f || view_h < 8.0f) return;
+    g_editor.ResizeViewerViewport(buffer_id, static_cast<int>(view_w), static_cast<int>(view_h));
+    if (!sess.view_fitted) g_editor.ViewerFrameAll(buffer_id);
+
+    // --- Input --------------------------------------------------------------
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+    const gfx::Rectangle viewport{x, y, view_w, view_h};
+    const gfx::Rectangle timeline{x, y + view_h, w, timeline_h};
+    const bool over_view = is_active && gfx::CheckCollisionPointRec(mouse, viewport);
+    const bool over_timeline = is_active && has_time &&
+                               gfx::CheckCollisionPointRec(mouse, timeline);
+    const bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+
+    // The play button, at the left of the timeline.
+    const float button = timeline_h - 10.0f;
+    const gfx::Rectangle play_button{x + 8.0f, y + view_h + 5.0f, button, button};
+    // Well clear of the button: at t = 0 the handle sits on the track's
+    // own start, and a start tucked against the button put the two on top
+    // of each other in the one state the viewer opens in.
+    const float track_x = play_button.x + play_button.width + 18.0f;
+    const float track_w = std::max(10.0f, w - (track_x - x) - 110.0f);
+
+    auto time_at = [&](float px) {
+        const double fraction =
+            std::clamp(static_cast<double>(px - track_x) / static_cast<double>(track_w), 0.0, 1.0);
+        return sess.time_from + (sess.time_to - sess.time_from) * fraction;
+    };
+
+    if (over_timeline && gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
+        if (gfx::CheckCollisionPointRec(mouse, play_button)) {
+            g_editor.ViewerPlay(buffer_id, !sess.playing);
+        } else {
+            // GRABBING THE TRACK ANYWHERE JUMPS THERE, rather than only
+            // the handle being draggable. Scrubbing is the whole point of
+            // the strip and a handle a few pixels wide is a poor target.
+            g_editor.ViewerPlay(buffer_id, false);
+            g_viewer_drag = {true, false, true, buffer_id, mouse.x, mouse.y};
+            g_editor.ViewerSetTime(buffer_id, time_at(mouse.x));
+        }
+    } else if (over_view && (gfx::IsMouseButtonPressed(gfx::MouseButton::Left) ||
+                             gfx::IsMouseButtonPressed(gfx::MouseButton::Middle))) {
+        g_viewer_drag = {true,
+                         gfx::IsMouseButtonPressed(gfx::MouseButton::Middle) || shift,
+                         false,
+                         buffer_id,
+                         mouse.x,
+                         mouse.y};
+    }
+    bool dragging_now = false;
+    if (g_viewer_drag.active && g_viewer_drag.buffer_id == buffer_id) {
+        const bool still_down = gfx::IsMouseButtonDown(gfx::MouseButton::Left) ||
+                                gfx::IsMouseButtonDown(gfx::MouseButton::Middle);
+        if (still_down) {
+            dragging_now = true;
+            if (g_viewer_drag.scrubbing) {
+                g_editor.ViewerSetTime(buffer_id, time_at(mouse.x));
+            } else {
+                const float dx = mouse.x - g_viewer_drag.last_x;
+                const float dy = mouse.y - g_viewer_drag.last_y;
+                if (g_viewer_drag.panning) {
+                    g_editor.ViewerPan(buffer_id, dx / std::max(1.0f, view_w),
+                                       dy / std::max(1.0f, view_h));
+                } else {
+                    g_editor.ViewerOrbit(buffer_id, -dx * 0.3f, -dy * 0.3f);
+                }
+            }
+        } else {
+            g_viewer_drag.active = false;
+        }
+        g_viewer_drag.last_x = mouse.x;
+        g_viewer_drag.last_y = mouse.y;
+    }
+    if (over_view) {
+        const float wheel = gfx::GetMouseWheelMoveV().y;
+        if (wheel != 0.0f && g_editor.CurrentMode() != Mode::Viewer) {
+            // Only when the pane is not the focused one: a focused
+            // viewer's wheel already goes through Editor::WheelScroll,
+            // and two handlers would zoom twice per notch.
+            g_editor.ViewerZoom(buffer_id, std::pow(1.15f, wheel));
+        }
+    }
+    // A playing viewer advances whether or not it is focused, so two
+    // viewers can run side by side.
+    g_editor.ViewerTick(buffer_id, static_cast<double>(gfx::GetFrameTime()));
+
+    // --- The picture ---------------------------------------------------------
+    const int reduce = dragging_now ? 2 : 1;
+    const int want_w = std::max(16, static_cast<int>(view_w) / reduce);
+    const int want_h = std::max(16, static_cast<int>(view_h) / reduce);
+    const bool stale = sess.drawn_generation != sess.generation || sess.drawn_time != sess.time ||
+                       sess.drawn_yaw != sess.camera_yaw ||
+                       sess.drawn_pitch != sess.camera_pitch ||
+                       sess.drawn_distance != sess.camera_distance ||
+                       sess.drawn_target.x != sess.camera_target.x ||
+                       sess.drawn_target.y != sess.camera_target.y ||
+                       sess.drawn_target.z != sess.camera_target.z ||
+                       sess.drawn_w != want_w || sess.drawn_h != want_h;
+    ViewerTexture &cached = g_viewer_textures[buffer_id];
+    if (stale && !sess.scene.Empty()) {
+        std::vector<const fem::RenderMesh *> meshes;
+        meshes.reserve(sess.scene.items.size());
+        for (const view::Item &item : sess.scene.items) meshes.push_back(&item.mesh);
+        std::vector<fem::Annotation> labels;
+        labels.reserve(sess.scene.labels.size());
+        for (const view::Label &label : sess.scene.labels) {
+            labels.push_back(fem::Annotation{label.at, label.text,
+                                             {label.color[0], label.color[1], label.color[2]}});
+        }
+        cad::Vec3d low, high;
+        sess.scene.Bounds(&low, &high);
+        fem::MovieView look;
+        look.low = low;
+        look.high = high;
+        look.centre = cad::Vec3d{static_cast<double>(sess.camera_target.x),
+                                 static_cast<double>(sess.camera_target.y),
+                                 static_cast<double>(sess.camera_target.z)};
+        const cad::Vec3d span = high - low;
+        look.radius = 0.5 * std::sqrt(span.Dot(span));
+        if (!(look.radius > 0.0)) look.radius = 1.0;
+
+        fem::MovieOptions options;
+        options.width = want_w;
+        options.height = want_h;
+        // NEVER SUPERSAMPLED HERE. The films can afford it; a pane
+        // redrawn on every mouse move cannot, and at this size the edge
+        // crawl it fixes is not what anyone is looking at.
+        options.supersample = 1;
+        options.legend = sess.show_legend && sess.scene.has_field;
+        options.mesh_lines = sess.show_mesh_lines;
+        options.ghost_undeformed = false;
+        options.units = sess.scene.units;
+        options.caption = sess.scene.caption;
+        options.camera.yaw = static_cast<double>(sess.camera_yaw) * 3.14159265358979 / 180.0;
+        options.camera.pitch = static_cast<double>(sess.camera_pitch) * 3.14159265358979 / 180.0;
+        options.camera.distance = static_cast<double>(sess.camera_distance);
+        options.render.auto_range = false;
+        options.render.range_min = sess.scene.field_min;
+        options.render.range_max = sess.scene.field_max;
+
+        std::vector<unsigned char> pixels;
+        std::string error;
+        if (fem::RenderScene(meshes, labels, look, options, 0.0, sess.scene.field_min,
+                             sess.scene.field_max, &pixels, &error)) {
+            gfx::Image image{};
+            image.data = pixels.data();
+            image.width = want_w;
+            image.height = want_h;
+            image.mipmaps = 1;
+            image.format = gfx::kPixelFormatR8G8B8A8;
+            if (cached.texture.id != 0 &&
+                (cached.width != want_w || cached.height != want_h)) {
+                gfx::UnloadTexture(cached.texture);
+                cached.texture = gfx::Texture2D{};
+            }
+            if (cached.texture.id == 0) {
+                cached.texture = gfx::LoadTextureFromImage(image);
+                cached.width = want_w;
+                cached.height = want_h;
+            } else {
+                gfx::UpdateTexture(cached.texture, pixels.data());
+            }
+            sess.drawn_generation = sess.generation;
+            sess.drawn_time = sess.time;
+            sess.drawn_yaw = sess.camera_yaw;
+            sess.drawn_pitch = sess.camera_pitch;
+            sess.drawn_distance = sess.camera_distance;
+            sess.drawn_target = sess.camera_target;
+            sess.drawn_w = want_w;
+            sess.drawn_h = want_h;
+        }
+    }
+    if (cached.texture.id != 0 && !sess.scene.Empty()) {
+        gfx::DrawTexturePro(cached.texture,
+                            gfx::Rectangle{0, 0, static_cast<float>(cached.width),
+                                           static_cast<float>(cached.height)},
+                            gfx::Rectangle{x, y, view_w, view_h}, gfx::Vector2{0, 0}, 0.0f,
+                            gfx::White);
+    } else {
+        const char *empty = sess.script_path.empty()
+                                ? "nothing here yet -- bind a script with :ViewerBind <file.lua>"
+                                : "the script built an empty scene";
+        gfx::DrawTextEx(g_font, empty, gfx::Vector2{x + 12.0f, y + view_h * 0.5f}, font, 0,
+                        comment);
+    }
+
+    // --- The timeline ---------------------------------------------------------
+    if (has_time) {
+        // CONTRAST DERIVED FROM THE STRIP ITSELF, not taken from a
+        // paired highlight group. The strip is painted with StatusLineBg
+        // and the obvious partner is StatusLineFg -- and in this theme
+        // the two are near enough the same lightness that the play
+        // button came out invisible on its own background. A pairing
+        // that holds in one theme and not another is not a pairing worth
+        // relying on for something that must simply be *seen*, so the
+        // ink is black or white according to how light the strip is.
+        const gfx::Color strip_bg = ResolveHlGroup("StatusLineBg");
+        const double lightness = (0.299 * static_cast<double>(strip_bg.r) +
+                                  0.587 * static_cast<double>(strip_bg.g) +
+                                  0.114 * static_cast<double>(strip_bg.b)) /
+                                 255.0;
+        const gfx::Color strip_fg = lightness > 0.5
+                                        ? gfx::Color{40, 44, 52, 255}
+                                        : gfx::Color{225, 228, 234, 255};
+        gfx::DrawRectangleRec(timeline, strip_bg);
+        gfx::DrawLineEx(gfx::Vector2{x, y + view_h}, gfx::Vector2{x + w, y + view_h}, 1.0f, border);
+        // The play button: a triangle, or two bars when it is running.
+        const gfx::Color button_colour = strip_fg;
+        if (sess.playing) {
+            const float bar = play_button.width * 0.28f;
+            gfx::DrawRectangleRec(gfx::Rectangle{play_button.x + bar * 0.6f, play_button.y + 3.0f,
+                                                 bar, play_button.height - 6.0f},
+                                  button_colour);
+            gfx::DrawRectangleRec(
+                gfx::Rectangle{play_button.x + play_button.width - bar * 1.6f,
+                               play_button.y + 3.0f, bar, play_button.height - 6.0f},
+                button_colour);
+        } else {
+            gfx::DrawTriangle(gfx::Vector2{play_button.x + 4.0f, play_button.y + 3.0f},
+                              gfx::Vector2{play_button.x + 4.0f,
+                                           play_button.y + play_button.height - 3.0f},
+                              gfx::Vector2{play_button.x + play_button.width - 3.0f,
+                                           play_button.y + play_button.height * 0.5f},
+                              button_colour);
+        }
+        const float track_y = y + view_h + timeline_h * 0.5f;
+        gfx::DrawLineEx(gfx::Vector2{track_x, track_y},
+                        gfx::Vector2{track_x + track_w, track_y}, 2.0f, strip_fg);
+        const double span = sess.time_to - sess.time_from;
+        const float fraction =
+            span > 0.0 ? static_cast<float>((sess.time - sess.time_from) / span) : 0.0f;
+        const float handle_x = track_x + track_w * std::clamp(fraction, 0.0f, 1.0f);
+        gfx::DrawLineEx(gfx::Vector2{track_x, track_y}, gfx::Vector2{handle_x, track_y}, 2.0f,
+                        accent);
+        gfx::DrawCircle(static_cast<int>(handle_x), static_cast<int>(track_y), 5.0f, accent);
+        char stamp[64];
+        std::snprintf(stamp, sizeof(stamp), "%.4g", sess.time);
+        gfx::DrawTextEx(g_font, stamp,
+                        gfx::Vector2{track_x + track_w + 12.0f, track_y - font * 0.5f}, font, 0,
+                        strip_fg);
+    }
+
+    // --- The footer -----------------------------------------------------------
+    const std::string summary = g_editor.ViewerSummary(buffer_id);
+    gfx::DrawTextEx(g_font, summary.c_str(),
+                    gfx::Vector2{x + 8.0f, y + h - line_height - 2.0f}, font, 0,
+                    is_active ? normal : comment);
+}
+
 void DrawCadPane(const Pane &pane, CadSession &sess, float x, float y, float w, float h,
                  bool is_active) {
     const int buffer_id = pane.buffer_id;
@@ -37475,6 +37855,58 @@ void DrawCadPane(const Pane &pane, CadSession &sess, float x, float y, float w, 
     const float view_w = w - sidebar_w;
     const float view_h = h - line_height - 4.0f;
     if (view_w < 8.0f || view_h < 8.0f) return;
+
+    // --- Navigation (plans/CAD_FEM_PLAN.md Part L.1) ------------------------
+    //
+    // Left-drag orbits, middle-drag or shift-left-drag pans, the wheel
+    // zooms. Every branch ends in an Editor::Cad* call and writes nothing
+    // itself, which is the same rule Part F.5 set for the keyboard: there
+    // is nothing the mouse can do that a script cannot, and the pan a
+    // drag performs is the pan `cad.pan` performs.
+    //
+    // The delta is taken against the *previous frame's* pointer rather
+    // than against the position the drag started at, so that the whole
+    // gesture is a sum of the moves it was made of -- which is what lets
+    // it go through the incremental Orbit and Pan methods at all, instead
+    // of needing an absolute "set the camera to this" the surface does
+    // not have.
+    {
+        const gfx::Vector2 mouse = gfx::GetMousePosition();
+        const gfx::Rectangle viewport{view_x, y, view_w, view_h};
+        const bool inside = is_active && gfx::CheckCollisionPointRec(mouse, viewport);
+        const bool shift =
+            gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+        if (inside && (gfx::IsMouseButtonPressed(gfx::MouseButton::Left) ||
+                       gfx::IsMouseButtonPressed(gfx::MouseButton::Middle))) {
+            g_cad_camera_drag = {true, gfx::IsMouseButtonPressed(gfx::MouseButton::Middle) || shift,
+                                 buffer_id, mouse.x, mouse.y};
+        }
+        if (g_cad_camera_drag.active && g_cad_camera_drag.buffer_id == buffer_id) {
+            const bool still_down = g_cad_camera_drag.panning
+                                        ? (gfx::IsMouseButtonDown(gfx::MouseButton::Middle) ||
+                                           gfx::IsMouseButtonDown(gfx::MouseButton::Left))
+                                        : gfx::IsMouseButtonDown(gfx::MouseButton::Left);
+            if (still_down) {
+                const float dx = mouse.x - g_cad_camera_drag.last_x;
+                const float dy = mouse.y - g_cad_camera_drag.last_y;
+                if (g_cad_camera_drag.panning) {
+                    g_editor.CadPan(buffer_id, dx / std::max(1.0f, view_w),
+                                    dy / std::max(1.0f, view_h));
+                } else {
+                    g_editor.CadOrbit(buffer_id, -dx * 0.3f, -dy * 0.3f);
+                }
+            } else {
+                g_cad_camera_drag.active = false;
+            }
+            g_cad_camera_drag.last_x = mouse.x;
+            g_cad_camera_drag.last_y = mouse.y;
+        }
+        // The wheel is NOT handled here. Editor::WheelScroll already
+        // zooms a focused CAD pane (Mode::Cad), and a second handler
+        // would zoom twice for one notch -- which is exactly the sort of
+        // thing that reads as "the wheel is too sensitive" rather than
+        // as a bug.
+    }
 
     const float yaw = sess.camera_yaw * 3.14159265358979f / 180.0f;
     const float pitch = sess.camera_pitch * 3.14159265358979f / 180.0f;
@@ -41950,6 +42382,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     if (model3d_sess) {
         DrawModel3DPane(pane, *model3d_sess, x, content_y, w, content_h, is_active);
+        DrawPaneBorder(x, y, w, h, is_active);
+        return;
+    }
+
+    if (ViewerSession *viewer_sess = g_editor.GetViewerMutable(pane.buffer_id);
+        viewer_sess != nullptr) {
+        DrawViewerPane(pane, *viewer_sess, x, content_y, w, content_h, is_active);
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
@@ -51141,6 +51580,7 @@ int main(int argc, char **argv) {
     // runs the same way on both native and wasm builds.
     lua->DoString(kDefaultMod1Bindings);
     lua->DoString(kBuiltinEditHooks);
+    lua->DoString(kBuiltinViewer);
     lua->DoString(kBuiltinIcons);
     lua->DoString(kBuiltinSidebarPopout);
     lua->DoString(kBuiltinRightSidebarPanes);

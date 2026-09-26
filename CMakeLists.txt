@@ -439,6 +439,7 @@ add_library(mep_core STATIC
     src/fem_contact.cpp
     src/fem_render.cpp
     src/fem_movie.cpp
+    src/view_scene.cpp
     src/fem_animate.cpp
     src/fem_probe.cpp
     src/fem_adapt.cpp
@@ -1180,6 +1181,22 @@ target_include_directories(mep-nafems-examples PRIVATE src)
 target_compile_options(mep-nafems-examples PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-nafems-examples PRIVATE ${MEP_SANITIZE_FLAGS})
 
+add_executable(mep-view-scene-test EXCLUDE_FROM_ALL src/view_scene_test.cpp src/view_scene.cpp
+    src/fem_movie.cpp src/fem_render.cpp src/fem_viz.cpp src/fem_animate.cpp src/fem_modal.cpp
+    src/fem_static.cpp src/fem_result.cpp src/jpeg_codec.cpp src/mov_container.cpp
+    src/png_codec.cpp src/deflate.cpp
+    src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp src/fem_model.cpp
+    src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-view-scene-test PRIVATE src)
+target_compile_options(mep-view-scene-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-view-scene-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-view-scene-test)
+
 add_executable(mep-fem-movie-test EXCLUDE_FROM_ALL src/fem_movie_test.cpp src/fem_movie.cpp
     src/fem_render.cpp src/fem_viz.cpp src/fem_animate.cpp src/fem_modal.cpp src/fem_static.cpp
     src/fem_result.cpp src/jpeg_codec.cpp src/mov_container.cpp src/png_codec.cpp src/deflate.cpp
@@ -1889,7 +1906,14 @@ if(NOT EMSCRIPTEN)
         # Part F.5: the CAD part pane, driven through a live mep's agent
         # socket. Same shape and same requirement as the sketcher's live
         # test above: `./mep-cad-live-test ./mep`.
-        add_executable(mep-cad-live-test EXCLUDE_FROM_ALL src/cad_live_test.cpp)
+        add_executable(mep-viewer-live-test EXCLUDE_FROM_ALL src/viewer_live_test.cpp)
+        target_include_directories(mep-viewer-live-test PRIVATE src)
+        target_compile_options(mep-viewer-live-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+        target_link_options(mep-viewer-live-test PRIVATE ${MEP_SANITIZE_FLAGS})
+        target_link_libraries(mep-viewer-live-test PRIVATE Threads::Threads)
+        add_dependencies(tests mep-viewer-live-test)
+
+add_executable(mep-cad-live-test EXCLUDE_FROM_ALL src/cad_live_test.cpp)
         target_include_directories(mep-cad-live-test PRIVATE src)
         target_compile_options(mep-cad-live-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
         target_link_options(mep-cad-live-test PRIVATE ${MEP_SANITIZE_FLAGS})

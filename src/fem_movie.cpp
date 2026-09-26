@@ -533,9 +533,41 @@ MovieView FitView(const AnalysisModel &model) {
     return view;
 }
 
+namespace {
+// Everything below is one routine; the two public entry points are thin
+// wrappers over it, so a scene and a single-result film cannot drift
+// apart in how they are drawn.
+bool RenderMany(const std::vector<const RenderMesh *> &meshes, const RenderMesh *ghost,
+                const std::vector<Annotation> &labels, const MovieView &view,
+                const MovieOptions &options, double turn, double frame_min, double frame_max,
+                std::vector<unsigned char> *out, std::string *error);
+}  // namespace
+
+bool RenderScene(const std::vector<const RenderMesh *> &meshes,
+                 const std::vector<Annotation> &labels, const MovieView &view,
+                 const MovieOptions &options, double turn, double frame_min, double frame_max,
+                 std::vector<unsigned char> *out, std::string *error) {
+    std::vector<const RenderMesh *> solids;
+    solids.reserve(meshes.size());
+    for (const RenderMesh *mesh : meshes) {
+        if (mesh != nullptr) solids.push_back(mesh);
+    }
+    return RenderMany(solids, nullptr, labels, view, options, turn, frame_min, frame_max, out,
+                      error);
+}
+
 bool RenderFrame(const RenderMesh &mesh, const RenderMesh *ghost, const MovieView &view,
                  const MovieOptions &options, double turn, double frame_min, double frame_max,
                  std::vector<unsigned char> *out, std::string *error) {
+    return RenderMany({&mesh}, ghost, {}, view, options, turn, frame_min, frame_max, out, error);
+}
+
+namespace {
+
+bool RenderMany(const std::vector<const RenderMesh *> &meshes, const RenderMesh *ghost,
+                const std::vector<Annotation> &labels, const MovieView &view,
+                const MovieOptions &options, double turn, double frame_min, double frame_max,
+                std::vector<unsigned char> *out, std::string *error) {
     if (out == nullptr) {
         if (error != nullptr) *error = "RenderFrame needs somewhere to put the pixels";
         return false;
@@ -638,23 +670,43 @@ bool RenderFrame(const RenderMesh &mesh, const RenderMesh *ghost, const MovieVie
         }
     }
 
-    for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
-        DrawClipped(&image, basis, vertex_of(mesh, mesh.indices[t + 0]),
-                    vertex_of(mesh, mesh.indices[t + 1]), vertex_of(mesh, mesh.indices[t + 2]));
+    // The solids of every mesh first, then the lines of every mesh, and
+    // not mesh by mesh: a line belonging to the first item has to be
+    // hidden by the solid of the second, and drawing each item complete
+    // in turn would let the first item's wireframe show through
+    // everything drawn after it.
+    for (const RenderMesh *m : meshes) {
+        for (size_t t = 0; t + 2 < m->indices.size(); t += 3) {
+            DrawClipped(&image, basis, vertex_of(*m, m->indices[t + 0]),
+                        vertex_of(*m, m->indices[t + 1]), vertex_of(*m, m->indices[t + 2]));
+        }
     }
     if (options.mesh_lines) {
-        const auto edges = unique_edges(mesh);
-        if (static_cast<int>(edges.size()) <= room) {
-            for (const auto &edge : edges) {
-                DrawLine(&image, basis, vertex_of(mesh, edge.first), vertex_of(mesh, edge.second),
-                         0.08, 0.09, 0.11, 0.5);
+        int total = 0;
+        std::vector<std::vector<std::pair<unsigned int, unsigned int>>> per_mesh;
+        per_mesh.reserve(meshes.size());
+        for (const RenderMesh *m : meshes) {
+            per_mesh.push_back(unique_edges(*m));
+            total += static_cast<int>(per_mesh.back().size());
+        }
+        // Counted over the whole scene, not per item: ten items of a
+        // hundred edges each is a thousand edges on the screen however
+        // few any one of them has.
+        if (total <= room) {
+            for (size_t i = 0; i < meshes.size(); ++i) {
+                for (const auto &edge : per_mesh[i]) {
+                    DrawLine(&image, basis, vertex_of(*meshes[i], edge.first),
+                             vertex_of(*meshes[i], edge.second), 0.08, 0.09, 0.11, 0.5);
+                }
             }
         }
     }
-    for (size_t l = 0; l + 1 < mesh.line_indices.size(); l += 2) {
-        const Vertex a = vertex_of(mesh, mesh.line_indices[l + 0]);
-        const Vertex b = vertex_of(mesh, mesh.line_indices[l + 1]);
-        DrawLine(&image, basis, a, b, a.r, a.g, a.b, 1.0);
+    for (const RenderMesh *m : meshes) {
+        for (size_t l = 0; l + 1 < m->line_indices.size(); l += 2) {
+            const Vertex a = vertex_of(*m, m->line_indices[l + 0]);
+            const Vertex b = vertex_of(*m, m->line_indices[l + 1]);
+            DrawLine(&image, basis, a, b, a.r, a.g, a.b, 1.0);
+        }
     }
 
     std::vector<unsigned char> pixels =
@@ -666,12 +718,40 @@ bool RenderFrame(const RenderMesh &mesh, const RenderMesh *ghost, const MovieVie
     final_image.width = options.width;
     final_image.height = options.height;
     final_image.rgba = std::move(pixels);
+    // A LABEL IS DRAWN AT THE OUTPUT RESOLUTION AND DEPTH-TESTED AGAINST
+    // NOTHING. It is an annotation, not geometry: hiding it behind the
+    // part it names would defeat the only thing it is for. What it does
+    // respect is the camera -- a label behind the eye is not drawn at
+    // all, and one outside the frame is clipped by the plotting.
+    for (const Annotation &label : labels) {
+        const Vec3d rel{label.at.x - basis.eye.x, label.at.y - basis.eye.y,
+                        label.at.z - basis.eye.z};
+        Vertex v;
+        v.cx = Dot(rel, basis.right);
+        v.cy = Dot(rel, basis.up);
+        v.cz = Dot(rel, basis.forward);
+        if (v.cz < basis.near_plane) continue;
+        Project(&v, basis, width, height);
+        const int scale = std::max(1, options.height / 260);
+        const int x = static_cast<int>(std::lround(v.sx / supersample)) + 5 * scale;
+        const int y = static_cast<int>(std::lround(v.sy / supersample)) - kGlyphH * scale / 2;
+        // A tick at the point itself, so the text is tied to somewhere
+        // rather than floating near it.
+        for (int d = -2 * scale; d <= 2 * scale; ++d) {
+            PlotBlend(&final_image, static_cast<int>(std::lround(v.sx / supersample)) + d,
+                      static_cast<int>(std::lround(v.sy / supersample)),
+                      static_cast<double>(label.color[0]) / 255.0,
+                      static_cast<double>(label.color[1]) / 255.0,
+                      static_cast<double>(label.color[2]) / 255.0, 0.9);
+        }
+        DrawText(&final_image, x, y, scale, static_cast<double>(label.color[0]) / 255.0,
+                 static_cast<double>(label.color[1]) / 255.0,
+                 static_cast<double>(label.color[2]) / 255.0, label.text);
+    }
     if (options.legend) DrawLegend(&final_image, options, frame_min, frame_max);
     *out = std::move(final_image.rgba);
     return true;
 }
-
-namespace {
 
 // Builds the drawable surface for one frame, plus the undeformed ghost.
 bool BuildFrameMesh(const AnalysisModel &model, const std::vector<Vec3d> &displacement,

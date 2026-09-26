@@ -77,6 +77,19 @@ public:
      */
     void CallRefWithString(int ref, const std::string &arg);
     /**
+     * @brief Calls a stored Lua function with one number argument.
+     * @param ref Registry reference from a `mep.*` binding that took a function.
+     * @param arg The number to pass.
+     * @param out_error Set to the Lua error text when the call fails, or cleared.
+     * @return True if it ran without raising.
+     *
+     * Part L.3's `view.on_frame`: the viewer calls this every time the
+     * time changes. Reports the error to the caller rather than only to
+     * the status line, because a viewer wants to *show* why its scene is
+     * empty rather than flash it once and move on.
+     */
+    bool CallRefWithNumber(int ref, double arg, std::string *out_error);
+    /**
      * @brief Invokes ref with a single integer argument (job stdout/stderr lines, exit codes, ...),
      * reporting any error through the editor's status line. No-op if ref is LUA_NOREF (0 or -1).
      * @param ref Registry reference of the function to call.

@@ -1,0 +1,169 @@
+#+TITLE: The viewer
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="83">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+A viewer is a pane that shows a *scene*: geometry, results, annotation --
+whatever a Lua script puts in it. It has a camera you turn with the mouse
+and a timeline you scrub, and the script says what is in the scene at a
+given time.
+
+It is a different thing from the CAD pane. That one shows one document --
+a feature tree and the body it rebuilds to -- and its sidebar is that
+tree. A viewer shows whatever the script builds, which is routinely
+several things at once and often nothing the kernel has heard of: a
+result coloured by a field, a mode shape at a phase, a probe marker, a
+caption.
+
+* Opening one, step by step
+
+The shortest thing that works, from the repository root:
+
+#+begin_example
+:Viewer examples/viewer_modes.lua
+#+end_example
+
+That opens a viewer *in the current pane*, binds that script to it, runs
+it, and shows the scene. Paths are relative to where mep was started,
+the same as =:e=.
+
+To get the script beside it -- which is the point -- split and open it:
+
+#+begin_example
+:vsplit examples/viewer_modes.lua
+#+end_example
+
+Now edit the script and press =:w=. The viewer rebuilds. That is the
+whole loop: there is nothing else to press.
+
+** If you are already editing the script
+
+=%= means the file in the current buffer, so:
+
+#+begin_example
+:e examples/viewer_modes.lua
+:Viewer %
+:vsplit examples/viewer_modes.lua
+#+end_example
+
+The viewer takes over the pane the script was in, so the third line
+brings the script back beside it. (=%= is expanded by =:Viewer= and
+=:ViewerBind= only -- no other command in mep expands it yet.)
+
+** Binding a script to a viewer that is already open
+
+#+begin_example
+:Viewer                        an empty viewer, nothing bound
+:ViewerBind path/to/scene.lua  bind a script to *this* viewer, and run it
+#+end_example
+
+=:ViewerBind= acts on the viewer in the current pane, so the cursor has
+to be in one. In any other pane it says so rather than guessing.
+
+=:ViewerRun= runs the bound script again without saving; so does =r=
+with the viewer focused. Useful when the script reads a file that
+changed underneath it.
+
+** When nothing appears
+
+The line under the viewer is its status: how many items the scene has,
+how many triangles, the time, the script's name, and -- if the last run
+went wrong -- why.
+
+| ~nothing here yet -- bind a script~ | no script is bound; use =:ViewerBind= |
+| ~the script did not run: <path>~ | the path is wrong, or the file has a syntax error |
+| ~on_frame: ...~ | the frame callback raised; the message is Lua's own |
+| ~0 items~ with no message | the script ran and built nothing -- see the ~on_frame~ rule below |
+
+* Moving about
+
+| drag | turn the scene |
+| shift-drag, or middle-drag | pan |
+| wheel | zoom |
+| drag the slider | move through time |
+
+And from the keyboard, when the viewer is focused:
+
+| arrows | orbit |
+| shift-arrows | pan |
+| ~=~ / ~-~ | zoom in and out |
+| ~f~ | frame everything |
+| ~p~ | play and pause |
+| ~[~ / ~]~ | step back and forward in time |
+| ~w~ | the mesh lines on and off |
+| ~l~ | the colour bar on and off |
+| ~r~ | run the bound script again |
+| ~Esc~ | back to normal mode |
+
+* Writing a scene
+
+A script has a global ~view~ table. The whole of it:
+
+#+begin_src lua
+view.part{document = d, body = 0, color = view.colors.steel}
+view.result{result = r, field = "von_mises", scale = 200}
+view.mode{result = m, mode = 0, phase = 1.2, amplitude = 0.1}
+view.mesh{positions = {0,0,0, 1,0,0, 0,1,0}, indices = {1,2,3}}
+
+view.line({0,0,0}, {1,0,0}, view.colors.red)
+view.point({1,0,0}, 0.2)
+view.label({1,0,0}, "PROBE A")
+view.axes(1.0)
+view.caption("WHAT THIS IS")
+
+view.camera{yaw = 35, pitch = 30, distance = 8}
+view.frame_all()
+view.clear()
+view.info()
+#+end_src
+
+~positions~ are three numbers to a vertex and ~indices~ are *one-based*,
+because a Lua script indexes its own table from one; taking them as
+zero-based would draw a mesh quietly wrong rather than failing.
+
+** Time
+
+#+begin_src lua
+view.time_range(0, 2.5)
+view.on_frame(function(t)
+  view.result{result = r, field = "von_mises", scale = 200 * t}
+end)
+#+end_src
+
+~on_frame~ is called whenever the time moves, with a *cleared* scene. So
+it is written as "what is here now" rather than as a change from what was
+here before -- and *everything the scene contains has to be built inside
+it*. A script that adds a label outside ~on_frame~ will see it vanish the
+first time the slider moves.
+
+Without ~on_frame~ a viewer has no timeline at all and simply shows what
+the script built.
+
+** Where the numbers come from
+
+A viewer script runs in the same Lua as everything else, so it builds its
+geometry and its results through [[file:cad-fem.html][the CAD and FEM surface]] --
+~mep.part_*~ and ~mep.fem_*~ -- and hands the *handles* to ~view.*~. The
+scene never copies a mesh through a Lua table unless you ask it to with
+~view.mesh~.
+
+* From an agent
+
+The stateful half is on the agent socket: ~view.new~, ~view.bind~,
+~view.run~, ~view.camera~, ~view.time~ and ~view.info~. Building a scene
+is not, and deliberately: a scene is built by a script, so an agent that
+wants a particular one writes the script and binds it -- which is what a
+person does too.
+
+~view.on_frame~ is the one call that is Lua-only, because it takes a
+function, and a function is not a JSON value.
+
+* How it draws
+
+Through the same software rasteriser that writes the films (~fem.movie~),
+into a texture that is redrawn only when the camera, the time or the
+scene changes -- and at half resolution while a drag is in progress. One
+renderer for the pane, the still and the film means the picture you turn
+around is the picture you export, which two renderers could not promise.

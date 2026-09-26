@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The viewer</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Documents and media">
+<meta name="help-order" content="83">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The viewer</h1>
+<h1>What it is</h1>
+<p>A viewer is a pane that shows a <b>scene</b>: geometry, results, annotation --
+whatever a Lua script puts in it. It has a camera you turn with the mouse
+and a timeline you scrub, and the script says what is in the scene at a
+given time.</p>
+<p>It is a different thing from the CAD pane. That one shows one document --
+a feature tree and the body it rebuilds to -- and its sidebar is that
+tree. A viewer shows whatever the script builds, which is routinely
+several things at once and often nothing the kernel has heard of: a
+result coloured by a field, a mode shape at a phase, a probe marker, a
+caption.</p>
+<h1>Opening one, step by step</h1>
+<p>The shortest thing that works, from the repository root:</p>
+<pre>:Viewer examples/viewer_modes.lua</pre>
+<p>That opens a viewer <b>in the current pane</b>, binds that script to it, runs
+it, and shows the scene. Paths are relative to where mep was started,
+the same as <code>:e</code>.</p>
+<p>To get the script beside it -- which is the point -- split and open it:</p>
+<pre>:vsplit examples/viewer_modes.lua</pre>
+<p>Now edit the script and press <code>:w</code>. The viewer rebuilds. That is the
+whole loop: there is nothing else to press.</p>
+<h2>If you are already editing the script</h2>
+<p><code>%</code> means the file in the current buffer, so:</p>
+<pre>:e examples/viewer_modes.lua
+:Viewer %
+:vsplit examples/viewer_modes.lua</pre>
+<p>The viewer takes over the pane the script was in, so the third line
+brings the script back beside it. (<code>%</code> is expanded by <code>:Viewer</code> and
+<code>:ViewerBind</code> only -- no other command in mep expands it yet.)</p>
+<h2>Binding a script to a viewer that is already open</h2>
+<pre>:Viewer                        an empty viewer, nothing bound
+:ViewerBind path/to/scene.lua  bind a script to *this* viewer, and run it</pre>
+<p><code>:ViewerBind</code> acts on the viewer in the current pane, so the cursor has
+to be in one. In any other pane it says so rather than guessing.</p>
+<p><code>:ViewerRun</code> runs the bound script again without saving; so does <code>r</code>
+with the viewer focused. Useful when the script reads a file that
+changed underneath it.</p>
+<h2>When nothing appears</h2>
+<p>The line under the viewer is its status: how many items the scene has,
+how many triangles, the time, the script's name, and -- if the last run
+went wrong -- why.</p>
+<table>
+<tr><td><code>nothing here yet -- bind a script</code></td><td>no script is bound; use <code>:ViewerBind</code></td></tr>
+<tr><td><code>the script did not run: &lt;path&gt;</code></td><td>the path is wrong, or the file has a syntax error</td></tr>
+<tr><td><code>on_frame: ...</code></td><td>the frame callback raised; the message is Lua's own</td></tr>
+<tr><td><code>0 items</code> with no message</td><td>the script ran and built nothing -- see the <code>on_frame</code> rule below</td></tr>
+</table>
+<h1>Moving about</h1>
+<table>
+<tr><td>drag</td><td>turn the scene</td></tr>
+<tr><td>shift-drag, or middle-drag</td><td>pan</td></tr>
+<tr><td>wheel</td><td>zoom</td></tr>
+<tr><td>drag the slider</td><td>move through time</td></tr>
+</table>
+<p>And from the keyboard, when the viewer is focused:</p>
+<table>
+<tr><td>arrows</td><td>orbit</td></tr>
+<tr><td>shift-arrows</td><td>pan</td></tr>
+<tr><td><code>=</code> / <code>-</code></td><td>zoom in and out</td></tr>
+<tr><td><code>f</code></td><td>frame everything</td></tr>
+<tr><td><code>p</code></td><td>play and pause</td></tr>
+<tr><td><code>[</code> / <code>]</code></td><td>step back and forward in time</td></tr>
+<tr><td><code>w</code></td><td>the mesh lines on and off</td></tr>
+<tr><td><code>l</code></td><td>the colour bar on and off</td></tr>
+<tr><td><code>r</code></td><td>run the bound script again</td></tr>
+<tr><td><code>Esc</code></td><td>back to normal mode</td></tr>
+</table>
+<h1>Writing a scene</h1>
+<p>A script has a global <code>view</code> table. The whole of it:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">view.part{document = d, body = <span class="tok-cyan">0</span>, color = view.colors.steel<span class="tok-blue">}</span>
+view.<span class="tok-blue">result</span>{result = r, field = <span class="tok-green">"von_mises"</span>, scale = <span class="tok-cyan">200</span>}
+view.mode<span class="tok-blue">{</span>result = m, mode = <span class="tok-cyan">0</span>, phase = <span class="tok-cyan">1.2</span>, amplitude = <span class="tok-cyan">0.1</span><span class="tok-blue">}</span>
+view.mesh{positions = <span class="tok-blue">{</span><span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>, <span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>, <span class="tok-cyan">0</span>,<span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>}, indices = {<span class="tok-cyan">1</span>,<span class="tok-cyan">2</span>,<span class="tok-cyan">3</span>}<span class="tok-blue">}</span>
+
+view.line({<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>}, <span class="tok-blue">{</span><span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span><span class="tok-blue">}</span>, view.colors.red)
+view.<span class="tok-blue">point</span>({<span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span><span class="tok-blue">}</span>, <span class="tok-cyan">0.2</span>)
+view.label(<span class="tok-blue">{</span><span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span><span class="tok-blue">}</span>, <span class="tok-green">"PROBE A"</span>)
+view.<span class="tok-blue">axes</span>(<span class="tok-cyan">1.0</span>)
+view.caption(<span class="tok-green">"WHAT THIS IS"</span>)
+
+view.camera{yaw = <span class="tok-cyan">35</span>, pitch = <span class="tok-cyan">30</span>, distance = <span class="tok-cyan">8</span><span class="tok-blue">}</span>
+view.<span class="tok-blue">frame_all</span>()
+view.clear()
+view.<span class="tok-blue">info</span>()</code></pre></div>
+<p><code>positions</code> are three numbers to a vertex and <code>indices</code> are <b>one-based</b>,
+because a Lua script indexes its own table from one; taking them as
+zero-based would draw a mesh quietly wrong rather than failing.</p>
+<h2>Time</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">view.time_range(<span class="tok-cyan">0</span>, <span class="tok-cyan">2.5</span>)
+view.on_frame(<span class="tok-purple">function</span>(t)
+  view.result{result = r, field = <span class="tok-green">"von_mises"</span>, scale = <span class="tok-cyan">200</span> * t<span class="tok-blue">}</span>
+<span class="tok-purple">end</span>)</code></pre></div>
+<p><code>on_frame</code> is called whenever the time moves, with a <b>cleared</b> scene. So
+it is written as "what is here now" rather than as a change from what was
+here before -- and *everything the scene contains has to be built inside
+it*. A script that adds a label outside <code>on_frame</code> will see it vanish the
+first time the slider moves.</p>
+<p>Without <code>on_frame</code> a viewer has no timeline at all and simply shows what
+the script built.</p>
+<h2>Where the numbers come from</h2>
+<p>A viewer script runs in the same Lua as everything else, so it builds its
+geometry and its results through <a href="cad-fem.html">the CAD and FEM surface</a> --
+<code>mep.part_*</code> and <code>mep.fem_*</code> -- and hands the <b>handles</b> to <code>view.*</code>. The
+scene never copies a mesh through a Lua table unless you ask it to with
+<code>view.mesh</code>.</p>
+<h1>From an agent</h1>
+<p>The stateful half is on the agent socket: <code>view.new</code>, <code>view.bind</code>,
+<code>view.run</code>, <code>view.camera</code>, <code>view.time</code> and <code>view.info</code>. Building a scene
+is not, and deliberately: a scene is built by a script, so an agent that
+wants a particular one writes the script and binds it -- which is what a
+person does too.</p>
+<p><code>view.on_frame</code> is the one call that is Lua-only, because it takes a
+function, and a function is not a JSON value.</p>
+<h1>How it draws</h1>
+<p>Through the same software rasteriser that writes the films (<code>fem.movie</code>),
+into a texture that is redrawn only when the camera, the time or the
+scene changes -- and at half resolution while a drag is in progress. One
+renderer for the pane, the still and the film means the picture you turn
+around is the picture you export, which two renderers could not promise.</p>
+</body>
+</html>

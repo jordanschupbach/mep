@@ -62,6 +62,25 @@ public:
     // is not that.
     bool Call(const std::string &method, const Json &params, Json *out, std::string *error);
 
+    // What a handle actually holds, for a caller that needs the values
+    // rather than a JSON rendering of them.
+    //
+    // ADDED FOR THE VIEWER (Part L), and only for it. Everything else on
+    // this surface deliberately speaks JSON, because everything else is
+    // an *adapter* -- Lua, the socket, MCP -- and a shared JSON shape is
+    // what keeps the three of them identical. The viewer is not an
+    // adapter: it draws the model, and serialising a hundred thousand
+    // nodes into JSON so that it can parse them back would be absurd.
+    // Read-only pointers, valid until the handle is closed.
+    struct ResultView {
+        const fem::AnalysisModel *model = nullptr;
+        const fem::StaticResult *statics = nullptr;
+        const fem::ModalResult *modes = nullptr;
+        bool has_modes = false;
+    };
+    bool LookUpResult(int handle, ResultView *out) const;
+    const cad::Model *LookUpDocument(int handle) const;
+
     // How many of each thing is open, for tests and for `*.list`.
     int DocumentCount() const;
     int StudyCount() const;
@@ -104,6 +123,26 @@ private:
     MeshRecord *MeshOf(const Json &params, std::string *error);
     ResultRecord *ResultOf(const Json &params, std::string *error);
 };
+
+// A field by the name a caller typed: the display names
+// (`fem::ScalarFieldName`) and the compact aliases (`von_mises`,
+// `stress_yy`) alike. Exposed because the viewer takes a field name from
+// a script and has to resolve it the same way `fem.field` does -- two
+// resolvers would mean two sets of accepted spellings.
+fem::ScalarField FieldByName(const std::string &name, bool *ok);
+
+// THE session. One per process, shared by every surface in it.
+//
+// There used to be two: `agent_rpc.cpp` held one and `lua_env.cpp` held
+// another, so a document built by `mep.part_new` in Lua was invisible to
+// `part.list` over the socket and the reverse. The comment on the first
+// of them said exactly what the intent was -- "ONE PER PROCESS, NOT ONE
+// PER CONNECTION... a document an agent built is a thing a human in the
+// same editor should be able to mesh" -- and the second singleton
+// silently made it untrue. Part L's viewer is what forced the issue: its
+// script runs in Lua and the handles it builds have to be the ones the
+// scene builder resolves.
+Session &SharedSession();
 
 }  // namespace cadfem
 

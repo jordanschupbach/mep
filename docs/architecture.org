@@ -70,6 +70,94 @@ implemented here rather than bound to a library:
 | Video and audio | =mov_container.cpp=, =wav_doc.cpp= |
 | Terminal | =vterm.cpp= |
 
+* CAD and finite elements
+
+A second modeler, in the CAD lineage rather than the polygonal one
+=model3d_doc.cpp= implements, with a finite-element stack under it. See
+[[file:../plans/CAD_FEM_PLAN.md][the plan]], which records what is built
+and what is not: Part 0 (foundations), Part A (curves and surfaces),
+Part B (the boundary representation), Part C (intersections, the
+surface-surface marcher, and boolean operations) and Part D (the
+sketcher: geometry, constraint solver, diagnosis, profile extraction and
+the interactive =Mode::CadSketch= pane) and Part E (the feature tree,
+extrude, revolve, loft, sweep, fillets and chamfers on straight edges
+between planar faces, offset/draft/shell/thicken on polyhedra, patterns,
+datums and assemblies) and Part F (the native =.mepcad= document, STEP in
+and out, IGES in, DXF, STL/OBJ/glTF, drawing views and the =Mode::Cad=
+pane) are in the tree. Meshing and the physics are not.
+
+The two modelers share almost nothing on purpose. =MeshData= is float32
+parallel arrays with no notion of a face; exact geometry needs doubles,
+analytic and NURBS surfaces, and topology that survives a rebuild. They
+are designed to meet at exactly one place, the tessellator, and that
+bridge is one-way.
+
+| Area | Files |
+|------+-------|
+| Double-precision math core | =cad_math.{h,cpp}= — vectors (including homogeneous =Vec4d=), matrices, intervals, the per-entity tolerance model, Newton/Brent/Levenberg-Marquardt, one-sided-Jacobi SVD with rank and null space, Gauss-Legendre and adaptive Gauss-Kronrod quadrature |
+| Exact geometric predicates | =cad_predicates.{h,cpp}= — filtered-then-exact orientation, in-circle and in-sphere over Shewchuk expansion arithmetic |
+| B-spline and NURBS engine | =cad_nurbs.{h,cpp}= — knot vectors, basis functions, evaluation, knot insertion/removal, degree elevation, Bézier decomposition, interpolation and approximation (Piegl & Tiller, algorithm-by-algorithm) |
+| Curves | =cad_curve.{h,cpp}= — =Curve3= over Line/Circle/Ellipse/NURBS, point inversion, adaptive tessellation |
+| Surfaces | =cad_surface.{h,cpp}= — =Surface= over Plane/Cylinder/Cone/Sphere/Torus/NURBS plus extrusion, revolution, ruled and offset; loft and sweep (rotation-minimizing frames); the fundamental forms and curvatures the mesher needs |
+| Mass properties | =cad_mass.{h,cpp}= — volume, area, centroid and inertia by the divergence theorem |
+| Boundary representation | =cad_topology.{h,cpp}= — Body/Shell/Face/Loop/CoEdge/Edge/Vertex as flat arrays, plus box, cylinder, sphere and torus primitives |
+| Parameter-space curves | =cad_pcurve.{h,cpp}= — each coedge's edge curve in its face's (u,v), including the seam and pole cases |
+| Validity checking | =cad_validate.{h,cpp}= — structural, combinatorial (Euler-Poincaré) and geometric checks, with categorised diagnostics |
+| Tessellation | =cad_tessellate.{h,cpp}= — watertight triangle meshes by Delaunay in parameter space, over a shared edge sampling; the triangulator uses a vertex at infinity rather than a super-triangle, since a sliver's circumcircle is unbounded relative to the points and a super-triangle inside one leaves holes in the middle of the mesh |
+| Persistent naming | =cad_naming.{h,cpp}= — recognising an entity again after a parametric rebuild, and reporting when it cannot |
+| Intersections | =cad_intersect.{h,cpp}= — curve/curve, curve/surface, the closed-form surface/surface table for the quadric families, and the marching solver for everything else |
+| Point classification | =cad_classify.{h,cpp}= — inside/outside/boundary against a solid, by ray crossing parity |
+| Planar arrangements | =cad_arrangement.{h,cpp}= — curves cut at every crossing into a half-edge structure, read back as the regions they bound, with holes attached; shared by the boolean and the sketcher |
+| Booleans | =cad_boolean.{h,cpp}= — union, intersection and difference by imprint/classify/stitch, over an arrangement built in each face's own parameter space |
+| Sketch geometry | =cad_sketch.{h,cpp}= — 2D geometry on a plane that may be attached to a model face, plus profile extraction with nested holes |
+| Feature modeling | =cad_feature.{h,cpp}= — a parametric feature tree replayed from the first dirty feature, the profile-to-solid constructions (extrude, revolve, loft, sweep) each with Add/Cut/Intersect through the boolean, and blends (fillet, chamfer) done as local trim-and-stitch surgery rather than as a boolean, because a corner cutter is made almost entirely of the degeneracies the boolean does not handle |
+| Direct modelling | =cad_modify.{h,cpp}= — offset, draft, shell and thicken, which are one routine: change which surface some faces lie on, then re-solve each corner as the meeting of its three faces, leaving the topology alone |
+| Patterns | =cad_pattern.{h,cpp}= — linear, grid, circular, mirror and sketch-driven patterns, all of them a list of transforms handed to one copy routine; mirroring turns each face round, and which half of that correction a face needs depends on whether its surface's parameters survived the reflection |
+| STEP | =cad_step.h= with =cad_step_parse.cpp= (the ISO 10303-21 grammar, which knows nothing about geometry), =cad_step_read.cpp= (entities onto the B-rep) and =cad_step_write.cpp= (AP214 out, analytic surfaces kept analytic) |
+| Other interchange | =cad_exchange.h= with =cad_exchange_mesh.cpp= (STL/OBJ/glTF), =cad_exchange_dxf.cpp= (2D sketches, geometry only — DXF cannot carry constraints) and =cad_exchange_iges.cpp= (IGES B-rep in; not written, since STEP says the same things better) |
+| Drawing views | =cad_drawing.{h,cpp}= — edges projected with hidden-line removal by sampling against the tessellation, out as SVG |
+| The CAD pane | =Mode::Cad= and =CadSession= in =editor.h=; the feature-tree outliner and the software-shaded view in =main.cpp= — the same =Editor::Cad*= methods the =mep.cad_*= Lua functions and the =cad.*= agent-RPC methods call |
+| Native CAD document | =cad_doc.{h,cpp}= — =.mepcad=: the feature tree, its sketches and its persistent names as versioned text. The only lossless format, because it stores the operations rather than the body they produced |
+| Datums and assemblies | =cad_assembly.{h,cpp}= — datum points/axes/planes, part instances and mates, solved as least squares over quaternion placements by the same dual-number machinery the sketcher uses; the degree-of-freedom count comes from the Jacobian's rank. Parts may be feature trees, so a dimension change rebuilds them and the mates re-find their faces by name; sub-assemblies are placed rigidly and solved innermost first |
+| Exact derivatives | =cad_dual.h= — forward-mode dual numbers, so writing a residual writes its Jacobian row; shared by the sketch solver and the assembly solver |
+| Constraint solver | =cad_constraint.{h,cpp}= — sixteen constraint kinds as least squares with dual-number Jacobians, cluster decomposition, DOF and null-space diagnosis, redundant-versus-conflicting discrimination, dragging |
+| The sketch pane | =Mode::CadSketch= and =CadSketchSession= in =editor.h=; input in =editor.cpp=, drawing and the mouse in =main.cpp= — the same =Editor::CadSketch*= methods the =mep.sketch_*= Lua functions and the =sketch.*= agent-RPC methods call, so a sketch drawn by hand and one built by a script take the same path |
+| Meshing | =fem_mesh.h= with =fem_mesh_size.cpp= (an octree sizing field seeded from curvature, thin walls and local overrides, graded by a Lipschitz condition), =fem_mesh_surface.cpp= (per-face Delaunay refinement in the face's own parameters, under the metric its first fundamental form induces, with shared edges meshed once) and =fem_mesh_volume.cpp= (Bowyer–Watson tetrahedralisation and quality measurement; boundary recovery still to come) |
+| Sparse linear algebra | =num_sparse.{h,cpp}= — CSR, fill-reducing orderings, sparse =LDL^T=, IC(0), CG, GMRES |
+| FEM model and solver | =fem_model.{h,cpp}= (mesh, materials, constraints, loads, JSON), =fem_solve.{h,cpp}= (Hex8 elasticity, assembly, direct and iterative solution, stress recovery) |
+| Result visualization | =fem_viz.{h,cpp}= — surface extraction, colour maps, deformed-shape meshes |
+| The solver process | =fem_server.cpp= → the =mep-fem= binary |
+
+=mep-fem= is a separate process for the same reasons the language servers
+are: =src/job.h= only ever fires callbacks on the main thread so editor
+state needs no synchronization, and a solve is the one operation here that
+can legitimately run for minutes and allocate gigabytes. It speaks
+JSON-RPC over stdio through the same =rpc_framing.h= everything else uses,
+and =mep-fem --solve <file>= runs it headless for CI.
+
+Two build details that are load-bearing:
+
+- =cad_predicates.cpp= is compiled with =-ffp-contract=off=. Its exact
+  arithmetic assumes every floating-point operation is individually
+  rounded; a fused multiply-add would break the error terms silently.
+  =PredicatesSelfTest()= is the runtime backstop if the flag is ever lost.
+- The analytic curves and surfaces stay first-class rather than being
+  converted to NURBS on sight. Each can produce its *exact* NURBS form on
+  demand, but that conversion preserves shape, not parameterization inside
+  a span — see =Curve3::ToNurbs='s own note, which matters for anything
+  pairing parameters across the two.
+- =gfx::Mesh::indices= is 32-bit. It was =unsigned short=, and every
+  importer worked around the 65,536-vertex cap by abandoning indexing
+  altogether — which also destroys the vertex sharing a per-vertex result
+  field needs to interpolate smoothly.
+
+Tests: =mep-cad-math-test=, =mep-cad-predicates-test=,
+=mep-cad-nurbs-test=, =mep-cad-curve-test=, =mep-cad-surface-test=,
+=mep-cad-mass-test=, =mep-cad-topology-test=, =mep-num-sparse-test= and
+=mep-fem-test= are windowless and run by =just test=;
+=mep-gfx-native-index32-smoke=, =mep-gfx-native-fem-smoke= and
+=mep-gfx-native-brep-smoke= need a display and render to a PNG.
+
 * Agents and collaboration
 
 - =src/agent_rpc.cpp= — the agent-control socket

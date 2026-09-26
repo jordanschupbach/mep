@@ -8,6 +8,12 @@
 #include "html_doc.h"
 #include "org_doc.h"
 #include "image_doc.h"
+#include "cad_constraint.h"
+#include "cad_doc.h"
+#include "cad_drawing.h"
+#include "cad_exchange.h"
+#include "cad_step.h"
+#include "cad_sketch.h"
 #include "model3d_doc.h"
 #include "mov_container.h"
 #include "vterm.h"
@@ -140,6 +146,27 @@ enum class Mode {
     // own canvas painting (only DrawPane knows the pane's screen-space rect
     // each frame). ':' and the leader key are still forwarded.
     Model3D,
+    // A focused in-pane 2D sketcher (a CadSketchSession buffer -- see
+    // below; plans/CAD_FEM_PLAN.md Part D.5). The CAD lineage's front
+    // end: geometry placed with single keys, constraints applied by
+    // picking and pressing a key, dimensions typed into Mode::Prompt.
+    //
+    // It owns no geometry logic of its own. Every key ends in a call to
+    // one of the Editor::CadSketch* methods below, which are the same
+    // ones the Lua and agent-RPC surfaces call -- so anything the mouse
+    // can do, a script can do, and the two cannot drift apart because
+    // there is only one implementation. Panning and the rubber-band
+    // preview are driven from main.cpp's DrawPane, same reasoning as
+    // Mode::ImageEditor's canvas: only DrawPane knows the pane's
+    // screen-space rect each frame. ':' and the leader key are still
+    // forwarded.
+    CadSketch,
+    // A CAD part open in a pane (plans/CAD_FEM_PLAN.md Part F.5): the
+    // feature tree down the side, the body it rebuilds to in the middle.
+    // Same rule as CadSketch above -- every key here goes through one of
+    // the Editor::Cad* methods, so a part built by hand and one built by
+    // a script take the same path.
+    Cad,
     // A focused PDF-viewer pane (a PdfSession buffer -- see below): same
     // shape as Mode::Image (h/j/k/l pan, ':'/leader forwarded, everything
     // else a no-op) plus zathura-style screenful scrolls (Ctrl-f/Ctrl-b/
@@ -1669,6 +1696,129 @@ struct Model3DMaterialUpdate {
 
 // One in-pane 3D-modeler pane's state (MODEL3D.md Phase 1), keyed by buffer
 // id the same way ImageEditorSession is -- opened directly by Editor::
+// What a click does in Mode::CadSketch (plans/CAD_FEM_PLAN.md Part D.5).
+// Each drawing tool collects the points it needs and then calls exactly
+// one Editor::CadSketchAdd* method, so the tool state here is a click
+// counter and nothing more.
+enum class CadSketchTool {
+    Select,
+    Point,
+    Line,       // two clicks, then chains from the last point
+    Rectangle,  // two clicks (opposite corners), built as four constrained lines
+    Circle,     // centre, then a point on the rim
+    Arc,        // centre, start, end
+};
+
+// A 2D sketch open in a pane. Created by Editor::NewCadSketch, kept in
+// Editor::cad_sketch_sessions_ for the buffer's lifetime -- the same
+// lifetime rule as every other doc session map in this header.
+//
+// Deliberately free of any graphics type: `sketch` is plain CPU data
+// (cad_sketch.h) and the view is stored as a centre and a scale rather
+// than as a transform, so main.cpp owns the only code that turns sketch
+// units into pixels.
+struct CadSketchSession {
+    int buffer_id = 0;
+    cad::Sketch sketch;
+    // Refreshed by every call that changes the sketch, so the status line
+    // and the sidebar always describe the current state rather than the
+    // state as of the last explicit solve.
+    cad::SketchDiagnosis diagnosis;
+    std::vector<cad::Sketch::Profile> profiles;
+
+    // View. `pixels_per_unit` is the zoom; `view_centre` is the sketch
+    // coordinate at the middle of the viewport.
+    cad::Vec2d view_centre{0.0, 0.0};
+    double pixels_per_unit = 48.0;
+    int viewport_w = 0;
+    int viewport_h = 0;
+    // Cleared until the first frame that has both a viewport size and
+    // something to look at, so a sketch built before the pane was ever
+    // drawn still opens centred.
+    bool view_fitted = false;
+
+    CadSketchTool tool = CadSketchTool::Select;
+    // Points clicked so far for a multi-click tool, in sketch units.
+    std::vector<cad::Vec2d> pending;
+
+    // The current selection. Points and entities are kept apart because
+    // most constraints take one or the other, and a constraint applied to
+    // the wrong sort is a mistake worth refusing rather than guessing at.
+    std::vector<cad::SketchId> selected_points;
+    std::vector<cad::SketchId> selected_entities;
+
+    // Set while the mouse is dragging a point; cleared on release.
+    cad::SketchId dragging = cad::kNoSketchId;
+
+    bool construction = false;  // place new geometry as construction
+    bool show_constraints = true;
+    bool snap = true;
+    double grid = 0.25;
+
+    // Bumped whenever the geometry changes, so main.cpp can cache what it
+    // draws without having to diff the sketch.
+    int generation = 0;
+    // Set by a solve that could not be satisfied, shown in the pane.
+    std::string message;
+};
+
+// What the CAD pane is showing (plans/CAD_FEM_PLAN.md Part F.5).
+enum class CadView { Shaded, Wireframe, Drawing };
+
+// A CAD part open in a pane. Created by Editor::NewCad or by LoadFile's
+// .mepcad/.step/.iges branch, kept in Editor::cad_sessions_ for the
+// buffer's lifetime -- the same rule as every other doc session here.
+//
+// THE DOCUMENT IS THE FEATURE TREE and the body is derived from it. That
+// is the whole difference between this pane and Mode::Model3D next door:
+// there, the mesh *is* the document and editing means moving vertices;
+// here the document is a list of operations and the geometry is what you
+// get by replaying them. So `document` is what gets saved and undone, and
+// `tessellation` is a cache that any change throws away.
+//
+// A part read from STEP or IGES has no tree -- those formats carry the
+// faces and not the operations -- so `imported` holds the body directly
+// and `document.tree` is empty. The pane says so rather than pretending,
+// because "you cannot change the extrude distance of this part" is a
+// thing the user needs told.
+struct CadSession {
+    int buffer_id = 0;
+    cad::CadDocument document;
+    // Geometry read from a file that carries no tree. Empty for a part
+    // built here.
+    cad::Model imported;
+    std::vector<cad::EntityId> imported_bodies;
+    bool from_import = false;
+    std::string source_path;
+
+    // The mesh of whatever the document currently is, rebuilt on demand.
+    cad::TessellationMesh tessellation;
+    bool tessellation_valid = false;
+    double volume = 0.0;
+    int triangle_count = 0;
+
+    // Orbit camera, in the same idiom Model3DSession uses so that the two
+    // panes feel like one program.
+    Vec3f camera_target;
+    float camera_yaw = -45.0f;
+    float camera_pitch = 30.0f;
+    float camera_distance = 10.0f;
+    bool view_fitted = false;
+
+    CadView view = CadView::Shaded;
+    // Which feature the outliner has highlighted, or -1.
+    int selected_feature = -1;
+    // Features whose rebuild failed, for the outliner to mark. Filled by
+    // every rebuild.
+    std::vector<int> failed_features;
+
+    int viewport_w = 0;
+    int viewport_h = 0;
+    // Bumped whenever the document changes, so main.cpp can cache.
+    int generation = 0;
+    std::string message;
+};
+
 // OpenModel3DInPlace (LoadFile's .obj/.gltf/.glb/.iqm/.vox/.m3d/.blend
 // branch), never standalone. Kept alive in Editor::model3d_sessions_ for the
 // buffer's whole lifetime once opened (never reaped), same lifetime rule as
@@ -4075,6 +4225,9 @@ public:
      * @return True if a Model3DSession exists for this buffer.
      */
     bool IsModel3DBuffer(int buffer_id) const;
+    /** @brief Whether a buffer holds a 2D sketch (plans/CAD_FEM_PLAN.md Part D.5). */
+    bool IsCadSketchBuffer(int buffer_id) const;
+    bool IsCadBuffer(int buffer_id) const;
     /**
      * @brief Returns the 3D-modeler session for the given buffer id, if any.
      * @param buffer_id The buffer id to look up.
@@ -4101,6 +4254,140 @@ public:
      * @param w The new viewport width in pixels.
      * @param h The new viewport height in pixels.
      */
+    // --- The 2D sketcher (plans/CAD_FEM_PLAN.md Part D) ----------------
+    //
+    // This block is the whole of Part D.5's API. Mode::CadSketch's key
+    // handling, the mep.sketch_* Lua functions and the sketch.* agent-RPC
+    // methods all call exactly these and nothing else, which is what the
+    // plan means by building the interactive tool on the D.1-D.4 surface
+    // with no logic of its own: a script and a keystroke take the same
+    // path, so a sketch built either way is the same sketch.
+    //
+    // Every one that changes geometry re-solves and refreshes the
+    // session's diagnosis and profiles, so a caller never has to remember
+    // to. Ids are the sketch's own (cad_sketch.h), stable for the
+    // session's lifetime.
+
+    /** @brief Opens a new, empty sketch in the current pane. @return Its buffer id. */
+    // --- Part F.5: the CAD part pane ------------------------------------
+    //
+    // The same rule as the sketcher below: every one of these is the only
+    // way the pane changes anything, so the keys, the `mep.cad_*` Lua
+    // functions and the `cad.*` agent-RPC methods all go through exactly
+    // this surface and none of them can do something the others cannot.
+    void HandleCadInput();
+    int NewCad();
+    const CadSession *GetCad(int buffer_id) const;
+    /** @brief Mutable overload of GetCad. */
+    CadSession *GetCadMutable(int buffer_id);
+    void ResizeCadViewport(int buffer_id, int w, int h);
+    // Opens a .mepcad, .step/.stp or .iges/.igs in the current pane.
+    bool OpenCadInPlace(const std::string &path);
+    bool SaveCad(int buffer_id, const std::string &path);
+    // Replays the tree and re-tessellates. Returns false if any feature
+    // failed; the failures are in the session's `failed_features` and the
+    // message in `message`, because a tree that stops dead at the first
+    // failure is far more annoying than one that says which broke.
+    bool CadRebuild(int buffer_id);
+    // Adds a sketch feature holding the given sketch buffer's geometry,
+    // which is how the sketcher and this pane meet.
+    int CadAddSketchFrom(int buffer_id, int sketch_buffer_id, const std::string &name);
+    int CadAddExtrude(int buffer_id, int sketch_feature, double distance, const std::string &combine,
+                      const std::string &name);
+    int CadAddRevolve(int buffer_id, int sketch_feature, int axis_entity, double angle,
+                      const std::string &combine, const std::string &name);
+    bool CadSetFeatureNumber(int buffer_id, int feature, const std::string &field, double value);
+    bool CadSuppressFeature(int buffer_id, int feature, bool suppressed);
+    bool CadRemoveFeature(int buffer_id, int feature);
+    bool CadSelectFeature(int buffer_id, int feature);
+    // Writes the current body out. `format` is one of step, stl, obj,
+    // gltf, svg (a drawing view) or mepcad.
+    bool CadExport(int buffer_id, const std::string &format, const std::string &path);
+    void CadSetView(int buffer_id, const std::string &view);
+    void CadOrbit(int buffer_id, float yaw_delta, float pitch_delta);
+    void CadZoom(int buffer_id, float factor);
+    void CadFrameAll(int buffer_id);
+    // A one-line summary for the status line and for a script asking what
+    // is in the pane.
+    std::string CadSummary(int buffer_id) const;
+
+    int NewCadSketch();
+    /** @brief The sketch session for a buffer, or null if it is not a sketch buffer. */
+    const CadSketchSession *GetCadSketch(int buffer_id) const;
+    /** @brief Mutable overload of GetCadSketch. */
+    CadSketchSession *GetCadSketchMutable(int buffer_id);
+    /** @brief Records the pane's pixel size, for fit-to-view and hit testing. */
+    void ResizeCadSketchViewport(int buffer_id, int w, int h);
+
+    /** @brief Adds a free point. @return Its id, or -1 if not a sketch buffer. */
+    int CadSketchAddPoint(int buffer_id, double x, double y, bool fixed);
+    /** @brief Adds a line between two new points. @return The line's id, or -1. */
+    int CadSketchAddLine(int buffer_id, double x0, double y0, double x1, double y1, bool construction);
+    /** @brief Adds a line between two existing points. @return The line's id, or -1. */
+    int CadSketchAddLineFromPoints(int buffer_id, int start_point, int end_point, bool construction);
+    /** @brief Adds an arc about a centre, through a start and an end point. @return Its id, or -1. */
+    int CadSketchAddArc(int buffer_id, double cx, double cy, double sx, double sy, double ex, double ey,
+                        bool ccw, bool construction);
+    /** @brief Adds a circle. @return Its id, or -1. */
+    int CadSketchAddCircle(int buffer_id, double cx, double cy, double radius, bool construction);
+    /** @brief Adds an ellipse. @return Its id, or -1. */
+    int CadSketchAddEllipse(int buffer_id, double cx, double cy, double major, double minor, double rotation,
+                            bool construction);
+    /**
+     * @brief Adds four lines and the constraints that make them a rectangle.
+     *
+     * Not sugar: a rectangle drawn as four loose lines is four lines, and
+     * the user then has to apply eight constraints by hand to get what
+     * they already drew. @return The ids of the four lines, or empty.
+     */
+    std::vector<int> CadSketchAddRectangle(int buffer_id, double x0, double y0, double x1, double y1,
+                                           bool construction);
+
+    /**
+     * @brief Applies a constraint by name (see cad_sketch.h's ConstraintKindName).
+     * @return The constraint's id, or -1 if the name or the arguments do not fit.
+     */
+    int CadSketchConstrain(int buffer_id, const std::string &kind, const std::vector<int> &points,
+                           const std::vector<int> &entities, double value);
+    /** @brief Removes a constraint and re-solves. */
+    bool CadSketchRemoveConstraint(int buffer_id, int constraint_id);
+    /** @brief Deletes an entity and any point only it used. */
+    bool CadSketchDeleteEntity(int buffer_id, int entity_id);
+    /** @brief Moves a point outright, without solving -- used while placing geometry. */
+    bool CadSketchSetPoint(int buffer_id, int point_id, double x, double y);
+    /** @brief Anchors or releases a point. */
+    bool CadSketchSetPointFixed(int buffer_id, int point_id, bool fixed);
+    /** @brief Marks an entity as construction geometry, or stops. */
+    bool CadSketchSetConstruction(int buffer_id, int entity_id, bool construction);
+    /** @brief Changes a dimensional constraint's value and re-solves. */
+    bool CadSketchSetConstraintValue(int buffer_id, int constraint_id, double value);
+    /** @brief Re-solves and refreshes the diagnosis and profiles. @return False if it could not be evaluated. */
+    bool CadSketchSolve(int buffer_id);
+    /**
+     * @brief Drags a point toward a target, honouring the constraints.
+     *
+     * Moves along the sketch's free directions rather than pinning the
+     * point, so a drag the constraints cannot follow exactly still gets
+     * as far as it can -- see cad_constraint.h's DragPoint.
+     */
+    bool CadSketchDragPoint(int buffer_id, int point_id, double x, double y);
+    /**
+     * @brief Replaces the selection.
+     *
+     * Exposed rather than left to the mouse because a constraint is
+     * applied to whatever is selected, and a script that can draw but
+     * cannot select can only ever use the whole-sketch calls. It is also
+     * what makes the keyboard flow testable without guessing pixels.
+     * @return False if any id names geometry that is not there.
+     */
+    bool CadSketchSelect(int buffer_id, const std::vector<int> &points, const std::vector<int> &entities);
+    /** @brief The current selection. */
+    void CadSketchGetSelection(int buffer_id, std::vector<int> *points, std::vector<int> *entities) const;
+    /** @brief The point or entity nearest a sketch-space position, within `radius`. */
+    int CadSketchPick(int buffer_id, double x, double y, double radius, bool *is_point) const;
+    /** @brief Centres and scales the view on the sketch's own extent. */
+    void CadSketchFitView(int buffer_id);
+
     void ResizeModel3DViewport(int buffer_id, int w, int h);
     /**
      * @brief Snapshots the current buffer_id's scene onto its undo stack, clearing redo.
@@ -9900,6 +10187,7 @@ private:
     // and object-gizmo dragging are NOT handled here -- see Mode::Model3D's
     // own comment for why that lives in main.cpp's DrawPane instead.
     void HandleModel3DInput();
+    void HandleCadSketchInput();
     // Same Ctrl-scroll-zooms-else-orbits-nothing shape isn't quite right for
     // a 3D camera -- plain scroll dollies the camera in/out (changes
     // camera_distance); there's no 2D pan axis to scroll along the way
@@ -11084,6 +11372,8 @@ private:
     // Keyed by buffer_id -- one entry per open in-pane 3D-modeler pane
     // (MODEL3D.md), same never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, Model3DSession> model3d_sessions_;
+    std::unordered_map<int, CadSketchSession> cad_sketch_sessions_;
+    std::unordered_map<int, CadSession> cad_sessions_;
     // Keyed by buffer_id -- one entry per open PDF-viewer pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, PdfSession> pdfs_;

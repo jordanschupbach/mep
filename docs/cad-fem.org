@@ -1,0 +1,143 @@
+#+TITLE: The CAD kernel and the finite-element solver
+#+OPTIONS: toc:2 num:nil
+
+* Why it is here at all
+
+mep has a boundary-representation CAD kernel and a finite-element solver
+in it, written from scratch, with no OpenCASCADE, no CalculiX and no
+Eigen. The reason is the same one behind the PDF stack, the browser
+engine and the language servers: a dependency is a thing you cannot fix,
+cannot verify and cannot teach. What makes this particular one worth the
+effort is that the two halves are only interesting *together*.
+
+A CAD kernel on its own is a modeller. A finite-element solver on its own
+is a thing you feed a mesh. Keeping the exact geometry all the way
+through -- modelling, meshing, binding conditions, solving, estimating
+the error, and then meshing again -- is what lets the last of those
+happen at all. A program that imports a mesh can subdivide the elements
+it was given; it cannot put new nodes on the fillet, because it no longer
+has the fillet. It has a faceted approximation of one, and every
+refinement makes a finer approximation of the facets rather than of the
+part.
+
+* The shape of it
+
+** Geometry
+
+~src/cad_math~, ~cad_nurbs~, ~cad_curve~ and ~cad_surface~ are the
+analytic layer: points, curves, surfaces and their derivatives, with
+analytic forms kept analytic. A cylinder is a =CylinderSurface=, not a
+B-spline that happens to be round, because the operations downstream --
+filleting, drafting, and the STEP writer -- depend on knowing which it
+is.
+
+~cad_topology~ is the B-rep proper: vertices, edges, coedges, loops,
+faces, shells, bodies. ~cad_predicates~ underneath it is exact
+arithmetic, because a boolean that decides "on which side of this plane"
+with floating point decides it inconsistently for two faces that share an
+edge, and an inconsistent answer is a solid with a hole in it.
+
+~cad_intersect~, ~cad_classify~, ~cad_arrangement~ and ~cad_boolean~ are
+the boolean operator. ~cad_feature~, ~cad_modify~, ~cad_pattern~ and
+~cad_assembly~ are what a user actually reaches for. ~cad_naming~ is the
+persistent naming that makes a reference to "that face" survive a
+rebuild, which is what a parametric feature tree is *for* and is the part
+most kernels get least right.
+
+** Analysis
+
+~fem_mesh_*~ is the mesher: a background sizing field over an octree,
+then a surface mesh, then a Delaunay tetrahedralisation, then quality
+improvement, then optionally curved second-order elements whose mid-side
+nodes are projected onto the real surface -- which is the concrete payoff
+of still having the real surface.
+
+~fem_elem~ is the element library, eleven types, each held to properties
+that follow from what an element *is* rather than to a known answer.
+~fem_study~ binds conditions expressed against the geometry onto the
+mesh; ~fem_assemble~ builds the system; ~num_sparse~ factorises or
+iterates on it.
+
+~fem_static~, ~fem_thermal~, ~fem_modal~, ~fem_nonlinear~, ~fem_plastic~
+and ~fem_contact~ are the physics. ~fem_result~, ~fem_render~,
+~fem_probe~, ~fem_animate~, ~fem_movie~ and ~fem_adapt~ are what turns a
+solved system back into something a person can read, and the last of
+those closes the loop back to the geometry.
+
+~fem_movie~ is a software rasteriser -- z-buffer, perspective-correct
+interpolation, two-sided shading, its own small typeface for the colour
+bar -- feeding the same JPEG encoder and QuickTime muxer the 3D
+modeller's export uses. It is not routed through the modeller's own
+renderer for two reasons: that one animates *transforms*, and a mode
+shape is not a transform of anything, since every node moves
+differently; and it needs an OpenGL context, while a benchmark that
+produces its own film has to run in a test on a machine with no display.
+A rasteriser with no dependencies also renders the same picture
+everywhere, which is what lets a test assert what is in one.
+
+* How it is verified
+
+Nothing here is checked by comparing against itself. Each part is held to
+one of four things:
+
+1. *A closed form.* A block's volume, a cantilever's deflection, the area
+   of a sphere, Euler's buckling load, the slope of a bar past yield.
+2. *A convergence rate.* An element's error must fall at the order its
+   own theory predicts -- squared in h for a linear element, cubed for a
+   quadratic one. A rate is far harder to fake than a number: an element
+   that is wrong converges at the wrong rate, or to the wrong thing.
+3. *A property that follows from what the thing is.* Shape functions sum
+   to one; a stiffness matrix has exactly six zero eigenvalues; a closed
+   surface encloses a known volume; a mode shape is orthogonal to the
+   others; strain energy rises under refinement and never falls.
+4. *Another program entirely.* Gmsh for meshes, CalculiX for solves,
+   pdftoppm-style image comparison for renders. These are opt-in recipes
+   in the justfile rather than test dependencies.
+
+The one that has caught the most real bugs is the third. A residual at
+round-off proves a system was solved, not that it was the right system,
+and almost every mistake in this area produces a solver that runs,
+converges, and is wrong by ten percent.
+
+* The agent surface
+
+Part K's rule is *one implementation and three adapters*. The methods
+live in one table (~src/cad_fem_methods.cpp~) with one dispatch
+(~src/cad_fem_api.cpp~), and the Lua bindings, the agent-RPC dispatch,
+the MCP tool declarations and the reference documentation are each a loop
+over that table. The alternative -- four hand-maintained lists -- does
+not stay in step, and the test asserts that this one does: every declared
+method must be implemented, and the checked-in documentation must be what
+the generator would write.
+
+The method table is deliberately in its own translation unit with no
+kernel dependency, so ~mep-mcp~ -- which is a plain socket client and
+links none of mep_core -- can declare thirty CAD and FEM tools without
+linking a B-rep kernel into a process whose job is forwarding JSON.
+
+* The examples
+
+~examples/nafems/~ is nine NAFEMS benchmarks as parts you can open --
+one ~.mepcad~ feature tree each, and one Lua script that opens it, states
+the benchmark's own conditions, solves, compares against a reference and
+writes a film. They use *only* the agent surface above, which is the
+point: ~src/fem_nafems_test.cpp~ builds its meshes in C++ and proves the
+solver, and these prove that the surface can express the same problems.
+
+It was meant to be a demonstration and turned into a test. It found five
+defects -- a pressure acting the wrong way on a swept mesh, a kernel
+tolerance meant for millimetres applied to a part in metres, a face
+listing whose reported point is not on the face, two missing field names
+-- and three capabilities that existed but were unreachable. Four of the
+nine are still blocked, three in the mesher and one in the kernel.
+~plans/NAFEMS_PLAN.md~ has the whole account.
+
+* What is not here
+
+~plans/CAD_FEM_PLAN.md~ records this per part, in detail, as unchecked
+boxes under each finished item. The largest gaps at the time of writing:
+the mesher is scale dependent and grades poorly, which is what stops the
+adaptive loop after two or three cycles; there is no mortar contact, no
+friction and no self-contact; hyperelasticity is named and not written;
+and nothing here is wired into the editor's panes yet -- the drawing
+routines return arrays, and no pane assembles them.

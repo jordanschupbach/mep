@@ -217,6 +217,246 @@ dropped). If a screenshot right after an action doesn't show the expected
 change, don't assume it silently failed differently than usual -- just
 retry the same action once and re-check.
 
+## CAD and finite elements
+
+<!-- BEGIN GENERATED cad-fem -->
+
+The CAD kernel and finite-element solver, as 34 methods. Each one is reachable three ways, with
+the name mechanically derived from the method: `part.box` is the agent-RPC
+method, `mep_part_box` the MCP tool, and `mep.part_box` the Lua function. All
+three go to one implementation (`src/cad_fem_api.cpp`) driven by one table
+(`src/cad_fem_methods.cpp`), and this section is generated from that table --
+run `just cad-fem-docs` after changing it.
+
+Handles are integers and share one counter across documents, studies, meshes
+and results, so a handle of one kind is never mistaken for another. Closing a
+document closes everything built on it.
+
+### Analysis
+
+- `part_new(title?)` -- Opens an empty CAD document and returns its handle.
+  - `title` (string, optional) -- A name for the document.
+  - returns `{document}`
+- `part_close(document)` -- Closes a document and everything built on it.
+  - `document` (number, required) -- The document handle.
+  - returns `{closed}`
+- `part_list()` (read-only) -- Lists open documents, studies, meshes and results.
+  - returns `{documents, studies, meshes, results}`
+- `part_box(document, size, at?)` -- Adds a rectangular block.
+  - `document` (number, required) -- The document handle.
+  - `size` (array, required) -- Its extent, [x, y, z].
+  - `at` (array, optional) -- The minimum corner, [x, y, z]. Defaults to the origin.
+  - returns `{body}`
+- `part_cylinder(document, radius, height, at?, axis?)` -- Adds a cylinder.
+  - `document` (number, required) -- The document handle.
+  - `radius` (number, required) -- Its radius.
+  - `height` (number, required) -- Its height along the axis.
+  - `at` (array, optional) -- The centre of the base. Defaults to the origin.
+  - `axis` (array, optional) -- The axis direction. Defaults to +z.
+  - returns `{body}`
+- `part_sphere(document, radius, at?)` -- Adds a sphere.
+  - `document` (number, required) -- The document handle.
+  - `radius` (number, required) -- Its radius.
+  - `at` (array, optional) -- Its centre. Defaults to the origin.
+  - returns `{body}`
+- `part_boolean(document, op, a, b)` -- Combines two bodies and replaces them with the result.
+  - `document` (number, required) -- The document handle.
+  - `op` (string, required) -- One of union, difference, intersection.
+  - `a` (number, required) -- The first body.
+  - `b` (number, required) -- The second body.
+  - returns `{body}`
+- `part_shell(document, body, thickness, open_faces?)` -- Hollows a body out to a wall thickness.
+  - `document` (number, required) -- The document handle.
+  - `body` (number, required) -- The body to hollow.
+  - `thickness` (number, required) -- The wall thickness.
+  - `open_faces` (array, optional) -- Face handles to leave open.
+  - returns `{body}`
+- `part_info(document)` (read-only) -- Counts what a document holds.
+  - `document` (number, required) -- The document handle.
+  - returns `{bodies, faces, edges, vertices}`
+- `part_faces(document, body)` (read-only) -- Lists a body's faces: a normal, and where each one actually is.
+  - `document` (number, required) -- The document handle.
+  - `body` (number, required) -- The body.
+  - returns `{faces: [{id, point, normal, centroid, low, high}]}`
+- `part_edges(document, body, along?)` (read-only) -- Lists a body's edges, with a point, a direction and a length on each.
+  - `document` (number, required) -- The document handle.
+  - `body` (number, required) -- The body.
+  - `along` (array, optional) -- Keep only the edges running along this direction.
+  - returns `{edges: [{id, point, direction, from, to, length}]}`
+- `part_edge_at(document, body, point, along?)` (read-only) -- Finds the edge nearest a point, which is how a script names one.
+  - `document` (number, required) -- The document handle.
+  - `body` (number, required) -- The body.
+  - `point` (array, required) -- Look for the edge nearest here.
+  - `along` (array, optional) -- Consider only edges running along this direction.
+  - returns `{edge, point, direction, from, to, length, distance}`
+- `part_face_at(document, body, normal)` (read-only) -- Finds the face whose outward normal is nearest a direction.
+  - `document` (number, required) -- The document handle.
+  - `body` (number, required) -- The body.
+  - `normal` (array, required) -- The direction to look along.
+  - returns `{face, point, normal, agreement}`
+- `part_mass(document, body, density?)` (read-only) -- Volume, area, centre of mass and inertia of a body.
+  - `document` (number, required) -- The document handle.
+  - `body` (number, required) -- The body.
+  - `density` (number, optional) -- kg/m^3. Defaults to 1, so mass equals volume.
+  - returns `{volume, area, mass, centroid, inertia, principal}`
+- `part_validate(document, body)` (read-only) -- Checks a body's topology and geometry.
+  - `document` (number, required) -- The document handle.
+  - `body` (number, required) -- The body.
+  - returns `{ok, problems}`
+- `part_export(document, path, format?, body?)` -- Writes a body to STEP, STL, OBJ or glTF.
+  - `document` (number, required) -- The document handle.
+  - `path` (string, required) -- Where to write it.
+  - `format` (string, optional) -- step, stl, obj or gltf. Defaults to the extension.
+  - `body` (number, optional) -- One body, or every body if omitted.
+  - returns `{path, bytes, format}`
+- `part_import(path, format?)` -- Reads a STEP file, or a .mepcad feature tree, into a new document.
+  - `path` (string, required) -- The file to read.
+  - `format` (string, optional) -- step or mepcad. Defaults to the extension.
+  - returns `{document, bodies, warnings, features, volume}`
+- `fem_mesh(document, body, size?, order?, method?, layers?)` -- Meshes a body, into tetrahedra or by sweeping a profile into hexahedra.
+  - `document` (number, required) -- The document handle.
+  - `body` (number, required) -- The body to mesh.
+  - `size` (number, optional) -- Target element size. Defaults to the model's own scale.
+  - `order` (number, optional) -- 1 for Tet4, 2 for curved Tet10. Defaults to 1.
+  - `method` (string, optional) -- tetrahedra (the default) or sweep, which needs a prismatic body and gives Hex8.
+  - `layers` (number, optional) -- Elements along a sweep. Defaults to the sizing field.
+  - returns `{mesh, nodes, elements, shape, order, worst_dihedral, target_size}`
+- `fem_study(document, name?)` -- Starts a study on a document.
+  - `document` (number, required) -- The document handle.
+  - `name` (string, optional) -- A name for it.
+  - returns `{study}`
+- `fem_material(study, youngs_modulus?, poissons_ratio?, density?, thermal_expansion?, name?)` -- Sets the study's material.
+  - `study` (number, required) -- The study handle.
+  - `youngs_modulus` (number, optional) -- Pa. Defaults to steel.
+  - `poissons_ratio` (number, optional) -- Defaults to 0.3.
+  - `density` (number, optional) -- kg/m^3. Defaults to 7850.
+  - `thermal_expansion` (number, optional) -- 1/K.
+  - `name` (string, optional) -- A name for the material.
+  - returns `{materials}`
+- `fem_support(study, face?, edge?, fixed?)` -- Holds a face, or an edge -- which is what a simple support is.
+  - `study` (number, required) -- The study handle.
+  - `face` (number, optional) -- The face to hold.
+  - `edge` (number, optional) -- The edge to hold, instead of a face.
+  - `fixed` (array, optional) -- Which of x, y, z are held. Defaults to all three.
+  - returns `{supports}`
+- `fem_load(study, kind, face?, magnitude?, vector?)` -- Applies a load to a face, or gravity to the whole model.
+  - `study` (number, required) -- The study handle.
+  - `kind` (string, required) -- force, pressure, traction or gravity.
+  - `face` (number, optional) -- The face, for everything but gravity.
+  - `magnitude` (number, optional) -- Pa, for a pressure.
+  - `vector` (array, optional) -- The force, traction or acceleration.
+  - returns `{loads}`
+- `fem_solve(study, mesh)` -- Runs a linear static solve.
+  - `study` (number, required) -- The study handle.
+  - `mesh` (number, required) -- The mesh handle.
+  - returns `{result, nodes, elements, max_displacement, max_von_mises, strain_energy, equilibrium_residual, relative_error}`
+- `fem_modal(study, mesh, modes?)` -- Finds natural frequencies and mode shapes.
+  - `study` (number, required) -- The study handle.
+  - `mesh` (number, required) -- The mesh handle.
+  - `modes` (number, optional) -- How many. Defaults to 6.
+  - returns `{result, frequencies, rigid_body_modes}`
+- `fem_adapt(study, body, size?, target?, cycles?)` -- Meshes, solves, estimates the error and refines, repeatedly.
+  - `study` (number, required) -- The study handle.
+  - `body` (number, required) -- The body to mesh each cycle.
+  - `size` (number, optional) -- The starting element size.
+  - `target` (number, optional) -- The relative energy-norm error to aim for.
+  - `cycles` (number, optional) -- How many at most. Defaults to 3.
+  - returns `{result, cycles, reached_target, stopped_early, stop_reason}`
+- `fem_summary(result)` (read-only) -- Everything scalar about a result.
+  - `result` (number, required) -- The result handle.
+  - returns `{nodes, elements, max_displacement, max_von_mises, strain_energy, relative_error}`
+- `fem_field(result, field)` (read-only) -- The range of one field over a result.
+  - `result` (number, required) -- The result handle.
+  - `field` (string, required) -- von_mises, displacement, max_principal and so on.
+  - returns `{field, min, max, min_node, max_node, at_min, at_max}`
+- `fem_probe(result, field, points)` (read-only) -- Reads a field at points.
+  - `result` (number, required) -- The result handle.
+  - `field` (string, required) -- Which field.
+  - `points` (array, required) -- An array of [x, y, z].
+  - returns `{probes: [{at, value, inside, distance}]}`
+- `fem_path(result, field, from, to, samples?)` (read-only) -- Samples a field along a line, for plotting.
+  - `result` (number, required) -- The result handle.
+  - `field` (string, required) -- Which field.
+  - `from` (array, required) -- The start point.
+  - `to` (array, required) -- The end point.
+  - `samples` (number, optional) -- How many. Defaults to 20.
+  - returns `{rows: [{distance, at, value}], csv}`
+- `fem_animate(result, mode?, frames?, amplitude?)` (read-only) -- Frames of a mode shape, as displacement per node.
+  - `result` (number, required) -- A result from fem.modal.
+  - `mode` (number, optional) -- Which mode, from zero. Defaults to the first.
+  - `frames` (number, optional) -- How many. Defaults to 24.
+  - `amplitude` (number, optional) -- Peak movement as a fraction of the diagonal.
+  - returns `{frames, period, amplitude_scale, displacement}`
+- `fem_nodes(result)` (read-only) -- The result's node coordinates, three numbers per node.
+  - `result` (number, required) -- The result handle.
+  - returns `{count, nodes}`
+- `fem_movie(result, path, field?, mode?, frames?, fps?, width?, height?, amplitude?, yaw?, pitch?, orbit?, caption?, color_map?)` -- Renders a result as a playable Motion-JPEG .mov.
+  - `result` (number, required) -- The result handle.
+  - `path` (string, required) -- Where to write the film.
+  - `field` (string, optional) -- Which field colours it. Defaults to von_mises, or displacement for a modal result.
+  - `mode` (number, optional) -- For a modal result, which mode. Defaults to the first.
+  - `frames` (number, optional) -- How many. Defaults to 36.
+  - `fps` (number, optional) -- Frames per second. Defaults to 20.
+  - `width` (number, optional) -- Pixels. Defaults to 720.
+  - `height` (number, optional) -- Pixels. Defaults to 540.
+  - `amplitude` (number, optional) -- Peak movement as a fraction of the diagonal.
+  - `yaw` (number, optional) -- Camera bearing in degrees.
+  - `pitch` (number, optional) -- Camera elevation in degrees.
+  - `orbit` (bool, optional) -- Turn the camera a full circle over the film.
+  - `caption` (string, optional) -- A line of text along the top.
+  - `color_map` (string, optional) -- viridis, blue_to_red or greyscale.
+  - returns `{path, frames, seconds, width, height, field_min, field_max, bytes}`
+- `fem_image(result, path, field?, mode?, width?, height?, amplitude?, yaw?, pitch?, caption?, color_map?)` -- Renders one frame of a result as a PNG.
+  - `result` (number, required) -- The result handle.
+  - `path` (string, required) -- Where to write the picture.
+  - `field` (string, optional) -- Which field colours it.
+  - `mode` (number, optional) -- For a modal result, which mode to draw at its extreme.
+  - `width` (number, optional) -- Pixels. Defaults to 720.
+  - `height` (number, optional) -- Pixels. Defaults to 540.
+  - `amplitude` (number, optional) -- Peak movement as a fraction of the diagonal.
+  - `yaw` (number, optional) -- Camera bearing in degrees.
+  - `pitch` (number, optional) -- Camera elevation in degrees.
+  - `caption` (string, optional) -- A line of text along the top.
+  - `color_map` (string, optional) -- viridis, blue_to_red or greyscale.
+  - returns `{path, width, height, field_min, field_max, bytes}`
+- `fem_export(result, field, path, format?, from?, to?, samples?)` -- Writes a path plot or a field to CSV or an org table.
+  - `result` (number, required) -- The result handle.
+  - `field` (string, required) -- Which field.
+  - `path` (string, required) -- Where to write it.
+  - `format` (string, optional) -- csv or org. Defaults to the extension.
+  - `from` (array, optional) -- A path start; omit to export every node.
+  - `to` (array, optional) -- A path end.
+  - `samples` (number, optional) -- Path samples.
+  - returns `{path, rows, format}`
+
+<!-- END GENERATED cad-fem -->
+
+### Working with it
+
+Build geometry, mesh it, attach a study, solve, read the numbers. Faces
+are named by direction rather than by clicking: `cad_face_at` returns the
+face whose outward normal is nearest a direction you give, which is the
+only way to refer to one that survives the body being rebuilt at a
+different size -- and the adaptive loop rebuilds it on every cycle.
+
+Every `fem_solve` comes back with a `relative_error`: the estimated
+energy-norm error of that mesh. A stress number without it is a number
+nobody can act on. Above about 10% the mesh is telling you it has not
+resolved the problem; `fem_adapt` refines until it has, or says why it
+could not.
+
+Headless, with no display, for CI and scripts:
+
+```
+mep --cad-fem study.json out.json     # a list of these calls, in order
+mep --fem-solve study.json            # the same thing, named for what it does
+mep --cad-export part.step part.stl   # one file to another
+```
+
+A script is a JSON list of `{"method": ..., "params": {...}}`. Name a
+call with `"as"` and later calls can write `$name.field` anywhere a value
+goes, so handles never appear in the file.
+
 ## The in-pane 3D modeler
 
 `mep_model_new()` creates a brand-new empty scene headlessly (no source
@@ -525,6 +765,109 @@ across the clip with `ffmpeg` and read them, and confirm the moving
 object visibly separates from its starting position while the
 background/other objects rotate around with the camera, not the other
 way around.
+
+## The in-pane 2D sketcher
+
+`mep_sketch_new()` opens an empty CAD sketch headlessly and returns its
+`buffer_id` -- pass that to every other `mep_sketch_*` tool. Everything
+in this section works without the window: the same `Editor::CadSketch*`
+calls sit behind both these tools and the sketch pane's own keys, so a
+sketch built by tool and one drawn by hand are the same sketch.
+
+**A sketch is constrained geometry, not a drawing.** Place things roughly
+and then say what must be true of them; the solver moves the geometry to
+satisfy it. That is the difference from the 3D modeler above, where a
+transform you set is where the object is. Here, setting a dimension to a
+new value and re-solving is how a parametric change is made.
+
+Data model: a sketch is *points*, *entities* built out of shared points,
+and *constraints* between them. An arc is a centre and two endpoints, not
+a centre plus angles, so joining one curve's end to another is a
+coincidence between two points rather than a constraint against a derived
+quantity. A circle keeps a radius instead of a point on its rim. Every
+sketch starts with a fixed origin point (id 0) so that it cannot drift.
+
+### Drawing
+- `mep_sketch_add_point(buffer_id, x, y, fixed?)`
+- `mep_sketch_add_line(buffer_id, x0, y0, x1, y1, construction?)`
+- `mep_sketch_add_rectangle(buffer_id, x0, y0, x1, y1, construction?)` --
+  four lines sharing their corner points, already horizontal/vertical.
+  Prefer this to four separate lines: the shared corners mean dragging
+  one moves both edges that meet there, with no constraints needed.
+- `mep_sketch_add_circle(buffer_id, cx, cy, radius, construction?)`
+- `mep_sketch_add_arc(buffer_id, cx, cy, sx, sy, ex, ey, ccw?, construction?)`
+- `mep_sketch_add_ellipse(buffer_id, cx, cy, major, minor, rotation?, construction?)`
+
+`construction: true` makes an entity a reference line -- constraints may
+use it, profile extraction ignores it.
+
+### Constraining
+`mep_sketch_list(buffer_id)` first: every constraint names geometry by
+id. Then `mep_sketch_constrain(buffer_id, kind, points?, entities?,
+value?)`. What each kind takes:
+
+| kind | arguments |
+|---|---|
+| `coincident` | two points |
+| `horizontal`, `vertical` | two points, or one line entity |
+| `parallel`, `perpendicular` | two line entities |
+| `angle` | two line entities + `value` (radians) |
+| `equal` | two lines, or two circles/arcs |
+| `tangent` | a line and a circle/arc, or two circles/arcs (`value < 0` = internal) |
+| `concentric` | two circles/arcs |
+| `collinear` | two line entities |
+| `symmetric` | two points + a line entity |
+| `point_on_object` | a point + an entity |
+| `distance`, `horizontal_distance`, `vertical_distance` | two points + `value` |
+| `radius`, `diameter` | a circle or arc + `value` |
+
+A constraint that does not fit its arguments is **refused**, not quietly
+dropped -- so a failure here means the selection was wrong, not that the
+solver could not manage it.
+
+### Solving and diagnosis
+`mep_sketch_solve(buffer_id)` re-solves and reports `status`:
+
+- `solved` -- every constraint satisfied and no freedom left. What a
+  finished sketch should be.
+- `under_constrained` -- satisfied, but the sketch can still move.
+  `degrees_of_freedom` says how much. Not an error; most sketches are
+  here most of the time.
+- `redundant` -- the constraints depend on one another but agree. The
+  sketch solves; `redundant` lists the ones saying nothing new.
+- `conflicting` -- they depend on one another and *disagree*. Nothing
+  satisfies them; `conflicting` lists the ones involved. Remove one with
+  `mep_sketch_remove_constraint`.
+
+Those last two are different problems with different fixes, which is why
+they are reported separately rather than both as "over-constrained".
+
+### Changing and extracting
+- `mep_sketch_set_constraint_value(buffer_id, constraint_id, value)` --
+  the parametric edit: change a dimension, everything downstream follows.
+- `mep_sketch_drag_point(buffer_id, point_id, x, y)` -- moves a point
+  while honouring the constraints, going as far as the sketch's remaining
+  freedom allows rather than refusing an unreachable target.
+- `mep_sketch_set_point`, `..._set_point_fixed`, `..._set_construction`,
+  `..._delete_entity`, `..._select`/`..._selection`.
+- `mep_sketch_profiles(buffer_id)` -- the closed regions the
+  non-construction geometry bounds, each with its exact area (integrated
+  along the curves, not off a polygon) and its hole count. A washer drawn
+  as two circles is one profile with one hole, not two profiles.
+
+### By hand
+The sketch pane's own keys, should you want to drive it that way: digits
+`1`-`6` pick the tool (select / point / line / rectangle / circle / arc),
+letters apply a constraint to the selection by first letter (`c`
+coincident, `h` horizontal, `v` vertical, `p` parallel, `l`
+perpendicular, `t` tangent, `e` equal, `o` concentric, `n` collinear,
+`y` symmetric, `g` point-on-object), and `d`/`x`/`z`/`a`/`r`/`m` open a
+prompt for a distance / horizontal distance / vertical distance / angle /
+radius / diameter. `f` anchors the selected points, `k` toggles
+construction on the selected entities, `K` places new geometry as
+construction, `s` re-solves, `F` fits the view, `G` toggles grid snap,
+`q` leaves. Escape abandons a half-drawn shape, then clears the
+selection.
 
 ## The in-pane image editor
 

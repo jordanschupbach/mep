@@ -1,0 +1,457 @@
+#+TITLE: CAD and finite elements
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="70">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+#+OPTIONS: toc:2 num:nil
+
+* What this is
+
+mep carries its own boundary-representation CAD kernel and its own
+finite-element solver. Both are written from scratch in this repository:
+there is no OpenCASCADE, no CalculiX, no Eigen. The kernel keeps exact
+geometry -- a cylinder is a cylinder, not a fine polygon -- through
+modelling, meshing, solving and back out again, and that is what makes
+adaptive refinement possible at all: refining a mesh means going back to
+the shape and meshing it again, which a program holding only facets
+cannot do.
+
+* Getting started
+
+Everything is reachable from Lua as ~mep.part_*~ and ~mep.fem_*~, from an
+agent over the RPC socket as ~cad.*~ and ~fem.*~, from an MCP client as
+~mep_part_*~ and ~mep_fem_*~, and from the command line with no display at
+all:
+
+#+begin_src sh
+mep --cad-fem study.json out.json
+mep --cad-export part.step part.stl
+#+end_src
+
+A script is a list of calls. Name one with ~as~ and later calls refer to
+its result with ~$name.field~:
+
+#+begin_src js
+[
+  {"method": "part.new",     "as": "doc"},
+  {"method": "part.box",     "as": "block", "params": {"document": "$doc.document", "size": [10, 6, 4]}},
+  {"method": "part.face_at", "as": "base",  "params": {"document": "$doc.document", "body": "$block.body", "normal": [0, 0, -1]}},
+  {"method": "part.face_at", "as": "top",   "params": {"document": "$doc.document", "body": "$block.body", "normal": [0, 0, 1]}},
+  {"method": "fem.mesh",    "as": "mesh",  "params": {"document": "$doc.document", "body": "$block.body", "size": 2.0}},
+  {"method": "fem.study",   "as": "study", "params": {"document": "$doc.document"}},
+  {"method": "fem.support", "params": {"study": "$study.study", "face": "$base.face"}},
+  {"method": "fem.load",    "params": {"study": "$study.study", "kind": "pressure", "face": "$top.face", "magnitude": 5e6}},
+  {"method": "fem.solve",   "as": "result", "params": {"study": "$study.study", "mesh": "$mesh.mesh"}}
+]
+#+end_src
+
+* Things worth knowing
+
+** Faces are named by direction
+
+There is no clicking here, so ~cad.face_at~ returns the face whose
+outward normal is nearest a direction you name. It is also the only
+addressing that survives a rebuild: a study captures its faces as
+persistent *names*, not as ids, so the same study still means the same
+thing after the part changes size -- which is exactly what the adaptive
+loop does on every cycle.
+
+** Every solve reports how wrong it is
+
+~fem.solve~ returns a ~relative_error~ alongside the stresses: the
+estimated error of that mesh in the energy norm, from a superconvergent
+patch recovery of the stress field. A stress number handed to someone who
+will act on it, with no indication of how converged it is, is the most
+dangerous output this system produces. Above roughly ten percent, the
+mesh has not resolved the problem.
+
+** Sizes are in your model's units
+
+Element size, chord tolerance and displacement scaling all default to a
+fraction of the model's own diagonal rather than to an absolute number.
+An absolute default is right for exactly one size of model and it is
+never the one in front of you.
+
+* Method reference
+
+# BEGIN GENERATED cad-fem
+
+
+** Analysis
+
+*** part_new(title?)
+Opens an empty CAD document and returns its handle.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =title= | string | optional | A name for the document. |
+
+Returns ={document}=.
+*** part_close(document)
+Closes a document and everything built on it.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+
+Returns ={closed}=.
+*** part_list()
+Read-only.
+Lists open documents, studies, meshes and results.
+
+Returns ={documents, studies, meshes, results}=.
+*** part_box(document, size, at?)
+Adds a rectangular block.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =size= | array | required | Its extent, [x, y, z]. |
+| =at= | array | optional | The minimum corner, [x, y, z]. Defaults to the origin. |
+
+Returns ={body}=.
+*** part_cylinder(document, radius, height, at?, axis?)
+Adds a cylinder.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =radius= | number | required | Its radius. |
+| =height= | number | required | Its height along the axis. |
+| =at= | array | optional | The centre of the base. Defaults to the origin. |
+| =axis= | array | optional | The axis direction. Defaults to +z. |
+
+Returns ={body}=.
+*** part_sphere(document, radius, at?)
+Adds a sphere.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =radius= | number | required | Its radius. |
+| =at= | array | optional | Its centre. Defaults to the origin. |
+
+Returns ={body}=.
+*** part_boolean(document, op, a, b)
+Combines two bodies and replaces them with the result.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =op= | string | required | One of union, difference, intersection. |
+| =a= | number | required | The first body. |
+| =b= | number | required | The second body. |
+
+Returns ={body}=.
+*** part_shell(document, body, thickness, open_faces?)
+Hollows a body out to a wall thickness.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =body= | number | required | The body to hollow. |
+| =thickness= | number | required | The wall thickness. |
+| =open_faces= | array | optional | Face handles to leave open. |
+
+Returns ={body}=.
+*** part_info(document)
+Read-only.
+Counts what a document holds.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+
+Returns ={bodies, faces, edges, vertices}=.
+*** part_faces(document, body)
+Read-only.
+Lists a body's faces: a normal, and where each one actually is.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =body= | number | required | The body. |
+
+Returns ={faces: [{id, point, normal, centroid, low, high}]}=.
+*** part_edges(document, body, along?)
+Read-only.
+Lists a body's edges, with a point, a direction and a length on each.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =body= | number | required | The body. |
+| =along= | array | optional | Keep only the edges running along this direction. |
+
+Returns ={edges: [{id, point, direction, from, to, length}]}=.
+*** part_edge_at(document, body, point, along?)
+Read-only.
+Finds the edge nearest a point, which is how a script names one.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =body= | number | required | The body. |
+| =point= | array | required | Look for the edge nearest here. |
+| =along= | array | optional | Consider only edges running along this direction. |
+
+Returns ={edge, point, direction, from, to, length, distance}=.
+*** part_face_at(document, body, normal)
+Read-only.
+Finds the face whose outward normal is nearest a direction.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =body= | number | required | The body. |
+| =normal= | array | required | The direction to look along. |
+
+Returns ={face, point, normal, agreement}=.
+*** part_mass(document, body, density?)
+Read-only.
+Volume, area, centre of mass and inertia of a body.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =body= | number | required | The body. |
+| =density= | number | optional | kg/m^3. Defaults to 1, so mass equals volume. |
+
+Returns ={volume, area, mass, centroid, inertia, principal}=.
+*** part_validate(document, body)
+Read-only.
+Checks a body's topology and geometry.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =body= | number | required | The body. |
+
+Returns ={ok, problems}=.
+*** part_export(document, path, format?, body?)
+Writes a body to STEP, STL, OBJ or glTF.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =path= | string | required | Where to write it. |
+| =format= | string | optional | step, stl, obj or gltf. Defaults to the extension. |
+| =body= | number | optional | One body, or every body if omitted. |
+
+Returns ={path, bytes, format}=.
+*** part_import(path, format?)
+Reads a STEP file, or a .mepcad feature tree, into a new document.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =path= | string | required | The file to read. |
+| =format= | string | optional | step or mepcad. Defaults to the extension. |
+
+Returns ={document, bodies, warnings, features, volume}=.
+*** fem_mesh(document, body, size?, order?, method?, layers?)
+Meshes a body, into tetrahedra or by sweeping a profile into hexahedra.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =body= | number | required | The body to mesh. |
+| =size= | number | optional | Target element size. Defaults to the model's own scale. |
+| =order= | number | optional | 1 for Tet4, 2 for curved Tet10. Defaults to 1. |
+| =method= | string | optional | tetrahedra (the default) or sweep, which needs a prismatic body and gives Hex8. |
+| =layers= | number | optional | Elements along a sweep. Defaults to the sizing field. |
+
+Returns ={mesh, nodes, elements, shape, order, worst_dihedral, target_size}=.
+*** fem_study(document, name?)
+Starts a study on a document.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =document= | number | required | The document handle. |
+| =name= | string | optional | A name for it. |
+
+Returns ={study}=.
+*** fem_material(study, youngs_modulus?, poissons_ratio?, density?, thermal_expansion?, name?)
+Sets the study's material.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =study= | number | required | The study handle. |
+| =youngs_modulus= | number | optional | Pa. Defaults to steel. |
+| =poissons_ratio= | number | optional | Defaults to 0.3. |
+| =density= | number | optional | kg/m^3. Defaults to 7850. |
+| =thermal_expansion= | number | optional | 1/K. |
+| =name= | string | optional | A name for the material. |
+
+Returns ={materials}=.
+*** fem_support(study, face?, edge?, fixed?)
+Holds a face, or an edge -- which is what a simple support is.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =study= | number | required | The study handle. |
+| =face= | number | optional | The face to hold. |
+| =edge= | number | optional | The edge to hold, instead of a face. |
+| =fixed= | array | optional | Which of x, y, z are held. Defaults to all three. |
+
+Returns ={supports}=.
+*** fem_load(study, kind, face?, magnitude?, vector?)
+Applies a load to a face, or gravity to the whole model.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =study= | number | required | The study handle. |
+| =kind= | string | required | force, pressure, traction or gravity. |
+| =face= | number | optional | The face, for everything but gravity. |
+| =magnitude= | number | optional | Pa, for a pressure. |
+| =vector= | array | optional | The force, traction or acceleration. |
+
+Returns ={loads}=.
+*** fem_solve(study, mesh)
+Runs a linear static solve.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =study= | number | required | The study handle. |
+| =mesh= | number | required | The mesh handle. |
+
+Returns ={result, nodes, elements, max_displacement, max_von_mises, strain_energy, equilibrium_residual, relative_error}=.
+*** fem_modal(study, mesh, modes?)
+Finds natural frequencies and mode shapes.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =study= | number | required | The study handle. |
+| =mesh= | number | required | The mesh handle. |
+| =modes= | number | optional | How many. Defaults to 6. |
+
+Returns ={result, frequencies, rigid_body_modes}=.
+*** fem_adapt(study, body, size?, target?, cycles?)
+Meshes, solves, estimates the error and refines, repeatedly.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =study= | number | required | The study handle. |
+| =body= | number | required | The body to mesh each cycle. |
+| =size= | number | optional | The starting element size. |
+| =target= | number | optional | The relative energy-norm error to aim for. |
+| =cycles= | number | optional | How many at most. Defaults to 3. |
+
+Returns ={result, cycles, reached_target, stopped_early, stop_reason}=.
+*** fem_summary(result)
+Read-only.
+Everything scalar about a result.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =result= | number | required | The result handle. |
+
+Returns ={nodes, elements, max_displacement, max_von_mises, strain_energy, relative_error}=.
+*** fem_field(result, field)
+Read-only.
+The range of one field over a result.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =result= | number | required | The result handle. |
+| =field= | string | required | von_mises, displacement, max_principal and so on. |
+
+Returns ={field, min, max, min_node, max_node, at_min, at_max}=.
+*** fem_probe(result, field, points)
+Read-only.
+Reads a field at points.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =result= | number | required | The result handle. |
+| =field= | string | required | Which field. |
+| =points= | array | required | An array of [x, y, z]. |
+
+Returns ={probes: [{at, value, inside, distance}]}=.
+*** fem_path(result, field, from, to, samples?)
+Read-only.
+Samples a field along a line, for plotting.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =result= | number | required | The result handle. |
+| =field= | string | required | Which field. |
+| =from= | array | required | The start point. |
+| =to= | array | required | The end point. |
+| =samples= | number | optional | How many. Defaults to 20. |
+
+Returns ={rows: [{distance, at, value}], csv}=.
+*** fem_animate(result, mode?, frames?, amplitude?)
+Read-only.
+Frames of a mode shape, as displacement per node.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =result= | number | required | A result from fem.modal. |
+| =mode= | number | optional | Which mode, from zero. Defaults to the first. |
+| =frames= | number | optional | How many. Defaults to 24. |
+| =amplitude= | number | optional | Peak movement as a fraction of the diagonal. |
+
+Returns ={frames, period, amplitude_scale, displacement}=.
+*** fem_nodes(result)
+Read-only.
+The result's node coordinates, three numbers per node.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =result= | number | required | The result handle. |
+
+Returns ={count, nodes}=.
+*** fem_movie(result, path, field?, mode?, frames?, fps?, width?, height?, amplitude?, yaw?, pitch?, orbit?, caption?, color_map?)
+Renders a result as a playable Motion-JPEG .mov.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =result= | number | required | The result handle. |
+| =path= | string | required | Where to write the film. |
+| =field= | string | optional | Which field colours it. Defaults to von_mises, or displacement for a modal result. |
+| =mode= | number | optional | For a modal result, which mode. Defaults to the first. |
+| =frames= | number | optional | How many. Defaults to 36. |
+| =fps= | number | optional | Frames per second. Defaults to 20. |
+| =width= | number | optional | Pixels. Defaults to 720. |
+| =height= | number | optional | Pixels. Defaults to 540. |
+| =amplitude= | number | optional | Peak movement as a fraction of the diagonal. |
+| =yaw= | number | optional | Camera bearing in degrees. |
+| =pitch= | number | optional | Camera elevation in degrees. |
+| =orbit= | bool | optional | Turn the camera a full circle over the film. |
+| =caption= | string | optional | A line of text along the top. |
+| =color_map= | string | optional | viridis, blue_to_red or greyscale. |
+
+Returns ={path, frames, seconds, width, height, field_min, field_max, bytes}=.
+*** fem_image(result, path, field?, mode?, width?, height?, amplitude?, yaw?, pitch?, caption?, color_map?)
+Renders one frame of a result as a PNG.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =result= | number | required | The result handle. |
+| =path= | string | required | Where to write the picture. |
+| =field= | string | optional | Which field colours it. |
+| =mode= | number | optional | For a modal result, which mode to draw at its extreme. |
+| =width= | number | optional | Pixels. Defaults to 720. |
+| =height= | number | optional | Pixels. Defaults to 540. |
+| =amplitude= | number | optional | Peak movement as a fraction of the diagonal. |
+| =yaw= | number | optional | Camera bearing in degrees. |
+| =pitch= | number | optional | Camera elevation in degrees. |
+| =caption= | string | optional | A line of text along the top. |
+| =color_map= | string | optional | viridis, blue_to_red or greyscale. |
+
+Returns ={path, width, height, field_min, field_max, bytes}=.
+*** fem_export(result, field, path, format?, from?, to?, samples?)
+Writes a path plot or a field to CSV or an org table.
+
+| parameter | type | | meaning |
+|---|---|---|---|
+| =result= | number | required | The result handle. |
+| =field= | string | required | Which field. |
+| =path= | string | required | Where to write it. |
+| =format= | string | optional | csv or org. Defaults to the extension. |
+| =from= | array | optional | A path start; omit to export every node. |
+| =to= | array | optional | A path end. |
+| =samples= | number | optional | Path samples. |
+
+Returns ={path, rows, format}=.
+
+# END GENERATED cad-fem

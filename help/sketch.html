@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The 2D sketcher</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Documents and media">
+<meta name="help-order" content="81">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The 2D sketcher</h1>
+<h1>Opening a sketch</h1>
+<p><code>:SketchNew</code> opens an empty sketch. It is the front end of mep's CAD
+modeler, which is a separate thing from the polygonal 3D modeler: that one
+edits vertices, this one edits <i>what must be true</i> of the geometry and
+lets a solver work out where it goes.</p>
+<h1>The idea</h1>
+<p>A sketch is not a drawing. Place things roughly, then say what has to hold
+-- these two edges are equal, this line is horizontal, that hole is 2.5
+from the left -- and the solver moves everything to satisfy it at once.</p>
+<p>The consequence worth internalising: *a dimension is an input, not a
+measurement*. Changing one and re-solving is how a design is changed.</p>
+<p>The status line along the bottom of the pane always shows where the sketch
+stands:</p>
+<ul>
+<li><code>solved</code> -- every constraint satisfied and nothing left free. What a finished sketch should be.</li>
+<li><code>under_constrained</code> -- satisfied, but still movable, with the number of degrees of freedom. Not an error; most sketches are here most of the time.</li>
+<li><code>redundant</code> -- constraints that depend on one another but agree. The sketch still solves; the extra ones simply say nothing new.</li>
+<li><code>conflicting</code> -- constraints that depend on one another and disagree. Nothing satisfies them. Remove one.</li>
+</ul>
+<p>Those last two look the same in most tools and are not the same problem.</p>
+<h1>Drawing</h1>
+<p>Digits pick the tool:</p>
+<table>
+<tr><td><code>1</code></td><td>select</td></tr>
+<tr><td><code>2</code></td><td>point</td></tr>
+<tr><td><code>3</code></td><td>line (chains from the last point)</td></tr>
+<tr><td><code>4</code></td><td>rectangle (two corners)</td></tr>
+<tr><td><code>5</code></td><td>circle (centre, then a point on the rim)</td></tr>
+<tr><td><code>6</code></td><td>arc (centre, start, end)</td></tr>
+</table>
+<p>Click to place. <code>Escape</code> abandons a half-drawn shape; a second <code>Escape</code>
+clears the selection. Middle-drag pans, the wheel zooms, <code>F</code> fits the view
+to what is there.</p>
+<p>Prefer the rectangle tool to four separate lines: its corners are /shared
+points/, so dragging one moves both edges that meet there and no
+coincidence constraints are needed.</p>
+<h1>Constraining</h1>
+<p>Select geometry, then press a letter. Each is the first letter of what it
+does.</p>
+<table>
+<tr><td><code>c</code></td><td>coincident</td><td>two points</td></tr>
+<tr><td><code>h</code></td><td>horizontal</td><td>two points, or a line</td></tr>
+<tr><td><code>v</code></td><td>vertical</td><td>two points, or a line</td></tr>
+<tr><td><code>p</code></td><td>parallel</td><td>two lines</td></tr>
+<tr><td><code>l</code></td><td>perpendicular</td><td>two lines</td></tr>
+<tr><td><code>t</code></td><td>tangent</td><td>a line and a circle/arc, or two circles/arcs</td></tr>
+<tr><td><code>e</code></td><td>equal</td><td>two lines, or two circles/arcs</td></tr>
+<tr><td><code>o</code></td><td>concentric</td><td>two circles/arcs</td></tr>
+<tr><td><code>n</code></td><td>collinear</td><td>two lines</td></tr>
+<tr><td><code>y</code></td><td>symmetric</td><td>two points and a line</td></tr>
+<tr><td><code>g</code></td><td>point on object</td><td>a point and an entity</td></tr>
+</table>
+<p>Dimensions open a prompt, pre-filled with what the selection currently
+measures -- so applying one without editing it changes nothing:</p>
+<table>
+<tr><td><code>d</code></td><td>distance</td><td><code>x</code></td><td>horizontal distance</td></tr>
+<tr><td><code>z</code></td><td>vertical distance</td><td><code>a</code></td><td>angle (radians)</td></tr>
+<tr><td><code>r</code></td><td>radius</td><td><code>m</code></td><td>diameter</td></tr>
+</table>
+<p>A constraint that does not suit the selection is refused and says so,
+rather than quietly failing to appear.</p>
+<h1>Dragging</h1>
+<p>Dragging a point moves it /along the directions the sketch is still free
+to move in/. A dimensioned width will not budge, and the corner slides
+vertically instead of the whole drag being refused.</p>
+<h1>Anchors and construction geometry</h1>
+<p>Every sketch has a fixed origin point, drawn as a square, so that it cannot
+drift. <code>f</code> anchors or releases other selected points.</p>
+<p>Construction geometry -- a centreline, a circle used only to keep three
+points concentric -- is drawn dashed and is ignored when profiles are
+found. <code>k</code> toggles it on the selection; <code>K</code> places new geometry as
+construction until pressed again.</p>
+<h1>Profiles</h1>
+<p>The closed regions the non-construction geometry bounds are marked with
+their area. Nested regions are reported as <i>holes</i> of the region around
+them, not as separate profiles: a washer drawn as two circles is one
+profile with one hole, which is the distinction an extrude needs.</p>
+<p>Areas are integrated along the real curves, so a circle's area is its
+area and not that of the polygon it is drawn with.</p>
+<h1>Driving it from a script or an agent</h1>
+<p>Every key above ends in the same call that <code>mep.sketch_*</code> (Lua) and
+<code>sketch.*</code> (agent RPC) make, so anything that can be done by hand can be
+done headlessly, and the two cannot drift apart. See <code>MEP_AGENT_API.md</code>.</p>
+</body>
+</html>

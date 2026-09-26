@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (75)</h1>
+<h1>The bindings (96)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -77,6 +77,27 @@ that it does nothing.</p>
 <tr><td><code>mep.replace_lines</code></td><td>replaces a 1-indexed, end-exclusive line range with a new set of lines</td></tr>
 <tr><td><code>mep.set_cursor</code></td><td>moves the cursor to a 1-indexed position</td></tr>
 <tr><td><code>mep.set_line</code></td><td>replaces the content of a 1-indexed line</td></tr>
+<tr><td><code>mep.sketch_add_arc</code></td><td>entity_id</td></tr>
+<tr><td><code>mep.sketch_add_circle</code></td><td>entity_id</td></tr>
+<tr><td><code>mep.sketch_add_ellipse</code></td><td>entity_id</td></tr>
+<tr><td><code>mep.sketch_add_line</code></td><td>entity_id</td></tr>
+<tr><td><code>mep.sketch_add_line_from_points</code></td><td>entity_id</td></tr>
+<tr><td><code>mep.sketch_add_point</code></td><td>point_id</td></tr>
+<tr><td><code>mep.sketch_add_rectangle</code></td><td>{line_ids}</td></tr>
+<tr><td><code>mep.sketch_constrain</code></td><td>constraint_id</td></tr>
+<tr><td><code>mep.sketch_delete_entity</code></td><td>bool</td></tr>
+<tr><td><code>mep.sketch_drag_point</code></td><td>bool</td></tr>
+<tr><td><code>mep.sketch_list</code></td><td>{points, entities, constraints}</td></tr>
+<tr><td><code>mep.sketch_new</code></td><td>buffer_id</td></tr>
+<tr><td><code>mep.sketch_profiles</code></td><td>array of {area, holes, interior{x,y}}</td></tr>
+<tr><td><code>mep.sketch_remove_constraint</code></td><td>bool</td></tr>
+<tr><td><code>mep.sketch_select</code></td><td>bool</td></tr>
+<tr><td><code>mep.sketch_selection</code></td><td>{points, entities}</td></tr>
+<tr><td><code>mep.sketch_set_constraint_value</code></td><td>bool</td></tr>
+<tr><td><code>mep.sketch_set_construction</code></td><td>bool</td></tr>
+<tr><td><code>mep.sketch_set_point</code></td><td>bool</td></tr>
+<tr><td><code>mep.sketch_set_point_fixed</code></td><td>bool</td></tr>
+<tr><td><code>mep.sketch_solve</code></td><td>table</td></tr>
 <tr><td><code>mep.split_below</code></td><td>opens a new horizontal split below the focused pane</td></tr>
 <tr><td><code>mep.term_resize</code></td><td>resizes a PTY-backed job's terminal dimensions</td></tr>
 <tr><td><code>mep.term_start</code></td><td>spawns a subprocess against a real PTY (raw stdout only, no separate stderr stream) instead of plain pipes</td></tr>

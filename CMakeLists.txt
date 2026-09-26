@@ -379,6 +379,71 @@ add_library(mep_core STATIC
     src/image_procgen.cpp
     src/model3d_doc.cpp
     src/model3d_blend_import.cpp
+    # CAD kernel + FEM foundations (plans/CAD_FEM_PLAN.md Part 0). Compiled
+    # into mep_core so the editor links them directly; the mep-fem solver
+    # binary below compiles the solver half again rather than linking
+    # mep_core, same reasoning as the language-server targets.
+    src/cad_math.cpp
+    src/cad_nurbs.cpp
+    src/cad_curve.cpp
+    src/cad_surface.cpp
+    src/cad_mass.cpp
+    src/cad_topology.cpp
+    src/cad_pcurve.cpp
+    src/cad_validate.cpp
+    src/cad_tessellate.cpp
+    src/cad_naming.cpp
+    src/cad_intersect.cpp
+    src/cad_classify.cpp
+    src/cad_arrangement.cpp
+    src/cad_boolean.cpp
+    src/cad_sketch.cpp
+    src/cad_constraint.cpp
+    src/cad_feature.cpp
+    src/cad_modify.cpp
+    src/cad_pattern.cpp
+    src/cad_assembly.cpp
+    src/cad_doc.cpp
+    src/cad_step_parse.cpp
+    src/cad_step_read.cpp
+    src/cad_step_write.cpp
+    src/cad_exchange_mesh.cpp
+    src/cad_exchange_dxf.cpp
+    src/cad_exchange_iges.cpp
+    src/cad_drawing.cpp
+    src/cad_predicates.cpp
+    src/num_sparse.cpp
+    src/fem_model.cpp
+    src/fem_solve.cpp
+    src/fem_elem.cpp
+    src/fem_viz.cpp
+    # Parts G to K: the mesher, the solvers, post-processing and the agent
+    # surface that Part K exposes them through. In mep_core rather than
+    # only in the mep-fem subprocess because `cad.*` and `fem.*` are
+    # answered on the editor's own agent socket -- a document an agent
+    # builds has to be one the human in the same editor can see.
+    src/fem_mesh_size.cpp
+    src/fem_mesh_surface.cpp
+    src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp
+    src/fem_mesh_sweep.cpp
+    src/fem_study.cpp
+    src/fem_assemble.cpp
+    src/fem_static.cpp
+    src/fem_result.cpp
+    src/fem_thermal.cpp
+    src/fem_map.cpp
+    src/fem_modal.cpp
+    src/fem_nonlinear.cpp
+    src/fem_plastic.cpp
+    src/fem_contact.cpp
+    src/fem_render.cpp
+    src/fem_movie.cpp
+    src/fem_animate.cpp
+    src/fem_probe.cpp
+    src/fem_adapt.cpp
+    src/cad_fem_api.cpp
+    src/cad_fem_methods.cpp
     src/wav_doc.cpp
     src/svg_doc.cpp
     src/pdf_doc.cpp
@@ -517,7 +582,18 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(mep_core PUBLIC OpenGL::GL X11::X11)
 endif()
 if(NOT EMSCRIPTEN AND NOT WIN32)
-    find_package(Threads REQUIRED)
+    # cad_predicates.cpp's exact arithmetic assumes every floating-point
+# operation is individually rounded to double. Contracting a multiply and an
+# add into an FMA would break the error terms it is built from, so
+# contraction is disabled for that one translation unit -- everywhere it is
+# compiled. See src/cad_predicates.h's build note: as written the primitives
+# survive contraction anyway (verified), but that argument has to be re-made
+# after any edit to them, and a silent loss of exactness is close to
+# undebuggable from its symptoms.
+set(MEP_FP_EXACT_SOURCES src/cad_predicates.cpp)
+set_source_files_properties(${MEP_FP_EXACT_SOURCES} PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+
+find_package(Threads REQUIRED)
     target_link_libraries(mep_core PUBLIC Threads::Threads)
     # dlopen/dlsym for the dynamic-grammar-loading path (treesitter.cpp).
     # Emscripten/wasm has no filesystem access to arbitrary shared
@@ -595,6 +671,27 @@ mep_add_gfx_native_smoke(mep-gfx-native-audio-smoke src/gfx/native_audio_smoke_m
 # Model-import smoke test (Stage B8): loads a real model file and
 # renders it, see gfx/native_model_smoke_main.cpp.
 mep_add_gfx_native_smoke(mep-gfx-native-model-smoke src/gfx/native_model_smoke_main.cpp)
+# 32-bit mesh indices (plans/CAD_FEM_PLAN.md Part 0.4): draws one indexed
+# mesh with more than 65,536 vertices and checks the framebuffer for the
+# specific scrambling a 16-bit index wraparound would produce. Nothing
+# else in the tree builds a large indexed mesh -- every importer sidesteps
+# indexing entirely -- so without this the widened type would be untested.
+mep_add_gfx_native_smoke(mep-gfx-native-index32-smoke src/gfx/native_index32_smoke_main.cpp)
+
+# The Part 0.6 vertical slice on screen: mesh -> solve -> colour -> draw,
+# with a framebuffer check that the result really is a contour plot. Takes
+# the FEM sources as extra arguments since they are not part of the gfx set.
+mep_add_gfx_native_smoke(mep-gfx-native-fem-smoke src/gfx/native_fem_smoke_main.cpp)
+target_sources(mep-gfx-native-fem-smoke PRIVATE src/fem_model.cpp src/fem_solve.cpp src/fem_elem.cpp src/fem_viz.cpp
+    src/num_sparse.cpp src/cad_math.cpp)
+
+# Part B.5 on screen: B-rep solids tessellated and drawn. Catches what a
+# volume check cannot -- a misplaced seam, a pinched pole, an inverted
+# normal -- all of which are obvious in a picture and invisible in a number.
+mep_add_gfx_native_smoke(mep-gfx-native-brep-smoke src/gfx/native_brep_smoke_main.cpp)
+target_sources(mep-gfx-native-brep-smoke PRIVATE src/cad_topology.cpp src/cad_pcurve.cpp
+    src/cad_tessellate.cpp src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp
+    src/cad_math.cpp)
 
 # BUILD_PERFORMANCE_PLAN.md Round 3: a production build only needs `mep`
 # itself plus its two companion tools (mep-mcp, mep-collabd, both real
@@ -606,7 +703,8 @@ mep_add_gfx_native_smoke(mep-gfx-native-model-smoke src/gfx/native_model_smoke_m
 # `cmake --build . --target tests` (or an explicit smaller target list)
 # rather than relying on `all` to have built everything as a side effect.
 add_custom_target(tests)
-add_dependencies(tests mep-gfx-native-integration-smoke mep-gfx-native-audio-smoke mep-gfx-native-model-smoke)
+add_dependencies(tests mep-gfx-native-integration-smoke mep-gfx-native-audio-smoke mep-gfx-native-model-smoke
+    mep-gfx-native-index32-smoke mep-gfx-native-fem-smoke mep-gfx-native-brep-smoke)
 
 add_executable(mep
     src/main.cpp
@@ -650,8 +748,16 @@ endif()
 # none of mep_core -- just json.h/persist.h/rpc_framing.h and
 # POSIX sockets. Skipped on Emscripten/Windows for the same reason
 # agent_rpc.h's socket support itself is (see that header's own comment).
+# Part K.4: writes the generated halves of the CAD/FEM reference into
+# MEP_AGENT_API.md and help/cad-fem.org. Links the method table and
+# nothing else, so `just cad-fem-docs` cannot fail for an unrelated
+# reason.
+add_executable(mep-cad-fem-docs EXCLUDE_FROM_ALL src/cad_fem_docs_main.cpp src/cad_fem_methods.cpp)
+target_include_directories(mep-cad-fem-docs PRIVATE src)
+target_compile_options(mep-cad-fem-docs PRIVATE ${MEP_STRICT_FLAGS})
+
 if(NOT EMSCRIPTEN AND NOT WIN32)
-    add_executable(mep-mcp src/mcp_bridge.cpp)
+    add_executable(mep-mcp src/mcp_bridge.cpp src/cad_fem_methods.cpp)
     target_include_directories(mep-mcp PRIVATE src)
     target_compile_options(mep-mcp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-mcp PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -744,6 +850,486 @@ target_include_directories(mep-indent-test PRIVATE src)
 target_compile_options(mep-indent-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-indent-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-indent-test)
+
+# --- CAD kernel + FEM foundations (plans/CAD_FEM_PLAN.md Part 0) ------------
+# All four are pure CPU with no backend at all -- no gfx, no X11, no GL -- so
+# unlike mep-model3d-doc-test they link nothing but their own sources.
+
+# Part 0.1: the double-precision math core.
+add_executable(mep-cad-math-test EXCLUDE_FROM_ALL src/cad_math_test.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-math-test PRIVATE src)
+target_compile_options(mep-cad-math-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-math-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-math-test)
+
+# Part 0.2: exact geometric predicates. Inherits the -ffp-contract=off
+# source property set above, and PredicatesSelfTest() fails loudly at
+# startup if it is ever lost.
+add_executable(mep-cad-predicates-test EXCLUDE_FROM_ALL src/cad_predicates_test.cpp src/cad_predicates.cpp)
+target_include_directories(mep-cad-predicates-test PRIVATE src)
+target_compile_options(mep-cad-predicates-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-predicates-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-predicates-test)
+
+# Part A.2/A.3: the B-spline and NURBS engine -- knot vectors, basis
+# functions, evaluation, the shape-preserving operations and fitting.
+add_executable(mep-cad-nurbs-test EXCLUDE_FROM_ALL src/cad_nurbs_test.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-nurbs-test PRIVATE src)
+target_compile_options(mep-cad-nurbs-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-nurbs-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-nurbs-test)
+
+# Part A.1/A.5: the curve interface, the analytic families, and point
+# inversion.
+add_executable(mep-cad-curve-test EXCLUDE_FROM_ALL src/cad_curve_test.cpp src/cad_curve.cpp src/cad_nurbs.cpp
+    src/cad_math.cpp)
+target_include_directories(mep-cad-curve-test PRIVATE src)
+target_compile_options(mep-cad-curve-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-curve-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-curve-test)
+
+# Part A.1/A.3/A.4: the surface interface, the analytic families, the
+# derived surfaces and the loft/sweep construction operations.
+add_executable(mep-cad-surface-test EXCLUDE_FROM_ALL src/cad_surface_test.cpp src/cad_surface.cpp
+    src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-surface-test PRIVATE src)
+target_compile_options(mep-cad-surface-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-surface-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-surface-test)
+
+# Part A.6: mass properties by the divergence theorem -- the volume check
+# every later operation is verified against.
+add_executable(mep-cad-mass-test EXCLUDE_FROM_ALL src/cad_mass_test.cpp src/cad_mass.cpp src/cad_surface.cpp
+    src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-mass-test PRIVATE src)
+target_compile_options(mep-cad-mass-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-mass-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-mass-test)
+
+# Part B: the boundary representation -- topology, p-curves, the validity
+# checker, tessellation and persistent naming. Links cad_predicates.cpp
+# because the tessellator's Delaunay runs on the exact predicates.
+add_executable(mep-cad-topology-test EXCLUDE_FROM_ALL src/cad_topology_test.cpp src/cad_topology.cpp
+    src/cad_pcurve.cpp src/cad_validate.cpp src/cad_tessellate.cpp src/cad_naming.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-topology-test PRIVATE src)
+target_compile_options(mep-cad-topology-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-topology-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-topology-test)
+
+# Part C.1/C.2 plus the classification third of C.4: curve-curve and
+# curve-surface intersection, the analytic surface-surface table, and
+# point-in-solid classification by ray parity.
+add_executable(mep-cad-intersect-test EXCLUDE_FROM_ALL src/cad_intersect_test.cpp src/cad_intersect.cpp
+    src/cad_classify.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_surface.cpp src/cad_curve.cpp
+    src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-intersect-test PRIVATE src)
+target_compile_options(mep-cad-intersect-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-intersect-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-intersect-test)
+
+# Part C.4/C.5: boolean operations -- imprint, classify, stitch -- and the
+# algebraic identities they have to satisfy.
+add_executable(mep-cad-boolean-test EXCLUDE_FROM_ALL src/cad_boolean_test.cpp src/cad_boolean.cpp
+    src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp
+    src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-boolean-test PRIVATE src)
+target_compile_options(mep-cad-boolean-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-boolean-test PRIVATE ${MEP_SANITIZE_FLAGS})
+set_source_files_properties(src/cad_predicates.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+add_dependencies(tests mep-cad-boolean-test)
+
+# Part D: the sketcher -- 2D geometry, the constraint solver, its
+# diagnosis, and profile extraction.
+add_executable(mep-cad-sketch-test EXCLUDE_FROM_ALL src/cad_sketch_test.cpp src/cad_sketch.cpp
+    src/cad_constraint.cpp src/cad_arrangement.cpp src/cad_intersect.cpp src/cad_naming.cpp
+    src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp
+    src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-sketch-test PRIVATE src)
+target_compile_options(mep-cad-sketch-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-sketch-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-sketch-test)
+
+# Part E.1/E.2: the feature tree and the sketch-based features -- extrude,
+# revolve and loft, each with its boolean variants.
+add_executable(mep-cad-feature-test EXCLUDE_FROM_ALL src/cad_feature_test.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp src/cad_surface.cpp
+    src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-feature-test PRIVATE src)
+target_compile_options(mep-cad-feature-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-feature-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-feature-test)
+
+# Part E.4: offset, draft, shell and thicken.
+add_executable(mep-cad-modify-test EXCLUDE_FROM_ALL src/cad_modify_test.cpp src/cad_modify.cpp
+    src/cad_feature.cpp src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp
+    src/cad_arrangement.cpp src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp
+    src/cad_validate.cpp src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp
+    src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-modify-test PRIVATE src)
+target_compile_options(mep-cad-modify-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-modify-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-modify-test)
+
+# Part E.5: patterns and transforms.
+add_executable(mep-cad-pattern-test EXCLUDE_FROM_ALL src/cad_pattern_test.cpp src/cad_pattern.cpp
+    src/cad_modify.cpp src/cad_feature.cpp src/cad_boolean.cpp src/cad_sketch.cpp
+    src/cad_constraint.cpp src/cad_arrangement.cpp src/cad_intersect.cpp src/cad_classify.cpp
+    src/cad_tessellate.cpp src/cad_validate.cpp src/cad_naming.cpp src/cad_topology.cpp
+    src/cad_pcurve.cpp src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp
+    src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-pattern-test PRIVATE src)
+target_compile_options(mep-cad-pattern-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-pattern-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-pattern-test)
+
+# Part E.6: datums and assemblies.
+add_executable(mep-cad-assembly-test EXCLUDE_FROM_ALL src/cad_assembly_test.cpp src/cad_assembly.cpp
+    src/cad_pattern.cpp src/cad_modify.cpp src/cad_feature.cpp src/cad_boolean.cpp src/cad_sketch.cpp
+    src/cad_constraint.cpp src/cad_arrangement.cpp src/cad_intersect.cpp src/cad_classify.cpp
+    src/cad_tessellate.cpp src/cad_validate.cpp src/cad_naming.cpp src/cad_topology.cpp
+    src/cad_pcurve.cpp src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp
+    src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-assembly-test PRIVATE src)
+target_compile_options(mep-cad-assembly-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-assembly-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-assembly-test)
+
+# Part F.1: the native .mepcad document.
+add_executable(mep-cad-doc-test EXCLUDE_FROM_ALL src/cad_doc_test.cpp src/cad_doc.cpp
+    src/cad_feature.cpp src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp
+    src/cad_arrangement.cpp src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp
+    src/cad_validate.cpp src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp
+    src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-doc-test PRIVATE src)
+target_compile_options(mep-cad-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-doc-test)
+
+# Parts F.2 and F.3: STEP read and write.
+add_executable(mep-cad-step-test EXCLUDE_FROM_ALL src/cad_step_test.cpp src/cad_step_parse.cpp
+    src/cad_step_read.cpp src/cad_step_write.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-step-test PRIVATE src)
+target_compile_options(mep-cad-step-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-step-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-step-test)
+
+# Part F.4: STL/OBJ/glTF export, DXF both ways, IGES in, drawing views.
+add_executable(mep-cad-exchange-test EXCLUDE_FROM_ALL src/cad_exchange_test.cpp
+    src/cad_exchange_mesh.cpp src/cad_exchange_dxf.cpp src/cad_exchange_iges.cpp src/cad_drawing.cpp
+    src/cad_step_parse.cpp src/cad_step_read.cpp src/cad_step_write.cpp src/cad_modify.cpp
+    src/cad_feature.cpp src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp
+    src/cad_arrangement.cpp src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp
+    src/cad_validate.cpp src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp
+    src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-exchange-test PRIVATE src)
+target_compile_options(mep-cad-exchange-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-exchange-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cad-exchange-test)
+
+# Part G: the mesher.
+add_executable(mep-fem-mesh-test EXCLUDE_FROM_ALL src/fem_mesh_test.cpp src/fem_mesh_size.cpp
+    src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/fem_model.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-mesh-test PRIVATE src)
+target_compile_options(mep-fem-mesh-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-mesh-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-mesh-test)
+
+# Part H.1: the element library, held to the identities an element obeys.
+add_executable(mep-fem-elem-test EXCLUDE_FROM_ALL src/fem_elem_test.cpp src/fem_elem.cpp
+    src/fem_solve.cpp src/fem_model.cpp src/num_sparse.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-elem-test PRIVATE src)
+target_compile_options(mep-fem-elem-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-elem-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-elem-test)
+
+# Part H.2: the analysis model, bound to named CAD faces rather than to
+# node numbers. Links the CAD side because that is the whole point.
+add_executable(mep-fem-study-test EXCLUDE_FROM_ALL src/fem_study_test.cpp src/fem_study.cpp src/fem_assemble.cpp
+    src/fem_elem.cpp src/fem_solve.cpp src/fem_model.cpp src/num_sparse.cpp
+    src/fem_mesh_size.cpp src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-study-test PRIVATE src)
+target_compile_options(mep-fem-study-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-study-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-study-test)
+
+# Part H.3: assembly -- the symbolic pattern, the numeric fill, and the
+# three ways a constraint can be applied.
+add_executable(mep-fem-assemble-test EXCLUDE_FROM_ALL src/fem_assemble_test.cpp
+    src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp src/fem_model.cpp
+    src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-assemble-test PRIVATE src)
+target_compile_options(mep-fem-assemble-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-assemble-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-assemble-test)
+
+# Part H.6: linear static, verified against a manufactured solution.
+add_executable(mep-fem-static-test EXCLUDE_FROM_ALL src/fem_static_test.cpp src/fem_static.cpp src/fem_result.cpp
+    src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp src/fem_model.cpp
+    src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-static-test PRIVATE src)
+target_compile_options(mep-fem-static-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-static-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-static-test)
+
+add_executable(mep-fem-result-test EXCLUDE_FROM_ALL src/fem_result_test.cpp src/fem_static.cpp src/fem_result.cpp
+    src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp src/fem_model.cpp
+    src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-result-test PRIVATE src)
+target_compile_options(mep-fem-result-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-result-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-result-test)
+
+add_executable(mep-fem-adapt-test EXCLUDE_FROM_ALL src/fem_adapt_test.cpp src/fem_adapt.cpp src/fem_static.cpp src/fem_result.cpp
+    src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp src/fem_model.cpp
+    src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-adapt-test PRIVATE src)
+target_compile_options(mep-fem-adapt-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-adapt-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-adapt-test)
+
+add_executable(mep-fem-nafems-test EXCLUDE_FROM_ALL src/fem_nafems_test.cpp src/fem_adapt.cpp src/fem_thermal.cpp src/fem_modal.cpp src/fem_animate.cpp src/fem_static.cpp src/fem_result.cpp
+    src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp src/fem_model.cpp
+    src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-nafems-test PRIVATE src)
+target_compile_options(mep-fem-nafems-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-nafems-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-nafems-test)
+
+
+add_executable(mep-cad-fem-api-test EXCLUDE_FROM_ALL src/cad_fem_api_test.cpp src/cad_fem_api.cpp src/cad_fem_methods.cpp src/cad_mass.cpp src/cad_doc.cpp src/fem_movie.cpp src/fem_render.cpp src/fem_viz.cpp src/jpeg_codec.cpp src/mov_container.cpp src/png_codec.cpp src/deflate.cpp src/fem_adapt.cpp src/fem_animate.cpp src/fem_probe.cpp src/fem_map.cpp src/fem_modal.cpp src/cad_step_parse.cpp src/cad_step_read.cpp src/cad_step_write.cpp src/cad_exchange_mesh.cpp src/fem_static.cpp src/fem_result.cpp
+    src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp src/fem_model.cpp
+    src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-cad-fem-api-test PRIVATE src)
+target_compile_options(mep-cad-fem-api-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cad-fem-api-test PRIVATE ${MEP_SANITIZE_FLAGS})
+# So the documentation check can find MEP_AGENT_API.md and help/ wherever
+# the build tree happens to be.
+target_compile_definitions(mep-cad-fem-api-test PRIVATE MEP_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+add_dependencies(tests mep-cad-fem-api-test)
+
+
+
+add_executable(mep-fem-render-test EXCLUDE_FROM_ALL src/fem_render_test.cpp src/fem_render.cpp src/fem_viz.cpp src/fem_static.cpp src/fem_result.cpp
+    src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp src/fem_model.cpp
+    src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-render-test PRIVATE src)
+target_compile_options(mep-fem-render-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-render-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-render-test)
+
+add_executable(mep-nafems-examples EXCLUDE_FROM_ALL src/nafems_examples_main.cpp
+    src/cad_doc.cpp src/cad_feature.cpp src/cad_sketch.cpp src/cad_constraint.cpp
+    src/cad_boolean.cpp src/cad_modify.cpp src/cad_arrangement.cpp src/cad_intersect.cpp
+    src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp src/cad_naming.cpp
+    src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp src/cad_surface.cpp
+    src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-nafems-examples PRIVATE src)
+target_compile_options(mep-nafems-examples PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-nafems-examples PRIVATE ${MEP_SANITIZE_FLAGS})
+
+add_executable(mep-fem-movie-test EXCLUDE_FROM_ALL src/fem_movie_test.cpp src/fem_movie.cpp
+    src/fem_render.cpp src/fem_viz.cpp src/fem_animate.cpp src/fem_modal.cpp src/fem_static.cpp
+    src/fem_result.cpp src/jpeg_codec.cpp src/mov_container.cpp src/png_codec.cpp src/deflate.cpp
+    src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp src/fem_model.cpp
+    src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-movie-test PRIVATE src)
+target_compile_options(mep-fem-movie-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-movie-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-movie-test)
+
+add_executable(mep-fem-report-test EXCLUDE_FROM_ALL src/fem_report_test.cpp src/fem_animate.cpp src/fem_probe.cpp src/fem_map.cpp src/fem_modal.cpp src/fem_thermal.cpp src/fem_static.cpp src/fem_result.cpp
+    src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp src/fem_model.cpp
+    src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp src/cad_feature.cpp
+    src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp
+    src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp
+    src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp
+    src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-report-test PRIVATE src)
+target_compile_options(mep-fem-report-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-report-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-report-test)
+
+
+
+
+# Part I.1: steady-state heat conduction.
+add_executable(mep-fem-thermal-test EXCLUDE_FROM_ALL src/fem_thermal_test.cpp src/fem_thermal.cpp
+    src/fem_static.cpp src/fem_result.cpp src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp
+    src/fem_model.cpp src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp
+    src/fem_mesh_volume.cpp src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp
+    src/cad_feature.cpp src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp
+    src/cad_arrangement.cpp src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp
+    src/cad_validate.cpp src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp
+    src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp
+    src/cad_math.cpp)
+target_include_directories(mep-fem-thermal-test PRIVATE src)
+target_compile_options(mep-fem-thermal-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-thermal-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-thermal-test)
+
+# Part I.3: thermal-structural coupling, and the field mapping it needs.
+add_executable(mep-fem-couple-test EXCLUDE_FROM_ALL src/fem_couple_test.cpp src/fem_map.cpp
+    src/fem_thermal.cpp src/fem_static.cpp src/fem_result.cpp src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp
+    src/fem_solve.cpp src/fem_model.cpp src/num_sparse.cpp src/fem_mesh_size.cpp
+    src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp src/fem_mesh_curved.cpp
+    src/fem_mesh_sweep.cpp src/cad_modify.cpp src/cad_feature.cpp src/cad_boolean.cpp
+    src/cad_sketch.cpp src/cad_constraint.cpp src/cad_arrangement.cpp src/cad_intersect.cpp
+    src/cad_classify.cpp src/cad_tessellate.cpp src/cad_validate.cpp src/cad_naming.cpp
+    src/cad_topology.cpp src/cad_pcurve.cpp src/cad_predicates.cpp src/cad_surface.cpp
+    src/cad_curve.cpp src/cad_nurbs.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-couple-test PRIVATE src)
+target_compile_options(mep-fem-couple-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-couple-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-couple-test)
+
+# Part I.4: modal analysis.
+add_executable(mep-fem-modal-test EXCLUDE_FROM_ALL src/fem_modal_test.cpp src/fem_modal.cpp
+    src/fem_static.cpp src/fem_result.cpp src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp
+    src/fem_model.cpp src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp
+    src/fem_mesh_volume.cpp src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp
+    src/cad_feature.cpp src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp
+    src/cad_arrangement.cpp src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp
+    src/cad_validate.cpp src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp
+    src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp
+    src/cad_math.cpp)
+target_include_directories(mep-fem-modal-test PRIVATE src)
+target_compile_options(mep-fem-modal-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-modal-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-modal-test)
+
+# Parts I.6 to I.8: nonlinearity and contact.
+add_executable(mep-fem-nonlinear-test EXCLUDE_FROM_ALL src/fem_nonlinear_test.cpp
+    src/fem_nonlinear.cpp src/fem_plastic.cpp src/fem_contact.cpp src/fem_modal.cpp
+    src/fem_static.cpp src/fem_result.cpp src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp
+    src/fem_model.cpp src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp
+    src/fem_mesh_volume.cpp src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp
+    src/cad_feature.cpp src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp
+    src/cad_arrangement.cpp src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp
+    src/cad_validate.cpp src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp
+    src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp
+    src/cad_math.cpp)
+target_include_directories(mep-fem-nonlinear-test PRIVATE src)
+target_compile_options(mep-fem-nonlinear-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-nonlinear-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-nonlinear-test)
+
+# Part H.6: the cross-check against CalculiX. Needs CalculiX, so it takes
+# the path as an argument and is not part of `tests`, same as the mesher's
+# Gmsh comparison.
+add_executable(mep-fem-static-compare-test EXCLUDE_FROM_ALL src/fem_static_compare_test.cpp
+    src/fem_static.cpp src/fem_result.cpp src/fem_assemble.cpp src/fem_study.cpp src/fem_elem.cpp src/fem_solve.cpp
+    src/fem_model.cpp src/num_sparse.cpp src/fem_mesh_size.cpp src/fem_mesh_surface.cpp
+    src/fem_mesh_volume.cpp src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/cad_modify.cpp
+    src/cad_feature.cpp src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp
+    src/cad_arrangement.cpp src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp
+    src/cad_validate.cpp src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp
+    src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp
+    src/cad_math.cpp)
+target_include_directories(mep-fem-static-compare-test PRIVATE src)
+target_compile_options(mep-fem-static-compare-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-static-compare-test PRIVATE ${MEP_SANITIZE_FLAGS})
+
+# Part G.7: the same bodies meshed by Gmsh, for a second opinion. Needs
+# Gmsh on the machine, so it takes the path to it as an argument and is
+# not part of `tests` -- the same arrangement the live tests use.
+add_executable(mep-fem-mesh-compare-test EXCLUDE_FROM_ALL src/fem_mesh_compare_test.cpp
+    src/fem_mesh_size.cpp src/fem_mesh_surface.cpp src/fem_mesh_volume.cpp
+    src/fem_mesh_curved.cpp src/fem_mesh_sweep.cpp src/fem_model.cpp src/cad_modify.cpp
+    src/cad_feature.cpp src/cad_boolean.cpp src/cad_sketch.cpp src/cad_constraint.cpp
+    src/cad_arrangement.cpp src/cad_intersect.cpp src/cad_classify.cpp src/cad_tessellate.cpp
+    src/cad_validate.cpp src/cad_naming.cpp src/cad_topology.cpp src/cad_pcurve.cpp
+    src/cad_predicates.cpp src/cad_surface.cpp src/cad_curve.cpp src/cad_nurbs.cpp
+    src/cad_math.cpp src/cad_step_parse.cpp src/cad_step_read.cpp src/cad_step_write.cpp)
+target_include_directories(mep-fem-mesh-compare-test PRIVATE src)
+target_compile_options(mep-fem-mesh-compare-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-mesh-compare-test PRIVATE ${MEP_SANITIZE_FLAGS})
+
+# Part 0.3: sparse linear algebra. Links cad_math.cpp only for the dense
+# cross-check the test does against it.
+add_executable(mep-num-sparse-test EXCLUDE_FROM_ALL src/num_sparse_test.cpp src/num_sparse.cpp src/cad_math.cpp)
+target_include_directories(mep-num-sparse-test PRIVATE src)
+target_compile_options(mep-num-sparse-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-num-sparse-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-num-sparse-test)
+
+# Part 0.6: the linear static solver, including the element patch test.
+add_executable(mep-fem-test EXCLUDE_FROM_ALL src/fem_test.cpp src/fem_model.cpp src/fem_solve.cpp src/fem_elem.cpp
+    src/num_sparse.cpp src/cad_math.cpp)
+target_include_directories(mep-fem-test PRIVATE src)
+target_compile_options(mep-fem-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fem-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fem-test)
+
+# Part 0.5: the mep-fem solver binary. Built by default (not
+# EXCLUDE_FROM_ALL) because the editor spawns it out of its own bin
+# directory, exactly as it does the language servers; and skipped on
+# Emscripten, which has no subprocesses -- same reasoning as those targets.
+if(NOT EMSCRIPTEN)
+    add_executable(mep-fem src/fem_server.cpp src/fem_model.cpp src/fem_solve.cpp src/fem_elem.cpp src/num_sparse.cpp
+        src/cad_math.cpp)
+    target_include_directories(mep-fem PRIVATE src)
+    target_compile_options(mep-fem PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-fem PRIVATE ${MEP_SANITIZE_FLAGS})
+endif()
 
 # mep's own C++ language server: the wire half (src/cpp_lsp_server.cpp) over
 # the analysis half (src/cpp_lsp.cpp's scope model, src/cpp_lsp_diagnostics.cpp
@@ -1287,6 +1873,36 @@ if(NOT EMSCRIPTEN)
         target_link_options(mep-agent-rpc-test PRIVATE ${MEP_SANITIZE_FLAGS})
         target_link_libraries(mep-agent-rpc-test PRIVATE Threads::Threads)
         add_dependencies(tests mep-agent-rpc-test)
+
+        # Part D.5: the same "spawn a real mep and drive its socket" shape,
+        # for the sketcher's whole stack -- RPC dispatch, the Editor
+        # methods the keyboard also calls, the solver, and back out as
+        # JSON. Run by hand the same way:
+        # `./mep-cad-sketch-live-test ./mep`.
+        add_executable(mep-cad-sketch-live-test EXCLUDE_FROM_ALL src/cad_sketch_live_test.cpp)
+        target_include_directories(mep-cad-sketch-live-test PRIVATE src)
+        target_compile_options(mep-cad-sketch-live-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+        target_link_options(mep-cad-sketch-live-test PRIVATE ${MEP_SANITIZE_FLAGS})
+        target_link_libraries(mep-cad-sketch-live-test PRIVATE Threads::Threads)
+        add_dependencies(tests mep-cad-sketch-live-test)
+
+        # Part F.5: the CAD part pane, driven through a live mep's agent
+        # socket. Same shape and same requirement as the sketcher's live
+        # test above: `./mep-cad-live-test ./mep`.
+        add_executable(mep-cad-live-test EXCLUDE_FROM_ALL src/cad_live_test.cpp)
+        target_include_directories(mep-cad-live-test PRIVATE src)
+        target_compile_options(mep-cad-live-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+        target_link_options(mep-cad-live-test PRIVATE ${MEP_SANITIZE_FLAGS})
+        target_link_libraries(mep-cad-live-test PRIVATE Threads::Threads)
+        add_dependencies(tests mep-cad-live-test)
+
+add_executable(mep-cad-fem-api-live-test EXCLUDE_FROM_ALL src/cad_fem_api_live_test.cpp src/cad_fem_methods.cpp)
+        target_include_directories(mep-cad-fem-api-live-test PRIVATE src)
+        target_compile_options(mep-cad-fem-api-live-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+        target_link_options(mep-cad-fem-api-live-test PRIVATE ${MEP_SANITIZE_FLAGS})
+        target_link_libraries(mep-cad-fem-api-live-test PRIVATE Threads::Threads)
+        add_dependencies(tests mep-cad-fem-api-live-test)
+
     endif()
 endif()
 

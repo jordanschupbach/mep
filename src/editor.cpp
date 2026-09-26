@@ -4617,6 +4617,12 @@ void Editor::HandleInput() {
         case Mode::Model3D:
             HandleModel3DInput();
             break;
+        case Mode::CadSketch:
+            HandleCadSketchInput();
+            break;
+        case Mode::Cad:
+            HandleCadInput();
+            break;
         case Mode::Pdf:
         case Mode::PdfNav:
         case Mode::PdfAnnotate:
@@ -5403,6 +5409,22 @@ void Editor::HandleMouseWheel(float dx, float dy) {
         case Mode::Model3D:
             WheelScrollModel3D(dx, dy);
             break;
+        case Mode::Cad:
+            // The wheel zooms the part, which is what it does in the
+            // polygonal modeller next door and is the only thing anyone
+            // expects a wheel to do over a 3D view.
+            CadZoom(CurPane().buffer_id, dy > 0.0f ? 1.1f : (dy < 0.0f ? 1.0f / 1.1f : 1.0f));
+            break;
+        case Mode::CadSketch:
+            if (CadSketchSession *sketch = GetCadSketchMutable(CurPane().buffer_id); sketch != nullptr) {
+                // Zoom about the view centre. Zooming about the pointer
+                // would be nicer and needs the pane rect, which only
+                // main.cpp has -- it drives that from DrawPane, the same
+                // split every other in-pane viewer uses.
+                const double factor = (dy > 0.0f) ? 1.1 : (dy < 0.0f ? 1.0 / 1.1 : 1.0);
+                sketch->pixels_per_unit = std::clamp(sketch->pixels_per_unit * factor, 0.5, 4000.0);
+            }
+            break;
         case Mode::Html:
             WheelScrollHtml(dx, dy);
             break;
@@ -5963,7 +5985,10 @@ bool Editor::BufferIsPristine(int buffer_id) const {
     // filename. Without this an agent-created image/3D buffer would both
     // keep the dashboard up over it and, via BufferLabelForLua, stay out
     // of the buffer lists entirely.
-    if (IsTerminalBuffer(buffer_id) || GetImageEditor(buffer_id) || IsModel3DBuffer(buffer_id)) return false;
+    if (IsTerminalBuffer(buffer_id) || GetImageEditor(buffer_id) || IsModel3DBuffer(buffer_id) ||
+        IsCadSketchBuffer(buffer_id) || IsCadBuffer(buffer_id)) {
+        return false;
+    }
     return true;
 }
 
@@ -6749,6 +6774,10 @@ void Editor::SyncModeToActivePaneBuffer() {
         mode_ = Mode::Image;
     } else if (IsModel3DBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Model3D;
+    } else if (IsCadBuffer(CurPane().buffer_id)) {
+        mode_ = Mode::Cad;
+    } else if (IsCadSketchBuffer(CurPane().buffer_id)) {
+        mode_ = Mode::CadSketch;
     } else if (IsPdfBuffer(CurPane().buffer_id)) {
         // Preserve an active annotate sub-mode when focus re-lands on the
         // same PDF buffer -- a click-to-place-caret routes through
@@ -7824,6 +7853,10 @@ void ComputeSceneWorldBounds(const Scene &scene, Vec3f *out_min, Vec3f *out_max)
 }
 
 bool Editor::IsModel3DBuffer(int buffer_id) const { return model3d_sessions_.find(buffer_id) != model3d_sessions_.end(); }
+
+bool Editor::IsCadSketchBuffer(int buffer_id) const {
+    return cad_sketch_sessions_.find(buffer_id) != cad_sketch_sessions_.end();
+}
 
 const Model3DSession *Editor::GetModel3D(int buffer_id) const {
     auto it = model3d_sessions_.find(buffer_id);
@@ -8902,6 +8935,201 @@ void Editor::Model3DBumpSceneGeneration(int buffer_id) {
     it->second.scene_generation = NextModel3DSceneGeneration();
 }
 
+// Mode::CadSketch's keyboard (plans/CAD_FEM_PLAN.md Part D.5).
+//
+// Two key groups, chosen so neither has to be remembered as an exception.
+//
+//   DIGITS PICK A DRAWING TOOL, the same convention Mode::Model3D already
+//   uses and for the same reason: the letters are wanted for actions, and
+//   a tool is a mode rather than an action.
+//
+//   LETTERS APPLY A CONSTRAINT TO THE SELECTION, and each is the first
+//   letter of what it does -- h horizontal, v vertical, p parallel,
+//   e equal, t tangent, and so on. A constraint needing a number opens
+//   Mode::Prompt for it, so 'd' on two selected points asks for the
+//   distance rather than inventing one.
+//
+// Every branch ends in a call to one of the Editor::CadSketch* methods.
+// That is the whole of the plan's "no logic of its own": a key press and
+// an agent's RPC call reach the geometry by the same path, so there is no
+// second implementation to keep in step.
+void Editor::HandleCadSketchInput() {
+    CadSketchSession *sess = GetCadSketchMutable(CurPane().buffer_id);
+    if (sess == nullptr) {
+        mode_ = Mode::Normal;
+        return;
+    }
+
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+        // One Escape abandons a half-drawn shape, a second clears the
+        // selection. Collapsing the two would mean a mis-click while
+        // drawing costs the selection as well.
+        if (!sess->pending.empty()) {
+            sess->pending.clear();
+        } else {
+            sess->selected_points.clear();
+            sess->selected_entities.clear();
+        }
+        return;
+    }
+    if (gfx::IsKeyPressed(gfx::Key::Delete) || gfx::IsKeyPressed(gfx::Key::Backspace)) {
+        for (cad::SketchId id : sess->selected_entities) CadSketchDeleteEntity(sess->buffer_id, id);
+        sess->selected_entities.clear();
+        return;
+    }
+
+    // Applies a constraint to whatever is selected, reporting rather than
+    // silently doing nothing when the selection does not suit it -- a
+    // constraint that quietly fails to appear is the single most
+    // confusing thing a sketcher can do.
+    auto apply = [&](const char *kind, double value) {
+        const int id = CadSketchConstrain(sess->buffer_id, kind, sess->selected_points,
+                                          sess->selected_entities, value);
+        if (id < 0) {
+            SetStatusMessage(std::string("cannot apply ") + kind + " to this selection");
+            return;
+        }
+        sess->selected_points.clear();
+        sess->selected_entities.clear();
+        SetStatusMessage(std::string(kind) + " applied");
+    };
+    // The same, for a constraint that needs a number: the prompt is
+    // Mode::Prompt, reused rather than reimplemented, and the selection
+    // is captured now because the user may click elsewhere before typing.
+    auto apply_dimension = [&](const char *kind, const char *title, double suggestion) {
+        const int buffer_id = sess->buffer_id;
+        const std::vector<cad::SketchId> points = sess->selected_points;
+        const std::vector<cad::SketchId> entities = sess->selected_entities;
+        char shown[64];
+        std::snprintf(shown, sizeof(shown), "%g", suggestion);
+        const std::string kind_name = kind;
+        BeginPromptNative(title, shown, [this, buffer_id, kind_name, points, entities](const std::string &text) {
+            char *end = nullptr;
+            const double value = std::strtod(text.c_str(), &end);
+            if (end == text.c_str()) {
+                SetStatusMessage("not a number: " + text);
+                return;
+            }
+            if (CadSketchConstrain(buffer_id, kind_name, points, entities, value) < 0) {
+                SetStatusMessage("cannot apply " + kind_name + " to this selection");
+                return;
+            }
+            if (CadSketchSession *s = GetCadSketchMutable(buffer_id); s != nullptr) {
+                s->selected_points.clear();
+                s->selected_entities.clear();
+            }
+            SetStatusMessage(kind_name + " applied");
+        });
+    };
+    // What the selection currently measures, offered as the prompt's
+    // default so that a dimension applied without editing it changes
+    // nothing -- which is what a user expects from "dimension this".
+    auto measured_distance = [&]() {
+        if (sess->selected_points.size() < 2) return 1.0;
+        const cad::SketchPoint *a = sess->sketch.GetPoint(sess->selected_points[0]);
+        const cad::SketchPoint *b = sess->sketch.GetPoint(sess->selected_points[1]);
+        if (a == nullptr || b == nullptr) return 1.0;
+        return (b->position - a->position).Length();
+    };
+    auto measured_radius = [&]() {
+        if (sess->selected_entities.empty()) return 1.0;
+        double radius = 1.0;
+        sess->sketch.Radius(sess->selected_entities[0], &radius);
+        return radius;
+    };
+
+    int cp = gfx::GetCharPressed();
+    while (cp > 0) {
+        if (cp == ':') {
+            EnterCommand();
+            return;  // mode_ is no longer CadSketch -- stop draining as this mode
+        }
+        if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            TriggerWhichKey();
+            return;
+        }
+        switch (cp) {
+            // --- Tools ---------------------------------------------------
+            case '1': sess->tool = CadSketchTool::Select; sess->pending.clear(); break;
+            case '2': sess->tool = CadSketchTool::Point; sess->pending.clear(); break;
+            case '3': sess->tool = CadSketchTool::Line; sess->pending.clear(); break;
+            case '4': sess->tool = CadSketchTool::Rectangle; sess->pending.clear(); break;
+            case '5': sess->tool = CadSketchTool::Circle; sess->pending.clear(); break;
+            case '6': sess->tool = CadSketchTool::Arc; sess->pending.clear(); break;
+
+            // --- Geometric constraints ------------------------------------
+            case 'c': apply("coincident", 0.0); break;
+            case 'h': apply("horizontal", 0.0); break;
+            case 'v': apply("vertical", 0.0); break;
+            case 'p': apply("parallel", 0.0); break;
+            case 'l': apply("perpendicular", 0.0); break;  // 'p' is taken; think "L" for the right angle
+            case 't': apply("tangent", 0.0); break;
+            case 'e': apply("equal", 0.0); break;
+            case 'o': apply("concentric", 0.0); break;
+            case 'n': apply("collinear", 0.0); break;
+            case 'y': apply("symmetric", 0.0); break;
+            case 'g': apply("point_on_object", 0.0); break;
+
+            // --- Dimensions -----------------------------------------------
+            case 'd': apply_dimension("distance", "Distance", measured_distance()); break;
+            case 'x': apply_dimension("horizontal_distance", "Horizontal distance", measured_distance()); break;
+            case 'z': apply_dimension("vertical_distance", "Vertical distance", measured_distance()); break;
+            case 'a': apply_dimension("angle", "Angle (radians)", 0.0); break;
+            case 'r': apply_dimension("radius", "Radius", measured_radius()); break;
+            case 'm': apply_dimension("diameter", "Diameter", 2.0 * measured_radius()); break;
+
+            // --- Everything else ------------------------------------------
+            case 'f':
+                // Anchor or release the selected points. A sketch needs at
+                // least one, and the origin is one already, so this is for
+                // pinning something else down deliberately.
+                for (cad::SketchId id : sess->selected_points) {
+                    const cad::SketchPoint *point = sess->sketch.GetPoint(id);
+                    CadSketchSetPointFixed(sess->buffer_id, id, point != nullptr && !point->fixed);
+                }
+                break;
+            case 'k':
+                for (cad::SketchId id : sess->selected_entities) {
+                    const cad::SketchEntity *entity = sess->sketch.GetEntity(id);
+                    CadSketchSetConstruction(sess->buffer_id, id, entity != nullptr && !entity->construction);
+                }
+                break;
+            case 'K':
+                // New geometry is construction from here on.
+                sess->construction = !sess->construction;
+                SetStatusMessage(sess->construction ? "placing construction geometry"
+                                                    : "placing normal geometry");
+                break;
+            case 's':
+                CadSketchSolve(sess->buffer_id);
+                break;
+            case 'F':
+                CadSketchFitView(sess->buffer_id);
+                break;
+            case 'G':
+                sess->snap = !sess->snap;
+                SetStatusMessage(sess->snap ? "grid snap on" : "grid snap off");
+                break;
+            case 'C':
+                sess->show_constraints = !sess->show_constraints;
+                break;
+            case '+':
+            case '=':
+                sess->pixels_per_unit = std::min(4000.0, sess->pixels_per_unit * 1.25);
+                break;
+            case '-':
+                sess->pixels_per_unit = std::max(0.5, sess->pixels_per_unit / 1.25);
+                break;
+            case 'q':
+                mode_ = Mode::Normal;
+                return;
+            default:
+                break;
+        }
+        cp = gfx::GetCharPressed();
+    }
+}
+
 void Editor::HandleModel3DInput() {
     Model3DSession *sess = nullptr;
     {
@@ -9040,6 +9268,869 @@ void Editor::HandleModel3DInput() {
             std::vector<int> selected = sess->selection;
             for (int id : selected) Model3DDeleteObject(sess->buffer_id, id);
         }
+    }
+}
+
+
+// =====================================================================
+// The 2D sketcher (plans/CAD_FEM_PLAN.md Part D.5)
+// =====================================================================
+//
+// Every method here is a thin wrapper over cad_sketch.h / cad_constraint.h
+// that also keeps the session's derived state -- the diagnosis and the
+// profiles -- in step with the geometry. Nothing here decides anything
+// about geometry; that all happened in Parts D.1 to D.4, and this file is
+// the seam where it meets a buffer and a keyboard.
+
+namespace {
+
+// Re-solves and refreshes everything derived from the geometry.
+//
+// Called by every mutating method rather than left to the caller, because
+// the alternative -- a `solve` the caller must remember -- means a sketch
+// that is shown one way and is in fact another, and every one of the
+// three front ends (keys, Lua, RPC) would have to remember separately.
+void RefreshCadSketch(CadSketchSession &sess) {
+    sess.message.clear();
+    if (!cad::SolveSketch(&sess.sketch, &sess.diagnosis, {})) {
+        sess.message = sess.diagnosis.message;
+    }
+    std::string error;
+    sess.profiles.clear();
+    if (!sess.sketch.ExtractProfiles(&sess.profiles, &error) && !error.empty()) {
+        sess.message = error;
+    }
+    ++sess.generation;
+}
+
+}  // namespace
+
+// --- Part F.5: the CAD part pane ---------------------------------------
+//
+// Everything the pane can do, and the only way it can do it. See the
+// block in editor.h for why that matters.
+
+namespace {
+
+// The model and bodies a session currently stands for: the feature
+// tree's output for a part built here, the imported geometry for one
+// read from a file that carries no tree.
+const cad::Model &CadModelOf(const CadSession &sess, std::vector<cad::EntityId> *bodies) {
+    if (sess.from_import) {
+        *bodies = sess.imported_bodies;
+        return sess.imported;
+    }
+    *bodies = sess.document.tree.Bodies();
+    return sess.document.tree.Result();
+}
+
+cad::FeatureCombine CadCombineFromName(const std::string &name) {
+    if (name == "add") return cad::FeatureCombine::Add;
+    if (name == "cut") return cad::FeatureCombine::Cut;
+    if (name == "intersect") return cad::FeatureCombine::Intersect;
+    return cad::FeatureCombine::NewBody;
+}
+
+std::string CadLowerExtension(const std::string &path) {
+    const std::size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos) return "";
+    std::string out = path.substr(dot + 1);
+    for (char &c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+}  // namespace
+
+bool Editor::IsCadBuffer(int buffer_id) const {
+    return cad_sessions_.find(buffer_id) != cad_sessions_.end();
+}
+
+// Keys in Mode::Cad (plans/CAD_FEM_PLAN.md Part F.5).
+//
+// Every one of them calls exactly one Editor::Cad* method, which is the
+// rule the whole part is built on: there is nothing the keyboard can do
+// that a script cannot, and nothing a script can do that the keyboard
+// cannot reach.
+void Editor::HandleCadInput() {
+    CadSession *sess = GetCadMutable(CurPane().buffer_id);
+    if (sess == nullptr) {
+        mode_ = Mode::Normal;
+        return;
+    }
+    const int buffer_id = CurPane().buffer_id;
+    const bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+    const float step = shift ? 15.0f : 5.0f;
+
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+        mode_ = Mode::Normal;
+        return;
+    }
+    // Orbit with the arrows, which is the same idiom Mode::Model3D uses.
+    if (gfx::IsKeyPressed(gfx::Key::Left)) CadOrbit(buffer_id, -step, 0.0f);
+    if (gfx::IsKeyPressed(gfx::Key::Right)) CadOrbit(buffer_id, step, 0.0f);
+    if (gfx::IsKeyPressed(gfx::Key::Up)) CadOrbit(buffer_id, 0.0f, step);
+    if (gfx::IsKeyPressed(gfx::Key::Down)) CadOrbit(buffer_id, 0.0f, -step);
+    if (gfx::IsKeyPressed(gfx::Key::Equal)) CadZoom(buffer_id, 1.2f);
+    if (gfx::IsKeyPressed(gfx::Key::Minus)) CadZoom(buffer_id, 1.0f / 1.2f);
+    if (gfx::IsKeyPressed(gfx::Key::F)) CadFrameAll(buffer_id);
+    if (gfx::IsKeyPressed(gfx::Key::R)) {
+        CadRebuild(buffer_id);
+        status_message_ = CadSummary(buffer_id);
+    }
+    // Walk the feature tree with j and k, because that is how everything
+    // else in this editor moves down a list.
+    const std::vector<cad::Feature> &features = sess->document.tree.Features();
+    if (!features.empty() && (gfx::IsKeyPressed(gfx::Key::J) || gfx::IsKeyPressed(gfx::Key::K))) {
+        int at = -1;
+        for (std::size_t i = 0; i < features.size(); ++i) {
+            if (features[i].id == sess->selected_feature) at = static_cast<int>(i);
+        }
+        if (gfx::IsKeyPressed(gfx::Key::J)) {
+            at = at + 1 >= static_cast<int>(features.size()) ? 0 : at + 1;
+        } else {
+            at = at <= 0 ? static_cast<int>(features.size()) - 1 : at - 1;
+        }
+        CadSelectFeature(buffer_id, features[static_cast<std::size_t>(at)].id);
+    }
+    if (gfx::IsKeyPressed(gfx::Key::S) && sess->selected_feature >= 0) {
+        const cad::Feature *feature = sess->document.tree.Get(sess->selected_feature);
+        if (feature != nullptr) {
+            CadSuppressFeature(buffer_id, sess->selected_feature, !feature->suppressed);
+            status_message_ = CadSummary(buffer_id);
+        }
+    }
+    if (gfx::IsKeyPressed(gfx::Key::W)) {
+        CadSetView(buffer_id, sess->view == CadView::Shaded ? "wireframe" : "shaded");
+    }
+}
+
+int Editor::NewCad() {
+    const int buffer_id = CreateEmptyBuffer();
+    CadSession sess;
+    sess.buffer_id = buffer_id;
+    cad_sessions_[buffer_id] = std::move(sess);
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    mode_ = Mode::Cad;
+    status_message_.clear();
+    return buffer_id;
+}
+
+const CadSession *Editor::GetCad(int buffer_id) const {
+    const auto it = cad_sessions_.find(buffer_id);
+    return it == cad_sessions_.end() ? nullptr : &it->second;
+}
+
+CadSession *Editor::GetCadMutable(int buffer_id) {
+    const auto it = cad_sessions_.find(buffer_id);
+    return it == cad_sessions_.end() ? nullptr : &it->second;
+}
+
+void Editor::ResizeCadViewport(int buffer_id, int w, int h) {
+    if (CadSession *sess = GetCadMutable(buffer_id); sess != nullptr) {
+        sess->viewport_w = w;
+        sess->viewport_h = h;
+    }
+}
+
+bool Editor::OpenCadInPlace(const std::string &path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        status_message_ = "E212: can't open " + path;
+        return false;
+    }
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string extension = CadLowerExtension(path);
+
+    CadSession sess;
+    std::string error;
+    if (extension == "mepcad") {
+        if (!cad::ReadCadDocument(text, &sess.document, &error)) {
+            status_message_ = "E: " + path + ": " + error;
+            return false;
+        }
+    } else if (extension == "step" || extension == "stp") {
+        cad::StepReadReport report;
+        if (!cad::ReadStepText(text, &sess.imported, &report, {})) {
+            status_message_ = "E: " + path + ": " + report.error;
+            return false;
+        }
+        sess.imported_bodies = report.bodies;
+        sess.from_import = true;
+        // What the file said that this reader could not build is worth a
+        // line: a part that came in with four hundred faces missing
+        // should not look like a part that came in whole.
+        if (!report.unsupported.empty()) {
+            std::string note;
+            for (const auto &entry : report.unsupported) {
+                if (!note.empty()) note += ", ";
+                note += entry.first + " x" + std::to_string(entry.second);
+            }
+            sess.message = "not read: " + note;
+        }
+    } else if (extension == "iges" || extension == "igs") {
+        cad::IgesReadReport report;
+        if (!cad::ReadIgesText(text, &sess.imported, &report)) {
+            status_message_ = "E: " + path + ": " + report.error;
+            return false;
+        }
+        sess.imported_bodies = report.bodies;
+        sess.from_import = true;
+    } else {
+        status_message_ = "E: " + path + ": not a CAD file this build reads";
+        return false;
+    }
+
+    const int buffer_id = CreateEmptyBuffer();
+    sess.buffer_id = buffer_id;
+    sess.source_path = path;
+    cad_sessions_[buffer_id] = std::move(sess);
+    buffers_[static_cast<size_t>(buffer_id)].filename = path;
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    mode_ = Mode::Cad;
+    CadRebuild(buffer_id);
+    CadFrameAll(buffer_id);
+    status_message_ = CadSummary(buffer_id);
+    return true;
+}
+
+bool Editor::SaveCad(int buffer_id, const std::string &path) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr) return false;
+    if (sess->from_import) {
+        // There is no tree to save. Saying so is better than writing an
+        // empty document over the file the part came from.
+        status_message_ = "E: this part was imported, so it has no feature tree to save; export it "
+                          "instead";
+        return false;
+    }
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        status_message_ = "E212: can't write " + path;
+        return false;
+    }
+    out << cad::WriteCadDocument(sess->document);
+    sess->source_path = path;
+    buffers_[static_cast<size_t>(buffer_id)].filename = path;
+    buffers_[static_cast<size_t>(buffer_id)].modified = false;
+    status_message_ = "\"" + path + "\" written";
+    return true;
+}
+
+bool Editor::CadRebuild(int buffer_id) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr) return false;
+    sess->failed_features.clear();
+    sess->tessellation_valid = false;
+    sess->tessellation = cad::TessellationMesh{};
+    sess->volume = 0.0;
+    sess->triangle_count = 0;
+    ++sess->generation;
+
+    bool ok = true;
+    if (!sess->from_import) {
+        std::string error;
+        ok = sess->document.tree.Rebuild(&error);
+        sess->message = ok ? "" : error;
+        for (const cad::Feature &feature : sess->document.tree.Features()) {
+            const cad::FeatureResult *result = sess->document.tree.ResultOf(feature.id);
+            if (result != nullptr && !result->ok) sess->failed_features.push_back(feature.id);
+        }
+    }
+
+    std::vector<cad::EntityId> bodies;
+    const cad::Model &model = CadModelOf(*sess, &bodies);
+    for (cad::EntityId body : bodies) {
+        cad::TessellationMesh one;
+        std::string error;
+        if (!cad::TessellateBody(model, body, {}, &one, &error)) {
+            sess->message = error;
+            ok = false;
+            continue;
+        }
+        const int base = sess->tessellation.VertexCount();
+        for (const cad::Vec3d &p : one.positions) sess->tessellation.positions.push_back(p);
+        for (const cad::Vec3d &n : one.normals) sess->tessellation.normals.push_back(n);
+        for (int index : one.indices) sess->tessellation.indices.push_back(base + index);
+        for (cad::EntityId face : one.triangle_face) sess->tessellation.triangle_face.push_back(face);
+        sess->volume += one.SignedVolume();
+    }
+    sess->triangle_count = sess->tessellation.TriangleCount();
+    sess->tessellation_valid = sess->triangle_count > 0;
+    return ok;
+}
+
+int Editor::CadAddSketchFrom(int buffer_id, int sketch_buffer_id, const std::string &name) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    const CadSketchSession *source = GetCadSketch(sketch_buffer_id);
+    if (sess == nullptr || source == nullptr || sess->from_import) return -1;
+    // By value: a feature tree is a document, and a rebuild must not
+    // depend on a buffer that may since have been closed.
+    const int id = sess->document.tree.AddSketch(source->sketch, name);
+    CadRebuild(buffer_id);
+    return id;
+}
+
+int Editor::CadAddExtrude(int buffer_id, int sketch_feature, double distance,
+                          const std::string &combine, const std::string &name) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr || sess->from_import) return -1;
+    cad::Feature feature;
+    feature.kind = cad::FeatureKind::Extrude;
+    feature.name = name.empty() ? "extrude" : name;
+    feature.sketch = sketch_feature;
+    feature.distance = distance;
+    feature.combine = CadCombineFromName(combine);
+    const int id = sess->document.tree.AddFeature(feature);
+    CadRebuild(buffer_id);
+    return id;
+}
+
+int Editor::CadAddRevolve(int buffer_id, int sketch_feature, int axis_entity, double angle,
+                          const std::string &combine, const std::string &name) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr || sess->from_import) return -1;
+    cad::Feature feature;
+    feature.kind = cad::FeatureKind::Revolve;
+    feature.name = name.empty() ? "revolve" : name;
+    feature.sketch = sketch_feature;
+    feature.axis_entity = axis_entity;
+    feature.angle = angle;
+    feature.combine = CadCombineFromName(combine);
+    const int id = sess->document.tree.AddFeature(feature);
+    CadRebuild(buffer_id);
+    return id;
+}
+
+bool Editor::CadSetFeatureNumber(int buffer_id, int feature, const std::string &field, double value) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr || sess->from_import) return false;
+    cad::Feature *target = sess->document.tree.GetMutable(feature);
+    if (target == nullptr) return false;
+    if (field == "distance") {
+        target->distance = value;
+    } else if (field == "angle") {
+        target->angle = value;
+    } else if (field == "twist") {
+        target->twist = value;
+    } else if (field == "end_scale") {
+        target->end_scale = value;
+    } else if (field == "profile") {
+        target->profile_index = static_cast<int>(value);
+    } else {
+        return false;
+    }
+    buffers_[static_cast<size_t>(buffer_id)].modified = true;
+    CadRebuild(buffer_id);
+    return true;
+}
+
+bool Editor::CadSuppressFeature(int buffer_id, int feature, bool suppressed) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr || sess->from_import) return false;
+    cad::Feature *target = sess->document.tree.GetMutable(feature);
+    if (target == nullptr) return false;
+    target->suppressed = suppressed;
+    buffers_[static_cast<size_t>(buffer_id)].modified = true;
+    CadRebuild(buffer_id);
+    return true;
+}
+
+bool Editor::CadRemoveFeature(int buffer_id, int feature) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr || sess->from_import) return false;
+    if (!sess->document.tree.RemoveFeature(feature)) return false;
+    if (sess->selected_feature == feature) sess->selected_feature = -1;
+    buffers_[static_cast<size_t>(buffer_id)].modified = true;
+    CadRebuild(buffer_id);
+    return true;
+}
+
+bool Editor::CadSelectFeature(int buffer_id, int feature) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr) return false;
+    if (feature >= 0 && sess->document.tree.Get(feature) == nullptr) return false;
+    sess->selected_feature = feature;
+    return true;
+}
+
+bool Editor::CadExport(int buffer_id, const std::string &format, const std::string &path) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr) return false;
+    std::vector<cad::EntityId> bodies;
+    const cad::Model &model = CadModelOf(*sess, &bodies);
+    std::string text;
+    std::string error;
+    if (format == "mepcad") {
+        if (sess->from_import) {
+            status_message_ = "E: an imported part has no feature tree to write";
+            return false;
+        }
+        text = cad::WriteCadDocument(sess->document);
+    } else if (format == "step") {
+        if (!cad::WriteStepShapes(model, bodies, &text, &error)) {
+            status_message_ = "E: " + error;
+            return false;
+        }
+    } else if (format == "stl" || format == "obj" || format == "gltf") {
+        cad::MeshExportOptions options;
+        options.name = sess->document.title.empty() ? "part" : sess->document.title;
+        const bool ok = format == "stl"   ? cad::WriteStl(model, bodies, &text, &error, options)
+                        : format == "obj" ? cad::WriteObj(model, bodies, &text, &error, options)
+                                          : cad::WriteGltf(model, bodies, &text, &error, options);
+        if (!ok) {
+            status_message_ = "E: " + error;
+            return false;
+        }
+    } else if (format == "svg") {
+        cad::DrawingViewOptions options;
+        // The direction the pane is looking, so what gets written is what
+        // is on screen rather than a fixed front view.
+        const float yaw = sess->camera_yaw * 3.14159265358979f / 180.0f;
+        const float pitch = sess->camera_pitch * 3.14159265358979f / 180.0f;
+        options.direction = cad::Vec3d{-static_cast<double>(std::cos(pitch) * std::sin(yaw)),
+                                       -static_cast<double>(std::cos(pitch) * std::cos(yaw)),
+                                       -static_cast<double>(std::sin(pitch))};
+        cad::DrawingView view;
+        if (!cad::MakeDrawingView(model, bodies, options, &view, &error)) {
+            status_message_ = "E: " + error;
+            return false;
+        }
+        text = cad::DrawingViewToSvg(view, 210.0);
+    } else {
+        status_message_ = "E: unknown export format '" + format +
+                          "' (step, stl, obj, gltf, svg, mepcad)";
+        return false;
+    }
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        status_message_ = "E212: can't write " + path;
+        return false;
+    }
+    out << text;
+    status_message_ = "\"" + path + "\" written (" + format + ")";
+    return true;
+}
+
+void Editor::CadSetView(int buffer_id, const std::string &view) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr) return;
+    if (view == "wireframe") {
+        sess->view = CadView::Wireframe;
+    } else if (view == "drawing") {
+        sess->view = CadView::Drawing;
+    } else {
+        sess->view = CadView::Shaded;
+    }
+}
+
+void Editor::CadOrbit(int buffer_id, float yaw_delta, float pitch_delta) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr) return;
+    sess->camera_yaw += yaw_delta;
+    sess->camera_pitch += pitch_delta;
+    // Stop just short of straight up and straight down, where an orbit
+    // rig's up vector stops meaning anything.
+    if (sess->camera_pitch > 89.0f) sess->camera_pitch = 89.0f;
+    if (sess->camera_pitch < -89.0f) sess->camera_pitch = -89.0f;
+}
+
+void Editor::CadZoom(int buffer_id, float factor) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr || !(factor > 0.0f)) return;
+    sess->camera_distance /= factor;
+    if (sess->camera_distance < 1e-3f) sess->camera_distance = 1e-3f;
+    if (sess->camera_distance > 1e6f) sess->camera_distance = 1e6f;
+}
+
+void Editor::CadFrameAll(int buffer_id) {
+    CadSession *sess = GetCadMutable(buffer_id);
+    if (sess == nullptr) return;
+    if (!sess->tessellation_valid) CadRebuild(buffer_id);
+    cad::Box3d extent;
+    for (const cad::Vec3d &p : sess->tessellation.positions) extent.Expand(p);
+    if (extent.IsEmpty()) {
+        sess->camera_target = Vec3f{0.0f, 0.0f, 0.0f};
+        sess->camera_distance = 10.0f;
+        sess->view_fitted = true;
+        return;
+    }
+    const cad::Vec3d centre = extent.Center();
+    sess->camera_target = Vec3f{static_cast<float>(centre.x), static_cast<float>(centre.y),
+                                static_cast<float>(centre.z)};
+    const double size = std::max({extent.x.Width(), extent.y.Width(), extent.z.Width(), 1e-6});
+    sess->camera_distance = static_cast<float>(size * 2.2);
+    sess->view_fitted = true;
+}
+
+std::string Editor::CadSummary(int buffer_id) const {
+    const CadSession *sess = GetCad(buffer_id);
+    if (sess == nullptr) return "";
+    std::vector<cad::EntityId> bodies;
+    if (sess->from_import) {
+        bodies = sess->imported_bodies;
+    } else {
+        bodies = sess->document.tree.Bodies();
+    }
+    char buffer[256];
+    if (sess->from_import) {
+        std::snprintf(buffer, sizeof(buffer), "imported: %d bod%s, %d triangles, volume %.4f",
+                      static_cast<int>(bodies.size()), bodies.size() == 1 ? "y" : "ies",
+                      sess->triangle_count, sess->volume);
+    } else {
+        std::snprintf(buffer, sizeof(buffer),
+                      "%d feature%s, %d bod%s, %d triangles, volume %.4f%s",
+                      static_cast<int>(sess->document.tree.Features().size()),
+                      sess->document.tree.Features().size() == 1 ? "" : "s",
+                      static_cast<int>(bodies.size()), bodies.size() == 1 ? "y" : "ies",
+                      sess->triangle_count, sess->volume,
+                      sess->failed_features.empty() ? "" : "  [FAILED]");
+    }
+    return buffer;
+}
+
+int Editor::NewCadSketch() {
+    const int buffer_id = CreateEmptyBuffer();
+    CadSketchSession sess;
+    sess.buffer_id = buffer_id;
+    cad_sketch_sessions_[buffer_id] = std::move(sess);
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    mode_ = Mode::CadSketch;
+    status_message_.clear();
+    return buffer_id;
+}
+
+const CadSketchSession *Editor::GetCadSketch(int buffer_id) const {
+    const auto it = cad_sketch_sessions_.find(buffer_id);
+    return it == cad_sketch_sessions_.end() ? nullptr : &it->second;
+}
+
+CadSketchSession *Editor::GetCadSketchMutable(int buffer_id) {
+    const auto it = cad_sketch_sessions_.find(buffer_id);
+    return it == cad_sketch_sessions_.end() ? nullptr : &it->second;
+}
+
+void Editor::ResizeCadSketchViewport(int buffer_id, int w, int h) {
+    if (CadSketchSession *sess = GetCadSketchMutable(buffer_id); sess != nullptr) {
+        sess->viewport_w = w;
+        sess->viewport_h = h;
+    }
+}
+
+int Editor::CadSketchAddPoint(int buffer_id, double x, double y, bool fixed) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr) return -1;
+    const int id = sess->sketch.AddPoint(cad::Vec2d{x, y}, fixed);
+    RefreshCadSketch(*sess);
+    return id;
+}
+
+int Editor::CadSketchAddLine(int buffer_id, double x0, double y0, double x1, double y1, bool construction) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr) return -1;
+    const int id = sess->sketch.AddLine(cad::Vec2d{x0, y0}, cad::Vec2d{x1, y1}, construction);
+    RefreshCadSketch(*sess);
+    return id;
+}
+
+int Editor::CadSketchAddLineFromPoints(int buffer_id, int start_point, int end_point, bool construction) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr) return -1;
+    if (sess->sketch.GetPoint(start_point) == nullptr || sess->sketch.GetPoint(end_point) == nullptr) return -1;
+    const int id = sess->sketch.AddLineFromPoints(start_point, end_point, construction);
+    RefreshCadSketch(*sess);
+    return id;
+}
+
+int Editor::CadSketchAddArc(int buffer_id, double cx, double cy, double sx, double sy, double ex, double ey,
+                            bool ccw, bool construction) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr) return -1;
+    const int id =
+        sess->sketch.AddArc(cad::Vec2d{cx, cy}, cad::Vec2d{sx, sy}, cad::Vec2d{ex, ey}, ccw, construction);
+    RefreshCadSketch(*sess);
+    return id;
+}
+
+int Editor::CadSketchAddCircle(int buffer_id, double cx, double cy, double radius, bool construction) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr || radius <= 0.0) return -1;
+    const int id = sess->sketch.AddCircle(cad::Vec2d{cx, cy}, radius, construction);
+    RefreshCadSketch(*sess);
+    return id;
+}
+
+int Editor::CadSketchAddEllipse(int buffer_id, double cx, double cy, double major, double minor,
+                                double rotation, bool construction) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr || major <= 0.0 || minor <= 0.0) return -1;
+    const int id = sess->sketch.AddEllipse(cad::Vec2d{cx, cy}, major, minor, rotation, construction);
+    RefreshCadSketch(*sess);
+    return id;
+}
+
+std::vector<int> Editor::CadSketchAddRectangle(int buffer_id, double x0, double y0, double x1, double y1,
+                                               bool construction) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr) return {};
+    cad::Sketch &sketch = sess->sketch;
+    // Four corners, four lines sharing them, and the constraints that
+    // make it a rectangle rather than four lines that happen to look like
+    // one. Sharing the corner points is what makes dragging one corner
+    // move the two edges that meet there, so no coincidence constraints
+    // are needed -- they would be four more equations saying something
+    // the representation already says.
+    const cad::SketchId a = sketch.AddPoint(cad::Vec2d{x0, y0});
+    const cad::SketchId b = sketch.AddPoint(cad::Vec2d{x1, y0});
+    const cad::SketchId c = sketch.AddPoint(cad::Vec2d{x1, y1});
+    const cad::SketchId d = sketch.AddPoint(cad::Vec2d{x0, y1});
+    const cad::SketchId bottom = sketch.AddLineFromPoints(a, b, construction);
+    const cad::SketchId right = sketch.AddLineFromPoints(b, c, construction);
+    const cad::SketchId top = sketch.AddLineFromPoints(c, d, construction);
+    const cad::SketchId left = sketch.AddLineFromPoints(d, a, construction);
+    sketch.Constrain(cad::ConstraintKind::Horizontal, {}, {bottom});
+    sketch.Constrain(cad::ConstraintKind::Horizontal, {}, {top});
+    sketch.Constrain(cad::ConstraintKind::Vertical, {}, {right});
+    sketch.Constrain(cad::ConstraintKind::Vertical, {}, {left});
+    RefreshCadSketch(*sess);
+    return {bottom, right, top, left};
+}
+
+int Editor::CadSketchConstrain(int buffer_id, const std::string &kind_name, const std::vector<int> &points,
+                               const std::vector<int> &entities, double value) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr) return -1;
+    cad::ConstraintKind kind = cad::ConstraintKind::Coincident;
+    if (!cad::ConstraintKindFromName(kind_name, &kind)) return -1;
+    for (int id : points) {
+        if (sess->sketch.GetPoint(id) == nullptr) return -1;
+    }
+    for (int id : entities) {
+        if (sess->sketch.GetEntity(id) == nullptr) return -1;
+    }
+    // Refused here rather than discovered as a silently ignored
+    // constraint: cad_constraint.cpp reports "does not apply" by failing
+    // the whole evaluation, which would take the sketch down with it.
+    cad::SketchConstraint probe;
+    probe.kind = kind;
+    probe.points = points;
+    probe.entities = entities;
+    probe.value = value;
+    if (cad::ResidualCount(sess->sketch, probe) == 0) return -1;
+
+    const int id = sess->sketch.AddConstraint(probe);
+    RefreshCadSketch(*sess);
+    return id;
+}
+
+bool Editor::CadSketchRemoveConstraint(int buffer_id, int constraint_id) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr || !sess->sketch.RemoveConstraint(constraint_id)) return false;
+    RefreshCadSketch(*sess);
+    return true;
+}
+
+bool Editor::CadSketchDeleteEntity(int buffer_id, int entity_id) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr) return false;
+    const cad::SketchEntity *entity = sess->sketch.GetEntity(entity_id);
+    if (entity == nullptr) return false;
+    // Every constraint that names the entity, or names a point only this
+    // entity uses, goes with it. Leaving them behind would leave the
+    // solver evaluating a constraint against geometry that is gone, which
+    // cad_constraint.cpp reports by refusing to evaluate the sketch at
+    // all -- one stale constraint would make the whole sketch unsolvable.
+    std::vector<cad::SketchId> doomed_points;
+    for (cad::SketchId p : entity->points) {
+        bool used_elsewhere = false;
+        for (const cad::SketchEntity &other : sess->sketch.Entities()) {
+            if (other.id == entity_id) continue;
+            if (std::find(other.points.begin(), other.points.end(), p) != other.points.end()) {
+                used_elsewhere = true;
+            }
+        }
+        if (!used_elsewhere) doomed_points.push_back(p);
+    }
+    std::vector<cad::SketchId> doomed_constraints;
+    for (const cad::SketchConstraint &constraint : sess->sketch.Constraints()) {
+        bool touches = std::find(constraint.entities.begin(), constraint.entities.end(), entity_id) !=
+                       constraint.entities.end();
+        for (cad::SketchId p : doomed_points) {
+            if (std::find(constraint.points.begin(), constraint.points.end(), p) != constraint.points.end()) {
+                touches = true;
+            }
+        }
+        if (touches) doomed_constraints.push_back(constraint.id);
+    }
+    for (cad::SketchId id : doomed_constraints) sess->sketch.RemoveConstraint(id);
+    sess->sketch.RemoveEntity(entity_id, doomed_points);
+
+    auto forget = [](std::vector<cad::SketchId> &list, const std::vector<cad::SketchId> &gone) {
+        list.erase(std::remove_if(list.begin(), list.end(),
+                                  [&](cad::SketchId id) {
+                                      return std::find(gone.begin(), gone.end(), id) != gone.end();
+                                  }),
+                   list.end());
+    };
+    forget(sess->selected_entities, {entity_id});
+    forget(sess->selected_points, doomed_points);
+    RefreshCadSketch(*sess);
+    return true;
+}
+
+bool Editor::CadSketchSetPoint(int buffer_id, int point_id, double x, double y) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr || sess->sketch.GetPoint(point_id) == nullptr) return false;
+    sess->sketch.SetPointPosition(point_id, cad::Vec2d{x, y});
+    ++sess->generation;
+    return true;
+}
+
+bool Editor::CadSketchSetPointFixed(int buffer_id, int point_id, bool fixed) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr || sess->sketch.GetPoint(point_id) == nullptr) return false;
+    sess->sketch.SetPointFixed(point_id, fixed);
+    RefreshCadSketch(*sess);
+    return true;
+}
+
+bool Editor::CadSketchSetConstruction(int buffer_id, int entity_id, bool construction) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr) return false;
+    cad::SketchEntity *entity = sess->sketch.GetEntity(entity_id);
+    if (entity == nullptr) return false;
+    entity->construction = construction;
+    RefreshCadSketch(*sess);
+    return true;
+}
+
+bool Editor::CadSketchSetConstraintValue(int buffer_id, int constraint_id, double value) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr) return false;
+    cad::SketchConstraint *constraint = sess->sketch.GetConstraint(constraint_id);
+    if (constraint == nullptr) return false;
+    constraint->value = value;
+    RefreshCadSketch(*sess);
+    return true;
+}
+
+bool Editor::CadSketchSolve(int buffer_id) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr) return false;
+    RefreshCadSketch(*sess);
+    return sess->message.empty();
+}
+
+bool Editor::CadSketchDragPoint(int buffer_id, int point_id, double x, double y) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr || sess->sketch.GetPoint(point_id) == nullptr) return false;
+    cad::DragPoint(&sess->sketch, point_id, cad::Vec2d{x, y}, &sess->diagnosis, {});
+    std::string error;
+    sess->profiles.clear();
+    sess->sketch.ExtractProfiles(&sess->profiles, &error);
+    ++sess->generation;
+    return true;
+}
+
+bool Editor::CadSketchSelect(int buffer_id, const std::vector<int> &points, const std::vector<int> &entities) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr) return false;
+    for (int id : points) {
+        if (sess->sketch.GetPoint(id) == nullptr) return false;
+    }
+    for (int id : entities) {
+        if (sess->sketch.GetEntity(id) == nullptr) return false;
+    }
+    sess->selected_points.assign(points.begin(), points.end());
+    sess->selected_entities.assign(entities.begin(), entities.end());
+    return true;
+}
+
+void Editor::CadSketchGetSelection(int buffer_id, std::vector<int> *points, std::vector<int> *entities) const {
+    if (points != nullptr) points->clear();
+    if (entities != nullptr) entities->clear();
+    const CadSketchSession *sess = GetCadSketch(buffer_id);
+    if (sess == nullptr) return;
+    if (points != nullptr) points->assign(sess->selected_points.begin(), sess->selected_points.end());
+    if (entities != nullptr) entities->assign(sess->selected_entities.begin(), sess->selected_entities.end());
+}
+
+int Editor::CadSketchPick(int buffer_id, double x, double y, double radius, bool *is_point) const {
+    const CadSketchSession *sess = GetCadSketch(buffer_id);
+    if (sess == nullptr) return -1;
+    const cad::Vec2d probe{x, y};
+    // Points win ties with curves, and by a margin rather than on equal
+    // terms: a point sits *on* the curves that use it, so a hit test that
+    // ranked them together would pick the curve about half the time, and
+    // dragging an endpoint would be a coin toss.
+    double best = radius;
+    int found = -1;
+    bool point_hit = false;
+    for (const cad::SketchPoint &point : sess->sketch.Points()) {
+        const double distance = (point.position - probe).Length();
+        if (distance <= best) {
+            best = distance;
+            found = point.id;
+            point_hit = true;
+        }
+    }
+    if (found < 0) {
+        for (const cad::SketchEntity &entity : sess->sketch.Entities()) {
+            const std::shared_ptr<const cad::Curve3> curve = sess->sketch.Curve(entity.id);
+            if (!curve) continue;
+            double t = 0.0;
+            cad::Vec3d closest;
+            if (!curve->ClosestPoint(cad::Vec3d{x, y, 0.0}, &t, &closest)) continue;
+            const double distance = (cad::Vec2d{closest.x, closest.y} - probe).Length();
+            if (distance <= best) {
+                best = distance;
+                found = entity.id;
+                point_hit = false;
+            }
+        }
+    }
+    if (is_point != nullptr) *is_point = point_hit;
+    return found;
+}
+
+void Editor::CadSketchFitView(int buffer_id) {
+    CadSketchSession *sess = GetCadSketchMutable(buffer_id);
+    if (sess == nullptr) return;
+    cad::Vec2d lo{0.0, 0.0};
+    cad::Vec2d hi{0.0, 0.0};
+    bool any = false;
+    for (const cad::SketchPoint &point : sess->sketch.Points()) {
+        if (!any) {
+            lo = hi = point.position;
+            any = true;
+            continue;
+        }
+        lo = cad::Vec2d{std::min(lo.x, point.position.x), std::min(lo.y, point.position.y)};
+        hi = cad::Vec2d{std::max(hi.x, point.position.x), std::max(hi.y, point.position.y)};
+    }
+    // A circle's rim reaches beyond its centre point, and fitting to the
+    // points alone would cut it off.
+    for (const cad::SketchEntity &entity : sess->sketch.Entities()) {
+        double radius = 0.0;
+        if (!sess->sketch.Radius(entity.id, &radius)) continue;
+        const cad::SketchPoint *centre = sess->sketch.GetPoint(entity.points[0]);
+        if (centre == nullptr) continue;
+        lo = cad::Vec2d{std::min(lo.x, centre->position.x - radius), std::min(lo.y, centre->position.y - radius)};
+        hi = cad::Vec2d{std::max(hi.x, centre->position.x + radius), std::max(hi.y, centre->position.y + radius)};
+    }
+    if (!any) return;
+    sess->view_centre = (lo + hi) * 0.5;
+    const double width = std::max(1e-6, hi.x - lo.x);
+    const double height = std::max(1e-6, hi.y - lo.y);
+    if (sess->viewport_w > 0 && sess->viewport_h > 0) {
+        const double fit = std::min(static_cast<double>(sess->viewport_w) / (width * 1.2),
+                                    static_cast<double>(sess->viewport_h) / (height * 1.2));
+        sess->pixels_per_unit = std::clamp(fit, 0.5, 4000.0);
     }
 }
 
@@ -22362,7 +23453,9 @@ bool Editor::IsQuickJumpTextBuffer(int buffer_id) const {
     // non-text mode -- each has its own DrawPane branch instead of the
     // buf.lines row loop.
     return !IsTerminalBuffer(buffer_id) && !IsImageBuffer(buffer_id) && !IsImageEditorActive(buffer_id) &&
-           !IsModel3DBuffer(buffer_id) && !IsPdfBuffer(buffer_id) && !IsVideoBuffer(buffer_id) &&
+           !IsModel3DBuffer(buffer_id) && !IsCadSketchBuffer(buffer_id) && !IsCadBuffer(buffer_id) &&
+           !IsPdfBuffer(buffer_id) &&
+           !IsVideoBuffer(buffer_id) &&
            !IsHtmlBuffer(buffer_id) && !IsSidebarPaneBuffer(buffer_id) && !IsOfficeBuffer(buffer_id) &&
            !IsSheetBuffer(buffer_id) && !IsKanbanViewActive(buffer_id) && !IsGanttViewActive(buffer_id);
 }
@@ -22885,6 +23978,8 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::Image: return "IMAGE";
         case Mode::ImageEditor: return "IMAGE-EDIT";
         case Mode::Model3D: return "3D-MODEL";
+        case Mode::CadSketch: return "SKETCH";
+        case Mode::Cad: return "CAD";
         case Mode::Pdf: return "PDF";
         case Mode::PdfNav: return "PDF-NAV";
         case Mode::PdfAnnotate: return "PDF-ANNOT";
@@ -22961,7 +24056,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "bnext", "bn", "bprevious", "bprev", "bp", "bNext", "bN", "bdelete", "bd", "bdelete!", "bd!",
         "set", "normal", "norm", "normal!", "norm!", "MepNotifyClear", "MepNotifyDismiss",
         "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "MepPaneZoom", "colorscheme", "colo", "lua", "source",
-        "MepNextSheet", "MepPrevSheet", "Model3DNew", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave",
+        "MepNextSheet", "MepPrevSheet", "Model3DNew", "SketchNew", "CadNew", "CadExport", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave",
         "CollabStatus", "AgentSocket",
     };
     return kNames;
@@ -25380,6 +26475,19 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         PrevSheet();
     } else if (name == "Model3DNew") {
         NewModel3DScene();
+    } else if (name == "CadNew") {
+        NewCad();
+        status_message_ = "new CAD part";
+    } else if (name == "CadExport") {
+        // :CadExport <format> <path>
+        const std::size_t space = args.find(' ');
+        if (space == std::string::npos) {
+            status_message_ = "E: usage: :CadExport <step|stl|obj|gltf|svg|mepcad> <path>";
+        } else {
+            CadExport(CurPane().buffer_id, args.substr(0, space), args.substr(space + 1));
+        }
+    } else if (name == "SketchNew") {
+        NewCadSketch();
     } else if (name == "Kanban") {
         OpenKanbanView();
     } else if (name == "Gantt") {
@@ -29036,6 +30144,19 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
 #endif
         SyncModeToActivePaneBuffer();
         return;
+    }
+    // CAD files. `.mepcad` carries the feature tree and reopens
+    // parametric; STEP and IGES carry the faces a tree produced and
+    // reopen as geometry, which the pane says out loud rather than
+    // letting the user discover by trying to change a dimension.
+    {
+        const std::string extension = CadLowerExtension(path);
+        if (extension == "mepcad" || extension == "step" || extension == "stp" ||
+            extension == "iges" || extension == "igs") {
+            OpenCadInPlace(path);
+            SyncModeToActivePaneBuffer();
+            return;
+        }
     }
     if (IsModel3DPath(path) || IsBlendPath(path)) {
         // Unlike Image/Pdf/Docx above, no bytes-bridge dance: raylib's

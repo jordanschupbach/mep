@@ -371,7 +371,7 @@ bool RayTriangleIntersect(Ray ray, Vector3 v0, Vector3 v1, Vector3 v2, float *ou
 // below rather than each hand-rolling its own array bookkeeping.
 struct MeshBuilder {
     std::vector<float> positions, normals, texcoords;
-    std::vector<unsigned short> indices;
+    std::vector<unsigned int> indices;
 
     void AddVertex(Vector3 p, Vector3 n, float u, float v) {
         positions.push_back(p.x);
@@ -384,9 +384,9 @@ struct MeshBuilder {
         texcoords.push_back(v);
     }
     void AddTriangle(int a, int b, int c) {
-        indices.push_back(static_cast<unsigned short>(a));
-        indices.push_back(static_cast<unsigned short>(b));
-        indices.push_back(static_cast<unsigned short>(c));
+        indices.push_back(static_cast<unsigned int>(a));
+        indices.push_back(static_cast<unsigned int>(b));
+        indices.push_back(static_cast<unsigned int>(c));
     }
 
     Mesh Build() {
@@ -402,7 +402,7 @@ struct MeshBuilder {
         auto *uv = new float[texcoords.size()];
         std::copy(texcoords.begin(), texcoords.end(), uv);
         m.texcoords = uv;
-        auto *idx = new unsigned short[indices.size()];
+        auto *idx = new unsigned int[indices.size()];
         std::copy(indices.begin(), indices.end(), idx);
         m.indices = idx;
         return m;
@@ -660,7 +660,7 @@ void NativeRenderer3DBackend::DrawMeshShadow(gfx::Mesh mesh, gfx::Matrix transfo
     UploadMatrix(impl_->depth_mvp_loc, mvp);
     gl::BindVertexArray(static_cast<gl::GLuint>(mesh.vaoId));
     if (mesh.indices != nullptr) {
-        gl::DrawElements(gl::GL_TRIANGLES, mesh.triangleCount * 3, gl::GL_UNSIGNED_SHORT, nullptr);
+        gl::DrawElements(gl::GL_TRIANGLES, mesh.triangleCount * 3, gl::GL_UNSIGNED_INT, nullptr);
     } else {
         gl::DrawArrays(gl::GL_TRIANGLES, 0, mesh.vertexCount);
     }
@@ -866,7 +866,15 @@ void ComputeFallbackNormalsAndTangents(const gfx::Mesh &mesh, bool need_normals,
     std::vector<Vector3> normal_accum, tangent_accum;
     if (need_normals) normal_accum.assign(static_cast<size_t>(vcount), Vector3{0, 0, 0});
     if (need_tangents) tangent_accum.assign(static_cast<size_t>(vcount), Vector3{0, 0, 0});
-    auto idx = [&](int t, int k) -> int { return mesh.indices != nullptr ? mesh.indices[t * 3 + k] : t * 3 + k; };
+    // The cast is explicit now that Mesh::indices is 32-bit unsigned
+    // (Part 0.4): it used to be a silent widening from unsigned short.
+    // int stays the local index type because Mesh::vertexCount is
+    // itself an int, so the whole interface is bounded there anyway --
+    // and a mesh large enough to overflow it would exhaust memory long
+    // before the index type became the constraint.
+    auto idx = [&](int t, int k) -> int {
+        return mesh.indices != nullptr ? static_cast<int>(mesh.indices[t * 3 + k]) : t * 3 + k;
+    };
     auto pos = [&](int i) -> Vector3 { return {mesh.vertices[i * 3], mesh.vertices[i * 3 + 1], mesh.vertices[i * 3 + 2]}; };
     for (int t = 0; t < mesh.triangleCount; t++) {
         int i0 = idx(t, 0), i1 = idx(t, 1), i2 = idx(t, 2);
@@ -961,8 +969,13 @@ void NativeRenderer3DBackend::UploadMesh(gfx::Mesh *mesh, bool dynamic) {
 
     if (mesh->indices != nullptr) {
         gl::BindBuffer(gl::GL_ELEMENT_ARRAY_BUFFER, vbos[3]);
+        // 32-bit indices (plans/CAD_FEM_PLAN.md Part 0.4, and see
+        // gfx::Mesh::indices' own note on why the 16-bit cap had to
+        // go). GL_UNSIGNED_INT is core in desktop GL and in WebGL2 --
+        // only WebGL1 needed OES_element_index_uint for it -- so both
+        // of this backend's targets support it unconditionally.
         gl::BufferData(gl::GL_ELEMENT_ARRAY_BUFFER,
-                       static_cast<gl::GLsizeiptr>(sizeof(unsigned short)) * 3 * mesh->triangleCount,
+                       static_cast<gl::GLsizeiptr>(sizeof(unsigned int)) * 3 * mesh->triangleCount,
                        mesh->indices, usage);
     }
 
@@ -1071,7 +1084,7 @@ void NativeRenderer3DBackend::DrawMesh(gfx::Mesh mesh, gfx::Material material, g
 
     gl::BindVertexArray(static_cast<gl::GLuint>(mesh.vaoId));
     if (mesh.indices != nullptr) {
-        gl::DrawElements(gl::GL_TRIANGLES, mesh.triangleCount * 3, gl::GL_UNSIGNED_SHORT, nullptr);
+        gl::DrawElements(gl::GL_TRIANGLES, mesh.triangleCount * 3, gl::GL_UNSIGNED_INT, nullptr);
     } else {
         gl::DrawArrays(gl::GL_TRIANGLES, 0, mesh.vertexCount);
     }
@@ -1271,9 +1284,11 @@ gfx::RayCollision NativeRenderer3DBackend::GetRayCollisionMesh(gfx::Ray ray, gfx
     for (int i = 0; i < tri_count; i++) {
         int i0, i1, i2;
         if (mesh.indices != nullptr) {
-            i0 = mesh.indices[i * 3 + 0];
-            i1 = mesh.indices[i * 3 + 1];
-            i2 = mesh.indices[i * 3 + 2];
+            // Explicit since Part 0.4 widened the index type; see
+            // ComputeFallbackNormalsAndTangents' own note on why int.
+            i0 = static_cast<int>(mesh.indices[i * 3 + 0]);
+            i1 = static_cast<int>(mesh.indices[i * 3 + 1]);
+            i2 = static_cast<int>(mesh.indices[i * 3 + 2]);
         } else {
             i0 = i * 3;
             i1 = i * 3 + 1;

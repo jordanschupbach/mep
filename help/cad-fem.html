@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAD and finite elements</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Documents and media">
+<meta name="help-order" content="70">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>CAD and finite elements</h1>
+<h1>What this is</h1>
+<p>mep carries its own boundary-representation CAD kernel and its own
+finite-element solver. Both are written from scratch in this repository:
+there is no OpenCASCADE, no CalculiX, no Eigen. The kernel keeps exact
+geometry -- a cylinder is a cylinder, not a fine polygon -- through
+modelling, meshing, solving and back out again, and that is what makes
+adaptive refinement possible at all: refining a mesh means going back to
+the shape and meshing it again, which a program holding only facets
+cannot do.</p>
+<h1>Getting started</h1>
+<p>Everything is reachable from Lua as <code>mep.part_*</code> and <code>mep.fem_*</code>, from an
+agent over the RPC socket as <code>cad.*</code> and <code>fem.*</code>, from an MCP client as
+<code>mep_part_*</code> and <code>mep_fem_*</code>, and from the command line with no display at
+all:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep</span> <span class="tok-cyan">--cad-fem</span> study.json out.json
+<span class="tok-blue">mep</span> <span class="tok-cyan">--cad-export</span> part.step part.stl</code></pre></div>
+<p>A script is a list of calls. Name one with <code>as</code> and later calls refer to
+its result with <code>$name.field</code>:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">js</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="js">[
+  {<span class="tok-green">"method"</span>: <span class="tok-green">"part.new"</span>,     <span class="tok-green">"as"</span>: <span class="tok-green">"doc"</span>},
+  {<span class="tok-green">"method"</span>: <span class="tok-green">"part.box"</span>,     <span class="tok-green">"as"</span>: <span class="tok-green">"block"</span>, <span class="tok-green">"params"</span>: {<span class="tok-green">"document"</span>: <span class="tok-green">"$doc.document"</span>, <span class="tok-green">"size"</span>: [<span class="tok-cyan">10</span>, <span class="tok-cyan">6</span>, <span class="tok-cyan">4</span>]}},
+  {<span class="tok-green">"method"</span>: <span class="tok-green">"part.face_at"</span>, <span class="tok-green">"as"</span>: <span class="tok-green">"base"</span>,  <span class="tok-green">"params"</span>: {<span class="tok-green">"document"</span>: <span class="tok-green">"$doc.document"</span>, <span class="tok-green">"body"</span>: <span class="tok-green">"$block.body"</span>, <span class="tok-green">"normal"</span>: [<span class="tok-cyan">0</span>, <span class="tok-cyan">0</span>, -<span class="tok-cyan">1</span>]}},
+  {<span class="tok-green">"method"</span>: <span class="tok-green">"part.face_at"</span>, <span class="tok-green">"as"</span>: <span class="tok-green">"top"</span>,   <span class="tok-green">"params"</span>: {<span class="tok-green">"document"</span>: <span class="tok-green">"$doc.document"</span>, <span class="tok-green">"body"</span>: <span class="tok-green">"$block.body"</span>, <span class="tok-green">"normal"</span>: [<span class="tok-cyan">0</span>, <span class="tok-cyan">0</span>, <span class="tok-cyan">1</span>]}},
+  {<span class="tok-green">"method"</span>: <span class="tok-green">"fem.mesh"</span>,    <span class="tok-green">"as"</span>: <span class="tok-green">"mesh"</span>,  <span class="tok-green">"params"</span>: {<span class="tok-green">"document"</span>: <span class="tok-green">"$doc.document"</span>, <span class="tok-green">"body"</span>: <span class="tok-green">"$block.body"</span>, <span class="tok-green">"size"</span>: <span class="tok-cyan">2.0</span>}},
+  {<span class="tok-green">"method"</span>: <span class="tok-green">"fem.study"</span>,   <span class="tok-green">"as"</span>: <span class="tok-green">"study"</span>, <span class="tok-green">"params"</span>: {<span class="tok-green">"document"</span>: <span class="tok-green">"$doc.document"</span>}},
+  {<span class="tok-green">"method"</span>: <span class="tok-green">"fem.support"</span>, <span class="tok-green">"params"</span>: {<span class="tok-green">"study"</span>: <span class="tok-green">"$study.study"</span>, <span class="tok-green">"face"</span>: <span class="tok-green">"$base.face"</span>}},
+  {<span class="tok-green">"method"</span>: <span class="tok-green">"fem.load"</span>,    <span class="tok-green">"params"</span>: {<span class="tok-green">"study"</span>: <span class="tok-green">"$study.study"</span>, <span class="tok-green">"kind"</span>: <span class="tok-green">"pressure"</span>, <span class="tok-green">"face"</span>: <span class="tok-green">"$top.face"</span>, <span class="tok-green">"magnitude"</span>: <span class="tok-cyan">5e6</span>}},
+  {<span class="tok-green">"method"</span>: <span class="tok-green">"fem.solve"</span>,   <span class="tok-green">"as"</span>: <span class="tok-green">"result"</span>, <span class="tok-green">"params"</span>: {<span class="tok-green">"study"</span>: <span class="tok-green">"$study.study"</span>, <span class="tok-green">"mesh"</span>: <span class="tok-green">"$mesh.mesh"</span>}}
+]</code></pre></div>
+<h1>Things worth knowing</h1>
+<h2>Faces are named by direction</h2>
+<p>There is no clicking here, so <code>cad.face_at</code> returns the face whose
+outward normal is nearest a direction you name. It is also the only
+addressing that survives a rebuild: a study captures its faces as
+persistent <b>names</b>, not as ids, so the same study still means the same
+thing after the part changes size -- which is exactly what the adaptive
+loop does on every cycle.</p>
+<h2>Every solve reports how wrong it is</h2>
+<p><code>fem.solve</code> returns a <code>relative_error</code> alongside the stresses: the
+estimated error of that mesh in the energy norm, from a superconvergent
+patch recovery of the stress field. A stress number handed to someone who
+will act on it, with no indication of how converged it is, is the most
+dangerous output this system produces. Above roughly ten percent, the
+mesh has not resolved the problem.</p>
+<h2>Sizes are in your model's units</h2>
+<p>Element size, chord tolerance and displacement scaling all default to a
+fraction of the model's own diagonal rather than to an absolute number.
+An absolute default is right for exactly one size of model and it is
+never the one in front of you.</p>
+<h1>Method reference</h1>
+<p># BEGIN GENERATED cad-fem</p>
+<h2>Analysis</h2>
+<h3>part_new(title?)</h3>
+<p>Opens an empty CAD document and returns its handle.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>title</code></td><td>string</td><td>optional</td><td>A name for the document.</td></tr>
+</table>
+<p>Returns <code>{document}</code>.</p>
+<h3>part_close(document)</h3>
+<p>Closes a document and everything built on it.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+</table>
+<p>Returns <code>{closed}</code>.</p>
+<h3>part_list()</h3>
+<p>Read-only.
+Lists open documents, studies, meshes and results.</p>
+<p>Returns <code>{documents, studies, meshes, results}</code>.</p>
+<h3>part_box(document, size, at?)</h3>
+<p>Adds a rectangular block.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>size</code></td><td>array</td><td>required</td><td>Its extent, [x, y, z].</td></tr>
+<tr><td><code>at</code></td><td>array</td><td>optional</td><td>The minimum corner, [x, y, z]. Defaults to the origin.</td></tr>
+</table>
+<p>Returns <code>{body}</code>.</p>
+<h3>part_cylinder(document, radius, height, at?, axis?)</h3>
+<p>Adds a cylinder.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>radius</code></td><td>number</td><td>required</td><td>Its radius.</td></tr>
+<tr><td><code>height</code></td><td>number</td><td>required</td><td>Its height along the axis.</td></tr>
+<tr><td><code>at</code></td><td>array</td><td>optional</td><td>The centre of the base. Defaults to the origin.</td></tr>
+<tr><td><code>axis</code></td><td>array</td><td>optional</td><td>The axis direction. Defaults to +z.</td></tr>
+</table>
+<p>Returns <code>{body}</code>.</p>
+<h3>part_sphere(document, radius, at?)</h3>
+<p>Adds a sphere.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>radius</code></td><td>number</td><td>required</td><td>Its radius.</td></tr>
+<tr><td><code>at</code></td><td>array</td><td>optional</td><td>Its centre. Defaults to the origin.</td></tr>
+</table>
+<p>Returns <code>{body}</code>.</p>
+<h3>part_boolean(document, op, a, b)</h3>
+<p>Combines two bodies and replaces them with the result.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>op</code></td><td>string</td><td>required</td><td>One of union, difference, intersection.</td></tr>
+<tr><td><code>a</code></td><td>number</td><td>required</td><td>The first body.</td></tr>
+<tr><td><code>b</code></td><td>number</td><td>required</td><td>The second body.</td></tr>
+</table>
+<p>Returns <code>{body}</code>.</p>
+<h3>part_shell(document, body, thickness, open_faces?)</h3>
+<p>Hollows a body out to a wall thickness.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>body</code></td><td>number</td><td>required</td><td>The body to hollow.</td></tr>
+<tr><td><code>thickness</code></td><td>number</td><td>required</td><td>The wall thickness.</td></tr>
+<tr><td><code>open_faces</code></td><td>array</td><td>optional</td><td>Face handles to leave open.</td></tr>
+</table>
+<p>Returns <code>{body}</code>.</p>
+<h3>part_info(document)</h3>
+<p>Read-only.
+Counts what a document holds.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+</table>
+<p>Returns <code>{bodies, faces, edges, vertices}</code>.</p>
+<h3>part_faces(document, body)</h3>
+<p>Read-only.
+Lists a body's faces: a normal, and where each one actually is.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>body</code></td><td>number</td><td>required</td><td>The body.</td></tr>
+</table>
+<p>Returns <code>{faces: [{id, point, normal, centroid, low, high}]}</code>.</p>
+<h3>part_edges(document, body, along?)</h3>
+<p>Read-only.
+Lists a body's edges, with a point, a direction and a length on each.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>body</code></td><td>number</td><td>required</td><td>The body.</td></tr>
+<tr><td><code>along</code></td><td>array</td><td>optional</td><td>Keep only the edges running along this direction.</td></tr>
+</table>
+<p>Returns <code>{edges: [{id, point, direction, from, to, length}]}</code>.</p>
+<h3>part_edge_at(document, body, point, along?)</h3>
+<p>Read-only.
+Finds the edge nearest a point, which is how a script names one.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>body</code></td><td>number</td><td>required</td><td>The body.</td></tr>
+<tr><td><code>point</code></td><td>array</td><td>required</td><td>Look for the edge nearest here.</td></tr>
+<tr><td><code>along</code></td><td>array</td><td>optional</td><td>Consider only edges running along this direction.</td></tr>
+</table>
+<p>Returns <code>{edge, point, direction, from, to, length, distance}</code>.</p>
+<h3>part_face_at(document, body, normal)</h3>
+<p>Read-only.
+Finds the face whose outward normal is nearest a direction.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>body</code></td><td>number</td><td>required</td><td>The body.</td></tr>
+<tr><td><code>normal</code></td><td>array</td><td>required</td><td>The direction to look along.</td></tr>
+</table>
+<p>Returns <code>{face, point, normal, agreement}</code>.</p>
+<h3>part_mass(document, body, density?)</h3>
+<p>Read-only.
+Volume, area, centre of mass and inertia of a body.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>body</code></td><td>number</td><td>required</td><td>The body.</td></tr>
+<tr><td><code>density</code></td><td>number</td><td>optional</td><td>kg/m^3. Defaults to 1, so mass equals volume.</td></tr>
+</table>
+<p>Returns <code>{volume, area, mass, centroid, inertia, principal}</code>.</p>
+<h3>part_validate(document, body)</h3>
+<p>Read-only.
+Checks a body's topology and geometry.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>body</code></td><td>number</td><td>required</td><td>The body.</td></tr>
+</table>
+<p>Returns <code>{ok, problems}</code>.</p>
+<h3>part_export(document, path, format?, body?)</h3>
+<p>Writes a body to STEP, STL, OBJ or glTF.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>path</code></td><td>string</td><td>required</td><td>Where to write it.</td></tr>
+<tr><td><code>format</code></td><td>string</td><td>optional</td><td>step, stl, obj or gltf. Defaults to the extension.</td></tr>
+<tr><td><code>body</code></td><td>number</td><td>optional</td><td>One body, or every body if omitted.</td></tr>
+</table>
+<p>Returns <code>{path, bytes, format}</code>.</p>
+<h3>part_import(path, format?)</h3>
+<p>Reads a STEP file, or a .mepcad feature tree, into a new document.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>path</code></td><td>string</td><td>required</td><td>The file to read.</td></tr>
+<tr><td><code>format</code></td><td>string</td><td>optional</td><td>step or mepcad. Defaults to the extension.</td></tr>
+</table>
+<p>Returns <code>{document, bodies, warnings, features, volume}</code>.</p>
+<h3>fem_mesh(document, body, size?, order?, method?, layers?)</h3>
+<p>Meshes a body, into tetrahedra or by sweeping a profile into hexahedra.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>body</code></td><td>number</td><td>required</td><td>The body to mesh.</td></tr>
+<tr><td><code>size</code></td><td>number</td><td>optional</td><td>Target element size. Defaults to the model's own scale.</td></tr>
+<tr><td><code>order</code></td><td>number</td><td>optional</td><td>1 for Tet4, 2 for curved Tet10. Defaults to 1.</td></tr>
+<tr><td><code>method</code></td><td>string</td><td>optional</td><td>tetrahedra (the default) or sweep, which needs a prismatic body and gives Hex8.</td></tr>
+<tr><td><code>layers</code></td><td>number</td><td>optional</td><td>Elements along a sweep. Defaults to the sizing field.</td></tr>
+</table>
+<p>Returns <code>{mesh, nodes, elements, shape, order, worst_dihedral, target_size}</code>.</p>
+<h3>fem_study(document, name?)</h3>
+<p>Starts a study on a document.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>document</code></td><td>number</td><td>required</td><td>The document handle.</td></tr>
+<tr><td><code>name</code></td><td>string</td><td>optional</td><td>A name for it.</td></tr>
+</table>
+<p>Returns <code>{study}</code>.</p>
+<h3>fem_material(study, youngs_modulus?, poissons_ratio?, density?, thermal_expansion?, name?)</h3>
+<p>Sets the study's material.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>study</code></td><td>number</td><td>required</td><td>The study handle.</td></tr>
+<tr><td><code>youngs_modulus</code></td><td>number</td><td>optional</td><td>Pa. Defaults to steel.</td></tr>
+<tr><td><code>poissons_ratio</code></td><td>number</td><td>optional</td><td>Defaults to 0.3.</td></tr>
+<tr><td><code>density</code></td><td>number</td><td>optional</td><td>kg/m^3. Defaults to 7850.</td></tr>
+<tr><td><code>thermal_expansion</code></td><td>number</td><td>optional</td><td>1/K.</td></tr>
+<tr><td><code>name</code></td><td>string</td><td>optional</td><td>A name for the material.</td></tr>
+</table>
+<p>Returns <code>{materials}</code>.</p>
+<h3>fem_support(study, face?, edge?, fixed?)</h3>
+<p>Holds a face, or an edge -- which is what a simple support is.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>study</code></td><td>number</td><td>required</td><td>The study handle.</td></tr>
+<tr><td><code>face</code></td><td>number</td><td>optional</td><td>The face to hold.</td></tr>
+<tr><td><code>edge</code></td><td>number</td><td>optional</td><td>The edge to hold, instead of a face.</td></tr>
+<tr><td><code>fixed</code></td><td>array</td><td>optional</td><td>Which of x, y, z are held. Defaults to all three.</td></tr>
+</table>
+<p>Returns <code>{supports}</code>.</p>
+<h3>fem_load(study, kind, face?, magnitude?, vector?)</h3>
+<p>Applies a load to a face, or gravity to the whole model.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>study</code></td><td>number</td><td>required</td><td>The study handle.</td></tr>
+<tr><td><code>kind</code></td><td>string</td><td>required</td><td>force, pressure, traction or gravity.</td></tr>
+<tr><td><code>face</code></td><td>number</td><td>optional</td><td>The face, for everything but gravity.</td></tr>
+<tr><td><code>magnitude</code></td><td>number</td><td>optional</td><td>Pa, for a pressure.</td></tr>
+<tr><td><code>vector</code></td><td>array</td><td>optional</td><td>The force, traction or acceleration.</td></tr>
+</table>
+<p>Returns <code>{loads}</code>.</p>
+<h3>fem_solve(study, mesh)</h3>
+<p>Runs a linear static solve.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>study</code></td><td>number</td><td>required</td><td>The study handle.</td></tr>
+<tr><td><code>mesh</code></td><td>number</td><td>required</td><td>The mesh handle.</td></tr>
+</table>
+<p>Returns <code>{result, nodes, elements, max_displacement, max_von_mises, strain_energy, equilibrium_residual, relative_error}</code>.</p>
+<h3>fem_modal(study, mesh, modes?)</h3>
+<p>Finds natural frequencies and mode shapes.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>study</code></td><td>number</td><td>required</td><td>The study handle.</td></tr>
+<tr><td><code>mesh</code></td><td>number</td><td>required</td><td>The mesh handle.</td></tr>
+<tr><td><code>modes</code></td><td>number</td><td>optional</td><td>How many. Defaults to 6.</td></tr>
+</table>
+<p>Returns <code>{result, frequencies, rigid_body_modes}</code>.</p>
+<h3>fem_adapt(study, body, size?, target?, cycles?)</h3>
+<p>Meshes, solves, estimates the error and refines, repeatedly.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>study</code></td><td>number</td><td>required</td><td>The study handle.</td></tr>
+<tr><td><code>body</code></td><td>number</td><td>required</td><td>The body to mesh each cycle.</td></tr>
+<tr><td><code>size</code></td><td>number</td><td>optional</td><td>The starting element size.</td></tr>
+<tr><td><code>target</code></td><td>number</td><td>optional</td><td>The relative energy-norm error to aim for.</td></tr>
+<tr><td><code>cycles</code></td><td>number</td><td>optional</td><td>How many at most. Defaults to 3.</td></tr>
+</table>
+<p>Returns <code>{result, cycles, reached_target, stopped_early, stop_reason}</code>.</p>
+<h3>fem_summary(result)</h3>
+<p>Read-only.
+Everything scalar about a result.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>result</code></td><td>number</td><td>required</td><td>The result handle.</td></tr>
+</table>
+<p>Returns <code>{nodes, elements, max_displacement, max_von_mises, strain_energy, relative_error}</code>.</p>
+<h3>fem_field(result, field)</h3>
+<p>Read-only.
+The range of one field over a result.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>result</code></td><td>number</td><td>required</td><td>The result handle.</td></tr>
+<tr><td><code>field</code></td><td>string</td><td>required</td><td>von_mises, displacement, max_principal and so on.</td></tr>
+</table>
+<p>Returns <code>{field, min, max, min_node, max_node, at_min, at_max}</code>.</p>
+<h3>fem_probe(result, field, points)</h3>
+<p>Read-only.
+Reads a field at points.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>result</code></td><td>number</td><td>required</td><td>The result handle.</td></tr>
+<tr><td><code>field</code></td><td>string</td><td>required</td><td>Which field.</td></tr>
+<tr><td><code>points</code></td><td>array</td><td>required</td><td>An array of [x, y, z].</td></tr>
+</table>
+<p>Returns <code>{probes: [{at, value, inside, distance}]}</code>.</p>
+<h3>fem_path(result, field, from, to, samples?)</h3>
+<p>Read-only.
+Samples a field along a line, for plotting.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>result</code></td><td>number</td><td>required</td><td>The result handle.</td></tr>
+<tr><td><code>field</code></td><td>string</td><td>required</td><td>Which field.</td></tr>
+<tr><td><code>from</code></td><td>array</td><td>required</td><td>The start point.</td></tr>
+<tr><td><code>to</code></td><td>array</td><td>required</td><td>The end point.</td></tr>
+<tr><td><code>samples</code></td><td>number</td><td>optional</td><td>How many. Defaults to 20.</td></tr>
+</table>
+<p>Returns <code>{rows: [{distance, at, value}], csv}</code>.</p>
+<h3>fem_animate(result, mode?, frames?, amplitude?)</h3>
+<p>Read-only.
+Frames of a mode shape, as displacement per node.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>result</code></td><td>number</td><td>required</td><td>A result from fem.modal.</td></tr>
+<tr><td><code>mode</code></td><td>number</td><td>optional</td><td>Which mode, from zero. Defaults to the first.</td></tr>
+<tr><td><code>frames</code></td><td>number</td><td>optional</td><td>How many. Defaults to 24.</td></tr>
+<tr><td><code>amplitude</code></td><td>number</td><td>optional</td><td>Peak movement as a fraction of the diagonal.</td></tr>
+</table>
+<p>Returns <code>{frames, period, amplitude_scale, displacement}</code>.</p>
+<h3>fem_nodes(result)</h3>
+<p>Read-only.
+The result's node coordinates, three numbers per node.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>result</code></td><td>number</td><td>required</td><td>The result handle.</td></tr>
+</table>
+<p>Returns <code>{count, nodes}</code>.</p>
+<h3>fem_movie(result, path, field?, mode?, frames?, fps?, width?, height?, amplitude?, yaw?, pitch?, orbit?, caption?, color_map?)</h3>
+<p>Renders a result as a playable Motion-JPEG .mov.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>result</code></td><td>number</td><td>required</td><td>The result handle.</td></tr>
+<tr><td><code>path</code></td><td>string</td><td>required</td><td>Where to write the film.</td></tr>
+<tr><td><code>field</code></td><td>string</td><td>optional</td><td>Which field colours it. Defaults to von_mises, or displacement for a modal result.</td></tr>
+<tr><td><code>mode</code></td><td>number</td><td>optional</td><td>For a modal result, which mode. Defaults to the first.</td></tr>
+<tr><td><code>frames</code></td><td>number</td><td>optional</td><td>How many. Defaults to 36.</td></tr>
+<tr><td><code>fps</code></td><td>number</td><td>optional</td><td>Frames per second. Defaults to 20.</td></tr>
+<tr><td><code>width</code></td><td>number</td><td>optional</td><td>Pixels. Defaults to 720.</td></tr>
+<tr><td><code>height</code></td><td>number</td><td>optional</td><td>Pixels. Defaults to 540.</td></tr>
+<tr><td><code>amplitude</code></td><td>number</td><td>optional</td><td>Peak movement as a fraction of the diagonal.</td></tr>
+<tr><td><code>yaw</code></td><td>number</td><td>optional</td><td>Camera bearing in degrees.</td></tr>
+<tr><td><code>pitch</code></td><td>number</td><td>optional</td><td>Camera elevation in degrees.</td></tr>
+<tr><td><code>orbit</code></td><td>bool</td><td>optional</td><td>Turn the camera a full circle over the film.</td></tr>
+<tr><td><code>caption</code></td><td>string</td><td>optional</td><td>A line of text along the top.</td></tr>
+<tr><td><code>color_map</code></td><td>string</td><td>optional</td><td>viridis, blue_to_red or greyscale.</td></tr>
+</table>
+<p>Returns <code>{path, frames, seconds, width, height, field_min, field_max, bytes}</code>.</p>
+<h3>fem_image(result, path, field?, mode?, width?, height?, amplitude?, yaw?, pitch?, caption?, color_map?)</h3>
+<p>Renders one frame of a result as a PNG.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>result</code></td><td>number</td><td>required</td><td>The result handle.</td></tr>
+<tr><td><code>path</code></td><td>string</td><td>required</td><td>Where to write the picture.</td></tr>
+<tr><td><code>field</code></td><td>string</td><td>optional</td><td>Which field colours it.</td></tr>
+<tr><td><code>mode</code></td><td>number</td><td>optional</td><td>For a modal result, which mode to draw at its extreme.</td></tr>
+<tr><td><code>width</code></td><td>number</td><td>optional</td><td>Pixels. Defaults to 720.</td></tr>
+<tr><td><code>height</code></td><td>number</td><td>optional</td><td>Pixels. Defaults to 540.</td></tr>
+<tr><td><code>amplitude</code></td><td>number</td><td>optional</td><td>Peak movement as a fraction of the diagonal.</td></tr>
+<tr><td><code>yaw</code></td><td>number</td><td>optional</td><td>Camera bearing in degrees.</td></tr>
+<tr><td><code>pitch</code></td><td>number</td><td>optional</td><td>Camera elevation in degrees.</td></tr>
+<tr><td><code>caption</code></td><td>string</td><td>optional</td><td>A line of text along the top.</td></tr>
+<tr><td><code>color_map</code></td><td>string</td><td>optional</td><td>viridis, blue_to_red or greyscale.</td></tr>
+</table>
+<p>Returns <code>{path, width, height, field_min, field_max, bytes}</code>.</p>
+<h3>fem_export(result, field, path, format?, from?, to?, samples?)</h3>
+<p>Writes a path plot or a field to CSV or an org table.</p>
+<table>
+<tr><td>parameter</td><td>type</td><td></td><td>meaning</td></tr>
+<tr><td>---</td><td>---</td><td>---</td><td>---</td></tr>
+<tr><td><code>result</code></td><td>number</td><td>required</td><td>The result handle.</td></tr>
+<tr><td><code>field</code></td><td>string</td><td>required</td><td>Which field.</td></tr>
+<tr><td><code>path</code></td><td>string</td><td>required</td><td>Where to write it.</td></tr>
+<tr><td><code>format</code></td><td>string</td><td>optional</td><td>csv or org. Defaults to the extension.</td></tr>
+<tr><td><code>from</code></td><td>array</td><td>optional</td><td>A path start; omit to export every node.</td></tr>
+<tr><td><code>to</code></td><td>array</td><td>optional</td><td>A path end.</td></tr>
+<tr><td><code>samples</code></td><td>number</td><td>optional</td><td>Path samples.</td></tr>
+</table>
+<p>Returns <code>{path, rows, format}</code>.</p>
+<p># END GENERATED cad-fem</p>
+</body>
+</html>

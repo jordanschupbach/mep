@@ -1,4 +1,5 @@
 #include "agent_rpc.h"
+#include "cad_fem_api.h"
 #include "editor.h"
 #include "image_procgen.h"
 
@@ -436,6 +437,46 @@ const Model3DSession &RequireModel3D(const Editor &editor, int buffer_id) {
 }
 
 /**
+ * @brief Looks up a sketch session, throwing an RpcError if the buffer is not one.
+ * @param editor The editor.
+ * @param buffer_id The buffer id to look up.
+ * @return A const reference to the CadSketchSession.
+ */
+const CadSketchSession &RequireCadSketch(const Editor &editor, int buffer_id) {
+    const CadSketchSession *sess = editor.GetCadSketch(buffer_id);
+    if (!sess) throw RpcError{-32602, "not a sketch buffer: " + std::to_string(buffer_id)};
+    return *sess;
+}
+
+/**
+ * @brief The solver's verdict on a sketch, as JSON.
+ *
+ * Reported by sketch.solve and sketch.diagnosis both, because "did it
+ * work" is the question an agent has after every change and the answer is
+ * more than a boolean: a sketch can solve and still be under-constrained,
+ * and it can fail because constraints disagree rather than because the
+ * solver gave up. See cad_constraint.h's SketchStatus.
+ */
+Json CadSketchDiagnosisJson(const cad::SketchDiagnosis &d) {
+    Json j = Json::Object();
+    j["status"] = std::string(cad::SketchStatusName(static_cast<int>(d.status)));
+    j["degrees_of_freedom"] = d.degrees_of_freedom;
+    j["parameters"] = d.parameters;
+    j["residuals"] = d.residuals;
+    j["rank"] = d.rank;
+    j["clusters"] = d.clusters;
+    j["residual_norm"] = d.residual_norm;
+    Json redundant = Json::Array();
+    for (cad::SketchId id : d.redundant) redundant.push_back(Json(id));
+    j["redundant"] = redundant;
+    Json conflicting = Json::Array();
+    for (cad::SketchId id : d.conflicting) conflicting.push_back(Json(id));
+    j["conflicting"] = conflicting;
+    if (!d.message.empty()) j["message"] = d.message;
+    return j;
+}
+
+/**
  * @brief Maps a primitive-kind name to a PrimitiveKind, throwing an RpcError if unrecognized.
  * @param name The primitive kind name ("cube"/"sphere"/"cylinder"/"cone"/"plane"/"torus"/"wedge").
  * @return The matching PrimitiveKind.
@@ -653,7 +694,41 @@ std::unordered_map<std::string, UiMethodHandler> &UiMethods() {
  * @param params The method's parameters, read leniently (missing fields read as 0/"").
  * @return The method's JSON result.
  */
+// The CAD and FEM session this connection's `cad.*` and `fem.*` calls
+// act on (plans/CAD_FEM_PLAN.md Part K.2).
+//
+// ONE PER PROCESS, NOT ONE PER CONNECTION, and deliberately: a document
+// an agent built is a thing a human in the same editor should be able to
+// mesh, and two agents working on one part is the case the collaboration
+// machinery in this file exists for. It is the same posture as the
+// editor's buffers, which are also shared rather than per-client.
+cadfem::Session &CadFemSession() {
+    static cadfem::Session session;
+    return session;
+}
+
 Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const Json &params) {
+    // Everything Part K declares, dispatched from one table rather than
+    // listed method by method, so a method added to `cadfem::Methods()`
+    // is reachable here without a second edit.
+    //
+    // MATCHED AGAINST THE TABLE, NOT AGAINST A PREFIX, and that is not a
+    // refinement -- the first version claimed the whole of `cad.` and
+    // silently shadowed the fifteen `cad.*` methods Part F.5 already had
+    // for the in-pane CAD buffer, three of which (`cad.new`, `cad.info`,
+    // `cad.export`) are direct name collisions and twelve of which were
+    // simply made unreachable. That is also why the kernel session
+    // answers to `part.*`: the headless document this operates on and the
+    // CAD buffer the editor opens are different things, and calling both
+    // of them `cad` would have made the surface ambiguous even once the
+    // routing was exact.
+    if (cadfem::FindMethod(method) != nullptr) {
+        Json out;
+        std::string error;
+        if (!CadFemSession().Call(method, params, &out, &error)) throw RpcError{-32602, error};
+        return out;
+    }
+
     if (method == "cursor.get") {
         EnsureConnCursorInitialized(editor, conn);
         Json j = CursorJson(conn.cursor.row, conn.cursor.col);
@@ -1030,6 +1105,368 @@ Json Dispatch(Editor &editor, Connection &conn, const std::string &method, const
         j["buffer_id"] = buffer_id;
         j["lines"] = std::move(lines);
         return j;
+    }
+    // --- The 2D sketcher (plans/CAD_FEM_PLAN.md Part D) -----------------
+    //
+    // The same Editor::CadSketch* methods the keyboard calls, so a sketch
+    // an agent builds and one a user draws are built by the same code.
+    // --- Part F.5: the CAD part pane ------------------------------------
+    //
+    // The same Editor::Cad* methods the keyboard and Lua call.
+    if (method == "cad.new") {
+        Json j = Json::Object();
+        j["buffer_id"] = editor.NewCad();
+        return j;
+    }
+    if (method == "cad.open") {
+        Json j = Json::Object();
+        const bool ok = editor.OpenCadInPlace(params.get("path").as_string(""));
+        j["ok"] = ok;
+        // Which buffer it landed in, so a caller can go straight on to
+        // ask about it without having to guess.
+        j["buffer_id"] = ok ? editor.CurrentBufferId() : -1;
+        return j;
+    }
+    if (method == "cad.save") {
+        Json j = Json::Object();
+        j["ok"] = editor.SaveCad(params.get("buffer_id").as_int(-1), params.get("path").as_string(""));
+        return j;
+    }
+    if (method == "cad.rebuild") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        Json j = Json::Object();
+        j["ok"] = editor.CadRebuild(buffer_id);
+        j["summary"] = Json(editor.CadSummary(buffer_id));
+        return j;
+    }
+    if (method == "cad.addSketch") {
+        Json j = Json::Object();
+        j["feature"] = editor.CadAddSketchFrom(params.get("buffer_id").as_int(-1),
+                                               params.get("sketch_buffer_id").as_int(-1),
+                                               params.get("name").as_string("sketch"));
+        return j;
+    }
+    if (method == "cad.addExtrude") {
+        Json j = Json::Object();
+        j["feature"] = editor.CadAddExtrude(params.get("buffer_id").as_int(-1),
+                                            params.get("sketch").as_int(-1),
+                                            params.get("distance").as_double(1.0),
+                                            params.get("combine").as_string("new"),
+                                            params.get("name").as_string("extrude"));
+        return j;
+    }
+    if (method == "cad.addRevolve") {
+        Json j = Json::Object();
+        j["feature"] = editor.CadAddRevolve(params.get("buffer_id").as_int(-1),
+                                            params.get("sketch").as_int(-1),
+                                            params.get("axis_entity").as_int(-1),
+                                            params.get("angle").as_double(6.283185307179586),
+                                            params.get("combine").as_string("new"),
+                                            params.get("name").as_string("revolve"));
+        return j;
+    }
+    if (method == "cad.set") {
+        Json j = Json::Object();
+        j["ok"] = editor.CadSetFeatureNumber(params.get("buffer_id").as_int(-1),
+                                             params.get("feature").as_int(-1),
+                                             params.get("field").as_string(""),
+                                             params.get("value").as_double(0.0));
+        j["summary"] = Json(editor.CadSummary(params.get("buffer_id").as_int(-1)));
+        return j;
+    }
+    if (method == "cad.suppress") {
+        Json j = Json::Object();
+        j["ok"] = editor.CadSuppressFeature(params.get("buffer_id").as_int(-1),
+                                            params.get("feature").as_int(-1),
+                                            params.get("suppressed").as_bool(true));
+        return j;
+    }
+    if (method == "cad.remove") {
+        Json j = Json::Object();
+        j["ok"] = editor.CadRemoveFeature(params.get("buffer_id").as_int(-1),
+                                          params.get("feature").as_int(-1));
+        return j;
+    }
+    if (method == "cad.select") {
+        Json j = Json::Object();
+        j["ok"] = editor.CadSelectFeature(params.get("buffer_id").as_int(-1),
+                                          params.get("feature").as_int(-1));
+        return j;
+    }
+    if (method == "cad.export") {
+        Json j = Json::Object();
+        j["ok"] = editor.CadExport(params.get("buffer_id").as_int(-1),
+                                   params.get("format").as_string("step"),
+                                   params.get("path").as_string(""));
+        return j;
+    }
+    if (method == "cad.view") {
+        editor.CadSetView(params.get("buffer_id").as_int(-1), params.get("view").as_string("shaded"));
+        return Json::Object();
+    }
+    if (method == "cad.camera") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        if (params.contains("yaw") || params.contains("pitch")) {
+            editor.CadOrbit(buffer_id, static_cast<float>(params.get("yaw").as_double(0.0)),
+                            static_cast<float>(params.get("pitch").as_double(0.0)));
+        }
+        if (params.contains("zoom")) {
+            editor.CadZoom(buffer_id, static_cast<float>(params.get("zoom").as_double(1.0)));
+        }
+        if (params.get("frame_all").as_bool(false)) editor.CadFrameAll(buffer_id);
+        return Json::Object();
+    }
+    if (method == "cad.info") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        const CadSession *sess = editor.GetCad(buffer_id);
+        if (sess == nullptr) throw RpcError(-32602, "no CAD part in buffer " + std::to_string(buffer_id));
+        Json j = Json::Object();
+        j["summary"] = Json(editor.CadSummary(buffer_id));
+        j["volume"] = sess->volume;
+        j["triangles"] = sess->triangle_count;
+        j["imported"] = sess->from_import;
+        j["message"] = Json(sess->message);
+        Json tree = Json::Array();
+        for (const cad::Feature &feature : sess->document.tree.Features()) {
+            Json f = Json::Object();
+            f["id"] = feature.id;
+            f["name"] = Json(feature.name);
+            f["suppressed"] = feature.suppressed;
+            f["distance"] = feature.distance;
+            f["failed"] = std::find(sess->failed_features.begin(), sess->failed_features.end(),
+                                    feature.id) != sess->failed_features.end();
+            tree.push_back(std::move(f));
+        }
+        j["tree"] = std::move(tree);
+        return j;
+    }
+    if (method == "sketch.new") {
+        Json j = Json::Object();
+        j["buffer_id"] = editor.NewCadSketch();
+        return j;
+    }
+    if (method == "sketch.list") {
+        const CadSketchSession &sess = RequireCadSketch(editor, params.get("buffer_id").as_int(-1));
+        Json points = Json::Array();
+        for (const cad::SketchPoint &point : sess.sketch.Points()) {
+            Json p = Json::Object();
+            p["id"] = point.id;
+            p["x"] = point.position.x;
+            p["y"] = point.position.y;
+            p["fixed"] = point.fixed;
+            points.push_back(p);
+        }
+        Json entities = Json::Array();
+        for (const cad::SketchEntity &entity : sess.sketch.Entities()) {
+            Json e = Json::Object();
+            e["id"] = entity.id;
+            e["kind"] = std::string(cad::SketchEntityKindName(entity.kind));
+            e["construction"] = entity.construction;
+            Json refs = Json::Array();
+            for (cad::SketchId p : entity.points) refs.push_back(Json(p));
+            e["points"] = refs;
+            double radius = 0.0;
+            if (sess.sketch.Radius(entity.id, &radius)) e["radius"] = radius;
+            entities.push_back(e);
+        }
+        Json constraints = Json::Array();
+        for (const cad::SketchConstraint &constraint : sess.sketch.Constraints()) {
+            Json c = Json::Object();
+            c["id"] = constraint.id;
+            c["kind"] = std::string(cad::ConstraintKindName(constraint.kind));
+            c["value"] = constraint.value;
+            c["driving"] = constraint.driving;
+            constraints.push_back(c);
+        }
+        Json j = Json::Object();
+        j["points"] = points;
+        j["entities"] = entities;
+        j["constraints"] = constraints;
+        return j;
+    }
+    if (method == "sketch.addPoint") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        const int id = editor.CadSketchAddPoint(buffer_id, params.get("x").as_double(0),
+                                                params.get("y").as_double(0),
+                                                params.get("fixed").as_bool(false));
+        if (id < 0) throw RpcError{-32602, "not a sketch buffer: " + std::to_string(buffer_id)};
+        Json j = Json::Object();
+        j["point_id"] = id;
+        return j;
+    }
+    if (method == "sketch.addLine") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        const int id = editor.CadSketchAddLine(buffer_id, params.get("x0").as_double(0),
+                                               params.get("y0").as_double(0), params.get("x1").as_double(0),
+                                               params.get("y1").as_double(0),
+                                               params.get("construction").as_bool(false));
+        if (id < 0) throw RpcError{-32602, "not a sketch buffer: " + std::to_string(buffer_id)};
+        Json j = Json::Object();
+        j["entity_id"] = id;
+        return j;
+    }
+    if (method == "sketch.addArc") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        const int id = editor.CadSketchAddArc(
+            buffer_id, params.get("cx").as_double(0), params.get("cy").as_double(0),
+            params.get("sx").as_double(0), params.get("sy").as_double(0), params.get("ex").as_double(0),
+            params.get("ey").as_double(0), params.get("ccw").as_bool(true),
+            params.get("construction").as_bool(false));
+        if (id < 0) throw RpcError{-32602, "not a sketch buffer: " + std::to_string(buffer_id)};
+        Json j = Json::Object();
+        j["entity_id"] = id;
+        return j;
+    }
+    if (method == "sketch.addCircle") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        const int id = editor.CadSketchAddCircle(buffer_id, params.get("cx").as_double(0),
+                                                  params.get("cy").as_double(0),
+                                                  params.get("radius").as_double(0),
+                                                  params.get("construction").as_bool(false));
+        if (id < 0) throw RpcError{-32602, "bad radius, or not a sketch buffer"};
+        Json j = Json::Object();
+        j["entity_id"] = id;
+        return j;
+    }
+    if (method == "sketch.addEllipse") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        const int id = editor.CadSketchAddEllipse(
+            buffer_id, params.get("cx").as_double(0), params.get("cy").as_double(0),
+            params.get("major").as_double(0), params.get("minor").as_double(0),
+            params.get("rotation").as_double(0), params.get("construction").as_bool(false));
+        if (id < 0) throw RpcError{-32602, "bad axes, or not a sketch buffer"};
+        Json j = Json::Object();
+        j["entity_id"] = id;
+        return j;
+    }
+    if (method == "sketch.addRectangle") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        const std::vector<int> ids = editor.CadSketchAddRectangle(
+            buffer_id, params.get("x0").as_double(0), params.get("y0").as_double(0),
+            params.get("x1").as_double(0), params.get("y1").as_double(0),
+            params.get("construction").as_bool(false));
+        if (ids.empty()) throw RpcError{-32602, "not a sketch buffer: " + std::to_string(buffer_id)};
+        Json arr = Json::Array();
+        for (int id : ids) arr.push_back(Json(id));
+        Json j = Json::Object();
+        j["entity_ids"] = arr;
+        return j;
+    }
+    if (method == "sketch.constrain") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        std::vector<int> points;
+        std::vector<int> entities;
+        for (const Json &v : params.get("points").items()) points.push_back(v.as_int(-1));
+        for (const Json &v : params.get("entities").items()) entities.push_back(v.as_int(-1));
+        const std::string kind = params.get("kind").as_string();
+        const int id = editor.CadSketchConstrain(buffer_id, kind, points, entities,
+                                                  params.get("value").as_double(0));
+        if (id < 0) {
+            throw RpcError{-32602, "cannot apply '" + kind + "' to that geometry (unknown kind, missing " +
+                                       "entity, or wrong number of arguments)"};
+        }
+        Json j = Json::Object();
+        j["constraint_id"] = id;
+        return j;
+    }
+    if (method == "sketch.removeConstraint") {
+        Json j = Json::Object();
+        j["ok"] = editor.CadSketchRemoveConstraint(params.get("buffer_id").as_int(-1),
+                                                    params.get("constraint_id").as_int(-1));
+        return j;
+    }
+    if (method == "sketch.deleteEntity") {
+        Json j = Json::Object();
+        j["ok"] = editor.CadSketchDeleteEntity(params.get("buffer_id").as_int(-1),
+                                                params.get("entity_id").as_int(-1));
+        return j;
+    }
+    if (method == "sketch.setPoint") {
+        Json j = Json::Object();
+        j["ok"] = editor.CadSketchSetPoint(params.get("buffer_id").as_int(-1),
+                                            params.get("point_id").as_int(-1), params.get("x").as_double(0),
+                                            params.get("y").as_double(0));
+        return j;
+    }
+    if (method == "sketch.setPointFixed") {
+        Json j = Json::Object();
+        j["ok"] = editor.CadSketchSetPointFixed(params.get("buffer_id").as_int(-1),
+                                                 params.get("point_id").as_int(-1),
+                                                 params.get("fixed").as_bool(true));
+        return j;
+    }
+    if (method == "sketch.setConstruction") {
+        Json j = Json::Object();
+        j["ok"] = editor.CadSketchSetConstruction(params.get("buffer_id").as_int(-1),
+                                                   params.get("entity_id").as_int(-1),
+                                                   params.get("construction").as_bool(true));
+        return j;
+    }
+    if (method == "sketch.setConstraintValue") {
+        Json j = Json::Object();
+        j["ok"] = editor.CadSketchSetConstraintValue(params.get("buffer_id").as_int(-1),
+                                                      params.get("constraint_id").as_int(-1),
+                                                      params.get("value").as_double(0));
+        return j;
+    }
+    if (method == "sketch.dragPoint") {
+        Json j = Json::Object();
+        j["ok"] = editor.CadSketchDragPoint(params.get("buffer_id").as_int(-1),
+                                             params.get("point_id").as_int(-1), params.get("x").as_double(0),
+                                             params.get("y").as_double(0));
+        return j;
+    }
+    if (method == "sketch.select") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        std::vector<int> points;
+        std::vector<int> entities;
+        for (const Json &v : params.get("points").items()) points.push_back(v.as_int(-1));
+        for (const Json &v : params.get("entities").items()) entities.push_back(v.as_int(-1));
+        if (!editor.CadSketchSelect(buffer_id, points, entities)) {
+            throw RpcError{-32602, "no such geometry, or not a sketch buffer"};
+        }
+        Json j = Json::Object();
+        j["ok"] = true;
+        return j;
+    }
+    if (method == "sketch.selection") {
+        std::vector<int> points;
+        std::vector<int> entities;
+        editor.CadSketchGetSelection(params.get("buffer_id").as_int(-1), &points, &entities);
+        Json p = Json::Array();
+        for (int id : points) p.push_back(Json(id));
+        Json e = Json::Array();
+        for (int id : entities) e.push_back(Json(id));
+        Json j = Json::Object();
+        j["points"] = p;
+        j["entities"] = e;
+        return j;
+    }
+    if (method == "sketch.solve") {
+        const int buffer_id = params.get("buffer_id").as_int(-1);
+        editor.CadSketchSolve(buffer_id);
+        const CadSketchSession &sess = RequireCadSketch(editor, buffer_id);
+        return CadSketchDiagnosisJson(sess.diagnosis);
+    }
+    if (method == "sketch.diagnosis") {
+        const CadSketchSession &sess = RequireCadSketch(editor, params.get("buffer_id").as_int(-1));
+        return CadSketchDiagnosisJson(sess.diagnosis);
+    }
+    if (method == "sketch.profiles") {
+        const CadSketchSession &sess = RequireCadSketch(editor, params.get("buffer_id").as_int(-1));
+        Json arr = Json::Array();
+        for (const cad::Sketch::Profile &profile : sess.profiles) {
+            Json p = Json::Object();
+            p["area"] = profile.area;
+            p["holes"] = static_cast<int>(profile.holes.size());
+            p["interior_x"] = profile.interior.x;
+            p["interior_y"] = profile.interior.y;
+            Json outer = Json::Array();
+            for (const cad::Sketch::Profile::Piece &piece : profile.outer) outer.push_back(Json(piece.entity));
+            p["outer_entities"] = outer;
+            arr.push_back(p);
+        }
+        return arr;
     }
     if (method == "model.new") {
         Json j = Json::Object();

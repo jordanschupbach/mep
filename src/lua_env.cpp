@@ -1,4 +1,6 @@
 #include "lua_env.h"
+
+#include "cad_fem_api.h"
 #include "http_client.h"
 #include "http_server.h"
 #include "url_util.h"
@@ -10144,6 +10146,521 @@ int l_model_primitive_info(lua_State *L) {
     return 1;
 }
 
+// --- The 2D sketcher (plans/CAD_FEM_PLAN.md Part D) --------------------
+//
+// One function per Editor::CadSketch* method, with the same names and the
+// same arguments. The sketcher's own key handling calls those same
+// methods, so a sketch built by a script and one built by hand go through
+// the same code -- which is what the plan means by the interactive tool
+// having no logic of its own.
+
+// Reads a Lua array of integers into a vector. Missing or nil is empty,
+// which is what most constraints want for the argument list they do not use.
+std::vector<int> ReadIdArray(lua_State *L, int index) {
+    std::vector<int> ids;
+    if (!lua_istable(L, index)) return ids;
+    const lua_Integer count = static_cast<lua_Integer>(lua_rawlen(L, index));
+    for (lua_Integer i = 1; i <= count; ++i) {
+        lua_rawgeti(L, index, i);
+        ids.push_back(static_cast<int>(lua_tointeger(L, -1)));
+        lua_pop(L, 1);
+    }
+    return ids;
+}
+
+const CadSketchSession *RequireSketch(lua_State *L, int buffer_id) {
+    const CadSketchSession *sess = GetEditor(L)->GetCadSketch(buffer_id);
+    if (sess == nullptr) luaL_error(L, "not a sketch buffer: %d", buffer_id);
+    return sess;
+}
+
+// mep.sketch_new() -> buffer_id.
+// --- Part F.5: the CAD part pane ---------------------------------------
+//
+// One function per Editor::Cad* method, and nothing that is not one.
+// Same rule as the sketcher's bindings above: a part built from Lua and
+// one built by hand go through exactly the same code.
+
+// mep.cad_new() -> buffer_id.
+int l_cad_new(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->NewCad());
+    return 1;
+}
+
+// mep.cad_open(path) -> ok.
+int l_cad_open(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->OpenCadInPlace(luaL_checkstring(L, 1)) ? 1 : 0);
+    return 1;
+}
+
+// mep.cad_save(buffer_id, path) -> ok.
+int l_cad_save(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->SaveCad(static_cast<int>(luaL_checkinteger(L, 1)),
+                                             luaL_checkstring(L, 2))
+                           ? 1
+                           : 0);
+    return 1;
+}
+
+// mep.cad_rebuild(buffer_id) -> ok.
+int l_cad_rebuild(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadRebuild(static_cast<int>(luaL_checkinteger(L, 1))) ? 1 : 0);
+    return 1;
+}
+
+// mep.cad_add_sketch(buffer_id, sketch_buffer_id[, name]) -> feature_id.
+int l_cad_add_sketch(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->CadAddSketchFrom(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                      static_cast<int>(luaL_checkinteger(L, 2)),
+                                                      luaL_optstring(L, 3, "sketch")));
+    return 1;
+}
+
+// mep.cad_add_extrude(buffer_id, sketch_feature, distance[, combine[, name]]) -> feature_id.
+int l_cad_add_extrude(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->CadAddExtrude(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                   static_cast<int>(luaL_checkinteger(L, 2)),
+                                                   luaL_checknumber(L, 3), luaL_optstring(L, 4, "new"),
+                                                   luaL_optstring(L, 5, "extrude")));
+    return 1;
+}
+
+// mep.cad_add_revolve(buffer_id, sketch_feature, axis_entity, angle[, combine[, name]]) -> feature_id.
+int l_cad_add_revolve(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->CadAddRevolve(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                   static_cast<int>(luaL_checkinteger(L, 2)),
+                                                   static_cast<int>(luaL_checkinteger(L, 3)),
+                                                   luaL_checknumber(L, 4), luaL_optstring(L, 5, "new"),
+                                                   luaL_optstring(L, 6, "revolve")));
+    return 1;
+}
+
+// mep.cad_set(buffer_id, feature_id, field, value) -> ok.
+int l_cad_set(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadSetFeatureNumber(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                         static_cast<int>(luaL_checkinteger(L, 2)),
+                                                         luaL_checkstring(L, 3), luaL_checknumber(L, 4))
+                           ? 1
+                           : 0);
+    return 1;
+}
+
+// mep.cad_suppress(buffer_id, feature_id, suppressed) -> ok.
+int l_cad_suppress(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadSuppressFeature(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                        static_cast<int>(luaL_checkinteger(L, 2)),
+                                                        lua_toboolean(L, 3) != 0)
+                           ? 1
+                           : 0);
+    return 1;
+}
+
+// mep.cad_remove(buffer_id, feature_id) -> ok.
+int l_cad_remove(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadRemoveFeature(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                      static_cast<int>(luaL_checkinteger(L, 2)))
+                           ? 1
+                           : 0);
+    return 1;
+}
+
+// mep.cad_select(buffer_id, feature_id) -> ok.
+int l_cad_select(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadSelectFeature(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                      static_cast<int>(luaL_checkinteger(L, 2)))
+                           ? 1
+                           : 0);
+    return 1;
+}
+
+// mep.cad_export(buffer_id, format, path) -> ok.
+int l_cad_export(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadExport(static_cast<int>(luaL_checkinteger(L, 1)),
+                                               luaL_checkstring(L, 2), luaL_checkstring(L, 3))
+                           ? 1
+                           : 0);
+    return 1;
+}
+
+// mep.cad_view(buffer_id, view) -- shaded, wireframe or drawing.
+int l_cad_view(lua_State *L) {
+    GetEditor(L)->CadSetView(static_cast<int>(luaL_checkinteger(L, 1)), luaL_checkstring(L, 2));
+    return 0;
+}
+
+// mep.cad_orbit(buffer_id, yaw, pitch).
+int l_cad_orbit(lua_State *L) {
+    GetEditor(L)->CadOrbit(static_cast<int>(luaL_checkinteger(L, 1)),
+                           static_cast<float>(luaL_checknumber(L, 2)),
+                           static_cast<float>(luaL_checknumber(L, 3)));
+    return 0;
+}
+
+// mep.cad_zoom(buffer_id, factor).
+int l_cad_zoom(lua_State *L) {
+    GetEditor(L)->CadZoom(static_cast<int>(luaL_checkinteger(L, 1)),
+                          static_cast<float>(luaL_checknumber(L, 2)));
+    return 0;
+}
+
+// mep.cad_frame_all(buffer_id).
+int l_cad_frame_all(lua_State *L) {
+    GetEditor(L)->CadFrameAll(static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+
+// mep.cad_info(buffer_id) -> table.
+int l_cad_info(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const CadSession *sess = GetEditor(L)->GetCad(buffer_id);
+    if (sess == nullptr) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushstring(L, GetEditor(L)->CadSummary(buffer_id).c_str());
+    lua_setfield(L, -2, "summary");
+    lua_pushnumber(L, sess->volume);
+    lua_setfield(L, -2, "volume");
+    lua_pushinteger(L, sess->triangle_count);
+    lua_setfield(L, -2, "triangles");
+    lua_pushboolean(L, sess->from_import ? 1 : 0);
+    lua_setfield(L, -2, "imported");
+    lua_pushinteger(L, static_cast<lua_Integer>(sess->document.tree.Features().size()));
+    lua_setfield(L, -2, "features");
+    lua_pushinteger(L, static_cast<lua_Integer>(sess->failed_features.size()));
+    lua_setfield(L, -2, "failed");
+    lua_pushstring(L, sess->message.c_str());
+    lua_setfield(L, -2, "message");
+    lua_newtable(L);
+    int at = 1;
+    for (const cad::Feature &feature : sess->document.tree.Features()) {
+        lua_newtable(L);
+        lua_pushinteger(L, feature.id);
+        lua_setfield(L, -2, "id");
+        lua_pushstring(L, feature.name.c_str());
+        lua_setfield(L, -2, "name");
+        lua_pushboolean(L, feature.suppressed ? 1 : 0);
+        lua_setfield(L, -2, "suppressed");
+        lua_pushnumber(L, feature.distance);
+        lua_setfield(L, -2, "distance");
+        lua_rawseti(L, -2, at++);
+    }
+    lua_setfield(L, -2, "tree");
+    return 1;
+}
+
+int l_sketch_new(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->NewCadSketch());
+    return 1;
+}
+
+// mep.sketch_add_point(buffer_id, x, y[, fixed]) -> point_id.
+int l_sketch_add_point(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const int id = GetEditor(L)->CadSketchAddPoint(buffer_id, luaL_checknumber(L, 2), luaL_checknumber(L, 3),
+                                                   lua_toboolean(L, 4) != 0);
+    if (id < 0) return luaL_error(L, "not a sketch buffer: %d", buffer_id);
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.sketch_add_line(buffer_id, x0, y0, x1, y1[, construction]) -> entity_id.
+int l_sketch_add_line(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const int id = GetEditor(L)->CadSketchAddLine(buffer_id, luaL_checknumber(L, 2), luaL_checknumber(L, 3),
+                                                  luaL_checknumber(L, 4), luaL_checknumber(L, 5),
+                                                  lua_toboolean(L, 6) != 0);
+    if (id < 0) return luaL_error(L, "not a sketch buffer: %d", buffer_id);
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.sketch_add_line_from_points(buffer_id, start_point, end_point[, construction]) -> entity_id.
+int l_sketch_add_line_from_points(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const int id = GetEditor(L)->CadSketchAddLineFromPoints(buffer_id, static_cast<int>(luaL_checkinteger(L, 2)),
+                                                            static_cast<int>(luaL_checkinteger(L, 3)),
+                                                            lua_toboolean(L, 4) != 0);
+    if (id < 0) return luaL_error(L, "no such points, or not a sketch buffer: %d", buffer_id);
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.sketch_add_arc(buffer_id, cx, cy, sx, sy, ex, ey[, ccw[, construction]]) -> entity_id.
+int l_sketch_add_arc(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const bool ccw = lua_isnoneornil(L, 8) ? true : lua_toboolean(L, 8) != 0;
+    const int id = GetEditor(L)->CadSketchAddArc(buffer_id, luaL_checknumber(L, 2), luaL_checknumber(L, 3),
+                                                  luaL_checknumber(L, 4), luaL_checknumber(L, 5),
+                                                  luaL_checknumber(L, 6), luaL_checknumber(L, 7), ccw,
+                                                  lua_toboolean(L, 9) != 0);
+    if (id < 0) return luaL_error(L, "not a sketch buffer: %d", buffer_id);
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.sketch_add_circle(buffer_id, cx, cy, radius[, construction]) -> entity_id.
+int l_sketch_add_circle(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const int id = GetEditor(L)->CadSketchAddCircle(buffer_id, luaL_checknumber(L, 2), luaL_checknumber(L, 3),
+                                                     luaL_checknumber(L, 4), lua_toboolean(L, 5) != 0);
+    if (id < 0) return luaL_error(L, "bad radius, or not a sketch buffer: %d", buffer_id);
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.sketch_add_ellipse(buffer_id, cx, cy, major, minor, rotation[, construction]) -> entity_id.
+int l_sketch_add_ellipse(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const int id = GetEditor(L)->CadSketchAddEllipse(buffer_id, luaL_checknumber(L, 2), luaL_checknumber(L, 3),
+                                                      luaL_checknumber(L, 4), luaL_checknumber(L, 5),
+                                                      luaL_checknumber(L, 6), lua_toboolean(L, 7) != 0);
+    if (id < 0) return luaL_error(L, "bad axes, or not a sketch buffer: %d", buffer_id);
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.sketch_add_rectangle(buffer_id, x0, y0, x1, y1[, construction]) -> {line_ids}.
+int l_sketch_add_rectangle(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const std::vector<int> ids = GetEditor(L)->CadSketchAddRectangle(
+        buffer_id, luaL_checknumber(L, 2), luaL_checknumber(L, 3), luaL_checknumber(L, 4),
+        luaL_checknumber(L, 5), lua_toboolean(L, 6) != 0);
+    if (ids.empty()) return luaL_error(L, "not a sketch buffer: %d", buffer_id);
+    lua_newtable(L);
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        lua_pushinteger(L, ids[i]);
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
+}
+
+// mep.sketch_constrain(buffer_id, kind[, points[, entities[, value]]]) -> constraint_id.
+int l_sketch_constrain(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const std::string kind = luaL_checkstring(L, 2);
+    const std::vector<int> points = ReadIdArray(L, 3);
+    const std::vector<int> entities = ReadIdArray(L, 4);
+    const double value = luaL_optnumber(L, 5, 0.0);
+    const int id = GetEditor(L)->CadSketchConstrain(buffer_id, kind, points, entities, value);
+    if (id < 0) {
+        return luaL_error(L, "cannot apply '%s' to that geometry in buffer %d", kind.c_str(), buffer_id);
+    }
+    lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.sketch_remove_constraint(buffer_id, constraint_id) -> bool.
+int l_sketch_remove_constraint(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadSketchRemoveConstraint(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                                static_cast<int>(luaL_checkinteger(L, 2))));
+    return 1;
+}
+
+// mep.sketch_delete_entity(buffer_id, entity_id) -> bool.
+int l_sketch_delete_entity(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadSketchDeleteEntity(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                            static_cast<int>(luaL_checkinteger(L, 2))));
+    return 1;
+}
+
+// mep.sketch_set_point(buffer_id, point_id, x, y) -> bool. Moves without solving.
+int l_sketch_set_point(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadSketchSetPoint(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                        static_cast<int>(luaL_checkinteger(L, 2)),
+                                                        luaL_checknumber(L, 3), luaL_checknumber(L, 4)));
+    return 1;
+}
+
+// mep.sketch_set_point_fixed(buffer_id, point_id, fixed) -> bool.
+int l_sketch_set_point_fixed(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadSketchSetPointFixed(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                             static_cast<int>(luaL_checkinteger(L, 2)),
+                                                             lua_toboolean(L, 3) != 0));
+    return 1;
+}
+
+// mep.sketch_set_construction(buffer_id, entity_id, construction) -> bool.
+int l_sketch_set_construction(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadSketchSetConstruction(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                               static_cast<int>(luaL_checkinteger(L, 2)),
+                                                               lua_toboolean(L, 3) != 0));
+    return 1;
+}
+
+// mep.sketch_set_constraint_value(buffer_id, constraint_id, value) -> bool.
+int l_sketch_set_constraint_value(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadSketchSetConstraintValue(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                                  static_cast<int>(luaL_checkinteger(L, 2)),
+                                                                  luaL_checknumber(L, 3)));
+    return 1;
+}
+
+// mep.sketch_drag_point(buffer_id, point_id, x, y) -> bool.
+int l_sketch_drag_point(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CadSketchDragPoint(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                         static_cast<int>(luaL_checkinteger(L, 2)),
+                                                         luaL_checknumber(L, 3), luaL_checknumber(L, 4)));
+    return 1;
+}
+
+// mep.sketch_select(buffer_id[, points[, entities]]) -> bool. Replaces
+// the selection, which is what a constraint keystroke acts on.
+int l_sketch_select(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, GetEditor(L)->CadSketchSelect(buffer_id, ReadIdArray(L, 2), ReadIdArray(L, 3)));
+    return 1;
+}
+
+// mep.sketch_selection(buffer_id) -> {points=, entities=}.
+int l_sketch_selection(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    std::vector<int> points;
+    std::vector<int> entities;
+    GetEditor(L)->CadSketchGetSelection(buffer_id, &points, &entities);
+    lua_newtable(L);
+    auto push = [&](const std::vector<int> &ids, const char *name) {
+        lua_newtable(L);
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            lua_pushinteger(L, ids[i]);
+            lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+        }
+        lua_setfield(L, -2, name);
+    };
+    push(points, "points");
+    push(entities, "entities");
+    return 1;
+}
+
+// mep.sketch_solve(buffer_id) -> table. The diagnosis: the same numbers
+// the status line shows, so a script can check whether the sketch it just
+// built is fully constrained instead of assuming so.
+int l_sketch_solve(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    GetEditor(L)->CadSketchSolve(buffer_id);
+    const CadSketchSession *sess = RequireSketch(L, buffer_id);
+    const cad::SketchDiagnosis &d = sess->diagnosis;
+    lua_newtable(L);
+    lua_pushstring(L, cad::SketchStatusName(static_cast<int>(d.status)));
+    lua_setfield(L, -2, "status");
+    lua_pushinteger(L, d.degrees_of_freedom);
+    lua_setfield(L, -2, "degrees_of_freedom");
+    lua_pushinteger(L, d.parameters);
+    lua_setfield(L, -2, "parameters");
+    lua_pushinteger(L, d.residuals);
+    lua_setfield(L, -2, "residuals");
+    lua_pushinteger(L, d.rank);
+    lua_setfield(L, -2, "rank");
+    lua_pushinteger(L, d.clusters);
+    lua_setfield(L, -2, "clusters");
+    lua_pushnumber(L, d.residual_norm);
+    lua_setfield(L, -2, "residual_norm");
+    auto push_ids = [&](const std::vector<cad::SketchId> &ids, const char *name) {
+        lua_newtable(L);
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            lua_pushinteger(L, ids[i]);
+            lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+        }
+        lua_setfield(L, -2, name);
+    };
+    push_ids(d.redundant, "redundant");
+    push_ids(d.conflicting, "conflicting");
+    return 1;
+}
+
+// mep.sketch_list(buffer_id) -> {points=, entities=, constraints=}.
+int l_sketch_list(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const CadSketchSession *sess = RequireSketch(L, buffer_id);
+    lua_newtable(L);
+
+    lua_newtable(L);
+    int index = 1;
+    for (const cad::SketchPoint &point : sess->sketch.Points()) {
+        lua_newtable(L);
+        lua_pushinteger(L, point.id);
+        lua_setfield(L, -2, "id");
+        lua_pushnumber(L, point.position.x);
+        lua_setfield(L, -2, "x");
+        lua_pushnumber(L, point.position.y);
+        lua_setfield(L, -2, "y");
+        lua_pushboolean(L, point.fixed);
+        lua_setfield(L, -2, "fixed");
+        lua_rawseti(L, -2, index++);
+    }
+    lua_setfield(L, -2, "points");
+
+    lua_newtable(L);
+    index = 1;
+    for (const cad::SketchEntity &entity : sess->sketch.Entities()) {
+        lua_newtable(L);
+        lua_pushinteger(L, entity.id);
+        lua_setfield(L, -2, "id");
+        lua_pushstring(L, cad::SketchEntityKindName(entity.kind));
+        lua_setfield(L, -2, "kind");
+        lua_pushboolean(L, entity.construction);
+        lua_setfield(L, -2, "construction");
+        lua_newtable(L);
+        for (std::size_t k = 0; k < entity.points.size(); ++k) {
+            lua_pushinteger(L, entity.points[k]);
+            lua_rawseti(L, -2, static_cast<lua_Integer>(k + 1));
+        }
+        lua_setfield(L, -2, "points");
+        double radius = 0.0;
+        if (sess->sketch.Radius(entity.id, &radius)) {
+            lua_pushnumber(L, radius);
+            lua_setfield(L, -2, "radius");
+        }
+        lua_rawseti(L, -2, index++);
+    }
+    lua_setfield(L, -2, "entities");
+
+    lua_newtable(L);
+    index = 1;
+    for (const cad::SketchConstraint &constraint : sess->sketch.Constraints()) {
+        lua_newtable(L);
+        lua_pushinteger(L, constraint.id);
+        lua_setfield(L, -2, "id");
+        lua_pushstring(L, cad::ConstraintKindName(constraint.kind));
+        lua_setfield(L, -2, "kind");
+        lua_pushnumber(L, constraint.value);
+        lua_setfield(L, -2, "value");
+        lua_pushboolean(L, constraint.driving);
+        lua_setfield(L, -2, "driving");
+        lua_rawseti(L, -2, index++);
+    }
+    lua_setfield(L, -2, "constraints");
+    return 1;
+}
+
+// mep.sketch_profiles(buffer_id) -> array of {area=, holes=, interior={x,y}}.
+int l_sketch_profiles(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const CadSketchSession *sess = RequireSketch(L, buffer_id);
+    lua_newtable(L);
+    for (std::size_t i = 0; i < sess->profiles.size(); ++i) {
+        const cad::Sketch::Profile &profile = sess->profiles[i];
+        lua_newtable(L);
+        lua_pushnumber(L, profile.area);
+        lua_setfield(L, -2, "area");
+        lua_pushinteger(L, static_cast<lua_Integer>(profile.holes.size()));
+        lua_setfield(L, -2, "holes");
+        lua_pushnumber(L, profile.interior.x);
+        lua_setfield(L, -2, "interior_x");
+        lua_pushnumber(L, profile.interior.y);
+        lua_setfield(L, -2, "interior_y");
+        lua_newtable(L);
+        for (std::size_t k = 0; k < profile.outer.size(); ++k) {
+            lua_pushinteger(L, profile.outer[k].entity);
+            lua_rawseti(L, -2, static_cast<lua_Integer>(k + 1));
+        }
+        lua_setfield(L, -2, "outer_entities");
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
+}
+
 // mep.model_add_primitive(buffer_id, kind[, transform]) -> object_id.
 // `transform`, if given, is a {position=, rotation=, scale=} table applied
 // right after creation (each sub-field optional, {x=,y=,z=} tables).
@@ -10766,6 +11283,52 @@ int l_model_flip_normals(lua_State *L) {
     return 1;
 }
 
+// --- CAD and FEM (plans/CAD_FEM_PLAN.md Part K.1) ---------------------------
+//
+// ONE C FUNCTION FOR ALL OF THEM, with the method name carried as an
+// upvalue, because there is nothing per-method to write: every one takes
+// a table, converts it to Json, calls the shared dispatch and converts
+// the reply back. Writing thirty near-identical wrappers by hand would
+// be thirty chances to bind the wrong name, and a new method in
+// `cadfem::Methods()` would need one more.
+//
+// The Lua names are the method names with the dot replaced -- `cad.box`
+// becomes `mep.cad_box` -- so anyone who has read the agent-RPC
+// documentation can use the Lua surface without a second table to learn.
+cadfem::Session &LuaCadFemSession() {
+    static cadfem::Session session;
+    return session;
+}
+
+int l_cad_fem_call(lua_State *L) {
+    const char *method = lua_tostring(L, lua_upvalueindex(1));
+    Json params = lua_isnoneornil(L, 1) ? Json::Object() : LuaToJson(L, 1);
+    if (!params.is_object()) params = Json::Object();
+    Json out;
+    std::string error;
+    if (!LuaCadFemSession().Call(method, params, &out, &error)) {
+        // NIL PLUS A MESSAGE, not an error raised. That is this file's
+        // convention for an operation that can legitimately fail on its
+        // input -- mep.format_cpp and mep.format_python do the same --
+        // and it lets a script try a boolean that may not intersect
+        // without wrapping every call in pcall.
+        lua_pushnil(L);
+        lua_pushlstring(L, error.data(), error.size());
+        return 2;
+    }
+    PushJsonNilNull(L, out);
+    return 1;
+}
+
+// The Lua name for a method: `fem.solve` -> `fem_solve`.
+std::string CadFemLuaName(const std::string &method) {
+    std::string out = method;
+    for (char &ch : out) {
+        if (ch == '.') ch = '_';
+    }
+    return out;
+}
+
 const luaL_Reg kMepFuncs[] = {
     {"get_line", l_get_line},
     {"set_line", l_set_line},
@@ -11224,6 +11787,44 @@ const luaL_Reg kMepFuncs[] = {
     {"pane_close_buffer", l_pane_close_buffer},
     {"pane_move_buffer", l_pane_move_buffer},
     {"layout", l_layout},
+    {"cad_new", l_cad_new},
+    {"cad_open", l_cad_open},
+    {"cad_save", l_cad_save},
+    {"cad_rebuild", l_cad_rebuild},
+    {"cad_add_sketch", l_cad_add_sketch},
+    {"cad_add_extrude", l_cad_add_extrude},
+    {"cad_add_revolve", l_cad_add_revolve},
+    {"cad_set", l_cad_set},
+    {"cad_suppress", l_cad_suppress},
+    {"cad_remove", l_cad_remove},
+    {"cad_select", l_cad_select},
+    {"cad_export", l_cad_export},
+    {"cad_view", l_cad_view},
+    {"cad_orbit", l_cad_orbit},
+    {"cad_zoom", l_cad_zoom},
+    {"cad_frame_all", l_cad_frame_all},
+    {"cad_info", l_cad_info},
+    {"sketch_new", l_sketch_new},
+    {"sketch_add_point", l_sketch_add_point},
+    {"sketch_add_line", l_sketch_add_line},
+    {"sketch_add_line_from_points", l_sketch_add_line_from_points},
+    {"sketch_add_arc", l_sketch_add_arc},
+    {"sketch_add_circle", l_sketch_add_circle},
+    {"sketch_add_ellipse", l_sketch_add_ellipse},
+    {"sketch_add_rectangle", l_sketch_add_rectangle},
+    {"sketch_constrain", l_sketch_constrain},
+    {"sketch_remove_constraint", l_sketch_remove_constraint},
+    {"sketch_delete_entity", l_sketch_delete_entity},
+    {"sketch_set_point", l_sketch_set_point},
+    {"sketch_set_point_fixed", l_sketch_set_point_fixed},
+    {"sketch_set_construction", l_sketch_set_construction},
+    {"sketch_set_constraint_value", l_sketch_set_constraint_value},
+    {"sketch_drag_point", l_sketch_drag_point},
+    {"sketch_select", l_sketch_select},
+    {"sketch_selection", l_sketch_selection},
+    {"sketch_solve", l_sketch_solve},
+    {"sketch_list", l_sketch_list},
+    {"sketch_profiles", l_sketch_profiles},
     {"model_new", l_model_new},
     {"model_list_objects", l_model_list_objects},
     {"model_scene_stats", l_model_scene_stats},
@@ -11280,6 +11881,15 @@ LuaEnv::LuaEnv(Editor *editor) : editor_(editor) {
     lua_setfield(L_, LUA_REGISTRYINDEX, kLuaEnvRegistryKey);
 
     luaL_newlib(L_, kMepFuncs);
+    // Part K.1's bindings, generated from the one method table rather
+    // than listed in kMepFuncs above -- so `mep.cad_*` and `mep.fem_*`
+    // cannot fall out of step with the agent-RPC and MCP surfaces, which
+    // are generated from the same place.
+    for (const cadfem::Method &method : cadfem::Methods()) {
+        lua_pushstring(L_, method.name);
+        lua_pushcclosure(L_, l_cad_fem_call, 1);
+        lua_setfield(L_, -2, CadFemLuaName(method.name).c_str());
+    }
     // A comparable sentinel for JSON `null` (Phase 20 LSP): PushJson uses
     // the same lightuserdata value, so Lua code can tell an explicit null
     // field apart from an absent one (`result == mep.json_null`) -- Lua's

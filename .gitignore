@@ -13,3 +13,8 @@ tmp_assets/
 README.html
 ./tmp
 .scratch/
+
+# NAFEMS example films and stills: build output, written by
+# `just nafems`. A repository is not a video host.
+examples/nafems/film/
+examples/nafems/fv42.step

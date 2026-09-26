@@ -23,6 +23,7 @@
 // to an already-running mep purely as an external client of its Unix
 // socket, the same way `socat`, a human, or mcp/mep_client.ts would.
 
+#include "cad_fem_methods.h"
 #include "json.h"
 #include "persist.h"
 #include "rpc_framing.h"
@@ -467,6 +468,118 @@ const ToolSpec kTools[] = {
      R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", true},
     {"mep_model_scene_stats", "model.sceneStats", "Get a 3D-modeler scene's object count and total triangle count.",
      R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})", true},
+    // --- The 2D sketcher (plans/CAD_FEM_PLAN.md Part D) -----------------
+    {"mep_sketch_new", "sketch.new",
+     "Open a new, empty 2D CAD sketch in the current pane and return its buffer_id. A sketch is "
+     "constrained geometry, not drawing: place points/lines/arcs/circles roughly, then apply "
+     "constraints and let the solver put them where they belong. Every sketch starts with a fixed "
+     "origin point (id 0) so it cannot drift.",
+     R"({"type":"object","properties":{}})",
+     false},
+    {"mep_sketch_list", "sketch.list",
+     "List a sketch's points, entities and constraints with their ids -- what you need before "
+     "constraining anything, since every constraint refers to geometry by id.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})",
+     true},
+    {"mep_sketch_add_point", "sketch.addPoint",
+     "Add a free point. fixed=true anchors it so the solver may not move it.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"x":{"type":"number"},"y":{"type":"number"},"fixed":{"type":"boolean"}},"required":["buffer_id","x","y"]})",
+     false},
+    {"mep_sketch_add_line", "sketch.addLine",
+     "Add a line between two new points. Returns the line's entity_id; use sketch.list to find the "
+     "two point ids it created, which is what you constrain to join it to anything else. "
+     "construction=true makes it a reference line, excluded from profiles.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"x0":{"type":"number"},"y0":{"type":"number"},"x1":{"type":"number"},"y1":{"type":"number"},"construction":{"type":"boolean"}},"required":["buffer_id","x0","y0","x1","y1"]})",
+     false},
+    {"mep_sketch_add_rectangle", "sketch.addRectangle",
+     "Add four lines sharing their corner points, already constrained horizontal/vertical. Prefer "
+     "this to four separate lines: the corners are shared points, so dragging one moves both edges "
+     "that meet there, and no coincidence constraints are needed.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"x0":{"type":"number"},"y0":{"type":"number"},"x1":{"type":"number"},"y1":{"type":"number"},"construction":{"type":"boolean"}},"required":["buffer_id","x0","y0","x1","y1"]})",
+     false},
+    {"mep_sketch_add_circle", "sketch.addCircle",
+     "Add a circle. Its radius is a solver parameter, so a radius/diameter constraint or an equal "
+     "constraint against another circle will change it.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"cx":{"type":"number"},"cy":{"type":"number"},"radius":{"type":"number"},"construction":{"type":"boolean"}},"required":["buffer_id","cx","cy","radius"]})",
+     false},
+    {"mep_sketch_add_arc", "sketch.addArc",
+     "Add an arc about a centre, through a start and an end point. The endpoints are placed on a "
+     "common circle for you. ccw (default true) picks which of the two arcs between them is meant.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"cx":{"type":"number"},"cy":{"type":"number"},"sx":{"type":"number"},"sy":{"type":"number"},"ex":{"type":"number"},"ey":{"type":"number"},"ccw":{"type":"boolean"},"construction":{"type":"boolean"}},"required":["buffer_id","cx","cy","sx","sy","ex","ey"]})",
+     false},
+    {"mep_sketch_add_ellipse", "sketch.addEllipse",
+     "Add an ellipse. Its major/minor axes and rotation are solver parameters.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"cx":{"type":"number"},"cy":{"type":"number"},"major":{"type":"number"},"minor":{"type":"number"},"rotation":{"type":"number","description":"radians"},"construction":{"type":"boolean"}},"required":["buffer_id","cx","cy","major","minor"]})",
+     false},
+    {"mep_sketch_constrain", "sketch.constrain",
+     "Apply a constraint and re-solve. Which arguments each kind takes: coincident takes two points; "
+     "horizontal/vertical take two points or one line entity; parallel/perpendicular/angle/equal take "
+     "two line entities; tangent takes a line and a circle/arc, or two circles/arcs (value<0 means "
+     "internal tangency); concentric takes two circles/arcs; collinear takes two lines; symmetric "
+     "takes two points and a line; point_on_object takes a point and an entity; distance/"
+     "horizontal_distance/vertical_distance take two points and a value; radius/diameter take a "
+     "circle or arc and a value. Fails rather than silently doing nothing if the selection does not "
+     "fit. Angles are in radians.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"kind":{"type":"string","enum":["coincident","horizontal","vertical","parallel","perpendicular","tangent","equal","concentric","collinear","symmetric","point_on_object","distance","horizontal_distance","vertical_distance","angle","radius","diameter"]},"points":{"type":"array","items":{"type":"integer"}},"entities":{"type":"array","items":{"type":"integer"}},"value":{"type":"number"}},"required":["buffer_id","kind"]})",
+     false},
+    {"mep_sketch_remove_constraint", "sketch.removeConstraint",
+     "Remove a constraint and re-solve. The usual fix when sketch.solve reports a conflict.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"constraint_id":{"type":"integer"}},"required":["buffer_id","constraint_id"]})",
+     false},
+    {"mep_sketch_delete_entity", "sketch.deleteEntity",
+     "Delete an entity, along with any point only it used and any constraint that named either.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"entity_id":{"type":"integer"}},"required":["buffer_id","entity_id"]})",
+     false},
+    {"mep_sketch_set_point", "sketch.setPoint",
+     "Move a point outright, without solving -- for nudging geometry into a better starting position "
+     "before constraining it. Use sketch.dragPoint instead to move a point while honouring the "
+     "constraints.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"point_id":{"type":"integer"},"x":{"type":"number"},"y":{"type":"number"}},"required":["buffer_id","point_id","x","y"]})",
+     false},
+    {"mep_sketch_set_point_fixed", "sketch.setPointFixed",
+     "Anchor a point so the solver may not move it, or release it.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"point_id":{"type":"integer"},"fixed":{"type":"boolean"}},"required":["buffer_id","point_id","fixed"]})",
+     false},
+    {"mep_sketch_set_construction", "sketch.setConstruction",
+     "Mark an entity as construction geometry (excluded from profiles) or stop.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"entity_id":{"type":"integer"},"construction":{"type":"boolean"}},"required":["buffer_id","entity_id","construction"]})",
+     false},
+    {"mep_sketch_set_constraint_value", "sketch.setConstraintValue",
+     "Change a dimensional constraint's value and re-solve -- how a parametric change is made.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"constraint_id":{"type":"integer"},"value":{"type":"number"}},"required":["buffer_id","constraint_id","value"]})",
+     false},
+    {"mep_sketch_drag_point", "sketch.dragPoint",
+     "Move a point toward a target while honouring the constraints -- it goes as far as the sketch's "
+     "remaining freedom allows rather than refusing an unreachable target outright.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"point_id":{"type":"integer"},"x":{"type":"number"},"y":{"type":"number"}},"required":["buffer_id","point_id","x","y"]})",
+     false},
+    {"mep_sketch_select", "sketch.select",
+     "Replace the sketcher's selection. What a constraint keystroke in the sketch pane acts on, and the "
+     "way to apply a constraint the same way a user would rather than naming the geometry in the call.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"},"points":{"type":"array","items":{"type":"integer"}},"entities":{"type":"array","items":{"type":"integer"}}},"required":["buffer_id"]})",
+     false},
+    {"mep_sketch_selection", "sketch.selection",
+     "What is currently selected in the sketch pane.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})",
+     true},
+    {"mep_sketch_solve", "sketch.solve",
+     "Re-solve and report the verdict: status is solved / under_constrained / redundant / conflicting "
+     "/ not_converged, with degrees_of_freedom and the ids of any redundant or conflicting "
+     "constraints. 'redundant' means the extra constraints agree and the sketch still solves; "
+     "'conflicting' means they disagree and nothing satisfies them -- different problems with "
+     "different fixes.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})",
+     false},
+    {"mep_sketch_diagnosis", "sketch.diagnosis",
+     "The last solve's verdict, without re-solving.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})",
+     true},
+    {"mep_sketch_profiles", "sketch.profiles",
+     "The closed regions the sketch's non-construction geometry bounds, each with its exact area and "
+     "how many holes it has. A washer drawn as two circles is one profile with one hole, not two "
+     "profiles -- which is the distinction an extrude needs.",
+     R"({"type":"object","properties":{"buffer_id":{"type":"integer"}},"required":["buffer_id"]})",
+     true},
     {"mep_model_primitive_info", "model.primitiveInfo",
      "Look up a primitive kind's pivot point and default dimensions (e.g. cylinder/cone are base-pivoted and extend "
      "+Y, not centered) -- pass kind for just that one, or omit it to get every kind at once. No buffer_id needed, "
@@ -995,23 +1108,91 @@ Json ToolErrorResult(const std::string &message) {
 // behind why this exists.
 std::string g_last_status;
 
+// --- CAD and FEM tools (plans/CAD_FEM_PLAN.md Part K.3) --------------------
+//
+// GENERATED FROM `cadfem::Methods()`, not listed above. The table in
+// src/cad_fem_api.h already carries every method's name, summary,
+// parameters, types and which of them are required -- which is exactly
+// what a JSON Schema needs -- so writing thirty more `ToolSpec` literals
+// here would be transcribing it, and a transcription drifts. The Lua
+// bindings and the agent-RPC dispatch are generated from the same table
+// for the same reason.
+//
+// The tool name is the method with its dot replaced and `mep_` in front,
+// matching every other tool here: `fem.solve` becomes `mep_fem_solve`.
+std::string CadFemToolName(const std::string &method) {
+    std::string out = "mep_" + method;
+    for (char &ch : out) {
+        if (ch == '.') ch = '_';
+    }
+    return out;
+}
+
+std::string CadFemRpcMethod(const std::string &tool) {
+    for (const cadfem::Method &method : cadfem::Methods()) {
+        if (CadFemToolName(method.name) == tool) return method.name;
+    }
+    return "";
+}
+
+Json CadFemToolJson(const cadfem::Method &method) {
+    Json properties = Json::Object();
+    Json required = Json::Array();
+    for (const cadfem::Parameter &parameter : method.params) {
+        Json one = Json::Object();
+        // An array parameter here is always an array of numbers -- a
+        // point, a direction, a list of handles -- so saying so costs
+        // nothing and stops a model sending strings.
+        one["type"] = std::string(parameter.type) == "bool" ? "boolean" : parameter.type;
+        one["description"] = parameter.summary;
+        properties[parameter.name] = std::move(one);
+        if (parameter.required) required.push_back(std::string(parameter.name));
+    }
+    Json schema = Json::Object();
+    schema["type"] = "object";
+    schema["properties"] = std::move(properties);
+    if (required.size() > 0) schema["required"] = std::move(required);
+    Json out = Json::Object();
+    out["name"] = CadFemToolName(method.name);
+    out["description"] = std::string(method.summary) + " Returns " + method.returns + ".";
+    out["inputSchema"] = std::move(schema);
+    return out;
+}
+
+// Tells the human's editor that the agent has started doing something,
+// if it does not already think so. Best effort: if mep is unreachable,
+// the real call that follows fails too and surfaces that normally.
+void AnnounceWorking() {
+    const bool is_stale =
+        g_last_status == "done" || g_last_status.empty() || g_last_status == "idle";
+    if (!is_stale) return;
+    try {
+        Json params = Json::Object();
+        params["status"] = "thinking";
+        g_mep.Call("session.setStatus", params);
+        g_last_status = "thinking";
+    } catch (const std::exception &) {
+    }
+}
+
 Json HandleToolsCall(const std::string &name, const Json &arguments) {
     if (name == "mep_poll_events") return ToolResult(g_mep.DrainEvents());
 
     const ToolSpec *spec = FindTool(name);
-    if (!spec) return ToolErrorResult("unknown tool: " + name);
-
-    const bool is_stale = g_last_status == "done" || g_last_status.empty() || g_last_status == "idle";
-    if (std::string(spec->rpc_method) != "session.setStatus" && !spec->read_only && is_stale) {
+    if (!spec) {
+        const std::string method = CadFemRpcMethod(name);
+        if (method.empty()) return ToolErrorResult("unknown tool: " + name);
+        const cadfem::Method *declared = cadfem::FindMethod(method);
+        if (declared != nullptr && !declared->read_only) AnnounceWorking();
         try {
-            Json params = Json::Object();
-            params["status"] = "thinking";
-            g_mep.Call("session.setStatus", params);
-            g_last_status = "thinking";
-        } catch (const std::exception &) {
-            // Best-effort -- if mep is unreachable the real call below fails too
-            // and surfaces that error to the model normally.
+            return ToolResult(g_mep.Call(method, arguments));
+        } catch (const std::exception &ex) {
+            return ToolErrorResult(ex.what());
         }
+    }
+
+    if (std::string(spec->rpc_method) != "session.setStatus" && !spec->read_only) {
+        AnnounceWorking();
     }
     try {
         Json result = g_mep.Call(spec->rpc_method, arguments);
@@ -1077,6 +1258,9 @@ void HandleMessage(const Json &req) {
     } else if (method == "tools/list") {
         Json tools = Json::Array();
         for (const auto &spec : kTools) tools.push_back(ToolSpecToJson(spec));
+        for (const cadfem::Method &declared : cadfem::Methods()) {
+            tools.push_back(CadFemToolJson(declared));
+        }
         result = Json::Object();
         result["tools"] = tools;
     } else if (method == "tools/call") {

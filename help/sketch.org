@@ -1,0 +1,113 @@
+#+TITLE: The 2D sketcher
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="81">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening a sketch
+
+=:SketchNew= opens an empty sketch. It is the front end of mep's CAD
+modeler, which is a separate thing from the polygonal 3D modeler: that one
+edits vertices, this one edits /what must be true/ of the geometry and
+lets a solver work out where it goes.
+
+* The idea
+
+A sketch is not a drawing. Place things roughly, then say what has to hold
+-- these two edges are equal, this line is horizontal, that hole is 2.5
+from the left -- and the solver moves everything to satisfy it at once.
+
+The consequence worth internalising: *a dimension is an input, not a
+measurement*. Changing one and re-solving is how a design is changed.
+
+The status line along the bottom of the pane always shows where the sketch
+stands:
+
+- =solved= -- every constraint satisfied and nothing left free. What a
+  finished sketch should be.
+- =under_constrained= -- satisfied, but still movable, with the number of
+  degrees of freedom. Not an error; most sketches are here most of the
+  time.
+- =redundant= -- constraints that depend on one another but agree. The
+  sketch still solves; the extra ones simply say nothing new.
+- =conflicting= -- constraints that depend on one another and disagree.
+  Nothing satisfies them. Remove one.
+
+Those last two look the same in most tools and are not the same problem.
+
+* Drawing
+
+Digits pick the tool:
+
+| =1= | select |
+| =2= | point |
+| =3= | line (chains from the last point) |
+| =4= | rectangle (two corners) |
+| =5= | circle (centre, then a point on the rim) |
+| =6= | arc (centre, start, end) |
+
+Click to place. =Escape= abandons a half-drawn shape; a second =Escape=
+clears the selection. Middle-drag pans, the wheel zooms, =F= fits the view
+to what is there.
+
+Prefer the rectangle tool to four separate lines: its corners are /shared
+points/, so dragging one moves both edges that meet there and no
+coincidence constraints are needed.
+
+* Constraining
+
+Select geometry, then press a letter. Each is the first letter of what it
+does.
+
+| =c= | coincident | two points |
+| =h= | horizontal | two points, or a line |
+| =v= | vertical | two points, or a line |
+| =p= | parallel | two lines |
+| =l= | perpendicular | two lines |
+| =t= | tangent | a line and a circle/arc, or two circles/arcs |
+| =e= | equal | two lines, or two circles/arcs |
+| =o= | concentric | two circles/arcs |
+| =n= | collinear | two lines |
+| =y= | symmetric | two points and a line |
+| =g= | point on object | a point and an entity |
+
+Dimensions open a prompt, pre-filled with what the selection currently
+measures -- so applying one without editing it changes nothing:
+
+| =d= | distance | =x= | horizontal distance |
+| =z= | vertical distance | =a= | angle (radians) |
+| =r= | radius | =m= | diameter |
+
+A constraint that does not suit the selection is refused and says so,
+rather than quietly failing to appear.
+
+* Dragging
+
+Dragging a point moves it /along the directions the sketch is still free
+to move in/. A dimensioned width will not budge, and the corner slides
+vertically instead of the whole drag being refused.
+
+* Anchors and construction geometry
+
+Every sketch has a fixed origin point, drawn as a square, so that it cannot
+drift. =f= anchors or releases other selected points.
+
+Construction geometry -- a centreline, a circle used only to keep three
+points concentric -- is drawn dashed and is ignored when profiles are
+found. =k= toggles it on the selection; =K= places new geometry as
+construction until pressed again.
+
+* Profiles
+
+The closed regions the non-construction geometry bounds are marked with
+their area. Nested regions are reported as /holes/ of the region around
+them, not as separate profiles: a washer drawn as two circles is one
+profile with one hole, which is the distinction an extrude needs.
+
+Areas are integrated along the real curves, so a circle's area is its
+area and not that of the polygon it is drawn with.
+
+* Driving it from a script or an agent
+
+Every key above ends in the same call that =mep.sketch_*= (Lua) and
+=sketch.*= (agent RPC) make, so anything that can be done by hand can be
+done headlessly, and the two cannot drift apart. See =MEP_AGENT_API.md=.

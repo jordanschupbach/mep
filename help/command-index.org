@@ -5,7 +5,7 @@
 
 * Every command
 
-All 329 ex commands mep defines: 103 built in and 227 registered from Lua.
+All 329 ex commands mep defines: 104 built in and 226 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -291,6 +291,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:Servers= | [[file:local-server.html][Serving a directory]] |
 | =:ServeStop= | [[file:local-server.html][Serving a directory]] |
 | =:set= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:SketchNew= | [[file:sketch.html][The 2D sketcher]] |
 | =:source= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:sp= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:split= | [[file:agent-api.html][Driving mep from an agent]] |

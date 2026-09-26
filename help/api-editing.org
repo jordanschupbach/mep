@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (75)
+* The bindings (96)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -73,6 +73,27 @@ that it does nothing.
 | =mep.replace_lines= | replaces a 1-indexed, end-exclusive line range with a new set of lines |
 | =mep.set_cursor= | moves the cursor to a 1-indexed position |
 | =mep.set_line= | replaces the content of a 1-indexed line |
+| =mep.sketch_add_arc= | entity_id |
+| =mep.sketch_add_circle= | entity_id |
+| =mep.sketch_add_ellipse= | entity_id |
+| =mep.sketch_add_line= | entity_id |
+| =mep.sketch_add_line_from_points= | entity_id |
+| =mep.sketch_add_point= | point_id |
+| =mep.sketch_add_rectangle= | {line_ids} |
+| =mep.sketch_constrain= | constraint_id |
+| =mep.sketch_delete_entity= | bool |
+| =mep.sketch_drag_point= | bool |
+| =mep.sketch_list= | {points, entities, constraints} |
+| =mep.sketch_new= | buffer_id |
+| =mep.sketch_profiles= | array of {area, holes, interior{x,y}} |
+| =mep.sketch_remove_constraint= | bool |
+| =mep.sketch_select= | bool |
+| =mep.sketch_selection= | {points, entities} |
+| =mep.sketch_set_constraint_value= | bool |
+| =mep.sketch_set_construction= | bool |
+| =mep.sketch_set_point= | bool |
+| =mep.sketch_set_point_fixed= | bool |
+| =mep.sketch_solve= | table |
 | =mep.split_below= | opens a new horizontal split below the focused pane |
 | =mep.term_resize= | resizes a PTY-backed job's terminal dimensions |
 | =mep.term_start= | spawns a subprocess against a real PTY (raw stdout only, no separate stderr stream) instead of plain pipes |

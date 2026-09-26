@@ -91,6 +91,52 @@ run: build-native
 run-wasm: build-web
     LD_LIBRARY_PATH="${MEP_WEBVIEW_LD_LIBRARY_PATH:-}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" deno task launch
 
+# Regenerates the CAD/FEM reference in MEP_AGENT_API.md and
+# help/cad-fem.org from the one method table in src/cad_fem_methods.cpp
+# (plans/CAD_FEM_PLAN.md Part K.4). Run it after adding or changing a
+# method and commit the result; `mep-cad-fem-api-test` fails when the
+# files and the table have drifted apart, so this is not optional.
+cad-fem-docs:
+    nix develop --command cmake --build {{native_build_dir}} --target mep-cad-fem-docs
+    ./{{native_build_dir}}/mep-cad-fem-docs .
+    @echo "now run `just help` to re-export help/cad-fem.html"
+
+# Rebuild the NAFEMS example geometry: one .mepcad feature tree per
+# benchmark in examples/nafems, each rebuilt and measured against its own
+# closed-form volume before it is written. Run it after changing
+# src/nafems_examples_main.cpp and commit the result -- the files are
+# checked in, because an example you have to build before you can open it
+# is not an example.
+nafems-geometry:
+    nix develop --command cmake --build {{native_build_dir}} --target mep-nafems-examples
+    ./{{native_build_dir}}/mep-nafems-examples .
+
+# Run every NAFEMS example and print a table. Each one opens its part,
+# states the benchmark's own conditions through the public Lua surface,
+# solves, compares against a reference and writes a film into
+# examples/nafems/film. Several take a minute or two -- a modal analysis
+# of ten thousand hexahedra is not quick -- and some are blocked in the
+# mesher and say so. Exit status 0 if every example that ran agreed with
+# its reference.
+nafems:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    nix develop --command cmake --build {{native_build_dir}} --target mep
+    ran=0; agreed=0; blocked=0; failed=0
+    for script in examples/nafems/*.lua; do
+        name=$(basename "$script" .lua)
+        [ "$name" = "nafems" ] && continue
+        ./{{native_build_dir}}/mep --run-lua "$script"
+        case $? in
+            0) ran=$((ran+1)); agreed=$((agreed+1));;
+            2) blocked=$((blocked+1));;
+            *) ran=$((ran+1)); failed=$((failed+1));;
+        esac
+    done
+    echo ""
+    echo "NAFEMS examples: $agreed of $ran agreed with their references, $blocked blocked"
+    [ "$failed" -eq 0 ]
+
 # Re-render the built-in help workspace: every help/*.org through mep's own
 # Org exporter (`mep --export-org`, src/main.cpp's RunHeadlessOrgExport) to
 # the help/*.html the Help sidebar actually lists and ships. Needs no
@@ -150,7 +196,7 @@ test: build-native
     # otherwise mean this check never ran at all.
     echo "== check_help"
     python3 scripts/check_help.py {{native_build_dir}}/mep --strict
-    targets=(mep-html-doc-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-org-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-workspace-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test mep-collab-crdt-test mep-collab-session-test)
+    targets=(mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-org-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-workspace-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do
         if [ -x "{{native_build_dir}}/$t" ]; then
@@ -191,11 +237,57 @@ bench: build-native
 test-gui: build-native
     #!/usr/bin/env bash
     set -euo pipefail
-    cmake --build {{native_build_dir}} -j --target mep-agent-rpc-test
+    cmake --build {{native_build_dir}} -j --target mep-agent-rpc-test mep-cad-live-test mep-cad-sketch-live-test mep-cad-fem-api-live-test
     echo "== mep-agent-rpc-test"
     "./{{native_build_dir}}/mep-agent-rpc-test" "./{{native_build_dir}}/mep"
+    echo "== mep-cad-live-test"
+    "./{{native_build_dir}}/mep-cad-live-test" "./{{native_build_dir}}/mep"
+    echo "== mep-cad-sketch-live-test"
+    "./{{native_build_dir}}/mep-cad-sketch-live-test" "./{{native_build_dir}}/mep"
+    # Part K: the agent surface for the kernel and the solver, over the
+    # socket, through Lua, and headless through `mep --cad-fem`.
+    echo "== mep-cad-fem-api-live-test"
+    "./{{native_build_dir}}/mep-cad-fem-api-live-test" "./{{native_build_dir}}/mep"
     echo "== mcp/server_test.ts"
     MEP_BINARY="$(realpath {{native_build_dir}}/mep)" deno test --allow-all mcp/server_test.ts
+
+# Part G.7: the mesher measured against Gmsh, on geometry carried across
+# as STEP written by mep's own writer. Separate from `test` because it
+# needs Gmsh on the machine, and Gmsh is not something to make the whole
+# suite depend on -- but it is the only test that can say whether the
+# mesher is merely valid or actually good, and the only one that reads
+# mep's STEP with somebody else's kernel. Nix has a Gmsh built with
+# OpenCASCADE, Netgen and TetGen, so one binary provides both opinions.
+test-mesh-compare: build-native
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmake --build {{native_build_dir}} -j --target mep-fem-mesh-compare-test
+    scratch="$(mktemp -d)"
+    trap 'rm -rf "$scratch"' EXIT
+    gmsh="${GMSH:-$(command -v gmsh || true)}"
+    if [ -z "$gmsh" ]; then
+        echo "gmsh is not on PATH; try: nix shell nixpkgs#gmsh --command just test-mesh-compare"
+        exit 1
+    fi
+    "./{{native_build_dir}}/mep-fem-mesh-compare-test" "$gmsh" "$scratch"
+
+# Part H.6: the same mesh solved here and by CalculiX, which is free and
+# reads Abaqus .inp. Separate from `test` because it needs CalculiX, and
+# it is the only check on the conventions this solver shares with the rest
+# of the world -- a node ordering or a sign that is self-consistent here
+# and nowhere else would pass everything in `test`.
+test-fem-compare: build-native
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmake --build {{native_build_dir}} -j --target mep-fem-static-compare-test
+    scratch="$(mktemp -d)"
+    trap 'rm -rf "$scratch"' EXIT
+    ccx="${CCX:-$(command -v ccx || true)}"
+    if [ -z "$ccx" ]; then
+        echo "ccx is not on PATH; try: nix shell nixpkgs#calculix-ccx --command just test-fem-compare"
+        exit 1
+    fi
+    "./{{native_build_dir}}/mep-fem-static-compare-test" "$ccx" "$scratch"
 
 # Static analysis of mep's own C++ (src/*.cpp, src/*.h) -- deliberately
 # excludes third_party/ and the build/native/_deps/*-src/ vendored trees

@@ -14,6 +14,7 @@
 #include "url_util.h"
 #include "svg_doc.h"
 #include "job.h"
+#include "cad_fem_api.h"
 #include "lua_env.h"
 #include "math_tex.h"
 #include "org_doc.h"
@@ -37329,6 +37330,560 @@ void DrawImageEditorDashedPath(const std::vector<gfx::Vector2> &points, bool clo
  * @param h Height of the pane's content area, in screen pixels.
  * @param is_active Whether this pane is the currently active one.
  */
+// --- The 2D sketcher (plans/CAD_FEM_PLAN.md Part D.5) ------------------
+//
+// Drawing and the mouse both live here rather than in editor.cpp, for the
+// same reason every other in-pane viewer splits that way: only DrawPane
+// knows the pane's screen-space rectangle each frame, and the sketch <->
+// pixel mapping is exactly that rectangle plus the session's own centre
+// and zoom.
+//
+// It draws only what the solver already decided. Curves come from
+// Sketch::Curve -- the same call profile extraction uses -- rather than
+// being re-derived per entity kind here, so the picture and the geometry
+// cannot disagree about where an arc goes.
+
+// Where a sketch coordinate lands on screen, given the pane's viewport.
+gfx::Vector2 CadSketchToScreen(const CadSketchSession &sess, const cad::Vec2d &p, float cx, float cy) {
+    return gfx::Vector2{cx + static_cast<float>((p.x - sess.view_centre.x) * sess.pixels_per_unit),
+                        cy - static_cast<float>((p.y - sess.view_centre.y) * sess.pixels_per_unit)};
+}
+
+// And the inverse, for hit testing a click. The y axis flips: sketches
+// count y upwards and screens count it down.
+cad::Vec2d CadSketchFromScreen(const CadSketchSession &sess, float sx, float sy, float cx, float cy) {
+    return cad::Vec2d{sess.view_centre.x + static_cast<double>(sx - cx) / sess.pixels_per_unit,
+                      sess.view_centre.y - static_cast<double>(sy - cy) / sess.pixels_per_unit};
+}
+
+double CadSketchSnap(const CadSketchSession &sess, double v) {
+    if (!sess.snap || sess.grid <= 0.0) return v;
+    return std::round(v / sess.grid) * sess.grid;
+}
+
+// The CAD part pane (plans/CAD_FEM_PLAN.md Part F.5).
+//
+// THE SHADING IS DONE HERE, IN SOFTWARE, and that is a deliberate choice
+// rather than a shortcut. A CAD part is a few thousand triangles that
+// change only when the tree is rebuilt, so there is nothing to be gained
+// from uploading it to the GPU and a good deal of lifecycle bookkeeping
+// to be lost -- a mesh handle per buffer, freed at the right moment,
+// reuploaded on every edit. Projecting and sorting a few thousand
+// triangles on the CPU costs less than that bookkeeping and keeps this
+// pane, like every other in-pane viewer here, free of graphics state.
+//
+// Painter's algorithm: cull what faces away, sort by depth, draw back to
+// front. It is exact for a convex solid and wrong only where two
+// triangles interpenetrate, which a valid B-rep's tessellation does not
+// do.
+void DrawCadPane(const Pane &pane, CadSession &sess, float x, float y, float w, float h,
+                 bool is_active) {
+    const int buffer_id = pane.buffer_id;
+    g_editor.ResizeCadViewport(buffer_id, static_cast<int>(w), static_cast<int>(h));
+    const gfx::Color bg = ResolveHlGroup("NormalBg");
+    const gfx::Color normal = ResolveHlGroup("Normal");
+    const gfx::Color comment = ResolveHlGroup("Comment");
+    const gfx::Color accent = ResolveHlGroup("Accent");
+    const gfx::Color warn = ResolveHlGroup("Warn");
+    const gfx::Color border = ResolveHlGroup("Border");
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w),
+                       static_cast<int>(h), bg);
+
+    if (!sess.tessellation_valid && sess.triangle_count == 0) g_editor.CadRebuild(buffer_id);
+    if (!sess.view_fitted && w > 0.0f && h > 0.0f) g_editor.CadFrameAll(buffer_id);
+
+    // --- The outliner ------------------------------------------------------
+    //
+    // The feature tree is the document, so it gets the sidebar rather than
+    // a panel that can be closed.
+    const float font = MenuFontSize();
+    const float line_height = font + 4.0f;
+    const float sidebar_w = std::min(w * 0.36f, std::max(180.0f, w * 0.22f));
+    // The pane's own background, not the status line's: the text drawn on
+    // it is Normal and Comment, which are the colours a theme picks to be
+    // legible against exactly this. Borrowing the status line's
+    // background put light text on a light panel.
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(sidebar_w),
+                       static_cast<int>(h), bg);
+    gfx::DrawLineEx(gfx::Vector2{x + sidebar_w, y}, gfx::Vector2{x + sidebar_w, y + h}, 1.0f, border);
+
+    float row = y + 4.0f;
+    gfx::DrawTextEx(g_font, sess.from_import ? "imported geometry" : "feature tree",
+                    gfx::Vector2{x + 6.0f, row}, font, 0, comment);
+    row += line_height * 1.4f;
+
+    if (sess.from_import) {
+        // An imported part has no tree, and saying so is the point: "you
+        // cannot change the extrude distance of this" is something the
+        // user has to be told rather than left to discover.
+        char note[160];
+        std::snprintf(note, sizeof(note), "%d bod%s from", static_cast<int>(sess.imported_bodies.size()),
+                      sess.imported_bodies.size() == 1 ? "y" : "ies");
+        gfx::DrawTextEx(g_font, note, gfx::Vector2{x + 6.0f, row}, font, 0, normal);
+        row += line_height;
+        const std::string name = sess.source_path.substr(sess.source_path.find_last_of('/') + 1);
+        gfx::DrawTextEx(g_font, name.c_str(), gfx::Vector2{x + 6.0f, row}, font, 0, accent);
+        row += line_height * 1.4f;
+        gfx::DrawTextEx(g_font, "no feature tree:", gfx::Vector2{x + 6.0f, row}, font, 0, comment);
+        row += line_height;
+        gfx::DrawTextEx(g_font, "this format carries", gfx::Vector2{x + 6.0f, row}, font, 0, comment);
+        row += line_height;
+        gfx::DrawTextEx(g_font, "faces, not operations", gfx::Vector2{x + 6.0f, row}, font, 0, comment);
+        row += line_height;
+    } else {
+        for (const cad::Feature &feature : sess.document.tree.Features()) {
+            if (row > y + h - line_height * 2.0f) break;
+            const bool failed = std::find(sess.failed_features.begin(), sess.failed_features.end(),
+                                          feature.id) != sess.failed_features.end();
+            const bool selected = feature.id == sess.selected_feature;
+            if (selected) {
+                gfx::DrawRectangle(static_cast<int>(x + 2.0f), static_cast<int>(row - 1.0f),
+                                   static_cast<int>(sidebar_w - 4.0f), static_cast<int>(line_height),
+                                   ResolveHlGroup("VisualBg"));
+            }
+            const char *kind = "?";
+            switch (feature.kind) {
+                case cad::FeatureKind::Sketch: kind = "sketch"; break;
+                case cad::FeatureKind::Extrude: kind = "extrude"; break;
+                case cad::FeatureKind::Revolve: kind = "revolve"; break;
+                case cad::FeatureKind::Loft: kind = "loft"; break;
+                case cad::FeatureKind::Sweep: kind = "sweep"; break;
+            }
+            char label[192];
+            std::snprintf(label, sizeof(label), "%s%-8s %s", feature.suppressed ? "- " : "  ", kind,
+                          feature.name.c_str());
+            // A selected row is drawn on VisualBg, so its text has to be
+            // Visual rather than Normal -- the two are chosen by the
+            // theme to go together, and using Normal there puts light
+            // text on a light bar.
+            const gfx::Color text = failed ? warn
+                                    : selected ? ResolveHlGroup("Visual")
+                                    : feature.suppressed ? comment
+                                                         : normal;
+            gfx::DrawTextEx(g_font, label, gfx::Vector2{x + 6.0f, row}, font, 0, text);
+            row += line_height;
+        }
+    }
+    if (!sess.message.empty() && row < y + h - line_height * 2.0f) {
+        row += line_height * 0.5f;
+        gfx::DrawTextEx(g_font, sess.message.substr(0, 40).c_str(), gfx::Vector2{x + 6.0f, row}, font, 0,
+                        warn);
+    }
+
+    // --- The part ----------------------------------------------------------
+    const float view_x = x + sidebar_w;
+    const float view_w = w - sidebar_w;
+    const float view_h = h - line_height - 4.0f;
+    if (view_w < 8.0f || view_h < 8.0f) return;
+
+    const float yaw = sess.camera_yaw * 3.14159265358979f / 180.0f;
+    const float pitch = sess.camera_pitch * 3.14159265358979f / 180.0f;
+    // The camera's own frame: forward from the eye towards the part, and
+    // a right and up square to it.
+    const cad::Vec3d forward{-static_cast<double>(std::cos(pitch) * std::sin(yaw)),
+                             -static_cast<double>(std::cos(pitch) * std::cos(yaw)),
+                             -static_cast<double>(std::sin(pitch))};
+    cad::Vec3d up{0.0, 0.0, 1.0};
+    up = (up - forward * forward.Dot(up)).Normalized();
+    const cad::Vec3d right = up.Cross(forward).Normalized();
+    const cad::Vec3d target{static_cast<double>(sess.camera_target.x),
+                            static_cast<double>(sess.camera_target.y),
+                            static_cast<double>(sess.camera_target.z)};
+    const cad::Vec3d eye = target - forward * static_cast<double>(sess.camera_distance);
+    const double focal = static_cast<double>(view_h) * 1.2;
+    const float centre_x = view_x + view_w * 0.5f;
+    const float centre_y = y + view_h * 0.5f;
+
+    auto project = [&](const cad::Vec3d &p, gfx::Vector2 *out, double *depth) {
+        const cad::Vec3d relative = p - eye;
+        const double z = relative.Dot(forward);
+        if (z <= 1e-6) return false;
+        *depth = z;
+        out->x = centre_x + static_cast<float>(relative.Dot(right) / z * focal);
+        out->y = centre_y - static_cast<float>(relative.Dot(up) / z * focal);
+        return true;
+    };
+
+    const cad::TessellationMesh &mesh = sess.tessellation;
+    struct Facet {
+        gfx::Vector2 a, b, c;
+        double depth;
+        float shade;
+    };
+    std::vector<Facet> facets;
+    facets.reserve(static_cast<std::size_t>(mesh.TriangleCount()));
+    for (std::size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+        const cad::Vec3d &p0 = mesh.positions[static_cast<std::size_t>(mesh.indices[t])];
+        const cad::Vec3d &p1 = mesh.positions[static_cast<std::size_t>(mesh.indices[t + 1])];
+        const cad::Vec3d &p2 = mesh.positions[static_cast<std::size_t>(mesh.indices[t + 2])];
+        const cad::Vec3d face_normal = (p1 - p0).Cross(p2 - p0);
+        if (face_normal.LengthSquared() <= 0.0) continue;
+        // Back-face culling before anything else: half the triangles of a
+        // closed solid face away, and sorting them costs as much as
+        // drawing them.
+        if (face_normal.Dot(forward) >= 0.0) continue;
+        Facet facet;
+        double d0 = 0.0;
+        double d1 = 0.0;
+        double d2 = 0.0;
+        if (!project(p0, &facet.a, &d0) || !project(p1, &facet.b, &d1) ||
+            !project(p2, &facet.c, &d2)) {
+            continue;
+        }
+        facet.depth = (d0 + d1 + d2) / 3.0;
+        // A headlight, so nothing is ever unlit however the part is
+        // turned. Not physical and not meant to be: this is a shape being
+        // read, not a render.
+        const double lambert = -face_normal.Normalized().Dot(forward);
+        facet.shade = static_cast<float>(0.35 + 0.65 * std::max(0.0, lambert));
+        facets.push_back(facet);
+    }
+    std::sort(facets.begin(), facets.end(),
+              [](const Facet &a, const Facet &b) { return a.depth > b.depth; });
+
+    const bool wireframe = sess.view == CadView::Wireframe;
+    for (const Facet &facet : facets) {
+        if (!wireframe) {
+            const gfx::Color shade{static_cast<unsigned char>(90.0f * facet.shade + 40.0f),
+                                   static_cast<unsigned char>(120.0f * facet.shade + 50.0f),
+                                   static_cast<unsigned char>(160.0f * facet.shade + 60.0f), 255};
+            gfx::DrawTriangle(facet.a, facet.b, facet.c, shade);
+        } else {
+            gfx::DrawLineEx(facet.a, facet.b, 1.0f, accent);
+            gfx::DrawLineEx(facet.b, facet.c, 1.0f, accent);
+            gfx::DrawLineEx(facet.c, facet.a, 1.0f, accent);
+        }
+    }
+    if (facets.empty()) {
+        gfx::DrawTextEx(g_font, sess.message.empty() ? "nothing to show yet" : sess.message.c_str(),
+                        gfx::Vector2{view_x + 12.0f, y + view_h * 0.5f}, font, 0, comment);
+    }
+
+    // --- The view cube ------------------------------------------------------
+    //
+    // A labelled triad rather than a cube: it says which way the part is
+    // turned, which is the only thing a cube in the corner is for, and it
+    // does it without needing to be picked.
+    const float triad = 26.0f;
+    const gfx::Vector2 origin{view_x + view_w - triad - 14.0f, y + triad + 14.0f};
+    const cad::Vec3d axes[3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+    const char *names[3] = {"x", "y", "z"};
+    const gfx::Color colours[3] = {gfx::Color{220, 90, 90, 255}, gfx::Color{110, 200, 110, 255},
+                                   gfx::Color{110, 150, 230, 255}};
+    for (int i = 0; i < 3; ++i) {
+        const gfx::Vector2 tip{origin.x + static_cast<float>(axes[i].Dot(right)) * triad,
+                               origin.y - static_cast<float>(axes[i].Dot(up)) * triad};
+        gfx::DrawLineEx(origin, tip, 1.5f, colours[i]);
+        gfx::DrawTextEx(g_font, names[i], gfx::Vector2{tip.x - 3.0f, tip.y - font * 0.5f}, font, 0,
+                        colours[i]);
+    }
+
+    // --- The footer ---------------------------------------------------------
+    const std::string summary = g_editor.CadSummary(buffer_id);
+    gfx::DrawTextEx(g_font, summary.c_str(), gfx::Vector2{view_x + 6.0f, y + h - line_height}, font, 0,
+                    is_active ? normal : comment);
+}
+
+void DrawCadSketchPane(const Pane &pane, CadSketchSession &sess, float x, float y, float w, float h,
+                       bool is_active) {
+    const int buffer_id = pane.buffer_id;
+    g_editor.ResizeCadSketchViewport(buffer_id, static_cast<int>(w), static_cast<int>(h));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
+                       ResolveHlGroup("NormalBg"));
+
+    // The first frame centres the view on whatever is already there.
+    //
+    // Only the first, and only if there is something: a sketch an agent
+    // built before the pane existed would otherwise be drawn half off the
+    // edge. Fitting again later would be worse than not fitting at all --
+    // the flag is set even when there is nothing to fit, so that a user
+    // drawing their first line does not have the view yanked out from
+    // under them the moment it appears.
+    if (!sess.view_fitted && w > 0.0f && h > 0.0f) {
+        if (!sess.sketch.Entities().empty()) g_editor.CadSketchFitView(buffer_id);
+        sess.view_fitted = true;
+    }
+
+    const float cx = x + w * 0.5f;
+    const float cy = y + h * 0.5f;
+    const gfx::Color grid_color = ResolveHlGroup("NonText");
+    const gfx::Color axis_color = ResolveHlGroup("Comment");
+    const gfx::Color normal_color = ResolveHlGroup("Normal");
+    // Construction geometry and closed profiles each get a hue of their
+    // own rather than a shade of the normal one: on a dark scheme a
+    // "dimmer" line is hard to tell from a grid line, and the two things
+    // a sketcher most needs to see at a glance are what is real geometry
+    // and what regions have actually closed.
+    const gfx::Color construction_color = ResolveHlGroup("Purple");
+    const gfx::Color selected_color = ResolveHlGroup("Accent");
+    const gfx::Color fixed_color = ResolveHlGroup("Red");
+    const gfx::Color profile_color = ResolveHlGroup("Green");
+
+    // --- Grid and axes ---------------------------------------------------
+    //
+    // Two densities and an axis, each a different weight. Drawing one
+    // density at the snap spacing fills the pane with a solid mesh the
+    // geometry then has to compete with -- the grid is there to judge
+    // position against, and a grid you cannot see past does the opposite.
+    // The minor lines appear only once they are far enough apart to read,
+    // and they are blended most of the way back to the background so that
+    // a line of real geometry is unmistakably darker than any of them.
+    {
+        auto toward_background = [&](gfx::Color c, float amount) {
+            const gfx::Color bg = ResolveHlGroup("NormalBg");
+            auto mix = [&](unsigned char a, unsigned char b) {
+                return static_cast<unsigned char>(static_cast<float>(b) +
+                                                  (static_cast<float>(a) - static_cast<float>(b)) * amount);
+            };
+            return gfx::Color{mix(c.r, bg.r), mix(c.g, bg.g), mix(c.b, bg.b), 255};
+        };
+        const gfx::Color minor_color = toward_background(grid_color, 0.30f);
+        const gfx::Color major_color = toward_background(grid_color, 0.70f);
+        const cad::Vec2d lo = CadSketchFromScreen(sess, x, y + h, cx, cy);
+        const cad::Vec2d hi = CadSketchFromScreen(sess, x + w, y, cx, cy);
+        double minor = std::max(1e-9, sess.grid);
+        while (minor * sess.pixels_per_unit < 14.0) minor *= 10.0;
+        const double major = minor * 10.0;
+        auto rule = [&](double step, gfx::Color color, float thick) {
+            // Bounded, so a mis-set zoom cannot turn one frame into
+            // millions of draw calls.
+            if ((hi.x - lo.x) / step > 4000.0) return;
+            for (double gx = std::ceil(lo.x / step) * step; gx <= hi.x; gx += step) {
+                if (std::fabs(gx) < step * 0.5) continue;  // the axis draws itself, below
+                const float sx = CadSketchToScreen(sess, cad::Vec2d{gx, 0.0}, cx, cy).x;
+                gfx::DrawLineEx(gfx::Vector2{sx, y}, gfx::Vector2{sx, y + h}, thick, color);
+            }
+            for (double gy = std::ceil(lo.y / step) * step; gy <= hi.y; gy += step) {
+                if (std::fabs(gy) < step * 0.5) continue;
+                const float sy = CadSketchToScreen(sess, cad::Vec2d{0.0, gy}, cx, cy).y;
+                gfx::DrawLineEx(gfx::Vector2{x, sy}, gfx::Vector2{x + w, sy}, thick, color);
+            }
+        };
+        rule(minor, minor_color, 1.0f);
+        rule(major, major_color, 1.0f);
+        const gfx::Vector2 origin = CadSketchToScreen(sess, cad::Vec2d{0.0, 0.0}, cx, cy);
+        gfx::DrawLineEx(gfx::Vector2{origin.x, y}, gfx::Vector2{origin.x, y + h}, 1.0f, axis_color);
+        gfx::DrawLineEx(gfx::Vector2{x, origin.y}, gfx::Vector2{x + w, origin.y}, 1.0f, axis_color);
+    }
+
+    // --- Profiles ----------------------------------------------------------
+    //
+    // Marked at an interior point with their area rather than filled in.
+    // Filling would need the region triangulated, which is Part E's job
+    // when it extrudes one, and would claim more than is known -- whereas
+    // "this region is closed, and it measures this much" is exactly the
+    // feedback a sketch gives that a drawing does not.
+    for (const cad::Sketch::Profile &profile : sess.profiles) {
+        const gfx::Vector2 at = CadSketchToScreen(sess, profile.interior, cx, cy);
+        if (at.x < x || at.x > x + w || at.y < y || at.y > y + h) continue;
+        gfx::DrawCircleV(at, 4.0f, profile_color);
+        char label[64];
+        if (profile.holes.empty()) {
+            std::snprintf(label, sizeof(label), "%.4g", profile.area);
+        } else {
+            std::snprintf(label, sizeof(label), "%.4g (%zu hole%s)", profile.area, profile.holes.size(),
+                          profile.holes.size() == 1 ? "" : "s");
+        }
+        gfx::DrawTextEx(g_font, label, gfx::Vector2{at.x + 7.0f, at.y - MenuFontSize() * 0.5f},
+                        MenuFontSize(), 0, profile_color);
+    }
+
+    // --- Geometry ---------------------------------------------------------
+    auto is_selected_entity = [&](cad::SketchId id) {
+        return std::find(sess.selected_entities.begin(), sess.selected_entities.end(), id) !=
+               sess.selected_entities.end();
+    };
+    for (const cad::SketchEntity &entity : sess.sketch.Entities()) {
+        const std::shared_ptr<const cad::Curve3> curve = sess.sketch.Curve(entity.id);
+        if (!curve) continue;
+        gfx::Color color = entity.construction ? construction_color : normal_color;
+        float thickness = entity.construction ? 1.0f : 2.0f;
+        if (is_selected_entity(entity.id)) {
+            color = selected_color;
+            thickness = 3.0f;
+        }
+        double lo = 0.0;
+        double hi = 0.0;
+        curve->Domain(&lo, &hi);
+        // Enough segments that a circle looks like one at this zoom, and
+        // no more: the curve is exact, this is only how finely it is
+        // being sampled for the screen.
+        const double span = curve->Length() * sess.pixels_per_unit;
+        const int steps = std::clamp(static_cast<int>(span / 4.0), 8, 512);
+        gfx::Vector2 previous = CadSketchToScreen(sess, cad::Vec2d{curve->Point(lo).x, curve->Point(lo).y}, cx, cy);
+        for (int i = 1; i <= steps; ++i) {
+            const double t = lo + (hi - lo) * static_cast<double>(i) / static_cast<double>(steps);
+            const cad::Vec3d p = curve->Point(t);
+            const gfx::Vector2 at = CadSketchToScreen(sess, cad::Vec2d{p.x, p.y}, cx, cy);
+            // Construction geometry is dashed, which is the drawing
+            // convention and, unlike a different colour, survives a colour
+            // scheme where Comment and Normal are close together.
+            if (!entity.construction || ((i / 4) % 2) == 0) gfx::DrawLineEx(previous, at, thickness, color);
+            previous = at;
+        }
+    }
+
+    // --- Points ------------------------------------------------------------
+    for (const cad::SketchPoint &point : sess.sketch.Points()) {
+        const gfx::Vector2 at = CadSketchToScreen(sess, point.position, cx, cy);
+        const bool selected = std::find(sess.selected_points.begin(), sess.selected_points.end(), point.id) !=
+                              sess.selected_points.end();
+        // A fixed point is drawn as a square and a free one as a disc, so
+        // the anchors are readable without a legend -- the distinction
+        // matters, since a sketch with none is free to wander.
+        if (point.fixed) {
+            gfx::DrawRectangle(static_cast<int>(at.x) - 3, static_cast<int>(at.y) - 3, 7, 7,
+                               selected ? selected_color : fixed_color);
+        } else {
+            gfx::DrawCircleV(at, selected ? 5.0f : 3.0f, selected ? selected_color : normal_color);
+        }
+    }
+
+    // --- The shape being placed --------------------------------------------
+    for (const cad::Vec2d &p : sess.pending) {
+        const gfx::Vector2 at = CadSketchToScreen(sess, p, cx, cy);
+        gfx::DrawCircleLines(static_cast<int>(at.x), static_cast<int>(at.y), 6.0f, selected_color);
+    }
+
+    // --- Mouse -------------------------------------------------------------
+    //
+    // The whole interaction, and every branch of it ends in an
+    // Editor::CadSketch* call. Nothing here knows what a constraint is.
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+    const bool over = is_active && mouse.x >= x && mouse.x < x + w && mouse.y >= y && mouse.y < y + h;
+    if (over) {
+        const cad::Vec2d world = CadSketchFromScreen(sess, mouse.x, mouse.y, cx, cy);
+        const cad::Vec2d snapped{CadSketchSnap(sess, world.x), CadSketchSnap(sess, world.y)};
+        // A pick radius in sketch units that is a constant number of
+        // pixels, so hitting a point is equally easy at every zoom.
+        const double pick_radius = 8.0 / sess.pixels_per_unit;
+
+        if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
+            switch (sess.tool) {
+                case CadSketchTool::Select: {
+                    bool is_point = false;
+                    const int hit = g_editor.CadSketchPick(buffer_id, world.x, world.y, pick_radius, &is_point);
+                    const bool add = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+                    if (!add) {
+                        sess.selected_points.clear();
+                        sess.selected_entities.clear();
+                    }
+                    if (hit >= 0) {
+                        std::vector<cad::SketchId> &list =
+                            is_point ? sess.selected_points : sess.selected_entities;
+                        const auto found = std::find(list.begin(), list.end(), hit);
+                        if (found == list.end()) {
+                            list.push_back(hit);
+                        } else {
+                            list.erase(found);
+                        }
+                        // Selecting a point also arms a drag of it, so a
+                        // click-and-move is one gesture rather than two.
+                        if (is_point) sess.dragging = hit;
+                    }
+                    break;
+                }
+                case CadSketchTool::Point:
+                    g_editor.CadSketchAddPoint(buffer_id, snapped.x, snapped.y, false);
+                    break;
+                case CadSketchTool::Line:
+                    sess.pending.push_back(snapped);
+                    if (sess.pending.size() == 2) {
+                        g_editor.CadSketchAddLine(buffer_id, sess.pending[0].x, sess.pending[0].y,
+                                                  sess.pending[1].x, sess.pending[1].y, sess.construction);
+                        // Chained: the next line starts where this one
+                        // ended, which is how a closed outline gets drawn
+                        // without clicking every corner twice.
+                        const cad::Vec2d last = sess.pending[1];
+                        sess.pending.clear();
+                        sess.pending.push_back(last);
+                    }
+                    break;
+                case CadSketchTool::Rectangle:
+                    sess.pending.push_back(snapped);
+                    if (sess.pending.size() == 2) {
+                        g_editor.CadSketchAddRectangle(buffer_id, sess.pending[0].x, sess.pending[0].y,
+                                                       sess.pending[1].x, sess.pending[1].y,
+                                                       sess.construction);
+                        sess.pending.clear();
+                    }
+                    break;
+                case CadSketchTool::Circle:
+                    sess.pending.push_back(snapped);
+                    if (sess.pending.size() == 2) {
+                        const double radius = (sess.pending[1] - sess.pending[0]).Length();
+                        g_editor.CadSketchAddCircle(buffer_id, sess.pending[0].x, sess.pending[0].y, radius,
+                                                    sess.construction);
+                        sess.pending.clear();
+                    }
+                    break;
+                case CadSketchTool::Arc:
+                    sess.pending.push_back(snapped);
+                    if (sess.pending.size() == 3) {
+                        g_editor.CadSketchAddArc(buffer_id, sess.pending[0].x, sess.pending[0].y,
+                                                 sess.pending[1].x, sess.pending[1].y, sess.pending[2].x,
+                                                 sess.pending[2].y, true, sess.construction);
+                        sess.pending.clear();
+                    }
+                    break;
+            }
+        }
+        if (sess.dragging >= 0 && gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
+            g_editor.CadSketchDragPoint(buffer_id, sess.dragging, snapped.x, snapped.y);
+        }
+        // Middle-drag pans. The delta is kept here rather than read from
+        // the backend, which reports a position and not a movement.
+        static gfx::Vector2 last_pan{0.0f, 0.0f};
+        static bool panning = false;
+        if (gfx::IsMouseButtonDown(gfx::MouseButton::Middle)) {
+            if (panning) {
+                sess.view_centre.x -= static_cast<double>(mouse.x - last_pan.x) / sess.pixels_per_unit;
+                sess.view_centre.y += static_cast<double>(mouse.y - last_pan.y) / sess.pixels_per_unit;
+            }
+            last_pan = mouse;
+            panning = true;
+        } else {
+            panning = false;
+        }
+    }
+    if (!gfx::IsMouseButtonDown(gfx::MouseButton::Left)) sess.dragging = cad::kNoSketchId;
+
+    // --- Status band -------------------------------------------------------
+    //
+    // The solver's verdict, always visible. A sketcher that only tells
+    // you the sketch is over-constrained when you ask is a sketcher you
+    // find out from ten constraints later.
+    {
+        const float font_size = MenuFontSize();
+        const cad::SketchDiagnosis &d = sess.diagnosis;
+        const char *tool_name = "select";
+        switch (sess.tool) {
+            case CadSketchTool::Select: tool_name = "select"; break;
+            case CadSketchTool::Point: tool_name = "point"; break;
+            case CadSketchTool::Line: tool_name = "line"; break;
+            case CadSketchTool::Rectangle: tool_name = "rect"; break;
+            case CadSketchTool::Circle: tool_name = "circle"; break;
+            case CadSketchTool::Arc: tool_name = "arc"; break;
+        }
+        char text[256];
+        std::snprintf(text, sizeof(text), "%s  |  %s, %d dof  |  %zu profile(s)%s%s", tool_name,
+                      cad::SketchStatusName(static_cast<int>(d.status)), d.degrees_of_freedom,
+                      sess.profiles.size(), sess.construction ? "  |  construction" : "",
+                      sess.message.empty() ? "" : "  |  ");
+        std::string line = text;
+        if (!sess.message.empty()) line += sess.message;
+        const float band = font_size + 8.0f;
+        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y + h - band), static_cast<int>(w),
+                           static_cast<int>(band), ResolveHlGroup("StatusLine"));
+        gfx::Color text_color = normal_color;
+        if (d.status == cad::SketchStatus::Conflicting || d.status == cad::SketchStatus::NotConverged) {
+            text_color = fixed_color;
+        }
+        gfx::DrawTextEx(g_font, line.c_str(), gfx::Vector2{x + 6.0f, y + h - band + 4.0f}, font_size, 0,
+                        text_color);
+    }
+}
+
 void DrawImageEditorPane(const Pane &pane, ImageEditorSession &sess, float x, float y, float w, float h, bool is_active) {
     int buffer_id = pane.buffer_id;
     int pane_id = pane.id;
@@ -41395,6 +41950,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     if (model3d_sess) {
         DrawModel3DPane(pane, *model3d_sess, x, content_y, w, content_h, is_active);
+        DrawPaneBorder(x, y, w, h, is_active);
+        return;
+    }
+
+    if (CadSession *cad_sess = g_editor.GetCadMutable(pane.buffer_id); cad_sess != nullptr) {
+        DrawCadPane(pane, *cad_sess, x, content_y, w, content_h, is_active);
+        DrawPaneBorder(x, y, w, h, is_active);
+        return;
+    }
+
+    if (CadSketchSession *sketch_sess = g_editor.GetCadSketchMutable(pane.buffer_id); sketch_sess != nullptr) {
+        DrawCadSketchPane(pane, *sketch_sess, x, content_y, w, content_h, is_active);
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
@@ -50161,6 +50728,166 @@ void RegisterModel3DAgentMethods() {
 
 #if !defined(__EMSCRIPTEN__)
 /**
+ * @brief Runs a list of CAD and FEM calls with no window, frame loop or session.
+ * @param script_path Path of the JSON script to read.
+ * @param out_path Where to write the results, or nullptr for stdout.
+ * @return 0 if every call succeeded, 1 otherwise (the reason goes to stderr).
+ *
+ * Backs `mep --cad-fem <script.json> [out.json]` and its synonym
+ * `mep --fem-solve` (plans/CAD_FEM_PLAN.md Part K.5), so a CI job or a
+ * script can build geometry, mesh it, solve it and export the numbers
+ * with no display -- the same posture as `mep --export-org`.
+ *
+ * A SCRIPT OF CALLS RATHER THAN A STUDY FILE, and the reason is the one
+ * that shapes the whole of Part K. A declarative study format --
+ * geometry, material, supports, loads -- would be a *fifth* description
+ * of the same operations, after the method table, the Lua bindings, the
+ * RPC dispatch and the MCP schemas, and the fifth is the one that would
+ * be missing whatever was added last. A script is just the existing
+ * methods with their existing parameters, so there is nothing here to
+ * keep in step.
+ *
+ * Each entry is `{"method": ..., "params": {...}}` with an optional
+ * `"as"` naming its result, and any string parameter of the form
+ * `$name.field` is replaced by that field of the named result. Handles
+ * are therefore never written down: a script says what it means rather
+ * than what the ids happened to come out as.
+ */
+int RunHeadlessCadFem(const char *script_path, const char *out_path) {
+    std::ifstream file(script_path, std::ios::binary);
+    if (!file) {
+        std::fprintf(stderr, "mep --cad-fem: cannot read %s\n", script_path);
+        return 1;
+    }
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    Json script;
+    if (!Json::Parse(buffer.str(), &script)) {
+        std::fprintf(stderr, "mep --cad-fem: %s is not valid JSON\n", script_path);
+        return 1;
+    }
+    // A bare object is one call, which is the commonest thing anyone
+    // types by hand and would otherwise be a confusing error.
+    if (script.is_object()) {
+        Json wrapped = Json::Array();
+        wrapped.push_back(script);
+        script = wrapped;
+    }
+    if (!script.is_array()) {
+        std::fprintf(stderr, "mep --cad-fem: %s must be a call or a list of calls\n", script_path);
+        return 1;
+    }
+
+    cadfem::Session session;
+    std::map<std::string, Json> named;
+    // Substitutes `$name.field` wherever it appears, however deeply.
+    std::function<Json(const Json &)> resolve = [&](const Json &value) -> Json {
+        if (value.is_string()) {
+            const std::string text = value.as_string();
+            if (text.size() < 2 || text[0] != '$') return value;
+            const std::size_t dot = text.find('.');
+            if (dot == std::string::npos) return value;
+            const auto found = named.find(text.substr(1, dot - 1));
+            if (found == named.end()) return value;
+            return found->second.get(text.substr(dot + 1));
+        }
+        if (value.is_array()) {
+            Json out = Json::Array();
+            for (const Json &item : value.items()) out.push_back(resolve(item));
+            return out;
+        }
+        if (value.is_object()) {
+            Json out = Json::Object();
+            for (const auto &field : value.fields()) out[field.first] = resolve(field.second);
+            return out;
+        }
+        return value;
+    };
+
+    Json results = Json::Array();
+    for (std::size_t i = 0; i < script.items().size(); ++i) {
+        const Json &call = script.items()[i];
+        const std::string method = call.get("method").as_string("");
+        Json params = resolve(call.contains("params") ? call.get("params") : Json::Object());
+        Json out;
+        std::string error;
+        if (!session.Call(method, params, &out, &error)) {
+            std::fprintf(stderr, "mep --cad-fem: call %d (%s): %s\n", static_cast<int>(i),
+                         method.c_str(), error.c_str());
+            Json report = Json::Object();
+            report["ok"] = false;
+            report["failed"] = static_cast<int>(i);
+            report["method"] = method;
+            report["error"] = error;
+            report["results"] = results;
+            const std::string text = report.dump();
+            if (out_path != nullptr) {
+                std::ofstream sink(out_path, std::ios::binary);
+                sink << text << "\n";
+            } else {
+                std::printf("%s\n", text.c_str());
+            }
+            return 1;
+        }
+        if (call.contains("as")) named[call.get("as").as_string()] = out;
+        Json record = Json::Object();
+        record["method"] = method;
+        record["result"] = out;
+        results.push_back(std::move(record));
+    }
+    Json report = Json::Object();
+    report["ok"] = true;
+    report["calls"] = static_cast<int>(results.size());
+    report["results"] = std::move(results);
+    const std::string text = report.dump();
+    if (out_path != nullptr) {
+        std::ofstream sink(out_path, std::ios::binary);
+        if (!sink) {
+            std::fprintf(stderr, "mep --cad-fem: cannot write %s\n", out_path);
+            return 1;
+        }
+        sink << text << "\n";
+    } else {
+        std::printf("%s\n", text.c_str());
+    }
+    return 0;
+}
+
+/**
+ * @brief Imports a CAD file and writes it out in another format, with no window.
+ * @param in_path The file to read (STEP).
+ * @param out_path The file to write (.step, .stl, .obj or .gltf).
+ * @return 0 on success, 1 otherwise.
+ *
+ * Backs `mep --cad-export <in> <out>`. A convenience over the script
+ * above -- it is two calls -- kept because converting one file is the
+ * thing a build script most often wants and writing a two-line JSON file
+ * to do it is friction with no purpose.
+ */
+int RunHeadlessCadExport(const char *in_path, const char *out_path) {
+    cadfem::Session session;
+    Json params = Json::Object();
+    params["path"] = std::string(in_path);
+    Json out;
+    std::string error;
+    if (!session.Call("part.import", params, &out, &error)) {
+        std::fprintf(stderr, "mep --cad-export: %s\n", error.c_str());
+        return 1;
+    }
+    Json write = Json::Object();
+    write["document"] = out.get("document");
+    write["path"] = std::string(out_path);
+    if (!session.Call("part.export", write, &out, &error)) {
+        std::fprintf(stderr, "mep --cad-export: %s\n", error.c_str());
+        return 1;
+    }
+    std::printf("%s: %lld bytes, %d bodies\n", out_path,
+                static_cast<long long>(out.get("bytes").as_int(0)),
+                out.get("bodies").as_int(0));
+    return 0;
+}
+
+/**
  * @brief Renders one Org file to a standalone HTML file with no window, frame loop or session.
  * @param in_path Path of the .org source to read.
  * @param out_path Path of the .html file to write.
@@ -50219,6 +50946,52 @@ int RunHeadlessOrgExport(const std::string &in_path, const std::string &out_path
                              "error('export failed', 0) end\n";
     return lua->DoString(code) ? 0 : 1;
 }
+
+/**
+ * @brief Runs one Lua file with no window, frame loop or session, and exits with its verdict.
+ * @param path Path of the .lua script to run.
+ * @return 0 if the script ran without error, 1 otherwise (the reason is written to stderr).
+ *
+ * Backs `mep --run-lua <file.lua>`, which is what lets a script that
+ * drives the CAD and FEM surface (`mep.part_*`, `mep.fem_*`, Part K.1) be
+ * run from a Makefile, a CI job or a machine with no display -- and what
+ * makes the scripts under examples/nafems a thing that can be *checked* rather than
+ * only demonstrated. The same file runs inside a live editor through
+ * `:source`, against the same bindings, so there is one script and not a
+ * headless copy of it.
+ *
+ * Loads no kBuiltin* chunk at all, unlike the Org exporter above. A
+ * script that wants the editor's own Lua library is a script that wants
+ * an editor; this path exists for the parts of the Lua surface that are
+ * pure computation, and starting the file tree, git and LSP jobs for it
+ * would be starting jobs nothing here will ever pump.
+ */
+int RunHeadlessLua(const std::string &path) {
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) -- process-lifetime
+    // singleton, exactly as main()'s own LuaEnv is; this process exits below.
+    LuaEnv *lua = new LuaEnv(&g_editor);
+    g_editor.SetLuaEnv(lua);
+    // Through a pcall, with the message written to stderr: DoFile reports
+    // an error only through the editor's status line, which has no
+    // terminal behind it here, so a runtime error would otherwise surface
+    // as a bare non-zero exit with nothing said about it -- which is the
+    // single most annoying way for a script runner to behave.
+    std::string quoted = "\"";
+    for (const char c : path) {
+        if (c == '\\' || c == '"') quoted += '\\';
+        quoted += c;
+    }
+    quoted += '"';
+    const std::string code =
+        "local ran, err = pcall(dofile, " + quoted + ")\n"
+        "if not ran then io.stderr:write('mep --run-lua: ' .. tostring(err) .. '\\n') "
+        "error('script failed', 0) end\n";
+    if (!lua->DoString(code)) {
+        std::fprintf(stderr, "mep --run-lua: %s did not run cleanly\n", path.c_str());
+        return 1;
+    }
+    return 0;
+}
 #endif
 
 int main(int argc, char **argv) {
@@ -50237,6 +51010,21 @@ int main(int argc, char **argv) {
         if (std::string(argv[i]) == "--export-org") {
             return RunHeadlessOrgExport(argv[i + 1], argv[i + 2]);
         }
+        if (std::string(argv[i]) == "--cad-export") {
+            return RunHeadlessCadExport(argv[i + 1], argv[i + 2]);
+        }
+    }
+    // One argument, so it is matched separately from the two-argument
+    // forms above and ahead of --cad-fem's own loop.
+    for (int i = 1; i + 1 < argc; i++) {
+        if (std::string(argv[i]) == "--run-lua") return RunHeadlessLua(argv[i + 1]);
+    }
+    // Part K.5. One or two arguments, so it is matched separately from
+    // the two-argument forms above.
+    for (int i = 1; i + 1 < argc; i++) {
+        const std::string flag = argv[i];
+        if (flag != "--cad-fem" && flag != "--fem-solve") continue;
+        return RunHeadlessCadFem(argv[i + 1], i + 2 < argc ? argv[i + 2] : nullptr);
     }
 #endif
 

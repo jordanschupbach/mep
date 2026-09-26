@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (177)
+* The bindings (178)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -175,6 +175,7 @@ that it does nothing.
 | =mep.org_roam_slugify= | converts a note title into a filesystem-safe slug |
 | =mep.org_roam_title_of= | extracts an org-roam note's title from its file lines |
 | =mep.org_set_planning= | sets/updates a SCHEDULED or DEADLINE planning line on the current headline |
+| =mep.org_shell_expand= | expands command substitutions and $VARs in a header-arg value |
 | =mep.org_splice_results= | writes a results block into a document copy |
 | =mep.org_subtree_end_lines= | finds the last row of the subtree rooted at row, given a plain line array instead of a buffer |
 | =mep.org_table_align= | reformats the org table under the cursor to align its columns |

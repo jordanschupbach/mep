@@ -153,12 +153,15 @@ gfx::Model LoadIqmModel(const char *file_name) {
             meshes[m].normals = norms;
         }
 
-        auto *indices = new unsigned short[static_cast<size_t>(mesh_num_triangles) * 3];
+        auto *indices = new unsigned int[static_cast<size_t>(mesh_num_triangles) * 3];
         for (uint32_t t = 0; t < mesh_num_triangles; t++) {
             size_t src_tri = static_cast<size_t>(first_triangle + t) * 3;
             for (int k = 0; k < 3; k++) {
                 uint32_t global_vi = tri_indices[src_tri + static_cast<size_t>(k)];
-                indices[t * 3 + static_cast<size_t>(k)] = static_cast<unsigned short>(global_vi - first_vertex);
+                // No narrowing cast any more: gfx::Mesh::indices is 32-bit,
+                // which is the same width IQM itself stores these in, so a
+                // mesh with more than 65,536 vertices now survives the trip.
+                indices[t * 3 + static_cast<size_t>(k)] = global_vi - first_vertex;
             }
         }
         meshes[m].indices = indices;

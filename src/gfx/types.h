@@ -113,7 +113,17 @@ struct Mesh {
     float *normals = nullptr;
     float *tangents = nullptr;
     unsigned char *colors = nullptr;
-    unsigned short *indices = nullptr;
+    // 32-bit, not 16 (plans/CAD_FEM_PLAN.md Part 0.4). The narrower type
+    // capped an indexed mesh at 65,536 vertices, which every consumer in
+    // this tree worked around the same way: by giving up on indexing and
+    // uploading a flat triangle list instead (see the OBJ and VOX
+    // importers' own notes, and BuildModel3DGpuMesh in main.cpp). That
+    // costs three vertices per triangle where one would do, and it
+    // discards the vertex *sharing* that a per-vertex field needs to
+    // interpolate smoothly across a surface -- which is exactly how a FEM
+    // result gets drawn (Part J.2). A finite-element mesh passes 65,536
+    // vertices almost immediately, so the cap had to go either way.
+    unsigned int *indices = nullptr;
     float *animVertices = nullptr;
     float *animNormals = nullptr;
     unsigned char *boneIds = nullptr;

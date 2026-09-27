@@ -599,6 +599,10 @@
           "named": true
         },
         {
+          "type": "result_begin",
+          "named": true
+        },
+        {
           "type": "results",
           "named": true
         }
@@ -894,6 +898,10 @@
         {
           "type": "math_open",
           "named": true
+        },
+        {
+          "type": "result_end",
+          "named": true
         }
       ]
     }
@@ -965,6 +973,10 @@
         },
         {
           "type": "paragraph",
+          "named": true
+        },
+        {
+          "type": "result_end",
           "named": true
         },
         {
@@ -1307,6 +1319,10 @@
         },
         {
           "type": "inline_comment",
+          "named": true
+        },
+        {
+          "type": "result_end",
           "named": true
         }
       ]
@@ -2252,6 +2268,10 @@
           "named": true
         },
         {
+          "type": "result_end",
+          "named": true
+        },
+        {
           "type": "rule_line",
           "named": true
         },
@@ -2712,6 +2732,10 @@
         },
         {
           "type": "caption",
+          "named": true
+        },
+        {
+          "type": "result_end",
           "named": true
         },
         {

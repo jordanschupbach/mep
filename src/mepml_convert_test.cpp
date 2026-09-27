@@ -76,13 +76,20 @@ Lines Signature(const Document &doc, const Keeps &k) {
             case BlockKind::Callout: s = "C " + b.keyword + " " + Plain(b.inlines); break;
             case BlockKind::MathBlock: s = "M " + Squash(b.code); break;
             case BlockKind::Code: {
+                // A block the exports leave out entirely has nothing to come back.
+                bool shown_code = true, shown_results = true;
+                CodeExports(doc, b, &shown_code, &shown_results);
+                if (!shown_code && (!shown_results || b.result_line_start < 0)) continue;
                 std::string code = b.code;
                 while (!code.empty() && code.back() == '\n') code.pop_back();
                 s = "K " + b.lang;
                 if (k.code_options)
                     for (const Option &o : b.options) s += " " + o.name + "=" + o.value.s;
                 s += "\n" + code;
-                for (const std::string &r : b.result_lines) s += "\n> " + r;
+                // Markdown results are the blocks after this one, compared
+                // as themselves; the exports keep them as those blocks.
+                if (b.result_format != "markdown")
+                    for (const std::string &r : b.result_lines) s += "\n> " + r;
                 if (k.code_captions) s += "\ncaption " + Plain(b.caption_inlines);
                 break;
             }

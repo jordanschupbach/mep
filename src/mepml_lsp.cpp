@@ -549,6 +549,7 @@ const std::vector<Vocab> &MetaVocab() {
         {"Author", "//? Author: name", "The author, for the exports' metadata."},
         {"Date", "//? Date: text", "The date, for the exports' metadata."},
         {"Option", "//? Option: Name=value", "A document option: an integer, a decimal or a string (quote it to force a string)."},
+        {"Exports", "//? Exports: results", "What the exports show of every code block: code, results, both (the default) or none. A block's own exports= (or echo=) wins. The editor always shows everything."},
         {"Import", "//? Import: file.mepml", "Includes another mepml file: its options and other header keys are inherited (this file's own win) and its content is included here, in the order the header lists its imports."},
     };
     return v;
@@ -558,7 +559,9 @@ const std::vector<Vocab> &CodeOptionVocab() {
     static const std::vector<Vocab> v = {
         {"file", "file=path.png", "The block draws a figure into this file; after a run it is shown under the block, numbered and captioned."},
         {"eval", "eval=false", "eval=false (or no, never) stops the block from running."},
-        {"results", "results=html | terminal | exec | exec-gui", "results=html: the block prints HTML, kept as markup and drawn rendered. results=terminal (a shell block): it runs as a program in a terminal inside its results. results=exec (any language): the block is a program -- compiled first when the language is -- run in a terminal inside its results that you can type into and stop. results=exec-gui: the same, for a program that opens a window: the window is shown inside the results."},
+        {"exports", "exports=results", "What the exports show of this block: code, results, both or none (the document's Exports: header by default)."},
+        {"echo", "echo=false", "echo=false (knitr's name): the exports show the block's results but not its code."},
+        {"results", "results=html | markdown | terminal | exec | exec-gui", "results=html: the block prints HTML, kept as markup and drawn rendered. results=markdown (or md, asis): it prints Markdown, read as part of the document -- a table it prints is a table. results=terminal (a shell block): it runs as a program in a terminal inside its results. results=exec (any language): the block is a program -- compiled first when the language is -- run in a terminal inside its results that you can type into and stop. results=exec-gui: the same, for a program that opens a window: the window is shown inside the results."},
         {"rows", "rows=16", "The height of an exec block's terminal, or of an exec-gui block's window, in rows (16 and 20 by default)."},
         {"cols", "cols=80", "The width of an exec block's terminal, or of an exec-gui block's window, in columns (the text width by default)."},
     };

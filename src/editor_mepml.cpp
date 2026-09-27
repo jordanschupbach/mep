@@ -568,11 +568,27 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     std::unordered_set<int> table_layout_rows, table_rows;
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty() || b.kind != mepml::BlockKind::Table) continue;
-        for (int row = b.line_start; row <= b.line_end; ++row) {
+        for (int row = b.line_start; row <= (b.rows_end >= 0 ? b.rows_end : b.line_end); ++row) {
             if (row == b.caption_line || row == b.alt_line) continue;
             table_rows.insert(row);
             if (conceal && row != cur_row) table_layout_rows.insert(row);
         }
+    }
+    // Concealed markup right at the open edge of a GFM row -- `~setosa~ |
+    // 1.46` has no leading pipe to draw it on -- is left to
+    // MepmlTableLayout, which draws the missing pipe in the markup's place.
+    std::set<std::pair<int, int>> table_edge_markup;  // (row, col_start)
+    for (const mepml::Span &s : spans) {
+        if (!s.markup || (s.style & (mepml::kMath | mepml::kDirective)) || !table_layout_rows.count(s.line)) continue;
+        const std::string &line = buf.lines[static_cast<size_t>(s.line)];
+        const std::vector<std::pair<int, int>> cells = mepml::TableCells(line);
+        if (cells.empty()) continue;
+        int first = cells.front().first, last = cells.back().second;
+        const bool lead = first > 0 && line[static_cast<size_t>(first - 1)] == '|';
+        const bool trail = last < static_cast<int>(line.size()) && line[static_cast<size_t>(last)] == '|';
+        while (first < last && (line[static_cast<size_t>(first)] == ' ' || line[static_cast<size_t>(first)] == '\t')) ++first;
+        while (last > first && (line[static_cast<size_t>(last - 1)] == ' ' || line[static_cast<size_t>(last - 1)] == '\t')) --last;
+        if ((!lead && s.col_start == first) || (!trail && s.col_end == last)) table_edge_markup.emplace(s.line, s.col_start);
     }
 
     for (const mepml::Span &s : spans) {
@@ -626,6 +642,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             if (s.style & mepml::kBig) hl = "Yellow";
         }
         if ((s.style & mepml::kTableRule) && table_layout_rows.count(s.line)) continue;
+        if (table_edge_markup.count({s.line, s.col_start})) continue;
         // A picture cell's `@image{...}`: MepmlTableLayout hides it and the
         // picture is drawn above the row.
         if ((s.style & mepml::kTable) && (s.style & mepml::kDirective) && !s.target.empty() &&
@@ -786,7 +803,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         }
     }
 
-    if (conceal) MepmlTableLayout(doc, spans, table_layout_rows, ns);
+    if (conceal) MepmlTableLayout(doc, spans, table_layout_rows, table_edge_markup, ns);
 
     // A figure's alt text: small, italic, muted and centred under it.
     if (conceal) {
@@ -1129,7 +1146,8 @@ std::vector<OrgLiteralSpan> Editor::MepmlLiteralSpans() const {
 }
 
 void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepml::Span> &spans,
-                              const std::unordered_set<int> &rows, int ns) {
+                              const std::unordered_set<int> &rows,
+                              const std::set<std::pair<int, int>> &edge_markup, int ns) {
     Buffer &buf = Buf();
     const int n = buf.LineCount();
     const bool pictures = OrgImagesVisible();
@@ -1143,19 +1161,23 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
     auto span_width = [&](const mepml::Span &sp, const std::string &line) {
         return ConcealedWidth(sp, line, kTableMaxScale);
     };
-    // Unescaped pipes outside `verbatim`, as the parser splits cells.
-    auto pipes_of = [](const std::string &line) {
-        std::vector<int> out;
-        bool tick = false;
-        for (size_t c = 0; c < line.size(); ++c) {
-            if (line[c] == '\\') {
-                ++c;
-                continue;
-            }
-            if (line[c] == '`') tick = !tick;
-            if (line[c] == '|' && !tick) out.push_back(static_cast<int>(c));
-        }
-        return out;
+    // A row's cells, split exactly as the parser splits them, and which of
+    // its outer pipes it has: a GitHub-flavoured Markdown row may leave
+    // either out (`a | b`), and the layout then draws the missing one.
+    struct RowShape {
+        std::vector<std::pair<int, int>> cells;  // [begin, end) byte ranges
+        bool lead = false, trail = false;
+        int first = 0;  // byte column of the leading pipe, or of the first cell
+    };
+    auto shape_of = [](const std::string &line) {
+        RowShape r;
+        r.cells = mepml::TableCells(line);
+        if (r.cells.empty()) return r;
+        const int b0 = r.cells.front().first, e1 = r.cells.back().second;
+        r.lead = b0 > 0 && line[static_cast<size_t>(b0 - 1)] == '|';
+        r.trail = e1 < static_cast<int>(line.size()) && line[static_cast<size_t>(e1)] == '|';
+        r.first = r.lead ? b0 - 1 : b0;
+        return r;
     };
     auto add = [&](Decoration d) {
         if (d.row < 0 || d.row >= n || d.col_end <= d.col_start) return;
@@ -1167,6 +1189,7 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
         int body_end = b.line_end;
         if (b.caption_line >= 0) body_end = std::min(body_end, b.caption_line - 1);
         if (b.alt_line >= 0) body_end = std::min(body_end, b.alt_line - 1);
+        if (b.rows_end >= 0) body_end = std::min(body_end, b.rows_end);
 
         struct Cell {
             int ws_start, cs, ce, ws_end;  // segment [ws_start, ws_end), content [cs, ce)
@@ -1174,15 +1197,15 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             std::string image;  // a picture cell's resolved path (`@image{...}`)
         };
         std::map<int, std::vector<Cell>> cells;
-        std::map<int, std::vector<int>> pipes;
+        std::map<int, RowShape> shapes;
         std::vector<int> widths;
         for (int row = b.line_start; row <= body_end && row < n; ++row) {
             const std::string &line = buf.lines[static_cast<size_t>(row)];
-            std::vector<int> p = pipes_of(line);
-            pipes[row] = p;
-            if (row == b.separator_line || p.size() < 2) continue;
-            for (size_t k = 0; k + 1 < p.size(); ++k) {
-                Cell c{p[k] + 1, p[k] + 1, p[k + 1], p[k + 1], 0, {}};
+            const RowShape &shape = shapes[row] = shape_of(line);
+            if (row == b.separator_line || shape.cells.empty()) continue;
+            for (size_t k = 0; k < shape.cells.size(); ++k) {
+                const int ws = shape.cells[k].first, we = shape.cells[k].second;
+                Cell c{ws, ws, we, we, 0, {}};
                 while (c.cs < c.ce && (line[static_cast<size_t>(c.cs)] == ' ' || line[static_cast<size_t>(c.cs)] == '\t')) ++c.cs;
                 while (c.ce > c.cs && (line[static_cast<size_t>(c.ce - 1)] == ' ' || line[static_cast<size_t>(c.ce - 1)] == '\t')) --c.ce;
                 // A picture cell has no text of its own on the grid: its
@@ -1224,9 +1247,9 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             if (npic > 0) {
                 int avail = TextWidth();
                 if (CurPane().text_cols > 8) avail = std::min(avail, CurPane().text_cols - 2);
-                const std::vector<int> &p0 = pipes[b.line_start];
+                const RowShape &s0 = shapes[b.line_start];
                 int used = 1 + 3 * static_cast<int>(widths.size());
-                if (!p0.empty()) used += Codepoints(buf.lines[static_cast<size_t>(b.line_start)].substr(0, static_cast<size_t>(p0.front())));
+                if (!s0.cells.empty()) used += Codepoints(buf.lines[static_cast<size_t>(b.line_start)].substr(0, static_cast<size_t>(s0.first)));
                 for (size_t k = 0; k < widths.size(); ++k)
                     if (!picture_col[k]) used += widths[k];
                 constexpr int kMinPictureCols = 8;
@@ -1244,8 +1267,8 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             OrgTableGrid g;
             g.start_row = b.line_start;
             g.end_row = std::min(body_end, n - 1);
-            const std::vector<int> &p0 = pipes[b.line_start];
-            g.indent = p0.empty() ? 0 : Codepoints(buf.lines[static_cast<size_t>(b.line_start)].substr(0, static_cast<size_t>(p0.front())));
+            const RowShape &s0 = shapes[b.line_start];
+            g.indent = s0.cells.empty() ? 0 : Codepoints(buf.lines[static_cast<size_t>(b.line_start)].substr(0, static_cast<size_t>(s0.first)));
             int col = g.indent;
             g.rule_cols.push_back(col);
             for (int w : widths) {
@@ -1288,8 +1311,8 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
         for (int row = b.line_start; row <= body_end && row < n; ++row) {
             if (!rows.count(row)) continue;
             const std::string &line = buf.lines[static_cast<size_t>(row)];
-            const std::vector<int> &p = pipes[row];
-            if (p.empty()) continue;
+            const RowShape &shape = shapes[row];
+            if (shape.cells.empty()) continue;
             if (row == b.separator_line) {
                 std::string rule = "├";
                 for (size_t k = 0; k < widths.size(); ++k) {
@@ -1299,7 +1322,7 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
                 rule += "┤";
                 Decoration d;
                 d.row = row;
-                d.col_start = p.front();
+                d.col_start = shape.first;
                 d.col_end = static_cast<int>(line.size());
                 d.virt_overlay = true;
                 d.virt_text = rule;
@@ -1322,7 +1345,28 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
                     default: after[k] = pad; break;
                 }
             }
-            for (size_t k = 0; k < p.size(); ++k) {
+            // One pipe before each cell and one after the last: `k` is the
+            // boundary before cell k (k == cells: after the last one).
+            const size_t nb = shape.cells.size() + 1;
+            // Is [at, at+len) inside some span the scan conceals or draws
+            // its own way (markup, maths, a directive)? A drawn pipe must
+            // not take that span's place.
+            auto claimed = [&](int at, int len) {
+                auto it = by_line.find(row);
+                if (it == by_line.end()) return false;
+                for (const mepml::Span *sp : it->second)
+                    if ((sp->markup || (sp->style & (mepml::kMath | mepml::kDirective))) && sp->col_start < at + len &&
+                        sp->col_end > at)
+                        return true;
+                return false;
+            };
+            // Bytes in the UTF-8 codepoint starting at `at`.
+            auto cp_len = [&](int at) {
+                const unsigned char c = static_cast<unsigned char>(line[static_cast<size_t>(at)]);
+                const int len = c < 0x80 ? 1 : c < 0xe0 ? 2 : c < 0xf0 ? 3 : 4;
+                return std::min(len, static_cast<int>(line.size()) - at);
+            };
+            for (size_t k = 0; k < nb; ++k) {
                 std::string text;
                 if (k > 0 && k - 1 < widths.size()) text += std::string(static_cast<size_t>(after[k - 1]), ' ') + " ";
                 // ASCII, like org's own pipes: the grid pass draws the
@@ -1331,16 +1375,65 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
                 text += picture_row ? " " : "|";
                 if (k < cs.size()) text += " " + std::string(static_cast<size_t>(before[k]), ' ');
                 // A short row: draw its missing cells after the last pipe.
-                if (k + 1 == p.size())
+                if (k + 1 == nb)
                     for (size_t m = cs.size(); m < widths.size(); ++m)
                         text += " " + std::string(static_cast<size_t>(widths[m]), ' ') + " |";
                 Decoration d;
                 d.row = row;
-                d.col_start = p[k];
-                d.col_end = p[k] + 1;
                 d.virt_overlay = true;
-                d.virt_text = text;
                 d.virt_text_hl = "Comment";
+                d.priority = 10;
+                const bool real = (k > 0 && k + 1 < nb) || (k == 0 && shape.lead) || (k + 1 == nb && shape.trail);
+                if (real) {
+                    d.col_start = k == 0 ? shape.first : shape.cells[k - 1].second;
+                    d.col_end = d.col_start + 1;
+                    d.virt_text = text;
+                    add(d);
+                    continue;
+                }
+                // A GFM row without this outer pipe: it is drawn on the
+                // cell's first (or last) character, which the overlay then
+                // repeats in the text's own colour -- unless that character
+                // belongs to something drawn its own way, when the row
+                // keeps its raw edge there.
+                const Cell *c = nullptr;
+                if (k == 0 && !cs.empty()) c = &cs.front();
+                if (k + 1 == nb && k > 0 && k - 1 < cs.size()) c = &cs[k - 1];
+                if (!c || c->ce <= c->cs || !c->image.empty()) continue;
+                // Markup on that edge (the render pass left it to us): the
+                // pipe takes its place, beside whatever it is replaced by.
+                const mepml::Span *edge = nullptr;
+                if (auto it = by_line.find(row); it != by_line.end())
+                    for (const mepml::Span *sp : it->second)
+                        if (edge_markup.count({row, sp->col_start}) && (k == 0 ? sp->col_start == c->cs : sp->col_end == c->ce))
+                            edge = sp;
+                if (edge) {
+                    d.col_start = edge->col_start;
+                    d.col_end = edge->col_end;
+                    d.virt_text = k == 0 ? text + edge->replace : edge->replace + text;
+                    add(d);
+                    continue;
+                }
+                const int at = k == 0 ? c->cs : c->ce - 1;
+                int start = at;
+                while (k != 0 && start > c->cs && (static_cast<unsigned char>(line[static_cast<size_t>(start)]) & 0xc0) == 0x80) --start;
+                const int len = cp_len(start);
+                if (claimed(start, len)) continue;
+                const std::string ch = line.substr(static_cast<size_t>(start), static_cast<size_t>(len));
+                d.col_start = start;
+                d.col_end = start + len;
+                d.virt_text = k == 0 ? text + ch : ch + text;
+                d.virt_text_hl = "";
+                add(d);
+            }
+            // Past a missing trailing pipe, the row's own trailing spaces.
+            if (!shape.trail && shape.cells.back().second < static_cast<int>(line.size())) {
+                Decoration d;
+                d.row = row;
+                d.col_start = shape.cells.back().second;
+                d.col_end = static_cast<int>(line.size());
+                d.virt_overlay = true;
+                d.conceal = true;
                 d.priority = 10;
                 add(d);
             }
@@ -1456,7 +1549,10 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
             if (b.result_line_end > b.result_line_start) out.fold_row = b.result_line_start;
             // Rendered HTML is laid out to the text width; its source's
             // long lines must not widen the card.
-            out.content_cols = b.result_format == "html" || run_id >= 0 ? 0 : widest(out.begin_row, b.result_line_end);
+            // Nor may a Markdown result's raw rows (they are laid out too).
+            out.content_cols = b.result_format == "html" || b.result_format == "markdown" || run_id >= 0
+                                   ? 0
+                                   : widest(out.begin_row, b.result_line_end);
             cards.push_back(std::move(out));
         }
     }

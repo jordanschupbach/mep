@@ -88,6 +88,8 @@ module.exports = grammar({
     ...EMPHASIS.flatMap(([, open, close]) => [$[open], $[close]]),
     $._abstract_open,
     $._abstract_break, // a line break (and any blank lines) inside @abstract{}
+    $._result_begin_markdown, // `// result_begin: markdown`
+    $._result_end_attached, // `// result_end` with an @caption/@alttext under it
     $._error_sentinel,
   ],
 
@@ -115,6 +117,7 @@ module.exports = grammar({
     ])),
 
     _block: $ => choice(
+      $._markdown_results_end,
       $.meta,
       $.comment,
       $.callout,
@@ -176,7 +179,7 @@ module.exports = grammar({
       optional($.code_content),
       $.fence_close,
       $._newline,
-      optional($.results),
+      optional(choice($.results, $._markdown_results_begin)),
       repeat($._attribute),
     )),
     // Spacing inside the header is folded into its punctuation tokens,
@@ -211,24 +214,35 @@ module.exports = grammar({
     ),
     result_text: _ => /[^\n]+/,
 
+    // results=markdown: the Markdown the block printed, between the
+    // markers, is the document's own blocks (a table it printed is a table).
+    // The block ends at the opening marker; the closing one stands alone,
+    // or is the captioned table's (image's, maths') just above its caption.
+    _markdown_results_begin: $ => seq(alias($._result_begin_markdown, $.result_begin), $._newline),
+    _markdown_results_end: $ => seq($.result_end, $._newline),
+    _results_attributes: $ => prec.right(seq(alias($._result_end_attached, $.result_end), $._newline, repeat1($._attribute))),
+
     // --- $$ ... $$ and \[ ... \] ------------------------------------------
     display_math: $ => prec.right(seq(
       $.math_open,
       optional($.math_content),
       $.math_close,
       $._line_end,
-      repeat($._attribute),
+      choice(repeat($._attribute), $._results_attributes),
     )),
 
     // --- tables -------------------------------------------------------------
     table: $ => prec.right(seq(
       repeat1(choice($.table_row, seq($.table_delimiter_row, $._newline))),
-      repeat($._attribute),
+      choice(repeat($._attribute), $._results_attributes),
     )),
+    // Outer pipes are optional (GitHub-flavoured Markdown).
     table_row: $ => seq(
       $._table_row_start,
-      $._table_pipe,
-      repeat(seq(optional($.table_cell), $._table_pipe)),
+      choice(
+        seq($._table_pipe, repeat(seq(optional($.table_cell), $._table_pipe)), optional($.table_cell)),
+        seq($.table_cell, repeat1(seq($._table_pipe, optional($.table_cell)))),
+      ),
       $._newline,
     ),
     table_cell: $ => repeat1($._inline),
@@ -251,7 +265,7 @@ module.exports = grammar({
     import: $ => seq($._directive_start, '@', 'import', $._path_group, $._line_end),
     image: $ => prec.right(seq(
       $._directive_start, '@', 'image', $._path_group, $._line_end,
-      repeat($._attribute),
+      choice(repeat($._attribute), $._results_attributes),
     )),
     _path_group: $ => seq('{', optional(field('path', $.path)), '}'),
     path: _ => /[^}\n]+/,

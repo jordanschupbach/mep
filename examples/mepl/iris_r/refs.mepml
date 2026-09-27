@@ -1,0 +1,103 @@
+// References for iris_r.mepml.
+
+@article{fisher1936,
+  author = {Ronald A. Fisher},
+  title = {The Use of Multiple Measurements in Taxonomic Problems},
+  journal = {Annals of Eugenics},
+  volume = {7},
+  number = {2},
+  pages = {179–188},
+  year = 1936
+}
+
+@article{anderson1935,
+  author = {Edgar Anderson},
+  title = {The Irises of the Gaspé Peninsula},
+  journal = {Bulletin of the American Iris Society},
+  volume = {59},
+  pages = {2–5},
+  year = 1935
+}
+
+@article{box1949,
+  author = {George E. P. Box},
+  title = {A General Distribution Theory for a Class of Likelihood Criteria},
+  journal = {Biometrika},
+  volume = {36},
+  number = {3/4},
+  pages = {317–346},
+  year = 1949
+}
+
+@article{bezdek1999,
+  author = {James C. Bezdek and James M. Keller and Raghu Krishnapuram and Ludmila I. Kuncheva and Nikhil R. Pal},
+  title = {Will the Real Iris Data Please Stand Up?},
+  journal = {IEEE Transactions on Fuzzy Systems},
+  volume = {7},
+  number = {3},
+  pages = {368–369},
+  year = 1999
+}
+
+@book{mardia1979,
+  author = {Kanti V. Mardia and John T. Kent and John M. Bibby},
+  title = {Multivariate Analysis},
+  publisher = {Academic Press},
+  address = {London},
+  year = 1979
+}
+
+@book{hastie2009,
+  author = {Trevor Hastie and Robert Tibshirani and Jerome Friedman},
+  title = {The Elements of Statistical Learning: Data Mining, Inference, and Prediction},
+  edition = {2nd},
+  publisher = {Springer},
+  address = {New York},
+  year = 2009
+}
+
+@book{venables2002,
+  author = {William N. Venables and Brian D. Ripley},
+  title = {Modern Applied Statistics with S},
+  edition = {4th},
+  publisher = {Springer},
+  address = {New York},
+  year = 2002
+}
+
+@book{wickham2016,
+  author = {Hadley Wickham},
+  title = {ggplot2: Elegant Graphics for Data Analysis},
+  edition = {2nd},
+  publisher = {Springer},
+  address = {New York},
+  year = 2016
+}
+
+@manual{rcore2026,
+  author = {{R Core Team}},
+  title = {R: A Language and Environment for Statistical Computing},
+  organization = {R Foundation for Statistical Computing},
+  address = {Vienna, Austria},
+  note = {Version 4.6.1},
+  year = 2026
+}
+
+@article{lachenbruch1968,
+  author = {Peter A. Lachenbruch and M. Ray Mickey},
+  title = {Estimation of Error Rates in Discriminant Analysis},
+  journal = {Technometrics},
+  volume = {10},
+  number = {1},
+  pages = {1–11},
+  year = 1968
+}
+
+@book{xie2015,
+  author = {Yihui Xie},
+  title = {Dynamic Documents with R and knitr},
+  edition = {2nd},
+  publisher = {Chapman and Hall/CRC},
+  address = {Boca Raton, Florida},
+  year = 2015
+}

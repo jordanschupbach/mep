@@ -203,6 +203,159 @@ int main() {
         CHECK(first == 3 && last == 3 && d3.blocks[0].lang == "sh");
     }
 
+    // --- GitHub-flavoured Markdown tables: outer pipes optional after a
+    // header and a delimiter row; pipes in prose or list items are no table.
+    {
+        Lines src = {
+            "Before it.",                  // 0 (a paragraph the header ends)
+            "Name | Value",                // 1
+            ":-- | --:",                   // 2
+            "a \\| b | 1",                 // 3
+            "| c | 2 |",                   // 4
+            "short",                       // 5 (no pipe: ends the table)
+            "",                            // 6
+            "prose | with a pipe",         // 7
+            "",                            // 8
+            "- a | b",                     // 9
+            "- | -",                       // 10
+            "",                            // 11
+            "x | y",                       // 12
+            "- | -",                       // 13 (a list item, not a delimiter)
+        };
+        Document d = Parse(src);
+        CHECK(d.blocks.size() >= 5);
+        CHECK(d.blocks[0].kind == BlockKind::Paragraph && d.blocks[0].line_end == 0);
+        const Block &t = d.blocks[1];
+        CHECK(t.kind == BlockKind::Table && t.line_start == 1 && t.line_end == 4 && t.rows_end == 4);
+        CHECK(t.header_rows == 1 && t.separator_line == 2 && t.rows.size() == 3);
+        CHECK(t.aligns.size() == 2 && t.aligns[0] == Align::Left && t.aligns[1] == Align::Right);
+        CHECK(t.rows[1].size() == 2 && t.rows[2].size() == 2);
+        const TableCell &esc = t.rows[1][0];
+        CHECK(t.text.substr(static_cast<size_t>(esc.start), static_cast<size_t>(esc.end - esc.start)) == "a \\| b");
+        CHECK(d.blocks[2].kind == BlockKind::Paragraph && d.blocks[2].line_start == 5);
+        CHECK(d.blocks[3].kind == BlockKind::Paragraph && d.blocks[3].line_start == 7);
+        CHECK(d.blocks[4].kind == BlockKind::List);
+        for (const Block &b : d.blocks) CHECK(b.kind != BlockKind::Table || b.line_start == 1);
+        // TableCells: outer pipes optional, escapes and `verbatim` respected.
+        CHECK(TableCells("a | b").size() == 2 && TableCells("| a | b |").size() == 2);
+        CHECK(TableCells("| a | b").size() == 2 && TableCells("a | `x|y` | c \\| d").size() == 3);
+        CHECK(TableCells("no pipe").empty() && TableCells("|").empty());
+    }
+
+    // --- results=markdown: output written raw and read as the document's own.
+    {
+        Lines r = FormatResults("\n\n|a|b|\n|-|-|\n|1|2|\n\n", "markdown");
+        CHECK((r == Lines{"// result_begin: markdown", "|a|b|", "|-|-|", "|1|2|", "// result_end"}));
+        Document opts = Parse({"```{r, results=markdown}", "x", "```"});
+        CHECK(ResultFormatFor(opts.blocks[0]) == "markdown");
+        CHECK(ResultFormatFor(Parse({"```{r, results=asis}", "x", "```"}).blocks[0]) == "markdown");
+        CHECK(ResultFormatFor(Parse({"```{r, results=md}", "x", "```"}).blocks[0]) == "markdown");
+        CHECK(ResultFormatFor(Parse({"```{r, results=html}", "x", "```"}).blocks[0]) == "html");
+        CHECK(ResultFormatFor(Parse({"```{r, results=output}", "x", "```"}).blocks[0]).empty());
+        Lines src = {
+            "```{r, results=markdown}",    // 0
+            "kable(x)",                    // 1
+            "```",                         // 2
+            "// result_begin: md",         // 3
+            "| A | B |",                   // 4
+            "|--:|:--|",                   // 5
+            "| 1 | 2 |",                   // 6
+            "// result_end",               // 7
+            "@caption{Printed}",           // 8
+            "",                            // 9
+            "| typed | table |",           // 10
+        };
+        Document d = Parse(src);
+        CHECK(d.blocks.size() == 3);
+        const Block &code = d.blocks[0];
+        CHECK(code.kind == BlockKind::Code && code.result_format == "markdown");
+        CHECK(code.line_end == 3 && code.result_line_start == 3 && code.result_line_end == 7);
+        CHECK(code.result_lines.size() == 3 && code.result_lines[0] == "| A | B |");
+        const Block &t = d.blocks[1];
+        CHECK(t.kind == BlockKind::Table && t.line_start == 4 && t.rows_end == 6 && t.line_end == 8);
+        CHECK(t.caption == "Printed" && t.rows.size() == 2);
+        // Printed tables are numbered with typed ones.
+        const std::vector<std::string> labels = BlockLabels(d);
+        CHECK(labels[0].empty() && labels[1] == "Table 1" && labels[2] == "Table 2");
+        // Re-running replaces the whole region, table included.
+        int first = 0, last = 0;
+        ResultsReplaceRange(code, &first, &last);
+        CHECK(first == 3 && last == 8);
+        // The HTML export draws the table once, as a table.
+        const std::string html = ToHtml(d);
+        CHECK(html.find("results") == std::string::npos || html.find("<pre class=\"results\">") == std::string::npos);
+        CHECK(html.find("Table 1:") != std::string::npos);
+        // No diagnostics for a well-formed region; one for an unclosed one.
+        CHECK(d.diagnostics.empty());
+        Document bad = Parse({"```{r, results=markdown}", "x", "```", "// result_begin: markdown", "| a |"});
+        CHECK(!bad.diagnostics.empty());
+    }
+
+    // --- What the exports show: the header's Exports:, a block's exports= or echo=.
+    {
+        Lines src = {
+            "//? Exports: results",            // 0
+            "```{r}",                          // 1
+            "1",                               // 2
+            "```",                             // 3
+            "```{r, echo=false, file=\"a.png\"}", // 4
+            "plot(1)",                         // 5
+            "```",                             // 6
+            "// result_begin:",                // 7
+            "// @image{a.png}",                // 8
+            "// result_end",                   // 9
+            "```{r, results=markdown, exports=code}", // 10
+            "kable(x)",                        // 11
+            "```",                             // 12
+            "// result_begin: markdown",       // 13
+            "| a | b |",                       // 14
+            "|---|---|",                       // 15
+            "| 1 | 2 |",                       // 16
+            "// result_end",                   // 17
+            "@caption{Hidden}",                // 18
+            "",                                // 19
+            "| c | d |",                       // 20
+            "@caption{Shown}",                 // 21
+            "```{r, exports=both}",            // 22
+            "2",                               // 23
+            "```",                             // 24
+            "```{r, exports=none}",            // 25
+            "3",                               // 26
+            "```",                             // 27
+        };
+        Document d = Parse(src);
+        auto exports = [&](int line, bool code, bool results) {
+            const Block &b = d.blocks[static_cast<size_t>(d.BlockAtLine(line))];
+            bool c = false, r = false;
+            CodeExports(d, b, &c, &r);
+            return c == code && r == results;
+        };
+        CHECK(exports(2, false, true));   // the header's default
+        CHECK(exports(5, false, true));   // echo=false
+        CHECK(exports(11, true, false));  // exports=code
+        CHECK(exports(23, true, true));   // exports=both
+        CHECK(exports(26, false, false)); // exports=none
+        const std::vector<bool> hidden = ExportHidden(d);
+        const std::vector<std::string> labels = BlockLabels(d);
+        int hidden_tables = 0;
+        for (size_t i = 0; i < d.blocks.size(); ++i) {
+            if (d.blocks[i].kind != BlockKind::Table) continue;
+            if (hidden[i]) {
+                ++hidden_tables;
+                CHECK(labels[i].empty());  // not numbered
+            } else {
+                CHECK(labels[i] == "Table 1" && d.blocks[i].caption == "Shown");
+            }
+        }
+        CHECK(hidden_tables == 1);
+        CHECK(labels[static_cast<size_t>(d.BlockAtLine(5))] == "Figure 1");
+        const std::string html = ToHtml(d);
+        CHECK(html.find("kable(x)") != std::string::npos && html.find(">1</code>") == std::string::npos);
+        CHECK(html.find("plot(1)") == std::string::npos && html.find("a.png") != std::string::npos);
+        CHECK(html.find("Hidden") == std::string::npos && html.find("Table 1: ") != std::string::npos);
+        CHECK(html.find(">3</code>") == std::string::npos && html.find(">2</code>") != std::string::npos);
+    }
+
     // --- Display math, images, captions, tables, lists, rules, citations.
     {
         Lines src = {
@@ -345,6 +498,23 @@ int main() {
         CHECK(html.find("<figcaption>Figure 2: Second</figcaption>") != std::string::npos);
         CHECK(html.find("<caption>Table 1: Tab</caption>") != std::string::npos);
         CHECK(html.find("@image{plot.png}") == std::string::npos);
+        // A table scrolls in its own box rather than past the margin; the
+        // page is sized for a phone's width.
+        CHECK(html.find("<div class=\"table-wrap\"><table><caption>Table 1: Tab</caption>") != std::string::npos);
+        CHECK(html.find("<meta name=\"viewport\"") != std::string::npos);
+        // Several plots from one block: one figure, every figure closed.
+        const Document two = Parse({"```r", "x", "```", "// result_begin:", "// @image{a.png}", "// @image{b.png}", "// result_end",
+                                    "@caption{Two}"});
+        CHECK(two.blocks[0].result_images.size() == 2);
+        const std::string html2 = ToHtml(two);
+        CHECK(html2.find("<figure><img src=\"a.png\" alt=\"\"><img src=\"b.png\" alt=\"\"><figcaption>") != std::string::npos);
+        size_t opened = 0, closed = 0;
+        for (size_t at = 0; (at = html2.find("<figure", at)) != std::string::npos; ++at) ++opened;
+        for (size_t at = 0; (at = html2.find("</figure>", at)) != std::string::npos; ++at) ++closed;
+        CHECK(opened == closed);
+        // The HTML importer finds code results by this class's text, so
+        // the stylesheet must not spell it.
+        CHECK(html2.find("results-html") == std::string::npos);
     }
 
     // --- @abstract: prose over lines, paragraphs split by blank lines.
@@ -517,7 +687,7 @@ int main() {
         CHECK(count[BlockKind::Heading] >= 4);
         CHECK(count[BlockKind::Code] >= 4);
         CHECK(count[BlockKind::Image] == 2);
-        CHECK(count[BlockKind::Table] == 2);
+        CHECK(count[BlockKind::Table] == 4);  // two typed, one GFM, one printed by a block
         CHECK(count[BlockKind::MathBlock] == 2);
         CHECK(count[BlockKind::Citation] == 2);
         CHECK(count[BlockKind::Callout] >= 3);

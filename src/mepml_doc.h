@@ -5,6 +5,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 // mepml: mep's own lightweight markup language for literate-programming
@@ -164,7 +165,11 @@ struct Block {
     // What the results are: "" for plain text output, "html" for HTML the
     // block produced (a `results=html` option, recorded on the results'
     // own opening line as `// result_begin: html`). The editor renders an
-    // html result in place and the exports embed it.
+    // html result in place and the exports embed it. "markdown"
+    // (`results=markdown`) is Markdown the block printed, written between
+    // the markers without `// ` and parsed as blocks of the document: the
+    // block owns only the markers (line_end is the opening one), and
+    // result_lines holds the raw lines, which every export skips.
     std::string result_format;
 
     std::map<std::string, std::string> fields;  // Citation fields, lowercase names
@@ -181,6 +186,7 @@ struct Block {
     std::vector<Align> aligns;
     int header_rows = 0;  // rows above the |---| separator (0 = no header)
     int separator_line = -1;
+    int rows_end = -1;    // the table's last row (before any caption or marker)
 
     std::vector<ListItem> items;  // List
 
@@ -315,7 +321,8 @@ bool ResultImagePath(const std::string &text, std::string *path);
 // "Figure N" / "Table N" for every numbered block, "" for the rest,
 // parallel to doc.blocks. Images and code blocks that produced a figure
 // share one sequence; tables have their own. The editor's captions and
-// the HTML export both number from this, so they always agree.
+// the HTML export both number from this, so they always agree. What the
+// exports leave out (see CodeExports) is not numbered.
 std::vector<std::string> BlockLabels(const Document &doc);
 
 // --- Generated content: the table of contents and the bibliography, as
@@ -373,13 +380,34 @@ struct HtmlOptions {
 std::string ToHtml(const Document &doc, const HtmlOptions &opts = HtmlOptions());
 
 // ---------------------------------------------------------------------------
+// What the exports show of a code block, as org-babel's :exports says it:
+// `code`, `results`, `both` (the default) or `none`. The document's header
+// sets it for every block (`//? Exports: results`, or an `exports` option);
+// a block's own `exports=` wins, and so does knitr's `echo=false` (results
+// only). The editor always shows everything.
+void CodeExports(const Document &doc, const Block &b, bool *code, bool *results);
+// Parallel to doc.blocks: true for a block the exports leave out -- one
+// between the markers of `results=markdown` results that are not exported.
+std::vector<bool> ExportHidden(const Document &doc);
+
+// ---------------------------------------------------------------------------
+// Tables: a table line's cells, as [begin, end) byte ranges of `line`,
+// split on the pipes that are neither escaped nor inside `verbatim`. Outer
+// pipes are optional, as in GitHub-flavoured Markdown: `| a | b |` and
+// `a | b` are both two cells. Empty when the line has no such pipe.
+std::vector<std::pair<int, int>> TableCells(const std::string &line);
+
+// ---------------------------------------------------------------------------
 // Code-block results: the lines that should replace a code block's results
 // region (or be inserted right after its closing fence when it has none).
-// `format` is the results' kind ("" for text, "html"), written on the
-// opening marker (`// result_begin: html`) so the results keep it.
+// `format` is the results' kind ("" for text, "html", "markdown"), written
+// on the opening marker (`// result_begin: html`) so the results keep it.
+// Markdown lines are written without the `// ` prefix, to be parsed as the
+// document's own.
 std::vector<std::string> FormatResults(const std::string &output, const std::string &format = "");
 // The results kind a code block's options ask for: "html" for results=html
-// (or output=html), "" otherwise.
+// (or output=html); "markdown" for results=markdown, md, asis (knitr's
+// name) or raw (org's); "" otherwise.
 std::string ResultFormatFor(const Block &b);
 // An html result as something that can sit inside a page: a whole
 // document's <body> content, preceded by its <head>'s <style> elements; a

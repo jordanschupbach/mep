@@ -267,6 +267,26 @@ expected to write the file itself. After the run, the results hold an
 card, and the export shows it as an image. The block's =@caption= then
 captions the figure.
 
+** What the exports show
+
+By default an export shows each code block and its results. org-babel's
+=exports= option changes that: =code=, =results=, =both= or =none=. Set it
+for the whole document in the header, or on one block, where it wins:
+
+#+begin_example
+//? Exports: results
+```{r, exports=both}
+summary(fit)
+```
+#+end_example
+
+=echo=false= (knitr's name) also means results only. A report written
+this way exports as its text, tables and figures, with the code that made
+them left in the =.mepml= file. The editor always shows everything, and
+runs every block as usual. Results that are not exported (=exports=code=
+or =none=) are not numbered, in the editor either: a figure or table
+caption's number is always the one a reader sees.
+
 ** HTML output
 
 A block with =results=html= prints HTML, and its results are that HTML,
@@ -293,6 +313,36 @@ raw HTML, and Org as the =#+begin_export html= block org-babel itself
 writes for =:results html=. Word, OpenDocument, RTF and plain text show
 its text, and the three document formats also carry the markup itself, so
 importing one of them brings the HTML back.
+
+** Markdown output
+
+A block with =results=markdown= prints Markdown, and its results are read
+as part of the document. A table it prints is a table, numbered and
+captioned like one typed in:
+
+#+begin_example
+```{r, results=markdown}
+knitr::kable(head(iris, 3))
+```
+// result_begin: markdown
+|  Sepal.Length|  Sepal.Width| Species |
+|-------------:|------------:|:--------|
+|           5.1|          3.5|setosa   |
+|           4.9|          3.0|setosa   |
+|           4.7|          3.2|setosa   |
+// result_end
+@caption{The first flowers}
+#+end_example
+
+The output is written between the markers as it is, without the =// =
+prefix, and the blank lines a printer puts around a table are dropped.
+=results=md=, =results=asis= (knitr's name) and =results=raw= (org's) mean
+the same. A caption under the closing marker belongs to the table (or
+picture, or displayed maths) the results end with, so it stays put when
+the block is run again: running it replaces everything between the
+markers. The exports write the results as the document's own tables and
+text; which block printed them is not kept, so after importing a document
+back, running that block adds a fresh copy of its results.
 
 ** Programs in a terminal
 
@@ -440,6 +490,20 @@ Figures (images, and code blocks that drew one) and tables are numbered:
 a caption reads "Figure 2: ..." or "Table 1: ..." in the editor and in
 the export alike. A figure's caption is centred under it, with its alt text
 in small italics below.
+
+GitHub-flavoured Markdown tables work as they are. After a header row
+and a delimiter row with as many cells, the outer pipes are optional, and
+=\|= is a pipe inside a cell:
+
+#+begin_example
+Species    | Petal length | Petal width
+:--------- | -----------: | ----------:
+setosa     |         1.46 |        0.25
+versicolor |         4.26 |        1.33
+#+end_example
+
+Without that delimiter row a line needs a pipe at both ends to be a
+table row, so prose with a =|= in it stays prose.
 
 Tables are drawn as a grid: an outline, a shaded header and striped rows.
 The pipes don't need to line up in the file, because mep lines the columns

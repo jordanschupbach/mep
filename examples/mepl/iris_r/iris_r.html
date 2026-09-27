@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The iris dataset</title>
+<style>
+:root {
+  --fg: #1f2328; --muted: #59636e; --bg: #fff; --link: #0b5cad; --rule: #d1d9e0; --rule-strong: #1f2328;
+  --code-bg: #eff1f3; --pre-bg: #f6f8fa; --th-bg: #f6f8fa; --mark: #fff3a3; --results-bg: #fffbeb; --results-rule: #e5c07b;
+  --cite: #0b5cad; --missing: #c62828; --ins: #2f7d32; --del: #c62828;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --fg: #e6e6e6; --muted: #9ba3ad; --bg: #16181c; --link: #7cb7ff; --rule: #3a3f47; --rule-strong: #c9d1d9;
+    --code-bg: #262a31; --pre-bg: #1e2227; --th-bg: #1e2227; --mark: #6b5a00; --results-bg: #262216; --results-rule: #9c7c2c;
+    --cite: #7cb7ff; --missing: #ff7b72; --ins: #7ee787; --del: #ff7b72;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --fg: #e6e6e6; --muted: #9ba3ad; --bg: #16181c; --link: #7cb7ff; --rule: #3a3f47; --rule-strong: #c9d1d9;
+  --code-bg: #262a31; --pre-bg: #1e2227; --th-bg: #1e2227; --mark: #6b5a00; --results-bg: #262216; --results-rule: #9c7c2c;
+  --cite: #7cb7ff; --missing: #ff7b72; --ins: #7ee787; --del: #ff7b72;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { font-family: Charter, 'Bitstream Charter', 'Sitka Text', Cambria, Georgia, 'Times New Roman', serif; font-size: 1.0625rem;
+  max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; line-height: 1.6; color: var(--fg); background: var(--bg);
+  overflow-wrap: break-word; font-kerning: normal; }
+h1, h2, h3, h4, h5, h6 { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; margin: 2em 0 .6em; scroll-margin-top: 1rem; text-wrap: balance; }
+h1 { font-size: 1.7em; padding-bottom: .25em; border-bottom: 1px solid var(--rule); }
+h2 { font-size: 1.35em; } h3 { font-size: 1.15em; } h4, h5, h6 { font-size: 1em; }
+h1.title { font-size: 2.2em; text-align: center; border: 0; margin: 0 0 .8em; }
+p { margin: 0 0 1em; }
+a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: .15em; }
+a.cite, a.footnote-ref, sup a { text-decoration: none; }
+.cite-missing { color: var(--missing); }
+ul, ol { padding-left: 1.6em; margin: 0 0 1em; } li { margin: .2em 0; } li > p { margin: 0; }
+blockquote { margin: 1em 0; padding: 0 1em; color: var(--muted); border-left: 3px solid var(--rule); }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 2em 0; }
+code, pre, kbd, .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86em; }
+code { background: var(--code-bg); padding: .1em .3em; border-radius: 4px; }
+pre { background: var(--pre-bg); border: 1px solid var(--rule); padding: .8em 1em; margin: 0 0 1em; overflow-x: auto; border-radius: 6px; line-height: 1.45; tab-size: 4; }
+pre code { background: none; padding: 0; font-size: 1em; border-radius: 0; }
+pre.results { background: var(--results-bg); border-color: var(--results-rule); border-left-width: 3px; }
+img, svg, video { max-width: 100%; height: auto; }
+figure { margin: 1.8em 0; text-align: center; }
+figure img { display: block; margin: 0 auto; }
+figure img + img { margin-top: 1em; }
+figure.code { text-align: left; margin: 1.2em 0; }
+figure.code > pre:last-child { margin-bottom: 0; }
+figure.code figcaption.lang { font: .72em system-ui, sans-serif; color: var(--muted); text-align: left; letter-spacing: .04em; text-transform: uppercase; margin: 0 0 .3em; max-width: none; }
+figcaption, caption, .caption { font-size: .9em; color: var(--muted); text-align: center; line-height: 1.45; }
+figcaption { margin: .7em auto 0; max-width: 38rem; }
+.caption { margin: -.4em 0 1.2em; }
+/* A table may use more than the text column, up to 60rem, centred on it. */
+.table-wrap { width: min(100vw - 2.5rem, 60rem); max-width: none; margin: 1.8em 0 1.8em calc(50% - min(50vw - 1.25rem, 30rem)); overflow-x: auto; }
+table { border-collapse: collapse; margin: 0 auto; font-size: .9em; line-height: 1.4; font-variant-numeric: lining-nums tabular-nums;
+  border-top: 2px solid var(--rule-strong); border-bottom: 2px solid var(--rule-strong); }
+caption { caption-side: top; padding-bottom: .6em; }
+th, td { padding: .4em .75em; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; font-size: .92em; font-weight: 600; background: var(--th-bg);
+  border-bottom: 1px solid var(--rule-strong); }
+tr:last-child > td { border-bottom: 0; }
+td img, th img { display: block; max-height: 13em; width: auto; margin: 0 auto; }
+figure.code > div.results { overflow-x: auto; }
+.big { font-size: 1.3em; } mark { background: var(--mark); color: inherit; padding: 0 .1em; } ins { color: var(--ins); } del { color: var(--del); }
+.callout { --c: #61afef; border-left: 4px solid var(--c); background: color-mix(in srgb, var(--c) 11%, transparent); padding: .7em 1em; margin: 1.2em 0; border-radius: 4px; }
+.callout > :last-child { margin-bottom: 0; }
+.callout-title { font: 600 .78em system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; margin-bottom: .3em; }
+.callout-warning, .callout-caution { --c: #e5a50a; }
+.callout-error, .callout-danger { --c: #e06c75; }
+.callout-tip, .callout-hint, .callout-success { --c: #98c379; }
+.callout-todo, .callout-fixme, .callout-important { --c: #c678dd; }
+.math-display { text-align: center; margin: 1.2em 0; max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+mjx-container[display="true"] { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.footnotes { font-size: .88em; color: var(--muted); border-top: 1px solid var(--rule); margin-top: 3em; padding-top: 1em; }
+.footnotes ol { padding-left: 1.4em; }
+.abstract { margin: 0 auto 2.5em; max-width: 38rem; font-size: .95em; padding: 1em 1.4em; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.abstract p:last-child { margin-bottom: 0; }
+.abstract-title { font: 600 .8em system-ui, sans-serif; text-align: center; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .6em; color: var(--muted); }
+.toc { margin: 0 0 2em; } .toc ul { list-style: none; padding-left: 0; } .toc a { text-decoration: none; }
+.toc-2 { padding-left: 1em; } .toc-3 { padding-left: 2em; } .toc-4 { padding-left: 3em; }
+@media (max-width: 36rem) {
+  body { font-size: 1rem; padding: 1.5rem 1rem 3rem; }
+  h1.title { font-size: 1.8em; }
+  .abstract { padding: .8em 0; }
+  .table-wrap { width: calc(100vw - 2rem); margin-left: calc(50% - 50vw + 1rem); }
+  pre { padding: .7em .8em; }
+}
+@media print {
+  @page { margin: 2cm; }
+  :root { --fg: #000; --bg: #fff; --link: #000; }
+  body { max-width: none; padding: 0; font-size: 11pt; }
+  a { text-decoration: none; }
+  h1, h2, h3, h4 { break-after: avoid; }
+  figure, table, pre, .math-display, .callout { break-inside: avoid; }
+  .table-wrap, pre, .math-display { overflow: visible; }
+  pre { white-space: pre-wrap; }
+}
+</style>
+<script>MathJax = { tex: { inlineMath: [['\\(', '\\)']] } };</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js"></script>
+</head>
+<body>
+<h1 class="title">The iris dataset</h1>
+<section class="abstract"><p class="abstract-title">Abstract</p><p>In 1936 the statistician and geneticist Ronald Fisher used 150 iris flowers,
+measured by the botanist Edgar Anderson, to introduce the linear discriminant:
+the weighted sum of measurements that best separates known groups. The data hold
+50 flowers from each of three species, Iris setosa, Iris versicolor and Iris
+virginica, with four measurements per flower: sepal length, sepal width, petal
+length and petal width. We repeat his analysis in R.</p><p>A multivariate analysis of variance confirms that the species differ (Wilks'
+\(\Lambda = 0.023\)). The first linear discriminant, a contrast of petal size
+against sepal width, carries 99.1% of the between-species separation, with a
+canonical correlation of 0.985. It separates I. setosa from the other two
+species completely. Using both discriminants, the classifier misclassifies 3 of
+150 flowers under leave-one-out cross-validation, an error rate of 2.0%. All
+three errors involve I. versicolor and I. virginica. Repeated 70/30 train-test
+splits give a mean test error of 2.2%. Box's M test rejects equal species
+covariance matrices, yet quadratic discriminant analysis, which does not assume
+them, does no better: its leave-one-out error is 2.7%.</p></section>
+<h1 id="introduction">Introduction</h1>
+<p>The iris data are among the best-known datasets in statistics and machine
+learning. They were collected by the botanist Edgar Anderson, who was studying
+variation among irises in their natural populations <a class="cite" data-key="anderson1935" data-kind="citep" href="#cite-anderson1935">(Anderson, 1935)</a>. Two of
+the three species were gathered on the Gaspé Peninsula in Quebec, from the same
+pasture, on the same day. Ronald Fisher used them in the paper that introduced
+the linear discriminant <a class="cite" data-key="fisher1936" data-kind="citep" href="#cite-fisher1936">(Fisher, 1936)</a>. Fisher's question was one that
+taxonomists face all the time. Given several measurements on a specimen, how
+should they be combined into one number that best tells the groups apart? His
+answer, a weighted sum whose weights are chosen to maximise the separation
+between groups relative to the scatter within them, is still the starting point
+for classification methods today.</p>
+<p>Each of the 150 flowers has four measurements, in centimetres: the length and
+width of a sepal and the length and width of a petal. Fifty flowers come from
+each of the three species pictured in Table 1. The data ship with R as
+<code>datasets::iris</code>. That copy agrees with the values Fisher published, whereas
+some copies circulating online contain transcription errors <a class="cite" data-key="bezdek1999" data-kind="citep" href="#cite-bezdek1999">(Bezdek et al., 1999)</a>.</p>
+<div class="table-wrap"><table><caption>Table 1: The three species in the data</caption><tr><td><img src="./figs/Iris_versicolor.jpg" alt=""></td><td><img src="./figs/Iris_setosa.jpg" alt=""></td><td><img src="./figs/Iris_virginica.jpg" alt=""></td></tr><tr><td><em>Iris versicolor</em></td><td><em>Iris setosa</em></td><td><em>Iris virginica</em></td></tr></table></div>
+<p>This report is a complete linear discriminant analysis (LDA) of the data. The
+Methods section develops the technique: Fisher's criterion, the probabilistic
+model behind it, the assumptions it makes, and the quantities used to interpret
+and evaluate a fitted discriminant. The Analysis section applies each step in R.
+It tests whether the species differ at all, checks the assumptions, fits and
+interprets the discriminant functions, and measures how well they classify
+flowers they were not fitted to. Every table and figure is computed by R code
+kept in the report's source, <code>iris_r.mepml</code>, where each block reruns on its own
+(<code>C-c C-c</code> in mep, or <code>&lt;leader&gt;ka</code> to run them all). The exported report shows
+what the code computes, not the code itself.</p>
+<h1 id="data">Data</h1>
+<p>Table 2 describes the five columns of the data. None has missing values, and
+the design is balanced: 50 flowers of each species. The tables in this report
+are printed by R itself, with <code>knitr::kable()</code>, as Markdown that mep reads as a
+table (<code>results=markdown</code>), so they are recomputed whenever the report is run
+again.</p>
+<div class="table-wrap"><table><caption>Table 2: The five columns of the data: 150 flowers, one row each</caption><tr><th style="text-align:left">Column</th><th style="text-align:left">Kind</th><th style="text-align:left">Values</th><th style="text-align:right">Missing</th></tr><tr><td style="text-align:left"><code>Sepal.Length</code></td><td style="text-align:left">measurement (cm)</td><td style="text-align:left">4.3 to 7.9</td><td style="text-align:right">0</td></tr><tr><td style="text-align:left"><code>Sepal.Width</code></td><td style="text-align:left">measurement (cm)</td><td style="text-align:left">2.0 to 4.4</td><td style="text-align:right">0</td></tr><tr><td style="text-align:left"><code>Petal.Length</code></td><td style="text-align:left">measurement (cm)</td><td style="text-align:left">1.0 to 6.9</td><td style="text-align:right">0</td></tr><tr><td style="text-align:left"><code>Petal.Width</code></td><td style="text-align:left">measurement (cm)</td><td style="text-align:left">0.1 to 2.5</td><td style="text-align:right">0</td></tr><tr><td style="text-align:left"><code>Species</code></td><td style="text-align:left">species (factor)</td><td style="text-align:left">setosa (50), versicolor (50), virginica (50)</td><td style="text-align:right">0</td></tr></table></div>
+<p>Table 3 shows the first six flowers as R stores them, one row per flower.</p>
+<div class="table-wrap"><table><caption>Table 3: The first six flowers in the data (measurements in cm)</caption><tr><th style="text-align:right">Sepal length</th><th style="text-align:right">Sepal width</th><th style="text-align:right">Petal length</th><th style="text-align:right">Petal width</th><th style="text-align:left">Species</th></tr><tr><td style="text-align:right">5.1</td><td style="text-align:right">3.5</td><td style="text-align:right">1.4</td><td style="text-align:right">0.2</td><td style="text-align:left">setosa</td></tr><tr><td style="text-align:right">4.9</td><td style="text-align:right">3.0</td><td style="text-align:right">1.4</td><td style="text-align:right">0.2</td><td style="text-align:left">setosa</td></tr><tr><td style="text-align:right">4.7</td><td style="text-align:right">3.2</td><td style="text-align:right">1.3</td><td style="text-align:right">0.2</td><td style="text-align:left">setosa</td></tr><tr><td style="text-align:right">4.6</td><td style="text-align:right">3.1</td><td style="text-align:right">1.5</td><td style="text-align:right">0.2</td><td style="text-align:left">setosa</td></tr><tr><td style="text-align:right">5.0</td><td style="text-align:right">3.6</td><td style="text-align:right">1.4</td><td style="text-align:right">0.2</td><td style="text-align:left">setosa</td></tr><tr><td style="text-align:right">5.4</td><td style="text-align:right">3.9</td><td style="text-align:right">1.7</td><td style="text-align:right">0.4</td><td style="text-align:left">setosa</td></tr></table></div>
+<p>Table 4 summarises each measurement by species. The species differ most in
+their petals. Setosa petals average 1.46 cm long, against 4.26 cm for
+versicolor and 5.55 cm for virginica. Setosa has the widest sepals and the
+shortest petals, the reverse of the other two species. Virginica is larger
+than versicolor on all four measurements, but by much less than either differs
+from setosa.</p>
+<div class="table-wrap"><table><caption>Table 4: Mean (standard deviation) of each measurement, in centimetres, for the 50 flowers of each species</caption><tr><th style="text-align:left">Species</th><th style="text-align:right">Sepal length</th><th style="text-align:right">Sepal width</th><th style="text-align:right">Petal length</th><th style="text-align:right">Petal width</th></tr><tr><td style="text-align:left"><em>I. setosa</em></td><td style="text-align:right">5.01 (0.35)</td><td style="text-align:right">3.43 (0.38)</td><td style="text-align:right">1.46 (0.17)</td><td style="text-align:right">0.25 (0.11)</td></tr><tr><td style="text-align:left"><em>I. versicolor</em></td><td style="text-align:right">5.94 (0.52)</td><td style="text-align:right">2.77 (0.31)</td><td style="text-align:right">4.26 (0.47)</td><td style="text-align:right">1.33 (0.20)</td></tr><tr><td style="text-align:left"><em>I. virginica</em></td><td style="text-align:right">6.59 (0.64)</td><td style="text-align:right">2.97 (0.32)</td><td style="text-align:right">5.55 (0.55)</td><td style="text-align:right">2.03 (0.27)</td></tr></table></div>
+<p>Figure 1 plots every pair of measurements. Setosa forms its own cluster in
+every panel that involves a petal measurement. Versicolor and virginica
+overlap in every panel, though least in the petal panels, where virginica sits
+up and to the right. The measurements are also strongly correlated within
+species: a longer sepal tends to go with a wider one, and a longer petal with a
+wider one. This is why LDA helps. A weighted combination can separate groups
+that overlap on each measurement taken alone.</p>
+<figure><img src="figs/pairs.png" alt="A four-by-four grid of scatterplots. Setosa separates from the other two species in every panel that involves petal length or petal width; versicolor and virginica overlap in every panel."><figcaption>Figure 1: Scatterplot matrix of the four measurements (cm), coloured by species</figcaption></figure>
+<p>Figure 2 shows each measurement's distribution by species. The petal
+measurements separate setosa from the others completely. They also separate
+versicolor from virginica better than the sepal measurements do, although the
+two still overlap. The spread differs between species too, especially in the
+petals, where setosa varies least. This matters for the equal-covariance
+assumption tested below.</p>
+<figure><img src="figs/univariate.png" alt="Four panels of violin and box plots. Petal length and petal width are much smaller for setosa, with no overlap; versicolor is intermediate and virginica largest. The sepal measurements overlap across species."><figcaption>Figure 2: Distribution of each measurement by species: violin (density), box plot and individual flowers</figcaption></figure>
+<h1 id="methods">Methods</h1>
+<h2 id="fisher-s-linear-discriminant">Fisher's linear discriminant</h2>
+<p>Suppose \(n\) observations \(\mathbf{x}_i \in \mathbb{R}^p\) fall into \(K\) known
+groups, with \(n_k\) observations in group \(k\), group means \(\bar{\mathbf{x}}_k\)
+and overall mean \(\bar{\mathbf{x}}\). The total scatter of the data splits into
+the scatter within groups and the scatter between them. The within-groups and
+between-groups sums of squares and cross-products (SSCP) matrices are</p>
+<div class="math-display" role="math" aria-label="The within-groups matrix W sums outer products of deviations from each group mean; the between-groups matrix B sums n_k times outer products of group-mean deviations from the grand mean.">\[\mathbf{W} = \sum_{k=1}^{K} \sum_{i \in k} (\mathbf{x}_i - \bar{\mathbf{x}}_k)(\mathbf{x}_i - \bar{\mathbf{x}}_k)^\top,
+  \qquad
+  \mathbf{B} = \sum_{k=1}^{K} n_k (\bar{\mathbf{x}}_k - \bar{\mathbf{x}})(\bar{\mathbf{x}}_k - \bar{\mathbf{x}})^\top .\]</div>
+<p><a class="cite" data-key="fisher1936" data-kind="cite" href="#cite-fisher1936">Fisher (1936)</a> looked for the linear combination
+\(z = \mathbf{a}^\top \mathbf{x}\) whose group means are as far apart as possible
+relative to the spread within groups. That is, he maximised the ratio</p>
+<div class="math-display" role="math" aria-label="J of a equals a-transpose B a divided by a-transpose W a.">\[J(\mathbf{a}) = \frac{\mathbf{a}^\top \mathbf{B}\,\mathbf{a}}{\mathbf{a}^\top \mathbf{W}\,\mathbf{a}} .\]</div>
+<p>Setting the derivative of \(J\) to zero gives the generalised eigenproblem</p>
+<div class="math-display" role="math" aria-label="B a equals lambda W a.">\[\mathbf{B}\,\mathbf{a} = \lambda\, \mathbf{W}\,\mathbf{a},\]</div>
+<p>so the best direction \(\mathbf{a}_1\) is the eigenvector of
+\(\mathbf{W}^{-1}\mathbf{B}\) with the largest eigenvalue \(\lambda_1\), and
+\(J(\mathbf{a}_1) = \lambda_1\). The eigenvectors that follow give further
+discriminant functions. Each maximises \(J\) among directions whose scores are
+uncorrelated within groups with the scores of the earlier functions.
+\(\mathbf{B}\) has rank at most \(K - 1\), so there are
+\(s = \min(K - 1, p)\) functions with non-zero eigenvalues. For the iris data,
+\(K = 3\) and \(p = 4\), so the four measurements reduce to two discriminant
+functions, LD1 and LD2, without losing any information that separates the
+groups.</p>
+<p>An eigenvector's length is arbitrary. R's <code>MASS::lda</code> <a class="cite" data-key="venables2002" data-kind="citep" href="#cite-venables2002">(Venables and Ripley, 2002)</a>
+scales the functions so that each has unit variance within groups, which
+makes the discriminant space Euclidean: distances there are Mahalanobis
+distances in the original measurements. The sign of each function is also
+arbitrary, so software may flip it.</p>
+<h2 id="the-probabilistic-model">The probabilistic model</h2>
+<p>The same functions come out of a probability model. Suppose that within group
+\(k\) the measurements are multivariate normal, with a mean of their own and a
+covariance matrix \(\boldsymbol{\Sigma}\) shared by all groups,</p>
+<div class="math-display" role="math" aria-label="Given group k, x is p-variate normal with mean mu k and common covariance Sigma.">\[\mathbf{x} \mid G = k \;\sim\; N_p(\boldsymbol{\mu}_k, \boldsymbol{\Sigma}),\]</div>
+<p>and that group \(k\) has prior probability \(\pi_k\). Bayes' theorem gives the
+posterior probability that an observation belongs to group \(k\),</p>
+<div class="math-display" role="math" aria-label="The posterior probability of group k is pi k times the density f k at x, divided by the sum over all groups of the same product.">\[P(G = k \mid \mathbf{x}) = \frac{\pi_k f_k(\mathbf{x})}{\sum_{j=1}^{K} \pi_j f_j(\mathbf{x})},\]</div>
+<p>where \(f_k\) is the normal density. Because \(\boldsymbol{\Sigma}\) is the same for
+every group, the quadratic terms in \(\mathbf{x}\) cancel when groups are
+compared. What remains is a linear discriminant score</p>
+<div class="math-display" role="math" aria-label="delta k of x equals x-transpose Sigma-inverse mu k, minus one half mu k-transpose Sigma-inverse mu k, plus log pi k.">\[\delta_k(\mathbf{x}) = \mathbf{x}^\top \boldsymbol{\Sigma}^{-1} \boldsymbol{\mu}_k
+  - \frac{1}{2} \boldsymbol{\mu}_k^\top \boldsymbol{\Sigma}^{-1} \boldsymbol{\mu}_k + \log \pi_k ,\]</div>
+<p>and the Bayes rule assigns \(\mathbf{x}\) to the group with the largest
+\(\delta_k(\mathbf{x})\). The boundary between two groups, where their scores are
+equal, is therefore a hyperplane <a class="cite" data-key="hastie2009" data-kind="citep" href="#cite-hastie2009">(Hastie et al., 2009)</a>. In practice the group means
+are estimated by the sample means, and \(\boldsymbol{\Sigma}\) by the pooled
+within-groups covariance \(\hat{\boldsymbol{\Sigma}} = \mathbf{W} / (n - K)\).</p>
+<p>The two views agree. When the rule uses all \(s\) discriminant functions, it is
+the same as assigning each observation to the nearest group centroid in the
+discriminant space, adjusted for the priors:</p>
+<div class="math-display" role="math" aria-label="The predicted group is the k that minimises the squared distance from the discriminant scores z to the group centroid z-bar k, minus twice log pi k.">\[\hat{G}(\mathbf{x}) = \arg\min_{k} \; \| \mathbf{z} - \bar{\mathbf{z}}_k \|^2 - 2 \log \pi_k ,\]</div>
+<p>where \(\mathbf{z}\) holds the observation's discriminant scores and
+\(\bar{\mathbf{z}}_k\) the centroid of group \(k\). Here the priors are the group
+proportions, all equal to 1/3, so the rule reduces to the nearest centroid.</p>
+<h2 id="assumptions">Assumptions</h2>
+<p>The probability model assumes that:</p>
+<ul><li>observations are independent;</li><li>within each group, the measurements are multivariate normal;</li><li>every group has the same covariance matrix \(\boldsymbol{\Sigma}\);</li><li>no measurement is a linear combination of the others, so that
+  \(\mathbf{W}\) can be inverted.</li></ul>
+<p>Fisher's criterion itself needs none of the distributional assumptions: it is a
+geometric definition of a good projection. The assumptions matter for the
+posterior probabilities, which are only calibrated if the model holds, and for
+whether the Bayes rule is actually optimal. The rule usually classifies well
+even when the assumptions are moderately violated.</p>
+<p>Normality within groups can be checked one variable at a time with the
+Shapiro-Wilk test. Equality of the covariance matrices is tested with Box's M
+test <a class="cite" data-key="box1949" data-kind="citep" href="#cite-box1949">(Box, 1949)</a>. With \(\mathbf{S}_k\) the covariance matrix of group \(k\) and
+\(\mathbf{S}_p = \mathbf{W}/(n - K)\) the pooled one, the statistic is</p>
+<div class="math-display" role="math" aria-label="M equals n minus K times the log determinant of the pooled covariance, minus the sum over groups of n k minus one times the log determinant of that group's covariance.">\[M = (n - K) \log |\mathbf{S}_p| - \sum_{k=1}^{K} (n_k - 1) \log |\mathbf{S}_k| .\]</div>
+<p>\(M\) is zero when all the \(\mathbf{S}_k\) are equal and grows as they diverge.
+After a small-sample correction, \(M\) is approximately \(\chi^2\) with
+\(p(p+1)(K-1)/2\) degrees of freedom. The test is known to be very sensitive,
+both to departures from normality and to differences in covariance too small to
+matter for classification. For that reason we treat it as a diagnostic, and
+compare LDA with quadratic discriminant analysis (QDA), which estimates a
+separate covariance matrix for each group and does not need the assumption.</p>
+<h2 id="interpreting-the-discriminant-functions">Interpreting the discriminant functions</h2>
+<p>A fitted discriminant is described by several quantities:</p>
+<ul><li><strong>Eigenvalues</strong> \(\lambda_j\): the between-to-within variance ratio achieved by
+  each function. Their shares of the total, \(\lambda_j / \sum_i \lambda_i\)
+  (the &quot;proportion of trace&quot;), say how much of the group separation each
+  function carries.</li><li><strong>Canonical correlations</strong> \(r_j = \sqrt{\lambda_j / (1 + \lambda_j)}\): the
+  correlation between function \(j\) and the best linear combination of group
+  indicators.</li><li><strong>Dimension tests</strong>: Wilks'
+  \(\Lambda_j = \prod_{i=j}^{s} (1 + \lambda_i)^{-1}\) tests whether functions
+  \(j, \dots, s\) carry any separation. Bartlett's approximation
+  \(\chi^2 = -\left(n - 1 - \frac{p + K}{2}\right) \log \Lambda_j\) has
+  \((p - j + 1)(K - j)\) degrees of freedom <a class="cite" data-key="mardia1979" data-kind="citep" href="#cite-mardia1979">(Mardia et al., 1979)</a>. For \(j = 1\) this
+  is the MANOVA test of equal group means.</li><li><strong>Raw coefficients</strong> \(\mathbf{a}_j\): the weights that turn measurements into
+  scores. They depend on the measurement units.</li><li><strong>Standardised coefficients</strong> \(a_{jl} s_l\), where \(s_l\) is the pooled
+  within-groups standard deviation of variable \(l\). These are comparable across
+  variables and show each variable's contribution to the function, given the
+  other variables.</li><li><strong>Structure correlations</strong>: the correlation between each measurement and each
+  function's scores. These say what a function &quot;is&quot; in terms of the original
+  variables. Unlike the standardised coefficients, they are not distorted by
+  correlation among the predictors.</li></ul>
+<h2 id="measuring-classification-accuracy">Measuring classification accuracy</h2>
+<p>The error rate on the data used to fit the model (the <strong>resubstitution</strong> or
+apparent error) is optimistic, because the model has been tuned to exactly
+those flowers. We therefore also estimate the error in two honest ways:</p>
+<ul><li><strong>Leave-one-out cross-validation</strong> <a class="cite" data-key="lachenbruch1968" data-kind="citep" href="#cite-lachenbruch1968">(Lachenbruch and Mickey, 1968)</a>: each flower in
+  turn is classified by a discriminant fitted to the other 149.
+  <code>MASS::lda(..., CV = TRUE)</code> does this without refitting the model 150 times.</li><li><strong>Repeated hold-out</strong>: 500 times, fit to 35 random flowers per species and
+  classify the other 15 per species. This shows how much the error varies with
+  the particular training sample.</li></ul>
+<h2 id="software">Software</h2>
+<p>All computations use R 4.6.1 <a class="cite" data-key="rcore2026" data-kind="citep" href="#cite-rcore2026">(Team, 2026)</a>. The discriminant and QDA come
+from the <code>MASS</code> package <a class="cite" data-key="venables2002" data-kind="citep" href="#cite-venables2002">(Venables and Ripley, 2002)</a>, most figures are drawn with
+<code>ggplot2</code> <a class="cite" data-key="wickham2016" data-kind="citep" href="#cite-wickham2016">(Wickham, 2016)</a>, and the tables are printed as Markdown by
+<code>knitr::kable()</code> <a class="cite" data-key="xie2015" data-kind="citep" href="#cite-xie2015">(Xie, 2015)</a>. Box's M test is computed directly from its
+definition above. R has no built-in function for it, and implementing it here
+keeps the report free of extra dependencies.</p>
+<h1 id="analysis">Analysis</h1>
+<h2 id="do-the-species-differ">Do the species differ?</h2>
+<p>Classifying the flowers only makes sense if the species differ in their
+measurements. A one-way multivariate analysis of variance (MANOVA) tests the
+hypothesis that the three species have the same mean vector.</p>
+<p>All four standard MANOVA statistics reject equal means overwhelmingly (Table 5).
+Wilks' \(\Lambda = 0.023\) means that only 2.3% of the generalised variance in the
+measurements is left unexplained by species.</p>
+<div class="table-wrap"><table><caption>Table 5: One-way MANOVA of the four measurements on species</caption><tr><th style="text-align:left">Statistic</th><th style="text-align:right">Value</th><th style="text-align:right">Approx. F</th><th style="text-align:right">df1</th><th style="text-align:right">df2</th><th style="text-align:right">p-value</th></tr><tr><td style="text-align:left">Wilks' \(\Lambda\)</td><td style="text-align:right">0.0234</td><td style="text-align:right">199.1</td><td style="text-align:right">8</td><td style="text-align:right">288</td><td style="text-align:right">\(1.4 \times 10^{-112}\)</td></tr><tr><td style="text-align:left">Pillai's trace</td><td style="text-align:right">1.1919</td><td style="text-align:right">53.5</td><td style="text-align:right">8</td><td style="text-align:right">290</td><td style="text-align:right">\(9.7 \times 10^{-53}\)</td></tr><tr><td style="text-align:left">Hotelling-Lawley trace</td><td style="text-align:right">32.4773</td><td style="text-align:right">580.5</td><td style="text-align:right">8</td><td style="text-align:right">286</td><td style="text-align:right">\(6.4 \times 10^{-172}\)</td></tr><tr><td style="text-align:left">Roy's largest root</td><td style="text-align:right">32.1919</td><td style="text-align:right">1167.0</td><td style="text-align:right">4</td><td style="text-align:right">145</td><td style="text-align:right">\(3.8 \times 10^{-109}\)</td></tr></table></div>
+<h2 id="checking-the-assumptions">Checking the assumptions</h2>
+<p>The flowers were measured separately, so we take them to be independent, and
+none of the measurements is a linear combination of the others. That leaves
+normality and equal covariances, which we check with a Shapiro-Wilk test on
+each measurement within each species and with Box's M test.</p>
+<p>Table 6 lists the Shapiro-Wilk p-values. Eleven of the twelve distributions look
+compatible with normality at the 1% level. Setosa's petal width does not
+(\(p &lt; 0.001\)). Its values are recorded to the nearest millimetre and 29 of the
+50 are exactly 0.2 cm, so the distribution is lumpy and skewed to the right. The
+same coarse recording shows as rows of overlapping points in Figure 1.
+Versicolor's petal width is borderline (\(p = 0.027\)). Neither departure is
+serious for classification. The one clear failure is in setosa, a species
+separated from the others by a gap far larger than the width of its
+distribution.</p>
+<div class="table-wrap"><table><caption>Table 6: Shapiro-Wilk p-values for normality of each measurement within each species</caption><tr><th style="text-align:left">Measurement</th><th style="text-align:right"><em>I. setosa</em></th><th style="text-align:right"><em>I. versicolor</em></th><th style="text-align:right"><em>I. virginica</em></th></tr><tr><td style="text-align:left">Sepal length</td><td style="text-align:right">0.460</td><td style="text-align:right">0.465</td><td style="text-align:right">0.258</td></tr><tr><td style="text-align:left">Sepal width</td><td style="text-align:right">0.272</td><td style="text-align:right">0.338</td><td style="text-align:right">0.181</td></tr><tr><td style="text-align:left">Petal length</td><td style="text-align:right">0.055</td><td style="text-align:right">0.158</td><td style="text-align:right">0.110</td></tr><tr><td style="text-align:left">Petal width</td><td style="text-align:right">&lt; 0.001</td><td style="text-align:right">0.027</td><td style="text-align:right">0.087</td></tr></table></div>
+<p>Equal covariances are clearly rejected (Table 7). The log-determinant of a
+covariance matrix measures the volume of the cloud of points. Setosa's is
+about 4.1 lower than virginica's, a factor of \(e^{4.1} \approx 60\) in
+generalised variance: virginica's flowers vary much more than setosa's.</p>
+<div class="table-wrap"><table><caption>Table 7: Box's M test of equal covariance matrices across species</caption><tr><th style="text-align:left">Quantity</th><th style="text-align:right">Value</th></tr><tr><td style="text-align:left">\(\log \det \mathbf{S}_k\), <em>I. setosa</em></td><td style="text-align:right">-13.07</td></tr><tr><td style="text-align:left">\(\log \det \mathbf{S}_k\), <em>I. versicolor</em></td><td style="text-align:right">-10.87</td></tr><tr><td style="text-align:left">\(\log \det \mathbf{S}_k\), <em>I. virginica</em></td><td style="text-align:right">-8.93</td></tr><tr><td style="text-align:left">\(\log \det \mathbf{S}_p\), pooled</td><td style="text-align:right">-9.96</td></tr><tr><td style="text-align:left">Box's \(M\)</td><td style="text-align:right">146.66</td></tr><tr><td style="text-align:left">\(\chi^2\) (corrected)</td><td style="text-align:right">140.94</td></tr><tr><td style="text-align:left">Degrees of freedom</td><td style="text-align:right">20</td></tr><tr><td style="text-align:left">p-value</td><td style="text-align:right">\(3.4 \times 10^{-20}\)</td></tr></table></div>
+<p>Figure 3 shows what the test detects. For each species it draws the 95% ellipse
+of its own covariance matrix (solid) and of the pooled covariance matrix that
+LDA assumes (dashed), centred on that species' mean. For the petals the
+difference is large. Setosa's actual ellipse is much smaller than the pooled
+one, and virginica's is larger. For the sepals, versicolor's and virginica's
+ellipses are close to the pooled one, but setosa's is narrower and steeper,
+because its sepal length and width are more strongly correlated (0.74, against
+0.53 and 0.46 in the other species). The pooled matrix is a compromise, and the
+question for the Validation section is whether the compromise costs any
+accuracy.</p>
+<figure><img src="figs/covariance.png" alt="Two scatterplots, sepals and petals, with an ellipse per species drawn twice. For the petals, setosa's own ellipse is far smaller than the pooled one and virginica's is larger; for the sepals the solid and dashed ellipses are close."><figcaption>Figure 3: 95% normal-theory ellipses of each species' own covariance (solid) and of the pooled covariance LDA assumes (dashed), centred on each species' mean</figcaption></figure>
+<h2 id="fitting-the-discriminant">Fitting the discriminant</h2>
+<p>The model uses all four measurements, with priors equal to the species
+proportions (1/3 each).</p>
+<p>Both discriminant functions are statistically significant (Table 8). They are
+not equally important. LD1 has an eigenvalue of 32.2: along it, the spread
+between species is 32 times the spread within them, and it carries 99.1% of the
+separation. LD2 carries the remaining 0.9%. Its canonical correlation of 0.47
+means it does separate the species, but only weakly. With 150 flowers even that
+small effect is highly significant (\(p = 5.8 \times 10^{-8}\)).</p>
+<div class="table-wrap"><table><caption>Table 8: Eigenvalues, canonical correlations and Bartlett's dimension tests. The test in row j asks whether functions j onwards carry any separation.</caption><tr><th style="text-align:left">Function</th><th style="text-align:right">Eigenvalue</th><th style="text-align:right">% of trace</th><th style="text-align:right">Canonical corr.</th><th style="text-align:right">Wilks' \(\Lambda\)</th><th style="text-align:right">\(\chi^2\)</th><th style="text-align:right">df</th><th style="text-align:right">p-value</th></tr><tr><td style="text-align:left">LD1</td><td style="text-align:right">32.192</td><td style="text-align:right">99.12</td><td style="text-align:right">0.985</td><td style="text-align:right">0.0234</td><td style="text-align:right">546.12</td><td style="text-align:right">8</td><td style="text-align:right">\(8.9 \times 10^{-113}\)</td></tr><tr><td style="text-align:left">LD2</td><td style="text-align:right">0.285</td><td style="text-align:right">0.88</td><td style="text-align:right">0.471</td><td style="text-align:right">0.7780</td><td style="text-align:right">36.53</td><td style="text-align:right">3</td><td style="text-align:right">\(5.8 \times 10^{-8}\)</td></tr></table></div>
+<p>Table 9 gives the coefficients. The raw coefficients are what <code>predict()</code> uses.
+Up to centring, an iris's LD1 score is
+\(0.83\,\mathrm{SL} + 1.53\,\mathrm{SW} - 2.20\,\mathrm{PL} - 2.81\,\mathrm{PW}\)
+(sepal length, sepal width, petal length, petal width). The standardised
+coefficients put the four measurements on a common scale. By them, LD1 is
+dominated by petal length (\(-0.95\)), with contributions from petal width
+(\(-0.58\)), sepal width (\(+0.52\)) and sepal length (\(+0.43\)). LD2 is mainly
+sepal width and petal width, both negative (\(-0.74\) and \(-0.58\)), against
+petal length (\(+0.40\)).</p>
+<div class="table-wrap"><table><caption>Table 9: Raw and standardised discriminant coefficients. Standardised coefficients are the raw ones multiplied by each measurement's pooled within-species standard deviation.</caption><tr><th style="text-align:left">Measurement</th><th style="text-align:right">LD1 (raw)</th><th style="text-align:right">LD2 (raw)</th><th style="text-align:right">LD1 (std.)</th><th style="text-align:right">LD2 (std.)</th></tr><tr><td style="text-align:left">Sepal length</td><td style="text-align:right">0.829</td><td style="text-align:right">-0.024</td><td style="text-align:right">0.427</td><td style="text-align:right">-0.012</td></tr><tr><td style="text-align:left">Sepal width</td><td style="text-align:right">1.534</td><td style="text-align:right">-2.165</td><td style="text-align:right">0.521</td><td style="text-align:right">-0.735</td></tr><tr><td style="text-align:left">Petal length</td><td style="text-align:right">-2.201</td><td style="text-align:right">0.932</td><td style="text-align:right">-0.947</td><td style="text-align:right">0.401</td></tr><tr><td style="text-align:left">Petal width</td><td style="text-align:right">-2.810</td><td style="text-align:right">-2.839</td><td style="text-align:right">-0.575</td><td style="text-align:right">-0.581</td></tr></table></div>
+<p>Sepal length has a positive LD1 coefficient even though virginica, with the
+lowest LD1 scores, has the longest sepals. The structure correlations in
+Table 10 explain this. Across the whole sample, sepal length correlates at
+\(-0.79\) with LD1, in the same direction as the petal measurements, because
+large flowers are large in every dimension. The positive coefficient is a
+correction: once petal size is known, a longer sepal than expected points
+towards setosa. This is a standard reason for reading structure correlations
+alongside coefficients rather than instead of them. Taken together, the
+correlations say that LD1 is essentially a <strong>petal-size</strong> axis. Over the whole
+sample, petal length and petal width correlate \(-0.99\) and \(-0.97\) with it.
+LD2 is essentially a <strong>sepal-width</strong> axis (\(-0.86\) within species). The signs
+are arbitrary, as noted in the Methods. With these signs, setosa scores high
+on LD1.</p>
+<div class="table-wrap"><table><caption>Table 10: Structure correlations between each measurement and the discriminant scores: pooled within species, and over all 150 flowers</caption><tr><th style="text-align:left">Measurement</th><th style="text-align:right">LD1 (within)</th><th style="text-align:right">LD2 (within)</th><th style="text-align:right">LD1 (total)</th><th style="text-align:right">LD2 (total)</th></tr><tr><td style="text-align:left">Sepal length</td><td style="text-align:right">-0.223</td><td style="text-align:right">-0.311</td><td style="text-align:right">-0.792</td><td style="text-align:right">-0.218</td></tr><tr><td style="text-align:left">Sepal width</td><td style="text-align:right">0.119</td><td style="text-align:right">-0.864</td><td style="text-align:right">0.531</td><td style="text-align:right">-0.758</td></tr><tr><td style="text-align:left">Petal length</td><td style="text-align:right">-0.706</td><td style="text-align:right">-0.168</td><td style="text-align:right">-0.985</td><td style="text-align:right">-0.046</td></tr><tr><td style="text-align:left">Petal width</td><td style="text-align:right">-0.633</td><td style="text-align:right">-0.737</td><td style="text-align:right">-0.973</td><td style="text-align:right">-0.223</td></tr></table></div>
+<p>The species centroids in the discriminant space are in Table 11. On LD1 they are
+widely spaced and in order: setosa at \(+7.6\), versicolor at \(-1.8\) and
+virginica at \(-5.8\). The scores have unit variance within species, so on LD1
+alone setosa is 9.4 within-species standard deviations from versicolor, while
+versicolor and virginica are 4.0 apart. On LD2, versicolor is the odd
+one out, at \(+0.73\) against about \(-0.2\) to \(-0.5\) for the others.</p>
+<div class="table-wrap"><table><caption>Table 11: Species centroids in the discriminant space</caption><tr><th style="text-align:left">Species</th><th style="text-align:right">LD1</th><th style="text-align:right">LD2</th></tr><tr><td style="text-align:left"><em>I. setosa</em></td><td style="text-align:right">7.608</td><td style="text-align:right">-0.215</td></tr><tr><td style="text-align:left"><em>I. versicolor</em></td><td style="text-align:right">-1.825</td><td style="text-align:right">0.728</td></tr><tr><td style="text-align:left"><em>I. virginica</em></td><td style="text-align:right">-5.783</td><td style="text-align:right">-0.513</td></tr></table></div>
+<h2 id="the-discriminant-space">The discriminant space</h2>
+<p>Figure 4 plots every flower's scores on the two discriminant functions. It is
+the best two-dimensional view of the separation between species: no other
+linear projection of the four measurements separates them more by Fisher's
+criterion. Setosa lies far to the right, alone. Versicolor and virginica lie
+next to each other along LD1, and their 95% ellipses overlap in a narrow band
+between them. The three flowers that the fitted rule misclassifies (circled)
+all sit in that band.</p>
+<figure><img src="figs/ld_scores.png" alt="A scatterplot of LD2 against LD1. Setosa forms a tight cluster around LD1 = 7.6; versicolor and virginica form adjacent clusters around LD1 = -1.8 and -5.8 that touch between LD1 = -3 and -4, where three circled points lie."><figcaption>Figure 4: The flowers in the discriminant space, with 95% ellipses per species, centroids (crosses) and the three flowers the fitted rule misclassifies (circled). The axes are on equal scales.</figcaption></figure>
+<p>Figure 5 shows the same scores one function at a time. On LD1 the setosa density
+does not touch the others. The versicolor and virginica densities overlap only
+in their tails. On LD2 all three densities overlap heavily. LD2 does shift
+versicolor upward, which is why it helps a little with the versicolor-virginica
+boundary, but on its own it could not classify anything.</p>
+<figure><img src="figs/ld_densities.png" alt="Two density panels. On LD1, setosa's density is far to the right and does not overlap the others, while versicolor and virginica overlap slightly in their tails. On LD2, the three densities overlap almost entirely, versicolor sitting slightly higher."><figcaption>Figure 5: Kernel density of each species' scores on LD1 and on LD2</figcaption></figure>
+<p>Figure 6 draws each measurement as an arrow from the origin to its total-sample
+structure correlations with the two functions. The petal arrows point almost
+straight along LD1, which is what makes LD1 a petal-size axis. Sepal width
+points mostly along LD2. Sepal length lies between the two but closer to LD1.
+Arrows near the unit circle are almost entirely explained by the two functions.</p>
+<figure><img src="figs/structure.png" alt="A correlation circle. Petal length and petal width arrows point left along the LD1 axis almost to the circle; sepal length points left and slightly down; sepal width points right and down, mostly along LD2."><figcaption>Figure 6: Structure correlations over the whole sample: each measurement's correlation with LD1 and LD2, inside the unit circle</figcaption></figure>
+<p>The classification rule divides the discriminant plane into three regions, one
+per species (Figure 7). The priors are equal and the scores have unit variance
+within species, so each point belongs to the region of its nearest centroid, and
+the boundaries are the perpendicular bisectors between centroids. The regions
+shown are therefore exactly the rule <code>predict()</code> applies to the four
+measurements. The versicolor-virginica boundary crosses the LD1 axis near
+\(-3.8\). It is tilted about 17 degrees from vertical by the two species'
+separation on LD2.</p>
+<figure><img src="figs/regions.png" alt="The discriminant plane split into three shaded regions by straight boundaries: setosa on the right, versicolor in the middle and virginica on the left. Nearly every point lies in its own species' region; a few versicolor and virginica points lie near the boundary between them."><figcaption>Figure 7: Classification regions of the fitted rule in the discriminant space (shaded), with each flower coloured by its true species</figcaption></figure>
+<h2 id="classification-performance">Classification performance</h2>
+<p>The discriminant classifies 147 of the 150 flowers correctly (Table 12).
+Leave-one-out cross-validation gives exactly the same result as
+resubstitution: the same three flowers are misclassified, and no others
+(Table 13 gives both classifications). Refitting without a flower moves the coefficients too little to change any
+other flower's class. The estimated error rate is therefore 2.0%, and it is not
+an artefact of testing on the training data. Every setosa is classified
+correctly. The errors are two versicolor taken for virginica and one virginica
+taken for versicolor.</p>
+<div class="table-wrap"><table><caption>Table 12: Leave-one-out confusion matrix (resubstitution gives the same table)</caption><tr><th style="text-align:left">Actual species</th><th style="text-align:right">Predicted <em>setosa</em></th><th style="text-align:right">Predicted <em>versicolor</em></th><th style="text-align:right">Predicted <em>virginica</em></th><th style="text-align:right">Correct</th></tr><tr><td style="text-align:left"><em>I. setosa</em></td><td style="text-align:right">50</td><td style="text-align:right">0</td><td style="text-align:right">0</td><td style="text-align:right">100%</td></tr><tr><td style="text-align:left"><em>I. versicolor</em></td><td style="text-align:right">0</td><td style="text-align:right">48</td><td style="text-align:right">2</td><td style="text-align:right">96%</td></tr><tr><td style="text-align:left"><em>I. virginica</em></td><td style="text-align:right">0</td><td style="text-align:right">1</td><td style="text-align:right">49</td><td style="text-align:right">98%</td></tr><tr><td style="text-align:left">Total</td><td style="text-align:right">50</td><td style="text-align:right">49</td><td style="text-align:right">51</td><td style="text-align:right">98%</td></tr></table></div>
+<p>The three misclassified flowers are borderline (Table 13). Each is a large
+versicolor or a small virginica. Flowers 71 and 84 are versicolor with petals
+4.8 and 5.1 cm long, well inside virginica's range (4.5 to 6.9 cm). Flower 71
+also has the widest petals of any versicolor (1.8 cm). Flower 134 is a
+virginica with petals only 1.5 cm wide, close to the narrowest of its
+species. None is misclassified with much
+confidence: flower 134's posterior probability of versicolor is 0.79, and the
+other two go to virginica with probability 0.82 and 0.90.</p>
+<div class="table-wrap"><table><caption>Table 13: The misclassified flowers (leave-one-out), with their measurements in cm, the class resubstitution gives them, and their leave-one-out posterior probabilities. P(setosa) is below 0.001 for all three.</caption><tr><th style="text-align:right">Flower</th><th style="text-align:right">Sepal L.</th><th style="text-align:right">Sepal W.</th><th style="text-align:right">Petal L.</th><th style="text-align:right">Petal W.</th><th style="text-align:left">Species</th><th style="text-align:left">Predicted</th><th style="text-align:left">Resubst.</th><th style="text-align:right">P(versicolor)</th><th style="text-align:right">P(virginica)</th></tr><tr><td style="text-align:right">71</td><td style="text-align:right">5.9</td><td style="text-align:right">3.2</td><td style="text-align:right">4.8</td><td style="text-align:right">1.8</td><td style="text-align:left"><em>versicolor</em></td><td style="text-align:left"><em>virginica</em></td><td style="text-align:left"><em>virginica</em></td><td style="text-align:right">0.177</td><td style="text-align:right">0.823</td></tr><tr><td style="text-align:right">84</td><td style="text-align:right">6.0</td><td style="text-align:right">2.7</td><td style="text-align:right">5.1</td><td style="text-align:right">1.6</td><td style="text-align:left"><em>versicolor</em></td><td style="text-align:left"><em>virginica</em></td><td style="text-align:left"><em>virginica</em></td><td style="text-align:right">0.099</td><td style="text-align:right">0.901</td></tr><tr><td style="text-align:right">134</td><td style="text-align:right">6.3</td><td style="text-align:right">2.8</td><td style="text-align:right">5.1</td><td style="text-align:right">1.5</td><td style="text-align:left"><em>virginica</em></td><td style="text-align:left"><em>versicolor</em></td><td style="text-align:left"><em>versicolor</em></td><td style="text-align:right">0.788</td><td style="text-align:right">0.212</td></tr></table></div>
+<p>Figure 8 shows the posterior probabilities for every flower, ordered by LD1
+score. Setosa's posteriors, on the right, are all essentially 1. Between
+virginica on the left and versicolor, the posterior passes from one species to
+the other within a narrow band of flowers. These are the only flowers the model
+is uncertain about: just 11 of the 150 have a largest posterior below 0.9. The
+uncertainty the model reports matches the errors it actually makes.</p>
+<figure><img src="figs/posterior.png" alt="A stacked bar chart of posterior probabilities for 150 flowers. From the left, a long run of virginica-coloured bars changes to versicolor-coloured bars over a short band of mixed bars, then a long versicolor run, then the setosa run on the right, whose bars are all fully setosa. Three triangles mark misclassifications inside the mixed band."><figcaption>Figure 8: Leave-one-out posterior probabilities of each species for every flower, ordered by LD1 score. The strip under the bars gives each flower's true species; triangles mark the three misclassified flowers.</figcaption></figure>
+<h2 id="validation-and-comparison-with-other-rules">Validation and comparison with other rules</h2>
+<p>Leave-one-out gives a single estimate of the error rate. Repeated hold-out
+shows how much that estimate varies with the particular flowers used for
+fitting. We fit three rules to each of 500 stratified random
+training sets of 105 flowers (35 per species) and counts their mistakes on the
+remaining 45. The three rules are LDA with both discriminant functions, LDA
+with LD1 alone, and QDA, which drops the equal-covariance assumption that
+Box's M test rejected.</p>
+<figure><img src="figs/holdout.png" alt="A grouped bar chart of the number of test errors per split, from 0 to 5. For all three rules most splits have 0 or 1 errors; QDA has fewer splits with 0 errors and more with 2 or 3 than either LDA rule."><figcaption>Figure 9: Number of misclassified test flowers in 500 random 70/30 stratified splits, for LDA with both functions, LDA with LD1 alone, and QDA</figcaption></figure>
+<p>The hold-out results agree with leave-one-out (Figure 9, Table 14). LDA's test
+error averages 2.2%. A third of the splits give no errors at all, and only 5 of
+the 500 give more than three. The variation between splits, a standard deviation
+of 2.0 percentage points, is as large as the error rate itself. A single
+train-test split of the iris data can therefore report anything from perfect
+classification to 11% error, which is why repeated resampling or leave-one-out
+is needed.</p>
+<div class="table-wrap"><table><caption>Table 14: Error rates of the three rules under each validation scheme: the hold-out columns are over the 500 splits of Figure 9</caption><tr><th style="text-align:left">Rule</th><th style="text-align:right">Resubstitution</th><th style="text-align:right">Leave-one-out</th><th style="text-align:right">Hold-out mean (SD)</th><th style="text-align:right">Error-free splits</th><th style="text-align:right">Splits with &gt; 3 errors</th></tr><tr><td style="text-align:left">LDA, LD1 and LD2</td><td style="text-align:right">2.00%</td><td style="text-align:right">2.00%</td><td style="text-align:right">2.20% (1.99)</td><td style="text-align:right">33%</td><td style="text-align:right">5</td></tr><tr><td style="text-align:left">LDA, LD1 only</td><td style="text-align:right">1.33%</td><td style="text-align:right">2.00%</td><td style="text-align:right">2.10% (1.80)</td><td style="text-align:right">33%</td><td style="text-align:right">0</td></tr><tr><td style="text-align:left">QDA</td><td style="text-align:right">2.00%</td><td style="text-align:right">2.67%</td><td style="text-align:right">2.71% (2.18)</td><td style="text-align:right">25%</td><td style="text-align:right">10</td></tr></table></div>
+<p>Two further points emerge from the comparison. First, the rule that uses LD1
+alone does as well as the one that uses both functions. On the training data it
+does slightly better. LD2 carries under 1% of the separation, and its small
+contribution is not enough to improve prediction for new flowers. Second, QDA
+does slightly <strong>worse</strong> than LDA even though LDA's covariance assumption is
+clearly false. QDA estimates three 4-by-4 covariance matrices, 30 parameters,
+from 35 to 50 flowers per species, and the extra variance of those estimates
+outweighs the bias that pooling introduces. This is the usual result for small
+samples <a class="cite" data-key="hastie2009" data-kind="citep" href="#cite-hastie2009">(Hastie et al., 2009)</a>. A significant Box's M test is not by itself a
+reason to abandon LDA. The question is whether a more flexible model predicts
+better, and for these data it does not.</p>
+<h1 id="conclusion">Conclusion</h1>
+<p>Fisher's linear discriminant reduces the four iris measurements to a single
+score that separates the three species almost perfectly. That score, LD1,
+carries 99.1% of the between-species separation and is essentially a contrast
+of petal size against sepal width. It places I. setosa about 9 within-species
+standard deviations from the other two species, far enough that no setosa is
+ever misclassified. I. versicolor and I. virginica are separated too, but they
+overlap slightly, and all of the errors come from that overlap. Using the
+fitted rule on flowers it was not fitted to, three flowers in 150 are
+misclassified (2.0% under leave-one-out, 2.2% averaged over 500 random
+splits), and the posterior probabilities flag exactly those flowers as
+uncertain.</p>
+<p>The model's assumptions do not hold exactly. The species' covariance matrices
+differ significantly (Box's M, \(p = 3.4 \times 10^{-20}\)), and setosa's petal
+widths are not normal. Neither problem harms classification. QDA, which does
+not assume equal covariances, does slightly worse, and the non-normal variable
+belongs to the species that is easiest to separate. The posterior
+probabilities should still be read as a guide rather than as calibrated
+probabilities.</p>
+<p>Three caveats apply. The data are small and famously easy, so these error rates
+say little about harder problems. The flowers came from a few natural
+populations, so the discriminant may not transfer to irises from elsewhere. And
+the three species are equally common here by design, which the equal priors
+reflect. In a population where one species is rarer, the priors, and with them
+the boundaries, should change.</p>
+<section class="bibliography"><h2>References</h2><ol><li id="cite-anderson1935" data-key="anderson1935" data-bib-author="Edgar Anderson" data-bib-title="The Irises of the Gaspé Peninsula" data-bib-journal="Bulletin of the American Iris Society" data-bib-volume="59" data-bib-pages="2–5" data-bib-year="1935">Edgar Anderson (1935). <em>The Irises of the Gaspé Peninsula</em>, Bulletin of the American Iris Society, 59, 2–5.</li><li id="cite-fisher1936" data-key="fisher1936" data-bib-author="Ronald A. Fisher" data-bib-title="The Use of Multiple Measurements in Taxonomic Problems" data-bib-journal="Annals of Eugenics" data-bib-volume="7" data-bib-number="2" data-bib-pages="179–188" data-bib-year="1936">Ronald A. Fisher (1936). <em>The Use of Multiple Measurements in Taxonomic Problems</em>, Annals of Eugenics, 7, 179–188.</li><li id="cite-bezdek1999" data-key="bezdek1999" data-bib-author="James C. Bezdek and James M. Keller and Raghu Krishnapuram and Ludmila I. Kuncheva and Nikhil R. Pal" data-bib-title="Will the Real Iris Data Please Stand Up?" data-bib-journal="IEEE Transactions on Fuzzy Systems" data-bib-volume="7" data-bib-number="3" data-bib-pages="368–369" data-bib-year="1999">James C. Bezdek and James M. Keller and Raghu Krishnapuram and Ludmila I. Kuncheva and Nikhil R. Pal (1999). <em>Will the Real Iris Data Please Stand Up?</em>, IEEE Transactions on Fuzzy Systems, 7, 368–369.</li><li id="cite-venables2002" data-key="venables2002" data-bib-author="William N. Venables and Brian D. Ripley" data-bib-title="Modern Applied Statistics with S" data-bib-edition="4th" data-bib-publisher="Springer" data-bib-address="New York" data-bib-year="2002">William N. Venables and Brian D. Ripley (2002). <em>Modern Applied Statistics with S</em>, Springer.</li><li id="cite-hastie2009" data-key="hastie2009" data-bib-author="Trevor Hastie and Robert Tibshirani and Jerome Friedman" data-bib-title="The Elements of Statistical Learning: Data Mining, Inference, and Prediction" data-bib-edition="2nd" data-bib-publisher="Springer" data-bib-address="New York" data-bib-year="2009">Trevor Hastie and Robert Tibshirani and Jerome Friedman (2009). <em>The Elements of Statistical Learning: Data Mining, Inference, and Prediction</em>, Springer.</li><li id="cite-box1949" data-key="box1949" data-bib-author="George E. P. Box" data-bib-title="A General Distribution Theory for a Class of Likelihood Criteria" data-bib-journal="Biometrika" data-bib-volume="36" data-bib-number="3/4" data-bib-pages="317–346" data-bib-year="1949">George E. P. Box (1949). <em>A General Distribution Theory for a Class of Likelihood Criteria</em>, Biometrika, 36, 317–346.</li><li id="cite-mardia1979" data-key="mardia1979" data-bib-author="Kanti V. Mardia and John T. Kent and John M. Bibby" data-bib-title="Multivariate Analysis" data-bib-publisher="Academic Press" data-bib-address="London" data-bib-year="1979">Kanti V. Mardia and John T. Kent and John M. Bibby (1979). <em>Multivariate Analysis</em>, Academic Press.</li><li id="cite-lachenbruch1968" data-key="lachenbruch1968" data-bib-author="Peter A. Lachenbruch and M. Ray Mickey" data-bib-title="Estimation of Error Rates in Discriminant Analysis" data-bib-journal="Technometrics" data-bib-volume="10" data-bib-number="1" data-bib-pages="1–11" data-bib-year="1968">Peter A. Lachenbruch and M. Ray Mickey (1968). <em>Estimation of Error Rates in Discriminant Analysis</em>, Technometrics, 10, 1–11.</li><li id="cite-rcore2026" data-key="rcore2026" data-bib-author="R Core Team" data-bib-title="R: A Language and Environment for Statistical Computing" data-bib-organization="R Foundation for Statistical Computing" data-bib-address="Vienna, Austria" data-bib-note="Version 4.6.1" data-bib-year="2026">R Core Team (2026). <em>R: A Language and Environment for Statistical Computing</em>.</li><li id="cite-wickham2016" data-key="wickham2016" data-bib-author="Hadley Wickham" data-bib-title="ggplot2: Elegant Graphics for Data Analysis" data-bib-edition="2nd" data-bib-publisher="Springer" data-bib-address="New York" data-bib-year="2016">Hadley Wickham (2016). <em>ggplot2: Elegant Graphics for Data Analysis</em>, Springer.</li><li id="cite-xie2015" data-key="xie2015" data-bib-author="Yihui Xie" data-bib-title="Dynamic Documents with R and knitr" data-bib-edition="2nd" data-bib-publisher="Chapman and Hall/CRC" data-bib-address="Boca Raton, Florida" data-bib-year="2015">Yihui Xie (2015). <em>Dynamic Documents with R and knitr</em>, Chapman and Hall/CRC.</li></ol></section>
+</body>
+</html>

@@ -8959,14 +8959,16 @@ public:
      */
     void MepmlBuildCards(const mepml::Document &doc);
     /**
-     * @brief Draws mepml tables as aligned grids without touching the text: every pipe becomes a `│` overlay carrying its cell's padding (computed from the cells' concealed widths), source whitespace around cells is hidden, and the |---| row becomes a ├─┼─┤ rule.
+     * @brief Draws mepml tables as aligned grids without touching the text: every pipe becomes a `│` overlay carrying its cell's padding (computed from the cells' concealed widths), and a GFM row's missing outer pipes are drawn on its edge characters, source whitespace around cells is hidden, and the |---| row becomes a ├─┼─┤ rule.
      * @param doc The parsed buffer.
      * @param spans mepml::Highlight(doc), already computed by the caller.
      * @param rows The table rows to lay out (every row but the cursor's, while concealing).
+     * @param edge_markup Concealed markup, as (row, column), at the open edge of a GFM row (one without that outer pipe): the missing pipe is drawn in its place, and the caller has not drawn it.
      * @param ns Decoration namespace.
      */
     void MepmlTableLayout(const mepml::Document &doc, const std::vector<mepml::Span> &spans,
-                          const std::unordered_set<int> &rows, int ns);
+                          const std::unordered_set<int> &rows, const std::set<std::pair<int, int>> &edge_markup,
+                          int ns);
     // Marker folding (za/zm/zr/zR/zM), enabled by default for every
     // filetype: rebuilds provider="marker" folds from literal `{{{`/`}}}`
     // text markers (vim's classic foldmethod=marker), same lazy

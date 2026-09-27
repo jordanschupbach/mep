@@ -154,7 +154,10 @@ std::vector<std::string> HtmlResultText(const std::string &html) {
 }
 
 // A code block's results as lines of text: an html result as its text.
+// Markdown results have none of their own: they are the blocks after the
+// code block, exported as any other.
 std::vector<std::string> ResultTextLines(const Block &b) {
+    if (b.result_format == "markdown") return {};
     return b.result_format == "html" ? HtmlResultText(Join(b.result_lines, "\n")) : b.result_lines;
 }
 
@@ -326,8 +329,12 @@ struct MdWriter {
             if (!fm.empty()) blocks.push_back("---\n" + fm + "---");
         }
         const std::vector<std::string> labels = BlockLabels(doc);
+        const std::vector<bool> export_hidden = ExportHidden(doc);
         for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
             const Block &b = doc.blocks[bi];
+            if (export_hidden[bi]) continue;
+            bool show_code = true, show_results = true;
+            if (b.kind == BlockKind::Code) CodeExports(doc, b, &show_code, &show_results);
             const std::string caption = b.caption_inlines.empty() ? "" : Inl(b.caption_inlines);
             auto captioned = [&](const std::string &body) {
                 if (caption.empty()) return body;
@@ -350,23 +357,27 @@ struct MdWriter {
                     }
                     std::string fence = "```";
                     while (b.code.find(fence) != std::string::npos) fence += "`";
-                    std::string out = fence + b.lang + (opts.empty() ? "" : " {" + opts + "}") + "\n" + b.code + "\n" + fence;
+                    std::string out = show_code ? fence + b.lang + (opts.empty() ? "" : " {" + opts + "}") + "\n" + b.code + "\n" + fence : "";
                     std::vector<std::string> text;
-                    for (const std::string &l : b.result_lines) {
+                    // (Markdown results are the blocks that follow.)
+                    const std::vector<std::string> none;
+                    for (const std::string &l : b.result_format == "markdown" || !show_results ? none : b.result_lines) {
                         std::string img;
                         if (!b.result_format.empty() || !ResultImagePath(l, &img)) text.push_back(l);
                     }
                     // HTML the block produced: Markdown's own raw HTML, between
                     // markers mep's importer reads it back from.
+                    auto para = [&out](const std::string &more) { out += (out.empty() ? "" : "\n\n") + more; };
                     if (b.result_line_start >= 0 && !text.empty() && b.result_format == "html")
-                        out += "\n\n<!-- mepml:results html -->\n" + Join(text, "\n") + "\n<!-- /mepml:results -->";
+                        para("<!-- mepml:results html -->\n" + Join(text, "\n") + "\n<!-- /mepml:results -->");
                     else if (b.result_line_start >= 0 && !text.empty())
-                        out += "\n\n```output\n" + Join(text, "\n") + "\n```";
+                        para("```output\n" + Join(text, "\n") + "\n```");
                     std::string figs;
-                    for (const auto &im : b.result_images) figs += (figs.empty() ? "" : "\n") + ("![" + b.alt + "](" + im.second + ")");
-                    if (!figs.empty()) out += "\n\n" + captioned(figs);
-                    else if (!caption.empty()) out += "\n\n*" + caption + "*";
-                    blocks.push_back(out);
+                    if (show_results)
+                        for (const auto &im : b.result_images) figs += (figs.empty() ? "" : "\n") + ("![" + b.alt + "](" + im.second + ")");
+                    if (!figs.empty()) para(captioned(figs));
+                    else if (!caption.empty() && !out.empty()) para("*" + caption + "*");
+                    if (!out.empty()) blocks.push_back(out);
                     break;
                 }
                 case BlockKind::Image: blocks.push_back(captioned("![" + b.alt + "](" + b.value + ")")); break;
@@ -560,8 +571,12 @@ struct OrgWriter {
         }
         if (!head.empty()) blocks.push_back(Join(head, "\n"));
         const std::vector<std::string> labels = BlockLabels(doc);
+        const std::vector<bool> export_hidden = ExportHidden(doc);
         for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
             const Block &b = doc.blocks[bi];
+            if (export_hidden[bi]) continue;
+            bool show_code = true, show_results = true;
+            if (b.kind == BlockKind::Code) CodeExports(doc, b, &show_code, &show_results);
             const std::string cap = b.caption_inlines.empty() ? "" : "#+CAPTION: " + Unwrap(Inl(b.caption_inlines)) + "\n";
             switch (b.kind) {
                 case BlockKind::Paragraph: blocks.push_back(SafeLines(Inl(b.inlines))); break;
@@ -594,18 +609,19 @@ struct OrgWriter {
                         if (!t.empty() && (t[0] == '*' || t.rfind("#+", 0) == 0 || t.rfind(",*", 0) == 0)) l = "," + l;
                         body += l + "\n";
                     }
-                    std::string out = "#+begin_src " + (b.lang.empty() ? std::string("text") : b.lang) + args + "\n" + body + "#+end_src";
-                    if (b.result_line_start >= 0 && b.result_format == "html") {
+                    std::string out = show_code ? "#+begin_src " + (b.lang.empty() ? std::string("text") : b.lang) + args + "\n" + body + "#+end_src" : "";
+                    if (!show_results) {
+                    } else if (b.result_line_start >= 0 && b.result_format == "html") {
                         // org-babel's own form for `:results html`.
-                        out += "\n\n#+RESULTS:\n#+begin_export html\n" + Join(b.result_lines, "\n") + "\n#+end_export";
-                    } else if (b.result_line_start >= 0) {
-                        out += "\n\n" + (b.result_images.empty() ? std::string() : cap) + "#+RESULTS:";
+                        out += std::string(out.empty() ? "" : "\n\n") + "#+RESULTS:\n#+begin_export html\n" + Join(b.result_lines, "\n") + "\n#+end_export";
+                    } else if (b.result_line_start >= 0 && b.result_format != "markdown") {
+                        out += std::string(out.empty() ? "" : "\n\n") + (b.result_images.empty() ? std::string() : cap) + "#+RESULTS:";
                         for (const std::string &rl : b.result_lines) {
                             std::string img;
                             out += "\n" + (ResultImagePath(rl, &img) ? "[[file:" + img + "]]" : ": " + rl);
                         }
                     }
-                    blocks.push_back(out);
+                    if (!out.empty()) blocks.push_back(out);
                     break;
                 }
                 case BlockKind::Image: blocks.push_back(cap + "[[file:" + b.value + "]]"); break;
@@ -699,8 +715,12 @@ struct TextWriter {
         std::vector<std::string> blocks;
         if (!doc.title.empty()) blocks.push_back(doc.title + "\n" + std::string(doc.title.size(), '='));
         const std::vector<std::string> labels = BlockLabels(doc);
+        const std::vector<bool> export_hidden = ExportHidden(doc);
         for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
             const Block &b = doc.blocks[bi];
+            if (export_hidden[bi]) continue;
+            bool show_code = true, show_results = true;
+            if (b.kind == BlockKind::Code) CodeExports(doc, b, &show_code, &show_results);
             const std::string cap = b.caption_inlines.empty() ? "" : "\n" + (labels[bi].empty() ? "" : labels[bi] + ": ") + Inl(b.caption_inlines);
             switch (b.kind) {
                 case BlockKind::Paragraph: blocks.push_back(Inl(b.inlines)); break;
@@ -715,13 +735,15 @@ struct TextWriter {
                     std::string out;
                     std::istringstream ss(b.code);
                     std::string l;
-                    while (std::getline(ss, l)) out += "    " + l + "\n";
-                    for (const std::string &rl : ResultTextLines(b)) {
+                    while (show_code && std::getline(ss, l)) out += "    " + l + "\n";
+                    // Without the code, the output is set in as it would be printed.
+                    const std::string lead = show_code ? "    > " : "    ";
+                    for (const std::string &rl : show_results ? ResultTextLines(b) : std::vector<std::string>()) {
                         std::string img;
-                        out += "    > " + (b.result_format.empty() && ResultImagePath(rl, &img) ? "[figure: " + img + "]" : rl) + "\n";
+                        out += lead + (b.result_format.empty() && ResultImagePath(rl, &img) ? "[figure: " + img + "]" : rl) + "\n";
                     }
                     if (!out.empty()) out.pop_back();
-                    blocks.push_back(out + cap);
+                    if (!out.empty()) blocks.push_back(out + cap);
                     break;
                 }
                 case BlockKind::Image: blocks.push_back("[figure: " + b.value + "]" + cap); break;
@@ -812,8 +834,13 @@ std::vector<std::pair<std::string, std::string>> OfficeProps(const Document &doc
         if (LowerStr(kv.first) != "title" && LowerStr(kv.first) != "import")
             p.push_back({"mepml.meta." + std::to_string(++n), kv.first + ": " + kv.second});
     n = 0;
-    for (const Block &b : doc.blocks) {
-        if (b.kind != BlockKind::Code) continue;
+    const std::vector<bool> export_hidden = ExportHidden(doc);
+    for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
+        const Block &b = doc.blocks[bi];
+        if (b.kind != BlockKind::Code || export_hidden[bi]) continue;
+        bool show_code = true, show_results = true;
+        CodeExports(doc, b, &show_code, &show_results);
+        if (!show_code) continue;  // (its bookmark is not in the body either)
         std::string v = b.lang;
         for (const Option &o : b.options) v += "\n" + o.name + "\t" + o.value.s;
         p.push_back({"mepml.code." + std::to_string(++n), v});
@@ -965,8 +992,12 @@ struct RtfWriter {
         if (!doc.title.empty()) body += Para("\\s7\\qc\\sa320\\b\\fs40", Esc(doc.title));
         const std::vector<std::string> labels = BlockLabels(doc);
         static const int kHeadSize[] = {36, 32, 28, 26, 24, 24};
+        const std::vector<bool> export_hidden = ExportHidden(doc);
         for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
             const Block &b = doc.blocks[bi];
+            if (export_hidden[bi]) continue;
+            bool show_code = true, show_results = true;
+            if (b.kind == BlockKind::Code) CodeExports(doc, b, &show_code, &show_results);
             switch (b.kind) {
                 case BlockKind::Paragraph: body += Para("", Inl(b.inlines)); break;
                 case BlockKind::Heading: {
@@ -987,20 +1018,25 @@ struct RtfWriter {
                     // number (its header is in \userprops); results in gray.
                     std::istringstream ss(b.code);
                     std::string l;
-                    std::string mark = Bookmark("mepml_code_" + std::to_string(++code_n));
+                    const size_t before = body.size();
                     const std::string style = "\\s8\\li360\\sa0\\f2\\fs20";
-                    while (std::getline(ss, l)) {
-                        body += Para(style, mark + Esc(l));
-                        mark.clear();
+                    if (show_code) {
+                        std::string mark = Bookmark("mepml_code_" + std::to_string(++code_n));
+                        while (std::getline(ss, l)) {
+                            body += Para(style, mark + Esc(l));
+                            mark.clear();
+                        }
+                        if (!mark.empty()) body += Para(style, mark);
                     }
-                    if (!mark.empty()) body += Para(style, mark);
                     const std::string gray = "\\cf" + std::to_string(ColorIndex("#555555"));
-                    for (const std::string &rl : ResultTextLines(b)) {
-                        std::string img;
-                        if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += Para(style + gray, Esc(rl));
+                    if (show_results) {
+                        for (const std::string &rl : ResultTextLines(b)) {
+                            std::string img;
+                            if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += Para(style + gray, Esc(rl));
+                        }
+                        for (const auto &im : b.result_images) body += Picture(im.second);
                     }
-                    for (const auto &im : b.result_images) body += Picture(im.second);
-                    body += Caption(labels[bi], b.caption_inlines);
+                    if (body.size() > before) body += Caption(labels[bi], b.caption_inlines);
                     break;
                 }
                 case BlockKind::Image: body += Picture(b.value, b.alt) + Caption(labels[bi], b.caption_inlines); break;
@@ -1320,8 +1356,12 @@ struct DocxWriter {
         DocxRunFmt none;
         if (!doc.title.empty()) body += P(Style("Title"), Run(doc.title, none));
         const std::vector<std::string> labels = BlockLabels(doc);
+        const std::vector<bool> export_hidden = ExportHidden(doc);
         for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
             const Block &b = doc.blocks[bi];
+            if (export_hidden[bi]) continue;
+            bool show_code = true, show_results = true;
+            if (b.kind == BlockKind::Code) CodeExports(doc, b, &show_code, &show_results);
             switch (b.kind) {
                 case BlockKind::Paragraph: body += P("", Inl(b.inlines, none)); break;
                 case BlockKind::Heading:
@@ -1340,25 +1380,30 @@ struct DocxWriter {
                 case BlockKind::Code: {
                     std::istringstream ss(b.code);
                     std::string l;
-                    std::string mark = Bookmark("mepml_code_" + std::to_string(++code_n));
+                    const size_t before = body.size();
                     DocxRunFmt code_fmt;
                     code_fmt.keep_spaces = true;
                     // (A blank line is an empty paragraph -- Word shows it as
                     // one -- not a space, which a reader would keep.)
-                    while (std::getline(ss, l)) {
-                        body += P(Style("SourceCode"), mark + (l.empty() ? std::string() : Run(l, code_fmt)));
-                        mark.clear();
+                    if (show_code) {
+                        std::string mark = Bookmark("mepml_code_" + std::to_string(++code_n));
+                        while (std::getline(ss, l)) {
+                            body += P(Style("SourceCode"), mark + (l.empty() ? std::string() : Run(l, code_fmt)));
+                            mark.clear();
+                        }
+                        if (!mark.empty()) body += P(Style("SourceCode"), mark + Run(" ", none));
                     }
-                    if (!mark.empty()) body += P(Style("SourceCode"), mark + Run(" ", none));
                     DocxRunFmt out;
                     out.color = "555555";
                     out.keep_spaces = true;
-                    for (const std::string &rl : ResultTextLines(b)) {
-                        std::string img;
-                        if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += P(Style("SourceCode"), rl.empty() ? std::string() : Run(rl, out));
+                    if (show_results) {
+                        for (const std::string &rl : ResultTextLines(b)) {
+                            std::string img;
+                            if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += P(Style("SourceCode"), rl.empty() ? std::string() : Run(rl, out));
+                        }
+                        for (const auto &im : b.result_images) body += Picture(im.second);
                     }
-                    for (const auto &im : b.result_images) body += Picture(im.second);
-                    body += Caption(labels[bi], b.caption_inlines);
+                    if (body.size() > before) body += Caption(labels[bi], b.caption_inlines);
                     break;
                 }
                 case BlockKind::Image: body += Picture(b.value, b.alt) + Caption(labels[bi], b.caption_inlines); break;
@@ -1670,8 +1715,12 @@ struct OdtWriter {
         OdtFmt none;
         if (!doc.title.empty()) body += P("Title", Run(doc.title, none));
         const std::vector<std::string> labels = BlockLabels(doc);
+        const std::vector<bool> export_hidden = ExportHidden(doc);
         for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
             const Block &b = doc.blocks[bi];
+            if (export_hidden[bi]) continue;
+            bool show_code = true, show_results = true;
+            if (b.kind == BlockKind::Code) CodeExports(doc, b, &show_code, &show_results);
             switch (b.kind) {
                 case BlockKind::Paragraph: body += P("", Inl(b.inlines, none)); break;
                 case BlockKind::Heading: {
@@ -1693,20 +1742,25 @@ struct OdtWriter {
                 case BlockKind::Code: {
                     std::istringstream ss(b.code);
                     std::string l;
-                    std::string mark = "<text:bookmark text:name=\"mepml_code_" + std::to_string(++code_n) + "\"/>";
-                    while (std::getline(ss, l)) {
-                        body += P("Preformatted_20_Text", mark + Run(l, none));
-                        mark.clear();
+                    const size_t before = body.size();
+                    if (show_code) {
+                        std::string mark = "<text:bookmark text:name=\"mepml_code_" + std::to_string(++code_n) + "\"/>";
+                        while (std::getline(ss, l)) {
+                            body += P("Preformatted_20_Text", mark + Run(l, none));
+                            mark.clear();
+                        }
+                        if (!mark.empty()) body += P("Preformatted_20_Text", mark);
                     }
-                    if (!mark.empty()) body += P("Preformatted_20_Text", mark);
                     OdtFmt out;
                     out.color = "555555";
-                    for (const std::string &rl : ResultTextLines(b)) {
-                        std::string img;
-                        if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += P("Preformatted_20_Text", Run(rl, out));
+                    if (show_results) {
+                        for (const std::string &rl : ResultTextLines(b)) {
+                            std::string img;
+                            if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += P("Preformatted_20_Text", Run(rl, out));
+                        }
+                        for (const auto &im : b.result_images) body += Picture(im.second);
                     }
-                    for (const auto &im : b.result_images) body += Picture(im.second);
-                    body += Caption(labels[bi], b.caption_inlines);
+                    if (body.size() > before) body += Caption(labels[bi], b.caption_inlines);
                     break;
                 }
                 case BlockKind::Image: body += Picture(b.value, b.alt) + Caption(labels[bi], b.caption_inlines); break;

@@ -117,6 +117,16 @@ don't need to line up in the source (mep lines the columns up when drawing):
 | a longer cell | >big< | 100 |
 @caption{An aligned table}
 
+GitHub-flavoured Markdown tables work as they are. After a header and a
+delimiter row, the outer pipes are optional, and \| is a pipe inside a cell:
+
+Species | Petal length | Petal width
+:------ | -----------: | ----------:
+~setosa~ | 1.46 | 0.25
+versicolor | 4.26 | 1.33
+| virginica | 5.55 | 2.03 |
+@caption{A Markdown table}
+
 Code blocks take options in the header or from //? lines right above them,
 and a ```lang header works too. Results are written back between the markers
 when the block is run (C-c C-c in mep):
@@ -163,6 +173,34 @@ print("</table>")
 // <tr><td>cherry</td><td>12</td></tr>
 // </table>
 // result_end
+
+A block with results=markdown prints Markdown, which is written out as it
+is and read as part of the document: a table it prints is a table, numbered
+and captioned like any other. (R's knitr::kable() prints one.)
+
+```{python, results=markdown}
+rows = [("apple", 3), ("banana", 5)]
+print("| Fruit | Count |")
+print("|:------|------:|")
+for name, n in rows:
+    print(f"| {name} | {n} |")
+```
+// result_begin: markdown
+| Fruit | Count |
+|:------|------:|
+| apple | 3 |
+| banana | 5 |
+// result_end
+@caption{Fruit, counted by Python}
+
+The exports show each block's code and its results. `exports=` (code,
+results, both or none) or knitr's `echo=false` (results only) changes that for
+one block, and an `Exports:` line in the header for every block. The editor
+always shows everything; this block appears in no export:
+
+```{r, exports=none}
+cat("only in the editor")
+```
 
 An exec block runs a program in a terminal inside its results: C-c C-c starts
 it, Enter (or a click) types into it, Ctrl-\ Ctrl-N comes back to the text,

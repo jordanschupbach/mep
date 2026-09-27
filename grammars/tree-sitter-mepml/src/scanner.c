@@ -72,6 +72,8 @@ enum TokenType {
     OPEN_DELETE, CLOSE_DELETE,
     ABSTRACT_OPEN,
     ABSTRACT_BREAK,
+    RESULT_BEGIN_MARKDOWN,
+    RESULT_END_ATTACHED,
     ERROR_SENTINEL,
 };
 
@@ -115,8 +117,14 @@ typedef struct {
     // Inside @abstract{...}: the depth_count its own group sits at (0 when
     // outside one). Its prose runs over lines, paragraphs split by blank ones.
     uint8_t abstract_level;
+    // The table the previous line belonged to: TABLE_NONE, a mepml table
+    // (rows are `|` at both ends), or a GitHub-flavoured Markdown one
+    // (header over a delimiter row), whose rows need no outer pipes.
+    uint8_t table;
     uint8_t depths[MAX_DEPTH];  // brace depth inside each open {group}
 } Scanner;
+
+enum TableKind { TABLE_NONE = 0, TABLE_MEPML = 1, TABLE_GFM = 2 };
 
 // --- character classes ---------------------------------------------------
 
@@ -180,6 +188,7 @@ unsigned tree_sitter_mepml_external_scanner_serialize(void *payload, char *buffe
     buffer[n++] = (char)(s->open_mask >> 8);
     buffer[n++] = (char)s->depth_count;
     buffer[n++] = (char)s->abstract_level;
+    buffer[n++] = (char)s->table;
     for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH; ++i) buffer[n++] = (char)s->depths[i];
     return n;
 }
@@ -188,7 +197,7 @@ void tree_sitter_mepml_external_scanner_deserialize(void *payload, const char *b
     Scanner *s = (Scanner *)payload;
     memset(s, 0, sizeof(*s));
     s->prev = '\n';
-    if (length < 8) return;
+    if (length < 9) return;
     s->prev = (uint8_t)buffer[0];
     s->context = (uint8_t)buffer[1];
     s->link_mode = (uint8_t)buffer[2];
@@ -196,7 +205,8 @@ void tree_sitter_mepml_external_scanner_deserialize(void *payload, const char *b
     s->open_mask = (uint16_t)((uint8_t)buffer[4] | ((uint16_t)(uint8_t)buffer[5] << 8));
     s->depth_count = (uint8_t)buffer[6];
     s->abstract_level = (uint8_t)buffer[7];
-    for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH && 8 + i < length; ++i) s->depths[i] = (uint8_t)buffer[8 + i];
+    s->table = (uint8_t)buffer[8];
+    for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH && 9 + i < length; ++i) s->depths[i] = (uint8_t)buffer[9 + i];
 }
 
 // --- lookahead scope ------------------------------------------------------------
@@ -646,6 +656,19 @@ static bool scan_inline(Scanner *s, TSLexer *lexer, const bool *valid) {
     int32_t c = la(lexer);
     if (c == 0 || c == '\n' || c == '\r') return false;
 
+    // A table row's indentation belongs to its first pipe, if it has one
+    // (a GFM row may start with its first cell instead).
+    if (valid[TABLE_PIPE] && valid[TEXT] && s->prev == '\n' && is_blank(c)) {
+        while (is_blank(la(lexer))) adv(lexer);
+        if (la(lexer) == '|') {
+            adv(lexer);
+            lexer->mark_end(lexer);
+            return emit(s, lexer, TABLE_PIPE, '|');
+        }
+        lexer->mark_end(lexer);
+        return emit(s, lexer, TEXT, ' ');
+    }
+
     if (valid[URL] && s->link_mode != LINK_NONE && (s->link_mode == LINK_URL_ONLY || !valid[TEXT])) {
         int32_t last = 0;
         while (!at_eol(lexer) && la(lexer) != ']') {
@@ -893,8 +916,128 @@ static bool is_callout_keyword(const char *w) {
     return false;
 }
 
+// What a line-start branch had already consumed of a line when it gave up
+// on it, for deciding whether the line is a GitHub-flavoured Markdown table
+// row (src/mepml_doc.cpp: TableCells, IsDelimiterRow, GfmTableAt, GfmRowAt).
+typedef struct {
+    bool never;      // the line cannot be a table row (a comment)
+    int pipes;       // cell pipes seen so far
+    bool lead;       // the first non-blank character was a pipe
+    bool delimiter;  // everything so far fits a delimiter row (- : = | blanks)
+    bool tick;       // inside `verbatim`
+    bool trail;      // the last non-blank character was a cell pipe
+} LineSoFar;
+
+static const LineSoFar kNothing = {false, 0, false, true, false, false};
+static const LineSoFar kNotDelimiter = {false, 0, false, false, false, false};
+static const LineSoFar kNever = {true, 0, false, false, false, false};
+
+// Reads the rest of the line (to its end, not past it): its cell pipes,
+// whether it ends in one, and whether it is a delimiter row.
+static void scan_table_line(TSLexer *lexer, LineSoFar *st) {
+    while (!at_eol(lexer)) {
+        int32_t d = la(lexer);
+        adv(lexer);
+        if (d == '\\') {
+            st->delimiter = false;
+            st->trail = false;
+            if (!at_eol(lexer)) adv(lexer);
+            continue;
+        }
+        if (is_blank(d)) continue;
+        if (d == '`') st->tick = !st->tick;
+        if (d == '|' && !st->tick) {
+            st->pipes++;
+            st->trail = true;
+            continue;
+        }
+        st->trail = false;
+        if (d != '-' && d != ':' && d != '=') st->delimiter = false;
+    }
+}
+
+// Cells in a scanned line, as TableCells counts them.
+static int table_cells(const LineSoFar *st) {
+    return st->pipes == 0 ? 0 : st->pipes + 1 - (st->lead ? 1 : 0) - (st->trail ? 1 : 0);
+}
+
+// The next line is a delimiter row with `cells` cells, and not a list
+// item (`- | -`). Called at the end of the current line.
+static bool next_line_delimits(TSLexer *lexer, int cells) {
+    if (la(lexer) == '\r') adv(lexer);
+    if (la(lexer) != '\n') return false;
+    adv(lexer);
+    while (is_blank(la(lexer))) adv(lexer);
+    LineSoFar st = kNothing;
+    int32_t c = la(lexer);
+    if (c == '|') {
+        st.lead = true;
+        st.trail = true;
+        st.pipes = 1;
+        adv(lexer);
+    } else if (c == '-' || c == '*' || c == '+') {
+        adv(lexer);
+        if (is_blank(la(lexer))) return false;  // a list item
+        if (c != '-') st.delimiter = false;
+    } else if (is_digit(c)) {
+        return false;  // a list item, or at least not a delimiter row
+    }
+    scan_table_line(lexer, &st);
+    const int got = table_cells(&st);
+    return st.delimiter && got == cells && got > 0;
+}
+
+// A GFM table row, or the delimiter row under its header: a line with a
+// cell pipe that is no other block's start. Zero-width, except that a
+// delimiter row owns its line.
+static bool table_line(Scanner *s, TSLexer *lexer, const bool *valid, LineSoFar st) {
+    if (st.never || (!valid[TABLE_ROW_START] && !valid[TABLE_DELIMITER_ROW])) return false;
+    scan_table_line(lexer, &st);
+    const int cells = table_cells(&st);
+    if (cells <= 0) return false;
+    if (s->table == TABLE_GFM) {
+        if (st.delimiter && valid[TABLE_DELIMITER_ROW]) {
+            lexer->mark_end(lexer);
+            return emit(s, lexer, TABLE_DELIMITER_ROW, '|');
+        }
+        if (valid[TABLE_ROW_START]) {
+            s->context = CTX_LINE;
+            s->prev = '\n';
+            lexer->result_symbol = TABLE_ROW_START;
+            return true;
+        }
+        return false;
+    }
+    if (valid[TABLE_ROW_START] && next_line_delimits(lexer, cells)) {
+        s->table = TABLE_GFM;
+        s->context = CTX_LINE;
+        s->prev = '\n';
+        lexer->result_symbol = TABLE_ROW_START;
+        return true;
+    }
+    return false;
+}
+
+// The next line is an @caption or @alttext. Called at the end of a line.
+static bool next_line_is_attribute(TSLexer *lexer) {
+    if (la(lexer) == '\r') adv(lexer);
+    if (la(lexer) != '\n') return false;
+    adv(lexer);
+    while (is_blank(la(lexer))) adv(lexer);
+    if (la(lexer) != '@') return false;
+    adv(lexer);
+    char name[10] = {0};
+    int n = 0;
+    while (is_alpha(la(lexer)) && n < 9) {
+        name[n++] = (char)la(lexer);
+        adv(lexer);
+    }
+    return !is_alpha(la(lexer)) && (strcmp(name, "caption") == 0 || strcmp(name, "alttext") == 0);
+}
+
 // Zero-width fallbacks when a line is not any block start.
-static bool fallback_line(Scanner *s, TSLexer *lexer, const bool *valid, bool indented) {
+static bool fallback_line_after(Scanner *s, TSLexer *lexer, const bool *valid, bool indented, LineSoFar st) {
+    if (table_line(s, lexer, valid, st)) return true;
     if (indented && valid[LIST_CONTINUATION]) {
         s->context = CTX_LINE;
         lexer->result_symbol = LIST_CONTINUATION;
@@ -907,6 +1050,10 @@ static bool fallback_line(Scanner *s, TSLexer *lexer, const bool *valid, bool in
         return true;
     }
     return false;
+}
+
+static bool fallback_line(Scanner *s, TSLexer *lexer, const bool *valid, bool indented) {
+    return fallback_line_after(s, lexer, valid, indented, kNotDelimiter);
 }
 
 // Called at the start of a line where some block-level token is valid.
@@ -939,14 +1086,15 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
         if (la(lexer) != '/') return fallback_line(s, lexer, valid, indent > 0);
         adv(lexer);
         if (la(lexer) == '?') {
-            if (!valid[META_MARKER]) return fallback_line(s, lexer, valid, indent > 0);
+            if (!valid[META_MARKER]) return fallback_line_after(s, lexer, valid, indent > 0, kNever);
             adv(lexer);
             lexer->mark_end(lexer);
             s->context = CTX_LINE;
             return emit(s, lexer, META_MARKER, '?');
         }
-        if (!valid[COMMENT_MARKER] && !valid[CALLOUT_MARKER] && !valid[RESULT_BEGIN] && !valid[RESULT_END])
-            return fallback_line(s, lexer, valid, indent > 0);
+        if (!valid[COMMENT_MARKER] && !valid[CALLOUT_MARKER] && !valid[RESULT_BEGIN] && !valid[RESULT_END] &&
+            !valid[RESULT_BEGIN_MARKDOWN] && !valid[RESULT_END_ATTACHED])
+            return fallback_line_after(s, lexer, valid, indent > 0, kNever);
         bool spaced = false;
         while (is_blank(la(lexer))) {
             adv(lexer);
@@ -960,19 +1108,39 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
             word[n++] = (char)la(lexer);
             adv(lexer);
         }
-        if ((valid[RESULT_BEGIN] && strcmp(word, "result_begin") == 0) ||
-            (valid[RESULT_END] && strcmp(word, "result_end") == 0)) {
+        const bool begin = (valid[RESULT_BEGIN] || valid[RESULT_BEGIN_MARKDOWN]) && strcmp(word, "result_begin") == 0;
+        const bool end = (valid[RESULT_END] || valid[RESULT_END_ATTACHED]) && strcmp(word, "result_end") == 0;
+        if (begin || end) {
             if (la(lexer) == ':') adv(lexer);
             while (is_blank(la(lexer))) adv(lexer);
             // The opening marker may name the results' kind: `// result_begin: html`.
-            if (word[7] == 'b') {
-                while (is_alpha(la(lexer))) adv(lexer);
+            char kind[16] = {0};
+            int kn = 0;
+            if (begin) {
+                while (is_alpha(la(lexer))) {
+                    int32_t k = la(lexer);
+                    if (kn < 15) kind[kn++] = (char)(is_upper(k) ? k - 'A' + 'a' : k);
+                    adv(lexer);
+                }
                 while (is_blank(la(lexer))) adv(lexer);
             }
             if (at_eol(lexer)) {
                 lexer->mark_end(lexer);
                 s->context = CTX_LINE;
-                return emit(s, lexer, word[7] == 'b' ? RESULT_BEGIN : RESULT_END, ':');
+                if (begin) {
+                    // Markdown results are the document's own blocks, up to
+                    // their closing marker.
+                    const bool markdown = strcmp(kind, "markdown") == 0 || strcmp(kind, "md") == 0;
+                    if (markdown && valid[RESULT_BEGIN_MARKDOWN]) return emit(s, lexer, RESULT_BEGIN_MARKDOWN, ':');
+                    if (!markdown && valid[RESULT_BEGIN]) return emit(s, lexer, RESULT_BEGIN, ':');
+                } else {
+                    // Closing Markdown results that end in a table (image,
+                    // maths) captioned on the next line: the caption is that
+                    // block's, so the marker is too.
+                    if (valid[RESULT_END_ATTACHED] && next_line_is_attribute(lexer))
+                        return emit(s, lexer, RESULT_END_ATTACHED, ':');
+                    if (valid[RESULT_END]) return emit(s, lexer, RESULT_END, ':');
+                }
             }
         }
         if (valid[CALLOUT_MARKER] && n > 0 && la(lexer) == ':' && is_callout_keyword(word)) {
@@ -992,18 +1160,22 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
 
     // ``` fences.
     if (c == '`') {
+        LineSoFar st = kNotDelimiter;
         adv(lexer);
+        st.tick = !st.tick;
         if (la(lexer) == '`') {
             adv(lexer);
+            st.tick = !st.tick;
             if (la(lexer) == '`') {
                 adv(lexer);
+                st.tick = !st.tick;
                 if (valid[FENCE_OPEN]) {
                     lexer->mark_end(lexer);
                     return emit(s, lexer, FENCE_OPEN, '`');
                 }
             }
         }
-        return fallback_line(s, lexer, valid, indent > 0);
+        return fallback_line_after(s, lexer, valid, indent > 0, st);
     }
 
     // Display maths.
@@ -1015,6 +1187,8 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
             s->math_kind = c == '$' ? MATH_DOLLARS : MATH_BRACKET;
             return emit(s, lexer, MATH_OPEN, c == '$' ? '$' : '[');
         }
+        // A backslash escapes what follows it (a `\|` is no cell pipe).
+        if (c == '\\' && !at_eol(lexer)) adv(lexer);
         return fallback_line(s, lexer, valid, indent > 0);
     }
 
@@ -1047,7 +1221,7 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
                 s->prev = ' ';
                 return emit(s, lexer, LIST_MARKER, ' ');
             }
-            return fallback_line(s, lexer, valid, indent > 0);
+            return fallback_line_after(s, lexer, valid, indent > 0, kNever);  // a list item's shape
         }
         if (c != '+') {
             int count = 1;
@@ -1061,7 +1235,7 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
                 return emit(s, lexer, RULE, c);
             }
         }
-        return fallback_line(s, lexer, valid, indent > 0);
+        return fallback_line_after(s, lexer, valid, indent > 0, c == '-' || c == '=' ? kNothing : kNotDelimiter);
     }
 
     // Numbered lists.
@@ -1084,18 +1258,42 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
         return fallback_line(s, lexer, valid, indent > 0);
     }
 
-    // Tables: a line whose trimmed text starts and ends with `|`.
+    // Tables: a line whose trimmed text starts and ends with `|` (and,
+    // for a GitHub-flavoured Markdown table, lines with a pipe anywhere --
+    // see table_line).
     if (c == '|') {
         bool delimiter = true;
         int cells = 0;
         int32_t last = 0;
         bool tick = false;
+        // The same line as table_line reads it (escapes count), for when
+        // it is not a mepml row but may be a GFM one.
+        LineSoFar st = kNothing;
+        st.lead = true;
+        bool escaped = false;
         while (!at_eol(lexer)) {
             int32_t d = la(lexer);
             if (d == '`') tick = !tick;
             if (!is_blank(d)) last = d;
             if (d == '|' && !tick) cells++;
             else if (!is_blank(d) && d != '-' && d != ':' && d != '=') delimiter = false;
+            if (escaped) {
+                escaped = false;
+                st.trail = false;
+            } else if (d == '\\') {
+                escaped = true;
+                st.delimiter = false;
+                st.trail = false;
+            } else if (!is_blank(d)) {
+                if (d == '`') st.tick = !st.tick;
+                if (d == '|' && !st.tick) {
+                    st.pipes++;
+                    st.trail = true;
+                } else {
+                    st.trail = false;
+                    if (d != '-' && d != ':' && d != '=') st.delimiter = false;
+                }
+            }
             adv(lexer);
         }
         if (last == '|' && cells >= 2) {
@@ -1104,13 +1302,16 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
                 return emit(s, lexer, TABLE_DELIMITER_ROW, '|');
             }
             if (valid[TABLE_ROW_START]) {
+                // A new table: GFM when a delimiter row follows its header.
+                if (s->table == TABLE_NONE)
+                    s->table = next_line_delimits(lexer, table_cells(&st)) ? TABLE_GFM : TABLE_MEPML;
                 s->context = CTX_LINE;
                 s->prev = '\n';
                 lexer->result_symbol = TABLE_ROW_START;
                 return true;
             }
         }
-        return fallback_line(s, lexer, valid, indent > 0);
+        return fallback_line_after(s, lexer, valid, indent > 0, st);
     }
 
     // @directives.
@@ -1130,7 +1331,7 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
         return fallback_line(s, lexer, valid, indent > 0);
     }
 
-    return fallback_line(s, lexer, valid, indent > 0);
+    return fallback_line_after(s, lexer, valid, indent > 0, kNothing);
 }
 
 // Is the current line (lexer at its first character) a closing ``` fence?
@@ -1238,8 +1439,14 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
         bool block_valid = valid[BLANK_LINE] || valid[PARAGRAPH_START] || valid[COMMENT_MARKER] ||
                            valid[META_MARKER] || valid[H1_MARKER] || valid[LIST_MARKER] ||
                            valid[LIST_CONTINUATION] || valid[TABLE_ROW_START] || valid[RESULT_END] ||
+                           valid[RESULT_END_ATTACHED] || valid[RESULT_BEGIN_MARKDOWN] ||
                            valid[DIRECTIVE_START] || valid[FENCE_OPEN];
-        if (block_valid) return scan_line_start(s, lexer, valid);
+        if (block_valid) {
+            const bool ok = scan_line_start(s, lexer, valid);
+            if (ok && lexer->result_symbol != TABLE_ROW_START && lexer->result_symbol != TABLE_DELIMITER_ROW)
+                s->table = TABLE_NONE;
+            return ok;
+        }
     }
 
     // Line ends.

@@ -540,6 +540,21 @@ bool IsFence(const std::string &t) { return t.rfind("```", 0) == 0; }
 
 bool IsTableRow(const std::string &t) { return t.size() >= 2 && t.front() == '|' && t.back() == '|'; }
 
+// A `|---|:--:|` row: at least one pipe, and every cell dashes (or `=`)
+// with optional alignment colons.
+bool IsDelimiterRow(const std::string &s, size_t *cells_out = nullptr) {
+    const std::vector<std::pair<int, int>> cells = TableCells(s);
+    if (cells.empty()) return false;
+    for (const auto &cell : cells) {
+        std::string t = Trim(Sub(s, cell.first, cell.second));
+        if (t.empty()) return false;
+        for (char ch : t)
+            if (ch != '-' && ch != ':' && ch != '=') return false;
+    }
+    if (cells_out) *cells_out = cells.size();
+    return true;
+}
+
 // A list item's marker: "- ", "* ", "+ ", "12. ", "3) ". Returns the byte
 // length of indent+marker+space, 0 if not an item.
 int ListMarker(const std::string &line, bool *ordered, int *number) {
@@ -585,7 +600,8 @@ std::string CalloutKeyword(const std::string &line) {
 
 bool IsComment(const std::string &line) { return Trim(line).rfind("//", 0) == 0; }
 bool IsMetaLine(const std::string &line) { return Trim(line).rfind("//?", 0) == 0; }
-// `// result_begin:` optionally followed by the results' kind (`html`).
+// `// result_begin:` optionally followed by the results' kind (`html`,
+// `markdown`; `md` is read as `markdown`).
 bool IsResultBegin(const std::string &line, std::string *format = nullptr) {
     std::string t = Trim(line);
     std::string rest;
@@ -596,7 +612,9 @@ bool IsResultBegin(const std::string &line, std::string *format = nullptr) {
     rest = Trim(rest);
     for (char c : rest)
         if (!IsAlpha(c)) return false;
-    if (format) *format = Lower(rest);
+    rest = Lower(rest);
+    if (rest == "md") rest = "markdown";
+    if (format) *format = rest;
     return true;
 }
 bool IsResultEnd(const std::string &line) {
@@ -676,6 +694,11 @@ struct Parser {
     Document doc;
     int footnotes = 0;
     int n = 0;
+    // The `// result_end` lines closing `results=markdown` regions. Their
+    // content is parsed as blocks of the document, so the closing marker
+    // is skipped rather than read as a comment, and a caption under it
+    // still reaches the table (or other block) the results end with.
+    std::set<int> markdown_result_ends;
 
     explicit Parser(const std::vector<std::string> &l) : lines(l), n(static_cast<int>(l.size())) {}
 
@@ -736,7 +759,8 @@ struct Parser {
     bool Attach(int i, const std::string &name) {
         if (doc.blocks.empty()) return false;
         Block &b = doc.blocks.back();
-        if (b.line_end != i - 1) return false;
+        const int prev = markdown_result_ends.count(i - 1) ? i - 2 : i - 1;
+        if (b.line_end != prev) return false;
         if (b.kind != BlockKind::Image && b.kind != BlockKind::Table && b.kind != BlockKind::MathBlock &&
             b.kind != BlockKind::Code)
             return false;
@@ -865,6 +889,29 @@ struct Parser {
             j = n - 1;
         }
         int last = j;
+        if (j + 1 < n && IsResultBegin(L(j + 1), &b.result_format) && b.result_format == "markdown") {
+            // Markdown the block printed (`results=markdown`): written out
+            // raw, not commented, and read as part of the document -- a
+            // table it printed is a table here, numbered and captioned like
+            // one typed in. The block owns only the markers; what lies
+            // between them is left for Run() to parse.
+            int r = j + 2;
+            while (r < n && !IsResultEnd(L(r)) && !IsFence(Trim(L(r))) && !HeadingLevel(L(r))) ++r;
+            b.result_line_start = j + 1;
+            if (r < n && IsResultEnd(L(r))) {
+                b.result_line_end = r;
+                markdown_result_ends.insert(r);
+            } else {
+                Diag(Diagnostic::Error, j + 1, 0, Len(L(j + 1)), "results region has no // result_end");
+                b.result_line_end = r - 1;
+            }
+            for (int k = j + 2; k < r; ++k) b.result_lines.push_back(L(k));
+            b.line_start = opts_from;
+            b.line_end = j + 1;
+            SetText(b);
+            doc.blocks.push_back(std::move(b));
+            return j + 2;
+        }
         if (j + 1 < n && IsResultBegin(L(j + 1), &b.result_format)) {
             int r = j + 2;
             while (r < n && !IsResultEnd(L(r)) && IsComment(L(r))) ++r;
@@ -1106,31 +1153,43 @@ struct Parser {
         return j + 1;
     }
 
+    // A GitHub-flavoured Markdown table starts at `i`: a line with a pipe,
+    // over a delimiter row with as many cells. Its rows need no outer pipes.
+    // The header is not some other block (a list item, a directive), and
+    // the delimiter row is not a list item (`- | -`).
+    bool GfmTableAt(int i) {
+        if (i + 1 >= n || !GfmRowAt(i) || IsListItem(L(i + 1))) return false;
+        size_t delim = 0;
+        return IsDelimiterRow(L(i + 1), &delim) && delim == TableCells(L(i)).size();
+    }
+
+    // A table starts at `i`: a mepml row (`|` at both ends), or a GFM table.
+    bool TableStartAt(int i) { return IsTableRow(Trim(L(i))) || GfmTableAt(i); }
+
+    // Line `j` goes on with a GFM table: any line with a cell pipe that
+    // does not start some other block.
+    bool GfmRowAt(int j) {
+        const std::string &s = L(j);
+        const std::string t = Trim(s);
+        if (t.empty() || TableCells(s).empty()) return false;
+        if (HeadingLevel(s) || IsFence(t) || IsComment(s) || IsListItem(s)) return false;
+        if (t.rfind("$$", 0) == 0 || t.rfind("\\[", 0) == 0) return false;
+        const std::string d = DirectiveName(s);
+        return d.empty() || !IsKnownDirective(d);
+    }
+
     int ParseTable(int i) {
-        int j = i;
-        while (j < n && IsTableRow(Trim(L(j)))) ++j;
+        // mepml's own tables are the lines with a pipe at both ends; a GFM
+        // table (header over a delimiter row) also takes rows without them.
+        const bool gfm = GfmTableAt(i);
+        int j = i + 1;
+        while (j < n && (gfm ? GfmRowAt(j) : IsTableRow(Trim(L(j))))) ++j;
         Block b = MakeBlock(BlockKind::Table, i, j - 1);
+        b.rows_end = j - 1;
         for (int k = i; k < j; ++k) {
             const std::string &s = L(k);
             int off = b.line_offsets[static_cast<size_t>(k - i)];
-            // Split on unescaped bars outside `verbatim`.
-            std::vector<std::pair<int, int>> cells;
-            int first = static_cast<int>(s.find('|'));
-            int last = static_cast<int>(s.rfind('|'));
-            int cb = first + 1;
-            bool tick = false;
-            for (int c = first + 1; c <= last; ++c) {
-                char ch = s[static_cast<size_t>(c)];
-                if (ch == '\\') {
-                    ++c;
-                    continue;
-                }
-                if (ch == '`') tick = !tick;
-                if (ch == '|' && !tick) {
-                    cells.emplace_back(cb, c);
-                    cb = c + 1;
-                }
-            }
+            const std::vector<std::pair<int, int>> cells = TableCells(s);
             bool sep = !cells.empty();
             for (auto &cell : cells) {
                 std::string t = Trim(Sub(s, cell.first, cell.second));
@@ -1210,7 +1269,7 @@ struct Parser {
         const std::string &s = L(j);
         std::string t = Trim(s);
         if (t.empty()) return true;
-        if (HeadingLevel(s) || IsFence(t) || IsComment(s) || IsRule(t) || IsTableRow(t) || IsListItem(s)) return true;
+        if (HeadingLevel(s) || IsFence(t) || IsComment(s) || IsRule(t) || TableStartAt(j) || IsListItem(s)) return true;
         if (t.rfind("$$", 0) == 0 || t.rfind("\\[", 0) == 0) return true;
         std::string d = DirectiveName(s);
         return !d.empty() && IsKnownDirective(d);
@@ -1230,7 +1289,7 @@ struct Parser {
         while (i < n) {
             const std::string &s = L(i);
             std::string t = Trim(s);
-            if (t.empty()) {
+            if (t.empty() || markdown_result_ends.count(i)) {
                 ++i;
                 continue;
             }
@@ -1253,7 +1312,7 @@ struct Parser {
             } else if (IsRule(t)) {
                 doc.blocks.push_back(MakeBlock(BlockKind::Rule, i, i));
                 ++i;
-            } else if (IsTableRow(t)) {
+            } else if (TableStartAt(i)) {
                 i = ParseTable(i);
             } else if (IsListItem(s)) {
                 i = ParseList(i);
@@ -1353,9 +1412,15 @@ bool ResultImagePath(const std::string &text, std::string *path) {
 std::vector<std::string> BlockLabels(const Document &doc) {
     std::vector<std::string> out(doc.blocks.size());
     int figures = 0, tables = 0;
+    // What the exports leave out is not numbered, in the editor either, so
+    // "Table 3" in the prose means the same table everywhere.
+    const std::vector<bool> hidden = ExportHidden(doc);
     for (size_t i = 0; i < doc.blocks.size(); ++i) {
         const Block &b = doc.blocks[i];
-        if (b.kind == BlockKind::Image || (b.kind == BlockKind::Code && !b.result_images.empty()))
+        if (hidden[i]) continue;
+        bool code = true, results = true;
+        if (b.kind == BlockKind::Code) CodeExports(doc, b, &code, &results);
+        if (b.kind == BlockKind::Image || (b.kind == BlockKind::Code && !b.result_images.empty() && results))
             out[i] = "Figure " + std::to_string(++figures);
         else if (b.kind == BlockKind::Table)
             out[i] = "Table " + std::to_string(++tables);
@@ -1547,7 +1612,16 @@ std::string HtmlResultFragment(const std::string &html) {
 std::string ResultFormatFor(const Block &b) {
     for (const Option &o : b.options) {
         const std::string n = Lower(o.name);
-        if ((n == "results" || n == "output") && Lower(Trim(o.value.s)).find("html") != std::string::npos) return "html";
+        if (n != "results" && n != "output") continue;
+        const std::string v = Lower(Trim(o.value.s));
+        if (v.find("html") != std::string::npos) return "html";
+        // knitr's `results='asis'` and org's `:results raw` mean the same.
+        for (const char *w : {"markdown", "md", "asis", "raw"}) {
+            const size_t at = v.find(w);
+            const size_t end = at + std::string(w).size();
+            if (at != std::string::npos && (at == 0 || !IsAlpha(v[at - 1])) && (end >= v.size() || !IsAlpha(v[end])))
+                return "markdown";
+        }
     }
     return "";
 }
@@ -1557,13 +1631,22 @@ std::vector<std::string> FormatResults(const std::string &output, const std::str
     out.push_back(format.empty() ? "// result_begin:" : "// result_begin: " + format);
     std::string o = output;
     while (!o.empty() && (o.back() == '\n' || o.back() == '\r')) o.pop_back();
+    const bool raw = format == "markdown";
+    // Markdown is written as it is, to be read as the document's own; the
+    // blank lines a printer puts before and after a table go.
+    if (raw) {
+        size_t lead = 0;
+        while (lead < o.size() && (o[lead] == '\n' || o[lead] == '\r')) ++lead;
+        o.erase(0, lead);
+    }
     size_t k = 0;
     if (!o.empty()) {
         while (true) {
             size_t e = o.find('\n', k);
             std::string ln = o.substr(k, e == std::string::npos ? std::string::npos : e - k);
             if (!ln.empty() && ln.back() == '\r') ln.pop_back();
-            out.push_back(ln.empty() ? "//" : "// " + ln);
+            if (raw) out.push_back(ln);
+            else out.push_back(ln.empty() ? "//" : "// " + ln);
             if (e == std::string::npos) break;
             k = e + 1;
         }
@@ -1580,6 +1663,71 @@ void ResultsReplaceRange(const Block &b, int *first, int *last) {
         int close = b.code_line_end + 1;
         *first = *last = close + 1;
     }
+}
+
+// ---------------------------------------------------------------------------
+// What the exports show of a code block
+
+void CodeExports(const Document &doc, const Block &b, bool *code, bool *results) {
+    // org-babel's :exports, from the document's header (`//? Exports:` or an
+    // `exports` option), then the block's own `exports=` or knitr's `echo=`.
+    std::string mode;
+    for (const auto &kv : doc.meta)
+        if (Lower(Trim(kv.first)) == "exports") mode = Lower(Trim(kv.second));
+    if (const Option *o = doc.FindOption("exports")) mode = Lower(Trim(o->value.s));
+    for (const Option &o : b.options) {
+        const std::string n = Lower(o.name), v = Lower(Trim(o.value.s));
+        if (n == "exports") mode = v;
+        if (n == "echo") mode = v == "false" || v == "no" || v == "0" || v == "nil" ? "results" : "both";
+    }
+    *code = mode != "results" && mode != "none";
+    *results = mode != "code" && mode != "none";
+}
+
+std::vector<bool> ExportHidden(const Document &doc) {
+    std::vector<bool> hide(doc.blocks.size(), false);
+    for (size_t i = 0; i < doc.blocks.size(); ++i) {
+        const Block &c = doc.blocks[i];
+        if (c.kind != BlockKind::Code || c.result_format != "markdown" || c.result_line_start < 0) continue;
+        bool code = true, results = true;
+        CodeExports(doc, c, &code, &results);
+        if (results) continue;
+        for (size_t j = i + 1; j < doc.blocks.size() && doc.blocks[j].origin == c.origin &&
+                               doc.blocks[j].line_start < c.result_line_end;
+             ++j)
+            hide[j] = true;
+    }
+    return hide;
+}
+
+// ---------------------------------------------------------------------------
+// Tables
+
+std::vector<std::pair<int, int>> TableCells(const std::string &s) {
+    std::vector<int> pipes;
+    bool tick = false;
+    for (int c = 0; c < Len(s); ++c) {
+        char ch = s[static_cast<size_t>(c)];
+        if (ch == '\\') {
+            ++c;
+            continue;
+        }
+        if (ch == '`') tick = !tick;
+        if (ch == '|' && !tick) pipes.push_back(c);
+    }
+    std::vector<std::pair<int, int>> cells;
+    if (pipes.empty()) return cells;
+    int first = Indent(s);
+    int last = Len(s);
+    while (last > first && IsSpace(s[static_cast<size_t>(last - 1)])) --last;
+    const bool lead = pipes.front() == first, trail = pipes.back() == last - 1;
+    int cb = lead ? pipes.front() + 1 : first;
+    for (size_t k = lead ? 1 : 0; k < pipes.size(); ++k) {
+        cells.emplace_back(cb, pipes[k]);
+        cb = pipes[k] + 1;
+    }
+    if (!trail) cells.emplace_back(cb, last);
+    return cells;
 }
 
 }  // namespace mepml
@@ -1833,6 +1981,7 @@ struct Emitter {
                 int body_end = blk.line_end;
                 if (blk.caption_line >= 0) body_end = std::min(body_end, blk.caption_line - 1);
                 if (blk.alt_line >= 0) body_end = std::min(body_end, blk.alt_line - 1);
+                if (blk.kind == BlockKind::Table && blk.rows_end >= 0) body_end = std::min(body_end, blk.rows_end);
                 if (blk.kind == BlockKind::Image) {
                     Directive(blk.line_start, blk.value);
                 } else if (blk.kind == BlockKind::MathBlock) {
@@ -2000,7 +2149,8 @@ struct Emitter {
             Span rm = r;
             rm.style |= kComment;
             Lines(blk.result_line_start, blk.result_line_start, rm);
-            for (int line = blk.result_line_start + 1; line < blk.result_line_end; ++line) {
+            // Markdown results are the document's own blocks, styled as such.
+            for (int line = blk.result_line_start + 1; line < blk.result_line_end && blk.result_format != "markdown"; ++line) {
                 std::string s = LineText(line);
                 size_t p = s.find("//");
                 if (p == std::string::npos) {
@@ -2265,10 +2415,14 @@ struct HtmlWriter {
                 break;
             }
             case BlockKind::Code: {
-                out += "<figure class=\"code\">";
-                if (!b.lang.empty()) out += "<figcaption class=\"lang\">" + Esc(b.lang) + "</figcaption>";
-                out += "<pre><code class=\"language-" + Esc(b.lang) + "\">" + Esc(b.code) + "</code></pre>";
-                if (b.result_line_start >= 0) {
+                bool show_code = true, show_results = true;
+                CodeExports(doc, b, &show_code, &show_results);
+                std::string fig;
+                if (show_code) {
+                    if (!b.lang.empty()) fig += "<figcaption class=\"lang\">" + Esc(b.lang) + "</figcaption>";
+                    fig += "<pre><code class=\"language-" + Esc(b.lang) + "\">" + Esc(b.code) + "</code></pre>";
+                }
+                if (b.result_line_start >= 0 && show_results) {
                     // Text output as one block; figure lines as images.
                     std::string r;
                     bool any = false;
@@ -2278,18 +2432,22 @@ struct HtmlWriter {
                         r += (any ? "\n" : "") + line;
                         any = true;
                     }
-                    // HTML the block produced is the page's own markup.
-                    if (any && b.result_format == "html") out += "<div class=\"results results-html\">\n" + HtmlResultFragment(r) + "\n</div>";
-                    else if (any) out += "<pre class=\"results\">" + Esc(r) + "</pre>";
+                    // HTML the block produced is the page's own markup;
+                    // Markdown, the blocks that follow it.
+                    if (b.result_format == "markdown") any = false;
+                    if (any && b.result_format == "html") fig += "<div class=\"results results-html\">\n" + HtmlResultFragment(r) + "\n</div>";
+                    else if (any) fig += "<pre class=\"results\">" + Esc(r) + "</pre>";
                 }
-                out += "</figure>\n";
-                if (!b.result_images.empty()) {
+                if (!fig.empty()) out += "<figure class=\"code\">" + fig + "</figure>\n";
+                if (!b.result_images.empty() && show_results) {
+                    // One figure for all of the block's plots, under one caption.
+                    out += "<figure>";
                     for (const auto &img : b.result_images)
-                        out += "<figure><img src=\"" + Esc(img.second) + "\" alt=\"" + Esc(b.alt) + "\">";
+                        out += "<img src=\"" + Esc(img.second) + "\" alt=\"" + Esc(b.alt) + "\">";
                     if (!b.caption_inlines.empty())
                         out += "<figcaption>" + Esc(label) + ": " + Caption(b) + "</figcaption>";
                     out += "</figure>\n";
-                } else if (!b.caption_inlines.empty()) {
+                } else if (!b.caption_inlines.empty() && !fig.empty()) {
                     out += "<p class=\"caption\">" + Caption(b) + "</p>\n";
                 }
                 break;
@@ -2302,7 +2460,9 @@ struct HtmlWriter {
                 break;
             }
             case BlockKind::Table: {
-                out += "<table>";
+                // The wrapper scrolls a table wider than the text column
+                // instead of letting it spill past the margin.
+                out += "<div class=\"table-wrap\"><table>";
                 if (!b.caption_inlines.empty())
                     out += "<caption>" + Esc(label) + ": " + Caption(b) + "</caption>";
                 for (size_t r = 0; r < b.rows.size(); ++r) {
@@ -2326,7 +2486,7 @@ struct HtmlWriter {
                     }
                     out += "</tr>";
                 }
-                out += "</table>\n";
+                out += "</table></div>\n";
                 break;
             }
             case BlockKind::List: {
@@ -2402,32 +2562,109 @@ struct HtmlWriter {
     }
 };
 
+// The standalone page's default look: a readable serif column that nothing
+// may widen (images scale down, wide tables and display math scroll inside
+// it), light and dark themes, and print rules. Colours are custom
+// properties so a user stylesheet can retheme it by overriding :root.
+// Never name the results-html class here: mepml_import.cpp finds code
+// results by that text in the page (HtmlResultSources).
 const char *kCss = R"css(
-body { font-family: Georgia, 'Times New Roman', serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; color: #1f2328; background: #fff; }
-h1, h2, h3, h4 { font-family: system-ui, sans-serif; line-height: 1.25; }
-code, pre, .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 0.92em; }
-code { background: #f2f2f2; padding: 0 .25em; border-radius: 3px; }
-pre { background: #f6f8fa; padding: .8em 1em; overflow-x: auto; border-radius: 6px; }
-pre code { background: none; padding: 0; }
-pre.results { background: #fffbe6; border-left: 3px solid #e5c07b; }
-figure { margin: 1.2em 0; } figure.code figcaption.lang { font: 0.75em system-ui, sans-serif; color: #888; text-align: left; font-style: normal; margin: 0 0 -.3em; }
-figcaption, caption, .caption { font-style: italic; color: #555; text-align: center; margin: .3em 0; }
-img { max-width: 100%; }
-table { border-collapse: collapse; margin: 1em auto; } th, td { border: 1px solid #ccc; padding: .3em .7em; } th { background: #f2f2f2; }
-td img, th img { display: block; max-height: 16em; margin: 0 auto; }
-.big { font-size: 1.3em; } mark { background: #fff3a3; } ins { color: #2f7d32; } del { color: #c62828; }
-.callout { border-left: 4px solid #61afef; background: #eef6fd; padding: .6em .9em; margin: 1em 0; border-radius: 4px; }
-.callout-title { font: bold 0.8em system-ui, sans-serif; letter-spacing: .05em; }
-.callout-warning, .callout-caution { border-color: #e5a50a; background: #fdf6e3; }
-.callout-error, .callout-danger { border-color: #e06c75; background: #fdeeee; }
-.callout-tip, .callout-hint, .callout-success { border-color: #98c379; background: #f0f8ec; }
-.callout-todo, .callout-fixme, .callout-important { border-color: #c678dd; background: #f7effb; }
-.math-display { text-align: center; margin: 1em 0; overflow-x: auto; }
-.footnotes { font-size: .9em; border-top: 1px solid #ddd; margin-top: 2em; }
-.cite-missing { color: #c62828; }
-.abstract { margin: 1.5em 2.5em; font-size: .95em; }
-.abstract-title { font: bold .85em system-ui, sans-serif; text-align: center; letter-spacing: .08em; text-transform: uppercase; margin-bottom: .4em; }
-.toc ul { list-style: none; padding-left: 0; } .toc-2 { padding-left: 1em; } .toc-3 { padding-left: 2em; } .toc-4 { padding-left: 3em; }
+:root {
+  --fg: #1f2328; --muted: #59636e; --bg: #fff; --link: #0b5cad; --rule: #d1d9e0; --rule-strong: #1f2328;
+  --code-bg: #eff1f3; --pre-bg: #f6f8fa; --th-bg: #f6f8fa; --mark: #fff3a3; --results-bg: #fffbeb; --results-rule: #e5c07b;
+  --cite: #0b5cad; --missing: #c62828; --ins: #2f7d32; --del: #c62828;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --fg: #e6e6e6; --muted: #9ba3ad; --bg: #16181c; --link: #7cb7ff; --rule: #3a3f47; --rule-strong: #c9d1d9;
+    --code-bg: #262a31; --pre-bg: #1e2227; --th-bg: #1e2227; --mark: #6b5a00; --results-bg: #262216; --results-rule: #9c7c2c;
+    --cite: #7cb7ff; --missing: #ff7b72; --ins: #7ee787; --del: #ff7b72;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --fg: #e6e6e6; --muted: #9ba3ad; --bg: #16181c; --link: #7cb7ff; --rule: #3a3f47; --rule-strong: #c9d1d9;
+  --code-bg: #262a31; --pre-bg: #1e2227; --th-bg: #1e2227; --mark: #6b5a00; --results-bg: #262216; --results-rule: #9c7c2c;
+  --cite: #7cb7ff; --missing: #ff7b72; --ins: #7ee787; --del: #ff7b72;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { font-family: Charter, 'Bitstream Charter', 'Sitka Text', Cambria, Georgia, 'Times New Roman', serif; font-size: 1.0625rem;
+  max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; line-height: 1.6; color: var(--fg); background: var(--bg);
+  overflow-wrap: break-word; font-kerning: normal; }
+h1, h2, h3, h4, h5, h6 { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; margin: 2em 0 .6em; scroll-margin-top: 1rem; text-wrap: balance; }
+h1 { font-size: 1.7em; padding-bottom: .25em; border-bottom: 1px solid var(--rule); }
+h2 { font-size: 1.35em; } h3 { font-size: 1.15em; } h4, h5, h6 { font-size: 1em; }
+h1.title { font-size: 2.2em; text-align: center; border: 0; margin: 0 0 .8em; }
+p { margin: 0 0 1em; }
+a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: .15em; }
+a.cite, a.footnote-ref, sup a { text-decoration: none; }
+.cite-missing { color: var(--missing); }
+ul, ol { padding-left: 1.6em; margin: 0 0 1em; } li { margin: .2em 0; } li > p { margin: 0; }
+blockquote { margin: 1em 0; padding: 0 1em; color: var(--muted); border-left: 3px solid var(--rule); }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 2em 0; }
+code, pre, kbd, .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86em; }
+code { background: var(--code-bg); padding: .1em .3em; border-radius: 4px; }
+pre { background: var(--pre-bg); border: 1px solid var(--rule); padding: .8em 1em; margin: 0 0 1em; overflow-x: auto; border-radius: 6px; line-height: 1.45; tab-size: 4; }
+pre code { background: none; padding: 0; font-size: 1em; border-radius: 0; }
+pre.results { background: var(--results-bg); border-color: var(--results-rule); border-left-width: 3px; }
+img, svg, video { max-width: 100%; height: auto; }
+figure { margin: 1.8em 0; text-align: center; }
+figure img { display: block; margin: 0 auto; }
+figure img + img { margin-top: 1em; }
+figure.code { text-align: left; margin: 1.2em 0; }
+figure.code > pre:last-child { margin-bottom: 0; }
+figure.code figcaption.lang { font: .72em system-ui, sans-serif; color: var(--muted); text-align: left; letter-spacing: .04em; text-transform: uppercase; margin: 0 0 .3em; max-width: none; }
+figcaption, caption, .caption { font-size: .9em; color: var(--muted); text-align: center; line-height: 1.45; }
+figcaption { margin: .7em auto 0; max-width: 38rem; }
+.caption { margin: -.4em 0 1.2em; }
+/* A table may use more than the text column, up to 60rem, centred on it. */
+.table-wrap { width: min(100vw - 2.5rem, 60rem); max-width: none; margin: 1.8em 0 1.8em calc(50% - min(50vw - 1.25rem, 30rem)); overflow-x: auto; }
+table { border-collapse: collapse; margin: 0 auto; font-size: .9em; line-height: 1.4; font-variant-numeric: lining-nums tabular-nums;
+  border-top: 2px solid var(--rule-strong); border-bottom: 2px solid var(--rule-strong); }
+caption { caption-side: top; padding-bottom: .6em; }
+th, td { padding: .4em .75em; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; font-size: .92em; font-weight: 600; background: var(--th-bg);
+  border-bottom: 1px solid var(--rule-strong); }
+tr:last-child > td { border-bottom: 0; }
+td img, th img { display: block; max-height: 13em; width: auto; margin: 0 auto; }
+figure.code > div.results { overflow-x: auto; }
+.big { font-size: 1.3em; } mark { background: var(--mark); color: inherit; padding: 0 .1em; } ins { color: var(--ins); } del { color: var(--del); }
+.callout { --c: #61afef; border-left: 4px solid var(--c); background: color-mix(in srgb, var(--c) 11%, transparent); padding: .7em 1em; margin: 1.2em 0; border-radius: 4px; }
+.callout > :last-child { margin-bottom: 0; }
+.callout-title { font: 600 .78em system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; margin-bottom: .3em; }
+.callout-warning, .callout-caution { --c: #e5a50a; }
+.callout-error, .callout-danger { --c: #e06c75; }
+.callout-tip, .callout-hint, .callout-success { --c: #98c379; }
+.callout-todo, .callout-fixme, .callout-important { --c: #c678dd; }
+.math-display { text-align: center; margin: 1.2em 0; max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+mjx-container[display="true"] { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.footnotes { font-size: .88em; color: var(--muted); border-top: 1px solid var(--rule); margin-top: 3em; padding-top: 1em; }
+.footnotes ol { padding-left: 1.4em; }
+.abstract { margin: 0 auto 2.5em; max-width: 38rem; font-size: .95em; padding: 1em 1.4em; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.abstract p:last-child { margin-bottom: 0; }
+.abstract-title { font: 600 .8em system-ui, sans-serif; text-align: center; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .6em; color: var(--muted); }
+.toc { margin: 0 0 2em; } .toc ul { list-style: none; padding-left: 0; } .toc a { text-decoration: none; }
+.toc-2 { padding-left: 1em; } .toc-3 { padding-left: 2em; } .toc-4 { padding-left: 3em; }
+@media (max-width: 36rem) {
+  body { font-size: 1rem; padding: 1.5rem 1rem 3rem; }
+  h1.title { font-size: 1.8em; }
+  .abstract { padding: .8em 0; }
+  .table-wrap { width: calc(100vw - 2rem); margin-left: calc(50% - 50vw + 1rem); }
+  pre { padding: .7em .8em; }
+}
+@media print {
+  @page { margin: 2cm; }
+  :root { --fg: #000; --bg: #fff; --link: #000; }
+  body { max-width: none; padding: 0; font-size: 11pt; }
+  a { text-decoration: none; }
+  h1, h2, h3, h4 { break-after: avoid; }
+  figure, table, pre, .math-display, .callout { break-inside: avoid; }
+  .table-wrap, pre, .math-display { overflow: visible; }
+  pre { white-space: pre-wrap; }
+}
 )css";
 
 }  // namespace
@@ -2435,7 +2672,9 @@ td img, th img { display: block; max-height: 16em; margin: 0 auto; }
 std::string ToHtml(const Document &doc, const HtmlOptions &opts) {
     HtmlWriter w{doc, opts, {}, {}, {}};
     const std::vector<std::string> labels = BlockLabels(doc);
-    for (size_t i = 0; i < doc.blocks.size(); ++i) w.Block_(doc.blocks[i], labels[i]);
+    const std::vector<bool> export_hidden = ExportHidden(doc);
+    for (size_t i = 0; i < doc.blocks.size(); ++i)
+        if (!export_hidden[i]) w.Block_(doc.blocks[i], labels[i]);
     if (!w.footnotes.empty()) {
         w.out += "<section class=\"footnotes\"><ol>";
         for (auto &fn : w.footnotes) {
@@ -2446,10 +2685,10 @@ std::string ToHtml(const Document &doc, const HtmlOptions &opts) {
     }
     if (!opts.standalone) return w.out;
     std::string title = doc.title.empty() ? "Untitled" : doc.title;
-    std::string html = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>" + Esc(title) + "</title>\n";
+    std::string html = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + Esc(title) + "</title>\n";
     html += "<style>" + std::string(kCss) + "</style>\n";
     html += "<script>MathJax = { tex: { inlineMath: [['\\\\(', '\\\\)']] } };</script>\n";
-    html += "<script async src=\"https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js\"></script>\n";
+    html += "<script async src=\"https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js\"></script>\n";
     html += "</head>\n<body>\n";
     if (!doc.title.empty()) html += "<h1 class=\"title\">" + Esc(doc.title) + "</h1>\n";
     html += w.out + "</body>\n</html>\n";

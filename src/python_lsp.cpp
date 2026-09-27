@@ -2485,6 +2485,119 @@ PythonLspReferenceSet PythonLspReferences(const std::vector<std::string> &lines,
 
 namespace {
 
+// --- Semantic tokens --------------------------------------------------
+
+/** @brief The token type a binding's kind reads as (see PythonLspTokenType). */
+PythonLspTokenType TokenTypeOfBinding(const Analyzer &analyzer, const Binding &b) {
+    switch (b.kind) {
+        case BindKind::Import:
+            return PythonLspTokenType::Namespace;
+        case BindKind::ImportFrom:
+            // `from os import path` binds a module too -- but only when
+            // this server's own module table already knew that name was
+            // one (Binding::type_name's "module:" form). Anything else a
+            // module exports is a name whose kind is genuinely unknown
+            // here (a class? a function? a constant?), and a guess would
+            // be worse than the client's own grammar-based colour.
+            return b.type_name.rfind("module:", 0) == 0 ? PythonLspTokenType::Namespace
+                                                        : PythonLspTokenType::Variable;
+        case BindKind::Function:
+            return analyzer.scopes()[static_cast<size_t>(b.scope)].kind == ScopeKind::Class
+                       ? PythonLspTokenType::Method
+                       : PythonLspTokenType::Function;
+        case BindKind::Class:
+            return PythonLspTokenType::Class;
+        case BindKind::Param:
+            return PythonLspTokenType::Parameter;
+        case BindKind::TypeAlias:
+            return PythonLspTokenType::Type;
+        case BindKind::Variable:
+        case BindKind::ForTarget:
+        case BindKind::WithVar:
+        case BindKind::ExceptName:
+        case BindKind::CompTarget:
+        case BindKind::MatchCapture:
+            break;
+    }
+    return PythonLspTokenType::Variable;
+}
+
+/** @brief Reports whether a binding is the implicit `self`/`cls` a method never really passes. */
+bool IsImplicitParam(const Binding &b) {
+    return b.kind == BindKind::Param && (b.name == "self" || b.name == "cls");
+}
+
+}  // namespace
+
+std::vector<PythonLspSemanticToken> PythonLspSemanticTokens(const std::vector<std::string> &lines) {
+    PythonLspOptions opts;
+    opts.check_files = false;
+    const Analyzer analyzer(lines, opts);
+    std::vector<PythonLspSemanticToken> out;
+
+    // Which (scope, name) pairs a signature bound. A parameter reassigned
+    // in the body -- `def f(n): n += 1` -- binds again, as an ordinary
+    // variable in the same scope, and every read after it resolves to that
+    // second binding rather than to the parameter. Reporting those as
+    // variables would be true of the binding and useless to a reader: the
+    // name would change colour halfway down the function while still
+    // meaning the parameter. So a name a parameter already owns in that
+    // scope stays a parameter however often the body rebinds it.
+    std::set<std::pair<int, std::string>> param_names;
+    for (const Binding &b : analyzer.bindings()) {
+        if (b.kind == BindKind::Param) param_names.insert({b.scope, b.name});
+    }
+
+    const auto add = [&out, &analyzer, &param_names](const Binding &b, PyPos pos, int end_col, bool declaration) {
+        if (end_col <= pos.col) return;
+        PythonLspSemanticToken t;
+        t.line = pos.line;
+        t.col_start = pos.col;
+        t.col_end = end_col;
+        t.type = TokenTypeOfBinding(analyzer, b);
+        if (t.type == PythonLspTokenType::Variable && param_names.count({b.scope, b.name}) > 0) {
+            t.type = PythonLspTokenType::Parameter;
+        }
+        if (declaration) t.modifiers |= 1u << static_cast<unsigned>(PythonLspTokenModifier::Declaration);
+        if (IsImplicitParam(b)) t.modifiers |= 1u << static_cast<unsigned>(PythonLspTokenModifier::Implicit);
+        out.push_back(t);
+    };
+
+    for (const Binding &b : analyzer.bindings()) add(b, b.pos, b.end_col, true);
+    for (const Use &u : analyzer.uses()) {
+        if (u.binding < 0) continue;
+        // A name read out of a *string* annotation (`def f(x: "Node")`):
+        // its columns are inside a string literal, which the client is
+        // already painting as one. Recolouring part of a string would read
+        // as a bug, not as extra information.
+        if (u.soft) continue;
+        add(analyzer.bindings()[static_cast<size_t>(u.binding)], u.pos, u.end_col, false);
+    }
+
+    std::stable_sort(out.begin(), out.end(),
+                     [](const PythonLspSemanticToken &a, const PythonLspSemanticToken &b) {
+                         if (a.line != b.line) return a.line < b.line;
+                         return a.col_start < b.col_start;
+                     });
+    // One token per position: an augmented assignment (`total += 1`) both
+    // binds and reads the same name, and `x: int` declares one the same
+    // statement may also read. The first token's type wins (they agree --
+    // they are the same binding) and the modifiers merge, so the
+    // declaration modifier is not lost to a read that happens to sort
+    // level with it.
+    std::vector<PythonLspSemanticToken> unique;
+    for (const PythonLspSemanticToken &t : out) {
+        if (!unique.empty() && unique.back().line == t.line && unique.back().col_start == t.col_start) {
+            unique.back().modifiers |= t.modifiers;
+            continue;
+        }
+        unique.push_back(t);
+    }
+    return unique;
+}
+
+namespace {
+
 // --- Symbols ----------------------------------------------------------
 
 /** @brief Reports whether a name reads as a constant (SCREAMING_CASE), for SymbolKind.Constant. */

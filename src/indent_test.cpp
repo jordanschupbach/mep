@@ -5,7 +5,9 @@
 //                            gets, inheriting the current line and, in Python,
 //                            reacting to a block-opening ':' or a flow keyword.
 //   ReindentDedentKeyword -- the re-alignment of a Python else/elif/except/
-//                            finally clause the moment its ':' is typed.
+//                            finally/case clause the moment its ':' is typed,
+//                            onto the column of the statement it actually pairs
+//                            with (found in the lines above it).
 //   ReindentPastedText    -- a pasted block re-aligned onto the indent of
 //                            wherever it lands, its own shape kept.
 //   PasteSpliceCol        -- where a multi-line paste is actually spliced in,
@@ -19,6 +21,7 @@
 #include <cstdlib>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 // Asserts ComputeNewlineIndent(line, ft) == want, printing all three on a
@@ -90,39 +93,154 @@ void TestPythonFlowKeywordDedents() {
 
 // ---- ReindentDedentKeyword ----
 
-void ExpectReindent(const std::string &line, const std::string &ft,
+// The clause being typed is the last line of `lines`; everything before it is
+// the context it is matched against.
+void ExpectReindent(const std::vector<std::string> &lines, const std::string &ft,
                     const std::optional<std::string> &want) {
-    std::optional<std::string> got = mepindent::ReindentDedentKeyword(line, ft);
+    const int row = static_cast<int>(lines.size()) - 1;
+    std::optional<std::string> got = mepindent::ReindentDedentKeyword(lines, row, ft);
     bool ok = (got.has_value() == want.has_value()) && (!got || *got == *want);
     if (!ok) {
-        std::fprintf(stderr, "ReindentDedentKeyword(\"%s\", \"%s\") = %s, want %s\n",
-                     line.c_str(), ft.c_str(),
+        std::string ctx;
+        for (const std::string &l : lines) ctx += "  |" + l + "\n";
+        std::fprintf(stderr, "ReindentDedentKeyword(..., \"%s\") = %s, want %s\n%s", ft.c_str(),
                      got ? ("\"" + *got + "\"").c_str() : "nullopt",
-                     want ? ("\"" + *want + "\"").c_str() : "nullopt");
+                     want ? ("\"" + *want + "\"").c_str() : "nullopt", ctx.c_str());
         std::abort();
     }
 }
 
+// A clause with no context above it at all -- the fallback path, one level out.
+void ExpectReindentBare(const std::string &line, const std::string &ft,
+                        const std::optional<std::string> &want) {
+    ExpectReindent({line}, ft, want);
+}
+
 void TestDedentClauseRealign() {
-    ExpectReindent("        else:", "py", std::string("    "));
-    ExpectReindent("    elif x:", "py", std::string(""));
-    ExpectReindent("    except Foo:", "py", std::string(""));
-    ExpectReindent("    except* Foo:", "py", std::string(""));
-    ExpectReindent("    finally:", "py", std::string(""));
-    ExpectReindent("            else:", "pyi", std::string("        "));
+    ExpectReindentBare("        else:", "py", std::string("    "));
+    ExpectReindentBare("    elif x:", "py", std::string(""));
+    ExpectReindentBare("    except Foo:", "py", std::string(""));
+    ExpectReindentBare("    except* Foo:", "py", std::string(""));
+    ExpectReindentBare("    finally:", "py", std::string(""));
+    ExpectReindentBare("            else:", "pyi", std::string("        "));
     // Tab-indented clause: one tab is one level.
-    ExpectReindent("\t\telse:", "py", std::string("\t"));
+    ExpectReindentBare("\t\telse:", "py", std::string("\t"));
     // Already at column 0: nothing to dedent.
-    ExpectReindent("else:", "py", std::nullopt);
+    ExpectReindentBare("else:", "py", std::nullopt);
     // Not a dedent clause.
-    ExpectReindent("    return", "py", std::nullopt);
-    ExpectReindent("    if x:", "py", std::nullopt);
+    ExpectReindentBare("    return", "py", std::nullopt);
+    ExpectReindentBare("    if x:", "py", std::nullopt);
     // Whole-word only: `elsewhere`/`elifetime` are names, not clauses.
-    ExpectReindent("    elsewhere = 1", "py", std::nullopt);
-    ExpectReindent("    exceptional = 1", "py", std::nullopt);
+    ExpectReindentBare("    elsewhere = 1", "py", std::nullopt);
+    ExpectReindentBare("    exceptional = 1", "py", std::nullopt);
     // Not Python.
-    ExpectReindent("    else:", "cpp", std::nullopt);
-    ExpectReindent("    default:", "cpp", std::nullopt);
+    ExpectReindentBare("    else:", "cpp", std::nullopt);
+    ExpectReindentBare("    default:", "cpp", std::nullopt);
+}
+
+void TestDedentClauseMatchesItsOpener() {
+    // The regression: a nested `if` whose body ends in a flow keyword. Enter
+    // after `return 1` already dedents to the inner `if`'s own column, so the
+    // `else:` typed there is *already* right -- dedenting it again (which is all
+    // this used to do) paired it with the outer `if` instead.
+    ExpectReindent({"if a:", "    if b:", "        return 1", "    else:"}, "py", std::nullopt);
+    // Typed from the body's own column instead, it dedents to the inner `if`.
+    ExpectReindent({"if a:", "    if b:", "        x = 1", "        else:"}, "py",
+                   std::string("    "));
+    // Three deep, same story.
+    ExpectReindent({"if a:", "    if b:", "        if c:", "            return 1", "        else:"},
+                   "py", std::nullopt);
+    ExpectReindent(
+        {"if a:", "    if b:", "        if c:", "            x = 1", "            else:"}, "py",
+        std::string("        "));
+    // The single-level case every editor gets right, still right.
+    ExpectReindent({"if b:", "    x = 1", "    else:"}, "py", std::string(""));
+
+    // Blank lines and comments between the body and the clause decide nothing.
+    ExpectReindent({"if a:", "    if b:", "        x = 1", "", "        # why", "        else:"},
+                   "py", std::string("    "));
+
+    // Each clause matches only what can own it. A `for`/`while`/`try` can own an
+    // `else`; an `elif` can not be owned by a `for`.
+    ExpectReindent({"for i in xs:", "    if b:", "        break", "    else:"}, "py", std::nullopt);
+    ExpectReindent({"if a:", "    for i in xs:", "        x = 1", "        else:"}, "py",
+                   std::string("    "));
+    ExpectReindent({"if a:", "    while b:", "        x = 1", "        else:"}, "py",
+                   std::string("    "));
+    ExpectReindent({"if a:", "    try:", "        return 1", "    except E:"}, "py", std::nullopt);
+    ExpectReindent({"if a:", "    try:", "        x = 1", "    except E:", "        y = 2",
+                    "        finally:"},
+                   "py", std::string("    "));
+    // `elif` skips past a `for` that cannot own it and finds the `if`.
+    ExpectReindent({"if a:", "    for i in xs:", "        x = 1", "        elif b:"}, "py",
+                   std::string(""));
+
+    // A clause already sitting on its opener's column is left alone, however
+    // deep the nesting goes.
+    ExpectReindent({"def f():", "    if a:", "        if b:", "            x = 1", "        else:"},
+                   "py", std::nullopt);
+    // An opener deeper than the clause is inside the block being closed, so it
+    // cannot own it: here both inner `if`s are skipped and the `else` lands on
+    // the one at 4. (Column 5 only because a clause that already sits on a real
+    // opener's column needs no change -- this is the mid-edit shape.)
+    ExpectReindent({"if a:", "    if b:", "        if c:", "            x = 1", "     else:"}, "py",
+                   std::string("    "));
+
+    // Only ever dedents: a clause already shallower than its own opener (a
+    // deliberate manual dedent, or code still being moved around) is left where
+    // it is rather than pushed back in.
+    ExpectReindent({"def f():", "    if b:", "        x = 1", "    else:"}, "py", std::nullopt);
+
+    // Tabs: the opener's own indentation is what the clause takes, so a
+    // tab-indented file stays tab-indented.
+    ExpectReindent({"if a:", "\tif b:", "\t\tx = 1", "\t\telse:"}, "py", std::string("\t"));
+}
+
+void TestDedentCaseClause() {
+    // A later `case` aligns with the one above it, not with a level count: the
+    // body it closes is one level in, and typing `case` from there dedents.
+    ExpectReindent({"match x:", "    case 1:", "        pass", "        case 2:"}, "py",
+                   std::string("    "));
+    // Typed from the `case` column already (Enter after a flow keyword in the
+    // body, say), it is left alone.
+    ExpectReindent({"match x:", "    case 1:", "        return 1", "    case 2:"}, "py",
+                   std::nullopt);
+    // The *first* case sits one level inside its `match`, so a case typed there
+    // is already right -- this is the rule that keeps `match x:` Enter `case 1:`
+    // from being dedented straight back out onto the `match`.
+    ExpectReindent({"match x:", "    case 1:"}, "py", std::nullopt);
+    ExpectReindent({"def f():", "    match x:", "        case 1:"}, "py", std::nullopt);
+    // Over-indented with no sibling yet: back onto the match's own body column.
+    ExpectReindent({"match x:", "        case 1:"}, "py", std::string("    "));
+    ExpectReindent({"def f():", "    match x:", "            case 1:"}, "py",
+                   std::string("        "));
+    // A nested match: the inner one's cases belong to it, not to the outer.
+    ExpectReindent({"match x:", "    case 1:", "        match y:", "            case 2:",
+                    "                pass", "                case 3:"},
+                   "py", std::string("            "));
+    // Guards and patterns are just more of the line -- `case` is still the word
+    // that decides.
+    ExpectReindent({"match x:", "    case Point(y=0):", "        pass", "        case _ if z:"},
+                   "py", std::string("    "));
+    // Tabs: the sibling's own indentation, and the match's own plus one tab.
+    ExpectReindent({"match x:", "\tcase 1:", "\t\tpass", "\t\tcase 2:"}, "py", std::string("\t"));
+    ExpectReindent({"match x:", "\t\tcase 1:"}, "py", std::string("\t"));
+
+    // `case` is a soft keyword. With no match statement open above it, a line
+    // that merely starts with the word `case` is an ordinary statement -- and
+    // its ':' must not dedent it. (`case = {1: 2}` and `case: int = 1` both
+    // reach here, since the ':' is what fires this.)
+    ExpectReindent({"def f():", "    case = {1: 2}"}, "py", std::nullopt);
+    ExpectReindent({"def f():", "    case: int = 1"}, "py", std::nullopt);
+    ExpectReindentBare("    case 1:", "py", std::nullopt);
+    // Even inside an `if`, with no match in sight.
+    ExpectReindent({"if a:", "    x = 1", "    case = {1: 2}"}, "py", std::nullopt);
+    // A `match` used as a name opens nothing, so the case below it is left alone
+    // rather than pulled onto a column derived from an assignment.
+    ExpectReindent({"def f():", "    match = 1", "    case = {2: 3}"}, "py", std::nullopt);
+    // Not Python.
+    ExpectReindent({"match x:", "    case 1:", "        pass", "        case 2:"}, "cpp",
+                   std::nullopt);
 }
 
 // ---- ReindentPastedText ----
@@ -310,6 +428,8 @@ int main() {
     TestPythonColonOpensBlock();
     TestPythonFlowKeywordDedents();
     TestDedentClauseRealign();
+    TestDedentClauseMatchesItsOpener();
+    TestDedentCaseClause();
     TestPasteKeepsShape();
     TestPasteFirstLineSplice();
     TestPasteBlankLines();

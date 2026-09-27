@@ -330,6 +330,67 @@ static const char *kHighlightsPython = R"TSQ(
 ((identifier) @variable.builtin
  (#any-of? @variable.builtin "self" "cls"))
 
+; Parameters and arguments
+
+; A name a signature *binds* -- and the `kw=` half of a keyword argument at
+; a call site -- reads as a parameter rather than as an ordinary variable,
+; so a def's own inputs stand out from the locals around them and a call's
+; keyword names stand out from their values. Only the binding occurrence,
+; not uses of the name in the body: telling a parameter's use apart from
+; any other local needs scope resolution, which a query cannot do.
+;
+; self/cls are excluded so a method's implicit first parameter keeps the
+; builtin colour the pattern above gives it -- both patterns cover the
+; identical span, and the later one would otherwise win.
+((parameters
+   (identifier) @variable.parameter)
+ (#not-any-of? @variable.parameter "self" "cls"))
+(parameters
+  (typed_parameter
+    (identifier) @variable.parameter))
+(parameters
+  (default_parameter
+    name: (identifier) @variable.parameter))
+(parameters
+  (typed_default_parameter
+    name: (identifier) @variable.parameter))
+; `*args` / `**kwargs`, bare or annotated -- the name, not the stars.
+(parameters
+  (list_splat_pattern
+    (identifier) @variable.parameter))
+(parameters
+  (dictionary_splat_pattern
+    (identifier) @variable.parameter))
+(parameters
+  (typed_parameter
+    (list_splat_pattern
+      (identifier) @variable.parameter)))
+(parameters
+  (typed_parameter
+    (dictionary_splat_pattern
+      (identifier) @variable.parameter)))
+
+; A lambda's parameters are parameters too.
+(lambda_parameters
+  (identifier) @variable.parameter)
+(lambda_parameters
+  (default_parameter
+    name: (identifier) @variable.parameter))
+(lambda_parameters
+  (list_splat_pattern
+    (identifier) @variable.parameter))
+(lambda_parameters
+  (dictionary_splat_pattern
+    (identifier) @variable.parameter))
+(lambda_parameters
+  (tuple_pattern
+    (identifier) @variable.parameter))
+
+; `f(timeout=3)` -- the keyword's name; the value after `=` is ordinary
+; code and keeps the colours it would have anywhere else.
+(keyword_argument
+  name: (identifier) @variable.parameter)
+
 ; An attribute access reads as a member, not as a free variable. Ahead of
 ; the call patterns below so a method call's own name keeps the function
 ; colour even if @property is given a colour of its own -- the two cover

@@ -55,6 +55,12 @@ mep.syntax_auto = false   -- stop the automatic re-highlight
 Captures map to colour groups through =mep.ts_capture_hl=, an ordinary Lua
 table -- see [[file:highlight-groups.html][Highlight groups]].
 
+A language server can add to this: where one is attached and answers
+=textDocument/semanticTokens=, names it has *resolved* -- a parameter used
+in the body, an imported module, a function named rather than called --
+are recoloured over the grammar's own pass. See
+[[file:lsp.html][Language servers]] for that table.
+
 * Colour swatches
 
 =:MepColorize= finds colour literals -- =#ff8800=, =rgb(...)= -- and draws

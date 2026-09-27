@@ -7,8 +7,9 @@
 // Backspace/Delete press eats when the cursor is in an indent.
 //
 // These are deliberately pure string->string functions with no dependency on
-// the editor, buffer or Lua (this file includes <string> and <optional> and
-// nothing else), the same "keep dependencies to an absolute minimum" ethos as
+// the editor, buffer or Lua (this file includes <string>, <optional> and
+// <vector> and nothing else), the same "keep dependencies to an absolute
+// minimum" ethos as
 // python_format.h and spell.cpp -- so the whole indent policy is unit-testable
 // in isolation (see indent_test.cpp) and the editor call sites stay a couple of
 // lines each.
@@ -23,6 +24,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace mepindent {
 
@@ -44,16 +46,44 @@ inline constexpr const char *kShift = "    ";
 std::string ComputeNewlineIndent(const std::string &line_before_cursor,
                                  const std::string &filetype);
 
-// Re-alignment for a Python clause that belongs one level out from the block
-// body -- else/finally, or an elif/except with a condition -- as it is completed
-// (mep calls this after a ':' is typed in a py/pyi buffer). Returns the new
-// leading whitespace for `current_line` (its existing indent minus one shift,
-// floored at column 0), or nullopt to leave the line untouched -- which is the
-// answer for any non-clause line, an already-column-0 clause, and every
-// non-Python filetype. Single-level only: it dedents one shift rather than
-// hunting the matching opener's column, which is right for the common case and
-// never over-dedents.
-std::optional<std::string> ReindentDedentKeyword(const std::string &current_line,
+// Re-alignment for a Python clause that belongs to a block opened further up --
+// else/finally, an elif/except with a condition, or a match statement's case --
+// as it is completed (mep calls this after a ':' is typed in a py/pyi buffer).
+// `lines[row]` is the line being typed on; the lines above it are the context.
+// Returns the new leading whitespace for that line, or nullopt to leave it
+// untouched -- which is the answer for any non-clause line, a clause already at
+// the right column, and every non-Python filetype.
+//
+// The clause is aligned with the statement it actually pairs with: the nearest
+// line above it that opens a block this clause can close (`else` after
+// if/elif/for/while/try/except, `elif` after if/elif, `except` after
+// try/except, `finally` after try/except/else, `case` after case/match),
+// skipping blank and comment lines and skipping anything indented deeper than
+// the clause itself -- that is the body being closed, not the opener. Finding
+// the opener is what distinguishes this from "dedent one level", which is what
+// this used to do and
+// which silently mis-paired a clause whenever the line above had *already*
+// dedented:
+//
+//     if a:
+//         if b:
+//             return 1      <- Enter here dedents (a flow keyword ends the block)
+//         else:             <- so this was typed at 4 and dedented again, to 0,
+//                              pairing with `if a:` instead of `if b:`
+//
+// A `case` takes the column of the `case` above it, or -- when it is the first
+// one -- sits one level *inside* its own `match`, which is where Python puts it.
+// It is also the one clause here that is a soft keyword, so it is only treated
+// as a clause at all when a match statement is genuinely open above it: an
+// ordinary `case = {1: 2}` elsewhere in a file is left alone rather than
+// dedented for looking like one.
+//
+// It only ever dedents, never indents: a clause typed shallower than its opener
+// (a deliberate manual dedent, mid-edit code) is left where it is rather than
+// pushed back in. When no matching opener can be found at all -- an unfinished
+// buffer, a clause with nothing above it -- every hard-keyword clause falls back
+// to one level out, which is the old behaviour and never over-dedents.
+std::optional<std::string> ReindentDedentKeyword(const std::vector<std::string> &lines, int row,
                                                  const std::string &filetype);
 
 // --- Pasting -------------------------------------------------------------

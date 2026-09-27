@@ -148,6 +148,20 @@ outline, so [[file:structure-symbols.html][the symbol views]] work from the serv
 suite, each =else=/=except=/=finally= arm, runs of comment lines, the
 import block at the top and multi-line strings.
 
+* Semantic highlighting
+
+The server also answers =textDocument/semanticTokens=, which is what keeps
+a parameter coloured as one everywhere in its function rather than only in
+the signature that binds it. An imported module reads as a module at every
+use, a =def= referenced without being called still reads as a function,
+and =self= / =cls= keep a colour of their own.
+
+It classifies only what it can resolve to a binding in this file: a
+builtin, an attribute, a name from a star import or a name inside a string
+annotation gets no token at all, so the grammar's own colour keeps showing
+rather than being overwritten with a guess. See [[file:lsp.html][Language servers]] for the
+colour table and how to change it.
+
 * What it does not do
 
 - *No type checking.* See the opening section.

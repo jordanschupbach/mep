@@ -921,7 +921,11 @@ add_dependencies(tests mep-indent-test)
 # grammars (the same ${TS_GRAMMAR_LIBS} mep itself uses) but nothing else -- no
 # mep_core, no editor, no display, since treesitter.cpp depends on none of it.
 add_executable(mep-treesitter-test EXCLUDE_FROM_ALL src/treesitter_test.cpp src/treesitter.cpp)
-target_include_directories(mep-treesitter-test PRIVATE src)
+# "${CMAKE_BINARY_DIR}/generated" for mepml_queries.h, the one query header
+# treesitter.cpp includes that is generated at configure time (from
+# grammars/tree-sitter-mepml/queries) rather than checked in -- mep_core gets it
+# as a PUBLIC include directory, and this target compiles treesitter.cpp itself.
+target_include_directories(mep-treesitter-test PRIVATE src "${CMAKE_BINARY_DIR}/generated")
 target_link_libraries(mep-treesitter-test PRIVATE tree_sitter ${TS_GRAMMAR_LIBS})
 target_compile_options(mep-treesitter-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-treesitter-test PRIVATE ${MEP_SANITIZE_FLAGS})

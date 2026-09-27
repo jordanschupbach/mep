@@ -44,6 +44,11 @@ than replacing it.</p>
 <h1>Changing the colours</h1>
 <p>Captures map to colour groups through <code>mep.ts_capture_hl</code>, an ordinary Lua
 table -- see <a href="highlight-groups.html">Highlight groups</a>.</p>
+<p>A language server can add to this: where one is attached and answers
+<code>textDocument/semanticTokens</code>, names it has <b>resolved</b> -- a parameter used
+in the body, an imported module, a function named rather than called --
+are recoloured over the grammar's own pass. See
+<a href="lsp.html">Language servers</a> for that table.</p>
 <h1>Colour swatches</h1>
 <p><code>:MepColorize</code> finds colour literals -- <code>#ff8800</code>, <code>rgb(...)</code> -- and draws
 the actual colour beside them. Useful in a stylesheet or a theme file.</p>

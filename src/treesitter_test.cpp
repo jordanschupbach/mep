@@ -254,7 +254,54 @@ void TestPythonIdentifierConventions() {
         "        return cls\n";
     ExpectCaptures("py", methods, "self", "variable variable.builtin");
     ExpectCaptures("py", methods, "cls", "variable variable.builtin");
-    ExpectCaptures("py", methods, "other", "variable");
+    // ...and a real parameter beside them is a parameter, not a plain local:
+    // self/cls are excluded from the parameter patterns precisely so the two
+    // stay distinguishable in the same signature.
+    ExpectCaptures("py", methods, "other", "variable variable.parameter");
+}
+
+void TestPythonParameters() {
+    // Every shape a signature can bind a name in gets the parameter capture,
+    // and it lands on the *name* -- not on the annotation, the default value or
+    // the stars.
+    const std::string src =
+        "def f(a, b: int, c=1, d: str = \"x\", *args, **kwargs):\n"
+        "    return a + b\n";
+    ExpectCaptures("py", src, "a,", "variable variable.parameter");
+    ExpectCaptures("py", src, "b:", "variable variable.parameter");
+    ExpectCaptures("py", src, "c=", "variable variable.parameter");
+    ExpectCaptures("py", src, "d:", "variable variable.parameter");
+    ExpectCaptures("py", src, "args", "variable variable.parameter");
+    ExpectCaptures("py", src, "kwargs", "variable variable.parameter");
+    // The annotation and the default keep their own captures.
+    ExpectCaptures("py", src, "int", "variable type");
+    ExpectCaptures("py", src, "str", "variable type");
+    ExpectCaptures("py", src, "1,", "number");
+    ExpectCaptures("py", src, "\"x\"", "string");
+    // A use in the body is an ordinary local: which of them is a parameter
+    // needs scope resolution, which a query cannot do.
+    ExpectCaptures("py", src, "a + b", "variable");
+
+    // Annotated *args/**kwargs nest one level deeper in the grammar (the splat
+    // sits inside a typed_parameter), and are still parameters.
+    const std::string typed_splat = "def g(*args: int, **kwargs: str):\n    pass\n";
+    ExpectCaptures("py", typed_splat, "args", "variable variable.parameter");
+    ExpectCaptures("py", typed_splat, "kwargs", "variable variable.parameter");
+
+    // A lambda binds parameters the same way.
+    const std::string lam = "key = lambda item, n=2: item[n]\n";
+    ExpectCaptures("py", lam, "item,", "variable variable.parameter");
+    ExpectCaptures("py", lam, "n=", "variable variable.parameter");
+    ExpectCaptures("py", lam, "item[", "variable");
+
+    // At a call site it is the keyword's name that is the parameter; its value
+    // is ordinary code. A positional argument is just an expression.
+    const std::string call = "f(1, x, timeout=3, mode=MODE)\n";
+    ExpectCaptures("py", call, "timeout", "variable variable.parameter");
+    ExpectCaptures("py", call, "mode", "variable variable.parameter");
+    ExpectCaptures("py", call, "3", "number");
+    ExpectCaptures("py", call, "MODE", "variable constant");
+    ExpectCaptures("py", call, "x,", "variable");
 }
 
 void TestPythonCalls() {
@@ -281,7 +328,7 @@ void TestPythonCalls() {
     ExpectCaptures("py", deco, "@", "function");
     ExpectCaptures("py", deco, "functools", "function variable");
     ExpectCaptures("py", deco, "lru_cache", "function variable property function.method");
-    ExpectCaptures("py", deco, "maxsize", "variable");
+    ExpectCaptures("py", deco, "maxsize", "variable variable.parameter");
     ExpectCaptures("py", deco, "None", "constant.builtin");
 }
 
@@ -414,6 +461,7 @@ int main() {
     TestPythonKeywords();
     TestPythonSoftKeywords();
     TestPythonIdentifierConventions();
+    TestPythonParameters();
     TestPythonCalls();
     TestPythonAnnotations();
     TestPythonLiteralsAndComments();

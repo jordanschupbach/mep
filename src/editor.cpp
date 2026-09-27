@@ -20678,8 +20678,11 @@ void Editor::InsertNewline(bool auto_indent) {
 void Editor::ReindentDedentClause() {
     CursorPos &cursor = CurPane().cursor;
     std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
+    // The lines above are the context the clause is matched against (which
+    // `if`/`try` does this `else` actually close), so the whole buffer goes in
+    // rather than just the line being typed on.
     std::optional<std::string> new_indent =
-        mepindent::ReindentDedentKeyword(line, LspFiletype(Buf().filename));
+        mepindent::ReindentDedentKeyword(Buf().lines, cursor.row, LspFiletype(Buf().filename));
     if (!new_indent) return;
     size_t old_ws = 0;
     while (old_ws < line.size() && (line[old_ws] == ' ' || line[old_ws] == '\t')) old_ws++;

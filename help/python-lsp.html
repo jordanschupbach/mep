@@ -124,6 +124,17 @@ attribute whose owner is defined in another file).</p>
 outline, so <a href="structure-symbols.html">the symbol views</a> work from the server. Folding covers every
 suite, each <code>else=/=except=/=finally</code> arm, runs of comment lines, the
 import block at the top and multi-line strings.</p>
+<h1>Semantic highlighting</h1>
+<p>The server also answers <code>textDocument/semanticTokens</code>, which is what keeps
+a parameter coloured as one everywhere in its function rather than only in
+the signature that binds it. An imported module reads as a module at every
+use, a <code>def</code> referenced without being called still reads as a function,
+and <code>self</code> / <code>cls</code> keep a colour of their own.</p>
+<p>It classifies only what it can resolve to a binding in this file: a
+builtin, an attribute, a name from a star import or a name inside a string
+annotation gets no token at all, so the grammar's own colour keeps showing
+rather than being overwritten with a guess. See <a href="lsp.html">Language servers</a> for the
+colour table and how to change it.</p>
 <h1>What it does not do</h1>
 <ul>
 <li><b>No type checking.</b> See the opening section.</li>

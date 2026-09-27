@@ -6691,6 +6691,20 @@ const char *kBuiltinLsp =
     "        signatureHelp = {signatureInformation = {documentationFormat = {'plaintext'}}},\n"
     "        rename = {},\n"
     "        codeAction = {},\n"
+    // Semantic tokens: the scope-aware half of syntax colouring (see
+    // mep.lsp_semantic_tokens below). Full documents only -- mep asks for
+    // the whole file and redraws its own namespace from scratch, so there
+    // is no delta state to keep in sync. The tokenTypes/tokenModifiers
+    // lists are required by the protocol even though every server sends
+    // its own legend back: they are the client saying which *standard*
+    // names it understands, and a server is free to answer with only some
+    // of them.
+    "        semanticTokens = {requests = {full = true}, formats = {'relative'},\n"
+    "          tokenTypes = {'namespace', 'type', 'class', 'enum', 'interface', 'struct', 'typeParameter',\n"
+    "            'parameter', 'variable', 'property', 'enumMember', 'event', 'function', 'method', 'macro',\n"
+    "            'keyword', 'modifier', 'comment', 'string', 'number', 'regexp', 'operator', 'decorator'},\n"
+    "          tokenModifiers = {'declaration', 'definition', 'readonly', 'static', 'deprecated', 'abstract',\n"
+    "            'async', 'modification', 'documentation', 'defaultLibrary'}},\n"
     "      },\n"
     "    },\n"
     "  }, function(msg)\n"
@@ -6740,6 +6754,12 @@ const char *kBuiltinLsp =
     "    textDocument = {uri = mep_lsp_uri(fname), languageId = mep_lsp_filetype(fname) or '',\n"
     "                    version = 1, text = table.concat(text, '\\n')},\n"
     "  })\n"
+    // The server now has the document, which is the earliest point a
+    // semantic-token request can be answered for it -- and the only hook
+    // every "this file just became known to a server" path goes through
+    // (a fresh attach, and a second file opened onto an already-running
+    // client). Self-gating: a no-op when the server has no such provider.
+    "  if mep.lsp_semantic_auto then mep.lsp_semantic_tokens() end\n"
     "end\n"
     "function mep.lsp_did_change()\n"
     "  local id = mep.lsp_client_for()\n"
@@ -6753,6 +6773,15 @@ const char *kBuiltinLsp =
     "    textDocument = {uri = mep_lsp_uri(fname), version = v},\n"
     "    contentChanges = {{text = table.concat(text, '\\n')}},\n"
     "  })\n"
+    // Semantic tokens ride this notification rather than a debounce of
+    // their own, and deliberately: a token is a byte offset into one
+    // *version* of the document, so a request that raced ahead of the
+    // didChange for the edit that prompted it would be answered against
+    // the previous text and then dropped by the version check in
+    // mep.lsp_semantic_tokens -- with nothing left to fire again once the
+    // typing stopped, which is exactly when the colours are wanted. Asked
+    // for here, every request follows the text it is about.
+    "  if mep.lsp_semantic_auto then mep.lsp_semantic_tokens() end\n"
     "end\n"
     "function mep.lsp_did_save()\n"
     "  local id = mep.lsp_client_for()\n"
@@ -7375,6 +7404,130 @@ const char *kBuiltinLsp =
     // reach a key typed after a pending "["/"]").
     "mep.map_bracket_prev('e', mep.lsp_prev_error)\n"
     "mep.map_bracket_next('e', mep.lsp_next_error)\n"
+    // --- Semantic tokens: colour by what a name *is* -------------------
+    //
+    // The half of syntax colouring a grammar cannot do. Treesitter sees
+    // that a name sits in a parameter list, or that it is CamelCase, or
+    // that it is followed by `(` -- all of it purely positional. Only the
+    // server has resolved scopes, so only the server can say that the
+    // bare `factor` three lines into a function body is that function's
+    // own parameter, that `os` is a module rather than a local, or that a
+    // lowercase name is a class. Those answers land here as decorations in
+    // their own namespace at a priority above the Treesitter pass
+    // (kBuiltinSyntax draws at the default 0), so the two compose: the
+    // grammar paints everything, and the server repaints the names it
+    // knows more about than the grammar could.
+    //
+    // Which token types actually get a colour is mep.lsp_semantic_hl --
+    // deliberately a *short* table, because a token type mapped here
+    // overrides the grammar for every language at once. What is in it is
+    // what the grammar either cannot know or gets wrong; what is left out
+    // (variable, property, class, type, enum, ...) is left out on purpose,
+    // since Treesitter already colours those from the syntax and a second
+    // opinion would only mean the same name changing colour depending on
+    // which pass ran last. `class`/`type` in particular disagree across
+    // languages -- clangd calls a C++ type a `class`, where mep's own
+    // scheme paints types Orange and class-like names Blue -- so mapping
+    // either of them would recolour C++ by way of a Python fix.
+    //
+    // Lookup is modifier-qualified first, then the bare type name
+    // ('parameter.implicit' before 'parameter'), which is what lets
+    // `self`/`cls` keep the builtin colour kHighlightsPython's own query
+    // gives them instead of reading as ordinary parameters. mep's Python
+    // server marks them with its own `implicit` modifier for exactly this
+    // (see PythonLspTokenModifier in python_lsp.h).
+    "mep.lsp_semantic_hl = {\n"
+    "  parameter = 'Red', ['parameter.implicit'] = 'Cyan',\n"
+    "  namespace = 'Orange', ['function'] = 'Blue', method = 'Blue',\n"
+    "}\n"
+    // The refresh cadence is mep.lsp_did_change's own (mep.
+    // on_buffer_changed's 0.3s debounce), not a timer here -- see the note
+    // there. Much slower than mep.syntax_interval's 0.03s, and for a
+    // different reason than cost: this is a round trip to another process
+    // that re-analyses the whole document to answer, so "when you stop
+    // typing a word" is the right grain. The colours already in the buffer
+    // follow the text through inserts and deletes on their own
+    // (Editor::ShiftDecorationsForLineEdit), so the cadence governs how
+    // fast *new* names pick up a semantic colour, not whether the old ones
+    // keep theirs.
+    "mep.lsp_semantic_auto = true\n"
+    "local mep_semantic_ns = nil\n"
+    // The modifiers a token carries, decoded from its bitmask against the
+    // server's own modifier legend. Plain arithmetic rather than bitwise
+    // operators: the numbers arrive from JSON as Lua numbers, and `&`
+    // demands an integer representation this never has to assume.
+    "local function mep_semantic_modifiers(bits, names)\n"
+    "  local out = {}\n"
+    "  local rest = bits or 0\n"
+    "  for i = 1, #names do\n"
+    "    if rest % 2 >= 1 then out[#out + 1] = names[i] end\n"
+    "    rest = math.floor(rest / 2)\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_semantic_hl_for(type_name, mods)\n"
+    "  local map = mep.lsp_semantic_hl\n"
+    "  if not map then return nil end\n"
+    "  for _, m in ipairs(mods) do\n"
+    "    local hl = map[type_name .. '.' .. m]\n"
+    "    if hl then return hl end\n"
+    "  end\n"
+    "  return map[type_name]\n"
+    "end\n"
+    "function mep.lsp_semantic_tokens()\n"
+    "  local id = mep.lsp_client_for()\n"
+    "  if not id then return end\n"
+    "  local caps = mep_lsp_server_capabilities[id]\n"
+    "  local provider = caps and caps.semanticTokensProvider\n"
+    "  local legend = provider and provider.legend\n"
+    "  if not legend or not legend.tokenTypes then return end\n"
+    "  local types, mod_names = legend.tokenTypes, legend.tokenModifiers or {}\n"
+    "  local fname = mep.filename()\n"
+    "  local asked_version = mep_lsp_doc_versions[fname] or 1\n"
+    "  mep.lsp_request(id, 'textDocument/semanticTokens/full', {textDocument = {uri = mep_lsp_uri(fname)}},\n"
+    "    function(msg)\n"
+    "      local result = mep_lsp_result(msg)\n"
+    "      local data = result and result.data\n"
+    "      if not data then return end\n"
+    // Everything about a token is a byte offset into the document that was
+    // asked about, so a response that outlived its document is not stale
+    // colour but *wrong* colour, on whatever text now sits at those
+    // offsets. Dropped rather than approximated -- the edit that made it
+    // stale sent its own didChange, and asked again from there.
+    "      if mep.filename() ~= fname then return end\n"
+    "      if (mep_lsp_doc_versions[fname] or 1) ~= asked_version then return end\n"
+    "      if not mep_semantic_ns then mep_semantic_ns = mep.ns_create('semantic') end\n"
+    "      mep.ns_clear(mep_semantic_ns)\n"
+    // The wire format is a chain of deltas, five integers per token: line
+    // delta from the previous token, then a column delta *within* that
+    // line or an absolute column on a new one, length, a token-type index
+    // into the legend, and a modifier bitmask.
+    "      local row, col = 0, 0\n"
+    "      local i = 1\n"
+    "      while i + 4 <= #data do\n"
+    "        local dl, dc, len = data[i], data[i + 1], data[i + 2]\n"
+    "        row = row + dl\n"
+    "        col = (dl == 0) and (col + dc) or dc\n"
+    "        local type_name = types[data[i + 3] + 1]\n"
+    "        if type_name and len > 0 then\n"
+    "          local hl = mep_semantic_hl_for(type_name, mep_semantic_modifiers(data[i + 4], mod_names))\n"
+    "          local line = hl and mep.get_line(row + 1)\n"
+    // A server is free to send a token spanning a line break (mep's own
+    // Python server never does -- every token it emits is one identifier),
+    // and a row past the end of the buffer is what a response racing an
+    // undo looks like. Clamped to the row's own text rather than trusted.
+    "          if line and col < #line then\n"
+    "            local stop = col + len\n"
+    "            if stop > #line then stop = #line end\n"
+    "            mep.deco_add(mep_semantic_ns, {row = row + 1, col_start = col + 1, col_end = stop + 1,\n"
+    "                                           hl_group = hl, priority = 5})\n"
+    "          end\n"
+    "        end\n"
+    "        i = i + 5\n"
+    "      end\n"
+    "    end)\n"
+    "end\n"
+    "mep.command('MepLspSemanticTokens', mep.lsp_semantic_tokens)\n"
     // Keeps the server's own copy of the document in sync with unsaved
     // edits -- mep.lsp_did_change/did_save were previously defined but
     // never actually wired to anything, so diagnostics/hover would only
@@ -7410,6 +7563,10 @@ const char *kBuiltinLsp =
     "  if fname == mep_lsp_last_file then return end\n"
     "  mep_lsp_last_file = fname\n"
     "  mep.lsp_render_diagnostics()\n"
+    // A file switched *back* to is already attached, so nothing re-sends
+    // didOpen for it (see mep_lsp_seen_files below) and its semantic
+    // colours would only come back on the next edit.
+    "  if mep.lsp_semantic_auto then mep.lsp_semantic_tokens() end\n"
     "  if not mep.lsp_auto_attach or fname == '' or mep_lsp_seen_files[fname] then return end\n"
     "  if not mep_lsp_filetype(fname) then return end\n"
     "  mep_lsp_seen_files[fname] = true\n"
@@ -12126,6 +12283,16 @@ const char *kBuiltinSyntax =
     // reads distinctly against the string green around it.
     "  ['punctuation.interpolation'] = 'Yellow',\n"
     "  number = 'Cyan', boolean = 'Cyan', constant = 'Cyan', ['constant.builtin'] = 'Cyan',\n"
+    // A parameter name -- a def/lambda signature's own bindings and the
+    // `kw=` half of a keyword argument (kHighlightsPython's parameter
+    // rules; most vendored queries emit @variable.parameter for the same
+    // thing, so this colours them all). Red is the one palette hue no
+    // ordinary-code capture claims -- the 'error' entry below is for a
+    // query's own ERROR/diagnostic capture, and a buffer's diagnostics are
+    // drawn as underlines rather than as recoloured text, so the two never
+    // read as each other -- and it is the slot several of the ported
+    // schemes (One Dark, tokyonight) already give this kind of name.
+    "  ['variable.parameter'] = 'Red', parameter = 'Red',\n"
     "  ['variable.builtin'] = 'Cyan', character = 'Cyan', float = 'Cyan', attribute = 'Cyan',\n"
     "  keyword = 'Purple', ['keyword.function'] = 'Purple', ['keyword.operator'] = 'Purple',\n"
     "  ['keyword.return'] = 'Purple', conditional = 'Purple', ['repeat'] = 'Purple',\n"

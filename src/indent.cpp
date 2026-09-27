@@ -57,6 +57,17 @@ std::string DedentOne(const std::string &ws) {
     return "";
 }
 
+// One indent level deeper than `ws`, in whatever the file indents with, so a
+// tab-indented file does not gain a four-space level. The mirror of DedentOne.
+// `like` is a second sample of the file's indentation (the line being
+// re-indented), consulted when `ws` is empty and so has nothing to say -- which
+// is exactly the common case here, a `match` at column 0.
+std::string IndentOne(const std::string &ws, const std::string &like) {
+    const std::string &hint = ws.empty() ? like : ws;
+    if (!hint.empty() && hint.find(' ') == std::string::npos) return ws + '\t';
+    return ws + kShift;
+}
+
 // The last significant character of `line` -- ignoring trailing whitespace and
 // a trailing `#` comment -- or '\0' if there is none. Tracks single/double
 // quoted strings (with backslash escapes) so a '#' or ':' inside a string is
@@ -110,7 +121,27 @@ bool IsFlowKeyword(const std::string &word) {
 }
 
 bool IsDedentClause(const std::string &word) {
-    return word == "else" || word == "elif" || word == "except" || word == "finally";
+    return word == "else" || word == "elif" || word == "except" || word == "finally" ||
+           word == "case";
+}
+
+// Whether a statement starting with `opener` can own a `clause` -- Python's own
+// pairing rules, including the ones easy to forget: `for`/`while` take an
+// `else`, so does `try` (after its last `except`), and a `finally` can follow
+// that `else` in turn.
+bool OpensClause(const std::string &clause, const std::string &opener) {
+    if (clause == "else") {
+        return opener == "if" || opener == "elif" || opener == "for" || opener == "while" ||
+               opener == "try" || opener == "except";
+    }
+    if (clause == "elif") return opener == "if" || opener == "elif";
+    if (clause == "except") return opener == "try" || opener == "except";
+    if (clause == "finally") return opener == "try" || opener == "except" || opener == "else";
+    // A `case` belongs to the `case` above it (same column) or, when it is the
+    // first one, to the `match` itself (one column further in) -- see the
+    // IndentOne branch in ReindentDedentKeyword.
+    if (clause == "case") return opener == "case" || opener == "match";
+    return false;
 }
 
 }  // namespace
@@ -125,13 +156,47 @@ std::string ComputeNewlineIndent(const std::string &line_before_cursor,
     return indent;
 }
 
-std::optional<std::string> ReindentDedentKeyword(const std::string &current_line,
+std::optional<std::string> ReindentDedentKeyword(const std::vector<std::string> &lines, int row,
                                                  const std::string &filetype) {
     if (!IsPython(filetype)) return std::nullopt;
-    if (!IsDedentClause(FirstWord(current_line))) return std::nullopt;
-    std::string indent = LeadingWhitespace(current_line);
+    if (row < 0 || row >= static_cast<int>(lines.size())) return std::nullopt;
+    const std::string &current_line = lines[static_cast<size_t>(row)];
+    const std::string clause = FirstWord(current_line);
+    if (!IsDedentClause(clause)) return std::nullopt;
+    const std::string indent = LeadingWhitespace(current_line);
     if (indent.empty()) return std::nullopt;  // already at column 0, nothing to do
-    std::string dedented = DedentOne(indent);
+    const int cur = IndentWidth(indent);
+
+    // The statement this clause closes: the nearest line above that opens a
+    // block it can attach to, at this clause's own column or further out.
+    for (int j = row - 1; j >= 0; j--) {
+        const std::string &above = lines[static_cast<size_t>(j)];
+        if (IsBlank(above)) continue;
+        const std::string ws = LeadingWhitespace(above);
+        if (above[ws.size()] == '#') continue;  // a comment decides nothing
+        // Deeper than the clause: that is the body being closed, not an opener
+        // for it -- an `if` nested inside the block cannot own this `else`.
+        if (IndentWidth(ws) > cur) continue;
+        const std::string opener = FirstWord(above);
+        if (!OpensClause(clause, opener)) continue;
+        // Every clause takes its opener's own column -- except the first `case`
+        // of a match statement, which sits one level *inside* its `match` (a
+        // later `case` aligns with the `case` above it, which the same rule
+        // gives for free).
+        const std::string target =
+            (clause == "case" && opener == "match") ? IndentOne(ws, indent) : ws;
+        if (target == indent) return std::nullopt;         // already where it belongs
+        if (IndentWidth(target) > cur) return std::nullopt;  // only ever dedents
+        return target;
+    }
+    // `case` is a soft keyword, so a line starting with the word `case` and
+    // containing a ':' is only a clause if a match statement is actually open
+    // above it -- `case = {1: 2}` anywhere else is an ordinary assignment, and
+    // the fallback below would dedent it for no reason.
+    if (clause == "case") return std::nullopt;
+    // Nothing above owns it (a clause being typed into an unfinished buffer):
+    // one level out, which is where it would most often have belonged anyway.
+    const std::string dedented = DedentOne(indent);
     if (dedented == indent) return std::nullopt;
     return dedented;
 }

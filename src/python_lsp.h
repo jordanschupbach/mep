@@ -249,6 +249,61 @@ struct PythonLspReferenceSet {
  */
 PythonLspReferenceSet PythonLspReferences(const std::vector<std::string> &lines, int line, int col);
 
+// --- Semantic tokens --------------------------------------------------
+
+// The semantic-token types this server emits, in the exact order its
+// legend declares them (the wire format is an index into that legend --
+// see python_lsp_server.cpp). Every name is one of the LSP
+// specification's own standard SemanticTokenTypes, so a client that
+// knows nothing about mep still recognizes them.
+enum class PythonLspTokenType {
+    Namespace = 0,  // a module: `import os`, or a `from`-import of a known submodule
+    Type,           // a PEP 695 `type Alias = ...`
+    Class,
+    Parameter,
+    Variable,
+    Function,
+    Method,
+};
+
+// The modifiers, likewise legend-ordered. `Declaration` is the standard
+// spelling for "this occurrence is the binding itself" rather than a read
+// of it. `Implicit` is this server's own addition (the specification lets
+// a server extend the modifier legend): `self`/`cls`, which are
+// parameters a reader never thinks of as arguments, so a client can keep
+// colouring them as the builtins they read as instead of as parameters.
+enum class PythonLspTokenModifier { Declaration = 0, Implicit = 1 };
+
+struct PythonLspSemanticToken {
+    int line = 0;       // 0-based
+    int col_start = 0;  // 0-based byte column, half-open [col_start, col_end)
+    int col_end = 0;
+    PythonLspTokenType type = PythonLspTokenType::Variable;
+    unsigned modifiers = 0;  // bitmask of `1u << static_cast<unsigned>(PythonLspTokenModifier)`
+};
+
+/**
+ * @brief Classifies every identifier this server can resolve to a binding, so a
+ * client can colour by what a name *is* rather than by where it sits.
+ *
+ * This is the half of syntax colouring a grammar cannot do. A Treesitter query
+ * sees that `x` is in a parameter list and that some other `x` is an
+ * identifier in an expression; only a scope resolution knows the second one is
+ * that same parameter. So the token set is deliberately partial -- it covers
+ * the occurrences that resolve to a binding in this file and nothing else:
+ *   - A name this server cannot resolve (a builtin, an attribute, a name from
+ *     a star import, a name in a string annotation whose columns are inside a
+ *     string literal) gets no token at all rather than a guessed one, leaving
+ *     whatever the client's own grammar-based pass painted there showing.
+ *   - Keywords, literals, strings, comments and operators are never emitted:
+ *     every client already has them right, and re-sending them would only
+ *     create a second opinion to disagree with.
+ *
+ * @param lines the document's text, one entry per line
+ * @return every classified occurrence in ascending (line, col_start) order, at most one per position
+ */
+std::vector<PythonLspSemanticToken> PythonLspSemanticTokens(const std::vector<std::string> &lines);
+
 // --- Signature help ---------------------------------------------------
 
 struct PythonLspSignature {

@@ -73,6 +73,35 @@ more than one, the message beside it is prefixed with the count -- =(3)
 ...= -- so nothing is lost by the mark naming a kind rather than a number.</p>
 <p>Severity maps to the <code>Error</code>, <code>Warn</code>, <code>Info</code> and <code>Hint</code> <a href="highlight-groups.html">highlight groups</a>, so
 the colours follow your theme.</p>
+<h1>Semantic highlighting</h1>
+<p>Colour by what a name <b>is</b>, not by where it sits. A grammar can see that a
+name is written inside a parameter list; only a server knows that the bare
+<code>factor</code> three lines further down is that same parameter. A server that
+answers <code>textDocument/semanticTokens</code> gets those answers drawn over the
+Treesitter colours, which stay underneath for everything the server does
+not claim.</p>
+<p>Out of the box:</p>
+<table>
+<tr><th>Token type</th><th>Colour</th><th>What it fixes</th></tr>
+<tr><td><code>parameter</code></td><td><code>Red</code></td><td>a parameter, everywhere in its body</td></tr>
+<tr><td><code>parameter.implicit</code></td><td><code>Cyan</code></td><td>Python's <code>self</code> / <code>cls</code>, kept as builtins</td></tr>
+<tr><td><code>namespace</code></td><td><code>Orange</code></td><td>an imported module, wherever it is used</td></tr>
+<tr><td><code>function</code>, <code>method</code></td><td><code>Blue</code></td><td>a function named rather than called</td></tr>
+</table>
+<p>The table is <code>mep.lsp_semantic_hl</code>, keyed by the LSP token-type name and
+optionally by <code>type.modifier</code>, which is checked first:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_semantic_hl[<span class="tok-green">'variable.readonly'</span>] = <span class="tok-green">'Cyan'</span>  <span class="tok-comment">-- constants</span>
+mep.lsp_semantic_hl.class = <span class="tok-green">'Orange'</span>               <span class="tok-comment">-- every server's classes</span>
+mep.lsp_semantic_hl.parameter = <span class="tok-cyan">nil</span>                <span class="tok-comment">-- back to the grammar's colour</span></code></pre></div>
+<p>It is short on purpose: a token type mapped here overrides the grammar in
+<b>every</b> language at once. What is left out -- <code>variable</code>, <code>property</code>,
+<code>class</code>, <code>type</code> -- is left out because <a href="syntax.html">Treesitter</a> already colours those from
+the syntax, and a second opinion would only mean a name whose colour
+depends on which pass ran last.</p>
+<p>Tokens refresh whenever the server is told about an edit -- when you stop
+typing, on opening a file and on switching back to one -- and on
+<code>:MepLspSemanticTokens</code>. <code>mep.lsp_semantic_auto = false</code> stops the
+automatic refresh, leaving the command.</p>
 <h1>Servers mep knows about</h1>
 <p>Forty. Each is used when its command is on <code>$PATH</code>; the org, R, Python,
 C++, C and Maxima ones ship with mep itself:</p>

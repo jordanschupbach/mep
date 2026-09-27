@@ -235,6 +235,8 @@ public:
             Rename(msg.get("id"), params);
         } else if (method == "textDocument/signatureHelp") {
             Reply(msg.get("id"), SignatureHelp(params));
+        } else if (method == "textDocument/semanticTokens/full") {
+            Reply(msg.get("id"), SemanticTokens(params));
         } else if (method == "completionItem/resolve") {
             // Every item is already complete when it is offered; resolving
             // one is the identity.
@@ -317,6 +319,27 @@ private:
         Json rename = Json::Object();
         rename["prepareProvider"] = true;
 
+        // Semantic tokens: the legend is this server's own token-type and
+        // modifier order (PythonLspTokenType / PythonLspTokenModifier in
+        // python_lsp.h -- the numbers on the wire are indexes into these
+        // two arrays, so their order is the protocol here and must match
+        // those enums exactly). Full documents only: re-analysis is one
+        // linear pass over an in-memory document, so a delta protocol
+        // would add a result cache to get wrong and save nothing.
+        Json semantic = Json::Object();
+        Json legend = Json::Object();
+        Json token_types = Json::Array();
+        for (const char *name : {"namespace", "type", "class", "parameter", "variable", "function", "method"}) {
+            token_types.push_back(std::string(name));
+        }
+        Json token_modifiers = Json::Array();
+        for (const char *name : {"declaration", "implicit"}) token_modifiers.push_back(std::string(name));
+        legend["tokenTypes"] = token_types;
+        legend["tokenModifiers"] = token_modifiers;
+        semantic["legend"] = legend;
+        semantic["full"] = true;
+        semantic["range"] = false;
+
         Json caps = Json::Object();
         caps["positionEncoding"] = "utf-8";
         caps["textDocumentSync"] = sync;
@@ -329,6 +352,7 @@ private:
         caps["referencesProvider"] = true;
         caps["documentHighlightProvider"] = true;
         caps["renameProvider"] = rename;
+        caps["semanticTokensProvider"] = semantic;
 
         Json info = Json::Object();
         info["name"] = "mep-python-lsp";
@@ -602,6 +626,34 @@ private:
         out["signatures"] = signatures;
         out["activeSignature"] = 0;
         out["activeParameter"] = sig.active_param;
+        return out;
+    }
+
+    /** @brief Answers `textDocument/semanticTokens/full`. */
+    Json SemanticTokens(const Json &params) const {
+        const std::string uri = params.get("textDocument").get("uri").as_string();
+        const std::vector<PythonLspSemanticToken> tokens = PythonLspSemanticTokens(Doc(uri));
+        // The wire format (LSP SemanticTokens.data): five integers per
+        // token, each position stated as a delta from the previous token's
+        // -- line delta, then a column delta *within the same line* or an
+        // absolute column on a new one. Every token here is one
+        // identifier, so none of them spans a line break and `length` is
+        // simply its byte width.
+        Json data = Json::Array();
+        int prev_line = 0;
+        int prev_col = 0;
+        for (const PythonLspSemanticToken &t : tokens) {
+            const int delta_line = t.line - prev_line;
+            data.push_back(delta_line);
+            data.push_back(delta_line == 0 ? t.col_start - prev_col : t.col_start);
+            data.push_back(t.col_end - t.col_start);
+            data.push_back(static_cast<int>(t.type));
+            data.push_back(static_cast<int>(t.modifiers));
+            prev_line = t.line;
+            prev_col = t.col_start;
+        }
+        Json out = Json::Object();
+        out["data"] = data;
         return out;
     }
 };

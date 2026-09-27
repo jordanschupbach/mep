@@ -79,6 +79,44 @@ more than one, the message beside it is prefixed with the count -- =(3)
 Severity maps to the =Error=, =Warn=, =Info= and =Hint= [[file:highlight-groups.html][highlight groups]], so
 the colours follow your theme.
 
+* Semantic highlighting
+
+Colour by what a name *is*, not by where it sits. A grammar can see that a
+name is written inside a parameter list; only a server knows that the bare
+=factor= three lines further down is that same parameter. A server that
+answers =textDocument/semanticTokens= gets those answers drawn over the
+Treesitter colours, which stay underneath for everything the server does
+not claim.
+
+Out of the box:
+
+| Token type           | Colour   | What it fixes                           |
+|----------------------+----------+-----------------------------------------|
+| =parameter=          | =Red=    | a parameter, everywhere in its body     |
+| =parameter.implicit= | =Cyan=   | Python's =self= / =cls=, kept as builtins |
+| =namespace=          | =Orange= | an imported module, wherever it is used |
+| =function=, =method= | =Blue=   | a function named rather than called     |
+
+The table is =mep.lsp_semantic_hl=, keyed by the LSP token-type name and
+optionally by =type.modifier=, which is checked first:
+
+#+begin_src lua
+mep.lsp_semantic_hl['variable.readonly'] = 'Cyan'  -- constants
+mep.lsp_semantic_hl.class = 'Orange'               -- every server's classes
+mep.lsp_semantic_hl.parameter = nil                -- back to the grammar's colour
+#+end_src
+
+It is short on purpose: a token type mapped here overrides the grammar in
+*every* language at once. What is left out -- =variable=, =property=,
+=class=, =type= -- is left out because [[file:syntax.html][Treesitter]] already colours those from
+the syntax, and a second opinion would only mean a name whose colour
+depends on which pass ran last.
+
+Tokens refresh whenever the server is told about an edit -- when you stop
+typing, on opening a file and on switching back to one -- and on
+=:MepLspSemanticTokens=. =mep.lsp_semantic_auto = false= stops the
+automatic refresh, leaving the command.
+
 * Servers mep knows about
 
 Forty. Each is used when its command is on =$PATH=; the org, R, Python,

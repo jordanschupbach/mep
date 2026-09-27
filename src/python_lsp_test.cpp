@@ -941,6 +941,166 @@ void TestRealisticFileIsQuiet() {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// Semantic tokens: what a name *is*, which is the half a grammar cannot see
+// ---------------------------------------------------------------------------
+
+// Position of the `nth` (0-based) occurrence of `needle` in `lines`, as the
+// (line, byte column) a semantic token would carry.
+struct At {
+    int line = 0;
+    int col = 0;
+};
+At Locate(const Lines &lines, const std::string &needle, int nth = 0) {
+    int seen = 0;
+    for (size_t i = 0; i < lines.size(); i++) {
+        size_t from = 0;
+        while (true) {
+            const size_t at = lines[i].find(needle, from);
+            if (at == std::string::npos) break;
+            if (seen++ == nth) return At{static_cast<int>(i), static_cast<int>(at)};
+            from = at + 1;
+        }
+    }
+    std::fprintf(stderr, "test bug: occurrence %d of \"%s\" not in source\n", nth, needle.c_str());
+    std::abort();
+}
+
+/** @brief The token starting exactly at a position, or nullptr when that name got none. */
+const PythonLspSemanticToken *TokenAt(const std::vector<PythonLspSemanticToken> &tokens, const At &at) {
+    for (const PythonLspSemanticToken &t : tokens) {
+        if (t.line == at.line && t.col_start == at.col) return &t;
+    }
+    return nullptr;
+}
+
+bool HasModifier(const PythonLspSemanticToken &t, PythonLspTokenModifier m) {
+    return (t.modifiers & (1u << static_cast<unsigned>(m))) != 0;
+}
+
+void TestSemanticTokens() {
+    const Lines lines = {
+        "import os",
+        "from os import path",
+        "from json import dumps",
+        "",
+        "LIMIT = 10",
+        "",
+        "def scale(factor, offset=0):",
+        "    total = factor * 2",
+        "    return total + offset + LIMIT",
+        "",
+        "class Widget:",
+        "    def area(self, size):",
+        "        self.size = size",
+        "        return len(path.sep) + size",
+    };
+    const std::vector<PythonLspSemanticToken> tokens = PythonLspSemanticTokens(lines);
+
+    // The whole point: a parameter is a parameter wherever it appears, not
+    // only in the signature that binds it. The declaration carries the
+    // modifier that says which occurrence it is.
+    const PythonLspSemanticToken *decl = TokenAt(tokens, Locate(lines, "factor"));
+    CHECK(decl != nullptr);
+    CHECK(decl->type == PythonLspTokenType::Parameter);
+    CHECK(HasModifier(*decl, PythonLspTokenModifier::Declaration));
+    const PythonLspSemanticToken *use = TokenAt(tokens, Locate(lines, "factor", 1));
+    CHECK(use != nullptr);
+    CHECK(use->type == PythonLspTokenType::Parameter);
+    CHECK(!HasModifier(*use, PythonLspTokenModifier::Declaration));
+    // ...including a parameter whose signature gave it a default, and one
+    // read on a line that never mentions the def.
+    const PythonLspSemanticToken *offset_use = TokenAt(tokens, Locate(lines, "offset", 1));
+    CHECK(offset_use != nullptr);
+    CHECK(offset_use->type == PythonLspTokenType::Parameter);
+
+    // A local is a variable, a def is a function, a def in a class body is a
+    // method, and a class is a class.
+    CHECK(TokenAt(tokens, Locate(lines, "total"))->type == PythonLspTokenType::Variable);
+    CHECK(TokenAt(tokens, Locate(lines, "scale"))->type == PythonLspTokenType::Function);
+    CHECK(TokenAt(tokens, Locate(lines, "Widget"))->type == PythonLspTokenType::Class);
+    CHECK(TokenAt(tokens, Locate(lines, "area"))->type == PythonLspTokenType::Method);
+    CHECK(TokenAt(tokens, Locate(lines, "LIMIT"))->type == PythonLspTokenType::Variable);
+    CHECK(TokenAt(tokens, Locate(lines, "LIMIT", 1))->type == PythonLspTokenType::Variable);
+
+    // self is a parameter the reader never thinks of as an argument, and
+    // says so with the modifier a client uses to keep colouring it as the
+    // builtin it reads as.
+    const PythonLspSemanticToken *self = TokenAt(tokens, Locate(lines, "self"));
+    CHECK(self != nullptr);
+    CHECK(self->type == PythonLspTokenType::Parameter);
+    CHECK(HasModifier(*self, PythonLspTokenModifier::Implicit));
+    // A real parameter beside it carries no such modifier.
+    const PythonLspSemanticToken *size = TokenAt(tokens, Locate(lines, "size)"));
+    CHECK(size != nullptr);
+    CHECK(size->type == PythonLspTokenType::Parameter);
+    CHECK(!HasModifier(*size, PythonLspTokenModifier::Implicit));
+
+    // An imported module is a namespace, at its import and at every use --
+    // `from os import path` included, since this server's own module table
+    // knows os.path is one.
+    CHECK(TokenAt(tokens, Locate(lines, "os"))->type == PythonLspTokenType::Namespace);
+    CHECK(TokenAt(tokens, Locate(lines, "path"))->type == PythonLspTokenType::Namespace);
+    CHECK(TokenAt(tokens, Locate(lines, "path", 1))->type == PythonLspTokenType::Namespace);
+    // A name imported *from* a module is a name whose kind this server
+    // cannot know, and it says variable rather than guessing class or
+    // function.
+    CHECK(TokenAt(tokens, Locate(lines, "dumps"))->type == PythonLspTokenType::Variable);
+
+    // What must get no token at all, so the client's grammar-based colours
+    // keep showing: a builtin, an attribute, and a keyword.
+    CHECK(TokenAt(tokens, Locate(lines, "len")) == nullptr);
+    CHECK(TokenAt(tokens, Locate(lines, "size = size")) == nullptr);  // the `self.size` attribute
+    CHECK(TokenAt(tokens, Locate(lines, "return")) == nullptr);
+    CHECK(TokenAt(tokens, Locate(lines, "import")) == nullptr);
+
+    // Ascending order and one token per position: the encoding on the wire
+    // is a chain of deltas, so an out-of-order or duplicated position is
+    // not a cosmetic problem there but a corrupt stream.
+    for (size_t i = 1; i < tokens.size(); i++) {
+        const bool ordered = tokens[i - 1].line < tokens[i].line ||
+                             (tokens[i - 1].line == tokens[i].line && tokens[i - 1].col_start < tokens[i].col_start);
+        CHECK(ordered);
+    }
+    for (const PythonLspSemanticToken &t : tokens) CHECK(t.col_end > t.col_start);
+
+    // A name in a string annotation resolves for "is this import used", but
+    // its columns are inside a string literal, so it gets no token: half a
+    // recoloured string reads as a bug.
+    const Lines annotated = {
+        "class Node:",
+        "    pass",
+        "",
+        "def visit(n: \"Node\") -> None:",
+        "    return n",
+    };
+    const std::vector<PythonLspSemanticToken> ann = PythonLspSemanticTokens(annotated);
+    CHECK(TokenAt(ann, Locate(annotated, "Node\"")) == nullptr);
+    CHECK(TokenAt(ann, Locate(annotated, "n: "))->type == PythonLspTokenType::Parameter);
+
+    // An augmented assignment both binds and reads its name; the position
+    // gets one token, keeping the declaration modifier the binding gave it.
+    const Lines aug = {"def f(n):", "    n += 1", "    return n"};
+    const std::vector<PythonLspSemanticToken> aug_tokens = PythonLspSemanticTokens(aug);
+    const PythonLspSemanticToken *aug_use = TokenAt(aug_tokens, Locate(aug, "n +="));
+    CHECK(aug_use != nullptr);
+    CHECK(aug_use->type == PythonLspTokenType::Parameter);
+
+    // A lambda's parameter is a parameter, and a comprehension's loop
+    // variable is a variable -- both have their own scope, and both resolve.
+    const Lines small = {"key = lambda item: item.x", "squares = [v * v for v in range(3)]"};
+    const std::vector<PythonLspSemanticToken> small_tokens = PythonLspSemanticTokens(small);
+    CHECK(TokenAt(small_tokens, Locate(small, "item:"))->type == PythonLspTokenType::Parameter);
+    CHECK(TokenAt(small_tokens, Locate(small, "item."))->type == PythonLspTokenType::Parameter);
+    CHECK(TokenAt(small_tokens, Locate(small, "v *"))->type == PythonLspTokenType::Variable);
+
+    // Empty and broken documents answer without crashing, which is the only
+    // promise worth making about them.
+    CHECK(PythonLspSemanticTokens(Lines{}).empty());
+    CHECK(PythonLspSemanticTokens(Lines{""}).empty());
+    PythonLspSemanticTokens(Lines{"def (:", "  x =", "class"});
+}
+
 int main() {
     TestTokenizer();
     TestParserCoverage();
@@ -959,6 +1119,7 @@ int main() {
     TestDefinition();
     TestReferences();
     TestSignatureHelp();
+    TestSemanticTokens();
     TestVocabulary();
     TestRealisticFileIsQuiet();
     std::printf("mep-python-lsp-test: all checks passed\n");

@@ -66,9 +66,50 @@ to every matching line. <code>:norm</code> is the short form.</p>
 <tr><td><code>ignorecase</code></td><td>off</td><td>case-insensitive search and <code>:s</code></td></tr>
 <tr><td><code>wrapscan</code></td><td>on</td><td>search wraps around the buffer</td></tr>
 <tr><td><code>textwidth=N</code> / <code>tw=N</code></td><td>80</td><td>the column <code>gq</code> wraps to</td></tr>
+<tr><td><code>pasteindent</code> / <code>pi</code></td><td>on</td><td>re-indent a multi-line paste</td></tr>
+<tr><td><code>pyindent</code></td><td>on</td><td>re-indent Python on save</td></tr>
+<tr><td><code>smarttab</code> / <code>sta</code></td><td>on</td><td>Backspace eats a whole soft tab</td></tr>
+<tr><td><code>caretdelay=MS</code></td><td>system</td><td>hold before the caret repeats</td></tr>
+<tr><td><code>caretrate=N</code></td><td>system</td><td>caret steps per second held</td></tr>
+<tr><td><code>maxfps=N</code></td><td>0</td><td>cap on frames drawn per second</td></tr>
 </table>
 <p>Prefix a boolean option with <code>no</code> to turn it off: <code>:set nowrap</code>,
 <code>:set nonumber norelativenumber</code>.</p>
+<h2>Caret repeat speed</h2>
+<p>Holding <code>h</code>, <code>j</code>, <code>k</code>, <code>l</code> or an arrow key repeats the motion on mep's own
+timer, not on the OS's key-repeat events. By default it copies whatever
+repeat delay and rate the system is configured with, so the caret moves at
+the speed everything else on the machine does.</p>
+<p><code>:set caretdelay</code> (milliseconds before repeating starts) and <code>:set caretrate</code>
+(steps per second once it does) override that. Neither is clamped to what the
+OS itself would repeat at -- the point being platforms that cap their own
+repeat rate well below what a fast typist wants, macOS in particular, where
+the Key Repeat slider stops around 30/s:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">text</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="">:set caretrate=120
+:set caretdelay=140</code></pre></div>
+<p><code>0</code> restores "follow the system" for either one. A rate higher than the
+display's refresh rate has no further effect, since the caret can move at
+most one step per frame drawn.</p>
+<h2>Frame rate</h2>
+<p><code>:set maxfps=N</code> caps how many frames a second mep draws. <code>0</code>, the default,
+means no cap: vsync paces the loop, so mep draws at the display's refresh
+rate.</p>
+<p>Worth setting on a laptop. mep redraws every frame whether or not anything
+changed, so an idle editor's CPU cost is almost entirely redrawing, and a
+cap gives back CPU in proportion to the frames it skips -- measured on a
+165Hz screen, as a percentage of one core while idle:</p>
+<table>
+<tr><th><code>maxfps</code></th><th>frames drawn</th><th>idle CPU</th></tr>
+<tr><td><code>0</code></td><td>163/s</td><td>32%</td></tr>
+<tr><td><code>120</code></td><td>119/s</td><td>24%</td></tr>
+<tr><td><code>60</code></td><td>60/s</td><td>12%</td></tr>
+<tr><td><code>30</code></td><td>30/s</td><td>6%</td></tr>
+</table>
+<p>The cost is smoothness: scrolling and caret movement on a high-refresh
+screen are visibly less fluid capped than not. Nothing tears either way.</p>
+<p>One interaction to know: the caret moves at most one step per frame, so a
+<code>maxfps</code> below your caret rate becomes the caret's ceiling -- =:set
+maxfps=30= turns a 50/s caret into a 30/s one.</p>
 <p>For anything persistent, set it in <code>~/.config/mep/init.lua</code> instead.</p>
 <h1>Finding a command</h1>
 <p>Almost every feature has a <code>:Mep...</code> command, and there are over two hundred

@@ -38,6 +38,26 @@ references use <code>:MepLspReferences</code>.</p>
 <code>:MepLspReferences</code>, <code>:MepLspImplementation</code>, <code>:MepLspTypeDefinition</code>,
 <code>:MepLspSignatureHelp</code>, <code>:MepLspRename</code>, <code>:MepLspCodeAction</code>,
 <code>:MepLspFormat</code>.</p>
+<h1>Parameter hints</h1>
+<p>Type an opening <code>(</code> and the signature of what you are calling appears in a
+popup by the cursor -- every parameter, its type annotation where the
+definition has one, its default where it has one -- plus which argument you
+are on right now and the callee's docstring:</p>
+<pre>connect(host: str, port: int=8080, *, timeout: float | None=None) -&gt; bool
+argument 2: port: int=8080
+Open a connection to a host.</pre>
+<p>It follows you across the commas, updates as you type, and closes itself
+when the cursor leaves the argument list (<code>Esc</code> dismisses it early). When the
+completion list is open it moves above the line rather than covering it, so
+you can read both at once.</p>
+<p>On by default; <code>mep.lsp_signature_help_auto = false</code> in <code>init.lua</code> turns it
+off, leaving it available on demand on <code>&lt;leader&gt;lk</code> and
+<code>:MepLspSignatureHelp</code>.</p>
+<p>How much you get depends on the server. mep's own Python and C++ servers
+read the definition out of the file you are editing, so a local <code>def</code> gives
+you its real annotations and defaults; for an imported name they answer from
+their built-in standard-library tables, which is a signature but not a
+docstring for everything.</p>
 <h1>Diagnostics</h1>
 <p>Errors, warnings and hints are underlined in the buffer and marked in the
 sign column. <code>Q</code> shows the current line's diagnostics in a popup, and

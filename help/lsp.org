@@ -36,6 +36,34 @@ Every action also has a command: =:MepLspHover=, =:MepLspDefinition=,
 =:MepLspSignatureHelp=, =:MepLspRename=, =:MepLspCodeAction=,
 =:MepLspFormat=.
 
+* Parameter hints
+
+Type an opening =(= and the signature of what you are calling appears in a
+popup by the cursor -- every parameter, its type annotation where the
+definition has one, its default where it has one -- plus which argument you
+are on right now and the callee's docstring:
+
+#+BEGIN_EXAMPLE
+connect(host: str, port: int=8080, *, timeout: float | None=None) -> bool
+argument 2: port: int=8080
+Open a connection to a host.
+#+END_EXAMPLE
+
+It follows you across the commas, updates as you type, and closes itself
+when the cursor leaves the argument list (=Esc= dismisses it early). When the
+completion list is open it moves above the line rather than covering it, so
+you can read both at once.
+
+On by default; =mep.lsp_signature_help_auto = false= in =init.lua= turns it
+off, leaving it available on demand on =<leader>lk= and
+=:MepLspSignatureHelp=.
+
+How much you get depends on the server. mep's own Python and C++ servers
+read the definition out of the file you are editing, so a local =def= gives
+you its real annotations and defaults; for an imported name they answer from
+their built-in standard-library tables, which is a signature but not a
+docstring for everything.
+
 * Diagnostics
 
 Errors, warnings and hints are underlined in the buffer and marked in the

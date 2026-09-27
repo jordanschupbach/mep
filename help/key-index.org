@@ -5,11 +5,7 @@
 
 * Leader bindings
 
-<<<<<<< HEAD
-All 141 =<leader>= sequences registered at startup. Press
-=======
-All 131 =<leader>= sequences registered at startup. Press
->>>>>>> 5583f63 (worked on formatting on saving)
+All 142 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 

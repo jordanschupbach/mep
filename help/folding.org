@@ -27,6 +27,17 @@ presses walk through the nest a level at a time.
 Closing a fold the cursor is inside moves the cursor to that fold's
 summary line, rather than leaving it on a hidden row.
 
+Pause on =z= without typing a second key and a panel of every fold
+command appears along the bottom of the window -- which-key, for the =z=
+prefix. It is only a reminder: the keys still resolve immediately, so
+typing =zc= at speed never puts it on screen and nothing it shows can
+swallow a keystroke. In Visual mode it lists what Visual mode actually
+has, which is =zf=.
+
+=o= and =O= on a closed fold open the new line /outside/ it -- after the
+last collapsed row, or before the first -- rather than dropping what you
+type into the middle of a region you folded away.
+
 ** Making and unmaking them
 
 | Key         | Does                                              |
@@ -69,9 +80,18 @@ fold turns folding back on first, as in Vim.
 | =zj= | to the start of the next fold     |
 | =zk= | to the end of the previous fold   |
 
-A folded region shows a marker in the gutter column, beside the line
-number: =-= for an open fold, =+= for a closed one. Clicking it toggles
-that fold without moving the cursor.
+** What a folded line looks like
+
+A closed fold keeps its own first line -- syntax highlighting and all --
+rather than replacing it with a synthetic placeholder, and marks itself
+four ways: a tinted band across the row, an accent rule down its left
+edge, an accent =+= in the gutter, and =... N lines= after the text
+saying how much is behind it. An open fold's start row shows a =-= in
+the gutter. Clicking either marker toggles that fold without moving the
+cursor.
+
+The band and rule are derived from the theme's accent color, so a fold
+reads the same way in every palette.
 
 * Where folds come from
 

@@ -10,6 +10,9 @@ namespace gfx {
 
 inline bool IsKeyPressed(Key key) { return GetBackends().input->IsKeyPressed(key); }
 inline bool IsKeyPressedRepeat(Key key) { return GetBackends().input->IsKeyPressedRepeat(key); }
+inline bool GetKeyRepeatRate(double *delay_sec, double *interval_sec) {
+    return GetBackends().input->GetKeyRepeatRate(delay_sec, interval_sec);
+}
 inline bool IsKeyDown(Key key) { return GetBackends().input->IsKeyDown(key); }
 inline bool IsKeyReleased(Key key) { return GetBackends().input->IsKeyReleased(key); }
 inline Key GetKeyPressed() { return GetBackends().input->GetKeyPressed(); }

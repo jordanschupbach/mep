@@ -67,9 +67,62 @@ to every matching line. =:norm= is the short form.
 | =ignorecase=                 | off     | case-insensitive search and =:s= |
 | =wrapscan=                   | on      | search wraps around the buffer  |
 | =textwidth=N= / =tw=N=       | 80      | the column =gq= wraps to        |
+| =pasteindent= / =pi=         | on      | re-indent a multi-line paste    |
+| =pyindent=                   | on      | re-indent Python on save        |
+| =smarttab= / =sta=           | on      | Backspace eats a whole soft tab |
+| =caretdelay=MS=              | system  | hold before the caret repeats   |
+| =caretrate=N=                | system  | caret steps per second held     |
+| =maxfps=N=                   | 0       | cap on frames drawn per second  |
 
 Prefix a boolean option with =no= to turn it off: =:set nowrap=,
 =:set nonumber norelativenumber=.
+
+** Caret repeat speed
+
+Holding =h=, =j=, =k=, =l= or an arrow key repeats the motion on mep's own
+timer, not on the OS's key-repeat events. By default it copies whatever
+repeat delay and rate the system is configured with, so the caret moves at
+the speed everything else on the machine does.
+
+=:set caretdelay= (milliseconds before repeating starts) and =:set caretrate=
+(steps per second once it does) override that. Neither is clamped to what the
+OS itself would repeat at -- the point being platforms that cap their own
+repeat rate well below what a fast typist wants, macOS in particular, where
+the Key Repeat slider stops around 30/s:
+
+#+begin_src
+:set caretrate=120
+:set caretdelay=140
+#+end_src
+
+=0= restores "follow the system" for either one. A rate higher than the
+display's refresh rate has no further effect, since the caret can move at
+most one step per frame drawn.
+
+** Frame rate
+
+=:set maxfps=N= caps how many frames a second mep draws. =0=, the default,
+means no cap: vsync paces the loop, so mep draws at the display's refresh
+rate.
+
+Worth setting on a laptop. mep redraws every frame whether or not anything
+changed, so an idle editor's CPU cost is almost entirely redrawing, and a
+cap gives back CPU in proportion to the frames it skips -- measured on a
+165Hz screen, as a percentage of one core while idle:
+
+| =maxfps= | frames drawn | idle CPU |
+|----------+--------------+----------|
+| =0=      | 163/s        | 32%      |
+| =120=    | 119/s        | 24%      |
+| =60=     | 60/s         | 12%      |
+| =30=     | 30/s         | 6%       |
+
+The cost is smoothness: scrolling and caret movement on a high-refresh
+screen are visibly less fluid capped than not. Nothing tears either way.
+
+One interaction to know: the caret moves at most one step per frame, so a
+=maxfps= below your caret rate becomes the caret's ceiling -- =:set
+maxfps=30= turns a 50/s caret into a 30/s one.
 
 For anything persistent, set it in =~/.config/mep/init.lua= instead.
 

@@ -1301,6 +1301,17 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     // that would glow against a dark one.
     g["Accent"] = p.accent;
     g["AccentTint"] = Mix(p.accent, p.bg, 0.18f);
+    // A closed fold's summary row. It used to borrow CursorLine, which
+    // says "the line the cursor is on" -- not "there are forty hidden
+    // lines behind this one", and indistinguishable from the real
+    // cursorline the moment the cursor sat there. These are a band with a
+    // trace of the accent in it, a bright accent rule down the row's left
+    // edge, and a secondary foreground for the "N lines" count that
+    // follows the summary text. All derived from the palette, so a fold
+    // reads the same way in every theme.
+    g["Folded"] = Mix(p.accent, p.bg, 0.86f);
+    g["FoldedEdge"] = Mix(p.accent, p.bg, 0.25f);
+    g["FoldedCount"] = DimText(p.fg, p.bg, 0.5f, kSecondaryTextContrast);
     // A dimmer foreground than Normal for secondary text (word/page count,
     // placeholder text, inert rail icons) -- the same role Comment fills for
     // syntax comments, and now the same derivation, so this one also stops
@@ -18828,6 +18839,29 @@ bool Editor::HandleTabShortcuts() {
 
 // --- Normal mode -----------------------------------------------------------
 
+void Editor::ResolveCaretRepeat(double *delay_sec, double *interval_sec) const {
+    // Used only where the platform can't be asked (the wasm build, since
+    // the browser exposes nothing of the sort) and nothing was :set: a
+    // snappy-but-sane middle ground, rather than a pretend "system
+    // default" for a system that never told us one.
+    constexpr double kCaretFallbackDelaySec = 0.2;
+    constexpr double kCaretFallbackRatePerSec = 30.0;
+    // A floor on the interval, not a policy on how fast a caret may go:
+    // 500/s is already far beyond any display's refresh rate (this whole
+    // loop runs once per frame), so this only stops a nonsense
+    // `:set caretrate=1e9` from producing a zero or denormal interval.
+    constexpr double kCaretMinIntervalSec = 0.002;
+    double os_delay = 0.0;
+    double os_interval = 0.0;
+    const bool have_os_rate = gfx::GetKeyRepeatRate(&os_delay, &os_interval);
+    const double delay =
+        caret_delay_sec_ > 0.0 ? caret_delay_sec_ : (have_os_rate ? os_delay : kCaretFallbackDelaySec);
+    const double interval = caret_rate_ > 0.0 ? 1.0 / caret_rate_
+                                              : (have_os_rate ? os_interval : 1.0 / kCaretFallbackRatePerSec);
+    *delay_sec = std::max(delay, 0.0);
+    *interval_sec = std::max(interval, kCaretMinIntervalSec);
+}
+
 void Editor::HandleNormalInput() {
     // GLFW/raylib doesn't emit a char event while Ctrl is held, so these
     // are checked separately from the gfx::GetCharPressed() loop below.
@@ -19073,13 +19107,24 @@ void Editor::HandleNormalInput() {
     // to fall within one polling window -- unlike gfx::GetCharPressed(), whose
     // queue is filled straight from the press event and can't miss a tap
     // that way):
-    //   1. kMotionHoldConfirmSec -- a key only starts being treated as
+    //   1. kMotionTapGuardSec -- a key only starts being treated as
     //      "held" (fast path takes over, queue discards its repeats)
-    //      once gfx::IsKeyDown() has read continuously true for this long. A
-    //      human tap, even a fast one, doesn't remotely approach this;
-    //      only a genuine sustained hold does. Below this threshold nothing
-    //      here changes anything -- the original, fully-reliable
-    //      queue-driven path handles it exactly as before this fix existed.
+    //      once gfx::IsKeyDown() has read continuously true for at least
+    //      this long. A human tap, even a fast one, doesn't remotely
+    //      approach this; only a genuine sustained hold does. Below this
+    //      threshold nothing here changes anything -- the original,
+    //      fully-reliable queue-driven path handles it exactly as before
+    //      this fix existed.
+    //
+    //      This is only a *floor* on the hold threshold, not the threshold
+    //      itself: that comes from ResolveCaretRepeat() (`:set caretdelay`,
+    //      or the OS's own repeat delay by default), and is typically far
+    //      longer -- 200ms here, 500ms on a stock GNOME. The floor exists
+    //      so that a deliberately snappy `:set caretdelay=10` can't drive
+    //      the threshold down into the range where the tap-reliability
+    //      argument above stops holding, while still letting any sane
+    //      value through untouched. The two were one constant originally,
+    //      which made the repeat delay unconfigurable.
     //   2. kMotionDiscardCooldownSec -- once a *confirmed* hold ends, the
     //      queue keeps discarding that key's repeats for this long
     //      afterward too, since those are presumed to be the delayed tail
@@ -19097,15 +19142,24 @@ void Editor::HandleNormalInput() {
     //      events: three real taps at +0.25/+0.40/+0.60s after a
     //      confirmed hold's release all dropped), which read as "the
     //      caret lags behind every now and then".
-    //   3. kMotionRepeatIntervalSec -- once confirmed, the cursor only
-    //      actually moves this often, independent of frame rate (though
-    //      it can never move faster than once per rendered frame no
-    //      matter how small this is, since this whole loop only runs
-    //      once per frame -- at 0.005s/60fps that's the effective floor
-    //      already, i.e. this is intentionally set below the frame
-    //      budget to mean "as fast as a frame allows," not a real
-    //      independent 200/sec rate).
-    constexpr double kMotionHoldConfirmSec = 0.2;
+    //   3. ResolveCaretRepeat()'s interval -- once confirmed, the cursor
+    //      only actually moves this often, independent of frame rate.
+    //      This used to be a hardcoded 0.005s, deliberately set below the
+    //      frame budget to mean "as fast as a frame allows" rather than a
+    //      real rate. That made the caret's actual speed the display's
+    //      refresh rate: 60/s on the 60Hz panel it was written against,
+    //      but 165/s on a 165Hz one, against a system repeat rate of
+    //      50/s -- i.e. a caret that ran over three times faster than
+    //      the one the user had configured, and at a different speed on
+    //      every machine. (gfx::SetTargetFPS is not a second line of
+    //      defense here: the native backend stores the value and never
+    //      reads it, so frame pacing is purely vsync.) It is now a real
+    //      interval, inherited from the OS's own repeat rate by default
+    //      and overridable with `:set caretrate`. Movement still can't
+    //      exceed one step per rendered frame, since this whole loop runs
+    //      once per frame -- that's a ceiling on the setting, not the
+    //      meaning of it.
+    constexpr double kMotionTapGuardSec = 0.08;
 #if defined(__EMSCRIPTEN__)
     constexpr double kMotionDiscardCooldownSec = 0.7;
 #else
@@ -19113,79 +19167,133 @@ void Editor::HandleNormalInput() {
     // stalled frame or two), well under a deliberate human re-tap.
     constexpr double kMotionDiscardCooldownSec = 0.05;
 #endif
-    constexpr double kMotionRepeatIntervalSec = 0.005;
+    double caret_delay_sec = 0.0;
+    double caret_interval_sec = 0.0;
+    ResolveCaretRepeat(&caret_delay_sec, &caret_interval_sec);
+    const double motion_hold_confirm_sec = std::max(caret_delay_sec, kMotionTapGuardSec);
     bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     bool count_pending_now = pending_count_ != 0;
     bool no_pending_state_now = pending_op_ == 0 && !pending_g_ && !pending_bracket_prev_ && !pending_bracket_next_ &&
                                  !pending_ctrl_w_ && !pending_org_export_ && pending_find_ == 0 && !count_pending_now &&
                                  !awaiting_register_name_;
     double now = gfx::GetTime();
-    static const std::pair<gfx::Key, char> kMotionKeys[] = {
-        {gfx::Key::H, 'h'},
-        {gfx::Key::J, 'j'},
-        {gfx::Key::K, 'k'},
-        {gfx::Key::L, 'l'},
+    // Arrow keys ride the same table and the same timer as the letters,
+    // so one `:set caretdelay`/`caretrate` governs both and a held Down
+    // moves at exactly the speed a held j does. They were separate paths
+    // originally, the arrows driven by gfx::IsKeyPressedRepeat (i.e. the
+    // OS's auto-repeat notifications) while the letters ran on this
+    // timer, which is what made the two visibly disagree: on a 165Hz
+    // display h/j/k/l ran at 165/s while the arrows tracked the system's
+    // 50/s. Note that the old arrow path could never have honored a rate
+    // above the OS's own anyway -- IsKeyPressedRepeat is a per-frame
+    // bool, not a count, so repeats arriving faster than the frame rate
+    // coalesce -- which is precisely why macOS's capped repeat rate needs
+    // mep to own the timer rather than follow the system's events.
+    //
+    // The one real difference is where a key's *initial* press comes
+    // from, since an arrow never produces a character event: for the
+    // letters it's the gfx::GetCharPressed() drain loop below, for the
+    // arrows gfx::IsKeyPressed right here. `char_driven` marks which.
+    struct MotionKeyDef {
+        gfx::Key key;
+        char motion;
+        bool char_driven;
     };
-    for (int i = 0; i < 4; i++) {
+    static const MotionKeyDef kMotionKeys[] = {
+        {gfx::Key::H, 'h', true},      {gfx::Key::J, 'j', true},     {gfx::Key::K, 'k', true},
+        {gfx::Key::L, 'l', true},      {gfx::Key::Left, 'h', false}, {gfx::Key::Down, 'j', false},
+        {gfx::Key::Up, 'k', false},    {gfx::Key::Right, 'l', false},
+    };
+    constexpr int kMotionKeyCount = static_cast<int>(sizeof(kMotionKeys) / sizeof(kMotionKeys[0]));
+    /**
+     * @brief Applies one motion step, routing to the dashboard's selection when that's what's on screen.
+     * @param motion The motion character ('h', 'j', 'k' or 'l').
+     * @param no_pending_state Whether no operator/count/prefix is waiting to consume this key.
+     */
+    auto fire_motion = [this](char motion, bool no_pending_state) {
+        if (ShouldShowDashboard() && no_pending_state && (motion == 'j' || motion == 'k')) {
+            MoveDashboardSelection(motion == 'j' ? 1 : -1);
+        } else {
+            HandleNormalChar(static_cast<int>(motion), no_pending_state);
+        }
+    };
+    for (int i = 0; i < kMotionKeyCount; i++) {
+        const MotionKeyDef &def = kMotionKeys[i];
         MotionRepeatState &st = motion_repeat_[i];
-        bool down = gfx::IsKeyDown(kMotionKeys[i].first);
+        bool down = gfx::IsKeyDown(def.key);
+        // Ordered before the initial-press handling just below so that a
+        // press landing on the same frame the key is first seen down sets
+        // queue_moved_since_down_ *after* this clears it.
+        if (down && st.down_since < 0.0) {
+            st.down_since = now;
+            st.queue_moved_since_down_ = false;
+        }
+        // An arrow's initial press, deliberately outside the `down` gate:
+        // a tap short enough to be pressed and released inside one frame
+        // never reads as down at all, and dropping it would lose a real
+        // keystroke. Unlike the repeat below it also runs with an
+        // operator or count pending, since `d<Down>`/`5<Down>` are the
+        // arrow spellings of `dj`/`5j` and have always worked.
+        if (!def.char_driven && !ctrl && !shift && gfx::IsKeyPressed(def.key)) {
+            st.queue_moved_since_down_ = true;
+            fire_motion(def.motion, no_pending_state_now);
+            if (mode_ != Mode::Normal) return;  // key switched modes
+        }
         if (down) {
-            if (st.down_since < 0.0) st.down_since = now;
-            bool confirmed = (now - st.down_since) >= kMotionHoldConfirmSec;
+            bool confirmed = (now - st.down_since) >= motion_hold_confirm_sec;
             if (confirmed) {
                 st.discard_until = now + kMotionDiscardCooldownSec;
-                // A queued real-repeat move already landed for this exact
-                // hold (see queue_moved_since_down_'s own comment) --
-                // that already satisfies this transition's "due" move, so
-                // consume the flag and skip firing again here instead of
+                // A move already landed for this exact hold (see
+                // queue_moved_since_down_'s own comment) -- that already
+                // satisfies this transition's "due" move, so consume the
+                // flag and skip firing again here instead of
                 // double-counting; normal interval pacing resumes next
                 // frame since the flag only ever suppresses one fire.
                 if (st.queue_moved_since_down_) {
                     st.queue_moved_since_down_ = false;
                 } else {
                     bool interval_elapsed =
-                        st.last_move_time_ < 0.0 || (now - st.last_move_time_) >= kMotionRepeatIntervalSec;
+                        st.last_move_time_ < 0.0 || (now - st.last_move_time_) >= caret_interval_sec;
                     if (no_pending_state_now && !ctrl && !shift && interval_elapsed) {
-                        st.last_move_time_ = now;
-                        if (ShouldShowDashboard() && (kMotionKeys[i].second == 'j' || kMotionKeys[i].second == 'k')) {
-                            MoveDashboardSelection(kMotionKeys[i].second == 'j' ? 1 : -1);
+                        if (st.last_move_time_ < 0.0) {
+                            st.last_move_time_ = now;
                         } else {
-                            HandleNormalChar(static_cast<int>(kMotionKeys[i].second), no_pending_state_now);
+                            // Advance the schedule by exactly one interval
+                            // rather than resetting it to `now`. Resetting
+                            // re-quantizes every step onto the frame grid,
+                            // so the rate that actually comes out is
+                            // fps/ceil(fps/rate), not the rate asked for:
+                            // 50/s on a 165Hz display became 165/4 =
+                            // 41/s, i.e. a caret slower than the very
+                            // system rate it was supposed to be matching
+                            // (measured on a software-rendered Xvfb at
+                            // ~225fps: 100/s came out as 77/s, 60/s as
+                            // 57/s). Accumulating instead means a fire
+                            // lands on the first frame at or after each
+                            // scheduled step, so the *average* rate is
+                            // exact and the only error is up to one
+                            // frame of jitter per step.
+                            st.last_move_time_ += caret_interval_sec;
+                            // Resync rather than burst-catching-up if
+                            // we've fallen more than a whole interval
+                            // behind -- a stalled frame, or simply a rate
+                            // faster than the display can draw (where
+                            // this correctly degrades to one step per
+                            // frame) shouldn't bank steps and then pay
+                            // them out as a jump.
+                            if ((now - st.last_move_time_) > caret_interval_sec) st.last_move_time_ = now;
                         }
+                        fire_motion(def.motion, no_pending_state_now);
                         if (mode_ != Mode::Normal) return;  // key switched modes
                     }
                 }
             }
         } else if (st.down_since >= 0.0) {
-            if ((now - st.down_since) >= kMotionHoldConfirmSec) st.discard_until = now + kMotionDiscardCooldownSec;
+            if ((now - st.down_since) >= motion_hold_confirm_sec) st.discard_until = now + kMotionDiscardCooldownSec;
             st.down_since = -1.0;
             st.last_move_time_ = -1.0;
             st.queue_moved_since_down_ = false;
         }
-    }
-
-    // Arrow keys as h/j/k/l equivalents. Unlike letter keys, GLFW/raylib
-    // never emits a char event for these, so there's no gfx::GetCharPressed()
-    // queue entry to translate below -- IsKeyPressed (initial tap) plus
-    // IsKeyPressedRepeat (OS auto-repeat while held) is the same pattern
-    // already used for arrow-key movement in every other input handler in
-    // this file (e.g. HandleOfficeNormalInput, HandleSheetNormalInput), so
-    // no need to duplicate the h/j/k/l block's own hold-fast-path above.
-    static const std::pair<gfx::Key, char> kArrowMotionKeys[] = {
-        {gfx::Key::Left, 'h'},
-        {gfx::Key::Down, 'j'},
-        {gfx::Key::Up, 'k'},
-        {gfx::Key::Right, 'l'},
-    };
-    for (const auto &arrow : kArrowMotionKeys) {
-        if (ctrl || shift) continue;
-        if (!(gfx::IsKeyPressed(arrow.first) || gfx::IsKeyPressedRepeat(arrow.first))) continue;
-        if (ShouldShowDashboard() && no_pending_state_now && (arrow.second == 'j' || arrow.second == 'k')) {
-            MoveDashboardSelection(arrow.second == 'j' ? 1 : -1);
-        } else {
-            HandleNormalChar(static_cast<int>(arrow.second), no_pending_state_now);
-        }
-        if (mode_ != Mode::Normal) return;  // key switched modes
     }
 
     int cp = gfx::GetCharPressed();
@@ -19198,19 +19306,33 @@ void Editor::HandleNormalInput() {
         bool no_pending_state = pending_op_ == 0 && !pending_g_ && !pending_bracket_prev_ && !pending_bracket_next_ &&
                                  !pending_ctrl_w_ && !pending_org_export_ && pending_find_ == 0 && !is_count_digit &&
                                  !awaiting_register_name_;
-        // A confirmed-held bare h/j/k/l is handled by the fast path above
-        // (or is within its post-release discard window) -- drop the
-        // queued notification here instead of replaying/double-counting
-        // it. Anything below the hold-confirm threshold (ordinary taps),
-        // shifted (H/L), or counted/operator-pending never enters this
-        // window at all and falls through to the normal handling below,
-        // completely unaffected.
+        // A held bare h/j/k/l is the motion timer's business, not this
+        // loop's -- drop the queued notification here instead of
+        // replaying/double-counting it. An ordinary tap, a shifted H/L,
+        // or a counted/operator-pending key never enters either window
+        // below and falls through to the normal handling, completely
+        // unaffected.
         int motion_idx = -1;
         if (no_pending_state && !ctrl && !shift) {
             motion_idx = cp == 'h' ? 0 : cp == 'j' ? 1 : cp == 'k' ? 2 : cp == 'l' ? 3 : -1;
-            if (motion_idx >= 0 && now < motion_repeat_[motion_idx].discard_until) {
-                cp = gfx::GetCharPressed();
-                continue;
+            if (motion_idx >= 0) {
+                const MotionRepeatState &st = motion_repeat_[motion_idx];
+                // Two separate reasons to drop one:
+                //   - the post-release cooldown, i.e. a stale repeat for
+                //     a hold that is already over (discard_until);
+                //   - a hold still in progress that has already had its
+                //     one initial move. Everything after that move
+                //     belongs to the timer above, paced at mep's own
+                //     configured rate. Without this the OS would keep
+                //     repeating through this queue during the gap before
+                //     the timer takes over, so a `:set caretdelay` longer
+                //     than the system's own repeat delay would start the
+                //     caret at the system's rate and then change speed
+                //     mid-hold.
+                if (now < st.discard_until || (st.down_since >= 0.0 && st.queue_moved_since_down_)) {
+                    cp = gfx::GetCharPressed();
+                    continue;
+                }
             }
         }
         if (ShouldShowDashboard() && no_pending_state && !ctrl && !shift &&
@@ -20027,6 +20149,7 @@ bool Editor::DispatchNormalKey(int cp) {
     }
     if (c == 'z') {
         pending_z_ = true;
+        pending_z_since_ = gfx::GetTime();
         return true;
     }
     if (c == 'Z') {
@@ -20128,32 +20251,46 @@ bool Editor::DispatchNormalKey(int cp) {
         case 'A': PushUndo(); cursor.col = LineLen(cursor.row); EnterInsert(); break;
         case 'o': {
             PushUndo();
-            // The opened line inherits the current line's indent (and one level
+            // On a closed fold, the line opens *after the whole fold* --
+            // the collapsed rows are still there, and dropping the new
+            // line into the middle of them (where the cursor's own row
+            // technically is) puts your typing somewhere you cannot see,
+            // inside a region you deliberately folded away. Same rule
+            // vim's own o follows.
+            const int after = FoldAwareOpenRow(cursor.row, /*below=*/true);
+            // The opened line inherits the preceding line's indent (and one level
             // deeper after a Python block opener), same policy as pressing Enter
             // at its end -- ComputeNewlineIndent reads the whole current line.
             std::string indent = mepindent::ComputeNewlineIndent(
-                Buf().lines[static_cast<size_t>(cursor.row)], LspFiletype(Buf().filename));
-            Buf().lines.insert(Buf().lines.begin() + cursor.row + 1, indent);
-            ShiftMarksForLineEdit(cursor.row + 1, 1);
-            ShiftFoldsForLineEdit(cursor.row + 1, 1);
-            ShiftDecorationsForLineEdit(cursor.row + 1, 1);
-            cursor.row++;
+                Buf().lines[static_cast<size_t>(after)], LspFiletype(Buf().filename));
+            Buf().lines.insert(Buf().lines.begin() + after + 1, indent);
+            ShiftMarksForLineEdit(after + 1, 1);
+            ShiftFoldsForLineEdit(after + 1, 1);
+            ShiftDecorationsForLineEdit(after + 1, 1);
+            cursor.row = after + 1;
             cursor.col = static_cast<int>(indent.size());
             EnterInsert();
             break;
         }
         case 'O': {
             PushUndo();
+            // The mirror of o's fold handling above: above a closed fold
+            // means above the whole fold, not into its hidden interior.
+            // Usually a no-op, since the cursor on a closed fold already
+            // sits on its first row -- but not when something else parked
+            // it further in.
+            const int before = FoldAwareOpenRow(cursor.row, /*below=*/false);
             // Open above: match the current line's own indentation (no block-
             // opener bonus -- the new line precedes it, it isn't its body).
-            const std::string &cur = Buf().lines[static_cast<size_t>(cursor.row)];
+            const std::string &cur = Buf().lines[static_cast<size_t>(before)];
             size_t n = 0;
             while (n < cur.size() && (cur[n] == ' ' || cur[n] == '\t')) n++;
             std::string indent = cur.substr(0, n);
-            Buf().lines.insert(Buf().lines.begin() + cursor.row, indent);
-            ShiftMarksForLineEdit(cursor.row, 1);
-            ShiftFoldsForLineEdit(cursor.row, 1);
-            ShiftDecorationsForLineEdit(cursor.row, 1);
+            Buf().lines.insert(Buf().lines.begin() + before, indent);
+            ShiftMarksForLineEdit(before, 1);
+            ShiftFoldsForLineEdit(before, 1);
+            ShiftDecorationsForLineEdit(before, 1);
+            cursor.row = before;
             cursor.col = static_cast<int>(indent.size());
             EnterInsert();
             break;
@@ -21361,6 +21498,7 @@ void Editor::DispatchVisualKey(int cp) {
     }
     if (c == 'z') {
         pending_z_ = true;
+        pending_z_since_ = gfx::GetTime();
         return;
     }
     if (c == ';' || c == ',') {
@@ -21821,10 +21959,11 @@ void Editor::BeginPreview(const std::string &title, const std::string &text) {
     mode_ = Mode::Preview;
 }
 
-void Editor::ShowHover(const std::string &title, const std::string &text) {
+void Editor::ShowHover(const std::string &title, const std::string &text, bool sticky) {
     hover_open_ = true;
     hover_title_ = title;
     hover_text_ = text;
+    hover_sticky_ = sticky;
     hover_anchor_pos_ = Cursor();
 }
 
@@ -21840,6 +21979,21 @@ void Editor::MaybeDismissHover() {
     // hover_open_ alone -- exactly the "one more Escape to actually close
     // it" behavior Mode::HoverFocus's doc comment describes.
     if (mode_ == Mode::HoverFocus) return;
+    // A sticky popup (ShowHover's `sticky`, i.e. the LSP parameter hint)
+    // is *meant* to be read while typing, so neither Insert mode nor the
+    // cursor advancing a column may close it -- both are what the user is
+    // doing when they want it most. Escape still does, and so does any
+    // mode that isn't one of the two you type in; leaving the call itself
+    // is not something editor.cpp can see, so it stays the job of the
+    // Lua driver that opened the popup (kBuiltinLsp's auto-trigger calls
+    // mep.hover_close as soon as the cursor is no longer between a
+    // call's parentheses).
+    if (hover_sticky_) {
+        if (gfx::IsKeyPressed(gfx::Key::Escape) || (mode_ != Mode::Normal && mode_ != Mode::Insert)) {
+            hover_open_ = false;
+        }
+        return;
+    }
     if (mode_ != Mode::Normal || gfx::IsKeyPressed(gfx::Key::Escape)) {
         hover_open_ = false;
         return;
@@ -22693,6 +22847,15 @@ void Editor::UpdateFolds() {
     Buf().fold_providers_suppressed = false;
     RecomputeLazyFoldProviders();
     OpenFoldsToRevealRow(CurPane().cursor.row);
+}
+
+int Editor::FoldAwareOpenRow(int row, bool below) const {
+    int target = row;
+    for (const Fold &f : Buf().folds) {
+        if (!f.closed || row < f.start_row || row > f.end_row) continue;
+        target = below ? std::max(target, f.end_row) : std::min(target, f.start_row);
+    }
+    return target;
 }
 
 void Editor::SnapCursorOutOfClosedFold() {
@@ -27884,6 +28047,40 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
                         // here, or the table keeps the old width until
                         // the next time the cursor happens to move.
                         OrgTableWrapScan(true);
+                    } else {
+                        status_message_ = "E521: Number required after =: " + opt;
+                    }
+                } else if (key == "maxfps") {
+                    // A ceiling on rendered frames per second; 0 = none,
+                    // the default, leaving vsync to pace the loop at the
+                    // display's refresh rate. Applied immediately so the
+                    // effect is visible without a restart, and read back
+                    // at startup by main() for an init.lua that sets it.
+                    char *val_end = nullptr;
+                    long v = std::strtol(val.c_str(), &val_end, 10);
+                    if (val_end != val.c_str() && *val_end == '\0' && v >= 0 && v <= 10000) {
+                        max_fps_ = static_cast<int>(v);
+                        gfx::SetTargetFPS(max_fps_);
+                    } else {
+                        status_message_ = "E521: Number required after =: " + opt;
+                    }
+                } else if (key == "caretdelay" || key == "caretrate") {
+                    // How long a held motion key waits before the caret
+                    // starts repeating (ms) and how fast it repeats once
+                    // it does (steps per second) -- see caret_delay_sec_/
+                    // caret_rate_ and ResolveCaretRepeat. 0 restores the
+                    // default of inheriting the OS's own repeat settings;
+                    // any other value overrides them outright, including
+                    // upward past what the OS itself would repeat at.
+                    // Fractional values are accepted (caretrate=12.5).
+                    char *val_end = nullptr;
+                    double v = std::strtod(val.c_str(), &val_end);
+                    if (val_end != val.c_str() && *val_end == '\0' && v >= 0.0 && std::isfinite(v)) {
+                        if (key == "caretdelay") {
+                            caret_delay_sec_ = v / 1000.0;
+                        } else {
+                            caret_rate_ = v;
+                        }
                     } else {
                         status_message_ = "E521: Number required after =: " + opt;
                     }

@@ -1,6 +1,7 @@
 #include "gfx/backend_native.h"
 
 #include <chrono>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -144,6 +145,16 @@ gfx::Key UnmapKey(KeySym sym) {
 
 constexpr int kKeyCount = static_cast<int>(gfx::Key::Up) + 1;
 
+// Seconds since the first call. Its own clock rather than
+// IPlatformBackend::GetTime()'s: only deltas within a single caller are
+// ever compared, so the two epochs never have to agree. Used by the frame
+// limiter in NativeContextSwapBuffers and by GetKeyRepeatRate's cache.
+double MonotonicSeconds() {
+    using clock = std::chrono::steady_clock;
+    static const clock::time_point start = clock::now();
+    return std::chrono::duration<double>(clock::now() - start).count();
+}
+
 }  // namespace
 
 // -- Per-window input/platform state ---------------------------------------
@@ -184,13 +195,29 @@ struct NativeContext {
 
     bool should_close = false;
     gfx::Key exit_key = gfx::Key::None;
+    // SetTargetFPS's frame cap: frames per second, or 0 for "no cap", the
+    // default -- pacing then comes from vsync alone (SetSwapInterval(1) at
+    // Init), i.e. the display's refresh rate. `frame_deadline` is when the
+    // frame currently being drawn is allowed to end, in MonotonicSeconds;
+    // negative means the limiter isn't running (no cap, or just enabled).
     int target_fps = 0;
+    double frame_deadline = -1.0;
     std::string clipboard_text;  // cached text we own the CLIPBOARD selection with
 
     // Set on FocusOut, cleared at the top of the next frame's poll --
     // see IInputBackend::WindowFocusLostThisFrame for why a caller
     // needs to tell ReleaseAllKeys' synthetic releases from real ones.
     bool focus_lost = false;
+
+    // Cached XkbGetAutoRepeatRate result, for GetKeyRepeatRate. Asking
+    // the X server is a synchronous round-trip and the caller wants this
+    // every frame, so it's cached and only re-asked every
+    // kRepeatRateRequerySec -- often enough that an `xset r rate` run
+    // mid-session is picked up, rarely enough to cost nothing. Negative
+    // means "asked and the server had no usable answer".
+    double repeat_delay_sec = -1.0;
+    double repeat_interval_sec = -1.0;
+    double repeat_rate_queried_at = -1.0;
 
     bool key_down[kKeyCount] = {};
     bool key_pressed[kKeyCount] = {};
@@ -219,7 +246,45 @@ void NativeContextFramebufferSize(NativeContext *ctx, int *w, int *h) {
     *h = attrs.height;
 }
 
-void NativeContextSwapBuffers(NativeContext *ctx) { glXSwapBuffers(ctx->display, ctx->window); }
+// Ends the frame: presents it, then -- if SetTargetFPS asked for a cap --
+// sleeps out whatever is left of this frame's budget.
+//
+// This is where the cap belongs rather than in EndDrawing (which is one of
+// several callers) because it is the single point every rendered frame
+// passes through on its way out.
+//
+// Two things worth knowing about the cap:
+//
+//   - It composes cleanly with vsync, and the rate it delivers is the rate
+//     asked for. Swap interval 1 (SetSwapInterval at Init) means "never
+//     swap more than once per vblank", not "block until the next vblank",
+//     so once this sleep has run past a vblank the following swap returns
+//     without blocking and the sleep alone sets the period. Vsync is still
+//     doing its job -- each frame is presented on a vblank, so nothing
+//     tears -- which only quantizes *when* a frame appears, not how many
+//     appear per second. Measured on a 165Hz panel: 60 -> 59.5, 30 ->
+//     29.6, 120 -> 119.0. (An earlier version of this comment claimed the
+//     rate collapsed onto refresh-rate divisors, 60 -> 55. It does not.)
+//
+//   - It is a *pacing* cap, not a budget to catch up on. If a frame
+//     overruns (a slow redraw, or a target this machine simply cannot
+//     hold), the deadline resyncs to now instead of banking the debt and
+//     paying it back as a burst of unpaced frames.
+void NativeContextSwapBuffers(NativeContext *ctx) {
+    glXSwapBuffers(ctx->display, ctx->window);
+    if (ctx->target_fps <= 0) {
+        ctx->frame_deadline = -1.0;
+        return;
+    }
+    const double now = MonotonicSeconds();
+    if (ctx->frame_deadline < 0.0) ctx->frame_deadline = now;
+    ctx->frame_deadline += 1.0 / static_cast<double>(ctx->target_fps);
+    if (ctx->frame_deadline <= now) {
+        ctx->frame_deadline = now;
+        return;
+    }
+    std::this_thread::sleep_for(std::chrono::duration<double>(ctx->frame_deadline - now));
+}
 
 namespace {
 
@@ -710,7 +775,11 @@ public:
         // size must not be persisted as a restore size.
         return horz && vert;
     }
-    void SetTargetFPS(int fps) override { ctx_->target_fps = fps; }
+    void SetTargetFPS(int fps) override {
+        const int capped = fps > 0 ? fps : 0;
+        if (capped != ctx_->target_fps) ctx_->frame_deadline = -1.0;  // restart pacing, don't inherit a stale deadline
+        ctx_->target_fps = capped;
+    }
     int GetScreenWidth() override {
         int w = 0, h = 0;
         NativeContextFramebufferSize(ctx_, &w, &h);
@@ -844,6 +913,32 @@ public:
     bool IsKeyPressed(gfx::Key key) override { return InRange(key) && ctx_->key_pressed[static_cast<int>(key)]; }
     bool IsKeyPressedRepeat(gfx::Key key) override {
         return InRange(key) && (ctx_->key_pressed[static_cast<int>(key)] || ctx_->key_repeat[static_cast<int>(key)]);
+    }
+    bool GetKeyRepeatRate(double *delay_sec, double *interval_sec) override {
+        constexpr double kRepeatRateRequerySec = 1.0;
+        const double now = MonotonicSeconds();
+        if (ctx_->display != nullptr &&
+            (ctx_->repeat_rate_queried_at < 0.0 || (now - ctx_->repeat_rate_queried_at) >= kRepeatRateRequerySec)) {
+            ctx_->repeat_rate_queried_at = now;
+            unsigned int delay_ms = 0;
+            unsigned int interval_ms = 0;
+            // Same values `xset r rate <delay> <rate>` sets and `xset q`
+            // prints back as "auto repeat delay"/"repeat rate" -- note
+            // the second one X reports here is a per-repeat *interval* in
+            // ms, not the repeats-per-second figure xset takes.
+            if (XkbGetAutoRepeatRate(ctx_->display, XkbUseCoreKbd, &delay_ms, &interval_ms) == True &&
+                delay_ms > 0 && interval_ms > 0) {
+                ctx_->repeat_delay_sec = static_cast<double>(delay_ms) / 1000.0;
+                ctx_->repeat_interval_sec = static_cast<double>(interval_ms) / 1000.0;
+            } else {
+                ctx_->repeat_delay_sec = -1.0;
+                ctx_->repeat_interval_sec = -1.0;
+            }
+        }
+        if (ctx_->repeat_delay_sec <= 0.0 || ctx_->repeat_interval_sec <= 0.0) return false;
+        if (delay_sec != nullptr) *delay_sec = ctx_->repeat_delay_sec;
+        if (interval_sec != nullptr) *interval_sec = ctx_->repeat_interval_sec;
+        return true;
     }
     bool IsKeyDown(gfx::Key key) override { return InRange(key) && ctx_->key_down[static_cast<int>(key)]; }
     bool IsKeyReleased(gfx::Key key) override { return InRange(key) && ctx_->key_released[static_cast<int>(key)]; }

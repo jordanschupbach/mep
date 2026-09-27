@@ -113,6 +113,10 @@ constexpr float kMinFontSize = 6.0f;
 constexpr float kMaxFontSize = 96.0f;
 constexpr float kFontSizeStep = 2.0f;
 constexpr int kMarginX = 8;
+// How long a `z` has to sit unresolved before its hint panel appears
+// (DrawFoldPrefixOverlay), and the accent rule down that panel's edge.
+constexpr double kFoldHintDelay = 0.45;
+constexpr int kFoldPanelEdgeWidth = 3;
 constexpr int kMenuPaddingX = 14;
 constexpr int kMenuItemPaddingX = 16;
 
@@ -740,6 +744,14 @@ bool g_show_help_overlay = false;
 // finishes -- see the hover-tooltip comment on DrawPane's own hover block.
 bool g_hover_popup_pending = false;
 float g_hover_popup_x = 0, g_hover_popup_y = 0;
+// The top of the cursor's own row (g_hover_popup_y is its bottom), plus
+// whether the popup should prefer growing upward off of it. Only the
+// Insert-mode parameter hint asks: the completion list is already drawn
+// just below the cursor, and this popup is drawn after it (deliberately,
+// see its call site), so a hint left below would paint straight over the
+// candidate list it is supposed to be read alongside.
+float g_hover_popup_row_top = 0;
+bool g_hover_popup_prefer_above = false;
 std::string g_help_overlay_text;
 
 // Which office-toolbar dropdown/popup is open (main.cpp's DrawPane office
@@ -6789,6 +6801,16 @@ const char *kBuiltinLsp =
     // typing stopped, which is exactly when the colours are wanted. Asked
     // for here, every request follows the text it is about.
     "  if mep.lsp_semantic_auto then mep.lsp_semantic_tokens() end\n"
+    // The parameter hint rides this notification for exactly the reason
+    // semantic tokens do, one line up. It used to have its own, faster
+    // (0.2s vs 0.3s) mep.on_buffer_changed hook, which meant the request
+    // routinely overtook the didChange for the edit that prompted it: the
+    // server answered signatureHelp against a document that did not yet
+    // contain the `foo(` just typed, found no call site, and returned no
+    // signatures -- and since that hook had already consumed the change
+    // epoch, nothing asked again once the text did arrive. The visible
+    // symptom was a hint that never appeared at all.
+    "  if mep.lsp_signature_help_auto and mep_lsp_in_call_args() then mep.lsp_signature_help(true) end\n"
     "end\n"
     "function mep.lsp_did_save()\n"
     "  local id = mep.lsp_client_for()\n"
@@ -6960,10 +6982,19 @@ const char *kBuiltinLsp =
     "function mep.lsp_goto_type_definition()\n"
     "  mep_lsp_goto('textDocument/typeDefinition', 'No type definition found')\n"
     "end\n"
-    "function mep.lsp_signature_help()\n"
+    // Whether the currently-open hover popup is *our* parameter hint, so
+    // the frame hook below only ever closes a popup this feature opened
+    // (never a mep.lsp_hover() doc the user summoned on purpose).
+    "local mep_lsp_sig_open = false\n"
+    // `hint` marks the while-you-typing auto-trigger below rather than a
+    // deliberate <leader>lk: it keeps the popup sticky (see
+    // Editor::ShowHover) and hands ownership of closing it to the frame
+    // hook further down, so the hint behaves like every other editor's
+    // parameter hint instead of like a one-shot hover.
+    "function mep.lsp_signature_help(hint)\n"
     "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
     "  local id = poly and poly.client or mep.lsp_client_for()\n"
-    "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
+    "  if not id then if not hint then mep.notify('No LSP attached', 'warn') end return end\n"
     "  mep.lsp_request(id, 'textDocument/signatureHelp', {\n"
     "    textDocument = {uri = poly and poly.uri or mep_lsp_uri(mep.filename())},\n"
     "    position = poly and poly.position or mep_lsp_position(),\n"
@@ -6972,31 +7003,71 @@ const char *kBuiltinLsp =
     "    local sigs = result and result.signatures\n"
     "    if not sigs or #sigs == 0 then return end\n"
     "    local active = sigs[(result.activeSignature or 0) + 1] or sigs[1]\n"
-    "    local text = active.label or ''\n"
+    "    local label = active.label or ''\n"
+    "    local text = label\n"
+    // Which argument the cursor is actually on, spelled out on its own
+    // line under the signature -- the whole label is one flat string here
+    // (DrawHoverPopup has no rich-text renderer to embolden a span with),
+    // so naming the parameter is how "you are filling in this one" gets
+    // across. ParameterInformation.label is a string for most servers but
+    // the spec also allows a [start, end] pair of offsets into the
+    // signature label, which mep's own servers don't emit and pyright
+    // does; both are handled. Signature-level activeParameter wins over
+    // the result-level one, per the spec.
+    "    local params = active.parameters\n"
+    "    local ai = active.activeParameter or result.activeParameter\n"
+    // JSON numbers arrive as Lua floats, so this index is 0.0/1.0/2.0 and
+    // not 0/1/2 -- harmless for the table lookup (Lua normalises an
+    // integral float key) but it reaches the popup as "argument 1.0" if
+    // it is not floored back to an integer subtype first.
+    "    ai = ai and math.floor(ai) or nil\n"
+    "    if params and ai then\n"
+    "      local p = params[ai + 1]\n"
+    "      local plabel = p and p.label\n"
+    "      if type(plabel) == 'table' then\n"
+    "        local a, b = plabel[1], plabel[2]\n"
+    "        plabel = (type(a) == 'number' and type(b) == 'number') and label:sub(a + 1, b) or nil\n"
+    "      end\n"
+    "      if type(plabel) == 'string' and plabel ~= '' then\n"
+    "        text = text .. string.format('\\nargument %d: %s', ai + 1, plabel)\n"
+    "        local pdoc = p and p.documentation\n"
+    "        pdoc = type(pdoc) == 'table' and pdoc.value or pdoc\n"
+    "        if type(pdoc) == 'string' and pdoc ~= '' then text = text .. ' -- ' .. pdoc end\n"
+    "      end\n"
+    "    end\n"
     "    local doc = active.documentation\n"
     "    if doc then\n"
     "      local doctext = type(doc) == 'table' and doc.value or tostring(doc)\n"
     "      if doctext and doctext ~= '' then text = text .. '\\n' .. doctext end\n"
     "    end\n"
-    // mep.hover_show, not mep.notify: a real anchored floating popup now
-    // exists (added for mep.lsp_hover above) and auto-dismisses on cursor
-    // move/mode change, which is exactly the right lifetime for signature
-    // help too -- reused as-is rather than inventing a second widget.
-    "    mep.hover_show('Signature Help', text)\n"
+    // mep.hover_show, not mep.notify: a real anchored floating popup
+    // exists (added for mep.lsp_hover above), reused rather than
+    // inventing a second widget. Its default lifetime is *not* right for
+    // a parameter hint, though -- hover dismisses itself the moment the
+    // cursor moves or Insert mode is entered, which is every keystroke of
+    // the call you are trying to fill in, so an auto-triggered hint used
+    // to flash for a single frame and vanish. Hence the sticky third
+    // argument (Editor::ShowHover) for the auto path, and the frame hook
+    // below to close it once the cursor leaves the argument list.
+    "    mep_lsp_sig_open = hint and true or false\n"
+    "    mep.hover_show('Signature Help', text, hint)\n"
     "  end)\n"
     "end\n"
     // Opt-in-by-default auto-trigger while typing inside a call's argument
     // list -- unlike hover's other consumers, signature help is only
     // useful *during* typing, not summoned after the fact, so this
     // defaults on (mep.lsp_signature_help_auto = true) unlike every other
-    // '_auto' flag elsewhere in this file, which default off. Trigger
-    // heuristic is a cheap same-line scan for an unmatched '(' before the
+    // '_auto' flag elsewhere in this file, which default off. The trigger
+    // itself lives in mep.lsp_did_change (see the comment there); this is
+    // just the flag that gates it, and mep_lsp_in_call_args below is the
+    // condition: a cheap same-line scan for an unmatched '(' before the
     // cursor -- the same "regex/same-line-scan, not a real parser"
-    // tradeoff Phase 25's own doc-gen fallback already made -- riding
-    // kBuiltinEditHooks' existing debounced mep.on_buffer_changed rather
-    // than a new per-keystroke hook.
+    // tradeoff Phase 25's own doc-gen fallback already made.
     "mep.lsp_signature_help_auto = true\n"
-    "local function mep_lsp_in_call_args()\n"
+    // Global, not a chunk-local, for the same reason mep_lsp_uri and
+    // mep_lsp_position are: mep.lsp_did_change above calls it, and a
+    // local declared this far down the chunk would not be in scope there.
+    "function mep_lsp_in_call_args()\n"
     "  local row, col = mep.cursor()\n"
     "  local line = mep.get_line(row):sub(1, col - 1)\n"
     "  local depth = 0\n"
@@ -7010,11 +7081,23 @@ const char *kBuiltinLsp =
     "  end\n"
     "  return false\n"
     "end\n"
-    "mep.on_buffer_changed(function()\n"
-    "  if mep.lsp_signature_help_auto and mep.lsp_client_for() and mep_lsp_in_call_args() then\n"
-    "    mep.lsp_signature_help()\n"
+    // Closing the hint is a *cursor* event, not an edit event, so it
+    // cannot ride the same mep.on_buffer_changed poller that opens it:
+    // walking out of a call with the arrow keys, or typing the closing
+    // ')' and moving on, would otherwise leave a stale signature hanging
+    // until the next keystroke happened to land. Since the popup is
+    // sticky (Editor::MaybeDismissHover no longer dismisses it on cursor
+    // move, which is the whole point), this hook is the only thing that
+    // retires it. Guarded by mep_lsp_sig_open first, so the usual case --
+    // no hint open -- is one boolean test per frame, not a line scan.
+    "mep.on_frame(function()\n"
+    "  if not mep_lsp_sig_open then return end\n"
+    "  if not mep.hover_is_open() then mep_lsp_sig_open = false return end\n"
+    "  if not mep_lsp_in_call_args() then\n"
+    "    mep_lsp_sig_open = false\n"
+    "    mep.hover_close()\n"
     "  end\n"
-    "end, 0.2)\n"
+    "end)\n"
     // General TextEdit application, character-range-aware -- what
     // rename, code actions and (since gf, see kBuiltinFormat) formatting
     // all apply their edits through. Such edits are typically just a few
@@ -33713,6 +33796,107 @@ void DrawWhichKeyOverlay() {
     }
 }
 
+// The `z` prefix's own hint panel -- which-key for a prefix that isn't
+// <leader>. Unlike DrawWhichKeyOverlay this is *purely* a hint: `z` is
+// still resolved by Editor::DispatchNormalKey's own pending_z_ block, not
+// by a mode that captures keys, so every z command types exactly as fast
+// as it always did and nothing here can swallow a keystroke. It only
+// appears once the prefix has been held past kFoldHintDelay, so the panel
+// is something you get by pausing, not something that flashes at you
+// mid-command. No screen dim either, for the same reason: this is a
+// reminder, not a modal.
+/**
+ * @brief Draws the fold hint panel listing the `z` prefix's commands, docked along the bottom.
+ */
+void DrawFoldPrefixOverlay() {
+    struct FoldHint {
+        const char *key;
+        const char *label;
+    };
+    // Normal mode's z surface, in the order they're worth learning:
+    // toggling first, then the level-at-a-time pair, then everything that
+    // acts on the whole buffer, then making/unmaking, then the odds.
+    // Labels are kept under ~14 characters deliberately: the panel sizes
+    // every column to its widest entry, so one long label costs a whole
+    // column across the entire grid and pushes the panel taller.
+    static const FoldHint kNormalHints[] = {
+        {"za", "toggle"},         {"zA", "toggle all"},     {"zo", "open a level"},
+        {"zO", "open all here"},  {"zc", "close a level"},  {"zC", "close all here"},
+        {"zv", "reveal cursor"},  {"zR", "open every"},     {"zM", "close every"},
+        {"zr", "level less"},     {"zm", "level more"},     {"zF", "fold N lines"},
+        {"zd", "delete"},         {"zD", "delete all here"},{"zE", "delete every"},
+        {"zj", "next fold"},      {"zk", "prev fold"},      {"zi", "folding off/on"},
+        {"zx", "rebuild folds"},  {"zz", "view: center"},   {"zt", "view: top"},
+        {"zb", "view: bottom"},
+    };
+    // Visual mode resolves the same prefix through DispatchVisualKey,
+    // which only implements zf -- listing the rest would be a lie.
+    static const FoldHint kVisualHints[] = {
+        {"zf", "fold the selection"},
+    };
+    const bool visual = g_editor.CurrentMode() == Mode::Visual || g_editor.CurrentMode() == Mode::VisualLine ||
+                        g_editor.CurrentMode() == Mode::VisualBlock;
+    const FoldHint *hints = visual ? kVisualHints : kNormalHints;
+    const size_t hint_count = visual ? std::size(kVisualHints) : std::size(kNormalHints);
+
+    // The menu font, not the editor's own: at g_font_size these 22
+    // entries measure wide enough that only two columns fit, and the
+    // panel grows to cover most of the window -- far too much furniture
+    // for a hint you triggered by pausing. Smaller text flows into four
+    // columns and keeps it to a few rows.
+    float font_size = MenuFontSize();
+    int line_h = static_cast<int>(font_size) + 6;
+    int screen_w = gfx::GetScreenWidth();
+    int screen_h = gfx::GetScreenHeight();
+    int margin_x = 40;
+    int box_w = std::max(screen_w - margin_x * 2, 200);
+
+    std::string title = std::string("z") + (visual ? "  (Visual)  folds" : "  folds");
+    float title_size = MenuFontSize();
+    int title_h = static_cast<int>(title_size) + 8;
+
+    int item_w = 0;
+    for (size_t i = 0; i < hint_count; i++) {
+        const std::string line = std::string(hints[i].key) + "  " + hints[i].label;
+        item_w = std::max(item_w, static_cast<int>(MeasureUiText(line, font_size)));
+    }
+    item_w += 18;
+    int content_w = box_w - 28;
+    int columns = std::max(1, item_w > 0 ? content_w / item_w : 1);
+    int rows = (static_cast<int>(hint_count) + columns - 1) / columns;
+    int box_h = std::min(screen_h - 80, rows * line_h + title_h + 20);
+
+    // Same docking as the which-key bar: just above the status/command
+    // bars rather than over them.
+    int line_height = LineHeight();
+    int command_bar_height = line_height;
+    int status_bar_height = g_editor.IsZenMode() ? 0 : line_height;
+    int bottom_margin = command_bar_height + status_bar_height + 8;
+
+    int box_x = (screen_w - box_w) / 2;
+    int box_y = screen_h - bottom_margin - box_h;
+    gfx::DrawRectangle(box_x, box_y, box_w, box_h, ResolveHlGroup("FloatBg"));
+    gfx::DrawRectangleLines(box_x, box_y, box_w, box_h, ResolveHlGroup("FloatBorder"));
+    // The same accent rule a folded row wears, so the panel reads as
+    // belonging to the folds it is about.
+    gfx::DrawRectangle(box_x, box_y, kFoldPanelEdgeWidth, box_h, ResolveHlGroup("FoldedEdge"));
+
+    float content_x = static_cast<float>(box_x + 14);
+    float content_y = static_cast<float>(box_y + 10);
+    gfx::DrawTextEx(g_font, title.c_str(), gfx::Vector2{content_x, content_y}, title_size, 0,
+                    ResolveHlGroup("PickerTitle"));
+    content_y += title_size + 8;
+    for (size_t i = 0; i < hint_count; i++) {
+        int col = static_cast<int>(i) % columns;
+        int row = static_cast<int>(i) / columns;
+        float ix = content_x + static_cast<float>(col) * static_cast<float>(item_w);
+        float iy = content_y + static_cast<float>(row) * static_cast<float>(line_h);
+        DrawUiText(hints[i].key, gfx::Vector2{ix, iy}, font_size, ResolveHlGroup("FoldedEdge"));
+        ix += MeasureUiText(hints[i].key, font_size) + 16.0f;
+        DrawUiText(hints[i].label, gfx::Vector2{ix, iy}, font_size, ResolveHlGroup("Normal"));
+    }
+}
+
 /**
  * @brief Draws the generic centered help/text overlay (g_help_overlay_text), sized to fit
  * its content, dismissed on Escape or click.
@@ -34002,8 +34186,10 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
  * DrawHoverPopupFocused when in Mode::HoverFocus. Does nothing if no hover is open.
  * @param x Anchor x-coordinate (typically just below/right of the cursor).
  * @param y Anchor y-coordinate; flipped above the cursor if there's no room below.
+ * @param row_top Top of the cursor's own row, i.e. the bottom edge to grow upward from.
+ * @param prefer_above Place the box above the cursor row when it fits there, not below.
  */
-void DrawHoverPopup(float x, float y) {
+void DrawHoverPopup(float x, float y, float row_top, bool prefer_above) {
     if (!g_editor.IsHoverOpen()) return;
     const std::string &title = g_editor.HoverTitle();
     const std::string &text = g_editor.HoverText();
@@ -34047,8 +34233,14 @@ void DrawHoverPopup(float x, float y) {
     if (x < 0) x = 0;
     // Prefer drawing below the cursor (the `y` passed in); flip above it
     // if there isn't room below, same idea DrawCmdlineCompletionPopup
-    // uses for the command bar's upward-growing list.
-    if (y + static_cast<float>(box_h) > static_cast<float>(gfx::GetScreenHeight())) y = std::max(0.0f, y - static_cast<float>(box_h) - static_cast<float>(line_h));
+    // uses for the command bar's upward-growing list. `prefer_above`
+    // reverses that preference for the parameter hint, which has to yield
+    // the space below the cursor to the completion list.
+    if (prefer_above && row_top - static_cast<float>(box_h) >= 0.0f) {
+        y = row_top - static_cast<float>(box_h);
+    } else if (y + static_cast<float>(box_h) > static_cast<float>(gfx::GetScreenHeight())) {
+        y = std::max(0.0f, y - static_cast<float>(box_h) - static_cast<float>(line_h));
+    }
     gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
     gfx::DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
     float ty = y + 5;
@@ -42958,8 +43150,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     float font_size = MenuFontSize();
     // Captured inside the is_active cursor block below, consumed after
     // EndScissorMode() -- see the hover-tooltip comment down there.
-    float hover_cursor_x = 0, hover_cursor_y = 0;
+    float hover_cursor_x = 0, hover_cursor_y = 0, hover_cursor_row_top = 0;
     bool hover_cursor_valid = false;
+    bool hover_cursor_prefer_above = false;
 
     const Buffer &buf = g_editor.GetBuffer(pane.buffer_id);
     gfx::Color header_bg = is_active ? ResolveHlGroup("TabActive") : ResolveHlGroup("MenuBar");
@@ -46197,6 +46390,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
     static const std::vector<const Decoration *> kNoDecos;
 
+    // A closed fold's summary row (drawn further down) marks itself three
+    // ways: the Folded band behind it, this accent rule down its left
+    // edge, and the ellipsis-plus-line-count that trails its text.
+    constexpr int kFoldEdgeWidth = 3;
+    // Plain ASCII dots: the shipped mono font has no U+2026/U+22EF
+    // ellipsis glyph and draws a tofu "?" in its place.
+    constexpr const char *kFoldEllipsis = "...";
+
     // A closed fold's one-line summary (further down) shows its own real
     // first line rather than a synthetic placeholder, and that line
     // deserves the same syntax highlighting as it would get if it weren't
@@ -46210,7 +46411,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // one-line fold summary doesn't need any of.
     // Returns the columns it drew, which is two fewer than the row's own
     // length when it hid a headline's stars -- the caller's trailing
-    // " ..." follows the text it actually put on screen.
+    // ellipsis and line count follow the text it actually put on screen.
     auto draw_fold_summary_text = [&](int fold_row, float fold_ly) -> int {
         const std::string &raw = buf.lines[static_cast<size_t>(fold_row)];
         // A folded mepml document header reads as its title and a muted
@@ -46505,15 +46706,6 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // the cursorline check below so the two combine (rather than the
         // second one painting flatly over the first) when the cursor
         // actually is inside this (collapsed) range.
-        if (fold_here && org_card_folded_rows.count(row) == 0) {
-            // Over the row's headroom too (a folded mepml header's large
-            // title rises into it), so the band holds the whole summary.
-            const int fold_pad = g_editor.RowTopPadSlots(buf, row) * line_height;
-            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) - fold_pad, static_cast<int>(w), line_height + fold_pad,
-                               ResolveHlGroup("CursorLine"));
-            row_bg_plain = false;
-        }
-
         // An over-wide org table's row (Buffer::org_table_wrap_rows,
         // Editor::OrgTableWrapScan): its own text is not what gets drawn
         // at all -- the wrapped layout's lines are, one per visual slot --
@@ -46677,6 +46869,32 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + tint_offset + s * line_height, static_cast<int>(w),
                               line_height, ResolveHlGroup("CursorLine"));
             }
+            row_bg_plain = false;
+        }
+
+        // The closed fold's own band, drawn *after* the cursorline tint
+        // rather than before it. The two used to be the same color, so
+        // the order didn't matter; now that a folded row has a band of
+        // its own, drawing it first meant the cursorline painted flatly
+        // over it and a fold the cursor happened to be inside stopped
+        // looking folded at all -- which is exactly when you most need to
+        // see it. The caret still marks where the cursor is.
+        if (fold_here && org_card_folded_rows.count(row) == 0) {
+            // Over the row's headroom too (a folded mepml header's large
+            // title rises into it), so the band holds the whole summary.
+            const int fold_pad = g_editor.RowTopPadSlots(buf, row) * line_height;
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) - fold_pad, static_cast<int>(w),
+                               line_height + fold_pad, ResolveHlGroup("Folded"));
+            // An accent rule down the row's left edge. The band alone is
+            // deliberately faint (it sits under ordinary syntax
+            // highlighting and must not wash it out), so the rule is what
+            // actually catches the eye when skimming a file -- the same
+            // job the colored left border does on a help page's code
+            // block. Drawn inside kMarginX rather than at the pane's own
+            // x: the window frame is painted over the outermost few
+            // pixels of the pane afterwards, which swallowed it whole.
+            gfx::DrawRectangle(static_cast<int>(x) + kMarginX, static_cast<int>(ly) - fold_pad, kFoldEdgeWidth,
+                               line_height + fold_pad, ResolveHlGroup("FoldedEdge"));
             row_bg_plain = false;
         }
 
@@ -47000,8 +47218,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // title instead of floating past where the asterisks used to
             // end the line.
             const int folded_cols = draw_fold_summary_text(row, ly);
-            gfx::DrawTextEx(g_font, " ...", gfx::Vector2{text_x + static_cast<float>(folded_cols) * g_char_width, ly},
-                       g_font_size, 0, ResolveHlGroup("Comment"));
+            // How much is behind it, not just that something is: "... 34
+            // lines" answers the question a collapsed line actually
+            // raises, and is what vim's own fold text leads with.
+            const int hidden_lines = fold_here->end_row - fold_here->start_row + 1;
+            const std::string fold_tail = "  " + std::string(kFoldEllipsis) + "  " + std::to_string(hidden_lines) + " lines";
+            gfx::DrawTextEx(g_font, fold_tail.c_str(), gfx::Vector2{text_x + static_cast<float>(folded_cols) * g_char_width, ly},
+                       g_font_size, 0, ResolveHlGroup("FoldedCount"));
             // Fold marker click-to-toggle (Phase 11 click-dispatch gap):
             // mep has no separate statuscolumn widget row, so the fold
             // marker lives in the gutter's own trailing-space column
@@ -47012,7 +47235,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // background split's gutter would silently toggle the wrong
             // buffer's fold otherwise.
             if (is_active) {
-                gfx::DrawTextEx(g_font, "+", gfx::Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
+                gfx::DrawTextEx(g_font, "+", gfx::Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("FoldedEdge"));
                 int marker_row = row;
                 // Toggles (opens) the fold starting at this row.
                 RegisterClickRegion(
@@ -48728,6 +48951,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
         hover_cursor_x = cursor_x;
         hover_cursor_y = cursor_y + row_extent;
+        hover_cursor_row_top = cursor_y;
+        // Only the sticky parameter hint moves out of the way; a hover doc
+        // summoned with K in Normal mode has no completion list to collide
+        // with and keeps its long-standing below-the-cursor placement.
+        hover_cursor_prefer_above = g_editor.IsHoverSticky() && g_editor.CurrentMode() == Mode::Insert &&
+                                    g_editor.IsCompletionOpen();
         hover_cursor_valid = true;
     }
 
@@ -49394,6 +49623,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         g_hover_popup_pending = true;
         g_hover_popup_x = hover_cursor_x;
         g_hover_popup_y = hover_cursor_y;
+        g_hover_popup_row_top = hover_cursor_row_top;
+        g_hover_popup_prefer_above = hover_cursor_prefer_above;
     }
 }
 
@@ -50444,7 +50675,9 @@ void DrawEditor() {
     // after DrawSidebars, so a hover doc wide/tall enough to spill into an
     // open sidebar (the file tree, most visibly) paints on top of it instead
     // of being overpainted by the sidebar's own opaque panel.
-    if (g_hover_popup_pending) DrawHoverPopup(g_hover_popup_x, g_hover_popup_y);
+    if (g_hover_popup_pending) {
+        DrawHoverPopup(g_hover_popup_x, g_hover_popup_y, g_hover_popup_row_top, g_hover_popup_prefer_above);
+    }
     // A popped-out sidebar (mod1+m) is a modal float like the overlays
     // below, drawn over the docked panels/menu bar it zooms; a no-op
     // unless one is active.
@@ -50465,6 +50698,9 @@ void DrawEditor() {
     if (g_editor.CurrentMode() == Mode::Picker) DrawPickerOverlay();
     if (g_editor.CurrentMode() == Mode::RoamGraph) DrawRoamGraphOverlay();
     if (g_editor.CurrentMode() == Mode::WhichKey) DrawWhichKeyOverlay();
+    if (g_editor.FoldPrefixPending() && gfx::GetTime() - g_editor.FoldPrefixPendingSince() >= kFoldHintDelay) {
+        DrawFoldPrefixOverlay();
+    }
     if (g_show_help_overlay) DrawHelpOverlay();
     DrawToastStack();
     if (g_hint_mode_active) DrawHintOverlay();
@@ -53375,7 +53611,16 @@ int main(int argc, char **argv) {
     emscripten_set_main_loop(UpdateDrawFrame, 0, 0);
     return 0;
 #else
-    gfx::SetTargetFPS(60);
+    // 0 (mep's default `:set maxfps`) means no frame cap: vsync alone
+    // paces the loop, i.e. mep renders at the display's refresh rate.
+    // Read from the editor rather than hardcoded so an init.lua that ran
+    // above (mep.cmd('set maxfps=60')) isn't overwritten here.
+    //
+    // This call used to pass a literal 60 while the native backend stored
+    // the value and never read it, so it capped nothing -- which is part
+    // of why a caret paced at one step per frame went unnoticed as a
+    // 165-steps-per-second caret on a 165Hz panel.
+    gfx::SetTargetFPS(g_editor.MaxFps());
     static const bool kPdfProf = std::getenv("MEP_PDF_PROF") != nullptr;
     int prof_frame = 0;
     while (!gfx::WindowShouldClose() && !g_editor.ShouldQuit()) {

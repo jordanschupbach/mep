@@ -32,7 +32,7 @@ that it does nothing.
 | =mep.hover_close= | dismisses an open hover tooltip |
 | =mep.hover_focus_enter= | moves the cursor into the open hover popup's text so it can be navigated/yanked; a no-op if hover isn't open |
 | =mep.hover_is_open= | reports whether a hover tooltip is currently showing |
-| =mep.hover_show= | shows a passive floating tooltip anchored near the cursor |
+| =mep.hover_show= | shows a passive floating tooltip anchored near the cursor, optionally sticky so that typing and cursor movement do not dismiss it |
 | =mep.icon_for_file= | a short ASCII glyph (Phase 10) |
 | =mep.layout= | applies a named pane auto-layout |
 | =mep.nav_pane= | moves focus to the neighboring pane in the given direction, if any |

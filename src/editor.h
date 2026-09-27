@@ -3456,6 +3456,11 @@ public:
      * @return The text width in columns.
      */
     int TextWidth() const { return text_width_; }
+    /**
+     * @brief The `:set maxfps` frame cap, or 0 for uncapped (vsync-paced).
+     * @return Frames per second ceiling; 0 means no ceiling.
+     */
+    int MaxFps() const { return max_fps_; }
     // <leader>oti / mep.org_images_toggle -- whether main.cpp's renderer
     // should substitute a rendered texture for a Buffer::org_image_rows
     // row instead of its ordinary [[file:...]] text.
@@ -8799,6 +8804,40 @@ public:
      * @brief Moves the cursor to the summary row of the closed fold hiding it, if one now does.
      */
     void SnapCursorOutOfClosedFold();
+    // Resolves caret_delay_sec_/caret_rate_ (either an explicit :set
+    // value or 0 for "inherit the OS") into the delay and interval
+    // HandleNormalInput's motion timer actually runs on.
+    /**
+     * @brief Computes the motion-repeat delay and interval from the :set options and the OS's own rate.
+     * @param delay_sec Out: seconds a motion key must be held before the caret starts repeating.
+     * @param interval_sec Out: seconds between repeats once it has started.
+     */
+    void ResolveCaretRepeat(double *delay_sec, double *interval_sec) const;
+    // Where an o/O-style line insertion should land when the cursor sits
+    // on (or inside) a closed fold: after the whole fold rather than into
+    // its hidden interior, and before it rather than into the middle of
+    // it. Outermost closed fold wins, so a nest opens outside all of it,
+    // as in vim. Plain `row` when no closed fold covers it.
+    /**
+     * @brief The row an opened line should follow or precede, skipping past a closed fold at the cursor.
+     * @param row The cursor's row.
+     * @param below True for o (after the fold), false for O (before it).
+     * @return The fold's end row (below) or start row (above), or `row` when no closed fold covers it.
+     */
+    int FoldAwareOpenRow(int row, bool below) const;
+    // The `z` prefix's pending state, for the fold hint panel to render
+    // against (main.cpp's DrawFoldPrefixOverlay): whether a `z` is
+    // waiting for its second key, and since when.
+    /**
+     * @brief Whether a `z` prefix is waiting for its second key.
+     * @return True between the `z` keystroke and the command key that resolves it.
+     */
+    bool FoldPrefixPending() const { return pending_z_; }
+    /**
+     * @brief When the pending `z` prefix was typed, in gfx::GetTime() seconds.
+     * @return The timestamp of the `z` keystroke.
+     */
+    double FoldPrefixPendingSince() const { return pending_z_since_; }
     // True (and *fold_start_row set) if `row` is hidden inside a closed
     // fold -- i.e. inside one but not that fold's own start row, which
     // stays visible as the fold's summary line.
@@ -10727,9 +10766,21 @@ public:
     // very next HandleInput() call where the cursor no longer matches (or
     // Normal mode was left, or Escape was pressed) closes it. Checked once
     // per frame from the top of HandleInput() via MaybeDismissHover().
-    void ShowHover(const std::string &title, const std::string &text);
+    // `sticky` marks a popup whose whole point is to stay up *while
+    // typing*: the LSP parameter hint (mep.lsp_signature_help's
+    // auto-trigger). The auto-dismiss rules above would kill one
+    // instantly -- Insert mode is not Mode::Normal, and every keystroke
+    // moves the cursor off the snapshotted anchor -- so a hint opened
+    // mid-call used to live exactly one frame. A sticky popup instead
+    // survives Insert mode and cursor movement; Escape still closes it,
+    // so does leaving the Normal/Insert pair (a visual selection, the
+    // command line, a picker: a hint anchored to a cursor nobody is
+    // typing at is just clutter), and so does whoever opened it calling
+    // mep.hover_close once the cursor leaves the argument list.
+    void ShowHover(const std::string &title, const std::string &text, bool sticky = false);
     void CloseHover() { hover_open_ = false; }
     bool IsHoverOpen() const { return hover_open_; }
+    bool IsHoverSticky() const { return hover_open_ && hover_sticky_; }
     const std::string &HoverTitle() const { return hover_title_; }
     const std::string &HoverText() const { return hover_text_; }
 
@@ -12673,6 +12724,9 @@ private:
     std::string hover_title_;
     std::string hover_text_;
     CursorPos hover_anchor_pos_{};
+    // See ShowHover's `sticky` parameter: suppresses the move/mode
+    // auto-dismiss for a popup that has to outlive typing.
+    bool hover_sticky_ = false;
 
     // --- Hover focus state (see Mode::HoverFocus's own comment) ---
     // row_/col_ index into hover_text_ split on '\n', vim-normal-mode-caret
@@ -12737,6 +12791,45 @@ private:
     bool ignore_case_ = false;
     bool wrapscan_ = true;
     int text_width_ = 80;
+    // :set caretdelay=<ms> / :set caretrate=<per-second> -- how long a
+    // held motion key waits before the caret starts repeating, and how
+    // fast it repeats once it does. Both apply to bare h/j/k/l and the
+    // arrow keys alike (HandleNormalInput's motion table), which repeat
+    // under mep's own timer rather than the OS's auto-repeat.
+    //
+    // 0 (the default, for both) means "inherit whatever the OS reports"
+    // via gfx::GetKeyRepeatRate, so out of the box the caret matches the
+    // system's own repeat settings. An explicit value overrides that and
+    // is deliberately NOT clamped to what the OS would allow for its own
+    // repeat: mep runs this timer itself, so a platform that caps its
+    // repeat rate far below what a fast typist wants (macOS, whose
+    // Key Repeat slider bottoms out around 30/s) has no say here.
+    // ResolveCaretRepeat() turns this pair into the actual delay and
+    // interval; HandleNormalInput additionally floors the delay at its
+    // own kMotionTapGuardSec, which is a property of that loop's
+    // tap-vs-hold detection rather than of the setting.
+    double caret_delay_sec_ = 0.0;
+    double caret_rate_ = 0.0;
+    // :set maxfps=<N> -- an upper bound on how many frames a second mep
+    // renders, or 0 (the default) for no bound, where pacing comes from
+    // vsync alone and so equals the display's refresh rate.
+    //
+    // Default 0 because capping costs visible smoothness in scrolling and
+    // caret motion, which on a high-refresh display is most of the point
+    // of having one. It is worth setting on a laptop: mep redraws every
+    // frame unconditionally, with no damage tracking at all, so an idle
+    // editor's CPU cost is essentially *all* redraw. Measured on a 165Hz
+    // panel (Release build, idle, % of one core): uncapped 163fps/32.1%,
+    // maxfps=120 119fps/24.1%, =60 59.5fps/12.2%, =30 29.6fps/5.9%. That
+    // is a near-perfect straight line at ~0.2% of a core per frame per
+    // second with a fitted fixed cost of ~0.1%, so a cap buys back CPU in
+    // direct proportion to the frames it drops.
+    //
+    // A cap below the caret's own repeat rate also becomes that caret's
+    // ceiling, since the motion timer can only step once per frame -- so
+    // `maxfps=30` quietly turns a 50/s caret into a 30/s one. See
+    // NativeContextSwapBuffers, which implements the cap.
+    int max_fps_ = 0;
     // :set pasteindent/nopasteindent (default on) -- whether a multi-line paste
     // is re-aligned onto the indent of wherever it lands (PasteAfter/
     // PasteBefore, and the Insert-mode paste through InsertTextAsTyped) instead
@@ -12964,15 +13057,25 @@ private:
     bool pending_org_export_ = false;
     // 'z' waiting for a second key (scroll commands: z/t/b).
     bool pending_z_ = false;
+    // When pending_z_ was last set, in gfx::GetTime() seconds: the fold
+    // hint panel (DrawFoldPrefixOverlay, main.cpp) only appears once the
+    // prefix has been held a moment, so typing "zc" at speed never
+    // flashes a panel on screen, while pausing on `z` explains itself.
+    double pending_z_since_ = 0.0;
     // 'Z' waiting for a second key -- only ZZ is implemented (a float
     // pane's "confirm" chord, see CloseFloatPane's force_write param and
     // DispatchNormalKey); real vim's other Z-command, ZQ (discard and
     // quit), has no mep equivalent yet. A bare Z outside a float, or Z
     // followed by anything but a second Z, is silently swallowed.
     bool pending_capital_z_ = false;
-    // Per-key state for HandleNormalInput's bare-hjkl fast path (see its
-    // own comment for the wasm/webview lag this exists to fix). Index:
-    // 0=h, 1=j, 2=k, 3=l.
+    // Per-key state for HandleNormalInput's motion-repeat timer (see its
+    // own comment for the wasm/webview lag the hjkl half originally
+    // existed to fix). Index: 0=h, 1=j, 2=k, 3=l, 4=Left, 5=Down, 6=Up,
+    // 7=Right -- the arrows run through the same timer as the letters so
+    // one :set caretdelay/caretrate governs both. They differ only in
+    // where the *initial* press comes from: a letter arrives as a
+    // gfx::GetCharPressed() codepoint, an arrow (which never produces a
+    // char event) as gfx::IsKeyPressed.
     struct MotionRepeatState {
         // GetTime() this key was last observed to go down (IsKeyDown
         // false -> true), or -1 while it's up. A *duration* below some
@@ -12992,14 +13095,24 @@ private:
         // GetTime() this key last actually moved the cursor via the fast
         // path, or -1.0 if it hasn't fired yet during the current hold.
         // Without this, a confirmed hold moved the cursor once per
-        // rendered frame (up to the 60fps target, i.e. as fast as 60
-        // columns/lines per second) -- gated here to kMotionRepeatIntervalSec
-        // instead, independent of frame rate.
+        // rendered frame -- which on a high-refresh display meant a caret
+        // running at the monitor's refresh rate (165/s on a 165Hz panel,
+        // against a system repeat rate of 50/s) and, worse, a different
+        // speed on every machine. Gated here to ResolveCaretRepeat()'s
+        // interval instead, which is frame-rate independent. Advanced by
+        // exactly one interval per fire rather than reset to the current
+        // time, so the average rate is the configured one instead of the
+        // frame grid's nearest divisor of it -- see the fire site.
         double last_move_time_ = -1.0;
-        // Set when the gfx::GetCharPressed() queue (driven by real OS
-        // key-repeat, the pre-confirm path) has already moved the cursor
-        // for this key since it last went down, and not yet consumed by
-        // the fast path's own next check. Exists because a hold whose
+        // Set when this key has already moved the cursor once since it
+        // last went down, by way of its initial press rather than the
+        // timer -- the gfx::GetCharPressed() queue for a letter, or
+        // gfx::IsKeyPressed for an arrow. Cleared when the key goes down
+        // fresh and when it comes back up, so it only ever describes the
+        // hold in progress.
+        //
+        // It does two jobs. The first: suppress the timer's own first
+        // fire, because a hold whose
         // duration lands close to kMotionHoldConfirmSec can have a real
         // OS-repeat notification for this same tap still in flight when
         // the fast path's *own* first (unconditional) fire lands on a
@@ -13007,15 +13120,24 @@ private:
         // what was one continuous tap (confirmed empirically: a hold a
         // few ms past the threshold moved 2-3 rows/columns instead of 1,
         // reproducing when the OS's own key-repeat delay is close to
-        // kMotionHoldConfirmSec, as this sandbox's 200ms/200ms is). The
+        // the confirm threshold, as this sandbox's 200ms/200ms is). The
         // fast path checks and immediately clears this rather than gating
-        // on last_move_time_/kMotionRepeatIntervalSec (too short --
-        // 5ms -- to bridge a real ~16ms frame gap), so only that one
-        // transition fire is skipped; normal interval-paced repeat
-        // resumes the very next frame.
+        // on last_move_time_/the repeat interval (which can be shorter
+        // than a frame, so it can't bridge a real ~16ms frame gap), so
+        // only that one transition fire is skipped; normal interval-paced
+        // repeat resumes the very next frame.
+        //
+        // The second: once the initial press has moved, every *OS*
+        // auto-repeat notification for the same still-held key is
+        // discarded (see the drain loop's discard check) instead of
+        // moving the caret at the OS's rate. Without that, a caretdelay
+        // longer than the OS's own repeat delay would leave the system
+        // repeating through the queue during the gap before mep's timer
+        // takes over, so the caret would start at the OS rate and then
+        // change speed mid-hold.
         bool queue_moved_since_down_ = false;
     };
-    MotionRepeatState motion_repeat_[4];
+    MotionRepeatState motion_repeat_[8];
     // Accumulates digits typed before a command (e.g. the "5" in "5j");
     // 0 means no count was typed. See TakeRawCount().
     int pending_count_ = 0;

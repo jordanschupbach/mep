@@ -2043,17 +2043,25 @@ int l_float_is_open(lua_State *L) {
 // the moment the cursor moves, Escape is pressed, or Normal mode is left.
 // First real consumer: mep.lsp_hover() (main.cpp's kBuiltinLsp), which
 // previously only surfaced hover text via mep.notify (a toast, not a
-// floating popup).
+// floating popup). A truthy third argument opts out of the
+// move/mode-change dismissal for the one consumer that cannot live with
+// it, mep.lsp_signature_help's while-you-type parameter hint.
 /**
- * @brief Implements mep.hover_show(title, text): shows a passive floating tooltip anchored near the cursor.
- * @param L Lua state; arg 1 is the title, arg 2 the text to show.
+ * @brief Implements mep.hover_show(title, text[, sticky]): shows a passive floating tooltip anchored near the
+ * cursor, optionally sticky so that typing and cursor movement do not dismiss it.
+ * @param L Lua state; arg 1 is the title, arg 2 the text, optional arg 3 whether the popup survives typing.
  * @return Number of values pushed (0).
  */
 int l_hover_show(lua_State *L) {
     const char *title = luaL_optstring(L, 1, "");
     size_t len = 0;
     const char *text = luaL_checklstring(L, 2, &len);
-    GetEditor(L)->ShowHover(title, std::string(text, len));
+    // The optional third argument (default false) is Editor::ShowHover's
+    // `sticky`: keep the popup up through Insert mode and cursor
+    // movement, for a parameter hint that is only useful mid-typing, and
+    // leave closing it to the caller (mep.hover_close). See ShowHover.
+    const bool sticky = lua_toboolean(L, 3) != 0;
+    GetEditor(L)->ShowHover(title, std::string(text, len), sticky);
     return 0;
 }
 

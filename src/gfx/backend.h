@@ -65,6 +65,25 @@ public:
     virtual ~IInputBackend() = default;
     virtual bool IsKeyPressed(Key key) = 0;
     virtual bool IsKeyPressedRepeat(Key key) = 0;
+    // The OS's own keyboard auto-repeat settings, if this platform can be
+    // asked: `delay_sec` is how long a key must be held before it starts
+    // repeating, `interval_sec` the gap between repeats once it does.
+    // Returns false (leaving both outputs untouched) when the platform
+    // exposes no way to ask -- the browser doesn't, so the wasm backend
+    // never answers -- and the caller then has to supply its own default.
+    //
+    // Deliberately *not* a cap on anything. A caller that runs its own
+    // repeat timer off IsKeyDown (mep's h/j/k/l and arrow-key motion
+    // repeat does exactly that, see Editor::HandleNormalInput) uses this
+    // only as the default rate it inherits, so it still matches the
+    // system by default while staying free to exceed it -- which is the
+    // point on a platform whose own repeat rate is capped well below
+    // what a fast typist wants (macOS).
+    virtual bool GetKeyRepeatRate(double *delay_sec, double *interval_sec) {
+        (void)delay_sec;
+        (void)interval_sec;
+        return false;
+    }
     virtual bool IsKeyDown(Key key) = 0;
     virtual bool IsKeyReleased(Key key) = 0;
     virtual Key GetKeyPressed() = 0;    // drains one queued key-down event per call, Key::None when empty

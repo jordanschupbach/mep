@@ -196,7 +196,7 @@ and <code>for i from 1</code> are the same loop, and each is left as it was writ
 around binary operators (but not around <code>^</code>, <code>:</code>, <code>::</code>, <code>$</code> or <code>@</code>), <code>&lt;-</code>
 for assignment, double-quoted strings, and an 80-column margin that calls,
 argument lists and pipelines are broken across to respect.</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">r</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="r">result=<span class="tok-blue">some_function</span>(argument_one=<span class="tok-cyan">1</span>,argument_two=<span class="tok-cyan">2</span>,argument_three=<span class="tok-green">'three'</span>)</code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">r</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="r">result=<span class="tok-blue">some_function</span>(<span class="tok-red">argument_one</span>=<span class="tok-cyan">1</span>,<span class="tok-red">argument_two</span>=<span class="tok-cyan">2</span>,argument_three=<span class="tok-green">'three'</span>)</code></pre></div>
 <p>becomes</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">r</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="r">result &lt;- some_function(
   argument_one = <span class="tok-cyan">1</span>,

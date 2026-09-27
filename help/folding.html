@@ -33,6 +33,15 @@ presses walk through the nest a level at a time.</p>
 </table>
 <p>Closing a fold the cursor is inside moves the cursor to that fold's
 summary line, rather than leaving it on a hidden row.</p>
+<p>Pause on <code>z</code> without typing a second key and a panel of every fold
+command appears along the bottom of the window -- which-key, for the <code>z</code>
+prefix. It is only a reminder: the keys still resolve immediately, so
+typing <code>zc</code> at speed never puts it on screen and nothing it shows can
+swallow a keystroke. In Visual mode it lists what Visual mode actually
+has, which is <code>zf</code>.</p>
+<p><code>o</code> and <code>O</code> on a closed fold open the new line <i>outside</i> it -- after the
+last collapsed row, or before the first -- rather than dropping what you
+type into the middle of a region you folded away.</p>
 <h2>Making and unmaking them</h2>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
@@ -69,9 +78,16 @@ fold turns folding back on first, as in Vim.</p>
 <tr><td><code>zj</code></td><td>to the start of the next fold</td></tr>
 <tr><td><code>zk</code></td><td>to the end of the previous fold</td></tr>
 </table>
-<p>A folded region shows a marker in the gutter column, beside the line
-number: <code>-</code> for an open fold, <code>+</code> for a closed one. Clicking it toggles
-that fold without moving the cursor.</p>
+<h2>What a folded line looks like</h2>
+<p>A closed fold keeps its own first line -- syntax highlighting and all --
+rather than replacing it with a synthetic placeholder, and marks itself
+four ways: a tinted band across the row, an accent rule down its left
+edge, an accent <code>+</code> in the gutter, and <code>... N lines</code> after the text
+saying how much is behind it. An open fold's start row shows a <code>-</code> in
+the gutter. Clicking either marker toggles that fold without moving the
+cursor.</p>
+<p>The band and rule are derived from the theme's accent color, so a fold
+reads the same way in every palette.</p>
 <h1>Where folds come from</h1>
 <table>
 <tr><th>Source</th><th>For</th></tr>

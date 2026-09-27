@@ -650,6 +650,75 @@ ThemeColor Mix(ThemeColor a, ThemeColor b, float t) {
                      static_cast<int>(a.b + (b.b - a.b) * t));
 }
 
+// WCAG relative luminance (sRGB gamma-decoded, Rec.709 weights) and the
+// contrast ratio built from it. Used by DimText below to decide how far a
+// text color can be faded toward the background before it stops being
+// readable -- an ordinary channel-space distance can't answer that, since
+// the same numeric gap is far more visible against a mid-gray than against
+// near-black.
+/**
+ * @brief Computes a color's WCAG relative luminance.
+ * @param c The color to measure (alpha ignored).
+ * @return Relative luminance in [0, 1].
+ */
+float RelativeLuminance(ThemeColor c) {
+    // Undoes the sRGB transfer function for one channel.
+    auto linear = [](unsigned char v) {
+        float f = static_cast<float>(v) / 255.0f;
+        return f <= 0.03928f ? f / 12.92f : std::pow((f + 0.055f) / 1.055f, 2.4f);
+    };
+    return 0.2126f * linear(c.r) + 0.7152f * linear(c.g) + 0.0722f * linear(c.b);
+}
+/**
+ * @brief Computes the WCAG contrast ratio between two colors.
+ * @param a First color.
+ * @param b Second color.
+ * @return The contrast ratio, in [1, 21]; order of the arguments does not matter.
+ */
+float ContrastRatio(ThemeColor a, ThemeColor b) {
+    float la = RelativeLuminance(a), lb = RelativeLuminance(b);
+    return (std::max(la, lb) + 0.05f) / (std::min(la, lb) + 0.05f);
+}
+
+// Fades `fg` toward `bg` for text that should read as secondary (comments,
+// line numbers) -- as far as `max_t`, but stopping early at whatever blend
+// still clears `min_ratio` contrast against `bg`.
+//
+// The contrast floor is not just an accessibility nicety here, it is what
+// keeps glyph antialiasing working at all. A glyph is blitted as white RGB
+// + coverage alpha through an ordinary SRC_ALPHA blend (see
+// backend_native_text.cpp / backend_native_renderer2d.cpp), so every
+// antialiased pixel lands somewhere on the 8-bit ramp between `bg` and the
+// text color -- and the number of distinct values that ramp can take is
+// just the channel distance between them. Fade text to within ~20 levels
+// of the background and 256 coverage steps collapse onto ~20 outputs: the
+// edges stair-step and the text reads as pixelated/low-resolution rather
+// than merely dim. At a 3:1 floor the narrowest ramp across the shipped
+// palettes is ~75 levels, which is smooth.
+// The contrast floor every secondary-text group derives against. 3:1 is
+// WCAG AA's own floor for large text -- low enough that comments still
+// recede from Normal in every shipped palette, high enough that they stay
+// readable and antialias smoothly. It cannot go much higher: the lowest-
+// contrast palette (solarized-light) only reaches 4.13:1 at *full* p.fg, so
+// a 4.5:1 body-text floor would leave it no room to dim at all.
+constexpr float kSecondaryTextContrast = 3.0f;
+
+/**
+ * @brief Fades a text color toward the background for secondary text, keeping a minimum contrast ratio.
+ * @param fg The full-strength text color to fade.
+ * @param bg The background the text is drawn on.
+ * @param max_t How far to fade toward `bg` at most, as a Mix() factor in [0, 1].
+ * @param min_ratio The WCAG contrast ratio against `bg` to keep.
+ * @return The most-faded blend of `fg` toward `bg` that still clears `min_ratio`, or `fg` if none does.
+ */
+ThemeColor DimText(ThemeColor fg, ThemeColor bg, float max_t, float min_ratio) {
+    for (int step = static_cast<int>(max_t * 20.0f); step > 0; step--) {
+        ThemeColor candidate = Mix(fg, bg, static_cast<float>(step) / 20.0f);
+        if (ContrastRatio(candidate, bg) >= min_ratio) return candidate;
+    }
+    return fg;
+}
+
 // mep's original hardcoded look (main.cpp's pre-Phase-9 literals), kept as
 // the default palette so nothing visually changes for existing users.
 const Palette kPaletteMepDark = {
@@ -1129,11 +1198,18 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["SpellBad"] = p.red;
     g["SpellCap"] = p.yellow;
     g["SpellRare"] = p.yellow;
-    g["Debug"] = p.border;
+    g["Debug"] = DimText(p.fg, p.bg, 0.55f, kSecondaryTextContrast);
     g["Add"] = p.green;
     g["Delete"] = p.red;
     g["Change"] = p.yellow;
-    g["Comment"] = p.border;
+    // Secondary *text*, so it fades from p.fg rather than reusing p.border.
+    // Border is a structural color -- "pane and panel edges" (help/themes.org)
+    // -- which most palettes deliberately pin a few levels off p.bg; as text
+    // that is not merely dim but actively pixelated, because the glyph
+    // antialiasing ramp has nowhere to land (see DimText's comment). Across
+    // the shipped palettes p.border averaged ~1.6:1 against p.bg and bottomed
+    // out at 1.08:1 (ayu-dark), i.e. all but invisible.
+    g["Comment"] = DimText(p.fg, p.bg, 0.55f, kSecondaryTextContrast);
     // Chrome. Everything that marks "the active/selected one" (pane
     // header, workspace pill, sidebar tab, picker title/selection, menu
     // hover) tints from p.accent -- the scheme's own signature color --
@@ -1197,7 +1273,11 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     // Editor::UpdateIncSearch), so it wants to read as "found" against
     // either theme rather than blend in like Visual's selection tint does.
     g["IncSearch"] = Mix(p.orange, p.fg, 0.5f);
-    g["LineNr"] = p.border;
+    // Gutter line numbers are text too, and want the same treatment as
+    // Comment above -- dimmer than Normal, but never faded so far into p.bg
+    // that the digits stair-step. Kept a touch dimmer than Comment (the
+    // gutter should recede further than inline prose) but on the same floor.
+    g["LineNr"] = DimText(p.fg, p.bg, 0.6f, kSecondaryTextContrast);
     g["FloatBg"] = Lighten(p.bg, 5);
     g["FloatBorder"] = p.border;
     g["Overlay"] = ThemeColor{0, 0, 0, 140};
@@ -1222,10 +1302,11 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     g["Accent"] = p.accent;
     g["AccentTint"] = Mix(p.accent, p.bg, 0.18f);
     // A dimmer foreground than Normal for secondary text (word/page count,
-    // placeholder text, inert rail icons) -- Comment (p.border) already
-    // fills a similar role for syntax comments, but that's tuned for
-    // against-code contrast, not this UI's own chrome.
-    g["MutedFg"] = Mix(p.fg, p.bg, 0.55f);
+    // placeholder text, inert rail icons) -- the same role Comment fills for
+    // syntax comments, and now the same derivation, so this one also stops
+    // fading once it hits the readability floor instead of blending into a
+    // low-contrast palette's background.
+    g["MutedFg"] = DimText(p.fg, p.bg, 0.55f, kSecondaryTextContrast);
     // The page itself: lighter than the surrounding canvas/chrome in every
     // palette (light or dark) so it still reads as "a sheet of paper" set
     // against the work surface, without hardcoding an actual white.
@@ -19567,40 +19648,101 @@ bool Editor::DispatchNormalKey(int cp) {
         return true;
     }
 
-    // z{z,t,b}: reposition the view without moving the cursor.
-    // z{a,o,c}: toggle/open/close the fold at the cursor (Phase 5).
-    // z{m,r,R,M}: vim-style fold-level stepping/extremes (org headlines).
+    // The z prefix. Broadly vim's own fold surface, plus z{z,t,b}'s view
+    // repositioning:
+    //   za/zA  toggle the fold at the cursor, one level / recursively
+    //   zo/zO  open it, one level / recursively
+    //   zc/zC  close it, one level / recursively
+    //   zv     open just enough to see the cursor's line
+    //   zR/zM  open / close every fold in the buffer
+    //   zr/zm  one fold level less / more
+    //   zf/zF  create one over a motion-free count of lines (zf: Visual,
+    //          see DispatchVisualKey; zF: [count] lines from the cursor)
+    //   zd/zD  delete the fold at the cursor, innermost / every one
+    //   zE     delete every fold in the buffer
+    //   zj/zk  jump to the next fold's start / the previous fold's end
+    //   zi/zn/zN  folding off and on ('foldenable')
+    //   zx     rebuild the computed folds now
     if (pending_z_) {
         pending_z_ = false;
-        // Org buffers have no persistent fold provider (no watcher re-runs
-        // this on every edit) -- recomputing right before any fold command
-        // touches the buffer means it's always current without paying a
-        // rescan on every keystroke that isn't actually about to use it.
-        // Marker folds (`{{{`/`}}}`) get the same lazy treatment, but for
-        // every filetype -- not just org.
-        if (c == 'a' || c == 'o' || c == 'c' || c == 'm' || c == 'r' || c == 'R' || c == 'M') {
-            if (IsOrgBuffer()) RecomputeOrgFolds();
-            if (IsMepmlBuffer()) RecomputeMepmlFolds();
-            RecomputeMarkerFolds();
-        }
-        if (c == 'z' || c == 't' || c == 'b') {
-            ScrollCursorTo(c);
-        } else if (c == 'a') {
-            ToggleFoldAtCursor();
-        } else if (c == 'o' || c == 'c') {
-            int row = CurPane().cursor.row;
-            for (Fold &f : Buf().folds) {
-                if (row >= f.start_row && row <= f.end_row) f.closed = (c == 'c');
+        // Taken here rather than per-branch so a count typed before a z
+        // command is consumed by it either way -- left pending it would
+        // leak into whatever key came next ("5zz" then "j" jumping five
+        // lines). Only zF has a use for it.
+        const int count = TakeRawCount();
+        const int row = CurPane().cursor.row;
+        // Org/mepml/marker folds have no watcher re-running their
+        // providers on every edit -- recomputing right before a command
+        // that reads them means they're always current without paying a
+        // rescan on every keystroke that isn't about to use one. Not for
+        // zd/zD/zE, which are about to remove folds (rebuilding first
+        // would resurrect exactly what's being deleted), nor for the
+        // commands that create or disable them.
+        if (std::strchr("aAoOcCvmrRMjk", c) != nullptr) RecomputeLazyFoldProviders();
+        switch (c) {
+            case 'z':
+            case 't':
+            case 'b': ScrollCursorTo(c); break;
+            case 'a':
+                SetFoldsEnabled(true);
+                ToggleFoldAtCursor();
+                break;
+            case 'A': ToggleFoldsAtRowRecursive(row); break;
+            case 'o': OpenFoldsAtRow(row, false); break;
+            case 'O': OpenFoldsAtRow(row, true); break;
+            case 'c': CloseFoldsAtRow(row, false); break;
+            case 'C': CloseFoldsAtRow(row, true); break;
+            case 'v': OpenFoldsToRevealRow(row); break;
+            case 'M':
+                SetFoldsEnabled(true);
+                SetAllFoldsClosed(true);
+                break;
+            case 'R': SetAllFoldsClosed(false); break;
+            case 'm':
+                SetFoldsEnabled(true);
+                AdjustFoldLevel(-1);
+                break;
+            case 'r': AdjustFoldLevel(1); break;
+            case 'F': {
+                // zf's Normal-mode form: [count] lines from the cursor
+                // down, the count being the only range it takes (mep has
+                // no operator-pending fold, so there's no "zfap").
+                const int end_row = row + std::max(1, count) - 1;
+                if (end_row <= row) {
+                    SetStatusMessage("Fold needs at least two lines");
+                    break;
+                }
+                CreateFold(row, end_row, /*closed=*/true, "manual");
+                CurPane().cursor = FirstNonBlank(std::min(row, Buf().LineCount() - 1));
+                ClampCursor();
+                break;
             }
-        } else if (c == 'M') {
-            SetAllFoldsClosed(true);
-        } else if (c == 'R') {
-            SetAllFoldsClosed(false);
-        } else if (c == 'm') {
-            AdjustFoldLevel(-1);
-        } else if (c == 'r') {
-            AdjustFoldLevel(1);
+            case 'd': DeleteFoldAtRow(row, false); break;
+            case 'D': DeleteFoldAtRow(row, true); break;
+            case 'E':
+                DeleteAllFolds();
+                SetStatusMessage("All folds deleted -- zx rebuilds them");
+                break;
+            case 'j':
+            case 'k': {
+                const int target = (c == 'j') ? NextFoldStartRow(row) : PrevFoldEndRow(row);
+                if (target < 0) {
+                    SetStatusMessage(c == 'j' ? "No fold below the cursor" : "No fold above the cursor");
+                    break;
+                }
+                CurPane().cursor.row = target;
+                ClampCursor();
+                break;
+            }
+            case 'i': SetFoldsEnabled(!Buf().fold_enabled); break;
+            case 'n': SetFoldsEnabled(false); break;
+            case 'N': SetFoldsEnabled(true); break;
+            case 'x': UpdateFolds(); break;
+            default: break;
         }
+        // Only the closing commands can strand the cursor inside a fold
+        // it can no longer see out of.
+        if (std::strchr("aAcCMmiN", c) != nullptr) SnapCursorOutOfClosedFold();
         return true;
     }
 
@@ -21171,6 +21313,38 @@ void Editor::DispatchVisualKey(int cp) {
         return;
     }
 
+    // z{f}: fold the selection -- vim's Visual-mode zf. The only fold
+    // command that takes a range rather than acting at the cursor's own
+    // fold, so it lives here and has no counterpart in DispatchNormalKey's
+    // pending_z_ block. provider="manual" keeps it clear of the lazy
+    // provider recomputes (org/mepml/marker), each of which clears and
+    // rebuilds only its own tag, so a hand-made fold isn't wiped out by
+    // the next za; ShiftFoldsForLineEdit keeps its range glued to the text
+    // across later edits. Any other second key just cancels, same as
+    // Normal mode's pending_z_ swallowing a letter it has no command for.
+    if (pending_z_) {
+        pending_z_ = false;
+        if (c == 'f') {
+            CursorPos s, e;
+            VisualRange(s, e);
+            // CreateFold drops a <2-line range silently (nothing to hide);
+            // say so rather than looking like the key did nothing.
+            if (e.row <= s.row) {
+                EnterNormal();
+                SetStatusMessage("Fold needs at least two lines");
+                return;
+            }
+            CreateFold(s.row, e.row, /*closed=*/true, "manual");
+            EnterNormal();
+            // The interior rows are hidden now, so leave the cursor on the
+            // fold's own summary line rather than wherever inside the
+            // selection it happened to sit.
+            CurPane().cursor = FirstNonBlank(std::min(s.row, Buf().LineCount() - 1));
+            ClampCursor();
+        }
+        return;
+    }
+
     if (TryLuaMapping(mode_, std::string(1, c))) return;
 
     if (c == 'i' || c == 'a') {
@@ -21183,6 +21357,10 @@ void Editor::DispatchVisualKey(int cp) {
     }
     if (c == 'g') {
         pending_g_ = true;
+        return;
+    }
+    if (c == 'z') {
+        pending_z_ = true;
         return;
     }
     if (c == ';' || c == ',') {
@@ -22375,6 +22553,153 @@ void Editor::ClearFoldsFromProvider(const std::string &provider) {
     // Matches folds whose provider tag equals the one being cleared.
     folds.erase(std::remove_if(folds.begin(), folds.end(), [&](const Fold &f) { return f.provider == provider; }),
                 folds.end());
+}
+
+namespace {
+// The folds containing `row`, widest first -- the order zo/zO want (a
+// nest opens from the outside in) and the reverse of zc/zC's. Pointers
+// into Buffer::folds, so nothing here may outlive a push_back on it.
+std::vector<Fold *> FoldsContainingRow(std::vector<Fold> &folds, int row) {
+    std::vector<Fold *> hits;
+    for (Fold &f : folds)
+        if (row >= f.start_row && row <= f.end_row) hits.push_back(&f);
+    std::sort(hits.begin(), hits.end(), [](const Fold *a, const Fold *b) {
+        return (a->end_row - a->start_row) > (b->end_row - b->start_row);
+    });
+    return hits;
+}
+}  // namespace
+
+void Editor::OpenFoldsAtRow(int row, bool recursive) {
+    std::vector<Fold *> hits = FoldsContainingRow(Buf().folds, row);
+    for (Fold *f : hits) {  // widest first
+        if (!f->closed) continue;
+        f->closed = false;
+        if (!recursive) return;  // zo: one level per press, outermost first
+    }
+}
+
+void Editor::CloseFoldsAtRow(int row, bool recursive) {
+    SetFoldsEnabled(true);  // vim: anything that closes a fold turns folding back on
+    std::vector<Fold *> hits = FoldsContainingRow(Buf().folds, row);
+    for (auto it = hits.rbegin(); it != hits.rend(); ++it) {  // innermost first
+        if ((*it)->closed) continue;
+        (*it)->closed = true;
+        if (!recursive) return;  // zc: one level per press, innermost first
+    }
+}
+
+void Editor::ToggleFoldsAtRowRecursive(int row) {
+    SetFoldsEnabled(true);
+    const std::vector<Fold *> hits = FoldsContainingRow(Buf().folds, row);
+    bool any_closed = false;
+    for (const Fold *f : hits) any_closed = any_closed || f->closed;
+    if (any_closed) {
+        OpenFoldsAtRow(row, true);
+    } else {
+        CloseFoldsAtRow(row, true);
+    }
+}
+
+void Editor::DeleteFoldAtRow(int row, bool recursive) {
+    auto &folds = Buf().folds;
+    const std::vector<Fold *> hits = FoldsContainingRow(folds, row);
+    if (hits.empty()) {
+        SetStatusMessage("No fold at the cursor");
+        return;
+    }
+    // Erase by value rather than through the pointers above: removing one
+    // element invalidates the rest of them.
+    const Fold target = *hits.back();  // innermost
+    folds.erase(std::remove_if(folds.begin(), folds.end(),
+                               [&](const Fold &f) {
+                                   if (recursive) return row >= f.start_row && row <= f.end_row;
+                                   return f.start_row == target.start_row && f.end_row == target.end_row &&
+                                          f.provider == target.provider;
+                               }),
+                folds.end());
+    if (folds.empty()) Buf().fold_level = -1;
+}
+
+void Editor::DeleteAllFolds() {
+    Buf().folds.clear();
+    Buf().folds_closed_before_disable.clear();
+    Buf().fold_level = -1;
+    // Without this the next fold command's lazy rebuild would hand back
+    // every org/mepml/marker fold that was just eliminated. zx (or an
+    // explicit provider command) is how they come back.
+    Buf().fold_providers_suppressed = true;
+}
+
+void Editor::OpenFoldsToRevealRow(int row) {
+    // Only the folds that actually hide the row: one starting *on* it
+    // leaves it visible as its own summary line, and vim's zv leaves that
+    // fold alone too.
+    for (Fold &f : Buf().folds)
+        if (f.start_row < row && row <= f.end_row) f.closed = false;
+}
+
+int Editor::NextFoldStartRow(int row) const {
+    int best = -1;
+    for (const Fold &f : Buf().folds)
+        if (f.start_row > row && (best < 0 || f.start_row < best)) best = f.start_row;
+    return best;
+}
+
+int Editor::PrevFoldEndRow(int row) const {
+    int best = -1;
+    for (const Fold &f : Buf().folds)
+        if (f.end_row < row && f.end_row > best) best = f.end_row;
+    return best;
+}
+
+void Editor::SetFoldsEnabled(bool enabled) {
+    Buffer &b = Buf();
+    if (enabled == b.fold_enabled) return;
+    if (!enabled) {
+        b.folds_closed_before_disable.clear();
+        for (Fold &f : b.folds) {
+            if (f.closed) b.folds_closed_before_disable.push_back(f.start_row);
+            f.closed = false;
+        }
+        b.fold_enabled = false;
+        return;
+    }
+    for (Fold &f : b.folds) {
+        if (std::find(b.folds_closed_before_disable.begin(), b.folds_closed_before_disable.end(), f.start_row) !=
+            b.folds_closed_before_disable.end()) {
+            f.closed = true;
+        }
+    }
+    b.folds_closed_before_disable.clear();
+    b.fold_enabled = true;
+}
+
+void Editor::RecomputeLazyFoldProviders() {
+    if (Buf().fold_providers_suppressed) return;
+    if (IsOrgBuffer()) RecomputeOrgFolds();
+    if (IsMepmlBuffer()) RecomputeMepmlFolds();
+    RecomputeMarkerFolds();
+    // A provider hands back its own idea of what should be collapsed
+    // (mepml/marker preserve state by start row, org defaults new folds
+    // open) -- none of which may re-collapse anything while folding is
+    // off, or 'nofoldenable' would silently stop meaning what it says.
+    if (!Buf().fold_enabled) {
+        for (Fold &f : Buf().folds) f.closed = false;
+    }
+}
+
+void Editor::UpdateFolds() {
+    Buf().fold_providers_suppressed = false;
+    RecomputeLazyFoldProviders();
+    OpenFoldsToRevealRow(CurPane().cursor.row);
+}
+
+void Editor::SnapCursorOutOfClosedFold() {
+    int start_row = 0;
+    if (!IsRowHiddenByFold(CurPane().cursor.row, &start_row)) return;
+    CurPane().cursor = FirstNonBlank(std::max(0, std::min(start_row, Buf().LineCount() - 1)));
+    ClampCursor();
 }
 
 namespace {

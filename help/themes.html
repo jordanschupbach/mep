@@ -62,6 +62,21 @@ all -- is <b>derived</b> from those eleven, by mixing and tinting. That is why
 adding a theme means writing eleven colours rather than a stylesheet, and
 why a new UI element picks up sensible colours in all sixty-two themes
 without anyone revisiting them.</p>
+<h1>Dim text keeps a contrast floor</h1>
+<p>The muted text groups -- <code>Comment</code>, <code>LineNr</code>, <code>MutedFg</code>, <code>Debug</code> -- are <b>not</b>
+<code>border</code>. They fade <code>fg</code> toward <code>bg</code>, but stop fading as soon as they reach a
+3:1 contrast ratio against the resolved background, so a palette with a
+low-contrast <code>fg</code> gets a less-faded comment rather than an unreadable one.</p>
+<p>That floor is also what keeps glyph antialiasing intact. Text is drawn as
+coverage blended between the background and the text colour, so every
+antialiased edge pixel lands on a ramp whose length <b>is</b> the distance
+between those two colours. Dim text to within a handful of levels of the
+background and the ramp has nowhere to land: the edges stair-step and the
+text looks pixelated, as though rendered at a lower resolution, rather than
+simply faint. <code>border</code> sits that close to <code>bg</code> in most palettes -- which is
+right for a pane edge and wrong for a comment.</p>
+<p>So a custom theme picks <code>border</code> purely for its edges. Comment colour
+follows from <code>fg</code> and <code>bg</code>, and stays legible without being tuned.</p>
 <h1>Light and dark</h1>
 <p>mep does not track a light/dark flag. Where it needs to know -- picking
 which mep logo to draw on the start screen, for instance -- it computes the

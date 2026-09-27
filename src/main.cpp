@@ -1871,7 +1871,14 @@ gfx::Color ResolveHlGroup(const std::string &name) {
     if (contains("Info") || contains("Blue") || contains("Hint")) return ToRaylib(get("Blue", {97, 175, 239, 255}));
     if (contains("Purple") || contains("Magenta")) return ToRaylib(get("Purple", {198, 120, 221, 255}));
     if (contains("Cyan")) return ToRaylib(get("Cyan", {86, 182, 194, 255}));
-    if (contains("Comment") || contains("Gray") || contains("Grey")) return ToRaylib(get("Border", {130, 130, 135, 255}));
+    // Routes to the theme's own Comment group, not the raw Border color it
+    // used to read. Border is structural ("pane and panel edges"); most
+    // palettes pin it within a handful of levels of the background, which as
+    // *text* renders pixelated rather than merely dim -- the glyph
+    // antialiasing ramp is only as wide as the text/background gap. The
+    // Comment group (BuildHighlightGroups, editor.cpp) is a fade from the
+    // foreground held above a contrast floor, which is what dim text wants.
+    if (contains("Comment") || contains("Gray") || contains("Grey")) return ToRaylib(get("Comment", {130, 130, 135, 255}));
     return ToRaylib(get("Normal", {200, 200, 200, 255}));
 }
 

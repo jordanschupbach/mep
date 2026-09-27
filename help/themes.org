@@ -69,6 +69,25 @@ adding a theme means writing eleven colours rather than a stylesheet, and
 why a new UI element picks up sensible colours in all sixty-two themes
 without anyone revisiting them.
 
+* Dim text keeps a contrast floor
+
+The muted text groups -- =Comment=, =LineNr=, =MutedFg=, =Debug= -- are *not*
+=border=. They fade =fg= toward =bg=, but stop fading as soon as they reach a
+3:1 contrast ratio against the resolved background, so a palette with a
+low-contrast =fg= gets a less-faded comment rather than an unreadable one.
+
+That floor is also what keeps glyph antialiasing intact. Text is drawn as
+coverage blended between the background and the text colour, so every
+antialiased edge pixel lands on a ramp whose length *is* the distance
+between those two colours. Dim text to within a handful of levels of the
+background and the ramp has nowhere to land: the edges stair-step and the
+text looks pixelated, as though rendered at a lower resolution, rather than
+simply faint. =border= sits that close to =bg= in most palettes -- which is
+right for a pane edge and wrong for a comment.
+
+So a custom theme picks =border= purely for its edges. Comment colour
+follows from =fg= and =bg=, and stays legible without being tuned.
+
 * Light and dark
 
 mep does not track a light/dark flag. Where it needs to know -- picking

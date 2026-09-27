@@ -1034,6 +1034,22 @@ struct Buffer {
     // (i.e. everything open), matching a freshly loaded/folded file where
     // nothing's been collapsed yet.
     int fold_level = -1;
+    // vim's 'foldenable', toggled by zi (and set either way by zn/zN).
+    // Folding is not implemented as a render-time gate -- every site that
+    // hides a row reads Fold::closed directly -- so "disabled" is stored
+    // as what it looks like: every fold forced open, with the rows that
+    // *were* closed remembered here (by start row, the same handle every
+    // provider recompute preserves state by) so zN/zi can put them back
+    // exactly as they were rather than losing the collapse.
+    bool fold_enabled = true;
+    std::vector<int> folds_closed_before_disable;
+    // Set by zE, cleared by zx: stops the lazy org/mepml/marker rebuild
+    // that a fold command would otherwise run, which would resurrect
+    // everything zE just eliminated on the very next keystroke. Only the
+    // *lazy* rebuild is suppressed -- an explicit :MepOrgFold/:MepMarkdown/
+    // :MepSyntaxFold still builds folds, since that is the user asking for
+    // them outright.
+    bool fold_providers_suppressed = false;
 
     // Org inline-image rendering: row -> a resolved file path plus that
     // file's native pixel size, populated by Editor::OrgImageScan (and
@@ -8696,6 +8712,93 @@ public:
      * @param provider The provider tag to clear folds for.
      */
     void ClearFoldsFromProvider(const std::string &provider);
+    // zo/zO and zc/zC: open or close the folds containing `row`. One level
+    // per press when `recursive` is false -- the outermost *closed* fold
+    // opens first, the innermost *open* one closes first, so repeated
+    // presses walk in and out of a nest a level at a time -- or every fold
+    // containing the row at once when it's true.
+    /**
+     * @brief Opens the folds containing a row: the outermost closed one (zo), or all of them (zO).
+     * @param row The row to open folds at.
+     * @param recursive Whether to open every containing fold rather than one level.
+     */
+    void OpenFoldsAtRow(int row, bool recursive);
+    /**
+     * @brief Closes the folds containing a row: the innermost open one (zc), or all of them (zC).
+     * @param row The row to close folds at.
+     * @param recursive Whether to close every containing fold rather than one level.
+     */
+    void CloseFoldsAtRow(int row, bool recursive);
+    /**
+     * @brief zA: opens every fold containing a row if any is closed, else closes them all.
+     * @param row The row to toggle folds at.
+     */
+    void ToggleFoldsAtRowRecursive(int row);
+    // zd/zD: remove the fold itself, not just its collapsed state. A fold
+    // a provider owns (org headlines, `{{{` markers, ...) can be rebuilt
+    // by that provider's next recompute -- the same caveat vim's own zd
+    // carries outside foldmethod=manual.
+    /**
+     * @brief Deletes the innermost fold containing a row (zd), or every fold containing it (zD).
+     * @param row The row to delete folds at.
+     * @param recursive Whether to delete every containing fold rather than only the innermost.
+     */
+    void DeleteFoldAtRow(int row, bool recursive);
+    /**
+     * @brief zE: deletes every fold in the current buffer and suppresses the lazy provider rebuild until zx.
+     */
+    void DeleteAllFolds();
+    /**
+     * @brief zv: opens just enough folds that the cursor's row is no longer hidden inside a closed one.
+     * @param row The row to reveal.
+     */
+    void OpenFoldsToRevealRow(int row);
+    /**
+     * @brief zj: the start row of the first fold starting below `row`.
+     * @param row The row to search from.
+     * @return That start row, or -1 when no fold starts below `row`.
+     */
+    int NextFoldStartRow(int row) const;
+    /**
+     * @brief zk: the end row of the last fold ending above `row`.
+     * @param row The row to search from.
+     * @return That end row, or -1 when no fold ends above `row`.
+     */
+    int PrevFoldEndRow(int row) const;
+    /**
+     * @brief zi/zn/zN: turns folding off (every fold forced open, collapsed rows remembered) or back on.
+     * @param enabled Whether folding is enabled.
+     */
+    void SetFoldsEnabled(bool enabled);
+    /**
+     * @brief Whether folding is enabled for the current buffer ('foldenable').
+     * @return True unless zi/zn turned it off.
+     */
+    bool FoldsEnabled() const { return Buf().fold_enabled; }
+    // The lazy rebuild the z-commands run before touching folds: org,
+    // mepml and marker folds have no watcher recomputing them on every
+    // keystroke, so they are brought up to date at the moment one is
+    // about to be used. A no-op while zE's suppression is in force, and
+    // anything it rebuilds is forced open while folding is disabled, so a
+    // recompute can't quietly re-collapse rows behind 'nofoldenable'.
+    /**
+     * @brief Rebuilds the lazily-computed fold providers (org, mepml, marker) for the current buffer.
+     */
+    void RecomputeLazyFoldProviders();
+    /**
+     * @brief zx: lifts zE's suppression, rebuilds the lazy fold providers and reveals the cursor's row.
+     */
+    void UpdateFolds();
+    // After a command that closes folds, the cursor can be left on a row
+    // that is now hidden -- which draws the caret on some unrelated
+    // visible line further down. Vim parks it on the fold's own summary
+    // line instead; so does this. Only the keyboard fold commands call
+    // it: a gutter click deliberately leaves the cursor alone (see
+    // ToggleFoldAtRow).
+    /**
+     * @brief Moves the cursor to the summary row of the closed fold hiding it, if one now does.
+     */
+    void SnapCursorOutOfClosedFold();
     // True (and *fold_start_row set) if `row` is hidden inside a closed
     // fold -- i.e. inside one but not that fold's own start row, which
     // stays visible as the fold's summary line.

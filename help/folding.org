@@ -5,19 +5,73 @@
 
 * The keys
 
-All on the =z= prefix, as in Vim:
+All on the =z= prefix, as in Vim. A fold at the cursor means one whose
+range covers the cursor's row; where a nest of them does, /one level/
+opens from the outside in and closes from the inside out, so repeated
+presses walk through the nest a level at a time.
 
-| Key  | Does                            |
-|------+---------------------------------|
-| =za= | toggle the fold at the cursor   |
-| =zo= | open it                         |
-| =zc= | close it                        |
-| =zR= | open every fold in the buffer   |
-| =zM= | close every fold                |
-| =zr= | one fold level less             |
-| =zm= | one fold level more             |
+| Key  | Does                                                |
+|------+-----------------------------------------------------|
+| =za= | toggle the fold at the cursor                       |
+| =zA= | toggle it and everything nested in it               |
+| =zo= | open one level at the cursor                        |
+| =zO= | open every fold at the cursor                       |
+| =zc= | close one level at the cursor                       |
+| =zC= | close every fold at the cursor                      |
+| =zv= | open just enough to see the line the cursor is on   |
+| =zR= | open every fold in the buffer                       |
+| =zM= | close every fold                                    |
+| =zr= | one fold level less                                 |
+| =zm= | one fold level more                                 |
 
-A folded region shows a marker in the gutter column, beside the line number.
+Closing a fold the cursor is inside moves the cursor to that fold's
+summary line, rather than leaving it on a hidden row.
+
+** Making and unmaking them
+
+| Key         | Does                                              |
+|-------------+---------------------------------------------------|
+| =zf=        | (Visual) fold the selected lines, closed          |
+| =[count]zF= | fold =count= lines from the cursor down, closed   |
+| =zd=        | delete the fold at the cursor                     |
+| =zD=        | delete every fold at the cursor                   |
+| =zE=        | delete every fold in the buffer                   |
+| =zx=        | rebuild the computed folds now, and do =zv=       |
+
+=zf= takes whichever lines the selection touches -- charwise or linewise,
+it folds whole lines either way -- and needs at least two of them, as
+does =zF=. A fold either of them makes is yours, not a provider's: none
+of the recomputes below clear it, and it follows the text as you edit
+around it.
+
+=zd= and =zD= remove the fold itself, not just its collapsed state. One
+that a provider owns can be rebuilt by that provider's next recompute --
+the same caveat vim's own =zd= carries outside =foldmethod=manual=. =zE=
+is the exception: it stops the automatic rebuild as well, so the buffer
+stays unfolded until =zx= asks for the folds back.
+
+** Turning folding off
+
+| Key  | Does                                                    |
+|------+---------------------------------------------------------|
+| =zi= | folding off and on ('foldenable')                       |
+| =zn= | off: every fold opens, and nothing collapses            |
+| =zN= | on: every fold that was collapsed goes back as it was   |
+
+Folding off opens everything without losing it -- =zN= (or =zi= again)
+puts each fold back exactly as you left it. Any command that closes a
+fold turns folding back on first, as in Vim.
+
+** Moving between them
+
+| Key  | Does                              |
+|------+-----------------------------------|
+| =zj= | to the start of the next fold     |
+| =zk= | to the end of the previous fold   |
+
+A folded region shows a marker in the gutter column, beside the line
+number: =-= for an open fold, =+= for a closed one. Clicking it toggles
+that fold without moving the cursor.
 
 * Where folds come from
 
@@ -26,6 +80,7 @@ A folded region shows a marker in the gutter column, beside the line number.
 | Treesitter            | code, via =:MepSyntaxFold=           |
 | headline depth        | Org and Markdown                     |
 | =\{\{\{= and =\}\}\}= | marker folds, in any filetype        |
+| =zf= in Visual mode   | one you make by hand, any filetype   |
 
 Org and marker folds are recomputed lazily -- right before a fold command
 touches the buffer, rather than on every keystroke -- so they are always

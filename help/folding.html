@@ -13,24 +13,72 @@
 <body>
 <h1>Folds</h1>
 <h1>The keys</h1>
-<p>All on the <code>z</code> prefix, as in Vim:</p>
+<p>All on the <code>z</code> prefix, as in Vim. A fold at the cursor means one whose
+range covers the cursor's row; where a nest of them does, <i>one level</i>
+opens from the outside in and closes from the inside out, so repeated
+presses walk through the nest a level at a time.</p>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
 <tr><td><code>za</code></td><td>toggle the fold at the cursor</td></tr>
-<tr><td><code>zo</code></td><td>open it</td></tr>
-<tr><td><code>zc</code></td><td>close it</td></tr>
+<tr><td><code>zA</code></td><td>toggle it and everything nested in it</td></tr>
+<tr><td><code>zo</code></td><td>open one level at the cursor</td></tr>
+<tr><td><code>zO</code></td><td>open every fold at the cursor</td></tr>
+<tr><td><code>zc</code></td><td>close one level at the cursor</td></tr>
+<tr><td><code>zC</code></td><td>close every fold at the cursor</td></tr>
+<tr><td><code>zv</code></td><td>open just enough to see the line the cursor is on</td></tr>
 <tr><td><code>zR</code></td><td>open every fold in the buffer</td></tr>
 <tr><td><code>zM</code></td><td>close every fold</td></tr>
 <tr><td><code>zr</code></td><td>one fold level less</td></tr>
 <tr><td><code>zm</code></td><td>one fold level more</td></tr>
 </table>
-<p>A folded region shows a marker in the gutter column, beside the line number.</p>
+<p>Closing a fold the cursor is inside moves the cursor to that fold's
+summary line, rather than leaving it on a hidden row.</p>
+<h2>Making and unmaking them</h2>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>zf</code></td><td>(Visual) fold the selected lines, closed</td></tr>
+<tr><td><code>[count]zF</code></td><td>fold <code>count</code> lines from the cursor down, closed</td></tr>
+<tr><td><code>zd</code></td><td>delete the fold at the cursor</td></tr>
+<tr><td><code>zD</code></td><td>delete every fold at the cursor</td></tr>
+<tr><td><code>zE</code></td><td>delete every fold in the buffer</td></tr>
+<tr><td><code>zx</code></td><td>rebuild the computed folds now, and do <code>zv</code></td></tr>
+</table>
+<p><code>zf</code> takes whichever lines the selection touches -- charwise or linewise,
+it folds whole lines either way -- and needs at least two of them, as
+does <code>zF</code>. A fold either of them makes is yours, not a provider's: none
+of the recomputes below clear it, and it follows the text as you edit
+around it.</p>
+<p><code>zd</code> and <code>zD</code> remove the fold itself, not just its collapsed state. One
+that a provider owns can be rebuilt by that provider's next recompute --
+the same caveat vim's own <code>zd</code> carries outside <code>foldmethod=manual</code>. <code>zE</code>
+is the exception: it stops the automatic rebuild as well, so the buffer
+stays unfolded until <code>zx</code> asks for the folds back.</p>
+<h2>Turning folding off</h2>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>zi</code></td><td>folding off and on ('foldenable')</td></tr>
+<tr><td><code>zn</code></td><td>off: every fold opens, and nothing collapses</td></tr>
+<tr><td><code>zN</code></td><td>on: every fold that was collapsed goes back as it was</td></tr>
+</table>
+<p>Folding off opens everything without losing it -- <code>zN</code> (or <code>zi</code> again)
+puts each fold back exactly as you left it. Any command that closes a
+fold turns folding back on first, as in Vim.</p>
+<h2>Moving between them</h2>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>zj</code></td><td>to the start of the next fold</td></tr>
+<tr><td><code>zk</code></td><td>to the end of the previous fold</td></tr>
+</table>
+<p>A folded region shows a marker in the gutter column, beside the line
+number: <code>-</code> for an open fold, <code>+</code> for a closed one. Clicking it toggles
+that fold without moving the cursor.</p>
 <h1>Where folds come from</h1>
 <table>
 <tr><th>Source</th><th>For</th></tr>
 <tr><td>Treesitter</td><td>code, via <code>:MepSyntaxFold</code></td></tr>
 <tr><td>headline depth</td><td>Org and Markdown</td></tr>
 <tr><td><code>\{\{\{</code> and <code>\}\}\}</code></td><td>marker folds, in any filetype</td></tr>
+<tr><td><code>zf</code> in Visual mode</td><td>one you make by hand, any filetype</td></tr>
 </table>
 <p>Org and marker folds are recomputed lazily -- right before a fold command
 touches the buffer, rather than on every keystroke -- so they are always

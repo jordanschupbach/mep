@@ -109,6 +109,34 @@ current without costing anything while you type.
 Org has its own cycling on =:MepOrgCycle=, which is the more natural way to
 move through an outline.
 
+* Folds across sessions
+
+Folds are saved in the project session file, next to the layout, tabs and
+cursor positions, and come back when the project is reopened.
+
+| Kind                                   | Saved as                     |
+|----------------------------------------+------------------------------|
+| a fold you made (=zf= / =zF=)          | the fold itself              |
+| a provider's fold you collapsed        | the collapse, not the fold   |
+| a provider's fold left open            | nothing                      |
+
+A provider's fold (an Org headline, a =\{\{\{= marker, a treesitter
+block) is rebuilt from the text next time anyway, so there is nothing
+worth saving but the fact that you had closed it -- which comes back
+matched by start row, the same way a recompute preserves it inside a
+session. A fold you made by hand exists nowhere but in mep, so it is
+saved whole.
+
+Two things to know:
+
+- Folds come back whether or not a layout does. Opening a project (from
+  the dashboard, or =mep --project <path>=) restores its whole saved
+  layout; a bare =mep file.txt= restores no layout at all, by design --
+  but it still finds that file folded the way you left it, because a
+  fold belongs to the buffer rather than to the pane.
+- A saved range that no longer fits the file (it was edited elsewhere in
+  between, or shrank) is dropped rather than applied to the wrong lines.
+
 * From Lua
 
 #+begin_src lua

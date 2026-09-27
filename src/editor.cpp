@@ -5230,41 +5230,109 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
         target = std::max(row, pane.scroll_row);
     }
 
-    // Smooth catch-up: advance scroll_row toward `target` by at most
-    // cursor_delta rows this call instead of snapping straight there.
-    // An ordinary single-row step (j/k) only ever needs scroll_row to
-    // move by 1 anyway UNLESS the row just stepped onto/off is an org
-    // inline image or LaTeX fragment (row_slots, many slots tall for one
-    // buffer row) -- that's the one case `target` can land far from
-    // scroll_row despite cursor_delta staying 1, and capping the advance
-    // to cursor_delta turns it into a multi-frame slide instead of an
-    // instant jump: UpdateScrollForPane runs every rendered frame (see
-    // its DrawPane call site, main.cpp), so the remaining distance keeps
-    // closing at this same rate even across frames with no further
-    // input, until scroll_row reaches target. A genuinely large cursor
-    // jump (G, gg, a search, a counted motion like 15j) moves
-    // cursor_delta by roughly the same amount target needs to move, so
-    // it stays effectively uncapped and still lands in a single frame.
-    // The inline-image half of that now belongs to the two branches
-    // above (they own the scroll while the cursor is on a figure, and
-    // move by whole visual lines once it has stepped off one); what is
-    // left for this cap is a LaTeX fragment, and a figure whose slide
-    // happened to end on a whole row.
-    int cap = std::max(1, cursor_delta);
+    // --- Catch-up: snap, unless a LaTeX fragment is what's moving ------
+    //
+    // `target` can land several rows from scroll_row off a single j,
+    // because one buffer row is not one visual slot: soft wrap (:set
+    // wrap, on by default) makes a long line 2-5 slots, and a closed
+    // fold's summary or an org headline claim their own (PaneRowSlots).
+    // Those rows are ordinary text, and the honest answer for them is to
+    // move the view the whole way in the same frame as the keystroke that
+    // asked for it -- one press, one step, however many rows that is.
+    //
+    // This used to cap *every* catch-up at cursor_delta rows per call,
+    // paying a multi-row move out one row per rendered frame. Since this
+    // function runs once per frame (its DrawPane call site, main.cpp),
+    // that made the view's speed the display's refresh rate rather than
+    // anything the user set: measured on a 68fps Xvfb against a 25/s
+    // caret, one keystroke's 4-row target move slid the text 5 rows in
+    // 64ms -- 78 rows/s, 3.1x the caret -- and 21 of 78 view movements
+    // landed on frames with no keystroke at all. That is the same
+    // frame-rate pacing bug ResolveCaretRepeat exists to fix, one layer
+    // up, and it read as the view lurching ahead of the caret and then
+    // stopping dead. Snapping removes it outright: every view movement is
+    // now caused by, and simultaneous with, a keystroke.
+    //
+    // The one catch-up still worth spreading over frames is a multi-line
+    // LaTeX fragment (Buffer::OrgLatexRender), which claims many slots
+    // for one row -- snapping would flick the whole fragment on or off
+    // screen at once. (Org inline images and a part-way-scrolled figure
+    // never reach here: the two branches above own their scroll.) That
+    // slide is paced by a budget of rows accrued over *elapsed time* at
+    // the caret's own repeat rate, so it runs at one speed on a 60Hz
+    // panel and a 165Hz one, and `:set caretrate` governs it exactly as
+    // it governs the caret.
     int jump = target - pane.scroll_row;
-    // Safety valve: a gap wider than the pane itself shares no content
-    // between where the view is and where it's going, so sliding through
-    // it isn't a smooth transition -- it's a long flip-book of unrelated
-    // rows at `cap` rows per frame (1, whenever the cursor itself didn't
-    // move). That only happens when something replaced the buffer under
-    // the cursor rather than when the cursor navigated, so snap instead.
-    // The org-image/LaTeX slide this smoothing exists for stays intact:
-    // it spans one tall row (OrgImageLayoutFor), never more than a
-    // screenful.
-    if (std::abs(jump) > visible_lines) cap = std::abs(jump);
-    if (jump > cap) pane.scroll_row += cap;
-    else if (jump < -cap) pane.scroll_row -= cap;
-    else pane.scroll_row = target;
+    const double catchup_now = gfx::GetTime();
+    const double catchup_dt =
+        (pane.scroll_catchup_last_time < 0.0) ? 0.0 : catchup_now - pane.scroll_catchup_last_time;
+    pane.scroll_catchup_last_time = catchup_now;
+    // A gap wider than the pane shares no content between where the view
+    // is and where it's going, so it is not a transition to slide through
+    // -- it's a flip-book of unrelated rows. That only happens when
+    // something replaced the buffer under the cursor rather than when the
+    // cursor navigated. Snap, and skip paying for the range scan below.
+    bool slide = jump != 0 && std::abs(jump) <= visible_lines;
+    if (slide) {
+        // Is a fragment actually part of this move -- either the row being
+        // stepped onto, or one of the rows about to scroll off the top?
+        // Asked through OrgLatexRenderForRow, the same lookup PaneRowSlots
+        // uses to give such a row its many slots, so the two can't
+        // disagree about which rows are tall; it also honours the reveal
+        // rule, so a fragment currently showing its raw source (the cursor
+        // is inside it, org_plain_cursor_line_) is correctly an ordinary
+        // row here. Deliberately NOT RenderContaining: that one answers
+        // only for a fragment's *interior* rows -- the ones DrawPane skips
+        // -- so it never matches a fragment whose source is a single line,
+        // which is exactly the shape whose render is tallest relative to
+        // the rows it occupies, and so the one most in need of the slide.
+        // Bounded to a screenful by the check above.
+        bool render_involved = OrgLatexRenderForRow(buf, pane.cursor.row, pane.cursor.row) != nullptr;
+        const int scan_hi = std::max(pane.scroll_row, target);
+        for (int r = std::min(pane.scroll_row, target); !render_involved && r <= scan_hi; r++) {
+            if (OrgLatexRenderForRow(buf, r, pane.cursor.row) != nullptr) render_involved = true;
+        }
+        slide = render_involved;
+    }
+    if (slide) {
+        double caret_delay_sec = 0.0;
+        double caret_interval_sec = 0.0;
+        ResolveCaretRepeat(&caret_delay_sec, &caret_interval_sec);
+        // Clamped to one interval so a stalled frame, or a window that
+        // was unfocused for a while, can't bank credit and then pay it
+        // out as a jump -- the same reason the caret timer resyncs rather
+        // than catching up.
+        pane.scroll_catchup_budget += std::clamp(catchup_dt, 0.0, caret_interval_sec) / caret_interval_sec;
+        // A genuinely large cursor jump (G, gg, a search, a counted
+        // motion like 15j) moves cursor_delta by roughly the same amount
+        // target needs to move, so it stays effectively uncapped and
+        // still lands in a single frame; the budget only ever pays for
+        // the residual the cursor's own movement doesn't account for.
+        //
+        // Deliberately no std::max(1, ...) floor on this, unlike the
+        // per-call cap it replaces: a floor of one row per *call* is a
+        // floor of one row per rendered frame, which is the whole bug --
+        // it hands the residual out at the refresh rate and leaves the
+        // budget with nothing to govern (measured: a 3-row slide paid out
+        // on 3 consecutive frames ~5ms apart, ~200 rows/s, against a 25/s
+        // caret). A cap of 0 on a frame that has not yet earned a row is
+        // exactly what paces the slide; the budget can never stall, since
+        // it accrues every call and releases a row within one caret
+        // interval.
+        const int cap = cursor_delta + static_cast<int>(pane.scroll_catchup_budget);
+        const int scroll_before = pane.scroll_row;
+        if (jump > cap) pane.scroll_row += cap;
+        else if (jump < -cap) pane.scroll_row -= cap;
+        else pane.scroll_row = target;
+        pane.scroll_catchup_budget -=
+            std::min(pane.scroll_catchup_budget,
+                     static_cast<double>(std::max(0, std::abs(pane.scroll_row - scroll_before) - cursor_delta)));
+    } else {
+        pane.scroll_row = target;
+    }
+    // Caught up: nothing left to owe, so no credit carries into whatever
+    // the next slide turns out to be.
+    if (pane.scroll_row == target) pane.scroll_catchup_budget = 0.0;
     // Never stop inside a render's skipped rows: sliding down, step past
     // it; sliding up, stop on it. (Snapping back while sliding down would
     // undo each step on the next frame.)
@@ -17230,6 +17298,47 @@ Json Editor::SplitStateJson(const Workspace &ws, const SplitNode &node) const {
     return j;
 }
 
+// Which folds are worth a session file. A hand-made one (provider
+// "manual", from zf/zF) exists nowhere else -- lose it and it is gone. A
+// provider's fold, by contrast, is rebuilt from the text itself next
+// run, so the fold needs no saving; what does is the fact that the user
+// *collapsed* it, which the providers' own recomputes then preserve by
+// start row. So: every manual fold, and every closed one. An open
+// treesitter fold in a 3000-line file is neither, and saving thousands of
+// those would bloat the session file for nothing.
+Json Editor::WorkspaceFoldsJson(const Workspace &ws) const {
+    Json out = Json::Array();
+    for (const Buffer &buf : buffers_) {
+        if (buf.deleted || buf.filename.empty() || buf.folds.empty()) continue;
+        // A file opened from the command line -- or through anything else
+        // that runs before a workspace is active -- keeps workspace_id
+        // -1, the same "not scoped to one workspace" marker the scratch
+        // buffer carries. Those belong to the primary workspace here:
+        // it's the one whose root the file was opened against, and
+        // scoping them to nothing at all is what silently dropped every
+        // fold in a plain `mep file.txt` session.
+        const bool scoped_here = buf.workspace_id == ws.id;
+        const bool unscoped = buf.workspace_id < 0 && ws.primary;
+        if (!scoped_here && !unscoped) continue;
+        Json ranges = Json::Array();
+        for (const Fold &f : buf.folds) {
+            if (f.provider != "manual" && !f.closed) continue;
+            Json r = Json::Object();
+            r["start"] = f.start_row;
+            r["end"] = f.end_row;
+            r["closed"] = f.closed;
+            r["provider"] = f.provider;
+            ranges.push_back(std::move(r));
+        }
+        if (ranges.items().empty()) continue;
+        Json entry = Json::Object();
+        entry["buffer"] = RelativeToRoot(buf.filename, ws.root);
+        entry["ranges"] = std::move(ranges);
+        out.push_back(std::move(entry));
+    }
+    return out;
+}
+
 Json Editor::WorkspaceStateJson(const Project &project) const {
     Json j = Json::Object();
     j["version"] = kWorkspaceStateVersion;
@@ -17255,6 +17364,7 @@ Json Editor::WorkspaceStateJson(const Project &project) const {
             tabs.push_back(std::move(tj));
         }
         wj["tabs"] = std::move(tabs);
+        wj["folds"] = WorkspaceFoldsJson(ws);
         workspaces.push_back(std::move(wj));
     }
     j["workspaces"] = std::move(workspaces);
@@ -17593,6 +17703,11 @@ bool Editor::RestoreWorkspaceLayout(int workspace_id, const Json &wj, int *missi
     }
     const int saved_tab = wj.get("active_tab").as_int(0);
     ws.active_tab = (saved_tab >= 0 && saved_tab < static_cast<int>(ws.tabs.size())) ? saved_tab : 0;
+    // Folds after the files are open (nothing to fold before that) and
+    // after the focus fixup, since this touches buffers rather than panes
+    // and must not move the cursor.
+    RestoreWorkspaceFolds(wj, root);
+
     // A restored terminal pane left Mode::Terminal behind (see
     // OpenTerminalInPlaceArgv's tail) even when the pane that ends up
     // focused isn't one; AfterWorkspaceActivated's own guard, applied here
@@ -17600,6 +17715,86 @@ bool Editor::RestoreWorkspaceLayout(int workspace_id, const Json &wj, int *missi
     if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
     SyncModeToActivePaneBuffer();
     return true;
+}
+
+void Editor::RestoreWorkspaceFolds(const Json &wj, const std::string &root) {
+    for (const Json &entry : wj.get("folds").items()) {
+        if (!entry.is_object()) continue;
+        const std::string saved = entry.get("buffer").as_string("");
+        const std::string path = AbsoluteFromRoot(saved, root);
+        if (path.empty()) continue;
+        Buffer *buf = nullptr;
+        for (Buffer &candidate : buffers_) {
+            if (candidate.deleted || candidate.filename.empty()) continue;
+            // Buffer::filename is absolute when the file was opened
+            // through a restore and relative when it came off the command
+            // line, so compare resolved paths: matching the relative name
+            // directly would let one workspace's saved "notes.txt" land on
+            // another workspace's open notes.txt.
+            if (BufferAbsolutePath(candidate) == path) buf = &candidate;
+        }
+        // The file may not have come back at all (deleted, or its pane
+        // dropped) -- there is nothing to hang a fold on, so skip it.
+        if (buf == nullptr) continue;
+        for (const Json &r : entry.get("ranges").items()) {
+            if (!r.is_object()) continue;
+            const int start = r.get("start").as_int(-1);
+            const int end = r.get("end").as_int(-1);
+            const bool closed = r.get("closed").as_bool(true);
+            const std::string provider = r.get("provider").as_string("manual");
+            // The same validity rule CreateFold applies, against the file
+            // as it is *now*: it may well have been edited between the
+            // save and this restore, and a range running off the end of a
+            // file that has since shrunk would hide rows that no longer
+            // exist.
+            if (start < 0 || end <= start || end >= buf->LineCount()) continue;
+            Fold *existing = nullptr;
+            for (Fold &f : buf->folds) {
+                if (f.start_row == start && f.end_row == end && f.provider == provider) existing = &f;
+            }
+            // A provider may already have rebuilt this very fold while the
+            // file was loading (the latex scan does), and two panes on one
+            // file walk the same buffer twice -- so carry the saved
+            // collapsed state onto what is there rather than stacking a
+            // duplicate fold on top of it.
+            if (existing != nullptr) {
+                existing->closed = closed;
+                continue;
+            }
+            buf->folds.push_back({start, end, closed, provider});
+        }
+    }
+}
+
+bool Editor::RestoreFoldsOnly(int project_id) {
+#if defined(__EMSCRIPTEN__)
+    (void)project_id;
+    return false;
+#else
+    if (!session_enabled_) return false;
+    const Project *project = FindProject(project_id);
+    if (!project) return false;
+    const std::string path = WorkspaceStateFile(*project);
+    if (path.empty()) return false;
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return false;
+    Json doc;
+    // Silent about a malformed or future-versioned file, unlike
+    // RestoreWorkspaceState's own warnings: this runs on a startup that
+    // asked for nothing to be restored, so a session file it cannot read
+    // costs the user nothing and is not worth a notification.
+    if (!ReadJsonFile(path, &doc) || !doc.is_object() || !doc.get("workspaces").is_array()) return false;
+    if (doc.get("version").as_int(0) != kWorkspaceStateVersion) return false;
+    // Every saved workspace, not just the primary one: the file that was
+    // opened may well live in a worktree, and RestoreWorkspaceFolds keys
+    // off resolved paths, so a workspace whose files aren't open simply
+    // contributes nothing.
+    for (const Json &wj : doc.get("workspaces").items()) {
+        if (!wj.is_object()) continue;
+        RestoreWorkspaceFolds(wj, wj.get("root").as_string(""));
+    }
+    return true;
+#endif
 }
 
 bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
@@ -17651,7 +17846,16 @@ bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
             if (target && !wj.get("branch").as_string("").empty() && target->branch.empty()) {
                 target->branch = wj.get("branch").as_string("");
             }
-            if (keep_primary_tabs) continue;
+            if (keep_primary_tabs) {
+                // The saved layout is deliberately not restored here (a
+                // file was named on the command line and is already in the
+                // pane), but folds are not part of the layout -- they
+                // belong to the buffer. Restore them for whatever did get
+                // opened, or `mep somefile` would silently drop the folds
+                // `mep --project` keeps.
+                RestoreWorkspaceFolds(wj, root.empty() ? (target ? target->root : std::string()) : root);
+                continue;
+            }
         } else {
             if (root.empty() || !ValidWorkspaceName(name)) continue;
             if (!std::filesystem::is_directory(root, ec)) {

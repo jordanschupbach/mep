@@ -258,6 +258,23 @@
           installPhase = ''
             runHook preInstall
             install -Dm755 mep "$out/bin/mep"
+            # The language servers mep brings itself, and the mepml
+            # converter. These are not optional extras: kBuiltinLsp's
+            # registry spawns each one through mep.bundled_tool, which
+            # looks for it *beside* the running mep (/proc/self/exe) and
+            # otherwise falls back to the bare name on $PATH -- where
+            # nothing installs them either. Copying only `mep` here (this
+            # installPhase replaces the one CMake's own install(TARGETS)
+            # rules would have run) therefore shipped a build with no
+            # Python, C, C++, R, org, mepml or Maxima language support at
+            # all: no diagnostics, no hover, no LSP completion and no
+            # parameter hints, failing silently except for one "failed to
+            # start (not on PATH?)" toast. Keep in sync with the
+            # install(TARGETS ...) lines in CMakeLists.txt.
+            for tool in mep-org-lsp mep-mepml-lsp mep-r-lsp mep-python-lsp \
+                        mep-cpp-lsp mep-c-lsp mep-maxima-lsp mep-mepml; do
+              install -Dm755 "$tool" "$out/bin/$tool"
+            done
             install -Dm644 "$NIX_BUILD_TOP/$sourceRoot"/help/*.html -t "$out/share/mep/help"
             # Keep runtime assets with the packaged executable.  The native
             # dashboard resolves these relative to $out/bin/mep as

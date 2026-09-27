@@ -1389,6 +1389,16 @@ struct Pane {
     // smoothing.
     int scroll_follow_last_cursor_row = -1;
 
+    // Whole rows of view catch-up Editor::UpdateScrollForPane has
+    // *earned* but not yet spent, and the GetTime() it last topped this
+    // up at (-1 = never). Only ever nonzero while sliding through a
+    // LaTeX fragment, the one catch-up that is still paced rather than
+    // snapped -- see the pacing block in UpdateScrollForPane for why a
+    // budget accrued over elapsed time is the only form of this that
+    // isn't secretly a function of the display's refresh rate.
+    double scroll_catchup_budget = 0.0;
+    double scroll_catchup_last_time = -1.0;
+
     // Sub-row scroll offset (TODO.org "smooth scroll"): how many of
     // `scroll_row`'s own visual slots are scrolled off above the top of
     // the pane. Almost always 0 -- an ordinary row is one slot tall, so
@@ -4050,6 +4060,18 @@ public:
     // `keep_primary_tabs`: leave the primary workspace alone entirely
     // (`mep <file>` already put something there).
     bool RestoreWorkspaceState(int project_id, bool keep_primary_tabs);
+    // Folds alone, out of the same session file RestoreWorkspaceState
+    // reads -- for the startup that deliberately does *not* restore a
+    // layout (a bare `mep file.txt`, which leaves the pristine bootstrap
+    // workspace alone so the dashboard still shows). A fold belongs to a
+    // buffer, not to a pane, so there is no reason for it to share the
+    // layout's fate.
+    /**
+     * @brief Reapplies only the saved folds for a project, touching no layout, tabs or cursors.
+     * @param project_id The project whose session file to read.
+     * @return True if a session file was read.
+     */
+    bool RestoreFoldsOnly(int project_id);
     // Rebuilds one workspace's saved tabs from `wj` (one element of the
     // session file's `workspaces` array): the split tree with its share
     // ratios, each pane's file, its background buffer tabs, cursor and
@@ -12376,6 +12398,23 @@ private:
     bool WorkspaceIsPristine(const Workspace &ws) const;
     Json WorkspaceStateJson(const Project &project) const;
     Json SplitStateJson(const Workspace &ws, const SplitNode &node) const;
+    // The folds of every file open in one workspace, for the session file:
+    // an array of {buffer, ranges}. Per workspace rather than per pane
+    // because a fold belongs to a *buffer* -- two panes showing the same
+    // file share one set, and a file sitting in a pane's background tab
+    // has folds worth keeping too.
+    /**
+     * @brief Serializes the worth-saving folds of every file open in a workspace.
+     * @param ws The workspace whose buffers to walk.
+     * @return An array of {buffer, ranges} objects; empty when nothing is folded.
+     */
+    Json WorkspaceFoldsJson(const Workspace &ws) const;
+    /**
+     * @brief Reapplies the folds a session file saved for a workspace, to whichever of its files are now open.
+     * @param wj The saved workspace object.
+     * @param root The workspace root saved paths are relative to.
+     */
+    void RestoreWorkspaceFolds(const Json &wj, const std::string &root);
     uint64_t LayoutFingerprint() const;
     uint64_t last_layout_fingerprint_ = 0;
     double layout_dirty_since_ = -1.0;

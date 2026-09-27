@@ -53586,6 +53586,14 @@ int main(int argc, char **argv) {
         g_editor.RestoreWorkspaceState(g_editor.ActiveProject().id, !file_arg.empty());
         lua->DoString(std::string("mep.project_apply_default_layout_to_empty_workspaces(") +
                       (file_arg.empty() ? "false" : "true") + ")");
+    } else if (g_editor.RestoreWorkspaces()) {
+        // A bare `mep` (with or without a file) deliberately restores no
+        // layout, per the paragraph above -- but folds belong to the
+        // buffer, not to the pane it happens to sit in, so `mep file.txt`
+        // opens that file exactly as it always did and finds it folded the
+        // way it was left. Reads the same session file the project would;
+        // a no-op when there isn't one.
+        g_editor.RestoreFoldsOnly(g_editor.ActiveProject().id);
     }
     g_editor.ProjectDetectGit(g_editor.ActiveProject().id);
     mep::agent::Start();

@@ -6,6 +6,10 @@
 //                            reacting to a block-opening ':' or a flow keyword.
 //   ReindentDedentKeyword -- the re-alignment of a Python else/elif/except/
 //                            finally clause the moment its ':' is typed.
+//   ReindentPastedText    -- a pasted block re-aligned onto the indent of
+//                            wherever it lands, its own shape kept.
+//   IndentBackspaceWidth  -- how much whitespace one Backspace press eats when
+//   IndentDeleteWidth        the cursor is in an indent (a whole soft tab).
 
 #include "indent.h"
 
@@ -119,6 +123,144 @@ void TestDedentClauseRealign() {
     ExpectReindent("    default:", "cpp", std::nullopt);
 }
 
+// ---- ReindentPastedText ----
+
+void ExpectPaste(const std::string &text, const std::string &target, bool indent_first,
+                 const std::string &want) {
+    std::string got = mepindent::ReindentPastedText(text, target, indent_first);
+    if (got != want) {
+        std::fprintf(stderr,
+                     "ReindentPastedText(\"%s\", \"%s\", %s) = \"%s\", want \"%s\"\n",
+                     text.c_str(), target.c_str(), indent_first ? "true" : "false",
+                     got.c_str(), want.c_str());
+        std::abort();
+    }
+}
+
+void TestPasteKeepsShape() {
+    // The everyday case: a block copied at column 0 pasted into a function body.
+    // Every line gains the target indent, the nesting inside it is untouched.
+    ExpectPaste("if x:\n    y = 1\n", "    ", true,
+                "    if x:\n        y = 1\n");
+    // The same block copied *with* its own indentation: the baseline is the
+    // first non-blank line's, so the result is identical -- this is the whole
+    // point, pasting is insensitive to how deep the source happened to be.
+    ExpectPaste("        if x:\n            y = 1\n", "    ", true,
+                "    if x:\n        y = 1\n");
+    // Pasting at column 0 strips the source indent rather than keeping it.
+    ExpectPaste("        if x:\n            y = 1\n", "", true,
+                "if x:\n    y = 1\n");
+    // A line shallower than the first is floored at the target, never pulled
+    // left of it (a copy that starts mid-block).
+    ExpectPaste("    y = 1\nz = 2\n", "        ", true,
+                "        y = 1\n        z = 2\n");
+    // Single line: nothing to re-align, returned byte for byte.
+    ExpectPaste("    y = 1", "        ", true, "    y = 1");
+    ExpectPaste("", "    ", true, "");
+    // Nothing but blank lines: no indentation to measure, so left alone.
+    ExpectPaste("\n\n", "    ", true, "\n\n");
+}
+
+void TestPasteFirstLineSplice() {
+    // indent_first=false: the first line is spliced onto what is already on the
+    // line (an Insert-mode paste at the cursor, or a charwise p), so it is
+    // stripped but not re-prefixed -- the text before the cursor is its indent.
+    ExpectPaste("def f():\n    return 1\n", "    ", false,
+                "def f():\n        return 1\n");
+    ExpectPaste("    def f():\n        return 1\n", "    ", false,
+                "def f():\n        return 1\n");
+}
+
+void TestPasteBlankLines() {
+    // Interior blank lines stay empty instead of collecting the target indent.
+    ExpectPaste("a = 1\n\nb = 2\n", "    ", true, "    a = 1\n\n    b = 2\n");
+    ExpectPaste("a = 1\n   \nb = 2\n", "    ", true, "    a = 1\n\n    b = 2\n");
+    // A trailing partial line of whitespace is where the cursor lands and
+    // typing continues, so it keeps the indent it is due.
+    ExpectPaste("if x:\n    ", "    ", true, "    if x:\n        ");
+    // ... but a trailing *newline* is preserved as one, not padded.
+    ExpectPaste("if x:\n    \n", "    ", true, "    if x:\n\n");
+}
+
+void TestPasteTabs() {
+    // Tab-indented source, space-indented target: tabs are measured as four
+    // columns each and re-emitted as the target's spaces.
+    ExpectPaste("if x:\n\ty = 1\n", "    ", true, "    if x:\n        y = 1\n");
+    ExpectPaste("\tif x:\n\t\ty = 1\n", "", true, "if x:\n    y = 1\n");
+    // Space-indented source, tab-indented target: the relative levels come out
+    // as tabs, so the pasted block matches the file it lands in.
+    ExpectPaste("if x:\n    y = 1\n", "\t", true, "\tif x:\n\t\ty = 1\n");
+    // A target that mixes the two counts as spaces -- only an all-tab indent
+    // means "this file uses tabs".
+    ExpectPaste("if x:\n    y = 1\n", "\t ", true, "\t if x:\n\t     y = 1\n");
+    // Interior tabs (alignment inside the line) are not touched, only leading.
+    ExpectPaste("a\t= 1\n    b\t= 2\n", "", true, "a\t= 1\n    b\t= 2\n");
+}
+
+// ---- IndentBackspaceWidth / IndentDeleteWidth ----
+
+void ExpectBackspace(const std::string &line, int col, int want) {
+    int got = mepindent::IndentBackspaceWidth(line, col);
+    if (got != want) {
+        std::fprintf(stderr, "IndentBackspaceWidth(\"%s\", %d) = %d, want %d\n",
+                     line.c_str(), col, got, want);
+        std::abort();
+    }
+}
+
+void ExpectDelete(const std::string &line, int col, int want) {
+    int got = mepindent::IndentDeleteWidth(line, col);
+    if (got != want) {
+        std::fprintf(stderr, "IndentDeleteWidth(\"%s\", %d) = %d, want %d\n",
+                     line.c_str(), col, got, want);
+        std::abort();
+    }
+}
+
+void TestBackspaceEatsWholeIndent() {
+    // One press per indent level, at every depth.
+    ExpectBackspace("    x", 4, 4);
+    ExpectBackspace("        x", 8, 4);
+    ExpectBackspace("        ", 8, 4);
+    // Mid-level: back to the previous tab stop, not a whole level past it.
+    ExpectBackspace("      x", 6, 2);
+    ExpectBackspace("     x", 5, 1);
+    // Fewer spaces than a level: all of them (there is no stop to stop at).
+    ExpectBackspace("  x", 2, 2);
+    ExpectBackspace(" x", 1, 1);
+    // A literal tab is already a single press -- left to the ordinary path.
+    ExpectBackspace("\tx", 1, 0);
+    ExpectBackspace("\t    x", 5, 4);  // spaces after a tab: still one level
+    // Text before the cursor means ordinary Backspace: the spaces between
+    // words are not indentation.
+    ExpectBackspace("x    y", 5, 0);
+    ExpectBackspace("    x ", 6, 0);
+    ExpectBackspace("    xy", 6, 0);
+    // Start of line, and a column past the end: nothing special.
+    ExpectBackspace("    x", 0, 0);
+    ExpectBackspace("    x", 99, 0);
+    ExpectBackspace("", 0, 0);
+}
+
+void TestDeleteEatsWholeIndent() {
+    // Forward Delete from column 0 takes the whole first level.
+    ExpectDelete("    x", 0, 4);
+    ExpectDelete("        x", 0, 4);
+    ExpectDelete("        x", 4, 4);
+    // Up to the next stop only.
+    ExpectDelete("        x", 2, 2);
+    ExpectDelete("      x", 4, 2);
+    // A short indent: the spaces that are there, stopping at the text.
+    ExpectDelete("  x", 0, 2);
+    // On a tab, or on text: ordinary Delete.
+    ExpectDelete("\tx", 0, 0);
+    ExpectDelete("    x", 4, 0);
+    // Past the indent (text before the cursor): ordinary Delete, so a space
+    // between words still goes one at a time.
+    ExpectDelete("x    y", 1, 0);
+    ExpectDelete("", 0, 0);
+}
+
 }  // namespace
 
 int main() {
@@ -126,6 +268,12 @@ int main() {
     TestPythonColonOpensBlock();
     TestPythonFlowKeywordDedents();
     TestDedentClauseRealign();
+    TestPasteKeepsShape();
+    TestPasteFirstLineSplice();
+    TestPasteBlankLines();
+    TestPasteTabs();
+    TestBackspaceEatsWholeIndent();
+    TestDeleteEatsWholeIndent();
     std::printf("indent tests passed\n");
     return 0;
 }

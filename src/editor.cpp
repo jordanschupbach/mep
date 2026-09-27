@@ -19168,6 +19168,16 @@ std::string Editor::RegisterTextForPaste(int name) {
 }
 
 void Editor::InsertTextAsTyped(const std::string &text) {
+    // A multi-line block arrives with the indentation of wherever it was copied
+    // from, which is almost never the indentation of where it is going: the
+    // first line lands after whatever the cursor already sits behind, and every
+    // line after it keeps its original absolute indent. So re-align the whole
+    // block onto the cursor's own indent first, keeping its internal shape
+    // (`:set nopasteindent` for the byte-for-byte paste). Single-line register
+    // pastes (Ctrl-R) come through here too and are returned untouched.
+    std::string prepared = ReindentedForPaste(
+        text, PasteContinuationIndent(CurPane().cursor.row, CurPane().cursor.col),
+        /*indent_first_line=*/false);
     // Pasted/register text arrives with its own indentation baked in, so the
     // newline auto-indent and dedent-clause re-align that ProcessInsertKey now
     // applies to typed input must be suppressed here -- otherwise every line of
@@ -19184,8 +19194,8 @@ void Editor::InsertTextAsTyped(const std::string &text) {
     // Malformed sequences are skipped byte-by-byte rather than inserted
     // as garbage.
     size_t i = 0;
-    while (i < text.size()) {
-        unsigned char b = static_cast<unsigned char>(text[i]);
+    while (i < prepared.size()) {
+        unsigned char b = static_cast<unsigned char>(prepared[i]);
         int cp = 0;
         size_t len = 1;
         if (b < 0x80) {
@@ -19203,10 +19213,10 @@ void Editor::InsertTextAsTyped(const std::string &text) {
             i++;
             continue;
         }
-        if (i + len > text.size()) break;
+        if (i + len > prepared.size()) break;
         bool valid = true;
         for (size_t k = 1; k < len; k++) {
-            unsigned char c = static_cast<unsigned char>(text[i + k]);
+            unsigned char c = static_cast<unsigned char>(prepared[i + k]);
             if ((c & 0xC0) != 0x80) {
                 valid = false;
                 break;
@@ -20542,6 +20552,17 @@ void Editor::Backspace() {
     CursorPos &cursor = CurPane().cursor;
     if (cursor.col > 0) {
         std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
+        // In an indent, one press takes the whole soft tab back to the previous
+        // tab stop (`:set smarttab`) -- mep's indent is four spaces, and a
+        // four-press dedent is the thing this avoids. 0 = not in an indent, in
+        // which case a single character (one whole UTF-8 codepoint) goes.
+        int indent = smart_tab_ ? mepindent::IndentBackspaceWidth(line, cursor.col) : 0;
+        if (indent > 1) {
+            line.erase(static_cast<size_t>(cursor.col - indent), static_cast<size_t>(indent));
+            cursor.col -= indent;
+            Buf().modified = true;
+            return;
+        }
         int start = cursor.col - 1;
         while (start > 0 && (static_cast<unsigned char>(line[static_cast<size_t>(start)]) & 0xC0) == 0x80) start--;
         line.erase(static_cast<size_t>(start), static_cast<size_t>(cursor.col - start));
@@ -20563,6 +20584,14 @@ void Editor::DeleteForward() {
     CursorPos &cursor = CurPane().cursor;
     std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
     if (cursor.col < static_cast<int>(line.size())) {
+        // Backspace's forward counterpart: in an indent, one press takes the
+        // whole soft tab up to the next tab stop (`:set smarttab`).
+        int indent = smart_tab_ ? mepindent::IndentDeleteWidth(line, cursor.col) : 0;
+        if (indent > 1) {
+            line.erase(static_cast<size_t>(cursor.col), static_cast<size_t>(indent));
+            Buf().modified = true;
+            return;
+        }
         line.erase(static_cast<size_t>(cursor.col), static_cast<size_t>(Utf8CodepointLen(line, static_cast<size_t>(cursor.col))));
     } else if (cursor.row + 1 < Buf().LineCount()) {
         std::string next = Buf().lines[static_cast<size_t>(cursor.row) + 1];
@@ -26694,6 +26723,33 @@ CursorPos Editor::InsertCharwiseTextAt(CursorPos pos, const std::string &text) {
     return {end_row, end_col};
 }
 
+
+// The indent the continuation lines of a paste spliced into row `row` at byte
+// `col` belong at -- see the two-shape comment on the declaration in editor.h.
+std::string Editor::PasteContinuationIndent(int row, int col) const {
+    if (row < 0 || row >= Buf().LineCount()) return "";
+    const std::string &line = Buf().lines[static_cast<size_t>(row)];
+    int at = std::min(static_cast<int>(line.size()), std::max(0, col));
+    std::string prefix = line.substr(0, static_cast<size_t>(at));
+    // Nothing but whitespace before the insertion point: that whitespace *is*
+    // the indent this paste lands on (the Insert-mode "new auto-indented line,
+    // then paste" case). Mid-line: the line's own indent, which is where the
+    // block's second and later lines continue from.
+    if (prefix.find_first_not_of(" \t") == std::string::npos) return prefix;
+    return mepindent::LeadingWhitespace(line);
+}
+
+std::string Editor::ReindentedForPaste(const std::string &text, const std::string &target_indent,
+                                       bool indent_first_line) const {
+    if (!paste_indent_) return text;
+    return mepindent::ReindentPastedText(text, target_indent, indent_first_line);
+}
+
+std::string Editor::PasteLinewiseIndent(int row) const {
+    if (row < 0 || row >= Buf().LineCount()) return "";
+    return mepindent::LeadingWhitespace(Buf().lines[static_cast<size_t>(row)]);
+}
+
 void Editor::PasteAfter(int count, char reg_name) {
     // Pasting from the unnamed register (plain p, "+p, "*p) picks up
     // whatever another app copied since mep last touched the clipboard.
@@ -26706,7 +26762,11 @@ void Editor::PasteAfter(int count, char reg_name) {
         std::vector<std::string> block = SplitYankLines(reg.text);
         PasteBlockAt(cursor, block, false);
     } else if (reg.linewise) {
-        std::vector<std::string> block = SplitYankLines(reg.text);
+        // `:set pasteindent`: re-align the block onto the indent of the line
+        // it is pasted onto, keeping the block's own internal shape. Blockwise
+        // paste above is left alone -- its columns are the point.
+        std::vector<std::string> block = SplitYankLines(ReindentedForPaste(
+            reg.text, PasteLinewiseIndent(cursor.row), /*indent_first_line=*/true));
         std::vector<std::string> new_lines;
         for (int i = 0; i < count; i++) new_lines.insert(new_lines.end(), block.begin(), block.end());
         int insert_at = cursor.row + 1;
@@ -26716,9 +26776,11 @@ void Editor::PasteAfter(int count, char reg_name) {
         ShiftDecorationsForLineEdit(insert_at, static_cast<int>(new_lines.size()));
         cursor = {insert_at, 0};
     } else {
-        std::string text;
-        for (int i = 0; i < count; i++) text += reg.text;
         int at = std::min(LineLen(cursor.row), cursor.col + 1);
+        std::string once = ReindentedForPaste(reg.text, PasteContinuationIndent(cursor.row, at),
+                                              /*indent_first_line=*/false);
+        std::string text;
+        for (int i = 0; i < count; i++) text += once;
         CursorPos end = InsertCharwiseTextAt({cursor.row, at}, text);
         // Land on the last inserted character (Vim's `p`), not just past it.
         cursor = end;
@@ -26738,7 +26800,9 @@ void Editor::PasteBefore(int count, char reg_name) {
         std::vector<std::string> block = SplitYankLines(reg.text);
         PasteBlockAt(cursor, block, true);
     } else if (reg.linewise) {
-        std::vector<std::string> block = SplitYankLines(reg.text);
+        // Same alignment as `p`: the row the paste lands on.
+        std::vector<std::string> block = SplitYankLines(ReindentedForPaste(
+            reg.text, PasteLinewiseIndent(cursor.row), /*indent_first_line=*/true));
         std::vector<std::string> new_lines;
         for (int i = 0; i < count; i++) new_lines.insert(new_lines.end(), block.begin(), block.end());
         int insert_at = cursor.row;
@@ -26748,9 +26812,11 @@ void Editor::PasteBefore(int count, char reg_name) {
         ShiftDecorationsForLineEdit(insert_at, static_cast<int>(new_lines.size()));
         cursor = {insert_at, 0};
     } else {
-        std::string text;
-        for (int i = 0; i < count; i++) text += reg.text;
         int at = std::min(LineLen(cursor.row), cursor.col);
+        std::string once = ReindentedForPaste(reg.text, PasteContinuationIndent(cursor.row, at),
+                                              /*indent_first_line=*/false);
+        std::string text;
+        for (int i = 0; i < count; i++) text += once;
         CursorPos pos = {cursor.row, at};
         InsertCharwiseTextAt(pos, text);
         cursor = pos;  // land on the first inserted character (Vim's `P`)
@@ -27337,6 +27403,10 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
                 ignore_case_ = value;
             } else if (key == "wrapscan" || key == "ws") {
                 wrapscan_ = value;
+            } else if (key == "pasteindent" || key == "pi") {
+                paste_indent_ = value;
+            } else if (key == "smarttab" || key == "sta") {
+                smart_tab_ = value;
             } else {
                 status_message_ = "E518: Unknown option: " + opt;
             }

@@ -21,9 +21,29 @@
 <tr><td><code>wrap</code></td><td>on</td><td>soft-wrap long lines</td></tr>
 <tr><td><code>ignorecase</code></td><td>off</td><td>case-insensitive search and <code>:s</code></td></tr>
 <tr><td><code>wrapscan</code></td><td>on</td><td>search wraps around the buffer</td></tr>
+<tr><td><code>pasteindent</code> / <code>pi</code></td><td>on</td><td>re-indent a pasted block to fit where it lands</td></tr>
+<tr><td><code>smarttab</code> / <code>sta</code></td><td>on</td><td>one Backspace/Delete press per indent level</td></tr>
 <tr><td><code>textwidth=N</code> / <code>tw=N</code></td><td>80</td><td>the column <code>gq</code> wraps to</td></tr>
 </table>
 <p>Prefix a boolean with <code>no</code> to turn it off: <code>:set nowrap</code>.</p>
+<h2>Indentation: <code>pasteindent</code> and <code>smarttab</code></h2>
+<p>mep indents with a four-space soft tab everywhere, and these two are how that
+soft tab behaves when text arrives or leaves in a block.</p>
+<p><code>pasteindent</code> re-aligns a multi-line paste onto the indent of wherever it
+lands instead of keeping the indentation of wherever it was copied from. The
+block's own shape is kept exactly -- nesting inside it survives, whatever the
+source indented with -- so only the block as a whole moves:</p>
+<ul>
+<li><code>p</code> and <code>P</code> align the block with the line it lands on (Vim's <code>]p</code> rule), so a block copied from eight columns deep and pasted beside a line at four comes in at four. Deliberately not "the indent a new line here would get": that would put a body pasted under a Python <code>def f():</code> inside it, but it would also shift <code>yyp</code>, duplicating an <code>if x:</code> one level deeper and a <code>return</code> one level out. To paste a block <b>inside</b> the line above it, open the line first (<code>o</code>) and paste in Insert mode -- the auto-indent is then the target -- or <code>&gt;&gt;</code> the pasted range.</li>
+<li>An Insert-mode paste (<code>Ctrl-Shift-V</code>, <code>Ctrl-R {reg}</code>) uses the indent the cursor already sits at -- open a line with <code>o</code> and paste, and the block follows that line's auto-indent.</li>
+<li>Leading tabs in the pasted text count as four columns each and come back out as whatever the target line indents with, so a paste never mixes the two.</li>
+<li>Blockwise (<code>Ctrl-V</code>) registers are pasted as-is: their columns are the point.</li>
+</ul>
+<p><code>smarttab</code> makes one Backspace press in a line's leading whitespace eat a
+whole indent level -- back to the previous four-column tab stop rather than one
+space at a time -- and Delete do the same forwards. Spaces that are not
+indentation (between words, or anywhere after text on the line) still go one at
+a time.</p>
 <h1><code>mep.opt</code> options</h1>
 <h2>Editing and session</h2>
 <table>

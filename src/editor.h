@@ -11034,6 +11034,10 @@ private:
     // Python else/elif/except/finally clause, snap its indentation one level
     // out (mepindent::ReindentDedentKeyword). No-op otherwise.
     void ReindentDedentClause();
+    // Insert-mode Backspace/Delete. In a line's leading whitespace both eat a
+    // whole soft tab per press while `:set smarttab` is on (smart_tab_) -- mep
+    // indents with four spaces, and taking them out should cost one press, not
+    // four -- and a single character everywhere else.
     void Backspace();
     void DeleteForward();
 
@@ -11237,6 +11241,35 @@ private:
     CursorPos InsertCharwiseTextAt(CursorPos pos, const std::string &text);
     void PasteAfter(int count = 1, char reg_name = 0);
     void PasteBefore(int count = 1, char reg_name = 0);
+
+    // `:set pasteindent` (paste_indent_) needs to know what indent a paste is
+    // landing on. Two shapes, because the two kinds of paste land differently:
+    //
+    //   PasteContinuationIndent -- text spliced into an existing line (a
+    //     charwise p/P, or an Insert-mode paste at the cursor). The whitespace
+    //     before the insertion point is the indent when that is all there is
+    //     before it -- pasting at the start of a line, the common case, where
+    //     the cursor already sits at the right column; otherwise the line's own
+    //     indent, for the block's second and later lines to continue at.
+    //   PasteLinewiseIndent -- whole lines pasted before (`P`) or after (`p`)
+    //     row `row`: that row's own indent, for both, which is Vim's `]p` rule.
+    //     Deliberately NOT "the indent a new line there would get"
+    //     (mepindent::ComputeNewlineIndent): that would land a body pasted
+    //     under a Python `def foo():` inside it, but it would also silently
+    //     shift `yyp` -- duplicating a line that ends in ':' one level deeper,
+    //     and one that starts with `return` one level out. Aligning with the
+    //     line you paste onto is the rule that never rewrites a duplicate.
+    //
+    // Neither looks past the row it is given, so a paste on a blank line goes
+    // to that line's own column.
+    std::string PasteContinuationIndent(int row, int col) const;
+    std::string PasteLinewiseIndent(int row) const;
+    // mepindent::ReindentPastedText while `:set pasteindent` is on (the
+    // default), `text` byte for byte while it is off -- the one place every
+    // paste path asks the question, so the option can't be honored in one and
+    // forgotten in another.
+    std::string ReindentedForPaste(const std::string &text, const std::string &target_indent,
+                                   bool indent_first_line) const;
 
     // Ctrl-D/Ctrl-U (half a screen) and Ctrl-F/Ctrl-B (a full screen):
     // scroll the current pane, carrying the cursor along by the same
@@ -12143,6 +12176,18 @@ private:
     bool ignore_case_ = false;
     bool wrapscan_ = true;
     int text_width_ = 80;
+    // :set pasteindent/nopasteindent (default on) -- whether a multi-line paste
+    // is re-aligned onto the indent of wherever it lands (PasteAfter/
+    // PasteBefore, and the Insert-mode paste through InsertTextAsTyped) instead
+    // of arriving with the indentation of wherever it was copied from. The
+    // block's own internal shape is kept either way; see
+    // mepindent::ReindentPastedText. Off = the old byte-for-byte paste.
+    bool paste_indent_ = true;
+    // :set smarttab/nosmarttab (default on) -- whether one Backspace/Delete
+    // press in a line's leading whitespace eats a whole soft tab (kShift
+    // columns, back to / up to the nearest tab stop) instead of one space.
+    // See mepindent::IndentBackspaceWidth / IndentDeleteWidth.
+    bool smart_tab_ = true;
     // :set wrap/nowrap -- whether a buffer row wider than the pane soft-
     // wraps onto extra *visual* rows (main.cpp's DrawPane) instead of
     // running off the right edge. Distinct from text_width_/gq's hard

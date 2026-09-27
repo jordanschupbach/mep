@@ -13,9 +13,42 @@
 | =wrap=                    | on      | soft-wrap long lines           |
 | =ignorecase=              | off     | case-insensitive search and =:s= |
 | =wrapscan=                | on      | search wraps around the buffer |
+| =pasteindent= / =pi=      | on      | re-indent a pasted block to fit where it lands |
+| =smarttab= / =sta=        | on      | one Backspace/Delete press per indent level |
 | =textwidth=N= / =tw=N=    | 80      | the column =gq= wraps to       |
 
 Prefix a boolean with =no= to turn it off: =:set nowrap=.
+
+** Indentation: =pasteindent= and =smarttab=
+
+mep indents with a four-space soft tab everywhere, and these two are how that
+soft tab behaves when text arrives or leaves in a block.
+
+=pasteindent= re-aligns a multi-line paste onto the indent of wherever it
+lands instead of keeping the indentation of wherever it was copied from. The
+block's own shape is kept exactly -- nesting inside it survives, whatever the
+source indented with -- so only the block as a whole moves:
+
+- =p= and =P= align the block with the line it lands on (Vim's =]p= rule), so
+  a block copied from eight columns deep and pasted beside a line at four
+  comes in at four. Deliberately not "the indent a new line here would get":
+  that would put a body pasted under a Python =def f():= inside it, but it
+  would also shift =yyp=, duplicating an =if x:= one level deeper and a
+  =return= one level out. To paste a block *inside* the line above it, open
+  the line first (=o=) and paste in Insert mode -- the auto-indent is then the
+  target -- or =>>= the pasted range.
+- An Insert-mode paste (=Ctrl-Shift-V=, =Ctrl-R {reg}=) uses the indent the
+  cursor already sits at -- open a line with =o= and paste, and the block
+  follows that line's auto-indent.
+- Leading tabs in the pasted text count as four columns each and come back out
+  as whatever the target line indents with, so a paste never mixes the two.
+- Blockwise (=Ctrl-V=) registers are pasted as-is: their columns are the point.
+
+=smarttab= makes one Backspace press in a line's leading whitespace eat a
+whole indent level -- back to the previous four-column tab stop rather than one
+space at a time -- and Delete do the same forwards. Spaces that are not
+indentation (between words, or anywhere after text on the line) still go one at
+a time.
 
 * =mep.opt= options
 

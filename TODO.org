@@ -1,3 +1,26 @@
+* TODO have ability to create folds
+* TODO Get browser working 
+* DONE deleting a tab is just deleting four spaces, not a tab
+
+One Backspace press in a line's leading whitespace now eats the whole soft
+tab -- back to the previous 4-column tab stop, not one space -- and Delete
+does the same forwards. A literal =\t= was always one press, so only the
+soft-tab case changed. Spaces that are not indentation (between words, after
+text) still go one at a time, since it is the leading run that is an indent.
+=:set nosmarttab= puts the old one-space-per-press behaviour back.
+
+Pasting was the other half of the same complaint (code arriving with the
+indentation of wherever it was copied from): a multi-line paste is now
+re-aligned onto the indent of where it lands, keeping its own internal
+nesting -- =p=/=P= align it with the line it lands on (Vim's =]p= rule, the
+one that leaves =yyp= duplicating a line exactly), and an Insert-mode paste
+(Ctrl-Shift-V, Ctrl-R) uses the indent the cursor already sits at, so opening
+a line with =o= and pasting puts the block at that line's auto-indent. Tabs in the pasted text are measured
+as four columns and re-emitted in whatever the target line indents with.
+=:set nopasteindent= pastes byte for byte again. The policy itself is in
+=src/indent.cpp= (=ReindentPastedText=, =IndentBackspaceWidth=,
+=IndentDeleteWidth=), unit-tested in =src/indent_test.cpp=.
+
 * DONE commit popup binding
 
 In commit messages, I can quit by pressing escape. I'd like this to not be the case. To abort, I can press mod+d (alt+d), or do :bd. Implement this.

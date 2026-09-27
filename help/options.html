@@ -22,12 +22,13 @@
 <tr><td><code>ignorecase</code></td><td>off</td><td>case-insensitive search and <code>:s</code></td></tr>
 <tr><td><code>wrapscan</code></td><td>on</td><td>search wraps around the buffer</td></tr>
 <tr><td><code>pasteindent</code> / <code>pi</code></td><td>on</td><td>re-indent a pasted block to fit where it lands</td></tr>
+<tr><td><code>pyindent</code></td><td>on</td><td>re-align a Python buffer's indentation on save</td></tr>
 <tr><td><code>smarttab</code> / <code>sta</code></td><td>on</td><td>one Backspace/Delete press per indent level</td></tr>
 <tr><td><code>textwidth=N</code> / <code>tw=N</code></td><td>80</td><td>the column <code>gq</code> wraps to</td></tr>
 </table>
 <p>Prefix a boolean with <code>no</code> to turn it off: <code>:set nowrap</code>.</p>
-<h2>Indentation: <code>pasteindent</code> and <code>smarttab</code></h2>
-<p>mep indents with a four-space soft tab everywhere, and these two are how that
+<h2>Indentation: <code>pasteindent</code>, <code>pyindent</code> and <code>smarttab</code></h2>
+<p>mep indents with a four-space soft tab everywhere, and these three are how that
 soft tab behaves when text arrives or leaves in a block.</p>
 <p><code>pasteindent</code> re-aligns a multi-line paste onto the indent of wherever it
 lands instead of keeping the indentation of wherever it was copied from. The
@@ -39,6 +40,19 @@ source indented with -- so only the block as a whole moves:</p>
 <li>Leading tabs in the pasted text count as four columns each and come back out as whatever the target line indents with, so a paste never mixes the two.</li>
 <li>Blockwise (<code>Ctrl-V</code>) registers are pasted as-is: their columns are the point.</li>
 </ul>
+<p><code>pyindent</code> re-aligns a Python buffer's own indentation onto that four-space
+grid when you save it -- every statement and every standalone comment, one undo
+entry, and the aligned text is what lands on disk. It is the other half of
+<code>pasteindent</code>: a pasted block arrives at the right <b>position</b> but keeps the
+shape it was copied with, so a block from a two-space or tab-indented source
+comes in internally ragged, and nothing short of <code>gf</code> put that right.</p>
+<p>Indentation only -- quoting, spacing, line length and blank lines stay exactly
+as you wrote them; those are <code>gf</code>'s business (see <a href="formatting.html">Formatting</a>). And it only
+ever normalizes the nesting the file already expresses, read the way Python
+itself reads it: a file Python cannot read unambiguously is left completely
+alone rather than guessed at, as is one already correctly indented (no undo
+entry, no "modified" flag). When it does change something, the <code>:w</code> message
+says <code>indent realigned</code>.</p>
 <p><code>smarttab</code> makes one Backspace press in a line's leading whitespace eat a
 whole indent level -- back to the previous four-column tab stop rather than one
 space at a time -- and Delete do the same forwards. Spaces that are not
@@ -106,8 +120,8 @@ mep.git_gutter_line_hl = <span class="tok-cyan">true</span>
 mep.git_hunk_preview_on_jump = <span class="tok-cyan">true</span>
 mep.syntax_auto = <span class="tok-cyan">false</span>
 mep.activity_todo_file = <span class="tok-green">'~/notes/tasks.org'</span>
-mep.format_languages.js = {<span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span>}
-mep.snippets.py = {<span class="tok-blue">}</span>
+mep.format_languages.js = <span class="tok-blue">{</span><span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span>}
+mep.snippets.py = {}
 mep.ts_capture_hl[<span class="tok-green">'keyword'</span>] = <span class="tok-green">'Red'</span></code></pre></div>
 <h1>See also</h1>
 <ul>

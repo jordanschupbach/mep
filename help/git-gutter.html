@@ -55,7 +55,7 @@ which is not what most people want to see.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-comment">-- vim-gitgutter's whole-line tint, on top of the sign-column marks</span>
 mep.git_gutter_line_hl = <span class="tok-cyan">true</span></code></pre></div>
 <h1>For a statusline</h1>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.git_gutter_summary()   <span class="tok-comment">--&gt; "+12 ~3 -1"</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.<span class="tok-blue">git_gutter_summary</span>()   <span class="tok-comment">--&gt; "+12 ~3 -1"</span></code></pre></div>
 <p>Returns the current buffer's added, changed and deleted counts, ready to
 drop into a custom <a href="status-line.html">status line</a>.</p>
 <h1>See also</h1>

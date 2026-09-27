@@ -12116,6 +12116,15 @@ const char *kBuiltinSyntax =
     "mep.ts_capture_hl = {\n"
     "  comment = 'Comment', ['comment.documentation'] = 'Comment', debug = 'Comment',\n"
     "  string = 'Green', ['string.escape'] = 'Green', ['string.special'] = 'Green', escape = 'Green',\n"
+    // An f-string/template field's own braces (kHighlightsPython's
+    // (interpolation) rule). Deliberately not the nvim-conventional
+    // 'punctuation.special' name every other grammar's query already uses
+    // for its interpolation delimiters: that capture also carries
+    // markdown's heading/list/quote markers and html's directive values,
+    // which would all have been recoloured along with it. Yellow is the
+    // one palette slot no other capture claims, so a field's boundary
+    // reads distinctly against the string green around it.
+    "  ['punctuation.interpolation'] = 'Yellow',\n"
     "  number = 'Cyan', boolean = 'Cyan', constant = 'Cyan', ['constant.builtin'] = 'Cyan',\n"
     "  ['variable.builtin'] = 'Cyan', character = 'Cyan', float = 'Cyan', attribute = 'Cyan',\n"
     "  keyword = 'Purple', ['keyword.function'] = 'Purple', ['keyword.operator'] = 'Purple',\n"

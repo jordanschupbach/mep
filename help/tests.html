@@ -26,7 +26,7 @@ toast, which is the only feedback when the terminal is off screen.</p>
 <tr><td><code>.c</code>, <code>.cpp</code>, headers</td><td>the project's build-directory test target</td></tr>
 <tr><td><code>.rs</code></td><td>Cargo's test runner</td></tr>
 </table>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.lang_test_python = {<span class="tok-green">'pytest'</span>, <span class="tok-green">'-q'</span><span class="tok-blue">}</span>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.lang_test_python = {<span class="tok-green">'pytest'</span>, <span class="tok-green">'-q'</span>}
 mep.opt.lang_test_build_dirs = {<span class="tok-green">'build'</span>, <span class="tok-green">'build/native'</span>}</code></pre></div>
 <p>If mep cannot work out a runner for the filetype, it says so in one line
 rather than guessing.</p>

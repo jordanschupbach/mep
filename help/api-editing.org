@@ -11,7 +11,11 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
+<<<<<<< HEAD
 * The bindings (151)
+=======
+* The bindings (137)
+>>>>>>> 5583f63 (worked on formatting on saving)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -85,6 +89,8 @@ that it does nothing.
 | =mep.jump_to_buffer= | switches workspace/tab/pane to land on a buffer wherever it lives |
 | =mep.line_count= | returns the number of lines in the current buffer |
 | =mep.menubar_set_visible= | shows or hides the top menu bar outright |
+| =mep.menubar_tap_toggle_enabled= | returns whether a bare mod1 tap toggles the menu bar |
+| =mep.menubar_tap_toggle_set= | enables/disables the bare mod1 (Alt) tap that toggles the menu bar |
 | =mep.menubar_toggle= | shows/hides the top menu bar, the same thing tapping mod1 does |
 | =mep.menubar_visible= | returns whether the top menu bar is currently shown |
 | =mep.mepml_block_at= | describes the mepml code block at a 1-based row |

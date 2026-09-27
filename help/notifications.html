@@ -43,7 +43,7 @@ mep.notify(<span class="tok-green">'Could not reach the server'</span>, <span cl
 <p>Lua's own <code>print()</code> is routed through <code>mep.notify</code> as well, so a <code>print</code> in
 your config or in a <code>:lua</code> one-liner shows up as a toast rather than
 vanishing into a terminal mep does not have.</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">:lua <span class="tok-blue">print</span>(mep.<span class="tok-blue">line_count</span>())</code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">:lua <span class="tok-blue">print</span>(mep.line_count())</code></pre></div>
 <p>That makes <code>print</code> a perfectly good debugging tool here -- and it means a
 chatty <code>print</code> in a frame hook will bury you in toasts, so keep those out of
 <code>mep.on_frame</code>.</p>

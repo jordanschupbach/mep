@@ -198,6 +198,15 @@ It is not =black=, though, and the differences are deliberate:
   parser.
 - *Comments are normalized, not moved.* They keep the token they follow.
 
+** Indentation alone, on every save
+
+=gf= is the whole formatter. The much smaller half of it -- put the
+indentation back on the four-space grid and change nothing else -- runs on its
+own every time you save a Python buffer, which is what fixes a block pasted
+from a two-space or tab-indented source. It is =:set pyindent= (on by default;
+see [[file:options.html][Options]]), it shares this formatter's tokenizer and its proof-reading,
+and it leaves a file it cannot read unambiguously completely alone.
+
 ** It will not rewrite code it cannot prove it preserved
 
 Every result is proof-read before it reaches the buffer: the formatted text

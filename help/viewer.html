@@ -81,28 +81,28 @@ went wrong -- why.</p>
 </table>
 <h1>Writing a scene</h1>
 <p>A script has a global <code>view</code> table. The whole of it:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">view.part{document = d, body = <span class="tok-cyan">0</span>, color = view.colors.steel<span class="tok-blue">}</span>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">view.<span class="tok-blue">part</span><span class="tok-blue">{</span>document = d, body = <span class="tok-cyan">0</span>, color = view.colors.steel<span class="tok-blue">}</span>
 view.<span class="tok-blue">result</span>{result = r, field = <span class="tok-green">"von_mises"</span>, scale = <span class="tok-cyan">200</span>}
-view.mode<span class="tok-blue">{</span>result = m, mode = <span class="tok-cyan">0</span>, phase = <span class="tok-cyan">1.2</span>, amplitude = <span class="tok-cyan">0.1</span><span class="tok-blue">}</span>
-view.mesh{positions = <span class="tok-blue">{</span><span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>, <span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>, <span class="tok-cyan">0</span>,<span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>}, indices = {<span class="tok-cyan">1</span>,<span class="tok-cyan">2</span>,<span class="tok-cyan">3</span>}<span class="tok-blue">}</span>
+view.<span class="tok-blue">mode</span>{result = m, mode = <span class="tok-cyan">0</span>, phase = <span class="tok-cyan">1.2</span>, amplitude = <span class="tok-cyan">0.1</span><span class="tok-blue">}</span>
+view.mesh<span class="tok-blue">{</span>positions = <span class="tok-blue">{</span><span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>, <span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>, <span class="tok-cyan">0</span>,<span class="tok-cyan">1</span>,<span class="tok-cyan">0</span><span class="tok-blue">}</span>, indices = <span class="tok-blue">{</span><span class="tok-cyan">1</span>,<span class="tok-cyan">2</span>,<span class="tok-cyan">3</span><span class="tok-blue">}</span><span class="tok-blue">}</span>
 
-view.line({<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>}, <span class="tok-blue">{</span><span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span><span class="tok-blue">}</span>, view.colors.red)
-view.<span class="tok-blue">point</span>({<span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span><span class="tok-blue">}</span>, <span class="tok-cyan">0.2</span>)
-view.label(<span class="tok-blue">{</span><span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span><span class="tok-blue">}</span>, <span class="tok-green">"PROBE A"</span>)
-view.<span class="tok-blue">axes</span>(<span class="tok-cyan">1.0</span>)
+view.line(<span class="tok-blue">{</span><span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span><span class="tok-blue">}</span>, <span class="tok-blue">{</span><span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span><span class="tok-blue">}</span>, view.colors.red)
+view.<span class="tok-blue">point</span>({<span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>}, <span class="tok-cyan">0.2</span>)
+view.label({<span class="tok-cyan">1</span>,<span class="tok-cyan">0</span>,<span class="tok-cyan">0</span>}, <span class="tok-green">"PROBE A"</span>)
+view.axes(<span class="tok-cyan">1.0</span>)
 view.caption(<span class="tok-green">"WHAT THIS IS"</span>)
 
-view.camera{yaw = <span class="tok-cyan">35</span>, pitch = <span class="tok-cyan">30</span>, distance = <span class="tok-cyan">8</span><span class="tok-blue">}</span>
+view.camera<span class="tok-blue">{</span>yaw = <span class="tok-cyan">35</span>, pitch = <span class="tok-cyan">30</span>, distance = <span class="tok-cyan">8</span>}
 view.<span class="tok-blue">frame_all</span>()
-view.clear()
-view.<span class="tok-blue">info</span>()</code></pre></div>
+view.<span class="tok-blue">clear</span>()
+view.info()</code></pre></div>
 <p><code>positions</code> are three numbers to a vertex and <code>indices</code> are <b>one-based</b>,
 because a Lua script indexes its own table from one; taking them as
 zero-based would draw a mesh quietly wrong rather than failing.</p>
 <h2>Time</h2>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">view.time_range(<span class="tok-cyan">0</span>, <span class="tok-cyan">2.5</span>)
-view.on_frame(<span class="tok-purple">function</span>(t)
-  view.result{result = r, field = <span class="tok-green">"von_mises"</span>, scale = <span class="tok-cyan">200</span> * t<span class="tok-blue">}</span>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">view.<span class="tok-blue">time_range</span>(<span class="tok-cyan">0</span>, <span class="tok-cyan">2.5</span>)
+view.<span class="tok-blue">on_frame</span>(<span class="tok-purple">function</span>(t)
+  view.<span class="tok-blue">result</span><span class="tok-blue">{</span>result = r, field = <span class="tok-green">"von_mises"</span>, scale = <span class="tok-cyan">200</span> * t}
 <span class="tok-purple">end</span>)</code></pre></div>
 <p><code>on_frame</code> is called whenever the time moves, with a <b>cleared</b> scene. So
 it is written as "what is here now" rather than as a change from what was

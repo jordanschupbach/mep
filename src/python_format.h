@@ -96,4 +96,30 @@ struct Result {
 // text always ends in exactly one newline when non-empty.
 Result Format(std::string_view source, const Options &opts = Options());
 
+// Re-indents `source` and changes nothing else. Every statement's (and every
+// standalone comment's) own indentation is rewritten as `opts.indent_width`
+// spaces per nesting level; every other byte of the file -- the code itself,
+// the blank lines, continuation lines, the interior of a triple-quoted string,
+// the line endings, a missing final newline -- comes back exactly as it went
+// in. Format() would do this too, but it also rewrites quotes, spacing and
+// line breaks; this is the pass for "my indentation is ragged", which is what
+// a paste from a 2-space or tab-indented source leaves behind. It is what
+// `:set pyindent` runs on save (Editor::RealignPythonIndent).
+//
+// The nesting it re-emits is the nesting the *input* expressed, read exactly
+// as CPython's tokenizer reads it -- so this normalizes an indent grid, it
+// does not repair a broken one. A file whose indentation is ambiguous to
+// CPython ("unindent does not match any outer indentation level") is refused
+// with that same message rather than guessed at, same as any tokenizer error,
+// and `ok` is false with `text` empty whenever the caller must not write back.
+// An indent that merely goes *deeper* than anything opened a block for -- what
+// CPython reports as "unexpected indent" -- is not ambiguous, only wrong, and
+// comes back as a level of its own on the new grid: still wrong, but now
+// visibly so rather than wrong by a stray space or two.
+//
+// Same proof-reading contract as Format: with `opts.verify` on, the output is
+// re-tokenized and refused unless it reproduces the input's token stream *and*
+// its per-statement nesting levels.
+Result RealignIndent(std::string_view source, const Options &opts = Options());
+
 }  // namespace pyfmt

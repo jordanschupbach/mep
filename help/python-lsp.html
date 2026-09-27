@@ -85,7 +85,7 @@ unseen too. So:</p>
 <li>An unused half of a tuple unpacking, and any name starting with <code>_</code>, are not unused variables.</li>
 </ul>
 <p>A line-length hint exists but is off unless asked for:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.python_ls.init_options = <span class="tok-blue">{</span>maxLineLength = <span class="tok-cyan">100</span>}</code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.python_ls.init_options = {maxLineLength = <span class="tok-cyan">100</span>}</code></pre></div>
 <h1>Completion</h1>
 <p>Completion is context-aware rather than a word list:</p>
 <table>
@@ -137,7 +137,7 @@ or hand <code>py</code> back to pyright:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.python_ls = <span class="tok-cyan">nil</span>
 mep.lsp_servers.pyright.filetypes = <span class="tok-blue">{</span><span class="tok-green">'py'</span>}</code></pre></div>
 <p>Or point it at your own build:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.python_ls.cmd = {<span class="tok-green">'/path/to/mep-python-lsp'</span><span class="tok-blue">}</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.python_ls.cmd = <span class="tok-blue">{</span><span class="tok-green">'/path/to/mep-python-lsp'</span>}</code></pre></div>
 <p>It also runs standalone, over stdio, in any editor that speaks LSP.</p>
 <h1>See also</h1>
 <ul>

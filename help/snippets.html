@@ -43,8 +43,8 @@ that tabstop stale. Expand, fill in, then move on.</p>
 <h1>What ships</h1>
 <p>Curated sets for <code>c</code>, <code>cpp</code>, <code>go</code>, <code>lua</code>, <code>py</code>, <code>rs</code>, <code>nix</code> and <code>envrc</code>.</p>
 <h1>Adding your own</h1>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.snippets.py = mep.snippets.py <span class="tok-purple">or</span> {<span class="tok-blue">}</span>
-mep.snippets.py[<span class="tok-green">'main'</span>] = <span class="tok-blue">{</span>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.snippets.py = mep.snippets.py <span class="tok-purple">or</span> {}
+mep.snippets.py[<span class="tok-green">'main'</span>] = {
   <span class="tok-green">'def main() -&gt; None:'</span>,
   <span class="tok-green">'    ${1:pass}'</span>,
   <span class="tok-green">''</span>,

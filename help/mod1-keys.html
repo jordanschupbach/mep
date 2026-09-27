@@ -67,9 +67,9 @@ Pressing it again restores the layout from before; pressing it in a
 <h1>Rebinding</h1>
 <p>Every default above is a <code>mep.map_mod1()</code> call made at startup, so any of
 them can be replaced or removed from <code>init.lua</code>:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.map_mod1(<span class="tok-green">'h'</span>, <span class="tok-purple">function</span>() mep.nav_pane(<span class="tok-green">'left'</span>) <span class="tok-purple">end</span>)
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.<span class="tok-blue">map_mod1</span>(<span class="tok-green">'h'</span>, <span class="tok-purple">function</span>() mep.nav_pane(<span class="tok-green">'left'</span>) <span class="tok-purple">end</span>)
 mep.map_mod1(<span class="tok-green">'S-l'</span>, mep.some_function)   <span class="tok-comment">-- mod1+Shift+l</span>
-mep.map_mod1(<span class="tok-green">'C-j'</span>, mep.other_function)  <span class="tok-comment">-- mod1+Ctrl+j</span></code></pre></div>
+mep.<span class="tok-blue">map_mod1</span>(<span class="tok-green">'C-j'</span>, mep.other_function)  <span class="tok-comment">-- mod1+Ctrl+j</span></code></pre></div>
 <p>A bare letter is <code>mod1+letter</code>; <code>S-</code> and <code>C-</code> prefixes add Shift and Ctrl.
 <code>Tab</code>, <code>S-Tab</code>, <code>CR</code> and <code>S-CR</code> are also accepted.</p>
 <p>The functions behind the defaults are callable directly:

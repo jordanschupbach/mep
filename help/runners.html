@@ -16,7 +16,7 @@
 <p><code>&lt;leader&gt;&lt;Space&gt;</code> (<code>:Runner</code>) fuzzy-picks a target from whichever build
 system the project uses, and runs it in this tab's terminal.</p>
 <p>It looks for <code>just</code>, then <code>make</code>, then <code>ninja</code>, then <code>cmake</code>:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.runner_order = {<span class="tok-green">'make'</span>, <span class="tok-green">'just'</span>}   <span class="tok-comment">-- or your own precedence</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.runner_order = <span class="tok-blue">{</span><span class="tok-green">'make'</span>, <span class="tok-green">'just'</span>}   <span class="tok-comment">-- or your own precedence</span></code></pre></div>
 <h1>The preview</h1>
 <p>The preview column beside the list shows, for the highlighted target:</p>
 <ul>

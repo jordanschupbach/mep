@@ -915,6 +915,18 @@ target_compile_options(mep-indent-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZ
 target_link_options(mep-indent-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-indent-test)
 
+# The syntax-highlighting queries (src/treesitter_queries.h) and the span
+# pipeline TreesitterHighlight runs them through: which capture each token ends
+# up wearing, per language. Links the Treesitter runtime and the compiled-in
+# grammars (the same ${TS_GRAMMAR_LIBS} mep itself uses) but nothing else -- no
+# mep_core, no editor, no display, since treesitter.cpp depends on none of it.
+add_executable(mep-treesitter-test EXCLUDE_FROM_ALL src/treesitter_test.cpp src/treesitter.cpp)
+target_include_directories(mep-treesitter-test PRIVATE src)
+target_link_libraries(mep-treesitter-test PRIVATE tree_sitter ${TS_GRAMMAR_LIBS})
+target_compile_options(mep-treesitter-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-treesitter-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-treesitter-test)
+
 # --- CAD kernel + FEM foundations (plans/CAD_FEM_PLAN.md Part 0) ------------
 # All four are pure CPU with no backend at all -- no gfx, no X11, no GL -- so
 # unlike mep-model3d-doc-test they link nothing but their own sources.

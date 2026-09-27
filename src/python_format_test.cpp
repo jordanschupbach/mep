@@ -11,6 +11,12 @@
 // and asserts that Format() either produced token-equivalent output or
 // refused outright -- the property that matters when a buffer is about to be
 // overwritten in place.
+//
+// RealignIndent -- the indentation-only pass `:set pyindent` runs on every save
+// -- is covered at the end, and holds to a stricter version of the same rule:
+// it may only change indentation, so its expectations are byte-exact about
+// everything else (continuation lines, string interiors, blank lines, line
+// endings, a missing final newline).
 
 #include "python_format.h"
 
@@ -558,6 +564,207 @@ void TestIdempotenceOfExpectations() {
     for (const char *in : kInputs) ExpectStable(Fmt(in));
 }
 
+// ---------------------------------------------------------------------------
+// RealignIndent: the indentation-only pass (`:set pyindent` runs on save)
+// ---------------------------------------------------------------------------
+
+// Re-indents `src` and requires success, reporting the refusal otherwise.
+std::string Realign(const std::string &src) {
+    pyfmt::Result r = pyfmt::RealignIndent(src);
+    if (!r.ok) {
+        std::fprintf(stderr, "unexpected realign failure: %s\n(input)\n%s\n", r.error.c_str(),
+                     src.c_str());
+        std::abort();
+    }
+    return r.text;
+}
+
+void ExpectRealign(const std::string &src, const std::string &want) {
+    const std::string got = Realign(src);
+    if (got != want) {
+        std::fprintf(stderr, "--- input ---\n%s--- want ---\n%s--- got ---\n%s", src.c_str(),
+                     want.c_str(), got.c_str());
+        Check(false, "re-indented output matches", __LINE__);
+    }
+    // A fixed point, like the formatter: running it again changes nothing.
+    CHECK(Realign(got) == got);
+}
+
+void TestRealignNormalizesTheGrid() {
+    // The case this pass exists for: a paste from a 2-space-indented source
+    // lands correctly *positioned* (that is `:set pasteindent`'s job) but
+    // internally on the wrong grid, and nothing short of reformatting the whole
+    // file with `gf` used to put it back.
+    ExpectRealign("def f(x):\n"
+                  "  if x:\n"
+                  "    return 1\n"
+                  "  return 0\n",
+                  "def f(x):\n"
+                  "    if x:\n"
+                  "        return 1\n"
+                  "    return 0\n");
+    // Tabs, and a mix of tabs and spaces, become the same 4-space grid.
+    ExpectRealign("def f(x):\n\tif x:\n\t\treturn 1\n",
+                  "def f(x):\n    if x:\n        return 1\n");
+    ExpectRealign("class A:\n\tdef f(self):\n\t    return 1\n",
+                  "class A:\n    def f(self):\n        return 1\n");
+    // An indent that is a multiple of nothing is still just nesting.
+    ExpectRealign("if a:\n   b = 1\n   if c:\n         d = 2\n",
+                  "if a:\n    b = 1\n    if c:\n        d = 2\n");
+    // Already right: byte for byte, which is what lets the save path skip the
+    // undo entry entirely.
+    const char *const kAligned =
+        "def f():\n"
+        "    if a:\n"
+        "        return 1\n"
+        "    return 0\n";
+    ExpectRealign(kAligned, kAligned);
+}
+
+void TestRealignTouchesNothingElse() {
+    // Continuation lines are left exactly as they are: their column is often
+    // deliberate alignment under an open bracket, and it is never what decides
+    // the statement's nesting.
+    ExpectRealign("def f():\n"
+                  "  return [\n"
+                  "      1,\n"
+                  "        2,\n"
+                  "  ]\n",
+                  "def f():\n"
+                  "    return [\n"
+                  "      1,\n"
+                  "        2,\n"
+                  "  ]\n");
+    // The interior of a triple-quoted string is content, not indentation.
+    ExpectRealign("def f():\n"
+                  "  s = \"\"\"\n"
+                  "  keep\n"
+                  "    this\n"
+                  "\"\"\"\n"
+                  "  return s\n",
+                  "def f():\n"
+                  "    s = \"\"\"\n"
+                  "  keep\n"
+                  "    this\n"
+                  "\"\"\"\n"
+                  "    return s\n");
+    // Spacing, quoting, line length and blank lines are the formatter's
+    // business, and a save must not quietly do any of it.
+    ExpectRealign("x=1  #  note\n\n\n\ny = 'a'\n", "x=1  #  note\n\n\n\ny = 'a'\n");
+    // A file with no trailing newline keeps not having one -- Format() would add
+    // one, this is a byte-preserving pass.
+    ExpectRealign("if a:\n  b = 1", "if a:\n    b = 1");
+    // CRLF endings survive: the '\r' belongs to the line, not to the indent.
+    ExpectRealign("if a:\r\n  b = 1\r\n", "if a:\r\n    b = 1\r\n");
+    // A BOM is put back where it was.
+    ExpectRealign("\xef\xbb\xbfif a:\n  b = 1\n", "\xef\xbb\xbfif a:\n    b = 1\n");
+    // Nothing but blank lines, and the empty file.
+    ExpectRealign("\n\n   \n", "\n\n   \n");
+    ExpectRealign("", "");
+}
+
+void TestRealignComments() {
+    // A standalone comment is re-indented with the block it belongs to, the same
+    // rule the formatter uses (AssignCommentIndents) -- otherwise a re-indented
+    // body would leave its own comments behind on the old grid. Deliberately
+    // the formatter's rule and not one of its own, so a save and a later `gf`
+    // never disagree about where a comment goes.
+    ExpectRealign("def f():\n"
+                  "  # leading\n"
+                  "  if a:\n"
+                  "    # inner\n"
+                  "    b = 1\n"
+                  "  # after\n"
+                  "  return 1\n",
+                  "def f():\n"
+                  "    # leading\n"
+                  "    if a:\n"
+                  "        # inner\n"
+                  "        b = 1\n"
+                  "    # after\n"
+                  "    return 1\n");
+    // With no statement after it, a comment stays with the block above rather
+    // than with the column it was written at -- again AssignCommentIndents'
+    // own rule (there is nothing following to belong to).
+    ExpectRealign("def f():\n"
+                  "  if a:\n"
+                  "    b = 1\n"
+                  "  # trailing\n",
+                  "def f():\n"
+                  "    if a:\n"
+                  "        b = 1\n"
+                  "        # trailing\n");
+    // A comment inside a bracketed continuation is part of that statement, so it
+    // is left alone along with the rest of the continuation.
+    ExpectRealign("def f():\n"
+                  "  x = [\n"
+                  "      # why\n"
+                  "      1,\n"
+                  "  ]\n",
+                  "def f():\n"
+                  "    x = [\n"
+                  "      # why\n"
+                  "      1,\n"
+                  "  ]\n");
+}
+
+void TestRealignRefusals() {
+    // Indentation CPython itself cannot read is refused rather than guessed at:
+    // the nesting this pass re-emits is the nesting the input expressed, and
+    // when that is ambiguous there is nothing safe to emit. `ok` false with an
+    // empty `text` is what makes the save path leave the buffer alone.
+    pyfmt::Result r = pyfmt::RealignIndent("if a:\n        b = 1\n    c = 2\n");
+    CHECK(!r.ok);
+    CHECK(r.text.empty());
+    CHECK(r.error == "unindent does not match any outer indentation level");
+    CHECK(r.error_line == 3);
+    // Any other tokenizer error is equally a refusal.
+    pyfmt::Result unterminated = pyfmt::RealignIndent("s = \"open\n");
+    CHECK(!unterminated.ok);
+    CHECK(unterminated.text.empty());
+    CHECK(!unterminated.error.empty());
+    // A lone CR is not a line ending this pass can number lines by, so it is
+    // refused too rather than re-indenting the wrong lines.
+    pyfmt::Result lone_cr = pyfmt::RealignIndent("if a:\n\r  b = 1\n");
+    CHECK(!lone_cr.ok);
+    CHECK(lone_cr.text.empty());
+}
+
+void TestRealignNeverChangesMeaning() {
+    // The property that matters when this runs on every save: what comes back is
+    // the same program, or nothing came back at all. Same shape as
+    // TestNeverChangesMeaning above, and it leans on the same verifier --
+    // RealignIndent re-tokenizes its own output and compares both the token
+    // stream and the per-statement nesting before returning it.
+    const char *const kInputs[] = {
+        "def f():\n  return 1\n",
+        "if a:\n\tb = 1\nelse:\n\tc = 2\n",
+        "class A:\n  # note\n  def f(self):\n      if x:\n            return f\"{x!r:>2}\"\n",
+        "x = [\n  1,\n    2,\n]\n",
+        "def f():\n  s = '''\n  x\n'''\n  return s\n",
+        "if a: b = 1\n",
+        "a = 1; b = 2\n",
+        "def f(\n  a,\n    b,\n):\n  pass\n",
+        "match x:\n  case (A | B):\n      pass\n",
+        "@deco\ndef f():\n\tpass\n",
+        "x = 1 \\\n  + 2\n",
+        "if a:\n  pass\n# dedented comment\nb = 1\n",
+        "\f\nif a:\n  b = 1\n",
+        "def f():\n\f  b = 1\n",
+        "if a:\n  if b:\n      pass\n  else:\n      pass\n",
+    };
+    for (const char *in : kInputs) {
+        pyfmt::Result r = pyfmt::RealignIndent(in);
+        if (!r.ok) continue;  // a refusal is always an acceptable answer
+        // The same program: the formatter's own view of both texts agrees.
+        CHECK(Fmt(in) == Fmt(r.text));
+        // And a fixed point.
+        pyfmt::Result again = pyfmt::RealignIndent(r.text);
+        CHECK(again.ok);
+        CHECK(again.text == r.text);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -578,6 +785,11 @@ int main() {
     TestVerifier();
     TestWholeFile();
     TestIdempotenceOfExpectations();
+    TestRealignNormalizesTheGrid();
+    TestRealignTouchesNothingElse();
+    TestRealignComments();
+    TestRealignRefusals();
+    TestRealignNeverChangesMeaning();
     std::printf("python_format tests passed\n");
     return 0;
 }

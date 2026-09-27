@@ -20,9 +20,9 @@ Browsing sixty-two themes is therefore just holding a cursor key.</p>
 <pre>:colorscheme everforest-dark
 :colo nord</pre>
 <p>From Lua:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.colorscheme(<span class="tok-green">'kanagawa'</span>)          <span class="tok-comment">-- set it</span>
-<span class="tok-blue">print</span>(mep.<span class="tok-blue">current_theme</span>())           <span class="tok-comment">-- what is active</span>
-<span class="tok-purple">for</span> _, n <span class="tok-purple">in</span> <span class="tok-blue">ipairs</span>(mep.<span class="tok-blue">theme_names</span>()) <span class="tok-purple">do</span> <span class="tok-blue">print</span>(n) <span class="tok-purple">end</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.<span class="tok-blue">colorscheme</span>(<span class="tok-green">'kanagawa'</span>)          <span class="tok-comment">-- set it</span>
+<span class="tok-blue">print</span>(mep.current_theme())           <span class="tok-comment">-- what is active</span>
+<span class="tok-purple">for</span> _, n <span class="tok-purple">in</span> <span class="tok-blue">ipairs</span>(mep.theme_names()) <span class="tok-purple">do</span> <span class="tok-blue">print</span>(n) <span class="tok-purple">end</span></code></pre></div>
 <p>To make it stick, put the <code>mep.colorscheme</code> call in <code>init.lua</code>.</p>
 <h1>What ships</h1>
 <p>Sixty-two themes, in the order the picker lists them:</p>

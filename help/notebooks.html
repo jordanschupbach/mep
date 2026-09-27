@@ -72,11 +72,11 @@ whatever the one above it used. Each choice is written to that cell's
 execute one at a time in order, so a mixed "run all" still goes top to
 bottom.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.notebook_kernels = {
-  <span class="tok-blue">{</span>name=<span class="tok-green">'python3'</span>, display_name=<span class="tok-green">'Python 3'</span>, language=<span class="tok-green">'py'</span>, mode=<span class="tok-green">'python'</span><span class="tok-blue">}</span>,
-  {name=<span class="tok-green">'ir'</span>, display_name=<span class="tok-green">'R'</span>, language=<span class="tok-green">'r'</span>, mode=<span class="tok-green">'script'</span>,
-   command=<span class="tok-blue">{</span><span class="tok-green">'R'</span>, <span class="tok-green">'--slave'</span>, <span class="tok-green">'--no-save'</span><span class="tok-blue">}</span>},
-  {name=<span class="tok-green">'deno'</span>, display_name=<span class="tok-green">'Deno'</span>, language=<span class="tok-green">'js'</span>, mode=<span class="tok-green">'script'</span>,
-   command=<span class="tok-blue">{</span><span class="tok-green">'deno'</span>, <span class="tok-green">'run'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span>},
+  {name=<span class="tok-green">'python3'</span>, display_name=<span class="tok-green">'Python 3'</span>, language=<span class="tok-green">'py'</span>, mode=<span class="tok-green">'python'</span>},
+  <span class="tok-blue">{</span>name=<span class="tok-green">'ir'</span>, display_name=<span class="tok-green">'R'</span>, language=<span class="tok-green">'r'</span>, mode=<span class="tok-green">'script'</span>,
+   command={<span class="tok-green">'R'</span>, <span class="tok-green">'--slave'</span>, <span class="tok-green">'--no-save'</span>}<span class="tok-blue">}</span>,
+  <span class="tok-blue">{</span>name=<span class="tok-green">'deno'</span>, display_name=<span class="tok-green">'Deno'</span>, language=<span class="tok-green">'js'</span>, mode=<span class="tok-green">'script'</span>,
+   command=<span class="tok-blue">{</span><span class="tok-green">'deno'</span>, <span class="tok-green">'run'</span>, <span class="tok-green">'-'</span>}},
 }</code></pre></div>
 <p><code>mode</code> is one of:</p>
 <table>

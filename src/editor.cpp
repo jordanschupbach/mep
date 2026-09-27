@@ -14,6 +14,7 @@
 #include "model3d_blend_import.h"
 #include "model3d_doc.h"
 #include "pdf_doc.h"
+#include "python_format.h"
 #include "treesitter.h"
 #include "workspace_git.h"
 
@@ -19297,9 +19298,18 @@ void Editor::InsertTextAsTyped(const std::string &text) {
     // block onto the cursor's own indent first, keeping its internal shape
     // (`:set nopasteindent` for the byte-for-byte paste). Single-line register
     // pastes (Ctrl-R) come through here too and are returned untouched.
-    std::string prepared = ReindentedForPaste(
-        text, PasteContinuationIndent(CurPane().cursor.row, CurPane().cursor.col),
-        /*indent_first_line=*/false);
+    // The cursor moves out of the line's leading whitespace first, for the same
+    // reason the charwise p/P paths snap their own insertion point (see
+    // mepindent::PasteSpliceCol): splicing the block's first line *inside* the
+    // indent leaves it a space or two short of every line under it.
+    if (paste_indent_ && text.find('\n') != std::string::npos) {
+        CursorPos &c = CurPane().cursor;
+        if (c.row >= 0 && c.row < Buf().LineCount()) {
+            c.col = mepindent::PasteSpliceCol(Buf().lines[static_cast<size_t>(c.row)], c.col);
+        }
+    }
+    std::string prepared = ReindentedForPaste(text, PasteTargetIndent(CurPane().cursor.row),
+                                              /*indent_first_line=*/false);
     // Pasted/register text arrives with its own indentation baked in, so the
     // newline auto-indent and dedent-clause re-align that ProcessInsertKey now
     // applies to typed input must be suppressed here -- otherwise every line of
@@ -26878,30 +26888,17 @@ CursorPos Editor::InsertCharwiseTextAt(CursorPos pos, const std::string &text) {
 }
 
 
-// The indent the continuation lines of a paste spliced into row `row` at byte
-// `col` belong at -- see the two-shape comment on the declaration in editor.h.
-std::string Editor::PasteContinuationIndent(int row, int col) const {
+// The indent a paste landing on row `row` belongs at -- see the declaration in
+// editor.h.
+std::string Editor::PasteTargetIndent(int row) const {
     if (row < 0 || row >= Buf().LineCount()) return "";
-    const std::string &line = Buf().lines[static_cast<size_t>(row)];
-    int at = std::min(static_cast<int>(line.size()), std::max(0, col));
-    std::string prefix = line.substr(0, static_cast<size_t>(at));
-    // Nothing but whitespace before the insertion point: that whitespace *is*
-    // the indent this paste lands on (the Insert-mode "new auto-indented line,
-    // then paste" case). Mid-line: the line's own indent, which is where the
-    // block's second and later lines continue from.
-    if (prefix.find_first_not_of(" \t") == std::string::npos) return prefix;
-    return mepindent::LeadingWhitespace(line);
+    return mepindent::LeadingWhitespace(Buf().lines[static_cast<size_t>(row)]);
 }
 
 std::string Editor::ReindentedForPaste(const std::string &text, const std::string &target_indent,
                                        bool indent_first_line) const {
     if (!paste_indent_) return text;
     return mepindent::ReindentPastedText(text, target_indent, indent_first_line);
-}
-
-std::string Editor::PasteLinewiseIndent(int row) const {
-    if (row < 0 || row >= Buf().LineCount()) return "";
-    return mepindent::LeadingWhitespace(Buf().lines[static_cast<size_t>(row)]);
 }
 
 void Editor::PasteAfter(int count, char reg_name) {
@@ -26920,7 +26917,7 @@ void Editor::PasteAfter(int count, char reg_name) {
         // it is pasted onto, keeping the block's own internal shape. Blockwise
         // paste above is left alone -- its columns are the point.
         std::vector<std::string> block = SplitYankLines(ReindentedForPaste(
-            reg.text, PasteLinewiseIndent(cursor.row), /*indent_first_line=*/true));
+            reg.text, PasteTargetIndent(cursor.row), /*indent_first_line=*/true));
         std::vector<std::string> new_lines;
         for (int i = 0; i < count; i++) new_lines.insert(new_lines.end(), block.begin(), block.end());
         int insert_at = cursor.row + 1;
@@ -26931,7 +26928,13 @@ void Editor::PasteAfter(int count, char reg_name) {
         cursor = {insert_at, 0};
     } else {
         int at = std::min(LineLen(cursor.row), cursor.col + 1);
-        std::string once = ReindentedForPaste(reg.text, PasteContinuationIndent(cursor.row, at),
+        // A multi-line block goes in at the line's indent, not one space into
+        // it: see mepindent::PasteSpliceCol. Only while `:set pasteindent` is
+        // on -- off, a paste is byte-for-byte at exactly the Vim position.
+        if (paste_indent_ && reg.text.find('\n') != std::string::npos) {
+            at = mepindent::PasteSpliceCol(Buf().lines[static_cast<size_t>(cursor.row)], at);
+        }
+        std::string once = ReindentedForPaste(reg.text, PasteTargetIndent(cursor.row),
                                               /*indent_first_line=*/false);
         std::string text;
         for (int i = 0; i < count; i++) text += once;
@@ -26956,7 +26959,7 @@ void Editor::PasteBefore(int count, char reg_name) {
     } else if (reg.linewise) {
         // Same alignment as `p`: the row the paste lands on.
         std::vector<std::string> block = SplitYankLines(ReindentedForPaste(
-            reg.text, PasteLinewiseIndent(cursor.row), /*indent_first_line=*/true));
+            reg.text, PasteTargetIndent(cursor.row), /*indent_first_line=*/true));
         std::vector<std::string> new_lines;
         for (int i = 0; i < count; i++) new_lines.insert(new_lines.end(), block.begin(), block.end());
         int insert_at = cursor.row;
@@ -26967,7 +26970,11 @@ void Editor::PasteBefore(int count, char reg_name) {
         cursor = {insert_at, 0};
     } else {
         int at = std::min(LineLen(cursor.row), cursor.col);
-        std::string once = ReindentedForPaste(reg.text, PasteContinuationIndent(cursor.row, at),
+        // Same snap as `p` above.
+        if (paste_indent_ && reg.text.find('\n') != std::string::npos) {
+            at = mepindent::PasteSpliceCol(Buf().lines[static_cast<size_t>(cursor.row)], at);
+        }
+        std::string once = ReindentedForPaste(reg.text, PasteTargetIndent(cursor.row),
                                               /*indent_first_line=*/false);
         std::string text;
         for (int i = 0; i < count; i++) text += once;
@@ -27559,6 +27566,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
                 wrapscan_ = value;
             } else if (key == "pasteindent" || key == "pi") {
                 paste_indent_ = value;
+            } else if (key == "pyindent") {
+                py_indent_ = value;
             } else if (key == "smarttab" || key == "sta") {
                 smart_tab_ = value;
             } else {
@@ -30724,6 +30733,65 @@ std::vector<Editor::MappingDescription> Editor::AllMappingDescriptions() const {
 
 // --- File I/O ------------------------------------------------------------
 
+// `:set pyindent` -- see the declaration in editor.h for the contract.
+bool Editor::RealignPythonIndent(int buffer_id) {
+    if (!py_indent_) return false;
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    const std::string ft = LspFiletype(buf.filename);
+    if (ft != "py" && ft != "pyi") return false;
+
+    std::string before;
+    for (const std::string &l : buf.lines) {
+        before += l;
+        before += '\n';
+    }
+    // Defaults, whose indent_width is the 4 of mepindent::kShift -- the same
+    // soft tab auto-indent, >>/<< and the paste re-indent all use.
+    const pyfmt::Result r = pyfmt::RealignIndent(before);
+    if (!r.ok || r.text == before) return false;
+
+    // Back to lines. The empty trailing element the final newline leaves is
+    // dropped (a file ending in '\n' is N lines, not N + 1), the same split
+    // kBuiltinFormat's own mep_format_split does.
+    std::vector<std::string> lines;
+    for (size_t start = 0;;) {
+        const size_t nl = r.text.find('\n', start);
+        if (nl == std::string::npos) {
+            lines.push_back(r.text.substr(start));
+            break;
+        }
+        lines.push_back(r.text.substr(start, nl - start));
+        start = nl + 1;
+    }
+    if (!lines.empty() && lines.back().empty()) lines.pop_back();
+    // An indentation-only pass cannot add or remove a line. If one ever did,
+    // that is a bug, and a save is the worst possible moment to trust it.
+    if (lines.size() != buf.lines.size()) return false;
+
+    PushUndoForBuffer(buffer_id);
+    // The cursor rides its own line's indent change instead of staying at a
+    // byte column the text moved out from under it. The active pane's only:
+    // another pane showing the same buffer has its cursor clamped the next
+    // time it is drawn or moved, the same accepted limitation ReplaceLinesAt
+    // documents for a buffer that isn't the active one.
+    const bool active = CurrentBufferId() == buffer_id;
+    if (active) {
+        CursorPos &cursor = CurPane().cursor;
+        const size_t row = static_cast<size_t>(cursor.row);
+        if (cursor.row >= 0 && row < lines.size() && row < buf.lines.size()) {
+            const int old_ws = static_cast<int>(mepindent::LeadingWhitespace(buf.lines[row]).size());
+            const int new_ws = static_cast<int>(mepindent::LeadingWhitespace(lines[row]).size());
+            cursor.col = cursor.col >= old_ws ? cursor.col + (new_ws - old_ws)
+                                              : std::min(cursor.col, new_ws);
+        }
+    }
+    buf.lines = std::move(lines);
+    buf.modified = true;
+    if (active) ClampCursor();
+    return true;
+}
+
 bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
     // `buf` is always a reference to an element of buffers_ (both callers
     // pass one) -- pointer arithmetic recovers its buffer_id to check
@@ -30969,6 +31037,15 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
         status_message_ = "\"" + path + "\" " + std::to_string(notebooks_[buffer_id].doc.cells.size()) + " cells written";
         return true;
     }
+    // `:set pyindent`: a Python buffer's indentation goes back onto the
+    // 4-space grid *before* the write, not after -- the aligned text is what
+    // should land on disk, and doing it here (rather than in a Lua on-save
+    // poll, which only ever sees a save that already happened) is also what
+    // keeps the file and the buffer on screen from disagreeing. Placed after
+    // every special-buffer branch above has returned, so an image/PDF/sheet/
+    // notebook buffer -- whose `lines` are not the file's bytes -- can never
+    // reach it.
+    const bool realigned = RealignPythonIndent(buffer_id);
 #if defined(__EMSCRIPTEN__)
     std::string content;
     for (const auto &l : buf.lines) {
@@ -30987,6 +31064,7 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
     buf.modified = false;
     save_epoch_++;
     status_message_ = "\"" + path + "\" " + std::to_string(buf.LineCount()) + "L written";
+    if (realigned) status_message_ += ", indent realigned";
     return true;
 #else
     std::ofstream out(io_path, std::ios::binary);
@@ -30999,6 +31077,7 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
     buf.modified = false;
     save_epoch_++;
     status_message_ = "\"" + path + "\" " + std::to_string(buf.LineCount()) + "L written";
+    if (realigned) status_message_ += ", indent realigned";
     // AFTER THE STREAM IS CLOSED, and that is not tidiness.
     //
     // Part L.4: saving a script a viewer is bound to rebuilds that

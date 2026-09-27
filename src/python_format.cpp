@@ -1793,6 +1793,41 @@ std::string RenderFile(std::vector<LogicalLine> &lines, const Options &opts) {
     return text;
 }
 
+// --- Indentation-only pass --------------------------------------------------
+
+// The physical lines of `src`, each *including* its own line terminator, so
+// joining them back reproduces the input byte for byte. Splits on '\n' only:
+// a '\r' stays part of the line it ends (a CRLF file's), which is what keeps
+// this numbering identical to the Tokenizer's own `line_` counter --
+// RealignIndent maps a LogicalLine's `first_line` straight into this vector.
+std::vector<std::string_view> PhysicalLines(std::string_view src) {
+    std::vector<std::string_view> out;
+    size_t start = 0;
+    while (start < src.size()) {
+        size_t nl = src.find('\n', start);
+        if (nl == std::string_view::npos) {
+            out.push_back(src.substr(start));
+            break;
+        }
+        out.push_back(src.substr(start, nl - start + 1));
+        start = nl + 1;
+    }
+    return out;
+}
+
+// True if `src` contains a '\r' that is not part of a CRLF pair. The
+// Tokenizer counts a lone CR as a line end at a statement boundary but as
+// plain whitespace inside one, so PhysicalLines' "split on '\n'" numbering
+// and the Tokenizer's `line_` can disagree on such a file -- RealignIndent
+// refuses it rather than re-indent the wrong lines. (mep never writes one:
+// this is only reachable from a file that already had them.)
+bool HasLoneCarriageReturn(std::string_view src) {
+    for (size_t i = 0; i < src.size(); i++) {
+        if (src[i] == '\r' && (i + 1 >= src.size() || src[i + 1] != '\n')) return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 Result Format(std::string_view source, const Options &opts) {
@@ -1859,6 +1894,103 @@ Result Format(std::string_view source, const Options &opts) {
 
     r.ok = true;
     r.text = std::string(bom) + text;
+    return r;
+}
+
+Result RealignIndent(std::string_view source, const Options &opts) {
+    Result r;
+    std::string_view bom;
+    if (source.size() >= 3 && static_cast<unsigned char>(source[0]) == 0xEF &&
+        static_cast<unsigned char>(source[1]) == 0xBB &&
+        static_cast<unsigned char>(source[2]) == 0xBF) {
+        bom = source.substr(0, 3);
+        source.remove_prefix(3);
+    }
+    if (HasLoneCarriageReturn(source)) {
+        r.error = "carriage return that is not part of a CRLF line ending";
+        return r;
+    }
+    Tokenizer tz(source);
+    if (!tz.Run()) {
+        r.error = tz.error();
+        r.error_line = tz.error_line();
+        return r;
+    }
+    std::vector<LogicalLine> lines = tz.lines();
+    if (lines.empty()) {  // nothing but blank lines: no indentation to align
+        r.ok = true;
+        r.text = std::string(bom) + std::string(source);
+        return r;
+    }
+    AssignCommentIndents(lines, opts.indent_width);
+
+    const int width = opts.indent_width > 0 ? opts.indent_width : 4;
+    std::vector<std::string_view> phys = PhysicalLines(source);
+    // The nesting level each physical line's indentation should express, or -1
+    // for every line this pass must not touch: a continuation line (its
+    // statement's own indent is on the line the statement *started* on), the
+    // interior of a triple-quoted string, and blank lines.
+    std::vector<int> want_level(phys.size(), -1);
+    for (const LogicalLine &l : lines) {
+        const size_t idx = static_cast<size_t>(l.first_line - 1);
+        if (l.first_line < 1 || idx >= phys.size()) continue;
+        if (want_level[idx] < 0) want_level[idx] = l.indent;
+    }
+
+    std::string out;
+    out.reserve(source.size() + phys.size());
+    for (size_t i = 0; i < phys.size(); i++) {
+        const std::string_view line = phys[i];
+        if (want_level[i] < 0) {
+            out += line;
+            continue;
+        }
+        size_t ws = 0;
+        while (ws < line.size() && (line[ws] == ' ' || line[ws] == '\t' || line[ws] == '\f')) ws++;
+        // A form feed is a page separator rather than indentation (CPython's
+        // tokenizer resets the column on one), and rewriting the run would eat
+        // it -- so a line indented with one is left exactly as it is.
+        if (line.substr(0, ws).find('\f') != std::string_view::npos) {
+            out += line;
+            continue;
+        }
+        out.append(static_cast<size_t>(want_level[i]) * static_cast<size_t>(width), ' ');
+        out += line.substr(ws);
+    }
+
+    if (opts.verify) {
+        // The same "proof-read the output" contract Format has, and here it is
+        // checking the one thing this pass can get wrong: that the indentation
+        // it wrote expresses the *same* nesting it read. A continuation line or
+        // a string interior mistaken for a statement start would show up as a
+        // changed level (or a changed line count) rather than as silently
+        // re-nested code.
+        Tokenizer check(out);
+        if (!check.Run()) {
+            r.error = "internal error: re-indented output does not tokenize (" + check.error() + ")";
+            return r;
+        }
+        std::vector<LogicalLine> after = check.lines();
+        AssignCommentIndents(after, opts.indent_width);
+        if (after.size() != lines.size()) {
+            r.error = "internal error: re-indenting changed the statement structure";
+            return r;
+        }
+        for (size_t i = 0; i < lines.size(); i++) {
+            if (after[i].indent == lines[i].indent && after[i].first_line == lines[i].first_line) continue;
+            r.error = "internal error: re-indenting would change the nesting";
+            r.error_line = lines[i].first_line;
+            return r;
+        }
+        std::string why;
+        if (!VerifyEquivalent(Significant(lines), Significant(after), why)) {
+            r.error = "internal error: re-indenting would change this code (" + why + ")";
+            return r;
+        }
+    }
+
+    r.ok = true;
+    r.text = std::string(bom) + out;
     return r;
 }
 

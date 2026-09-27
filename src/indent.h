@@ -90,6 +90,27 @@ int IndentWidth(const std::string &whitespace);
 std::string ReindentPastedText(const std::string &text, const std::string &target_indent,
                                bool indent_first_line);
 
+// Where a multi-line paste should actually be spliced into `line`, given the
+// byte column `col` the caller would otherwise have used (a charwise p/P's own
+// insertion point, or the Insert-mode cursor). It is `col` itself everywhere
+// except inside the line's leading whitespace, which is moved forward to the
+// end of that whitespace.
+//
+// This is what keeps a multi-line paste from landing a column or two in from
+// the margin: a cursor sitting anywhere in a line's indent -- column 0 of an
+// indented line is the everyday case, a mouse click or `0` or arrowing down a
+// column away -- would otherwise splice the block's first line *inside* the
+// indent, at `col`, while `target_indent` put every line after it at the line's
+// real indent. Landing the whole block at that same indent is both what
+// `:set pasteindent` means and the only answer that keeps the block's own
+// shape: the leading whitespace `col` was pointing into is not a position in
+// the text, it is the indentation the block is being pasted at.
+//
+// Single-line pastes must not go through this: a word pasted at column 0 of an
+// indented line belongs at column 0 (ReindentPastedText leaves single-line text
+// alone for the same reason).
+int PasteSpliceCol(const std::string &line, int col);
+
 // --- Backspace/Delete over an indent -------------------------------------
 
 // How many bytes an Insert-mode Backspace at byte `col` of `line` should delete

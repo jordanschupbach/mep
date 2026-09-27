@@ -119,7 +119,7 @@ work from the server as well.</p>
 <p>It is an ordinary entry in the server registry, so <code>init.lua</code> can drop it:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.org_ls = <span class="tok-cyan">nil</span></code></pre></div>
 <p>Or point it at your own build:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.org_ls.cmd = {<span class="tok-green">'/path/to/mep-org-lsp'</span><span class="tok-blue">}</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.org_ls.cmd = <span class="tok-blue">{</span><span class="tok-green">'/path/to/mep-org-lsp'</span>}</code></pre></div>
 <p>It also runs standalone, over stdio, in any editor that speaks LSP.</p>
 <h1>See also</h1>
 <ul>

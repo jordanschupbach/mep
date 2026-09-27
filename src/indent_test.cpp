@@ -8,6 +8,8 @@
 //                            finally clause the moment its ':' is typed.
 //   ReindentPastedText    -- a pasted block re-aligned onto the indent of
 //                            wherever it lands, its own shape kept.
+//   PasteSpliceCol        -- where a multi-line paste is actually spliced in,
+//                            which is never inside the line's own indent.
 //   IndentBackspaceWidth  -- how much whitespace one Backspace press eats when
 //   IndentDeleteWidth        the cursor is in an indent (a whole soft tab).
 
@@ -261,6 +263,46 @@ void TestDeleteEatsWholeIndent() {
     ExpectDelete("", 0, 0);
 }
 
+// ---- PasteSpliceCol ----
+
+void ExpectSplice(const std::string &line, int col, int want) {
+    int got = mepindent::PasteSpliceCol(line, col);
+    if (got != want) {
+        std::fprintf(stderr, "PasteSpliceCol(\"%s\", %d) = %d, want %d\n", line.c_str(), col,
+                     got, want);
+        std::abort();
+    }
+}
+
+void TestPasteSpliceColLeavesTheIndent() {
+    // The regression this exists for: a cursor inside a line's indent -- column
+    // 0 of an indented line above all, which is where a mouse click, `0`, or
+    // arrowing down a column leaves it. `p` splices after the cursor's own
+    // character, i.e. at column 1, and the block used to arrive one space in
+    // from the margin with every line under it at the line's real indent.
+    ExpectSplice("    x = 1", 1, 4);
+    ExpectSplice("    x = 1", 0, 4);
+    ExpectSplice("    x = 1", 2, 4);
+    ExpectSplice("    x = 1", 3, 4);
+    // At the end of the indent, or anywhere in the text, the caller's own
+    // column is already right and is returned untouched.
+    ExpectSplice("    x = 1", 4, 4);
+    ExpectSplice("    x = 1", 5, 5);
+    ExpectSplice("    x = 1", 9, 9);
+    // A blank-but-indented line -- the other everyday paste target -- lands at
+    // its own indent rather than one space into it.
+    ExpectSplice("        ", 1, 8);
+    ExpectSplice("        ", 8, 8);
+    // Nothing to leave: an unindented line, an empty one, a tab indent.
+    ExpectSplice("x = 1", 0, 0);
+    ExpectSplice("x = 1", 3, 3);
+    ExpectSplice("", 0, 0);
+    ExpectSplice("\t\tx", 1, 2);
+    // A negative column (nothing should ever pass one) clamps rather than
+    // indexing backwards.
+    ExpectSplice("    x", -1, 0);
+}
+
 }  // namespace
 
 int main() {
@@ -272,6 +314,7 @@ int main() {
     TestPasteFirstLineSplice();
     TestPasteBlankLines();
     TestPasteTabs();
+    TestPasteSpliceColLeavesTheIndent();
     TestBackspaceEatsWholeIndent();
     TestDeleteEatsWholeIndent();
     std::printf("indent tests passed\n");

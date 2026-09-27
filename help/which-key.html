@@ -57,10 +57,10 @@ authoritative answer when the popup and your memory disagree.</p>
 <code>{seq</code>, desc=}=, and <code>mep.mapping_descriptions()</code> covers the rest.</p>
 <h1>Adding your own</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.leader_map(<span class="tok-green">'xr'</span>, <span class="tok-green">'Reload config'</span>, <span class="tok-purple">function</span>()
-  mep.<span class="tok-blue">cmd</span>(<span class="tok-green">'source '</span> .. os.<span class="tok-blue">getenv</span>(<span class="tok-green">'HOME'</span>) .. <span class="tok-green">'/.config/mep/init.lua'</span>)
+  mep.cmd(<span class="tok-green">'source '</span> .. os.getenv(<span class="tok-green">'HOME'</span>) .. <span class="tok-green">'/.config/mep/init.lua'</span>)
 <span class="tok-purple">end</span>)
 
-mep.leader_group(<span class="tok-green">'x'</span>, <span class="tok-green">'extras'</span>, <span class="tok-cyan">0xf013</span>, <span class="tok-green">'Purple'</span>)</code></pre></div>
+mep.<span class="tok-blue">leader_group</span>(<span class="tok-green">'x'</span>, <span class="tok-green">'extras'</span>, <span class="tok-cyan">0xf013</span>, <span class="tok-green">'Purple'</span>)</code></pre></div>
 <p><code>mep.leader_map(seq, desc, fn, icon?, icon_hl?)</code> binds a sequence; the
 description is what the popup shows, so write it as a label rather than a
 sentence. <code>mep.leader_group(prefix, label, icon?, icon_hl?)</code> names a group
@@ -73,7 +73,7 @@ aligned.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.leader_map(<span class="tok-green">'a&lt;CR&gt;'</span>, <span class="tok-green">'AI terminal'</span>, mep.ai_terminal_open)</code></pre></div>
 <p><code>&lt;Return&gt;</code> and <code>&lt;Enter&gt;</code> are accepted as the same thing.</p>
 <h1>Changing the leader</h1>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.set_leader(<span class="tok-green">','</span>)</code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.<span class="tok-blue">set_leader</span>(<span class="tok-green">','</span>)</code></pre></div>
 <h1>See also</h1>
 <ul>
 <li><a href="command-line.html">The command line</a> -- the other way to reach a command.</li>

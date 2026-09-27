@@ -30,11 +30,11 @@ and your memory disagree.</p>
 <tr><td><code>mep.leader_group(prefix, label, icon?, icon_hl?)</code></td><td>names a leader group</td></tr>
 <tr><td><code>mep.command(name, fn)</code></td><td>a <code>:name</code> ex command</td></tr>
 </table>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.map(<span class="tok-green">'n'</span>, <span class="tok-green">'Y'</span>, <span class="tok-purple">function</span>() mep.cmd(<span class="tok-green">'normal y$'</span>) <span class="tok-purple">end</span>)
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.<span class="tok-blue">map</span>(<span class="tok-green">'n'</span>, <span class="tok-green">'Y'</span>, <span class="tok-purple">function</span>() mep.cmd(<span class="tok-green">'normal y$'</span>) <span class="tok-purple">end</span>)
 mep.map_g(<span class="tok-green">'b'</span>, mep.lsp_references)          <span class="tok-comment">-- gb</span>
-mep.map_bracket_next(<span class="tok-green">'e'</span>, my_next_error)    <span class="tok-comment">-- ]e</span>
-mep.map_mod1(<span class="tok-green">'S-h'</span>, my_function)            <span class="tok-comment">-- mod1+Shift+h</span>
-mep.command(<span class="tok-green">'Reload'</span>, <span class="tok-purple">function</span>() mep.<span class="tok-blue">cmd</span>(<span class="tok-green">'e!'</span>) <span class="tok-purple">end</span>)</code></pre></div>
+mep.<span class="tok-blue">map_bracket_next</span>(<span class="tok-green">'e'</span>, my_next_error)    <span class="tok-comment">-- ]e</span>
+mep.<span class="tok-blue">map_mod1</span>(<span class="tok-green">'S-h'</span>, my_function)            <span class="tok-comment">-- mod1+Shift+h</span>
+mep.command(<span class="tok-green">'Reload'</span>, <span class="tok-purple">function</span>() mep.cmd(<span class="tok-green">'e!'</span>) <span class="tok-purple">end</span>)</code></pre></div>
 <h1>Most defaults are overridable</h1>
 <p>Much of what feels built in is an ordinary Lua binding registered at
 startup, so redefining it in <code>init.lua</code> simply replaces it:</p>

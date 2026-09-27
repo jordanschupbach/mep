@@ -11601,27 +11601,27 @@ private:
     void PasteBefore(int count = 1, char reg_name = 0);
 
     // `:set pasteindent` (paste_indent_) needs to know what indent a paste is
-    // landing on. Two shapes, because the two kinds of paste land differently:
+    // landing on: row `row`'s own indent, for every kind of paste -- whole
+    // lines before (`P`) or after (`p`) it, a charwise p/P spliced into it, and
+    // an Insert-mode paste at the cursor alike. That is Vim's `]p` rule, and
+    // deliberately NOT "the indent a new line there would get"
+    // (mepindent::ComputeNewlineIndent): that would land a body pasted under a
+    // Python `def foo():` inside it, but it would also silently shift `yyp` --
+    // duplicating a line that ends in ':' one level deeper, and one that starts
+    // with `return` one level out. Aligning with the line you paste onto is the
+    // rule that never rewrites a duplicate.
     //
-    //   PasteContinuationIndent -- text spliced into an existing line (a
-    //     charwise p/P, or an Insert-mode paste at the cursor). The whitespace
-    //     before the insertion point is the indent when that is all there is
-    //     before it -- pasting at the start of a line, the common case, where
-    //     the cursor already sits at the right column; otherwise the line's own
-    //     indent, for the block's second and later lines to continue at.
-    //   PasteLinewiseIndent -- whole lines pasted before (`P`) or after (`p`)
-    //     row `row`: that row's own indent, for both, which is Vim's `]p` rule.
-    //     Deliberately NOT "the indent a new line there would get"
-    //     (mepindent::ComputeNewlineIndent): that would land a body pasted
-    //     under a Python `def foo():` inside it, but it would also silently
-    //     shift `yyp` -- duplicating a line that ends in ':' one level deeper,
-    //     and one that starts with `return` one level out. Aligning with the
-    //     line you paste onto is the rule that never rewrites a duplicate.
+    // Emphatically the whole row's indent rather than just the whitespace
+    // *before the insertion point*, which is what this used to answer for a
+    // spliced paste: a cursor anywhere inside a line's indent (column 0 of an
+    // indented line -- a mouse click, `0`, arrowing down a column -- is the
+    // everyday case) then made the target one or two stray spaces instead of
+    // the line's real indent, and the whole block came in that far from the
+    // margin. mepindent::PasteSpliceCol is the other half of that fix.
     //
-    // Neither looks past the row it is given, so a paste on a blank line goes
+    // It never looks past the row it is given, so a paste on a blank line goes
     // to that line's own column.
-    std::string PasteContinuationIndent(int row, int col) const;
-    std::string PasteLinewiseIndent(int row) const;
+    std::string PasteTargetIndent(int row) const;
     // mepindent::ReindentPastedText while `:set pasteindent` is on (the
     // default), `text` byte for byte while it is off -- the one place every
     // paste path asks the question, so the option can't be honored in one and
@@ -11855,6 +11855,20 @@ private:
     // true only if all modified buffers were written (used to gate :wqa).
     bool WriteAllModified();
     bool SaveBuffer(Buffer &buf, const std::string &path);
+    // `:set pyindent`: re-indents a py/pyi buffer in place, one undo entry, on
+    // its way out to disk (called by SaveBuffer before it writes, so the file
+    // and the buffer on screen never disagree). A no-op -- false, nothing
+    // pushed, nothing marked modified -- for every other filetype, when the
+    // option is off, when the indentation is already right, and whenever
+    // pyfmt::RealignIndent refuses the file (a tokenizer error, or its own
+    // verification failing): a save must never be the thing that mangles a
+    // buffer, so "can't do this safely" always means "leave it exactly alone".
+    /**
+     * @brief Re-indents a Python buffer onto mep's 4-space indent grid in place, as one undoable change.
+     * @param buffer_id The id of the buffer to re-indent.
+     * @return True if the buffer's text actually changed.
+     */
+    bool RealignPythonIndent(int buffer_id);
 
     // --- Buffer/pane/tab plumbing ---
     Buffer &Buf() { return buffers_[static_cast<size_t>(CurPane().buffer_id)]; }
@@ -12580,6 +12594,15 @@ private:
     // block's own internal shape is kept either way; see
     // mepindent::ReindentPastedText. Off = the old byte-for-byte paste.
     bool paste_indent_ = true;
+    // :set pyindent/nopyindent (default on) -- whether saving a Python buffer
+    // first re-indents it onto mep's own 4-space grid (RealignPythonIndent ->
+    // pyfmt::RealignIndent). This is the other half of `:set pasteindent`: a
+    // paste keeps the shape it was copied with, so a block from a 2-space or
+    // tab-indented source lands correctly positioned but internally ragged,
+    // and nothing put that right short of reformatting the whole file with
+    // `gf`. Indentation only -- quoting, spacing and line breaks are `gf`'s
+    // business, not a save's.
+    bool py_indent_ = true;
     // :set smarttab/nosmarttab (default on) -- whether one Backspace/Delete
     // press in a line's leading whitespace eats a whole soft tab (kShift
     // columns, back to / up to the nearest tab stop) instead of one space.

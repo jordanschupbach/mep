@@ -568,6 +568,10 @@ struct RawSpan {
     uint32_t end_byte = 0;
     uint32_t start_row = 0;
     uint32_t start_col = 0;
+    // Index of the query pattern this capture came from, kept only as
+    // the tiebreak for two captures covering the exact same bytes (see
+    // the sort in TreesitterHighlight).
+    uint32_t pattern_index = 0;
     std::string capture;
 };
 
@@ -595,6 +599,7 @@ void CollectRawSpans(const TSQuery *query, const TSNode &root, const std::string
             const char *name = ts_query_capture_name_for_id(query, cap.index, &name_len);
             if (name_len == 0 || name[0] == '_') continue;  // "_foo": not meant to be rendered
             RawSpan rs;
+            rs.pattern_index = match.pattern_index;
             rs.start_byte = ts_node_start_byte(cap.node);
             rs.end_byte = std::min(ts_node_end_byte(cap.node), static_cast<uint32_t>(text.size()));
             if (rs.end_byte <= rs.start_byte) continue;
@@ -907,9 +912,27 @@ std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, co
     // captures (e.g. a whole call_expression) before the narrow ones
     // nested inside them (e.g. the function name) makes the narrow, more
     // specific highlight the one that actually shows.
-    // Comparator: orders spans by decreasing byte length (widest first).
-    std::sort(raw.begin(), raw.end(), [](const RawSpan &a, const RawSpan &b) {
-        return (a.end_byte - a.start_byte) > (b.end_byte - b.start_byte);
+    //
+    // Two captures covering the exact *same* bytes can't be separated
+    // that way, and those are common: a highlights.scm routinely starts
+    // with a catch-all ((identifier) @variable) and then narrows it with
+    // later, predicate-guarded patterns over the same node (python's
+    // @constructor/@constant/@variable.builtin identifier conventions,
+    // for one). These queries are all written to nvim's convention, where
+    // the *last* pattern to match a node is the one that wins, so equal-
+    // width spans go in ascending pattern order -- the later pattern
+    // paints last. Without that tiebreak std::sort's own unspecified
+    // order for equal keys decided it, which is why e.g. an ALL_CAPS
+    // python name could come out Blue (@constructor) in one place and
+    // Cyan (@constant) in another within the same file. stable_sort, so
+    // anything still fully tied (two captures of the same span from the
+    // same pattern, or from the separate markdown-inline query) keeps its
+    // collection order rather than reshuffling run to run.
+    // Comparator: widest span first, then ascending query pattern index.
+    std::stable_sort(raw.begin(), raw.end(), [](const RawSpan &a, const RawSpan &b) {
+        uint32_t a_len = a.end_byte - a.start_byte, b_len = b.end_byte - b.start_byte;
+        if (a_len != b_len) return a_len > b_len;
+        return a.pattern_index < b.pattern_index;
     });
 
     // Split every span at line boundaries -- mep's decoration model is

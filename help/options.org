@@ -14,14 +14,15 @@
 | =ignorecase=              | off     | case-insensitive search and =:s= |
 | =wrapscan=                | on      | search wraps around the buffer |
 | =pasteindent= / =pi=      | on      | re-indent a pasted block to fit where it lands |
+| =pyindent=                | on      | re-align a Python buffer's indentation on save |
 | =smarttab= / =sta=        | on      | one Backspace/Delete press per indent level |
 | =textwidth=N= / =tw=N=    | 80      | the column =gq= wraps to       |
 
 Prefix a boolean with =no= to turn it off: =:set nowrap=.
 
-** Indentation: =pasteindent= and =smarttab=
+** Indentation: =pasteindent=, =pyindent= and =smarttab=
 
-mep indents with a four-space soft tab everywhere, and these two are how that
+mep indents with a four-space soft tab everywhere, and these three are how that
 soft tab behaves when text arrives or leaves in a block.
 
 =pasteindent= re-aligns a multi-line paste onto the indent of wherever it
@@ -43,6 +44,21 @@ source indented with -- so only the block as a whole moves:
 - Leading tabs in the pasted text count as four columns each and come back out
   as whatever the target line indents with, so a paste never mixes the two.
 - Blockwise (=Ctrl-V=) registers are pasted as-is: their columns are the point.
+
+=pyindent= re-aligns a Python buffer's own indentation onto that four-space
+grid when you save it -- every statement and every standalone comment, one undo
+entry, and the aligned text is what lands on disk. It is the other half of
+=pasteindent=: a pasted block arrives at the right *position* but keeps the
+shape it was copied with, so a block from a two-space or tab-indented source
+comes in internally ragged, and nothing short of =gf= put that right.
+
+Indentation only -- quoting, spacing, line length and blank lines stay exactly
+as you wrote them; those are =gf='s business (see [[file:formatting.html][Formatting]]). And it only
+ever normalizes the nesting the file already expresses, read the way Python
+itself reads it: a file Python cannot read unambiguously is left completely
+alone rather than guessed at, as is one already correctly indented (no undo
+entry, no "modified" flag). When it does change something, the =:w= message
+says =indent realigned=.
 
 =smarttab= makes one Backspace press in a line's leading whitespace eat a
 whole indent level -- back to the previous four-column tab stop rather than one

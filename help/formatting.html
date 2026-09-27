@@ -69,16 +69,16 @@ access specifiers flush with the class, <code>case</code> labels a level inside 
 of trailing <code>//</code> comments lined up in one column with two spaces in front of
 them, and a 100-column margin.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">cpp</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="cpp"><span class="tok-purple">struct</span> <span class="tok-orange">Point</span>{<span class="tok-orange">int</span> x=<span class="tok-cyan">0</span>;<span class="tok-orange">int</span> y=<span class="tok-cyan">0</span>;};
-<span class="tok-orange">int</span> Sum(<span class="tok-purple">const</span> std::<span class="tok-orange">vector</span>&lt;<span class="tok-orange">Point</span>&gt;&amp;pts,<span class="tok-orange">int</span> scale){
+<span class="tok-orange">int</span> <span class="tok-blue">Sum</span>(<span class="tok-purple">const</span> std::<span class="tok-orange">vector</span>&lt;<span class="tok-orange">Point</span>&gt;&amp;pts,<span class="tok-orange">int</span> scale){
 <span class="tok-orange">int</span> total=<span class="tok-cyan">0</span>;
-<span class="tok-purple">for</span>(<span class="tok-orange">size_t</span> i=<span class="tok-cyan">0</span>;i&lt;pts.size();i++)total+=pts[i].x*scale+pts[i].y;
+<span class="tok-purple">for</span>(<span class="tok-orange">size_t</span> i=<span class="tok-cyan">0</span>;i&lt;pts.<span class="tok-blue">size</span>();i++)total+=pts[i].x*scale+pts[i].y;
 <span class="tok-purple">return</span> total;
 }</code></pre></div>
 <p>becomes</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">cpp</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="cpp"><span class="tok-purple">struct</span> <span class="tok-orange">Point</span> { <span class="tok-orange">int</span> x = <span class="tok-cyan">0</span>; <span class="tok-orange">int</span> y = <span class="tok-cyan">0</span>; };
-<span class="tok-orange">int</span> Sum(<span class="tok-purple">const</span> std::<span class="tok-orange">vector</span>&lt;<span class="tok-orange">Point</span>&gt; &amp;pts, <span class="tok-orange">int</span> scale) {
+<span class="tok-orange">int</span> <span class="tok-blue">Sum</span>(<span class="tok-purple">const</span> std::<span class="tok-orange">vector</span>&lt;<span class="tok-orange">Point</span>&gt; &amp;pts, <span class="tok-orange">int</span> scale) {
     <span class="tok-orange">int</span> total = <span class="tok-cyan">0</span>;
-    <span class="tok-purple">for</span> (<span class="tok-orange">size_t</span> i = <span class="tok-cyan">0</span>; i &lt; pts.size(); i++) total += pts[i].x * scale + pts[i].y;
+    <span class="tok-purple">for</span> (<span class="tok-orange">size_t</span> i = <span class="tok-cyan">0</span>; i &lt; pts.<span class="tok-blue">size</span>(); i++) total += pts[i].x * scale + pts[i].y;
     <span class="tok-purple">return</span> total;
 }</code></pre></div>
 <p>A braced initializer whose last element carries a comma stays exploded, one
@@ -127,7 +127,7 @@ are byte-identical to <code>clang-format</code>'s with the matching style; the r
 the deliberate differences above.</p>
 <p>To go back to <code>clang-format</code> instead, replace the entry with an ordinary
 argv one:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.cpp = <span class="tok-blue">{</span><span class="tok-green">'clang-format'</span>, <span class="tok-green">'--assume-filename={}'</span><span class="tok-blue">}</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.cpp = {<span class="tok-green">'clang-format'</span>, <span class="tok-green">'--assume-filename={}'</span>}</code></pre></div>
 <h1>The Python formatter</h1>
 <p>Python is formatted by mep itself. Nothing is spawned, nothing has to be on
 <code>PATH</code>, and <code>gf</code> works the same in a fresh checkout as on a fully set-up
@@ -142,6 +142,13 @@ lines around top-level <code>def</code> and <code>class</code>.</p>
 <li><b>=match= statements are left alone.</b> <code>match</code> and <code>case</code> are ordinary identifiers until they are not, and telling the two apart needs a real parser.</li>
 <li><b>Comments are normalized, not moved.</b> They keep the token they follow.</li>
 </ul>
+<h2>Indentation alone, on every save</h2>
+<p><code>gf</code> is the whole formatter. The much smaller half of it -- put the
+indentation back on the four-space grid and change nothing else -- runs on its
+own every time you save a Python buffer, which is what fixes a block pasted
+from a two-space or tab-indented source. It is <code>:set pyindent</code> (on by default;
+see <a href="options.html">Options</a>), it shares this formatter's tokenizer and its proof-reading,
+and it leaves a file it cannot read unambiguously completely alone.</p>
 <h2>It will not rewrite code it cannot prove it preserved</h2>
 <p>Every result is proof-read before it reaches the buffer: the formatted text
 is re-tokenized and compared against the original, allowing only the changes
@@ -153,7 +160,7 @@ names its line, so the cursor can be put on it.</p>
 <h2>Options</h2>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.py.width = <span class="tok-cyan">100</span>   <span class="tok-comment">-- default 88</span></code></pre></div>
 <p>To go back to <code>black</code> instead, replace the entry with an ordinary argv one:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.py = <span class="tok-blue">{</span><span class="tok-green">'black'</span>, <span class="tok-green">'--quiet'</span>, <span class="tok-green">'--stdin-filename={}'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.py = <span class="tok-blue">{</span><span class="tok-green">'black'</span>, <span class="tok-green">'--quiet'</span>, <span class="tok-green">'--stdin-filename={}'</span>, <span class="tok-green">'-'</span>}</code></pre></div>
 <h1>The Maxima formatter</h1>
 <p>Maxima has no formatter of its own to defer to -- its <code>grind</code> is a printer
 for <b>values</b>, and running a file through it would lose the file's comments
@@ -191,15 +198,15 @@ for assignment, double-quoted strings, and an 80-column margin that calls,
 argument lists and pipelines are broken across to respect.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">r</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="r">result=<span class="tok-blue">some_function</span>(argument_one=<span class="tok-cyan">1</span>,argument_two=<span class="tok-cyan">2</span>,argument_three=<span class="tok-green">'three'</span>)</code></pre></div>
 <p>becomes</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">r</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="r">result &lt;- <span class="tok-blue">some_function</span>(
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">r</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="r">result &lt;- some_function(
   argument_one = <span class="tok-cyan">1</span>,
   argument_two = <span class="tok-cyan">2</span>,
   argument_three = <span class="tok-green">"three"</span>
 )</code></pre></div>
 <p>A trailing block "hugs" the call it belongs to rather than exploding the
 argument list, which is the shape R is actually written in:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">r</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="r">test_that(<span class="tok-green">"it works"</span>, {
-  <span class="tok-blue">expect_equal</span>(<span class="tok-cyan">1</span>, <span class="tok-cyan">1</span>)
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">r</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="r"><span class="tok-blue">test_that</span>(<span class="tok-green">"it works"</span>, {
+  expect_equal(<span class="tok-cyan">1</span>, <span class="tok-cyan">1</span>)
 })</code></pre></div>
 <p>Two things it deliberately does <b>not</b> do: it never adds braces to an
 <code>if=/=for</code> body that has none, and it never rewrites a <code>%&gt;%</code> into a <code>|&gt;</code>.
@@ -216,10 +223,10 @@ token, against the input -- finds a difference it did not intend.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.R.width = <span class="tok-cyan">100</span></code></pre></div>
 <h2>Using air or styler instead</h2>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-comment">-- Posit's air, the tidyverse formatter this style follows:</span>
-mep.format_languages.R = {<span class="tok-green">'air'</span>, <span class="tok-green">'format'</span>, <span class="tok-green">'--stdin-file-path={}'</span>}
+mep.format_languages.<span class="tok-cyan">R</span> = <span class="tok-blue">{</span><span class="tok-green">'air'</span>, <span class="tok-green">'format'</span>, <span class="tok-green">'--stdin-file-path={}'</span>}
 <span class="tok-comment">-- or styler, which rewrites a file in place rather than filtering:</span>
-mep.format_languages.<span class="tok-cyan">R</span> = <span class="tok-blue">{</span>mode = <span class="tok-green">'file'</span>, <span class="tok-green">'Rscript'</span>, <span class="tok-green">'-e'</span>,
-  <span class="tok-green">'styler::style_file(commandArgs(TRUE))'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span></code></pre></div>
+mep.format_languages.R = {mode = <span class="tok-green">'file'</span>, <span class="tok-green">'Rscript'</span>, <span class="tok-green">'-e'</span>,
+  <span class="tok-green">'styler::style_file(commandArgs(TRUE))'</span>, <span class="tok-green">'{}'</span>}</code></pre></div>
 <p>Both need the tool installed, and <code>air</code> takes its own margin from the
 nearest <code>air.toml</code> rather than from <code>width</code> above.</p>
 <h1>Line width</h1>
@@ -228,7 +235,7 @@ nearest <code>air.toml</code> rather than from <code>width</code> above.</p>
 change it. <code>clang-format</code>, if you put it back for C or C++, takes its margin
 from the project's own <code>.clang-format</code> instead.</p>
 <h1>Adding one</h1>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.js = {<span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.format_languages.js = <span class="tok-blue">{</span><span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span>}
 mep.format_languages.ts = mep.format_languages.js</code></pre></div>
 <p>The entry is an argv array. <code>\{\}</code> anywhere in it is replaced by a path.</p>
 <p>Three modes:</p>

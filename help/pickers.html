@@ -60,7 +60,7 @@ searches that worktree and not the others.</p>
 <h1>Writing your own</h1>
 <p>Pickers are ordinary Lua, and the built-in ones are defined the same way
 yours would be:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.picker_open(<span class="tok-green">'Pick a colour'</span>, {<span class="tok-green">'red'</span>, <span class="tok-green">'green'</span>, <span class="tok-green">'blue'</span><span class="tok-blue">}</span>, <span class="tok-purple">function</span>(item)
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.picker_open(<span class="tok-green">'Pick a colour'</span>, {<span class="tok-green">'red'</span>, <span class="tok-green">'green'</span>, <span class="tok-green">'blue'</span>}, <span class="tok-purple">function</span>(item)
   <span class="tok-purple">if</span> item <span class="tok-purple">then</span> mep.notify(<span class="tok-green">'you chose '</span> .. item) <span class="tok-purple">end</span>
 <span class="tok-purple">end</span>)</code></pre></div>
 <p>The callback receives <code>nil</code> when cancelled. Further arguments add a preview

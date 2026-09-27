@@ -56,8 +56,8 @@ tracking time from their own code.</p>
 their name and cursor position, like <code>Ada @12:4</code>. Clicking one jumps to that
 participant's cursor.</p>
 <h1>Replacing it</h1>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.set_statusline(<span class="tok-purple">function</span>()
-  <span class="tok-purple">return</span> mep.<span class="tok-blue">filename</span>() .. <span class="tok-green">'  '</span> .. (mep.git_gutter_summary() or <span class="tok-green">''</span>)
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.<span class="tok-blue">set_statusline</span>(<span class="tok-purple">function</span>()
+  <span class="tok-purple">return</span> mep.filename() .. <span class="tok-green">'  '</span> .. (mep.git_gutter_summary() <span class="tok-purple">or</span> <span class="tok-green">''</span>)
 <span class="tok-purple">end</span>)</code></pre></div>
 <p>The function is called each frame and its string is drawn as the status
 line. The Ln/Col readout and the chips are kept either way, so a custom

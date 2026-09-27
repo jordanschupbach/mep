@@ -196,6 +196,12 @@ std::string ReindentPastedText(const std::string &text, const std::string &targe
     return out;
 }
 
+int PasteSpliceCol(const std::string &line, int col) {
+    if (col < 0) return 0;
+    const int indent = static_cast<int>(LeadingWhitespace(line).size());
+    return col < indent ? indent : col;
+}
+
 int IndentBackspaceWidth(const std::string &line, int col) {
     if (col <= 0 || col > static_cast<int>(line.size())) return 0;
     // Only inside the leading whitespace: a space between words is not indent.

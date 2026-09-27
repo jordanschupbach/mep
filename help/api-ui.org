@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (81)
+* The bindings (82)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -62,6 +62,7 @@ that it does nothing.
 | =mep.picker_set_hint= | sets the open picker's footer key hint |
 | =mep.picker_set_items= | replaces the open picker's item list in place |
 | =mep.picker_set_preview= | sets (or clears) the picker's preview-column text and optional per-span syntax highlighting |
+| =mep.picker_set_selected= | sets the open picker's highlighted row (1-indexed, clamped) |
 | =mep.picker_set_tabs= | sets the open picker's tab-strip labels and 1-indexed active tab |
 | =mep.quick_jump= | Editor::BeginQuickJump (TODO.org "quickjump |
 | =mep.quick_jump_matches= | array of {pane_id, row, col, label} |

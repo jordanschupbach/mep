@@ -16,6 +16,7 @@
 | Markdown     | Treesitter    | =marksman=                   | LSP            |           |
 | Org          | Treesitter    | =mep-org-lsp=                |                |           |
 | Maxima       | per-line lexer | =mep-maxima-lsp=            | built in       | =maxima=  |
+| mepml        | Treesitter    | =mep-mepml-lsp=              | LSP (tables)   |           |
 | Go           | grammar via =just fetch-grammars= | =gopls=  | LSP            |           |
 | Rust         | grammar via =just fetch-grammars= | =rust-analyzer= | LSP     |           |
 | everything else | per-line lexer | see [[file:lsp.html][Language servers]]    | LSP if attached |          |

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The mepml language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Writing">
+<meta name="help-order" content="31">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The mepml language server</h1>
+<h1>What it is</h1>
+<p>mepml files get a language server of their own, <code>mep-mepml-lsp</code>, built
+and shipped with mep. Open a <code>.mepml</code> file and it attaches by itself;
+there is nothing to install.</p>
+<p>It reads a document with the same parser mep renders it from and exports
+it with, so the server and the page you see can never disagree about what
+a line means. It then adds what no single line can tell you on its own:
+citations defined in an =@import=ed file, pictures and link targets that
+are not on disk, headings that links point to.</p>
+<p>While it is attached, the problems it finds are the ones mep underlines;
+mepml's own renderer stops drawing its copy, so nothing is marked twice.
+Because it is an ordinary language server, other editors can use it too.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>What it means</th></tr>
+<tr><td><code>unknown-citation</code></td><td><code>\cite{key}</code> with no <code>@citation</code> entry for the key</td></tr>
+<tr><td><code>unused-citation</code></td><td>an entry nothing cites (shown faded)</td></tr>
+<tr><td><code>unknown-anchor</code></td><td>a link to <code>#anchor</code> where no heading has that anchor</td></tr>
+<tr><td><code>missing-file</code></td><td>a link to a file that is not there</td></tr>
+<tr><td><code>image-missing</code></td><td>an <code>@image</code> picture, or a figure a code block drew, is gone</td></tr>
+<tr><td><code>import-missing</code>, <code>import-cycle</code></td><td>an import that cannot be read, or imports itself</td></tr>
+<tr><td><code>duplicate-import</code></td><td>a file already imported above (included only once)</td></tr>
+<tr><td><code>unknown-directive</code></td><td>an <code>@name</code> mepml does not have (<code>@imgae</code>)</td></tr>
+<tr><td><code>unknown-color</code></td><td><code>\color{name}</code> with a colour mepml does not know</td></tr>
+<tr><td><code>empty-footnote</code></td><td><code>\fn{}</code> with nothing in it</td></tr>
+<tr><td><code>table-columns</code></td><td>a table row with more or fewer cells than the rest</td></tr>
+<tr><td><code>heading-skip</code></td><td>a heading two levels below the one before it</td></tr>
+<tr><td><code>duplicate-option</code></td><td>the same <code>//? Option:</code> set twice</td></tr>
+<tr><td><code>duplicate-citation</code></td><td>two entries with one key</td></tr>
+<tr><td><code>unclosed-code</code>, <code>unclosed-math</code>, <code>unclosed-results</code></td><td>a block that never ends</td></tr>
+<tr><td><code>orphan-caption</code></td><td>an <code>@caption</code> or <code>@alttext</code> with nothing above to attach to</td></tr>
+<tr><td><code>deprecated-directive</code></td><td><code>@printbibliography</code>, which is now <code>@bibliography</code></td></tr>
+</table>
+<p>The file checks need the document to be saved somewhere; an unsaved buffer
+has no directory to look in, so they are skipped rather than guessed.</p>
+<p>What is left alone, on purpose:</p>
+<ul>
+<li>The code inside a code block. That is its own language's business, and running the block is how mepml checks it.</li>
+<li>Maths. TeX is checked where it is typeset, in the buffer and the exports.</li>
+<li>Spelling and grammar.</li>
+</ul>
+<h1>Completion</h1>
+<p>What it offers depends on where the cursor is:</p>
+<table>
+<tr><th>After</th><th>You get</th></tr>
+<tr><td><code>@</code> at a line's start</td><td>the directives: <code>image</code>, <code>caption</code>, <code>import</code>, <code>toc</code>, ...</td></tr>
+<tr><td><code>\</code></td><td>the commands: <code>cite</code>, <code>citep</code>, <code>fn</code>, <code>color</code>, <code>f</code>, <code>fs</code></td></tr>
+<tr><td><code>\cite{</code> or <code>\citep{</code></td><td>every citation key, with its author and year</td></tr>
+<tr><td><code>\color{</code></td><td>the colour names, with their values</td></tr>
+<tr><td><code>\f{</code>, <code>\fs{</code></td><td>font families; sizes in points</td></tr>
+<tr><td><code>@image{</code>, <code>@import{</code></td><td>the files beside the document (pictures; <code>.mepml</code> and <code>.bib</code>)</td></tr>
+<tr><td>a link's bar</td><td><code>#anchors</code> of every heading, then files</td></tr>
+<tr><td><code>//?</code></td><td><code>Title</code>, <code>Subtitle</code>, <code>Author</code>, <code>Date</code>, <code>Option</code>, <code>Import</code></td></tr>
+<tr><td>=//? Import: =</td><td>the <code>.mepml</code> and <code>.bib</code> files beside the document</td></tr>
+<tr><td><code>// W</code></td><td>the callout kinds: <code>WARNING</code>, <code>NOTE</code>, <code>TIP</code>, ...</td></tr>
+<tr><td><code>```</code></td><td>the languages a code block can run</td></tr>
+<tr><td>=```{r, =</td><td><code>file=</code>, <code>eval=</code> and every babel header argument</td></tr>
+</table>
+<h1>Hover, definitions and references</h1>
+<ul>
+<li><b>Hover</b> on a citation shows its entry as the bibliography will print it, and every field. On a footnote, its text; on a link, where it goes (and whether it exists); on a colour, its value; on a heading, its anchor and how many links point at it; on a code block's fence, its language and options.</li>
+<li><b>Go to definition</b> goes from a citation to its entry (into the imported file, when it lives there), from a <code>#anchor</code> link to the heading, and from <code>@image</code>, <code>@import</code>, a header <code>//? Import:</code> or a file link to the file. Hover on a header import lists the options it brings (and which of them this document overrides) and how much content it includes.</li>
+<li><b>References</b> on a citation key lists every <code>\cite</code> of it and its entry; on a heading, the heading and every link to it.</li>
+<li><b>Rename</b> renames a citation key everywhere in the document, entry included. On a heading it renames the heading, and every <code>#anchor</code> link to it follows to the new anchor. A key defined in an imported file is not renamed from here; the server names the file to rename it in.</li>
+</ul>
+<h1>Fixes and formatting</h1>
+<p>The code actions on a line with a problem:</p>
+<ul>
+<li>An unknown citation: add a <code>@citation</code> entry for it at the end of the document, or switch to the existing key it is closest to.</li>
+<li>A misspelt directive, anchor or colour: change it to the nearest real one.</li>
+<li><code>@printbibliography</code>: rename it to <code>@bibliography</code>.</li>
+<li>A table with ragged rows: pad every row to the same number of cells.</li>
+</ul>
+<p><b>Formatting</b> lines up every table's pipes, honouring each column's
+alignment (<code>:---</code>, <code>:---:</code>, <code>---:</code>), and touches nothing else. The same is
+offered as a code action on any table that is not aligned yet.</p>
+<h1>Outline and folding</h1>
+<p>The outline lists the headings, nested by depth, with each section's
+figures, tables, code blocks and citations under it, numbered the way the
+captions number them. Folding covers the same blocks mep folds in the
+buffer: sections, document headers, code, citations, display maths, tables,
+lists and comment runs -- a code block and its results as two separate
+folds.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="mepml.html">mepml</a> -- the language itself.</li>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+</ul>
+</body>
+</html>

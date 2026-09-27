@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (96)
+* The bindings (151)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -31,6 +31,7 @@ that it does nothing.
 | =mep.buffer_ns_clear= | clears every decoration under a namespace in a specific (possibly background) buffer |
 | =mep.buffer_on_screen= | whether some pane in the active tab shows the buffer |
 | =mep.buffer_open_beside= | shows a buffer in a pane that isn't a navigator, splitting if need be |
+| =mep.buffer_save= | bool: writes buffer `id` to its own filename |
 | =mep.buffer_save_epoch= | -- |
 | =mep.buffer_set_drag_resolver= | registers a row->path resolver so a buffer's own rows can be dragged onto a pane to open |
 | =mep.buffer_set_filename= | sets a buffer's raw filename |
@@ -48,6 +49,23 @@ that it does nothing.
 | =mep.buffer_text_cols= | returns the text column budget of the pane showing a buffer |
 | =mep.buffer_workspace= | the stable id of the workspace a buffer belongs to |
 | =mep.bundled_tool= | resolves a helper binary installed beside the running `mep` |
+| =mep.cad_add_extrude= | feature_id |
+| =mep.cad_add_revolve= | feature_id |
+| =mep.cad_add_sketch= | feature_id |
+| =mep.cad_export= | ok |
+| =mep.cad_frame_all= | -- |
+| =mep.cad_info= | table |
+| =mep.cad_new= | buffer_id |
+| =mep.cad_open= | ok |
+| =mep.cad_orbit= | -- |
+| =mep.cad_rebuild= | ok |
+| =mep.cad_remove= | ok |
+| =mep.cad_save= | ok |
+| =mep.cad_select= | ok |
+| =mep.cad_set= | ok |
+| =mep.cad_suppress= | ok |
+| =mep.cad_view= | shaded, wireframe or drawing |
+| =mep.cad_zoom= | -- |
 | =mep.clipboard_get= | returns the system clipboard's text |
 | =mep.clipboard_set= | copies text to the system clipboard |
 | =mep.current_buffer= | returns the active pane's buffer id |
@@ -69,10 +87,28 @@ that it does nothing.
 | =mep.menubar_set_visible= | shows or hides the top menu bar outright |
 | =mep.menubar_toggle= | shows/hides the top menu bar, the same thing tapping mod1 does |
 | =mep.menubar_visible= | returns whether the top menu bar is currently shown |
+| =mep.mepml_block_at= | describes the mepml code block at a 1-based row |
+| =mep.mepml_code_blocks= | lists the current mepml buffer's code-block bodies |
+| =mep.mepml_diagnostics= | the parser's diagnostics for the current mepml buffer |
+| =mep.mepml_export= | writes the current mepml buffer in the format named by the path's extension |
+| =mep.mepml_export_html= | writes the current mepml buffer as standalone HTML |
+| =mep.mepml_folds= | rebuilds the current mepml buffer's heading/block folds |
+| =mep.mepml_gui_start= | shows a block's program window inside its results |
+| =mep.mepml_header_toggle= | folds or unfolds the current mepml buffer's document headers |
+| =mep.mepml_import= | converts a document to mepml and writes it |
+| =mep.mepml_link_at= | the target of the mepml link at a 1-based position |
+| =mep.mepml_outline= | lists the current mepml buffer's headings |
+| =mep.mepml_scan= | re-parses the current mepml buffer and emits its decorations into `ns` |
+| =mep.mepml_splice_results= | -- |
+| =mep.mepml_terminal_focus= | sends the keyboard to the terminal of the block under the cursor |
+| =mep.mepml_terminal_start= | runs a block's program in a terminal inside its results |
+| =mep.mepml_terminal_stop= | stops the mepml block running under the cursor |
 | =mep.mod1_name= | returns the display name of whichever modifier is currently mod1 |
+| =mep.read_disk_lines= | array of lines, or nil |
 | =mep.replace_lines= | replaces a 1-indexed, end-exclusive line range with a new set of lines |
 | =mep.set_cursor= | moves the cursor to a 1-indexed position |
 | =mep.set_line= | replaces the content of a 1-indexed line |
+| =mep.set_on_quit_unsaved= | fn(scope) where scope is "all" (:qa/:wqa) or |
 | =mep.sketch_add_arc= | entity_id |
 | =mep.sketch_add_circle= | entity_id |
 | =mep.sketch_add_ellipse= | entity_id |
@@ -107,9 +143,28 @@ that it does nothing.
 | =mep.ui_confirm= | shows a yes/no confirmation prompt and calls on_done with the choice |
 | =mep.ui_input= | shows a text prompt overlay and calls on_done with the entered text (or nothing on Escape) |
 | =mep.ui_select= | shows a fixed-list chooser and calls on_done with the chosen 1-indexed index (or nothing on Escape) |
+| =mep.unsaved_buffers= | array of {id, name}: every buffer with unsaved |
 | =mep.url_normalize= | normalizes omnibar input into a loadable target |
 | =mep.url_resolve= | resolves a reference against an absolute URL |
 | =mep.url_under_cursor= | returns the URL under the cursor, if any |
+| =mep.view_add_label= | -- |
+| =mep.view_add_line= | -- |
+| =mep.view_add_mesh= | -- |
+| =mep.view_add_mode= | -- |
+| =mep.view_add_part= | -- |
+| =mep.view_add_point= | -- |
+| =mep.view_add_result= | -- |
+| =mep.view_camera= | -- |
+| =mep.view_caption= | -- |
+| =mep.view_clear= | -- |
+| =mep.view_current= | buffer_id or nil |
+| =mep.view_frame_all= | -- |
+| =mep.view_info= | table |
+| =mep.view_new= | buffer_id |
+| =mep.view_on_frame= | -- |
+| =mep.view_play= | -- |
+| =mep.view_time= | t |
+| =mep.view_time_range= | -- |
 | =mep.visual_change= | deletes the current Visual selection and enters Insert mode at the deletion point, like pressing "c" |
 | =mep.visual_range= | returns the current Visual selection's normalized 1-indexed endpoints and kind, or nil if none |
 | =mep.visual_selection= | returns the currently selected text without altering the selection or any register |

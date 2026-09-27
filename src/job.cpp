@@ -15,12 +15,28 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
 #endif
 
 Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_stdout, bool use_pty,
-         std::vector<std::pair<std::string, std::string>> extra_env)
+         std::vector<std::pair<std::string, std::string>> extra_env, bool die_with_parent)
     : raw_stdout_(raw_stdout || use_pty), use_pty_(use_pty), extra_env_(std::move(extra_env)) {
 #if MEP_JOB_POSIX
+    // In the child, right after fork: SIGTERM when mep goes (and at once,
+    // if it already went between the fork and here).
+    const pid_t parent_pid = getpid();
+    auto tie_to_parent = [die_with_parent, parent_pid] {
+#if defined(__linux__)
+        if (!die_with_parent) return;
+        prctl(PR_SET_PDEATHSIG, SIGTERM);
+        if (getppid() != parent_pid) _exit(1);
+#else
+        (void)die_with_parent;
+        (void)parent_pid;
+#endif
+    };
     if (argv.empty()) {
         spawn_failed_ = true;
         finished_ = true;
@@ -38,6 +54,7 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
             // Child: forkpty() already made the PTY slave our controlling
             // terminal and stdin/stdout/stderr -- just cwd + exec.
             setpgid(0, 0);
+            tie_to_parent();
             if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
             // Strip KITTY_* -- mep launched from a real kitty window
             // inherits these, and a shell that sees KITTY_INSTALLATION_DIR
@@ -122,6 +139,7 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
         close(err_pipe[0]);
         close(err_pipe[1]);
         setpgid(0, 0);
+        tie_to_parent();
         if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
         for (const auto &kv : extra_env_) setenv(kv.first.c_str(), kv.second.c_str(), 1);
         std::vector<char *> cargv;
@@ -144,6 +162,7 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
 #else
     (void)argv;
     (void)cwd;
+    (void)die_with_parent;
     spawn_failed_ = true;
     finished_ = true;
 #endif
@@ -347,11 +366,12 @@ JobManager &JobManager::Instance() {
 }
 
 int JobManager::Spawn(const std::vector<std::string> &argv, const std::string &cwd, Callbacks callbacks,
-                       bool use_pty, std::vector<std::pair<std::string, std::string>> extra_env) {
+                       bool use_pty, std::vector<std::pair<std::string, std::string>> extra_env, bool die_with_parent) {
     Entry entry;
     entry.id = next_id_++;
     for (const std::string &a : argv) { entry.debug_cmd += a; entry.debug_cmd += ' '; }
-    entry.job = std::make_shared<Job>(argv, cwd, callbacks.on_stdout_raw != nullptr, use_pty, std::move(extra_env));
+    entry.job = std::make_shared<Job>(argv, cwd, callbacks.on_stdout_raw != nullptr, use_pty, std::move(extra_env),
+                                      die_with_parent);
     entry.callbacks = std::move(callbacks);
     entry.spawn_failed = entry.job->SpawnFailed();
     jobs_.push_back(std::move(entry));
@@ -375,6 +395,10 @@ void JobManager::Kill(int id) {
     if (Job *j = Find(id)) j->Kill();
 }
 
+void JobManager::KillHard(int id) {
+    if (Job *j = Find(id)) j->KillHard();
+}
+
 void JobManager::Interrupt(int id) {
     if (Job *j = Find(id)) j->Interrupt();
 }
@@ -384,6 +408,13 @@ bool JobManager::IsRunning(int id) const {
         if (e.id == id) return !e.job->Finished();
     }
     return false;
+}
+
+int JobManager::Pid(int id) const {
+    for (const auto &e : jobs_) {
+        if (e.id == id) return e.job->Pid();
+    }
+    return -1;
 }
 
 Job *JobManager::Find(int id) {

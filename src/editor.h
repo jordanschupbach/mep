@@ -7,6 +7,7 @@
 #include "notebook_doc.h"
 #include "html_doc.h"
 #include "org_doc.h"
+#include "mepml_doc.h"
 #include "image_doc.h"
 #include "cad_constraint.h"
 #include "cad_doc.h"
@@ -20,6 +21,7 @@
 #include "vterm.h"
 #include "spell.h"
 #include "gfx/types.h"
+#include "gui_embed.h"
 
 #include <stddef.h>
 #include <ctime>
@@ -541,6 +543,33 @@ struct Decoration {
     // hl_group's other consumers (syntax highlighting, diagnostics) do.
     bool has_fg_color = false;
     ThemeColor fg_color;
+    // Pure concealment (mepml, Editor::MepmlScan): together with
+    // virt_overlay and an empty virt_text, hides [col_start, col_end)
+    // outright -- DrawPane collapses the columns exactly as it does for a
+    // replacement-text overlay, just with nothing drawn in their place.
+    // This is what lets nested markup (`*~x~*`, `\color{red}{*x*}`) hide
+    // each delimiter on its own while the text between keeps every
+    // decoration of its own; one whole-span overlay carrying the inner
+    // text as its replacement (org's way) can only carry one style.
+    bool conceal = false;
+    // Tints [col_start, col_end)'s background with hl_group's colour at a
+    // low alpha, under the text (mepml's `=highlight=`).
+    bool bg_fill = false;
+    // A concealing overlay's replacement drawn at a different size and/or
+    // face than the editor's own (mepml's >big< / <small> / \fs{} / \f{}):
+    // DrawPane reserves ceil(codepoints * virt_scale) columns for it --
+    // deterministic, so the scan can lay out table columns without font
+    // metrics -- and draws the text bottom-aligned with the row's body
+    // text at g_font_size * virt_scale, from `virt_family` ("" = the
+    // editor face, "sans", "serif" or "mono" = the embedded Liberation
+    // faces), squeezed horizontally if a proportional face runs wider
+    // than its reserved columns. The row reserves headroom above it
+    // (Editor::RowTopPadSlots) when the text is taller than a line.
+    float virt_scale = 1.0f;
+    std::string virt_family;
+    // Vertical shift of such a run, in body ems (positive = up): mepml's
+    // ^superscript^ and ,,subscript,, are small runs raised / lowered.
+    float virt_raise = 0.0f;
 };
 
 // A fold range (NVIM_PARITY_PLAN.md Part I Phase 5). `provider` is a free-
@@ -1031,6 +1060,45 @@ struct Buffer {
     };
     std::unordered_map<int, OrgImageRender> org_image_rows;
 
+    // mepml headings (Editor::MepmlScan): row -> `>` depth, for exactly the
+    // rows the parser read as headings -- a `> x` line inside a code block
+    // or a results region is not one, which a per-line sniff like org's
+    // OrgHeadlineLevel could not tell. Read through
+    // Editor::HeadingLevelForRow by the same four slot walkers that scale
+    // org headlines, so a mepml heading is drawn large the same way.
+    std::unordered_map<int, int> mepml_heading_rows;
+    // mepml rows holding text drawn larger than body size (Decoration::
+    // virt_scale): row -> the largest scale on it, plus a hash of the
+    // row's text so an edit since the scan never keeps stale headroom.
+    // Editor::RowTopPadSlots turns it into the slots reserved above the
+    // row -- read by the same walkers as mepml_heading_rows.
+    struct MepmlRowScale {
+        float scale = 1.0f;
+        size_t text_hash = 0;
+    };
+    std::unordered_map<int, MepmlRowScale> mepml_row_scale;
+    // mepml rows drawn as generated content in place of their own text:
+    // `@toc` (the headings) and `@bibliography` (the cited entries), one
+    // line of styled text per drawn line (mepml::RenderToc/
+    // RenderBibliography). Like an inline image, the row claims one slot
+    // per line -- read through Editor::MepmlVirtualBlockForRow by every
+    // slot walker -- except while the cursor is on it, when it is the
+    // raw directive again.
+    struct MepmlVirtualBlock {
+        std::vector<mepml::RenderedLine> lines;
+        size_t text_hash = 0;  // the directive row's text when built
+    };
+    std::unordered_map<int, MepmlVirtualBlock> mepml_virtual_rows;
+    // A folded mepml document header (a run of `//?` lines) reads as its
+    // title plus a muted summary of the rest, not as its raw first line.
+    struct MepmlFoldSummary {
+        std::string title;
+        std::string detail;
+        float title_scale = 1.0f;  // drawn this much larger than body text (with headroom above, RowTopPadSlots)
+        size_t text_hash = 0;      // the fold's first row when built
+    };
+    std::unordered_map<int, MepmlFoldSummary> mepml_fold_summaries;
+
     // Org LaTeX/math-mode rendering (<leader>otl, Editor::OrgLatexVisible()):
     // row -> a rendered fragment's PNG path plus how many line-heights tall
     // to display it, populated by Lua's mep.org_latex_scan() (kBuiltinOrgLatex,
@@ -1062,8 +1130,22 @@ struct Buffer {
         std::string path;
         int slots = 1;
         int end_row = 0;
+        // Non-empty for a mepml code block's html result: the rows draw as
+        // this markup, laid out by mep's HTML engine (DrawPane), instead
+        // of as the texture at `path`. `base_dir` resolves its relative
+        // <img src>/stylesheet paths (the document's directory).
+        std::string html;
+        std::string base_dir;
+        int html_cols = 0;  // the width (columns) it was laid out at, and is drawn at
+        // >= 0 for a mepml code block's running terminal (Editor::MepmlTerminalStart):
+        // the rows draw its live screen, and stay drawn under the cursor.
+        int term_run = -1;
     };
     std::unordered_map<int, OrgLatexRender> org_latex_rows;
+    // mepml code blocks' html results (Editor::MepmlScan), in the same
+    // "one row, N slots, skip to end_row" shape -- kept apart from
+    // org_latex_rows, which the LaTeX scan clears and refills on its own.
+    std::unordered_map<int, OrgLatexRender> mepml_html_rows;
 
     // Org tables laid out for the screen (Editor::OrgTableWrapScan),
     // for either of two reasons. A table whose width runs past `:set
@@ -1293,6 +1375,12 @@ struct Pane {
     // UpdateScrollForPane drops a stale offset rather than applying it to
     // whatever row the view landed on.
     int scroll_sub_row = -1;
+    // The line of a rendered mepml @toc/@bibliography block the cursor is
+    // on (Editor::VirtualLineStep): `virt_line` counts from the block's
+    // first generated line and only means anything while the cursor is on
+    // `virt_row` (UpdateScrollForPane forgets it once the cursor leaves).
+    int virt_row = -1;
+    int virt_line = 0;
     // The soft-wrap budget (DrawPane's own `wrap_cols`) as of this pane's
     // last render, recorded by UpdateScrollForPane. Key handling --
     // ScrollFigureStep and the mouse wheel -- has to count visual slots
@@ -3042,6 +3130,13 @@ struct OrgBlockCard {
     // own comment there. Codepoints, not bytes, since that's the unit
     // DrawLineFast advances its column grid by.
     int content_cols = 0;
+    // No title bar and no floor: every row from begin_row to end_row is
+    // content, drawn over a plain wash (a mepml document header -- its
+    // `//?` lines are rendered in place, see Editor::MepmlScan).
+    bool bare = false;
+    // A mepml block whose program is running in a terminal inside its
+    // results (Editor::MepmlTerminalStart): the bar shows a stop button.
+    int term_run = -1;
 };
 
 // The play-button view of a card (OrgBlockPlayFor, org_doc.h). The two
@@ -3220,6 +3315,28 @@ public:
      * @return True if the key was consumed by scrolling; false to let it move the cursor normally.
      */
     bool ScrollFigureStep(bool down);
+    /**
+     * @brief Steps the cursor one line through the rendered mepml @toc/@bibliography block it is on.
+     * @param down True for j, false for k.
+     * @return 1 when the step stayed inside the block (the key is consumed), 0 when the cursor is on
+     * a block's first/last line and the key should move off it normally, -1 when not on a block.
+     */
+    int VirtualLineStep(bool down);
+    /**
+     * @brief The line of the rendered @toc/@bibliography block on a pane's cursor row the cursor is on.
+     * @param pane The pane.
+     * @param lines The block's line count.
+     * @return The 0-based line, clamped to the block.
+     */
+    static int VirtualLineOf(const Pane &pane, int lines) {
+        if (lines <= 0 || pane.virt_row != pane.cursor.row) return 0;
+        return std::clamp(pane.virt_line, 0, lines - 1);
+    }
+    /**
+     * @brief Jumps to the heading of the table-of-contents entry the cursor is on (Enter on a rendered @toc).
+     * @return True when the cursor was on a TOC entry and moved.
+     */
+    bool VirtualLineActivate();
     /**
      * @brief Returns how many visual slots the org inline image on `row` claims, or 0 if that row
      * does not render as one (including when inline images are toggled off).
@@ -6952,6 +7069,14 @@ public:
      * @return The tables found, in buffer order (empty for a non-org or non-existent buffer).
      */
     const std::vector<OrgTableGrid> &OrgTables(int buffer_id);
+    // mepml tables' grids, in *display* columns (Editor::MepmlTableLayout
+    // aligns them at draw time), per buffer id; OrgTables hands these out
+    // for a .mepml buffer so DrawPane's org grid pass draws them too.
+    std::unordered_map<int, std::vector<OrgTableGrid>> mepml_table_grids_;
+    // mepml code blocks and their results regions as block cards (so
+    // DrawPane's org card pass draws them: tinted card, language chip,
+    // options, play button), per buffer id, rebuilt by MepmlScan.
+    std::unordered_map<int, std::vector<OrgBlockCard>> mepml_block_cards_;
     // Aligns the table containing 0-based `row` on its pipes -- the same
     // rewrite :MepOrgTableAlign does, but for a row that isn't
     // necessarily the cursor's (and silently, with no "Not on a table
@@ -8581,6 +8706,222 @@ public:
      * @return True if the current buffer is org-mode.
      */
     bool IsOrgBuffer() const;
+    /**
+     * @brief Reports whether the current buffer is a mepml document.
+     * @return True if the current buffer's file ends in ".mepml".
+     */
+    bool IsMepmlBuffer() const;
+
+    // --- mepml (src/mepml_doc.h; implementation in editor_mepml.cpp) ---
+    //
+    // Heading lookups shared by org and mepml, for the renderers that draw
+    // a heading larger than body text (DrawPane's row loop, its cursor-Y
+    // walk, its closed-fold summary, and UpdateScrollForPane through
+    // PaneRowSlots). Org answers from the line itself (OrgHeadlineLevel);
+    // mepml from the registry its scan keeps (Buffer::mepml_heading_rows),
+    // re-checked against the line so a row edited since the last scan
+    // never keeps a stale heading.
+    /**
+     * @brief Returns the heading depth of a buffer row for org or mepml buffers, or 0.
+     * @param buf The buffer.
+     * @param row 0-based row.
+     * @return 1-based heading level, or 0 when the row is not a heading.
+     */
+    static int HeadingLevelForRow(const Buffer &buf, int row);
+    /**
+     * @brief Returns the extra display slots a heading of `level` claims (kOrgHeadingStyles).
+     * @param level 1-based heading level (0 = not a heading).
+     * @return Extra slots beyond the row's own one.
+     */
+    static int HeadingExtraSlotsForLevel(int level);
+    /**
+     * @brief Returns the bytes of heading markup the render hides at the start of a row (org stars / mepml `>`s plus the following space), or 0.
+     * @param buf The buffer.
+     * @param row 0-based row.
+     * @return Prefix length to hide.
+     */
+    static int HeadingHideLenForRow(const Buffer &buf, int row);
+    /**
+     * @brief Returns the indent, in columns, drawn in place of a hidden heading prefix (level - 1), or 0.
+     * @param buf The buffer.
+     * @param row 0-based row.
+     * @return Indent width in columns.
+     */
+    static int HeadingIndentColsForRow(const Buffer &buf, int row);
+    /**
+     * @brief Returns the empty slots drawn above a row whose text is taller than a line (mepml's scaled runs), so it can share a baseline with the rest of the row.
+     * @param buf The buffer.
+     * @param row 0-based row.
+     * @return Slots of headroom above the row's text; 0 for ordinary rows and closed-fold summaries.
+     */
+    int RowTopPadSlots(const Buffer &buf, int row) const;
+    /**
+     * @brief The generated content (@toc / @bibliography) a row draws as, or nullptr when it draws its own text (no such content, concealment off, or a closed fold on it).
+     * @param buf The buffer.
+     * @param row 0-based row.
+     * @param cursor_row Unused: the block is drawn under the cursor too, like an image (kept so every walker passes the same arguments as for LaTeX rows).
+     * @return The block, or nullptr.
+     */
+    const Buffer::MepmlVirtualBlock *MepmlVirtualBlockForRow(const Buffer &buf, int row, int cursor_row) const;
+    /**
+     * @brief Re-parses the current mepml buffer and emits its styling/concealment decorations into `ns`, refreshing its heading, image and link registries.
+     * @param ns Decoration namespace (the caller clears it first).
+     * @param own_diagnostics Draw the parser's own diagnostics; false while a language server (mep-mepml-lsp) publishes them, so they are not drawn twice.
+     */
+    void MepmlScan(int ns, bool own_diagnostics = true);
+    // --- Terminals inside mepml results ----------------------------------
+    // An `exec` code block (or a shell block with results=terminal) runs its
+    // command in a pseudo-terminal whose screen is drawn inside the block's
+    // results card while it runs; Enter or a click hands it the keyboard
+    // (Ctrl-\ Ctrl-N gives it back), and when the program ends its final
+    // screen is written into the results as text.
+    /**
+     * @brief Starts the code block whose ``` fence is on `fence_row` running in a terminal inside its results.
+     * @param buffer_id The mepml buffer.
+     * @param fence_row The block's opening fence row (0-based).
+     * @param argv The program to run instead of the block's own command (results=exec: what babel prepared or compiled from the block), or null.
+     * @param temp_files Files to delete once that program is done (its source, its binary), or when it cannot start.
+     * @return The run's id, or -1 (with a status message) when it cannot start.
+     */
+    int MepmlTerminalStart(int buffer_id, int fence_row, const std::vector<std::string> *argv = nullptr,
+                           const std::vector<std::string> &temp_files = {});
+    /**
+     * @brief Stops a running block: SIGTERM to its process group, SIGKILL if already asked once.
+     * @param run_id The run.
+     * @return True when there was such a run.
+     */
+    bool MepmlTerminalStop(int run_id);
+    /**
+     * @brief The run whose block (fence to results end) covers `row` of the current buffer, or -1.
+     */
+    int MepmlTerminalRunAt(int row) const;
+    /**
+     * @brief Sends the keyboard to a run's terminal (Terminal mode, for that terminal) until Ctrl-\ Ctrl-N.
+     * @return True when the run is live.
+     */
+    bool MepmlTerminalFocus(int run_id);
+    /**
+     * @brief The session of a run, for drawing; nullptr when there is no such run.
+     */
+    const TerminalSession *MepmlTerminalSession(int run_id) const;
+    /**
+     * @brief The run whose terminal has the keyboard, or -1.
+     */
+    int MepmlTerminalFocused() const { return mode_ == Mode::Terminal ? mepml_term_focus_ : -1; }
+    /**
+     * @brief Once per frame: writes each finished run's final screen into its block's results, and forgets it.
+     */
+    void MepmlTerminalsTick();
+    // --- GUI programs inside mepml results ---------------------------------
+    // An `exec-gui` block (or results=exec-gui) runs a program whose own
+    // window is shown inside the block's results (gui_embed.h: an X11
+    // window reparented into mep's). Its run shares the terminal runs' ids,
+    // so the stop button, C-c C-k, Enter and a click treat both alike.
+    /**
+     * @brief Tells the editor which native window it lives in, so programs can be embedded into it (main(), once the window exists).
+     * @param handle gfx::GetNativeWindowHandle()'s value.
+     */
+    void SetNativeWindowHandle(void *handle) { native_window_handle_ = handle; }
+    /**
+     * @brief Starts the code block whose fence is on `fence_row` as a program whose window is shown in its results.
+     * @param buffer_id The mepml buffer.
+     * @param fence_row The block's opening fence row (0-based).
+     * @param argv The program (results=exec-gui: what babel prepared), or null to run the block's body as a command line.
+     * @param temp_files Files to delete once the program is done.
+     * @return The run's id, or -1 (with a status message) when it cannot start.
+     */
+    int MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::string> *argv = nullptr,
+                      const std::vector<std::string> &temp_files = {});
+    /**
+     * @brief Whether `run_id` is a GUI run (not a terminal one).
+     */
+    bool MepmlIsGuiRun(int run_id) const { return mepml_guis_.count(run_id) != 0; }
+    struct MepmlGuiView {
+        std::string status;  // what to draw while there is no window ("starting xclock...")
+        int cols = 0;        // its width in columns (cols=, else the text width)
+        bool shown = false;  // its window is adopted (the draw leaves the area to it)
+        bool focused = false;
+    };
+    /**
+     * @brief What the draw needs to know about a GUI run; false when there is no such run.
+     */
+    bool MepmlGuiViewOf(int run_id, MepmlGuiView *out) const;
+    /**
+     * @brief Puts a GUI run's window where its results are drawn this frame (pixels in mep's window).
+     * @param run_id The run.
+     * @param full Its whole area.
+     * @param clip The part of mep's window it may cover (the pane's text area).
+     */
+    void MepmlGuiPlace(int run_id, const mep::gui_embed::Rect &full, const mep::gui_embed::Rect &clip);
+    /**
+     * @brief After a frame is drawn: hides every GUI run nothing placed, and pushes the changes to the windowing system.
+     */
+    void MepmlGuisEndFrame();
+    /**
+     * @brief Once per frame (from MepmlTerminalsTick): finds windows, takes the keyboard back when asked, and writes each ended program's results.
+     */
+    void MepmlGuisTick();
+    /**
+     * @brief Rebuilds provider="mepml" folds (heading sections, code blocks, citations, comment runs), keeping each fold's open/closed state.
+     */
+    void RecomputeMepmlFolds();
+    /**
+     * @brief Parses the current buffer as mepml, resolving @import relative to its file.
+     * @param with_imports Expand @import directives (reads files).
+     * @return The parsed document.
+     */
+    mepml::Document MepmlParseCurrent(bool with_imports) const;
+    /**
+     * @brief The current buffer's file as an absolute path (empty for an unnamed buffer).
+     * @return The path; relative image and @import paths resolve against its directory.
+     */
+    std::string MepmlCurrentFile() const;
+    /**
+     * @brief The summary a closed fold starting at `row` shows in place of its raw first line (a mepml document header).
+     * @param buf The buffer being drawn.
+     * @param row The fold's first row.
+     * @param cursor_row The pane cursor's row (-1 for an inactive pane): that row is shown raw.
+     * @return The summary, or nullptr to draw the row itself.
+     */
+    const Buffer::MepmlFoldSummary *MepmlFoldSummaryForRow(const Buffer &buf, int row, int cursor_row) const;
+    /**
+     * @brief Folds every document header (run of `//?` lines) in the current mepml buffer, or unfolds them all if they already are.
+     * @return 1 when the headers are now folded, 0 when unfolded, -1 when the buffer has no foldable header.
+     */
+    int MepmlToggleHeaderFolds();
+    /**
+     * @brief Replaces (or inserts) the results region of the code block whose opening fence is on `fence_row`, in any buffer.
+     * @param buffer_id Target buffer.
+     * @param fence_row 0-based row of the block's ``` line.
+     * @param code The block body the output came from; the splice is refused if the block has changed since.
+     * @param output Program output ('\n'-separated).
+     * @return True if the results were written.
+     */
+    bool MepmlSpliceResults(int buffer_id, int fence_row, const std::string &code, const std::string &output);
+    /**
+     * @brief The current mepml buffer's math, as fragments for the LaTeX preview (OrgLatexScanFragments dispatches here for .mepml).
+     * @return Display-math blocks and inline fragments, rows/cols 1-based.
+     */
+    OrgLatexFragments MepmlLatexFragments() const;
+    /**
+     * @brief The current mepml buffer's literal (non-prose) spans -- code, results, verbatim, maths, metadata, directives, link targets and markup -- for the spell checker to skip.
+     * @return Spans with 1-based rows and 1-based half-open columns, like OrgLiteralSpans.
+     */
+    std::vector<OrgLiteralSpan> MepmlLiteralSpans() const;
+    /**
+     * @brief Rebuilds the current buffer's mepml block cards (code blocks and their results regions) for DrawPane's card pass.
+     * @param doc The parsed buffer.
+     */
+    void MepmlBuildCards(const mepml::Document &doc);
+    /**
+     * @brief Draws mepml tables as aligned grids without touching the text: every pipe becomes a `│` overlay carrying its cell's padding (computed from the cells' concealed widths), source whitespace around cells is hidden, and the |---| row becomes a ├─┼─┤ rule.
+     * @param doc The parsed buffer.
+     * @param spans mepml::Highlight(doc), already computed by the caller.
+     * @param rows The table rows to lay out (every row but the cursor's, while concealing).
+     * @param ns Decoration namespace.
+     */
+    void MepmlTableLayout(const mepml::Document &doc, const std::vector<mepml::Span> &spans,
+                          const std::unordered_set<int> &rows, int ns);
     // Marker folding (za/zm/zr/zR/zM), enabled by default for every
     // filetype: rebuilds provider="marker" folds from literal `{{{`/`}}}`
     // text markers (vim's classic foldmethod=marker), same lazy
@@ -8838,6 +9179,20 @@ public:
      * @return The registered render, or nullptr.
      */
     const Buffer::OrgLatexRender *OrgLatexRenderForRow(const Buffer &buf, int row, int cursor_row) const;
+    /**
+     * @brief The drawn render (an org LaTeX fragment or a mepml html result) whose skipped source rows include `row` -- a row DrawPane never draws on its own.
+     * @param pane The pane (its cursor decides whether a render is revealed).
+     * @param buf The pane's buffer.
+     * @param row A row strictly after a render's first row and up to its end_row.
+     * @param start Set to the render's own first row when one is found.
+     * @return The render, or nullptr when `row` is an ordinary row.
+     */
+    const Buffer::OrgLatexRender *RenderContaining(const Pane &pane, const Buffer &buf, int row, int *start) const;
+    /**
+     * @brief Installs the measure a mepml html result is laid out with (main.cpp: mep's HTML engine and fonts).
+     * @param fn fn(html, base_dir, width_cols) -> the rows the rendered markup is tall.
+     */
+    void SetHtmlMeasureHook(std::function<int(const std::string &, const std::string &, int)> fn) { html_measure_ = std::move(fn); }
     // Clears every entry -- called by mep.org_latex_scan() before
     // rescanning (and when the toggle turns off), mirroring
     // ClearOrgImageRows.
@@ -11077,6 +11432,9 @@ private:
     // still gets a sane answer.
     double render_char_width_ = kNotebookDefaultCharAspect * 22.0;
     double render_line_height_ = 22.0;
+    // See SetHtmlMeasureHook; unset (a headless build, a test) leaves html
+    // results as their source text.
+    std::function<int(const std::string &, const std::string &, int)> html_measure_;
 
     // Shared by Visual mode's d/x/y and the menu-bar Copy/Cut: operates on
     // the current selection, or the current line if there is none.
@@ -11658,6 +12016,45 @@ private:
     // after the process exits (so its scrollback stays viewable) until
     // the pane itself closes.
     std::unordered_map<int, TerminalSession> terminals_;
+    // Terminals running inside mepml results (MepmlTerminalStart), kept
+    // apart from terminals_: these belong to a block, not to a buffer of
+    // their own, so nothing that treats a terminal buffer specially
+    // (IsTerminalBuffer, ReapExitedTerminals) may see them.
+    struct MepmlTermRun {
+        TerminalSession sess;
+        int buffer_id = -1;
+        std::string code;   // the block's command: finds the block again after edits
+        int fence_row = -1;  // last known (MepmlScan keeps it current)
+        int results_end = -1;
+        int rows = 16, cols = 80;
+        int stops = 0;  // stop requests so far (the second one kills outright)
+        // A full-screen program's last frame (its alternate screen, which
+        // is gone once it exits): the results if its main screen is empty.
+        std::vector<std::string> alt_snapshot;
+        std::vector<std::string> temp_files;  // results=exec: the program's source/binary
+    };
+    std::map<int, MepmlTermRun> mepml_terms_;
+    int next_mepml_term_ = 1;
+    // GUI runs (MepmlGuiStart). The backend is declared first so that it
+    // outlives every run's window.
+    void *native_window_handle_ = nullptr;
+    std::unique_ptr<mep::gui_embed::Backend> gui_backend_;
+    struct MepmlGuiRun {
+        std::unique_ptr<mep::gui_embed::EmbeddedApp> app;
+        int buffer_id = -1;
+        std::string code;   // finds the block again after edits
+        int fence_row = -1;
+        int results_end = -1;
+        int rows = 20, cols = 0;
+        std::string label;          // the command, for "starting ..."
+        std::string snapshot_path;  // where its last picture is saved (absolute), "" = nowhere
+        std::string snapshot_ref;   // ... and how the results name it
+        std::vector<std::string> temp_files;
+        mep::gui_embed::Rect placed;  // this frame's area (a click outside it takes the keyboard back)
+    };
+    std::map<int, MepmlGuiRun> mepml_guis_;
+    int mepml_gui_focus_ = -1;  // the GUI run holding the keyboard, or -1
+    int mepml_term_focus_ = -1;  // the run the keyboard goes to while mode_ is Terminal
     // Keyed by buffer_id -- one entry per open image-viewer pane. Unlike
     // terminals_, never reaped: an image buffer has no live process to
     // outlive its pane, and (like every other Buffer) staying reachable

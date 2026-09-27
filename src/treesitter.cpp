@@ -19,6 +19,9 @@
 #endif
 #include "treesitter_queries.h"
 #include "treesitter_structure_queries.h"
+// mepml's own grammar ships its queries as .scm files
+// (grammars/tree-sitter-mepml/queries); CMake embeds them here.
+#include "mepml_queries.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
@@ -36,6 +39,7 @@ const TSLanguage *tree_sitter_markdown(void);
 const TSLanguage *tree_sitter_markdown_inline(void);
 const TSLanguage *tree_sitter_org(void);
 const TSLanguage *tree_sitter_r(void);
+const TSLanguage *tree_sitter_mepml(void);  // mep's own: grammars/tree-sitter-mepml
 }
 
 namespace {
@@ -89,6 +93,7 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
         {"org", {tree_sitter_org, kHighlightsOrg}},
         {"r", {tree_sitter_r, kHighlightsR}},
         {"R", {tree_sitter_r, kHighlightsR}},
+        {"mepml", {tree_sitter_mepml, kHighlightsMepml}},
     };
     return table;
 }
@@ -121,6 +126,7 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"r", {tree_sitter_r, kFoldsR}},
         {"R", {tree_sitter_r, kFoldsR}},
         {"org", {tree_sitter_org, kFoldsOrg}},
+        {"mepml", {tree_sitter_mepml, kFoldsMepml}},
     };
     return table;
 }

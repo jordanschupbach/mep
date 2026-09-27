@@ -1,28 +1,50 @@
-> Some header
+//? Title: A Test Document
+//? Import: opts.mepml
+//? Import: refs.mepml
+//? MACRO: Let's worry about this one later...
+
+@toc
+
+// This is a comment. The above options can be int, double, or string valued
+
+// Space between text (i.e. new line characters on their own line) indicates new paragraphs.
+
+@import{refs.mepml}
+// NOTE: this doesnt need to be a mepml file, but does need to be compatible.
+// also note, the above syntax for NOTE: is special, that allow for special
+// formatting of notes. There are others by default WARNING, ERROR, INFO, and
+// others that might make sense here
+
+> Heading level 1
 
 Here, we have some _underlined_ text and we have some *bold text* and we have
-some `verbatim text` and we have some [my website : https://yabla.com]. and here
+some `verbatim text` and we have some [my website|https://yabla.com]. and here
 we have some ~italic text~ and we have some ^superscript^ and we have some
-_subscript_ and we have some <small text> and we have some >big text< and we
+,,subscript,, and we have some <small text> and we have some >big text< and we
 have some |monospaced text| and we have some =highlighted text= and we have some
 -strikethrough text- and we have some +inserted text+ and we have some !deleted
-text. Here's some \fs{12}{font size 12} text and here's some \fs{24}{font size
-24} text. Here's some \color{red}{red text} and here's some \color{blue}{blue
-text} . Here's some \fs{12}{\color{red}{font size 12 red text}}.
+text!. Here's some \f{Helvetica}{\fs{12}{Helvetica, font size 12}} text and
+here's some \fs{24}{font size 24} text. Here's some \color{red}{red text} and
+here's some \color{blue}{blue text} . Here's some \fs{16}{\color{red}{font size
+16 red text}}. Here's a \fn{footnote here}. And here's a citation: \cite{asdf1},
+and here's a parenthetical citation: \citep{asdf1}.
 
-Here's some latex math: $E=mc^2$ and here's some display math:
+Here's some latex math: here's inline $E=mc^2$ and here's some display math:
 $$
-\int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
+  \int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
 $$
+@alttext{Some alternative text describing the equation}
 
-Other syntax works too like \(\frac{a}{b}\) and 
+Other syntax works too like this inline \(\frac{a}{b}\)@alttext{More alt text} and this display math
 \[ 
   \sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6} 
 \]
 
+Note that we can optionally include
+
 // Some comment about the code block to come
-//= Option1: value1
-//= Option2: value2
+//? Option: Option1=value1
+//? Option: Option2=value2
 ```{bash, Option3="value3"}
 echo "Hello, world"
 ```
@@ -30,6 +52,198 @@ echo "Hello, world"
 // Results will show here
 // result_end
 
->> Some sub header
+>> Heading Level 2
 
+@image{./filepath/img1.png}
+@caption{Caption here}
+@alttext{Alttext here}
 
+@image{./filepath/img2.png} // NOTE: captions and alttext are optional
+
+>>> Heading Level 3
+
+| Col 1 | Col 2 |
+| ----- | ----- |
+| item1 | item2 |
+| item3 | item4 |
+| item5 | item6 |
+@caption{Here's my caption here}
+
+-------------------------------------------------------------------------------
+
+A dividing line is 3 or more horizontal characters (any one of - = _ *)
+
+=================
+
+> Additions beyond the original sketch
+
+// NOTE: everything below this heading was added while implementing the
+// parser; see help/mepml.org for the full reference.
+
+// INFO: subscript is `,,x,,` rather than `_x_` because `_x_` is already underline.
+
+// WARNING: a line starting with `>` and a space is always a heading, so
+// `>big<` text at the very start of a line must not have a space after the `>`.
+
+Lists use -, * or + for bullets and 1. or 1) for numbers; indent to nest:
+
+- first item with *bold* inside
+- second item
+  - a nested item
+  - [ ] an open task
+  - [x] a finished task
+1. numbered
+2. and another
+
+Escape any marker with a backslash: \*not bold\*, \$5 and \$6, \\. A lone
+dollar amount like $5 is never math. Inline text // a trailing comment is hidden.
+
+Tables can align columns with colons in the separator row, and the pipes
+don't need to line up in the source (mep lines the columns up when drawing):
+
+| Left | Centre | Right |
+| :--- | :----: | ----: |
+| a | b | 1 |
+| `c` | *d* | 2.50 |
+| a longer cell | >big< | 100 |
+@caption{An aligned table}
+
+Code blocks take options in the header or from //? lines right above them,
+and a ```lang header works too. Results are written back between the markers
+when the block is run (C-c C-c in mep):
+
+```{python, eval=true}
+print(sum(range(10)))
+```
+
+```r
+x <- 1:10
+mean(x)
+```
+
+A block with a file= option draws a figure: R and Python have their plotting
+pointed at that file, and after a run the image is shown in the block's
+results, numbered and captioned like any other figure:
+
+```{r, file="squares.png"}
+x <- 1:10
+plot(x, x^2, type = "b", main = "Squares")
+```
+@caption{Squares, drawn by R}
+@alttext{A line plot of x squared for x from 1 to 10}
+
+A block with results=html prints HTML: its results keep that markup, and mep
+draws it in place of the text (move the cursor into it to see the markup).
+The exports embed it as HTML:
+
+```{python, results=html}
+rows = [("apple", 3), ("banana", 5), ("cherry", 12)]
+print("<p><b>Fruit</b> counted by <i>Python</i>:</p>")
+print("<table>")
+print("<tr><th>Fruit</th><th>Count</th></tr>")
+for name, n in rows:
+    print(f"<tr><td>{name}</td><td>{n}</td></tr>")
+print("</table>")
+```
+// result_begin: html
+// <p><b>Fruit</b> counted by <i>Python</i>:</p>
+// <table>
+// <tr><th>Fruit</th><th>Count</th></tr>
+// <tr><td>apple</td><td>3</td></tr>
+// <tr><td>banana</td><td>5</td></tr>
+// <tr><td>cherry</td><td>12</td></tr>
+// </table>
+// result_end
+
+An exec block runs a program in a terminal inside its results: C-c C-c starts
+it, Enter (or a click) types into it, Ctrl-\ Ctrl-N comes back to the text,
+and C-c C-k (or the stop button) stops it. When it ends, its last screen is
+kept as the results:
+
+```{exec, rows=8}
+python3 -q
+```
+// result_begin: terminal
+// >>> print(6*7, [c.upper() for c in "mep"])
+// 42 ['M', 'E', 'P']
+// >>>
+// result_end
+
+With results=exec, a block in any language is the program: it is compiled
+(when the language is) and then run in the same kind of terminal:
+
+```{c, results=exec, rows=6}
+#include <stdio.h>
+int main(void) {
+    char name[64];
+    printf("What is your name? ");
+    fflush(stdout);
+    if (fgets(name, sizeof name, stdin)) printf("Hello, %s", name);
+    return 0;
+}
+```
+// result_begin: terminal
+// What is your name? Ada
+// Hello, Ada
+// result_end
+
+An exec-gui block runs a program with a window of its own, and shows that
+window inside the results (on X11): Enter or a click hands it the keyboard,
+Ctrl-\ takes it back, and when it closes its last picture is kept:
+
+```{exec-gui, rows=12}
+xeyes
+```
+// result_begin: gui
+// [running] xeyes
+// result_end
+
+```{python, results=exec-gui, rows=10}
+import math
+import tkinter as tk
+
+root = tk.Tk()
+root.title("smile")
+canvas = tk.Canvas(root, bg="black", highlightthickness=0)
+canvas.pack(fill="both", expand=True)
+
+def draw(event=None):
+    canvas.delete("all")
+    w, h = canvas.winfo_width(), canvas.winfo_height()
+    a = min(w * 0.38, h * 1.6)  # half the smile's width
+    b = h * 0.4                 # how deep it curves
+    cx, cy = w / 2, h * 0.18
+    line = max(4, h * 0.03)
+
+    def lip(x):  # the smile's height at x
+        return cy + b * math.sqrt(max(0.0, 1 - ((x - cx) / a) ** 2))
+
+    # The tongue, out of the smile halfway to its right end, leaning that way.
+    tx = cx + a / 2
+    tw, tl = h * 0.24, h * 0.34
+    lean = tw * 0.35
+    left, right = tx - tw / 2, tx + tw / 2
+    pts = [left, lip(left), left, lip(left),
+           left + lean * 0.2, lip(tx) + tl * 0.7,
+           tx + lean * 0.6, lip(tx) + tl,
+           right + lean, lip(tx) + tl * 0.62,
+           right, lip(right), right, lip(right)]
+    canvas.create_polygon(pts, smooth=True, fill="white", outline="white")
+    canvas.create_line(tx + lean * 0.05, lip(tx) + line * 1.5, tx + lean * 0.35, lip(tx) + tl * 0.55,
+                       fill="black", width=max(2, line * 0.4), capstyle="round")
+    # The smile, drawn over the tongue's root.
+    canvas.create_arc(cx - a, cy - b, cx + a, cy + b, start=190, extent=160,
+                      style="arc", outline="white", width=line)
+
+canvas.bind("<Configure>", draw)
+root.mainloop()
+```
+// result_begin: gui
+// [running] python program
+// result_end
+
+A bibtex-style entry works as well (so a .bib file can be @imported):
+
+Knuth coined the term literate programming \citep{knuth84}.
+
+@bibliography

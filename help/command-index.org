@@ -5,7 +5,7 @@
 
 * Every command
 
-All 329 ex commands mep defines: 104 built in and 226 registered from Lua.
+All 347 ex commands mep defines: 109 built in and 239 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -29,11 +29,13 @@ bindings instead. A dash means no page covers that command yet.
 | =:bprevious= | [[file:command-line.html][The command line]] |
 | =:Browse= | [[file:browser.html][The browser pane]] |
 | =:BrowseExternal= | [[file:browser.html][The browser pane]] |
+| =:CadExport= | -- |
+| =:CadNew= | -- |
 | =:close= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:CollabJoin= | [[file:collab.html][Collaborative editing]] |
 | =:CollabLeave= | [[file:collab.html][Collaborative editing]] |
 | =:CollabStatus= | [[file:collab.html][Collaborative editing]] |
-| =:colo= | [[file:config.html][Configuration]] |
+| =:colo= | [[file:cad-fem.html][CAD and finite elements]] |
 | =:colorscheme= | [[file:config.html][Configuration]] |
 | =:Copilot= | [[file:ai-commands.html][Ask the model]] |
 | =:CopilotDisable= | -- |
@@ -128,6 +130,19 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepMdTableAlign= | [[file:markdown.html][Markdown]] |
 | =:MepMdTableInsertCol= | [[file:markdown.html][Markdown]] |
 | =:MepMdTableInsertRow= | [[file:markdown.html][Markdown]] |
+| =:MepmlCheck= | [[file:mepml.html][mepml]] |
+| =:MepmlExecute= | [[file:mepml.html][mepml]] |
+| =:MepmlExecuteAll= | [[file:mepml.html][mepml]] |
+| =:MepmlExport= | [[file:mepml.html][mepml]] |
+| =:MepmlExportHtml= | [[file:mepml.html][mepml]] |
+| =:MepmlExportOpen= | [[file:mepml.html][mepml]] |
+| =:MepmlFoldsRecompute= | [[file:mepml.html][mepml]] |
+| =:MepmlHeaderToggle= | [[file:mepml.html][mepml]] |
+| =:MepmlImport= | [[file:mepml.html][mepml]] |
+| =:MepmlLinkFollow= | [[file:mepml.html][mepml]] |
+| =:MepmlRender= | [[file:mepml.html][mepml]] |
+| =:MepmlStop= | [[file:mepml.html][mepml]] |
+| =:MepmlTerminal= | [[file:mepml.html][mepml]] |
 | =:MepNextSheet= | [[file:sheets.html][Spreadsheets]] |
 | =:MepNotifyClear= | [[file:notifications.html][Notifications]] |
 | =:MepNotifyDismiss= | [[file:notifications.html][Notifications]] |
@@ -293,9 +308,6 @@ bindings instead. A dash means no page covers that command yet.
 | =:set= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:SketchNew= | [[file:sketch.html][The 2D sketcher]] |
 | =:source= | [[file:agent-api.html][Driving mep from an agent]] |
-| =:Viewer= | [[file:viewer.html][The viewer]] |
-| =:ViewerBind= | [[file:viewer.html][The viewer]] |
-| =:ViewerRun= | [[file:viewer.html][The viewer]] |
 | =:sp= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:split= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:tabclose= | -- |
@@ -311,11 +323,14 @@ bindings instead. A dash means no page covers that command yet.
 | =:term= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:terminal= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:Text= | [[file:command-line.html][The command line]] |
+| =:Viewer= | [[file:filetypes.html][Filetypes]] |
+| =:ViewerBind= | [[file:viewer.html][The viewer]] |
+| =:ViewerRun= | [[file:viewer.html][The viewer]] |
 | =:vs= | [[file:command-line.html][The command line]] |
 | =:vsplit= | [[file:command-line.html][The command line]] |
 | =:w= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:wa= | [[file:agent-api.html][Driving mep from an agent]] |
-| =:wall= | -- |
+| =:wall= | [[file:cad-fem.html][CAD and finite elements]] |
 | =:WebLadder= | [[file:web-ladder.html][Measuring the engine]] |
 | =:WebLadderRun= | [[file:web-ladder.html][Measuring the engine]] |
 | =:workspace= | [[file:agent-api.html][Driving mep from an agent]] |

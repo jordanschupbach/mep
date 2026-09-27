@@ -1940,6 +1940,12 @@ const std::vector<OrgBlockCard> &Editor::OrgBlockCards(int buffer_id) {
     org_block_cards_.clear();
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return org_block_cards_;
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (LspFiletype(buf.filename) == "mepml") {
+        // Built by the mepml scan (Editor::MepmlScan), not re-parsed per frame.
+        auto it = mepml_block_cards_.find(buffer_id);
+        if (it != mepml_block_cards_.end()) org_block_cards_ = it->second;
+        return org_block_cards_;
+    }
     const int n = buf.LineCount();
     for (int row = 0; row < n; row++) {
         bool is_begin = false;
@@ -3502,7 +3508,10 @@ std::string JoinNewline(const std::vector<std::string> &lines) {
 // The scan itself is pure line analysis and lives in org_doc.cpp
 // (OrgLatexScan), where mep-org-doc-test can reach it; this only points it
 // at the current buffer.
-OrgLatexFragments Editor::OrgLatexScanFragments() const { return OrgLatexScan(Buf().lines); }
+OrgLatexFragments Editor::OrgLatexScanFragments() const {
+    if (IsMepmlBuffer()) return MepmlLatexFragments();
+    return OrgLatexScan(Buf().lines);
+}
 
 namespace {
 // kBuiltinOrgBib's own `mep_org_bib_split_top_level` port: splits `s` on
@@ -4697,8 +4706,9 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // A closed fold collapses its whole range into one drawn line, and
     // that line is the summary -- not the row's own text, image, formula
     // or wrapped table -- so nothing below applies to it.
+    // (A folded mepml header's large title claims its headroom too.)
     for (const Fold &f : buf.folds) {
-        if (f.closed && f.start_row == row) return 1;
+        if (f.closed && f.start_row == row) return 1 + RowTopPadSlots(buf, row);
     }
     // A notebook code cell's output block hangs under its last
     // row (Editor::NotebookTrailingSlots, rebuilt each frame by
@@ -4711,7 +4721,7 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // the way the old lambda had it: a few bytes of extension matching is
     // nothing next to the per-row work every caller is already doing, and
     // hoisting it would mean threading it through every helper below.
-    const bool org_buffer = LspFiletype(buf.filename) == "org";
+    const bool org_buffer = LspFiletype(buf.filename) == "org" || LspFiletype(buf.filename) == "mepml";
     // An org headline claims an extra slot at the shallower
     // depths (kOrgHeadingStyles) -- the room its larger text is
     // drawn in. Same "one row, more than one slot" shape as an
@@ -4720,7 +4730,7 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // whatever the branches below work out rather than
     // short-circuiting them.
     const int heading_extra =
-        (org_heading_scale_visible_ && org_buffer) ? OrgHeadingExtraSlotsFor(buf.lines[static_cast<size_t>(row)]) : 0;
+        (org_heading_scale_visible_ && org_buffer) ? HeadingExtraSlotsForLevel(HeadingLevelForRow(buf, row)) : 0;
     if (org_images_visible_) {
         auto img_it = buf.org_image_rows.find(row);
         if (img_it != buf.org_image_rows.end()) {
@@ -4729,6 +4739,10 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     }
     if (const Buffer::OrgLatexRender *latex = OrgLatexRenderForRow(buf, row, pane.cursor.row)) {
         return latex->slots + trailing;
+    }
+    // A mepml @toc/@bibliography row: one slot per generated line.
+    if (const Buffer::MepmlVirtualBlock *vb = MepmlVirtualBlockForRow(buf, row, pane.cursor.row)) {
+        return static_cast<int>(vb->lines.size()) + trailing;
     }
     // A row of an over-wide org table draws as however many
     // lines its wrapped layout needs (Buffer::org_table_wrap_rows)
@@ -4746,12 +4760,17 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // N slots" shape as the image/table cases above.
     if (wrap_cols > 0) {
         int len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
-        return std::max(1, (len + wrap_cols - 1) / wrap_cols) + trailing + heading_extra;
+        return std::max(1, (len + wrap_cols - 1) / wrap_cols) + trailing + heading_extra + RowTopPadSlots(buf, row);
     }
-    return 1 + trailing + heading_extra;
+    return 1 + trailing + heading_extra + RowTopPadSlots(buf, row);
 }
 
 int Editor::PaneFigureSlots(const Pane &pane, const Buffer &buf, int row) const {
+    // A mepml @toc/@bibliography block scrolls like a figure: j/k move the
+    // view through a block taller than the pane before leaving it.
+    if (const Buffer::MepmlVirtualBlock *vb = MepmlVirtualBlockForRow(buf, row, -1)) {
+        return static_cast<int>(vb->lines.size());
+    }
     if (!org_images_visible_) return 0;
     auto it = buf.org_image_rows.find(row);
     if (it == buf.org_image_rows.end()) return 0;
@@ -4787,20 +4806,29 @@ int Editor::PanePrevDrawnRow(const Pane &pane, const Buffer &buf, int row) const
             break;
         }
     }
-    // Landing inside a rendered LaTeX fragment's source range means
-    // landing on a row DrawPane skips outright, so rewind to the row the
-    // fragment is actually drawn on -- the same jump-back
+    // Landing inside a rendered LaTeX fragment's (or mepml html result's)
+    // source range means landing on a row DrawPane skips outright, so
+    // rewind to the row it is actually drawn on -- the same jump-back
     // UpdateScrollForPane's own upward walk does.
-    if (org_latex_visible_) {
-        for (const auto &kv : buf.org_latex_rows) {
-            if (prev > kv.first && prev <= kv.second.end_row &&
-                OrgLatexRenderForRow(buf, kv.first, pane.cursor.row) != nullptr) {
-                prev = kv.first;
-                break;
+    int start = 0;
+    if (RenderContaining(pane, buf, prev, &start)) prev = start;
+    return std::max(0, prev);
+}
+
+const Buffer::OrgLatexRender *Editor::RenderContaining(const Pane &pane, const Buffer &buf, int row, int *start) const {
+    auto scan = [&](const std::unordered_map<int, Buffer::OrgLatexRender> &rows) -> const Buffer::OrgLatexRender * {
+        for (const auto &kv : rows) {
+            if (row > kv.first && row <= kv.second.end_row) {
+                if (const Buffer::OrgLatexRender *r = OrgLatexRenderForRow(buf, kv.first, pane.cursor.row)) {
+                    *start = kv.first;
+                    return r;
+                }
             }
         }
-    }
-    return std::max(0, prev);
+        return nullptr;
+    };
+    if (const Buffer::OrgLatexRender *r = scan(buf.mepml_html_rows)) return r;
+    return org_latex_visible_ ? scan(buf.org_latex_rows) : nullptr;
 }
 
 int Editor::PaneSlotOffsetOfRow(const Pane &pane, const Buffer &buf, int row, int wrap_cols, int cap) const {
@@ -4859,6 +4887,47 @@ bool Editor::ScrollPaneBySlots(Pane &pane, const Buffer &buf, int slots, int wra
     return moved;
 }
 
+int Editor::VirtualLineStep(bool down) {
+    Pane &pane = CurPane();
+    const Buffer &buf = Buf();
+    const Buffer::MepmlVirtualBlock *vb = MepmlVirtualBlockForRow(buf, pane.cursor.row, -1);
+    if (vb == nullptr) {
+        // k onto a block from below lands on its last line, the way the
+        // cursor would enter any tall run of text from its bottom.
+        if (!down && pane.cursor.row > 0) {
+            if (const Buffer::MepmlVirtualBlock *above = MepmlVirtualBlockForRow(buf, pane.cursor.row - 1, -1)) {
+                pane.virt_row = pane.cursor.row - 1;
+                pane.virt_line = static_cast<int>(above->lines.size()) - 1;
+            }
+        }
+        return -1;
+    }
+    const int n = static_cast<int>(vb->lines.size());
+    const int cur = VirtualLineOf(pane, n);
+    const int next = cur + (down ? 1 : -1);
+    if (next < 0 || next >= n) return 0;  // off the block's edge: an ordinary row step
+    pane.virt_row = pane.cursor.row;
+    pane.virt_line = next;
+    // Keep the selected line on screen: the block can be taller than the pane.
+    const int visible = std::max(1, pane.visible_lines);
+    const int top = PaneSlotOffsetOfRow(pane, buf, pane.cursor.row, pane.wrap_cols, 2 * visible + 2) + next;
+    if (top >= visible) ScrollPaneBySlots(pane, buf, top - visible + 1, pane.wrap_cols);
+    else if (top < 0) ScrollPaneBySlots(pane, buf, top, pane.wrap_cols);
+    return 1;
+}
+
+bool Editor::VirtualLineActivate() {
+    Pane &pane = CurPane();
+    const Buffer::MepmlVirtualBlock *vb = MepmlVirtualBlockForRow(Buf(), pane.cursor.row, -1);
+    if (vb == nullptr || vb->lines.empty()) return false;
+    const int target = vb->lines[static_cast<size_t>(VirtualLineOf(pane, static_cast<int>(vb->lines.size())))].target_line;
+    if (target < 0 || target >= Buf().LineCount()) return false;
+    PushJump(pane.cursor, pane.buffer_id);
+    pane.cursor.row = target;
+    pane.cursor.col = 0;
+    return true;
+}
+
 bool Editor::ScrollFigureStep(bool down) {
     Pane &pane = CurPane();
     const Buffer &buf = Buf();
@@ -4898,6 +4967,18 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
     // DrawPane calls this pass just ahead of its own row loop -- so a
     // stale offset can never reach the screen.
     if (pane.scroll_sub_row != pane.scroll_row) pane.scroll_sub = 0;
+    if (pane.virt_row != pane.cursor.row) pane.virt_row = -1;  // the cursor left its @toc line
+    // A view that some other command (Ctrl-D, zz, a search) left starting
+    // inside a render's skipped rows starts on the render instead: those
+    // rows are never drawn on their own.
+    {
+        int start = 0;
+        if (RenderContaining(pane, buf, pane.scroll_row, &start)) {
+            pane.scroll_row = start;
+            pane.scroll_sub = 0;
+            pane.scroll_sub_row = start;
+        }
+    }
     pane.scroll_sub =
         std::clamp(pane.scroll_sub, 0, std::max(0, PaneRowSlots(pane, buf, pane.scroll_row, wrap_cols) - 1));
     pane.scroll_sub_row = pane.scroll_row;
@@ -5044,14 +5125,9 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
             // for a *revealed* fragment (OrgLatexRenderForRow returns
             // nullptr for it): its rows are back to being ordinary text
             // rows, each measured on its own, with nothing to rewind to.
-            if (org_latex_visible_) {
-                for (const auto &kv : buf.org_latex_rows) {
-                    if (candidate > kv.first && candidate <= kv.second.end_row &&
-                        OrgLatexRenderForRow(buf, kv.first, pane.cursor.row) != nullptr) {
-                        candidate = kv.first;
-                        break;
-                    }
-                }
+            {
+                int start = 0;
+                if (RenderContaining(pane, buf, candidate, &start)) candidate = start;
             }
             int candidate_slots = row_slots(candidate);
             if (slots + candidate_slots > visible_lines) break;  // admitting it would overflow -> keep `row` as the top
@@ -5096,6 +5172,14 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
     if (jump > cap) pane.scroll_row += cap;
     else if (jump < -cap) pane.scroll_row -= cap;
     else pane.scroll_row = target;
+    // Never stop inside a render's skipped rows: sliding down, step past
+    // it; sliding up, stop on it. (Snapping back while sliding down would
+    // undo each step on the next frame.)
+    {
+        int start = 0;
+        if (const Buffer::OrgLatexRender *r = RenderContaining(pane, buf, pane.scroll_row, &start))
+            pane.scroll_row = jump > 0 ? std::min(r->end_row + 1, std::max(target, start)) : start;
+    }
 
     if (pane.scroll_row < 0) pane.scroll_row = 0;
 }
@@ -5695,6 +5779,7 @@ std::vector<SpellTok> TokenizeSpellWords(const std::string &line, int a, int b) 
 // suggestion, right-to-left so earlier columns stay valid. Assumes the caller
 // already pushed one undo entry. Returns how many words were changed.
 std::vector<OrgLiteralSpan> Editor::BufferLiteralSpans() const {
+    if (IsMepmlBuffer()) return MepmlLiteralSpans();
     if (!IsOrgBuffer()) return {};
     return OrgLiteralSpans(Buf().lines);
 }
@@ -14987,7 +15072,22 @@ void Editor::HandleGanttInsertInput() {
 }
 
 void Editor::HandleTerminalInput() {
-    TerminalSession *sess = FindTerminal(CurPane().buffer_id);
+    // A terminal running inside a mepml block's results has the keyboard
+    // (MepmlTerminalFocus) -- the same key handling, a different session.
+    TerminalSession *sess = nullptr;
+    bool embedded = false;
+    if (mepml_term_focus_ >= 0) {
+        auto run = mepml_terms_.find(mepml_term_focus_);
+        if (run != mepml_terms_.end() && !run->second.sess.exited) {
+            sess = &run->second.sess;
+            embedded = true;
+        } else {
+            mepml_term_focus_ = -1;
+            mode_ = Mode::Normal;
+            return;
+        }
+    }
+    if (!sess) sess = FindTerminal(CurPane().buffer_id);
     if (!sess) {
         mode_ = Mode::Normal;
         return;
@@ -15012,6 +15112,12 @@ void Editor::HandleTerminalInput() {
         if (terminal_pending_ctrl_bs_) {
             terminal_pending_ctrl_bs_ = false;
             if (key == gfx::Key::N && ctrl) {
+                if (embedded) {
+                    // Back to the document; the program keeps running.
+                    mepml_term_focus_ = -1;
+                    mode_ = Mode::Normal;
+                    return;
+                }
                 EnterTerminalNormalMode(*sess);
                 return;
             }
@@ -15096,7 +15202,7 @@ void Editor::HandleTerminalInput() {
         // swallowed rather than typed to the child -- the selection is
         // already highlighted on screen, so this reads naturally. Release
         // already auto-copied; this is the keyboard path the user asked for.
-        if (sess->sel_active && cp == 'y') {
+        if (sess->sel_active && cp == 'y' && !embedded) {
             TerminalCopySelection(CurPane().buffer_id);
             sess->sel_active = false;
             cp = gfx::GetCharPressed();
@@ -18663,7 +18769,7 @@ void Editor::HandleNormalInput() {
     // Ctrl-W above predate that finding and were left as-is (out of scope
     // here), worth remembering if either is ever reported flaky too.
     bool ctrl_v = false, ctrl_d = false, ctrl_u = false, ctrl_f = false, ctrl_b = false, ctrl_a = false,
-         ctrl_x = false, ctrl_o = false, ctrl_i = false, ctrl_c = false, ctrl_e = false;
+         ctrl_x = false, ctrl_o = false, ctrl_i = false, ctrl_c = false, ctrl_e = false, ctrl_k = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (!ctrl) continue;
         if (key == gfx::Key::V) ctrl_v = true;
@@ -18677,6 +18783,7 @@ void Editor::HandleNormalInput() {
         else if (key == gfx::Key::I) ctrl_i = true;
         else if (key == gfx::Key::C) ctrl_c = true;
         else if (key == gfx::Key::E) ctrl_e = true;
+        else if (key == gfx::Key::K) ctrl_k = true;
     }
     // Held-repeat for the four page-scroll combos only (D/U/F/B) -- not
     // the queue-drained loop above (which only ever sees a key's initial
@@ -18787,6 +18894,15 @@ void Editor::HandleNormalInput() {
         }
         return;
     }
+    // Ctrl-C Ctrl-K: stop the mepml block running under the cursor (a
+    // terminal inside its results) -- Emacs' own "kill" for a running job.
+    if (ctrl_k && pending_ctrl_c_ && (now_ - pending_ctrl_c_time_) < kCtrlCChordTimeoutSec) {
+        pending_ctrl_c_ = false;
+        const int run = MepmlTerminalRunAt(CurPane().cursor.row);
+        if (run >= 0) MepmlTerminalStop(run);
+        else status_message_ = "No running block here";
+        return;
+    }
     if (gfx::IsKeyPressed(gfx::Key::Escape)) {
         // A "nothing pending" Escape is offered to the buffer's
         // SetBufferOnKey hook as "\x1b" first (the file tree closes its `?`
@@ -18832,6 +18948,12 @@ void Editor::HandleNormalInput() {
         ActivateDashboardSelection();
         return;
     }
+    // Enter on a rendered @toc entry: jump to its heading.
+    if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && VirtualLineActivate()) return;
+    // Enter on a mepml block running in a terminal: give that terminal the keyboard.
+    if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && IsMepmlBuffer() &&
+        MepmlTerminalFocus(MepmlTerminalRunAt(CurPane().cursor.row)))
+        return;
     if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && lua_) {
         if (int ref = BufferHookRef(enter_hook_refs_, CurPane().buffer_id)) {
             lua_->CallRef(ref);
@@ -19448,6 +19570,7 @@ bool Editor::DispatchNormalKey(int cp) {
         // every filetype -- not just org.
         if (c == 'a' || c == 'o' || c == 'c' || c == 'm' || c == 'r' || c == 'R' || c == 'M') {
             if (IsOrgBuffer()) RecomputeOrgFolds();
+            if (IsMepmlBuffer()) RecomputeMepmlFolds();
             RecomputeMarkerFolds();
         }
         if (c == 'z' || c == 't' || c == 'b') {
@@ -19803,7 +19926,15 @@ bool Editor::DispatchNormalKey(int cp) {
     // operator-pending/Visual dispatches (above and in their own handlers)
     // never reach here -- their motion has to move the cursor, not the
     // view.
-    if ((c == 'j' || c == 'k') && pending_count_ == 0 && ScrollFigureStep(c == 'j')) return true;
+    // A rendered mepml @toc/@bibliography is stepped through a line at a
+    // time instead (its entries are what the cursor selects; Enter jumps
+    // to a TOC entry's heading), and at its first or last line the key
+    // moves off it like an ordinary row -- no figure-style slide.
+    if ((c == 'j' || c == 'k') && pending_count_ == 0) {
+        const int step = VirtualLineStep(c == 'j');
+        if (step == 1) return true;
+        if (step < 0 && ScrollFigureStep(c == 'j')) return true;
+    }
     // Single-key motions shared with operator-pending dispatch above and
     // with Visual mode's own motion handling; peek (don't consume) the
     // pending count so an unrecognized key below still sees it -- e.g.
@@ -22302,12 +22433,24 @@ bool Editor::ToggleOrgImages() {
 
 void Editor::SetOrgLatexRow(int row, const std::string &path, int slots, int end_row) {
     if (row < 0 || row >= Buf().LineCount()) return;
-    Buf().org_latex_rows[row] = Buffer::OrgLatexRender{path, std::max(1, slots), std::max(row, end_row)};
+    Buf().org_latex_rows[row] = Buffer::OrgLatexRender{path, std::max(1, slots), std::max(row, end_row), {}, {}, 0, -1};
 }
 
 void Editor::ClearOrgLatexRows() { Buf().org_latex_rows.clear(); }
 
 const Buffer::OrgLatexRender *Editor::OrgLatexRenderForRow(const Buffer &buf, int row, int cursor_row) const {
+    // A mepml html result: drawn while concealing, its raw markup back
+    // whenever the cursor is inside it (so it can be read and edited).
+    if (org_conceal_visible_) {
+        auto h = buf.mepml_html_rows.find(row);
+        if (h != buf.mepml_html_rows.end()) {
+            // A running terminal stays drawn under the cursor: its rows hold
+            // no markup worth revealing, and that is where the cursor sits
+            // to hand it the keyboard (Enter).
+            if (h->second.term_run < 0 && cursor_row >= row && cursor_row <= h->second.end_row) return nullptr;
+            return &h->second;
+        }
+    }
     if (!org_latex_visible_) return nullptr;
     auto it = buf.org_latex_rows.find(row);
     if (it == buf.org_latex_rows.end()) return nullptr;
@@ -26261,6 +26404,12 @@ void Editor::JumpListForward() {
 
 void Editor::TryRunOrgBabelAtCursor() {
     const std::string &filename = Buf().filename;
+    // C-c C-c in a mepml document runs its code block (kBuiltinMepml).
+    if (IsMepmlBuffer()) {
+        auto mit = lua_commands_.find("MepmlExecute");
+        if (mit != lua_commands_.end() && lua_) lua_->CallRefWithString(mit->second, "");
+        return;
+    }
     if (filename.size() < 4 || filename.compare(filename.size() - 4, 4, ".org") != 0) return;
     auto it = lua_commands_.find("MepOrgBabelExecute");
     if (it != lua_commands_.end() && lua_) lua_->CallRefWithString(it->second, "");
@@ -26268,6 +26417,11 @@ void Editor::TryRunOrgBabelAtCursor() {
 
 void Editor::TryRunOrgExport(char format_key) {
     const std::string &filename = Buf().filename;
+    if (IsMepmlBuffer() && format_key == 'h') {
+        auto mit = lua_commands_.find("MepmlExportHtml");
+        if (mit != lua_commands_.end() && lua_) lua_->CallRefWithString(mit->second, "");
+        return;
+    }
     if (filename.size() < 4 || filename.compare(filename.size() - 4, 4, ".org") != 0) return;
     const char *command = nullptr;
     switch (format_key) {
@@ -29177,6 +29331,17 @@ const std::vector<Buffer::OrgLinkSpan> *Editor::OrgLinkSpansForRow(int buffer_id
 
 bool Editor::OrgFollowLinkAt(int row, int col) {
     const std::vector<Buffer::OrgLinkSpan> *spans = OrgLinkSpansForRow(CurrentBufferId(), row);
+    // mepml fills the same registry (Editor::MepmlScan) but its links are
+    // plain url/path targets, followed by kBuiltinMepml's own dispatcher.
+    if (spans && IsMepmlBuffer()) {
+        for (const Buffer::OrgLinkSpan &sp : *spans) {
+            if (col < sp.col_start || col >= sp.col_end) continue;
+            SetCursorForLua(row, sp.col_start);
+            RunCommand("MepmlLinkFollow");
+            return true;
+        }
+        return false;
+    }
     if (!spans) return false;
     for (const Buffer::OrgLinkSpan &sp : *spans) {
         if (col < sp.col_start || col >= sp.col_end) continue;
@@ -29198,6 +29363,11 @@ const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
     org_tables_.clear();
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return org_tables_;
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (LspFiletype(buf.filename) == "mepml") {
+        auto it = mepml_table_grids_.find(buffer_id);
+        if (it != mepml_table_grids_.end()) org_tables_ = it->second;
+        return org_tables_;
+    }
     if (LspFiletype(buf.filename) != "org") return org_tables_;
     const int n = buf.LineCount();
     /**

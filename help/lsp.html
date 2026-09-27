@@ -116,16 +116,18 @@ C++, C and Maxima ones ship with mep itself:</p>
 <tr><td>Vimscript</td><td><code>vim-language-server</code></td></tr>
 <tr><td>Org</td><td><code>mep-org-lsp</code> (ships with mep)</td></tr>
 <tr><td>Maxima</td><td><code>mep-maxima-lsp</code> (ships with mep)</td></tr>
+<tr><td>mepml</td><td><code>mep-mepml-lsp</code> (ships with mep)</td></tr>
 </table>
 <p>If a server is missing, nothing breaks -- the file simply opens without one.</p>
-<h1>The six mep brings itself</h1>
-<p><code>mep-org-lsp</code>, <code>mep-r-lsp</code>, <code>mep-python-lsp</code>, <code>mep-cpp-lsp</code>, <code>mep-c-lsp</code>
-and <code>mep-maxima-lsp</code> are mep's own servers, built and installed alongside
-<code>mep</code>, so org, R, Python, C++, C and Maxima files get diagnostics and
-completion with nothing to install. See <a href="org-lsp.html">The org language server</a>,
-<a href="r-lsp.html">The R language server</a>, <a href="python-lsp.html">The Python language server</a>,
-<a href="cpp-lsp.html">The C++ language server</a>, <a href="c-lsp.html">The C language server</a> and
-<a href="maxima-lsp.html">The Maxima language server</a>.</p>
+<h1>The seven mep brings itself</h1>
+<p><code>mep-org-lsp</code>, <code>mep-r-lsp</code>, <code>mep-python-lsp</code>, <code>mep-cpp-lsp</code>, <code>mep-c-lsp</code>,
+<code>mep-maxima-lsp</code> and <code>mep-mepml-lsp</code> are mep's own servers, built and
+installed alongside <code>mep</code>, so org, R, Python, C++, C, Maxima and mepml
+files get diagnostics and completion with nothing to install. See
+<a href="org-lsp.html">The org language server</a>, <a href="r-lsp.html">The R language server</a>,
+<a href="python-lsp.html">The Python language server</a>, <a href="cpp-lsp.html">The C++ language server</a>,
+<a href="c-lsp.html">The C language server</a>, <a href="maxima-lsp.html">The Maxima language server</a> and
+<a href="mepml-lsp.html">The mepml language server</a>.</p>
 <p>Python, C++ and C are the three languages where mep's own server is
 preferred over an external one out of the box: <code>pyright</code> and <code>clangd</code>
 stay registered but claim no filetype of their own, and one line in

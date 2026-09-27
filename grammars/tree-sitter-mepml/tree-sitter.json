@@ -1,0 +1,21 @@
+{
+  "grammars": [
+    {
+      "name": "mepml",
+      "camelcase": "Mepml",
+      "scope": "text.mepml",
+      "path": ".",
+      "file-types": ["mepml"],
+      "highlights": "queries/highlights.scm",
+      "injections": "queries/injections.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "mepml, mep's literate-programming markup",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

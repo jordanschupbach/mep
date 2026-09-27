@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 130 =<leader>= sequences registered at startup. Press
+All 141 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -65,6 +65,17 @@ the features live.
 | =<leader>hs= | Help: symbol under the cursor (gh) | [[file:language-ui.html][Language UI modes]] |
 | =<leader>jv= | Runner: variable inspector | [[file:runners.html][The command runner]] |
 | =<leader>jw= | Runner: workspaces | [[file:runners.html][The command runner]] |
+| =<leader>ka= | mepml: run all code blocks | [[file:mepml.html][mepml]] |
+| =<leader>kc= | mepml: list problems | [[file:mepml.html][mepml]] |
+| =<leader>ke= | mepml: export as... | [[file:mepml.html][mepml]] |
+| =<leader>kh= | mepml: fold/unfold the document header | [[file:mepml.html][mepml]] |
+| =<leader>ki= | mepml: import a document | [[file:mepml.html][mepml]] |
+| =<leader>kl= | mepml: follow link | [[file:mepml.html][mepml]] |
+| =<leader>km= | mepml: toggle markup concealment | [[file:mepml.html][mepml]] |
+| =<leader>ko= | mepml: export HTML and open | [[file:mepml.html][mepml]] |
+| =<leader>ks= | mepml: stop the running block | [[file:mepml.html][mepml]] |
+| =<leader>kt= | mepml: type into the running block | [[file:mepml.html][mepml]] |
+| =<leader>kx= | mepml: run code block at cursor | [[file:mepml.html][mepml]] |
 | =<leader>li= | LSP: goto implementation | [[file:lsp.html][Language servers]] |
 | =<leader>lk= | LSP: signature help | [[file:c-lsp.html][The C language server]] |
 | =<leader>lt= | LSP: goto type definition | [[file:lsp.html][Language servers]] |
@@ -109,7 +120,7 @@ the features live.
 | =<leader>otc= | Org: toggle plain (undecorated) cursor line | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>oth= | Org: toggle scaled heading sizes | [[file:org-basics.html][Org files in mep]] |
 | =<leader>oti= | Org: toggle inline images | [[file:org-visuals.html][Images, LaTeX and tables]] |
-| =<leader>otl= | Toggle LaTeX/math preview (org/tex) | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =<leader>otl= | Toggle LaTeX/math preview (org/tex) | [[file:mepml.html][mepml]] |
 | =<leader>otm= | Org: toggle markup concealment | [[file:org-basics.html][Org files in mep]] |
 | =<leader>ots= | Org: toggle src-block LSP status | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otw= | Org: toggle wrapped table rendering | [[file:org-visuals.html][Images, LaTeX and tables]] |

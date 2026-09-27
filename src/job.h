@@ -69,9 +69,10 @@ public:
      * @param raw_stdout If true, queue raw stdout chunks instead of splitting into lines.
      * @param use_pty If true, attach the child to a pseudo-terminal instead of plain pipes; implies raw_stdout and merges stdout+stderr.
      * @param extra_env Extra name/value pairs set via setenv() in the child only, after fork/forkpty but before exec.
+     * @param die_with_parent If true (Linux), the child is sent SIGTERM when mep itself dies, however it dies -- for a child nothing else would end (a GUI program holds no pty to hang up).
      */
     Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_stdout = false, bool use_pty = false,
-        std::vector<std::pair<std::string, std::string>> extra_env = {});
+        std::vector<std::pair<std::string, std::string>> extra_env = {}, bool die_with_parent = false);
     /**
      * @brief Kills the child if still running and joins the reader thread, blocking until it exits.
      */
@@ -114,6 +115,11 @@ public:
      * @return True if spawning failed (e.g. empty argv, pipe/fork failure, or an unsupported platform).
      */
     bool SpawnFailed() const { return spawn_failed_; }
+    /**
+     * @brief The child's process id.
+     * @return Its pid, or -1 when it never started.
+     */
+    int Pid() const { return static_cast<int>(pid_); }
 
     /**
      * @brief Sends SIGTERM to the child's whole process group.
@@ -257,10 +263,12 @@ public:
      * @param callbacks Handlers invoked from PollAll() for this job's stdout/stderr/exit.
      * @param use_pty If true, attach the child to a pseudo-terminal instead of plain pipes.
      * @param extra_env Extra name/value pairs set in the child's environment only.
+     * @param die_with_parent See Job's constructor.
      * @return The new job's id (never 0 on success; 0 if spawning failed).
      */
     int Spawn(const std::vector<std::string> &argv, const std::string &cwd, Callbacks callbacks,
-              bool use_pty = false, std::vector<std::pair<std::string, std::string>> extra_env = {});
+              bool use_pty = false, std::vector<std::pair<std::string, std::string>> extra_env = {},
+              bool die_with_parent = false);
 
     // Raw write/close access for interactive jobs (REPLs, `git apply`).
     /**
@@ -281,6 +289,11 @@ public:
      */
     void Kill(int id);
     /**
+     * @brief Sends SIGKILL to the given job's process group (see Job::KillHard).
+     * @param id Id of the target job, as returned by Spawn().
+     */
+    void KillHard(int id);
+    /**
      * @brief Sends SIGINT to the given job's process group (see Job::Interrupt).
      * @param id Id of the target job, as returned by Spawn().
      */
@@ -291,6 +304,12 @@ public:
      * @return True if the job exists and hasn't finished.
      */
     bool IsRunning(int id) const;
+    /**
+     * @brief The given job's process id (the leader of its process group).
+     * @param id Id of the target job, as returned by Spawn().
+     * @return Its pid, or -1 for an unknown or never-started job.
+     */
+    int Pid(int id) const;
     /**
      * @brief Updates the given PTY job's terminal window size.
      * @param id Id of the target job, as returned by Spawn().

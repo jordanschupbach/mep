@@ -13,7 +13,7 @@
 <body>
 <h1>Command index</h1>
 <h1>Every command</h1>
-<p>All 329 ex commands mep defines: 104 built in and 226 registered from Lua.</p>
+<p>All 347 ex commands mep defines: 109 built in and 239 registered from Lua.</p>
 <p><code>Tab</code> at the <code>:</code> prompt completes these, and <code>&lt;leader&gt;hk</code> lists the key
 bindings instead. A dash means no page covers that command yet.</p>
 <table>
@@ -35,11 +35,13 @@ bindings instead. A dash means no page covers that command yet.</p>
 <tr><td><code>:bprevious</code></td><td><a href="command-line.html">The command line</a></td></tr>
 <tr><td><code>:Browse</code></td><td><a href="browser.html">The browser pane</a></td></tr>
 <tr><td><code>:BrowseExternal</code></td><td><a href="browser.html">The browser pane</a></td></tr>
+<tr><td><code>:CadExport</code></td><td>--</td></tr>
+<tr><td><code>:CadNew</code></td><td>--</td></tr>
 <tr><td><code>:close</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
 <tr><td><code>:CollabJoin</code></td><td><a href="collab.html">Collaborative editing</a></td></tr>
 <tr><td><code>:CollabLeave</code></td><td><a href="collab.html">Collaborative editing</a></td></tr>
 <tr><td><code>:CollabStatus</code></td><td><a href="collab.html">Collaborative editing</a></td></tr>
-<tr><td><code>:colo</code></td><td><a href="config.html">Configuration</a></td></tr>
+<tr><td><code>:colo</code></td><td><a href="cad-fem.html">CAD and finite elements</a></td></tr>
 <tr><td><code>:colorscheme</code></td><td><a href="config.html">Configuration</a></td></tr>
 <tr><td><code>:Copilot</code></td><td><a href="ai-commands.html">Ask the model</a></td></tr>
 <tr><td><code>:CopilotDisable</code></td><td>--</td></tr>
@@ -134,6 +136,19 @@ bindings instead. A dash means no page covers that command yet.</p>
 <tr><td><code>:MepMdTableAlign</code></td><td><a href="markdown.html">Markdown</a></td></tr>
 <tr><td><code>:MepMdTableInsertCol</code></td><td><a href="markdown.html">Markdown</a></td></tr>
 <tr><td><code>:MepMdTableInsertRow</code></td><td><a href="markdown.html">Markdown</a></td></tr>
+<tr><td><code>:MepmlCheck</code></td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>:MepmlExecute</code></td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>:MepmlExecuteAll</code></td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>:MepmlExport</code></td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>:MepmlExportHtml</code></td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>:MepmlExportOpen</code></td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>:MepmlFoldsRecompute</code></td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>:MepmlHeaderToggle</code></td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>:MepmlImport</code></td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>:MepmlLinkFollow</code></td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>:MepmlRender</code></td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>:MepmlStop</code></td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>:MepmlTerminal</code></td><td><a href="mepml.html">mepml</a></td></tr>
 <tr><td><code>:MepNextSheet</code></td><td><a href="sheets.html">Spreadsheets</a></td></tr>
 <tr><td><code>:MepNotifyClear</code></td><td><a href="notifications.html">Notifications</a></td></tr>
 <tr><td><code>:MepNotifyDismiss</code></td><td><a href="notifications.html">Notifications</a></td></tr>
@@ -299,9 +314,6 @@ bindings instead. A dash means no page covers that command yet.</p>
 <tr><td><code>:set</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
 <tr><td><code>:SketchNew</code></td><td><a href="sketch.html">The 2D sketcher</a></td></tr>
 <tr><td><code>:source</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
-<tr><td><code>:Viewer</code></td><td><a href="viewer.html">The viewer</a></td></tr>
-<tr><td><code>:ViewerBind</code></td><td><a href="viewer.html">The viewer</a></td></tr>
-<tr><td><code>:ViewerRun</code></td><td><a href="viewer.html">The viewer</a></td></tr>
 <tr><td><code>:sp</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
 <tr><td><code>:split</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
 <tr><td><code>:tabclose</code></td><td>--</td></tr>
@@ -317,11 +329,14 @@ bindings instead. A dash means no page covers that command yet.</p>
 <tr><td><code>:term</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
 <tr><td><code>:terminal</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
 <tr><td><code>:Text</code></td><td><a href="command-line.html">The command line</a></td></tr>
+<tr><td><code>:Viewer</code></td><td><a href="filetypes.html">Filetypes</a></td></tr>
+<tr><td><code>:ViewerBind</code></td><td><a href="viewer.html">The viewer</a></td></tr>
+<tr><td><code>:ViewerRun</code></td><td><a href="viewer.html">The viewer</a></td></tr>
 <tr><td><code>:vs</code></td><td><a href="command-line.html">The command line</a></td></tr>
 <tr><td><code>:vsplit</code></td><td><a href="command-line.html">The command line</a></td></tr>
 <tr><td><code>:w</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
 <tr><td><code>:wa</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>
-<tr><td><code>:wall</code></td><td>--</td></tr>
+<tr><td><code>:wall</code></td><td><a href="cad-fem.html">CAD and finite elements</a></td></tr>
 <tr><td><code>:WebLadder</code></td><td><a href="web-ladder.html">Measuring the engine</a></td></tr>
 <tr><td><code>:WebLadderRun</code></td><td><a href="web-ladder.html">Measuring the engine</a></td></tr>
 <tr><td><code>:workspace</code></td><td><a href="agent-api.html">Driving mep from an agent</a></td></tr>

@@ -476,7 +476,11 @@ void WriteEscapedAttr(std::ostream &os, const std::string &s) {
 void WriteNode(std::ostream &os, const Node *n) {
     switch (n->type) {
         case node_declaration: {
-            os << "<?" << n->name;
+            // append_child(node_declaration) leaves the name empty (pugixml
+            // names it "xml" implicitly); writing it bare produced
+            // `<? version=...?>`, which strict readers reject -- every ODT
+            // doc_export.cpp wrote was unreadable to LibreOffice/pandoc.
+            os << "<?" << (n->name.empty() ? std::string("xml") : n->name);
             for (const Attr &a : n->attrs) os << " " << a.name << "=\"" << a.value << "\"";
             os << "?>";
             return;

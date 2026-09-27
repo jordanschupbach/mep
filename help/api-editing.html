@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (96)</h1>
+<h1>The bindings (151)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -35,6 +35,7 @@ that it does nothing.</p>
 <tr><td><code>mep.buffer_ns_clear</code></td><td>clears every decoration under a namespace in a specific (possibly background) buffer</td></tr>
 <tr><td><code>mep.buffer_on_screen</code></td><td>whether some pane in the active tab shows the buffer</td></tr>
 <tr><td><code>mep.buffer_open_beside</code></td><td>shows a buffer in a pane that isn't a navigator, splitting if need be</td></tr>
+<tr><td><code>mep.buffer_save</code></td><td>bool: writes buffer `id` to its own filename</td></tr>
 <tr><td><code>mep.buffer_save_epoch</code></td><td>--</td></tr>
 <tr><td><code>mep.buffer_set_drag_resolver</code></td><td>registers a row-&gt;path resolver so a buffer's own rows can be dragged onto a pane to open</td></tr>
 <tr><td><code>mep.buffer_set_filename</code></td><td>sets a buffer's raw filename</td></tr>
@@ -52,6 +53,23 @@ that it does nothing.</p>
 <tr><td><code>mep.buffer_text_cols</code></td><td>returns the text column budget of the pane showing a buffer</td></tr>
 <tr><td><code>mep.buffer_workspace</code></td><td>the stable id of the workspace a buffer belongs to</td></tr>
 <tr><td><code>mep.bundled_tool</code></td><td>resolves a helper binary installed beside the running `mep`</td></tr>
+<tr><td><code>mep.cad_add_extrude</code></td><td>feature_id</td></tr>
+<tr><td><code>mep.cad_add_revolve</code></td><td>feature_id</td></tr>
+<tr><td><code>mep.cad_add_sketch</code></td><td>feature_id</td></tr>
+<tr><td><code>mep.cad_export</code></td><td>ok</td></tr>
+<tr><td><code>mep.cad_frame_all</code></td><td>--</td></tr>
+<tr><td><code>mep.cad_info</code></td><td>table</td></tr>
+<tr><td><code>mep.cad_new</code></td><td>buffer_id</td></tr>
+<tr><td><code>mep.cad_open</code></td><td>ok</td></tr>
+<tr><td><code>mep.cad_orbit</code></td><td>--</td></tr>
+<tr><td><code>mep.cad_rebuild</code></td><td>ok</td></tr>
+<tr><td><code>mep.cad_remove</code></td><td>ok</td></tr>
+<tr><td><code>mep.cad_save</code></td><td>ok</td></tr>
+<tr><td><code>mep.cad_select</code></td><td>ok</td></tr>
+<tr><td><code>mep.cad_set</code></td><td>ok</td></tr>
+<tr><td><code>mep.cad_suppress</code></td><td>ok</td></tr>
+<tr><td><code>mep.cad_view</code></td><td>shaded, wireframe or drawing</td></tr>
+<tr><td><code>mep.cad_zoom</code></td><td>--</td></tr>
 <tr><td><code>mep.clipboard_get</code></td><td>returns the system clipboard's text</td></tr>
 <tr><td><code>mep.clipboard_set</code></td><td>copies text to the system clipboard</td></tr>
 <tr><td><code>mep.current_buffer</code></td><td>returns the active pane's buffer id</td></tr>
@@ -73,10 +91,28 @@ that it does nothing.</p>
 <tr><td><code>mep.menubar_set_visible</code></td><td>shows or hides the top menu bar outright</td></tr>
 <tr><td><code>mep.menubar_toggle</code></td><td>shows/hides the top menu bar, the same thing tapping mod1 does</td></tr>
 <tr><td><code>mep.menubar_visible</code></td><td>returns whether the top menu bar is currently shown</td></tr>
+<tr><td><code>mep.mepml_block_at</code></td><td>describes the mepml code block at a 1-based row</td></tr>
+<tr><td><code>mep.mepml_code_blocks</code></td><td>lists the current mepml buffer's code-block bodies</td></tr>
+<tr><td><code>mep.mepml_diagnostics</code></td><td>the parser's diagnostics for the current mepml buffer</td></tr>
+<tr><td><code>mep.mepml_export</code></td><td>writes the current mepml buffer in the format named by the path's extension</td></tr>
+<tr><td><code>mep.mepml_export_html</code></td><td>writes the current mepml buffer as standalone HTML</td></tr>
+<tr><td><code>mep.mepml_folds</code></td><td>rebuilds the current mepml buffer's heading/block folds</td></tr>
+<tr><td><code>mep.mepml_gui_start</code></td><td>shows a block's program window inside its results</td></tr>
+<tr><td><code>mep.mepml_header_toggle</code></td><td>folds or unfolds the current mepml buffer's document headers</td></tr>
+<tr><td><code>mep.mepml_import</code></td><td>converts a document to mepml and writes it</td></tr>
+<tr><td><code>mep.mepml_link_at</code></td><td>the target of the mepml link at a 1-based position</td></tr>
+<tr><td><code>mep.mepml_outline</code></td><td>lists the current mepml buffer's headings</td></tr>
+<tr><td><code>mep.mepml_scan</code></td><td>re-parses the current mepml buffer and emits its decorations into `ns`</td></tr>
+<tr><td><code>mep.mepml_splice_results</code></td><td>--</td></tr>
+<tr><td><code>mep.mepml_terminal_focus</code></td><td>sends the keyboard to the terminal of the block under the cursor</td></tr>
+<tr><td><code>mep.mepml_terminal_start</code></td><td>runs a block's program in a terminal inside its results</td></tr>
+<tr><td><code>mep.mepml_terminal_stop</code></td><td>stops the mepml block running under the cursor</td></tr>
 <tr><td><code>mep.mod1_name</code></td><td>returns the display name of whichever modifier is currently mod1</td></tr>
+<tr><td><code>mep.read_disk_lines</code></td><td>array of lines, or nil</td></tr>
 <tr><td><code>mep.replace_lines</code></td><td>replaces a 1-indexed, end-exclusive line range with a new set of lines</td></tr>
 <tr><td><code>mep.set_cursor</code></td><td>moves the cursor to a 1-indexed position</td></tr>
 <tr><td><code>mep.set_line</code></td><td>replaces the content of a 1-indexed line</td></tr>
+<tr><td><code>mep.set_on_quit_unsaved</code></td><td>fn(scope) where scope is "all" (:qa/:wqa) or</td></tr>
 <tr><td><code>mep.sketch_add_arc</code></td><td>entity_id</td></tr>
 <tr><td><code>mep.sketch_add_circle</code></td><td>entity_id</td></tr>
 <tr><td><code>mep.sketch_add_ellipse</code></td><td>entity_id</td></tr>
@@ -111,9 +147,28 @@ that it does nothing.</p>
 <tr><td><code>mep.ui_confirm</code></td><td>shows a yes/no confirmation prompt and calls on_done with the choice</td></tr>
 <tr><td><code>mep.ui_input</code></td><td>shows a text prompt overlay and calls on_done with the entered text (or nothing on Escape)</td></tr>
 <tr><td><code>mep.ui_select</code></td><td>shows a fixed-list chooser and calls on_done with the chosen 1-indexed index (or nothing on Escape)</td></tr>
+<tr><td><code>mep.unsaved_buffers</code></td><td>array of {id, name}: every buffer with unsaved</td></tr>
 <tr><td><code>mep.url_normalize</code></td><td>normalizes omnibar input into a loadable target</td></tr>
 <tr><td><code>mep.url_resolve</code></td><td>resolves a reference against an absolute URL</td></tr>
 <tr><td><code>mep.url_under_cursor</code></td><td>returns the URL under the cursor, if any</td></tr>
+<tr><td><code>mep.view_add_label</code></td><td>--</td></tr>
+<tr><td><code>mep.view_add_line</code></td><td>--</td></tr>
+<tr><td><code>mep.view_add_mesh</code></td><td>--</td></tr>
+<tr><td><code>mep.view_add_mode</code></td><td>--</td></tr>
+<tr><td><code>mep.view_add_part</code></td><td>--</td></tr>
+<tr><td><code>mep.view_add_point</code></td><td>--</td></tr>
+<tr><td><code>mep.view_add_result</code></td><td>--</td></tr>
+<tr><td><code>mep.view_camera</code></td><td>--</td></tr>
+<tr><td><code>mep.view_caption</code></td><td>--</td></tr>
+<tr><td><code>mep.view_clear</code></td><td>--</td></tr>
+<tr><td><code>mep.view_current</code></td><td>buffer_id or nil</td></tr>
+<tr><td><code>mep.view_frame_all</code></td><td>--</td></tr>
+<tr><td><code>mep.view_info</code></td><td>table</td></tr>
+<tr><td><code>mep.view_new</code></td><td>buffer_id</td></tr>
+<tr><td><code>mep.view_on_frame</code></td><td>--</td></tr>
+<tr><td><code>mep.view_play</code></td><td>--</td></tr>
+<tr><td><code>mep.view_time</code></td><td>t</td></tr>
+<tr><td><code>mep.view_time_range</code></td><td>--</td></tr>
 <tr><td><code>mep.visual_change</code></td><td>deletes the current Visual selection and enters Insert mode at the deletion point, like pressing "c"</td></tr>
 <tr><td><code>mep.visual_range</code></td><td>returns the current Visual selection's normalized 1-indexed endpoints and kind, or nil if none</td></tr>
 <tr><td><code>mep.visual_selection</code></td><td>returns the currently selected text without altering the selection or any register</td></tr>

@@ -51,6 +51,7 @@ extern "C" {
 #include "gfx/platform.h"
 
 #include "json.h"
+#include "mepml_convert.h"
 #include "persist.h"
 
 // Defined in main.cpp -- returns the fixed-width glyph advance (in pixels)
@@ -2712,6 +2713,388 @@ int l_org_link_scan(lua_State *L) {
     int ns = static_cast<int>(luaL_checkinteger(L, 1));
     GetEditor(L)->OrgLinkScan(ns);
     return 0;
+}
+
+// --- mepml (src/mepml_doc.h, Editor::Mepml*; driven by kBuiltinMepml) ---
+
+/**
+ * @brief Implements mep.mepml_scan(ns [, own_diagnostics]): re-parses the current mepml buffer and emits its decorations into `ns`.
+ * @param L Lua state; arg 1 is the namespace id, optional arg 2 false to leave diagnostics to a language server.
+ * @return Number of values pushed (0).
+ */
+int l_mepml_scan(lua_State *L) {
+    const bool own = lua_isnoneornil(L, 2) || lua_toboolean(L, 2) != 0;
+    GetEditor(L)->MepmlScan(static_cast<int>(luaL_checkinteger(L, 1)), own);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.mepml_folds(): rebuilds the current mepml buffer's heading/block folds.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_mepml_folds(lua_State *L) {
+    GetEditor(L)->RecomputeMepmlFolds();
+    return 0;
+}
+
+namespace {
+void PushMepmlValue(lua_State *L, const mepml::Value &v) {
+    switch (v.kind) {
+        case mepml::ValueKind::Int: lua_pushinteger(L, static_cast<lua_Integer>(v.i)); break;
+        case mepml::ValueKind::Double: lua_pushnumber(L, v.d); break;
+        case mepml::ValueKind::String: lua_pushlstring(L, v.s.data(), v.s.size()); break;
+    }
+}
+}  // namespace
+
+// mep.mepml_block_at(row) -> the code block covering 1-based `row` (its
+// //? option lines, fences, body or results region), or nil:
+//   { lang, code, fence_row (1-based), options = {name = value, ...},
+//     option_list = {{name=, value=}, ...} }
+/**
+ * @brief Implements mep.mepml_block_at(row): describes the mepml code block at a 1-based row.
+ * @param L Lua state; arg 1 is the 1-based row.
+ * @return Number of values pushed (1: the table, or nil).
+ */
+int l_mepml_block_at(lua_State *L) {
+    const int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    const mepml::Document doc = GetEditor(L)->MepmlParseCurrent(false);
+    for (const mepml::Block &b : doc.blocks) {
+        if (b.kind != mepml::BlockKind::Code || row < b.line_start || row > b.line_end) continue;
+        lua_newtable(L);
+        lua_pushlstring(L, b.lang.data(), b.lang.size());
+        lua_setfield(L, -2, "lang");
+        lua_pushlstring(L, b.code.data(), b.code.size());
+        lua_setfield(L, -2, "code");
+        lua_pushinteger(L, b.code_line_start);  // fence row, 1-based
+        lua_setfield(L, -2, "fence_row");
+        lua_newtable(L);
+        for (const mepml::Option &o : b.options) {
+            PushMepmlValue(L, o.value);
+            lua_setfield(L, -2, o.name.c_str());
+        }
+        lua_setfield(L, -2, "options");
+        lua_newtable(L);
+        lua_Integer k = 1;
+        for (const mepml::Option &o : b.options) {
+            lua_newtable(L);
+            lua_pushlstring(L, o.name.data(), o.name.size());
+            lua_setfield(L, -2, "name");
+            lua_pushlstring(L, o.value.s.data(), o.value.s.size());
+            lua_setfield(L, -2, "value");
+            lua_rawseti(L, -2, k++);
+        }
+        lua_setfield(L, -2, "option_list");
+        return 1;
+    }
+    lua_pushnil(L);
+    return 1;
+}
+
+// mep.mepml_code_blocks() -> {{lang=, first=, last=}, ...}: every code
+// block's body rows (1-based, inclusive), for embedded-language highlighting.
+/**
+ * @brief Implements mep.mepml_code_blocks(): lists the current mepml buffer's code-block bodies.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the array).
+ */
+int l_mepml_code_blocks(lua_State *L) {
+    const mepml::Document doc = GetEditor(L)->MepmlParseCurrent(false);
+    lua_newtable(L);
+    lua_Integer k = 1;
+    for (const mepml::Block &b : doc.blocks) {
+        if (b.kind != mepml::BlockKind::Code || b.code_line_end < b.code_line_start) continue;
+        lua_newtable(L);
+        lua_pushlstring(L, b.lang.data(), b.lang.size());
+        lua_setfield(L, -2, "lang");
+        lua_pushinteger(L, b.code_line_start + 1);
+        lua_setfield(L, -2, "first");
+        lua_pushinteger(L, b.code_line_end + 1);
+        lua_setfield(L, -2, "last");
+        lua_rawseti(L, -2, k++);
+    }
+    return 1;
+}
+
+// mep.mepml_outline() -> {{level=, title=, row=}, ...} (row 1-based).
+/**
+ * @brief Implements mep.mepml_outline(): lists the current mepml buffer's headings.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the array).
+ */
+int l_mepml_outline(lua_State *L) {
+    const mepml::Document doc = GetEditor(L)->MepmlParseCurrent(false);
+    lua_newtable(L);
+    lua_Integer k = 1;
+    for (const mepml::Block &b : doc.blocks) {
+        if (b.kind != mepml::BlockKind::Heading) continue;
+        std::string title = b.text.substr(static_cast<size_t>(mepml::LineHeadingMarkupLen(b.text)));
+        lua_newtable(L);
+        lua_pushinteger(L, b.level);
+        lua_setfield(L, -2, "level");
+        lua_pushlstring(L, title.data(), title.size());
+        lua_setfield(L, -2, "title");
+        lua_pushinteger(L, b.line_start + 1);
+        lua_setfield(L, -2, "row");
+        lua_rawseti(L, -2, k++);
+    }
+    return 1;
+}
+
+// mep.mepml_splice_results(buffer_id, fence_row, code, output) -> bool:
+// writes `output` as the results region of the block whose ``` line is
+// 1-based `fence_row` in that buffer, refusing if the body has changed.
+/**
+ * @brief Implements mep.mepml_splice_results(buffer_id, fence_row, code, output).
+ * @param L Lua state; buffer id, 1-based fence row, the block's code, the output text.
+ * @return Number of values pushed (1: whether the results were written).
+ */
+int l_mepml_splice_results(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const int fence_row = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    const std::string code = luaL_checkstring(L, 3);
+    const std::string output = luaL_optstring(L, 4, "");
+    lua_pushboolean(L, GetEditor(L)->MepmlSpliceResults(buffer_id, fence_row, code, output));
+    return 1;
+}
+
+// mep.mepml_terminal_start(buffer_id, fence_row [, argv [, temp_files]])
+// -> run id | nil: runs the block whose ``` fence is on 1-based `fence_row`
+// in a terminal inside its results (Editor::MepmlTerminalStart). `argv`
+// (results=exec) is the program to run in place of the block's command;
+// `temp_files` are deleted once it is done.
+/**
+ * @brief Implements mep.mepml_terminal_start(buffer_id, fence_row [, argv [, temp_files]]): runs a block's program in a terminal inside its results.
+ * @param L Lua state; the buffer id, the 1-based fence row, optionally the argv table and the temp-file table.
+ * @return Number of values pushed (1: the run id, or nil).
+ */
+int l_mepml_terminal_start(lua_State *L) {
+    auto strings_at = [L](int idx) {
+        std::vector<std::string> out;
+        if (!lua_istable(L, idx)) return out;
+        const lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, idx));
+        for (lua_Integer k = 1; k <= n; ++k) {
+            lua_rawgeti(L, idx, k);
+            if (lua_isstring(L, -1)) out.emplace_back(lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+        return out;
+    };
+    const bool has_argv = lua_istable(L, 3);
+    const std::vector<std::string> argv = strings_at(3);
+    const std::vector<std::string> temps = strings_at(4);
+    const int id = GetEditor(L)->MepmlTerminalStart(static_cast<int>(luaL_checkinteger(L, 1)),
+                                                    static_cast<int>(luaL_checkinteger(L, 2)) - 1,
+                                                    has_argv ? &argv : nullptr, temps);
+    if (id < 0) lua_pushnil(L);
+    else lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.mepml_gui_start(buffer_id, fence_row [, argv [, temp_files]]) -> run
+// id | nil: runs the block whose ``` fence is on 1-based `fence_row` as a
+// program whose own window is shown inside its results
+// (Editor::MepmlGuiStart). `argv` (results=exec-gui) is the program
+// babel prepared, in place of the block's command line; `temp_files` are
+// deleted once it is done.
+/**
+ * @brief Implements mep.mepml_gui_start(buffer_id, fence_row [, argv [, temp_files]]): shows a block's program window inside its results.
+ * @param L Lua state; the buffer id, the 1-based fence row, optionally the argv table and the temp-file table.
+ * @return Number of values pushed (1: the run id, or nil).
+ */
+int l_mepml_gui_start(lua_State *L) {
+    auto strings_at = [L](int idx) {
+        std::vector<std::string> out;
+        if (!lua_istable(L, idx)) return out;
+        const lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, idx));
+        for (lua_Integer k = 1; k <= n; ++k) {
+            lua_rawgeti(L, idx, k);
+            if (lua_isstring(L, -1)) out.emplace_back(lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+        return out;
+    };
+    const bool has_argv = lua_istable(L, 3);
+    const std::vector<std::string> argv = strings_at(3);
+    const std::vector<std::string> temps = strings_at(4);
+    const int id = GetEditor(L)->MepmlGuiStart(static_cast<int>(luaL_checkinteger(L, 1)),
+                                               static_cast<int>(luaL_checkinteger(L, 2)) - 1, has_argv ? &argv : nullptr, temps);
+    if (id < 0) lua_pushnil(L);
+    else lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.mepml_terminal_stop() -> bool: stops the block running under the cursor.
+/**
+ * @brief Implements mep.mepml_terminal_stop(): stops the mepml block running under the cursor.
+ * @param L Lua state.
+ * @return Number of values pushed (1: whether a running block was found).
+ */
+int l_mepml_terminal_stop(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int row = 0, col = 0;
+    ed->GetCursorForLua(&row, &col);
+    const int run = ed->MepmlTerminalRunAt(row);
+    lua_pushboolean(L, run >= 0 && ed->MepmlTerminalStop(run));
+    return 1;
+}
+
+// mep.mepml_terminal_focus() -> bool: gives the keyboard to the terminal
+// of the block running under the cursor.
+/**
+ * @brief Implements mep.mepml_terminal_focus(): sends the keyboard to the terminal of the block under the cursor.
+ * @param L Lua state.
+ * @return Number of values pushed (1: whether a running block was found).
+ */
+int l_mepml_terminal_focus(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int row = 0, col = 0;
+    ed->GetCursorForLua(&row, &col);
+    lua_pushboolean(L, ed->MepmlTerminalFocus(ed->MepmlTerminalRunAt(row)));
+    return 1;
+}
+
+// mep.mepml_link_at(row, col) -> the link target under 1-based (row, col), or nil.
+/**
+ * @brief Implements mep.mepml_link_at(row, col): the target of the mepml link at a 1-based position.
+ * @param L Lua state; 1-based row and column.
+ * @return Number of values pushed (1: the target string, or nil).
+ */
+int l_mepml_link_at(lua_State *L) {
+    const int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    const int col = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    Editor *ed = GetEditor(L);
+    if (const std::vector<Buffer::OrgLinkSpan> *spans = ed->OrgLinkSpansForRow(ed->CurrentBufferId(), row)) {
+        for (const Buffer::OrgLinkSpan &sp : *spans) {
+            if (col >= sp.col_start && col < sp.col_end) {
+                lua_pushlstring(L, sp.target.data(), sp.target.size());
+                return 1;
+            }
+        }
+    }
+    lua_pushnil(L);
+    return 1;
+}
+
+// mep.mepml_export_html(path) -> true | nil, err: exports the current
+// buffer (imports expanded) as a standalone HTML page.
+/**
+ * @brief Implements mep.mepml_export_html(path): writes the current mepml buffer as standalone HTML.
+ * @param L Lua state; arg 1 is the output path.
+ * @return Number of values pushed (1 on success: true; 2 on failure: nil, message).
+ */
+int l_mepml_export_html(lua_State *L) {
+    const std::string path = luaL_checkstring(L, 1);
+    const mepml::Document doc = GetEditor(L)->MepmlParseCurrent(true);
+    std::ofstream f(path, std::ios::binary);
+    if (!f) {
+        lua_pushnil(L);
+        lua_pushstring(L, ("cannot write " + path).c_str());
+        return 2;
+    }
+    f << mepml::ToHtml(doc);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// mep.mepml_export(path) -> true | nil, err: exports the current buffer
+// (imports expanded) to the format `path`'s extension names -- html, md,
+// org, rtf, docx, odt, tex or txt (mepml_convert.h). Images resolve
+// against the buffer's own directory. PDF is the .tex compiled by the
+// caller (kBuiltinMepml runs tectonic without blocking the editor).
+/**
+ * @brief Implements mep.mepml_export(path): writes the current mepml buffer in the format named by the path's extension.
+ * @param L Lua state; arg 1 is the output path.
+ * @return Number of values pushed (1 on success: true; 2 on failure: nil, message).
+ */
+int l_mepml_export(lua_State *L) {
+    const std::string path = luaL_checkstring(L, 1);
+    const mepml::Format format = mepml::FormatFromPath(path);
+    std::string err;
+    if (format == mepml::Format::Mepml || !mepml::CanExport(format) || format == mepml::Format::Pdf) {
+        err = "cannot export to " + path + " (html, md, org, rtf, docx, odt, tex, txt)";
+    } else {
+        Editor *ed = GetEditor(L);
+        const std::string file = ed->MepmlCurrentFile();
+        const std::string base = file.empty() ? std::string(".") : std::filesystem::path(file).parent_path().string();
+        if (mepml::ExportFile(ed->MepmlParseCurrent(true), path, base, &err)) {
+            lua_pushboolean(L, 1);
+            return 1;
+        }
+    }
+    lua_pushnil(L);
+    lua_pushstring(L, err.c_str());
+    return 2;
+}
+
+// mep.mepml_import(in_path, out_path) -> out_path | nil, err: converts an
+// html/md/org/rtf/docx/odt/txt file to mepml and writes it to out_path
+// (pictures inside DOCX/ODT/RTF go to a "<stem>_media" directory beside
+// it). Overwrites out_path: the caller asks first.
+/**
+ * @brief Implements mep.mepml_import(in_path, out_path): converts a document to mepml and writes it.
+ * @param L Lua state; arg 1 is the document, arg 2 the .mepml to write.
+ * @return Number of values pushed (1 on success: the output path; 2 on failure: nil, message).
+ */
+int l_mepml_import(lua_State *L) {
+    const std::string in = luaL_checkstring(L, 1);
+    const std::string out = luaL_checkstring(L, 2);
+    std::string text, err;
+    if (!mepml::CanImport(mepml::FormatFromPath(in))) {
+        err = "cannot import " + in + " (html, md, org, rtf, docx, odt, txt)";
+    } else if (mepml::ImportFile(in, out, &text, &err)) {
+        std::ofstream f(out, std::ios::binary);
+        f << text;
+        if (f) {
+            lua_pushstring(L, out.c_str());
+            return 1;
+        }
+        err = "cannot write " + out;
+    }
+    lua_pushnil(L);
+    lua_pushstring(L, err.c_str());
+    return 2;
+}
+
+// mep.mepml_header_toggle() -> "folded" | "unfolded" | nil: folds every
+// document header (run of `//?` lines) in the current mepml buffer, or
+// unfolds them all when they already are; nil when there is none.
+/**
+ * @brief Implements mep.mepml_header_toggle(): folds or unfolds the current mepml buffer's document headers.
+ * @param L Lua state.
+ * @return Number of values pushed (1: "folded", "unfolded" or nil).
+ */
+int l_mepml_header_toggle(lua_State *L) {
+    const int r = GetEditor(L)->MepmlToggleHeaderFolds();
+    if (r < 0) lua_pushnil(L);
+    else lua_pushstring(L, r == 1 ? "folded" : "unfolded");
+    return 1;
+}
+
+// mep.mepml_diagnostics() -> {{row=, col=, severity=, message=}, ...} (1-based).
+/**
+ * @brief Implements mep.mepml_diagnostics(): the parser's diagnostics for the current mepml buffer.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the array).
+ */
+int l_mepml_diagnostics(lua_State *L) {
+    const mepml::Document doc = GetEditor(L)->MepmlParseCurrent(true);
+    lua_newtable(L);
+    lua_Integer k = 1;
+    for (const mepml::Diagnostic &d : doc.diagnostics) {
+        lua_newtable(L);
+        lua_pushinteger(L, d.line + 1);
+        lua_setfield(L, -2, "row");
+        lua_pushinteger(L, d.col_start + 1);
+        lua_setfield(L, -2, "col");
+        lua_pushstring(L, d.severity == mepml::Diagnostic::Error ? "error" : d.severity == mepml::Diagnostic::Warning ? "warn" : "info");
+        lua_setfield(L, -2, "severity");
+        lua_pushlstring(L, d.message.data(), d.message.size());
+        lua_setfield(L, -2, "message");
+        lua_rawseti(L, -2, k++);
+    }
+    return 1;
 }
 
 // mep.org_table_auto_align(): realigns a table the cursor has just left
@@ -12079,6 +12462,22 @@ const luaL_Reg kMepFuncs[] = {
     {"buf_clear_org_lsp_status", l_buf_clear_org_lsp_status},
     {"org_latex_visible", l_org_latex_visible},
     {"org_link_scan", l_org_link_scan},
+    {"mepml_scan", l_mepml_scan},
+    {"mepml_folds", l_mepml_folds},
+    {"mepml_block_at", l_mepml_block_at},
+    {"mepml_code_blocks", l_mepml_code_blocks},
+    {"mepml_outline", l_mepml_outline},
+    {"mepml_splice_results", l_mepml_splice_results},
+    {"mepml_link_at", l_mepml_link_at},
+    {"mepml_terminal_start", l_mepml_terminal_start},
+    {"mepml_gui_start", l_mepml_gui_start},
+    {"mepml_terminal_stop", l_mepml_terminal_stop},
+    {"mepml_terminal_focus", l_mepml_terminal_focus},
+    {"mepml_export_html", l_mepml_export_html},
+    {"mepml_export", l_mepml_export},
+    {"mepml_header_toggle", l_mepml_header_toggle},
+    {"mepml_import", l_mepml_import},
+    {"mepml_diagnostics", l_mepml_diagnostics},
     {"org_table_auto_align", l_org_table_auto_align},
     {"org_conceal_toggle", l_org_conceal_toggle},
     {"org_conceal_visible", l_org_conceal_visible},

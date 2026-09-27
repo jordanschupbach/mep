@@ -1,0 +1,120 @@
+#+TITLE: The mepml language server
+#+HTML_HEAD: <meta name="help-section" content="Writing">
+#+HTML_HEAD: <meta name="help-order" content="31">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+mepml files get a language server of their own, =mep-mepml-lsp=, built
+and shipped with mep. Open a =.mepml= file and it attaches by itself;
+there is nothing to install.
+
+It reads a document with the same parser mep renders it from and exports
+it with, so the server and the page you see can never disagree about what
+a line means. It then adds what no single line can tell you on its own:
+citations defined in an =@import=ed file, pictures and link targets that
+are not on disk, headings that links point to.
+
+While it is attached, the problems it finds are the ones mep underlines;
+mepml's own renderer stops drawing its copy, so nothing is marked twice.
+Because it is an ordinary language server, other editors can use it too.
+
+* What it reports
+
+| Code                     | What it means                                              |
+|--------------------------+------------------------------------------------------------|
+| =unknown-citation=       | =\cite{key}= with no =@citation= entry for the key         |
+| =unused-citation=        | an entry nothing cites (shown faded)                       |
+| =unknown-anchor=         | a link to =#anchor= where no heading has that anchor       |
+| =missing-file=           | a link to a file that is not there                         |
+| =image-missing=          | an =@image= picture, or a figure a code block drew, is gone |
+| =import-missing=, =import-cycle= | an import that cannot be read, or imports itself |
+| =duplicate-import=       | a file already imported above (included only once)         |
+| =unknown-directive=      | an =@name= mepml does not have (=@imgae=)                  |
+| =unknown-color=          | =\color{name}= with a colour mepml does not know           |
+| =empty-footnote=         | =\fn{}= with nothing in it                                 |
+| =table-columns=          | a table row with more or fewer cells than the rest         |
+| =heading-skip=           | a heading two levels below the one before it               |
+| =duplicate-option=       | the same =//? Option:= set twice                           |
+| =duplicate-citation=     | two entries with one key                                   |
+| =unclosed-code=, =unclosed-math=, =unclosed-results= | a block that never ends       |
+| =orphan-caption=         | an =@caption= or =@alttext= with nothing above to attach to |
+| =deprecated-directive=   | =@printbibliography=, which is now =@bibliography=         |
+
+The file checks need the document to be saved somewhere; an unsaved buffer
+has no directory to look in, so they are skipped rather than guessed.
+
+What is left alone, on purpose:
+
+- The code inside a code block. That is its own language's business, and
+  running the block is how mepml checks it.
+- Maths. TeX is checked where it is typeset, in the buffer and the
+  exports.
+- Spelling and grammar.
+
+* Completion
+
+What it offers depends on where the cursor is:
+
+| After                   | You get                                              |
+|-------------------------+------------------------------------------------------|
+| =@= at a line's start   | the directives: =image=, =caption=, =import=, =toc=, ... |
+| =\=                     | the commands: =cite=, =citep=, =fn=, =color=, =f=, =fs= |
+| =\cite{= or =\citep{=   | every citation key, with its author and year         |
+| =\color{=               | the colour names, with their values                  |
+| =\f{=, =\fs{=           | font families; sizes in points                       |
+| =@image{=, =@import{=   | the files beside the document (pictures; =.mepml= and =.bib=) |
+| a link's bar            | =#anchors= of every heading, then files              |
+| =//?=                   | =Title=, =Subtitle=, =Author=, =Date=, =Option=, =Import= |
+| =//? Import: =          | the =.mepml= and =.bib= files beside the document    |
+| =// W=                  | the callout kinds: =WARNING=, =NOTE=, =TIP=, ...     |
+| =```=                   | the languages a code block can run                   |
+| =```{r, =               | =file==, =eval== and every babel header argument     |
+
+* Hover, definitions and references
+
+- *Hover* on a citation shows its entry as the bibliography will print it,
+  and every field. On a footnote, its text; on a link, where it goes (and
+  whether it exists); on a colour, its value; on a heading, its anchor and
+  how many links point at it; on a code block's fence, its language and
+  options.
+- *Go to definition* goes from a citation to its entry (into the imported
+  file, when it lives there), from a =#anchor= link to the heading, and
+  from =@image=, =@import=, a header =//? Import:= or a file link to the
+  file. Hover on a header import lists the options it brings (and which
+  of them this document overrides) and how much content it includes.
+- *References* on a citation key lists every =\cite= of it and its entry;
+  on a heading, the heading and every link to it.
+- *Rename* renames a citation key everywhere in the document, entry
+  included. On a heading it renames the heading, and every =#anchor= link
+  to it follows to the new anchor. A key defined in an imported file is
+  not renamed from here; the server names the file to rename it in.
+
+* Fixes and formatting
+
+The code actions on a line with a problem:
+
+- An unknown citation: add a =@citation= entry for it at the end of the
+  document, or switch to the existing key it is closest to.
+- A misspelt directive, anchor or colour: change it to the nearest real
+  one.
+- =@printbibliography=: rename it to =@bibliography=.
+- A table with ragged rows: pad every row to the same number of cells.
+
+*Formatting* lines up every table's pipes, honouring each column's
+alignment (=:---=, =:---:=, =---:=), and touches nothing else. The same is
+offered as a code action on any table that is not aligned yet.
+
+* Outline and folding
+
+The outline lists the headings, nested by depth, with each section's
+figures, tables, code blocks and citations under it, numbered the way the
+captions number them. Folding covers the same blocks mep folds in the
+buffer: sections, document headers, code, citations, display maths, tables,
+lists and comment runs -- a code block and its results as two separate
+folds.
+
+* See also
+
+- [[file:mepml.html][mepml]] -- the language itself.
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.

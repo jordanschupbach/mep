@@ -1,0 +1,533 @@
+#+TITLE: mepml
+#+HTML_HEAD: <meta name="help-section" content="Writing">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+mepml is mep's own markup language for literate documents: prose, maths,
+code blocks you can run, and their results, in one plain-text =.mepml=
+file. The file =test.mepml= at the top of the mep repository uses every
+construct below and is the reference for the language.
+
+A =.mepml= buffer is rendered in place, the way org is: markup is hidden
+on every line except the cursor's, headings are drawn large, maths is
+typeset, images are shown, and code blocks are highlighted in their own
+language.
+
+* Keys and commands
+
+| Key / command         | Does                                                      |
+|-----------------------+-----------------------------------------------------------|
+| =C-c C-c=             | run the code block under the cursor                       |
+| =<leader>kx=          | the same                                                  |
+| =C-c C-k=             | stop the block running under the cursor (a terminal)      |
+| =<leader>ks=          | the same                                                  |
+| =<leader>kt=          | type into the running block's terminal                    |
+| =<leader>ka=          | run every code block, top to bottom                       |
+| =<leader>ke=          | export as... (pick a format: HTML, PDF, Word, ...)        |
+| =<leader>ko=          | export to HTML and open it                                |
+| =<leader>ki=          | import a document (HTML, Markdown, Word, ...) as mepml    |
+| =C-c C-e h=           | export to HTML                                            |
+| =<leader>kc=          | list problems (unknown citations, unclosed blocks ...)    |
+| =<leader>kh=          | fold or unfold the document header (the =//?= lines)      |
+| =<leader>kl=          | follow the link under the cursor (clicking works too)     |
+| =<leader>km=          | toggle markup concealment                                 |
+| =:MepmlExecute=       | run the code block under the cursor                       |
+| =:MepmlExecuteAll=    | run every code block                                      |
+| =:MepmlStop=          | stop the running block under the cursor                   |
+| =:MepmlTerminal=      | type into the running block's terminal                    |
+| =:MepmlExport= [fmt]  | export as =fmt= (html pdf docx odt rtf md org tex txt)    |
+| =:MepmlImport= [file] | import =file= as mepml and open it                        |
+| =:MepmlExportHtml=    | export to HTML                                            |
+| =:MepmlExportOpen=    | export to HTML and open it                                |
+| =:MepmlCheck=         | list problems                                             |
+| =:MepmlHeaderToggle=  | fold or unfold the document header                        |
+| =:MepmlLinkFollow=    | follow the link under the cursor                          |
+| =:MepmlRender=        | re-render the buffer now                                  |
+| =:MepmlFoldsRecompute= | rebuild folds (=za=, =zc= and =zo= do this themselves)  |
+
+Folding (=za=, =zM=, =zR=) folds heading sections, code blocks,
+citations, display maths, tables, lists and comment runs. A code block and
+its results fold separately: =za= on the opening fence folds the code,
+=za= on the =// result_begin:= line folds the results, so either can be
+put away while the other stays open (a running program's terminal or
+window hides with its results). The Structure sidebar lists the headings.
+
+* Document options and comments
+
+#+begin_example
+//? Title: Some title
+//? Option: OptionA=10
+//? Option: OptionB=1.1
+//? Option: OptionC="asdfasdf"
+// A comment: never rendered, never exported.
+#+end_example
+
+=//?= lines hold metadata as =Key: value=. =Title:= names the document;
+=Option: Name=value= sets an option whose value is an integer, a decimal
+or a string (quote it to force a string). Any other key is kept as-is.
+
+A run of =//?= lines on consecutive rows is a header block, drawn as a
+card of its own. The title is large and bold, a =Subtitle:= sits under it
+in italics, and every other key becomes a muted label in a column, with
+the values lined up beside it. An option reads =OptionA = 10=, its value
+coloured as a number or a string. The line under the cursor shows its
+raw =//?= text, as any marked-up line does.
+
+A header block folds like any other block (=za=, or the =+=/=-= in the
+gutter). Folded, it reads as its title and a tally of the rest: /Some
+title • 3 options/. =<leader>kh= folds every header in the document at
+once, or unfolds them.
+
+** Importing in the header
+
+#+begin_example
+//? Title: A Test Document
+//? Import: opts.mepml
+//? Import: refs.mepml
+//? Option: speed=5
+#+end_example
+
+=//? Import: file= brings another mepml file into this one, from the
+header:
+
+- Its header is inherited: its options, and keys such as =Author:= or
+  =Date:= that this document does not set. This document's own always
+  win -- above, =speed= is 5 even if =opts.mepml= sets it too -- and its
+  =Title:= is used only if this document has none.
+- Its content is included where the =Import:= line is, so imported files
+  arrive in the order the header lists them, ahead of this document's own
+  text. Its citations join this document's, ready for =\cite{}=.
+- A file can import others in turn. A file imported twice (by the header
+  and again with =@import= in the body) is included once, where it is
+  first named; a file that imports itself round a loop is reported.
+
+The import's path is a link: =<leader>kl= (or a click) opens the file.
+The buffer shows this document's own text; the imported content appears
+in every export and in the language server's checks.
+
+A =//= line is a comment. On a prose line, a =//= after a space starts a
+comment that runs to the end of that line.
+
+* Callouts
+
+A comment that starts with a keyword and a colon is a callout, drawn as a
+coloured note and exported as one; the =//= lines right under it continue
+it.
+
+#+begin_example
+// NOTE: this is shown to the reader,
+// and so is this line.
+// WARNING: so is this.
+#+end_example
+
+The keywords are =NOTE=, =INFO=, =TIP=, =HINT=, =SUCCESS=, =WARNING=,
+=CAUTION=, =ERROR=, =DANGER=, =IMPORTANT=, =TODO=, =FIXME=, =QUESTION= and
+=EXAMPLE=.
+
+* Headings, paragraphs and rules
+
+#+begin_example
+> Heading level 1
+>> Heading level 2
+>>> Heading level 3
+#+end_example
+
+Up to six levels. A blank line separates paragraphs. A line of three or
+more of the same one of =-=, ~=~, =_= or =*= is a dividing rule.
+
+* Inline formatting
+
+| Markup                    | Result                     |
+|---------------------------+----------------------------|
+| =*bold*=                  | bold                       |
+| =~italic~=                | italic                     |
+| =_underlined_=            | underlined                 |
+| =x^2^=                    | superscript (x²)           |
+| =H,,2,,O=                 | subscript (H₂O)            |
+| =<small>=                 | small text                 |
+| =>big<=                   | big text                   |
+| ~=highlighted=~           | highlighted                |
+| =-strikethrough-=         | struck through             |
+| =+inserted+=              | inserted                   |
+| =!deleted!=               | deleted                    |
+| =`verbatim`=              | code, nothing inside is formatted |
+
+Two more use a pipe character: =|monospaced|= is monospaced text that is
+still formatted inside, and =[text|https://...]= is a link (a bare
+=[https://...]= works too).
+
+A marker only opens after a space or punctuation and before a non-space,
+and only closes before a space or punctuation, so =snake_case=, =a * b=,
+=1 + 2= and =well-known= are left alone. Superscript and subscript are the
+exception and work inside words: =x^2^=, =H,,2,,O=. Put a backslash before
+any character to take it literally: =\*not bold\*=.
+
+A line that starts with =>= and a space is always a heading, so =>big<= at
+the very start of a line must not have a space after the =>=.
+
+Commands take arguments in braces and nest:
+
+| Command                  | Does                                  |
+|--------------------------+---------------------------------------|
+| =\f{Helvetica}{text}=    | font family                           |
+| =\fs{12}{text}=          | font size in points (12 is body size) |
+| =\color{red}{text}=      | colour: a name or =#rrggbb=           |
+| =\fn{text}=              | a numbered footnote                   |
+| =\cite{key}=             | Author (Year)                         |
+| =\citep{key}=            | (Author, Year)                        |
+
+The editor draws these for real, as it does big, small, superscript and
+subscript text: a line holding text taller than a line gets room above it,
+so everything on the line shares one baseline. Families map onto the faces
+mep embeds: Helvetica, Arial and other sans faces draw in Liberation Sans;
+Times, Georgia and other serif faces in Liberation Serif; Courier and other
+monospace faces in Liberation Mono. Inside a table cell, text is drawn at
+most a quarter larger than body text, so the row stays one line tall. The
+cursor's own line always shows the raw markup, for editing.
+
+* Maths
+
+#+begin_example
+Inline $E=mc^2$ or \(\frac{a}{b}\)@alttext{a over b}.
+$$
+  \int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
+$$
+@alttext{The Gaussian integral}
+\[ \sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6} \]
+#+end_example
+
+Maths is typeset in the buffer with the same preview org uses
+(=<leader>otl= toggles it; it needs =tectonic= and =pdftoppm=). An
+=@alttext{}= right after a formula describes it for screen readers in the
+export. A lone dollar amount such as =$5= is never maths.
+
+* Code blocks and results
+
+#+begin_example
+//? Option: Option1=value1
+```{bash, Option3="value3"}
+echo "Hello, world"
+```
+// result_begin:
+// Hello, world
+// result_end
+#+end_example
+
+The header is =```{lang, Name=value, ...}=, or just =```lang=.
+=//? Option:= lines directly above the block add more options. Running the
+block (=C-c C-c=) writes its output between the =result_begin:= and
+=result_end= markers, creating them under the block if they aren't there
+yet. =eval=false= stops a block from running.
+
+In the editor a code block is drawn as a card: a title bar with its
+language, its header options and a play button (click it to run the
+block), and its results as an =output= card underneath. The raw lines come
+back when the cursor is on them.
+
+A block with a =file= option draws a figure:
+
+#+begin_example
+```{r, file="squares.png"}
+plot(1:10, (1:10)^2, type = "b")
+```
+@caption{Squares}
+#+end_example
+
+R gets a plot device opened at that file, and Python gets matplotlib
+pointed at it (just plot; no =savefig= needed). Any other language is
+expected to write the file itself. After the run, the results hold an
+=@image{squares.png}= line: the editor draws the figure inside the output
+card, and the export shows it as an image. The block's =@caption= then
+captions the figure.
+
+** HTML output
+
+A block with =results=html= prints HTML, and its results are that HTML,
+drawn rendered:
+
+#+begin_example
+```{python, results=html}
+print("<table><tr><th>Fruit</th><th>Count</th></tr>")
+print("<tr><td>apple</td><td>3</td></tr></table>")
+```
+#+end_example
+
+After a run the results open with =// result_begin: html= and hold the
+markup the block printed. In the buffer the output card shows it laid out
+by mep's own HTML engine -- tables, headings, lists, colours, borders,
+inline SVG, pictures -- at the text width. Move the cursor into it to see
+and edit the markup; move out and it is drawn again. A whole document
+(=<html>=, =<head>=, =<body>=) works as well as a fragment; its scripts are
+not run, since the results show what the code produced.
+
+The exports keep it as HTML where the format can: the HTML export embeds
+it (a whole document's body, with its =<style>=), Markdown carries it as
+raw HTML, and Org as the =#+begin_export html= block org-babel itself
+writes for =:results html=. Word, OpenDocument, RTF and plain text show
+its text, and the three document formats also carry the markup itself, so
+importing one of them brings the HTML back.
+
+** Programs in a terminal
+
+An =exec= block's body is a command line, and running it starts that
+program in a terminal inside the block's results -- a prompt, a REPL, a
+full-screen program such as =htop=:
+
+#+begin_example
+```{exec, rows=14}
+htop
+```
+#+end_example
+
+While it runs, the output card shows its live screen, colours and all, and
+both cards carry a stop button. To use it:
+
+| Key                   | Does                                                   |
+|-----------------------+--------------------------------------------------------|
+| =Enter= (or a click)  | send the keyboard to the program                       |
+| =Ctrl-\= =Ctrl-N=     | give the keyboard back to the document                 |
+| =C-c C-k=             | stop it (a second time kills it outright)              |
+
+Everything typed goes to the program while it has the keyboard, =Escape=
+included, the same as in mep's own terminal. When the program ends -- by
+itself, by =q= or =Ctrl-D= from inside, or by being stopped -- its last
+screen is written into the results as text, so the document keeps a record
+of the session (a full-screen program's last frame, even though it clears
+the screen as it leaves). =[stopped]= or its exit status follows when
+that is worth knowing.
+
+=rows= sets the terminal's height (16 by default) and =cols= its width
+(the text width by default). The program runs through =/bin/sh= in the
+document's own directory, so pipes, =&&= and several lines all work. A
+shell block does the same with =results=terminal=:
+
+#+begin_example
+```{bash, results=terminal}
+for i in 1 2 3; do echo $i; sleep 1; done
+```
+#+end_example
+
+** A program of your own in a terminal
+
+=results=exec= does the same for a block in any language: its body is a
+program, which is written out -- and compiled first, for a compiled
+language -- exactly as a normal run would, and then run in a terminal in
+the results rather than as a batch job. It can prompt, read what you type,
+redraw the screen, and be stopped, like an =exec= block:
+
+#+begin_example
+```{c, results=exec, rows=8}
+#include <stdio.h>
+int main(void) {
+    char name[64];
+    printf("What is your name? ");
+    fflush(stdout);
+    if (fgets(name, sizeof name, stdin)) printf("Hello, %s", name);
+    return 0;
+}
+```
+#+end_example
+
+The language's own options still apply: =flags= and =libs= go to the
+compiler, =cmdline= to the program. When the compile fails, its errors
+become the results and nothing runs. The source and the program itself are
+temporary files, deleted once it ends. (A language whose client reads its
+script on standard input, such as SQL, has no program to run this way.)
+
+** A program's window in the document
+
+An =exec-gui= block starts a program that opens a window, and shows that
+window inside the block's results -- live, where the output would be:
+
+#+begin_example
+```{exec-gui, rows=12}
+xclock -update 1
+```
+#+end_example
+
+=results=exec-gui= does the same for a program written in the block, in
+any language (compiled first when the language is), exactly as
+=results=exec= does for a terminal program:
+
+#+begin_example
+```{python, results=exec-gui, rows=14}
+import tkinter as tk
+root = tk.Tk()
+tk.Button(root, text="Quit", command=root.destroy).pack()
+root.mainloop()
+```
+#+end_example
+
+The window keeps to the block: it scrolls with the document, is cut off at
+the pane's edges, and is hidden while its block is off screen or another
+buffer is shown. =rows= sets its height (20 rows by default) and =cols= its
+width (the text width by default).
+
+| Key                     | Does                                                  |
+|-------------------------+-------------------------------------------------------|
+| =Enter= (or a click)    | send the keyboard and mouse to the program            |
+| =Ctrl-\=                | give them back to the document                        |
+| a click outside it      | the same                                              |
+| =C-c C-k= (or the stop button) | ask it to close; again to stop it, a third time to kill it |
+
+Until you hand it the keyboard, the document keeps it: typing with the
+mouse resting over the program still edits the text. When the program ends
+-- closed from inside, or stopped -- its last picture is saved as a PNG
+beside the document (=file== names it; otherwise it is called after the
+document and the block) and becomes the results, followed by anything the
+program printed, and its exit status when that was not 0. A program that
+opens no window within 20 seconds is still running (the block says so, and
+still takes one if it comes later), and the stop key ends it. Programs are
+tied to mep: when mep exits, however it exits, they close too.
+
+This needs mep running on X11 (which includes XWayland). The program is
+started with its toolkit pointed at X11 (=GDK_BACKEND=x11=,
+=QT_QPA_PLATFORM=xcb=, =SDL_VIDEODRIVER=x11=), so GTK, Qt and SDL programs
+open their windows where mep can take them. Elsewhere the block says why it
+cannot run.
+
+Blocks run through the same language table org babel uses, so every
+language org can run works here (=bash=, =python=, =r=, =c=, =cpp=,
+=julia=, ...), and so do babel's header options such as =cmdline= and
+=stdin=. =mep-lua= runs inside mep itself and returns its values. Blocks
+run in the document's own directory.
+
+* Images and tables
+
+#+begin_example
+@image{./figures/plot.png}
+@caption{A caption, with *formatting*}
+@alttext{What the image shows}
+
+| Left | Centre | Right |
+| :--- | :----: | ----: |
+| a    |   b    |     1 |
+@caption{A table caption}
+#+end_example
+
+=@caption= and =@alttext= are optional and go on the lines directly after
+the image, table, display maths or code block they describe. Images are
+drawn in the buffer.
+
+Figures (images, and code blocks that drew one) and tables are numbered:
+a caption reads "Figure 2: ..." or "Table 1: ..." in the editor and in
+the export alike. A figure's caption is centred under it, with its alt text
+in small italics below.
+
+Tables are drawn as a grid: an outline, a shaded header and striped rows.
+The pipes don't need to line up in the file, because mep lines the columns
+up when drawing, without changing the text. Colons in the separator row
+align a column left (=:--=), right (=--:=) or centre (=:-:=). The table
+under the cursor shows its raw text.
+
+* Lists
+
+#+begin_example
+- a bullet (also * or +)
+  - indented to nest
+  - [ ] an open task
+  - [x] a finished task
+1. a numbered item (or 1))
+#+end_example
+
+* Citations, imports and contents
+
+#+begin_example
+@citation{asdf1}{
+  author = author1,
+  title = {The title},
+  year = 1999
+}
+@article{knuth84, author = {Donald E. Knuth}, year = 1984}
+@import{refs.bib}
+@toc
+@bibliography
+#+end_example
+
+A citation is =@citation{key}{fields}=, or an ordinary BibTeX entry, so
+an existing =.bib= file can be =@import=-ed. =@import{path}= pulls in
+another file (relative to this one); its content, citations and options
+join this document. =@toc= is a table of contents and
+=@bibliography= lists every cited entry, in the order first cited
+(=@printbibliography=, its older name, still works).
+
+Both are drawn in the buffer: =@toc= as the document's headings, indented
+by depth (click one to jump to it), and =@bibliography= as the numbered
+reference list, titles in italics, wrapped to the text width. Like an
+image, the block stays drawn when the cursor is on it; toggle concealment
+(=<leader>km=) to see the directive itself.
+
+The cursor moves through either block a line at a time. =j= and =k= step
+from entry to entry, with the current one highlighted, and past the first
+or last line they move on to the text around it. On a contents entry,
+=Enter= jumps to its heading (=C-o= comes back).
+
+* Exporting and importing
+
+=<leader>ke= (or =:MepmlExport=) exports the document beside its file,
+=notes.mepml= becoming =notes.docx= and so on. Imports are expanded and
+pictures are embedded where the format can hold them:
+
+| Format                | Written as                                                  |
+|-----------------------+-------------------------------------------------------------|
+| HTML                  | a standalone page (=<leader>ko= opens it)                    |
+| PDF                   | the LaTeX export, compiled by =tectonic= in the background  |
+| Word (=.docx=)        | named styles, real lists, footnotes, links, embedded images |
+| OpenDocument (=.odt=) | the same, for LibreOffice                                   |
+| Rich Text (=.rtf=)    | the same, with a stylesheet and list tables                 |
+| Markdown (=.md=)      | GitHub/pandoc Markdown: alerts, fenced code, footnotes      |
+| Org (=.org=)          | org-mode: =#+begin_src= blocks, =[cite:@key]=, footnotes     |
+| LaTeX (=.tex=)        | a standalone article                                        |
+| Plain text (=.txt=)   | the text, tables lined up, references listed                |
+
+=<leader>ki= (or =:MepmlImport file=) goes the other way: an HTML,
+Markdown, Org, RTF, Word, OpenDocument or plain-text file becomes a
+=.mepml= beside it, which is then opened (you are asked before an
+existing one is replaced). Pictures inside a Word, OpenDocument or RTF
+file are saved to a =file_media= directory next to it.
+
+A round trip keeps the document. Headings, paragraphs, every kind of
+inline formatting, links, footnotes, maths, code blocks with their
+results, figures and tables with captions, lists, callouts, the table of
+contents and the bibliography all come back. Word, OpenDocument and RTF
+also carry what they have no place for as custom document properties:
+the =//?= options, each code block's language and options, and the
+bibliography's entries. Markdown and Org carry the bibliography in a
+comment. What a format cannot say is lost or approximated. For example,
+Org has one strike-through for both =-struck-= and =!deleted!= text, and
+Word shows maths as its TeX source.
+
+Documents written by other programs import by their styles (Heading 1,
+Title, Quote, Source Code, Caption ...), so a typical Word or LibreOffice
+document keeps its structure. Word equations and LibreOffice formulas
+become TeX.
+
+The same converters are a command-line tool:
+
+#+begin_src sh
+mep-mepml convert notes.mepml notes.docx   # any format to any format,
+mep-mepml convert report.docx report.mepml # by way of mepml
+#+end_src
+
+and Lua functions: =mep.mepml_export(path)= writes the current buffer in
+the format =path= names, =mep.mepml_export_as(fmt)= also does PDF, and
+=mep.mepml_import(in, out)= writes =out=.
+
+* Language server
+
+mepml has a language server of its own, =mep-mepml-lsp=, which attaches
+to a =.mepml= file by itself. It checks citations, heading links, pictures
+and imports across the document, completes directives, citation keys,
+colours and paths, renames citation keys and headings, and lines tables
+up. See [[file:mepml-lsp.html][The mepml language server]].
+
+* Tree-sitter grammar
+
+mepml has its own tree-sitter grammar in =grammars/tree-sitter-mepml= in
+the mep repository. mep uses it to colour a document's structure: the
+metadata keys and values, code block languages and options, citation
+fields, and callout kinds. Other editors can use it too. It comes with
+highlight, fold and injection queries (a code block's body is highlighted
+in its own language). Headings nest into sections, so any tree-sitter
+client can fold and outline a document. =just mepml-grammar= regenerates
+the parser and runs its tests.

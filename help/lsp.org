@@ -124,18 +124,20 @@ C++, C and Maxima ones ship with mep itself:
 | Vimscript       | =vim-language-server=              |
 | Org             | =mep-org-lsp= (ships with mep)     |
 | Maxima          | =mep-maxima-lsp= (ships with mep)  |
+| mepml           | =mep-mepml-lsp= (ships with mep)   |
 
 If a server is missing, nothing breaks -- the file simply opens without one.
 
-* The six mep brings itself
+* The seven mep brings itself
 
-=mep-org-lsp=, =mep-r-lsp=, =mep-python-lsp=, =mep-cpp-lsp=, =mep-c-lsp=
-and =mep-maxima-lsp= are mep's own servers, built and installed alongside
-=mep=, so org, R, Python, C++, C and Maxima files get diagnostics and
-completion with nothing to install. See [[file:org-lsp.html][The org language server]],
-[[file:r-lsp.html][The R language server]], [[file:python-lsp.html][The Python language server]],
-[[file:cpp-lsp.html][The C++ language server]], [[file:c-lsp.html][The C language server]] and
-[[file:maxima-lsp.html][The Maxima language server]].
+=mep-org-lsp=, =mep-r-lsp=, =mep-python-lsp=, =mep-cpp-lsp=, =mep-c-lsp=,
+=mep-maxima-lsp= and =mep-mepml-lsp= are mep's own servers, built and
+installed alongside =mep=, so org, R, Python, C++, C, Maxima and mepml
+files get diagnostics and completion with nothing to install. See
+[[file:org-lsp.html][The org language server]], [[file:r-lsp.html][The R language server]],
+[[file:python-lsp.html][The Python language server]], [[file:cpp-lsp.html][The C++ language server]],
+[[file:c-lsp.html][The C language server]], [[file:maxima-lsp.html][The Maxima language server]] and
+[[file:mepml-lsp.html][The mepml language server]].
 
 Python, C++ and C are the three languages where mep's own server is
 preferred over an external one out of the box: =pyright= and =clangd=

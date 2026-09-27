@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mepml</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Writing">
+<meta name="help-order" content="30">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>mepml</h1>
+<p>mepml is mep's own markup language for literate documents: prose, maths,
+code blocks you can run, and their results, in one plain-text <code>.mepml</code>
+file. The file <code>test.mepml</code> at the top of the mep repository uses every
+construct below and is the reference for the language.</p>
+<p>A <code>.mepml</code> buffer is rendered in place, the way org is: markup is hidden
+on every line except the cursor's, headings are drawn large, maths is
+typeset, images are shown, and code blocks are highlighted in their own
+language.</p>
+<h1>Keys and commands</h1>
+<table>
+<tr><th>Key / command</th><th>Does</th></tr>
+<tr><td><code>C-c C-c</code></td><td>run the code block under the cursor</td></tr>
+<tr><td><code>&lt;leader&gt;kx</code></td><td>the same</td></tr>
+<tr><td><code>C-c C-k</code></td><td>stop the block running under the cursor (a terminal)</td></tr>
+<tr><td><code>&lt;leader&gt;ks</code></td><td>the same</td></tr>
+<tr><td><code>&lt;leader&gt;kt</code></td><td>type into the running block's terminal</td></tr>
+<tr><td><code>&lt;leader&gt;ka</code></td><td>run every code block, top to bottom</td></tr>
+<tr><td><code>&lt;leader&gt;ke</code></td><td>export as... (pick a format: HTML, PDF, Word, ...)</td></tr>
+<tr><td><code>&lt;leader&gt;ko</code></td><td>export to HTML and open it</td></tr>
+<tr><td><code>&lt;leader&gt;ki</code></td><td>import a document (HTML, Markdown, Word, ...) as mepml</td></tr>
+<tr><td><code>C-c C-e h</code></td><td>export to HTML</td></tr>
+<tr><td><code>&lt;leader&gt;kc</code></td><td>list problems (unknown citations, unclosed blocks ...)</td></tr>
+<tr><td><code>&lt;leader&gt;kh</code></td><td>fold or unfold the document header (the <code>//?</code> lines)</td></tr>
+<tr><td><code>&lt;leader&gt;kl</code></td><td>follow the link under the cursor (clicking works too)</td></tr>
+<tr><td><code>&lt;leader&gt;km</code></td><td>toggle markup concealment</td></tr>
+<tr><td><code>:MepmlExecute</code></td><td>run the code block under the cursor</td></tr>
+<tr><td><code>:MepmlExecuteAll</code></td><td>run every code block</td></tr>
+<tr><td><code>:MepmlStop</code></td><td>stop the running block under the cursor</td></tr>
+<tr><td><code>:MepmlTerminal</code></td><td>type into the running block's terminal</td></tr>
+<tr><td><code>:MepmlExport</code> [fmt]</td><td>export as <code>fmt</code> (html pdf docx odt rtf md org tex txt)</td></tr>
+<tr><td><code>:MepmlImport</code> [file]</td><td>import <code>file</code> as mepml and open it</td></tr>
+<tr><td><code>:MepmlExportHtml</code></td><td>export to HTML</td></tr>
+<tr><td><code>:MepmlExportOpen</code></td><td>export to HTML and open it</td></tr>
+<tr><td><code>:MepmlCheck</code></td><td>list problems</td></tr>
+<tr><td><code>:MepmlHeaderToggle</code></td><td>fold or unfold the document header</td></tr>
+<tr><td><code>:MepmlLinkFollow</code></td><td>follow the link under the cursor</td></tr>
+<tr><td><code>:MepmlRender</code></td><td>re-render the buffer now</td></tr>
+<tr><td><code>:MepmlFoldsRecompute</code></td><td>rebuild folds (<code>za</code>, <code>zc</code> and <code>zo</code> do this themselves)</td></tr>
+</table>
+<p>Folding (<code>za</code>, <code>zM</code>, <code>zR</code>) folds heading sections, code blocks,
+citations, display maths, tables, lists and comment runs. A code block and
+its results fold separately: <code>za</code> on the opening fence folds the code,
+<code>za</code> on the <code>// result_begin:</code> line folds the results, so either can be
+put away while the other stays open (a running program's terminal or
+window hides with its results). The Structure sidebar lists the headings.</p>
+<h1>Document options and comments</h1>
+<pre>//? Title: Some title
+//? Option: OptionA=10
+//? Option: OptionB=1.1
+//? Option: OptionC="asdfasdf"
+// A comment: never rendered, never exported.</pre>
+<p><code>//?</code> lines hold metadata as <code>Key: value</code>. <code>Title:</code> names the document;
+<code>Option: Name=value</code> sets an option whose value is an integer, a decimal
+or a string (quote it to force a string). Any other key is kept as-is.</p>
+<p>A run of <code>//?</code> lines on consecutive rows is a header block, drawn as a
+card of its own. The title is large and bold, a <code>Subtitle:</code> sits under it
+in italics, and every other key becomes a muted label in a column, with
+the values lined up beside it. An option reads <code>OptionA = 10</code>, its value
+coloured as a number or a string. The line under the cursor shows its
+raw <code>//?</code> text, as any marked-up line does.</p>
+<p>A header block folds like any other block (<code>za</code>, or the <code>+=/</code>-= in the
+gutter). Folded, it reads as its title and a tally of the rest: /Some
+title • 3 options/. <code>&lt;leader&gt;kh</code> folds every header in the document at
+once, or unfolds them.</p>
+<h2>Importing in the header</h2>
+<pre>//? Title: A Test Document
+//? Import: opts.mepml
+//? Import: refs.mepml
+//? Option: speed=5</pre>
+<p><code>//? Import: file</code> brings another mepml file into this one, from the
+header:</p>
+<ul>
+<li>Its header is inherited: its options, and keys such as <code>Author:</code> or <code>Date:</code> that this document does not set. This document's own always win -- above, <code>speed</code> is 5 even if <code>opts.mepml</code> sets it too -- and its <code>Title:</code> is used only if this document has none.</li>
+<li>Its content is included where the <code>Import:</code> line is, so imported files arrive in the order the header lists them, ahead of this document's own text. Its citations join this document's, ready for <code>\cite{}</code>.</li>
+<li>A file can import others in turn. A file imported twice (by the header and again with <code>@import</code> in the body) is included once, where it is first named; a file that imports itself round a loop is reported.</li>
+</ul>
+<p>The import's path is a link: <code>&lt;leader&gt;kl</code> (or a click) opens the file.
+The buffer shows this document's own text; the imported content appears
+in every export and in the language server's checks.</p>
+<p>A <code>//</code> line is a comment. On a prose line, a <code>//</code> after a space starts a
+comment that runs to the end of that line.</p>
+<h1>Callouts</h1>
+<p>A comment that starts with a keyword and a colon is a callout, drawn as a
+coloured note and exported as one; the <code>//</code> lines right under it continue
+it.</p>
+<pre>// NOTE: this is shown to the reader,
+// and so is this line.
+// WARNING: so is this.</pre>
+<p>The keywords are <code>NOTE</code>, <code>INFO</code>, <code>TIP</code>, <code>HINT</code>, <code>SUCCESS</code>, <code>WARNING</code>,
+<code>CAUTION</code>, <code>ERROR</code>, <code>DANGER</code>, <code>IMPORTANT</code>, <code>TODO</code>, <code>FIXME</code>, <code>QUESTION</code> and
+<code>EXAMPLE</code>.</p>
+<h1>Headings, paragraphs and rules</h1>
+<pre>&gt; Heading level 1
+&gt;&gt; Heading level 2
+&gt;&gt;&gt; Heading level 3</pre>
+<p>Up to six levels. A blank line separates paragraphs. A line of three or
+more of the same one of <code>-</code>, <code>=</code>, <code>_</code> or <code>*</code> is a dividing rule.</p>
+<h1>Inline formatting</h1>
+<table>
+<tr><th>Markup</th><th>Result</th></tr>
+<tr><td><code>*bold*</code></td><td>bold</td></tr>
+<tr><td><code>~italic~</code></td><td>italic</td></tr>
+<tr><td><code>_underlined_</code></td><td>underlined</td></tr>
+<tr><td><code>x^2^</code></td><td>superscript (x²)</td></tr>
+<tr><td><code>H,,2,,O</code></td><td>subscript (H₂O)</td></tr>
+<tr><td><code>&lt;small&gt;</code></td><td>small text</td></tr>
+<tr><td><code>&gt;big&lt;</code></td><td>big text</td></tr>
+<tr><td><code>=highlighted=</code></td><td>highlighted</td></tr>
+<tr><td><code>-strikethrough-</code></td><td>struck through</td></tr>
+<tr><td><code>+inserted+</code></td><td>inserted</td></tr>
+<tr><td><code>!deleted!</code></td><td>deleted</td></tr>
+<tr><td><code>`verbatim`</code></td><td>code, nothing inside is formatted</td></tr>
+</table>
+<p>Two more use a pipe character: <code>|monospaced|</code> is monospaced text that is
+still formatted inside, and <code>[text|https://...]</code> is a link (a bare
+<code>[https://...]</code> works too).</p>
+<p>A marker only opens after a space or punctuation and before a non-space,
+and only closes before a space or punctuation, so <code>snake_case</code>, <code>a * b</code>,
+<code>1 + 2</code> and <code>well-known</code> are left alone. Superscript and subscript are the
+exception and work inside words: <code>x^2^</code>, <code>H,,2,,O</code>. Put a backslash before
+any character to take it literally: <code>\*not bold\*</code>.</p>
+<p>A line that starts with <code>&gt;</code> and a space is always a heading, so <code>&gt;big&lt;</code> at
+the very start of a line must not have a space after the <code>&gt;</code>.</p>
+<p>Commands take arguments in braces and nest:</p>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>\f{Helvetica}{text}</code></td><td>font family</td></tr>
+<tr><td><code>\fs{12}{text}</code></td><td>font size in points (12 is body size)</td></tr>
+<tr><td><code>\color{red}{text}</code></td><td>colour: a name or <code>#rrggbb</code></td></tr>
+<tr><td><code>\fn{text}</code></td><td>a numbered footnote</td></tr>
+<tr><td><code>\cite{key}</code></td><td>Author (Year)</td></tr>
+<tr><td><code>\citep{key}</code></td><td>(Author, Year)</td></tr>
+</table>
+<p>The editor draws these for real, as it does big, small, superscript and
+subscript text: a line holding text taller than a line gets room above it,
+so everything on the line shares one baseline. Families map onto the faces
+mep embeds: Helvetica, Arial and other sans faces draw in Liberation Sans;
+Times, Georgia and other serif faces in Liberation Serif; Courier and other
+monospace faces in Liberation Mono. Inside a table cell, text is drawn at
+most a quarter larger than body text, so the row stays one line tall. The
+cursor's own line always shows the raw markup, for editing.</p>
+<h1>Maths</h1>
+<pre>Inline $E=mc^2$ or \(\frac{a}{b}\)@alttext{a over b}.
+$$
+  \int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
+$$
+@alttext{The Gaussian integral}
+\[ \sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6} \]</pre>
+<p>Maths is typeset in the buffer with the same preview org uses
+(<code>&lt;leader&gt;otl</code> toggles it; it needs <code>tectonic</code> and <code>pdftoppm</code>). An
+<code>@alttext{}</code> right after a formula describes it for screen readers in the
+export. A lone dollar amount such as <code>$5</code> is never maths.</p>
+<h1>Code blocks and results</h1>
+<pre>//? Option: Option1=value1
+```{bash, Option3="value3"}
+echo "Hello, world"
+```
+// result_begin:
+// Hello, world
+// result_end</pre>
+<p>The header is <code>```{lang, Name=value, ...}</code>, or just <code>```lang</code>.
+<code>//? Option:</code> lines directly above the block add more options. Running the
+block (<code>C-c C-c</code>) writes its output between the <code>result_begin:</code> and
+<code>result_end</code> markers, creating them under the block if they aren't there
+yet. <code>eval=false</code> stops a block from running.</p>
+<p>In the editor a code block is drawn as a card: a title bar with its
+language, its header options and a play button (click it to run the
+block), and its results as an <code>output</code> card underneath. The raw lines come
+back when the cursor is on them.</p>
+<p>A block with a <code>file</code> option draws a figure:</p>
+<pre>```{r, file="squares.png"}
+plot(1:10, (1:10)^2, type = "b")
+```
+@caption{Squares}</pre>
+<p>R gets a plot device opened at that file, and Python gets matplotlib
+pointed at it (just plot; no <code>savefig</code> needed). Any other language is
+expected to write the file itself. After the run, the results hold an
+<code>@image{squares.png}</code> line: the editor draws the figure inside the output
+card, and the export shows it as an image. The block's <code>@caption</code> then
+captions the figure.</p>
+<h2>HTML output</h2>
+<p>A block with <code>results=html</code> prints HTML, and its results are that HTML,
+drawn rendered:</p>
+<pre>```{python, results=html}
+print("&lt;table&gt;&lt;tr&gt;&lt;th&gt;Fruit&lt;/th&gt;&lt;th&gt;Count&lt;/th&gt;&lt;/tr&gt;")
+print("&lt;tr&gt;&lt;td&gt;apple&lt;/td&gt;&lt;td&gt;3&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;")
+```</pre>
+<p>After a run the results open with <code>// result_begin: html</code> and hold the
+markup the block printed. In the buffer the output card shows it laid out
+by mep's own HTML engine -- tables, headings, lists, colours, borders,
+inline SVG, pictures -- at the text width. Move the cursor into it to see
+and edit the markup; move out and it is drawn again. A whole document
+(<code>&lt;html&gt;</code>, <code>&lt;head&gt;</code>, <code>&lt;body&gt;</code>) works as well as a fragment; its scripts are
+not run, since the results show what the code produced.</p>
+<p>The exports keep it as HTML where the format can: the HTML export embeds
+it (a whole document's body, with its <code>&lt;style&gt;</code>), Markdown carries it as
+raw HTML, and Org as the <code>#+begin_export html</code> block org-babel itself
+writes for <code>:results html</code>. Word, OpenDocument, RTF and plain text show
+its text, and the three document formats also carry the markup itself, so
+importing one of them brings the HTML back.</p>
+<h2>Programs in a terminal</h2>
+<p>An <code>exec</code> block's body is a command line, and running it starts that
+program in a terminal inside the block's results -- a prompt, a REPL, a
+full-screen program such as <code>htop</code>:</p>
+<pre>```{exec, rows=14}
+htop
+```</pre>
+<p>While it runs, the output card shows its live screen, colours and all, and
+both cards carry a stop button. To use it:</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Enter</code> (or a click)</td><td>send the keyboard to the program</td></tr>
+<tr><td><code>Ctrl-\</code> <code>Ctrl-N</code></td><td>give the keyboard back to the document</td></tr>
+<tr><td><code>C-c C-k</code></td><td>stop it (a second time kills it outright)</td></tr>
+</table>
+<p>Everything typed goes to the program while it has the keyboard, <code>Escape</code>
+included, the same as in mep's own terminal. When the program ends -- by
+itself, by <code>q</code> or <code>Ctrl-D</code> from inside, or by being stopped -- its last
+screen is written into the results as text, so the document keeps a record
+of the session (a full-screen program's last frame, even though it clears
+the screen as it leaves). <code>[stopped]</code> or its exit status follows when
+that is worth knowing.</p>
+<p><code>rows</code> sets the terminal's height (16 by default) and <code>cols</code> its width
+(the text width by default). The program runs through <code>/bin/sh</code> in the
+document's own directory, so pipes, <code>&amp;&amp;</code> and several lines all work. A
+shell block does the same with <code>results=terminal</code>:</p>
+<pre>```{bash, results=terminal}
+for i in 1 2 3; do echo $i; sleep 1; done
+```</pre>
+<h2>A program of your own in a terminal</h2>
+<p><code>results=exec</code> does the same for a block in any language: its body is a
+program, which is written out -- and compiled first, for a compiled
+language -- exactly as a normal run would, and then run in a terminal in
+the results rather than as a batch job. It can prompt, read what you type,
+redraw the screen, and be stopped, like an <code>exec</code> block:</p>
+<pre>```{c, results=exec, rows=8}
+#include &lt;stdio.h&gt;
+int main(void) {
+    char name[64];
+    printf("What is your name? ");
+    fflush(stdout);
+    if (fgets(name, sizeof name, stdin)) printf("Hello, %s", name);
+    return 0;
+}
+```</pre>
+<p>The language's own options still apply: <code>flags</code> and <code>libs</code> go to the
+compiler, <code>cmdline</code> to the program. When the compile fails, its errors
+become the results and nothing runs. The source and the program itself are
+temporary files, deleted once it ends. (A language whose client reads its
+script on standard input, such as SQL, has no program to run this way.)</p>
+<h2>A program's window in the document</h2>
+<p>An <code>exec-gui</code> block starts a program that opens a window, and shows that
+window inside the block's results -- live, where the output would be:</p>
+<pre>```{exec-gui, rows=12}
+xclock -update 1
+```</pre>
+<p><code>results=exec-gui</code> does the same for a program written in the block, in
+any language (compiled first when the language is), exactly as
+<code>results=exec</code> does for a terminal program:</p>
+<pre>```{python, results=exec-gui, rows=14}
+import tkinter as tk
+root = tk.Tk()
+tk.Button(root, text="Quit", command=root.destroy).pack()
+root.mainloop()
+```</pre>
+<p>The window keeps to the block: it scrolls with the document, is cut off at
+the pane's edges, and is hidden while its block is off screen or another
+buffer is shown. <code>rows</code> sets its height (20 rows by default) and <code>cols</code> its
+width (the text width by default).</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Enter</code> (or a click)</td><td>send the keyboard and mouse to the program</td></tr>
+<tr><td><code>Ctrl-\</code></td><td>give them back to the document</td></tr>
+<tr><td>a click outside it</td><td>the same</td></tr>
+<tr><td><code>C-c C-k</code> (or the stop button)</td><td>ask it to close; again to stop it, a third time to kill it</td></tr>
+</table>
+<p>Until you hand it the keyboard, the document keeps it: typing with the
+mouse resting over the program still edits the text. When the program ends
+-- closed from inside, or stopped -- its last picture is saved as a PNG
+beside the document (<code>file=</code> names it; otherwise it is called after the
+document and the block) and becomes the results, followed by anything the
+program printed, and its exit status when that was not 0. A program that
+opens no window within 20 seconds is still running (the block says so, and
+still takes one if it comes later), and the stop key ends it. Programs are
+tied to mep: when mep exits, however it exits, they close too.</p>
+<p>This needs mep running on X11 (which includes XWayland). The program is
+started with its toolkit pointed at X11 (<code>GDK_BACKEND=x11</code>,
+<code>QT_QPA_PLATFORM=xcb</code>, <code>SDL_VIDEODRIVER=x11</code>), so GTK, Qt and SDL programs
+open their windows where mep can take them. Elsewhere the block says why it
+cannot run.</p>
+<p>Blocks run through the same language table org babel uses, so every
+language org can run works here (<code>bash</code>, <code>python</code>, <code>r</code>, <code>c</code>, <code>cpp</code>,
+<code>julia</code>, ...), and so do babel's header options such as <code>cmdline</code> and
+<code>stdin</code>. <code>mep-lua</code> runs inside mep itself and returns its values. Blocks
+run in the document's own directory.</p>
+<h1>Images and tables</h1>
+<pre>@image{./figures/plot.png}
+@caption{A caption, with *formatting*}
+@alttext{What the image shows}
+
+| Left | Centre | Right |
+| :--- | :----: | ----: |
+| a    |   b    |     1 |
+@caption{A table caption}</pre>
+<p><code>@caption</code> and <code>@alttext</code> are optional and go on the lines directly after
+the image, table, display maths or code block they describe. Images are
+drawn in the buffer.</p>
+<p>Figures (images, and code blocks that drew one) and tables are numbered:
+a caption reads "Figure 2: ..." or "Table 1: ..." in the editor and in
+the export alike. A figure's caption is centred under it, with its alt text
+in small italics below.</p>
+<p>Tables are drawn as a grid: an outline, a shaded header and striped rows.
+The pipes don't need to line up in the file, because mep lines the columns
+up when drawing, without changing the text. Colons in the separator row
+align a column left (<code>:--</code>), right (<code>--:</code>) or centre (<code>:-:</code>). The table
+under the cursor shows its raw text.</p>
+<h1>Lists</h1>
+<pre>- a bullet (also * or +)
+  - indented to nest
+  - [ ] an open task
+  - [x] a finished task
+1. a numbered item (or 1))</pre>
+<h1>Citations, imports and contents</h1>
+<pre>@citation{asdf1}{
+  author = author1,
+  title = {The title},
+  year = 1999
+}
+@article{knuth84, author = {Donald E. Knuth}, year = 1984}
+@import{refs.bib}
+@toc
+@bibliography</pre>
+<p>A citation is <code>@citation{key}{fields}</code>, or an ordinary BibTeX entry, so
+an existing <code>.bib</code> file can be <code>@import</code>-ed. <code>@import{path}</code> pulls in
+another file (relative to this one); its content, citations and options
+join this document. <code>@toc</code> is a table of contents and
+<code>@bibliography</code> lists every cited entry, in the order first cited
+(<code>@printbibliography</code>, its older name, still works).</p>
+<p>Both are drawn in the buffer: <code>@toc</code> as the document's headings, indented
+by depth (click one to jump to it), and <code>@bibliography</code> as the numbered
+reference list, titles in italics, wrapped to the text width. Like an
+image, the block stays drawn when the cursor is on it; toggle concealment
+(<code>&lt;leader&gt;km</code>) to see the directive itself.</p>
+<p>The cursor moves through either block a line at a time. <code>j</code> and <code>k</code> step
+from entry to entry, with the current one highlighted, and past the first
+or last line they move on to the text around it. On a contents entry,
+<code>Enter</code> jumps to its heading (<code>C-o</code> comes back).</p>
+<h1>Exporting and importing</h1>
+<p><code>&lt;leader&gt;ke</code> (or <code>:MepmlExport</code>) exports the document beside its file,
+<code>notes.mepml</code> becoming <code>notes.docx</code> and so on. Imports are expanded and
+pictures are embedded where the format can hold them:</p>
+<table>
+<tr><th>Format</th><th>Written as</th></tr>
+<tr><td>HTML</td><td>a standalone page (<code>&lt;leader&gt;ko</code> opens it)</td></tr>
+<tr><td>PDF</td><td>the LaTeX export, compiled by <code>tectonic</code> in the background</td></tr>
+<tr><td>Word (<code>.docx</code>)</td><td>named styles, real lists, footnotes, links, embedded images</td></tr>
+<tr><td>OpenDocument (<code>.odt</code>)</td><td>the same, for LibreOffice</td></tr>
+<tr><td>Rich Text (<code>.rtf</code>)</td><td>the same, with a stylesheet and list tables</td></tr>
+<tr><td>Markdown (<code>.md</code>)</td><td>GitHub/pandoc Markdown: alerts, fenced code, footnotes</td></tr>
+<tr><td>Org (<code>.org</code>)</td><td>org-mode: <code>#+begin_src</code> blocks, <code>[cite:@key]</code>, footnotes</td></tr>
+<tr><td>LaTeX (<code>.tex</code>)</td><td>a standalone article</td></tr>
+<tr><td>Plain text (<code>.txt</code>)</td><td>the text, tables lined up, references listed</td></tr>
+</table>
+<p><code>&lt;leader&gt;ki</code> (or <code>:MepmlImport file</code>) goes the other way: an HTML,
+Markdown, Org, RTF, Word, OpenDocument or plain-text file becomes a
+<code>.mepml</code> beside it, which is then opened (you are asked before an
+existing one is replaced). Pictures inside a Word, OpenDocument or RTF
+file are saved to a <code>file_media</code> directory next to it.</p>
+<p>A round trip keeps the document. Headings, paragraphs, every kind of
+inline formatting, links, footnotes, maths, code blocks with their
+results, figures and tables with captions, lists, callouts, the table of
+contents and the bibliography all come back. Word, OpenDocument and RTF
+also carry what they have no place for as custom document properties:
+the <code>//?</code> options, each code block's language and options, and the
+bibliography's entries. Markdown and Org carry the bibliography in a
+comment. What a format cannot say is lost or approximated. For example,
+Org has one strike-through for both <code>-struck-</code> and <code>!deleted!</code> text, and
+Word shows maths as its TeX source.</p>
+<p>Documents written by other programs import by their styles (Heading 1,
+Title, Quote, Source Code, Caption ...), so a typical Word or LibreOffice
+document keeps its structure. Word equations and LibreOffice formulas
+become TeX.</p>
+<p>The same converters are a command-line tool:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-mepml</span> convert notes.mepml notes.docx   <span class="tok-comment"># any format to any format,</span>
+<span class="tok-blue">mep-mepml</span> convert report.docx report.mepml <span class="tok-comment"># by way of mepml</span></code></pre></div>
+<p>and Lua functions: <code>mep.mepml_export(path)</code> writes the current buffer in
+the format <code>path</code> names, <code>mep.mepml_export_as(fmt)</code> also does PDF, and
+<code>mep.mepml_import(in, out)</code> writes <code>out</code>.</p>
+<h1>Language server</h1>
+<p>mepml has a language server of its own, <code>mep-mepml-lsp</code>, which attaches
+to a <code>.mepml</code> file by itself. It checks citations, heading links, pictures
+and imports across the document, completes directives, citation keys,
+colours and paths, renames citation keys and headings, and lines tables
+up. See <a href="mepml-lsp.html">The mepml language server</a>.</p>
+<h1>Tree-sitter grammar</h1>
+<p>mepml has its own tree-sitter grammar in <code>grammars/tree-sitter-mepml</code> in
+the mep repository. mep uses it to colour a document's structure: the
+metadata keys and values, code block languages and options, citation
+fields, and callout kinds. Other editors can use it too. It comes with
+highlight, fold and injection queries (a code block's body is highlighted
+in its own language). Headings nest into sections, so any tree-sitter
+client can fold and outline a document. <code>just mepml-grammar</code> regenerates
+the parser and runs its tests.</p>
+</body>
+</html>

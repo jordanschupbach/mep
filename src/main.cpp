@@ -526,22 +526,28 @@ gfx::Font g_math_serif_bold_font{};
 // exhaustive (real LaTeX has thousands of symbol macros) -- an unmapped
 // command falls back to showing its own name as plain text (see
 // LayoutMathCommand), a legible degradation rather than a missing glyph.
+// Also carries the super/subscript digits, the box-drawing rules and the
+// bullet that mepml's concealed rendering substitutes for its markup
+// (Editor::MepmlScan: `^2^` -> ², `|` -> │, `---` -> ───), all checked
+// present in JetBrains Mono's own cmap.
 constexpr int kMathCodepoints[] = {
-    0xa3, 0xa7, 0xa8, 0xa9, 0xac, 0xb0, 0xb1, 0xb4, 0xb6, 0xb7, 0xd7, 0xf7,
-    0x127, 0x2c7, 0x2d8, 0x2dc, 0x391, 0x393, 0x394, 0x398, 0x39b, 0x39e, 0x3a0, 0x3a3,
-    0x3a5, 0x3a6, 0x3a8, 0x3a9, 0x3b1, 0x3b2, 0x3b3, 0x3b4, 0x3b5, 0x3b6, 0x3b7, 0x3b8,
-    0x3b9, 0x3ba, 0x3bb, 0x3bc, 0x3bd, 0x3be, 0x3bf, 0x3c0, 0x3c1, 0x3c2, 0x3c3, 0x3c4,
-    0x3c5, 0x3c6, 0x3c7, 0x3c8, 0x3c9, 0x3d6, 0x2016, 0x2020, 0x2021, 0x2022, 0x2026, 0x2032,
-    0x2033, 0x2102, 0x210d, 0x2113, 0x2115, 0x2119, 0x211a, 0x211d, 0x2124, 0x2190, 0x2191, 0x2192,
-    0x2193, 0x2194, 0x2195, 0x2196, 0x2197, 0x2198, 0x2199, 0x21a6, 0x21a9, 0x21aa, 0x21d0, 0x21d2,
-    0x21d4, 0x2200, 0x2201, 0x2202, 0x2203, 0x2205, 0x2207, 0x2208, 0x2209, 0x220b, 0x220f, 0x2210,
-    0x2211, 0x2212, 0x2213, 0x2218, 0x2219, 0x221a, 0x221e, 0x2223, 0x2224, 0x2225, 0x2227, 0x2228,
-    0x2229, 0x222a, 0x222b, 0x2234, 0x2235, 0x223c, 0x2243, 0x2245, 0x2248, 0x224d, 0x2254, 0x2260,
-    0x2261, 0x2264, 0x2265, 0x226a, 0x226b, 0x227a, 0x227b, 0x2282, 0x2283, 0x2286, 0x2287, 0x2288,
-    0x228e, 0x2291, 0x2292, 0x2293, 0x2294, 0x2295, 0x2296, 0x2297, 0x2298, 0x2299, 0x22a2, 0x22a3,
-    0x22a4, 0x22a5, 0x22c2, 0x22c3, 0x22c4, 0x22c6, 0x22ee, 0x22ef, 0x22f1, 0x2308, 0x2309, 0x230a,
-    0x230b, 0x25a1, 0x25b3, 0x25b7, 0x25c1, 0x266d, 0x266f, 0x2713, 0x27e8, 0x27e9, 0x27f5, 0x27f6,
-    0x27f7,
+    0xa3, 0xa7, 0xa8, 0xa9, 0xac, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb6, 0xb7,
+    0xb9, 0xd7, 0xf7, 0x127, 0x2c7, 0x2d8, 0x2dc, 0x391, 0x393, 0x394, 0x398, 0x39b,
+    0x39e, 0x3a0, 0x3a3, 0x3a5, 0x3a6, 0x3a8, 0x3a9, 0x3b1, 0x3b2, 0x3b3, 0x3b4, 0x3b5,
+    0x3b6, 0x3b7, 0x3b8, 0x3b9, 0x3ba, 0x3bb, 0x3bc, 0x3bd, 0x3be, 0x3bf, 0x3c0, 0x3c1,
+    0x3c2, 0x3c3, 0x3c4, 0x3c5, 0x3c6, 0x3c7, 0x3c8, 0x3c9, 0x3d6, 0x2016, 0x2020, 0x2021,
+    0x2022, 0x2026, 0x2032, 0x2033, 0x2070, 0x2074, 0x2075, 0x2076, 0x2077, 0x2078, 0x2079, 0x207a,
+    0x207c, 0x2080, 0x2081, 0x2082, 0x2083, 0x2084, 0x2085, 0x2086, 0x2087, 0x2088, 0x2089, 0x2102,
+    0x210d, 0x2113, 0x2115, 0x2119, 0x211a, 0x211d, 0x2124, 0x2190, 0x2191, 0x2192, 0x2193, 0x2194,
+    0x2195, 0x2196, 0x2197, 0x2198, 0x2199, 0x21a6, 0x21a9, 0x21aa, 0x21d0, 0x21d2, 0x21d4, 0x2200,
+    0x2201, 0x2202, 0x2203, 0x2205, 0x2207, 0x2208, 0x2209, 0x220b, 0x220f, 0x2210, 0x2211, 0x2212,
+    0x2213, 0x2218, 0x2219, 0x221a, 0x221e, 0x2223, 0x2224, 0x2225, 0x2227, 0x2228, 0x2229, 0x222a,
+    0x222b, 0x2234, 0x2235, 0x223c, 0x2243, 0x2245, 0x2248, 0x224d, 0x2254, 0x2260, 0x2261, 0x2264,
+    0x2265, 0x226a, 0x226b, 0x227a, 0x227b, 0x2282, 0x2283, 0x2286, 0x2287, 0x2288, 0x228e, 0x2291,
+    0x2292, 0x2293, 0x2294, 0x2295, 0x2296, 0x2297, 0x2298, 0x2299, 0x22a2, 0x22a3, 0x22a4, 0x22a5,
+    0x22c2, 0x22c3, 0x22c4, 0x22c6, 0x22ee, 0x22ef, 0x22f1, 0x2308, 0x2309, 0x230a, 0x230b, 0x2500,
+    0x2502, 0x251c, 0x2524, 0x253c, 0x25a1, 0x25b3, 0x25b7, 0x25c1, 0x266d, 0x266f, 0x2713, 0x27e8,
+    0x27e9, 0x27f5, 0x27f6, 0x27f7,
 };
 
 // The subset of the same set that the embedded Liberation Serif faces
@@ -2855,8 +2861,10 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, gf
             // DrawTextCodepoint(g_font, ...) would silently fall back to
             // '?' for it. Route the same way DrawUiText already does for
             // every other piece of UI that draws these codepoints.
-            if (IsIconCodepoint(codepoint) || IsSymbolCodepoint(codepoint)) {
-                const gfx::Font &f = IsIconCodepoint(codepoint) ? g_icon_font : g_symbol_font;
+            if (IsIconCodepoint(codepoint) || IsSymbolCodepoint(codepoint) || IsMathCodepoint(codepoint)) {
+                const gfx::Font &f = IsIconCodepoint(codepoint)     ? g_icon_font
+                                     : IsSymbolCodepoint(codepoint) ? g_symbol_font
+                                                                    : g_math_font;
                 std::string glyph(&text[i - codepoint_size], static_cast<size_t>(codepoint_size));
                 gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{cx, y}, font_size, 0, tint);
             } else {
@@ -6550,6 +6558,14 @@ const char *kBuiltinLsp =
     // material uses. There is no third-party Maxima language server to
     // defer to -- this is the only one there is.
     "  maxima_ls = {cmd = {mep.bundled_tool('mep-maxima-lsp')}, filetypes = {'mac', 'dem', 'mc', 'max'}},\n"
+    // mep's own mepml server (src/mepml_lsp_server.cpp), bundled the same
+    // way as the entries above. It reads a document with mepml_doc.h's
+    // parser -- the one the editor renders from -- so it can never
+    // disagree with the rendering, and adds what one buffer cannot know
+    // on its own: citations from @imported files, missing images and link
+    // targets, heading anchors. While it is attached, kBuiltinMepml leaves
+    // the diagnostics to it rather than drawing the parser's a second time.
+    "  mepml_ls = {cmd = {mep.bundled_tool('mep-mepml-lsp')}, filetypes = {'mepml'}},\n"
     "}\n"
     // (filetype .. '@' .. workspace root) -> client_id: one client per
     // filetype *per workspace root* (WORKSPACES_PLAN.md Phase 5), since
@@ -10710,6 +10726,32 @@ const char *kBuiltinStructure =
     // own notion of "done" for the exact same file. A plain headline
     // with no TODO keyword at all gets no checkbox, matching the "only
     // if it is there" scope this was asked for.\n"
+    // mepml headings (`>`, `>>`, ... then a space) outside ``` code
+    // blocks -- same {row, depth, start_row, end_row} shape as the markdown
+    // scan above, which it mirrors.
+    "local function mep_structure_mepml_items(lines)\n"
+    "  local raw = {}\n"
+    "  local in_fence = false\n"
+    "  for i, line in ipairs(lines) do\n"
+    "    if line:match('^%s*```') then\n"
+    "      in_fence = not in_fence\n"
+    "    elseif not in_fence then\n"
+    "      local marks, title = line:match('^(>+)%s+(.*)$')\n"
+    "      if marks and #marks <= 6 and title ~= '' then\n"
+    "        raw[#raw + 1] = {row = i, col = 0, name = title, kind = 'heading' .. #marks, depth = #marks - 1}\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  if #raw == 0 then return nil end\n"
+    "  for k, item in ipairs(raw) do\n"
+    "    item.start_row = item.row\n"
+    "    item.end_row = #lines\n"
+    "    for j = k + 1, #raw do\n"
+    "      if raw[j].depth <= item.depth then item.end_row = raw[j].row - 1 break end\n"
+    "    end\n"
+    "  end\n"
+    "  return raw\n"
+    "end\n"
     "local function mep_structure_org_items(lines)\n"
     "  local todo_by_line = {}\n"
     "  local ok, todo_items = pcall(mep.activity_todo_load, mep.filename())\n"
@@ -10795,6 +10837,8 @@ const char *kBuiltinStructure =
     "    items = mep_structure_md_items(lines)\n"
     "  elseif ft == 'org' then\n"
     "    items = mep_structure_org_items(lines)\n"
+    "  elseif ft == 'mepml' then\n"
+    "    items = mep_structure_mepml_items(lines)\n"
     "  else\n"
     "    items = mep.ts_structure(ft, table.concat(lines, '\\n'))\n"
     "  end\n"
@@ -12129,6 +12173,29 @@ const char *kBuiltinSyntax =
     "  OrgPropertyValue = 'Green', OrgDirectiveValue = 'Green',\n"
     "  OrgCellFormula = 'Orange',\n"
     "}\n"
+    // mepml's own capture colours (grammars/tree-sitter-mepml/queries/
+    // highlights.scm uses the portable nvim-style names). Kept in a copy
+    // of mep.ts_capture_hl (ts_apply_captures reads the table raw, so no
+    // __index fallback) rather than added to it: names like punctuation.delimiter, property and function.macro
+    // are shared with every other grammar's query, and mapping them
+    // globally recoloured Lua's `.` and C's macros. Coloured to agree with
+    // what Editor::MepmlScan paints; the emphasis captures (markup.strong,
+    // markup.italic, ...) stay unmapped, since the scan draws those as
+    // real styles rather than colours.
+    "mep_mepml_capture_hl = {}\n"
+    "for k, v in pairs(mep.ts_capture_hl) do mep_mepml_capture_hl[k] = v end\n"
+    "for k, v in pairs({\n"
+    "  ['markup.heading.1'] = 'Purple', ['markup.heading.2'] = 'Blue', ['markup.heading.3'] = 'Cyan',\n"
+    "  ['markup.heading.4'] = 'Green', ['markup.heading.5'] = 'Yellow', ['markup.heading.6'] = 'Orange',\n"
+    "  ['markup.raw.block'] = 'Normal', ['markup.raw'] = 'Green', ['markup.math'] = 'Purple', ['markup.link.url'] = 'Blue',\n"
+    "  ['markup.link.label'] = 'Blue', ['markup.link'] = 'Blue', ['markup.list'] = 'Yellow',\n"
+    "  ['markup.list.checked'] = 'Yellow', ['punctuation.special'] = 'Comment',\n"
+    "  ['punctuation.delimiter'] = 'Comment', ['keyword.directive'] = 'Purple',\n"
+    "  ['comment.note'] = 'Blue', ['comment.hint'] = 'Green', ['comment.warning'] = 'Yellow',\n"
+    "  ['comment.error'] = 'Red', ['comment.todo'] = 'Purple', ['string.special.path'] = 'Cyan',\n"
+    "  ['string.special'] = 'Cyan', ['diff.plus'] = 'Green', ['diff.minus'] = 'Red', ['function.macro'] = 'Blue',\n"
+    "  property = 'Cyan',\n"
+    "}) do mep_mepml_capture_hl[k] = v end\n"
     // The capture->highlight-group resolve (dot-segment fallback) and the
     // fallback per-line lexer both moved to C++ -- mep.ts_apply_captures
     // and mep.syntax_highlight_fallback (lua_env.cpp, backed by
@@ -12278,6 +12345,23 @@ const char *kBuiltinSyntax =
     "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
     "  if ft == 'ipynb' and mep.notebook_is_buffer() then\n"
     "    mep_syntax_highlight_notebook(mep_syntax_ns, lines)\n"
+    "    return\n"
+    "  end\n"
+    // mepml: its own grammar (grammars/tree-sitter-mepml) colours the
+    // markup's structure -- the delimiters, directives, metadata, callout
+    // kinds -- and each ``` code block is then highlighted in its own
+    // language, the way org's src blocks are. The styling proper (bold,
+    // sizes, concealment) is Editor::MepmlScan's, in its own namespace.
+    "  if ft == 'mepml' then\n"
+    "    local captures = mep.ts_captures('mepml', table.concat(lines, '\\n'))\n"
+    "    if captures then mep.ts_apply_captures(mep_syntax_ns, captures, mep_mepml_capture_hl, 0) end\n"
+    "    for _, cb in ipairs(mep.mepml_code_blocks()) do\n"
+    "      local embed_ft = mep_org_babel_lang_ts_ft and mep_org_babel_lang_ts_ft[cb.lang:lower()] or cb.lang:lower()\n"
+    "      local body = {}\n"
+    "      for k = cb.first, cb.last do body[#body + 1] = lines[k] end\n"
+    "      local captures = embed_ft ~= '' and mep.ts_captures(embed_ft, table.concat(body, '\\n'))\n"
+    "      if captures then mep.ts_apply_captures(mep_syntax_ns, captures, mep.ts_capture_hl, cb.first - 1) end\n"
+    "    end\n"
     "    return\n"
     "  end\n"
     // Real grammar available: parse + run its highlights.scm query
@@ -15974,6 +16058,61 @@ const char *kBuiltinOrgBabel =
     "  })\n"
     "end\n"
     "\n"
+    "-- mep_org_babel_prepare_exec: the same preparation as mep_org_babel_spawn\n"
+    "-- (the script written out, compiled when the language is), but instead of\n"
+    "-- running the program it hands back its command line -- for a caller that\n"
+    "-- runs it somewhere else, a terminal inside a mepml block's results\n"
+    "-- (results=exec). on_ready(argv, cleanup) on success, where cleanup lists\n"
+    "-- the temporary files to delete once the program is done;\n"
+    "-- on_ready(nil, error_lines, stage) when it cannot be built.\n"
+    "function mep_org_babel_prepare_exec(lang_def, exe, script_lines, args_str, cwd, on_ready)\n"
+    "  cwd = cwd or '.'\n"
+    "  args_str = args_str or ''\n"
+    "  if lang_def.reads_script_on_stdin then\n"
+    "    on_ready(nil, {'this language reads its script on stdin; it cannot run as a program in a terminal'}, 'setup')\n"
+    "    return\n"
+    "  end\n"
+    "  local source_path = os.tmpname() .. lang_def.extension\n"
+    "  local f = io.open(source_path, 'w')\n"
+    "  f:write(table.concat(script_lines, '\\n'))\n"
+    "  f:close()\n"
+    "  local cmdline = mep_org_babel_shell_word_arg(args_str, 'cmdline', cwd)\n"
+    "  if lang_def.compiled then\n"
+    "    local binary_path = os.tmpname()\n"
+    "    local class_name = mep_org_babel_arg(args_str, 'classname')\n"
+    "      or (lang_def.detect_class and lang_def.detect_class(script_lines))\n"
+    "    local compile_cmd = lang_def.compile_cmd\n"
+    "      and lang_def.compile_cmd(exe, source_path, binary_path, class_name, args_str)\n"
+    "      or { exe, source_path, '-o', binary_path }\n"
+    "    mep_org_babel_extend(compile_cmd, mep_org_babel_shell_word_arg(args_str, 'flags', cwd))\n"
+    "    mep_org_babel_extend(compile_cmd, mep_org_babel_shell_word_arg(args_str, 'libs', cwd))\n"
+    "    local compile_err = {}\n"
+    "    mep.job_start(compile_cmd, {\n"
+    "      cwd = cwd,\n"
+    "      on_stdout = function(line) compile_err[#compile_err + 1] = line end,\n"
+    "      on_stderr = function(line) compile_err[#compile_err + 1] = line end,\n"
+    "      on_exit = function(compile_code)\n"
+    "        if compile_code ~= 0 then\n"
+    "          os.remove(source_path)\n"
+    "          os.remove(binary_path)\n"
+    "          on_ready(nil, compile_err, 'compilation')\n"
+    "          return\n"
+    "        end\n"
+    "        local run_cmd = lang_def.run_compiled_cmd\n"
+    "          and lang_def.run_compiled_cmd(binary_path, class_name, args_str, source_path)\n"
+    "          or { binary_path }\n"
+    "        mep_org_babel_extend(run_cmd, cmdline)\n"
+    "        -- (a JVM-style run needs the source's directory too, so both stay)\n"
+    "        on_ready(run_cmd, { binary_path, source_path })\n"
+    "      end,\n"
+    "    })\n"
+    "    return\n"
+    "  end\n"
+    "  local run_cmd = lang_def.run_cmd and lang_def.run_cmd(exe, source_path, args_str) or { exe, source_path }\n"
+    "  mep_org_babel_extend(run_cmd, cmdline)\n"
+    "  on_ready(run_cmd, { source_path })\n"
+    "end\n"
+    "\n"
     "-- The stderr line to surface in a failure notification: the first line,\n"
     "-- skipping any leading \"# <package>\" header (`go build`/`go run` always\n"
     "-- print one of these before the real error).\n"
@@ -17990,7 +18129,7 @@ const char *kBuiltinOrgLatex =
     // a definition body means.
     "local function mep_latex_preview_ft(fname)\n"
     "  local ft = mep_lsp_filetype(fname)\n"
-    "  return ft == 'org' or ft == 'tex'\n"
+    "  return ft == 'org' or ft == 'tex' or ft == 'mepml'\n"
     "end\n"
     "function mep.org_latex_scan()\n"
     "  mep_org_latex_err_seen_scan = {}\n"
@@ -23436,6 +23575,387 @@ const char *kBuiltinOrgSnippets =
 // serialize below, ported from the source config), so the untouched
 // remainder keeps its old color instead of being stripped; multi-line
 // selections take a plain-wrap path.
+// mepml (src/mepml_doc.h): rendering hooks, running code blocks through
+// kBuiltinOrgBabel's language table (mep_org_babel_resolve_lang/
+// _prepare_script/_spawn), HTML export and link following. The markup
+// itself is drawn by Editor::MepmlScan; this chunk only decides when.
+// Rescans on edit and on every cursor-row change -- the cursor's row is
+// the one left unconcealed, the same reveal-to-edit rule org follows.
+const char *kBuiltinMepml =
+    "local mep_mepml_ns = nil\n"
+    "local function mep_mepml_is(fname) return mep_lsp_filetype(fname or '') == 'mepml' end\n"
+    "function mep.mepml_render()\n"
+    "  if not mep_mepml_ns then mep_mepml_ns = mep.ns_create('mepml') end\n"
+    "  mep.ns_clear(mep_mepml_ns)\n"
+    "  -- With mep's mepml language server attached (kBuiltinLsp's mepml_ls),\n"
+    "  -- its diagnostics -- the parser's plus cross-reference checks -- are\n"
+    "  -- the ones drawn; the scan's own would double every underline.\n"
+    "  local lsp = mep.lsp_client_for and mep.lsp_client_for()\n"
+    "  mep.mepml_scan(mep_mepml_ns, not lsp)\n"
+    "end\n"
+    "mep.command('MepmlRender', mep.mepml_render)\n"
+    "mep.on_buffer_changed(function()\n"
+    "  if mep_mepml_is(mep.filename()) then mep.mepml_render() end\n"
+    "end)\n"
+    "local mep_mepml_last_file, mep_mepml_last_row = nil, nil\n"
+    "mep.on_frame(function()\n"
+    "  local fname = mep.filename()\n"
+    "  if not mep_mepml_is(fname) then\n"
+    "    mep_mepml_last_file, mep_mepml_last_row = fname, nil\n"
+    "    return\n"
+    "  end\n"
+    "  local row = mep.cursor()\n"
+    "  if fname ~= mep_mepml_last_file or row ~= mep_mepml_last_row then\n"
+    "    mep_mepml_last_file, mep_mepml_last_row = fname, row\n"
+    "    mep.mepml_render()\n"
+    "  end\n"
+    "end)\n"
+    "\n"
+    "local function mep_mepml_dir(fname)\n"
+    "  local d = (fname or ''):match('^(.*)/[^/]*$')\n"
+    "  if d == nil or d == '' then return '.' end\n"
+    "  return d\n"
+    "end\n"
+    "local function mep_mepml_split(s)\n"
+    "  local out = {}\n"
+    "  for line in (s .. '\\n'):gmatch('(.-)\\n') do out[#out + 1] = line end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_mepml_falsy(v)\n"
+    "  return v == false or v == 0 or v == 'false' or v == 'no' or v == 'never' or v == 'nil'\n"
+    "end\n"
+    "\n"
+    "-- Runs the code block covering 1-based `row` and writes its output into\n"
+    "-- the block's results region; `on_done` (optional) is called once that\n"
+    "-- has happened or the block was skipped, so blocks can be chained.\n"
+    "local function mep_mepml_run_block(row, on_done)\n"
+    "  on_done = on_done or function() end\n"
+    "  local blk = mep.mepml_block_at(row)\n"
+    "  if not blk then mep.notify('Not in a mepml code block', 'warn') on_done() return end\n"
+    "  if mep_mepml_falsy(blk.options.eval) then\n"
+    "    mep.notify('This block has eval=' .. tostring(blk.options.eval) .. '; not running it', 'warn')\n"
+    "    on_done()\n"
+    "    return\n"
+    "  end\n"
+    "  local lang = (blk.lang or ''):lower()\n"
+    "  if lang == '' then mep.notify('The code block has no language (```{lang} ...)', 'warn') on_done() return end\n"
+    "  -- An exec block (or a shell block with results=terminal) runs as a\n"
+    "  -- program in a terminal inside its results, not as a batch job.\n"
+    "  local res = tostring(blk.options.results or blk.options.output or ''):lower()\n"
+    "  -- An exec-gui block's program opens a window, shown inside its results.\n"
+    "  if lang == 'exec-gui' or lang == 'gui' then\n"
+    "    mep.mepml_gui_start(mep.current_buffer(), blk.fence_row)\n"
+    "    on_done()\n"
+    "    return\n"
+    "  end\n"
+    "  if lang == 'exec' or lang == 'executable' or res == 'terminal' then\n"
+    "    mep.mepml_terminal_start(mep.current_buffer(), blk.fence_row)\n"
+    "    on_done()\n"
+    "    return\n"
+    "  end\n"
+    "  local buf = mep.current_buffer()\n"
+    "  local function finish(text)\n"
+    "    if not mep.mepml_splice_results(buf, blk.fence_row, blk.code, text) then\n"
+    "      mep.notify('mepml: the block changed while it ran; results discarded', 'warn')\n"
+    "    end\n"
+    "    on_done()\n"
+    "  end\n"
+    "  if lang == 'mep-lua' then\n"
+    "    local chunk, err = load(blk.code, '=mep-lua block', 't')\n"
+    "    if not chunk then finish('compile error: ' .. tostring(err)) return end\n"
+    "    local r = table.pack(pcall(chunk))\n"
+    "    local out = {}\n"
+    "    if not r[1] then out[1] = 'error: ' .. tostring(r[2]) else\n"
+    "      for i = 2, r.n do out[#out + 1] = tostring(r[i]) end\n"
+    "    end\n"
+    "    finish(table.concat(out, '\\n'))\n"
+    "    return\n"
+    "  end\n"
+    "  -- Header options become babel header args, so every babel language\n"
+    "  -- option (:cmdline, :stdin, :includes ...) works unchanged.\n"
+    "  local args = {}\n"
+    "  for _, o in ipairs(blk.option_list) do args[#args + 1] = ':' .. o.name .. ' ' .. o.value end\n"
+    "  local args_str = table.concat(args, ' ')\n"
+    "  local lang_def, exe = mep_org_babel_resolve_lang(lang, args_str)\n"
+    "  if not lang_def then mep.notify('mepml: ' .. tostring(exe), 'warn') on_done() return end\n"
+    "  -- results=exec: the block is a program in its language -- written out,\n"
+    "  -- and compiled when the language is, the way babel runs it -- that then\n"
+    "  -- runs in a terminal inside its results, like an exec block (with\n"
+    "  -- results=exec-gui: in a window of its own there). A failed compile\n"
+    "  -- leaves its errors as the results instead.\n"
+    "  if res == 'exec' or res == 'exec-gui' then\n"
+    "    local script = mep_org_babel_prepare_script(lang, lang_def, {}, mep_mepml_split(blk.code), args_str, {}, nil)\n"
+    "    if lang_def.compiled then mep.notify('Compiling ' .. lang .. ' block...') end\n"
+    "    mep_org_babel_prepare_exec(lang_def, exe, script, args_str, mep_mepml_dir(mep.filename()), function(argv, extra, stage)\n"
+    "      if not argv then\n"
+    "        mep.notify('mepml: ' .. tostring(stage or 'build') .. ' failed', 'warn')\n"
+    "        finish(table.concat(extra or {}, '\\n'))\n"
+    "        return\n"
+    "      end\n"
+    "      if res == 'exec-gui' then\n"
+    "        mep.mepml_gui_start(buf, blk.fence_row, argv, extra)\n"
+    "      else\n"
+    "        mep.mepml_terminal_start(buf, blk.fence_row, argv, extra)\n"
+    "      end\n"
+    "      on_done()\n"
+    "    end)\n"
+    "    return\n"
+    "  end\n"
+    "  -- A figure: file=<path> names the image the block draws. R (and any\n"
+    "  -- language babel knows how to) gets its plotting device opened at that\n"
+    "  -- path for it; Python gets matplotlib pointed there; anything else is\n"
+    "  -- expected to write the file itself. When it exists afterwards, an\n"
+    "  -- @image{} line joins the results and the editor draws it there.\n"
+    "  local dir = mep_mepml_dir(mep.filename())\n"
+    "  local fig = blk.options.file\n"
+    "  if fig ~= nil then fig = tostring(fig) end\n"
+    "  if fig == '' then fig = nil end\n"
+    "  local fig_path = fig and (fig:sub(1, 1) == '/' and fig or (dir .. '/' .. fig:gsub('^%./', ''))) or nil\n"
+    "  local body = mep_mepml_split(blk.code)\n"
+    "  local modes = {}\n"
+    "  if fig_path then\n"
+    "    modes.graphics = true\n"
+    "    if lang == 'python' and not lang_def.graphics_wrap then\n"
+    "      table.insert(body, 1, \"import matplotlib; matplotlib.use('Agg')\")\n"
+    "      body[#body + 1] = 'import matplotlib.pyplot as _mep_plt'\n"
+    "      body[#body + 1] = string.format('_mep_plt.savefig(%q, bbox_inches=\"tight\")', fig_path)\n"
+    "    end\n"
+    "  end\n"
+    "  local script = mep_org_babel_prepare_script(lang, lang_def, {}, body, args_str, modes, fig_path)\n"
+    "  mep.notify('Running ' .. lang .. ' block...')\n"
+    "  mep_org_babel_spawn(lang_def, exe, script, args_str, function(code, out, err, verb)\n"
+    "    out = out or {}\n"
+    "    if fig_path then\n"
+    "      -- R's dev.off(), closing the plot device, prints this pair.\n"
+    "      local kept = {}\n"
+    "      local i = 1\n"
+    "      while i <= #out do\n"
+    "        if out[i]:match('^%s*null device%s*$') and (out[i + 1] or ''):match('^%s*%d+%s*$') then\n"
+    "          i = i + 2\n"
+    "        else\n"
+    "          kept[#kept + 1] = out[i]\n"
+    "          i = i + 1\n"
+    "        end\n"
+    "      end\n"
+    "      out = kept\n"
+    "    end\n"
+    "    local text = table.concat(out, '\\n')\n"
+    "    if code ~= 0 then\n"
+    "      local e = table.concat(err or {}, '\\n')\n"
+    "      if e ~= '' then text = text .. (text ~= '' and '\\n' or '') .. e end\n"
+    "      mep.notify('mepml: ' .. tostring(verb or 'run') .. ' exited with ' .. tostring(code), 'warn')\n"
+    "    end\n"
+    "    if fig_path then\n"
+    "      if mep_org_babel_file_exists(fig_path) then\n"
+    "        mep.org_image_invalidate(fig_path)  -- a re-run redraws, not a cached texture\n"
+    "        text = text .. (text ~= '' and '\\n' or '') .. '@image{' .. fig .. '}'\n"
+    "      else\n"
+    "        mep.notify('mepml: the block did not create ' .. fig, 'warn')\n"
+    "      end\n"
+    "    end\n"
+    "    finish(text)\n"
+    "  end, dir)\n"
+    "end\n"
+    "function mep.mepml_execute() mep_mepml_run_block((mep.cursor())) end\n"
+    "mep.command('MepmlExecute', mep.mepml_execute)\n"
+    "\n"
+    "-- Every code block in the document, top to bottom, each started only once\n"
+    "-- the previous one's results are in (so the rows it looks up stay valid).\n"
+    "function mep.mepml_execute_all()\n"
+    "  local total = #mep.mepml_code_blocks()\n"
+    "  if total == 0 then mep.notify('No code blocks', 'warn') return end\n"
+    "  local i = 0\n"
+    "  local function step()\n"
+    "    i = i + 1\n"
+    "    local list = mep.mepml_code_blocks()\n"
+    "    if i > #list then mep.notify('Ran ' .. #list .. ' code blocks') return end\n"
+    "    mep_mepml_run_block(list[i].first, step)\n"
+    "  end\n"
+    "  step()\n"
+    "end\n"
+    "mep.command('MepmlExecuteAll', mep.mepml_execute_all)\n"
+    "\n"
+    "local function mep_mepml_html_path()\n"
+    "  local f = mep.filename() or 'untitled.mepml'\n"
+    "  return (f:gsub('%.mepml$', '')) .. '.html'\n"
+    "end\n"
+    "function mep.mepml_export_html_ui()\n"
+    "  local out = mep_mepml_html_path()\n"
+    "  local ok, err = mep.mepml_export_html(out)\n"
+    "  if ok then mep.notify('Exported ' .. out) else mep.notify('mepml export failed: ' .. tostring(err), 'error') end\n"
+    "  return ok and out or nil\n"
+    "end\n"
+    "mep.command('MepmlExportHtml', mep.mepml_export_html_ui)\n"
+    "function mep.mepml_export_open()\n"
+    "  local out = mep.mepml_export_html_ui()\n"
+    "  if out then mep.open_url(out) end\n"
+    "end\n"
+    "mep.command('MepmlExportOpen', mep.mepml_export_open)\n"
+    "\n"
+    "-- Every format mepml_convert.h writes; PDF is the LaTeX export compiled by\n"
+    "-- tectonic in the background.\n"
+    "local mep_mepml_formats = {\n"
+    "  {'html', 'HTML'}, {'pdf', 'PDF (LaTeX via tectonic)'}, {'docx', 'Word (.docx)'},\n"
+    "  {'odt', 'OpenDocument text (.odt)'}, {'rtf', 'Rich Text (.rtf)'}, {'md', 'Markdown'},\n"
+    "  {'org', 'Org'}, {'tex', 'LaTeX'}, {'txt', 'Plain text'},\n"
+    "}\n"
+    "local function mep_mepml_out(ext)\n"
+    "  local f = mep.filename() or 'untitled.mepml'\n"
+    "  return (f:gsub('%.mepml$', '')) .. '.' .. ext\n"
+    "end\n"
+    "-- mep.mepml_export_as(fmt [, on_done]): exports the buffer beside its file\n"
+    "-- (name.fmt); on_done(path) on success.\n"
+    "function mep.mepml_export_as(fmt, on_done)\n"
+    "  fmt = (fmt or ''):lower():gsub('^%.', '')\n"
+    "  if fmt == 'markdown' then fmt = 'md' elseif fmt == 'latex' then fmt = 'tex' elseif fmt == 'text' then fmt = 'txt' end\n"
+    "  local known = false\n"
+    "  for _, f in ipairs(mep_mepml_formats) do known = known or f[1] == fmt end\n"
+    "  if not known then\n"
+    "    mep.notify('mepml: no export to \"' .. fmt .. '\" (html pdf docx odt rtf md org tex txt)', 'error')\n"
+    "    return\n"
+    "  end\n"
+    "  local out = mep_mepml_out(fmt)\n"
+    "  local function done(ok, err)\n"
+    "    if ok then mep.notify('Exported ' .. out) else mep.notify('mepml export failed: ' .. tostring(err), 'error') end\n"
+    "    if ok and on_done then on_done(out) end\n"
+    "  end\n"
+    "  if fmt ~= 'pdf' then return done(mep.mepml_export(out)) end\n"
+    "  if not mep_org_babel_has_exe('tectonic') then return done(nil, \"tectonic not found on PATH (see flake.nix's devShell)\") end\n"
+    "  -- The .tex goes beside the document (its pictures resolve from there)\n"
+    "  -- under a name of its own, and the PDF takes the document's name.\n"
+    "  local dir = mep_mepml_dir(mep.filename())\n"
+    "  local stem = out:match('([^/]+)%.pdf$')\n"
+    "  local tex = dir .. '/.' .. stem .. '.mepml-export.tex'\n"
+    "  local ok, err = mep.mepml_export(tex)\n"
+    "  if not ok then return done(nil, err) end\n"
+    "  mep.notify('Compiling ' .. out .. ' ...')\n"
+    "  local errs = {}\n"
+    "  mep.job_start({'tectonic', '-X', 'compile', tex, '--outdir', dir}, {\n"
+    "    cwd = dir,\n"
+    "    on_stderr = function(line) errs[#errs + 1] = line end,\n"
+    "    on_exit = function(code)\n"
+    "      os.remove(tex)\n"
+    "      local built = tex:gsub('%.tex$', '.pdf')\n"
+    "      if code == 0 and os.rename(built, out) then done(true)\n"
+    "      else os.remove(built) done(nil, mep_org_babel_first_error_line(errs) or 'tectonic failed') end\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
+    "function mep.mepml_export_ui()\n"
+    "  local labels = {}\n"
+    "  for i, f in ipairs(mep_mepml_formats) do labels[i] = f[2] end\n"
+    "  mep.ui_select(labels, 'Export mepml as', function(i)\n"
+    "    if i then mep.mepml_export_as(mep_mepml_formats[i][1]) end\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepmlExport', function(args)\n"
+    "  local fmt = (args or ''):match('%S+')\n"
+    "  if fmt then mep.mepml_export_as(fmt) else mep.mepml_export_ui() end\n"
+    "end)\n"
+    "\n"
+    "-- mep.mepml_import_file(path): converts an html/md/org/rtf/docx/odt/txt\n"
+    "-- file to name.mepml beside it (asking before replacing one) and opens it.\n"
+    "function mep.mepml_import_file(path)\n"
+    "  path = (path or ''):gsub('^%s+', ''):gsub('%s+$', ''):gsub('^~', os.getenv('HOME') or '~')\n"
+    "  if path == '' then return end\n"
+    "  local dir = mep_mepml_dir(mep.filename())\n"
+    "  if path:sub(1, 1) ~= '/' and dir ~= '.' then path = dir .. '/' .. path:gsub('^%./', '') end\n"
+    "  local out = path:gsub('%.[^./]*$', '') .. '.mepml'\n"
+    "  local function go()\n"
+    "    local res, err = mep.mepml_import(path, out)\n"
+    "    if res then\n"
+    "      mep.open(out)\n"
+    "      mep.notify('Imported ' .. path .. ' as ' .. out)\n"
+    "    else\n"
+    "      mep.notify('mepml import failed: ' .. tostring(err), 'error')\n"
+    "    end\n"
+    "  end\n"
+    "  local exists = io.open(out, 'r')\n"
+    "  if exists then\n"
+    "    exists:close()\n"
+    "    mep.ui_confirm(out .. ' exists. Replace it?', false, function(yes) if yes then go() end end)\n"
+    "  else\n"
+    "    go()\n"
+    "  end\n"
+    "end\n"
+    "function mep.mepml_import_ui()\n"
+    "  local dir = mep_mepml_dir(mep.filename())\n"
+    "  mep.ui_input('Import as mepml (html md org rtf docx odt txt)', dir == '.' and '' or dir .. '/', mep.mepml_import_file)\n"
+    "end\n"
+    "mep.command('MepmlImport', function(args)\n"
+    "  if args and args:match('%S') then mep.mepml_import_file(args) else mep.mepml_import_ui() end\n"
+    "end)\n"
+    "\n"
+    "function mep.mepml_link_follow()\n"
+    "  local row, col = mep.cursor()\n"
+    "  local target = mep.mepml_link_at(row, col)\n"
+    "  if not target then mep.notify('No link under the cursor', 'warn') return end\n"
+    "  if target:match('^%a[%w+.-]*://') or target:match('^mailto:') then\n"
+    "    mep.open_url(target)\n"
+    "    mep.notify('Opening ' .. target)\n"
+    "    return\n"
+    "  end\n"
+    "  local path = target:gsub('^file:', '')\n"
+    "  local anchor = nil\n"
+    "  if path:sub(1, 1) == '#' then anchor, path = path:sub(2), '' end\n"
+    "  if path ~= '' then\n"
+    "    if path:sub(1, 1) ~= '/' then path = mep_mepml_dir(mep.filename()) .. '/' .. path:gsub('^%./', '') end\n"
+    "    mep.open(path)\n"
+    "    return\n"
+    "  end\n"
+    "  -- #anchor: jump to the heading whose title matches.\n"
+    "  for _, h in ipairs(mep.mepml_outline()) do\n"
+    "    local slug = h.title:lower():gsub('[^%w]+', '-'):gsub('^-+', ''):gsub('-+$', '')\n"
+    "    if slug == anchor:lower() or h.title == anchor then mep.set_cursor(h.row, 1) return end\n"
+    "  end\n"
+    "  mep.notify('No heading for #' .. anchor, 'warn')\n"
+    "end\n"
+    "mep.command('MepmlLinkFollow', mep.mepml_link_follow)\n"
+    "\n"
+    "function mep.mepml_check()\n"
+    "  local diags = mep.mepml_diagnostics()\n"
+    "  if #diags == 0 then mep.notify('mepml: no problems') return end\n"
+    "  local items = {}\n"
+    "  for _, d in ipairs(diags) do items[#items + 1] = d.row .. ':' .. d.col .. ' [' .. d.severity .. '] ' .. d.message end\n"
+    "  mep.picker_open('mepml problems', items, function(item)\n"
+    "    if not item then return end\n"
+    "    local r, c = item:match('^(%d+):(%d+)')\n"
+    "    if r then mep.set_cursor(tonumber(r), tonumber(c)) end\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepmlCheck', mep.mepml_check)\n"
+    "function mep.mepml_stop()\n"
+    "  if not mep.mepml_terminal_stop() then mep.notify('No running block here', 'warn') end\n"
+    "end\n"
+    "mep.command('MepmlStop', mep.mepml_stop)\n"
+    "function mep.mepml_terminal()\n"
+    "  if not mep.mepml_terminal_focus() then mep.notify('No running block here', 'warn') end\n"
+    "end\n"
+    "mep.command('MepmlTerminal', mep.mepml_terminal)\n"
+    "function mep.mepml_header_toggle_ui()\n"
+    "  local state = mep.mepml_header_toggle()\n"
+    "  if not state then mep.notify('No document header (//? lines) to fold', 'warn') end\n"
+    "end\n"
+    "mep.command('MepmlHeaderToggle', mep.mepml_header_toggle_ui)\n"
+    "mep.command('MepmlFoldsRecompute', mep.mepml_folds)\n"
+    "\n"
+    "mep.leader_group('k', 'mepml', 0xf121, 'Cyan')\n"
+    "mep.leader_map('kx', 'mepml: run code block at cursor', mep.mepml_execute)\n"
+    "mep.leader_map('ka', 'mepml: run all code blocks', mep.mepml_execute_all)\n"
+    "mep.leader_map('ke', 'mepml: export as...', mep.mepml_export_ui)\n"
+    "mep.leader_map('ki', 'mepml: import a document', mep.mepml_import_ui)\n"
+    "mep.leader_map('ko', 'mepml: export HTML and open', mep.mepml_export_open)\n"
+    "mep.leader_map('kc', 'mepml: list problems', mep.mepml_check)\n"
+    "mep.leader_map('ks', 'mepml: stop the running block', mep.mepml_stop)\n"
+    "mep.leader_map('kt', 'mepml: type into the running block', mep.mepml_terminal)\n"
+    "mep.leader_map('kh', 'mepml: fold/unfold the document header', mep.mepml_header_toggle_ui)\n"
+    "mep.leader_map('kl', 'mepml: follow link', mep.mepml_link_follow)\n"
+    "mep.leader_map('km', 'mepml: toggle markup concealment', function()\n"
+    "  local visible = mep.org_conceal_toggle()\n"
+    "  mep.notify('Markup concealment: ' .. (visible and 'on' or 'off'))\n"
+    "  mep.mepml_render()\n"
+    "end)\n";
+
 const char *kBuiltinOrgNotes =
     "local mep_orghl_groups = {red = 'Red', orange = 'Orange',\n"
     "  yellow = 'Yellow', green = 'Green', cyan = 'Cyan', blue = 'Blue',\n"
@@ -41719,6 +42239,532 @@ void DrawNotebookToolbar(const Pane &pane, float x, float ty, float w, float th)
     }
 }
 
+
+// Italic text on the editor's column grid. The editor face (g_font,
+// JetBrains Mono Regular) has no italic, and the old way of faking one --
+// a shear pushed onto gfx's matrix stack around DrawTextEx -- never did
+// anything: that stack only feeds the 3D renderer, so "italic" org/mepml
+// text came out upright. Liberation Mono Italic is already embedded for
+// the office viewer (g_office_font_mono_italic), so each glyph is drawn
+// from it instead, one per g_char_width column exactly like DrawLineFast's
+// own stride, keeping the grid intact. Codepoints the italic atlas lacks
+// fall back to the upright face.
+// Text on the editor's column grid, one codepoint per g_char_width column,
+// each from whichever atlas has it (icon, symbol, math tier, else g_font)
+// -- DrawLineFast's own routing, for text that is not a buffer line:
+// a concealing overlay's replacement text. A plain DrawTextEx(g_font, ...)
+// drew every non-ASCII replacement glyph as '?'. `bold` adds the same 1px
+// double-draw the per-span bold pass fakes weight with.
+void DrawGridText(const std::string &text, float x, float y, gfx::Color color, bool bold) {
+    float dx = x;
+    const char *ps = text.c_str();
+    const int n = static_cast<int>(text.size());
+    for (int i = 0; i < n;) {
+        int cp_size = 0;
+        const int cp = gfx::GetCodepointNext(&ps[i], &cp_size);
+        const std::string glyph(ps + i, static_cast<size_t>(cp_size));
+        i += cp_size;
+        if (cp != ' ' && cp != '\t') {
+            const gfx::Font &f = IsIconCodepoint(cp)     ? g_icon_font
+                                 : IsSymbolCodepoint(cp) ? g_symbol_font
+                                 : IsMathCodepoint(cp)   ? g_math_font
+                                                         : g_font;
+            gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{dx, y}, g_font_size, 0, color);
+            if (bold) gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{dx + 1, y}, g_font_size, 0, color);
+        }
+        dx += g_char_width;
+    }
+}
+
+// One run of text at its own size and face (Decoration::virt_scale/
+// virt_family -- mepml's >big<, <small>, \fs{} and \f{}), drawn into
+// `cols` columns starting at (x, y), the row's top-left. Bottom-aligned
+// on a ~0.78em ascent so it shares a baseline with the row's body text;
+// Editor::RowTopPadSlots reserves the headroom a taller run rises into.
+// The editor face is drawn a glyph per scaled column; a Liberation face
+// is proportional, drawn as one string and squeezed if it would overrun
+// its columns.
+// The embedded face a styled run draws from: "" is the editor's own
+// (drawn a glyph per column, so it has no single Font), "sans"/"serif"/
+// "mono" the Liberation faces the office viewer embeds.
+const gfx::Font &StyledRunFont(const std::string &family, bool bold, bool italic) {
+    if (family == "serif")
+        return bold && italic ? g_office_font_serif_bolditalic
+               : bold         ? g_office_font_serif_bold
+               : italic       ? g_office_font_serif_italic
+                              : g_office_font_serif_regular;
+    if (family == "mono")
+        return bold && italic ? g_office_font_mono_bolditalic
+               : bold         ? g_office_font_mono_bold
+               : italic       ? g_office_font_mono_italic
+                              : g_office_font_mono_regular;
+    return bold && italic ? g_office_font_bolditalic
+           : bold         ? g_office_font_bold
+           : italic       ? g_office_font_italic
+                          : g_office_font_regular;
+}
+
+// Columns a styled run reserves on the row (DrawPane's collapse): the
+// editor face at `scale` takes ceil(codepoints * scale) -- the arithmetic
+// the mepml scan lays tables out with -- and a proportional face its
+// measured width, so "Helvetica" doesn't leave a monospace-sized hole.
+int StyledRunCols(const std::string &text, float scale, const std::string &family, bool bold, bool italic) {
+    const int cp = ByteOffsetToColumn(text, static_cast<int>(text.size()));
+    const int mono_cols = std::max(1, static_cast<int>(std::ceil(static_cast<float>(cp) * scale - 1e-3f)));
+    if (family.empty() || g_char_width <= 0.0f) return mono_cols;
+    const float w = gfx::MeasureTextEx(StyledRunFont(family, bold, italic), text.c_str(), g_font_size * scale, 0).x;
+    return std::max(1, static_cast<int>(std::ceil(w / g_char_width - 0.05f)));
+}
+
+// One run of text at its own size and face (Decoration::virt_scale/
+// virt_family/virt_raise -- mepml's >big<, <small>, \fs{}, \f{}, ^sup^
+// and ,,sub,,), drawn into `cols` columns starting at (x, y), the row's
+// top-left. Bottom-aligned on a ~0.78em ascent so it shares a baseline
+// with the row's body text (then shifted by `raise` ems);
+// Editor::RowTopPadSlots reserves the headroom a taller run rises into.
+// The editor face is drawn a glyph per scaled column; a Liberation face
+// is proportional, drawn as one string and squeezed if it would overrun
+// its columns.
+void DrawStyledRun(const std::string &text, float x, float y, int cols, float scale, const std::string &family,
+                   bool bold, bool italic, float raise, gfx::Color color) {
+    const float fs = g_font_size * scale;
+    const float top = y + 0.78f * (g_font_size - fs) - raise * g_font_size;
+    if (family.empty()) {
+        const float stride = g_char_width * scale;
+        float dx = x;
+        const char *ps = text.c_str();
+        const int n = static_cast<int>(text.size());
+        for (int i = 0; i < n;) {
+            int cp_size = 0;
+            const int cp = gfx::GetCodepointNext(&ps[i], &cp_size);
+            const std::string glyph(ps + i, static_cast<size_t>(cp_size));
+            i += cp_size;
+            if (cp != ' ' && cp != '\t') {
+                const gfx::Font &f = (italic && cp < 0x2000 && g_office_font_mono_italic.texture.id != 0)
+                                         ? g_office_font_mono_italic
+                                     : IsIconCodepoint(cp)   ? g_icon_font
+                                     : IsSymbolCodepoint(cp) ? g_symbol_font
+                                     : IsMathCodepoint(cp)   ? g_math_font
+                                                             : g_font;
+                gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{dx, top}, fs, 0, color);
+                if (bold) gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{dx + 1, top}, fs, 0, color);
+            }
+            dx += stride;
+        }
+        return;
+    }
+    const gfx::Font &f = StyledRunFont(family, bold, italic);
+    const float avail = static_cast<float>(cols) * g_char_width;
+    const float w = gfx::MeasureTextEx(f, text.c_str(), fs, 0).x;
+    const float size = (w > avail && w > 0.0f) ? fs * avail / w : fs;
+    gfx::DrawTextEx(f, text.c_str(), gfx::Vector2{x, top + 0.78f * (fs - size)}, size, 0, color);
+}
+
+void DrawItalicColumns(const std::string &text, float x, float y, gfx::Color color) {
+    const bool have_italic = g_office_font_mono_italic.texture.id != 0;
+    float dx = x;
+    const char *ps = text.c_str();
+    const int n = static_cast<int>(text.size());
+    for (int i = 0; i < n;) {
+        int cp_size = 0;
+        const int cp = gfx::GetCodepointNext(&ps[i], &cp_size);
+        const std::string glyph(ps + i, static_cast<size_t>(cp_size));
+        i += cp_size;
+        if (cp != ' ' && cp != '\t') {
+            const bool italic_ok = have_italic && gfx::GetGlyphIndex(g_office_font_mono_italic, cp) >= 0 && cp < 0x2000;
+            if (italic_ok) {
+                gfx::DrawTextEx(g_office_font_mono_italic, glyph.c_str(), gfx::Vector2{dx, y}, g_font_size, 0, color);
+            } else {
+                DrawGridText(glyph, dx, y, color, false);
+            }
+        }
+        dx += g_char_width;
+    }
+}
+
+// --- mepml html results -----------------------------------------------------
+// A code block with `results=html` keeps the HTML it printed as its
+// results; the buffer draws that markup in place (Editor::MepmlScan
+// registers the rows, Buffer::mepml_html_rows). Parsed once per distinct
+// markup, laid out at the text width both when the rows are counted
+// (MeasureMepmlHtml, the editor's measure hook) and when they are drawn
+// (DrawMepmlHtmlResult), so the space reserved is exactly the space used.
+// Static: a result's scripts are not run -- it shows what the code made.
+constexpr float kMepmlHtmlPad = 8.0f;
+void PaintHtmlLayout(const HtmlLayout &layout, const HtmlLayoutCtx &ctx, float x, float pad, float top, float content_y,
+                     float content_h, bool theme, int pane_id, int buffer_id, bool interactive);  // just below
+
+const HtmlDoc &MepmlHtmlDoc(const std::string &html, const std::string &base_dir) {
+    static std::unordered_map<std::string, std::unique_ptr<HtmlDoc>> cache;
+    std::string key = base_dir;
+    key += '\x1f';
+    key += html;
+    auto it = cache.find(key);
+    if (it != cache.end()) return *it->second;
+    if (cache.size() > 32) cache.clear();  // stale versions of results being edited
+    auto doc = std::make_unique<HtmlDoc>();
+    ParseHtml(html, *doc);
+    LoadLocalHtmlResources(*doc, base_dir);
+    ComputeStyles(*doc);
+    const HtmlDoc &ref = *doc;
+    cache[key] = std::move(doc);
+    return ref;
+}
+
+HtmlLayoutCtx MepmlHtmlCtx(const std::string &base_dir, int cols) {
+    const float width = static_cast<float>(cols) * g_char_width;
+    HtmlLayoutCtx ctx{std::max(50.0f, width - kMepmlHtmlPad * 2.0f), g_font_size, ResolveHlGroup("Normal")};
+    ctx.base_dir = base_dir;
+    return ctx;
+}
+
+/**
+ * @brief Draws the live screen of a program running in a mepml block's results (Editor::MepmlTerminalStart).
+ * @param run_id The run.
+ * @param x The text column's left edge.
+ * @param y The first reserved row's top.
+ * @param h The reserved rows' height.
+ */
+void DrawMepmlTerminal(int run_id, float x, float y, float h) {
+    const TerminalSession *sess = g_editor.MepmlTerminalSession(run_id);
+    if (!sess || !sess->vterm) return;
+    const float grid_w = static_cast<float>(sess->vterm->Cols()) * g_char_width;
+    const gfx::Rectangle rect{x - 2.0f, y, grid_w + 4.0f, h};
+    // The terminal's own paper: its default background, a shade off the page.
+    gfx::DrawRectangle(static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(rect.width), static_cast<int>(rect.height),
+                       ResolveHlGroup("NormalBg"));
+    gfx::DrawRectangle(static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(rect.width), static_cast<int>(rect.height),
+                       gfx::Fade(ResolveHlGroup("Comment"), 0.06f));
+    DrawTerminalGrid(*sess, x, y, grid_w, h);
+    const bool focused = g_editor.MepmlTerminalFocused() == run_id;
+    gfx::DrawRectangleLines(static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(rect.width), static_cast<int>(rect.height),
+                            focused ? ResolveHlGroup("Accent") : gfx::Fade(ResolveHlGroup("Border"), 0.6f));
+    // A click hands it the keyboard (Ctrl-\ Ctrl-N gives it back).
+    RegisterClickRegionOnTop(rect, [run_id] { g_editor.MepmlTerminalFocus(run_id); });
+}
+
+/**
+ * @brief Draws the area a mepml exec-gui block's program window sits in, and puts the window there.
+ * @param run_id The GUI run.
+ * @param x The text column's left edge.
+ * @param y The first reserved row's top.
+ * @param w The width available (the program's window fills it unless the block sets cols=).
+ * @param h The reserved rows' height.
+ * @param clip The pane's text area: the window is clipped to it.
+ */
+void DrawMepmlGui(int run_id, float x, float y, float w, float h, const gfx::Rectangle &clip) {
+    Editor::MepmlGuiView view;
+    if (!g_editor.MepmlGuiViewOf(run_id, &view)) return;
+    const float gw = view.cols > 0 ? std::min(w, static_cast<float>(view.cols) * g_char_width) : w;
+    const gfx::Rectangle rect{x - 2.0f, y, gw + 4.0f, h};
+    gfx::DrawRectangle(static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(rect.width), static_cast<int>(rect.height),
+                       gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+    if (!view.status.empty()) {
+        const gfx::Vector2 ts = gfx::MeasureTextEx(g_font, view.status.c_str(), g_font_size, 0.0f);
+        gfx::DrawTextEx(g_font, view.status.c_str(),
+                        gfx::Vector2{rect.x + std::max(8.0f, (rect.width - ts.x) / 2.0f), rect.y + (rect.height - ts.y) / 2.0f},
+                        g_font_size, 0.0f, ResolveHlGroup("MutedFg"));
+    }
+    // The program's own window covers the inside of the frame.
+    const mep::gui_embed::Rect full{static_cast<int>(x), static_cast<int>(y) + 1, static_cast<int>(gw), static_cast<int>(h) - 2};
+    const mep::gui_embed::Rect pane_clip{static_cast<int>(clip.x), static_cast<int>(clip.y), static_cast<int>(clip.width),
+                                         static_cast<int>(clip.height)};
+    g_editor.MepmlGuiPlace(run_id, full, pane_clip);
+    gfx::DrawRectangleLines(static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(rect.width), static_cast<int>(rect.height),
+                            view.focused ? ResolveHlGroup("Accent") : gfx::Fade(ResolveHlGroup("Border"), 0.6f));
+    // A click on it (mep sees clicks there until the program has the
+    // keyboard) hands it the keyboard.
+    if (view.shown) RegisterClickRegionOnTop(rect, [run_id] { g_editor.MepmlTerminalFocus(run_id); });
+}
+
+/**
+ * @brief Rows a mepml html result takes when rendered (Editor::SetHtmlMeasureHook).
+ * @param html The result's markup.
+ * @param base_dir Directory its relative paths resolve against.
+ * @param cols The width to lay it out at, in columns (DrawMepmlHtmlResult draws at the same width).
+ * @return The rendered height, in editor rows.
+ */
+int MeasureMepmlHtml(const std::string &html, const std::string &base_dir, int cols) {
+    const HtmlLayout layout = LayoutHtmlDoc(MepmlHtmlDoc(html, base_dir), MepmlHtmlCtx(base_dir, cols));
+    const float h = layout.total_height + kMepmlHtmlPad * 2.0f;
+    return std::max(1, static_cast<int>(std::ceil(h / static_cast<float>(LineHeight()))));
+}
+
+/**
+ * @brief Draws a mepml html result into the rows reserved for it.
+ * @param render The registered result (markup and base directory).
+ * @param x The text column's left edge.
+ * @param y The first reserved row's top.
+ * @param h The reserved rows' height.
+ */
+void DrawMepmlHtmlResult(const Buffer::OrgLatexRender &render, float x, float y, float h) {
+    const HtmlLayoutCtx ctx = MepmlHtmlCtx(render.base_dir, render.html_cols);
+    const HtmlLayout layout = LayoutHtmlDoc(MepmlHtmlDoc(render.html, render.base_dir), ctx);
+    PaintHtmlLayout(layout, ctx, x, kMepmlHtmlPad, y + kMepmlHtmlPad, y, h, false, -1, -1, false);
+}
+
+// Paints a laid-out HTML document: element backgrounds and borders, then
+// canvases, SVG, rules, text, images and maths -- the browser pane's own
+// painter, shared with mepml's in-buffer html results (DrawMepmlHtmlResult).
+// `x` + `pad` is the layout's left edge and `top` its y; `content_y` /
+// `content_h` the visible band (culling only -- the caller owns the
+// scissor). `interactive` registers form-field click regions and link-hint
+// targets for (pane_id, buffer_id), which only a browser pane wants.
+void PaintHtmlLayout(const HtmlLayout &layout, const HtmlLayoutCtx &ctx, float x, float pad, float top, float content_y,
+                     float content_h, bool theme, int pane_id, int buffer_id, bool interactive) {
+    // Element background-color boxes (layout.backgrounds, pushed in
+    // document order by HtmlLayoutBlock) -- drawn before every other
+    // layer below so glyphs/rules/images always land on top of their
+    // own box, never under it. Front-to-back in document order also
+    // means a nested box with its own distinct background (e.g.
+    // mep_org_html_code_block's own header-over-body split, main.cpp's
+    // kBuiltinOrgExport) paints over its ancestor's, matching real
+    // stacking order despite this renderer having no z-index concept.
+    // Skipped entirely in theme mode -- the base NormalBg fill just
+    // above already covers the whole pane, so a page's own background
+    // boxes would otherwise paint page-colored islands over it.
+    if (!theme) {
+        for (const HtmlBgRect &bg : layout.backgrounds) {
+            float ry = top + bg.y;
+            if (ry + bg.h < content_y || ry > content_y + content_h) continue;
+            gfx::DrawRectangle(static_cast<int>(x + pad + bg.x), static_cast<int>(ry), static_cast<int>(bg.w),
+                          static_cast<int>(bg.h), bg.color);
+        }
+    }
+    // Element border boxes (layout.borders, same document-order/paint-
+    // order reasoning as layout.backgrounds just above) -- each edge is
+    // its own filled rectangle rather than DrawRectangleLines, since
+    // the four widths/colors can all differ (a plain DrawRectangleLines
+    // call has one uniform width/color for all four sides). In theme
+    // mode every edge uses the same theme border color instead of its
+    // own CSS color, matching HtmlRule's ("<hr>") own always-theme-
+    // colored line just below (which never had a CSS color to begin
+    // with, so it needs no such branch itself).
+    gfx::Color theme_border = ResolveHlGroup("Border");
+    for (const HtmlBorderRect &br : layout.borders) {
+        float ry = top + br.y;
+        if (ry + br.h < content_y || ry > content_y + content_h) continue;
+        float bx = x + pad + br.x;
+        if (br.top_w > 0.0f) gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(ry), static_cast<int>(br.w),
+                                            static_cast<int>(br.top_w), theme ? theme_border : br.top_c);
+        if (br.bottom_w > 0.0f)
+            gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(ry + br.h - br.bottom_w), static_cast<int>(br.w),
+                          static_cast<int>(br.bottom_w), theme ? theme_border : br.bottom_c);
+        if (br.left_w > 0.0f) gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(ry), static_cast<int>(br.left_w),
+                                             static_cast<int>(br.h), theme ? theme_border : br.left_c);
+        if (br.right_w > 0.0f)
+            gfx::DrawRectangle(static_cast<int>(bx + br.w - br.right_w), static_cast<int>(ry),
+                          static_cast<int>(br.right_w), static_cast<int>(br.h), theme ? theme_border : br.right_c);
+    }
+    // Replay each canvas's retained 2D display list after CSS backgrounds
+    // and borders, but before text.  Commands are clipped manually to the
+    // canvas viewport (the pane scissor is already active here); this
+    // preserves the essential canvas rule that drawing cannot bleed into
+    // surrounding DOM content without introducing nested raylib scissors.
+    for (const HtmlCanvasRun &canvas : layout.canvases) {
+        if (!canvas.node) continue;
+        float ry = top + canvas.y;
+        if (ry + canvas.h < content_y || ry > content_y + content_h) continue;
+        float cx = x + pad + canvas.x;
+        float sx = canvas.w / static_cast<float>(std::max(1, canvas.node->canvas_width));
+        float sy = canvas.h / static_cast<float>(std::max(1, canvas.node->canvas_height));
+        auto clipped = [cx, ry, &canvas](float px, float py, float pw, float ph, gfx::Color color) {
+            float left = std::max(cx, px), top_edge = std::max(ry, py);
+            float right = std::min(cx + canvas.w, px + pw), bottom = std::min(ry + canvas.h, py + ph);
+            if (right > left && bottom > top_edge)
+                gfx::DrawRectangle(static_cast<int>(left), static_cast<int>(top_edge), static_cast<int>(right - left),
+                              static_cast<int>(bottom - top_edge), color);
+        };
+        for (const CanvasCommand &command : canvas.node->canvas_commands) {
+            float px = cx + command.x * sx, py = ry + command.y * sy;
+            float pw = command.w * sx, ph = command.h * sy;
+            // A gradient paint is sampled per primitive (rect corners,
+            // triangle centroid, segment midpoint) in canvas space --
+            // exact for axis-aligned rects, a smooth-enough approximation
+            // for paths without a per-pixel shader.
+            auto color_at = [&command](float canvas_x, float canvas_y) {
+                gfx::Color c{command.r, command.g, command.b, command.a};
+                if (command.gradient.present) CanvasGradientColorAt(command.gradient, canvas_x, canvas_y, c.r, c.g, c.b, c.a);
+                return c;
+            };
+            gfx::Color color = color_at(command.x + command.w / 2.0f, command.y + command.h / 2.0f);
+            auto at = [&](unsigned i) { return gfx::Vector2{cx + command.points[static_cast<size_t>(i) * 2U] * sx, ry + command.points[static_cast<size_t>(i) * 2U + 1U] * sy}; };
+            auto canvas_at = [&](unsigned i, float &ox, float &oy) { ox = command.points[static_cast<size_t>(i) * 2U]; oy = command.points[static_cast<size_t>(i) * 2U + 1U]; };
+            if (command.kind == CanvasCommand::Kind::FillRect) {
+                if (command.gradient.present) {
+                    float left = std::max(cx, px), top_edge = std::max(ry, py);
+                    float right = std::min(cx + canvas.w, px + pw), bottom = std::min(ry + canvas.h, py + ph);
+                    if (right > left && bottom > top_edge) {
+                        auto back = [&](float screen_x, float screen_y) { return color_at((screen_x - cx) / sx, (screen_y - ry) / sy); };
+                        gfx::DrawRectangleGradientEx({left, top_edge, right - left, bottom - top_edge}, back(left, top_edge), back(left, bottom), back(right, bottom), back(right, top_edge));
+                    }
+                } else clipped(px, py, pw, ph, color);
+            } else if (command.kind == CanvasCommand::Kind::StrokeRect) {
+                float lw = std::max(1.0f, command.line_width * (sx + sy) / 2.0f);
+                clipped(px, py, pw, lw, color_at(command.x + command.w / 2.0f, command.y)); clipped(px, py + ph - lw, pw, lw, color_at(command.x + command.w / 2.0f, command.y + command.h));
+                clipped(px, py, lw, ph, color_at(command.x, command.y + command.h / 2.0f)); clipped(px + pw - lw, py, lw, ph, color_at(command.x + command.w, command.y + command.h / 2.0f));
+            } else if (command.kind == CanvasCommand::Kind::StrokePath) {
+                float lw = std::max(1.0f, command.line_width * (sx + sy) / 2.0f);
+                unsigned count = static_cast<unsigned>(command.points.size() / 2);
+                for (unsigned i = 1; i < count; ++i) {
+                    gfx::Color c = color;
+                    if (command.gradient.present) { float ax, ay, bx, by; canvas_at(i - 1, ax, ay); canvas_at(i, bx, by); c = color_at((ax + bx) / 2.0f, (ay + by) / 2.0f); }
+                    gfx::DrawLineEx(at(i - 1), at(i), lw, c);
+                }
+            } else if (command.kind == CanvasCommand::Kind::FillPath) {
+                for (size_t i = 0; i + 2 < command.triangles.size(); i += 3) {
+                    gfx::Color c = color;
+                    if (command.gradient.present) {
+                        float ax, ay, bx, by, qx, qy; canvas_at(command.triangles[i], ax, ay); canvas_at(command.triangles[i + 1], bx, by); canvas_at(command.triangles[i + 2], qx, qy);
+                        c = color_at((ax + bx + qx) / 3.0f, (ay + by + qy) / 3.0f);
+                    }
+                    gfx::DrawTriangle(at(command.triangles[i]), at(command.triangles[i + 1]), at(command.triangles[i + 2]), c);
+                }
+            } else if (command.kind == CanvasCommand::Kind::FillText) {
+                float font_px = (command.font_size > 0.0f ? command.font_size : ctx.base_font_size) * sy;
+                gfx::DrawTextEx(g_font, command.text.c_str(), {px, py - font_px}, font_px, 0, color_at(command.x, command.y));
+            } else if (command.kind == CanvasCommand::Kind::ImageData) {
+                int image_w = std::max(0, static_cast<int>(command.w)), image_h = std::max(0, static_cast<int>(command.h));
+                for (int iy = 0; iy < image_h; ++iy) for (int ix = 0; ix < image_w; ++ix) {
+                    size_t index = (static_cast<size_t>(iy) * static_cast<size_t>(image_w) + static_cast<size_t>(ix)) * 4U;
+                    if (index + 3 >= command.pixels.size()) continue;
+                    clipped(px + static_cast<float>(ix) * sx, py + static_cast<float>(iy) * sy, sx, sy, {command.pixels[index], command.pixels[index + 1], command.pixels[index + 2], command.pixels[index + 3]});
+                }
+            } else {
+                // The usual full-canvas clear is compacted at execution
+                // time.  A partial clear exposes the preview's page base
+                // color, the closest available representation without a
+                // per-canvas GPU render target.
+                clipped(px, py, pw, ph, ResolveHlGroup("NormalBg"));
+            }
+        }
+    }
+    // Embedded SVG is flattened by svg_doc.cpp into already-transformed
+    // polylines/triangles/text in the run's own pixel space (viewBox,
+    // transforms, path curves, inheritance all resolved there), and
+    // replayed here with raylib primitives -- same split as <canvas>.
+    for (const HtmlSvgRun &svg : layout.svgs) {
+        if (!svg.node) continue;
+        float sy = top + svg.y;
+        if (sy + svg.h < content_y || sy > content_y + content_h) continue;
+        float sx = x + pad + svg.x;
+        gfx::Color page_fg = theme ? ResolveHlGroup("Normal") : HtmlResolveColor(svg.node->style, ctx);
+        SvgDisplayList list = BuildSvgDisplayList(*svg.node, svg.w, svg.h, SvgPaint{true, page_fg.r, page_fg.g, page_fg.b, 255});
+        auto to_color = [](const SvgPaint &paint) { return gfx::Color{paint.r, paint.g, paint.b, paint.a}; };
+        for (const SvgShape &shape : list.shapes) {
+            if (shape.kind == SvgShape::Kind::Text) {
+                if (shape.points.size() < 2) continue;
+                gfx::Vector2 size = gfx::MeasureTextEx(g_font, shape.text.c_str(), shape.font_size, 0);
+                float anchor_dx = shape.text_anchor == "middle" ? -size.x / 2.0f : (shape.text_anchor == "end" ? -size.x : 0.0f);
+                gfx::DrawTextEx(g_font, shape.text.c_str(), {sx + shape.points[0] + anchor_dx, sy + shape.points[1] - shape.font_size},
+                           shape.font_size, 0, to_color(shape.fill));
+                continue;
+            }
+            auto at = [&](unsigned i) { return gfx::Vector2{sx + shape.points[static_cast<size_t>(i) * 2U], sy + shape.points[static_cast<size_t>(i) * 2U + 1U]}; };
+            if (shape.kind == SvgShape::Kind::Polygon && shape.fill.present) {
+                gfx::Color fill = to_color(shape.fill);
+                for (size_t i = 0; i + 2 < shape.triangles.size(); i += 3)
+                    gfx::DrawTriangle(at(shape.triangles[i]), at(shape.triangles[i + 1]), at(shape.triangles[i + 2]), fill);
+            }
+            if (shape.stroke.present) {
+                gfx::Color stroke = to_color(shape.stroke);
+                float width = std::max(1.0f, shape.stroke_width);
+                unsigned count = static_cast<unsigned>(shape.points.size() / 2);
+                for (unsigned i = 1; i < count; ++i) gfx::DrawLineEx(at(i - 1), at(i), width, stroke);
+                if ((shape.closed || shape.kind == SvgShape::Kind::Polygon) && count > 2) gfx::DrawLineEx(at(count - 1), at(0), width, stroke);
+            }
+        }
+    }
+    for (const HtmlRule &r : layout.rules) {
+        float ry = top + r.y;
+        if (ry < content_y - 4 || ry > content_y + content_h + 4) continue;
+        gfx::DrawLine(static_cast<int>(x + pad + r.x), static_cast<int>(ry),
+                  static_cast<int>(x + pad + r.x + r.w), static_cast<int>(ry), ResolveHlGroup("Border"));
+    }
+    // Hint-system link targets (HINT_SYSTEM.md): runs/images sharing
+    // the same link_node (one anchor spanning several words, e.g.
+    // "click <b>here</b> now") merge into a single bounding rect
+    // instead of one hint per run -- see LinkHintRect's own comment.
+    // Grouped by node identity, not href text, since two distinct
+    // <a>s can legitimately share an href (two "Edit" links to the
+    // same target) and must stay separate hint targets. Only visible
+    // (vertically culled) runs/images are ever added, matching every
+    // other element in this loop, so a link scrolled off-screen never
+    // becomes a hint target.
+    struct HtmlLinkGroup {
+        std::string href;
+        gfx::Rectangle rect{};
+        bool has = false;
+    };
+    std::unordered_map<const DomNode *, HtmlLinkGroup> link_groups;
+    auto expand_link_group = [&](const DomNode *node, const std::string &href, float lx, float ly, float lw,
+                                   float lh) {
+        if (!node || href.empty()) return;
+        HtmlLinkGroup &g = link_groups[node];
+        if (!g.has) {
+            g.has = true;
+            g.href = href;
+            g.rect = gfx::Rectangle{lx, ly, lw, lh};
+            return;
+        }
+        float x0 = std::min(g.rect.x, lx), y0 = std::min(g.rect.y, ly);
+        float x1 = std::max(g.rect.x + g.rect.width, lx + lw), y1 = std::max(g.rect.y + g.rect.height, ly + lh);
+        g.rect = gfx::Rectangle{x0, y0, x1 - x0, y1 - y0};
+    };
+    gfx::Color theme_fg = ResolveHlGroup("Normal");
+    for (const HtmlRun &run : layout.runs) {
+        float ry = top + run.y;
+        if (ry + run.font_size < content_y || ry > content_y + content_h) continue;  // cheap vertical culling
+        if (!theme) {
+            DrawHtmlRun(x + pad + run.x, ry, run);
+        } else {
+            HtmlRun themed_run = run;
+            themed_run.color = theme_fg;
+            DrawHtmlRun(x + pad + run.x, ry, themed_run);
+        }
+        if (!run.link_href.empty()) {
+            float rw = gfx::MeasureTextEx(g_font, run.text.c_str(), run.font_size, 0).x;
+            expand_link_group(run.link_node, run.link_href, x + pad + run.x, ry, rw, run.font_size);
+        }
+        if (run.node && interactive) {
+            const float rw = gfx::MeasureTextEx(run.font ? *run.font : g_font, run.text.c_str(), run.font_size, 0).x;
+            g_html_click_rects.push_back({pane_id, buffer_id, gfx::Rectangle{x + pad + run.x, ry, rw, run.font_size * 1.2f}, run.node, run.link_href});
+            // The field that owns the keyboard shows a caret at the end of its text.
+            if (run.node == g_editor.HtmlFocusedField(buffer_id) && std::fmod(gfx::GetTime(), 1.0) < 0.6) {
+                const float caret_x = x + pad + run.x + rw - gfx::MeasureTextEx(run.font ? *run.font : g_font, "]", run.font_size, 0).x;
+                gfx::DrawRectangle(static_cast<int>(caret_x), static_cast<int>(ry), 2, static_cast<int>(run.font_size), ResolveHlGroup("Cursor"));
+            }
+        }
+    }
+    for (const HtmlImageRun &img : layout.images) {
+        float ry = top + img.y;
+        if (ry + img.h < content_y || ry > content_y + content_h) continue;
+        // A data: URI gets the same theme-recolor treatment a local
+        // <img> does, just via its own decode path (GetOrLoadThemedDataUriImageTexture,
+        // decoding straight from the embedded base64 payload instead of
+        // a file on disk) since there's no path here for GetOrLoadThemedHtmlImageTexture's
+        // own stat()+ifstream to read.
+        bool is_data_uri = img.path.compare(0, 5, "data:") == 0;
+        const gfx::Texture2D *tex = is_data_uri ? (theme ? GetOrLoadThemedDataUriImageTexture(img.path) : GetOrLoadDataUriImageTexture(img.path))
+                                     : theme     ? GetOrLoadThemedHtmlImageTexture(img.path)
+                                                 : GetOrLoadOrgInlineImageTexture(img.path);
+        if (!tex) continue;  // e.g. the file was removed/moved since layout ran this same frame
+        gfx::Rectangle src{0, 0, static_cast<float>(tex->width), static_cast<float>(tex->height)};
+        gfx::Rectangle dst{x + pad + img.x, ry, img.w, img.h};
+        gfx::DrawTexturePro(*tex, src, dst, gfx::Vector2{0, 0}, 0.0f, gfx::White);
+        if (!img.link_href.empty()) expand_link_group(img.link_node, img.link_href, dst.x, dst.y, dst.width, dst.height);
+    }
+    for (const HtmlMathRun &m : layout.math_runs) {
+        float ry = top + m.y;
+        if (ry + m.layout.height < content_y || ry > content_y + content_h) continue;
+        DrawMathLayout(x + pad + m.x, ry, m.layout, theme ? theme_fg : m.color);
+    }
+    for (const auto &kv : link_groups) {
+        if (!kv.second.has || !interactive) continue;
+        g_link_hint_rects.push_back({pane_id, buffer_id, kv.second.rect, false, -1, kv.second.href});
+    }
+}
+
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active) {
     int line_height = LineHeight();
     int header_h = PaneHeaderHeight();
@@ -42547,257 +43593,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                       static_cast<int>(content_h), ResolveHlGroup("NormalBg"));
         float top = content_y - html_sess->scroll_y;
         bool theme = html_sess->theme_colors;
-        // Element background-color boxes (layout.backgrounds, pushed in
-        // document order by HtmlLayoutBlock) -- drawn before every other
-        // layer below so glyphs/rules/images always land on top of their
-        // own box, never under it. Front-to-back in document order also
-        // means a nested box with its own distinct background (e.g.
-        // mep_org_html_code_block's own header-over-body split, main.cpp's
-        // kBuiltinOrgExport) paints over its ancestor's, matching real
-        // stacking order despite this renderer having no z-index concept.
-        // Skipped entirely in theme mode -- the base NormalBg fill just
-        // above already covers the whole pane, so a page's own background
-        // boxes would otherwise paint page-colored islands over it.
-        if (!theme) {
-            for (const HtmlBgRect &bg : layout.backgrounds) {
-                float ry = top + bg.y;
-                if (ry + bg.h < content_y || ry > content_y + content_h) continue;
-                gfx::DrawRectangle(static_cast<int>(x + kHtmlPad + bg.x), static_cast<int>(ry), static_cast<int>(bg.w),
-                              static_cast<int>(bg.h), bg.color);
-            }
-        }
-        // Element border boxes (layout.borders, same document-order/paint-
-        // order reasoning as layout.backgrounds just above) -- each edge is
-        // its own filled rectangle rather than DrawRectangleLines, since
-        // the four widths/colors can all differ (a plain DrawRectangleLines
-        // call has one uniform width/color for all four sides). In theme
-        // mode every edge uses the same theme border color instead of its
-        // own CSS color, matching HtmlRule's ("<hr>") own always-theme-
-        // colored line just below (which never had a CSS color to begin
-        // with, so it needs no such branch itself).
-        gfx::Color theme_border = ResolveHlGroup("Border");
-        for (const HtmlBorderRect &br : layout.borders) {
-            float ry = top + br.y;
-            if (ry + br.h < content_y || ry > content_y + content_h) continue;
-            float bx = x + kHtmlPad + br.x;
-            if (br.top_w > 0.0f) gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(ry), static_cast<int>(br.w),
-                                                static_cast<int>(br.top_w), theme ? theme_border : br.top_c);
-            if (br.bottom_w > 0.0f)
-                gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(ry + br.h - br.bottom_w), static_cast<int>(br.w),
-                              static_cast<int>(br.bottom_w), theme ? theme_border : br.bottom_c);
-            if (br.left_w > 0.0f) gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(ry), static_cast<int>(br.left_w),
-                                                 static_cast<int>(br.h), theme ? theme_border : br.left_c);
-            if (br.right_w > 0.0f)
-                gfx::DrawRectangle(static_cast<int>(bx + br.w - br.right_w), static_cast<int>(ry),
-                              static_cast<int>(br.right_w), static_cast<int>(br.h), theme ? theme_border : br.right_c);
-        }
-        // Replay each canvas's retained 2D display list after CSS backgrounds
-        // and borders, but before text.  Commands are clipped manually to the
-        // canvas viewport (the pane scissor is already active here); this
-        // preserves the essential canvas rule that drawing cannot bleed into
-        // surrounding DOM content without introducing nested raylib scissors.
-        for (const HtmlCanvasRun &canvas : layout.canvases) {
-            if (!canvas.node) continue;
-            float ry = top + canvas.y;
-            if (ry + canvas.h < content_y || ry > content_y + content_h) continue;
-            float cx = x + kHtmlPad + canvas.x;
-            float sx = canvas.w / static_cast<float>(std::max(1, canvas.node->canvas_width));
-            float sy = canvas.h / static_cast<float>(std::max(1, canvas.node->canvas_height));
-            auto clipped = [cx, ry, &canvas](float px, float py, float pw, float ph, gfx::Color color) {
-                float left = std::max(cx, px), top_edge = std::max(ry, py);
-                float right = std::min(cx + canvas.w, px + pw), bottom = std::min(ry + canvas.h, py + ph);
-                if (right > left && bottom > top_edge)
-                    gfx::DrawRectangle(static_cast<int>(left), static_cast<int>(top_edge), static_cast<int>(right - left),
-                                  static_cast<int>(bottom - top_edge), color);
-            };
-            for (const CanvasCommand &command : canvas.node->canvas_commands) {
-                float px = cx + command.x * sx, py = ry + command.y * sy;
-                float pw = command.w * sx, ph = command.h * sy;
-                // A gradient paint is sampled per primitive (rect corners,
-                // triangle centroid, segment midpoint) in canvas space --
-                // exact for axis-aligned rects, a smooth-enough approximation
-                // for paths without a per-pixel shader.
-                auto color_at = [&command](float canvas_x, float canvas_y) {
-                    gfx::Color c{command.r, command.g, command.b, command.a};
-                    if (command.gradient.present) CanvasGradientColorAt(command.gradient, canvas_x, canvas_y, c.r, c.g, c.b, c.a);
-                    return c;
-                };
-                gfx::Color color = color_at(command.x + command.w / 2.0f, command.y + command.h / 2.0f);
-                auto at = [&](unsigned i) { return gfx::Vector2{cx + command.points[static_cast<size_t>(i) * 2U] * sx, ry + command.points[static_cast<size_t>(i) * 2U + 1U] * sy}; };
-                auto canvas_at = [&](unsigned i, float &ox, float &oy) { ox = command.points[static_cast<size_t>(i) * 2U]; oy = command.points[static_cast<size_t>(i) * 2U + 1U]; };
-                if (command.kind == CanvasCommand::Kind::FillRect) {
-                    if (command.gradient.present) {
-                        float left = std::max(cx, px), top_edge = std::max(ry, py);
-                        float right = std::min(cx + canvas.w, px + pw), bottom = std::min(ry + canvas.h, py + ph);
-                        if (right > left && bottom > top_edge) {
-                            auto back = [&](float screen_x, float screen_y) { return color_at((screen_x - cx) / sx, (screen_y - ry) / sy); };
-                            gfx::DrawRectangleGradientEx({left, top_edge, right - left, bottom - top_edge}, back(left, top_edge), back(left, bottom), back(right, bottom), back(right, top_edge));
-                        }
-                    } else clipped(px, py, pw, ph, color);
-                } else if (command.kind == CanvasCommand::Kind::StrokeRect) {
-                    float lw = std::max(1.0f, command.line_width * (sx + sy) / 2.0f);
-                    clipped(px, py, pw, lw, color_at(command.x + command.w / 2.0f, command.y)); clipped(px, py + ph - lw, pw, lw, color_at(command.x + command.w / 2.0f, command.y + command.h));
-                    clipped(px, py, lw, ph, color_at(command.x, command.y + command.h / 2.0f)); clipped(px + pw - lw, py, lw, ph, color_at(command.x + command.w, command.y + command.h / 2.0f));
-                } else if (command.kind == CanvasCommand::Kind::StrokePath) {
-                    float lw = std::max(1.0f, command.line_width * (sx + sy) / 2.0f);
-                    unsigned count = static_cast<unsigned>(command.points.size() / 2);
-                    for (unsigned i = 1; i < count; ++i) {
-                        gfx::Color c = color;
-                        if (command.gradient.present) { float ax, ay, bx, by; canvas_at(i - 1, ax, ay); canvas_at(i, bx, by); c = color_at((ax + bx) / 2.0f, (ay + by) / 2.0f); }
-                        gfx::DrawLineEx(at(i - 1), at(i), lw, c);
-                    }
-                } else if (command.kind == CanvasCommand::Kind::FillPath) {
-                    for (size_t i = 0; i + 2 < command.triangles.size(); i += 3) {
-                        gfx::Color c = color;
-                        if (command.gradient.present) {
-                            float ax, ay, bx, by, qx, qy; canvas_at(command.triangles[i], ax, ay); canvas_at(command.triangles[i + 1], bx, by); canvas_at(command.triangles[i + 2], qx, qy);
-                            c = color_at((ax + bx + qx) / 3.0f, (ay + by + qy) / 3.0f);
-                        }
-                        gfx::DrawTriangle(at(command.triangles[i]), at(command.triangles[i + 1]), at(command.triangles[i + 2]), c);
-                    }
-                } else if (command.kind == CanvasCommand::Kind::FillText) {
-                    float font_px = (command.font_size > 0.0f ? command.font_size : ctx.base_font_size) * sy;
-                    gfx::DrawTextEx(g_font, command.text.c_str(), {px, py - font_px}, font_px, 0, color_at(command.x, command.y));
-                } else if (command.kind == CanvasCommand::Kind::ImageData) {
-                    int image_w = std::max(0, static_cast<int>(command.w)), image_h = std::max(0, static_cast<int>(command.h));
-                    for (int iy = 0; iy < image_h; ++iy) for (int ix = 0; ix < image_w; ++ix) {
-                        size_t index = (static_cast<size_t>(iy) * static_cast<size_t>(image_w) + static_cast<size_t>(ix)) * 4U;
-                        if (index + 3 >= command.pixels.size()) continue;
-                        clipped(px + static_cast<float>(ix) * sx, py + static_cast<float>(iy) * sy, sx, sy, {command.pixels[index], command.pixels[index + 1], command.pixels[index + 2], command.pixels[index + 3]});
-                    }
-                } else {
-                    // The usual full-canvas clear is compacted at execution
-                    // time.  A partial clear exposes the preview's page base
-                    // color, the closest available representation without a
-                    // per-canvas GPU render target.
-                    clipped(px, py, pw, ph, ResolveHlGroup("NormalBg"));
-                }
-            }
-        }
-        // Embedded SVG is flattened by svg_doc.cpp into already-transformed
-        // polylines/triangles/text in the run's own pixel space (viewBox,
-        // transforms, path curves, inheritance all resolved there), and
-        // replayed here with raylib primitives -- same split as <canvas>.
-        for (const HtmlSvgRun &svg : layout.svgs) {
-            if (!svg.node) continue;
-            float sy = top + svg.y;
-            if (sy + svg.h < content_y || sy > content_y + content_h) continue;
-            float sx = x + kHtmlPad + svg.x;
-            gfx::Color page_fg = theme ? ResolveHlGroup("Normal") : HtmlResolveColor(svg.node->style, ctx);
-            SvgDisplayList list = BuildSvgDisplayList(*svg.node, svg.w, svg.h, SvgPaint{true, page_fg.r, page_fg.g, page_fg.b, 255});
-            auto to_color = [](const SvgPaint &paint) { return gfx::Color{paint.r, paint.g, paint.b, paint.a}; };
-            for (const SvgShape &shape : list.shapes) {
-                if (shape.kind == SvgShape::Kind::Text) {
-                    if (shape.points.size() < 2) continue;
-                    gfx::Vector2 size = gfx::MeasureTextEx(g_font, shape.text.c_str(), shape.font_size, 0);
-                    float anchor_dx = shape.text_anchor == "middle" ? -size.x / 2.0f : (shape.text_anchor == "end" ? -size.x : 0.0f);
-                    gfx::DrawTextEx(g_font, shape.text.c_str(), {sx + shape.points[0] + anchor_dx, sy + shape.points[1] - shape.font_size},
-                               shape.font_size, 0, to_color(shape.fill));
-                    continue;
-                }
-                auto at = [&](unsigned i) { return gfx::Vector2{sx + shape.points[static_cast<size_t>(i) * 2U], sy + shape.points[static_cast<size_t>(i) * 2U + 1U]}; };
-                if (shape.kind == SvgShape::Kind::Polygon && shape.fill.present) {
-                    gfx::Color fill = to_color(shape.fill);
-                    for (size_t i = 0; i + 2 < shape.triangles.size(); i += 3)
-                        gfx::DrawTriangle(at(shape.triangles[i]), at(shape.triangles[i + 1]), at(shape.triangles[i + 2]), fill);
-                }
-                if (shape.stroke.present) {
-                    gfx::Color stroke = to_color(shape.stroke);
-                    float width = std::max(1.0f, shape.stroke_width);
-                    unsigned count = static_cast<unsigned>(shape.points.size() / 2);
-                    for (unsigned i = 1; i < count; ++i) gfx::DrawLineEx(at(i - 1), at(i), width, stroke);
-                    if ((shape.closed || shape.kind == SvgShape::Kind::Polygon) && count > 2) gfx::DrawLineEx(at(count - 1), at(0), width, stroke);
-                }
-            }
-        }
-        for (const HtmlRule &r : layout.rules) {
-            float ry = top + r.y;
-            if (ry < content_y - 4 || ry > content_y + content_h + 4) continue;
-            gfx::DrawLine(static_cast<int>(x + kHtmlPad + r.x), static_cast<int>(ry),
-                      static_cast<int>(x + kHtmlPad + r.x + r.w), static_cast<int>(ry), ResolveHlGroup("Border"));
-        }
-        // Hint-system link targets (HINT_SYSTEM.md): runs/images sharing
-        // the same link_node (one anchor spanning several words, e.g.
-        // "click <b>here</b> now") merge into a single bounding rect
-        // instead of one hint per run -- see LinkHintRect's own comment.
-        // Grouped by node identity, not href text, since two distinct
-        // <a>s can legitimately share an href (two "Edit" links to the
-        // same target) and must stay separate hint targets. Only visible
-        // (vertically culled) runs/images are ever added, matching every
-        // other element in this loop, so a link scrolled off-screen never
-        // becomes a hint target.
-        struct HtmlLinkGroup {
-            std::string href;
-            gfx::Rectangle rect{};
-            bool has = false;
-        };
-        std::unordered_map<const DomNode *, HtmlLinkGroup> link_groups;
-        auto expand_link_group = [&](const DomNode *node, const std::string &href, float lx, float ly, float lw,
-                                       float lh) {
-            if (!node || href.empty()) return;
-            HtmlLinkGroup &g = link_groups[node];
-            if (!g.has) {
-                g.has = true;
-                g.href = href;
-                g.rect = gfx::Rectangle{lx, ly, lw, lh};
-                return;
-            }
-            float x0 = std::min(g.rect.x, lx), y0 = std::min(g.rect.y, ly);
-            float x1 = std::max(g.rect.x + g.rect.width, lx + lw), y1 = std::max(g.rect.y + g.rect.height, ly + lh);
-            g.rect = gfx::Rectangle{x0, y0, x1 - x0, y1 - y0};
-        };
-        gfx::Color theme_fg = ResolveHlGroup("Normal");
-        for (const HtmlRun &run : layout.runs) {
-            float ry = top + run.y;
-            if (ry + run.font_size < content_y || ry > content_y + content_h) continue;  // cheap vertical culling
-            if (!theme) {
-                DrawHtmlRun(x + kHtmlPad + run.x, ry, run);
-            } else {
-                HtmlRun themed_run = run;
-                themed_run.color = theme_fg;
-                DrawHtmlRun(x + kHtmlPad + run.x, ry, themed_run);
-            }
-            if (!run.link_href.empty()) {
-                float rw = gfx::MeasureTextEx(g_font, run.text.c_str(), run.font_size, 0).x;
-                expand_link_group(run.link_node, run.link_href, x + kHtmlPad + run.x, ry, rw, run.font_size);
-            }
-            if (run.node) {
-                const float rw = gfx::MeasureTextEx(run.font ? *run.font : g_font, run.text.c_str(), run.font_size, 0).x;
-                g_html_click_rects.push_back({pane.id, pane.buffer_id, gfx::Rectangle{x + kHtmlPad + run.x, ry, rw, run.font_size * 1.2f}, run.node, run.link_href});
-                // The field that owns the keyboard shows a caret at the end of its text.
-                if (run.node == g_editor.HtmlFocusedField(pane.buffer_id) && std::fmod(gfx::GetTime(), 1.0) < 0.6) {
-                    const float caret_x = x + kHtmlPad + run.x + rw - gfx::MeasureTextEx(run.font ? *run.font : g_font, "]", run.font_size, 0).x;
-                    gfx::DrawRectangle(static_cast<int>(caret_x), static_cast<int>(ry), 2, static_cast<int>(run.font_size), ResolveHlGroup("Cursor"));
-                }
-            }
-        }
-        for (const HtmlImageRun &img : layout.images) {
-            float ry = top + img.y;
-            if (ry + img.h < content_y || ry > content_y + content_h) continue;
-            // A data: URI gets the same theme-recolor treatment a local
-            // <img> does, just via its own decode path (GetOrLoadThemedDataUriImageTexture,
-            // decoding straight from the embedded base64 payload instead of
-            // a file on disk) since there's no path here for GetOrLoadThemedHtmlImageTexture's
-            // own stat()+ifstream to read.
-            bool is_data_uri = img.path.compare(0, 5, "data:") == 0;
-            const gfx::Texture2D *tex = is_data_uri ? (theme ? GetOrLoadThemedDataUriImageTexture(img.path) : GetOrLoadDataUriImageTexture(img.path))
-                                         : theme     ? GetOrLoadThemedHtmlImageTexture(img.path)
-                                                     : GetOrLoadOrgInlineImageTexture(img.path);
-            if (!tex) continue;  // e.g. the file was removed/moved since layout ran this same frame
-            gfx::Rectangle src{0, 0, static_cast<float>(tex->width), static_cast<float>(tex->height)};
-            gfx::Rectangle dst{x + kHtmlPad + img.x, ry, img.w, img.h};
-            gfx::DrawTexturePro(*tex, src, dst, gfx::Vector2{0, 0}, 0.0f, gfx::White);
-            if (!img.link_href.empty()) expand_link_group(img.link_node, img.link_href, dst.x, dst.y, dst.width, dst.height);
-        }
-        for (const HtmlMathRun &m : layout.math_runs) {
-            float ry = top + m.y;
-            if (ry + m.layout.height < content_y || ry > content_y + content_h) continue;
-            DrawMathLayout(x + kHtmlPad + m.x, ry, m.layout, theme ? theme_fg : m.color);
-        }
-        for (const auto &kv : link_groups) {
-            if (!kv.second.has) continue;
-            g_link_hint_rects.push_back({pane.id, pane.buffer_id, kv.second.rect, false, -1, kv.second.href});
-        }
+        PaintHtmlLayout(layout, ctx, x, kHtmlPad, top, content_y, content_h, theme, pane.id, pane.buffer_id, true);
         gfx::EndScissorMode();
         DrawPaneBorder(x, y, w, h, is_active);
         return;
@@ -44860,6 +45656,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // scaled headlines and the drawn table grid), so the filetype lookup
     // happens once per pane rather than once per row.
     const bool is_org_buffer = LspFiletype(buf.filename) == "org";
+    // mepml (src/mepml_doc.h) shares the depth-scaled headings, their
+    // hidden markup and clickable links with org -- through
+    // Editor::HeadingLevelForRow and friends, which know each language's
+    // own heading syntax -- but none of org's block cards or table grid.
+    const bool is_mepml_buffer = LspFiletype(buf.filename) == "mepml";
+    const bool is_heading_buffer = is_org_buffer || is_mepml_buffer;
     // The cursor row every LaTeX-preview lookup below is resolved
     // against (Editor::OrgLatexRenderForRow): a fragment whose own
     // source rows the caret is inside reverts to that source, so it can
@@ -44874,7 +45676,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // scroll a fragment's worth of slots off. The pane's own cursor,
     // always, is the one rule all four can follow.
     const int latex_cursor_row = pane.cursor.row;
-    if (is_org_buffer) {
+    if (is_org_buffer || is_mepml_buffer) {
         for (const Editor::OrgTableGrid &t : g_editor.OrgTables(pane.buffer_id)) {
             // OrgTables' returned reference is into Editor's own scratch
             // vector, refilled on the next call -- taking addresses into
@@ -44889,7 +45691,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
     }
-    if (g_editor.OrgBlockCardsVisible() && is_org_buffer) {
+    // mepml code blocks and their results draw as cards too
+    // (Editor::MepmlBuildCards feeds OrgBlockCards).
+    if (g_editor.OrgBlockCardsVisible() && (is_org_buffer || is_mepml_buffer)) {
         // Row -> its first visual slot, and how many slots it claims,
         // walked exactly the way the draw loop below walks (a closed fold
         // collapses to one slot, an org image/LaTeX row claims its own
@@ -44911,11 +45715,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int next = r + 1;
                 if (f) {
                     next = f->end_row + 1;
+                    slots += g_editor.RowTopPadSlots(buf, r);  // a folded mepml header's large title
                 } else if (g_editor.OrgImagesVisible() && img_it != buf.org_image_rows.end()) {
                     slots = g_editor.OrgImageLayoutForRow(img_it->second, pane.text_cols).slots;
                 } else if (latex != nullptr) {
                     slots = latex->slots;
                     next = latex->end_row + 1;
+                } else if (const Buffer::MepmlVirtualBlock *vb =
+                               g_editor.MepmlVirtualBlockForRow(buf, r, latex_cursor_row)) {
+                    slots = static_cast<int>(vb->lines.size());
                 } else if (g_editor.OrgTableWrapVisible() && tw_it != buf.org_table_wrap_rows.end() &&
                            !tw_it->second.lines.empty()) {
                     // An over-wide table's row draws as its wrapped
@@ -44930,8 +45738,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // An org headline's own extra slot (kOrgHeadingStyles)
                     // -- one of the four walkers that has to agree on it.
                     if (g_editor.OrgHeadingScaleVisible()) {
-                        slots += Editor::OrgHeadingExtraSlotsFor(buf.lines[static_cast<size_t>(r)]);
+                        slots += Editor::HeadingExtraSlotsForLevel(Editor::HeadingLevelForRow(buf, r));
                     }
+                    slots += g_editor.RowTopPadSlots(buf, r);
                 }
                 slot_count[r] = slots;
                 vslot += slots;
@@ -44999,8 +45808,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             if (!skip && (g_editor.OrgImagesVisible() || g_editor.OrgLatexVisible())) {
                 for (int r = card.meta_row; r <= last_row && !skip; r++) {
-                    if (g_editor.OrgImagesVisible() && buf.org_image_rows.count(r) != 0) skip = true;
-                    if (g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row) != nullptr) skip = true;
+                    // A figure a mepml code block drew sits inside its
+                    // output card on purpose (Editor::MepmlScan).
+                    if (g_editor.OrgImagesVisible() && !is_mepml_buffer && buf.org_image_rows.count(r) != 0) skip = true;
+                    // (An html result is drawn inside its own output card, on purpose.)
+                    const Buffer::OrgLatexRender *lr = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row);
+                    if (lr != nullptr && lr->html.empty() && lr->term_run < 0) skip = true;
                 }
             }
             if (skip) continue;
@@ -45054,14 +45867,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // so a block whose `#+NAME:` has scrolled off the top edge
             // still hides the `#+begin_` line under its title bar.
             float header_bottom = 0.0f;
-            if (row_bottom(card.begin_row, &header_bottom)) {
+            // A bare card (a mepml document header) has no title bar and
+            // no floor: its rows are all content.
+            if (!card.bare && row_bottom(card.begin_row, &header_bottom)) {
                 const bool cursor_in_header = is_active && pane.cursor.row >= card.meta_row && pane.cursor.row <= card.begin_row;
                 const bool sel_in_header = sel_lo >= 0 && sel_lo <= card.begin_row && sel_hi >= card.meta_row;
                 box.header = gfx::Rectangle{card_left, box.rect.y, box.rect.width, header_bottom - box.rect.y - 1.0f};
                 box.conceal_header = box.header.height > 1.0f && !cursor_in_header && !sel_in_header;
             }
             float footer_top = 0.0f, footer_bottom = 0.0f;
-            if (card.end_row >= 0 && row_top(card.end_row, &footer_top) && row_bottom(card.end_row, &footer_bottom)) {
+            if (!card.bare && card.end_row >= 0 && row_top(card.end_row, &footer_top) && row_bottom(card.end_row, &footer_bottom)) {
                 const bool cursor_on_end = is_active && pane.cursor.row == card.end_row;
                 const bool sel_on_end = sel_lo >= 0 && sel_lo <= card.end_row && sel_hi >= card.end_row;
                 box.footer = gfx::Rectangle{card_left, footer_top, box.rect.width, footer_bottom - footer_top - 1.0f};
@@ -45075,8 +45890,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // active toolbar control, far too loud behind a page of code.)
             const float rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(box.rect.width, box.rect.height)));
             gfx::DrawRectangleRounded(box.rect, rr, 6,
-                                  card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
-                                              : gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+                                  card.bare     ? gfx::Fade(ResolveHlGroup("Purple"), 0.07f)
+                                  : card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                                : gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
             // Every row the card paints over, so the decoration loop can
             // hand that row's end-of-line virtual text to the post-pass
             // rather than drawing it where the bar is about to land. A
@@ -45155,6 +45971,23 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // " ..." follows the text it actually put on screen.
     auto draw_fold_summary_text = [&](int fold_row, float fold_ly) -> int {
         const std::string &raw = buf.lines[static_cast<size_t>(fold_row)];
+        // A folded mepml document header reads as its title and a muted
+        // tally of the rest (Editor::MepmlScan), not as a raw `//?` line.
+        if (const Buffer::MepmlFoldSummary *sum =
+                g_editor.MepmlFoldSummaryForRow(buf, fold_row, is_active ? pane.cursor.row : -1)) {
+            // The title as large as it is unfolded (RowTopPadSlots
+            // reserved the headroom above this row); the tally stays body
+            // size, on the same baseline.
+            int cols = StyledRunCols(sum->title, sum->title_scale, "", true, false);
+            DrawStyledRun(sum->title, text_x, fold_ly, cols, sum->title_scale, "", true, false, 0.0f,
+                          ResolveHlGroup("OrgHeadlineLevel1"));
+            if (!sum->detail.empty()) {
+                DrawLineFast(sum->detail, text_x + static_cast<float>(cols) * g_char_width, fold_ly, g_font_size,
+                             ResolveHlGroup("Comment"));
+                cols += ByteOffsetToColumn(sum->detail, static_cast<int>(sum->detail.size()));
+            }
+            return cols;
+        }
         // A closed subtree's summary row is a headline like any other, so
         // it hides its own leading stars too (OrgHeadlineStarHideLen,
         // org_doc.h) -- otherwise a heading sprouted its asterisks back
@@ -45167,16 +46000,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // `disp_line`: this branch runs before that is built, and a
         // folded row is one of a handful on screen.
         const int star_hide =
-            (is_org_buffer && g_editor.OrgConcealVisible() && !(is_active && fold_row == pane.cursor.row))
-                ? OrgHeadlineStarHideLen(raw)
+            (is_heading_buffer && g_editor.OrgConcealVisible() && !(is_active && fold_row == pane.cursor.row))
+                ? Editor::HeadingHideLenForRow(buf, fold_row)
                 : 0;
         // How far left the title slid: the stars and their space out,
         // OrgHeadlineStarIndentCols back in. Always 2 -- but derived, so
         // the two definitions cannot drift apart.
-        const int star_shift = star_hide > 0 ? star_hide - OrgHeadlineStarIndentCols(raw) : 0;
+        const int star_indent = Editor::HeadingIndentColsForRow(buf, fold_row);
+        const int star_shift = star_hide > 0 ? star_hide - star_indent : 0;
         std::string collapsed;
         if (star_hide > 0) {
-            collapsed.assign(static_cast<size_t>(OrgHeadlineStarIndentCols(raw)), ' ');
+            collapsed.assign(static_cast<size_t>(star_indent), ' ');
             collapsed.append(raw, static_cast<size_t>(star_hide), std::string::npos);
         }
         const std::string &line = star_hide > 0 ? collapsed : raw;
@@ -45353,17 +46187,27 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         return std::min(1.0f, (static_cast<float>(line_height) * 0.95f) / static_cast<float>(tex.height));
     };
     /**
-     * @brief Columns an inline math render claims on the drawn grid: its own width plus half a character of air on each side.
+     * @brief Columns an inline math render claims on the drawn grid: just its own width, rounded up to whole columns.
      * @param tex The fragment's rendered texture.
      * @return The column count to reserve for it.
      */
+    // No extra column of "air" either side: the render's own border (the
+    // standalone class's 1pt) and the spaces the prose already has around
+    // `$...$` separate it from its neighbours, and an extra column read
+    // as a gap on both sides of every formula.
     auto OrgLatexInlineCols = [&](const gfx::Texture2D &tex) {
         const float draw_w = static_cast<float>(tex.width) * OrgLatexInlineScale(tex);
-        return std::max(1, static_cast<int>(std::ceil(draw_w / g_char_width)) + 1);
+        return std::max(1, static_cast<int>(std::ceil(draw_w / g_char_width - 0.05f)));
     };
     int visual_slot = 0;  // a closed fold collapses N buffer rows into 1 of these
     int row = pane.scroll_row;
     for (; row < buf.LineCount() && visual_slot < visible_lines; row++) {
+        // Headroom for a row whose text is drawn taller than a line
+        // (mepml's scaled runs, Editor::RowTopPadSlots): the empty slots
+        // come first, so the row's text -- and every run on it, large or
+        // not -- sits on the bottom one and shares one baseline. One of
+        // the walkers that must agree (RowSlot, PaneRowSlots).
+        visual_slot += g_editor.RowTopPadSlots(buf, row);
         float ly = content_y + static_cast<float>(visual_slot * line_height);
         visual_slot++;
 
@@ -45420,7 +46264,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // second one painting flatly over the first) when the cursor
         // actually is inside this (collapsed) range.
         if (fold_here) {
-            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly), static_cast<int>(w), line_height, ResolveHlGroup("CursorLine"));
+            // Over the row's headroom too (a folded mepml header's large
+            // title rises into it), so the band holds the whole summary.
+            const int fold_pad = g_editor.RowTopPadSlots(buf, row) * line_height;
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) - fold_pad, static_cast<int>(w), line_height + fold_pad,
+                               ResolveHlGroup("CursorLine"));
             row_bg_plain = false;
         }
 
@@ -45576,8 +46424,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             (pane.cursor.row == row ||
              (fold_here && pane.cursor.row >= fold_here->start_row && pane.cursor.row <= fold_here->end_row))) {
             int tint_slots = (row_wraps && pane.cursor.row == row) ? row_wrap_slots : 1;
+            // On a rendered mepml @toc/@bibliography, the line the cursor
+            // is on (Editor::VirtualLineStep), not the block's first.
+            int tint_offset = 0;
+            if (!fold_here && pane.cursor.row == row) {
+                if (const Buffer::MepmlVirtualBlock *cvb = g_editor.MepmlVirtualBlockForRow(buf, row, latex_cursor_row))
+                    tint_offset = Editor::VirtualLineOf(pane, static_cast<int>(cvb->lines.size())) * line_height;
+            }
             for (int s = 0; s < tint_slots; s++) {
-                gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
+                gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + tint_offset + s * line_height, static_cast<int>(w),
                               line_height, ResolveHlGroup("CursorLine"));
             }
             row_bg_plain = false;
@@ -45744,6 +46599,90 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
 
+        // mepml @toc / @bibliography (Editor::MepmlVirtualBlockForRow): the
+        // directive's row draws its generated content -- one styled line
+        // per slot, on a quiet card -- and a table of contents entry is
+        // clickable, jumping to its heading. The cursor's own row is the
+        // raw directive (the lookup returns nothing for it).
+        if (!fold_here) {
+            if (const Buffer::MepmlVirtualBlock *vb = g_editor.MepmlVirtualBlockForRow(buf, row, latex_cursor_row)) {
+                const int nlines = static_cast<int>(vb->lines.size());
+                const float block_h = static_cast<float>(nlines * line_height);
+                int widest = 0;
+                for (const mepml::RenderedLine &l : vb->lines)
+                    widest = std::max(widest, ByteOffsetToColumn(l.text, static_cast<int>(l.text.size())));
+                const float card_x = text_x - g_char_width * 0.5f;
+                const float card_w = std::min(x + w - card_x - static_cast<float>(kMarginX),
+                                              static_cast<float>(std::max(widest + 2, 24)) * g_char_width);
+                const gfx::Rectangle card{card_x, ly + 1.0f, card_w, block_h - 2.0f};
+                const float rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(card.width, card.height)));
+                gfx::DrawRectangleRounded(card, rr, 6, gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+                gfx::DrawRectangleRoundedLinesEx(card, rr, 6, 1.0f, gfx::Fade(ResolveHlGroup("Border"), 0.7f));
+                // The line the cursor is on (Editor::VirtualLineStep): the
+                // cursor-line band, across the card.
+                const int sel_line = (is_active && pane.cursor.row == row) ? Editor::VirtualLineOf(pane, nlines) : -1;
+                const gfx::Color sel_tint = gfx::Fade(ResolveHlGroup("Accent"), 0.16f);
+                if (sel_line >= 0) {
+                    const int sy = static_cast<int>(ly + static_cast<float>(sel_line * line_height));
+                    gfx::DrawRectangle(static_cast<int>(card.x + 1.0f), sy, static_cast<int>(card.width - 2.0f), line_height, sel_tint);
+                    gfx::DrawRectangle(static_cast<int>(card.x + 1.0f), sy + 2, 3, line_height - 4, ResolveHlGroup("Accent"));
+                }
+                for (int i = 0; i < nlines; ++i) {
+                    const mepml::RenderedLine &l = vb->lines[static_cast<size_t>(i)];
+                    const float yy = ly + static_cast<float>(i * line_height);
+                    const float tx = text_x + g_char_width * 0.5f;
+                    DrawLineFast(l.text, tx, yy, g_font_size, ResolveHlGroup("Normal"));
+                    for (const mepml::RenderedSpan &sp : l.spans) {
+                        if (sp.col_end <= sp.col_start) continue;
+                        const std::string piece = l.text.substr(static_cast<size_t>(sp.col_start),
+                                                                static_cast<size_t>(sp.col_end - sp.col_start));
+                        const float px = tx + static_cast<float>(ByteOffsetToColumn(l.text, sp.col_start)) * g_char_width;
+                        const float pw = static_cast<float>(ByteOffsetToColumn(piece, static_cast<int>(piece.size()))) * g_char_width;
+                        const char *group = (sp.style & mepml::kHeading)
+                                                ? (sp.heading_level <= 1   ? "OrgHeadlineLevel1"
+                                                   : sp.heading_level == 2 ? "OrgHeadlineLevel2"
+                                                                           : "OrgHeadlineLevel3")
+                                            : (sp.style & mepml::kCite)    ? "Blue"
+                                            : (sp.style & mepml::kComment) ? "Comment"
+                                                                           : "Normal";
+                        const gfx::Color c = ResolveHlGroup(group);
+                        if (i != sel_line) {
+                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(yy), static_cast<int>(pw), line_height,
+                                               ResolveHlGroup("NormalBg"));
+                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(yy), static_cast<int>(pw), line_height,
+                                               gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+                        } else {
+                            // The selected line's own stack: cursor line, card wash, selection tint.
+                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(yy), static_cast<int>(pw), line_height,
+                                               ResolveHlGroup(g_editor.ShowCursorLine() ? "CursorLine" : "NormalBg"));
+                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(yy), static_cast<int>(pw), line_height,
+                                               gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(yy), static_cast<int>(pw), line_height, sel_tint);
+                        }
+                        if (sp.style & mepml::kItalic) DrawItalicColumns(piece, px, yy, c);
+                        else DrawGridText(piece, px, yy, c, (sp.style & mepml::kBold) != 0);
+                    }
+                    if (l.target_line >= 0) {
+                        const gfx::Rectangle hit{tx, yy, card_w - g_char_width, static_cast<float>(line_height)};
+                        const bool hover = PointInRect(gfx::GetMousePosition(), hit);
+                        if (hover) {
+                            gfx::DrawRectangle(static_cast<int>(hit.x), static_cast<int>(yy + static_cast<float>(line_height) - 3.0f),
+                                               static_cast<int>(static_cast<float>(ByteOffsetToColumn(l.text, static_cast<int>(l.text.size()))) * g_char_width),
+                                               1, ResolveHlGroup("Accent"));
+                        }
+                        const int jump_pane = pane.id;
+                        const int jump_row = l.target_line;
+                        RegisterClickRegionOnTop(hit, [jump_pane, jump_row] {
+                            g_editor.FocusPaneById(jump_pane);
+                            g_editor.SetCursorForLua(jump_row, 0);
+                        });
+                    }
+                }
+                visual_slot += nlines - 1;  // visual_slot++ above already accounted for 1
+                continue;
+            }
+        }
+
         // Org LaTeX/math-mode rendering (<leader>otl / mep.org_latex_toggle,
         // Editor::OrgLatexVisible()): mirrors the org-image branch just
         // above, but the target size is the fragment's *own* rendered PNG
@@ -45767,6 +46706,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const Buffer::OrgLatexRender *latex_render = g_editor.OrgLatexRenderForRow(buf, row, latex_cursor_row);
             if (latex_render != nullptr) {
                 const Buffer::OrgLatexRender &render = *latex_render;
+                if (render.term_run >= 0) {
+                    // A program running in a mepml block's results: in a
+                    // terminal, or in a window of its own.
+                    const float slot_h = static_cast<float>(line_height) * static_cast<float>(render.slots);
+                    if (g_editor.MepmlIsGuiRun(render.term_run))
+                        DrawMepmlGui(render.term_run, text_x, ly, std::max(40.0f, w - (text_x - x) - kMarginX), slot_h,
+                                     gfx::Rectangle{x, content_y, w, content_h});
+                    else
+                        DrawMepmlTerminal(render.term_run, text_x, ly, slot_h);
+                    visual_slot += render.slots - 1;
+                    row = render.end_row;
+                    continue;
+                }
+                if (!render.html.empty()) {
+                    // A mepml html result: the markup, laid out and painted.
+                    DrawMepmlHtmlResult(render, text_x, ly, static_cast<float>(line_height) * static_cast<float>(render.slots));
+                    visual_slot += render.slots - 1;
+                    row = render.end_row;
+                    continue;
+                }
                 float slot_h = static_cast<float>(line_height) * static_cast<float>(render.slots);
                 float pane_avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
                 const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(render.path);
@@ -45858,8 +46817,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // replacement text to lose, and the scaled renderer reads the
         // collapse instead of ignoring it (see head_star_hide below).
         const std::string &raw_line = buf.lines[static_cast<size_t>(row)];
-        const bool headline_row = is_org_buffer && g_editor.OrgHeadingScaleVisible() &&
-                                  Editor::OrgHeadlineLevelOf(raw_line) > 0;
+        const bool headline_row = is_heading_buffer && g_editor.OrgHeadingScaleVisible() &&
+                                  Editor::HeadingLevelForRow(buf, row) > 0;
         // A table row's `|` columns are load-bearing: the drawn grid's
         // rules are the columns every row of the table carries a `|` at
         // (Editor::OrgTables), and the eye reads the columns off those
@@ -45870,7 +46829,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // just before the `|`, which tightens the text inside the cell
         // while every pipe stays exactly where the row above put it.
         const size_t first_glyph = raw_line.find_first_not_of(" \t");
-        const bool table_row = first_glyph != std::string::npos && raw_line[first_glyph] == '|';
+        // mepml lays its tables out itself (Editor::MepmlTableLayout: the
+        // pipes are overlays carrying each cell's padding), so its rows
+        // collapse like prose rather than cell-locally.
+        const bool table_row = !is_mepml_buffer && first_glyph != std::string::npos && raw_line[first_glyph] == '|';
         conceal_runs.clear();
         math_runs.clear();
         // An org headline's leading stars, hidden and replaced by the
@@ -45889,26 +46851,34 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // the row's stored columns: collapsing the row it sits on would
         // leave it two columns off the glyph it is on.
         const int head_star_hide =
-            (is_org_buffer && g_editor.OrgConcealVisible() && !plain_row && tbl_wrap == nullptr &&
+            (is_heading_buffer && g_editor.OrgConcealVisible() && !plain_row && tbl_wrap == nullptr &&
              !ghost_covers_row(row) && !(is_active && row == pane.cursor.row))
-                ? OrgHeadlineStarHideLen(raw_line)
+                ? Editor::HeadingHideLenForRow(buf, row)
                 : 0;
         if (head_star_hide > 0) {
-            conceal_runs.push_back(ConcealRun{0, head_star_hide, OrgHeadlineStarIndentCols(raw_line),
+            conceal_runs.push_back(ConcealRun{0, head_star_hide, Editor::HeadingIndentColsForRow(buf, row),
                                               std::numeric_limits<int>::max()});
         }
         if (!plain_row && tbl_wrap == nullptr && !headline_row && !ghost_covers_row(row)) {
             const int raw_len = static_cast<int>(raw_line.size());
             for (const Decoration *dp : row_decos) {
                 const Decoration &d = *dp;
-                if (d.whole_line || !d.virt_overlay || d.virt_text.empty() || d.virt_text_eol) continue;
+                // An empty replacement collapses only when the decoration
+                // asks for pure concealment (Decoration::conceal, mepml):
+                // every other producer's empty overlay is a no-op here.
+                if (d.whole_line || !d.virt_overlay || (d.virt_text.empty() && !d.conceal) || d.virt_text_eol) continue;
                 if (d.col_end <= d.col_start) continue;
                 // Codepoints, not bytes -- the column count the virt_text
                 // pass itself measures the replacement in (its own
                 // `vtext_cols`), so the hole blanked here is exactly the
                 // room that pass will fill.
+                // A run drawn at another size/face reserves ceil(cols *
+                // scale) columns (Decoration::virt_scale) -- the same
+                // arithmetic the mepml scan lays tables out with.
+                const bool styled_run = d.virt_scale != 1.0f || !d.virt_family.empty();
                 ConcealRun run{d.col_start, d.col_end,
-                               ByteOffsetToColumn(d.virt_text, static_cast<int>(d.virt_text.size())),
+                               styled_run ? StyledRunCols(d.virt_text, d.virt_scale, d.virt_family, d.bold, d.italic)
+                                          : ByteOffsetToColumn(d.virt_text, static_cast<int>(d.virt_text.size())),
                                std::numeric_limits<int>::max()};
                 if (table_row) {
                     // A replacement *wider* than its markup has no slack
@@ -45972,6 +46942,25 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         conceal_runs.push_back(run);
                     }
                 }
+            }
+            // A rendered formula owns its whole source span: any other
+            // concealment inside it (mepml hides `$`/`\(` delimiters and an
+            // @alttext{} with runs of its own) is dropped, not the formula.
+            // Otherwise a delimiter's run sharing the formula's first
+            // column won the overlap below, the formula fell back to
+            // covering its raw source width, and the unrendered TeX's
+            // columns showed as a wide gap either side of the render.
+            if (!math_runs.empty()) {
+                conceal_runs.erase(
+                    std::remove_if(conceal_runs.begin(), conceal_runs.end(),
+                                   [&](const ConcealRun &r) {
+                                       for (const std::pair<int, int> &m : math_runs) {
+                                           if (r.col_start == m.first && r.col_end == m.second) return false;
+                                           if (r.col_start < m.second && r.col_end > m.first) return true;
+                                       }
+                                       return false;
+                                   }),
+                    conceal_runs.end());
             }
             std::sort(conceal_runs.begin(), conceal_runs.end(),
                       [](const ConcealRun &a, const ConcealRun &b) { return a.col_start < b.col_start; });
@@ -46281,15 +47270,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // (kOrgHeadingStyles, editor.h): `* Top` largest, each level
         // below it smaller, level 4 and deeper at plain body size.
         int org_head_level = 0;
-        if (g_editor.OrgHeadingScaleVisible() && is_org_buffer) {
-            org_head_level = Editor::OrgHeadlineLevelOf(buf.lines[static_cast<size_t>(row)]);
+        if (g_editor.OrgHeadingScaleVisible() && is_heading_buffer) {
+            org_head_level = Editor::HeadingLevelForRow(buf, row);
         }
         // The extra slots come first and unconditionally -- they are what
         // the other three walkers counted for this row, whatever the
         // cursor happens to be doing. Claimed here, before the decision
         // below about *how* to draw the row, so the two can never
         // disagree.
-        if (org_head_level > 0) visual_slot += Editor::OrgHeadingExtraSlotsFor(buf.lines[static_cast<size_t>(row)]);
+        if (org_head_level > 0) visual_slot += Editor::HeadingExtraSlotsForLevel(org_head_level);
         float org_head_fs = g_font_size, org_head_cw = g_char_width;
         if (org_head_level > 0) {
             // Reveal-to-edit: a headline under the cursor or inside a
@@ -46478,6 +47467,32 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     }
                 }
                 if (in_math) continue;
+            }
+            // Span background tint (Decoration::bg_fill, mepml's
+            // =highlight=): drawn translucent over the base pass's glyphs,
+            // and the text is then redrawn on top of it by the recolor
+            // below (the tint decoration carries no text style), so it
+            // reads as a marker-pen background rather than a veil.
+            if (d.bg_fill && !d.whole_line && d.col_end > d.col_start) {
+                const std::string &line = buf.lines[static_cast<size_t>(row)];
+                const int a = std::min(static_cast<int>(line.size()), d.col_start);
+                const int b = std::min(static_cast<int>(line.size()), d.col_end);
+                const gfx::Color tint = gfx::Fade(ResolveHlGroup(d.hl_group.empty() ? "Yellow" : d.hl_group), 0.28f);
+                if (b > a) {
+                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, line_height,
+                                     [&](float py, float x0, float x1, int, int) {
+                                         gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
+                                                            static_cast<int>(x1 - x0), line_height, tint);
+                                     });
+                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, line_height,
+                                     [&](float py, float px, float, int pa, int pb) {
+                                         std::string part = draw_line.substr(static_cast<size_t>(pa),
+                                                                             static_cast<size_t>(pb - pa));
+                                         gfx::DrawTextEx(g_font, part.c_str(), gfx::Vector2{px, py}, g_font_size, 0,
+                                                         ResolveHlGroup("Normal"));
+                                     });
+                }
+                continue;
             }
             if (!d.whole_line && !d.underline && !d.bold && !d.italic && (!d.hl_group.empty() || d.has_fg_color) &&
                 d.col_end > d.col_start) {
@@ -46689,22 +47704,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             // with the still-upright original DrawLineFast already
                             // drew there, so without covering it first the two
                             // visibly ghost together.
+                            (void)baseline_y;
                             gfx::DrawRectangle(static_cast<int>(px0 - pad), static_cast<int>(py),
                                           static_cast<int>(span_w + pad * 2), line_height, ResolveHlGroup("NormalBg"));
-                            gfx::PushMatrix();
-                            gfx::TranslateMatrix(px0, baseline_y, 0);
-                            // clang-format off
-                            const float shear[16] = {
-                                1.0f,  0.0f, 0.0f, 0.0f,
-                                -0.22f, 1.0f, 0.0f, 0.0f,
-                                0.0f,  0.0f, 1.0f, 0.0f,
-                                0.0f,  0.0f, 0.0f, 1.0f,
-                            };
-                            // clang-format on
-                            gfx::MultMatrix(shear);
-                            gfx::TranslateMatrix(-px0, -baseline_y, 0);
-                            gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px0, py}, g_font_size, 0, c);
-                            gfx::PopMatrix();
+                            DrawItalicColumns(piece, px0, py, c);
                         });
                 }
             }
@@ -46720,7 +47723,28 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 org_card_eol_texts.push_back(
                     {where.first, d.virt_text, ResolveHlGroup(d.virt_text_hl), ly, where.second});
             }
-            if (!d.virt_text.empty() && !ghost_covers_row(row) && !defer_eol_to_card) {
+            // A run drawn at its own size/face (mepml's scaled text): into
+            // the columns the collapse reserved for it, bottom-aligned with
+            // the row's body text, with its rules at the reserved width.
+            const bool styled_virt = d.virt_overlay && (d.virt_scale != 1.0f || !d.virt_family.empty()) &&
+                                     !d.virt_text.empty();
+            if (styled_virt && !ghost_covers_row(row)) {
+                const int cols = StyledRunCols(d.virt_text, d.virt_scale, d.virt_family, d.bold, d.italic);
+                const gfx::Vector2 vpos = WrapPos(DispCol(d.col_start), row_wrap_cols, text_x, ly, line_height);
+                const gfx::Color vc = d.has_fg_color ? gfx::Color{d.fg_color.r, d.fg_color.g, d.fg_color.b, d.fg_color.a}
+                                                     : ResolveHlGroup(d.virt_text_hl.empty() ? "Normal" : d.virt_text_hl);
+                DrawStyledRun(d.virt_text, vpos.x, vpos.y, cols, d.virt_scale, d.virt_family, d.bold, d.italic,
+                              d.virt_raise, vc);
+                const float rule_w = static_cast<float>(cols) * g_char_width;
+                if (d.underline)
+                    gfx::DrawRectangle(static_cast<int>(vpos.x), static_cast<int>(vpos.y + static_cast<float>(line_height) - 2),
+                                       static_cast<int>(rule_w), 1, vc);
+                if (d.strikethrough)
+                    gfx::DrawRectangle(static_cast<int>(vpos.x),
+                                       static_cast<int>(vpos.y + g_font_size * 0.78f - g_font_size * d.virt_scale * 0.3f),
+                                       static_cast<int>(rule_w), 1, vc);
+            }
+            if (!styled_virt && !d.virt_text.empty() && !ghost_covers_row(row) && !defer_eol_to_card) {
                 // virt_text_eol: anchored just past the row's own last
                 // character (plus one char of breathing room) rather than
                 // d.col_start, for an annotation describing the whole
@@ -46751,32 +47775,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 auto draw_virt_run = [&](const std::string &piece, float px, float py) {
                     if (piece.empty()) return;
                     if (d.italic && d.virt_overlay) {
-                        // Sheared exactly like the per-span italic pass
-                        // above -- around this text's own baseline, with
-                        // no cover-first step needed since the overlay
-                        // rectangle already cleared everything underneath.
-                        float baseline_y = py + static_cast<float>(line_height);
-                        gfx::PushMatrix();
-                        gfx::TranslateMatrix(px, baseline_y, 0);
-                        // clang-format off
-                        const float vshear[16] = {
-                            1.0f,  0.0f, 0.0f, 0.0f,
-                            -0.22f, 1.0f, 0.0f, 0.0f,
-                            0.0f,  0.0f, 1.0f, 0.0f,
-                            0.0f,  0.0f, 0.0f, 1.0f,
-                        };
-                        // clang-format on
-                        gfx::MultMatrix(vshear);
-                        gfx::TranslateMatrix(-px, -baseline_y, 0);
-                        gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, vc);
-                        gfx::PopMatrix();
+                        // A real italic face, like the per-span pass above
+                        // -- no cover-first step needed here, since the
+                        // overlay rectangle already cleared everything.
+                        DrawItalicColumns(piece, px, py, vc);
                         return;
                     }
-                    gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, vc);
                     // Same 1px double-draw fake bold the per-span pass uses.
-                    if (d.bold && d.virt_overlay) {
-                        gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px + 1, py}, g_font_size, 0, vc);
-                    }
+                    DrawGridText(piece, px, py, vc, d.bold && d.virt_overlay);
                 };
                 // A collapsed run needs no cover at all: the base pass
                 // drew blanks over exactly those columns, so covering them
@@ -46917,7 +47923,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // draws as more than one line, but a short one draws as exactly
         // one and would otherwise get a rectangle off to the right of
         // where the link actually is.)
-        if (is_org_buffer && row_wrap_slots <= 1 && tbl_wrap == nullptr) {
+        if (is_heading_buffer && row_wrap_slots <= 1 && tbl_wrap == nullptr) {
             if (const std::vector<Buffer::OrgLinkSpan> *link_spans =
                     g_editor.OrgLinkSpansForRow(pane.buffer_id, row)) {
                 for (const Buffer::OrgLinkSpan &lsp : *link_spans) {
@@ -47209,14 +48215,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // the draw loop's notebook branch); it counts with that row.
             const int nb_trailing = nb_sess ? g_editor.NotebookTrailingSlots(pane.buffer_id, r) : 0;
             if (f) {
+                // A folded mepml header's large title claims its headroom.
+                slot += 1 + g_editor.RowTopPadSlots(buf, r);
                 r = f->end_row + 1;
-                slot += 1;
             } else if (g_editor.OrgImagesVisible() && img_it != buf.org_image_rows.end()) {
                 r += 1;
                 slot += g_editor.OrgImageLayoutForRow(img_it->second, pane.text_cols).slots + nb_trailing;
             } else if (latex != nullptr) {
                 r = latex->end_row + 1;  // skip the fragment's remaining raw source rows outright
                 slot += latex->slots + nb_trailing;
+            } else if (const Buffer::MepmlVirtualBlock *vb = g_editor.MepmlVirtualBlockForRow(buf, r, latex_cursor_row)) {
+                // A mepml @toc/@bibliography row: one slot per generated line.
+                r += 1;
+                slot += static_cast<int>(vb->lines.size()) + nb_trailing;
             } else if (g_editor.OrgTableWrapVisible() && tw_it != buf.org_table_wrap_rows.end() &&
                        !tw_it->second.lines.empty()) {
                 // An over-wide org table's row draws as its wrapped
@@ -47231,13 +48242,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 slot += nb_trailing;
                 // An org headline's own extra slot (kOrgHeadingStyles) --
                 // the third of the four walkers that has to agree on it.
-                if (is_org_buffer && g_editor.OrgHeadingScaleVisible()) {
-                    slot += Editor::OrgHeadingExtraSlotsFor(buf.lines[static_cast<size_t>(r)]);
+                if (is_heading_buffer && g_editor.OrgHeadingScaleVisible()) {
+                    slot += Editor::HeadingExtraSlotsForLevel(Editor::HeadingLevelForRow(buf, r));
                 }
+                slot += g_editor.RowTopPadSlots(buf, r);
                 r += 1;
             }
         }
-        return slot;
+        // The target's own headroom sits above its text (the draw loop's
+        // RowTopPadSlots), so the caret lands on the text line.
+        return slot + g_editor.RowTopPadSlots(buf, target_row);
     };
 
     if (is_active && !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row &&
@@ -47257,6 +48271,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const Buffer::OrgLatexRender *cursor_latex =
             g_editor.OrgLatexRenderForRow(buf, pane.cursor.row, latex_cursor_row);
         bool cursor_on_latex = cursor_latex != nullptr;
+        // A mepml @toc/@bibliography row is outlined as a whole band the
+        // same way (its text is the generated content, not the directive).
+        const Buffer::MepmlVirtualBlock *cursor_vb = g_editor.MepmlVirtualBlockForRow(buf, pane.cursor.row, -1);
+        if (cursor_vb != nullptr) {
+            cursor_on_latex = true;
+            // ...around the one line the cursor is on (Editor::VirtualLineStep).
+            cursor_slot += Editor::VirtualLineOf(pane, static_cast<int>(cursor_vb->lines.size()));
+        }
         // The cursor's own row soft-wraps the same way any other plain row
         // does (never an image/latex row, which are handled separately
         // below); pane.cursor.col picks out which of its visual sub-lines
@@ -47282,7 +48304,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // also where the hover/completion popup is anchored below.
         const OrgImageLayout cursor_img_lay =
             cursor_on_image ? g_editor.OrgImageLayoutForRow(cursor_img_it->second, pane.text_cols) : OrgImageLayout{};
-        int cursor_slots = cursor_on_image ? cursor_img_lay.slots : (cursor_on_latex ? cursor_latex->slots : 1);
+        int cursor_slots = cursor_on_image ? cursor_img_lay.slots
+                           : cursor_latex  ? cursor_latex->slots
+                                           : 1;  // (a @toc/@bibliography: its selected line)
         float row_extent = (cursor_on_image || cursor_on_latex) ? static_cast<float>(line_height) * static_cast<float>(cursor_slots)
                                                                   : static_cast<float>(line_height);
         // Buffer::row_cursor (kBuiltinFileTree's read-only tree): the row's
@@ -47302,6 +48326,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::DrawRectangleLines(static_cast<int>(text_x + cursor_img_lay.offset_x), static_cast<int>(cursor_y),
                                 static_cast<int>(cursor_img_lay.width), static_cast<int>(cursor_img_lay.height),
                                 ResolveHlGroup("Normal"));
+        } else if (cursor_on_latex && cursor_vb != nullptr) {
+            // A @toc/@bibliography line: the outline spans the block's card
+            // (the draw loop's own card geometry), not the whole pane.
+            int widest = 0;
+            for (const mepml::RenderedLine &l : cursor_vb->lines)
+                widest = std::max(widest, ByteOffsetToColumn(l.text, static_cast<int>(l.text.size())));
+            const float card_x = text_x - g_char_width * 0.5f;
+            const float card_w = std::min(x + w - card_x - static_cast<float>(kMarginX),
+                                          static_cast<float>(std::max(widest + 2, 24)) * g_char_width);
+            gfx::DrawRectangleLines(static_cast<int>(card_x), static_cast<int>(cursor_y), static_cast<int>(card_w),
+                                static_cast<int>(row_extent), ResolveHlGroup("Normal"));
         } else if (cursor_on_latex) {
             float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
             gfx::DrawRectangleLines(static_cast<int>(text_x), static_cast<int>(cursor_y), static_cast<int>(avail_w),
@@ -47588,7 +48623,32 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float right_limit = cb.header.x + cb.header.width - 8.0f;
             const OrgBlockPlayInput play_in = OrgBlockPlayInputOf(card);
             const OrgBlockPlay play = OrgBlockPlayFor(play_in);
-            if (play != OrgBlockPlay::kHidden) {
+            // A block whose program is running: a stop button where the
+            // play button would be.
+            if (card.term_run >= 0) {
+                const float stop_w = std::max(20.0f, chip_h + 4.0f);
+                const gfx::Rectangle stop_rect{right_limit - stop_w, chip_y, stop_w, chip_h};
+                if (stop_rect.x >= cb.header.x + 9.0f + g_char_width * 3.0f) {
+                    const gfx::Color red = ResolveHlGroup("Red");
+                    const bool stop_hover = PointInRect(gfx::GetMousePosition(), stop_rect);
+                    gfx::DrawRectangleRounded(stop_rect, 0.5f, 6, gfx::Fade(red, stop_hover ? 0.35f : 0.14f));
+                    gfx::DrawRectangleRoundedLinesEx(stop_rect, 0.5f, 6, 1.0f, gfx::Fade(red, 0.75f));
+                    const float side = chip_h * 0.38f;
+                    gfx::DrawRectangle(static_cast<int>(stop_rect.x + (stop_rect.width - side) / 2.0f),
+                                       static_cast<int>(stop_rect.y + (stop_rect.height - side) / 2.0f), static_cast<int>(side),
+                                       static_cast<int>(side), red);
+                    if (stop_hover) {
+                        g_pane_control_tooltip_text = "Stop the program (C-c C-k)";
+                        g_pane_control_tooltip_anchor =
+                            gfx::Rectangle{stop_rect.x, stop_rect.y, stop_rect.width, static_cast<float>(line_height)};
+                    }
+                    const int stop_run = card.term_run;
+                    RegisterClickRegionOnTop(stop_rect, [stop_run] { g_editor.MepmlTerminalStop(stop_run); });
+                    right_limit = stop_rect.x - 8.0f;
+                    play_left = stop_rect.x;
+                }
+            }
+            if (play != OrgBlockPlay::kHidden && card.term_run < 0) {
                 const float play_w = std::max(20.0f, chip_h + 4.0f);
                 const gfx::Rectangle play_rect{right_limit - play_w, chip_y, play_w, chip_h};
                 // Dropped entirely rather than overlapping the kind chip,
@@ -47657,7 +48717,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // `src` and `example` (OrgBlockHasSettings, org_doc.h); a
             // `quote`/`export` block gets a card and no gear, the same
             // way it gets no play button.
-            if (OrgBlockHasSettings(card.kind)) {
+            // (Not for mepml: the popup edits org header arguments.)
+            if (OrgBlockHasSettings(card.kind) && !is_mepml_buffer) {
                 const float gear_w = std::max(20.0f, chip_h + 4.0f);
                 const gfx::Rectangle gear_rect{right_limit - gear_w, chip_y, gear_w, chip_h};
                 // Dropped on a card too narrow for it, same as the play
@@ -47856,8 +48917,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
-        gfx::Color border = cb.is_src ? (cb.active ? accent : gfx::Fade(accent, 0.55f))
-                                       : gfx::Fade(ResolveHlGroup("Border"), cb.active ? 1.0f : 0.7f);
+        gfx::Color border = card.bare   ? gfx::Fade(ResolveHlGroup("Purple"), cb.active ? 0.8f : 0.4f)
+                            : cb.is_src ? (cb.active ? accent : gfx::Fade(accent, 0.55f))
+                                        : gfx::Fade(ResolveHlGroup("Border"), cb.active ? 1.0f : 0.7f);
         gfx::DrawRectangleRoundedLinesEx(cb.rect, card_rr, 6, cb.active ? 2.0f : 1.0f, border);
         // End-of-line virtual text belonging to a row this card conceals
         // (org_card_eol_texts above): a diagnostic on the `#+begin_src`
@@ -50765,6 +51827,8 @@ void UpdateDrawFrame() {
         else { stmt; } } while (0)
     try {
         UDF_TIME("JobManager::PollAll", JobManager::Instance().PollAll());
+        // mepml blocks whose program ended: their final screens become results.
+        UDF_TIME("MepmlTerminalsTick", g_editor.MepmlTerminalsTick());
         UDF_TIME("TcpJsonRpc::PollAll", TcpJsonRpcManager::Instance().PollAll());
         UDF_TIME("agent::PollOnce", mep::agent::PollOnce(g_editor));
         UDF_TIME("DrainUiInputQueue", DrainUiInputQueueOneStep());
@@ -50907,6 +51971,9 @@ void UpdateDrawFrame() {
             }
         }
         UDF_TIME("DrawEditor", DrawEditor());
+        // Program windows shown in mepml results: hide the ones this frame
+        // did not draw (scrolled away, buffer switched).
+        g_editor.MepmlGuisEndFrame();
         if (g_pending_gantt_raster_export.buffer_id >= 0) {
             ExportGanttRaster(g_pending_gantt_raster_export.buffer_id, g_pending_gantt_raster_export.format.c_str());
             g_pending_gantt_raster_export = {};
@@ -51781,6 +52848,7 @@ int main(int argc, char **argv) {
     // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
     LuaEnv *lua = new LuaEnv(&g_editor);
     g_editor.SetLuaEnv(lua);
+    g_editor.SetHtmlMeasureHook(MeasureMepmlHtml);
     // Runs before any user config, so init.lua's own mep.map_mod1() calls
     // (same key) simply overwrite these. Not filesystem-dependent, so this
     // runs the same way on both native and wasm builds.
@@ -51858,6 +52926,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinMathSnippets);
     lua->DoString(kBuiltinOrgSnippets);
     lua->DoString(kBuiltinOrgNotes);
+    lua->DoString(kBuiltinMepml);
     lua->DoString(kBuiltinSnippetHelp);
     lua->DoString(kBuiltinActivityBar);
     lua->DoString(kBuiltinAi);
@@ -51953,6 +53022,8 @@ int main(int argc, char **argv) {
     g_editor.ProjectDetectGit(g_editor.ActiveProject().id);
     mep::agent::Start();
     mep::agent_ui::Init(gfx::GetNativeWindowHandle());
+    // mepml exec-gui blocks embed programs' windows into this one.
+    g_editor.SetNativeWindowHandle(gfx::GetNativeWindowHandle());
     RegisterUiAutomationMethods();
     RegisterModel3DAgentMethods();
 #endif

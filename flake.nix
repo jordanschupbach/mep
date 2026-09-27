@@ -300,6 +300,7 @@
 
         devShells.default = (pkgs.mkShell.override { stdenv = mepStdenv; }) {
           packages = [
+            pkgs.xeyes
             pkgs.cmake
             pkgs.ninja
             # BUILD_PERFORMANCE_PLAN.md -- CMakeLists.txt auto-detects

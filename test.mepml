@@ -1,5 +1,14 @@
 //? Title: A Test Document
 //? Import: opts.mepml
+
+@abstract{
+This document exercises *every* construct mepml has, from ~inline markup~ and
+$e^{i\pi} + 1 = 0$ to executable code blocks and the results they write back.
+
+An abstract can run over several paragraphs; a blank line separates them.
+}
+
+> Analysis
 //? Import: refs.mepml
 //? MACRO: Let's worry about this one later...
 

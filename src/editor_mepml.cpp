@@ -21,6 +21,8 @@
 #include "png_codec.h"
 
 std::string LspFiletype(const std::string &fname);
+// editor.cpp's mtime-cached image header sniff (native pixel size, 0/0 if unreadable).
+void ImagePixelSizeCached(const std::string &path, int *width, int *height);
 
 namespace {
 
@@ -264,6 +266,7 @@ int Editor::RowTopPadSlots(const Buffer &buf, int row) const {
         if (sit == buf.mepml_fold_summaries.end() || sit->second.text_hash != hash) return 0;
         scale = sit->second.title_scale;
     } else {
+        if (const int pics = MepmlTableImageBoxes(buf, row, nullptr)) return pics;
         auto it = buf.mepml_row_scale.find(row);
         if (it == buf.mepml_row_scale.end() || hash != it->second.text_hash) return 0;
         if (org_images_visible_ && buf.org_image_rows.count(row)) return 0;
@@ -279,6 +282,47 @@ int Editor::RowTopPadSlots(const Buffer &buf, int row) const {
     constexpr double kSlack = 6.0;
     if (over <= kSlack) return 0;
     return static_cast<int>(std::ceil((over - kSlack) / lh));
+}
+
+int Editor::MepmlTableImageBoxes(const Buffer &buf, int row, std::vector<MepmlCellImageBox> *out) const {
+    if (out) out->clear();
+    if (!org_conceal_visible_ || !org_images_visible_) return 0;
+    auto it = buf.mepml_table_images.find(row);
+    if (it == buf.mepml_table_images.end() || row < 0 || row >= buf.LineCount()) return 0;
+    if (std::hash<std::string>{}(buf.lines[static_cast<size_t>(row)]) != it->second.text_hash) return 0;
+    const float cw = std::max(1.0f, static_cast<float>(render_char_width_));
+    const float lh = std::max(1.0f, static_cast<float>(render_line_height_));
+    // A picture fills its cell's width, but never grows past its own
+    // pixels, nor taller than kMaxSlots lines (a portrait shrinks instead).
+    constexpr int kMaxSlots = 12, kUnknownSlots = 6;
+    constexpr float kPad = 4.0f;  // px above and below the tallest picture
+    std::vector<MepmlCellImageBox> boxes;
+    float tallest = 0.0f;
+    for (const Buffer::MepmlTableImage &img : it->second.cells) {
+        MepmlCellImageBox b;
+        b.image = &img;
+        const float box_w = std::max(1.0f, static_cast<float>(img.cols) * cw);
+        if (img.width > 0 && img.height > 0) {
+            float k = std::min({1.0f, box_w / static_cast<float>(img.width),
+                                static_cast<float>(kMaxSlots) * lh / static_cast<float>(img.height)});
+            b.w = static_cast<float>(img.width) * k;
+            b.h = static_cast<float>(img.height) * k;
+        } else {
+            b.w = box_w;
+            b.h = static_cast<float>(kUnknownSlots) * lh;
+        }
+        b.x = static_cast<float>(img.col) * cw + (box_w - b.w) * 0.5f;
+        tallest = std::max(tallest, b.h);
+        boxes.push_back(b);
+    }
+    if (boxes.empty()) return 0;
+    const int slots = static_cast<int>(std::ceil((tallest + 2.0f * kPad) / lh - 1e-3f));
+    // Every picture centred in the headroom, so a row of mixed shapes
+    // shares one middle line.
+    const float room = static_cast<float>(slots) * lh;
+    for (MepmlCellImageBox &b : boxes) b.y = (room - b.h) * 0.5f;
+    if (out) *out = std::move(boxes);
+    return slots;
 }
 
 const Buffer::MepmlVirtualBlock *Editor::MepmlVirtualBlockForRow(const Buffer &buf, int row, int cursor_row) const {
@@ -338,6 +382,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     Buffer &buf = Buf();
     buf.mepml_heading_rows.clear();
     buf.mepml_row_scale.clear();
+    buf.mepml_table_images.clear();
     buf.mepml_virtual_rows.clear();
     buf.mepml_html_rows.clear();
     mepml_table_grids_.erase(CurrentBufferId());
@@ -581,6 +626,11 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             if (s.style & mepml::kBig) hl = "Yellow";
         }
         if ((s.style & mepml::kTableRule) && table_layout_rows.count(s.line)) continue;
+        // A picture cell's `@image{...}`: MepmlTableLayout hides it and the
+        // picture is drawn above the row.
+        if ((s.style & mepml::kTable) && (s.style & mepml::kDirective) && !s.target.empty() &&
+            table_layout_rows.count(s.line) && OrgImagesVisible())
+            continue;
         if (hide && figure_alt_rows.count(s.line)) continue;  // drawn below, small and centred
         // A caption's `@caption{` opener becomes its label, padded so a
         // figure's caption sits centred under it.
@@ -630,6 +680,14 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                 d.virt_text_hl = hl.empty() ? "Comment" : hl;
                 d.bold = (s.style & (mepml::kCallout | mepml::kCite)) != 0 && !s.replace.empty() &&
                          (s.style & mepml::kCallout);
+                // An abstract's label: bold, and centred when it has its
+                // line to itself (the way a paper sets it).
+                if ((s.style & mepml::kAbstract) && !s.replace.empty()) {
+                    d.bold = true;
+                    d.virt_text_hl = HeadingColor(2);
+                    if (s.replace == "Abstract" && line.find_first_not_of(" \t", static_cast<size_t>(s.col_end)) == std::string::npos)
+                        d.virt_text = std::string(static_cast<size_t>(std::max(0, (TextWidth() - Codepoints(s.replace)) / 2)), ' ') + s.replace;
+                }
                 add(d);
             } else {
                 Decoration d = base;
@@ -728,7 +786,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         }
     }
 
-    MepmlTableLayout(doc, spans, table_layout_rows, ns);
+    if (conceal) MepmlTableLayout(doc, spans, table_layout_rows, ns);
 
     // A figure's alt text: small, italic, muted and centred under it.
     if (conceal) {
@@ -977,7 +1035,8 @@ void Editor::RecomputeMepmlFolds() {
         }
         if (b.kind == mepml::BlockKind::Code || b.kind == mepml::BlockKind::Citation ||
             b.kind == mepml::BlockKind::MathBlock || b.kind == mepml::BlockKind::Comment ||
-            b.kind == mepml::BlockKind::Table || b.kind == mepml::BlockKind::List)
+            b.kind == mepml::BlockKind::Table || b.kind == mepml::BlockKind::List ||
+            b.kind == mepml::BlockKind::Abstract)
             add(b.line_start, b.line_end);
     }
 }
@@ -1071,9 +1130,9 @@ std::vector<OrgLiteralSpan> Editor::MepmlLiteralSpans() const {
 
 void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepml::Span> &spans,
                               const std::unordered_set<int> &rows, int ns) {
-    if (rows.empty()) return;
-    const Buffer &buf = Buf();
+    Buffer &buf = Buf();
     const int n = buf.LineCount();
+    const bool pictures = OrgImagesVisible();
     std::unordered_map<int, std::vector<const mepml::Span *>> by_line;
     for (const mepml::Span &sp : spans)
         if (rows.count(sp.line)) by_line[sp.line].push_back(&sp);
@@ -1112,6 +1171,7 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
         struct Cell {
             int ws_start, cs, ce, ws_end;  // segment [ws_start, ws_end), content [cs, ce)
             int width;
+            std::string image;  // a picture cell's resolved path (`@image{...}`)
         };
         std::map<int, std::vector<Cell>> cells;
         std::map<int, std::vector<int>> pipes;
@@ -1122,14 +1182,26 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             pipes[row] = p;
             if (row == b.separator_line || p.size() < 2) continue;
             for (size_t k = 0; k + 1 < p.size(); ++k) {
-                Cell c{p[k] + 1, p[k] + 1, p[k + 1], p[k + 1], 0};
+                Cell c{p[k] + 1, p[k] + 1, p[k + 1], p[k + 1], 0, {}};
                 while (c.cs < c.ce && (line[static_cast<size_t>(c.cs)] == ' ' || line[static_cast<size_t>(c.cs)] == '\t')) ++c.cs;
                 while (c.ce > c.cs && (line[static_cast<size_t>(c.ce - 1)] == ' ' || line[static_cast<size_t>(c.ce - 1)] == '\t')) --c.ce;
+                // A picture cell has no text of its own on the grid: its
+                // column is sized for the picture below, on every row
+                // (the cursor's too, so the grid never shifts under it).
+                std::string img;
+                if (pictures &&
+                    mepml::ResultImagePath(line.substr(static_cast<size_t>(c.cs), static_cast<size_t>(c.ce - c.cs)), &img)) {
+                    std::string resolved = OrgResolvePath(img);
+                    std::error_code ec;
+                    if (std::filesystem::exists(resolved, ec)) c.image = std::move(resolved);
+                }
                 // Width measured from the concealed spans when the row is
                 // laid out, raw codepoints for the cursor's own row (drawn
                 // as typed), so its cells still count toward the columns.
                 auto it = by_line.find(row);
-                if (it != by_line.end()) {
+                if (!c.image.empty()) {
+                    c.width = 0;
+                } else if (it != by_line.end()) {
                     for (const mepml::Span *sp : it->second)
                         if (sp->col_start >= c.cs && sp->col_end <= c.ce) c.width += span_width(*sp, line);
                 } else {
@@ -1141,6 +1213,30 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             }
         }
         if (widths.empty()) continue;
+        // Picture columns share what the text width leaves once the text
+        // columns and the pipes have theirs.
+        {
+            std::vector<bool> picture_col(widths.size(), false);
+            for (const auto &kv : cells)
+                for (size_t k = 0; k < kv.second.size(); ++k)
+                    if (!kv.second[k].image.empty()) picture_col[k] = true;
+            const int npic = static_cast<int>(std::count(picture_col.begin(), picture_col.end(), true));
+            if (npic > 0) {
+                int avail = TextWidth();
+                if (CurPane().text_cols > 8) avail = std::min(avail, CurPane().text_cols - 2);
+                const std::vector<int> &p0 = pipes[b.line_start];
+                int used = 1 + 3 * static_cast<int>(widths.size());
+                if (!p0.empty()) used += Codepoints(buf.lines[static_cast<size_t>(b.line_start)].substr(0, static_cast<size_t>(p0.front())));
+                for (size_t k = 0; k < widths.size(); ++k)
+                    if (!picture_col[k]) used += widths[k];
+                constexpr int kMinPictureCols = 8;
+                // ...but no wider than half the text: a lone picture
+                // column is a thumbnail beside its row, not a figure.
+                const int share = std::max(kMinPictureCols, std::min((avail - used) / npic, avail / 2));
+                for (size_t k = 0; k < widths.size(); ++k)
+                    if (picture_col[k]) widths[k] = std::max(widths[k], share);
+            }
+        }
         // The grid DrawPane's org table pass draws (outline, header wash,
         // zebra stripes, rules), in the display columns the layout below
         // puts every pipe at.
@@ -1164,6 +1260,26 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             for (int row = g.start_row; row <= g.end_row; ++row)
                 if (!rows.count(row)) g.raw_rows.push_back(row);
             mepml_table_grids_[CurrentBufferId()].push_back(g);
+            // Each picture in its cell's content box (after the `| `).
+            for (const auto &kv : cells) {
+                Buffer::MepmlTableImageRow pics;
+                int at = g.indent;
+                for (size_t k = 0; k < kv.second.size() && k < widths.size(); ++k) {
+                    const Cell &c = kv.second[k];
+                    if (!c.image.empty()) {
+                        Buffer::MepmlTableImage img;
+                        img.path = c.image;
+                        ImagePixelSizeCached(img.path, &img.width, &img.height);
+                        img.col = at + 2;
+                        img.cols = widths[k];
+                        pics.cells.push_back(std::move(img));
+                    }
+                    at += widths[k] + 3;
+                }
+                if (pics.cells.empty()) continue;
+                pics.text_hash = std::hash<std::string>{}(buf.lines[static_cast<size_t>(kv.first)]);
+                buf.mepml_table_images[kv.first] = std::move(pics);
+            }
         }
         auto align_of = [&](size_t k) {
             return k < b.aligns.size() ? b.aligns[k] : mepml::Align::Default;
@@ -1193,6 +1309,9 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
                 continue;
             }
             const std::vector<Cell> &cs = cells[row];
+            // On a row of pictures the pipes would stand alone in empty
+            // space beside the grid's own rules, so only the rules draw.
+            const bool picture_row = std::any_of(cs.begin(), cs.end(), [](const Cell &c) { return !c.image.empty(); });
             // Padding each cell needs before / after its content.
             std::vector<int> before(widths.size(), 0), after(widths.size(), 0);
             for (size_t k = 0; k < widths.size(); ++k) {
@@ -1209,7 +1328,7 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
                 // ASCII, like org's own pipes: the grid pass draws the
                 // rules and outline over it, and a full-height box glyph
                 // would poke out past the outline's rounded corners.
-                text += "|";
+                text += picture_row ? " " : "|";
                 if (k < cs.size()) text += " " + std::string(static_cast<size_t>(before[k]), ' ');
                 // A short row: draw its missing cells after the last pipe.
                 if (k + 1 == p.size())
@@ -1226,8 +1345,19 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
                 add(d);
             }
             // The source's own spacing around each cell is replaced by the
-            // padding above, so it is hidden.
+            // padding above, so it is hidden -- as is a picture cell's
+            // `@image{...}`, the picture being drawn above the row.
             for (const Cell &c : cs) {
+                if (!c.image.empty()) {
+                    Decoration d;
+                    d.row = row;
+                    d.col_start = c.cs;
+                    d.col_end = c.ce;
+                    d.virt_overlay = true;
+                    d.conceal = true;
+                    d.priority = 10;
+                    add(d);
+                }
                 for (auto range : {std::make_pair(c.ws_start, c.cs), std::make_pair(c.ce, c.ws_end)}) {
                     if (range.second <= range.first) continue;
                     Decoration d;
@@ -1271,6 +1401,17 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
         head.content_cols = widest(run.first, run.last);
         cards.push_back(std::move(head));
     }
+    // An abstract: a plain card of its own behind its prose.
+    for (const mepml::Block &b : doc.blocks) {
+        if (!b.origin.empty() || b.kind != mepml::BlockKind::Abstract) continue;
+        OrgBlockCard card;
+        card.meta_row = card.begin_row = b.line_start;
+        card.end_row = b.line_end;
+        card.kind = "abstract";
+        card.bare = true;
+        card.content_cols = widest(b.line_start, b.line_end);
+        cards.push_back(std::move(card));
+    }
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty() || b.kind != mepml::BlockKind::Code) continue;
         // The code itself: its `//?` option lines and ``` header become the
@@ -1298,6 +1439,7 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
             if (kv.second.buffer_id == CurrentBufferId() && kv.second.fence_row == code.begin_row && kv.second.code == b.code)
                 run_id = kv.first;
         code.term_run = run_id;
+        code.fold_row = b.line_start;  // RecomputeMepmlFolds folds the option lines too
         cards.push_back(std::move(code));
         // Its results: a card of their own, the `// result_begin:` and
         // `// result_end` markers standing in as its header and floor.
@@ -1311,6 +1453,7 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
                                                        : "output";
             out.is_src = false;
             out.term_run = run_id;
+            if (b.result_line_end > b.result_line_start) out.fold_row = b.result_line_start;
             // Rendered HTML is laid out to the text width; its source's
             // long lines must not widen the card.
             out.content_cols = b.result_format == "html" || run_id >= 0 ? 0 : widest(out.begin_row, b.result_line_end);

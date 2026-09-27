@@ -279,6 +279,33 @@ int main() {
         CHECK(html.find("</li></ul><ol start=\"2\"><li>two") != std::string::npos);
     }
 
+    // --- Pictures in table cells: a cell of nothing but `@image{path}`.
+    {
+        Lines src = {
+            "| name | @image{a_b_c.png} |",       // 0
+            "| x @image{no.png} | @image{} |",   // 1
+        };
+        Document d = Parse(src);
+        CHECK(d.blocks.size() == 1 && d.blocks[0].kind == BlockKind::Table && d.blocks[0].rows.size() == 2);
+        const Block &t = d.blocks[0];
+        CHECK(t.rows[0][0].image.empty() && t.rows[0][1].image == "a_b_c.png");
+        // Text around it, or no path, is an ordinary cell.
+        CHECK(t.rows[1][0].image.empty() && t.rows[1][1].image.empty());
+        // One directive span over the cell -- no underline markup read out
+        // of the path's underscores.
+        std::vector<Span> spans = Highlight(d);
+        bool directive = false, underline = false;
+        for (const Span &sp : spans) {
+            if (sp.line != 0) continue;
+            if ((sp.style & kDirective) && sp.target == "a_b_c.png" && sp.col_start == 9 && sp.col_end == 26) directive = true;
+            if (sp.style & kUnderline) underline = true;
+        }
+        CHECK(directive && !underline);
+        std::string html = ToHtml(d);
+        CHECK(html.find("<td><img src=\"a_b_c.png\" alt=\"\"></td>") != std::string::npos);
+        CHECK(html.find("<td>x @image{no.png}</td>") != std::string::npos);
+    }
+
     // --- Figures: a code block's `@image{}` result line, shared numbering
     //     with @image figures, tables numbered apart, and the export.
     {
@@ -318,6 +345,51 @@ int main() {
         CHECK(html.find("<figcaption>Figure 2: Second</figcaption>") != std::string::npos);
         CHECK(html.find("<caption>Table 1: Tab</caption>") != std::string::npos);
         CHECK(html.find("@image{plot.png}") == std::string::npos);
+    }
+
+    // --- @abstract: prose over lines, paragraphs split by blank lines.
+    {
+        Lines src = {
+            "@abstract{",                          // 0
+            "We show *this*",                      // 1
+            "- across lines \\fn{a note}.",        // 2  (not a list inside an abstract)
+            "",                                    // 3
+            "  ",                                  // 4
+            "Second {braced} part.",               // 5
+            "} // done",                           // 6
+            "After.",                              // 7
+            "@abstract{One line.}",                // 8
+            "@abstract{never closed",              // 9
+        };
+        Document d = Parse(src);
+        const Block &a = d.blocks[0];
+        CHECK(a.kind == BlockKind::Abstract && a.line_start == 0 && a.line_end == 6);
+        std::vector<std::vector<Inline>> paras = AbstractParagraphs(a);
+        CHECK(paras.size() == 2);
+        CHECK(InlinePlainText(paras[0]) == "We show this\n- across lines .");
+        CHECK(InlinePlainText(paras[1]) == "Second {braced} part.");
+        CHECK(d.footnote_count == 1);
+        CHECK(d.blocks[1].kind == BlockKind::Paragraph && d.blocks[1].line_start == 7);
+        CHECK(d.blocks[2].kind == BlockKind::Abstract && AbstractParagraphs(d.blocks[2]).size() == 1);
+        CHECK(d.blocks[3].kind == BlockKind::Abstract && d.blocks[3].line_end == 9);
+        bool second = false, unclosed = false, trailing = false;
+        for (const Diagnostic &dg : d.diagnostics) {
+            if (dg.line == 8 && dg.message.find("second") != std::string::npos) second = true;
+            if (dg.line == 9 && dg.message.find("never closed") != std::string::npos) unclosed = true;
+            if (dg.line == 6) trailing = true;
+        }
+        CHECK(second && unclosed && !trailing);
+        // The editor's spans: the opener reads as a label, the closer goes.
+        bool label = false, closer = false;
+        for (const Span &sp : Highlight(d)) {
+            if (sp.line == 0 && sp.markup && (sp.style & kAbstract) && sp.replace == "Abstract") label = true;
+            if (sp.line == 6 && sp.markup && (sp.style & kAbstract) && sp.col_start == 0 && sp.col_end == 1) closer = true;
+        }
+        CHECK(label && closer);
+        const std::string html = ToHtml(d);
+        CHECK(html.find("<section class=\"abstract\"><p class=\"abstract-title\">Abstract</p><p>We show <strong>this</strong>") !=
+              std::string::npos);
+        CHECK(html.find("<p>Second {braced} part.</p></section>") != std::string::npos);
     }
 
     // --- Generated content: table of contents and bibliography.
@@ -451,6 +523,7 @@ int main() {
         CHECK(count[BlockKind::Callout] >= 3);
         CHECK(count[BlockKind::List] >= 1);
         CHECK(count[BlockKind::Bibliography] == 1);
+        CHECK(count[BlockKind::Abstract] == 1);
         CHECK(d.footnote_count == 1);
         CHECK(d.cite_order.size() == 2);
         // Every inline kind appears somewhere.

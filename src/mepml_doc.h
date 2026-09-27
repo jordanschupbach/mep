@@ -109,6 +109,7 @@ enum class BlockKind {
     Rule,          // --- (3+ of - = _ *)
     Bibliography,  // @bibliography (the older @printbibliography still parses)
     TableOfContents,  // @toc
+    Abstract,      // @abstract{ prose, blank lines between paragraphs }
 };
 
 enum class Align { Default, Left, Center, Right };
@@ -127,6 +128,9 @@ struct ListItem {
 struct TableCell {
     std::vector<Inline> content;
     int start = 0, end = 0;  // offsets into Block::text
+    // A cell holding nothing but `@image{path}` is a picture: the path,
+    // "" for an ordinary cell. `content` still has the raw text.
+    std::string image;
 };
 
 struct Block {
@@ -180,6 +184,11 @@ struct Block {
 
     std::vector<ListItem> items;  // List
 
+    // Abstract: `inlines` holds all of its prose; paragraph k is
+    // inlines[paragraph_starts[k] .. paragraph_starts[k+1]) (see
+    // AbstractParagraphs). Always starts with 0 when there is any text.
+    std::vector<size_t> paragraph_starts;
+
     // Offset (into text) of the first byte that belongs to each line.
     std::vector<int> line_offsets;
     struct Pos {
@@ -216,6 +225,9 @@ struct Document {
     // Index into blocks of the block covering `line`, or -1.
     int BlockAtLine(int line) const;
 };
+
+// An @abstract block's paragraphs, each its own run of inlines.
+std::vector<std::vector<Inline>> AbstractParagraphs(const Block &b);
 
 // The callout keywords a `// KEYWORD:` comment recognises.
 const std::vector<std::string> &CalloutKeywords();
@@ -278,6 +290,7 @@ enum StyleFlag : std::uint32_t {
     kHeading = 1u << 26,
     kError = 1u << 27,  // unresolved reference etc.
     kTableRule = 1u << 28,  // a table's own `|` pipes / |---| separator row
+    kAbstract = 1u << 29,   // an @abstract's `@abstract{` / `}` (replace = its "Abstract" label)
 };
 
 struct Span {

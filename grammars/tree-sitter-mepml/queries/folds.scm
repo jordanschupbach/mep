@@ -8,4 +8,5 @@
   (list)
   (comment)
   (callout)
+  (abstract)
 ] @fold

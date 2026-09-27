@@ -1,5 +1,24 @@
 [
   {
+    "type": "abstract",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "content",
+          "named": true
+        },
+        {
+          "type": "inline_comment",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "alttext",
     "named": true,
     "fields": {},
@@ -888,6 +907,10 @@
       "multiple": true,
       "required": false,
       "types": [
+        {
+          "type": "abstract",
+          "named": true
+        },
         {
           "type": "alttext",
           "named": true
@@ -2165,6 +2188,10 @@
       "required": true,
       "types": [
         {
+          "type": "abstract",
+          "named": true
+        },
+        {
           "type": "alttext",
           "named": true
         },
@@ -3044,6 +3071,10 @@
   },
   {
     "type": "]",
+    "named": false
+  },
+  {
+    "type": "abstract",
     "named": false
   },
   {

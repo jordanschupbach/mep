@@ -1,0 +1,32 @@
+//? Title: The iris dataset
+//? author: Jordan Schupbach
+//? Import: refs.mepml
+
+@abstract{
+In 1930, the iris dataset was introduced by the British statistician and
+biologist Ronald Fisher. The dataset consists of 150 samples of iris flowers,
+with 50 samples from each of three species: Iris setosa, Iris versicolor, and
+Iris virginica. We recreate his analysis in this report.
+}
+
+> Introduction
+
+The iris is a famous dataset in the field of machine learning and statistics. It
+consists of 150 samples from three species of iris flowers (Iris setosa, Iris
+versicolor, and Iris virginica). Each sample has four features: sepal length,
+sepal width, petal length, and petal width. The dataset is widely used for
+classification tasks and serves as a benchmark for various machine learning
+algorithms.
+
+
+|    @image{./figs/Iris_versicolor.jpg} | @image{./figs/Iris_setosa.jpg} | @image{./figs/Iris_virginica.jpg} |
+
+
+> Methods
+
+The linear discriminant method
+
+> Analysis
+> Conclusion
+
+

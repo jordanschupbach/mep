@@ -1077,6 +1077,23 @@ struct Buffer {
         size_t text_hash = 0;
     };
     std::unordered_map<int, MepmlRowScale> mepml_row_scale;
+    // mepml table rows with a picture in a cell (`| @image{path} |`,
+    // mepml::TableCell::image): row -> the cells' images, each in the
+    // display columns MepmlTableLayout gave its cell. The pictures are
+    // drawn in headroom above the row (Editor::RowTopPadSlots, so every
+    // slot walker already agrees on the height), sized by
+    // Editor::MepmlTableImageBoxes; `text_hash` drops the entry once the
+    // row is edited since the scan.
+    struct MepmlTableImage {
+        std::string path;
+        int width = 0, height = 0;  // native pixels, 0/0 if unknown
+        int col = 0, cols = 0;      // the cell's content box, display columns
+    };
+    struct MepmlTableImageRow {
+        std::vector<MepmlTableImage> cells;
+        size_t text_hash = 0;
+    };
+    std::unordered_map<int, MepmlTableImageRow> mepml_table_images;
     // mepml rows drawn as generated content in place of their own text:
     // `@toc` (the headings) and `@bibliography` (the cited entries), one
     // line of styled text per drawn line (mepml::RenderToc/
@@ -3137,6 +3154,11 @@ struct OrgBlockCard {
     // A mepml block whose program is running in a terminal inside its
     // results (Editor::MepmlTerminalStart): the bar shows a stop button.
     int term_run = -1;
+    // A mepml card's own fold (Editor::RecomputeMepmlFolds): the row it
+    // starts on, or -1 when the card has none. Closed, the card collapses
+    // to its title bar on that row instead of dropping to plain text, and
+    // the bar carries a minimize/restore button toggling it.
+    int fold_row = -1;
 };
 
 // The play-button view of a card (OrgBlockPlayFor, org_doc.h). The two
@@ -8651,6 +8673,14 @@ public:
      */
     void ToggleFoldAtRow(int row);
     /**
+     * @brief Toggles the fold that starts exactly at a row (the widest, if several do).
+     * @param row The fold's start row.
+     *
+     * A mepml card's minimize button, which names its fold by start row
+     * rather than by a row somewhere inside it.
+     */
+    void ToggleFoldStartingAt(int row);
+    /**
      * @brief Creates a new fold over a row range in the current buffer.
      * @param start_row The fold's start row.
      * @param end_row The fold's end row.
@@ -8755,6 +8785,21 @@ public:
      * @return Slots of headroom above the row's text; 0 for ordinary rows and closed-fold summaries.
      */
     int RowTopPadSlots(const Buffer &buf, int row) const;
+    // Where one picture of a mepml table row is drawn, in pixels: `x` from
+    // the text column's left edge, `y` from the top of the row's headroom.
+    struct MepmlCellImageBox {
+        const Buffer::MepmlTableImage *image = nullptr;
+        float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+    };
+    /**
+     * @brief Lays out the pictures in a mepml table row's cells (Buffer::mepml_table_images).
+     * @param buf The buffer.
+     * @param row 0-based row.
+     * @param out Receives each picture's box when non-null.
+     * @return The slots of headroom the pictures take above the row; 0 when the row has none
+     * (or images/concealment are off, or the row changed since the scan).
+     */
+    int MepmlTableImageBoxes(const Buffer &buf, int row, std::vector<MepmlCellImageBox> *out) const;
     /**
      * @brief The generated content (@toc / @bibliography) a row draws as, or nullptr when it draws its own text (no such content, concealment off, or a closed fold on it).
      * @param buf The buffer.

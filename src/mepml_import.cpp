@@ -345,6 +345,35 @@ struct Out {
         Block(o);
     }
     void Math(const std::string &tex) { Block("$$\n" + Trim(tex) + "\n$$", kFigure); }
+    // An abstract, one run of segments per paragraph.
+    void Abstract(const std::vector<std::vector<Seg>> &paras) {
+        std::vector<std::string> texts;
+        for (const std::vector<Seg> &p : paras) {
+            std::vector<Seg> segs = p;
+            Coalesce(segs);
+            std::string o;
+            for (const std::string &l : SplitLines(Trim(RenderSegs(segs))))
+                if (!Trim(l).empty()) o += (o.empty() ? "" : "\n") + Trim(l);
+            if (!o.empty()) texts.push_back(o);
+        }
+        if (texts.empty()) return;
+        std::string body;
+        for (const std::string &t : texts) body += (body.empty() ? "" : "\n\n") + t;
+        // Its closing brace is the first unbalanced `}`: prose that would
+        // unbalance it stays ordinary paragraphs instead.
+        int depth = 0;
+        bool ok = true;
+        for (size_t k = 0; k < body.size() && ok; ++k) {
+            if (body[k] == '\\') ++k;
+            else if (body[k] == '{') ++depth;
+            else if (body[k] == '}' && --depth < 0) ok = false;
+        }
+        if (!ok || depth != 0) {
+            for (const std::vector<Seg> &p : paras) Paragraph(p);
+            return;
+        }
+        Block("@abstract{\n" + body + "\n}");
+    }
     void Rule() { Block("---"); }
     void Comment(const std::string &text) {
         std::string o;
@@ -878,6 +907,14 @@ struct HtmlReader {
                 out.Callout("NOTE", InlOf(c));
             } else if (t == "nav" && HasClass(c, "toc")) {
                 out.Block("@toc");
+            } else if ((t == "section" || t == "div") && HasClass(c, "abstract")) {
+                // mep's own and pandoc's: a title element, then paragraphs.
+                std::vector<std::vector<Seg>> paras;
+                for (const auto &k : c->children) {
+                    if (k->type != DomNodeType::Element || HasClass(k.get(), "abstract-title")) continue;
+                    paras.push_back(InlOf(k.get()));
+                }
+                out.Abstract(paras);
             } else if (t == "section" && HasClass(c, "footnotes")) {
                 continue;  // folded into the \fn{} they belong to
             } else if (t == "section" && HasClass(c, "bibliography")) {
@@ -1710,6 +1747,27 @@ struct MdReader {
                     out.Results(raw, "html");
                     continue;
                 }
+                // An abstract (see MdWriter): its paragraphs up to the
+                // closing marker, less the bold "Abstract" line.
+                if (text == "mepml:abstract") {
+                    std::vector<std::vector<Seg>> paras;
+                    std::string cur;
+                    size_t n = i + 1;
+                    for (; n < lines.size() && Trim(lines[n]) != "<!-- /mepml:abstract -->"; ++n) {
+                        const std::string lt = Trim(lines[n]);
+                        if (lt == "**Abstract**") continue;
+                        if (lt.empty()) {
+                            if (!cur.empty()) paras.push_back(InlOf(cur));
+                            cur.clear();
+                        } else {
+                            cur += (cur.empty() ? "" : "\n") + lt;
+                        }
+                    }
+                    if (!cur.empty()) paras.push_back(InlOf(cur));
+                    i = n;
+                    out.Abstract(paras);
+                    continue;
+                }
                 // mep's own markers (see MdWriter): @toc / @bibliography
                 // stand for the heading and list that follow them.
                 if (text == "mepml:toc" || text == "mepml:bibliography") {
@@ -2209,6 +2267,19 @@ struct OrgReader {
                     out.Code("", {}, code);
                 } else if (kind == "export" || kind == "comment") {
                     // not document text
+                } else if (kind == "abstract") {
+                    std::vector<std::vector<Seg>> paras;
+                    std::string text;
+                    for (const std::string &b : blk) {
+                        if (Trim(b).empty()) {
+                            if (!text.empty()) paras.push_back(InlOf(text));
+                            text.clear();
+                        } else {
+                            text += (text.empty() ? "" : "\n") + Trim(b);
+                        }
+                    }
+                    if (!text.empty()) paras.push_back(InlOf(text));
+                    out.Abstract(paras);
                 } else if (kind == "center") {
                     for (const std::string &b : blk) para.push_back(b);
                     flush();
@@ -2742,7 +2813,10 @@ std::string MathmlTex(const xml::xml_node &n) {
 }
 
 // A paragraph's role, from its style.
-enum class ParaKind { Body, Title, Subtitle, Author, Date, Heading, Code, Quote, Caption, TocHeading, Toc, Bibliography, MathDisplay, Rule };
+enum class ParaKind {
+    Body, Title, Subtitle, Author, Date, Heading, Code, Quote, Caption, TocHeading, Toc, Bibliography, MathDisplay, Rule,
+    AbstractTitle, Abstract
+};
 
 // mep's own writers spell <small>, >big<, +inserted+ and !deleted! as a
 // size or a colour; read those back as the constructs they came from.
@@ -2875,6 +2949,7 @@ struct Assembler {
     std::string code_lang;
     std::vector<std::pair<std::string, std::string>> code_opts;
     std::vector<std::string> citations;
+    std::vector<std::vector<Seg>> abstract;  // consecutive Abstract paragraphs, not yet written
 
     std::string code_html;  // the block's html result, from the package's properties
     // A code block begins here (a mepml_code_N bookmark).
@@ -2885,7 +2960,12 @@ struct Assembler {
         code_opts = opts;
         code_html = html_result;
     }
+    void FlushAbstract() {
+        if (!abstract.empty()) out.Abstract(abstract);
+        abstract.clear();
+    }
     void FlushCode() {
+        FlushAbstract();
         if (!code.empty()) {
             std::string body;
             for (const std::string &l : code) body += l + "\n";
@@ -2906,6 +2986,7 @@ struct Assembler {
         }
     }
     void FlushList() {
+        FlushAbstract();
         if (!list.empty()) out.List(list);
         list.clear();
     }
@@ -2920,6 +3001,19 @@ struct Assembler {
     }
     void Para(ParaKind kind, int level, std::vector<Seg> segs, bool gray) {
         if (kind == ParaKind::Toc) return;  // the table of contents' own entries: @toc regenerates them
+        // An abstract's title is implied by @abstract; its paragraphs
+        // gather until something else arrives.
+        if (kind == ParaKind::AbstractTitle) {
+            Flush();
+            return;
+        }
+        if (kind == ParaKind::Abstract) {
+            if (abstract.empty()) Flush();
+            OfficeFmt(segs);
+            CollapseSpaces(segs);
+            if (!Trim(Plain(segs)).empty()) abstract.push_back(std::move(segs));
+            return;
+        }
         if (kind == ParaKind::Bibliography && bibliography) return;
         if (kind == ParaKind::Rule && Trim(Plain(segs)).empty()) {
             Flush();
@@ -3087,7 +3181,7 @@ struct DocxReader {
             if (StartsWith(n, "heading") || n == "title" || n == "subtitle" || n.find("code") != std::string::npos ||
                 n.find("preformatted") != std::string::npos || n.find("quote") != std::string::npos || n == "caption" ||
                 StartsWith(n, "toc") || n == "block text" || n == "plain text" || n == "verbatim" || n == "bibliography" ||
-                n == "author" || n == "date")
+                n == "author" || n == "date" || n == "abstract" || n == "abstract title")
                 return n;
             auto b = style_base.find(id);
             if (b == style_base.end()) return n;
@@ -3296,6 +3390,8 @@ struct DocxReader {
         if (n == "date") return ParaKind::Date;
         if (n.find("toc heading") != std::string::npos) return ParaKind::TocHeading;
         if (StartsWith(n, "toc")) return ParaKind::Toc;
+        if (n == "abstract title") return ParaKind::AbstractTitle;
+        if (n == "abstract") return ParaKind::Abstract;
         if (n.find("code") != std::string::npos || n.find("preformatted") != std::string::npos || n == "plain text" || n == "verbatim")
             return ParaKind::Code;
         if (n.find("quote") != std::string::npos || n == "block text") return ParaKind::Quote;
@@ -3560,7 +3656,7 @@ struct OdtReader {
             if (StartsWith(d, "heading") || d == "title" || d == "subtitle" || d == "author" || d == "date" || d.find("preformatted") != std::string::npos ||
                 d.find("quotation") != std::string::npos || d.find("quote") != std::string::npos || d == "caption" ||
                 StartsWith(d, "contents") || d == "source text" || d == "code" || d == "math display" || d == "bibliography" || d == "rule" ||
-                d == "horizontal line")
+                d == "horizontal line" || d == "abstract" || d == "abstract title")
                 return d;
             if (it == styles.end()) return d;
             name = it->second.parent;
@@ -3740,6 +3836,8 @@ struct OdtReader {
                 else if (role == "author") kind = ParaKind::Author;
                 else if (role == "date") kind = ParaKind::Date;
                 else if (role == "contents heading") kind = ParaKind::TocHeading;
+                else if (role == "abstract title") kind = ParaKind::AbstractTitle;
+                else if (role == "abstract") kind = ParaKind::Abstract;
                 else if (StartsWith(role, "contents")) kind = ParaKind::Toc;
                 else if (nm == "text:h" || StartsWith(role, "heading")) {
                     kind = ParaKind::Heading;
@@ -4015,6 +4113,8 @@ struct RtfReader {
         if (n == "date") return ParaKind::Date;
         if (n == "toc heading") return ParaKind::TocHeading;
         if (StartsWith(n, "toc ")) return ParaKind::Toc;
+        if (n == "abstract title") return ParaKind::AbstractTitle;
+        if (n == "abstract") return ParaKind::Abstract;
         if (n == "source code" || n.find("preformatted") != std::string::npos || n == "verbatim") return ParaKind::Code;
         if (n == "quote" || n == "block text") return ParaKind::Quote;
         if (n == "caption") return ParaKind::Caption;

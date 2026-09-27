@@ -105,6 +105,7 @@ bool Expected(const mepml::Block &b, Expect *e) {
         case BlockKind::Rule: e->type = "rule_line"; return true;
         case BlockKind::Bibliography: e->type = "bibliography"; return true;
         case BlockKind::TableOfContents: e->type = "toc"; return true;
+        case BlockKind::Abstract: e->type = "abstract"; return true;
     }
     return false;
 }
@@ -169,6 +170,8 @@ void CheckAgreement(TSParser *parser, const Lines &lines, const char *what) {
         if (n.type == "image" || n.type == "import" || n.type == "display_math" || n.type == "bibliography" ||
             n.type == "toc" || n.type == "caption" || n.type == "alttext")
             directive_rows.insert(n.start_row);
+        else if (n.type == "abstract")
+            directive_rows.insert(n.end_row);  // after its closing brace
     for (const TsNode &n : nodes)
         if (n.type != "inline_comment" || !directive_rows.count(n.start_row)) got[n.type]++;
     int mismatched = 0;

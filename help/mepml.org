@@ -50,7 +50,10 @@ citations, display maths, tables, lists and comment runs. A code block and
 its results fold separately: =za= on the opening fence folds the code,
 =za= on the =// result_begin:= line folds the results, so either can be
 put away while the other stays open (a running program's terminal or
-window hides with its results). The Structure sidebar lists the headings.
+window hides with its results). The =-= button at the right of either
+card's title bar does the same with the mouse. A folded card keeps its title
+bar (language, options, play button, and a count of the hidden lines), and its
+=+= button unfolds it. The Structure sidebar lists the headings.
 
 * Document options and comments
 
@@ -134,6 +137,30 @@ The keywords are =NOTE=, =INFO=, =TIP=, =HINT=, =SUCCESS=, =WARNING=,
 
 Up to six levels. A blank line separates paragraphs. A line of three or
 more of the same one of =-=, ~=~, =_= or =*= is a dividing rule.
+
+* The abstract
+
+#+begin_example
+@abstract{
+What the document is about, with any *inline* markup, $maths$ and
+\cite{key} citations.
+
+A blank line starts a second paragraph.
+}
+#+end_example
+
+The prose runs to the matching =}=, over as many lines as it needs; a
+blank line inside starts a new paragraph. Every line inside is prose, even
+one that begins with =-= or =>=. =@abstract{One sentence.}= on one line
+works too. A document has one abstract; a second is flagged.
+
+The editor draws it as a card, with =@abstract{= shown as a centred
+*Abstract* label (or a run-in *Abstract.* when text follows it on the same
+line) and the closing brace hidden. It folds like a code block. Each export
+writes its own format's abstract: LaTeX's =abstract= environment, Org's
+=#+begin_abstract=, Word's and LibreOffice's /Abstract/ styles, and a
+=<section class="abstract">= in HTML. Imports read these back, and pandoc's
+abstracts as well.
 
 * Inline formatting
 
@@ -420,6 +447,19 @@ up when drawing, without changing the text. Colons in the separator row
 align a column left (=:--=), right (=--:=) or centre (=:-:=). The table
 under the cursor shows its raw text.
 
+A cell holding only an image puts that picture in the table:
+
+#+begin_example
+| @image{./figs/setosa.jpg} | @image{./figs/versicolor.jpg} |
+| ~Iris setosa~             | ~Iris versicolor~             |
+#+end_example
+
+In the editor the picture columns share the text width that the other
+columns leave (at most half of it each), and the row gets taller to fit
+the tallest picture. When the cursor is on that row, the pictures stay
+above its raw text. The export puts an =<img>= in the cell. A cell with
+anything else next to the image is plain text.
+
 * Lists
 
 #+begin_example
@@ -488,8 +528,8 @@ file are saved to a =file_media= directory next to it.
 
 A round trip keeps the document. Headings, paragraphs, every kind of
 inline formatting, links, footnotes, maths, code blocks with their
-results, figures and tables with captions, lists, callouts, the table of
-contents and the bibliography all come back. Word, OpenDocument and RTF
+results, figures and tables with captions, lists, callouts, the abstract,
+the table of contents and the bibliography all come back. Word, OpenDocument and RTF
 also carry what they have no place for as custom document properties:
 the =//?= options, each code block's language and options, and the
 bibliography's entries. Markdown and Org carry the bibliography in a

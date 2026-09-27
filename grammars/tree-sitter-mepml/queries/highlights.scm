@@ -54,6 +54,7 @@
 (alttext "@" @keyword.directive "alttext" @keyword.directive)
 (bibliography) @keyword.directive
 (toc) @keyword.directive
+(abstract "@" @keyword.directive "abstract" @keyword.directive)
 (citation "@" @keyword.directive "citation" @keyword.directive)
 (bibtex_entry "@" @keyword.directive type: (entry_type) @keyword.directive)
 (path) @string.special.path

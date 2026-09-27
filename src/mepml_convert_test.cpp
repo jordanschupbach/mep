@@ -112,6 +112,10 @@ Lines Signature(const Document &doc, const Keeps &k) {
             case BlockKind::Rule: s = "R"; break;
             case BlockKind::TableOfContents: s = "TOC"; break;
             case BlockKind::Bibliography: s = "BIB"; break;
+            case BlockKind::Abstract:
+                s = "A";
+                for (const std::vector<Inline> &para : AbstractParagraphs(b)) s += "\n" + Plain(para);
+                break;
             case BlockKind::Comment:
             case BlockKind::Meta:
             case BlockKind::Import:

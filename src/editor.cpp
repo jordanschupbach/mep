@@ -22348,6 +22348,17 @@ void Editor::ToggleFoldAtRow(int row) {
     if (innermost) innermost->closed = !innermost->closed;
 }
 
+void Editor::ToggleFoldStartingAt(int row) {
+    // The same lazy recompute the z-commands do: these folds have no
+    // watcher, so they may not exist yet (or may predate an edit).
+    if (IsOrgBuffer()) RecomputeOrgFolds();
+    if (IsMepmlBuffer()) RecomputeMepmlFolds();
+    Fold *widest = nullptr;
+    for (Fold &f : Buf().folds)
+        if (f.start_row == row && (!widest || f.end_row > widest->end_row)) widest = &f;
+    if (widest) widest->closed = !widest->closed;
+}
+
 void Editor::CreateFold(int start_row, int end_row, bool closed, const std::string &provider) {
     if (start_row > end_row) std::swap(start_row, end_row);
     start_row = std::max(0, start_row);
@@ -22409,6 +22420,10 @@ void OrgImagePixelSize(const std::string &path, int *width, int *height) {
     *height = entry.height;
 }
 }  // namespace
+
+// The same mtime-cached header sniff, for mepml's table-cell pictures
+// (Editor::MepmlTableLayout, editor_mepml.cpp).
+void ImagePixelSizeCached(const std::string &path, int *width, int *height) { OrgImagePixelSize(path, width, height); }
 
 void Editor::SetOrgImageRow(int row, const std::string &path) {
     if (row < 0 || row >= Buf().LineCount()) return;

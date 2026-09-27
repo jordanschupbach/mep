@@ -56,7 +56,10 @@ citations, display maths, tables, lists and comment runs. A code block and
 its results fold separately: <code>za</code> on the opening fence folds the code,
 <code>za</code> on the <code>// result_begin:</code> line folds the results, so either can be
 put away while the other stays open (a running program's terminal or
-window hides with its results). The Structure sidebar lists the headings.</p>
+window hides with its results). The <code>-</code> button at the right of either
+card's title bar does the same with the mouse. A folded card keeps its title
+bar (language, options, play button, and a count of the hidden lines), and its
+<code>+</code> button unfolds it. The Structure sidebar lists the headings.</p>
 <h1>Document options and comments</h1>
 <pre>//? Title: Some title
 //? Option: OptionA=10
@@ -109,6 +112,24 @@ it.</p>
 &gt;&gt;&gt; Heading level 3</pre>
 <p>Up to six levels. A blank line separates paragraphs. A line of three or
 more of the same one of <code>-</code>, <code>=</code>, <code>_</code> or <code>*</code> is a dividing rule.</p>
+<h1>The abstract</h1>
+<pre>@abstract{
+What the document is about, with any *inline* markup, $maths$ and
+\cite{key} citations.
+
+A blank line starts a second paragraph.
+}</pre>
+<p>The prose runs to the matching <code>}</code>, over as many lines as it needs; a
+blank line inside starts a new paragraph. Every line inside is prose, even
+one that begins with <code>-</code> or <code>&gt;</code>. <code>@abstract{One sentence.}</code> on one line
+works too. A document has one abstract; a second is flagged.</p>
+<p>The editor draws it as a card, with <code>@abstract{</code> shown as a centred
+<b>Abstract</b> label (or a run-in <b>Abstract.</b> when text follows it on the same
+line) and the closing brace hidden. It folds like a code block. Each export
+writes its own format's abstract: LaTeX's <code>abstract</code> environment, Org's
+<code>#+begin_abstract</code>, Word's and LibreOffice's <i>Abstract</i> styles, and a
+<code>&lt;section class</code>"abstract"&gt;= in HTML. Imports read these back, and pandoc's
+abstracts as well.</p>
 <h1>Inline formatting</h1>
 <table>
 <tr><th>Markup</th><th>Result</th></tr>
@@ -328,6 +349,14 @@ The pipes don't need to line up in the file, because mep lines the columns
 up when drawing, without changing the text. Colons in the separator row
 align a column left (<code>:--</code>), right (<code>--:</code>) or centre (<code>:-:</code>). The table
 under the cursor shows its raw text.</p>
+<p>A cell holding only an image puts that picture in the table:</p>
+<pre>| @image{./figs/setosa.jpg} | @image{./figs/versicolor.jpg} |
+| ~Iris setosa~             | ~Iris versicolor~             |</pre>
+<p>In the editor the picture columns share the text width that the other
+columns leave (at most half of it each), and the row gets taller to fit
+the tallest picture. When the cursor is on that row, the pictures stay
+above its raw text. The export puts an <code>&lt;img&gt;</code> in the cell. A cell with
+anything else next to the image is plain text.</p>
 <h1>Lists</h1>
 <pre>- a bullet (also * or +)
   - indented to nest
@@ -382,8 +411,8 @@ existing one is replaced). Pictures inside a Word, OpenDocument or RTF
 file are saved to a <code>file_media</code> directory next to it.</p>
 <p>A round trip keeps the document. Headings, paragraphs, every kind of
 inline formatting, links, footnotes, maths, code blocks with their
-results, figures and tables with captions, lists, callouts, the table of
-contents and the bibliography all come back. Word, OpenDocument and RTF
+results, figures and tables with captions, lists, callouts, the abstract,
+the table of contents and the bibliography all come back. Word, OpenDocument and RTF
 also carry what they have no place for as custom document properties:
 the <code>//?</code> options, each code block's language and options, and the
 bibliography's entries. Markdown and Org carry the bibliography in a

@@ -551,6 +551,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "abstract"
+        },
+        {
+          "type": "SYMBOL",
           "name": "caption"
         },
         {
@@ -1648,6 +1652,74 @@
         {
           "type": "STRING",
           "value": "toc"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_line_end"
+        }
+      ]
+    },
+    "abstract": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "_directive_start"
+        },
+        {
+          "type": "STRING",
+          "value": "@"
+        },
+        {
+          "type": "STRING",
+          "value": "abstract"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_abstract_open"
+          },
+          "named": false,
+          "value": "{"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "ALIAS",
+              "content": {
+                "type": "REPEAT1",
+                "content": {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "SYMBOL",
+                      "name": "_inline"
+                    },
+                    {
+                      "type": "SYMBOL",
+                      "name": "_abstract_break"
+                    }
+                  ]
+                }
+              },
+              "named": true,
+              "value": "content"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_group_close"
+          },
+          "named": false,
+          "value": "}"
         },
         {
           "type": "SYMBOL",
@@ -3262,6 +3334,14 @@
     {
       "type": "SYMBOL",
       "name": "_close_delete"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_abstract_open"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_abstract_break"
     },
     {
       "type": "SYMBOL",

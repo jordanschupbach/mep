@@ -321,6 +321,15 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         out += IsMathDisplay(node) ? ("\n\\[" + latex + "\\]\n") : ("$" + latex + "$");
         return;
     }
+    // A mepml @abstract (mepml::ToHtml): LaTeX's own abstract, whose
+    // environment prints the "Abstract" heading itself.
+    if ((tag == "section" || tag == "div") && node->Class() == "abstract") {
+        out += "\n\\begin{abstract}\n";
+        for (auto &c : node->children)
+            if (c->Class() != "abstract-title") WalkLatexNode(c.get(), ctx, out);
+        out += "\\end{abstract}\n";
+        return;
+    }
     if (tag == "div" && node->Class() == "org-code-block") {
         RenderOrgCodeBlockLatex(node, out);
         return;

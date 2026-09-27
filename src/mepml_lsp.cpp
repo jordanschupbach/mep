@@ -525,6 +525,7 @@ const std::vector<Vocab> &DirectiveVocab() {
         {"citation", "@citation{key}{fields}", "A bibliography entry: @citation{key}{ author = ..., title = {...}, year = ... }. Cite it with \\cite{key}."},
         {"bibliography", "@bibliography", "The reference list: every cited entry, numbered in the order first cited."},
         {"toc", "@toc", "The table of contents: every heading of this document, indented by depth."},
+        {"abstract", "@abstract{text}", "The document's abstract: prose over any number of lines, a blank line between paragraphs. Exports as each format's own abstract."},
     };
     return v;
 }
@@ -883,6 +884,12 @@ MepmlLspHoverInfo MepmlLspHover(const std::vector<std::string> &lines, int line,
         }
         case BlockKind::Bibliography: return found(ind, Len(l), VocabDoc(DirectiveVocab(), "bibliography"));
         case BlockKind::TableOfContents: return found(ind, Len(l), VocabDoc(DirectiveVocab(), "toc"));
+        case BlockKind::Abstract: {
+            if (line != b->line_start) break;
+            const size_t paras = b->paragraph_starts.size();
+            return found(ind, Len(l), VocabDoc(DirectiveVocab(), "abstract") + "\n\n" + std::to_string(paras) +
+                                          (paras == 1 ? " paragraph" : " paragraphs"));
+        }
         case BlockKind::Meta: {
             if (Lower(b->keyword) == "import") {
                 // As the expander resolves it, so it matches the blocks' origin.
@@ -1182,6 +1189,10 @@ std::vector<MepmlLspSymbol> MepmlLspSymbols(const std::vector<std::string> &line
             s.kind = MepmlLspSymbolKind::Key;
             s.name = b.value;
             s.detail = "citation";
+        } else if (b.kind == BlockKind::Abstract) {
+            s.kind = MepmlLspSymbolKind::Namespace;
+            s.name = "Abstract";
+            s.detail = "abstract";
         } else {
             continue;
         }
@@ -1232,7 +1243,7 @@ std::vector<MepmlLspFold> MepmlLspFolds(const std::vector<std::string> &lines) {
             add(b.line_start, b.result_line_start - 1, "");
             add(b.result_line_start, b.result_line_end, "");
         } else if (b.kind == BlockKind::Code || b.kind == BlockKind::Citation || b.kind == BlockKind::MathBlock ||
-                 b.kind == BlockKind::Table || b.kind == BlockKind::List)
+                 b.kind == BlockKind::Table || b.kind == BlockKind::List || b.kind == BlockKind::Abstract)
             add(b.line_start, b.line_end, "");
     }
     std::sort(out.begin(), out.end(), [](const MepmlLspFold &a, const MepmlLspFold &b) {

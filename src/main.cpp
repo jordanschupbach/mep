@@ -14733,7 +14733,11 @@ const char *kBuiltinOrgImages =
     "function mep.org_images_toggle_ui()\n"
     "  local visible = mep.org_images_toggle()\n"
     "  mep.notify('Org inline images: ' .. (visible and 'on' or 'off'))\n"
-    "  if visible then mep.org_image_scan() end\n"
+    "  if mep.mepml_render and mep_lsp_filetype(mep.filename() or '') == 'mepml' then\n"
+    "    mep.mepml_render()  -- a mepml table lays its picture cells out differently\n"
+    "  elseif visible then\n"
+    "    mep.org_image_scan()\n"
+    "  end\n"
     "end\n"
     "mep.command('MepOrgImagesToggle', mep.org_images_toggle_ui)\n"
     "mep.leader_map('oti', 'Org: toggle inline images', mep.org_images_toggle_ui)\n"
@@ -45538,6 +45542,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         bool conceal_footer = false;
         bool active = false;  // the cursor is somewhere inside this block
         bool is_src = false;
+        // Collapsed by its own fold (OrgBlockCard::fold_row): the whole
+        // box is the title bar, over the fold's one summary row.
+        bool folded = false;
+        int folded_rows = 0;
         const OrgBlockCard *card = nullptr;
     };
     std::vector<OrgCardBox> org_card_boxes;
@@ -45564,6 +45572,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // the header band, for the decoration loop's own "is this row's text
     // hidden behind a card?" test.
     std::unordered_map<int, std::pair<size_t, bool>> org_card_concealed_rows;
+    // Closed-fold rows a folded card's title bar stands in for: the bar is
+    // what marks them folded, so they skip the fold's own full-width band.
+    std::unordered_set<int> org_card_folded_rows;
+    // Row -> the wash of the card it sits in, so a cover that paints the
+    // pane's own background over part of a row (a faked-italic redraw, an
+    // overlay's cover) can lay the card's tint back on top of it.
+    std::unordered_map<int, gfx::Color> org_card_row_wash;
+    auto cover_card_wash = [&](int row, float x0, float y0, float w0, float h0) {
+        auto it = org_card_row_wash.find(row);
+        if (it != org_card_row_wash.end())
+            gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(y0), static_cast<int>(w0), static_cast<int>(h0), it->second);
+    };
     // Org tables drawn as a real grid (Editor::OrgTables): continuous
     // column rules through the `|` glyphs, a drawn horizontal rule in
     // place of each `|---+---|` row's dashes, and a tinted header block.
@@ -45808,14 +45828,52 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // the one thing the user asked to see in their place. An org
             // image or LaTeX row inside the block renders a texture this
             // would paint over. Both cases leave the block as plain text.
+            // The exception is a mepml card folded by its *own* fold: that
+            // collapses to its title bar alone, on the fold's one row.
             bool skip = false;
+            const Fold *own_fold = nullptr;
             for (const Fold &fold : buf.folds) {
-                if (fold.closed && fold.start_row <= last_row && fold.end_row >= card.meta_row) {
-                    skip = true;
-                    break;
+                if (!fold.closed || fold.start_row > last_row || fold.end_row < card.meta_row) continue;
+                if (card.fold_row >= 0 && card.end_row >= 0 && fold.start_row == card.fold_row &&
+                    fold.end_row >= card.end_row) {
+                    own_fold = &fold;
+                    continue;
                 }
+                skip = true;
+                break;
             }
-            if (!skip && (g_editor.OrgImagesVisible() || g_editor.OrgLatexVisible())) {
+            if (skip) continue;
+            if (own_fold != nullptr) {
+                // Only while the folded row itself is on screen -- the
+                // slot walk above collapsed it to that one row.
+                auto st = slot_start.find(own_fold->start_row);
+                if (st == slot_start.end()) continue;
+                auto sc = slot_count.find(own_fold->start_row);
+                const float top = content_y + static_cast<float>(st->second * line_height) + 1.0f;
+                const float bottom =
+                    content_y + static_cast<float>((st->second + (sc == slot_count.end() ? 1 : sc->second)) * line_height) - 1.0f;
+                if (bottom <= top + 2.0f) continue;
+                OrgCardBox box;
+                box.card = &card;
+                box.is_src = card.is_src;
+                box.folded = true;
+                box.folded_rows = own_fold->end_row - own_fold->start_row + 1;
+                box.rect = gfx::Rectangle{card_left, top, card_right_for(card.content_cols) - card_left, bottom - top};
+                // No raw line to reveal under the cursor (it would only be
+                // the fold's summary): the bar stays, and a brighter
+                // outline says the cursor is on it.
+                box.active = is_active && pane.cursor.row >= own_fold->start_row && pane.cursor.row <= own_fold->end_row;
+                box.header = box.rect;
+                box.conceal_header = true;
+                const float rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(box.rect.width, box.rect.height)));
+                gfx::DrawRectangleRounded(box.rect, rr, 6,
+                                          card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                                      : gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+                org_card_folded_rows.insert(own_fold->start_row);
+                org_card_boxes.push_back(box);
+                continue;
+            }
+            if (g_editor.OrgImagesVisible() || g_editor.OrgLatexVisible()) {
                 for (int r = card.meta_row; r <= last_row && !skip; r++) {
                     // A figure a mepml code block drew sits inside its
                     // output card on purpose (Editor::MepmlScan).
@@ -45898,10 +45956,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // theme's own AccentTint group is 82% accent -- right for an
             // active toolbar control, far too loud behind a page of code.)
             const float rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(box.rect.width, box.rect.height)));
-            gfx::DrawRectangleRounded(box.rect, rr, 6,
-                                  card.bare     ? gfx::Fade(ResolveHlGroup("Purple"), 0.07f)
-                                  : card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
-                                                : gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+            const gfx::Color wash = card.bare     ? gfx::Fade(ResolveHlGroup(card.kind == "abstract" ? "Cyan" : "Purple"), 0.07f)
+                                    : card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                                  : gfx::Fade(ResolveHlGroup("Comment"), 0.08f);
+            gfx::DrawRectangleRounded(box.rect, rr, 6, wash);
+            for (int r = card.meta_row; r <= last_row; r++) org_card_row_wash[r] = wash;
             // Every row the card paints over, so the decoration loop can
             // hand that row's end-of-line virtual text to the post-pass
             // rather than drawing it where the bar is about to land. A
@@ -46272,7 +46331,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // the cursorline check below so the two combine (rather than the
         // second one painting flatly over the first) when the cursor
         // actually is inside this (collapsed) range.
-        if (fold_here) {
+        if (fold_here && org_card_folded_rows.count(row) == 0) {
             // Over the row's headroom too (a folded mepml header's large
             // title rises into it), so the band holds the whole summary.
             const int fold_pad = g_editor.RowTopPadSlots(buf, row) * line_height;
@@ -47165,7 +47224,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const int geo_width = tbl_wrap != nullptr ? tbl_wrap->width : tbl.width;
                 const float tbl_x = text_x + static_cast<float>(geo_indent) * g_char_width;
                 const float tbl_w = static_cast<float>(geo_width) * g_char_width;
+                // A row with pictures in its cells (mepml) draws them in
+                // headroom above its text: the band and the column rules
+                // start at the top of it.
+                const float tbl_pad = is_mepml_buffer ? static_cast<float>(g_editor.RowTopPadSlots(buf, row) * line_height) : 0.0f;
+                const float band_y = ly - tbl_pad;
                 const float tbl_h = static_cast<float>(line_height * row_wrap_slots);
+                const float band_h = tbl_h + tbl_pad;
                 const bool is_header = tbl.header_end_row >= 0 && row <= tbl.header_end_row;
                 const bool is_sep =
                     std::find(tbl.sep_rows.begin(), tbl.sep_rows.end(), row) != tbl.sep_rows.end();
@@ -47184,7 +47249,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const bool round_bot = row == tbl.end_row;
                 gfx::Color accent_wash = ResolveHlGroup("Accent");
                 const gfx::Color wash{accent_wash.r, accent_wash.g, accent_wash.b, wash_a};
-                draw_org_table_band(gfx::Rectangle{tbl_x, ly, tbl_w, tbl_h}, round_top, round_bot, true, true, wash);
+                draw_org_table_band(gfx::Rectangle{tbl_x, band_y, tbl_w, band_h}, round_top, round_bot, true, true, wash);
                 // The box the rounded outline is stroked on, grown row by
                 // row; a table running off either edge of the viewport is
                 // pushed a row past it so the scissor takes that side's
@@ -47198,7 +47263,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // for the first or last row *on screen* of a table
                     // that continues past the edge, it reaches off-screen,
                     // which is the point.
-                    const float top = ly - (tbl.start_row < row ? static_cast<float>(line_height) : 0.0f);
+                    const float top = band_y - (tbl.start_row < row ? static_cast<float>(line_height) : 0.0f);
                     const float bot = ly + tbl_h + (tbl.end_row > row ? static_cast<float>(line_height) : 0.0f);
                     if (box.rect.width <= 0.0f) {
                         box.rect = gfx::Rectangle{tbl_x, top, tbl_w, bot - top};
@@ -47260,8 +47325,37 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         // height, so the per-row glyphs join into one
                         // continuous rule down the table.
                         float rx = text_x + (static_cast<float>(rc) + 0.5f) * g_char_width;
-                        org_table_rules.push_back({gfx::Rectangle{rx, ly, 1.0f, tbl_h}, false});
+                        org_table_rules.push_back({gfx::Rectangle{rx, band_y, 1.0f, band_h}, false});
                     }
+                }
+            }
+        }
+
+        // mepml table cells holding a picture (`| @image{path} |`,
+        // Editor::MepmlTableImageBoxes): each drawn in its cell's column,
+        // in the headroom RowTopPadSlots reserved above the row -- over the
+        // table's wash, under the column rules drawn after the text.
+        if (is_mepml_buffer && !fold_here) {
+            static std::vector<Editor::MepmlCellImageBox> cell_pics;
+            if (const int pic_slots = g_editor.MepmlTableImageBoxes(buf, row, &cell_pics)) {
+                // Centred across the headroom *and* the row's own lines
+                // (more than one when its source soft-wraps), whose picture
+                // cells are empty -- except on a row showing its raw source
+                // (the cursor's), which the pictures stay above.
+                auto tbl_it = org_table_of_row.find(row);
+                const bool raw_row = tbl_it == org_table_of_row.end() ||
+                                     std::find(tbl_it->second->raw_rows.begin(), tbl_it->second->raw_rows.end(), row) !=
+                                         tbl_it->second->raw_rows.end();
+                const float top = ly - static_cast<float>(pic_slots * line_height) +
+                                  (raw_row ? 0.0f : static_cast<float>(line_height * row_wrap_slots) * 0.5f);
+                for (const Editor::MepmlCellImageBox &pic : cell_pics) {
+                    const gfx::Texture2D *tex = GetOrLoadOrgInlineImageTexture(pic.image->path);
+                    if (!tex || tex->width <= 0) continue;
+                    // Scaled against the texture itself: the box already
+                    // has the picture's aspect, from its header's size.
+                    gfx::DrawTexturePro(*tex, gfx::Rectangle{0.0f, 0.0f, static_cast<float>(tex->width), static_cast<float>(tex->height)},
+                                        gfx::Rectangle{text_x + pic.x, top + pic.y, pic.w, pic.h}, gfx::Vector2{0.0f, 0.0f}, 0.0f,
+                                        gfx::White);
                 }
             }
         }
@@ -47716,6 +47810,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             (void)baseline_y;
                             gfx::DrawRectangle(static_cast<int>(px0 - pad), static_cast<int>(py),
                                           static_cast<int>(span_w + pad * 2), line_height, ResolveHlGroup("NormalBg"));
+                            cover_card_wash(row, px0 - pad, py, span_w + pad * 2, static_cast<float>(line_height));
                             DrawItalicColumns(piece, px0, py, c);
                         });
                 }
@@ -47841,6 +47936,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                           gfx::DrawRectangle(static_cast<int>(px0), static_cast<int>(py),
                                                              static_cast<int>(piece_w), line_height,
                                                              ResolveHlGroup("NormalBg"));
+                                          cover_card_wash(row, px0, py, piece_w, static_cast<float>(line_height));
                                       });
                 }
                 // Does the replacement text itself run past the wrap
@@ -48611,8 +48707,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // card's header rather than as part of the code.
             gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y),
                           static_cast<int>(cb.header.width), static_cast<int>(cb.header.height), header_wash);
-            gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y + cb.header.height - 1.0f),
-                          static_cast<int>(cb.header.width), 1, gfx::Fade(accent, cb.is_src ? 0.45f : 0.25f));
+            // (A folded card is all bar: no body under it to rule off.)
+            if (!cb.folded) {
+                gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y + cb.header.height - 1.0f),
+                                   static_cast<int>(cb.header.width), 1, gfx::Fade(accent, cb.is_src ? 0.45f : 0.25f));
+            }
             // Laid out on the band's *first* line. The band is one row tall
             // in the common case, but a stack of `#+HEADER:`/`#+NAME:`
             // lines -- or a single header long enough to soft-wrap --
@@ -48632,6 +48731,45 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float right_limit = cb.header.x + cb.header.width - 8.0f;
             const OrgBlockPlayInput play_in = OrgBlockPlayInputOf(card);
             const OrgBlockPlay play = OrgBlockPlayFor(play_in);
+            // Minimize (a bar) / restore (a plus), at the far right: folds
+            // or unfolds the card's own fold, as za on its first row would.
+            if (card.fold_row >= 0 && card.end_row >= 0) {
+                const float min_w = std::max(20.0f, chip_h + 4.0f);
+                const gfx::Rectangle min_rect{right_limit - min_w, chip_y, min_w, chip_h};
+                if (min_rect.x >= cb.header.x + 9.0f + g_char_width * 3.0f) {
+                    const gfx::Color min_c = ResolveHlGroup("MutedFg");
+                    const bool min_hover = PointInRect(gfx::GetMousePosition(), min_rect);
+                    gfx::DrawRectangleRounded(min_rect, 0.5f, 6, gfx::Fade(min_c, min_hover ? 0.35f : 0.12f));
+                    gfx::DrawRectangleRoundedLinesEx(min_rect, 0.5f, 6, 1.0f, gfx::Fade(min_c, 0.55f));
+                    // Drawn, not a glyph (g_font is ASCII-only, and a `-`
+                    // sits too high to read as a window's minimize bar).
+                    const float arm = std::round(chip_h * 0.44f);
+                    const float thick = std::max(2.0f, std::round(chip_h * 0.12f));
+                    const float mcx = std::round(min_rect.x + min_rect.width / 2.0f);
+                    const float mcy = std::round(min_rect.y + min_rect.height / 2.0f);
+                    const gfx::Color glyph_c = min_hover ? ResolveHlGroup("Normal") : min_c;
+                    gfx::DrawRectangle(static_cast<int>(mcx - arm / 2.0f), static_cast<int>(mcy - thick / 2.0f), static_cast<int>(arm),
+                                       static_cast<int>(thick), glyph_c);
+                    if (cb.folded) {
+                        gfx::DrawRectangle(static_cast<int>(mcx - thick / 2.0f), static_cast<int>(mcy - arm / 2.0f),
+                                           static_cast<int>(thick), static_cast<int>(arm), glyph_c);
+                    }
+                    if (min_hover) {
+                        g_pane_control_tooltip_text = cb.folded ? "Expand this block (za)" : "Minimize this block (za)";
+                        g_pane_control_tooltip_anchor =
+                            gfx::Rectangle{min_rect.x, min_rect.y, min_rect.width, static_cast<float>(line_height)};
+                    }
+                    const int min_pane = pane.id;
+                    const int min_row = card.fold_row;
+                    RegisterClickRegionOnTop(min_rect, [min_pane, min_row] {
+                        // Focus first: folds live on the active buffer.
+                        g_editor.FocusPaneById(min_pane);
+                        g_editor.ToggleFoldStartingAt(min_row);
+                    });
+                    right_limit = min_rect.x - 6.0f;
+                    play_left = min_rect.x;
+                }
+            }
             // A block whose program is running: a stop button where the
             // play button would be.
             if (card.term_run >= 0) {
@@ -48777,6 +48915,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
             float cx = cb.header.x + 9.0f;
+            bool bar_full = false;  // `fits` has drawn its ellipsis: nothing more goes on the bar
             /**
              * @brief Checks whether a bar element of the given width still fits before the card's right edge.
              * @param width The element's width in pixels.
@@ -48784,6 +48923,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
              */
             auto fits = [&](float width) {
                 if (cx + width <= right_limit) return true;
+                bar_full = true;
                 // Pulled back against the right edge when the run of chips
                 // has already reached it, so the ellipsis marking "there's
                 // more here" can't itself spill over the card's border.
@@ -48847,6 +48987,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                    g_font_size, 0, ResolveHlGroup("Normal"));
                     }
                     cx += opt_w + 6.0f;
+                }
+                // Folded: how much the bar is standing in for.
+                if (cb.folded && cb.folded_rows > 0 && !bar_full) {
+                    const std::string tally = std::to_string(cb.folded_rows) + (cb.folded_rows == 1 ? " line" : " lines");
+                    const float tally_w = gfx::MeasureTextEx(g_font, tally.c_str(), g_font_size, 0).x;
+                    if (cx + tally_w <= right_limit) {
+                        gfx::DrawTextEx(g_font, tally.c_str(), gfx::Vector2{cx + 2.0f, text_y}, g_font_size, 0,
+                                        ResolveHlGroup("Comment"));
+                    }
                 }
             }
         }
@@ -48926,7 +49075,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
-        gfx::Color border = card.bare   ? gfx::Fade(ResolveHlGroup("Purple"), cb.active ? 0.8f : 0.4f)
+        gfx::Color border = card.bare   ? gfx::Fade(ResolveHlGroup(card.kind == "abstract" ? "Cyan" : "Purple"), cb.active ? 0.8f : 0.4f)
                             : cb.is_src ? (cb.active ? accent : gfx::Fade(accent, 0.55f))
                                         : gfx::Fade(ResolveHlGroup("Border"), cb.active ? 1.0f : 0.7f);
         gfx::DrawRectangleRoundedLinesEx(cb.rect, card_rr, 6, cb.active ? 2.0f : 1.0f, border);

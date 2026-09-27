@@ -86,6 +86,8 @@ module.exports = grammar({
     $._group_close,
     $._arg_text,
     ...EMPHASIS.flatMap(([, open, close]) => [$[open], $[close]]),
+    $._abstract_open,
+    $._abstract_break, // a line break (and any blank lines) inside @abstract{}
     $._error_sentinel,
   ],
 
@@ -127,6 +129,7 @@ module.exports = grammar({
       $.bibtex_entry,
       $.bibliography,
       $.toc,
+      $.abstract,
       $.caption,
       $.alttext,
       $.paragraph,
@@ -260,6 +263,15 @@ module.exports = grammar({
     // @printbibliography is the directive's older name, still accepted.
     bibliography: $ => seq($._directive_start, '@', choice('bibliography', 'printbibliography'), $._line_end),
     toc: $ => seq($._directive_start, '@', 'toc', $._line_end),
+
+    // @abstract{ prose over any number of lines; blank lines split paragraphs }
+    abstract: $ => seq(
+      $._directive_start, '@', 'abstract',
+      alias($._abstract_open, '{'),
+      optional(alias(repeat1(choice($._inline, $._abstract_break)), $.content)),
+      alias($._group_close, '}'),
+      $._line_end,
+    ),
 
     citation: $ => seq(
       $._directive_start, '@', 'citation',

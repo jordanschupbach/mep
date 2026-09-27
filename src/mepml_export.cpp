@@ -432,6 +432,14 @@ struct MdWriter {
                     blocks.push_back(Join(lines, "\n"));
                     break;
                 }
+                case BlockKind::Abstract: {
+                    // Marked like @toc, so mep's importer gets @abstract back.
+                    std::vector<std::string> parts{"<!-- mepml:abstract -->\n**Abstract**"};
+                    for (const std::vector<Inline> &para : AbstractParagraphs(b)) parts.push_back(Inl(para));
+                    parts.push_back("<!-- /mepml:abstract -->");
+                    blocks.push_back(Join(parts, "\n\n"));
+                    break;
+                }
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -637,6 +645,13 @@ struct OrgWriter {
                     break;
                 }
                 case BlockKind::TableOfContents: blocks.push_back("#+TOC: headlines 3"); break;
+                case BlockKind::Abstract: {
+                    // Org's own convention (ox-latex makes it LaTeX's abstract).
+                    std::vector<std::string> paras;
+                    for (const std::vector<Inline> &para : AbstractParagraphs(b)) paras.push_back(SafeLines(Inl(para)));
+                    blocks.push_back("#+begin_abstract\n" + Join(paras, "\n\n") + "\n#+end_abstract");
+                    break;
+                }
                 case BlockKind::Meta:
                 case BlockKind::Import:
                 case BlockKind::Citation: break;
@@ -753,6 +768,12 @@ struct TextWriter {
                     for (const RenderedLine &l : b.kind == BlockKind::Bibliography ? RenderBibliography(doc, 78) : RenderToc(doc, 78))
                         lines.push_back(l.text);
                     blocks.push_back(Join(lines, "\n"));
+                    break;
+                }
+                case BlockKind::Abstract: {
+                    std::vector<std::string> parts{"Abstract"};
+                    for (const std::vector<Inline> &para : AbstractParagraphs(b)) parts.push_back(Inl(para));
+                    blocks.push_back(Join(parts, "\n\n"));
                     break;
                 }
                 case BlockKind::Comment:
@@ -1046,6 +1067,10 @@ struct RtfWriter {
                     }
                     break;
                 }
+                case BlockKind::Abstract:
+                    body += Para("\\s22\\qc\\sb240\\keepn\\b\\fs22", "Abstract");
+                    for (const std::vector<Inline> &para : AbstractParagraphs(b)) body += Para("\\s21\\li720\\ri720\\fs20", Inl(para));
+                    break;
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -1068,6 +1093,7 @@ struct RtfWriter {
         out += "{\\s7\\sbasedon0 Title;}{\\s8\\sbasedon0 Source Code;}{\\s9\\sbasedon0 Quote;}{\\s10\\sbasedon0 caption;}";
         for (int l = 1; l <= 6; ++l) out += "{\\s" + std::to_string(10 + l) + "\\sbasedon0 toc " + std::to_string(l) + ";}";
         out += "{\\s17\\sbasedon0 Bibliography;}{\\s18\\sbasedon0 Math Display;}{\\s19\\sbasedon0 TOC Heading;}{\\s20\\sbasedon0 List Paragraph;}"
+               "{\\s21\\sbasedon0 Abstract;}{\\s22\\sbasedon0 Abstract Title;}"
                "{\\*\\cs30 Verbatim Char;}{\\*\\cs31 Math;}}\n";  // (bare: some readers apply a character style's look to paragraphs)
         if (!lists.empty()) {
             std::string table = "{\\*\\listtable", overrides = "{\\*\\listoverridetable";
@@ -1405,6 +1431,11 @@ struct DocxWriter {
                             body += P(Style("TOC" + std::to_string(std::min(6, std::max(1, h.level)))), Run(InlinePlainText(h.inlines), none));
                     break;
                 }
+                case BlockKind::Abstract:
+                    // pandoc's style names, so its reader (and mep's) knows the part.
+                    body += P(Style("AbstractTitle"), Run("Abstract", none));
+                    for (const std::vector<Inline> &para : AbstractParagraphs(b)) body += P(Style("Abstract"), Inl(para, none));
+                    break;
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -1433,7 +1464,9 @@ struct DocxWriter {
              "<w:style w:type=\"paragraph\" w:styleId=\"Quote\"><w:name w:val=\"Quote\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:pBdr><w:left w:val=\"single\" w:sz=\"18\" w:space=\"8\" w:color=\"61AFEF\"/></w:pBdr><w:ind w:left=\"360\"/></w:pPr></w:style>"
              "<w:style w:type=\"paragraph\" w:styleId=\"ListParagraph\"><w:name w:val=\"List Paragraph\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:spacing w:after=\"40\"/></w:pPr></w:style>"
              "<w:style w:type=\"paragraph\" w:styleId=\"TOCHeading\"><w:name w:val=\"TOC Heading\"/><w:basedOn w:val=\"Heading1\"/></w:style>"
-             "<w:style w:type=\"paragraph\" w:styleId=\"Bibliography\"><w:name w:val=\"Bibliography\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:ind w:left=\"567\" w:hanging=\"567\"/></w:pPr></w:style>";
+             "<w:style w:type=\"paragraph\" w:styleId=\"Bibliography\"><w:name w:val=\"Bibliography\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:ind w:left=\"567\" w:hanging=\"567\"/></w:pPr></w:style>"
+             "<w:style w:type=\"paragraph\" w:styleId=\"AbstractTitle\"><w:name w:val=\"Abstract Title\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Abstract\"/><w:pPr><w:keepNext/><w:jc w:val=\"center\"/><w:spacing w:before=\"240\" w:after=\"80\"/></w:pPr><w:rPr><w:b/><w:sz w:val=\"22\"/></w:rPr></w:style>"
+             "<w:style w:type=\"paragraph\" w:styleId=\"Abstract\"><w:name w:val=\"Abstract\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:ind w:left=\"720\" w:right=\"720\"/></w:pPr><w:rPr><w:sz w:val=\"20\"/></w:rPr></w:style>";
         for (int i = 1; i <= 6; ++i)
             s += "<w:style w:type=\"paragraph\" w:styleId=\"TOC" + std::to_string(i) + "\"><w:name w:val=\"toc " + std::to_string(i) +
                  "\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:spacing w:after=\"60\"/><w:ind w:left=\"" + std::to_string(240 * (i - 1)) + "\"/></w:pPr></w:style>";
@@ -1758,6 +1791,10 @@ struct OdtWriter {
                             body += P("Contents_20_" + std::to_string(std::min(6, h.level)), Run(InlinePlainText(h.inlines), none));
                     break;
                 }
+                case BlockKind::Abstract:
+                    body += P("Abstract_20_Title", Run("Abstract", none));
+                    for (const std::vector<Inline> &para : AbstractParagraphs(b)) body += P("Abstract", Inl(para, none));
+                    break;
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -1808,6 +1845,8 @@ std::string OdtStyles() {
          "<style:style style:name=\"Footnote\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:text-properties fo:font-size=\"9pt\"/></style:style>"
          "<style:style style:name=\"Bibliography\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:margin-left=\"0.8cm\" fo:text-indent=\"-0.8cm\"/></style:style>"
          "<style:style style:name=\"Rule\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:border-bottom=\"0.05pt solid #000000\"/></style:style>"
+         "<style:style style:name=\"Abstract_20_Title\" style:display-name=\"Abstract Title\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:text-align=\"center\" fo:margin-top=\"0.4cm\" fo:keep-with-next=\"always\"/><style:text-properties fo:font-weight=\"bold\"/></style:style>"
+         "<style:style style:name=\"Abstract\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:margin-left=\"1.25cm\" fo:margin-right=\"1.25cm\"/><style:text-properties fo:font-size=\"10pt\"/></style:style>"
          "<text:list-style style:name=\"LBullet\">";
     for (int l = 1; l <= 10; ++l)
         s += "<text:list-level-style-bullet text:level=\"" + std::to_string(l) + "\" text:bullet-char=\"" + (l % 2 ? "•" : "◦") +

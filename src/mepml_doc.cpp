@@ -615,7 +615,8 @@ std::string DirectiveName(const std::string &line) {
 
 bool IsKnownDirective(const std::string &name) {
     return name == "import" || name == "citation" || name == "image" || name == "caption" || name == "alttext" ||
-           name == "bibliography" || name == "printbibliography" || name == "toc" || IsBibtexType(name);
+           name == "bibliography" || name == "printbibliography" || name == "toc" || name == "abstract" ||
+           IsBibtexType(name);
 }
 
 // Parses "k = v, k = {v}, k = "v"" fields out of a citation body.
@@ -989,6 +990,7 @@ struct Parser {
             doc.blocks.push_back(std::move(b));
             return i + 1;
         }
+        if (name == "abstract") return ParseAbstract(i, col);
         // @citation{key}{fields}  or  bibtex  @article{key, fields}
         std::string joined;
         std::vector<int> offs;
@@ -1045,6 +1047,65 @@ struct Parser {
         return j + 1;
     }
 
+    // @abstract{ ... }: prose up to the matching brace, over any number of
+    // lines; a blank line inside starts a new paragraph.
+    int ParseAbstract(int i, int col) {
+        const std::string &s = L(i);
+        if (At(s, col) != '{') {
+            Diag(Diagnostic::Error, i, Indent(s), Len(s), "@abstract needs a {...} body");
+            doc.blocks.push_back(MakeBlock(BlockKind::Paragraph, i, i));
+            return i + 1;
+        }
+        std::string joined;
+        int j = i, g = -1;
+        for (; j < n; ++j) {
+            if (j > i) joined += '\n';
+            joined += L(j);
+            g = ReadGroup(joined, col, Len(joined));
+            if (g >= 0) break;
+        }
+        if (g < 0) {
+            Diag(Diagnostic::Error, i, Indent(s), Len(s), "@abstract is never closed with }");
+            j = n - 1;
+        }
+        Block b = MakeBlock(BlockKind::Abstract, i, j);
+        const int body_end = g < 0 ? Len(b.text) : g - 1;
+        if (g >= 0) CheckTrailing(j, g - b.line_offsets.back());
+        // Paragraphs: runs of lines with any text, split at blank ones.
+        int from = col + 1;
+        while (from < body_end) {
+            while (from < body_end && IsSpace(b.text[static_cast<size_t>(from)])) ++from;
+            if (from >= body_end) break;
+            int to = from;
+            while (to < body_end) {
+                size_t nl = b.text.find('\n', static_cast<size_t>(to));
+                if (nl == std::string::npos || static_cast<int>(nl) >= body_end) {
+                    to = body_end;
+                    break;
+                }
+                int k = static_cast<int>(nl) + 1;
+                int e = k;
+                while (e < body_end && b.text[static_cast<size_t>(e)] != '\n' && IsSpace(b.text[static_cast<size_t>(e)])) ++e;
+                if (e >= body_end || b.text[static_cast<size_t>(e)] == '\n') {
+                    to = static_cast<int>(nl);  // a blank line ends the paragraph
+                    break;
+                }
+                to = k;
+            }
+            int end = to;
+            while (end > from && IsSpace(b.text[static_cast<size_t>(end - 1)])) --end;
+            b.paragraph_starts.push_back(b.inlines.size());
+            for (Inline &x : Inlines(b, from, end)) b.inlines.push_back(std::move(x));
+            from = to;
+        }
+        if (b.paragraph_starts.empty()) Diag(Diagnostic::Warning, i, Indent(s), Len(s), "empty @abstract");
+        for (const Block &o : doc.blocks)
+            if (o.kind == BlockKind::Abstract && o.origin.empty())
+                Diag(Diagnostic::Warning, i, Indent(s), col, "a document has one @abstract; this is a second");
+        doc.blocks.push_back(std::move(b));
+        return j + 1;
+    }
+
     int ParseTable(int i) {
         int j = i;
         while (j < n && IsTableRow(Trim(L(j)))) ++j;
@@ -1097,6 +1158,7 @@ struct Parser {
                 tc.start = off + cs;
                 tc.end = off + ce;
                 tc.content = Inlines(b, tc.start, tc.end);
+                ResultImagePath(Sub(s, cs, ce), &tc.image);
                 row.push_back(std::move(tc));
             }
             b.rows.push_back(std::move(row));
@@ -1269,6 +1331,17 @@ void Finish(Document &doc) {
 }  // namespace
 
 int LineHeadingLevel(const std::string &line) { return HeadingLevel(line); }
+
+std::vector<std::vector<Inline>> AbstractParagraphs(const Block &b) {
+    std::vector<std::vector<Inline>> out;
+    for (size_t k = 0; k < b.paragraph_starts.size(); ++k) {
+        const size_t from = b.paragraph_starts[k];
+        const size_t to = k + 1 < b.paragraph_starts.size() ? b.paragraph_starts[k + 1] : b.inlines.size();
+        out.emplace_back(b.inlines.begin() + static_cast<std::ptrdiff_t>(from),
+                         b.inlines.begin() + static_cast<std::ptrdiff_t>(std::min(to, b.inlines.size())));
+    }
+    return out;
+}
 
 bool ResultImagePath(const std::string &text, std::string *path) {
     std::string t = Trim(text);
@@ -1842,6 +1915,31 @@ struct Emitter {
             case BlockKind::TableOfContents:
                 Directive(blk.line_start, "");
                 break;
+            case BlockKind::Abstract: {
+                // `@abstract{` reads as the section's label -- on a line of
+                // its own, or run in before the text that follows it -- and
+                // the closing `}` goes away.
+                Span mk;
+                mk.style = kDirective | kAbstract;
+                mk.markup = true;
+                std::string s = LineText(blk.line_start);
+                int at = static_cast<int>(s.find('@'));
+                int open = static_cast<int>(s.find('{', static_cast<size_t>(std::max(at, 0))));
+                if (at < 0 || open < 0) break;
+                bool alone = Trim(s.substr(static_cast<size_t>(open) + 1)).empty();
+                mk.replace = alone ? "Abstract" : "Abstract. ";
+                Line(blk.line_start, at, open + 1, mk);
+                Inlines(blk.inlines, none);
+                int g = ReadGroup(blk.text, blk.line_offsets[0] + open, static_cast<int>(blk.text.size()));
+                if (g > 0) {
+                    Span close = mk;
+                    close.replace.clear();
+                    Range(g - 1, g, close);
+                    Block::Pos p = blk.OffsetToPos(g);
+                    TrailingComment(p.line, p.col);
+                }
+                break;
+            }
         }
     }
 
@@ -1868,7 +1966,18 @@ struct Emitter {
             Span cell;
             cell.style = kTable;
             if (static_cast<int>(row_idx) < blk.header_rows) cell.style |= kBold;
-            for (const TableCell &c : row) Inlines(c.content, cell);
+            for (const TableCell &c : row) {
+                if (c.image.empty()) {
+                    Inlines(c.content, cell);
+                    continue;
+                }
+                // A picture cell reads as one directive (the editor draws
+                // the image over it), not as inline markup in a path.
+                Span d;
+                d.style = kTable | kDirective;
+                d.target = c.image;
+                Range(c.start, c.end, d);
+            }
             ++row_idx;
         }
     }
@@ -2209,7 +2318,11 @@ struct HtmlWriter {
                                                      : "";
                         }
                         const char *tag = head ? "th" : "td";
-                        out += std::string("<") + tag + al + ">" + Inlines(b.rows[r][c].content) + "</" + tag + ">";
+                        const TableCell &cell = b.rows[r][c];
+                        const std::string body = cell.image.empty()
+                                                     ? Inlines(cell.content)
+                                                     : "<img src=\"" + Esc(cell.image) + "\" alt=\"\">";
+                        out += std::string("<") + tag + al + ">" + body + "</" + tag + ">";
                     }
                     out += "</tr>";
                 }
@@ -2278,6 +2391,13 @@ struct HtmlWriter {
                 out += "</ul></nav>\n";
                 break;
             }
+            case BlockKind::Abstract: {
+                // (ExportHtmlToLatex turns this section into \begin{abstract}.)
+                out += "<section class=\"abstract\"><p class=\"abstract-title\">Abstract</p>";
+                for (const std::vector<Inline> &para : AbstractParagraphs(b)) out += "<p>" + Inlines(para) + "</p>";
+                out += "</section>\n";
+                break;
+            }
         }
     }
 };
@@ -2294,6 +2414,7 @@ figure { margin: 1.2em 0; } figure.code figcaption.lang { font: 0.75em system-ui
 figcaption, caption, .caption { font-style: italic; color: #555; text-align: center; margin: .3em 0; }
 img { max-width: 100%; }
 table { border-collapse: collapse; margin: 1em auto; } th, td { border: 1px solid #ccc; padding: .3em .7em; } th { background: #f2f2f2; }
+td img, th img { display: block; max-height: 16em; margin: 0 auto; }
 .big { font-size: 1.3em; } mark { background: #fff3a3; } ins { color: #2f7d32; } del { color: #c62828; }
 .callout { border-left: 4px solid #61afef; background: #eef6fd; padding: .6em .9em; margin: 1em 0; border-radius: 4px; }
 .callout-title { font: bold 0.8em system-ui, sans-serif; letter-spacing: .05em; }
@@ -2304,6 +2425,8 @@ table { border-collapse: collapse; margin: 1em auto; } th, td { border: 1px soli
 .math-display { text-align: center; margin: 1em 0; overflow-x: auto; }
 .footnotes { font-size: .9em; border-top: 1px solid #ddd; margin-top: 2em; }
 .cite-missing { color: #c62828; }
+.abstract { margin: 1.5em 2.5em; font-size: .95em; }
+.abstract-title { font: bold .85em system-ui, sans-serif; text-align: center; letter-spacing: .08em; text-transform: uppercase; margin-bottom: .4em; }
 .toc ul { list-style: none; padding-left: 0; } .toc-2 { padding-left: 1em; } .toc-3 { padding-left: 2em; } .toc-4 { padding-left: 3em; }
 )css";
 

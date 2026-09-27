@@ -70,6 +70,8 @@ enum TokenType {
     OPEN_STRIKE, CLOSE_STRIKE,
     OPEN_INSERT, CLOSE_INSERT,
     OPEN_DELETE, CLOSE_DELETE,
+    ABSTRACT_OPEN,
+    ABSTRACT_BREAK,
     ERROR_SENTINEL,
 };
 
@@ -110,6 +112,9 @@ typedef struct {
     uint8_t math_kind;  // inside display maths: which closer
     uint16_t open_mask;  // bit i: kMarkers[i] is open (text must stop at its closer)
     uint8_t depth_count;
+    // Inside @abstract{...}: the depth_count its own group sits at (0 when
+    // outside one). Its prose runs over lines, paragraphs split by blank ones.
+    uint8_t abstract_level;
     uint8_t depths[MAX_DEPTH];  // brace depth inside each open {group}
 } Scanner;
 
@@ -174,7 +179,8 @@ unsigned tree_sitter_mepml_external_scanner_serialize(void *payload, char *buffe
     buffer[n++] = (char)(s->open_mask & 0xff);
     buffer[n++] = (char)(s->open_mask >> 8);
     buffer[n++] = (char)s->depth_count;
-    for (unsigned i = 0; i < s->depth_count; ++i) buffer[n++] = (char)s->depths[i];
+    buffer[n++] = (char)s->abstract_level;
+    for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH; ++i) buffer[n++] = (char)s->depths[i];
     return n;
 }
 
@@ -182,15 +188,15 @@ void tree_sitter_mepml_external_scanner_deserialize(void *payload, const char *b
     Scanner *s = (Scanner *)payload;
     memset(s, 0, sizeof(*s));
     s->prev = '\n';
-    if (length < 7) return;
+    if (length < 8) return;
     s->prev = (uint8_t)buffer[0];
     s->context = (uint8_t)buffer[1];
     s->link_mode = (uint8_t)buffer[2];
     s->math_kind = (uint8_t)buffer[3];
     s->open_mask = (uint16_t)((uint8_t)buffer[4] | ((uint16_t)(uint8_t)buffer[5] << 8));
     s->depth_count = (uint8_t)buffer[6];
-    if (s->depth_count > MAX_DEPTH) s->depth_count = MAX_DEPTH;
-    for (unsigned i = 0; i < s->depth_count && 7 + i < length; ++i) s->depths[i] = (uint8_t)buffer[7 + i];
+    s->abstract_level = (uint8_t)buffer[7];
+    for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH && 8 + i < length; ++i) s->depths[i] = (uint8_t)buffer[8 + i];
 }
 
 // --- lookahead scope ------------------------------------------------------------
@@ -244,12 +250,25 @@ static bool line_starts_block(TSLexer *lexer) {
 
 // Called at a '\n' inside a lookahead: true when the scope continues onto
 // the next line.
+static bool in_abstract(const Scanner *s) { return s->abstract_level > 0 && s->depth_count >= s->abstract_level; }
+
 static bool scope_continues(Scanner *s, TSLexer *lexer) {
     if (s->context != CTX_PARAGRAPH) return false;
     if (la(lexer) == '\r') adv(lexer);
     if (la(lexer) != '\n') return false;
     adv(lexer);
+    // An abstract's paragraph is every line up to a blank one, whatever
+    // the line starts with (ParseAbstract in mepml_doc.cpp).
+    if (in_abstract(s)) {
+        while (is_blank(la(lexer))) adv(lexer);
+        return !at_eol(lexer);
+    }
     return !line_starts_block(lexer);
+}
+
+// A group has closed: leaving the abstract's own ends the abstract.
+static void group_closed(Scanner *s) {
+    if (s->abstract_level > s->depth_count) s->abstract_level = 0;
 }
 
 // --- inline constructs ----------------------------------------------------------
@@ -691,6 +710,7 @@ static bool scan_inline(Scanner *s, TSLexer *lexer, const bool *valid) {
             adv(lexer);
             lexer->mark_end(lexer);
             if (s->depth_count > 0) s->depth_count--;
+            group_closed(s);
             return emit(s, lexer, GROUP_CLOSE, '}');
         }
         return false;
@@ -801,6 +821,7 @@ static bool scan_inline(Scanner *s, TSLexer *lexer, const bool *valid) {
                 adv(lexer);
                 lexer->mark_end(lexer);
                 s->depth_count--;
+                group_closed(s);
                 return emit(s, lexer, GROUP_CLOSE, '}');
             }
             adv(lexer);
@@ -855,7 +876,7 @@ static bool scan_inline(Scanner *s, TSLexer *lexer, const bool *valid) {
 
 static bool is_bibtex_or_directive(const char *name) {
     static const char *const kNames[] = {
-        "import", "citation", "image", "caption", "alttext", "bibliography", "printbibliography", "toc",
+        "import", "citation", "image", "caption", "alttext", "bibliography", "printbibliography", "toc", "abstract",
         "article", "book", "booklet", "conference", "inbook", "incollection", "inproceedings", "manual",
         "mastersthesis", "misc", "phdthesis", "proceedings", "techreport", "unpublished", "online", "software",
     };
@@ -1181,6 +1202,35 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
         }
         lexer->mark_end(lexer);
         return last ? emit(s, lexer, MATH_CONTENT, last) : false;
+    }
+
+    // @abstract{: its group opens, and its prose reads as a paragraph's.
+    if (valid[ABSTRACT_OPEN] && la(lexer) == '{') {
+        adv(lexer);
+        lexer->mark_end(lexer);
+        if (s->depth_count < MAX_DEPTH) s->depths[s->depth_count] = 0;
+        s->depth_count++;
+        s->abstract_level = s->depth_count;
+        s->context = CTX_PARAGRAPH;
+        s->prev = '\n';
+        lexer->result_symbol = ABSTRACT_OPEN;
+        return true;
+    }
+    // A line break inside an abstract, with any blank lines after it (a
+    // paragraph break).
+    if (valid[ABSTRACT_BREAK] && in_abstract(s) && (la(lexer) == '\n' || la(lexer) == '\r')) {
+        while (true) {
+            if (la(lexer) == '\r') adv(lexer);
+            if (la(lexer) != '\n') break;
+            adv(lexer);
+            lexer->mark_end(lexer);
+            while (is_blank(la(lexer))) adv(lexer);
+            if (la(lexer) != '\n' && la(lexer) != '\r') break;
+        }
+        s->prev = '\n';
+        s->context = CTX_PARAGRAPH;
+        lexer->result_symbol = ABSTRACT_BREAK;
+        return true;
     }
 
     // Line starts.

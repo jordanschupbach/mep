@@ -190,6 +190,18 @@ gfx::Sound NativeAudioBackend::LoadSound(const char *file_name) {
     return out;
 }
 
+gfx::Sound NativeAudioBackend::LoadSoundFromPcm(const int16_t *samples, size_t count, int channels, int rate) {
+    gfx::Sound out{};
+    if (!impl_->ready || samples == nullptr || count == 0 || channels <= 0 || rate <= 0) return out;
+    auto *s = new SoundState();
+    s->samples.assign(samples, samples + count);
+    s->channels = channels;
+    s->rate = rate;
+    out.backend_handle = s;
+    out.frameCount = static_cast<unsigned int>(TotalFrames(*s));
+    return out;
+}
+
 void NativeAudioBackend::UnloadSound(gfx::Sound sound) {
     if (sound.backend_handle == nullptr) return;
     auto *s = static_cast<SoundState *>(sound.backend_handle);
@@ -241,6 +253,13 @@ void NativeAudioBackend::SetSoundVolume(gfx::Sound sound, float volume) {
     static_cast<SoundState *>(sound.backend_handle)->volume = volume;
 }
 
+double NativeAudioBackend::GetSoundTimePlayed(gfx::Sound sound) {
+    if (sound.backend_handle == nullptr) return 0.0;
+    auto *s = static_cast<SoundState *>(sound.backend_handle);
+    if (s->rate <= 0) return 0.0;
+    return static_cast<double>(s->frame_pos.load()) / static_cast<double>(s->rate);
+}
+
 #else  // !MEP_AUDIO_ALSA -- Windows/macOS/Emscripten: graceful no-op, see this file's own top comment.
 
 struct NativeAudioBackend::Impl {};
@@ -250,12 +269,14 @@ NativeAudioBackend::~NativeAudioBackend() { delete impl_; }
 void NativeAudioBackend::InitAudioDevice() {}
 bool NativeAudioBackend::IsAudioDeviceReady() { return false; }
 gfx::Sound NativeAudioBackend::LoadSound(const char *) { return gfx::Sound{}; }
+gfx::Sound NativeAudioBackend::LoadSoundFromPcm(const int16_t *, size_t, int, int) { return gfx::Sound{}; }
 void NativeAudioBackend::UnloadSound(gfx::Sound) {}
 void NativeAudioBackend::PlaySound(gfx::Sound) {}
 void NativeAudioBackend::PauseSound(gfx::Sound) {}
 void NativeAudioBackend::ResumeSound(gfx::Sound) {}
 bool NativeAudioBackend::IsSoundPlaying(gfx::Sound) { return false; }
 void NativeAudioBackend::SetSoundVolume(gfx::Sound, float) {}
+double NativeAudioBackend::GetSoundTimePlayed(gfx::Sound) { return 0.0; }
 
 #endif  // MEP_AUDIO_ALSA
 

@@ -110,12 +110,20 @@ public:
     virtual void InitAudioDevice() = 0;
     virtual bool IsAudioDeviceReady() = 0;
     virtual Sound LoadSound(const char *file_name) = 0;
+    // Build a playable Sound from already-decoded interleaved PCM16 samples
+    // (the music-player pane decodes mp3/flac/ogg/wav to PCM itself and hands
+    // the raw samples here, rather than re-reading a file the way LoadSound
+    // does). `count` is the total number of int16 samples (frames * channels).
+    virtual Sound LoadSoundFromPcm(const int16_t *samples, size_t count, int channels, int rate) = 0;
     virtual void UnloadSound(Sound sound) = 0;
     virtual void PlaySound(Sound sound) = 0;
     virtual void PauseSound(Sound sound) = 0;
     virtual void ResumeSound(Sound sound) = 0;
     virtual bool IsSoundPlaying(Sound sound) = 0;
     virtual void SetSoundVolume(Sound sound, float volume) = 0;
+    // Seconds of audio played so far (playback cursor / sample rate), used by
+    // the music pane's elapsed/total readout. 0 if the sound isn't valid.
+    virtual double GetSoundTimePlayed(Sound sound) = 0;
 };
 
 class ITextBackend {

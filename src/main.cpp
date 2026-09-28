@@ -35290,6 +35290,201 @@ void DrawVideoPane(const Pane &pane, VideoSession &sess, float x, float y, float
     RegisterClickRegion(gfx::Rectangle{x, y, w, video_h}, [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
 }
 
+/**
+ * @brief Draws one music-player pane: a scrollable artist/album/song list above a fixed transport bar
+ * (previous / play-pause / next buttons, a click-drag volume slider, and a "title - artist  elapsed/total"
+ * readout). The folder metadata drilling is driven by MusicSession; playback by the gfx audio facade.
+ * @param pane The pane this session is shown in.
+ * @param sess The music session to draw and interact with.
+ * @param x,y,w,h The content rectangle (below the pane header, which shows the breadcrumb).
+ * @param is_active Whether this pane is the currently active one.
+ */
+void DrawMusicPane(const Pane &pane, MusicSession &sess, float x, float y, float w, float h, bool is_active) {
+    int buffer_id = pane.buffer_id;
+    g_editor.MusicPollPlayback(buffer_id);  // auto-advance a finished track
+
+    const gfx::Color bg = ResolveHlGroup("NormalBg");
+    const gfx::Color fg = ResolveHlGroup("Normal");
+    // The accent drives every emphasized element (selected row, play button,
+    // volume fill, now-playing marker); dim it when the pane isn't focused so
+    // an inactive player recedes, matching how the pane border de-emphasizes.
+    const gfx::Color accent = is_active ? ResolveHlGroup("Accent") : gfx::Fade(ResolveHlGroup("Accent"), 0.6f);
+    const gfx::Color muted = ResolveHlGroup("MutedFg");
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h), bg);
+
+    float font_size = MenuFontSize();
+    gfx::Vector2 mouse = gfx::GetMousePosition();
+
+    // Transport bar and list geometry both scale with the UI font so the
+    // circular buttons stay proportioned at any DPI.
+    float bar_h = std::round(font_size * 3.0f);
+    float row_h = std::round(font_size + 16.0f);
+    float list_h = std::max(0.0f, h - bar_h);
+    int n = static_cast<int>(sess.entries.size());
+    float total = static_cast<float>(n) * row_h;
+
+    // Keep the keyboard selection visible, then honor wheel scrolling, then
+    // clamp -- same "cheap every frame" shape as the other list panes.
+    if (n > 0) {
+        float sel_top = static_cast<float>(sess.selected) * row_h;
+        float sel_bot = sel_top + row_h;
+        if (sel_top < sess.scroll) sess.scroll = sel_top;
+        if (sel_bot > sess.scroll + list_h) sess.scroll = sel_bot - list_h;
+    }
+    bool mouse_in_list = mouse.x >= x && mouse.x <= x + w && mouse.y >= y && mouse.y <= y + list_h;
+    if (mouse_in_list) {
+        float wheel = gfx::GetMouseWheelMoveV().y;
+        if (wheel != 0.0f) sess.scroll -= wheel * row_h * 3.0f;
+    }
+    sess.scroll = std::clamp(sess.scroll, 0.0f, std::max(0.0f, total - list_h));
+
+    // --- Entry list ---
+    gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(list_h));
+    const float pad = std::round(font_size * 0.7f);
+    for (int i = 0; i < n; i++) {
+        const MusicSession::Entry &e = sess.entries[static_cast<size_t>(i)];
+        float ry = y + static_cast<float>(i) * row_h - sess.scroll;
+        if (ry + row_h <= y || ry >= y + list_h) continue;  // fully clipped
+
+        bool is_selected = (i == sess.selected);
+        std::string full = sess.cur_dir + "/" + e.name;
+        bool is_playing_row = !e.is_dir && full == sess.cur_song_path;
+        bool hover = mouse_in_list && mouse.y >= ry && mouse.y < ry + row_h;
+
+        // Rounded row highlight, inset from the pane edges so the list reads
+        // as a column of pills rather than full-width bands. Selected wins
+        // over hover; a thin accent bar marks the selected row.
+        gfx::Rectangle row_rect{x + pad, ry + 2.0f, w - 2.0f * pad, row_h - 4.0f};
+        if (is_selected) {
+            gfx::DrawRectangleRounded(row_rect, 0.35f, 6, gfx::Fade(accent, 0.16f));
+            gfx::DrawRectangleRounded(gfx::Rectangle{x + pad, ry + 5.0f, 3.0f, row_h - 10.0f}, 1.0f, 4, accent);
+        } else if (hover) {
+            gfx::DrawRectangleRounded(row_rect, 0.35f, 6, gfx::Fade(fg, 0.06f));
+        }
+
+        int icon_cp = e.is_dir ? 0xf07b : 0xf001;  // nf-fa-folder / nf-fa-music
+        gfx::Color icon_c = is_playing_row ? accent : (e.is_dir ? muted : gfx::Fade(fg, 0.75f));
+        gfx::Color text_c = is_playing_row ? accent : fg;
+        float text_y = ry + (row_h - font_size) / 2.0f;
+        float icon_x = x + pad + 10.0f;
+        DrawUiText(Utf8FromCodepoint(icon_cp), gfx::Vector2{icon_x, text_y}, font_size, icon_c);
+        DrawUiText(e.name, gfx::Vector2{icon_x + font_size + 12.0f, text_y}, font_size, text_c);
+        // A small "now playing" note badge on the right of the active song;
+        // directories get a right-aligned chevron.
+        if (is_playing_row) {
+            std::string badge = Utf8FromCodepoint(0xf028);  // volume icon = audible
+            DrawUiText(badge, gfx::Vector2{x + w - pad - 14.0f - MeasureUiText(badge, font_size), text_y}, font_size, accent);
+        } else if (e.is_dir) {
+            std::string chev = Utf8FromCodepoint(0xf054);  // nf-fa-chevron_right
+            DrawUiText(chev, gfx::Vector2{x + w - pad - 14.0f - MeasureUiText(chev, font_size), text_y}, font_size, muted);
+        }
+
+        float rh = std::min(row_h, (y + list_h) - ry);
+        if (rh > 2.0f) {
+            RegisterClickRegion(gfx::Rectangle{x, ry, w, rh}, [buffer_id, i, pane_id = pane.id] {
+                MusicSession *s = g_editor.GetMusicMutable(buffer_id);
+                if (!s || i < 0 || i >= static_cast<int>(s->entries.size())) return;
+                g_editor.FocusPaneById(pane_id);
+                s->selected = i;
+                const MusicSession::Entry &ent = s->entries[static_cast<size_t>(i)];
+                if (ent.is_dir) {
+                    g_editor.MusicLoadDir(*s, s->cur_dir + "/" + ent.name);
+                } else {
+                    g_editor.MusicPlaySong(*s, s->cur_dir + "/" + ent.name);
+                }
+            });
+        }
+    }
+    if (n == 0) {
+        DrawUiText("This folder has no songs or subfolders.", gfx::Vector2{x + pad + 10.0f, y + pad}, font_size, muted);
+    }
+    gfx::EndScissorMode();
+
+    // --- Transport bar ---
+    float bar_y = y + list_h;
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(bar_y), static_cast<int>(w), static_cast<int>(bar_h),
+                       ResolveHlGroup("MenuBar"));
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(bar_y), static_cast<int>(w), 1, gfx::Fade(fg, 0.12f));
+
+    float cy = bar_y + bar_h / 2.0f;
+    float r_small = std::round(font_size * 0.95f);
+    float r_big = std::round(font_size * 1.25f);
+    float gap = std::round(font_size * 0.7f);
+
+    // One circular transport button: a filled disc with a centered glyph, its
+    // whole square bounding box clickable. `filled` gives the central play/
+    // pause button an accent-filled disc (glyph in the bg color for contrast);
+    // the side buttons are subtle discs that brighten on hover.
+    auto circle_button = [&](float ccx, float radius, int glyph, bool filled,
+                             const std::function<void(MusicSession *)> &action) {
+        float dx = mouse.x - ccx, dy = mouse.y - cy;
+        bool hovered = (dx * dx + dy * dy) <= radius * radius;
+        gfx::Color disc = filled ? (hovered ? accent : gfx::Fade(accent, 0.9f))
+                                  : gfx::Fade(fg, hovered ? 0.20f : 0.10f);
+        gfx::DrawCircleV(gfx::Vector2{ccx, cy}, radius, disc);
+        std::string g = Utf8FromCodepoint(glyph);
+        float gw = MeasureUiText(g, font_size);
+        DrawUiText(g, gfx::Vector2{ccx - gw / 2.0f, cy - font_size / 2.0f}, font_size, filled ? bg : fg);
+        RegisterClickRegion(gfx::Rectangle{ccx - radius, cy - radius, radius * 2.0f, radius * 2.0f},
+                            [buffer_id, action, pane_id = pane.id] {
+                                MusicSession *s = g_editor.GetMusicMutable(buffer_id);
+                                if (!s) return;
+                                g_editor.FocusPaneById(pane_id);
+                                action(s);
+                            });
+    };
+
+    float prev_cx = x + pad + r_small;
+    float play_cx = prev_cx + r_small + gap + r_big;
+    float next_cx = play_cx + r_big + gap + r_small;
+    circle_button(prev_cx, r_small, 0xf048, false, [](MusicSession *s) { g_editor.MusicPrev(*s); });
+    circle_button(play_cx, r_big, sess.playing ? 0xf04c : 0xf04b, true,
+                  [](MusicSession *s) { g_editor.MusicTogglePlay(*s); });
+    circle_button(next_cx, r_small, 0xf051, false, [](MusicSession *s) { g_editor.MusicNext(*s); });
+
+    // Volume: a speaker glyph that reflects the level, a rounded track with an
+    // accent-filled portion, and a draggable knob. Drag anywhere in a taller
+    // hit band (per-frame IsMouseButtonDown, like DrawVideoPane's scrub bar).
+    float vol = std::clamp(sess.volume, 0.0f, 1.0f);
+    int vol_glyph = vol <= 0.001f ? 0xf026 : (vol < 0.5f ? 0xf027 : 0xf028);
+    float vol_icon_x = next_cx + r_small + gap * 1.5f;
+    DrawUiText(Utf8FromCodepoint(vol_glyph), gfx::Vector2{vol_icon_x, cy - font_size / 2.0f}, font_size, muted);
+    float slider_x = vol_icon_x + font_size + 12.0f;
+    float slider_w = std::round(font_size * 5.0f);
+    float track_h = std::round(font_size * 0.28f);
+    gfx::Rectangle track{slider_x, cy - track_h / 2.0f, slider_w, track_h};
+    gfx::DrawRectangleRounded(track, 1.0f, 6, gfx::Fade(fg, 0.18f));
+    gfx::DrawRectangleRounded(gfx::Rectangle{slider_x, track.y, slider_w * vol, track_h}, 1.0f, 6, accent);
+    float knob_x = slider_x + slider_w * vol;
+    gfx::DrawCircleV(gfx::Vector2{knob_x, cy}, track_h * 1.6f, fg);
+    gfx::Rectangle slider_hit{slider_x - r_small, bar_y, slider_w + 2.0f * r_small, bar_h};
+    bool in_slider = mouse.x >= slider_hit.x && mouse.x <= slider_hit.x + slider_hit.width && mouse.y >= slider_hit.y &&
+                     mouse.y <= slider_hit.y + slider_hit.height;
+    if (gfx::IsMouseButtonDown(gfx::MouseButton::Left) && in_slider && slider_w > 0) {
+        g_editor.FocusPaneById(pane.id);
+        g_editor.MusicSetVolume(sess, std::clamp((mouse.x - slider_x) / slider_w, 0.0f, 1.0f));
+    }
+
+    // Now-playing readout, right-aligned: title in the foreground color, then
+    // a dimmed "· artist" and elapsed/total time.
+    float readout_left = slider_x + slider_w + gap * 1.5f;
+    if (!sess.cur_title.empty() && readout_left < x + w - pad) {
+        double elapsed = sess.sound_loaded ? gfx::GetSoundTimePlayed(sess.sound) : 0.0;
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%d:%02d / %d:%02d", static_cast<int>(elapsed) / 60, static_cast<int>(elapsed) % 60,
+                      static_cast<int>(sess.cur_duration) / 60, static_cast<int>(sess.cur_duration) % 60);
+        std::string tail = (sess.cur_artist.empty() ? "" : "  ·  " + sess.cur_artist) + "    " + buf;
+        float tail_w = MeasureUiText(tail, font_size);
+        float title_w = MeasureUiText(sess.cur_title, font_size);
+        float rx = std::max(readout_left, x + w - pad - tail_w - title_w);
+        gfx::BeginScissorMode(static_cast<int>(readout_left), static_cast<int>(bar_y),
+                              static_cast<int>(std::max(0.0f, x + w - pad - readout_left)), static_cast<int>(bar_h));
+        DrawUiText(sess.cur_title, gfx::Vector2{rx, cy - font_size / 2.0f}, font_size, fg);
+        DrawUiText(tail, gfx::Vector2{rx + title_w, cy - font_size / 2.0f}, font_size, muted);
+        gfx::EndScissorMode();
+    }
+}
+
 // Active pane gets a thicker outline in BorderActive (the same accent-toned
 // color as its TabActive header, see BuildHighlightGroups in editor.cpp) so
 // which pane has the cursor reads at a glance -- a plain 1px
@@ -43210,6 +43405,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // scrub-bar/play-pause click handling in DrawVideoPane mutates the
     // session directly, the same reasoning as imgedit_sess/model3d_sess.
     VideoSession *video_sess = g_editor.GetVideoMutable(pane.buffer_id);
+    // Mutable for the same reason as video_sess: DrawMusicPane's transport-bar
+    // and list-row click handling mutates the session directly.
+    MusicSession *music_sess = g_editor.GetMusicMutable(pane.buffer_id);
     Model3DSession *model3d_sess = g_editor.GetModel3DMutable(pane.buffer_id);
     // Not a "session" struct like the ones above (there's nothing per-pane
     // to store -- the content lives on the SidebarInstance itself, same as
@@ -43267,8 +43465,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // Lua chunks) for the *just-focused* pane, same "focus first" pattern
     // as vsplit/hsplit/close below; a right click opens the "Setup"
     // dropdown (DrawRunButtonMenu) instead of running anything.
-    const bool show_run_button = !term_sess && !img_sess && !pdf_sess && !video_sess && !office_sess && !sheet_sess &&
-                                   !html_sess && !kanban_sess && !gantt_sess &&
+    const bool show_run_button = !term_sess && !img_sess && !pdf_sess && !video_sess && !music_sess && !office_sess &&
+                                   !sheet_sess && !html_sess && !kanban_sess && !gantt_sess &&
                                    RunButtonSupportsExtension(LspFiletype(buf.filename));
     const std::string run_label = " " + Utf8FromCodepoint(0xf04b) + " ";  // nf-fa-play
     const float run_w = show_run_button ? MeasureUiText(run_label, font_size) : 0.0f;
@@ -43282,8 +43480,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // font_size like the Run button rather than the smaller
     // control_font_size the split/close chrome uses -- both act on the
     // buffer's *contents*, not on the pane, and read as a pair.
-    const bool show_org_block_button = !term_sess && !img_sess && !pdf_sess && !video_sess && !office_sess &&
-                                       !sheet_sess && !html_sess && !kanban_sess && !gantt_sess &&
+    const bool show_org_block_button = !term_sess && !img_sess && !pdf_sess && !video_sess && !music_sess &&
+                                       !office_sess && !sheet_sess && !html_sess && !kanban_sess && !gantt_sess &&
                                        LspFiletype(buf.filename) == "org";
     const std::string org_block_label = " " + Utf8FromCodepoint(0xf121) + " ";  // nf-fa-code
     const float org_block_w = show_org_block_button ? MeasureUiText(org_block_label, font_size) : 0.0f;
@@ -43545,6 +43743,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                   std::to_string(video_sess->mov.height) + ", " +
                                   std::to_string(video_sess->mov.frame_index.size()) + " frames @ " +
                                   std::to_string(static_cast<int>(std::lround(video_sess->mov.fps))) + "fps)";
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else if (music_sess) {
+            // Breadcrumb: the root's basename plus the path from root down to
+            // the level currently shown (e.g. "Music / Björk / Homogenic").
+            std::string crumb = std::filesystem::path(music_sess->root).filename().string();
+            if (crumb.empty()) crumb = music_sess->root;
+            if (music_sess->cur_dir.size() > music_sess->root.size()) {
+                std::string rel = music_sess->cur_dir.substr(music_sess->root.size());
+                for (char &c : rel)
+                    if (c == '/') c = 1;  // placeholder split marker
+                size_t start = 0;
+                while (start < rel.size()) {
+                    size_t next = rel.find(static_cast<char>(1), start);
+                    std::string part = rel.substr(start, next == std::string::npos ? std::string::npos : next - start);
+                    if (!part.empty()) crumb += " / " + part;
+                    if (next == std::string::npos) break;
+                    start = next + 1;
+                }
+            }
+            std::string label = "Music: " + crumb;
             gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (html_sess) {
             std::string title = html_sess->doc.title.empty() ? html_sess->source : html_sess->doc.title;
@@ -43924,6 +44142,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     if (video_sess) {
         DrawVideoPane(pane, *video_sess, x, content_y, w, content_h, is_active);
+        DrawPaneBorder(x, y, w, h, is_active);
+        return;
+    }
+
+    if (music_sess) {
+        DrawMusicPane(pane, *music_sess, x, content_y, w, content_h, is_active);
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }

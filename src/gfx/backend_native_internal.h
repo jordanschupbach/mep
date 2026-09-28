@@ -32,12 +32,14 @@ public:
     void InitAudioDevice() override;
     bool IsAudioDeviceReady() override;
     Sound LoadSound(const char *file_name) override;
+    Sound LoadSoundFromPcm(const int16_t *samples, size_t count, int channels, int rate) override;
     void UnloadSound(Sound sound) override;
     void PlaySound(Sound sound) override;
     void PauseSound(Sound sound) override;
     void ResumeSound(Sound sound) override;
     bool IsSoundPlaying(Sound sound) override;
     void SetSoundVolume(Sound sound, float volume) override;
+    double GetSoundTimePlayed(Sound sound) override;
 
 private:
     struct Impl;

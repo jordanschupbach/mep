@@ -11,11 +11,15 @@ namespace gfx {
 inline void InitAudioDevice() { GetBackends().audio->InitAudioDevice(); }
 inline bool IsAudioDeviceReady() { return GetBackends().audio->IsAudioDeviceReady(); }
 inline Sound LoadSound(const char *file_name) { return GetBackends().audio->LoadSound(file_name); }
+inline Sound LoadSoundFromPcm(const int16_t *samples, size_t count, int channels, int rate) {
+    return GetBackends().audio->LoadSoundFromPcm(samples, count, channels, rate);
+}
 inline void UnloadSound(Sound sound) { GetBackends().audio->UnloadSound(sound); }
 inline void PlaySound(Sound sound) { GetBackends().audio->PlaySound(sound); }
 inline void PauseSound(Sound sound) { GetBackends().audio->PauseSound(sound); }
 inline void ResumeSound(Sound sound) { GetBackends().audio->ResumeSound(sound); }
 inline bool IsSoundPlaying(Sound sound) { return GetBackends().audio->IsSoundPlaying(sound); }
 inline void SetSoundVolume(Sound sound, float volume) { GetBackends().audio->SetSoundVolume(sound, volume); }
+inline double GetSoundTimePlayed(Sound sound) { return GetBackends().audio->GetSoundTimePlayed(sound); }
 
 }  // namespace gfx

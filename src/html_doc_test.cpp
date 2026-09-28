@@ -58,6 +58,7 @@ int main() {
     CHECK(winner->style.line_height_multiplier == 2.0f && winner->style.letter_spacing.set &&
           winner->style.letter_spacing.value == 2.0f && winner->style.white_space == HtmlWhiteSpace::NoWrap);
     CHECK(second->style.bold && !first->style.bold);
+    CHECK(!first->style.list_marker_none);
     CHECK(check->form_checked && memo->form_value == "hello form" && choice->form_value == "b" && more->details_open);
     doc.scripts = {"document.querySelector('.card').textContent = 'selected'; document.title = document.querySelectorAll('li').length;"};
     RunScripts(doc, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
@@ -473,5 +474,53 @@ int main() {
     // The rotated square still covers the same 20x20 box after scaling by 2.
     CHECK(std::fabs(rotated.shapes[0].points[0] - 20.0f) < 0.01f && std::fabs(rotated.shapes[0].points[1]) < 0.01f);
     CHECK(rotated.shapes[1].kind == SvgShape::Kind::Polygon && std::fabs(rotated.shapes[1].points[0] - 8.0f) < 0.01f && std::fabs(rotated.shapes[1].points[1] - 6.0f) < 0.01f);
+    // list-style:none suppresses the <li> marker and inherits into nested
+    // lists (the common "list styled as a plain nav menu" pattern); a plain
+    // sibling list keeps its marker.
+    HtmlDoc lists;
+    ParseHtml(R"HTML(
+      <style> nav ul.menu { list-style: none; } </style>
+      <nav><ul class="menu"><li id="m1">a</li><li id="m2"><ul class="menu"><li id="m3">b</li></ul></li></ul></nav>
+      <ul><li id="p1">plain</li></ul>
+    )HTML", lists);
+    DomNode *m1 = FindById(lists.root.get(), "m1");
+    DomNode *m3 = FindById(lists.root.get(), "m3");
+    DomNode *p1 = FindById(lists.root.get(), "p1");
+    CHECK(m1 && m3 && p1);
+    CHECK(m1->style.is_list_item && m1->style.list_marker_none);
+    CHECK(m3->style.is_list_item && m3->style.list_marker_none);  // inherited into the nested list
+    CHECK(p1->style.is_list_item && !p1->style.list_marker_none);
+
+    // Custom properties + var(): the theme pattern -- :root defines the
+    // variables, a [data-theme] attribute selector overrides them, and every
+    // color is a var() reference. Also exercises comment stripping (a comment
+    // glued to the first selector used to break the whole sheet) and @media
+    // nesting (a flat brace scan misaligns every rule after it).
+    HtmlDoc vars;
+    ParseHtml(R"HTML(
+      <style>
+        /* theme comment { with a brace to trip a naive parser } */
+        :root { --fg: #112233; --bg: #445566; }
+        :root[data-theme="dark"] { --fg: #aabbcc; }
+        body { color: var(--fg); background: var(--bg); }
+        @media screen { .card { color: var(--fg, #000); } }
+        @keyframes spin { from { color: #ff0000; } to { color: #00ff00; } }
+        .gap { color: var(--missing, #010203); }
+      </style>
+      <html data-theme="dark"><body id="b"><p class="card" id="c">x</p><p class="gap" id="g">y</p></body></html>
+    )HTML", vars);
+    DomNode *vb = FindById(vars.root.get(), "b");
+    DomNode *vc = FindById(vars.root.get(), "c");
+    DomNode *vg = FindById(vars.root.get(), "g");
+    CHECK(vb && vc && vg);
+    // dark override wins on <html>, inherited to <body>: --fg == #aabbcc.
+    CHECK(vb->style.has_color && vb->style.color_r == 0xaa && vb->style.color_g == 0xbb && vb->style.color_b == 0xcc);
+    CHECK(vb->style.has_bg && vb->style.bg_r == 0x44 && vb->style.bg_g == 0x55 && vb->style.bg_b == 0x66);
+    // Rule inside @media still applies; var() picks the variable over its fallback.
+    CHECK(vc->style.has_color && vc->style.color_r == 0xaa);
+    // Undefined variable falls back to the literal given in var(..., fallback).
+    CHECK(vg->style.has_color && vg->style.color_r == 0x01 && vg->style.color_g == 0x02 && vg->style.color_b == 0x03);
+    // @keyframes block was skipped whole, not misparsed into a stray rule.
+
     std::cout << "html_doc_test passed\n";
 }

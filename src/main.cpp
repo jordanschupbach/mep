@@ -37116,7 +37116,15 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
     }
     if (c->tag == "button") {
         std::string label; HtmlCollectRawText(c, label);
-        out.push_back({"[ " + label + " ]", ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), true, false, false, false});
+        // A button with no text label of its own (its glyph/content comes
+        // only from CSS ::before/::after or a background image, neither of
+        // which this renderer supports) would draw as a bare "[  ]" box --
+        // visual noise, most often a decorative icon/toggle control (e.g. a
+        // nav-menu collapse caret). Draw nothing for it rather than an empty
+        // bracket pair; a button that actually has a label still gets one.
+        bool has_text = label.find_first_not_of(" \t\r\n") != std::string::npos;
+        if (has_text)
+            out.push_back({"[ " + label + " ]", ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), true, false, false, false});
         return;
     }
     if (c->tag == "textarea") {
@@ -37578,7 +37586,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
 
     float my_indent = content_x + static_cast<float>(node->style.list_depth) * kHtmlListIndentPx;
     std::vector<HtmlPendingWord> words;
-    if (node->style.is_list_item) {
+    if (node->style.is_list_item && !node->style.list_marker_none) {
         std::string marker =
             node->style.ordered_list_item ? (std::to_string(node->style.list_item_index) + ". ") : "* ";
         words.push_back({marker, box_ctx.base_font_size * node->style.font_scale, HtmlResolveColor(node->style, box_ctx),

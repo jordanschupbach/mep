@@ -834,6 +834,13 @@ bool MatchesSimple(const DomNode *node, const CssSimpleSelector &simple) {
         if (name == "hover" && !node->interaction_hover) return false;
         if (name == "focus" && !node->interaction_focus) return false;
         if (name == "active" && !node->interaction_active) return false;
+        // :root is the document root element (<html>). Matching it correctly
+        // matters for custom properties: `:root { --x: ... }` defines the
+        // theme's variables, and descendants must *inherit* them rather than
+        // each re-match `:root` and reset the variable to its light-theme
+        // default (which is what an "unknown pseudo matches anything" fallback
+        // would cause, breaking the [data-theme] override on every child).
+        if (name == "root" && node->tag != "html") return false;
     }
     return true;
 }
@@ -872,7 +879,29 @@ void CollectSelectorMatches(DomNode *node, const ParsedSelector &selector, std::
  * @param body Declaration block text (the contents between a CSS rule's braces, or an inline style="" attribute value).
  * @return Map of lowercased property names to lowercased, trimmed values.
  */
-std::unordered_map<std::string, std::string> ParseDeclarations(const std::string &body) {
+// Removes CSS `/* ... */` comments. CSS has no line comments, and none of
+// the stylesheets this renderer sees embed "/*" inside a string/url(), so a
+// plain scan is enough. Load-bearing: a comment anywhere in a <style> block
+// (author stylesheets are full of them) otherwise gets glued into the next
+// selector's text -- breaking that rule and, worse, throwing off the
+// brace-matching for everything after it.
+std::string StripCssComments(const std::string &css) {
+    std::string out;
+    out.reserve(css.size());
+    for (size_t i = 0; i < css.size();) {
+        if (css[i] == '/' && i + 1 < css.size() && css[i + 1] == '*') {
+            size_t end = css.find("*/", i + 2);
+            if (end == std::string::npos) break;
+            i = end + 2;
+        } else {
+            out += css[i++];
+        }
+    }
+    return out;
+}
+
+std::unordered_map<std::string, std::string> ParseDeclarations(const std::string &raw_body) {
+    const std::string body = StripCssComments(raw_body);
     std::unordered_map<std::string, std::string> out;
     size_t i = 0, n = body.size();
     while (i < n) {
@@ -1143,6 +1172,18 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
         else if (it->second == "nowrap") s.white_space = HtmlWhiteSpace::NoWrap;
         else s.white_space = HtmlWhiteSpace::Normal;
     }
+    // `list-style` (shorthand) / `list-style-type`: only the none-vs-marker
+    // distinction matters here (the exact bullet glyph is always drawn as
+    // "* " -- see main.cpp), so any value naming "none" suppresses the
+    // marker and any other explicit type restores it. The shorthand can
+    // also carry position/image tokens; a bare "none" in it means the type.
+    for (const char *key : {"list-style-type", "list-style"}) {
+        if (auto it = decls.find(key); it != decls.end()) {
+            const std::string v = ToLower(it->second);
+            if (v.find("none") != std::string::npos) s.list_marker_none = true;
+            else s.list_marker_none = false;
+        }
+    }
     if (auto it = decls.find("letter-spacing"); it != decls.end()) ParseCssLength(it->second, s.letter_spacing);
     if (auto it = decls.find("line-height"); it != decls.end()) {
         char *end = nullptr;
@@ -1239,7 +1280,67 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
 }
 
 /**
- * @brief Recursively collects CSS rules from every <style> element's text content in the subtree rooted at `n`, splitting comma-separated selector lists into individual rules.
+ * @brief Parses a (comment-stripped) CSS block into rules, appended to `rules`, splitting comma-separated selector lists into individual rules and recursing through nested at-rule blocks.
+ * @param css Comment-stripped CSS source (a whole <style> body, or the inner body of an at-rule).
+ * @param rules Output list appended with one CssRule per selector found.
+ *
+ * Brace-aware, unlike a flat find('{')/find('}') scan: it matches each
+ * block's braces so a nested block (a `@media`/`@supports` wrapping other
+ * rules, `@keyframes` with per-stop blocks) can't throw off the rules that
+ * follow it. `@media`/`@supports`/`@container`/`@layer` bodies are parsed as
+ * if their inner rules were top-level -- the condition is assumed to hold, a
+ * deliberate simplification for a preview renderer with no viewport/feature
+ * queries; every other at-rule (`@keyframes`/`@font-face`/`@page`/`@import`/
+ * `@charset`) is skipped whole (its declarations aren't ones this renderer
+ * applies, and skipping the block keeps the brace matching aligned).
+ */
+void CollectCssRules(const std::string &css, std::vector<CssRule> &rules) {
+    size_t i = 0, len = css.size();
+    while (i < len) {
+        while (i < len && std::isspace(static_cast<unsigned char>(css[i]))) ++i;
+        if (i >= len) break;
+        size_t brace = css.find('{', i);
+        if (brace == std::string::npos) break;
+        // A statement at-rule (`@import ...;`, `@charset ...;`) ends at a
+        // semicolon before any block -- consume it and move on.
+        size_t semi = css.find(';', i);
+        if (semi != std::string::npos && semi < brace) { i = semi + 1; continue; }
+        std::string prelude = css.substr(i, brace - i);
+        size_t pa = prelude.find_first_not_of(" \t\r\n");
+        std::string head = (pa == std::string::npos) ? std::string() : prelude.substr(pa);
+        // Match this block's braces to find its true end (nested blocks and all).
+        size_t depth = 1, j = brace + 1;
+        for (; j < len && depth > 0; ++j) {
+            if (css[j] == '{') ++depth;
+            else if (css[j] == '}') --depth;
+        }
+        const size_t body_len = (j > brace + 1) ? (j - 1 - (brace + 1)) : 0;  // exclude the closing '}'
+        std::string body = css.substr(brace + 1, body_len);
+        if (!head.empty() && head[0] == '@') {
+            std::string keyword = ToLower(head.substr(1, head.find_first_of(" \t\r\n({", 1) - 1));
+            if (keyword == "media" || keyword == "supports" || keyword == "container" || keyword == "layer" ||
+                keyword == "document" || keyword == "scope")
+                CollectCssRules(body, rules);
+            // else: keyframes/font-face/page/... -- skipped whole.
+        } else {
+            auto decls = ParseDeclarations(body);
+            size_t s = 0;
+            while (s < head.size()) {
+                size_t comma = head.find(',', s);
+                std::string one = head.substr(s, (comma == std::string::npos ? head.size() : comma) - s);
+                size_t a = one.find_first_not_of(" \t\r\n");
+                size_t b = one.find_last_not_of(" \t\r\n");
+                if (a != std::string::npos) rules.push_back({ToLower(one.substr(a, b - a + 1)), decls, rules.size()});
+                if (comma == std::string::npos) break;
+                s = comma + 1;
+            }
+        }
+        i = j;
+    }
+}
+
+/**
+ * @brief Recursively collects CSS rules from every <style> element's text content in the subtree rooted at `n`.
  * @param n Root of the subtree to scan.
  * @param rules Output list appended with one CssRule per selector found.
  */
@@ -1249,26 +1350,7 @@ void CollectStyleRules(DomNode *n, std::vector<CssRule> &rules) {
         for (const auto &c : n->children) {
             if (c->type == DomNodeType::Text) css += c->text;
         }
-        size_t i = 0, len = css.size();
-        while (i < len) {
-            size_t brace = css.find('{', i);
-            if (brace == std::string::npos) break;
-            size_t close = css.find('}', brace);
-            if (close == std::string::npos) break;
-            std::string selector_list = css.substr(i, brace - i);
-            auto decls = ParseDeclarations(css.substr(brace + 1, close - brace - 1));
-            size_t s = 0;
-            while (s < selector_list.size()) {
-                size_t comma = selector_list.find(',', s);
-                std::string one = selector_list.substr(s, (comma == std::string::npos ? selector_list.size() : comma) - s);
-                size_t a = one.find_first_not_of(" \t\r\n");
-                size_t b = one.find_last_not_of(" \t\r\n");
-                if (a != std::string::npos) rules.push_back({ToLower(one.substr(a, b - a + 1)), decls, rules.size()});
-                if (comma == std::string::npos) break;
-                s = comma + 1;
-            }
-            i = close + 1;
-        }
+        CollectCssRules(StripCssComments(css), rules);
     }
     for (auto &c : n->children) CollectStyleRules(c.get(), rules);
 }
@@ -1282,7 +1364,56 @@ void CollectStyleRules(DomNode *n, std::vector<CssRule> &rules) {
 /**
  * @brief Applies every matching CSS rule in specificity/source order.
  */
-void ApplyMatchingRules(const DomNode *n, ComputedStyle &style, const std::vector<CssRule> &rules) {
+// Substitutes CSS `var(--name[, fallback])` references in `value` using the
+// custom properties in `vars`. Recurses (depth-limited, so a variable that
+// refers to itself can't loop) since a variable's value can itself use
+// var(). An unresolved reference with no fallback yields the empty string,
+// which the property parsers then ignore -- the same "unsupported value is
+// silently dropped" tolerance the rest of this file has.
+std::string ResolveCssVars(const std::string &value, const std::unordered_map<std::string, std::string> &vars,
+                            int depth = 0) {
+    if (depth > 16 || value.find("var(") == std::string::npos) return value;
+    std::string out;
+    size_t i = 0;
+    while (i < value.size()) {
+        size_t at = value.find("var(", i);
+        if (at == std::string::npos) { out += value.substr(i); break; }
+        out += value.substr(i, at - i);
+        // Find the matching close paren for this var( (values can nest parens).
+        size_t j = at + 4, depth_p = 1;
+        for (; j < value.size() && depth_p > 0; ++j) {
+            if (value[j] == '(') ++depth_p;
+            else if (value[j] == ')') --depth_p;
+        }
+        const size_t inner_end = (j > 0) ? j - 1 : value.size();  // index of the matching ')'
+        std::string inner = value.substr(at + 4, inner_end - (at + 4));
+        size_t comma = inner.find(',');
+        std::string name = inner.substr(0, comma);
+        std::string fallback = (comma == std::string::npos) ? std::string() : inner.substr(comma + 1);
+        auto trim = [](std::string s) {
+            size_t a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
+            return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
+        };
+        name = trim(name);
+        auto found = vars.find(name);
+        if (found != vars.end()) out += ResolveCssVars(found->second, vars, depth + 1);
+        else out += ResolveCssVars(trim(fallback), vars, depth + 1);
+        i = j;
+    }
+    return out;
+}
+
+// Cascade for one element: gather every matching rule (plus the element's
+// inline style) in specificity/source order, then apply. Custom properties
+// are handled in two passes so var() resolves against the element's *final*
+// variable set: pass 1 folds every `--x` declaration into `vars` (later wins,
+// seeded by the inherited `vars` the caller passed in), pass 2 applies the
+// normal properties with their var() references substituted. `vars` is
+// updated in place so the caller can pass it down to this element's children,
+// which is how custom properties inherit.
+void ApplyMatchingRules(const DomNode *n, ComputedStyle &style, const std::vector<CssRule> &rules,
+                         const std::unordered_map<std::string, std::string> &inline_decls,
+                         std::unordered_map<std::string, std::string> &vars) {
     struct Match { const CssRule *rule; ParsedSelector selector; };
     std::vector<Match> matches;
     for (const CssRule &r : rules) {
@@ -1296,7 +1427,25 @@ void ApplyMatchingRules(const DomNode *n, ComputedStyle &style, const std::vecto
         if (a.selector.tag_count != b.selector.tag_count) return a.selector.tag_count < b.selector.tag_count;
         return a.rule->source_order < b.rule->source_order;
     });
-    for (const Match &match : matches) ApplyDeclarations(style, match.rule->decls);
+    // Cascade layers, lowest priority first: matched rules (already sorted),
+    // then the inline style="" (always wins over any rule).
+    std::vector<const std::unordered_map<std::string, std::string> *> layers;
+    layers.reserve(matches.size() + 1);
+    for (const Match &match : matches) layers.push_back(&match.rule->decls);
+    if (!inline_decls.empty()) layers.push_back(&inline_decls);
+
+    for (const auto *decls : layers)
+        for (const auto &[key, val] : *decls)
+            if (key.size() >= 2 && key[0] == '-' && key[1] == '-') vars[key] = ResolveCssVars(val, vars);
+
+    for (const auto *decls : layers) {
+        std::unordered_map<std::string, std::string> resolved;
+        for (const auto &[key, val] : *decls) {
+            if (key.size() >= 2 && key[0] == '-' && key[1] == '-') continue;  // custom property, not a real property
+            resolved.emplace(key, val.find("var(") != std::string::npos ? ResolveCssVars(val, vars) : val);
+        }
+        ApplyDeclarations(style, resolved);
+    }
 }
 
 // Whether a display-math span is the entirety of its parent block -- the
@@ -1331,8 +1480,11 @@ bool MathIsOnlyChild(const DomNode *n) {
  * @param in_ordered Whether the enclosing list (if any) is ordered (<ol>).
  */
 void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<CssRule> &rules, int list_depth,
-                   bool in_ordered) {
+                   bool in_ordered, const std::unordered_map<std::string, std::string> &parent_vars) {
     if (n->type != DomNodeType::Element) return;
+    // Custom properties inherit: this element starts from its parent's set and
+    // the cascade (ApplyMatchingRules, below) folds in any it redefines.
+    std::unordered_map<std::string, std::string> vars = parent_vars;
     ComputedStyle s = TagDefaults(n->tag);
     if (n->tag == "math") {
         bool display = n->attrs.count("display") && n->attrs.at("display") == "1";
@@ -1376,6 +1528,11 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
     s.line_height_length = parent.line_height_length;
     s.letter_spacing = parent.letter_spacing;
     if (n->tag != "pre") s.white_space = parent.white_space;
+    // list-style-type inherits in real CSS: a `list-style: none` on the
+    // <ul> reaches its <li> children (and deeper nested lists) unless one
+    // re-specifies its own. Seeded from the parent before ApplyMatchingRules
+    // (below) gets a chance to override it for this node.
+    s.list_marker_none = parent.list_marker_none;
     s.list_depth = list_depth;
     s.link_href = parent.link_href;
     s.link_node = parent.link_node;
@@ -1386,8 +1543,9 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
         }
     }
 
-    ApplyMatchingRules(n, s, rules);
-    if (auto it = n->attrs.find("style"); it != n->attrs.end()) ApplyDeclarations(s, ParseDeclarations(it->second));
+    std::unordered_map<std::string, std::string> inline_decls;
+    if (auto it = n->attrs.find("style"); it != n->attrs.end()) inline_decls = ParseDeclarations(it->second);
+    ApplyMatchingRules(n, s, rules, inline_decls, vars);
     s.preserve_whitespace = s.white_space == HtmlWhiteSpace::Pre;
     n->style = s;
 
@@ -1397,14 +1555,14 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
     int item_index = 0;
     for (auto &c : n->children) {
         if (is_list_container && c->type == DomNodeType::Element && c->tag == "li") item_index++;
-        WalkAndStyle(c.get(), s, rules, next_depth, next_ordered);
+        WalkAndStyle(c.get(), s, rules, next_depth, next_ordered, vars);
         if (is_list_container && c->type == DomNodeType::Element && c->tag == "li") {
             c->style.is_list_item = true;
             c->style.ordered_list_item = next_ordered;
             c->style.list_item_index = item_index;
         }
     }
-    if (n->shadow_root) WalkAndStyle(n->shadow_root.get(), s, rules, next_depth, next_ordered);
+    if (n->shadow_root) WalkAndStyle(n->shadow_root.get(), s, rules, next_depth, next_ordered, vars);
     if (n->tag == "select" && n->form_value.empty()) {
         DomNode *fallback = nullptr;
         for (auto &child : n->children) {
@@ -1427,7 +1585,8 @@ void ComputeStyles(HtmlDoc &doc) {
     std::vector<CssRule> rules;
     CollectStyleRules(doc.root.get(), rules);
     ComputedStyle root_style;  // no color/bold/italic -- layout falls back to the pane's theme colors
-    for (auto &c : doc.root->children) WalkAndStyle(c.get(), root_style, rules, 0, false);
+    const std::unordered_map<std::string, std::string> root_vars;  // custom properties cascade down from here
+    for (auto &c : doc.root->children) WalkAndStyle(c.get(), root_style, rules, 0, false, root_vars);
 }
 
 std::vector<DomNode *> QuerySelectorAll(DomNode *root, const std::string &selector) {

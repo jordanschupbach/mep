@@ -5520,9 +5520,9 @@ void Editor::WheelScrollSheet(float dx, float dy) {
 }
 
 void Editor::WheelScrollPdf(float dx, float dy) {
-    auto it = pdfs_.find(CurPane().buffer_id);
-    if (it == pdfs_.end()) return;
-    PdfSession &sess = it->second;
+    PdfSession *sp = EnsurePdfSession(CurPane().id, CurPane().buffer_id);
+    if (!sp) return;
+    PdfSession &sess = *sp;
     if (sess.search_active) return;  // don't fight the search-input overlay
     int page_count = sess.doc ? sess.doc->PageCount() : 0;
     if (page_count <= 0) return;
@@ -7144,7 +7144,7 @@ void Editor::SyncModeToActivePaneBuffer() {
         // Keyed on the focused session's own caret being initialised
         // (caret_page >= 0, set by EnterPdfAnnotateMode) so focusing a
         // *different* PDF pane still correctly falls to the plain viewer.
-        PdfSession *ps = GetPdfMutable(CurPane().buffer_id);
+        PdfSession *ps = GetPdfMutable(CurPane().id);
         if (mode_ == Mode::PdfAnnotate && ps && ps->caret_page >= 0) {
             // keep Mode::PdfAnnotate
         } else {
@@ -11512,25 +11512,76 @@ void Editor::HandleHtmlInput() {
     }
 }
 
-bool Editor::IsPdfBuffer(int buffer_id) const { return pdfs_.find(buffer_id) != pdfs_.end(); }
+bool Editor::IsPdfBuffer(int buffer_id) const { return pdf_buffers_.find(buffer_id) != pdf_buffers_.end(); }
 
-const PdfSession *Editor::GetPdf(int buffer_id) const {
-    auto it = pdfs_.find(buffer_id);
+const PdfSession *Editor::GetPdf(int pane_id) const {
+    auto it = pdfs_.find(pane_id);
     return it == pdfs_.end() ? nullptr : &it->second;
 }
 
-PdfSession *Editor::GetPdfMutable(int buffer_id) {
-    auto it = pdfs_.find(buffer_id);
+PdfSession *Editor::GetPdfMutable(int pane_id) {
+    auto it = pdfs_.find(pane_id);
     return it == pdfs_.end() ? nullptr : &it->second;
+}
+
+PdfBufferState *Editor::PdfBufferFor(int buffer_id) {
+    auto it = pdf_buffers_.find(buffer_id);
+    return it == pdf_buffers_.end() ? nullptr : it->second.get();
+}
+
+const PdfBufferState *Editor::PdfBufferFor(int buffer_id) const {
+    auto it = pdf_buffers_.find(buffer_id);
+    return it == pdf_buffers_.end() ? nullptr : it->second.get();
+}
+
+PdfSession *Editor::EnsurePdfSession(int pane_id, int buffer_id) {
+    auto bit = pdf_buffers_.find(buffer_id);
+    if (bit == pdf_buffers_.end()) return nullptr;  // not a PDF buffer
+    auto it = pdfs_.find(pane_id);
+    // Re-create if this pane never had a PDF session, or was showing a
+    // *different* PDF before (a buffer switch reuses the pane id).
+    if (it != pdfs_.end() && it->second.buffer_id == buffer_id) return &it->second;
+    PdfSession sess;
+    sess.pane_id = pane_id;
+    sess.buffer_id = buffer_id;
+    sess.shared = bit->second;
+    sess.doc = bit->second->doc;  // alias the shared document
+    sess.rendered_scale = 144.0f / 72.0f;  // baseline ~144dpi, same as OpenPdfInPlace
+    sess.last_annot_generation = bit->second->annot_generation;
+    pdfs_[pane_id] = std::move(sess);
+    return &pdfs_[pane_id];
+}
+
+PdfSession *Editor::AnyPdfSessionForBuffer(int buffer_id) {
+    // Prefer the active pane's own session, if it's on this buffer.
+    if (PdfSession *s = GetPdfMutable(ActivePaneId()); s && s->buffer_id == buffer_id) return s;
+    for (auto &kv : pdfs_)
+        if (kv.second.buffer_id == buffer_id) return &kv.second;
+    return nullptr;
+}
+
+void Editor::GotoPdfPagePane(int pane_id, int page) {
+    PdfSession *s = GetPdfMutable(pane_id);
+    if (!s || !s->doc) return;
+    int page_count = s->doc->PageCount();
+    if (page_count <= 0) return;
+    s->page = std::clamp(page, 0, page_count - 1);
+    s->scroll_y = 0;
 }
 
 void Editor::GotoPdfPage(int buffer_id, int page) {
-    auto it = pdfs_.find(buffer_id);
-    if (it == pdfs_.end() || !it->second.doc) return;
-    int page_count = it->second.doc->PageCount();
+    // Buffer-scoped: move every pane viewing this document (the outline
+    // sidebar's click-to-jump names no single pane).
+    const PdfBufferState *bs = PdfBufferFor(buffer_id);
+    if (!bs || !bs->doc) return;
+    int page_count = bs->doc->PageCount();
     if (page_count <= 0) return;
-    it->second.page = std::clamp(page, 0, page_count - 1);
-    it->second.scroll_y = 0;
+    int clamped = std::clamp(page, 0, page_count - 1);
+    for (auto &kv : pdfs_) {
+        if (kv.second.buffer_id != buffer_id) continue;
+        kv.second.page = clamped;
+        kv.second.scroll_y = 0;
+    }
 }
 
 std::pair<double, double> Editor::PdfPageSizePt(PdfSession &sess, int page_index) {
@@ -11550,8 +11601,8 @@ float Editor::PdfPageScreenHeightPx(PdfSession &sess, int page_index) {
     return static_cast<float>(PdfPageSizePt(sess, page_index).second * static_cast<double>(sess.rendered_scale) * static_cast<double>(sess.zoom));
 }
 
-void Editor::ResizePdfViewport(int buffer_id, int w, int h) {
-    auto it = pdfs_.find(buffer_id);
+void Editor::ResizePdfViewport(int pane_id, int w, int h) {
+    auto it = pdfs_.find(pane_id);
     if (it == pdfs_.end()) return;
     PdfSession &sess = it->second;
     sess.viewport_w = w;
@@ -11563,7 +11614,7 @@ void Editor::ResizePdfViewport(int buffer_id, int w, int h) {
     sess.pan_x = std::clamp(sess.pan_x, 0, max_pan_x);
 }
 
-void Editor::EnsurePdfPagesRastered(int buffer_id) {
+void Editor::EnsurePdfPagesRastered(int pane_id) {
     static const bool kPdfProf = std::getenv("MEP_PDF_PROF") != nullptr;
     auto prof_t0 = std::chrono::steady_clock::now();
     auto prof_log = [&](const char *what) {
@@ -11571,12 +11622,20 @@ void Editor::EnsurePdfPagesRastered(int buffer_id) {
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - prof_t0).count();
         if (ms > 30.0) std::fprintf(stderr, "[PDFPROF] EnsurePdfPagesRastered %s: %.0f ms\n", what, ms);
     };
-    auto it = pdfs_.find(buffer_id);
+    auto it = pdfs_.find(pane_id);
     if (it == pdfs_.end()) return;
     PdfSession &sess = it->second;
     if (!sess.doc) return;
     int page_count = sess.doc->PageCount();
     if (page_count <= 0) return;
+    // A sibling pane changed the shared annotation set: rebuild this pane's
+    // cached page overlays so the new/edited/deleted annotation shows here
+    // too. (Newly rendered pages below already read shared->pending_annots
+    // directly; this catches pages already cached before the change.)
+    if (sess.shared && sess.last_annot_generation != sess.shared->annot_generation) {
+        RecomputePdfPageAnnots(sess);
+        sess.last_annot_generation = sess.shared->annot_generation;
+    }
 
     // Pages render on a worker thread, one at a time (see
     // PdfSession::render_job): this frame collects a finished render,
@@ -11609,7 +11668,7 @@ void Editor::EnsurePdfPagesRastered(int buffer_id) {
             pr.generation = sess.next_raster_generation++;
             if (!sess.search_matches.empty()) pr.highlights = sess.doc->MatchRectsForPage(idx, sess.rendered_scale, sess.search_matches);
             pr.links = sess.doc->PageLinks(idx, sess.rendered_scale);
-            pr.annots = sess.doc->AnnotDrawForPage(idx, sess.rendered_scale, sess.pending_annots, sess.annot_edits, sess.annot_deletes);
+            pr.annots = sess.doc->AnnotDrawForPage(idx, sess.rendered_scale, sess.shared->pending_annots, sess.shared->annot_edits, sess.shared->annot_deletes);
             sess.rasters[idx] = std::move(pr);
         } else if (!res.ok && current) {
             // A failed render still takes a raster slot (an empty one, which
@@ -11667,9 +11726,9 @@ void Editor::RecomputePdfPageHighlights(PdfSession &sess) {
 }
 
 void Editor::RecomputePdfPageAnnots(PdfSession &sess) {
-    if (!sess.doc) return;
+    if (!sess.doc || !sess.shared) return;
     for (auto &kv : sess.rasters) {
-        kv.second.annots = sess.doc->AnnotDrawForPage(kv.first, sess.rendered_scale, sess.pending_annots, sess.annot_edits, sess.annot_deletes);
+        kv.second.annots = sess.doc->AnnotDrawForPage(kv.first, sess.rendered_scale, sess.shared->pending_annots, sess.shared->annot_edits, sess.shared->annot_deletes);
     }
 }
 
@@ -11697,7 +11756,7 @@ const char *Editor::PdfHighlightColorName(int index) const {
 }
 
 void Editor::SetPdfHighlightColor(int index) {
-    PdfSession *s = GetPdfMutable(CurPane().buffer_id);
+    PdfSession *s = GetPdfMutable(CurPane().id);
     if (!s || index < 0 || index >= kPdfPaletteCount) return;
     s->active_color = index;
     status_message_ = std::string("Highlight colour: ") + kPdfHighlightPalette[index].name;
@@ -11715,12 +11774,15 @@ bool Editor::SetPdfHighlightColorByName(const std::string &name) {
 }
 
 void Editor::AddPendingPdfAnnot(PdfSession &sess, int buffer_id, pdfannots::PdfAnnot a) {
-    sess.pending_annots.push_back(std::move(a));
-    sess.annots_dirty = true;
+    if (!sess.shared) return;
+    sess.shared->pending_annots.push_back(std::move(a));
+    sess.shared->annots_dirty = true;
+    sess.shared->annot_generation++;  // sibling panes pick this up next frame
     // Mark the buffer modified so the "unsaved" indicator shows and :w/:wa
     // pick it up (BufferUnsavable now reports an annotated PDF as savable).
     if (buffer_id >= 0 && buffer_id < static_cast<int>(buffers_.size())) buffers_[static_cast<size_t>(buffer_id)].modified = true;
     RecomputePdfPageAnnots(sess);
+    sess.last_annot_generation = sess.shared->annot_generation;
 }
 
 void Editor::SetPdfNoteLatexPng(const std::string &key, const std::string &png) { pdf_note_latex_png_[key] = png; }
@@ -11740,7 +11802,7 @@ void Editor::EnterPdfAnnotateMode() {
         return;
     }
     mode_ = Mode::PdfAnnotate;
-    if (PdfSession *s = GetPdfMutable(CurPane().buffer_id)) {
+    if (PdfSession *s = GetPdfMutable(CurPane().id)) {
         LoadCaretGlyphs(*s, s->page);
         s->visual_active = false;
         s->sel_quads.clear();
@@ -11751,7 +11813,7 @@ void Editor::EnterPdfAnnotateMode() {
 }
 
 void Editor::PdfNotePrompt() {
-    PdfSession *s = GetPdfMutable(CurPane().buffer_id);
+    PdfSession *s = GetPdfMutable(CurPane().id);
     if (!s) {
         status_message_ = "Not a PDF pane";
         return;
@@ -11801,8 +11863,9 @@ PdfSession::AnnotTarget Editor::ResolveAnnotTargetAtCaret(PdfSession &sess) {
         }
         return false;
     };
-    for (int i = static_cast<int>(sess.pending_annots.size()) - 1; i >= 0; --i) {
-        const pdfannots::PdfAnnot &a = sess.pending_annots[static_cast<size_t>(i)];
+    if (!sess.shared) return t;
+    for (int i = static_cast<int>(sess.shared->pending_annots.size()) - 1; i >= 0; --i) {
+        const pdfannots::PdfAnnot &a = sess.shared->pending_annots[static_cast<size_t>(i)];
         if (a.page != sess.caret_page || a.kind != pdfannots::Kind::Highlight) continue;
         if (in_quads(a.quads)) {
             t.valid = true; t.from_file = false; t.page = a.page;
@@ -11814,14 +11877,14 @@ PdfSession::AnnotTarget Editor::ResolveAnnotTargetAtCaret(PdfSession &sess) {
         for (const pdfannots::PdfAnnot &a : sess.doc->PageAnnots(sess.caret_page)) {
             if (a.kind != pdfannots::Kind::Highlight) continue;
             const bool deleted = std::any_of(
-                sess.annot_deletes.begin(), sess.annot_deletes.end(),
+                sess.shared->annot_deletes.begin(), sess.shared->annot_deletes.end(),
                 [&](const pdfwrite::AnnotDelete &d) { return d.page == a.page && d.obj_num == a.src_obj; });
             if (deleted) continue;
             if (in_quads(a.quads)) {
                 t.valid = true; t.from_file = true; t.page = a.page;
                 t.src_obj = a.src_obj; t.src_gen = a.src_gen; t.kind = 0;
                 t.contents = a.contents;
-                for (const pdfannots::PdfAnnot &e : sess.annot_edits)
+                for (const pdfannots::PdfAnnot &e : sess.shared->annot_edits)
                     if (e.src_obj == a.src_obj) t.contents = e.contents;
                 return t;
             }
@@ -11834,10 +11897,10 @@ PdfSession::AnnotTarget Editor::ResolveAnnotTargetAtCaret(PdfSession &sess) {
 // sticky note's) -- session annots are mutated in place; file annots become
 // an entry in annot_edits (re-emitted on :w).
 void Editor::ApplyPdfNoteToTarget(PdfSession &sess, const PdfSession::AnnotTarget &t, const std::string &text) {
-    if (!t.valid) return;
+    if (!t.valid || !sess.shared) return;
     if (!t.from_file) {
-        if (t.pending_index >= 0 && t.pending_index < static_cast<int>(sess.pending_annots.size()))
-            sess.pending_annots[static_cast<size_t>(t.pending_index)].contents = text;
+        if (t.pending_index >= 0 && t.pending_index < static_cast<int>(sess.shared->pending_annots.size()))
+            sess.shared->pending_annots[static_cast<size_t>(t.pending_index)].contents = text;
     } else if (sess.doc && t.src_obj > 0) {
         // Fetch the full file annotation (geometry/colour), set its new text,
         // and record it as an edit (replacing any prior edit of the same obj).
@@ -11845,52 +11908,55 @@ void Editor::ApplyPdfNoteToTarget(PdfSession &sess, const PdfSession::AnnotTarge
             if (fa.src_obj == t.src_obj) {
                 pdfannots::PdfAnnot ed = fa;
                 ed.contents = text;
-                sess.annot_edits.erase(std::remove_if(sess.annot_edits.begin(), sess.annot_edits.end(),
+                sess.shared->annot_edits.erase(std::remove_if(sess.shared->annot_edits.begin(), sess.shared->annot_edits.end(),
                                                       [&](const pdfannots::PdfAnnot &e) { return e.src_obj == t.src_obj; }),
-                                       sess.annot_edits.end());
-                sess.annot_edits.push_back(std::move(ed));
+                                       sess.shared->annot_edits.end());
+                sess.shared->annot_edits.push_back(std::move(ed));
                 break;
             }
         }
     }
-    sess.annots_dirty = true;
+    sess.shared->annots_dirty = true;
+    sess.shared->annot_generation++;
     int bid = CurPane().buffer_id;
     if (bid >= 0 && bid < static_cast<int>(buffers_.size())) buffers_[static_cast<size_t>(bid)].modified = true;
     RecomputePdfPageAnnots(sess);
+    sess.last_annot_generation = sess.shared->annot_generation;
 }
 
 // Deletes the annotation `t` (a highlight and its note, or a sticky note).
 void Editor::PdfDeleteTarget() {
     int bid = CurPane().buffer_id;
-    PdfSession *s = GetPdfMutable(bid);
-    if (!s) return;
+    PdfSession *s = GetPdfMutable(CurPane().id);
+    if (!s || !s->shared) return;
     const PdfSession::AnnotTarget t = ActiveAnnotTarget(*s);
     if (!t.valid) {
         status_message_ = "Hover over, or place the caret in, an annotation to delete it";
         return;
     }
     if (!t.from_file) {
-        if (t.pending_index >= 0 && t.pending_index < static_cast<int>(s->pending_annots.size()))
-            s->pending_annots.erase(s->pending_annots.begin() + t.pending_index);
+        if (t.pending_index >= 0 && t.pending_index < static_cast<int>(s->shared->pending_annots.size()))
+            s->shared->pending_annots.erase(s->shared->pending_annots.begin() + t.pending_index);
     } else if (t.src_obj > 0) {
         // Drop any pending edit of it, then schedule the file deletion.
-        s->annot_edits.erase(std::remove_if(s->annot_edits.begin(), s->annot_edits.end(),
+        s->shared->annot_edits.erase(std::remove_if(s->shared->annot_edits.begin(), s->shared->annot_edits.end(),
                                             [&](const pdfannots::PdfAnnot &e) { return e.src_obj == t.src_obj; }),
-                             s->annot_edits.end());
-        s->annot_deletes.push_back({t.page, t.src_obj});
+                             s->shared->annot_edits.end());
+        s->shared->annot_deletes.push_back({t.page, t.src_obj});
     }
     s->hover_annot.valid = false;
-    s->annots_dirty = true;
+    s->shared->annots_dirty = true;
+    s->shared->annot_generation++;
     if (bid >= 0 && bid < static_cast<int>(buffers_.size())) buffers_[static_cast<size_t>(bid)].modified = true;
     RecomputePdfPageAnnots(*s);
+    s->last_annot_generation = s->shared->annot_generation;
     status_message_ = "Deleted annotation (:w to save)";
 }
 
 void Editor::PdfSearchCommand(const std::string &query) {
-    int bid = CurPane().buffer_id;
-    auto it = pdfs_.find(bid);
-    if (it == pdfs_.end() || !it->second.doc) return;
-    PdfSession &sess = it->second;
+    PdfSession *sp = GetPdfMutable(CurPane().id);
+    if (!sp || !sp->doc) return;
+    PdfSession &sess = *sp;
     if (query.empty()) {
         status_message_ = "Usage: :pdfsearch <text>";
         return;
@@ -11912,9 +11978,9 @@ void Editor::PdfSearchCommand(const std::string &query) {
 
 void Editor::PdfHighlightCurrentMatch() {
     int bid = CurPane().buffer_id;
-    auto it = pdfs_.find(bid);
-    if (it == pdfs_.end() || !it->second.doc) return;
-    PdfSession &sess = it->second;
+    PdfSession *sp = GetPdfMutable(CurPane().id);
+    if (!sp || !sp->doc) return;
+    PdfSession &sess = *sp;
 
     pdfannots::PdfAnnot a;
     a.kind = pdfannots::Kind::Highlight;
@@ -11965,9 +12031,9 @@ void Editor::PdfHighlightCurrentMatch() {
 
 void Editor::PdfAddNote(const std::string &text) {
     int bid = CurPane().buffer_id;
-    auto it = pdfs_.find(bid);
-    if (it == pdfs_.end() || !it->second.doc) return;
-    PdfSession &sess = it->second;
+    PdfSession *sp = GetPdfMutable(CurPane().id);
+    if (!sp || !sp->doc) return;
+    PdfSession &sess = *sp;
     if (text.empty()) {
         status_message_ = "Usage: :pdfnote <text>";
         return;
@@ -12103,8 +12169,8 @@ void Editor::PdfCaretMove(PdfSession &sess, int cp) {
     PdfCaretEnsureVisible(sess);
 }
 
-void Editor::PdfCaretPlaceAtDevice(int buffer_id, int page, double dx, double dy) {
-    PdfSession *s = GetPdfMutable(buffer_id);
+void Editor::PdfCaretPlaceAtDevice(int pane_id, int page, double dx, double dy) {
+    PdfSession *s = GetPdfMutable(pane_id);
     if (!s || !s->doc) return;
     if (s->caret_page != page) LoadCaretGlyphs(*s, page);
     if (s->caret_glyphs.empty()) return;
@@ -12147,12 +12213,12 @@ void Editor::PdfAnnotLeaderAction(PdfSession &sess, int cp) {
             if (sess.visual_active && !sess.sel_quads.empty()) {
                 PdfHighlightCurrentMatch();
                 sess.visual_active = false;
-                if (!sess.pending_annots.empty()) {
+                if (sess.shared && !sess.shared->pending_annots.empty()) {
                     PdfSession::AnnotTarget &t = sess.note_edit_target;
                     t.valid = true;
                     t.from_file = false;
-                    t.page = sess.pending_annots.back().page;
-                    t.pending_index = static_cast<int>(sess.pending_annots.size()) - 1;
+                    t.page = sess.shared->pending_annots.back().page;
+                    t.pending_index = static_cast<int>(sess.shared->pending_annots.size()) - 1;
                     t.kind = 0;
                     t.contents.clear();
                     sess.note_input.clear();
@@ -12226,24 +12292,30 @@ void Editor::OpenPdfInPlace(const std::string &path, const unsigned char *bytes,
         }
     }
     if (buffer_id < 0) {
-        auto doc = std::make_unique<PdfDoc>();
+        auto doc = std::make_shared<PdfDoc>();
         if (!doc->LoadFromMemory(bytes, len)) {
             status_message_ = "E-\"" + path + "\": " + doc->Error();
             return;
         }
         buffer_id = CreateEmptyBuffer();
         buffers_[static_cast<size_t>(buffer_id)].filename = path;
-        PdfSession sess;
-        sess.buffer_id = buffer_id;
-        sess.doc = std::move(doc);
-        sess.rendered_scale = 144.0f / 72.0f;  // baseline ~144dpi, same as before
-        pdfs_[buffer_id] = std::move(sess);
+        // The shared per-buffer state (document + annotations); each pane's
+        // own view state is created lazily by EnsurePdfSession (below and on
+        // every frame from DrawPane).
+        auto bs = std::make_shared<PdfBufferState>();
+        bs->buffer_id = buffer_id;
+        bs->doc = std::move(doc);
+        pdf_buffers_[buffer_id] = std::move(bs);
         // No render call here -- EnsurePdfPagesRastered (called every frame
         // from DrawPane, including the first) handles it lazily.
     }
     CurPane().buffer_id = buffer_id;
     CurPane().cursor = {0, 0};
     CurPane().scroll_row = 0;
+    // Give the focused pane its own view onto this PDF right away (a second
+    // pane on an already-open file lands here too, and gets an independent
+    // page/scroll/zoom of its own rather than mirroring the first).
+    EnsurePdfSession(CurPane().id, buffer_id);
     pending_g_ = false;  // avoid gg/G leakage from whatever mode preceded this
     status_message_.clear();
 }
@@ -12392,25 +12464,36 @@ void Editor::HandleVideoInput() {
 }
 
 void Editor::ReloadPdfBuffer(int buffer_id, const unsigned char *bytes, size_t len) {
-    auto it = pdfs_.find(buffer_id);
-    if (it == pdfs_.end()) return;
-    auto doc = std::make_unique<PdfDoc>();
-    if (!doc->LoadFromMemory(bytes, len)) {
-        status_message_ = "E-reload: " + doc->Error();
+    PdfBufferState *bs = PdfBufferFor(buffer_id);
+    if (!bs || !bs->doc) return;
+    // Every pane viewing this buffer aliases bs->doc; a worker thread may be
+    // rendering a page from it right now. Join those in-flight renders
+    // before mutating the document in place, or the worker would read a
+    // half-swapped PdfDoc::Impl (LoadFromMemory replaces it wholesale).
+    for (auto &kv : pdfs_) {
+        if (kv.second.buffer_id != buffer_id) continue;
+        if (kv.second.render_job.valid()) kv.second.render_job.wait();
+    }
+    if (!bs->doc->LoadFromMemory(bytes, len)) {
+        status_message_ = "E-reload: " + bs->doc->Error();
         return;
     }
-    PdfSession &sess = it->second;
-    sess.doc = std::move(doc);
-    sess.page = 0;
-    sess.scroll_y = 0;
-    sess.pan_x = 0;
-    sess.rasters.clear();
-    sess.page_size_pt.clear();
-    sess.search_active = false;
-    sess.search_input.clear();
-    sess.search_query.clear();
-    sess.search_matches.clear();
-    sess.search_current = -1;
+    // Reloaded in place: the shared_ptr is unchanged, so every pane's
+    // aliased `doc` already sees the new content. Reset each view.
+    for (auto &kv : pdfs_) {
+        PdfSession &sess = kv.second;
+        if (sess.buffer_id != buffer_id) continue;
+        sess.page = 0;
+        sess.scroll_y = 0;
+        sess.pan_x = 0;
+        sess.rasters.clear();
+        sess.page_size_pt.clear();
+        sess.search_active = false;
+        sess.search_input.clear();
+        sess.search_query.clear();
+        sess.search_matches.clear();
+        sess.search_current = -1;
+    }
 }
 
 // Crosses `page` forward/backward as scroll_y drifts past the current
@@ -12503,14 +12586,10 @@ void Editor::ApplyPdfZoom(PdfSession &sess, float new_zoom) {
 }
 
 void Editor::HandlePdfInput() {
-    PdfSession *sess = nullptr;
-    {
-        auto it = pdfs_.find(CurPane().buffer_id);
-        if (it == pdfs_.end()) {
-            mode_ = Mode::Normal;
-            return;
-        }
-        sess = &it->second;
+    PdfSession *sess = EnsurePdfSession(CurPane().id, CurPane().buffer_id);
+    if (!sess) {
+        mode_ = Mode::Normal;
+        return;
     }
     if (sess->search_active) {
         HandlePdfSearchInput(*sess);
@@ -15868,6 +15947,14 @@ void Editor::ClosePane() {
         return;
     }
 
+    // Drop this pane's PDF view state (if any) -- keyed by pane id, so it
+    // would otherwise linger after the pane is gone. The shared per-buffer
+    // PdfBufferState (document + annotations) stays: other panes may still
+    // view the file, and it's switchable back into this slot later. Erasing
+    // the PdfSession destroys its render_job future, which (std::async)
+    // joins any in-flight render before the aliased doc can be touched.
+    pdfs_.erase(tab.active_pane_id);
+
     RemovePaneNode(tab.root, tab.active_pane_id);
 
     std::vector<int> ids;
@@ -16573,8 +16660,8 @@ bool Editor::BufferUnsavable(int buffer_id) const {
     // it and its `modified` flag could never clear (the E37 class -- keep
     // this skip set identical to SaveBuffer's own PDF guard).
     if (IsPdfBuffer(buffer_id)) {
-        const PdfSession *s = GetPdf(buffer_id);
-        return !s || !s->HasUnsavedAnnots();
+        const PdfBufferState *bs = PdfBufferFor(buffer_id);
+        return !bs || !bs->HasUnsavedAnnots();
     }
     if (IsImageBuffer(buffer_id) && image_editors_.find(buffer_id) == image_editors_.end()) return true;
     return false;
@@ -27950,7 +28037,7 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         // HandleCommandInput ran EnterNormal() before dispatching here, so
         // re-sync the mode back to Mode::Pdf for the PDF buffer we're on.
         if (IsPdfBuffer(CurPane().buffer_id)) {
-            GotoPdfPage(CurPane().buffer_id, n - 1);
+            GotoPdfPagePane(CurPane().id, n - 1);
             SyncModeToActivePaneBuffer();
             return;
         }
@@ -28085,7 +28172,7 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
     } else if (name == "pdfnote") {
         if (args.empty()) {
             PdfNotePrompt();
-        } else if (PdfSession *s = GetPdfMutable(CurPane().buffer_id); s && s->hover_annot.valid) {
+        } else if (PdfSession *s = GetPdfMutable(CurPane().id); s && s->hover_annot.valid) {
             ApplyPdfNoteToTarget(*s, s->hover_annot, args);  // attach/edit the note on the hovered annotation
         } else {
             PdfAddNote(args);  // standalone sticky note
@@ -31591,16 +31678,15 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
         // the file's /Annots as an appended incremental-update revision
         // (PdfDoc::BytesWithAddedAnnots), mirroring the image-editor's
         // "viewer rejects :w, edited session saves" split above.
-        auto pit = pdfs_.find(buffer_id);
-        if (pit == pdfs_.end() || !pit->second.doc || !pit->second.HasUnsavedAnnots()) {
+        PdfBufferState *bs = PdfBufferFor(buffer_id);
+        if (!bs || !bs->doc || !bs->HasUnsavedAnnots()) {
             status_message_ = "E382: Cannot write, PDF buffer (no annotations to save)";
             return false;
         }
-        PdfSession &psess = pit->second;
         std::string bytes =
-            psess.doc->BytesWithAnnotChanges(psess.pending_annots, psess.annot_edits, psess.annot_deletes);
+            bs->doc->BytesWithAnnotChanges(bs->pending_annots, bs->annot_edits, bs->annot_deletes);
         if (bytes.empty()) {
-            status_message_ = "E212: Can't write \"" + path + "\": " + psess.doc->Error();
+            status_message_ = "E212: Can't write \"" + path + "\": " + bs->doc->Error();
             return false;
         }
         // One-time backup of the pristine original before the first write.
@@ -31614,16 +31700,26 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
         }
         pdf_out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
         pdf_out.close();
+        // Every pane viewing this buffer aliases bs->doc and may be
+        // rendering a page from it; join those workers before reloading the
+        // document in place (same hazard ReloadPdfBuffer guards against).
+        for (auto &kv : pdfs_) {
+            if (kv.second.buffer_id != buffer_id) continue;
+            if (kv.second.render_job.valid()) kv.second.render_job.wait();
+        }
         // Re-load from the just-written bytes so the newly-added
         // annotations become ordinary existing ones (they now render via
-        // PdfDoc::PageAnnots like any other), and clear the session's
-        // pending set + caches so overlays recompute from the file.
-        psess.doc->LoadFromMemory(reinterpret_cast<const unsigned char *>(bytes.data()), bytes.size());
-        psess.pending_annots.clear();
-        psess.annot_edits.clear();
-        psess.annot_deletes.clear();
-        psess.annots_dirty = false;
-        psess.rasters.clear();
+        // PdfDoc::PageAnnots like any other), and clear the shared pending
+        // set. Bump annot_generation + drop every pane's rasters so all
+        // views' overlays recompute from the file.
+        bs->doc->LoadFromMemory(reinterpret_cast<const unsigned char *>(bytes.data()), bytes.size());
+        bs->pending_annots.clear();
+        bs->annot_edits.clear();
+        bs->annot_deletes.clear();
+        bs->annots_dirty = false;
+        bs->annot_generation++;
+        for (auto &kv : pdfs_)
+            if (kv.second.buffer_id == buffer_id) kv.second.rasters.clear();
         buf.filename = path;
         buf.modified = false;
         save_epoch_++;

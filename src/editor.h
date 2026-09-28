@@ -2265,12 +2265,68 @@ inline constexpr int kSheetRowHeight = 22;
 // document length (a 400-page PDF never holds more than ~7 rendered
 // pages) while still letting h/j/k/l scroll smoothly through page
 // boundaries instead of hard-cutting between pages.
+// The parts of a PDF that every pane viewing the same file must agree on:
+// the parsed document itself and the set of unsaved markup-annotation
+// edits. Held by shared_ptr and pointed at by each viewing pane's
+// PdfSession (below), keyed by buffer id in Editor::pdf_buffers_ -- the PDF
+// analogue of how a text Buffer's `lines`/`modified` are shared while each
+// Pane keeps its own cursor/scroll. This is what makes an annotation added
+// in one window appear in the other, and what lets `:w` (a buffer-level
+// operation) find the pending edits regardless of which pane is focused.
+//
+// The `doc` is safe to share across panes' render threads: PdfDoc's reads
+// go through XrefTable's mutex-guarded object cache (pdf_xref.h), and the
+// only unguarded mutable cache (PdfDoc::Impl::glyph_cache_) is touched
+// exclusively on the main thread. Reloads (save / mep.pdf_reload) still
+// join every pane's in-flight render_job before mutating the doc in place.
+struct PdfBufferState {
+    int buffer_id = 0;
+    // shared_ptr so a background render (PdfSession::render_job) holds its
+    // own reference and an in-place reload can't free it under a worker.
+    std::shared_ptr<PdfDoc> doc;
+    // Annotations created this session but not yet written to the file, in
+    // page point space. The file's own existing annotations are re-read per
+    // page for drawing (PdfDoc::PageAnnots) and are NOT duplicated here;
+    // `pending_annots` holds only the new ones, so a save
+    // (PdfDoc::BytesWithAnnotChanges) appends exactly these. Cleared after a
+    // successful save+reload (they become ordinary file annots).
+    std::vector<pdfannots::PdfAnnot> pending_annots;
+    // True while there are unsaved annotations -- gates `:w` and the
+    // "modified" buffer flag.
+    bool annots_dirty = false;
+    // Edits to existing FILE annotations (from_file, src_obj>0, new contents/
+    // colour) and deletions of file annotations -- applied on :w alongside
+    // pending_annots. Session (pending) annots are edited/deleted in place in
+    // pending_annots instead. All three clear after a successful save+reload.
+    std::vector<pdfannots::PdfAnnot> annot_edits;
+    std::vector<pdfwrite::AnnotDelete> annot_deletes;
+    // Bumped on every change to the annotation set above. Each viewing
+    // pane's PdfSession remembers the value it last rebuilt its raster
+    // overlays against (last_annot_generation) and, when it falls behind,
+    // re-derives them (Editor::EnsurePdfPagesRastered) -- so an annotation
+    // created in one window shows up in the other on its next frame.
+    int annot_generation = 0;
+    // True when there are unsaved annotation changes of any kind.
+    bool HasUnsavedAnnots() const {
+        return !pending_annots.empty() || !annot_edits.empty() || !annot_deletes.empty();
+    }
+};
+
 struct PdfSession {
     int buffer_id = 0;
-    // shared_ptr: a background render (render_job below) holds its own
-    // reference, so reloading the document mid-render can't free it
-    // under the worker.
+    int pane_id = 0;  // the pane this view belongs to (pdfs_ is keyed by it)
+    // The shared per-buffer document + annotation state (above); every pane
+    // viewing this buffer points at the same one.
+    std::shared_ptr<PdfBufferState> shared;
+    // Alias of shared->doc, kept as a direct member so the render/query
+    // call sites read `doc` unchanged. shared_ptr: a background render
+    // (render_job below) holds its own reference, so reloading the document
+    // mid-render can't free it under the worker.
     std::shared_ptr<PdfDoc> doc;
+    // Value of shared->annot_generation this pane last rebuilt its raster
+    // overlays for; a mismatch (a sibling pane changed the annotation set)
+    // triggers a RecomputePdfPageAnnots on the next EnsurePdfPagesRastered.
+    int last_annot_generation = 0;
     int page = 0;  // 0-indexed anchor page
     // Vertical: device pixels (post-zoom, i.e. "on-screen" pixels) scrolled
     // into `page` from its top -- can transiently go negative or past the
@@ -2395,16 +2451,11 @@ struct PdfSession {
     bool content_warning_shown = false;
 
     // --- markup annotations (highlights + sticky notes) ---
-    // Annotations created this session but not yet written to the file, in
-    // page point space (pdfannots::PdfAnnot). The file's own existing
-    // annotations are re-read per page for drawing (PdfDoc::PageAnnots) and
-    // are NOT duplicated here; `pending_annots` holds only the new ones, so
-    // a save (PdfDoc::BytesWithAddedAnnots) appends exactly these. Cleared
-    // after a successful save+reload (they become ordinary file annots).
-    std::vector<pdfannots::PdfAnnot> pending_annots;
-    // True while there are unsaved annotations -- gates `:w` and the
-    // "modified" buffer flag. Kept in sync with pending_annots.
-    bool annots_dirty = false;
+    // The unsaved-annotation set (pending_annots / annot_edits /
+    // annot_deletes / annots_dirty) is shared per-buffer, not per-pane -- it
+    // lives in PdfBufferState (`shared`) so annotations added in one window
+    // appear in every other window on the same file, and `:w` finds them
+    // whichever pane is focused.
 
     // --- click-drag text selection (main.cpp's PDF pane) ---
     // A left-drag over the page selects text; the selection persists after
@@ -2453,16 +2504,9 @@ struct PdfSession {
     };
     AnnotTarget hover_annot;       // annotation under the mouse this frame (else valid==false)
     AnnotTarget note_edit_target;  // set while the note prompt is editing/attaching (else standalone note)
-    // Edits to existing FILE annotations (from_file, src_obj>0, new contents/
-    // colour) and deletions of file annotations -- applied on :w alongside
-    // pending_annots. Session (pending) annots are edited/deleted in place in
-    // pending_annots instead. All three clear after a successful save+reload.
-    std::vector<pdfannots::PdfAnnot> annot_edits;
-    std::vector<pdfwrite::AnnotDelete> annot_deletes;
-    // True when there are unsaved annotation changes of any kind.
-    bool HasUnsavedAnnots() const {
-        return !pending_annots.empty() || !annot_edits.empty() || !annot_deletes.empty();
-    }
+    // (The annotation *edit* lists themselves -- annot_edits/annot_deletes,
+    // plus pending_annots/annots_dirty above -- are shared per-buffer in
+    // PdfBufferState (`shared`), not held here.)
 
     // --- annotate-mode note text entry ---
     // While true, keystrokes build up a sticky note's text (mirrors
@@ -5274,16 +5318,37 @@ public:
      * @return True if the buffer is a PDF pane.
      */
     bool IsPdfBuffer(int buffer_id) const;
+    // PDF view state (page/scroll/zoom/rasters) is PER PANE, keyed by pane
+    // id -- so the same PDF opened in two windows scrolls/zooms to
+    // different pages independently. GetPdf/GetPdfMutable look a session up
+    // by *pane* id (not buffer id); the shared per-buffer document +
+    // annotation-edit state lives in PdfBufferState (PdfBufferFor), so
+    // annotations stay in sync across every pane viewing the same file.
     /**
-     * @brief Returns the PDF session for the given buffer id, if any.
-     * @param buffer_id The buffer id to look up.
-     * @return A const pointer to the PdfSession, or nullptr if the buffer isn't a PDF pane.
+     * @brief Returns the PDF session for the given pane id, if that pane is showing a PDF.
+     * @param pane_id The pane id to look up.
+     * @return A const pointer to the PdfSession, or nullptr if the pane isn't a PDF pane.
      */
-    const PdfSession *GetPdf(int buffer_id) const;
+    const PdfSession *GetPdf(int pane_id) const;
     // Mutable accessor (used by main.cpp's PDF pane to drive click-drag
     // text selection state, whose geometry is only known at draw time).
-    PdfSession *GetPdfMutable(int buffer_id);
-    void PdfCaretPlaceAtDevice(int buffer_id, int page, double dx, double dy);  // click-to-place the caret (called from main.cpp)
+    PdfSession *GetPdfMutable(int pane_id);
+    // Lazily creates (or re-creates, if the pane now shows a different PDF)
+    // this pane's PdfSession -- aliasing the shared per-buffer PdfDoc +
+    // annotation state -- and returns it, or nullptr if buffer_id isn't a
+    // PDF buffer. This is how a *second* pane opened on an already-loaded
+    // PDF gets its own independent view state. Called from the draw/input
+    // entry points before a pane's PdfSession is first used.
+    PdfSession *EnsurePdfSession(int pane_id, int buffer_id);
+    // The shared per-buffer PDF state (document + unsaved annotation edits),
+    // keyed by buffer id -- the parts every pane viewing this PDF agrees on.
+    PdfBufferState *PdfBufferFor(int buffer_id);
+    const PdfBufferState *PdfBufferFor(int buffer_id) const;
+    // Any live PdfSession for `buffer_id` (preferring the active pane's), or
+    // nullptr -- for buffer-level Lua queries (outline / current page) that
+    // don't name a specific pane.
+    PdfSession *AnyPdfSessionForBuffer(int buffer_id);
+    void PdfCaretPlaceAtDevice(int pane_id, int page, double dx, double dy);  // click-to-place the caret (called from main.cpp)
     // Highlight-colour palette accessors + setters (used by annotate mode,
     // the leader menu, `:pdfcolor`, and main.cpp's status label). The
     // active colour is per-session.
@@ -5309,11 +5374,19 @@ public:
     // "jump this session to page N" entry point until now. A no-op if
     // `buffer_id` isn't a PDF pane or has no pages.
     /**
-     * @brief Jumps a PDF buffer's viewer to a given page.
+     * @brief Jumps every pane viewing a PDF buffer to a given page.
      * @param buffer_id The PDF-backed buffer id to navigate.
      * @param page Target 0-based page index (clamped to the valid range).
+     *
+     * Buffer-scoped: moves ALL panes showing this document (the outline
+     * sidebar's click-to-jump has no single pane in mind). Use
+     * GotoPdfPagePane to move just one pane (`:N`, a link click).
      */
     void GotoPdfPage(int buffer_id, int page);
+    // Jumps a single pane's PDF view to `page` (clamped), leaving sibling
+    // panes on the same document where they were -- `:N` and in-document
+    // link clicks, which act on the pane they were issued in.
+    void GotoPdfPagePane(int pane_id, int page);
     // Pure geometry clamp only (mirrors ResizeImageViewport): re-clamps
     // pan_x against the anchor page's on-screen width. Never triggers a
     // re-render itself -- that's EnsurePdfPagesRastered's job, called
@@ -5322,11 +5395,11 @@ public:
     // HandlePdfInput's own zoom-band logic has settled.
     /**
      * @brief Updates a PDF pane's viewport size and re-clamps its horizontal pan, without triggering a re-render.
-     * @param buffer_id The PDF buffer id to resize.
+     * @param pane_id The PDF pane id to resize.
      * @param w The new viewport width in pixels.
      * @param h The new viewport height in pixels.
      */
-    void ResizePdfViewport(int buffer_id, int w, int h);
+    void ResizePdfViewport(int pane_id, int w, int h);
     // Renders whichever of {page-1, page, page+1} aren't already cached at
     // the current rendered_scale (clearing the whole cache first if
     // rendered_scale changed since the last call), and evicts everything
@@ -5336,9 +5409,9 @@ public:
     // than only on state-change edges.
     /**
      * @brief Ensures the anchor page and its immediate neighbors are rasterized at the current scale, evicting the rest.
-     * @param buffer_id The PDF buffer id to update.
+     * @param pane_id The PDF pane id to update.
      */
-    void EnsurePdfPagesRastered(int buffer_id);
+    void EnsurePdfPagesRastered(int pane_id);
 
     // --- Video-playback panes (opened via LoadFile for a `.mov` path
     // written by mov::WriteMovFile -- see ANIMATION_VIDEO_PLAN.md Phase
@@ -12308,9 +12381,18 @@ private:
     // The viewer a running script belongs to, so that mep.view_* can
     // default to it. -1 when no script is running.
     int viewer_running_ = -1;
-    // Keyed by buffer_id -- one entry per open PDF-viewer pane, same
-    // never-reaped lifetime reasoning as images_ above.
+    // PDF view state keyed by PANE id -- one entry per pane showing a PDF,
+    // so the same file open in two windows scrolls/zooms independently
+    // (unlike images_ et al., which are keyed by buffer id and therefore
+    // mirror across panes). Never reaped except on ClosePane; a stale entry
+    // from a closed pane is harmless (pane ids are monotonic, never reused,
+    // and EnsurePdfSession re-checks buffer_id anyway).
     std::unordered_map<int, PdfSession> pdfs_;
+    // Shared per-buffer PDF state (document + unsaved annotations), keyed by
+    // buffer id -- what the pane sessions above alias and agree on. Its
+    // presence is also what IsPdfBuffer tests. Same never-reaped lifetime
+    // reasoning as images_.
+    std::unordered_map<int, std::shared_ptr<PdfBufferState>> pdf_buffers_;
     // note-text hash -> rendered LaTeX PNG path ("" while still rendering);
     // see SetPdfNoteLatexPng and kBuiltinPdfAnnot.
     std::unordered_map<std::string, std::string> pdf_note_latex_png_;

@@ -695,6 +695,9 @@ struct PdfTextureCacheEntry {
     int theme_epoch = -1;
     int w = 0, h = 0;
 };
+// Keyed by (pane id, page index) -- per pane, not per buffer, so the same
+// PDF shown in two panes at different pages/zoom levels uploads independent
+// textures instead of the two panes fighting over one shared cache entry.
 std::map<std::pair<int, int>, PdfTextureCacheEntry> g_pdf_page_textures;
 
 // PDF "theme colors" mode (default on; Ctrl-R in HandlePdfInput toggles
@@ -35048,16 +35051,17 @@ gfx::Texture2D *GetOrLoadOrgLatexTexture(const std::string &path) {
  * (updating in place when the size is unchanged, else replacing the texture) whenever the
  * raster's generation, the theme_colors flag, or the theme epoch has moved on since the last
  * upload; optionally recolors the raw RGBA raster through ThemedPdfChannel first.
- * @param buffer_id Id of the buffer the PDF page belongs to, used with page_index as the cache key.
+ * @param pane_id Id of the pane the PDF page is drawn in, used with page_index as the cache key
+ *        (per pane, not per buffer -- two panes on the same file can show different pages/scales).
  * @param page_index Index of the page within that buffer's document.
  * @param raster The page's current CPU-side raster (pixels, size, generation counter).
  * @param theme_colors Whether to recolor the raster to match the editor's color scheme before upload.
  * @return The cached or freshly-uploaded GPU texture for this page.
  */
-gfx::Texture2D GetOrUpdatePdfPageTexture(int buffer_id, int page_index, const PdfSession::PageRaster &raster,
+gfx::Texture2D GetOrUpdatePdfPageTexture(int pane_id, int page_index, const PdfSession::PageRaster &raster,
                                      bool theme_colors) {
     int theme_epoch = g_editor.ThemeEpoch();
-    auto key = std::make_pair(buffer_id, page_index);
+    auto key = std::make_pair(pane_id, page_index);
     auto it = g_pdf_page_textures.find(key);
     if (it != g_pdf_page_textures.end() && it->second.generation == raster.generation &&
         it->second.theme_colors == theme_colors && it->second.theme_epoch == theme_epoch) {
@@ -35109,21 +35113,21 @@ gfx::Texture2D GetOrUpdatePdfPageTexture(int buffer_id, int page_index, const Pd
     return entry.tex;
 }
 
-// Evicts GPU textures for any page of `buffer_id` that Editor::
+// Evicts GPU textures for any page of `pane_id` that Editor::
 // EnsurePdfPagesRastered no longer keeps a CPU-side raster for (i.e. it
 // scrolled out of the {page-1, page, page+1} window) -- keeps GPU memory
 // bounded the same way the CPU-side cache is bounded, regardless of how
 // many pages of a long document have been scrolled through.
 /**
- * @brief Evicts and unloads GPU page textures for `buffer_id` whose page no longer has a
+ * @brief Evicts and unloads GPU page textures for `pane_id` whose page no longer has a
  * CPU-side raster in `sess` (i.e. it scrolled out of the rastered window), keeping GPU memory
  * bounded.
- * @param buffer_id Id of the buffer whose stale page textures should be pruned.
+ * @param pane_id Id of the pane whose stale page textures should be pruned.
  * @param sess The PDF session whose current raster set defines which pages are still live.
  */
-void PrunePdfPageTextures(int buffer_id, const PdfSession &sess) {
+void PrunePdfPageTextures(int pane_id, const PdfSession &sess) {
     for (auto it = g_pdf_page_textures.begin(); it != g_pdf_page_textures.end();) {
-        if (it->first.first == buffer_id && sess.rasters.find(it->first.second) == sess.rasters.end()) {
+        if (it->first.first == pane_id && sess.rasters.find(it->first.second) == sess.rasters.end()) {
             gfx::UnloadTexture(it->second.tex);
             it = g_pdf_page_textures.erase(it);
         } else {
@@ -43166,7 +43170,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // methods on office_sess's buffer id.
     ImageEditorSession *imgedit_sess = g_editor.GetImageEditorMutable(pane.buffer_id);
     bool imgedit_active = imgedit_sess && imgedit_sess->active;
-    const PdfSession *pdf_sess = g_editor.GetPdf(pane.buffer_id);
+    // Per pane, lazily created: a second pane opened on an already-loaded
+    // PDF gets its own independent page/scroll/zoom here (EnsurePdfSession),
+    // rather than sharing the first pane's view. nullptr if not a PDF pane.
+    const PdfSession *pdf_sess = g_editor.EnsurePdfSession(pane.id, pane.buffer_id);
     // Mutable like model3d_sess below (not const like pdf_sess): the
     // scrub-bar/play-pause click handling in DrawVideoPane mutates the
     // session directly, the same reasoning as imgedit_sess/model3d_sess.
@@ -43980,9 +43987,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
 
     if (pdf_sess && pdf_sess->doc && pdf_sess->doc->PageCount() > 0) {
-        g_editor.ResizePdfViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
-        g_editor.EnsurePdfPagesRastered(pane.buffer_id);
-        PrunePdfPageTextures(pane.buffer_id, *pdf_sess);
+        g_editor.ResizePdfViewport(pane.id, static_cast<int>(w), static_cast<int>(content_h));
+        g_editor.EnsurePdfPagesRastered(pane.id);
+        PrunePdfPageTextures(pane.id, *pdf_sess);
 
         gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                           static_cast<int>(content_h));
@@ -44056,7 +44063,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             auto rit = pdf_sess->rasters.find(idx);
             if (rit == pdf_sess->rasters.end() || rit->second.w <= 0 || rit->second.h <= 0) return page_h;
             const PdfSession::PageRaster &pr = rit->second;
-            gfx::Texture2D tex = GetOrUpdatePdfPageTexture(pane.buffer_id, idx, pr, pdf_sess->theme_colors);
+            gfx::Texture2D tex = GetOrUpdatePdfPageTexture(pane.id, idx, pr, pdf_sess->theme_colors);
             gfx::Vector2 pos{x - static_cast<float>(pdf_sess->pan_x), top_y};
             gfx::DrawTextureEx(tex, pos, 0.0f, pdf_sess->zoom, gfx::White);
             drawn_pdf_pages.push_back({idx, pos, static_cast<float>(pr.w) * pdf_sess->zoom,
@@ -44295,7 +44302,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // :pdfhighlight to consume). Only the active pane reacts, and only
         // while the cursor is inside its content band.
         if (is_active) {
-            PdfSession *sel = g_editor.GetPdfMutable(pane.buffer_id);
+            PdfSession *sel = g_editor.GetPdfMutable(pane.id);
             if (sel) sel->hover_annot = hover_target;  // for annotate-mode note-edit/delete targeting
             gfx::Vector2 mp = annot_mouse;
             bool in_pane = mp.x >= x && mp.x <= x + w && mp.y >= content_y && mp.y <= content_y + content_h;
@@ -44319,7 +44326,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     sel->sel_quads.clear();
                     // In annotate mode a click also places the keyboard caret.
                     if (g_editor.CurrentMode() == Mode::PdfAnnotate)
-                        g_editor.PdfCaretPlaceAtDevice(pane.buffer_id, over, ddx, ddy);
+                        g_editor.PdfCaretPlaceAtDevice(pane.id, over, ddx, ddy);
                 } else if (sel->selecting && gfx::IsMouseButtonDown(gfx::MouseButton::Left) && sel->sel_page == over &&
                            sel->doc) {
                     sel->sel_quads = sel->doc->SelectionQuads(over, sel->rendered_scale, sel->sel_anchor_dx,
@@ -50547,7 +50554,7 @@ void DrawEditor() {
             std::string right = "Ln " + std::to_string(cursor.row + 1) + ", Col " + std::to_string(cursor.col + 1);
             // A PDF has no text cursor: its page/zoom/theme/search state
             // takes the Ln/Col slot instead (it used to crowd the pane header).
-            if (const PdfSession *pdf = g_editor.GetPdf(g_editor.CurrentBufferId()); pdf && pdf->doc) {
+            if (const PdfSession *pdf = g_editor.GetPdf(g_editor.ActivePaneId()); pdf && pdf->doc) {
                 right = "Page " + std::to_string(pdf->page + 1) + "/" + std::to_string(pdf->doc->PageCount()) + "  " +
                         std::to_string(static_cast<int>(std::lround(pdf->zoom * 100.0f))) + "%  " +
                         (pdf->theme_colors ? "[theme, Ctrl-R]" : "[original, Ctrl-R]");
@@ -50951,9 +50958,9 @@ HintTarget HintTargetForLink(const LinkHintRect &link) {
     if (link.is_pdf) {
         int target_page = link.target_page;
         std::string uri = link.uri;
-        return {anchor, "", [pane_id, buffer_id, target_page, uri] {
+        return {anchor, "", [pane_id, target_page, uri] {
                     g_editor.FocusPaneById(pane_id);
-                    if (target_page >= 0) g_editor.GotoPdfPage(buffer_id, target_page);
+                    if (target_page >= 0) g_editor.GotoPdfPagePane(pane_id, target_page);
                     else if (!uri.empty()) g_editor.RunCommand("lua mep.open_url([[" + uri + "]])");
                 }};
     }

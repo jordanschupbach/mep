@@ -9914,7 +9914,7 @@ int l_pdf_reload(lua_State *L) {
 #if !defined(__EMSCRIPTEN__)
     Editor *ed = GetEditor(L);
     int buffer_id = ed->CurrentBufferId();
-    if (!ed->GetPdf(buffer_id)) {
+    if (!ed->IsPdfBuffer(buffer_id)) {
         ed->Notify("Not a PDF pane", Editor::NotifyLevel::Warn);
         return 0;
     }
@@ -9937,7 +9937,7 @@ int l_pdf_reload(lua_State *L) {
 // than sniffing the ".pdf" file extension.
 int l_is_pdf_buffer(lua_State *L) {
     int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
-    lua_pushboolean(L, GetEditor(L)->GetPdf(buffer_id) != nullptr);
+    lua_pushboolean(L, GetEditor(L)->IsPdfBuffer(buffer_id));
     return 1;
 }
 
@@ -9953,12 +9953,12 @@ int l_is_pdf_buffer(lua_State *L) {
 // boolean field.
 int l_pdf_outline(lua_State *L) {
     int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
-    const PdfSession *sess = GetEditor(L)->GetPdf(buffer_id);
-    if (!sess || !sess->doc) {
+    const PdfBufferState *bs = GetEditor(L)->PdfBufferFor(buffer_id);
+    if (!bs || !bs->doc) {
         lua_pushnil(L);
         return 1;
     }
-    std::vector<PdfOutlineItem> items = sess->doc->Outline();
+    std::vector<PdfOutlineItem> items = bs->doc->Outline();
     if (items.empty()) {
         lua_pushnil(L);
         return 1;
@@ -9997,7 +9997,7 @@ int l_pdf_goto_page(lua_State *L) {
 // item" highlight for text buffers.
 int l_pdf_current_page(lua_State *L) {
     int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
-    const PdfSession *sess = GetEditor(L)->GetPdf(buffer_id);
+    const PdfSession *sess = GetEditor(L)->AnyPdfSessionForBuffer(buffer_id);
     lua_pushinteger(L, sess ? sess->page + 1 : 0);
     return 1;
 }

@@ -170,7 +170,7 @@ void ForEachInline(const Block &b, const std::function<void(const Inline &)> &fn
         for (const mepml::TableCell &c : row) walk(c.content);
 }
 
-// This document's own blocks (not those an @import brought in).
+// This document's own blocks (not those an \import brought in).
 template <typename Fn>
 void ForEachOwnBlock(const Document &doc, Fn fn) {
     for (const Block &b : doc.blocks)
@@ -229,7 +229,7 @@ const Heading *HeadingForAnchor(const std::vector<Heading> &hs, const std::strin
     return nullptr;
 }
 
-// Where a @citation / bibtex entry's key sits on its first line.
+// Where a \citation / bibtex entry's key sits on its first line.
 struct CitationDef {
     std::string key;
     std::string origin;  // "" for this document
@@ -246,7 +246,7 @@ std::vector<CitationDef> CitationDefs(const Document &doc, const std::vector<std
         d.line = b.line_start;
         if (b.origin.empty() && b.line_start >= 0 && b.line_start < static_cast<int>(lines.size())) {
             const std::string &l = lines[static_cast<size_t>(b.line_start)];
-            const size_t brace = l.find('{');
+            const size_t brace = l.find_first_of("{(");
             if (brace != std::string::npos) {
                 const size_t k = l.find(b.value, brace + 1);
                 if (k != std::string::npos) {
@@ -283,10 +283,10 @@ KeyRange LinkUrlRange(const Block &b, const Inline &x) {
     return {p.line, p.col, q.line == p.line ? q.col : p.col};
 }
 
-// \color{name}{...}'s name range.
+// \color(name, ...)'s (or \color{name}{...}'s) name range.
 KeyRange CommandArgRange(const Block &b, const Inline &x) {
-    const size_t open = b.text.find('{', static_cast<size_t>(x.start));
-    const size_t close = open == std::string::npos ? open : b.text.find('}', open);
+    const size_t open = b.text.find_first_of("{(", static_cast<size_t>(x.start));
+    const size_t close = open == std::string::npos ? open : b.text.find(b.text[open] == '(' ? ',' : '}', open);
     if (close == std::string::npos) {
         const Pos p = At(b, x.start);
         return {p.line, p.col, p.col};
@@ -295,10 +295,19 @@ KeyRange CommandArgRange(const Block &b, const Inline &x) {
     return {p.line, p.col, q.line == p.line ? q.col : p.col};
 }
 
-// The path inside `@name{path}` on a directive line.
+// The path inside `\name(path)` (or `@name{path}`) on a directive line.
 KeyRange DirectivePathRange(const std::string &line, int line_no) {
-    const size_t open = line.find('{');
-    const size_t close = open == std::string::npos ? open : line.find('}', open);
+    const size_t open = line.find_first_of("{(");
+    size_t close = std::string::npos;
+    if (open != std::string::npos) {
+        const char o = line[open], c = o == '(' ? ')' : '}';
+        int depth = 0;
+        for (size_t k = open; k < line.size() && close == std::string::npos; ++k) {
+            if (line[k] == '\\') ++k;
+            else if (line[k] == o) ++depth;
+            else if (line[k] == c && --depth == 0) close = k;
+        }
+    }
     if (close == std::string::npos) return {line_no, 0, 0};
     return {line_no, static_cast<int>(open) + 1, static_cast<int>(close)};
 }
@@ -321,6 +330,7 @@ std::string CodeFor(const std::string &message) {
         {"unknown citation key", "unknown-citation"},
         {"unknown directive", "unknown-directive"},
         {"@printbibliography is now", "deprecated-directive"},
+        {"@abstract{...} is now", "deprecated-directive"},
         {"unexpected text after directive", "trailing-text"},
         {"Option: expects", "bad-option"},
         {"code block is never closed", "unclosed-code"},
@@ -340,7 +350,7 @@ std::string CodeFor(const std::string &message) {
     if (message.find("cannot read import") != std::string::npos) return "import-missing";
     if (message.find("must directly follow") != std::string::npos) return "orphan-caption";
     if (message.find("needs a path") != std::string::npos) return "missing-path";
-    if (message.rfind("unterminated @", 0) == 0) return "unterminated-directive";
+    if (message.rfind("unterminated \\", 0) == 0 || message.rfind("unterminated @", 0) == 0) return "unterminated-directive";
     return "syntax";
 }
 
@@ -518,26 +528,26 @@ struct Vocab {
 
 const std::vector<Vocab> &DirectiveVocab() {
     static const std::vector<Vocab> v = {
-        {"image", "@image{path}", "A figure: the picture at path (relative to this file). Follow it with @caption{} and @alttext{}."},
-        {"caption", "@caption{text}", "The caption of the image, table, code block or display maths right above. Numbered as Figure N / Table N."},
-        {"alttext", "@alttext{text}", "A description of the figure or maths above, for readers who cannot see it."},
-        {"import", "@import{path}", "Includes another mepml (or .bib) file here: its blocks, citations and options join this document."},
-        {"citation", "@citation{key}{fields}", "A bibliography entry: @citation{key}{ author = ..., title = {...}, year = ... }. Cite it with \\cite{key}."},
-        {"bibliography", "@bibliography", "The reference list: every cited entry, numbered in the order first cited."},
-        {"toc", "@toc", "The table of contents: every heading of this document, indented by depth."},
-        {"abstract", "@abstract{text}", "The document's abstract: prose over any number of lines, a blank line between paragraphs. Exports as each format's own abstract."},
+        {"image", "\\image(path)", "A figure: the picture at path (relative to this file). Follow it with \\caption() and \\alttext()."},
+        {"caption", "\\caption(text)", "The caption of the image, table, code block or display maths right above. Numbered as Figure N / Table N."},
+        {"alttext", "\\alttext(text)", "A description of the figure or maths above, for readers who cannot see it."},
+        {"import", "\\import(path)", "Includes another mepml (or .bib) file here: its blocks, citations and options join this document."},
+        {"citation", "\\citation(key, fields)", "A bibliography entry: \\citation(key, author = ..., title = {...}, year = ...). Cite it with \\cite(key)."},
+        {"bibliography", "\\bibliography", "The reference list: every cited entry, numbered in the order first cited."},
+        {"toc", "\\toc", "The table of contents: every heading of this document, indented by depth."},
+        {"abstract", "\\abstract(text)", "The document's abstract: prose over any number of lines, a blank line between paragraphs. Exports as each format's own abstract."},
     };
     return v;
 }
 
 const std::vector<Vocab> &CommandVocab() {
     static const std::vector<Vocab> v = {
-        {"cite", "\\cite{key}", "A textual citation: Author (Year)."},
-        {"citep", "\\citep{key}", "A parenthetical citation: (Author, Year)."},
-        {"fn", "\\fn{text}", "A footnote, numbered in document order."},
-        {"color", "\\color{name}{text}", "Coloured text: a name (red, blue, ...) or #rrggbb."},
-        {"f", "\\f{family}{text}", "Text in another font family (serif, sans, mono, or a font name)."},
-        {"fs", "\\fs{points}{text}", "Text at a size in points (body text is 12)."},
+        {"cite", "\\cite(key)", "A textual citation: Author (Year)."},
+        {"citep", "\\citep(key)", "A parenthetical citation: (Author, Year)."},
+        {"fn", "\\fn(text)", "A footnote, numbered in document order."},
+        {"color", "\\color(name, text)", "Coloured text: a name (red, blue, ...) or #rrggbb."},
+        {"f", "\\f(family, text)", "Text in another font family (serif, sans, mono, or a font name)."},
+        {"fs", "\\fs(points, text)", "Text at a size in points (body text is 12)."},
     };
     return v;
 }
@@ -669,47 +679,73 @@ std::vector<MepmlLspCompletionItem> MepmlLspCompletions(const std::vector<std::s
         return out;
     }
 
-    // An unclosed `{` of a command or directive before the cursor.
-    const size_t brace = before.rfind('{');
-    if (brace != std::string::npos && before.find('}', brace) == std::string::npos) {
+    // The innermost unclosed `(` (or the older `{`) before the cursor: a
+    // command's or directive's argument being typed.
+    std::vector<size_t> groups;
+    for (size_t k = 0; k < before.size(); ++k) {
+        const char c = before[k];
+        if (c == '\\' && k + 1 < before.size() && std::isalpha(static_cast<unsigned char>(before[k + 1])) == 0) ++k;
+        else if (c == '(' || c == '{') groups.push_back(k);
+        else if ((c == ')' || c == '}') && !groups.empty() && before[groups.back()] == (c == ')' ? '(' : '{')) groups.pop_back();
+    }
+    if (!groups.empty()) {
+        const size_t brace = groups.back();
+        const bool paren = before[brace] == '(';
         size_t n = brace;
         while (n > 0 && std::isalpha(static_cast<unsigned char>(before[n - 1])) != 0) --n;
         const std::string name = before.substr(n, brace - n);
         const char sigil = n > 0 ? before[n - 1] : 0;
         const std::string typed = before.substr(brace + 1);
-        // The second group of \color{}{} / \f{}{} / \fs{}{} is text: nothing to offer.
-        if (sigil == '}') return out;
+        const bool two_args = name == "color" || name == "f" || name == "fs";
+        // The text of \color(name, text) / \f(...) / \fs(...), or the second
+        // group of \color{}{}: nothing to offer.
+        if (!paren && sigil == '}') return out;
+        if (paren && two_args && sigil == '\\' && typed.find(',') != std::string::npos) return out;
         if (sigil == '\\' && (name == "cite" || name == "citep")) {
             std::vector<Candidate> c;
             for (const auto &kv : doc.citations)
                 c.push_back({kv.first, "", MepmlLspKind::Reference, mepml::CiteLabel(doc, kv.first, false), CitationSummary(doc, kv.first), ""});
             Offer(out, typed, col, c);
-        } else if (sigil == '\\' && name == "color") {
+            return out;
+        }
+        const std::string next = paren ? ", " : "";  // after the argument: on to the text
+        if (sigil == '\\' && name == "color") {
             std::vector<Candidate> c;
             for (const std::string &cn : mepml::ColorNames()) {
                 std::uint32_t rgb = 0;
                 mepml::ParseColor(cn, &rgb);
                 char hex[8];
                 std::snprintf(hex, sizeof hex, "#%06x", rgb);
-                c.push_back({cn, "", MepmlLspKind::Color, hex, "", ""});
+                c.push_back({cn, "", MepmlLspKind::Color, hex, "", next});
             }
             Offer(out, typed, col, c);
-        } else if (sigil == '\\' && name == "f") {
+            return out;
+        }
+        if (sigil == '\\' && name == "f") {
             std::vector<Candidate> c;
             for (const char *f : {"serif", "sans", "mono", "Helvetica", "Times", "Courier", "Georgia", "Palatino"})
-                c.push_back({f, "", MepmlLspKind::Value, "font family", "", ""});
+                c.push_back({f, "", MepmlLspKind::Value, "font family", "", next});
             Offer(out, typed, col, c);
-        } else if (sigil == '\\' && name == "fs") {
+            return out;
+        }
+        if (sigil == '\\' && name == "fs") {
             std::vector<Candidate> c;
             for (const char *f : {"8", "9", "10", "11", "12", "14", "16", "18", "20", "24", "28", "32"})
-                c.push_back({f, "", MepmlLspKind::Value, "points", "", ""});
+                c.push_back({f, "", MepmlLspKind::Value, "points", "", next});
             Offer(out, typed, col, c);
-        } else if (sigil == '@' && name == "image") {
-            Offer(out, typed, col, PathCands(opts, typed, {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp"}));
-        } else if (sigil == '@' && name == "import") {
-            Offer(out, typed, col, PathCands(opts, typed, {".mepml", ".bib"}));
+            return out;
         }
-        return out;
+        const bool directive = sigil == (paren ? '\\' : '@');
+        if (directive && name == "image") {
+            Offer(out, typed, col, PathCands(opts, typed, {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp"}));
+            return out;
+        }
+        if (directive && name == "import") {
+            Offer(out, typed, col, PathCands(opts, typed, {".mepml", ".bib"}));
+            return out;
+        }
+        if (!paren) return out;
+        // Any other parenthesis (prose, a footnote's text): what follows.
     }
 
     // A link's target: `[text|` ...
@@ -729,30 +765,48 @@ std::vector<MepmlLspCompletionItem> MepmlLspCompletions(const std::vector<std::s
         }
     }
 
-    // A backslash command being typed: \ci -> \cite{
+    // A directive's candidates: \image(, \toc, ...
+    auto directives = [] {
+        std::vector<Candidate> c;
+        for (const Vocab &v : DirectiveVocab()) {
+            const std::string n = v.name;
+            c.push_back({n, "\\" + n, MepmlLspKind::Keyword, v.detail, v.doc, (n == "bibliography" || n == "toc") ? "" : "("});
+        }
+        return c;
+    };
+
+    // A backslash command being typed: \ci -> \cite(, and at the start of
+    // a line a directive too: \im -> \image(
     {
         size_t n = before.size();
         while (n > 0 && std::isalpha(static_cast<unsigned char>(before[n - 1])) != 0) --n;
         if (n > 0 && before[n - 1] == '\\') {
-            std::vector<Candidate> c = Cands(CommandVocab(), MepmlLspKind::Function, "{");
+            std::vector<Candidate> c = Cands(CommandVocab(), MepmlLspKind::Function, "(");
             for (Candidate &k : c) k.label = "\\" + k.text;
+            if (ind != std::string::npos && n - 1 == ind) {
+                const std::vector<Candidate> d = directives();
+                c.insert(c.end(), d.begin(), d.end());
+            }
             Offer(out, before.substr(n), col, c);
             return out;
         }
     }
 
-    // A directive at the start of a line: @im -> @image{
+    // The older `@` spelling at the start of a line: @im -> \image(, the
+    // `@` rewritten.
     if (!lead.empty() && lead[0] == '@') {
         const std::string typed = lead.substr(1);
         bool letters = true;
         for (char c : typed) letters = letters && std::isalpha(static_cast<unsigned char>(c)) != 0;
         if (letters) {
-            std::vector<Candidate> c;
-            for (const Vocab &v : DirectiveVocab()) {
-                const std::string n = v.name;
-                c.push_back({n, "@" + n, MepmlLspKind::Keyword, v.detail, v.doc, (n == "bibliography" || n == "toc") ? "" : "{"});
-            }
+            const size_t from = out.size();
+            const std::vector<Candidate> c = directives();
             Offer(out, typed, col, c);
+            for (size_t k = from; k < out.size(); ++k) {
+                // `typed` is all letters, so the item replaces all of it.
+                out[k].insert_text = "\\" + out[k].insert_text;
+                out[k].replace_start = static_cast<int>(ind);
+            }
         }
     }
     return out;
@@ -958,8 +1012,9 @@ MepmlLspHoverInfo MepmlLspHover(const std::vector<std::string> &lines, int line,
             break;
         default: break;
     }
-    if (lead.rfind("@caption", 0) == 0 || lead.rfind("@alttext", 0) == 0)
-        return found(ind, Len(l), VocabDoc(DirectiveVocab(), lead.rfind("@caption", 0) == 0 ? "caption" : "alttext"));
+    for (const char *name : {"caption", "alttext"})
+        if (lead.rfind(std::string("\\") + name, 0) == 0 || lead.rfind(std::string("@") + name, 0) == 0)
+            return found(ind, Len(l), VocabDoc(DirectiveVocab(), name));
     return h;
 }
 
@@ -1379,16 +1434,16 @@ std::vector<MepmlLspCodeAction> MepmlLspCodeActions(const std::vector<std::strin
         const std::string span = l.substr(static_cast<size_t>(std::min(d.col_start, Len(l))),
                                           static_cast<size_t>(std::max(0, std::min(d.col_end, Len(l)) - d.col_start)));
         if (d.code == "unknown-citation") {
-            // The key: between the \cite{ braces of the flagged span.
-            const size_t open = span.find('{'), close = span.rfind('}');
+            // The key: inside the \cite( parentheses (or braces) of the flagged span.
+            const size_t open = span.find_first_of("{("), close = span.find_last_of(")}");
             const std::string key = open != std::string::npos && close != std::string::npos && close > open ? Trim(span.substr(open + 1, close - open - 1)) : "";
             if (key.empty() || !offered_keys.insert(key).second) continue;
             MepmlLspCodeAction a;
-            a.title = "Add a @citation{" + key + "} entry";
+            a.title = "Add a \\citation(" + key + ") entry";
             a.fixes = d.code;
             const int last = static_cast<int>(lines.size()) - 1;
             a.edits.push_back({last, Len(lines.back()), last, Len(lines.back()),
-                               std::string(Trim(lines.back()).empty() ? "" : "\n") + "\n@citation{" + key + "}{\n  author = {},\n  title = {},\n  year = \n}"});
+                               std::string(Trim(lines.back()).empty() ? "" : "\n") + "\n\\citation(" + key + ",\n  author = {},\n  title = {},\n  year = \n)"});
             out.push_back(a);
             const std::vector<std::string> keys = [&] {
                 std::vector<std::string> v;
@@ -1398,11 +1453,35 @@ std::vector<MepmlLspCodeAction> MepmlLspCodeActions(const std::vector<std::strin
             const std::string near = Nearest(key, keys);
             if (!near.empty()) {
                 const size_t k = l.find(key, static_cast<size_t>(d.col_start));
-                if (k != std::string::npos) replace("Change to \\cite{" + near + "}", d.code, static_cast<int>(k), static_cast<int>(k + key.size()), near);
+                if (k != std::string::npos) replace("Change to \\cite(" + near + ")", d.code, static_cast<int>(k), static_cast<int>(k + key.size()), near);
             }
         } else if (d.code == "deprecated-directive") {
-            const size_t k = l.find("printbibliography");
-            if (k != std::string::npos) replace("Rename to @bibliography", d.code, static_cast<int>(k), static_cast<int>(k) + 17, "bibliography");
+            const size_t k = l.find("@printbibliography");
+            if (k != std::string::npos) replace("Rename to \\bibliography", d.code, static_cast<int>(k), static_cast<int>(k) + 18, "\\bibliography");
+            const size_t a = l.find("@abstract{");
+            if (a != std::string::npos) {
+                // `\abstract(` -> `\abstract(`, and its closing brace, on
+                // whichever line it is, -> `)`.
+                int depth = 0, cl = -1, cc = -1;
+                for (int ln = line; ln < static_cast<int>(lines.size()) && cl < 0; ++ln) {
+                    const std::string &t = lines[static_cast<size_t>(ln)];
+                    for (size_t k2 = ln == line ? a + 9 : 0; k2 < t.size(); ++k2) {
+                        if (t[k2] == '\\') ++k2;
+                        else if (t[k2] == '{') ++depth;
+                        else if (t[k2] == '}' && --depth == 0) {
+                            cl = ln;
+                            cc = static_cast<int>(k2);
+                            break;
+                        }
+                    }
+                }
+                MepmlLspCodeAction fix;
+                fix.title = "Change to \\abstract(...)";
+                fix.fixes = d.code;
+                fix.edits.push_back({line, static_cast<int>(a), line, static_cast<int>(a) + 10, "\\abstract("});
+                if (cl >= 0) fix.edits.push_back({cl, cc, cl, cc + 1, ")"});
+                out.push_back(fix);
+            }
         } else if (d.code == "unknown-directive") {
             const std::string name = span.size() > 1 ? span.substr(1) : "";
             std::vector<std::string> names;

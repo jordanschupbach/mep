@@ -2989,7 +2989,7 @@ struct ScopeGuide {
 // spanned 51 rows of prose that way).  These files are scanned only inside
 // a fenced code block instead -- see FindScopeGuides.
 bool IsProseGuideFiletype(const std::string &filetype) {
-    static const char *const kProseFiletypes[] = {"org", "md", "markdown", "rst", "txt", "text", "adoc", "asciidoc"};
+    static const char *const kProseFiletypes[] = {"org", "md", "markdown", "mepml", "rst", "txt", "text", "adoc", "asciidoc"};
     for (const char *ft : kProseFiletypes) {
         if (filetype == ft) return true;
     }
@@ -3027,6 +3027,11 @@ bool ProseFenceOpen(const std::string &filetype, const std::string &line, std::s
             return true;
         }
         return false;
+    }
+    // mepml's code blocks are markdown's backtick fences (```{lang, ...}).
+    if (filetype == "mepml" && ProseMatchAt(line, i, "```")) {
+        *fence = "```";
+        return true;
     }
     if (filetype == "md" || filetype == "markdown") {
         if (ProseMatchAt(line, i, "```")) {
@@ -23978,7 +23983,7 @@ const char *kBuiltinMepml =
     "  -- language babel knows how to) gets its plotting device opened at that\n"
     "  -- path for it; Python gets matplotlib pointed there; anything else is\n"
     "  -- expected to write the file itself. When it exists afterwards, an\n"
-    "  -- @image{} line joins the results and the editor draws it there.\n"
+    "  -- \\image() line joins the results and the editor draws it there.\n"
     "  local dir = mep_mepml_dir(mep.filename())\n"
     "  local fig = blk.options.file\n"
     "  if fig ~= nil then fig = tostring(fig) end\n"
@@ -24021,7 +24026,7 @@ const char *kBuiltinMepml =
     "    if fig_path then\n"
     "      if mep_org_babel_file_exists(fig_path) then\n"
     "        mep.org_image_invalidate(fig_path)  -- a re-run redraws, not a cached texture\n"
-    "        text = text .. (text ~= '' and '\\n' or '') .. '@image{' .. fig .. '}'\n"
+    "        text = text .. (text ~= '' and '\\n' or '') .. '\\\\image(' .. fig .. ')'\n"
     "      else\n"
     "        mep.notify('mepml: the block did not create ' .. fig, 'warn')\n"
     "      end\n"
@@ -42743,6 +42748,33 @@ void DrawStyledRun(const std::string &text, float x, float y, int cols, float sc
     gfx::DrawTextEx(f, text.c_str(), gfx::Vector2{x, top + 0.78f * (fs - size)}, size, 0, color);
 }
 
+// One line of generated mepml text (a caption, an alt text: mepml::
+// RenderCaption/RenderAltText) at `scale`, on the column grid: each span in
+// its style's colour and weight, the rest as body text.
+void DrawRenderedLine(const mepml::RenderedLine &l, float x, float y, float scale) {
+    const float stride = g_char_width * scale;
+    auto run = [&](int from, int to, std::uint32_t style) {
+        if (to <= from) return;
+        const std::string piece = l.text.substr(static_cast<size_t>(from), static_cast<size_t>(to - from));
+        const char *group = (style & mepml::kDirective)                   ? "Cyan"
+                            : (style & (mepml::kCite | mepml::kLink))     ? "Blue"
+                            : (style & mepml::kMath)                      ? "Purple"
+                            : (style & (mepml::kVerbatim | mepml::kMono)) ? "Green"
+                            : (style & mepml::kComment)                   ? "Comment"
+                                                                          : "Normal";
+        const float px = x + static_cast<float>(ByteOffsetToColumn(l.text, from)) * stride;
+        DrawStyledRun(piece, px, y, ByteOffsetToColumn(piece, static_cast<int>(piece.size())), scale, "",
+                      (style & mepml::kBold) != 0, (style & mepml::kItalic) != 0, 0.0f, ResolveHlGroup(group));
+    };
+    int at = 0;
+    for (const mepml::RenderedSpan &sp : l.spans) {
+        run(at, sp.col_start, 0);
+        run(sp.col_start, sp.col_end, sp.style);
+        at = std::max(at, sp.col_end);
+    }
+    run(at, static_cast<int>(l.text.size()), 0);
+}
+
 void DrawItalicColumns(const std::string &text, float x, float y, gfx::Color color) {
     const bool have_italic = g_office_font_mono_italic.texture.id != 0;
     float dx = x;
@@ -46430,7 +46462,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // size, on the same baseline.
             int cols = StyledRunCols(sum->title, sum->title_scale, "", true, false);
             DrawStyledRun(sum->title, text_x, fold_ly, cols, sum->title_scale, "", true, false, 0.0f,
-                          ResolveHlGroup("OrgHeadlineLevel1"));
+                          ResolveHlGroup(sum->title_hl));
             if (!sum->detail.empty()) {
                 DrawLineFast(sum->detail, text_x + static_cast<float>(cols) * g_char_width, fold_ly, g_font_size,
                              ResolveHlGroup("Comment"));
@@ -46865,7 +46897,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             (pane.cursor.row == row ||
              (fold_here && pane.cursor.row >= fold_here->start_row && pane.cursor.row <= fold_here->end_row))) {
             int tint_slots = (row_wraps && pane.cursor.row == row) ? row_wrap_slots : 1;
-            // On a rendered mepml @toc/@bibliography, the line the cursor
+            // On a rendered mepml \toc/\bibliography, the line the cursor
             // is on (Editor::VirtualLineStep), not the block's first.
             int tint_offset = 0;
             if (!fold_here && pane.cursor.row == row) {
@@ -47066,7 +47098,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
 
-        // mepml @toc / @bibliography (Editor::MepmlVirtualBlockForRow): the
+        // mepml \toc / \bibliography (Editor::MepmlVirtualBlockForRow): the
         // directive's row draws its generated content -- one styled line
         // per slot, on a quiet card -- and a table of contents entry is
         // clickable, jumping to its heading. The cursor's own row is the
@@ -47182,6 +47214,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                      gfx::Rectangle{x, content_y, w, content_h});
                     else
                         DrawMepmlTerminal(render.term_run, text_x, ly, slot_h);
+                    visual_slot += render.slots - 1;
+                    row = render.end_row;
+                    continue;
+                }
+                if (!render.styled.empty()) {
+                    // A mepml caption or alt text, wrapped to the text width.
+                    for (size_t i = 0; i < render.styled.size(); ++i)
+                        DrawRenderedLine(render.styled[i], text_x, ly + static_cast<float>(i) * static_cast<float>(line_height),
+                                         render.styled_scale);
                     visual_slot += render.slots - 1;
                     row = render.end_row;
                     continue;
@@ -47417,7 +47458,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             // A rendered formula owns its whole source span: any other
             // concealment inside it (mepml hides `$`/`\(` delimiters and an
-            // @alttext{} with runs of its own) is dropped, not the formula.
+            // \alttext() with runs of its own) is dropped, not the formula.
             // Otherwise a delimiter's run sharing the formula's first
             // column won the overlap below, the formula fell back to
             // covering its raw source width, and the unrendered TeX's
@@ -47735,7 +47776,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
 
-        // mepml table cells holding a picture (`| @image{path} |`,
+        // mepml table cells holding a picture (`| \image(path) |`,
         // Editor::MepmlTableImageBoxes): each drawn in its cell's column,
         // in the headroom RowTopPadSlots reserved above the row -- over the
         // table's wash, under the column rules drawn after the text.
@@ -48734,7 +48775,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 r = latex->end_row + 1;  // skip the fragment's remaining raw source rows outright
                 slot += latex->slots + nb_trailing;
             } else if (const Buffer::MepmlVirtualBlock *vb = g_editor.MepmlVirtualBlockForRow(buf, r, latex_cursor_row)) {
-                // A mepml @toc/@bibliography row: one slot per generated line.
+                // A mepml \toc/\bibliography row: one slot per generated line.
                 r += 1;
                 slot += static_cast<int>(vb->lines.size()) + nb_trailing;
             } else if (g_editor.OrgTableWrapVisible() && tw_it != buf.org_table_wrap_rows.end() &&
@@ -48780,13 +48821,24 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const Buffer::OrgLatexRender *cursor_latex =
             g_editor.OrgLatexRenderForRow(buf, pane.cursor.row, latex_cursor_row);
         bool cursor_on_latex = cursor_latex != nullptr;
-        // A mepml @toc/@bibliography row is outlined as a whole band the
+        // A mepml \toc/\bibliography row is outlined as a whole band the
         // same way (its text is the generated content, not the directive).
         const Buffer::MepmlVirtualBlock *cursor_vb = g_editor.MepmlVirtualBlockForRow(buf, pane.cursor.row, -1);
         if (cursor_vb != nullptr) {
             cursor_on_latex = true;
             // ...around the one line the cursor is on (Editor::VirtualLineStep).
             cursor_slot += Editor::VirtualLineOf(pane, static_cast<int>(cursor_vb->lines.size()));
+        }
+        // Folded, such a row keeps its summary under the cursor, outlined
+        // whole: a caret would punch the raw directive's glyph through it.
+        const Buffer::MepmlFoldSummary *cursor_sum = nullptr;
+        if (!cursor_on_image && !cursor_on_latex) {
+            for (const Fold &f : buf.folds)
+                if (f.closed && f.start_row == pane.cursor.row) {
+                    const Buffer::MepmlFoldSummary *sum =
+                        g_editor.MepmlFoldSummaryForRow(buf, pane.cursor.row, pane.cursor.row);
+                    if (sum && sum->keep_under_cursor) cursor_sum = sum;
+                }
         }
         // The cursor's own row soft-wraps the same way any other plain row
         // does (never an image/latex row, which are handled separately
@@ -48815,7 +48867,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             cursor_on_image ? g_editor.OrgImageLayoutForRow(cursor_img_it->second, pane.text_cols) : OrgImageLayout{};
         int cursor_slots = cursor_on_image ? cursor_img_lay.slots
                            : cursor_latex  ? cursor_latex->slots
-                                           : 1;  // (a @toc/@bibliography: its selected line)
+                                           : 1;  // (a \toc/\bibliography: its selected line)
         float row_extent = (cursor_on_image || cursor_on_latex) ? static_cast<float>(line_height) * static_cast<float>(cursor_slots)
                                                                   : static_cast<float>(line_height);
         // Buffer::row_cursor (kBuiltinFileTree's read-only tree): the row's
@@ -48836,7 +48888,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                 static_cast<int>(cursor_img_lay.width), static_cast<int>(cursor_img_lay.height),
                                 ResolveHlGroup("Normal"));
         } else if (cursor_on_latex && cursor_vb != nullptr) {
-            // A @toc/@bibliography line: the outline spans the block's card
+            // A \toc/\bibliography line: the outline spans the block's card
             // (the draw loop's own card geometry), not the whole pane.
             int widest = 0;
             for (const mepml::RenderedLine &l : cursor_vb->lines)
@@ -48846,6 +48898,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                           static_cast<float>(std::max(widest + 2, 24)) * g_char_width);
             gfx::DrawRectangleLines(static_cast<int>(card_x), static_cast<int>(cursor_y), static_cast<int>(card_w),
                                 static_cast<int>(row_extent), ResolveHlGroup("Normal"));
+        } else if (cursor_sum != nullptr) {
+            // Title, tally and the fold's trailing " ..." (draw_fold_summary_text).
+            const int cols = StyledRunCols(cursor_sum->title, cursor_sum->title_scale, "", true, false) +
+                             ByteOffsetToColumn(cursor_sum->detail, static_cast<int>(cursor_sum->detail.size())) + 4;
+            const float card_x = text_x - g_char_width * 0.5f;
+            gfx::DrawRectangleLines(static_cast<int>(card_x), static_cast<int>(cursor_y),
+                                static_cast<int>(static_cast<float>(cols + 1) * g_char_width), line_height,
+                                ResolveHlGroup("Normal"));
         } else if (cursor_on_latex) {
             float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
             gfx::DrawRectangleLines(static_cast<int>(text_x), static_cast<int>(cursor_y), static_cast<int>(avail_w),

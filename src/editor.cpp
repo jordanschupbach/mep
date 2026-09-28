@@ -4833,7 +4833,7 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     if (const Buffer::OrgLatexRender *latex = OrgLatexRenderForRow(buf, row, pane.cursor.row)) {
         return latex->slots + trailing;
     }
-    // A mepml @toc/@bibliography row: one slot per generated line.
+    // A mepml \toc/\bibliography row: one slot per generated line.
     if (const Buffer::MepmlVirtualBlock *vb = MepmlVirtualBlockForRow(buf, row, pane.cursor.row)) {
         return static_cast<int>(vb->lines.size()) + trailing;
     }
@@ -4859,7 +4859,7 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
 }
 
 int Editor::PaneFigureSlots(const Pane &pane, const Buffer &buf, int row) const {
-    // A mepml @toc/@bibliography block scrolls like a figure: j/k move the
+    // A mepml \toc/\bibliography block scrolls like a figure: j/k move the
     // view through a block taller than the pane before leaving it.
     if (const Buffer::MepmlVirtualBlock *vb = MepmlVirtualBlockForRow(buf, row, -1)) {
         return static_cast<int>(vb->lines.size());
@@ -5060,7 +5060,7 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
     // DrawPane calls this pass just ahead of its own row loop -- so a
     // stale offset can never reach the screen.
     if (pane.scroll_sub_row != pane.scroll_row) pane.scroll_sub = 0;
-    if (pane.virt_row != pane.cursor.row) pane.virt_row = -1;  // the cursor left its @toc line
+    if (pane.virt_row != pane.cursor.row) pane.virt_row = -1;  // the cursor left its \toc line
     // A view that some other command (Ctrl-D, zz, a search) left starting
     // inside a render's skipped rows starts on the render instead: those
     // rows are never drawn on their own.
@@ -19355,7 +19355,7 @@ void Editor::HandleNormalInput() {
         ActivateDashboardSelection();
         return;
     }
-    // Enter on a rendered @toc entry: jump to its heading.
+    // Enter on a rendered \toc entry: jump to its heading.
     if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && VirtualLineActivate()) return;
     // Enter on a mepml block running in a terminal: give that terminal the keyboard.
     if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && IsMepmlBuffer() &&
@@ -19464,9 +19464,7 @@ void Editor::HandleNormalInput() {
     const double motion_hold_confirm_sec = std::max(caret_delay_sec, kMotionTapGuardSec);
     bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     bool count_pending_now = pending_count_ != 0;
-    bool no_pending_state_now = pending_op_ == 0 && !pending_g_ && !pending_bracket_prev_ && !pending_bracket_next_ &&
-                                 !pending_ctrl_w_ && !pending_org_export_ && pending_find_ == 0 && !count_pending_now &&
-                                 !awaiting_register_name_;
+    bool no_pending_state_now = !AwaitingNormalArgKey() && !count_pending_now;
     double now = gfx::GetTime();
     // Arrow keys ride the same table and the same timer as the letters,
     // so one `:set caretdelay`/`caretrate` governs both and a held Down
@@ -19594,9 +19592,7 @@ void Editor::HandleNormalInput() {
         // the very next key literally, and counts are closer to syntax
         // than to a remappable command.
         bool is_count_digit = (cp >= '1' && cp <= '9') || (cp == '0' && pending_count_ != 0);
-        bool no_pending_state = pending_op_ == 0 && !pending_g_ && !pending_bracket_prev_ && !pending_bracket_next_ &&
-                                 !pending_ctrl_w_ && !pending_org_export_ && pending_find_ == 0 && !is_count_digit &&
-                                 !awaiting_register_name_;
+        bool no_pending_state = !AwaitingNormalArgKey() && !is_count_digit;
         // A held bare h/j/k/l is the motion timer's business, not this
         // loop's -- drop the queued notification here instead of
         // replaying/double-counting it. An ordinary tap, a shifted H/L,
@@ -20492,7 +20488,7 @@ bool Editor::DispatchNormalKey(int cp) {
     // operator-pending/Visual dispatches (above and in their own handlers)
     // never reach here -- their motion has to move the cursor, not the
     // view.
-    // A rendered mepml @toc/@bibliography is stepped through a line at a
+    // A rendered mepml \toc/\bibliography is stepped through a line at a
     // time instead (its entries are what the cursor selects; Enter jumps
     // to a TOC entry's heading), and at its first or last line the key
     // moves off it like an ordinary row -- no figure-style slide.
@@ -20697,6 +20693,13 @@ bool Editor::IsMidNormalCommand() const {
            pending_org_export_ || pending_z_ || pending_capital_z_ || pending_count_ != 0 ||
            awaiting_register_name_ || pending_register_ != 0 || pending_macro_record_ || awaiting_macro_play_ ||
            pending_replace_;
+}
+
+bool Editor::AwaitingNormalArgKey() const {
+    return pending_op_ != 0 || pending_g_ || pending_bracket_prev_ || pending_bracket_next_ || pending_find_ != 0 ||
+           pending_textobj_scope_ != 0 || pending_mark_jump_ != 0 || pending_mark_set_ || pending_ctrl_w_ ||
+           pending_org_export_ || pending_z_ || pending_capital_z_ || awaiting_register_name_ ||
+           pending_macro_record_ || awaiting_macro_play_ || pending_replace_;
 }
 
 void Editor::CancelPendingNormalState() {
@@ -23240,7 +23243,7 @@ bool Editor::ToggleOrgImages() {
 
 void Editor::SetOrgLatexRow(int row, const std::string &path, int slots, int end_row) {
     if (row < 0 || row >= Buf().LineCount()) return;
-    Buf().org_latex_rows[row] = Buffer::OrgLatexRender{path, std::max(1, slots), std::max(row, end_row), {}, {}, 0, -1};
+    Buf().org_latex_rows[row] = Buffer::OrgLatexRender{path, std::max(1, slots), std::max(row, end_row), {}, {}, 0, -1, {}, 1.0f};
 }
 
 void Editor::ClearOrgLatexRows() { Buf().org_latex_rows.clear(); }

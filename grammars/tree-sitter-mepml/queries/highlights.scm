@@ -48,14 +48,14 @@
 (latex) @markup.math
 
 ; --- directives
-(import "@" @keyword.directive "import" @keyword.directive)
-(image "@" @keyword.directive "image" @keyword.directive)
-(caption "@" @keyword.directive "caption" @keyword.directive)
-(alttext "@" @keyword.directive "alttext" @keyword.directive)
+(import ["\\" "@"] @keyword.directive "import" @keyword.directive)
+(image ["\\" "@"] @keyword.directive "image" @keyword.directive)
+(caption ["\\" "@"] @keyword.directive "caption" @keyword.directive)
+(alttext ["\\" "@"] @keyword.directive "alttext" @keyword.directive)
 (bibliography) @keyword.directive
 (toc) @keyword.directive
-(abstract "@" @keyword.directive "abstract" @keyword.directive)
-(citation "@" @keyword.directive "citation" @keyword.directive)
+(abstract "\\" @keyword.directive "abstract" @keyword.directive)
+(citation ["\\" "@"] @keyword.directive "citation" @keyword.directive)
 (bibtex_entry "@" @keyword.directive type: (entry_type) @keyword.directive)
 (path) @string.special.path
 (citation_key) @label

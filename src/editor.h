@@ -1093,7 +1093,7 @@ struct Buffer {
         size_t text_hash = 0;
     };
     std::unordered_map<int, MepmlRowScale> mepml_row_scale;
-    // mepml table rows with a picture in a cell (`| @image{path} |`,
+    // mepml table rows with a picture in a cell (`| \image(path) |`,
     // mepml::TableCell::image): row -> the cells' images, each in the
     // display columns MepmlTableLayout gave its cell. The pictures are
     // drawn in headroom above the row (Editor::RowTopPadSlots, so every
@@ -1111,7 +1111,7 @@ struct Buffer {
     };
     std::unordered_map<int, MepmlTableImageRow> mepml_table_images;
     // mepml rows drawn as generated content in place of their own text:
-    // `@toc` (the headings) and `@bibliography` (the cited entries), one
+    // `\toc` (the headings) and `\bibliography` (the cited entries), one
     // line of styled text per drawn line (mepml::RenderToc/
     // RenderBibliography). Like an inline image, the row claims one slot
     // per line -- read through Editor::MepmlVirtualBlockForRow by every
@@ -1123,12 +1123,18 @@ struct Buffer {
     };
     std::unordered_map<int, MepmlVirtualBlock> mepml_virtual_rows;
     // A folded mepml document header (a run of `//?` lines) reads as its
-    // title plus a muted summary of the rest, not as its raw first line.
+    // title plus a muted summary of the rest, not as its raw first line;
+    // a folded \toc/\bibliography as its title and an entry count.
     struct MepmlFoldSummary {
         std::string title;
         std::string detail;
         float title_scale = 1.0f;  // drawn this much larger than body text (with headroom above, RowTopPadSlots)
         size_t text_hash = 0;      // the fold's first row when built
+        std::string title_hl = "OrgHeadlineLevel1";
+        // A folded \toc/\bibliography keeps its summary under the cursor,
+        // as the unfolded block keeps its rendering (a header's raw `//?`
+        // line comes back there instead, to be edited).
+        bool keep_under_cursor = false;
     };
     std::unordered_map<int, MepmlFoldSummary> mepml_fold_summaries;
 
@@ -1173,6 +1179,10 @@ struct Buffer {
         // >= 0 for a mepml code block's running terminal (Editor::MepmlTerminalStart):
         // the rows draw its live screen, and stay drawn under the cursor.
         int term_run = -1;
+        // Non-empty for a mepml caption or alt text (Editor::MepmlScan): the
+        // rows draw as these lines, one slot each, at styled_scale.
+        std::vector<mepml::RenderedLine> styled;
+        float styled_scale = 1.0f;
     };
     std::unordered_map<int, OrgLatexRender> org_latex_rows;
     // mepml code blocks' html results (Editor::MepmlScan), in the same
@@ -1418,7 +1428,7 @@ struct Pane {
     // UpdateScrollForPane drops a stale offset rather than applying it to
     // whatever row the view landed on.
     int scroll_sub_row = -1;
-    // The line of a rendered mepml @toc/@bibliography block the cursor is
+    // The line of a rendered mepml \toc/\bibliography block the cursor is
     // on (Editor::VirtualLineStep): `virt_line` counts from the block's
     // first generated line and only means anything while the cursor is on
     // `virt_row` (UpdateScrollForPane forgets it once the cursor leaves).
@@ -3408,14 +3418,14 @@ public:
      */
     bool ScrollFigureStep(bool down);
     /**
-     * @brief Steps the cursor one line through the rendered mepml @toc/@bibliography block it is on.
+     * @brief Steps the cursor one line through the rendered mepml \toc/\bibliography block it is on.
      * @param down True for j, false for k.
      * @return 1 when the step stayed inside the block (the key is consumed), 0 when the cursor is on
      * a block's first/last line and the key should move off it normally, -1 when not on a block.
      */
     int VirtualLineStep(bool down);
     /**
-     * @brief The line of the rendered @toc/@bibliography block on a pane's cursor row the cursor is on.
+     * @brief The line of the rendered \toc/\bibliography block on a pane's cursor row the cursor is on.
      * @param pane The pane.
      * @param lines The block's line count.
      * @return The 0-based line, clamped to the block.
@@ -3425,7 +3435,7 @@ public:
         return std::clamp(pane.virt_line, 0, lines - 1);
     }
     /**
-     * @brief Jumps to the heading of the table-of-contents entry the cursor is on (Enter on a rendered @toc).
+     * @brief Jumps to the heading of the table-of-contents entry the cursor is on (Enter on a rendered \toc).
      * @return True when the cursor was on a TOC entry and moved.
      */
     bool VirtualLineActivate();
@@ -9038,7 +9048,7 @@ public:
      */
     int MepmlTableImageBoxes(const Buffer &buf, int row, std::vector<MepmlCellImageBox> *out) const;
     /**
-     * @brief The generated content (@toc / @bibliography) a row draws as, or nullptr when it draws its own text (no such content, concealment off, or a closed fold on it).
+     * @brief The generated content (\toc / \bibliography) a row draws as, or nullptr when it draws its own text (no such content, concealment off, or a closed fold on it).
      * @param buf The buffer.
      * @param row 0-based row.
      * @param cursor_row Unused: the block is drawn under the cursor too, like an image (kept so every walker passes the same arguments as for LaTeX rows).
@@ -9148,14 +9158,14 @@ public:
      */
     void RecomputeMepmlFolds();
     /**
-     * @brief Parses the current buffer as mepml, resolving @import relative to its file.
-     * @param with_imports Expand @import directives (reads files).
+     * @brief Parses the current buffer as mepml, resolving \import relative to its file.
+     * @param with_imports Expand \import directives (reads files).
      * @return The parsed document.
      */
     mepml::Document MepmlParseCurrent(bool with_imports) const;
     /**
      * @brief The current buffer's file as an absolute path (empty for an unnamed buffer).
-     * @return The path; relative image and @import paths resolve against its directory.
+     * @return The path; relative image and \import paths resolve against its directory.
      */
     std::string MepmlCurrentFile() const;
     /**
@@ -9195,6 +9205,12 @@ public:
      * @param doc The parsed buffer.
      */
     void MepmlBuildCards(const mepml::Document &doc);
+    /**
+     * @brief Widens the current buffer's mepml result cards to what they draw (laid-out tables included), then gives each code card and its results card the wider of the two widths.
+     *
+     * Runs after MepmlTableLayout, whose grids it measures.
+     */
+    void MepmlFitCards();
     /**
      * @brief Draws mepml tables as aligned grids without touching the text: every pipe becomes a `│` overlay carrying its cell's padding (computed from the cells' concealed widths), and a GFM row's missing outer pipes are drawn on its edge characters, source whitespace around cells is hidden, and the |---| row becomes a ├─┼─┤ rule.
      * @param doc The parsed buffer.
@@ -11485,6 +11501,13 @@ private:
     // shared by ProcessNormalKey's "did a command just finish" check and by
     // the real Escape handler / CancelPendingNormalState.
     bool IsMidNormalCommand() const;
+    // True while the next Normal-mode key is a literal argument to a
+    // command already in progress (r{char}, m{a-z}, `{mark}, z{x}, q{reg},
+    // @{reg}, ...) -- such a key must never be taken by the leader key or
+    // a Lua mapping (`rs` replacing with 's', not launching mep.quick_jump).
+    // Narrower than IsMidNormalCommand: a pending count/register still
+    // lets the next key start a mapped command.
+    bool AwaitingNormalArgKey() const;
     // Resets every pending_* flag to "nothing in progress", shared by the
     // real Escape key handler and by a replayed kReplayEscape.
     void CancelPendingNormalState();

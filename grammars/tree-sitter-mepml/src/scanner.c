@@ -58,6 +58,9 @@ enum TokenType {
     GROUP_OPEN,
     GROUP_CLOSE,
     ARG_TEXT,
+    PAREN_OPEN,
+    PAREN_CLOSE,
+    ARG_COMMA,
     OPEN_BOLD, CLOSE_BOLD,
     OPEN_ITALIC, CLOSE_ITALIC,
     OPEN_UNDERLINE, CLOSE_UNDERLINE,
@@ -74,6 +77,7 @@ enum TokenType {
     ABSTRACT_BREAK,
     RESULT_BEGIN_MARKDOWN,
     RESULT_END_ATTACHED,
+    ATTRIBUTE_START,
     ERROR_SENTINEL,
 };
 
@@ -114,14 +118,17 @@ typedef struct {
     uint8_t math_kind;  // inside display maths: which closer
     uint16_t open_mask;  // bit i: kMarkers[i] is open (text must stop at its closer)
     uint8_t depth_count;
-    // Inside @abstract{...}: the depth_count its own group sits at (0 when
+    // Inside \abstract(...): the depth_count its own group sits at (0 when
     // outside one). Its prose runs over lines, paragraphs split by blank ones.
     uint8_t abstract_level;
     // The table the previous line belonged to: TABLE_NONE, a mepml table
     // (rows are `|` at both ends), or a GitHub-flavoured Markdown one
     // (header over a delimiter row), whose rows need no outer pipes.
     uint8_t table;
-    uint8_t depths[MAX_DEPTH];  // brace depth inside each open {group}
+    // Bit i: open group i is a `(...)` (a \name(...) command or directive),
+    // not a `{...}` one. Each counts only its own kind of bracket.
+    uint32_t paren_mask;
+    uint8_t depths[MAX_DEPTH];  // bracket depth inside each open group
 } Scanner;
 
 enum TableKind { TABLE_NONE = 0, TABLE_MEPML = 1, TABLE_GFM = 2 };
@@ -189,6 +196,7 @@ unsigned tree_sitter_mepml_external_scanner_serialize(void *payload, char *buffe
     buffer[n++] = (char)s->depth_count;
     buffer[n++] = (char)s->abstract_level;
     buffer[n++] = (char)s->table;
+    for (unsigned k = 0; k < 4; ++k) buffer[n++] = (char)((s->paren_mask >> (8 * k)) & 0xff);
     for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH; ++i) buffer[n++] = (char)s->depths[i];
     return n;
 }
@@ -197,7 +205,7 @@ void tree_sitter_mepml_external_scanner_deserialize(void *payload, const char *b
     Scanner *s = (Scanner *)payload;
     memset(s, 0, sizeof(*s));
     s->prev = '\n';
-    if (length < 9) return;
+    if (length < 13) return;
     s->prev = (uint8_t)buffer[0];
     s->context = (uint8_t)buffer[1];
     s->link_mode = (uint8_t)buffer[2];
@@ -206,7 +214,61 @@ void tree_sitter_mepml_external_scanner_deserialize(void *payload, const char *b
     s->depth_count = (uint8_t)buffer[6];
     s->abstract_level = (uint8_t)buffer[7];
     s->table = (uint8_t)buffer[8];
-    for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH && 9 + i < length; ++i) s->depths[i] = (uint8_t)buffer[9 + i];
+    for (unsigned k = 0; k < 4; ++k) s->paren_mask |= (uint32_t)(uint8_t)buffer[9 + k] << (8 * k);
+    for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH && 13 + i < length; ++i) s->depths[i] = (uint8_t)buffer[13 + i];
+}
+
+// --- groups ------------------------------------------------------------------
+
+// The innermost open group is a `(...)` one.
+static bool top_is_paren(const Scanner *s) {
+    return s->depth_count > 0 && s->depth_count <= MAX_DEPTH && ((s->paren_mask >> (s->depth_count - 1)) & 1u);
+}
+static bool top_is_brace(const Scanner *s) { return s->depth_count > 0 && !top_is_paren(s); }
+static void push_group(Scanner *s, bool paren) {
+    if (s->depth_count < MAX_DEPTH) {
+        s->depths[s->depth_count] = 0;
+        if (paren) s->paren_mask |= 1u << s->depth_count;
+        else s->paren_mask &= ~(1u << s->depth_count);
+    }
+    s->depth_count++;
+}
+static void pop_group(Scanner *s) {
+    if (s->depth_count == 0) return;
+    s->depth_count--;
+    if (s->depth_count < MAX_DEPTH) s->paren_mask &= ~(1u << s->depth_count);
+}
+// Nesting inside the innermost group (its own kind of bracket only).
+static uint8_t top_depth(const Scanner *s) {
+    return s->depth_count > 0 && s->depth_count <= MAX_DEPTH ? s->depths[s->depth_count - 1] : 0;
+}
+static void top_depth_add(Scanner *s, int d) {
+    if (s->depth_count == 0 || s->depth_count > MAX_DEPTH) return;
+    uint8_t *v = &s->depths[s->depth_count - 1];
+    if (d > 0 && *v < 255) (*v)++;
+    if (d < 0 && *v > 0) (*v)--;
+}
+
+// The directives written `\name(...)` (or bare, `\toc`) at a line's start.
+static bool is_backslash_directive(const char *name) {
+    static const char *const kNames[] = {"import", "citation", "image", "caption", "alttext", "bibliography", "toc", "abstract"};
+    for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
+        if (strcmp(name, kNames[i]) == 0) return true;
+    return false;
+}
+
+// Just past a line's leading backslash: reads the name after it and says
+// whether it starts a directive (its `(`, or nothing, must follow).
+static bool backslash_directive_follows(TSLexer *lexer, char name[16]) {
+    memset(name, 0, 16);
+    int n = 0;
+    while (is_alpha(la(lexer)) && n < 15) {
+        name[n++] = (char)la(lexer);
+        adv(lexer);
+    }
+    if (n == 0 || is_alpha(la(lexer)) || !is_backslash_directive(name)) return false;
+    const int32_t next = la(lexer);
+    return next == '(' || is_blank(next) || at_eol(lexer);
 }
 
 // --- lookahead scope ------------------------------------------------------------
@@ -238,7 +300,8 @@ static bool line_starts_block(TSLexer *lexer) {
     }
     if (c == '\\') {
         adv(lexer);
-        return la(lexer) == '[';
+        char name[16];
+        return la(lexer) == '[' || backslash_directive_follows(lexer, name);
     }
     if (c == '|' || c == '@') return true;  // (approximate: tables, directives)
     if (c == '>') {
@@ -283,9 +346,11 @@ static void group_closed(Scanner *s) {
 
 // --- inline constructs ----------------------------------------------------------
 
-// Skips a balanced {...} whose '{' is the current character. False when it
-// never closes inside the scope.
-static bool skip_group(Scanner *s, TSLexer *lexer) {
+// Skips a balanced {...} or (...) whose opener is the current character
+// (counting only that kind of bracket). False when it never closes inside
+// the scope. *comma (when given) says whether a top-level comma was in it.
+static bool skip_group_comma(Scanner *s, TSLexer *lexer, bool *comma) {
+    const int32_t open = la(lexer), close = open == '(' ? ')' : '}';
     int depth = 0;
     while (true) {
         int32_t c = la(lexer);
@@ -299,8 +364,9 @@ static bool skip_group(Scanner *s, TSLexer *lexer) {
             if (!at_eol(lexer)) adv(lexer);
             continue;
         }
-        if (c == '{') depth++;
-        if (c == '}') {
+        if (c == open) depth++;
+        if (c == ',' && depth == 1 && comma) *comma = true;
+        if (c == close) {
             depth--;
             adv(lexer);
             if (depth == 0) return true;
@@ -309,6 +375,7 @@ static bool skip_group(Scanner *s, TSLexer *lexer) {
         adv(lexer);
     }
 }
+static bool skip_group(Scanner *s, TSLexer *lexer) { return skip_group_comma(s, lexer, NULL); }
 
 // Whether a closer for `m` follows (FindCloser in mepml_doc.cpp). The lexer
 // sits just past the opener; `opener_next` is the character after it.
@@ -316,6 +383,7 @@ static bool closer_exists(Scanner *s, TSLexer *lexer, const Marker *m) {
     bool first = true;
     int32_t prev = 0;
     int group_depth = 0;
+    int parens = 0;  // plain parentheses opened since the opener
     const size_t cl = strlen(m->close);
     while (true) {
         int32_t c = la(lexer);
@@ -328,7 +396,13 @@ static bool closer_exists(Scanner *s, TSLexer *lexer, const Marker *m) {
         }
         if (c == '\\') {
             adv(lexer);
-            if (!at_eol(lexer)) adv(lexer);
+            if (is_alpha(la(lexer))) {
+                // A command's `(...)` arguments are inside it, like a `{...}`.
+                while (is_alpha(la(lexer))) adv(lexer);
+                if (la(lexer) == '(' && !skip_group(s, lexer)) return false;
+            } else if (!at_eol(lexer)) {
+                adv(lexer);
+            }
             prev = 'a';
             first = false;
             continue;
@@ -349,7 +423,9 @@ static bool closer_exists(Scanner *s, TSLexer *lexer, const Marker *m) {
             continue;
         }
         // The end of an enclosing group or link ends the search.
-        if (c == '}' && s->depth_count > 0 && group_depth == 0) return false;
+        if (c == '}' && top_is_brace(s) && group_depth == 0) return false;
+        if (top_is_paren(s) && c == '(') parens++;
+        if (top_is_paren(s) && c == ')' && parens-- == 0) return false;
         if (c == ']' && s->link_mode != LINK_NONE) return false;
         if (c == '|' && s->context == CTX_LINE && m->close[0] != '|') {
             // (a table cell's pipe; checked loosely -- a closer past it
@@ -549,16 +625,25 @@ static bool is_link_bar(TSLexer *lexer) {
     }
 }
 
-// \name{...} commands: the lexer is just past the backslash. Emits the
-// command token (covering `\name`) when the groups it needs follow.
-static bool scan_command(Scanner *s, TSLexer *lexer, const bool *valid) {
-    char name[8] = {0};
+// Reads a command's name (the lexer just past the backslash); false when it
+// is too long to be one.
+static bool read_command_name(TSLexer *lexer, char name[8]) {
     int n = 0;
     while (is_alpha(la(lexer)) && n < 7) {
         name[n++] = (char)la(lexer);
         adv(lexer);
     }
-    if (is_alpha(la(lexer))) return false;
+    name[n] = 0;
+    return !is_alpha(la(lexer));
+}
+
+// \name(...) (or the older \name{...}) commands: the lexer is just past the
+// name (read into `name`). Emits the command token (covering `\name`) when
+// the arguments it needs follow: `(arg, text)` for a two-argument command,
+// its first top-level comma ending the argument.
+static bool scan_command_named(Scanner *s, TSLexer *lexer, const bool *valid, const char *name) {
+    const int n = (int)strlen(name);
+    if (n == 0) return false;
     enum TokenType tok;
     int groups;
     if (strcmp(name, "f") == 0) tok = CMD_F, groups = 2;
@@ -568,15 +653,25 @@ static bool scan_command(Scanner *s, TSLexer *lexer, const bool *valid) {
     else if (strcmp(name, "cite") == 0) tok = CMD_CITE, groups = 1;
     else if (strcmp(name, "citep") == 0) tok = CMD_CITEP, groups = 1;
     else return false;
-    if (!valid[tok] || la(lexer) != '{') return false;
+    if (!valid[tok] || (la(lexer) != '{' && la(lexer) != '(')) return false;
     lexer->mark_end(lexer);
     int32_t last = name[n - 1];
+    if (la(lexer) == '(') {
+        bool comma = false;
+        if (!skip_group_comma(s, lexer, &comma) || (groups == 2 && !comma)) return false;
+        return emit(s, lexer, tok, last);
+    }
     if (!skip_group(s, lexer)) return false;
     if (groups == 2) {
         while (is_blank(la(lexer))) adv(lexer);
         if (la(lexer) != '{' || !skip_group(s, lexer)) return false;
     }
     return emit(s, lexer, tok, last);
+}
+
+static bool scan_command(Scanner *s, TSLexer *lexer, const bool *valid) {
+    char name[8];
+    return read_command_name(lexer, name) && scan_command_named(s, lexer, valid, name);
 }
 
 // Emphasis: close when a closer of this kind is open and valid here, open
@@ -635,7 +730,8 @@ static bool is_special(Scanner *s, int32_t c, const bool *valid) {
     switch (c) {
         case '\\': case '`': case '$': case '[': return true;
         case ']': return s->link_mode != LINK_NONE;
-        case '{': case '}': return s->depth_count > 0;
+        case '{': case '}': return top_is_brace(s);
+        case '(': case ')': return top_is_paren(s);
         case '/': return true;
         case '|': return true;
         default: break;
@@ -679,7 +775,10 @@ static bool scan_inline(Scanner *s, TSLexer *lexer, const bool *valid) {
         lexer->mark_end(lexer);
         return emit(s, lexer, URL, last);
     }
-    if (valid[ARG_TEXT] && !valid[TEXT] && c != '}') {
+    const bool paren = top_is_paren(s);
+    const int32_t group_open = paren ? '(' : '{', group_close = paren ? ')' : '}';
+    if (valid[ARG_TEXT] && !valid[TEXT] && c != group_close && !(c == ',' && valid[ARG_COMMA])) {
+        // (In `\name(arg, text)` the argument ends at its comma.)
         int depth = 0;
         int32_t last = 0;
         while (true) {
@@ -691,11 +790,12 @@ static bool scan_inline(Scanner *s, TSLexer *lexer, const bool *valid) {
                 if (!lexer->eof(lexer)) adv(lexer);
                 continue;
             }
-            if (d == '{') depth++;
-            if (d == '}') {
+            if (d == group_open) depth++;
+            if (d == group_close) {
                 if (depth == 0) break;
                 depth--;
             }
+            if (d == ',' && depth == 0 && valid[ARG_COMMA]) break;
             last = d;
             adv(lexer);
         }
@@ -719,20 +819,39 @@ static bool scan_inline(Scanner *s, TSLexer *lexer, const bool *valid) {
             lexer->mark_end(lexer);
             return emit(s, lexer, TABLE_PIPE, '|');
         }
+        if (valid[PAREN_OPEN] && c == '(') {
+            adv(lexer);
+            lexer->mark_end(lexer);
+            push_group(s, true);
+            return emit(s, lexer, PAREN_OPEN, '(');
+        }
         if (valid[GROUP_OPEN]) {
             // (blanks allowed between a command's two groups)
             while (is_blank(la(lexer))) adv(lexer);
             if (la(lexer) != '{') return false;
             adv(lexer);
             lexer->mark_end(lexer);
-            if (s->depth_count < MAX_DEPTH) s->depths[s->depth_count] = 0;
-            s->depth_count++;
+            push_group(s, false);
             return emit(s, lexer, GROUP_OPEN, '{');
+        }
+        if (valid[ARG_COMMA] && c == ',') {
+            // The argument's comma, and the blanks after it.
+            adv(lexer);
+            while (is_blank(la(lexer))) adv(lexer);
+            lexer->mark_end(lexer);
+            return emit(s, lexer, ARG_COMMA, ' ');
+        }
+        if (valid[PAREN_CLOSE] && c == ')' && paren) {
+            adv(lexer);
+            lexer->mark_end(lexer);
+            pop_group(s);
+            group_closed(s);
+            return emit(s, lexer, PAREN_CLOSE, ')');
         }
         if (valid[GROUP_CLOSE] && c == '}') {
             adv(lexer);
             lexer->mark_end(lexer);
-            if (s->depth_count > 0) s->depth_count--;
+            pop_group(s);
             group_closed(s);
             return emit(s, lexer, GROUP_CLOSE, '}');
         }
@@ -745,7 +864,6 @@ static bool scan_inline(Scanner *s, TSLexer *lexer, const bool *valid) {
         while (true) {
             int32_t d = la(lexer);
             if (d == 0 || d == '\n' || d == '\r' || is_special(s, d, valid)) break;
-            if (d == '{' && s->depth_count > 0) break;
             adv(lexer);
             last = d;
             s->prev = clamp_char(d);
@@ -786,8 +904,8 @@ static bool scan_inline(Scanner *s, TSLexer *lexer, const bool *valid) {
                     }
                     empty = false;
                 }
-                text_last = '(';
-                break;
+                // No `\)`: a literal parenthesis (the backslash escapes it).
+                return emit(s, lexer, ESCAPE, '(');
             }
             if (is_alpha(n)) {
                 if (scan_command(s, lexer, valid)) return true;
@@ -833,26 +951,29 @@ static bool scan_inline(Scanner *s, TSLexer *lexer, const bool *valid) {
             lexer->mark_end(lexer);
             break;
         case '{':
+        case '(':
             adv(lexer);
             consumed = true;
             lexer->mark_end(lexer);
-            if (s->depth_count > 0 && s->depth_count <= MAX_DEPTH) s->depths[s->depth_count - 1]++;
+            if ((c == '(') == paren) top_depth_add(s, 1);
             break;
         case '}':
-            if (valid[GROUP_CLOSE] && s->depth_count > 0 &&
-                (s->depth_count > MAX_DEPTH || s->depths[s->depth_count - 1] == 0)) {
+        case ')': {
+            const bool own = (c == ')') == paren && s->depth_count > 0;
+            const enum TokenType close_tok = c == ')' ? PAREN_CLOSE : GROUP_CLOSE;
+            if (own && valid[close_tok] && (s->depth_count > MAX_DEPTH || top_depth(s) == 0)) {
                 adv(lexer);
                 lexer->mark_end(lexer);
-                s->depth_count--;
+                pop_group(s);
                 group_closed(s);
-                return emit(s, lexer, GROUP_CLOSE, '}');
+                return emit(s, lexer, close_tok, c);
             }
             adv(lexer);
             consumed = true;
             lexer->mark_end(lexer);
-            if (s->depth_count > 0 && s->depth_count <= MAX_DEPTH && s->depths[s->depth_count - 1] > 0)
-                s->depths[s->depth_count - 1]--;
+            if (own) top_depth_add(s, -1);
             break;
+        }
         case '/':
             adv(lexer);
             consumed = true;
@@ -899,7 +1020,8 @@ static bool scan_inline(Scanner *s, TSLexer *lexer, const bool *valid) {
 
 static bool is_bibtex_or_directive(const char *name) {
     static const char *const kNames[] = {
-        "import", "citation", "image", "caption", "alttext", "bibliography", "printbibliography", "toc", "abstract",
+        // (not abstract: only \abstract(...) is one; `@abstract{` is prose)
+        "import", "citation", "image", "caption", "alttext", "bibliography", "printbibliography", "toc",
         "article", "book", "booklet", "conference", "inbook", "incollection", "inproceedings", "manual",
         "mastersthesis", "misc", "phdthesis", "proceedings", "techreport", "unpublished", "online", "software",
     };
@@ -1018,13 +1140,14 @@ static bool table_line(Scanner *s, TSLexer *lexer, const bool *valid, LineSoFar 
     return false;
 }
 
-// The next line is an @caption or @alttext. Called at the end of a line.
+// The next line is a \caption or \alttext (or @caption, @alttext). Called
+// at the end of a line.
 static bool next_line_is_attribute(TSLexer *lexer) {
     if (la(lexer) == '\r') adv(lexer);
     if (la(lexer) != '\n') return false;
     adv(lexer);
     while (is_blank(la(lexer))) adv(lexer);
-    if (la(lexer) != '@') return false;
+    if (la(lexer) != '@' && la(lexer) != '\\') return false;
     adv(lexer);
     char name[10] = {0};
     int n = 0;
@@ -1178,6 +1301,33 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
         return fallback_line_after(s, lexer, valid, indent > 0, st);
     }
 
+    // \name(...) directives.
+    if (c == '\\' && (valid[DIRECTIVE_START] || valid[ATTRIBUTE_START])) {
+        adv(lexer);
+        if (is_alpha(la(lexer))) {
+            char name[16];
+            if (backslash_directive_follows(lexer, name)) {
+                // A caption or alt text is its own start, so the line under
+                // a captioned block can tell it from the next directive.
+                const bool attribute = strcmp(name, "caption") == 0 || strcmp(name, "alttext") == 0;
+                if (valid[attribute ? ATTRIBUTE_START : DIRECTIVE_START]) {
+                    s->context = CTX_LINE;
+                    lexer->result_symbol = attribute ? ATTRIBUTE_START : DIRECTIVE_START;
+                    return true;
+                }
+            }
+            return fallback_line(s, lexer, valid, indent > 0);
+        }
+        if (la(lexer) == '[' && valid[MATH_OPEN]) {
+            adv(lexer);
+            lexer->mark_end(lexer);
+            s->math_kind = MATH_BRACKET;
+            return emit(s, lexer, MATH_OPEN, '[');
+        }
+        if (!at_eol(lexer)) adv(lexer);
+        return fallback_line(s, lexer, valid, indent > 0);
+    }
+
     // Display maths.
     if ((c == '$' || c == '\\') && valid[MATH_OPEN]) {
         adv(lexer);
@@ -1323,9 +1473,10 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
             name[n++] = (char)la(lexer);
             adv(lexer);
         }
-        if (n > 0 && !is_alpha(la(lexer)) && is_bibtex_or_directive(name) && valid[DIRECTIVE_START]) {
+        const bool attribute = strcmp(name, "caption") == 0 || strcmp(name, "alttext") == 0;
+        if (n > 0 && !is_alpha(la(lexer)) && is_bibtex_or_directive(name) && valid[attribute ? ATTRIBUTE_START : DIRECTIVE_START]) {
             s->context = CTX_LINE;
-            lexer->result_symbol = DIRECTIVE_START;
+            lexer->result_symbol = attribute ? ATTRIBUTE_START : DIRECTIVE_START;
             return true;
         }
         return fallback_line(s, lexer, valid, indent > 0);
@@ -1405,12 +1556,11 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
         return last ? emit(s, lexer, MATH_CONTENT, last) : false;
     }
 
-    // @abstract{: its group opens, and its prose reads as a paragraph's.
-    if (valid[ABSTRACT_OPEN] && la(lexer) == '{') {
+    // \abstract(: its group opens, and its prose reads as a paragraph's.
+    if (valid[ABSTRACT_OPEN] && la(lexer) == '(') {
         adv(lexer);
         lexer->mark_end(lexer);
-        if (s->depth_count < MAX_DEPTH) s->depths[s->depth_count] = 0;
-        s->depth_count++;
+        push_group(s, true);
         s->abstract_level = s->depth_count;
         s->context = CTX_PARAGRAPH;
         s->prev = '\n';
@@ -1440,7 +1590,7 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
                            valid[META_MARKER] || valid[H1_MARKER] || valid[LIST_MARKER] ||
                            valid[LIST_CONTINUATION] || valid[TABLE_ROW_START] || valid[RESULT_END] ||
                            valid[RESULT_END_ATTACHED] || valid[RESULT_BEGIN_MARKDOWN] ||
-                           valid[DIRECTIVE_START] || valid[FENCE_OPEN];
+                           valid[DIRECTIVE_START] || valid[ATTRIBUTE_START] || valid[FENCE_OPEN];
         if (block_valid) {
             const bool ok = scan_line_start(s, lexer, valid);
             if (ok && lexer->result_symbol != TABLE_ROW_START && lexer->result_symbol != TABLE_DELIMITER_ROW)
@@ -1501,7 +1651,7 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
         return valid[TEXT] ? emit(s, lexer, TEXT, '[') : false;
     }
 
-    // @alttext right after inline maths.
+    // \alttext(...) (or @alttext{...}) right after inline maths.
     if (valid[ALTTEXT_MARKER] && la(lexer) == '@') {
         adv(lexer);
         lexer->mark_end(lexer);
@@ -1510,6 +1660,24 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
             return emit(s, lexer, ALTTEXT_MARKER, 't');
         }
         return valid[TEXT] ? emit(s, lexer, TEXT, '@') : false;
+    }
+    if (valid[ALTTEXT_MARKER] && la(lexer) == '\\') {
+        adv(lexer);
+        lexer->mark_end(lexer);
+        char name[8];
+        const bool named = is_alpha(la(lexer)) && read_command_name(lexer, name);
+        if (named && strcmp(name, "alttext") == 0 && la(lexer) == '(') {
+            lexer->mark_end(lexer);
+            return emit(s, lexer, ALTTEXT_MARKER, 't');
+        }
+        // Some other command after the maths.
+        if (named && scan_command_named(s, lexer, valid, name)) return true;
+        if (!named && !at_eol(lexer) && !is_space(la(lexer)) && la(lexer) != '(') {
+            adv(lexer);
+            lexer->mark_end(lexer);
+            return emit(s, lexer, ESCAPE, 'a');
+        }
+        return valid[TEXT] ? emit(s, lexer, TEXT, 'a') : false;
     }
 
     // A trailing // comment after a directive or display maths.

@@ -19,7 +19,7 @@ there is nothing to install.</p>
 <p>It reads a document with the same parser mep renders it from and exports
 it with, so the server and the page you see can never disagree about what
 a line means. It then adds what no single line can tell you on its own:
-citations defined in an =@import=ed file, pictures and link targets that
+citations defined in an imported file, pictures and link targets that
 are not on disk, headings that links point to.</p>
 <p>While it is attached, the problems it finds are the ones mep underlines;
 mepml's own renderer stops drawing its copy, so nothing is marked twice.
@@ -27,23 +27,23 @@ Because it is an ordinary language server, other editors can use it too.</p>
 <h1>What it reports</h1>
 <table>
 <tr><th>Code</th><th>What it means</th></tr>
-<tr><td><code>unknown-citation</code></td><td><code>\cite{key}</code> with no <code>@citation</code> entry for the key</td></tr>
+<tr><td><code>unknown-citation</code></td><td><code>\cite(key)</code> with no <code>\citation</code> entry for the key</td></tr>
 <tr><td><code>unused-citation</code></td><td>an entry nothing cites (shown faded)</td></tr>
 <tr><td><code>unknown-anchor</code></td><td>a link to <code>#anchor</code> where no heading has that anchor</td></tr>
 <tr><td><code>missing-file</code></td><td>a link to a file that is not there</td></tr>
-<tr><td><code>image-missing</code></td><td>an <code>@image</code> picture, or a figure a code block drew, is gone</td></tr>
+<tr><td><code>image-missing</code></td><td>an <code>\image</code> picture, or a figure a code block drew, is gone</td></tr>
 <tr><td><code>import-missing</code>, <code>import-cycle</code></td><td>an import that cannot be read, or imports itself</td></tr>
 <tr><td><code>duplicate-import</code></td><td>a file already imported above (included only once)</td></tr>
 <tr><td><code>unknown-directive</code></td><td>an <code>@name</code> mepml does not have (<code>@imgae</code>)</td></tr>
 <tr><td><code>unknown-color</code></td><td><code>\color{name}</code> with a colour mepml does not know</td></tr>
-<tr><td><code>empty-footnote</code></td><td><code>\fn{}</code> with nothing in it</td></tr>
+<tr><td><code>empty-footnote</code></td><td><code>\fn()</code> with nothing in it</td></tr>
 <tr><td><code>table-columns</code></td><td>a table row with more or fewer cells than the rest</td></tr>
 <tr><td><code>heading-skip</code></td><td>a heading two levels below the one before it</td></tr>
 <tr><td><code>duplicate-option</code></td><td>the same <code>//? Option:</code> set twice</td></tr>
 <tr><td><code>duplicate-citation</code></td><td>two entries with one key</td></tr>
 <tr><td><code>unclosed-code</code>, <code>unclosed-math</code>, <code>unclosed-results</code></td><td>a block that never ends</td></tr>
-<tr><td><code>orphan-caption</code></td><td>an <code>@caption</code> or <code>@alttext</code> with nothing above to attach to</td></tr>
-<tr><td><code>deprecated-directive</code></td><td><code>@printbibliography</code>, which is now <code>@bibliography</code></td></tr>
+<tr><td><code>orphan-caption</code></td><td>a <code>\caption</code> or <code>\alttext</code> with nothing above to attach to</td></tr>
+<tr><td><code>deprecated-directive</code></td><td><code>@printbibliography</code> (now <code>\bibliography</code>), <code>@abstract{</code> (now <code>\abstract(</code>)</td></tr>
 </table>
 <p>The file checks need the document to be saved somewhere; an unsaved buffer
 has no directory to look in, so they are skipped rather than guessed.</p>
@@ -57,12 +57,13 @@ has no directory to look in, so they are skipped rather than guessed.</p>
 <p>What it offers depends on where the cursor is:</p>
 <table>
 <tr><th>After</th><th>You get</th></tr>
-<tr><td><code>@</code> at a line's start</td><td>the directives: <code>image</code>, <code>caption</code>, <code>import</code>, <code>toc</code>, ...</td></tr>
 <tr><td><code>\</code></td><td>the commands: <code>cite</code>, <code>citep</code>, <code>fn</code>, <code>color</code>, <code>f</code>, <code>fs</code></td></tr>
-<tr><td><code>\cite{</code> or <code>\citep{</code></td><td>every citation key, with its author and year</td></tr>
-<tr><td><code>\color{</code></td><td>the colour names, with their values</td></tr>
-<tr><td><code>\f{</code>, <code>\fs{</code></td><td>font families; sizes in points</td></tr>
-<tr><td><code>@image{</code>, <code>@import{</code></td><td>the files beside the document (pictures; <code>.mepml</code> and <code>.bib</code>)</td></tr>
+<tr><td><code>\</code> at a line's start</td><td>the commands, and the directives: <code>image</code>, <code>caption</code>, <code>import</code>, <code>toc</code>, ...</td></tr>
+<tr><td><code>@</code> at a line's start</td><td>the directives, written the new way (<code>@im</code> becomes <code>\image(</code>)</td></tr>
+<tr><td><code>\cite(</code> or <code>\citep(</code></td><td>every citation key, with its author and year</td></tr>
+<tr><td><code>\color(</code></td><td>the colour names, with their values (then =, =, on to the text)</td></tr>
+<tr><td><code>\f(</code>, <code>\fs(</code></td><td>font families; sizes in points</td></tr>
+<tr><td><code>\image(</code>, <code>\import(</code></td><td>the files beside the document (pictures; <code>.mepml</code> and <code>.bib</code>)</td></tr>
 <tr><td>a link's bar</td><td><code>#anchors</code> of every heading, then files</td></tr>
 <tr><td><code>//?</code></td><td><code>Title</code>, <code>Subtitle</code>, <code>Author</code>, <code>Date</code>, <code>Option</code>, <code>Import</code></td></tr>
 <tr><td>=//? Import: =</td><td>the <code>.mepml</code> and <code>.bib</code> files beside the document</td></tr>
@@ -73,16 +74,17 @@ has no directory to look in, so they are skipped rather than guessed.</p>
 <h1>Hover, definitions and references</h1>
 <ul>
 <li><b>Hover</b> on a citation shows its entry as the bibliography will print it, and every field. On a footnote, its text; on a link, where it goes (and whether it exists); on a colour, its value; on a heading, its anchor and how many links point at it; on a code block's fence, its language and options.</li>
-<li><b>Go to definition</b> goes from a citation to its entry (into the imported file, when it lives there), from a <code>#anchor</code> link to the heading, and from <code>@image</code>, <code>@import</code>, a header <code>//? Import:</code> or a file link to the file. Hover on a header import lists the options it brings (and which of them this document overrides) and how much content it includes.</li>
+<li><b>Go to definition</b> goes from a citation to its entry (into the imported file, when it lives there), from a <code>#anchor</code> link to the heading, and from <code>\image</code>, <code>\import</code>, a header <code>//? Import:</code> or a file link to the file. Hover on a header import lists the options it brings (and which of them this document overrides) and how much content it includes.</li>
 <li><b>References</b> on a citation key lists every <code>\cite</code> of it and its entry; on a heading, the heading and every link to it.</li>
 <li><b>Rename</b> renames a citation key everywhere in the document, entry included. On a heading it renames the heading, and every <code>#anchor</code> link to it follows to the new anchor. A key defined in an imported file is not renamed from here; the server names the file to rename it in.</li>
 </ul>
 <h1>Fixes and formatting</h1>
 <p>The code actions on a line with a problem:</p>
 <ul>
-<li>An unknown citation: add a <code>@citation</code> entry for it at the end of the document, or switch to the existing key it is closest to.</li>
+<li>An unknown citation: add a <code>\citation</code> entry for it at the end of the document, or switch to the existing key it is closest to.</li>
 <li>A misspelt directive, anchor or colour: change it to the nearest real one.</li>
-<li><code>@printbibliography</code>: rename it to <code>@bibliography</code>.</li>
+<li><code>@printbibliography</code>: rename it to <code>\bibliography</code>.</li>
+<li>The old <code>@abstract{...}</code>: rewrite it as <code>\abstract(...)</code>.</li>
 <li>A table with ragged rows: pad every row to the same number of cells.</li>
 </ul>
 <p><b>Formatting</b> lines up every table's pipes, honouring each column's

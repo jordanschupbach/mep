@@ -1,24 +1,24 @@
 //? Title: A Test Document
 //? Import: opts.mepml
 
-@abstract{
+\abstract(
 This document exercises *every* construct mepml has, from ~inline markup~ and
 $e^{i\pi} + 1 = 0$ to executable code blocks and the results they write back.
 
 An abstract can run over several paragraphs; a blank line separates them.
-}
+)
 
 > Analysis
 //? Import: refs.mepml
 //? MACRO: Let's worry about this one later...
 
-@toc
+\toc
 
 // This is a comment. The above options can be int, double, or string valued
 
 // Space between text (i.e. new line characters on their own line) indicates new paragraphs.
 
-@import{refs.mepml}
+\import(refs.mepml)
 // NOTE: this doesnt need to be a mepml file, but does need to be compatible.
 // also note, the above syntax for NOTE: is special, that allow for special
 // formatting of notes. There are others by default WARNING, ERROR, INFO, and
@@ -32,19 +32,19 @@ we have some ~italic text~ and we have some ^superscript^ and we have some
 ,,subscript,, and we have some <small text> and we have some >big text< and we
 have some |monospaced text| and we have some =highlighted text= and we have some
 -strikethrough text- and we have some +inserted text+ and we have some !deleted
-text!. Here's some \f{Helvetica}{\fs{12}{Helvetica, font size 12}} text and
-here's some \fs{24}{font size 24} text. Here's some \color{red}{red text} and
-here's some \color{blue}{blue text} . Here's some \fs{16}{\color{red}{font size
-16 red text}}. Here's a \fn{footnote here}. And here's a citation: \cite{asdf1},
-and here's a parenthetical citation: \citep{asdf1}.
+text!. Here's some \f(Helvetica, \fs(12, Helvetica, font size 12)) text and
+here's some \fs(24, font size 24) text. Here's some \color(red, red text) and
+here's some \color(blue, blue text) . Here's some \fs(16, \color(red, font size
+16 red text)). Here's a \fn(footnote here). And here's a citation: \cite(asdf1),
+and here's a parenthetical citation: \citep(asdf1).
 
 Here's some latex math: here's inline $E=mc^2$ and here's some display math:
 $$
   \int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
 $$
-@alttext{Some alternative text describing the equation}
+\alttext(Some alternative text describing the equation)
 
-Other syntax works too like this inline \(\frac{a}{b}\)@alttext{More alt text} and this display math
+Other syntax works too like this inline \(\frac{a}{b}\)\alttext(More alt text) and this display math
 \[ 
   \sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6} 
 \]
@@ -63,11 +63,11 @@ echo "Hello, world"
 
 >> Heading Level 2
 
-@image{./filepath/img1.png}
-@caption{Caption here}
-@alttext{Alttext here}
+\image(./filepath/img1.png)
+\caption(Caption here)
+\alttext(Alttext here)
 
-@image{./filepath/img2.png} // NOTE: captions and alttext are optional
+\image(./filepath/img2.png) // NOTE: captions and alttext are optional
 
 >>> Heading Level 3
 
@@ -76,7 +76,7 @@ echo "Hello, world"
 | item1 | item2 |
 | item3 | item4 |
 | item5 | item6 |
-@caption{Here's my caption here}
+\caption(Here's my  caption here)
 
 -------------------------------------------------------------------------------
 
@@ -104,6 +104,12 @@ Lists use -, * or + for bullets and 1. or 1) for numbers; indent to nest:
 1. numbered
 2. and another
 
+Commands are \name(arguments, text): the arguments end at the first commas,
+so the text may hold commas of its own, and an unmatched parenthesis in it
+takes a backslash, \). The older \fs{12}{braced} spelling still reads, as
+do the @image{...}, @caption{...} and other @name{...} directives; only the
+abstract must be written \abstract(...).
+
 Escape any marker with a backslash: \*not bold\*, \$5 and \$6, \\. A lone
 dollar amount like $5 is never math. Inline text // a trailing comment is hidden.
 
@@ -115,7 +121,7 @@ don't need to line up in the source (mep lines the columns up when drawing):
 | a | b | 1 |
 | `c` | *d* | 2.50 |
 | a longer cell | >big< | 100 |
-@caption{An aligned table}
+\caption(An aligned table)
 
 GitHub-flavoured Markdown tables work as they are. After a header and a
 delimiter row, the outer pipes are optional, and \| is a pipe inside a cell:
@@ -125,7 +131,7 @@ Species | Petal length | Petal width
 ~setosa~ | 1.46 | 0.25
 versicolor | 4.26 | 1.33
 | virginica | 5.55 | 2.03 |
-@caption{A Markdown table}
+\caption(A Markdown table)
 
 Code blocks take options in the header or from //? lines right above them,
 and a ```lang header works too. Results are written back between the markers
@@ -148,8 +154,8 @@ results, numbered and captioned like any other figure:
 x <- 1:10
 plot(x, x^2, type = "b", main = "Squares")
 ```
-@caption{Squares, drawn by R}
-@alttext{A line plot of x squared for x from 1 to 10}
+\caption(Squares, drawn by R)
+\alttext(A line plot of x squared for x from 1 to 10)
 
 A block with results=html prints HTML: its results keep that markup, and mep
 draws it in place of the text (move the cursor into it to see the markup).
@@ -179,7 +185,7 @@ is and read as part of the document: a table it prints is a table, numbered
 and captioned like any other. (R's knitr::kable() prints one.)
 
 ```{python, results=markdown}
-rows = [("apple", 3), ("banana", 5)]
+rows = [("apple", 7), ("banana", 5)]
 print("| Fruit | Count |")
 print("|:------|------:|")
 for name, n in rows:
@@ -188,10 +194,10 @@ for name, n in rows:
 // result_begin: markdown
 | Fruit | Count |
 |:------|------:|
-| apple | 3 |
+| apple | 7 |
 | banana | 5 |
 // result_end
-@caption{Fruit, counted by Python}
+\caption(Fruit, counted by Python)
 
 The exports show each block's code and its results. `exports=` (code,
 results, both or none) or knitr's `echo=false` (results only) changes that for
@@ -201,6 +207,9 @@ always shows everything; this block appears in no export:
 ```{r, exports=none}
 cat("only in the editor")
 ```
+// result_begin:
+// only in the editor
+// result_end
 
 An exec block runs a program in a terminal inside its results: C-c C-c starts
 it, Enter (or a click) types into it, Ctrl-\ Ctrl-N comes back to the text,
@@ -230,8 +239,8 @@ int main(void) {
 }
 ```
 // result_begin: terminal
-// What is your name? Ada
-// Hello, Ada
+// What is your name? Jordan
+// Hello, Jordan
 // result_end
 
 An exec-gui block runs a program with a window of its own, and shows that
@@ -242,7 +251,7 @@ Ctrl-\ takes it back, and when it closes its last picture is kept:
 xeyes
 ```
 // result_begin: gui
-// [running] xeyes
+// [running] inkscape
 // result_end
 
 ```{python, results=exec-gui, rows=10}
@@ -285,12 +294,13 @@ def draw(event=None):
 canvas.bind("<Configure>", draw)
 root.mainloop()
 ```
-// result_begin: gui
-// [running] python program
+// result_begin:
+// \image(test-gui-7481ee16.png)
+// [stopped]
 // result_end
 
 A bibtex-style entry works as well (so a .bib file can be @imported):
 
-Knuth coined the term literate programming \citep{knuth84}.
+Knuth coined the term literate programming \citep(knuth84).
 
-@bibliography
+\bibliography

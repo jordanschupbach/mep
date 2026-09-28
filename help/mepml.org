@@ -46,14 +46,18 @@ language.
 | =:MepmlFoldsRecompute= | rebuild folds (=za=, =zc= and =zo= do this themselves)  |
 
 Folding (=za=, =zM=, =zR=) folds heading sections, code blocks,
-citations, display maths, tables, lists and comment runs. A code block and
+citations, display maths, tables, lists, comment runs and the rendered
+=\toc= and =\bibliography=. A code block and
 its results fold separately: =za= on the opening fence folds the code,
 =za= on the =// result_begin:= line folds the results, so either can be
 put away while the other stays open (a running program's terminal or
 window hides with its results). The =-= button at the right of either
 card's title bar does the same with the mouse. A folded card keeps its title
 bar (language, options, play button, and a count of the hidden lines), and its
-=+= button unfolds it. The Structure sidebar lists the headings.
+=+= button unfolds it. A rendered =\toc= or =\bibliography= folds too:
+=za= on it collapses the block to its title and a count (/Contents • 3
+headings/), and =za= again, =zR= or its =+= opens it. The Structure sidebar
+lists the headings.
 
 * Document options and comments
 
@@ -99,9 +103,9 @@ header:
   =Title:= is used only if this document has none.
 - Its content is included where the =Import:= line is, so imported files
   arrive in the order the header lists them, ahead of this document's own
-  text. Its citations join this document's, ready for =\cite{}=.
+  text. Its citations join this document's, ready for =\cite(key)=.
 - A file can import others in turn. A file imported twice (by the header
-  and again with =@import= in the body) is included once, where it is
+  and again with =\import= in the body) is included once, where it is
   first named; a file that imports itself round a loop is reported.
 
 The import's path is a link: =<leader>kl= (or a click) opens the file.
@@ -141,22 +145,26 @@ more of the same one of =-=, ~=~, =_= or =*= is a dividing rule.
 * The abstract
 
 #+begin_example
-@abstract{
+\abstract(
 What the document is about, with any *inline* markup, $maths$ and
-\cite{key} citations.
+\cite(key) citations.
 
 A blank line starts a second paragraph.
-}
+)
 #+end_example
 
-The prose runs to the matching =}=, over as many lines as it needs; a
+The prose runs to the matching =)=, over as many lines as it needs; a
 blank line inside starts a new paragraph. Every line inside is prose, even
-one that begins with =-= or =>=. =@abstract{One sentence.}= on one line
-works too. A document has one abstract; a second is flagged.
+one that begins with =-= or =>=. Parentheses inside are fine as long as
+they pair up; an unmatched one takes a backslash, =\)=.
+=\abstract(One sentence.)= on one line works too. A document has one
+abstract; a second is flagged. The older =@abstract{...}= spelling is no
+longer an abstract: it is flagged, and the language server's fix rewrites
+it.
 
-The editor draws it as a card, with =@abstract{= shown as a centred
+The editor draws it as a card, with =\abstract(= shown as a centred
 *Abstract* label (or a run-in *Abstract.* when text follows it on the same
-line) and the closing brace hidden. It folds like a code block. Each export
+line) and the closing parenthesis hidden. It folds like a code block. Each export
 writes its own format's abstract: LaTeX's =abstract= environment, Org's
 =#+begin_abstract=, Word's and LibreOffice's /Abstract/ styles, and a
 =<section class="abstract">= in HTML. Imports read these back, and pandoc's
@@ -192,16 +200,23 @@ any character to take it literally: =\*not bold\*=.
 A line that starts with =>= and a space is always a heading, so =>big<= at
 the very start of a line must not have a space after the =>=.
 
-Commands take arguments in braces and nest:
+Commands are written =\name(argument, text)= and nest:
 
 | Command                  | Does                                  |
 |--------------------------+---------------------------------------|
-| =\f{Helvetica}{text}=    | font family                           |
-| =\fs{12}{text}=          | font size in points (12 is body size) |
-| =\color{red}{text}=      | colour: a name or =#rrggbb=           |
-| =\fn{text}=              | a numbered footnote                   |
-| =\cite{key}=             | Author (Year)                         |
-| =\citep{key}=            | (Author, Year)                        |
+| =\f(Helvetica, text)=    | font family                           |
+| =\fs(12, text)=          | font size in points (12 is body size) |
+| =\color(red, text)=      | colour: a name or =#rrggbb=           |
+| =\fn(text)=              | a numbered footnote                   |
+| =\cite(key)=             | Author (Year)                         |
+| =\citep(key)=            | (Author, Year)                        |
+
+A command's arguments end at its first commas, so the text after them may
+hold commas of its own: =\fs(12, Helvetica, font size 12)= is 12-point
+"Helvetica, font size 12". Parentheses in the text are fine as long as they
+pair up; an unmatched one takes a backslash, =\)=. A two-argument command
+without its comma (=\fs(12)=) is left as plain text. The older
+=\fs{12}{text}= spelling, with each argument in braces, still works.
 
 The editor draws these for real, as it does big, small, superscript and
 subscript text: a line holding text taller than a line gets room above it,
@@ -215,17 +230,17 @@ cursor's own line always shows the raw markup, for editing.
 * Maths
 
 #+begin_example
-Inline $E=mc^2$ or \(\frac{a}{b}\)@alttext{a over b}.
+Inline $E=mc^2$ or \(\frac{a}{b}\)\alttext(a over b).
 $$
   \int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
 $$
-@alttext{The Gaussian integral}
+\alttext(The Gaussian integral)
 \[ \sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6} \]
 #+end_example
 
 Maths is typeset in the buffer with the same preview org uses
 (=<leader>otl= toggles it; it needs =tectonic= and =pdftoppm=). An
-=@alttext{}= right after a formula describes it for screen readers in the
+=\alttext()= right after a formula describes it for screen readers in the
 export. A lone dollar amount such as =$5= is never maths.
 
 * Code blocks and results
@@ -257,14 +272,14 @@ A block with a =file= option draws a figure:
 ```{r, file="squares.png"}
 plot(1:10, (1:10)^2, type = "b")
 ```
-@caption{Squares}
+\caption(Squares)
 #+end_example
 
 R gets a plot device opened at that file, and Python gets matplotlib
 pointed at it (just plot; no =savefig= needed). Any other language is
 expected to write the file itself. After the run, the results hold an
-=@image{squares.png}= line: the editor draws the figure inside the output
-card, and the export shows it as an image. The block's =@caption= then
+=\image(squares.png)= line: the editor draws the figure inside the output
+card, and the export shows it as an image. The block's =\caption= then
 captions the figure.
 
 ** What the exports show
@@ -331,7 +346,7 @@ knitr::kable(head(iris, 3))
 |           4.9|          3.0|setosa   |
 |           4.7|          3.2|setosa   |
 // result_end
-@caption{The first flowers}
+\caption(The first flowers)
 #+end_example
 
 The output is written between the markers as it is, without the =// =
@@ -472,24 +487,30 @@ run in the document's own directory.
 * Images and tables
 
 #+begin_example
-@image{./figures/plot.png}
-@caption{A caption, with *formatting*}
-@alttext{What the image shows}
+\image(./figures/plot.png)
+\caption(A caption, with *formatting*)
+\alttext(What the image shows)
 
 | Left | Centre | Right |
 | :--- | :----: | ----: |
 | a    |   b    |     1 |
-@caption{A table caption}
+\caption(
+  A longer table caption, its parentheses
+  on lines of their own
+)
 #+end_example
 
-=@caption= and =@alttext= are optional and go on the lines directly after
-the image, table, display maths or code block they describe. Images are
-drawn in the buffer.
+=\caption= and =\alttext= are optional and go on the lines directly after
+the image, table, display maths or code block they describe. Either can
+run over several lines, with its parentheses wherever suits, up to the next
+blank line; the line breaks read as spaces. Images are drawn in the buffer.
 
 Figures (images, and code blocks that drew one) and tables are numbered:
 a caption reads "Figure 2: ..." or "Table 1: ..." in the editor and in
-the export alike. A figure's caption is centred under it, with its alt text
-in small italics below.
+the export alike. In the editor a caption, and the alt text in small muted
+italics below it, are wrapped to the text width (=:set textwidth=, 80 by
+default) and centred under a figure; the source comes back while the cursor
+is on it.
 
 GitHub-flavoured Markdown tables work as they are. After a header row
 and a delimiter row with as many cells, the outer pipes are optional, and
@@ -514,7 +535,7 @@ under the cursor shows its raw text.
 A cell holding only an image puts that picture in the table:
 
 #+begin_example
-| @image{./figs/setosa.jpg} | @image{./figs/versicolor.jpg} |
+| \image(./figs/setosa.jpg) | \image(./figs/versicolor.jpg) |
 | ~Iris setosa~             | ~Iris versicolor~             |
 #+end_example
 
@@ -537,26 +558,31 @@ anything else next to the image is plain text.
 * Citations, imports and contents
 
 #+begin_example
-@citation{asdf1}{
+\citation(asdf1,
   author = author1,
   title = {The title},
   year = 1999
-}
+)
 @article{knuth84, author = {Donald E. Knuth}, year = 1984}
-@import{refs.bib}
-@toc
-@bibliography
+\import(refs.bib)
+\toc
+\bibliography
 #+end_example
 
-A citation is =@citation{key}{fields}=, or an ordinary BibTeX entry, so
-an existing =.bib= file can be =@import=-ed. =@import{path}= pulls in
+A citation is =\citation(key, fields)=, or an ordinary BibTeX entry, so
+an existing =.bib= file can be imported. =\import(path)= pulls in
 another file (relative to this one); its content, citations and options
-join this document. =@toc= is a table of contents and
-=@bibliography= lists every cited entry, in the order first cited
-(=@printbibliography=, its older name, still works).
+join this document. =\toc= is a table of contents and
+=\bibliography= lists every cited entry, in the order first cited
+(=@printbibliography=, its oldest name, still works).
 
-Both are drawn in the buffer: =@toc= as the document's headings, indented
-by depth (click one to jump to it), and =@bibliography= as the numbered
+Every directive is written =\name(...)=, or bare (=\toc=). The older
+=@name{...}= spelling (=@image{path}=, =@caption{text}=,
+=@citation{key}{fields}=, =@toc=, ...) still works, except for the
+abstract; BibTeX entries keep their =@article{...}= form.
+
+Both are drawn in the buffer: =\toc= as the document's headings, indented
+by depth (click one to jump to it), and =\bibliography= as the numbered
 reference list, titles in italics, wrapped to the text width. Like an
 image, the block stays drawn when the cursor is on it; toggle concealment
 (=<leader>km=) to see the directive itself.

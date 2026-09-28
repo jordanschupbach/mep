@@ -341,9 +341,10 @@ const Buffer::MepmlVirtualBlock *Editor::MepmlVirtualBlockForRow(const Buffer &b
 }
 
 const Buffer::MepmlFoldSummary *Editor::MepmlFoldSummaryForRow(const Buffer &buf, int row, int cursor_row) const {
-    if (!org_conceal_visible_ || row == cursor_row || row < 0 || row >= buf.LineCount()) return nullptr;
+    if (!org_conceal_visible_ || row < 0 || row >= buf.LineCount()) return nullptr;
     auto it = buf.mepml_fold_summaries.find(row);
     if (it == buf.mepml_fold_summaries.end()) return nullptr;
+    if (row == cursor_row && !it->second.keep_under_cursor) return nullptr;
     if (std::hash<std::string>{}(buf.lines[static_cast<size_t>(row)]) != it->second.text_hash) return nullptr;
     return &it->second;
 }
@@ -384,6 +385,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     buf.mepml_row_scale.clear();
     buf.mepml_table_images.clear();
     buf.mepml_virtual_rows.clear();
+    buf.mepml_fold_summaries.clear();
     buf.mepml_html_rows.clear();
     mepml_table_grids_.erase(CurrentBufferId());
     mepml_block_cards_.erase(CurrentBufferId());
@@ -450,10 +452,44 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                 links(b, x.children);
             }
         };
+    // Captions read "Figure N: ..." / "Table N: ..." (numbered exactly as
+    // the HTML export numbers them, mepml::BlockLabels).
+    const std::vector<std::string> block_labels = mepml::BlockLabels(doc);
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty()) continue;
         if (b.kind == mepml::BlockKind::Heading) buf.mepml_heading_rows[b.line_start] = b.level;
-        // An imported file's path (`@import{path}` or a header `//? Import:
+        // A caption and an alt text draw as their text wrapped to the text
+        // width in place of their source rows (one line or several) --
+        // centred under a figure (an \image, or a code block that drew one),
+        // which is drawn centred itself; the alt text small. Their raw rows come back
+        // while the cursor is in them (OrgLatexRenderForRow).
+        if (conceal && (b.caption_line >= 0 || b.alt_line >= 0)) {
+            const bool centred = b.kind == mepml::BlockKind::Image ||
+                                 (b.kind == mepml::BlockKind::Code && !b.result_images.empty());
+            int width = TextWidth();
+            if (CurPane().text_cols > 8) width = std::min(width, CurPane().text_cols - 1);
+            auto place = [&](int first, int last, std::vector<mepml::RenderedLine> lines, float scale) {
+                if (lines.empty() || first < 0 || last < first || last >= n) return;
+                Buffer::OrgLatexRender r;
+                r.styled = std::move(lines);
+                r.styled_scale = scale;
+                r.end_row = last;
+                r.slots = static_cast<int>(r.styled.size());
+                buf.mepml_html_rows[first] = std::move(r);
+            };
+            if (b.caption_line >= 0) {
+                const size_t idx = static_cast<size_t>(&b - doc.blocks.data());
+                place(b.caption_line, b.caption_line_end,
+                      mepml::RenderCaption(doc, b, idx < block_labels.size() ? block_labels[idx] : std::string(), width, centred),
+                      1.0f);
+            }
+            if (b.alt_line >= 0 && !b.alt.empty()) {
+                constexpr float kAltScale = 0.85f;
+                place(b.alt_line, b.alt_line_end,
+                      mepml::RenderAltText(b.alt, static_cast<int>(static_cast<float>(width) / kAltScale), centred), kAltScale);
+            }
+        }
+        // An imported file's path (`\import(path)` or a header `//? Import:
         // path`) is a link to it: <leader>kl or a click opens the file.
         if ((b.kind == mepml::BlockKind::Import || (b.kind == mepml::BlockKind::Meta && Lowered(b.keyword) == "import")) &&
             b.line_start >= 0 && b.line_start < buf.LineCount()) {
@@ -462,7 +498,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                 const size_t a = b.value.find_first_not_of(" \t"), z = b.value.find_last_not_of(" \t");
                 return a == std::string::npos ? std::string() : b.value.substr(a, z - a + 1);
             }();
-            const size_t from = b.kind == mepml::BlockKind::Import ? line.find('{') : line.find(':');
+            const size_t from = b.kind == mepml::BlockKind::Import ? line.find_first_of("{(") : line.find(':');
             const size_t at = target.empty() || from == std::string::npos ? std::string::npos : line.find(target, from);
             if (at != std::string::npos) {
                 Buffer::OrgLinkSpan sp;
@@ -479,6 +515,22 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             vb.lines = b.kind == mepml::BlockKind::TableOfContents ? mepml::RenderToc(doc, width)
                                                                    : mepml::RenderBibliography(doc, width);
             vb.text_hash = std::hash<std::string>{}(buf.lines[static_cast<size_t>(b.line_start)]);
+            // Folded (RecomputeMepmlFolds), it reads as its title and a count.
+            Buffer::MepmlFoldSummary sum;
+            sum.title = vb.lines.empty() ? std::string() : vb.lines[0].text;
+            sum.title_hl = "OrgHeadlineLevel2";
+            sum.keep_under_cursor = true;
+            sum.text_hash = vb.text_hash;
+            size_t count = doc.cite_order.size();
+            const char *noun = count == 1 ? "reference" : "references";
+            if (b.kind == mepml::BlockKind::TableOfContents) {
+                count = 0;
+                for (const mepml::Block &h : doc.blocks)
+                    if (h.kind == mepml::BlockKind::Heading && h.origin.empty()) ++count;
+                noun = count == 1 ? "heading" : "headings";
+            }
+            sum.detail = "  \u2022 " + std::to_string(count) + " " + noun;
+            buf.mepml_fold_summaries[b.line_start] = std::move(sum);
             buf.mepml_virtual_rows[b.line_start] = std::move(vb);
         }
         if (b.kind == mepml::BlockKind::Image && !b.value.empty()) {
@@ -502,7 +554,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             r.slots = std::max(1, html_measure_(r.html, r.base_dir, r.html_cols));
             buf.mepml_html_rows[b.result_line_start + 1] = std::move(r);
         }
-        // Figures a code block produced (`// @image{...}` result lines) are
+        // Figures a code block produced (`// \image(...)` result lines) are
         // drawn on their own rows inside the results card.
         for (const auto &img : b.result_images) {
             std::string resolved = OrgResolvePath(img.second);
@@ -530,32 +582,14 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
 
     const std::vector<mepml::Span> spans = mepml::Highlight(doc);
 
-    // Captions read "Figure N: ..." / "Table N: ..." (numbered exactly as
-    // the HTML export numbers them, mepml::BlockLabels), and a figure's --
-    // an @image, or a code block that drew one -- is centred under it, as
-    // is its alt text, drawn small.
-    struct CaptionInfo {
-        std::string label;
-        bool center = false;
-    };
-    std::unordered_map<int, CaptionInfo> caption_info;
-    std::unordered_set<int> figure_alt_rows;
-    {
-        const std::vector<std::string> labels = mepml::BlockLabels(doc);
-        for (size_t i = 0; i < doc.blocks.size(); ++i) {
-            const mepml::Block &b = doc.blocks[i];
-            if (!b.origin.empty()) continue;
-            const bool figure = b.kind == mepml::BlockKind::Image ||
-                                (b.kind == mepml::BlockKind::Code && !b.result_images.empty());
-            if (b.caption_line >= 0) caption_info[b.caption_line] = {labels[i], figure};
-            if (figure && b.alt_line >= 0) figure_alt_rows.insert(b.alt_line);
-        }
-    }
-    std::unordered_map<int, int> caption_content_width;  // caption row -> concealed width of its text
-    for (const mepml::Span &sp : spans) {
-        if (!caption_info.count(sp.line) || sp.line >= n) continue;
-        if (sp.markup && (sp.style & mepml::kDirective)) continue;  // the @caption{ / } markers
-        caption_content_width[sp.line] += ConcealedWidth(sp, buf.lines[static_cast<size_t>(sp.line)], 3.0f);
+    // The rows of a caption or alt text the cursor is in show their source,
+    // every one of them (the rendered text stands in for all of them).
+    std::unordered_set<int> revealed_rows;
+    for (const mepml::Block &b : doc.blocks) {
+        if (!b.origin.empty()) continue;
+        for (const auto &range : {std::make_pair(b.caption_line, b.caption_line_end), std::make_pair(b.alt_line, b.alt_line_end)})
+            if (range.first >= 0 && cur_row >= range.first && cur_row <= range.second)
+                for (int row = range.first; row <= range.second; ++row) revealed_rows.insert(row);
     }
     MepmlBuildCards(doc);
     // Table rows laid out by MepmlTableLayout below (every row of a table
@@ -569,7 +603,9 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty() || b.kind != mepml::BlockKind::Table) continue;
         for (int row = b.line_start; row <= (b.rows_end >= 0 ? b.rows_end : b.line_end); ++row) {
-            if (row == b.caption_line || row == b.alt_line) continue;
+            if ((b.caption_line >= 0 && row >= b.caption_line && row <= b.caption_line_end) ||
+                (b.alt_line >= 0 && row >= b.alt_line && row <= b.alt_line_end))
+                continue;
             table_rows.insert(row);
             if (conceal && row != cur_row) table_layout_rows.insert(row);
         }
@@ -594,7 +630,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     for (const mepml::Span &s : spans) {
         if (s.line < 0 || s.line >= n) continue;
         const std::string &line = buf.lines[static_cast<size_t>(s.line)];
-        const bool on_cursor = s.line == cur_row;
+        const bool on_cursor = s.line == cur_row || revealed_rows.count(s.line) > 0;
         const bool heading_row = buf.mepml_heading_rows.count(s.line) > 0;
         const bool hide = conceal && !on_cursor && !heading_row;
         Decoration base;
@@ -643,32 +679,11 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         }
         if ((s.style & mepml::kTableRule) && table_layout_rows.count(s.line)) continue;
         if (table_edge_markup.count({s.line, s.col_start})) continue;
-        // A picture cell's `@image{...}`: MepmlTableLayout hides it and the
+        // A picture cell's `\image(...)`: MepmlTableLayout hides it and the
         // picture is drawn above the row.
         if ((s.style & mepml::kTable) && (s.style & mepml::kDirective) && !s.target.empty() &&
             table_layout_rows.count(s.line) && OrgImagesVisible())
             continue;
-        if (hide && figure_alt_rows.count(s.line)) continue;  // drawn below, small and centred
-        // A caption's `@caption{` opener becomes its label, padded so a
-        // figure's caption sits centred under it.
-        if (hide && s.markup && (s.style & mepml::kDirective) && s.replace == "Caption: " &&
-            caption_info.count(s.line)) {
-            const CaptionInfo &ci = caption_info[s.line];
-            std::string label = ci.label.empty() ? "" : ci.label + ": ";
-            if (ci.center) {
-                const int total = Codepoints(label) + caption_content_width[s.line];
-                label = std::string(static_cast<size_t>(std::max(0, (TextWidth() - total) / 2)), ' ') + label;
-            }
-            Decoration d = base;
-            d.virt_overlay = true;
-            d.priority = 10;
-            d.virt_text = label;
-            d.conceal = label.empty();
-            d.virt_text_hl = "Cyan";
-            d.bold = true;
-            add(d);
-            continue;
-        }
         // Rows whose inner structure the tree-sitter grammar colours better
         // than one flat colour could -- //? key: value lines, code fences'
         // language and options, citation fields -- keep its captures
@@ -804,49 +819,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     }
 
     if (conceal) MepmlTableLayout(doc, spans, table_layout_rows, table_edge_markup, ns);
-
-    // A figure's alt text: small, italic, muted and centred under it.
-    if (conceal) {
-        for (int row : figure_alt_rows) {
-            if (row == cur_row || row < 0 || row >= n) continue;
-            const std::string &line = buf.lines[static_cast<size_t>(row)];
-            const size_t open = line.find('{');
-            const size_t close = line.rfind('}');
-            if (open == std::string::npos || close == std::string::npos || close <= open) continue;
-            const std::string text = line.substr(open + 1, close - open - 1);
-            const int cols = StyledCols(std::max(1, Codepoints(text)), 0.85f);
-            Decoration lead;
-            lead.row = row;
-            lead.col_start = 0;
-            lead.col_end = static_cast<int>(open) + 1;
-            lead.virt_overlay = true;
-            lead.priority = 10;
-            lead.virt_text = std::string(static_cast<size_t>(std::max(0, (TextWidth() - cols) / 2)), ' ');
-            lead.conceal = lead.virt_text.empty();
-            add(lead);
-            if (!text.empty()) {
-                Decoration body;
-                body.row = row;
-                body.col_start = static_cast<int>(open) + 1;
-                body.col_end = static_cast<int>(close);
-                body.virt_overlay = true;
-                body.priority = 10;
-                body.virt_text = text;
-                body.virt_scale = 0.85f;
-                body.italic = true;
-                body.virt_text_hl = "Comment";
-                add(body);
-            }
-            Decoration tail;
-            tail.row = row;
-            tail.col_start = static_cast<int>(close);
-            tail.col_end = static_cast<int>(close) + 1;
-            tail.virt_overlay = true;
-            tail.conceal = true;
-            tail.priority = 10;
-            add(tail);
-        }
-    }
+    MepmlFitCards();
 
     // Callouts get a coloured bar in the sign column on every line.
     for (const mepml::Block &b : doc.blocks) {
@@ -866,7 +839,6 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     // its own with its value beside it -- an Option's name = value
     // coloured by type. The card behind them comes from MepmlBuildCards;
     // the cursor's row shows its raw line, like any other markup.
-    buf.mepml_fold_summaries.clear();
     for (const HeaderRun &run : HeaderRuns(doc)) {
         int label_w = 0;
         for (const mepml::Block *e : run.entries) {
@@ -1014,7 +986,7 @@ void Editor::RecomputeMepmlFolds() {
     const mepml::Document doc = MepmlParseCurrent(false);
     const int n = Buf().LineCount();
     auto add = [&](int start, int end) {
-        if (end <= start) return;
+        if (end < start) return;
         bool closed = false;
         for (const Fold &of : old_folds) {
             if (of.start_row == start) {
@@ -1043,6 +1015,13 @@ void Editor::RecomputeMepmlFolds() {
     }
     for (const HeaderRun &run : HeaderRuns(doc)) add(run.first, run.last);
     for (const mepml::Block &b : doc.blocks) {
+        // \toc/\bibliography: one row of source drawn as a block of
+        // generated lines -- folding it (a one-row fold, hiding no rows)
+        // collapses the rendering to its title (MepmlScan's summary).
+        if (b.kind == mepml::BlockKind::TableOfContents || b.kind == mepml::BlockKind::Bibliography) {
+            add(b.line_start, b.line_start);
+            continue;
+        }
         // A code block and its results fold separately: the code (its
         // option lines and fences), and the result_begin..result_end region.
         if (b.kind == mepml::BlockKind::Code && b.result_line_start >= 0) {
@@ -1079,7 +1058,7 @@ bool Editor::MepmlSpliceResults(int buffer_id, int fence_row, const std::string 
 // The LaTeX preview's fragments (kBuiltinOrgLatex renders them with
 // tectonic), taken from the parse rather than OrgLatexScan's line
 // heuristics: a `$` inside a code block or a results region is never
-// math here, and a trailing @alttext{} is hidden along with the formula
+// math here, and a trailing \alttext() is hidden along with the formula
 // it describes.
 OrgLatexFragments Editor::MepmlLatexFragments() const {
     OrgLatexFragments out;
@@ -1194,7 +1173,7 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
         struct Cell {
             int ws_start, cs, ce, ws_end;  // segment [ws_start, ws_end), content [cs, ce)
             int width;
-            std::string image;  // a picture cell's resolved path (`@image{...}`)
+            std::string image;  // a picture cell's resolved path (`\image(...)`)
         };
         std::map<int, std::vector<Cell>> cells;
         std::map<int, RowShape> shapes;
@@ -1439,7 +1418,7 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             }
             // The source's own spacing around each cell is replaced by the
             // padding above, so it is hidden -- as is a picture cell's
-            // `@image{...}`, the picture being drawn above the row.
+            // `\image(...)`, the picture being drawn above the row.
             for (const Cell &c : cs) {
                 if (!c.image.empty()) {
                     Decoration d;
@@ -1555,6 +1534,43 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
                                    : widest(out.begin_row, b.result_line_end);
             cards.push_back(std::move(out));
         }
+    }
+}
+
+void Editor::MepmlFitCards() {
+    auto cit = mepml_block_cards_.find(CurrentBufferId());
+    if (cit == mepml_block_cards_.end()) return;
+    std::vector<OrgBlockCard> &cards = cit->second;
+    const Buffer &buf = Buf();
+    const int n = buf.LineCount();
+    static const std::vector<OrgTableGrid> kNoGrids;
+    auto git = mepml_table_grids_.find(CurrentBufferId());
+    const std::vector<OrgTableGrid> &grids = git == mepml_table_grids_.end() ? kNoGrids : git->second;
+    // A row as drawn: a laid-out table row spans its whole grid (its
+    // padded cells can run wider than the markup), anything else its text.
+    auto row_cols = [&](int r) {
+        for (const OrgTableGrid &g : grids) {
+            if (r < g.start_row || r > g.end_row) continue;
+            if (std::find(g.raw_rows.begin(), g.raw_rows.end(), r) != g.raw_rows.end()) break;
+            return std::max(g.indent + g.width, Codepoints(buf.lines[static_cast<size_t>(r)]));
+        }
+        return Codepoints(buf.lines[static_cast<size_t>(r)]);
+    };
+    for (size_t i = 0; i < cards.size(); ++i) {
+        OrgBlockCard &code = cards[i];
+        if (!code.is_src || code.bare) continue;
+        // MepmlBuildCards pushes a block's results card right after its code.
+        if (i + 1 >= cards.size() || cards[i + 1].is_src || cards[i + 1].bare) continue;
+        OrgBlockCard &out = cards[i + 1];
+        // Plain output and Markdown results (tables, prose) are drawn row by
+        // row; HTML, a terminal and a program's window are laid out to fit.
+        if (out.kind == "output" && out.term_run < 0) {
+            const int last = out.end_row >= 0 ? out.end_row : n - 1;
+            for (int r = std::max(0, out.begin_row); r <= last && r < n; ++r)
+                out.content_cols = std::max(out.content_cols, row_cols(r));
+        }
+        // A block and its results line up on one right edge.
+        code.content_cols = out.content_cols = std::max(code.content_cols, out.content_cols);
     }
 }
 
@@ -2007,7 +2023,7 @@ void Editor::MepmlGuisTick() {
             if (!png.empty() && f.write(png.data(), static_cast<std::streamsize>(png.size()))) {
                 f.close();
                 InvalidateOrgInlineImageTexture(run.snapshot_path);
-                lines.push_back("@image{" + run.snapshot_ref + "}");
+                lines.push_back("\\image(" + run.snapshot_ref + ")");
             }
         }
         const std::vector<std::string> &out = run.app->Stdout();
@@ -2027,7 +2043,7 @@ void Editor::MepmlGuisTick() {
         if (const mepml::Block *b = BlockForRun(doc, run.code, run.fence_row)) {
             int first = 0, last = 0;
             mepml::ResultsReplaceRange(*b, &first, &last);
-            // Plain results: the @image line draws as a picture, like a figure's.
+            // Plain results: the \image line draws as a picture, like a figure's.
             ReplaceLinesAt(run.buffer_id, first, last, mepml::FormatResults(text));
         }
         if (mepml_gui_focus_ == it->first) mepml_gui_focus_ = -1;

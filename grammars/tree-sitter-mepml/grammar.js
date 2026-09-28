@@ -61,7 +61,7 @@ module.exports = grammar({
     $.math_open,
     $.math_content,
     $.math_close,
-    $._directive_start, // zero-width: the line is a known @directive
+    $._directive_start, // zero-width: the line is a known \directive (or @directive)
     $._table_row_start, // zero-width: the line is a table row
     $.table_delimiter_row,
     $._table_pipe,
@@ -85,11 +85,15 @@ module.exports = grammar({
     $._group_open,
     $._group_close,
     $._arg_text,
+    $._paren_open,
+    $._paren_close,
+    $._arg_comma, // `, ` ending the argument of \name(arg, text)
     ...EMPHASIS.flatMap(([, open, close]) => [$[open], $[close]]),
     $._abstract_open,
-    $._abstract_break, // a line break (and any blank lines) inside @abstract{}
+    $._abstract_break, // a line break (and any blank lines) inside \abstract()
     $._result_begin_markdown, // `// result_begin: markdown`
-    $._result_end_attached, // `// result_end` with an @caption/@alttext under it
+    $._result_end_attached, // `// result_end` with a \caption/\alttext under it
+    $._attribute_start, // zero-width: the line is a \caption or \alttext
     $._error_sentinel,
   ],
 
@@ -259,39 +263,66 @@ module.exports = grammar({
 
     rule_line: $ => seq($.rule, $._newline),
 
-    // --- @directives ------------------------------------------------------
+    // --- \directives -----------------------------------------------------
+    // Each is `\name(...)` (or bare, `\toc`); the older `@name{...}`
+    // spelling still parses, except for the abstract. BibTeX entries keep
+    // their `@type{...}`.
     _line_end: $ => seq(optional($._ws), optional($.inline_comment), $._newline),
 
-    import: $ => seq($._directive_start, '@', 'import', $._path_group, $._line_end),
+    import: $ => seq($._directive_start, choice(seq('\\', 'import', $._paren_path_group), seq('@', 'import', $._path_group)), $._line_end),
     image: $ => prec.right(seq(
-      $._directive_start, '@', 'image', $._path_group, $._line_end,
+      $._directive_start, choice(seq('\\', 'image', $._paren_path_group), seq('@', 'image', $._path_group)), $._line_end,
       choice(repeat($._attribute), $._results_attributes),
     )),
     _path_group: $ => seq('{', optional(field('path', $.path)), '}'),
     path: _ => /[^}\n]+/,
+    _paren_path_group: $ => seq('(', optional(field('path', alias($._paren_path, $.path))), ')'),
+    _paren_path: _ => /[^)\n]+/,
 
     _attribute: $ => choice($.caption, $.alttext),
-    caption: $ => seq($._directive_start, '@', 'caption', $._content_group, $._line_end),
-    alttext: $ => seq($._directive_start, '@', 'alttext', '{', optional(alias($._brace_text, $.description)), '}', $._line_end),
-
-    // @printbibliography is the directive's older name, still accepted.
-    bibliography: $ => seq($._directive_start, '@', choice('bibliography', 'printbibliography'), $._line_end),
-    toc: $ => seq($._directive_start, '@', 'toc', $._line_end),
-
-    // @abstract{ prose over any number of lines; blank lines split paragraphs }
-    abstract: $ => seq(
-      $._directive_start, '@', 'abstract',
-      alias($._abstract_open, '{'),
-      optional(alias(repeat1(choice($._inline, $._abstract_break)), $.content)),
-      alias($._group_close, '}'),
+    caption: $ => seq(
+      $._attribute_start,
+      choice(seq('\\', 'caption', $._paren_content_group), seq('@', 'caption', $._content_group)),
+      $._line_end,
+    ),
+    alttext: $ => seq(
+      $._attribute_start,
+      choice(
+        seq('\\', 'alttext', '(', optional(alias($._paren_text, $.description)), ')'),
+        seq('@', 'alttext', '{', optional(alias($._brace_text, $.description)), '}'),
+      ),
       $._line_end,
     ),
 
+    // @printbibliography is the directive's oldest name, still accepted.
+    bibliography: $ => seq($._directive_start, choice(seq('\\', 'bibliography'), seq('@', choice('bibliography', 'printbibliography'))), $._line_end),
+    toc: $ => seq($._directive_start, choice('\\', '@'), 'toc', $._line_end),
+
+    // \abstract( prose over any number of lines; blank lines split paragraphs )
+    abstract: $ => seq(
+      $._directive_start, '\\', 'abstract',
+      alias($._abstract_open, '('),
+      optional(alias(repeat1(choice($._inline, $._abstract_break)), $.content)),
+      alias($._paren_close, ')'),
+      $._line_end,
+    ),
+
+    // \citation(key, field = value, ...) or @citation{key}{fields}
     citation: $ => seq(
-      $._directive_start, '@', 'citation',
-      '{', optional($._space), field('key', $.citation_key), optional($._space), '}',
-      optional($._space),
-      '{', repeat(choice($.citation_field, ',', $._space)), '}',
+      $._directive_start,
+      choice(
+        seq(
+          '\\', 'citation',
+          '(', optional($._space), field('key', alias($._paren_key, $.citation_key)), optional($._space), ',',
+          repeat(choice(alias($._paren_field, $.citation_field), ',', $._space)), ')',
+        ),
+        seq(
+          '@', 'citation',
+          '{', optional($._space), field('key', $.citation_key), optional($._space), '}',
+          optional($._space),
+          '{', repeat(choice($.citation_field, ',', $._space)), '}',
+        ),
+      ),
       $._line_end,
     ),
     bibtex_entry: $ => seq(
@@ -311,9 +342,19 @@ module.exports = grammar({
     field_name: _ => /[A-Za-z_][A-Za-z0-9_\-]*/,
     braced_value: $ => seq('{', optional($._brace_text), '}'),
     bare_value: _ => /[^,{}"\s][^,}\n]*/,
+    // Inside \citation(...): a field's bare value stops at its `)`.
+    _paren_key: _ => /[^\s{}(),]+/,
+    _paren_field: $ => seq(
+      field('name', $.field_name),
+      optional($._space), '=', optional($._space),
+      field('value', choice($.braced_value, $.string, alias($._paren_bare_value, $.bare_value))),
+    ),
+    _paren_bare_value: _ => /[^,{}()"\s][^,}()\n]*/,
     _space: _ => /[ \t\r\n]+/,
     // Balanced-brace text (nested groups allowed, \{ escapes).
     _brace_text: $ => repeat1(choice(/[^{}\\]+/, /\\./, seq('{', optional($._brace_text), '}'))),
+    // Balanced-parenthesis text (nested pairs allowed, \) escapes).
+    _paren_text: $ => repeat1(choice(/[^()\\]+/, /\\./, seq('(', optional($._paren_text), ')'))),
 
     // --- paragraphs ------------------------------------------------------------
     paragraph: $ => prec.right(seq(
@@ -351,8 +392,8 @@ module.exports = grammar({
 
     inline_math: $ => seq($.latex, optional($.alttext_attribute)),
     alttext_attribute: $ => seq(
-      alias($._alttext_marker, '@alttext'),
-      $._arg_group,
+      alias($._alttext_marker, '\\alttext'),
+      choice($._paren_arg_group, $._arg_group),
     ),
 
     link: $ => seq(
@@ -364,12 +405,31 @@ module.exports = grammar({
       alias($._link_close, ']'),
     ),
 
-    font: $ => seq(alias($._cmd_f, '\\f'), $._arg_group, $._content_group),
-    font_size: $ => seq(alias($._cmd_fs, '\\fs'), $._arg_group, $._content_group),
-    color: $ => seq(alias($._cmd_color, '\\color'), $._arg_group, $._content_group),
-    footnote: $ => seq(alias($._cmd_fn, '\\fn'), $._content_group),
-    cite: $ => seq(alias($._cmd_cite, '\\cite'), $._arg_group),
-    citep: $ => seq(alias($._cmd_citep, '\\citep'), $._arg_group),
+    // \name(arg, text) -- or the older \name{arg}{text}.
+    font: $ => seq(alias($._cmd_f, '\\f'), choice($._paren_arg_content, seq($._arg_group, $._content_group))),
+    font_size: $ => seq(alias($._cmd_fs, '\\fs'), choice($._paren_arg_content, seq($._arg_group, $._content_group))),
+    color: $ => seq(alias($._cmd_color, '\\color'), choice($._paren_arg_content, seq($._arg_group, $._content_group))),
+    footnote: $ => seq(alias($._cmd_fn, '\\fn'), choice($._paren_content_group, $._content_group)),
+    cite: $ => seq(alias($._cmd_cite, '\\cite'), choice($._paren_arg_group, $._arg_group)),
+    citep: $ => seq(alias($._cmd_citep, '\\citep'), choice($._paren_arg_group, $._arg_group)),
+
+    _paren_arg_group: $ => seq(
+      alias($._paren_open, '('),
+      optional(alias($._arg_text, $.argument)),
+      alias($._paren_close, ')'),
+    ),
+    _paren_content_group: $ => seq(
+      alias($._paren_open, '('),
+      optional(alias(repeat1(choice($._inline, $._soft_break)), $.content)),
+      alias($._paren_close, ')'),
+    ),
+    _paren_arg_content: $ => seq(
+      alias($._paren_open, '('),
+      optional(alias($._arg_text, $.argument)),
+      alias($._arg_comma, ','),
+      optional(alias(repeat1(choice($._inline, $._soft_break)), $.content)),
+      alias($._paren_close, ')'),
+    ),
 
     _arg_group: $ => seq(
       alias($._group_open, '{'),

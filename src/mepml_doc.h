@@ -72,7 +72,7 @@ enum class InlineKind {
     Footnote,     // \fn{x}; `number` is its 1-based document order
     Cite,         // \cite{key}   textual: Author (Year)
     CiteP,        // \citep{key}  parenthetical: (Author, Year)
-    Math,         // $x$ or \(x\); `text` is the TeX, `alt` any @alttext{};
+    Math,         // $x$ or \(x\); `text` is the TeX, `alt` any \alttext();
                   // `arg` is "display" for an inline $$x$$
     Comment,      // `text // comment` to the end of the line (not rendered)
 };
@@ -81,7 +81,7 @@ struct Inline {
     InlineKind kind = InlineKind::Text;
     std::string text;  // Text/Verbatim/Math contents, Cite key
     std::string arg;   // Link url, Font family, FontSize size, Color colour
-    std::string alt;   // Math @alttext{}
+    std::string alt;   // Math \alttext()
     int number = 0;    // Footnote number
     std::vector<Inline> children;
     // Source range of the whole construct including its markup, as byte
@@ -100,17 +100,17 @@ enum class BlockKind {
     Comment,       // // text  (not rendered in output)
     Callout,       // // NOTE: text (and following // lines)
     Meta,          // //? Key: value (document metadata)
-    Import,        // @import{path}
-    Citation,      // @citation{key}{ field = value, ... }
+    Import,        // \import(path) (or @import{path})
+    Citation,      // \citation(key, field = value, ...), @citation{key}{...} or BibTeX
     MathBlock,     // $$ ... $$  or  \[ ... \]
     Code,          // ```{lang, opts} ... ```
-    Image,         // @image{path}
+    Image,         // \image(path) (or @image{path})
     Table,         // | a | b |
     List,          // - item / 1. item / - [ ] task
     Rule,          // --- (3+ of - = _ *)
-    Bibliography,  // @bibliography (the older @printbibliography still parses)
-    TableOfContents,  // @toc
-    Abstract,      // @abstract{ prose, blank lines between paragraphs }
+    Bibliography,  // \bibliography (@bibliography and @printbibliography still parse)
+    TableOfContents,  // \toc (or @toc)
+    Abstract,      // \abstract( prose, blank lines between paragraphs )
 };
 
 enum class Align { Default, Left, Center, Right };
@@ -129,7 +129,7 @@ struct ListItem {
 struct TableCell {
     std::vector<Inline> content;
     int start = 0, end = 0;  // offsets into Block::text
-    // A cell holding nothing but `@image{path}` is a picture: the path,
+    // A cell holding nothing but `\image(path)` is a picture: the path,
     // "" for an ordinary cell. `content` still has the raw text.
     std::string image;
 };
@@ -137,7 +137,7 @@ struct TableCell {
 struct Block {
     BlockKind kind = BlockKind::Paragraph;
     int line_start = -1, line_end = -1;  // inclusive
-    // Non-empty for a block that came from an @import: the imported file's
+    // Non-empty for a block that came from an \import: the imported file's
     // path. Line numbers are then that file's, not the buffer's.
     std::string origin;
 
@@ -159,7 +159,7 @@ struct Block {
     // included), plus the result text with the `// ` prefixes stripped.
     int result_line_start = -1, result_line_end = -1;
     std::vector<std::string> result_lines;
-    // Result lines that are a figure the block produced (`// @image{path}`,
+    // Result lines that are a figure the block produced (`// \image(path)`,
     // written by a run with a `file=` option): line index and path.
     std::vector<std::pair<int, std::string>> result_images;
     // What the results are: "" for plain text output, "html" for HTML the
@@ -175,11 +175,16 @@ struct Block {
     std::map<std::string, std::string> fields;  // Citation fields, lowercase names
     std::vector<std::string> field_order;
 
-    // Caption / alt text attached by following @caption{} / @alttext{}
-    // lines (Image, Table, MathBlock).
+    // Caption / alt text attached by following \caption() / \alttext()
+    // lines (Image, Table, MathBlock, Code). Either may run over several
+    // lines (`\caption(` ... `)`): *_line is where it opens, *_line_end
+    // where its closing brace is, at column *_close_col. Line breaks in
+    // `caption`/`alt` and in caption_inlines' text are single spaces.
     std::string caption, alt;
     std::vector<Inline> caption_inlines;
     int caption_line = -1, alt_line = -1;
+    int caption_line_end = -1, alt_line_end = -1;
+    int caption_close_col = -1, alt_close_col = -1;
 
     // Table
     std::vector<std::vector<TableCell>> rows;
@@ -232,7 +237,7 @@ struct Document {
     int BlockAtLine(int line) const;
 };
 
-// An @abstract block's paragraphs, each its own run of inlines.
+// A \abstract block's paragraphs, each its own run of inlines.
 std::vector<std::vector<Inline>> AbstractParagraphs(const Block &b);
 
 // The callout keywords a `// KEYWORD:` comment recognises.
@@ -251,10 +256,10 @@ int LineHeadingMarkupLen(const std::string &line);
 std::vector<Inline> ParseInlines(const std::string &text, int *footnote_counter = nullptr);
 
 // ---------------------------------------------------------------------------
-// @import resolution. `read` returns false when the file cannot be read.
+// \import resolution. `read` returns false when the file cannot be read.
 // Imports are expanded in place (their blocks' line numbers stay those of
 // the imported file; `origin` in the result names which file). Cycles and
-// missing files become diagnostics on the @import line.
+// missing files become diagnostics on the \import line.
 using ReadFileFn = std::function<bool(const std::string &path, std::vector<std::string> *lines)>;
 std::string ResolvePath(const std::string &base_file, const std::string &path);
 Document ParseWithImports(const std::string &file, const std::vector<std::string> &lines, const ReadFileFn &read);
@@ -284,7 +289,7 @@ enum StyleFlag : std::uint32_t {
     kMath = 1u << 14,
     kComment = 1u << 15,
     kMeta = 1u << 16,
-    kDirective = 1u << 17,  // @image{...} etc.
+    kDirective = 1u << 17,  // \image(...) etc.
     kCode = 1u << 18,       // code block body
     kResult = 1u << 19,     // code result region
     kTable = 1u << 20,
@@ -296,7 +301,7 @@ enum StyleFlag : std::uint32_t {
     kHeading = 1u << 26,
     kError = 1u << 27,  // unresolved reference etc.
     kTableRule = 1u << 28,  // a table's own `|` pipes / |---| separator row
-    kAbstract = 1u << 29,   // an @abstract's `@abstract{` / `}` (replace = its "Abstract" label)
+    kAbstract = 1u << 29,   // a \abstract's `\abstract(` / `)` (replace = its "Abstract" label)
 };
 
 struct Span {
@@ -315,7 +320,7 @@ struct Span {
 std::vector<Span> Highlight(const Document &doc);
 
 // A results line (its `// ` prefix already stripped) that names a figure:
-// `@image{path}`. Sets *path.
+// `\image(path)` (or `@image{path}`). Sets *path.
 bool ResultImagePath(const std::string &text, std::string *path);
 
 // "Figure N" / "Table N" for every numbered block, "" for the rest,
@@ -326,8 +331,8 @@ bool ResultImagePath(const std::string &text, std::string *path);
 std::vector<std::string> BlockLabels(const Document &doc);
 
 // --- Generated content: the table of contents and the bibliography, as
-// lines of styled text (the editor draws these in place of the @toc /
-// @bibliography row; the HTML export builds the same content as markup).
+// lines of styled text (the editor draws these in place of the \toc /
+// \bibliography row; the HTML export builds the same content as markup).
 
 struct RenderedSpan {
     int col_start = 0, col_end = 0;  // byte offsets into RenderedLine::text
@@ -357,6 +362,13 @@ std::vector<RenderedLine> RenderToc(const Document &doc, int width);
 // "References" and "[n] entry" for every cited key, in first-cited order,
 // wrapped to `width` columns with a hanging indent.
 std::vector<RenderedLine> RenderBibliography(const Document &doc, int width);
+// A block's caption -- `label` ("Figure 1", "" for none) in bold, then
+// its text in italics with its inline styling -- and alt text (muted
+// italics), word-wrapped to `width` columns, each line centred when
+// `center`. The editor draws these in place of the \caption/\alttext rows.
+std::vector<RenderedLine> RenderCaption(const Document &doc, const Block &b, const std::string &label, int width,
+                                        bool center);
+std::vector<RenderedLine> RenderAltText(const std::string &alt, int width, bool center);
 
 // Rendered citation labels (natbib-ish): "Author (1999)" / "(Author, 1999)".
 std::string CiteLabel(const Document &doc, const std::string &key, bool parenthetical);

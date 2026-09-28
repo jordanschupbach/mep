@@ -82,7 +82,7 @@ const Lines kDoc = {
     "",                                           // 2
     "> Intro",                                    // 3
     "",                                           // 4
-    "See \\cite{knuth84} and \\citep{knuth84}.",  // 5
+    "See \\cite(knuth84) and \\citep(knuth84).",  // 5
     "Jump to [the method|#the-method].",          // 6
     "",                                           // 7
     ">> The Method",                              // 8
@@ -95,11 +95,11 @@ const Lines kDoc = {
     "|---|---:|",                                 // 15
     "| 1 | 2 |",                                  // 16
     "",                                           // 17
-    "@citation{knuth84}{",                        // 18
+    "\\citation(knuth84,",                          // 18
     "  author = {Donald E. Knuth},",              // 19
     "  title = {Literate Programming},",          // 20
     "  year = 1984",                              // 21
-    "}",                                          // 22
+    ")",                                          // 22
 };
 
 void TestDiagnostics() {
@@ -113,12 +113,12 @@ void TestDiagnostics() {
         "//? Option: A=2",
         "> One",
         ">>> Three",
-        "\\cite{nobody} \\color{rde}{x} \\fn{} [go|#nowhere]",
+        "\\cite(nobody) \\color(rde, x) \\fn() [go|#nowhere]",
         "@printbibliography",
         "@imgae{x.png}",
         "| a | b |",
         "| 1 |",
-        "@citation{lonely}{ author = A, year = 1 }",
+        "\\citation(lonely, author = A, year = 1)",
         "```python",
         "never closed",
     };
@@ -134,6 +134,9 @@ void TestDiagnostics() {
     CHECK(Has(ds, "table-columns", 8));
     CHECK(Has(ds, "unused-citation", 9));
     CHECK(Has(ds, "unclosed-code", 10));
+    // Unclosed directives, in either spelling.
+    const std::vector<MepmlLspDiagnostic> open = MepmlLspDiagnostics({"\\image(a.png", "@import{b.mepml"}, NoFiles());
+    CHECK(Has(open, "unterminated-directive", 0) && Has(open, "unterminated-directive", 1));
     // Ranges are exact: the colour's name, the anchor, the citation's key.
     for (const MepmlLspDiagnostic &d : ds) {
         const std::string text = bad[static_cast<size_t>(d.line)].substr(static_cast<size_t>(d.col_start),
@@ -141,7 +144,7 @@ void TestDiagnostics() {
         if (d.code == "unknown-color") CHECK(text == "rde");
         if (d.code == "unknown-anchor") CHECK(text == "#nowhere");
         if (d.code == "unused-citation") CHECK(text == "lonely");
-        if (d.code == "unknown-citation") CHECK(text == "\\cite{nobody}");
+        if (d.code == "unknown-citation") CHECK(text == "\\cite(nobody)");
     }
     // Sorted by position.
     for (size_t i = 1; i < ds.size(); ++i)
@@ -164,15 +167,15 @@ void TestFiles() {
     const fs::path dir = fs::temp_directory_path() / ("mep-mepml-lsp-" + std::to_string(std::random_device{}()));
     fs::create_directories(dir / "img");
     std::ofstream(dir / "img" / "here.png") << "x";
-    std::ofstream(dir / "refs.mepml") << "@citation{imp}{ author = Ada, title = {Notes}, year = 1843 }\n";
+    std::ofstream(dir / "refs.mepml") << "\\citation(imp, author = Ada, title = {Notes}, year = 1843)\n";
     MepmlLspOptions opts;
     opts.doc_path = (dir / "doc.mepml").string();
     const Lines doc = {
-        "@import{refs.mepml}",
-        "@image{img/here.png}",
-        "@image{img/gone.png}",
-        "As \\cite{imp} says, see [the notes|notes.pdf].",
-        "@image{im",
+        "\\import(refs.mepml)",
+        "\\image(img/here.png)",
+        "@image{img/gone.png}",  // the older spelling
+        "As \\cite(imp) says, see [the notes|notes.pdf].",
+        "\\image(im",
     };
     const std::vector<MepmlLspDiagnostic> ds = MepmlLspDiagnostics(doc, opts);
     CHECK(!Has(ds, "image-missing", 1));
@@ -186,20 +189,20 @@ void TestFiles() {
     std::string err;
     CHECK(MepmlLspRename(doc, 3, ColOf(doc, 3, "imp"), "ada", opts, &err).empty());
     CHECK(err.find("refs.mepml") != std::string::npos);
-    // @import's path goes to the file.
+    // \import's path goes to the file.
     const MepmlLspLocation imp = MepmlLspDefinition(doc, 0, 3, opts);
     CHECK(imp.found && imp.path == (dir / "refs.mepml").string());
-    // Path completion: `@image{im` offers the directory, then its image.
+    // Path completion: `\image(im` offers the directory, then its image.
     const std::vector<MepmlLspCompletionItem> c1 = MepmlLspCompletions(doc, 4, 9, opts);
     const std::optional<MepmlLspCompletionItem> img = Item(c1, "img/");
     CHECK(img && img->insert_text == "img/" && img->replace_start == 7);
-    const Lines doc2 = {"@image{img/he"};
+    const Lines doc2 = {"\\image(img/he"};
     const std::optional<MepmlLspCompletionItem> here = Item(MepmlLspCompletions(doc2, 0, 13, opts), "here.png");
     CHECK(here && here->insert_text == "here.png" && here->replace_start == 11);
     // Header imports: `//? Import: file` completes, goes to the file, and
     // says in hover what it brings; its options are not "set twice".
     std::ofstream(dir / "opts.mepml") << "//? Option: speed=3\n//? Option: name=\"x\"\n\nIntro text.\n";
-    const Lines head = {"//? Import: opts.mepml", "//? Option: speed=5", "//? Import: refs.mepml", "@import{refs.mepml}", "", "\\cite{imp}", "//? Import: op"};
+    const Lines head = {"//? Import: opts.mepml", "//? Option: speed=5", "//? Import: refs.mepml", "\\import(refs.mepml)", "", "\\cite(imp)", "//? Import: op"};
     const std::vector<MepmlLspDiagnostic> hd = MepmlLspDiagnostics(head, opts);
     CHECK(!Has(hd, "duplicate-option"));
     CHECK(!Has(hd, "unknown-citation"));  // refs.mepml came in through the header
@@ -221,13 +224,23 @@ void TestCompletion() {
         doc.push_back(line);
         return Item(MepmlLspCompletions(doc, static_cast<int>(doc.size()) - 1, static_cast<int>(line.size()), o), label);
     };
-    const std::optional<MepmlLspCompletionItem> d = at("@im", "@image");
-    CHECK(d && d->insert_text == "image{" && d->replace_start == 1);
-    CHECK(at("@to", "@toc") && at("@to", "@toc")->insert_text == "toc");
+    const std::optional<MepmlLspCompletionItem> d = at("\\im", "\\image");
+    CHECK(d && d->insert_text == "image(" && d->replace_start == 1);
+    CHECK(at("\\to", "\\toc") && at("\\to", "\\toc")->insert_text == "toc");
+    CHECK(!at("text \\im", "\\image").has_value());  // a directive starts its line
+    // The older `@` spelling completes to the new one, `@` and all.
+    const std::optional<MepmlLspCompletionItem> old = at("@im", "\\image");
+    CHECK(old && old->insert_text == "\\image(" && old->replace_start == 0);
     const std::optional<MepmlLspCompletionItem> c = at("text \\ci", "\\citep");
-    CHECK(c && c->insert_text == "citep{");
-    const std::optional<MepmlLspCompletionItem> k = at("x \\cite{kn", "knuth84");
+    CHECK(c && c->insert_text == "citep(");
+    const std::optional<MepmlLspCompletionItem> k = at("x \\cite(kn", "knuth84");
     CHECK(k && k->insert_text == "knuth84" && k->detail.find("Knuth") != std::string::npos);
+    CHECK(at("x \\cite{kn", "knuth84").has_value());
+    const std::optional<MepmlLspCompletionItem> red = at("x \\color(re", "red");
+    CHECK(red && red->insert_text == "red, ");  // on to the text
+    CHECK(!at("x \\color(red, re", "red").has_value());  // after the comma is text
+    CHECK(!at("x \\fs(12, (a \\color(red, re", "red").has_value());
+    CHECK(at("x \\fn(note (a \\ci", "\\cite").has_value());  // a command inside text
     CHECK(at("x \\color{re", "red").has_value());
     CHECK(!at("x \\color{red}{re", "red").has_value());  // the second group is text
     const std::optional<MepmlLspCompletionItem> a = at("see [it|#the-me", "#the-method");
@@ -258,7 +271,7 @@ void TestHoverAndDefinition() {
     CHECK(!MepmlLspHover(kDoc, 11, 2, o).found);  // code is its language's business
     h = MepmlLspHover(kDoc, 18, 3, o);
     CHECK(h.found && h.text.find("Cited 2 times") != std::string::npos);
-    const Lines colours = {"a \\color{red}{b} \\fn{a note}"};
+    const Lines colours = {"a \\color(red, b) \\fn(a note)"};
     CHECK(MepmlLspHover(colours, 0, 5, o).text.find("#e06c75") != std::string::npos);
     CHECK(MepmlLspHover(colours, 0, 20, o).text.find("a note") != std::string::npos);
     // results=exec: a program of any language, run in a terminal.
@@ -286,8 +299,8 @@ void TestReferencesAndRename() {
     CHECK(refs.refs.back().is_definition && refs.refs.back().line == 18);
     std::string err;
     Lines renamed = Apply(kDoc, MepmlLspRename(kDoc, 18, 12, "knuth1984", o, &err));
-    CHECK(renamed[5] == "See \\cite{knuth1984} and \\citep{knuth1984}.");
-    CHECK(renamed[18] == "@citation{knuth1984}{");
+    CHECK(renamed[5] == "See \\cite(knuth1984) and \\citep(knuth1984).");
+    CHECK(renamed[18] == "\\citation(knuth1984,");
     CHECK(MepmlLspDiagnostics(renamed, o).empty());
     CHECK(MepmlLspRename(kDoc, 18, 12, "two words", o, &err).empty() && !err.empty());
 
@@ -351,16 +364,16 @@ void TestActionsAndFormat() {
 
     // An unknown citation: add an entry (which then resolves), or pick the near one.
     Lines doc = kDoc;
-    doc[5] = "See \\cite{knuth48}.";
+    doc[5] = "See \\cite(knuth48).";
     const std::vector<MepmlLspCodeAction> acts = MepmlLspCodeActions(doc, 5, o);
     const MepmlLspCodeAction *add = nullptr, *change = nullptr;
     for (const MepmlLspCodeAction &a : acts) {
-        if (a.title.find("Add a @citation{knuth48}") != std::string::npos) add = &a;
-        if (a.title == "Change to \\cite{knuth84}") change = &a;
+        if (a.title.find("Add a \\citation(knuth48)") != std::string::npos) add = &a;
+        if (a.title == "Change to \\cite(knuth84)") change = &a;
     }
     CHECK(add && change);
     CHECK(!Has(MepmlLspDiagnostics(Apply(doc, add->edits), o), "unknown-citation"));
-    CHECK(Apply(doc, change->edits)[5] == "See \\cite{knuth84}.");
+    CHECK(Apply(doc, change->edits)[5] == "See \\cite(knuth84).");
 
     // Misspellings: directive, anchor, colour.
     auto first_fix = [&](const Lines &d, int line) {
@@ -369,9 +382,17 @@ void TestActionsAndFormat() {
         return Apply(d, a.front().edits)[static_cast<size_t>(line)];
     };
     CHECK(first_fix({"@imgae{x.png}"}, 0) == "@image{x.png}");
-    CHECK(first_fix({"@printbibliography"}, 0) == "@bibliography");
+    CHECK(first_fix({"@printbibliography"}, 0) == "\\bibliography");
     CHECK(first_fix({"> The Method", "[m|#the-methd]"}, 1) == "[m|#the-method]");
+    CHECK(first_fix({"\\color(gren, x)"}, 0) == "\\color(green, x)");
     CHECK(first_fix({"\\color{gren}{x}"}, 0) == "\\color{green}{x}");
+    // The old @abstract{...}: rewritten, its closing brace too.
+    const Lines old_abstract = {"@abstract{", "Some {braced} text.", "} // end", "", "After."};
+    const std::vector<MepmlLspCodeAction> fixes = MepmlLspCodeActions(old_abstract, 0, o);
+    CHECK(!fixes.empty() && fixes.front().fixes == "deprecated-directive");
+    const Lines new_abstract = Apply(old_abstract, fixes.front().edits);
+    CHECK(new_abstract[0] == "\\abstract(" && new_abstract[1] == "Some {braced} text." && new_abstract[2] == ") // end");
+    CHECK(MepmlLspDiagnostics(new_abstract, o).empty());
     // A ragged table: pad it.
     const Lines ragged = {"| a | b |", "| 1 |"};
     const Lines padded = Apply(ragged, MepmlLspCodeActions(ragged, 1, o).front().edits);

@@ -4,7 +4,7 @@
 //? Import: refs.mepml
 //? Exports: results
 
-@abstract{
+\abstract(
 In 1936 the statistician and geneticist Ronald Fisher used 150 iris flowers,
 measured by the botanist Edgar Anderson, to introduce the linear discriminant:
 the weighted sum of measurements that best separates known groups. The data hold
@@ -21,17 +21,17 @@ species completely. Using both discriminants, the classifier misclassifies 3 of
 three errors involve I. versicolor and I. virginica. Repeated 70/30 train-test
 splits give a mean test error of 2.2%. Box's M test rejects equal species
 covariance matrices, yet quadratic discriminant analysis, which does not assume
-them, does no better: its leave-one-out error is 2.7%. }
+them, does no better: its leave-one-out error is 2.7%. )
 
 
 > Introduction
 
 The iris data are among the best-known datasets in statistics and machine
 learning. They were collected by the botanist Edgar Anderson, who was studying
-variation among irises in their natural populations \citep{anderson1935}. Two of
+variation among irises in their natural populations \citep(anderson1935). Two of
 the three species were gathered on the Gaspé Peninsula in Quebec, from the same
 pasture, on the same day. Ronald Fisher used them in the paper that introduced
-the linear discriminant \citep{fisher1936}. Fisher's question was one that
+the linear discriminant \citep(fisher1936). Fisher's question was one that
 taxonomists face all the time. Given several measurements on a specimen, how
 should they be combined into one number that best tells the groups apart? His
 answer, a weighted sum whose weights are chosen to maximise the separation
@@ -42,12 +42,12 @@ Each of the 150 flowers has four measurements, in centimetres: the length and
 width of a sepal and the length and width of a petal. Fifty flowers come from
 each of the three species pictured in Table 1. The data ship with R as
 `datasets::iris`. That copy agrees with the values Fisher published, whereas
-some copies circulating online contain transcription errors \citep{bezdek1999}.
+some copies circulating online contain transcription errors \citep(bezdek1999).
 
-| @image{./figs/Iris_versicolor.jpg} | @image{./figs/Iris_setosa.jpg} | @image{./figs/Iris_virginica.jpg} |
-| ~Iris versicolor~ | ~Iris setosa~ | ~Iris virginica~ |
-@caption{The three species in the data}
-@alttext{Photographs of an Iris versicolor, an Iris setosa and an Iris virginica flower}
+| \image(./figs/Iris_versicolor.jpg) | \image(./figs/Iris_setosa.jpg) | \image(./figs/Iris_virginica.jpg) |
+| ~Iris versicolor~                  | ~Iris setosa~                  | ~Iris virginica~                  |
+\caption(The three species in the data)
+\alttext(Photographs of an Iris versicolor, an Iris setosa and an Iris virginica flower)
 
 This report is a complete linear discriminant analysis (LDA) of the data. The
 Methods section develops the technique: Fisher's criterion, the probabilistic
@@ -79,15 +79,15 @@ knitr::kable(data.frame(paste0("`", names(iris), "`"),
              col.names = c("Column", "Kind", "Values", "Missing"), align = "lllr", row.names = FALSE)
 ```
 // result_begin: markdown
-|Column         |Kind             |Values                                       | Missing|
-|:--------------|:----------------|:--------------------------------------------|-------:|
-|`Sepal.Length` |measurement (cm) |4.3 to 7.9                                   |       0|
-|`Sepal.Width`  |measurement (cm) |2.0 to 4.4                                   |       0|
-|`Petal.Length` |measurement (cm) |1.0 to 6.9                                   |       0|
-|`Petal.Width`  |measurement (cm) |0.1 to 2.5                                   |       0|
-|`Species`      |species (factor) |setosa (50), versicolor (50), virginica (50) |       0|
+| Column         | Kind             | Values                                       | Missing |
+| :------------- | :--------------- | :------------------------------------------- | ------: |
+| `Sepal.Length` | measurement (cm) | 4.3 to 7.9                                   |       0 |
+| `Sepal.Width`  | measurement (cm) | 2.0 to 4.4                                   |       0 |
+| `Petal.Length` | measurement (cm) | 1.0 to 6.9                                   |       0 |
+| `Petal.Width`  | measurement (cm) | 0.1 to 2.5                                   |       0 |
+| `Species`      | species (factor) | setosa (50), versicolor (50), virginica (50) |       0 |
 // result_end
-@caption{The five columns of the data: 150 flowers, one row each}
+\caption(The five columns of the data: 150 flowers, one row each)
 
 Table 3 shows the first six flowers as R stores them, one row per flower.
 
@@ -96,16 +96,16 @@ knitr::kable(head(iris), align = "rrrrl",
              col.names = c("Sepal length", "Sepal width", "Petal length", "Petal width", "Species"))
 ```
 // result_begin: markdown
-| Sepal length| Sepal width| Petal length| Petal width|Species |
-|------------:|-----------:|------------:|-----------:|:-------|
-|          5.1|         3.5|          1.4|         0.2|setosa  |
-|          4.9|         3.0|          1.4|         0.2|setosa  |
-|          4.7|         3.2|          1.3|         0.2|setosa  |
-|          4.6|         3.1|          1.5|         0.2|setosa  |
-|          5.0|         3.6|          1.4|         0.2|setosa  |
-|          5.4|         3.9|          1.7|         0.4|setosa  |
+| Sepal length | Sepal width | Petal length | Petal width | Species |
+| -----------: | ----------: | -----------: | ----------: | :------ |
+|          5.1 |         3.5 |          1.4 |         0.2 | setosa  |
+|          4.9 |         3.0 |          1.4 |         0.2 | setosa  |
+|          4.7 |         3.2 |          1.3 |         0.2 | setosa  |
+|          4.6 |         3.1 |          1.5 |         0.2 | setosa  |
+|          5.0 |         3.6 |          1.4 |         0.2 | setosa  |
+|          5.4 |         3.9 |          1.7 |         0.4 | setosa  |
 // result_end
-@caption{The first six flowers in the data (measurements in cm)}
+\caption(The first six flowers in the data (measurements in cm))
 
 Table 4 summarises each measurement by species. The species differ most in
 their petals. Setosa petals average 1.46 cm long, against 4.26 cm for
@@ -122,13 +122,13 @@ knitr::kable(data.frame(paste0("~I. ", rownames(stats), "~"), stats),
              align = "lrrrr", row.names = FALSE)
 ```
 // result_begin: markdown
-|Species         | Sepal length| Sepal width| Petal length| Petal width|
-|:---------------|------------:|-----------:|------------:|-----------:|
-|~I. setosa~     |  5.01 (0.35)| 3.43 (0.38)|  1.46 (0.17)| 0.25 (0.11)|
-|~I. versicolor~ |  5.94 (0.52)| 2.77 (0.31)|  4.26 (0.47)| 1.33 (0.20)|
-|~I. virginica~  |  6.59 (0.64)| 2.97 (0.32)|  5.55 (0.55)| 2.03 (0.27)|
+| Species         | Sepal length | Sepal width | Petal length | Petal width |
+| :-------------- | -----------: | ----------: | -----------: | ----------: |
+| ~I. setosa~     |  5.01 (0.35) | 3.43 (0.38) |  1.46 (0.17) | 0.25 (0.11) |
+| ~I. versicolor~ |  5.94 (0.52) | 2.77 (0.31) |  4.26 (0.47) | 1.33 (0.20) |
+| ~I. virginica~  |  6.59 (0.64) | 2.97 (0.32) |  5.55 (0.55) | 2.03 (0.27) |
 // result_end
-@caption{Mean (standard deviation) of each measurement, in centimetres, for the 50 flowers of each species}
+\caption(Mean (standard deviation) of each measurement, in centimetres, for the 50 flowers of each species)
 
 Figure 1 plots every pair of measurements. Setosa forms its own cluster in
 every panel that involves a petal measurement. Versicolor and virginica
@@ -150,10 +150,10 @@ legend("bottom", legend = paste("I.", names(pal)), col = pal, pch = 19,
        horiz = TRUE, bty = "n", text.font = 3, inset = 0.01)
 ```
 // result_begin:
-// @image{figs/pairs.png}
+// \image(figs/pairs.png)
 // result_end
-@caption{Scatterplot matrix of the four measurements (cm), coloured by species}
-@alttext{A four-by-four grid of scatterplots. Setosa separates from the other two species in every panel that involves petal length or petal width; versicolor and virginica overlap in every panel.}
+\caption(Scatterplot matrix of the four measurements (cm), coloured by species)
+\alttext(A four-by-four grid of scatterplots. Setosa separates from the other two species in every panel that involves petal length or petal width; versicolor and virginica overlap in every panel.)
 
 Figure 2 shows each measurement's distribution by species. The petal
 measurements separate setosa from the others completely. They also separate
@@ -181,10 +181,10 @@ p <- ggplot(long, aes(Species, values, fill = Species)) +
 print(p)
 ```
 // result_begin:
-// @image{figs/univariate.png}
+// \image(figs/univariate.png)
 // result_end
-@caption{Distribution of each measurement by species: violin (density), box plot and individual flowers}
-@alttext{Four panels of violin and box plots. Petal length and petal width are much smaller for setosa, with no overlap; versicolor is intermediate and virginica largest. The sepal measurements overlap across species.}
+\caption(Distribution of each measurement by species: violin (density), box plot and individual flowers)
+\alttext(Four panels of violin and box plots. Petal length and petal width are much smaller for setosa, with no overlap; versicolor is intermediate and virginica largest. The sepal measurements overlap across species.)
 
 > Methods
 
@@ -200,25 +200,25 @@ $$
   \qquad
   \mathbf{B} = \sum_{k=1}^{K} n_k (\bar{\mathbf{x}}_k - \bar{\mathbf{x}})(\bar{\mathbf{x}}_k - \bar{\mathbf{x}})^\top .
 $$
-@alttext{The within-groups matrix W sums outer products of deviations from each group mean; the between-groups matrix B sums n_k times outer products of group-mean deviations from the grand mean.}
+\alttext(The within-groups matrix W sums outer products of deviations from each group mean; the between-groups matrix B sums n_k times outer products of group-mean deviations from the grand mean.)
 
-\cite{fisher1936} looked for the linear combination
+\cite(fisher1936) looked for the linear combination
 $z = \mathbf{a}^\top \mathbf{x}$ whose group means are as far apart as possible
-relative to the spread within groups. That is, he maximised the ratio
+relative to the spread within groups. That is, he maximized the ratio
 $$
   J(\mathbf{a}) = \frac{\mathbf{a}^\top \mathbf{B}\,\mathbf{a}}{\mathbf{a}^\top \mathbf{W}\,\mathbf{a}} .
 $$
-@alttext{J of a equals a-transpose B a divided by a-transpose W a.}
+\alttext(J of a equals a-transpose B a divided by a-transpose W a.)
 
-Setting the derivative of $J$ to zero gives the generalised eigenproblem
+Setting the derivative of $J$ to zero gives the generalized eigenproblem
 $$
   \mathbf{B}\,\mathbf{a} = \lambda\, \mathbf{W}\,\mathbf{a},
 $$
-@alttext{B a equals lambda W a.}
+\alttext(B a equals lambda W a.)
 so the best direction $\mathbf{a}_1$ is the eigenvector of
 $\mathbf{W}^{-1}\mathbf{B}$ with the largest eigenvalue $\lambda_1$, and
 $J(\mathbf{a}_1) = \lambda_1$. The eigenvectors that follow give further
-discriminant functions. Each maximises $J$ among directions whose scores are
+discriminant functions. Each maximizes $J$ among directions whose scores are
 uncorrelated within groups with the scores of the earlier functions.
 $\mathbf{B}$ has rank at most $K - 1$, so there are
 $s = \min(K - 1, p)$ functions with non-zero eigenvalues. For the iris data,
@@ -226,7 +226,7 @@ $K = 3$ and $p = 4$, so the four measurements reduce to two discriminant
 functions, LD1 and LD2, without losing any information that separates the
 groups.
 
-An eigenvector's length is arbitrary. R's `MASS::lda` \citep{venables2002}
+An eigenvector's length is arbitrary. R's `MASS::lda` \citep(venables2002)
 scales the functions so that each has unit variance within groups, which
 makes the discriminant space Euclidean: distances there are Mahalanobis
 distances in the original measurements. The sign of each function is also
@@ -240,13 +240,13 @@ covariance matrix $\boldsymbol{\Sigma}$ shared by all groups,
 $$
   \mathbf{x} \mid G = k \;\sim\; N_p(\boldsymbol{\mu}_k, \boldsymbol{\Sigma}),
 $$
-@alttext{Given group k, x is p-variate normal with mean mu k and common covariance Sigma.}
+\alttext(Given group k, x is p-variate normal with mean mu k and common covariance Sigma.)
 and that group $k$ has prior probability $\pi_k$. Bayes' theorem gives the
 posterior probability that an observation belongs to group $k$,
 $$
   P(G = k \mid \mathbf{x}) = \frac{\pi_k f_k(\mathbf{x})}{\sum_{j=1}^{K} \pi_j f_j(\mathbf{x})},
 $$
-@alttext{The posterior probability of group k is pi k times the density f k at x, divided by the sum over all groups of the same product.}
+\alttext(The posterior probability of group k is pi k times the density f k at x, divided by the sum over all groups of the same product.)
 where $f_k$ is the normal density. Because $\boldsymbol{\Sigma}$ is the same for
 every group, the quadratic terms in $\mathbf{x}$ cancel when groups are
 compared. What remains is a linear discriminant score
@@ -254,10 +254,10 @@ $$
   \delta_k(\mathbf{x}) = \mathbf{x}^\top \boldsymbol{\Sigma}^{-1} \boldsymbol{\mu}_k
   - \frac{1}{2} \boldsymbol{\mu}_k^\top \boldsymbol{\Sigma}^{-1} \boldsymbol{\mu}_k + \log \pi_k ,
 $$
-@alttext{delta k of x equals x-transpose Sigma-inverse mu k, minus one half mu k-transpose Sigma-inverse mu k, plus log pi k.}
+\alttext(delta k of x equals x-transpose Sigma-inverse mu k, minus one half mu k-transpose Sigma-inverse mu k, plus log pi k.)
 and the Bayes rule assigns $\mathbf{x}$ to the group with the largest
 $\delta_k(\mathbf{x})$. The boundary between two groups, where their scores are
-equal, is therefore a hyperplane \citep{hastie2009}. In practice the group means
+equal, is therefore a hyperplane \citep(hastie2009). In practice the group means
 are estimated by the sample means, and $\boldsymbol{\Sigma}$ by the pooled
 within-groups covariance $\hat{\boldsymbol{\Sigma}} = \mathbf{W} / (n - K)$.
 
@@ -267,7 +267,7 @@ discriminant space, adjusted for the priors:
 $$
   \hat{G}(\mathbf{x}) = \arg\min_{k} \; \| \mathbf{z} - \bar{\mathbf{z}}_k \|^2 - 2 \log \pi_k ,
 $$
-@alttext{The predicted group is the k that minimises the squared distance from the discriminant scores z to the group centroid z-bar k, minus twice log pi k.}
+\alttext(The predicted group is the k that minimises the squared distance from the discriminant scores z to the group centroid z-bar k, minus twice log pi k.)
 where $\mathbf{z}$ holds the observation's discriminant scores and
 $\bar{\mathbf{z}}_k$ the centroid of group $k$. Here the priors are the group
 proportions, all equal to 1/3, so the rule reduces to the nearest centroid.
@@ -290,12 +290,12 @@ even when the assumptions are moderately violated.
 
 Normality within groups can be checked one variable at a time with the
 Shapiro-Wilk test. Equality of the covariance matrices is tested with Box's M
-test \citep{box1949}. With $\mathbf{S}_k$ the covariance matrix of group $k$ and
+test \citep(box1949). With $\mathbf{S}_k$ the covariance matrix of group $k$ and
 $\mathbf{S}_p = \mathbf{W}/(n - K)$ the pooled one, the statistic is
 $$
   M = (n - K) \log |\mathbf{S}_p| - \sum_{k=1}^{K} (n_k - 1) \log |\mathbf{S}_k| .
 $$
-@alttext{M equals n minus K times the log determinant of the pooled covariance, minus the sum over groups of n k minus one times the log determinant of that group's covariance.}
+\alttext(M equals n minus K times the log determinant of the pooled covariance, minus the sum over groups of n k minus one times the log determinant of that group's covariance.)
 $M$ is zero when all the $\mathbf{S}_k$ are equal and grows as they diverge.
 After a small-sample correction, $M$ is approximately $\chi^2$ with
 $p(p+1)(K-1)/2$ degrees of freedom. The test is known to be very sensitive,
@@ -319,7 +319,7 @@ A fitted discriminant is described by several quantities:
   $\Lambda_j = \prod_{i=j}^{s} (1 + \lambda_i)^{-1}$ tests whether functions
   $j, \dots, s$ carry any separation. Bartlett's approximation
   $\chi^2 = -\left(n - 1 - \frac{p + K}{2}\right) \log \Lambda_j$ has
-  $(p - j + 1)(K - j)$ degrees of freedom \citep{mardia1979}. For $j = 1$ this
+  $(p - j + 1)(K - j)$ degrees of freedom \citep(mardia1979). For $j = 1$ this
   is the MANOVA test of equal group means.
 - *Raw coefficients* $\mathbf{a}_j$: the weights that turn measurements into
   scores. They depend on the measurement units.
@@ -338,7 +338,7 @@ The error rate on the data used to fit the model (the *resubstitution* or
 apparent error) is optimistic, because the model has been tuned to exactly
 those flowers. We therefore also estimate the error in two honest ways:
 
-+ *Leave-one-out cross-validation* \citep{lachenbruch1968}: each flower in
++ *Leave-one-out cross-validation* \citep(lachenbruch1968): each flower in
   turn is classified by a discriminant fitted to the other 149.
   `MASS::lda(..., CV = TRUE)` does this without refitting the model 150 times.
 + *Repeated hold-out*: 500 times, fit to 35 random flowers per species and
@@ -347,10 +347,10 @@ those flowers. We therefore also estimate the error in two honest ways:
 
 >> Software
 
-All computations use R 4.6.1 \citep{rcore2026}. The discriminant and QDA come
-from the `MASS` package \citep{venables2002}, most figures are drawn with
-`ggplot2` \citep{wickham2016}, and the tables are printed as Markdown by
-`knitr::kable()` \citep{xie2015}. Box's M test is computed directly from its
+All computations use R 4.6.1 \citep(rcore2026). The discriminant and QDA come
+from the `MASS` package \citep(venables2002), most figures are drawn with
+`ggplot2` \citep(wickham2016), and the tables are printed as Markdown by
+`knitr::kable()` \citep(xie2015). Box's M test is computed directly from its
 definition above. R has no built-in function for it, and implementing it here
 keeps the report free of extra dependencies.
 
@@ -381,14 +381,14 @@ knitr::kable(data.frame(tests, sprintf("%.4f", stats[, 1]), sprintf("%.1f", stat
              align = "lrrrrr", row.names = FALSE)
 ```
 // result_begin: markdown
-|Statistic              |   Value| Approx. F| df1| df2|                p-value|
-|:----------------------|-------:|---------:|---:|---:|----------------------:|
-|Wilks' $\Lambda$       |  0.0234|     199.1|   8| 288| $1.4 \times 10^{-112}$|
-|Pillai's trace         |  1.1919|      53.5|   8| 290|  $9.7 \times 10^{-53}$|
-|Hotelling-Lawley trace | 32.4773|     580.5|   8| 286| $6.4 \times 10^{-172}$|
-|Roy's largest root     | 32.1919|    1167.0|   4| 145| $3.8 \times 10^{-109}$|
+| Statistic              |   Value | Approx. F | df1 | df2 |                p-value |
+| :--------------------- | ------: | --------: | --: | --: | ---------------------: |
+| Wilks' $\Lambda$       |  0.0234 |     199.1 |   8 | 288 | $1.4 \times 10^{-112}$ |
+| Pillai's trace         |  1.1919 |      53.5 |   8 | 290 |  $9.7 \times 10^{-53}$ |
+| Hotelling-Lawley trace | 32.4773 |     580.5 |   8 | 286 | $6.4 \times 10^{-172}$ |
+| Roy's largest root     | 32.1919 |    1167.0 |   4 | 145 | $3.8 \times 10^{-109}$ |
 // result_end
-@caption{One-way MANOVA of the four measurements on species}
+\caption(One-way MANOVA of the four measurements on species)
 
 >> Checking the assumptions
 
@@ -416,14 +416,14 @@ knitr::kable(data.frame(c("Sepal length", "Sepal width", "Petal length", "Petal 
              align = "lrrr", row.names = FALSE)
 ```
 // result_begin: markdown
-|Measurement  | ~I. setosa~| ~I. versicolor~| ~I. virginica~|
-|:------------|-----------:|---------------:|--------------:|
-|Sepal length |       0.460|           0.465|          0.258|
-|Sepal width  |       0.272|           0.338|          0.181|
-|Petal length |       0.055|           0.158|          0.110|
-|Petal width  |     < 0.001|           0.027|          0.087|
+| Measurement  | ~I. setosa~ | ~I. versicolor~ | ~I. virginica~ |
+| :----------- | ----------: | --------------: | -------------: |
+| Sepal length |       0.460 |           0.465 |          0.258 |
+| Sepal width  |       0.272 |           0.338 |          0.181 |
+| Petal length |       0.055 |           0.158 |          0.110 |
+| Petal width  |     < 0.001 |           0.027 |          0.087 |
 // result_end
-@caption{Shapiro-Wilk p-values for normality of each measurement within each species}
+\caption(Shapiro-Wilk p-values for normality of each measurement within each species)
 
 Equal covariances are clearly rejected (Table 7). The log-determinant of a
 covariance matrix measures the volume of the cloud of points. Setosa's is
@@ -458,18 +458,18 @@ knitr::kable(data.frame(
   col.names = c("Quantity", "Value"), align = "lr")
 ```
 // result_begin: markdown
-|Quantity                                  |                 Value|
-|:-----------------------------------------|---------------------:|
-|$\log \det \mathbf{S}_k$, ~I. setosa~     |                -13.07|
-|$\log \det \mathbf{S}_k$, ~I. versicolor~ |                -10.87|
-|$\log \det \mathbf{S}_k$, ~I. virginica~  |                 -8.93|
-|$\log \det \mathbf{S}_p$, pooled          |                 -9.96|
-|Box's $M$                                 |                146.66|
-|$\chi^2$ (corrected)                      |                140.94|
-|Degrees of freedom                        |                    20|
-|p-value                                   | $3.4 \times 10^{-20}$|
+| Quantity                                  |                 Value |
+| :---------------------------------------- | --------------------: |
+| $\log \det \mathbf{S}_k$, ~I. setosa~     |                -13.07 |
+| $\log \det \mathbf{S}_k$, ~I. versicolor~ |                -10.87 |
+| $\log \det \mathbf{S}_k$, ~I. virginica~  |                 -8.93 |
+| $\log \det \mathbf{S}_p$, pooled          |                 -9.96 |
+| Box's $M$                                 |                146.66 |
+| $\chi^2$ (corrected)                      |                140.94 |
+| Degrees of freedom                        |                    20 |
+| p-value                                   | $3.4 \times 10^{-20}$ |
 // result_end
-@caption{Box's M test of equal covariance matrices across species}
+\caption(Box's M test of equal covariance matrices across species)
 
 Figure 3 shows what the test detects. For each species it draws the 95% ellipse
 of its own covariance matrix (solid) and of the pooled covariance matrix that
@@ -526,10 +526,10 @@ p <- ggplot() +
 print(p)
 ```
 // result_begin:
-// @image{figs/covariance.png}
+// \image(figs/covariance.png)
 // result_end
-@caption{95% normal-theory ellipses of each species' own covariance (solid) and of the pooled covariance LDA assumes (dashed), centred on each species' mean}
-@alttext{Two scatterplots, sepals and petals, with an ellipse per species drawn twice. For the petals, setosa's own ellipse is far smaller than the pooled one and virginica's is larger; for the sepals the solid and dashed ellipses are close.}
+\caption(95% normal-theory ellipses of each species' own covariance (solid) and of the pooled covariance LDA assumes (dashed), centred on each species' mean)
+\alttext(Two scatterplots, sepals and petals, with an ellipse per species drawn twice. For the petals, setosa's own ellipse is far smaller than the pooled one and virginica's is larger; for the sepals the solid and dashed ellipses are close.)
 
 >> Fitting the discriminant
 
@@ -563,12 +563,12 @@ knitr::kable(data.frame(c("LD1", "LD2"), sprintf("%.3f", eig), sprintf("%.2f", 1
              align = "lrrrrrrr")
 ```
 // result_begin: markdown
-|Function | Eigenvalue| % of trace| Canonical corr.| Wilks' $\Lambda$| $\chi^2$| df|                p-value|
-|:--------|----------:|----------:|---------------:|----------------:|--------:|--:|----------------------:|
-|LD1      |     32.192|      99.12|           0.985|           0.0234|   546.12|  8| $8.9 \times 10^{-113}$|
-|LD2      |      0.285|       0.88|           0.471|           0.7780|    36.53|  3|   $5.8 \times 10^{-8}$|
+| Function | Eigenvalue | % of trace | Canonical corr. | Wilks' $\Lambda$ | $\chi^2$ |  df |                p-value |
+| :------- | ---------: | ---------: | --------------: | ---------------: | -------: | --: | ---------------------: |
+| LD1      |     32.192 |      99.12 |           0.985 |           0.0234 |   546.12 |   8 | $8.9 \times 10^{-113}$ |
+| LD2      |      0.285 |       0.88 |           0.471 |           0.7780 |    36.53 |   3 |   $5.8 \times 10^{-8}$ |
 // result_end
-@caption{Eigenvalues, canonical correlations and Bartlett's dimension tests. The test in row j asks whether functions j onwards carry any separation.}
+\caption(Eigenvalues, canonical correlations and Bartlett's dimension tests. The test in row j asks whether functions j onwards carry any separation.)
 
 Table 9 gives the coefficients. The raw coefficients are what `predict()` uses.
 Up to centring, an iris's LD1 score is
@@ -592,14 +592,14 @@ knitr::kable(data.frame(c("Sepal length", "Sepal width", "Petal length", "Petal 
              col.names = c("Measurement", "LD1 (raw)", "LD2 (raw)", "LD1 (std.)", "LD2 (std.)"))
 ```
 // result_begin: markdown
-|Measurement  | LD1 (raw)| LD2 (raw)| LD1 (std.)| LD2 (std.)|
-|:------------|---------:|---------:|----------:|----------:|
-|Sepal length |     0.829|    -0.024|      0.427|     -0.012|
-|Sepal width  |     1.534|    -2.165|      0.521|     -0.735|
-|Petal length |    -2.201|     0.932|     -0.947|      0.401|
-|Petal width  |    -2.810|    -2.839|     -0.575|     -0.581|
+| Measurement  | LD1 (raw) | LD2 (raw) | LD1 (std.) | LD2 (std.) |
+| :----------- | --------: | --------: | ---------: | ---------: |
+| Sepal length |     0.829 |    -0.024 |      0.427 |     -0.012 |
+| Sepal width  |     1.534 |    -2.165 |      0.521 |     -0.735 |
+| Petal length |    -2.201 |     0.932 |     -0.947 |      0.401 |
+| Petal width  |    -2.810 |    -2.839 |     -0.575 |     -0.581 |
 // result_end
-@caption{Raw and standardised discriminant coefficients. Standardised coefficients are the raw ones multiplied by each measurement's pooled within-species standard deviation.}
+\caption(Raw and standardised discriminant coefficients. Standardised coefficients are the raw ones multiplied by each measurement's pooled within-species standard deviation.)
 
 Sepal length has a positive LD1 coefficient even though virginica, with the
 lowest LD1 scores, has the longest sepals. The structure correlations in
@@ -627,14 +627,14 @@ knitr::kable(data.frame(c("Sepal length", "Sepal width", "Petal length", "Petal 
              col.names = c("Measurement", "LD1 (within)", "LD2 (within)", "LD1 (total)", "LD2 (total)"))
 ```
 // result_begin: markdown
-|Measurement  | LD1 (within)| LD2 (within)| LD1 (total)| LD2 (total)|
-|:------------|------------:|------------:|-----------:|-----------:|
-|Sepal length |       -0.223|       -0.311|      -0.792|      -0.218|
-|Sepal width  |        0.119|       -0.864|       0.531|      -0.758|
-|Petal length |       -0.706|       -0.168|      -0.985|      -0.046|
-|Petal width  |       -0.633|       -0.737|      -0.973|      -0.223|
+| Measurement  | LD1 (within) | LD2 (within) | LD1 (total) | LD2 (total) |
+| :----------- | -----------: | -----------: | ----------: | ----------: |
+| Sepal length |       -0.223 |       -0.311 |      -0.792 |      -0.218 |
+| Sepal width  |        0.119 |       -0.864 |       0.531 |      -0.758 |
+| Petal length |       -0.706 |       -0.168 |      -0.985 |      -0.046 |
+| Petal width  |       -0.633 |       -0.737 |      -0.973 |      -0.223 |
 // result_end
-@caption{Structure correlations between each measurement and the discriminant scores: pooled within species, and over all 150 flowers}
+\caption(Structure correlations between each measurement and the discriminant scores: pooled within species, and over all 150 flowers)
 
 The species centroids in the discriminant space are in Table 11. On LD1 they are
 widely spaced and in order: setosa at $+7.6$, versicolor at $-1.8$ and
@@ -651,13 +651,13 @@ centroids$Species <- paste0("~I. ", centroids$Species, "~")
 knitr::kable(centroids, digits = 3, align = "lrr")
 ```
 // result_begin: markdown
-|Species         |    LD1|    LD2|
-|:---------------|------:|------:|
-|~I. setosa~     |  7.608| -0.215|
-|~I. versicolor~ | -1.825|  0.728|
-|~I. virginica~  | -5.783| -0.513|
+| Species         |    LD1 |    LD2 |
+| :-------------- | -----: | -----: |
+| ~I. setosa~     |  7.608 | -0.215 |
+| ~I. versicolor~ | -1.825 |  0.728 |
+| ~I. virginica~  | -5.783 | -0.513 |
 // result_end
-@caption{Species centroids in the discriminant space}
+\caption(Species centroids in the discriminant space)
 
 >> The discriminant space
 
@@ -691,10 +691,10 @@ p <- ggplot(d, aes(LD1, LD2, colour = Species)) +
 print(p)
 ```
 // result_begin:
-// @image{figs/ld_scores.png}
+// \image(figs/ld_scores.png)
 // result_end
-@caption{The flowers in the discriminant space, with 95% ellipses per species, centroids (crosses) and the three flowers the fitted rule misclassifies (circled). The axes are on equal scales.}
-@alttext{A scatterplot of LD2 against LD1. Setosa forms a tight cluster around LD1 = 7.6; versicolor and virginica form adjacent clusters around LD1 = -1.8 and -5.8 that touch between LD1 = -3 and -4, where three circled points lie.}
+\caption(The flowers in the discriminant space, with 95% ellipses per species, centroids (crosses) and the three flowers the fitted rule misclassifies (circled). The axes are on equal scales.)
+\alttext(A scatterplot of LD2 against LD1. Setosa forms a tight cluster around LD1 = 7.6; versicolor and virginica form adjacent clusters around LD1 = -1.8 and -5.8 that touch between LD1 = -3 and -4, where three circled points lie.)
 
 Figure 5 shows the same scores one function at a time. On LD1 the setosa density
 does not touch the others. The versicolor and virginica densities overlap only
@@ -722,10 +722,10 @@ p <- ggplot(d, aes(score, fill = Species, colour = Species)) +
 print(p)
 ```
 // result_begin:
-// @image{figs/ld_densities.png}
+// \image(figs/ld_densities.png)
 // result_end
-@caption{Kernel density of each species' scores on LD1 and on LD2}
-@alttext{Two density panels. On LD1, setosa's density is far to the right and does not overlap the others, while versicolor and virginica overlap slightly in their tails. On LD2, the three densities overlap almost entirely, versicolor sitting slightly higher.}
+\caption(Kernel density of each species' scores on LD1 and on LD2)
+\alttext(Two density panels. On LD1, setosa's density is far to the right and does not overlap the others, while versicolor and virginica overlap slightly in their tails. On LD2, the three densities overlap almost entirely, versicolor sitting slightly higher.)
 
 Figure 6 draws each measurement as an arrow from the origin to its total-sample
 structure correlations with the two functions. The petal arrows point almost
@@ -749,10 +749,10 @@ arrows(0, 0, r[, 1], r[, 2], length = 0.1, lwd = 2, col = "#3b528b")
 text(c(-0.55, 0.58, -0.75, -0.98), c(-0.33, -0.86, 0.08, -0.33), labs, cex = 0.9, col = "#3b528b")
 ```
 // result_begin:
-// @image{figs/structure.png}
+// \image(figs/structure.png)
 // result_end
-@caption{Structure correlations over the whole sample: each measurement's correlation with LD1 and LD2, inside the unit circle}
-@alttext{A correlation circle. Petal length and petal width arrows point left along the LD1 axis almost to the circle; sepal length points left and slightly down; sepal width points right and down, mostly along LD2.}
+\caption(Structure correlations over the whole sample: each measurement's correlation with LD1 and LD2, inside the unit circle)
+\alttext(A correlation circle. Petal length and petal width arrows point left along the LD1 axis almost to the circle; sepal length points left and slightly down; sepal width points right and down, mostly along LD2.)
 
 The classification rule divides the discriminant plane into three regions, one
 per species (Figure 7). The priors are equal and the scores have unit variance
@@ -790,10 +790,10 @@ p <- ggplot() +
 print(p)
 ```
 // result_begin:
-// @image{figs/regions.png}
+// \image(figs/regions.png)
 // result_end
-@caption{Classification regions of the fitted rule in the discriminant space (shaded), with each flower coloured by its true species}
-@alttext{The discriminant plane split into three shaded regions by straight boundaries: setosa on the right, versicolor in the middle and virginica on the left. Nearly every point lies in its own species' region; a few versicolor and virginica points lie near the boundary between them.}
+\caption(Classification regions of the fitted rule in the discriminant space (shaded), with each flower coloured by its true species)
+\alttext(The discriminant plane split into three shaded regions by straight boundaries: setosa on the right, versicolor in the middle and virginica on the left. Nearly every point lies in its own species' region; a few versicolor and virginica points lie near the boundary between them.)
 
 >> Classification performance
 
@@ -818,14 +818,14 @@ knitr::kable(data.frame(c(paste0("~I. ", rownames(tab), "~"), "Total"), rows),
              align = "lrrrr", row.names = FALSE)
 ```
 // result_begin: markdown
-|Actual species  | Predicted ~setosa~| Predicted ~versicolor~| Predicted ~virginica~| Correct|
-|:---------------|------------------:|----------------------:|---------------------:|-------:|
-|~I. setosa~     |                 50|                      0|                     0|    100%|
-|~I. versicolor~ |                  0|                     48|                     2|     96%|
-|~I. virginica~  |                  0|                      1|                    49|     98%|
-|Total           |                 50|                     49|                    51|     98%|
+| Actual species  | Predicted ~setosa~ | Predicted ~versicolor~ | Predicted ~virginica~ | Correct |
+| :-------------- | -----------------: | ---------------------: | --------------------: | ------: |
+| ~I. setosa~     |                 50 |                      0 |                     0 |    100% |
+| ~I. versicolor~ |                  0 |                     48 |                     2 |     96% |
+| ~I. virginica~  |                  0 |                      1 |                    49 |     98% |
+| Total           |                 50 |                     49 |                    51 |     98% |
 // result_end
-@caption{Leave-one-out confusion matrix (resubstitution gives the same table)}
+\caption(Leave-one-out confusion matrix (resubstitution gives the same table))
 
 The three misclassified flowers are borderline (Table 13). Each is a large
 versicolor or a small virginica. Flowers 71 and 84 are versicolor with petals
@@ -851,13 +851,13 @@ knitr::kable(data.frame(wrong, iris[wrong, 1:4], paste0("~", iris$Species[wrong]
                            "Resubst.", "P(versicolor)", "P(virginica)"))
 ```
 // result_begin: markdown
-| Flower| Sepal L.| Sepal W.| Petal L.| Petal W.|Species      |Predicted    |Resubst.     | P(versicolor)| P(virginica)|
-|------:|--------:|--------:|--------:|--------:|:------------|:------------|:------------|-------------:|------------:|
-|     71|      5.9|      3.2|      4.8|      1.8|~versicolor~ |~virginica~  |~virginica~  |         0.177|        0.823|
-|     84|      6.0|      2.7|      5.1|      1.6|~versicolor~ |~virginica~  |~virginica~  |         0.099|        0.901|
-|    134|      6.3|      2.8|      5.1|      1.5|~virginica~  |~versicolor~ |~versicolor~ |         0.788|        0.212|
+| Flower | Sepal L. | Sepal W. | Petal L. | Petal W. | Species      | Predicted    | Resubst.     | P(versicolor) | P(virginica) |
+| -----: | -------: | -------: | -------: | -------: | :----------- | :----------- | :----------- | ------------: | -----------: |
+|     71 |      5.9 |      3.2 |      4.8 |      1.8 | ~versicolor~ | ~virginica~  | ~virginica~  |         0.177 |        0.823 |
+|     84 |      6.0 |      2.7 |      5.1 |      1.6 | ~versicolor~ | ~virginica~  | ~virginica~  |         0.099 |        0.901 |
+|    134 |      6.3 |      2.8 |      5.1 |      1.5 | ~virginica~  | ~versicolor~ | ~versicolor~ |         0.788 |        0.212 |
 // result_end
-@caption{The misclassified flowers (leave-one-out), with their measurements in cm, the class resubstitution gives them, and their leave-one-out posterior probabilities. P(setosa) is below 0.001 for all three.}
+\caption(The misclassified flowers (leave-one-out), with their measurements in cm, the class resubstitution gives them, and their leave-one-out posterior probabilities. P(setosa) is below 0.001 for all three.)
 
 Figure 8 shows the posterior probabilities for every flower, ordered by LD1
 score. Setosa's posteriors, on the right, are all essentially 1. Between
@@ -891,10 +891,10 @@ p <- ggplot() +
 print(p)
 ```
 // result_begin:
-// @image{figs/posterior.png}
+// \image(figs/posterior.png)
 // result_end
-@caption{Leave-one-out posterior probabilities of each species for every flower, ordered by LD1 score. The strip under the bars gives each flower's true species; triangles mark the three misclassified flowers.}
-@alttext{A stacked bar chart of posterior probabilities for 150 flowers. From the left, a long run of virginica-coloured bars changes to versicolor-coloured bars over a short band of mixed bars, then a long versicolor run, then the setosa run on the right, whose bars are all fully setosa. Three triangles mark misclassifications inside the mixed band.}
+\caption(Leave-one-out posterior probabilities of each species for every flower, ordered by LD1 score. The strip under the bars gives each flower's true species; triangles mark the three misclassified flowers.)
+\alttext(A stacked bar chart of posterior probabilities for 150 flowers. From the left, a long run of virginica-coloured bars changes to versicolor-coloured bars over a short band of mixed bars, then a long versicolor run, then the setosa run on the right, whose bars are all fully setosa. Three triangles mark misclassifications inside the mixed band.)
 
 >> Validation and comparison with other rules
 
@@ -930,10 +930,10 @@ p <- ggplot(d, aes(factor(errors, levels = 0:max(errors)), fill = rule)) +
 print(p)
 ```
 // result_begin:
-// @image{figs/holdout.png}
+// \image(figs/holdout.png)
 // result_end
-@caption{Number of misclassified test flowers in 500 random 70/30 stratified splits, for LDA with both functions, LDA with LD1 alone, and QDA}
-@alttext{A grouped bar chart of the number of test errors per split, from 0 to 5. For all three rules most splits have 0 or 1 errors; QDA has fewer splits with 0 errors and more with 2 or 3 than either LDA rule.}
+\caption(Number of misclassified test flowers in 500 random 70/30 stratified splits, for LDA with both functions, LDA with LD1 alone, and QDA)
+\alttext(A grouped bar chart of the number of test errors per split, from 0 to 5. For all three rules most splits have 0 or 1 errors; QDA has fewer splits with 0 errors and more with 2 or 3 than either LDA rule.)
 
 The hold-out results agree with leave-one-out (Figure 9, Table 14). LDA's test
 error averages 2.2%. A third of the splits give no errors at all, and only 5 of
@@ -973,13 +973,13 @@ knitr::kable(data.frame(c("LDA, LD1 and LD2", "LDA, LD1 only", "QDA"), pct(resub
              align = "lrrrrr")
 ```
 // result_begin: markdown
-|Rule             | Resubstitution| Leave-one-out| Hold-out mean (SD)| Error-free splits| Splits with > 3 errors|
-|:----------------|--------------:|-------------:|------------------:|-----------------:|----------------------:|
-|LDA, LD1 and LD2 |          2.00%|         2.00%|       2.20% (1.99)|               33%|                      5|
-|LDA, LD1 only    |          1.33%|         2.00%|       2.10% (1.80)|               33%|                      0|
-|QDA              |          2.00%|         2.67%|       2.71% (2.18)|               25%|                     10|
+| Rule             | Resubstitution | Leave-one-out | Hold-out mean (SD) | Error-free splits | Splits with > 3 errors |
+| :--------------- | -------------: | ------------: | -----------------: | ----------------: | ---------------------: |
+| LDA, LD1 and LD2 |          2.00% |         2.00% |       2.20% (1.99) |               33% |                      5 |
+| LDA, LD1 only    |          1.33% |         2.00% |       2.10% (1.80) |               33% |                      0 |
+| QDA              |          2.00% |         2.67% |       2.71% (2.18) |               25% |                     10 |
 // result_end
-@caption{Error rates of the three rules under each validation scheme: the hold-out columns are over the 500 splits of Figure 9}
+\caption(Error rates of the three rules under each validation scheme: the hold-out columns are over the 500 splits of Figure 9)
 
 Two further points emerge from the comparison. First, the rule that uses LD1
 alone does as well as the one that uses both functions. On the training data it
@@ -989,7 +989,7 @@ does slightly *worse* than LDA even though LDA's covariance assumption is
 clearly false. QDA estimates three 4-by-4 covariance matrices, 30 parameters,
 from 35 to 50 flowers per species, and the extra variance of those estimates
 outweighs the bias that pooling introduces. This is the usual result for small
-samples \citep{hastie2009}. A significant Box's M test is not by itself a
+samples \citep(hastie2009). A significant Box's M test is not by itself a
 reason to abandon LDA. The question is whether a more flexible model predicts
 better, and for these data it does not.
 
@@ -1022,5 +1022,5 @@ the three species are equally common here by design, which the equal priors
 reflect. In a population where one species is rarer, the priors, and with them
 the boundaries, should change.
 
-@bibliography
+\bibliography
 

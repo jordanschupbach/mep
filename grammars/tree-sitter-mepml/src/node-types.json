@@ -2990,6 +2990,14 @@
     }
   },
   {
+    "type": "(",
+    "named": false
+  },
+  {
+    "type": ")",
+    "named": false
+  },
+  {
     "type": ",",
     "named": false
   },
@@ -3003,10 +3011,6 @@
   },
   {
     "type": "@",
-    "named": false
-  },
-  {
-    "type": "@alttext",
     "named": false
   },
   {
@@ -3067,6 +3071,14 @@
   },
   {
     "type": "[",
+    "named": false
+  },
+  {
+    "type": "\\",
+    "named": false
+  },
+  {
+    "type": "\\alttext",
     "named": false
   },
   {

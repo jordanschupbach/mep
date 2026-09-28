@@ -459,6 +459,84 @@ int main() {
         CHECK(html.find("<td>x @image{no.png}</td>") != std::string::npos);
     }
 
+    // --- Captions and alt text over several lines: the braces on lines of
+    //     their own, the text read as one line, the export unchanged.
+    {
+        Lines src = {
+            "@image{a.png}",                 // 0
+            "@caption{",                     // 1
+            "  A *long* caption that",       // 2
+            "  wraps",                       // 3
+            "}",                             // 4
+            "@alttext{A plot",               // 5
+            "of x}  // note",                // 6
+            "",                              // 7
+            "$$",                            // 8
+            "x^2",                           // 9
+            "$$",                            // 10
+            "@alttext{",                     // 11
+            "Squared",                       // 12
+            "}",                             // 13
+            "@caption{never closed",         // 14
+            "",                              // 15
+            "Para.",                         // 16
+            "",                              // 17
+            "@caption{orphan",               // 18
+            "over two}",                     // 19
+            "After.",                        // 20
+        };
+        Document d = Parse(src);
+        const Block &img = d.blocks[0];
+        CHECK(img.kind == BlockKind::Image && img.line_end == 6);
+        CHECK(img.caption == "A *long* caption that wraps");
+        CHECK(img.caption_line == 1 && img.caption_line_end == 4 && img.caption_close_col == 0);
+        CHECK(FindKind(img.caption_inlines, InlineKind::Bold));
+        CHECK(img.alt == "A plot of x" && img.alt_line == 5 && img.alt_line_end == 6 && img.alt_close_col == 4);
+        const Block &math = d.blocks[1];
+        CHECK(math.kind == BlockKind::MathBlock && math.alt == "Squared" && math.alt_line_end == 13);
+        bool unterminated = false, misplaced = false;
+        for (const Diagnostic &dg : d.diagnostics) {
+            if (dg.line == 14 && dg.message.find("unterminated") != std::string::npos) unterminated = true;
+            if (dg.line == 14 && dg.message.find("must directly follow") != std::string::npos) misplaced = true;
+        }
+        CHECK(unterminated && !misplaced);
+        // An orphan still covers its whole group, so its second line is no paragraph.
+        bool orphan = false, stray = false;
+        for (const Block &b : d.blocks) {
+            if (b.kind == BlockKind::Comment && b.line_start == 18 && b.line_end == 19) orphan = true;
+            if (b.kind == BlockKind::Paragraph && b.line_start == 19) stray = true;
+        }
+        CHECK(orphan && !stray);
+        // Opener and closing brace are markup; the caption's text is styled.
+        bool open = false, close = false, bold = false;
+        for (const Span &sp : Highlight(d)) {
+            if (sp.line == 1 && sp.markup && sp.replace == "Caption: ") open = true;
+            if (sp.line == 4 && sp.markup && sp.col_start == 0 && sp.col_end == 1) close = true;
+            if (sp.line == 2 && (sp.style & kBold) && !sp.markup) bold = true;
+        }
+        CHECK(open && close && bold);
+        const std::string html = ToHtml(d);
+        CHECK(html.find("<figcaption>Figure 1: A <strong>long</strong> caption that wraps</figcaption>") != std::string::npos);
+        CHECK(html.find("alt=\"A plot of x\"") != std::string::npos);
+        // Rendered for the editor: wrapped to the width, centred, the label
+        // and the caption's own styling carried as spans.
+        const std::vector<RenderedLine> cap = RenderCaption(d, img, "Figure 1", 20, true);
+        CHECK(cap.size() == 2);
+        CHECK(cap[0].text == "  Figure 1: A long" && cap[1].text == " caption that wraps");
+        bool label = false, bolded = false;
+        for (const RenderedSpan &sp : cap[0].spans) {
+            const std::string t = cap[0].text.substr(static_cast<size_t>(sp.col_start),
+                                                     static_cast<size_t>(sp.col_end - sp.col_start));
+            if (t == "Figure 1:" && (sp.style & kBold) && (sp.style & kDirective)) label = true;
+            if (t == "long" && (sp.style & kBold) && (sp.style & kItalic)) bolded = true;
+        }
+        CHECK(label && bolded);
+        for (const RenderedLine &l : cap) CHECK(static_cast<int>(l.text.size()) <= 20);
+        const std::vector<RenderedLine> alt = RenderAltText(img.alt, 8, false);
+        CHECK(alt.size() == 2 && alt[0].text == "A plot" && alt[1].text == "of x");
+        CHECK(alt[0].spans.size() == 1 && (alt[0].spans[0].style & kComment) && alt[0].spans[0].col_end == 6);
+    }
+
     // --- Figures: a code block's `@image{}` result line, shared numbering
     //     with @image figures, tables numbered apart, and the export.
     {
@@ -517,19 +595,19 @@ int main() {
         CHECK(html2.find("results-html") == std::string::npos);
     }
 
-    // --- @abstract: prose over lines, paragraphs split by blank lines.
+    // --- \abstract: prose over lines, paragraphs split by blank lines.
     {
         Lines src = {
-            "@abstract{",                          // 0
+            "\\abstract(",                         // 0
             "We show *this*",                      // 1
-            "- across lines \\fn{a note}.",        // 2  (not a list inside an abstract)
+            "- across lines \\fn(a note).",        // 2  (not a list inside an abstract)
             "",                                    // 3
             "  ",                                  // 4
-            "Second {braced} part.",               // 5
-            "} // done",                           // 6
+            "Second (bracketed) part.",            // 5
+            ") // done",                           // 6
             "After.",                              // 7
-            "@abstract{One line.}",                // 8
-            "@abstract{never closed",              // 9
+            "\\abstract(One line.)",               // 8
+            "\\abstract(never closed",             // 9
         };
         Document d = Parse(src);
         const Block &a = d.blocks[0];
@@ -537,7 +615,7 @@ int main() {
         std::vector<std::vector<Inline>> paras = AbstractParagraphs(a);
         CHECK(paras.size() == 2);
         CHECK(InlinePlainText(paras[0]) == "We show this\n- across lines .");
-        CHECK(InlinePlainText(paras[1]) == "Second {braced} part.");
+        CHECK(InlinePlainText(paras[1]) == "Second (bracketed) part.");
         CHECK(d.footnote_count == 1);
         CHECK(d.blocks[1].kind == BlockKind::Paragraph && d.blocks[1].line_start == 7);
         CHECK(d.blocks[2].kind == BlockKind::Abstract && AbstractParagraphs(d.blocks[2]).size() == 1);
@@ -559,7 +637,89 @@ int main() {
         const std::string html = ToHtml(d);
         CHECK(html.find("<section class=\"abstract\"><p class=\"abstract-title\">Abstract</p><p>We show <strong>this</strong>") !=
               std::string::npos);
-        CHECK(html.find("<p>Second {braced} part.</p></section>") != std::string::npos);
+        CHECK(html.find("<p>Second (bracketed) part.</p></section>") != std::string::npos);
+    }
+
+    // --- The old @abstract{...} no longer makes an abstract: it says so.
+    {
+        Document d = Parse({"@abstract{Old.}", "", "text"});
+        CHECK(d.blocks[0].kind == BlockKind::Paragraph);
+        bool moved = false;
+        for (const Diagnostic &dg : d.diagnostics)
+            if (dg.line == 0 && dg.message.find("now \\abstract(") != std::string::npos) moved = true;
+        CHECK(moved);
+    }
+
+    // --- \name(...) directives, the new spelling of @name{...}.
+    {
+        Lines src = {
+            "\\image(./a.png)",                                  // 0
+            "\\caption(A (small) caption, with a comma)",        // 1
+            "\\alttext(",                                        // 2
+            "  Alt, over lines",                                 // 3
+            ")",                                                 // 4
+            "",                                                  // 5
+            "\\import(refs.mepml) // a comment",                 // 6
+            "\\toc",                                             // 7
+            "\\bibliography",                                    // 8
+            "\\citation(k1, author = Ada Lovelace, title = {A, B}, year = 1843)",  // 9
+            "\\citation(k2,",                                    // 10
+            "  author = Alan Turing,",                           // 11
+            "  year = 1936",                                     // 12
+            ")",                                                 // 13
+            "\\fs(24, big) starts a paragraph \\cite(k1).",      // 14
+        };
+        Document d = Parse(src);
+        CHECK(d.blocks[0].kind == BlockKind::Image && d.blocks[0].value == "./a.png");
+        CHECK(d.blocks[0].caption == "A (small) caption, with a comma");
+        CHECK(d.blocks[0].alt == "Alt, over lines" && d.blocks[0].line_end == 4);
+        CHECK(d.blocks[1].kind == BlockKind::Import && d.blocks[1].value == "refs.mepml");
+        CHECK(d.blocks[2].kind == BlockKind::TableOfContents && d.blocks[3].kind == BlockKind::Bibliography);
+        CHECK(d.blocks[4].kind == BlockKind::Citation && d.blocks[4].value == "k1");
+        CHECK(d.citations.at("k1").fields.at("title") == "A, B");
+        CHECK(d.citations.at("k1").fields.at("year") == "1843");
+        CHECK(d.blocks[5].kind == BlockKind::Citation && d.blocks[5].line_end == 13);
+        CHECK(d.citations.at("k2").fields.at("author") == "Alan Turing");
+        CHECK(d.blocks[6].kind == BlockKind::Paragraph && d.blocks[6].line_start == 14);
+        CHECK(d.cite_order.size() == 1 && d.cite_order[0] == "k1");
+        for (const Diagnostic &dg : d.diagnostics) CHECK(dg.line == 1000);  // none
+        // The editor's spans: the directive's `\caption(` opener is markup
+        // relabelled, its `)` is markup.
+        bool cap_open = false, cap_close = false, image = false;
+        for (const Span &sp : Highlight(d)) {
+            if (sp.line == 1 && sp.markup && sp.col_start == 0 && sp.col_end == 9 && sp.replace == "Caption: ") cap_open = true;
+            if (sp.line == 1 && sp.markup && sp.col_start == 40 && sp.col_end == 41) cap_close = true;
+            if (sp.line == 0 && (sp.style & kDirective) && sp.col_start == 0 && sp.col_end == 15) image = true;
+        }
+        CHECK(cap_open && cap_close && image);
+        std::string path;
+        CHECK(ResultImagePath("  \\image(out.png) ", &path) && path == "out.png");
+        CHECK(ResultImagePath("@image{old.png}", &path) && path == "old.png");
+        CHECK(!ResultImagePath("\\image{mixed.png)", &path));
+    }
+
+    // --- \name(arg, text) inline commands, and the old \name{arg}{text}.
+    {
+        Document d = Parse({"a \\f(Helvetica, \\fs(12, b, c)) \\color(#ff0000, *r*) \\fs{9}{old} \\fn(n (1)) \\citep(x)"});
+        const std::vector<Inline> &in = d.blocks[0].inlines;
+        CHECK(in.size() == 10);
+        CHECK(in[1].kind == InlineKind::Font && in[1].arg == "Helvetica");
+        CHECK(in[1].children.size() == 1 && in[1].children[0].kind == InlineKind::FontSize);
+        CHECK(in[1].children[0].arg == "12" && InlinePlainText(in[1].children[0].children) == "b, c");
+        CHECK(in[3].kind == InlineKind::Color && in[3].arg == "#ff0000" && in[3].children[0].kind == InlineKind::Bold);
+        CHECK(in[5].kind == InlineKind::FontSize && in[5].arg == "9" && InlinePlainText(in[5].children) == "old");
+        CHECK(in[7].kind == InlineKind::Footnote && InlinePlainText(in[7].children) == "n (1)");
+        CHECK(in[9].kind == InlineKind::CiteP && in[9].text == "x");
+        // No comma: not a two-argument command, so the text stays literal.
+        Document lit = Parse({"\\fs(12) and \\) and \\( too"});
+        CHECK(lit.blocks[0].inlines.size() >= 1 && lit.blocks[0].inlines[0].kind == InlineKind::Text);
+        CHECK(InlinePlainText(lit.blocks[0].inlines) == "\\fs(12) and ) and ( too");
+        // An emphasis marker inside a command's parentheses stays inside it.
+        Document em = Parse({"*see \\fs(12, a*b) here*"});
+        CHECK(em.blocks[0].inlines.size() == 1 && em.blocks[0].inlines[0].kind == InlineKind::Bold);
+        // Maths with the new alt text.
+        Document m = Parse({"x \\(\\frac{a}{b}\\)\\alttext(a over b) y"});
+        CHECK(m.blocks[0].inlines[1].kind == InlineKind::Math && m.blocks[0].inlines[1].alt == "a over b");
     }
 
     // --- Generated content: table of contents and bibliography.
@@ -579,7 +739,7 @@ int main() {
         CHECK(d.blocks[7].kind == BlockKind::Bibliography);  // the old name still works...
         bool renamed = false;
         for (const Diagnostic &dg : d.diagnostics)
-            if (dg.line == 7 && dg.message.find("now @bibliography") != std::string::npos) renamed = true;
+            if (dg.line == 7 && dg.message.find("now \\bibliography") != std::string::npos) renamed = true;
         CHECK(renamed);  // ...with a note
 
         std::vector<RenderedLine> toc = RenderToc(d, 80);

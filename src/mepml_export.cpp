@@ -227,21 +227,27 @@ bool ImageSize(const std::string &b, int *w, int *h, std::string *ext) {
 // Markdown
 // ===========================================================================
 
-// The document's @citation entries as mepml source, for formats whose
+// The document's \citation entries as mepml source, for formats whose
 // importer can find them again in a comment (Markdown, Org).
 std::string CitationsMepml(const Document &doc) {
     std::string c;
     for (const auto &kv : doc.citations) {
-        c += (c.empty() ? "" : "\n") + std::string("@citation{") + kv.first + "}{";
+        std::string fields;
         for (size_t f = 0; f < kv.second.field_order.size(); ++f) {
             const std::string &name = kv.second.field_order[f];
             std::string v = kv.second.fields.at(name);
             // Nothing in a value may end the comment it travels in.
             for (size_t at = v.find("--"); at != std::string::npos; at = v.find("--", at + 2)) v.replace(at, 2, "-\\-");
             for (size_t at = v.find("#+end"); at != std::string::npos; at = v.find("#+end", at + 2)) v.replace(at, 1, "\\#");
-            c += "\n  " + name + " = {" + v + "}" + (f + 1 < kv.second.field_order.size() ? "," : "");
+            fields += "\n  " + name + " = {" + v + "}" + (f + 1 < kv.second.field_order.size() ? "," : "");
         }
-        c += "\n}";
+        // `\citation(key, fields)`, unless a parenthesis in a value would
+        // end the group early; the older `@citation{key}{fields}` then.
+        int depth = 0;
+        for (char ch : fields) depth += ch == '(' ? 1 : ch == ')' ? -1 : 0;
+        const bool paren = depth == 0 && fields.find(')') == std::string::npos;
+        c += (c.empty() ? "" : "\n") + (paren ? "\\citation(" + kv.first + "," + fields + "\n)"
+                                             : "@citation{" + kv.first + "}{" + fields + "\n}");
     }
     return c;
 }
@@ -418,7 +424,7 @@ struct MdWriter {
                 case BlockKind::Rule: blocks.push_back("---"); break;
                 case BlockKind::Bibliography: {
                     // The markers are invisible in rendered Markdown; mep's
-                    // importer turns them back into @bibliography / @toc.
+                    // importer turns them back into \bibliography / \toc.
                     std::vector<std::string> lines{"<!-- mepml:bibliography -->", "## References", ""};
                     int n = 0;
                     for (const std::string &key : doc.cite_order) {
@@ -444,7 +450,7 @@ struct MdWriter {
                     break;
                 }
                 case BlockKind::Abstract: {
-                    // Marked like @toc, so mep's importer gets @abstract back.
+                    // Marked like \toc, so mep's importer gets \abstract back.
                     std::vector<std::string> parts{"<!-- mepml:abstract -->\n**Abstract**"};
                     for (const std::vector<Inline> &para : AbstractParagraphs(b)) parts.push_back(Inl(para));
                     parts.push_back("<!-- /mepml:abstract -->");

@@ -1,10 +1,10 @@
 
 // Allow for bibtex style entries
-@citation{asdf1}{
+\citation(asdf1,
   author = author1,
   title = {The title},
   year = 1999
-}
+)
 
 
 @article{knuth84,

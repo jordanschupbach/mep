@@ -15,11 +15,11 @@
 // all of it directly, with no process and no JSON-RPC client.
 //
 // What the server knows, beyond the parser's own structural diagnostics:
-//   - Cross-references: citation keys (\cite / \citep against @citation
+//   - Cross-references: citation keys (\cite / \citep against \citation
 //     entries, including those of @imported files), heading anchors
 //     (`[text|#anchor]` against the headings' slugs), footnotes.
-//   - The filesystem, when MepmlLspOptions::check_files is on: @image and
-//     @import paths, relative link targets, figures a code block wrote.
+//   - The filesystem, when MepmlLspOptions::check_files is on: \image and
+//     \import paths, relative link targets, figures a code block wrote.
 //   - Document structure: headings (nested), figures, tables and code
 //     blocks as symbols; the same fold ranges the editor folds.
 //
@@ -37,11 +37,11 @@
 // --- Options ----------------------------------------------------------
 
 struct MepmlLspOptions {
-    // The document's own absolute path. @import and relative paths resolve
+    // The document's own absolute path. \import and relative paths resolve
     // against its directory; empty (an unsaved buffer) turns off every
     // check that would need one.
     std::string doc_path;
-    // Whether to touch the filesystem at all (@import expansion, missing
+    // Whether to touch the filesystem at all (\import expansion, missing
     // images and link targets, path completion). Off in tests.
     bool check_files = true;
 };
@@ -141,7 +141,7 @@ struct MepmlLspLocation {
 };
 
 /**
- * @brief Where the thing under the cursor is defined: a citation's @citation entry (here or in an imported file), a link's heading or file, an @import/@image file.
+ * @brief Where the thing under the cursor is defined: a citation's \citation entry (here or in an imported file), a link's heading or file, an \import/\image file.
  */
 MepmlLspLocation MepmlLspDefinition(const std::vector<std::string> &lines, int line, int col, const MepmlLspOptions &opts);
 
@@ -149,7 +149,7 @@ struct MepmlLspReference {
     int line = 0;
     int col_start = 0;
     int col_end = 0;
-    bool is_definition = false;  // the @citation key / the heading title itself
+    bool is_definition = false;  // the \citation key / the heading title itself
 };
 
 struct MepmlLspReferenceSet {
@@ -164,7 +164,7 @@ struct MepmlLspReferenceSet {
 };
 
 /**
- * @brief Every mention of the citation key or heading under the cursor in this document (the \cite uses and the @citation entry; the heading and every link to its anchor).
+ * @brief Every mention of the citation key or heading under the cursor in this document (the \cite uses and the \citation entry; the heading and every link to its anchor).
  */
 MepmlLspReferenceSet MepmlLspReferences(const std::vector<std::string> &lines, int line, int col,
                                         const MepmlLspOptions &opts);
@@ -229,7 +229,7 @@ struct MepmlLspCodeAction {
 };
 
 /**
- * @brief The fixes on offer for the cursor's line: add a missing @citation entry, correct a misspelt directive, anchor or colour, pad a ragged table, align a table, rename @printbibliography.
+ * @brief The fixes on offer for the cursor's line: add a missing \citation entry, correct a misspelt directive, anchor or colour, pad a ragged table, align a table, rename @printbibliography.
  */
 std::vector<MepmlLspCodeAction> MepmlLspCodeActions(const std::vector<std::string> &lines, int line,
                                                     const MepmlLspOptions &opts);

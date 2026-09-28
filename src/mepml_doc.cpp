@@ -47,11 +47,14 @@ std::string Lower(std::string s) {
     return s;
 }
 
-// Reads a `{...}` group starting at s[i] == '{', balancing nested braces and
-// honouring `\{` / `\}` escapes. Returns the index just past the closing
-// brace (content is [i+1, ret-1)), or -1 if unbalanced before `limit`.
+// Reads a `{...}` or `(...)` group starting at s[i] == '{' or '(',
+// balancing nested braces (or parentheses) and honouring backslash escapes.
+// Returns the index just past the closing brace (content is [i+1, ret-1)),
+// or -1 if unbalanced before `limit`.
 int ReadGroup(const std::string &s, int i, int limit) {
-    if (At(s, i) != '{') return -1;
+    const char open = At(s, i);
+    if (open != '{' && open != '(') return -1;
+    const char close = open == '{' ? '}' : ')';
     int depth = 0;
     for (int j = i; j < limit; ++j) {
         char c = s[static_cast<size_t>(j)];
@@ -59,10 +62,29 @@ int ReadGroup(const std::string &s, int i, int limit) {
             ++j;
             continue;
         }
-        if (c == '{') ++depth;
-        if (c == '}' && --depth == 0) return j + 1;
+        if (c == open) ++depth;
+        if (c == close && --depth == 0) return j + 1;
     }
     return -1;
+}
+
+// The top-level commas of the `(...)` group over [b, e) (its content, less
+// the parentheses), at most `max` of them: `\fs(12, text, more)` splits
+// once, so the text after the first comma may hold commas of its own.
+std::vector<int> ArgCommas(const std::string &s, int b, int e, size_t max) {
+    std::vector<int> out;
+    int depth = 0;
+    for (int j = b; j < e && out.size() < max; ++j) {
+        char c = s[static_cast<size_t>(j)];
+        if (c == '\\') {
+            ++j;
+            continue;
+        }
+        if (c == '(') ++depth;
+        if (c == ')') --depth;
+        if (c == ',' && depth == 0) out.push_back(j);
+    }
+    return out;
 }
 
 // Unescapes a `"quoted"` string's body.
@@ -234,7 +256,11 @@ int FindCloser(const std::string &s, int from, int e, const Marker &m) {
     for (int j = from; j + cl <= e; ++j) {
         char c = s[static_cast<size_t>(j)];
         if (c == '\\') {
-            ++j;
+            // A command's `(...)` arguments are inside it, like a `{...}` group.
+            int k = j + 1;
+            while (k < e && IsAlpha(s[static_cast<size_t>(k)])) ++k;
+            const int g = k > j + 1 ? ReadGroup(s, k, e) : -1;
+            j = g > 0 && At(s, k) == '(' ? g - 1 : j + 1;
             continue;
         }
         if (c == '`') {
@@ -304,7 +330,7 @@ bool TryMath(InlineCtx &ctx, int i, int e, Inline *node) {
     node->end = close_at + close_len;
     node->text = Sub(s, node->inner_start, node->inner_end);
     if (display) node->arg = "display";
-    if (StartsAt(s, node->end, "@alttext{")) {
+    if (StartsAt(s, node->end, "\\alttext(") || StartsAt(s, node->end, "@alttext{")) {
         int g = ReadGroup(s, node->end + 8, e);
         if (g > 0) {
             node->alt = Sub(s, node->end + 9, g - 1);
@@ -333,7 +359,21 @@ bool TryCommand(InlineCtx &ctx, int i, int e, Inline *node) {
     if (g1 < 0) return false;
     node->kind = kind;
     node->start = i;
-    if (ngroups == 1) {
+    if (At(s, j) == '(') {
+        // `\name(arg, text)`: the arguments before the text end at the
+        // first top-level commas; the text is the rest.
+        int from = j + 1;
+        if (ngroups == 2) {
+            const std::vector<int> commas = ArgCommas(s, j + 1, g1 - 1, 1);
+            if (commas.empty()) return false;
+            node->arg = Trim(Sub(s, j + 1, commas[0]));
+            from = commas[0] + 1;
+            while (from < g1 - 1 && IsSpace(s[static_cast<size_t>(from)])) ++from;
+        }
+        node->inner_start = from;
+        node->inner_end = g1 - 1;
+        node->end = g1;
+    } else if (ngroups == 1) {
         node->inner_start = j + 1;
         node->inner_end = g1 - 1;
         node->end = g1;
@@ -443,7 +483,8 @@ void ParseRange(InlineCtx &ctx, int b, int e, std::vector<Inline> &out) {
         if (c == '\\') {
             if (At(s, i + 1) == '(') ok = TryMath(ctx, i, e, &node);
             else if (IsAlpha(At(s, i + 1))) ok = TryCommand(ctx, i, e, &node);
-            else if (i + 1 < e && !IsSpace(At(s, i + 1))) {
+            // An escape, or a `\(` that opens no maths: a literal parenthesis.
+            if (!ok && !IsAlpha(At(s, i + 1)) && i + 1 < e && !IsSpace(At(s, i + 1))) {
                 // Escape: `\*` is a literal star. The backslash is markup.
                 flush(i);
                 Inline t;
@@ -622,19 +663,31 @@ bool IsResultEnd(const std::string &line) {
     return t == "// result_end" || t == "// result_end:" || t == "//result_end";
 }
 
-// `@name` at the start of a trimmed line.
-std::string DirectiveName(const std::string &line) {
-    int i = Indent(line);
-    if (At(line, i) != '@') return "";
-    int j = i + 1;
-    while (IsAlpha(At(line, j))) ++j;
-    return Sub(line, i + 1, j);
-}
-
 bool IsKnownDirective(const std::string &name) {
     return name == "import" || name == "citation" || name == "image" || name == "caption" || name == "alttext" ||
            name == "bibliography" || name == "printbibliography" || name == "toc" || name == "abstract" ||
            IsBibtexType(name);
+}
+
+// `\name(...)` (or the older `@name{...}`) at the start of a trimmed line;
+// *sigil gets the `\` or `@`. A backslash starts a directive only for a
+// directive's own name followed by its `(` (or nothing, `\toc`), so a
+// paragraph may start with an inline command; BibTeX entries are `@` only.
+std::string DirectiveName(const std::string &line, char *sigil = nullptr) {
+    int i = Indent(line);
+    const char c = At(line, i);
+    if (c != '@' && c != '\\') return "";
+    int j = i + 1;
+    while (IsAlpha(At(line, j))) ++j;
+    std::string name = Sub(line, i + 1, j);
+    if (c == '\\') {
+        const char next = At(line, j);
+        if (!IsKnownDirective(name) || IsBibtexType(name) || name == "printbibliography" ||
+            (next != '(' && next != '\0' && !IsSpace(next)))
+            return "";
+    }
+    if (sigil) *sigil = c;
+    return name;
 }
 
 // Parses "k = v, k = {v}, k = "v"" fields out of a citation body.
@@ -738,6 +791,11 @@ struct Parser {
         return out;
     }
 
+    // How a directive is written, for messages: `\image(...)`, `\image(...)`.
+    static std::string Form(char sigil, const std::string &name) {
+        return sigil == '@' ? "@" + name + "{...}" : "\\" + name + "(...)";
+    }
+
     // Text after a directive's groups must be empty or a `// comment`.
     void CheckTrailing(int line, int col) {
         std::string rest = Trim(Sub(L(line), col, Len(L(line))));
@@ -755,35 +813,93 @@ struct Parser {
         return Sub(s, col + 1, g - 1);
     }
 
-    // Blocks a caption/alttext line may attach to.
-    bool Attach(int i, const std::string &name) {
-        if (doc.blocks.empty()) return false;
+    // A directive group which may run over several lines: `@name{` on line
+    // `line` at column `col`, closed by its balancing `}` on that line or
+    // any later one before a blank line. Returns the closing line, with
+    // *after the column past its `}`; -1 when it never closes.
+    int MultiLineGroup(int line, int col, int *after) {
+        std::string joined;
+        std::vector<int> starts;
+        for (int k = line; k < n; ++k) {
+            if (k > line && Trim(L(k)).empty()) break;
+            if (k > line) joined += '\n';
+            starts.push_back(Len(joined));
+            joined += L(k);
+            const int g = ReadGroup(joined, col, Len(joined));
+            if (g > 0) {
+                *after = g - starts.back();
+                return k;
+            }
+        }
+        *after = -1;
+        return -1;
+    }
+
+    // Line breaks (and the indentation after them) in a caption's text
+    // runs read as one space, as they would in a paragraph.
+    static std::string OneSpaced(const std::string &t) {
+        std::string o;
+        bool space = false;
+        for (char c : t) {
+            if (c == '\n' || c == '\r' || ((c == ' ' || c == '\t') && space)) {
+                if (!space) o += ' ';
+                space = true;
+                continue;
+            }
+            space = c == ' ' || c == '\t';
+            o += c;
+        }
+        return o;
+    }
+    static void OneSpacedInlines(std::vector<Inline> &ins) {
+        for (Inline &x : ins) {
+            if (x.kind == InlineKind::Text) x.text = OneSpaced(x.text);
+            OneSpacedInlines(x.children);
+        }
+    }
+
+    // Blocks a caption/alttext line may attach to. Returns the last line
+    // the directive covers: -1 when there is nothing to attach to, -2 when
+    // its group never closes (reported here).
+    int Attach(int i, const std::string &name, char sigil) {
+        if (doc.blocks.empty()) return -1;
         Block &b = doc.blocks.back();
         const int prev = markdown_result_ends.count(i - 1) ? i - 2 : i - 1;
-        if (b.line_end != prev) return false;
+        if (b.line_end != prev) return -1;
         if (b.kind != BlockKind::Image && b.kind != BlockKind::Table && b.kind != BlockKind::MathBlock &&
             b.kind != BlockKind::Code)
-            return false;
+            return -1;
         int col = Indent(L(i)) + 1 + Len(name);
         int after = -1;
-        std::string arg = OneLineGroup(i, col, &after);
-        if (after < 0) {
-            Diag(Diagnostic::Error, i, 0, Len(L(i)), "unterminated @" + name + "{...}");
-            return false;
+        const int last = MultiLineGroup(i, col, &after);
+        if (last < 0) {
+            Diag(Diagnostic::Error, i, 0, Len(L(i)), "unterminated " + Form(sigil, name));
+            return -2;
         }
-        CheckTrailing(i, after);
-        b.line_end = i;
+        CheckTrailing(last, after);
+        b.line_end = last;
         SetText(b);
-        int off = b.line_offsets.back();
+        // The group's content, less the blanks (and line breaks) just
+        // inside its braces.
+        int from = b.line_offsets[static_cast<size_t>(i - b.line_start)] + col + 1;
+        int to = b.line_offsets[static_cast<size_t>(last - b.line_start)] + after - 1;
+        while (from < to && std::isspace(static_cast<unsigned char>(b.text[static_cast<size_t>(from)]))) ++from;
+        while (to > from && std::isspace(static_cast<unsigned char>(b.text[static_cast<size_t>(to - 1)]))) --to;
+        const std::string arg = OneSpaced(Sub(b.text, from, to));
         if (name == "caption") {
-            b.caption = Trim(arg);
+            b.caption = arg;
             b.caption_line = i;
-            b.caption_inlines = Inlines(b, off + col + 1, off + after - 1);
+            b.caption_line_end = last;
+            b.caption_close_col = after - 1;
+            b.caption_inlines = Inlines(b, from, to);
+            OneSpacedInlines(b.caption_inlines);
         } else {
-            b.alt = Trim(arg);
+            b.alt = arg;
             b.alt_line = i;
+            b.alt_line_end = last;
+            b.alt_close_col = after - 1;
         }
-        return true;
+        return last;
     }
 
     int ParseMetaRun(int i) {
@@ -1003,19 +1119,24 @@ struct Parser {
         return j + 1;
     }
 
-    int ParseDirective(int i, const std::string &name) {
+    int ParseDirective(int i, const std::string &name, char sigil) {
         const std::string &s = L(i);
         int col = Indent(s) + 1 + Len(name);
         if (name == "caption" || name == "alttext") {
-            if (!Attach(i, name)) {
-                Diag(Diagnostic::Warning, i, 0, Len(s),
-                     "@" + name + " must directly follow an image, table, code block or display math");
-                doc.blocks.push_back(MakeBlock(BlockKind::Comment, i, i));
+            const int last = Attach(i, name, sigil);
+            if (last < 0) {
+                if (last == -1)
+                    Diag(Diagnostic::Warning, i, 0, Len(s),
+                         std::string(1, sigil) + name + " must directly follow an image, table, code block or display math");
+                int after = -1;
+                const int end = std::max(i, MultiLineGroup(i, col, &after));
+                doc.blocks.push_back(MakeBlock(BlockKind::Comment, i, end));
+                return end + 1;
             }
-            return i + 1;
+            return last + 1;
         }
         if (name == "printbibliography")
-            Diag(Diagnostic::Info, i, Indent(s), col, "@printbibliography is now @bibliography");
+            Diag(Diagnostic::Info, i, Indent(s), col, "@printbibliography is now \\bibliography");
         if (name == "bibliography" || name == "printbibliography" || name == "toc") {
             CheckTrailing(i, col);
             doc.blocks.push_back(
@@ -1026,19 +1147,24 @@ struct Parser {
             int after = -1;
             std::string arg = OneLineGroup(i, col, &after);
             if (after < 0) {
-                Diag(Diagnostic::Error, i, 0, Len(s), "unterminated @" + name + "{...}");
+                Diag(Diagnostic::Error, i, 0, Len(s), "unterminated " + Form(sigil, name));
                 doc.blocks.push_back(MakeBlock(BlockKind::Paragraph, i, i));
                 return i + 1;
             }
             CheckTrailing(i, after);
             Block b = MakeBlock(name == "import" ? BlockKind::Import : BlockKind::Image, i, i);
             b.value = Trim(arg);
-            if (b.value.empty()) Diag(Diagnostic::Error, i, 0, Len(s), "@" + name + " needs a path");
+            if (b.value.empty()) Diag(Diagnostic::Error, i, 0, Len(s), std::string(1, sigil) + name + " needs a path");
             doc.blocks.push_back(std::move(b));
             return i + 1;
         }
-        if (name == "abstract") return ParseAbstract(i, col);
-        // @citation{key}{fields}  or  bibtex  @article{key, fields}
+        if (name == "abstract") {
+            if (sigil == '\\') return ParseAbstract(i, col);
+            Diag(Diagnostic::Error, i, Indent(s), col, "@abstract{...} is now \\abstract(...)");
+            return ParseParagraph(i);
+        }
+        // \citation(key, fields), @citation{key}{fields} or bibtex @article{key, fields}
+        const bool paren = sigil == '\\';
         std::string joined;
         std::vector<int> offs;
         int j = i;
@@ -1049,21 +1175,27 @@ struct Parser {
             joined += '\n';
             g1 = ReadGroup(joined, col, Len(joined));
             if (g1 < 0) continue;
-            if (name != "citation") break;
+            if (name != "citation" || paren) break;
             int k = g1;
             while (k < Len(joined) && IsSpace(joined[static_cast<size_t>(k)])) ++k;
             if (k >= Len(joined)) continue;
             g2 = ReadGroup(joined, k, Len(joined));
             if (g2 >= 0) break;
         }
-        if (j >= n || j >= i + 500 || g1 < 0 || (name == "citation" && g2 < 0)) {
-            Diag(Diagnostic::Error, i, 0, Len(s), "unterminated @" + name + " entry");
+        if (j >= n || j >= i + 500 || g1 < 0 || (name == "citation" && !paren && g2 < 0)) {
+            Diag(Diagnostic::Error, i, 0, Len(s), "unterminated " + std::string(1, sigil) + name + " entry");
             doc.blocks.push_back(MakeBlock(BlockKind::Paragraph, i, i));
             return i + 1;
         }
         Block b = MakeBlock(BlockKind::Citation, i, j);
         std::string body;
-        if (name == "citation") {
+        if (paren) {
+            const std::vector<int> comma = ArgCommas(joined, col + 1, g1 - 1, 1);
+            const int key_end = comma.empty() ? g1 - 1 : comma[0];
+            b.value = Trim(Sub(joined, col + 1, key_end));
+            body = comma.empty() ? "" : Sub(joined, key_end + 1, g1 - 1);
+            CheckTrailing(j, g1 - offs.back());
+        } else if (name == "citation") {
             b.value = Trim(Sub(joined, col + 1, g1 - 1));
             int k = g1;
             while (IsSpace(At(joined, k))) ++k;
@@ -1094,12 +1226,12 @@ struct Parser {
         return j + 1;
     }
 
-    // @abstract{ ... }: prose up to the matching brace, over any number of
-    // lines; a blank line inside starts a new paragraph.
+    // \abstract( ... ): prose up to the matching parenthesis, over any
+    // number of lines; a blank line inside starts a new paragraph.
     int ParseAbstract(int i, int col) {
         const std::string &s = L(i);
-        if (At(s, col) != '{') {
-            Diag(Diagnostic::Error, i, Indent(s), Len(s), "@abstract needs a {...} body");
+        if (At(s, col) != '(') {
+            Diag(Diagnostic::Error, i, Indent(s), Len(s), "\\abstract needs a (...) body");
             doc.blocks.push_back(MakeBlock(BlockKind::Paragraph, i, i));
             return i + 1;
         }
@@ -1112,7 +1244,7 @@ struct Parser {
             if (g >= 0) break;
         }
         if (g < 0) {
-            Diag(Diagnostic::Error, i, Indent(s), Len(s), "@abstract is never closed with }");
+            Diag(Diagnostic::Error, i, Indent(s), Len(s), "\\abstract is never closed with )");
             j = n - 1;
         }
         Block b = MakeBlock(BlockKind::Abstract, i, j);
@@ -1145,10 +1277,10 @@ struct Parser {
             for (Inline &x : Inlines(b, from, end)) b.inlines.push_back(std::move(x));
             from = to;
         }
-        if (b.paragraph_starts.empty()) Diag(Diagnostic::Warning, i, Indent(s), Len(s), "empty @abstract");
+        if (b.paragraph_starts.empty()) Diag(Diagnostic::Warning, i, Indent(s), Len(s), "empty \\abstract");
         for (const Block &o : doc.blocks)
             if (o.kind == BlockKind::Abstract && o.origin.empty())
-                Diag(Diagnostic::Warning, i, Indent(s), col, "a document has one @abstract; this is a second");
+                Diag(Diagnostic::Warning, i, Indent(s), col, "a document has one \\abstract; this is a second");
         doc.blocks.push_back(std::move(b));
         return j + 1;
     }
@@ -1317,9 +1449,10 @@ struct Parser {
             } else if (IsListItem(s)) {
                 i = ParseList(i);
             } else {
-                std::string d = DirectiveName(s);
+                char sigil = 0;
+                std::string d = DirectiveName(s, &sigil);
                 if (!d.empty() && IsKnownDirective(d)) {
-                    i = ParseDirective(i, d);
+                    i = ParseDirective(i, d, sigil);
                 } else {
                     if (!d.empty())
                         Diag(Diagnostic::Warning, i, Indent(s), Indent(s) + 1 + Len(d),
@@ -1404,7 +1537,8 @@ std::vector<std::vector<Inline>> AbstractParagraphs(const Block &b) {
 
 bool ResultImagePath(const std::string &text, std::string *path) {
     std::string t = Trim(text);
-    if (t.rfind("@image{", 0) != 0 || t.back() != '}') return false;
+    if (!((t.rfind("\\image(", 0) == 0 && t.back() == ')') || (t.rfind("@image{", 0) == 0 && t.back() == '}')))
+        return false;
     *path = Trim(t.substr(7, t.size() - 8));
     return !path->empty();
 }
@@ -1468,7 +1602,7 @@ void Expand(const std::string &file, Document &doc, const ReadFileFn &read, std:
             std::set<std::string> &included, bool top) {
     std::vector<Block> out;
     for (Block &b : doc.blocks) {
-        // `@import{path}` in the body, or `//? Import: path` in the header:
+        // `\import(path)` in the body, or `//? Import: path` in the header:
         // either way the file's blocks follow the line that names it, so
         // header imports land in the order the header lists them.
         const bool header = b.kind == BlockKind::Meta && Lower(b.keyword) == "import";
@@ -1887,11 +2021,21 @@ struct Emitter {
         return b->text.substr(static_cast<size_t>(from), static_cast<size_t>(to - from));
     }
 
-    // `@name{arg}` directive line: name+braces markup, arg styled.
+    // Where a directive line's `\` (or `@`) is, and its group's `(` (or
+    // `{`) after it; -1 for either that is missing.
+    static int SigilAt(const std::string &s) {
+        const int i = Indent(s);
+        return At(s, i) == '@' || At(s, i) == '\\' ? i : -1;
+    }
+    static int OpenerAt(const std::string &s, int at) {
+        return static_cast<int>(s.find_first_of("{(", static_cast<size_t>(at < 0 ? 0 : at)));
+    }
+
+    // `\name(arg)` directive line: name+parentheses markup, arg styled.
     void Directive(int line, const std::string &target) {
         std::string s = LineText(line);
-        int at = static_cast<int>(s.find('@'));
-        int brace = static_cast<int>(s.find('{', static_cast<size_t>(at < 0 ? 0 : at)));
+        int at = SigilAt(s);
+        int brace = OpenerAt(s, at);
         Span d;
         d.style = kDirective;
         d.target = target;
@@ -1904,6 +2048,38 @@ struct Emitter {
         if (g < 0) g = static_cast<int>(s.size());
         Line(line, at, g, d);
         TrailingComment(line, g);
+    }
+    // A \caption(...) / \alttext(...) under a block, over one line or
+    // several: the `@name{` opener and closing `}` are markup (a caption's
+    // opener reads "Caption: " concealed), a caption's text is styled
+    // inline, an alt text's is the directive colour throughout.
+    void Attribute(const Block &blk, int first, int last, int close_col, bool caption) {
+        const std::string s0 = LineText(first);
+        const int at = SigilAt(s0);
+        const int brace = OpenerAt(s0, at);
+        if (at < 0 || brace < 0 || last < first || close_col < 0) return;
+        Span d;
+        d.style = kDirective;
+        d.markup = true;
+        d.replace = caption ? "Caption: " : "";
+        Line(first, at, brace + 1, d);
+        if (caption) {
+            Span cap;
+            cap.style = kItalic;
+            Inlines(blk.caption_inlines, cap);
+        } else {
+            Span a;
+            a.style = kDirective;
+            for (int line = first; line <= last; ++line) {
+                const int from = line == first ? brace + 1 : 0;
+                const int to = line == last ? close_col : static_cast<int>(LineText(line).size());
+                Line(line, from, to, a);
+            }
+        }
+        Span close = d;
+        close.replace.clear();
+        Line(last, close_col, close_col + 1, close);
+        TrailingComment(last, close_col + 1);
     }
     void TrailingComment(int line, int col) {
         std::string s = LineText(line);
@@ -1993,33 +2169,8 @@ struct Emitter {
                 } else {
                     CodeSpans(blk);
                 }
-                if (blk.caption_line >= 0) {
-                    Directive(blk.caption_line, "");
-                    // Caption text itself gets inline styling on top of the directive colour.
-                    std::string s = LineText(blk.caption_line);
-                    int brace = static_cast<int>(s.find('{'));
-                    int g = ReadGroup(s, brace, static_cast<int>(s.size()));
-                    if (brace >= 0 && g > 0) {
-                        out.erase(std::remove_if(out.begin(), out.end(),
-                                                 [&](const Span &sp) {
-                                                     return sp.line == blk.caption_line &&
-                                                            (sp.style & kDirective) && sp.col_start <= brace;
-                                                 }),
-                                  out.end());
-                        Span d;
-                        d.style = kDirective;
-                        d.markup = true;
-                        d.replace = "Caption: ";
-                        Line(blk.caption_line, static_cast<int>(s.find('@')), brace + 1, d);
-                        Span cap;
-                        cap.style = kItalic;
-                        Inlines(blk.caption_inlines, cap);
-                        Span close = d;
-                        close.replace.clear();
-                        Line(blk.caption_line, g - 1, g, close);
-                    }
-                }
-                if (blk.alt_line >= 0) Directive(blk.alt_line, "");
+                if (blk.caption_line >= 0) Attribute(blk, blk.caption_line, blk.caption_line_end, blk.caption_close_col, true);
+                if (blk.alt_line >= 0) Attribute(blk, blk.alt_line, blk.alt_line_end, blk.alt_close_col, false);
                 break;
             }
             case BlockKind::Citation: {
@@ -2065,15 +2216,15 @@ struct Emitter {
                 Directive(blk.line_start, "");
                 break;
             case BlockKind::Abstract: {
-                // `@abstract{` reads as the section's label -- on a line of
+                // `\abstract(` reads as the section's label -- on a line of
                 // its own, or run in before the text that follows it -- and
-                // the closing `}` goes away.
+                // the closing `)` goes away.
                 Span mk;
                 mk.style = kDirective | kAbstract;
                 mk.markup = true;
                 std::string s = LineText(blk.line_start);
-                int at = static_cast<int>(s.find('@'));
-                int open = static_cast<int>(s.find('{', static_cast<size_t>(std::max(at, 0))));
+                int at = SigilAt(s);
+                int open = OpenerAt(s, at);
                 if (at < 0 || open < 0) break;
                 bool alone = Trim(s.substr(static_cast<size_t>(open) + 1)).empty();
                 mk.replace = alone ? "Abstract" : "Abstract. ";
@@ -2530,7 +2681,7 @@ struct HtmlWriter {
                     if (!e.title.empty()) entry += "<em>" + Esc(e.title) + "</em>";
                     entry += Esc(e.rest);
                     // The entry's fields ride along as data-bib-* attributes,
-                    // so an HTML import gets the @citation back.
+                    // so an HTML import gets the \citation back.
                     std::string data = " data-key=\"" + Esc(key) + "\"";
                     const Citation &cit = doc.citations.at(key);
                     for (const std::string &name : cit.field_order)
@@ -2872,6 +3023,141 @@ std::vector<RenderedLine> RenderBibliography(const Document &doc, int width) {
         out.push_back(line);
     }
     return out;
+}
+
+namespace {
+// A run of text in one style, and a word made of such runs (a word can
+// change style midway: "*bold*," is two runs, one word).
+struct StyledPiece {
+    std::string text;
+    std::uint32_t style = 0;
+};
+using StyledWord = std::vector<StyledPiece>;
+
+// Inline content flattened to styled text, split into words at blanks.
+void FlattenInlines(const Document &doc, const std::vector<Inline> &ins, std::uint32_t style,
+                    std::vector<StyledWord> *words, bool *space_before) {
+    auto emit = [&](const std::string &text, std::uint32_t st) {
+        size_t k = 0;
+        while (k < text.size()) {
+            if (text[k] == ' ' || text[k] == '\t' || text[k] == '\n') {
+                *space_before = true;
+                ++k;
+                continue;
+            }
+            size_t e = k;
+            while (e < text.size() && text[e] != ' ' && text[e] != '\t' && text[e] != '\n') ++e;
+            if (*space_before || words->empty()) words->emplace_back();
+            *space_before = false;
+            StyledWord &w = words->back();
+            if (!w.empty() && w.back().style == st) w.back().text += text.substr(k, e - k);
+            else w.push_back({text.substr(k, e - k), st});
+            k = e;
+        }
+    };
+    for (const Inline &x : ins) {
+        const std::uint32_t st = style | FlagFor(x.kind);
+        switch (x.kind) {
+            case InlineKind::Text:
+                emit(x.text, style);
+                break;
+            case InlineKind::Verbatim:
+            case InlineKind::Math:
+                emit(x.text, st);
+                break;
+            case InlineKind::Cite:
+            case InlineKind::CiteP:
+                emit(doc.citations.count(x.text) ? CiteLabel(doc, x.text, x.kind == InlineKind::CiteP) : "[?" + x.text + "]",
+                     st);
+                break;
+            case InlineKind::Footnote:
+                emit(SuperNumber(x.number), style);
+                break;
+            case InlineKind::Comment:
+                break;
+            default:
+                FlattenInlines(doc, x.children, st, words, space_before);
+                break;
+        }
+    }
+}
+
+// Words filled greedily into lines of at most `width` columns (a word
+// longer than that gets a line of its own), each centred when `center`.
+std::vector<RenderedLine> FillWords(const std::vector<StyledWord> &words, int width, bool center) {
+    std::vector<RenderedLine> out;
+    RenderedLine line;
+    int cols = 0;
+    auto word_cols = [](const StyledWord &w) {
+        int c = 0;
+        for (const StyledPiece &p : w) c += Cols(p.text);
+        return c;
+    };
+    auto finish = [&] {
+        if (line.text.empty()) return;
+        if (center && cols < width) {
+            const int pad = (width - cols) / 2;
+            line.text.insert(0, static_cast<size_t>(pad), ' ');
+            for (RenderedSpan &sp : line.spans) {
+                sp.col_start += pad;
+                sp.col_end += pad;
+            }
+        }
+        out.push_back(std::move(line));
+        line = RenderedLine();
+        cols = 0;
+    };
+    for (const StyledWord &w : words) {
+        const int wc = word_cols(w);
+        if (cols > 0 && cols + 1 + wc > width) finish();
+        if (cols > 0) {
+            line.text += ' ';
+            ++cols;
+            // A space between two runs of one style belongs to them (an
+            // underline or highlight stays unbroken across it).
+            if (!line.spans.empty() && line.spans.back().col_end == static_cast<int>(line.text.size()) - 1 &&
+                line.spans.back().style == w.front().style)
+                line.spans.back().col_end++;
+        }
+        for (const StyledPiece &p : w) {
+            const int from = static_cast<int>(line.text.size());
+            line.text += p.text;
+            const int to = static_cast<int>(line.text.size());
+            if (p.style == 0) continue;
+            if (!line.spans.empty() && line.spans.back().style == p.style && line.spans.back().col_end == from)
+                line.spans.back().col_end = to;
+            else
+                line.spans.push_back({from, to, p.style, 0});
+        }
+        cols += wc;
+    }
+    finish();
+    return out;
+}
+}  // namespace
+
+std::vector<RenderedLine> RenderCaption(const Document &doc, const Block &b, const std::string &label, int width,
+                                        bool center) {
+    std::vector<StyledWord> words;
+    bool space = true;
+    if (!label.empty()) {
+        // "Figure 1:" as one or two words of its own style.
+        std::vector<Inline> lead(1);
+        lead[0].text = label + ":";
+        FlattenInlines(doc, lead, kDirective | kBold, &words, &space);
+        space = true;
+    }
+    FlattenInlines(doc, b.caption_inlines, kItalic, &words, &space);
+    return FillWords(words, std::max(8, width), center);
+}
+
+std::vector<RenderedLine> RenderAltText(const std::string &alt, int width, bool center) {
+    std::vector<StyledWord> words;
+    bool space = true;
+    std::vector<Inline> text(1);
+    text[0].text = alt;
+    FlattenInlines(Document(), text, kComment | kItalic, &words, &space);
+    return FillWords(words, std::max(8, width), center);
 }
 
 }  // namespace mepml

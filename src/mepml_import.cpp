@@ -93,6 +93,52 @@ std::string GroupEsc(const std::string &s) {
     return o;
 }
 
+// The text of a `\name(...)` group: a parenthesis with no partner takes a
+// backslash, so the group closes where it should. (An unmatched `(` never
+// comes before an unmatched `)`, so no `\(` ... `\)` pair reads as maths.)
+std::string ParenEsc(const std::string &s) {
+    std::vector<size_t> open, lone;
+    for (size_t k = 0; k < s.size(); ++k) {
+        if (s[k] == '\\') ++k;
+        else if (s[k] == '(') open.push_back(k);
+        else if (s[k] == ')' && open.empty()) lone.push_back(k);
+        else if (s[k] == ')') open.pop_back();
+    }
+    lone.insert(lone.end(), open.begin(), open.end());
+    if (lone.empty()) return s;
+    std::sort(lone.begin(), lone.end());
+    std::string o;
+    size_t at = 0;
+    for (size_t k : lone) {
+        o += s.substr(at, k - at) + "\\";
+        at = k;
+    }
+    return o + s.substr(at);
+}
+
+// An argument before a command's text (a font, a colour, a key): it ends at
+// a comma, so it holds none, nor any parenthesis.
+std::string ArgEsc(const std::string &s) {
+    std::string o;
+    for (char c : s)
+        if (c != ',' && c != '(' && c != ')') o += c;
+    return Trim(o);
+}
+
+// A citation as mepml: `\citation(key, fields)`, or the older
+// `@citation{key}{fields}` when a parenthesis in the fields would end the
+// group early (inside a `{...}` value there is no escaping it).
+std::string CitationEntry(const std::string &key, const std::string &fields) {
+    int depth = 0;
+    for (size_t k = 0; k < fields.size() && depth >= 0; ++k) {
+        if (fields[k] == '\\') ++k;
+        else if (fields[k] == '(') ++depth;
+        else if (fields[k] == ')') --depth;
+    }
+    if (depth != 0) return "@citation{" + key + "}{" + fields + "\n}";
+    return "\\citation(" + ArgEsc(key) + "," + fields + "\n)";
+}
+
 // A link target inside [text|url]: `|` and `]` would end it early.
 std::string UrlEsc(const std::string &s) {
     std::string o;
@@ -146,9 +192,9 @@ std::string RenderPlainSegs(const std::vector<Seg> &segs, size_t from, size_t to
                 break;
             case Seg::Math: piece = "\\(" + Trim(sg.text) + "\\)"; break;
             case Seg::DisplayMath: piece = "$$" + Trim(sg.text) + "$$"; break;
-            case Seg::Footnote: piece = "\\fn{" + sg.text + "}"; break;
-            case Seg::Cite: piece = "\\cite{" + sg.text + "}"; break;
-            case Seg::CiteP: piece = "\\citep{" + sg.text + "}"; break;
+            case Seg::Footnote: piece = "\\fn(" + ParenEsc(sg.text) + ")"; break;
+            case Seg::Cite: piece = "\\cite(" + ArgEsc(sg.text) + ")"; break;
+            case Seg::CiteP: piece = "\\citep(" + ArgEsc(sg.text) + ")"; break;
             case Seg::Text: {
                 // Whitespace at the run's edges goes outside its markers.
                 // Zero-width spaces are dropped: they are how Org escapes a
@@ -182,9 +228,10 @@ std::string RenderPlainSegs(const std::vector<Seg> &segs, size_t from, size_t to
                     body = std::string(m.open) + body + m.close;
                 }
                 (void)any_word_marker;
-                if (!sg.f.size.empty()) body = "\\fs{" + sg.f.size + "}{" + body + "}";
-                if (!sg.f.font.empty()) body = "\\f{" + GroupEsc(sg.f.font) + "}{" + body + "}";
-                if (!sg.f.color.empty()) body = "\\color{" + GroupEsc(sg.f.color) + "}{" + body + "}";
+                if (!sg.f.size.empty() || !sg.f.font.empty() || !sg.f.color.empty()) body = ParenEsc(body);
+                if (!sg.f.size.empty()) body = "\\fs(" + ArgEsc(sg.f.size) + ", " + body + ")";
+                if (!sg.f.font.empty()) body = "\\f(" + ArgEsc(sg.f.font) + ", " + body + ")";
+                if (!sg.f.color.empty()) body = "\\color(" + ArgEsc(sg.f.color) + ", " + body + ")";
                 out += body + trail;
                 continue;
             }
@@ -318,13 +365,13 @@ struct Out {
         for (char &c : text)
             if (c == '\n') c = ' ';
         if (text.empty()) return;
-        if (last == kFigure || last == kTable || last == kCode) Attach("@caption{" + text + "}");
+        if (last == kFigure || last == kTable || last == kCode) Attach("\\caption(" + ParenEsc(text) + ")");
         else Paragraph(segs);
     }
     void Image(const std::string &src, const std::string &alt) {
         if (src.empty()) return;
-        std::string o = "@image{" + GroupEsc(src) + "}";
-        if (!alt.empty()) o += "\n@alttext{" + GroupEsc(alt) + "}";
+        std::string o = "\\image(" + ParenEsc(src) + ")";
+        if (!alt.empty()) o += "\n\\alttext(" + ParenEsc(alt) + ")";
         Block(o, kFigure);
     }
     void Callout(const std::string &kind, const std::vector<Seg> &segs) {
@@ -359,20 +406,7 @@ struct Out {
         if (texts.empty()) return;
         std::string body;
         for (const std::string &t : texts) body += (body.empty() ? "" : "\n\n") + t;
-        // Its closing brace is the first unbalanced `}`: prose that would
-        // unbalance it stays ordinary paragraphs instead.
-        int depth = 0;
-        bool ok = true;
-        for (size_t k = 0; k < body.size() && ok; ++k) {
-            if (body[k] == '\\') ++k;
-            else if (body[k] == '{') ++depth;
-            else if (body[k] == '}' && --depth < 0) ok = false;
-        }
-        if (!ok || depth != 0) {
-            for (const std::vector<Seg> &p : paras) Paragraph(p);
-            return;
-        }
-        Block("@abstract{\n" + body + "\n}");
+        Block("\\abstract(\n" + ParenEsc(body) + "\n)");
     }
     void Rule() { Block("---"); }
     void Comment(const std::string &text) {
@@ -532,7 +566,7 @@ namespace {
 struct HtmlReader {
     Out out;
     std::map<std::string, std::string> footnotes;  // "#fn1" -> rendered mepml
-    std::vector<std::string> citations;            // @citation blocks from a bibliography's data-bib-*
+    std::vector<std::string> citations;            // \citation blocks from a bibliography's data-bib-*
     std::vector<std::string> html_result_sources;  // HtmlResultSources(), in document order
     size_t next_html_result = 0;
 
@@ -906,7 +940,7 @@ struct HtmlReader {
             } else if (t == "blockquote") {
                 out.Callout("NOTE", InlOf(c));
             } else if (t == "nav" && HasClass(c, "toc")) {
-                out.Block("@toc");
+                out.Block("\\toc");
             } else if ((t == "section" || t == "div") && HasClass(c, "abstract")) {
                 // mep's own and pandoc's: a title element, then paragraphs.
                 std::vector<std::vector<Seg>> paras;
@@ -928,13 +962,13 @@ struct HtmlReader {
                                 fields += "\n  " + kv.first.substr(9) + " = {" + GroupEsc(kv.second) + "},";
                             }
                             if (!fields.empty()) fields.pop_back();
-                            citations.push_back("@citation{" + Attr(k.get(), "data-key") + "}{" + fields + "\n}");
+                            citations.push_back(CitationEntry(Attr(k.get(), "data-key"), fields));
                         }
                         entries(k.get());
                     }
                 };
                 entries(c);
-                out.Block("@bibliography");
+                out.Block("\\bibliography");
             } else if (t == "div" && HasClass(c, "callout")) {
                 std::string kind = "NOTE";
                 std::vector<Seg> body;
@@ -954,7 +988,7 @@ struct HtmlReader {
                     else if (k->type == DomNodeType::Element && HasClass(k.get(), "caption")) cap = InlOf(k.get());
                 }
                 out.Math(tex);
-                if (!Attr(c, "aria-label").empty()) out.Attach("@alttext{" + GroupEsc(Attr(c, "aria-label")) + "}");
+                if (!Attr(c, "aria-label").empty()) out.Attach("\\alttext(" + ParenEsc(Attr(c, "aria-label")) + ")");
                 if (!cap.empty()) out.Caption(cap);
             } else if (t == "dl") {
                 for (const auto &k : c->children) {
@@ -1768,10 +1802,10 @@ struct MdReader {
                     out.Abstract(paras);
                     continue;
                 }
-                // mep's own markers (see MdWriter): @toc / @bibliography
+                // mep's own markers (see MdWriter): \toc / \bibliography
                 // stand for the heading and list that follow them.
                 if (text == "mepml:toc" || text == "mepml:bibliography") {
-                    out.Block(text == "mepml:toc" ? "@toc" : "@bibliography");
+                    out.Block(text == "mepml:toc" ? "\\toc" : "\\bibliography");
                     size_t n = i + 1;
                     while (n < lines.size() && Trim(lines[n]).empty()) ++n;
                     if (n < lines.size() && StartsWith(Trim(lines[n]), "#")) ++n;
@@ -2185,12 +2219,12 @@ struct OrgReader {
             }
             if (key == "toc") {
                 flush();
-                out.Block("@toc");
+                out.Block("\\toc");
                 continue;
             }
             if (key == "print_bibliography") {
                 flush();
-                out.Block("@bibliography");
+                out.Block("\\bibliography");
                 continue;
             }
             if (key == "results") {
@@ -2220,7 +2254,7 @@ struct OrgReader {
                     }
                 }
                 i = k - 1;
-                if (!image.empty()) res.push_back("@image{" + image + "}");
+                if (!image.empty()) res.push_back("\\image(" + ParenEsc(image) + ")");
                 out.Results(res, format);
                 TakeCaption();
                 continue;
@@ -2318,9 +2352,9 @@ struct OrgReader {
                     text += (text.empty() ? "" : "\n") + (Trim(lines[k]).size() > 2 ? Trim(lines[k]).substr(2) : "");
                 i = k - 1;
                 // mep's own marker (see OrgWriter): the References headline
-                // and list that follow are @bibliography.
+                // and list that follow are \bibliography.
                 if (text == "mepml:bibliography") {
-                    out.Block("@bibliography");
+                    out.Block("\\bibliography");
                     size_t n = k;
                     if (n < lines.size() && StartsWith(lines[n], "* ")) ++n;
                     while (n < lines.size() && !Trim(lines[n]).empty()) ++n;
@@ -2893,7 +2927,7 @@ struct OfficeProps {
                     fields += "\n  " + l.substr(0, tab) + " = {" + GroupEsc(l.substr(tab + 1)) + "},";
                 }
                 if (!fields.empty()) fields.pop_back();
-                citations->push_back("@citation{" + kv.first.substr(11) + "}{" + fields + "\n}");
+                citations->push_back(CitationEntry(kv.first.substr(11), fields));
             }
         }
         for (const auto &m : meta) out.meta.push_back("//? " + m.second);
@@ -3000,8 +3034,8 @@ struct Assembler {
         return t;
     }
     void Para(ParaKind kind, int level, std::vector<Seg> segs, bool gray) {
-        if (kind == ParaKind::Toc) return;  // the table of contents' own entries: @toc regenerates them
-        // An abstract's title is implied by @abstract; its paragraphs
+        if (kind == ParaKind::Toc) return;  // the table of contents' own entries: \toc regenerates them
+        // An abstract's title is implied by \abstract; its paragraphs
         // gather until something else arrives.
         if (kind == ParaKind::AbstractTitle) {
             Flush();
@@ -3053,7 +3087,7 @@ struct Assembler {
             case ParaKind::Author: out.meta.push_back("//? Author: " + Trim(Plain(segs))); break;
             case ParaKind::Date: out.meta.push_back("//? Date: " + Trim(Plain(segs))); break;
             case ParaKind::Heading: out.Heading(level, segs); break;
-            case ParaKind::TocHeading: out.Block("@toc"); break;
+            case ParaKind::TocHeading: out.Block("\\toc"); break;
             case ParaKind::Quote: {
                 std::string kind_word = "NOTE";
                 // "KEYWORD: text" in bold -- mep's own callout export.
@@ -3130,7 +3164,7 @@ struct Assembler {
     // A heading carrying the mepml_bibliography bookmark.
     void Bibliography() {
         Flush();
-        out.Block("@bibliography");
+        out.Block("\\bibliography");
         bibliography = true;
     }
 };
@@ -3904,7 +3938,7 @@ struct OdtReader {
                 Body(c);
             } else if (nm == "text:table-of-content") {
                 as.Flush();
-                as.out.Block("@toc");
+                as.out.Block("\\toc");
             }
         }
     }

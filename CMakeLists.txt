@@ -472,6 +472,10 @@ add_library(mep_core STATIC
     src/cad_fem_api.cpp
     src/cad_fem_methods.cpp
     src/wav_doc.cpp
+    # Music-player pane: the WAV path (via wav_doc.cpp above) + dispatch to the
+    # vendored mp3/flac/ogg decoders in the mep_audiodec lib below. Strict-clean
+    # (it only touches clean headers), so it stays in mep_core.
+    src/music_decode.cpp
     src/svg_doc.cpp
     src/pdf_doc.cpp
     # PDFIUM_REMOVAL_PLAN.md Phase 13: pdf_doc.cpp's own backend, swapped
@@ -609,7 +613,14 @@ set(MEP_UNITY_BATCH_SIZE "8" CACHE STRING "Files per unity batch when MEP_UNITY_
 if(MEP_UNITY_BUILD)
     set_target_properties(mep_core PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE ${MEP_UNITY_BATCH_SIZE})
 endif()
-target_link_libraries(mep_core PUBLIC lua tree_sitter ${TS_GRAMMAR_LIBS})
+# Vendored single-header audio decoders (dr_mp3, dr_flac, stb_vorbis) for the
+# music-player pane, in their own library compiled WITHOUT mep's strict
+# -Wall/-Werror flags -- those public-domain decoders aren't warning-clean, the
+# same reason lua/tree_sitter are kept out of the strict build above. The clean
+# audio_decoders.h wrapper is all mep_core (via music_decode.cpp) sees.
+add_library(mep_audiodec STATIC src/audio_decoders.cpp)
+target_include_directories(mep_audiodec PUBLIC src)
+target_link_libraries(mep_core PUBLIC lua tree_sitter mep_audiodec ${TS_GRAMMAR_LIBS})
 if(NOT EMSCRIPTEN)
     # X11::X11: gfx/backend_native.cpp's own X11/GLX window/input/context
     # implementation (GLFW_REMOVAL_PLAN.md) -- GLX itself is part of
@@ -708,6 +719,21 @@ mep_add_gfx_native_smoke(mep-gfx-native-integration-smoke src/gfx/native_gfx_smo
 # IsSoundPlaying, volume, unload) -- see gfx/native_audio_smoke_main.cpp.
 mep_add_gfx_native_smoke(mep-gfx-native-audio-smoke src/gfx/native_audio_smoke_main.cpp)
 
+# Music-player decoder smoke test: decodes wav/mp3/flac/ogg via DecodeAudioFile
+# (no audio device). Links the vendored-decoder lib + the WAV path directly.
+add_executable(mep-music-decode-smoke EXCLUDE_FROM_ALL src/music_decode_smoke_main.cpp src/music_decode.cpp src/wav_doc.cpp)
+target_include_directories(mep-music-decode-smoke PRIVATE src)
+target_link_libraries(mep-music-decode-smoke PRIVATE mep_audiodec)
+target_compile_options(mep-music-decode-smoke PRIVATE ${MEP_STRICT_FLAGS})
+
+# Music-player playback smoke test: the full decode -> LoadSoundFromPcm ->
+# play/pause/resume path against the native ALSA backend (the same transport
+# calls the pane's buttons make). Uses the gfx-native smoke scaffold, plus
+# music_decode.cpp + the vendored-decoder lib.
+mep_add_gfx_native_smoke(mep-music-playback-smoke src/gfx/native_music_playback_smoke_main.cpp)
+target_sources(mep-music-playback-smoke PRIVATE src/music_decode.cpp)
+target_link_libraries(mep-music-playback-smoke PRIVATE mep_audiodec)
+
 # Model-import smoke test (Stage B8): loads a real model file and
 # renders it, see gfx/native_model_smoke_main.cpp.
 mep_add_gfx_native_smoke(mep-gfx-native-model-smoke src/gfx/native_model_smoke_main.cpp)
@@ -744,7 +770,8 @@ target_sources(mep-gfx-native-brep-smoke PRIVATE src/cad_topology.cpp src/cad_pc
 # rather than relying on `all` to have built everything as a side effect.
 add_custom_target(tests)
 add_dependencies(tests mep-gfx-native-integration-smoke mep-gfx-native-audio-smoke mep-gfx-native-model-smoke
-    mep-gfx-native-index32-smoke mep-gfx-native-fem-smoke mep-gfx-native-brep-smoke)
+    mep-gfx-native-index32-smoke mep-gfx-native-fem-smoke mep-gfx-native-brep-smoke
+    mep-music-decode-smoke mep-music-playback-smoke)
 
 add_executable(mep
     src/main.cpp

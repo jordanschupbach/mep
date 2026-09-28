@@ -221,6 +221,14 @@ enum class Mode {
     // Pdf/Office/Sheet are, precisely so :e keeps editing the source).
     // See Editor::HandleHtmlInput.
     Html,
+    // A focused music-player pane (a MusicSession buffer -- see below,
+    // opened by the :music command). Drills an artist/album/song folder
+    // hierarchy (metadata is the folder names, no ID3) with a transport bar
+    // (prev/play-pause/next + volume). Same "':'/leader forwarded, own keys
+    // otherwise" shape as Mode::Video: j/k move the list cursor, Enter drills
+    // or plays, Backspace/h goes up, Space play/pause, n/p next/prev, +/-
+    // volume. See Editor::HandleMusicInput.
+    Music,
     // A focused pane showing a sidebar's content as an ordinary tabbable
     // buffer (mep.sidebar_open_pane, sidebar_pane_buffers_ below) rather
     // than docked to a screen edge (Mode::Sidebar) -- e.g. the R language
@@ -2565,6 +2573,51 @@ struct VideoSession {
         int w = 0, h = 0;
     };
     std::unordered_map<int, DecodedFrame> frames;
+};
+
+// One music-player pane's state, keyed by buffer id the same way Video/
+// ImageSession are (the buffer's Buffer::lines stays a dummy empty line;
+// real content lives here). The pane drills an artist/album/song folder tree
+// (`root` is the top the :music command opened; `cur_dir` is the level shown
+// now, and the breadcrumb is their relative difference); metadata is purely
+// the folder/file names, no ID3. Playback owns one gfx::Sound at a time
+// (decoded to PCM16 by DecodeAudioFile). The playlist is the songs of the
+// album a track was started from, held separately from the browse cursor so
+// next/prev and end-of-track auto-advance keep working even as the user
+// browses elsewhere in the tree.
+struct MusicSession {
+    int buffer_id = 0;
+    std::string root;
+    std::string cur_dir;
+
+    // Browse view of cur_dir: directories first then songs, each sorted
+    // alpha (populated by OpenMusicInPlace / directory navigation via
+    // ListDirectory -- Editor::DirEntry is a nested type not visible here, so
+    // its fields are copied into this flat struct). `selected` indexes into
+    // `entries`; `scroll` is a pixel offset into the drawn list (clamped by
+    // DrawMusicPane).
+    struct Entry {
+        std::string name;
+        bool is_dir = false;
+    };
+    std::vector<Entry> entries;
+    int selected = 0;
+    float scroll = 0.0f;
+
+    // Playback.
+    gfx::Sound sound{};
+    bool sound_loaded = false;
+    bool playing = false;
+    float volume = 0.8f;
+    std::string cur_song_path;
+    std::string cur_title;
+    std::string cur_album;
+    std::string cur_artist;
+    double cur_duration = 0.0;  // seconds, for the transport readout
+    // Song paths of the album the current track came from, + the index of
+    // the playing one, for next/prev and auto-advance.
+    std::vector<std::string> playlist;
+    int playlist_index = -1;
 };
 
 // One HTML-preview pane's state, keyed by buffer id the same way Image/
@@ -5476,6 +5529,39 @@ public:
     // the leader key are forwarded, matching Mode::Image/Pdf. See
     // Mode::Video's own comment.
     void HandleVideoInput();
+
+    // --- Music-player panes (opened via the :music command). Mirrors the
+    // Video block above for the buffer-identity plumbing; playback drives the
+    // gfx audio facade (gfx::PlaySound etc.) with PCM decoded by
+    // DecodeAudioFile (music_decode.h). ---
+    /** @brief True if the buffer is a music-player pane. */
+    bool IsMusicBuffer(int buffer_id) const;
+    /** @brief Mutable music session for a buffer id (DrawMusicPane mutates it directly), or nullptr. */
+    MusicSession *GetMusicMutable(int buffer_id);
+    // Resolves `root` (an explicit path, else $MEP_MUSIC_DIR, else ~/Music),
+    // creates an empty buffer, builds the MusicSession browsing that root in
+    // place, and points the current pane at it -- mirrors OpenVideoInPlace.
+    void OpenMusicInPlace(const std::string &root);
+    // j/k move the list cursor; Enter/l drills into a folder or plays a song;
+    // Backspace/h goes up a level (clamped at root); Space play/pause; n/p
+    // next/prev; +/- volume; ':' and leader forwarded. Mirrors HandleVideoInput.
+    void HandleMusicInput();
+    // Reloads sess.entries from `dir` (directories first, then songs by
+    // supported extension, each alpha) and resets the selection.
+    void MusicLoadDir(MusicSession &sess, const std::string &dir);
+    // Decodes `path` and starts playback, building `playlist` from the songs
+    // in that file's own directory so next/prev/auto-advance work. Sets the
+    // now-playing title/album/artist from the folder names.
+    void MusicPlaySong(MusicSession &sess, const std::string &path);
+    void MusicTogglePlay(MusicSession &sess);
+    void MusicNext(MusicSession &sess);
+    void MusicPrev(MusicSession &sess);
+    void MusicSetVolume(MusicSession &sess, float volume);
+    // Called each frame the pane is drawn: if a track finished on its own,
+    // auto-advance to the next song in the playlist (stopping at album end).
+    void MusicPollPlayback(int buffer_id);
+    // True if `name`'s extension is a format DecodeAudioFile can play.
+    static bool IsMusicFile(const std::string &name);
 
     // --- HTML-preview panes (opened via mep.html_open, kBuiltinTextTools
     // -- deliberately *not* reachable from LoadFile's extension dispatch,
@@ -12431,6 +12517,10 @@ private:
     // Keyed by buffer_id -- one entry per open video-playback pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, VideoSession> video_sessions_;
+    // Keyed by buffer_id -- one entry per open music-player pane. Unlike the
+    // maps above these ARE torn down (the loaded gfx::Sound is unloaded) when
+    // the buffer closes, see the erase site in CloseBuffer/DeleteBuffer.
+    std::unordered_map<int, MusicSession> music_sessions_;
     // Keyed by buffer_id -- one entry per open HTML-preview pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, HtmlSession> htmldocs_;

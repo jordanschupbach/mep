@@ -44,11 +44,13 @@
 #include <unistd.h>
 #endif
 
+#include "gfx/audio.h"
 #include "gfx/input.h"
 #include "gfx/platform.h"
 #include "gfx/renderer2d.h"
 #include "gfx/vecmath.h"
 #include "json.h"
+#include "music_decode.h"
 #include "persist.h"
 #include "collab_session.h"
 
@@ -4640,7 +4642,13 @@ Project *Editor::FindProject(int id) {
     return nullptr;
 }
 
-Editor::~Editor() = default;
+Editor::~Editor() {
+    // Stop any music-pane audio (an ALSA playback thread per loaded Sound) so
+    // quitting doesn't leave a track playing during teardown.
+    for (auto &kv : music_sessions_) {
+        if (kv.second.sound_loaded) gfx::UnloadSound(kv.second.sound);
+    }
+}
 
 void Editor::HandleInput() {
     TickCollaboration();
@@ -4735,6 +4743,9 @@ void Editor::HandleInput() {
             break;
         case Mode::Video:
             HandleVideoInput();
+            break;
+        case Mode::Music:
+            HandleMusicInput();
             break;
         case Mode::Html:
             HandleHtmlInput();
@@ -5654,6 +5665,7 @@ Mode Editor::WheelModeForBuffer(int buffer_id) const {
     if (IsViewerBuffer(buffer_id)) return Mode::Viewer;
     if (IsPdfBuffer(buffer_id)) return Mode::Pdf;
     if (IsVideoBuffer(buffer_id)) return Mode::Video;
+    if (IsMusicBuffer(buffer_id)) return Mode::Music;
     if (IsHtmlBuffer(buffer_id)) return Mode::Html;
     if (IsSidebarPaneBuffer(buffer_id)) return Mode::SidebarPane;
     if (IsOfficeBuffer(buffer_id)) return Mode::OfficeNormal;
@@ -6343,7 +6355,7 @@ bool Editor::BufferIsPristine(int buffer_id) const {
     // keep the dashboard up over it and, via BufferLabelForLua, stay out
     // of the buffer lists entirely.
     if (IsTerminalBuffer(buffer_id) || GetImageEditor(buffer_id) || IsModel3DBuffer(buffer_id) ||
-        IsCadSketchBuffer(buffer_id) || IsCadBuffer(buffer_id) || IsViewerBuffer(buffer_id)) {
+        IsCadSketchBuffer(buffer_id) || IsCadBuffer(buffer_id) || IsViewerBuffer(buffer_id) || IsMusicBuffer(buffer_id)) {
         return false;
     }
     return true;
@@ -7152,6 +7164,8 @@ void Editor::SyncModeToActivePaneBuffer() {
         }
     } else if (IsVideoBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Video;
+    } else if (IsMusicBuffer(CurPane().buffer_id)) {
+        mode_ = Mode::Music;
     } else if (IsHtmlBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Html;
     } else if (IsSidebarPaneBuffer(CurPane().buffer_id)) {
@@ -12327,6 +12341,184 @@ VideoSession *Editor::GetVideoMutable(int buffer_id) {
     return it == video_sessions_.end() ? nullptr : &it->second;
 }
 
+// --- Music-player panes ----------------------------------------------------
+
+bool Editor::IsMusicBuffer(int buffer_id) const { return music_sessions_.find(buffer_id) != music_sessions_.end(); }
+
+MusicSession *Editor::GetMusicMutable(int buffer_id) {
+    auto it = music_sessions_.find(buffer_id);
+    return it == music_sessions_.end() ? nullptr : &it->second;
+}
+
+bool Editor::IsMusicFile(const std::string &name) {
+    std::string::size_type dot = name.find_last_of('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = name.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext == "wav" || ext == "mp3" || ext == "flac" || ext == "ogg";
+}
+
+void Editor::MusicLoadDir(MusicSession &sess, const std::string &dir) {
+    sess.cur_dir = dir;
+    sess.entries.clear();
+    sess.selected = 0;
+    sess.scroll = 0.0f;
+    std::vector<DirEntry> raw = ListDirectory(dir);
+    // Directories first, then playable songs, each group alpha. Non-directory
+    // non-music files (cover art, .txt, ...) are hidden.
+    std::sort(raw.begin(), raw.end(), [](const DirEntry &a, const DirEntry &b) {
+        if (a.is_dir != b.is_dir) return a.is_dir;
+        return a.name < b.name;
+    });
+    for (const DirEntry &e : raw) {
+        if (e.name == "." || e.name == "..") continue;
+        if (e.is_dir) {
+            sess.entries.push_back({e.name, true});
+        } else if (IsMusicFile(e.name)) {
+            sess.entries.push_back({e.name, false});
+        }
+    }
+}
+
+void Editor::OpenMusicInPlace(const std::string &root) {
+    // Resolve the root: explicit arg, else $MEP_MUSIC_DIR, else ~/Music.
+    std::string resolved = root;
+    if (resolved.empty()) {
+        if (const char *env = std::getenv("MEP_MUSIC_DIR"); env != nullptr && env[0] != '\0') {
+            resolved = env;
+        } else if (const char *home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
+            resolved = std::string(home) + "/Music";
+        }
+    }
+    if (!resolved.empty() && resolved[0] == '~') {
+        if (const char *home = std::getenv("HOME"); home != nullptr && home[0] != '\0')
+            resolved = std::string(home) + resolved.substr(1);
+    }
+    std::error_code ec;
+    if (resolved.empty() || !std::filesystem::is_directory(resolved, ec)) {
+        status_message_ = "E-music: not a directory: " + (resolved.empty() ? "(none)" : resolved);
+        return;
+    }
+    resolved = std::filesystem::absolute(resolved, ec).lexically_normal().string();
+    while (resolved.size() > 1 && resolved.back() == '/') resolved.pop_back();
+
+    int buffer_id = CreateEmptyBuffer();
+    MusicSession sess;
+    sess.buffer_id = buffer_id;
+    sess.root = resolved;
+    MusicLoadDir(sess, resolved);
+    music_sessions_[buffer_id] = std::move(sess);
+
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    status_message_.clear();
+}
+
+void Editor::MusicPlaySong(MusicSession &sess, const std::string &path) {
+    std::string err;
+    std::vector<int16_t> samples;
+    int channels = 0, rate = 0;
+    if (!DecodeAudioFile(path, samples, channels, rate, err)) {
+        status_message_ = "E-music: " + err;
+        return;
+    }
+    if (!gfx::IsAudioDeviceReady()) gfx::InitAudioDevice();
+    if (!gfx::IsAudioDeviceReady()) {
+        status_message_ = "E-music: no audio device";
+        return;
+    }
+    if (sess.sound_loaded) {
+        gfx::UnloadSound(sess.sound);
+        sess.sound_loaded = false;
+    }
+    sess.sound = gfx::LoadSoundFromPcm(samples.data(), samples.size(), channels, rate);
+    if (sess.sound.frameCount == 0) {
+        status_message_ = "E-music: failed to load '" + path + "'";
+        return;
+    }
+    sess.sound_loaded = true;
+    gfx::SetSoundVolume(sess.sound, sess.volume);
+    gfx::PlaySound(sess.sound);
+    sess.playing = true;
+
+    // Metadata from the folder hierarchy: title = filename stem, album =
+    // parent dir, artist = grandparent dir.
+    std::filesystem::path p(path);
+    sess.cur_song_path = path;
+    sess.cur_title = p.stem().string();
+    sess.cur_album = p.parent_path().filename().string();
+    sess.cur_artist = p.parent_path().parent_path().filename().string();
+    sess.cur_duration = (channels > 0 && rate > 0)
+                            ? static_cast<double>(samples.size() / static_cast<size_t>(channels)) / static_cast<double>(rate)
+                            : 0.0;
+
+    // Build the playlist from the sibling songs in this file's directory so
+    // next/prev/auto-advance walk the album in listing order.
+    std::string song_dir = p.parent_path().string();
+    std::vector<DirEntry> raw = ListDirectory(song_dir);
+    std::sort(raw.begin(), raw.end(), [](const DirEntry &a, const DirEntry &b) { return a.name < b.name; });
+    sess.playlist.clear();
+    sess.playlist_index = -1;
+    for (const DirEntry &e : raw) {
+        if (e.is_dir || !IsMusicFile(e.name)) continue;
+        std::string full = song_dir + "/" + e.name;
+        if (full == path) sess.playlist_index = static_cast<int>(sess.playlist.size());
+        sess.playlist.push_back(full);
+    }
+    status_message_.clear();
+}
+
+void Editor::MusicTogglePlay(MusicSession &sess) {
+    if (!sess.sound_loaded) {
+        // Nothing loaded yet: start the selected song if the cursor is on one.
+        if (sess.selected >= 0 && sess.selected < static_cast<int>(sess.entries.size()) &&
+            !sess.entries[static_cast<size_t>(sess.selected)].is_dir) {
+            MusicPlaySong(sess, sess.cur_dir + "/" + sess.entries[static_cast<size_t>(sess.selected)].name);
+        }
+        return;
+    }
+    if (sess.playing) {
+        gfx::PauseSound(sess.sound);
+        sess.playing = false;
+    } else {
+        gfx::ResumeSound(sess.sound);
+        sess.playing = true;
+    }
+}
+
+void Editor::MusicNext(MusicSession &sess) {
+    if (sess.playlist.empty() || sess.playlist_index < 0) return;
+    if (sess.playlist_index + 1 >= static_cast<int>(sess.playlist.size())) return;  // at album end
+    MusicPlaySong(sess, sess.playlist[static_cast<size_t>(sess.playlist_index + 1)]);
+}
+
+void Editor::MusicPrev(MusicSession &sess) {
+    if (sess.playlist.empty() || sess.playlist_index <= 0) return;
+    MusicPlaySong(sess, sess.playlist[static_cast<size_t>(sess.playlist_index - 1)]);
+}
+
+void Editor::MusicSetVolume(MusicSession &sess, float volume) {
+    sess.volume = std::clamp(volume, 0.0f, 1.0f);
+    if (sess.sound_loaded) gfx::SetSoundVolume(sess.sound, sess.volume);
+}
+
+void Editor::MusicPollPlayback(int buffer_id) {
+    auto it = music_sessions_.find(buffer_id);
+    if (it == music_sessions_.end()) return;
+    MusicSession &sess = it->second;
+    // A track that finished on its own (device stopped while we still think
+    // we're playing) auto-advances to the next song in the album.
+    if (sess.playing && sess.sound_loaded && !gfx::IsSoundPlaying(sess.sound)) {
+        if (sess.playlist_index >= 0 && sess.playlist_index + 1 < static_cast<int>(sess.playlist.size())) {
+            MusicPlaySong(sess, sess.playlist[static_cast<size_t>(sess.playlist_index + 1)]);
+        } else {
+            sess.playing = false;  // album ended
+        }
+    }
+}
+
 void Editor::OpenVideoInPlace(const std::string &path) {
     int buffer_id = -1;
     for (size_t i = 0; i < buffers_.size(); i++) {
@@ -12459,6 +12651,81 @@ void Editor::HandleVideoInput() {
         }
         // Every other printable key is a deliberate no-op -- see Mode::Video's
         // own comment for why (no text to insert/operate on).
+        cp = gfx::GetCharPressed();
+    }
+}
+
+void Editor::HandleMusicInput() {
+    MusicSession *sess = nullptr;
+    {
+        auto it = music_sessions_.find(CurPane().buffer_id);
+        if (it == music_sessions_.end()) {
+            mode_ = Mode::Normal;
+            return;
+        }
+        sess = &it->second;
+    }
+
+    auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
+    auto move = [&](int delta) {
+        int n = static_cast<int>(sess->entries.size());
+        if (n == 0) return;
+        sess->selected = std::clamp(sess->selected + delta, 0, n - 1);
+    };
+    // Drill into the selected directory, or play the selected song.
+    auto activate = [&]() {
+        if (sess->selected < 0 || sess->selected >= static_cast<int>(sess->entries.size())) return;
+        const MusicSession::Entry &e = sess->entries[static_cast<size_t>(sess->selected)];
+        if (e.is_dir) {
+            MusicLoadDir(*sess, sess->cur_dir + "/" + e.name);
+        } else {
+            MusicPlaySong(*sess, sess->cur_dir + "/" + e.name);
+        }
+    };
+    // Go up one directory level, clamped at the pane's root.
+    auto ascend = [&]() {
+        if (sess->cur_dir == sess->root) return;
+        std::string parent = std::filesystem::path(sess->cur_dir).parent_path().string();
+        if (parent.empty()) return;
+        // Never navigate above root even if cur_dir somehow drifted outside it.
+        if (parent.size() < sess->root.size()) parent = sess->root;
+        MusicLoadDir(*sess, parent);
+    };
+
+    if (held(gfx::Key::Up)) move(-1);
+    if (held(gfx::Key::Down)) move(1);
+    if (held(gfx::Key::Enter) || held(gfx::Key::Right)) activate();
+    if (held(gfx::Key::Backspace) || held(gfx::Key::Left)) ascend();
+
+    int cp = gfx::GetCharPressed();
+    while (cp > 0) {
+        if (cp == ':') {
+            EnterCommand();
+            return;  // mode_ is no longer Music -- stop draining as this mode
+        } else if (cp == ' ') {
+            // Space = play/pause, ahead of the leader branch -- same strong
+            // media-player convention and reasoning as HandleVideoInput.
+            MusicTogglePlay(*sess);
+        } else if (cp == 'j') {
+            move(1);
+        } else if (cp == 'k') {
+            move(-1);
+        } else if (cp == 'l') {
+            activate();
+        } else if (cp == 'h') {
+            ascend();
+        } else if (cp == 'n') {
+            MusicNext(*sess);
+        } else if (cp == 'p') {
+            MusicPrev(*sess);
+        } else if (cp == '+' || cp == '=') {
+            MusicSetVolume(*sess, sess->volume + 0.05f);
+        } else if (cp == '-' || cp == '_') {
+            MusicSetVolume(*sess, sess->volume - 0.05f);
+        } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
+            TriggerWhichKey();
+            return;
+        }
         cp = gfx::GetCharPressed();
     }
 }
@@ -16204,6 +16471,13 @@ void Editor::BufferDeleteById(int target, bool force) {
     }
     buffers_[static_cast<size_t>(target)].deleted = true;
     NotebookCloseSession(target);
+    // A music pane's buffer owns a live audio Sound (an ALSA playback
+    // thread); unload it so :bd stops playback and frees the device rather
+    // than leaving it playing after the buffer is gone.
+    if (auto mit = music_sessions_.find(target); mit != music_sessions_.end()) {
+        if (mit->second.sound_loaded) gfx::UnloadSound(mit->second.sound);
+        music_sessions_.erase(mit);
+    }
 
     // Computed lazily -- only if some pane actually ends up with nothing
     // left in its own buffer_tabs once `target` is removed from it.
@@ -25855,6 +26129,7 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::PdfNav: return "PDF-NAV";
         case Mode::PdfAnnotate: return "PDF-ANNOT";
         case Mode::Video: return "VIDEO";
+        case Mode::Music: return "MUSIC";
         case Mode::Html: return "HTML";
         case Mode::SidebarPane: return "SIDEBAR";
         case Mode::OfficeNormal: return "NORMAL";
@@ -25919,6 +26194,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "w", "write", "wa", "wall", "q", "quit", "q!", "quit!", "qa", "qall", "qa!", "qall!",
         "wq", "x", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!", "split", "sp", "vsplit", "vs",
         "terminal", "term",
+        "music",
         "close", "tabnew", "tabdelete", "tabclose", "tabnext", "tabn", "tabprevious", "tabp", "tabN",
         "wsnew", "wsnew!", "wsdelete", "wsdelete!", "wsclose", "wsclose!", "wsnext", "wsn", "wsprevious", "wsp",
         "wsrename", "ws", "workspace", "wslist", "workspaces", "wsadopt", "wsprune", "wssave", "wsrestore",
@@ -28221,6 +28497,9 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         SplitCurrentPane(SplitDir::Vertical, args);
     } else if (name == "terminal" || name == "term") {
         OpenTerminal(args);
+    } else if (name == "music") {
+        OpenMusicInPlace(args);
+        SyncModeToActivePaneBuffer();
     } else if (name == "close") {
         ClosePane();
     } else if (name == "tabnew") {

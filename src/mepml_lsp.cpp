@@ -559,6 +559,7 @@ const std::vector<Vocab> &MetaVocab() {
         {"Author", "//? Author: name", "The author, for the exports' metadata."},
         {"Date", "//? Date: text", "The date, for the exports' metadata."},
         {"Option", "//? Option: Name=value", "A document option: an integer, a decimal or a string (quote it to force a string)."},
+        {"Export", "//? Export: pdf", "The format the Run button (the pane header's play button, <leader>rr, gr) exports to and opens: html (the default), pdf, docx, odt, rtf, md, org, tex or txt."},
         {"Exports", "//? Exports: results", "What the exports show of every code block: code, results, both (the default) or none. A block's own exports= (or echo=) wins. The editor always shows everything."},
         {"Import", "//? Import: file.mepml", "Includes another mepml file: its options and other header keys are inherited (this file's own win) and its content is included here, in the order the header lists its imports."},
     };

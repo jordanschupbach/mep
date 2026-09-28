@@ -2715,8 +2715,10 @@ struct HtmlWriter {
 
 // The standalone page's default look: a readable serif column that nothing
 // may widen (images scale down, wide tables and display math scroll inside
-// it), light and dark themes, and print rules. Colours are custom
-// properties so a user stylesheet can retheme it by overriding :root.
+// it), a light theme (whatever the reader's system prefers -- a document
+// reads like paper) with a dark one only on request (<html
+// data-theme="dark">), and print rules. Colours are custom properties so a
+// user stylesheet can retheme it by overriding :root.
 // Never name the results-html class here: mepml_import.cpp finds code
 // results by that text in the page (HtmlResultSources).
 const char *kCss = R"css(
@@ -2725,14 +2727,6 @@ const char *kCss = R"css(
   --code-bg: #eff1f3; --pre-bg: #f6f8fa; --th-bg: #f6f8fa; --mark: #fff3a3; --results-bg: #fffbeb; --results-rule: #e5c07b;
   --cite: #0b5cad; --missing: #c62828; --ins: #2f7d32; --del: #c62828;
   color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --fg: #e6e6e6; --muted: #9ba3ad; --bg: #16181c; --link: #7cb7ff; --rule: #3a3f47; --rule-strong: #c9d1d9;
-    --code-bg: #262a31; --pre-bg: #1e2227; --th-bg: #1e2227; --mark: #6b5a00; --results-bg: #262216; --results-rule: #9c7c2c;
-    --cite: #7cb7ff; --missing: #ff7b72; --ins: #7ee787; --del: #ff7b72;
-    color-scheme: dark;
-  }
 }
 :root[data-theme="dark"] {
   --fg: #e6e6e6; --muted: #9ba3ad; --bg: #16181c; --link: #7cb7ff; --rule: #3a3f47; --rule-strong: #c9d1d9;

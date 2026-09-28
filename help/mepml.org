@@ -17,6 +17,8 @@ language.
 
 | Key / command         | Does                                                      |
 |-----------------------+-----------------------------------------------------------|
+| play button, =gr=     | export the document and open the result beside it         |
+| =<leader>rr=          | the same                                                  |
 | =C-c C-c=             | run the code block under the cursor                       |
 | =<leader>kx=          | the same                                                  |
 | =C-c C-k=             | stop the block running under the cursor (a terminal)      |
@@ -593,6 +595,22 @@ or last line they move on to the text around it. On a contents entry,
 =Enter= jumps to its heading (=C-o= comes back).
 
 * Exporting and importing
+
+The play button in the pane's header (or =gr=, or =<leader>rr=) saves the
+document, exports it, and opens the result in a split on the right -- an
+HTML page, a PDF, a Word document -- refreshing that split on the next run
+instead of opening another. It exports HTML unless the header names a
+format:
+
+#+begin_example
+//? Title: My report
+//? Export: pdf
+#+end_example
+
+Any format the table below lists works (=html=, =pdf=, =docx=, =odt=,
+=rtf=, =md=, =org=, =tex=, =txt=). =Export:= is singular: =//? Exports:=
+is a different key, choosing which parts of each code block the exports
+show.
 
 =<leader>ke= (or =:MepmlExport=) exports the document beside its file,
 =notes.mepml= becoming =notes.docx= and so on. Imports are expanded and

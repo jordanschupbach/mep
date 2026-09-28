@@ -580,6 +580,8 @@ int main() {
         // page is sized for a phone's width.
         CHECK(html.find("<div class=\"table-wrap\"><table><caption>Table 1: Tab</caption>") != std::string::npos);
         CHECK(html.find("<meta name=\"viewport\"") != std::string::npos);
+        // Light by default, whatever the reader's system theme.
+        CHECK(html.find("prefers-color-scheme") == std::string::npos && html.find("color-scheme: light") != std::string::npos);
         // Several plots from one block: one figure, every figure closed.
         const Document two = Parse({"```r", "x", "```", "// result_begin:", "// @image{a.png}", "// @image{b.png}", "// result_end",
                                     "@caption{Two}"});

@@ -11,14 +11,6 @@
   --cite: #0b5cad; --missing: #c62828; --ins: #2f7d32; --del: #c62828;
   color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --fg: #e6e6e6; --muted: #9ba3ad; --bg: #16181c; --link: #7cb7ff; --rule: #3a3f47; --rule-strong: #c9d1d9;
-    --code-bg: #262a31; --pre-bg: #1e2227; --th-bg: #1e2227; --mark: #6b5a00; --results-bg: #262216; --results-rule: #9c7c2c;
-    --cite: #7cb7ff; --missing: #ff7b72; --ins: #7ee787; --del: #ff7b72;
-    color-scheme: dark;
-  }
-}
 :root[data-theme="dark"] {
   --fg: #e6e6e6; --muted: #9ba3ad; --bg: #16181c; --link: #7cb7ff; --rule: #3a3f47; --rule-strong: #c9d1d9;
   --code-bg: #262a31; --pre-bg: #1e2227; --th-bg: #1e2227; --mark: #6b5a00; --results-bg: #262216; --results-rule: #9c7c2c;
@@ -193,14 +185,14 @@ between-groups sums of squares and cross-products (SSCP) matrices are</p>
   \mathbf{B} = \sum_{k=1}^{K} n_k (\bar{\mathbf{x}}_k - \bar{\mathbf{x}})(\bar{\mathbf{x}}_k - \bar{\mathbf{x}})^\top .\]</div>
 <p><a class="cite" data-key="fisher1936" data-kind="cite" href="#cite-fisher1936">Fisher (1936)</a> looked for the linear combination
 \(z = \mathbf{a}^\top \mathbf{x}\) whose group means are as far apart as possible
-relative to the spread within groups. That is, he maximised the ratio</p>
+relative to the spread within groups. That is, he maximized the ratio</p>
 <div class="math-display" role="math" aria-label="J of a equals a-transpose B a divided by a-transpose W a.">\[J(\mathbf{a}) = \frac{\mathbf{a}^\top \mathbf{B}\,\mathbf{a}}{\mathbf{a}^\top \mathbf{W}\,\mathbf{a}} .\]</div>
-<p>Setting the derivative of \(J\) to zero gives the generalised eigenproblem</p>
+<p>Setting the derivative of \(J\) to zero gives the generalized eigenproblem</p>
 <div class="math-display" role="math" aria-label="B a equals lambda W a.">\[\mathbf{B}\,\mathbf{a} = \lambda\, \mathbf{W}\,\mathbf{a},\]</div>
 <p>so the best direction \(\mathbf{a}_1\) is the eigenvector of
 \(\mathbf{W}^{-1}\mathbf{B}\) with the largest eigenvalue \(\lambda_1\), and
 \(J(\mathbf{a}_1) = \lambda_1\). The eigenvectors that follow give further
-discriminant functions. Each maximises \(J\) among directions whose scores are
+discriminant functions. Each maximizes \(J\) among directions whose scores are
 uncorrelated within groups with the scores of the earlier functions.
 \(\mathbf{B}\) has rank at most \(K - 1\), so there are
 \(s = \min(K - 1, p)\) functions with non-zero eigenvalues. For the iris data,

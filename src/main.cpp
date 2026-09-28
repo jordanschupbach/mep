@@ -24081,21 +24081,23 @@ const char *kBuiltinMepml =
     "  local f = mep.filename() or 'untitled.mepml'\n"
     "  return (f:gsub('%.mepml$', '')) .. '.' .. ext\n"
     "end\n"
-    "-- mep.mepml_export_as(fmt [, on_done]): exports the buffer beside its file\n"
-    "-- (name.fmt); on_done(path) on success.\n"
-    "function mep.mepml_export_as(fmt, on_done)\n"
+    "-- mep.mepml_export_as(fmt [, on_done [, on_fail]]): exports the buffer beside\n"
+    "-- its file (name.fmt); on_done(path) on success, on_fail(err) otherwise.\n"
+    "function mep.mepml_export_as(fmt, on_done, on_fail)\n"
     "  fmt = (fmt or ''):lower():gsub('^%.', '')\n"
     "  if fmt == 'markdown' then fmt = 'md' elseif fmt == 'latex' then fmt = 'tex' elseif fmt == 'text' then fmt = 'txt' end\n"
     "  local known = false\n"
     "  for _, f in ipairs(mep_mepml_formats) do known = known or f[1] == fmt end\n"
     "  if not known then\n"
     "    mep.notify('mepml: no export to \"' .. fmt .. '\" (html pdf docx odt rtf md org tex txt)', 'error')\n"
+    "    if on_fail then on_fail('unknown format ' .. fmt) end\n"
     "    return\n"
     "  end\n"
     "  local out = mep_mepml_out(fmt)\n"
     "  local function done(ok, err)\n"
     "    if ok then mep.notify('Exported ' .. out) else mep.notify('mepml export failed: ' .. tostring(err), 'error') end\n"
     "    if ok and on_done then on_done(out) end\n"
+    "    if not ok and on_fail then on_fail(err) end\n"
     "  end\n"
     "  if fmt ~= 'pdf' then return done(mep.mepml_export(out)) end\n"
     "  if not mep_org_babel_has_exe('tectonic') then return done(nil, \"tectonic not found on PATH (see flake.nix's devShell)\") end\n"
@@ -27939,6 +27941,46 @@ const char *kBuiltinRunButton =
     "  end\n"
     "end\n"
     "function mep.run_button_run_org() mep_run_button_org_export(nil, 'Run') end\n"
+    // mepml's Run button: the same export-and-show pipeline as org's, over
+    // mepml's own exporter (mep.mepml_export_as, kBuiltinMepml; PDF is its
+    // LaTeX export compiled by tectonic). The format comes from a
+    // `//? Export: pdf` header line -- singular, so the `//? Exports:` key
+    // (which code blocks' parts the exports show) never matches -- and is
+    // html when there is none. Shares org's in-flight guard, keyed by file.\n"
+    "local mep_run_button_mepml_formats = {\n"
+    "  html = true, pdf = true, docx = true, odt = true, rtf = true, md = true, markdown = true,\n"
+    "  org = true, tex = true, latex = true, txt = true, text = true,\n"
+    "}\n"
+    "function mep.run_button_mepml_format()\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    local f = mep.get_line(i):match('^%s*//%?%s*[Ee][Xx][Pp][Oo][Rr][Tt]%s*:%s*(%S+)')\n"
+    "    if f then return (f:lower():gsub('^%.', '')) end\n"
+    "  end\n"
+    "  return 'html'\n"
+    "end\n"
+    "function mep.run_button_run_mepml()\n"
+    "  local fname = mep.filename()\n"
+    "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
+    "  if mep_run_button_org_running[fname] then\n"
+    "    mep.notify('Run: already running, please wait...', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  mep_run_button_org_running[fname] = true\n"
+    "  local function done() mep_run_button_org_running[fname] = nil end\n"
+    "  local ok, err = pcall(function()\n"
+    "    mep.cmd('write')\n"
+    "    local fmt = mep.run_button_mepml_format()\n"
+    "    if not mep_run_button_mepml_formats[fmt] then\n"
+    "      mep.notify('Run: unknown //? Export: ' .. fmt .. ', defaulting to html', 'warn')\n"
+    "      fmt = 'html'\n"
+    "    end\n"
+    "    mep.mepml_export_as(fmt, function(path) done() mep_run_button_show_org_output(path, 'Run') end, done)\n"
+    "  end)\n"
+    "  if not ok then\n"
+    "    done()\n"
+    "    mep.notify('Run: ' .. tostring(err), 'error')\n"
+    "  end\n"
+    "end\n"
     // The formats the Export button's dropdown offers, in menu order --
     // also what :MepOrgExportOpen accepts and what its error message
     // lists. Every entry must be a key of mep_run_button_org_exporters
@@ -28278,6 +28320,7 @@ const char *kBuiltinRunButton =
     "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
     "  local ext = mep_lsp_filetype(fname)\n"
     "  if ext == 'org' then mep.run_button_run_org() return end\n"
+    "  if ext == 'mepml' then mep.run_button_run_mepml() return end\n"
     "  if ext == 'tex' then mep.run_button_run_tex() return end\n"
     "  if ext == 'ipynb' and mep.notebook_is_buffer() then mep.notebook_run_all() return end\n"
     "  local extl = ext and ext:lower()\n"
@@ -38279,7 +38322,8 @@ void DrawAgentStatusBadge(gfx::Vector2 center, float radius, const std::string &
  */
 bool RunButtonSupportsExtension(const std::string &ext) {
     static const std::unordered_set<std::string> kExts = {"py",  "r",   "R",   "c",   "cpp", "cc",
-                                                            "cxx", "org", "tex", "Rmd", "rmd", "Rnw", "rnw"};
+                                                            "cxx", "org", "tex", "Rmd", "rmd", "Rnw", "rnw",
+                                                            "mepml"};
     return kExts.count(ext) != 0;
 }
 

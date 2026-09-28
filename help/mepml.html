@@ -23,6 +23,8 @@ language.</p>
 <h1>Keys and commands</h1>
 <table>
 <tr><th>Key / command</th><th>Does</th></tr>
+<tr><td>play button, <code>gr</code></td><td>export the document and open the result beside it</td></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>the same</td></tr>
 <tr><td><code>C-c C-c</code></td><td>run the code block under the cursor</td></tr>
 <tr><td><code>&lt;leader&gt;kx</code></td><td>the same</td></tr>
 <tr><td><code>C-c C-k</code></td><td>stop the block running under the cursor (a terminal)</td></tr>
@@ -460,6 +462,17 @@ from entry to entry, with the current one highlighted, and past the first
 or last line they move on to the text around it. On a contents entry,
 <code>Enter</code> jumps to its heading (<code>C-o</code> comes back).</p>
 <h1>Exporting and importing</h1>
+<p>The play button in the pane's header (or <code>gr</code>, or <code>&lt;leader&gt;rr</code>) saves the
+document, exports it, and opens the result in a split on the right -- an
+HTML page, a PDF, a Word document -- refreshing that split on the next run
+instead of opening another. It exports HTML unless the header names a
+format:</p>
+<pre>//? Title: My report
+//? Export: pdf</pre>
+<p>Any format the table below lists works (<code>html</code>, <code>pdf</code>, <code>docx</code>, <code>odt</code>,
+<code>rtf</code>, <code>md</code>, <code>org</code>, <code>tex</code>, <code>txt</code>). <code>Export:</code> is singular: <code>//? Exports:</code>
+is a different key, choosing which parts of each code block the exports
+show.</p>
 <p><code>&lt;leader&gt;ke</code> (or <code>:MepmlExport</code>) exports the document beside its file,
 <code>notes.mepml</code> becoming <code>notes.docx</code> and so on. Imports are expanded and
 pictures are embedded where the format can hold them:</p>

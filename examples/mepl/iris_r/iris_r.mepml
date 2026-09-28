@@ -24,6 +24,8 @@ covariance matrices, yet quadratic discriminant analysis, which does not assume
 them, does no better: its leave-one-out error is 2.7%. )
 
 
+\toc
+
 > Introduction
 
 The iris data are among the best-known datasets in statistics and machine

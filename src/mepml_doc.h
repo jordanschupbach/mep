@@ -111,6 +111,14 @@ enum class BlockKind {
     Bibliography,  // \bibliography (@bibliography and @printbibliography still parse)
     TableOfContents,  // \toc (or @toc)
     Abstract,      // \abstract( prose, blank lines between paragraphs )
+    // A slide: `\slide(` on a line of its own opens it (`\slide{` and
+    // `@slide{` too), a line holding just its closing `)` (`}`) ends it.
+    // What lies between is the slide's content, ordinary blocks of the
+    // document, so the two markers are blocks of their own. `level` is the
+    // slide's 1-based number on both. A slide left open ends where the
+    // next one starts, or at the end of the document.
+    SlideBegin,
+    SlideEnd,
 };
 
 enum class Align { Default, Left, Center, Right };
@@ -147,7 +155,7 @@ struct Block {
     std::string text;
     std::vector<Inline> inlines;  // Paragraph, Heading title, Callout body, captions
 
-    int level = 0;               // Heading
+    int level = 0;               // Heading; SlideBegin/SlideEnd: the slide's number
     std::string keyword;         // Callout: NOTE/WARNING/...; Meta: key
     std::string value;           // Meta raw value; Import/Image path; Citation key
     std::vector<Option> options;  // Code (preceding //? lines + header); Meta Option
@@ -240,6 +248,31 @@ struct Document {
 // A \abstract block's paragraphs, each its own run of inlines.
 std::vector<std::vector<Inline>> AbstractParagraphs(const Block &b);
 
+// One slide of the document (not of an \import): its number, the lines
+// from its opener to its last line -- the closing bracket's, or for a
+// slide left open the line before the next opener (or the document's
+// last line) -- its blocks as [first, last) indices into doc.blocks,
+// markers included, and its title: the text of its first heading, "" if
+// it has none.
+struct Slide {
+    int number = 0;
+    int line_start = -1, line_end = -1;
+    bool closed = false;
+    size_t first_block = 0, last_block = 0;
+    std::string title;
+};
+std::vector<Slide> Slides(const Document &doc, int line_count);
+
+// A header value by key, compared without case (`//? author:` is
+// `Author`); the last one wins, "" when there is none.
+std::string MetaValue(const Document &doc, const std::string &key);
+// `//? Type: presentation` (or `slides`): the document is a slide deck.
+// Its HTML, LaTeX and PDF exports are then a slideshow and a Beamer deck,
+// holding only what is on its slides, after a title slide made from the
+// header (Title, Subtitle, Author, Date). `//? Type: document` is the
+// default.
+bool IsPresentation(const Document &doc);
+
 // The callout keywords a `// KEYWORD:` comment recognises.
 const std::vector<std::string> &CalloutKeywords();
 
@@ -302,6 +335,7 @@ enum StyleFlag : std::uint32_t {
     kError = 1u << 27,  // unresolved reference etc.
     kTableRule = 1u << 28,  // a table's own `|` pipes / |---| separator row
     kAbstract = 1u << 29,   // a \abstract's `\abstract(` / `)` (replace = its "Abstract" label)
+    kSlide = 1u << 30,      // a \slide's `\slide(` / `)` lines (replace = "Slide N" on the opener)
 };
 
 struct Span {
@@ -390,6 +424,20 @@ struct HtmlOptions {
     std::string base_dir;    // image paths are made relative to this
 };
 std::string ToHtml(const Document &doc, const HtmlOptions &opts = HtmlOptions());
+// A presentation as a self-contained HTML slideshow: a title slide and one
+// 16:9 slide per \slide, scaled to the window, stepped through with the
+// arrow keys (or space, a click, a swipe); `f` goes full screen, and
+// printing gives one slide per page. Only the slides' content is shown.
+// Not standalone: just the <section class="slide"> elements.
+std::string ToSlidesHtml(const Document &doc, const HtmlOptions &opts = HtmlOptions());
+// Each slide's content as HTML: `title` is its first heading's inline
+// markup ("" for an untitled slide), `body` the rest of its blocks (and
+// its footnotes). The slideshow and the Beamer export both build on these.
+struct SlideHtml {
+    int number = 0;
+    std::string title, body;
+};
+std::vector<SlideHtml> SlideFragments(const Document &doc, const HtmlOptions &opts = HtmlOptions());
 
 // ---------------------------------------------------------------------------
 // What the exports show of a code block, as org-babel's :exports says it:

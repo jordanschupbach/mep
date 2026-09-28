@@ -32,10 +32,10 @@
 
 namespace mepml {
 
-enum class Format { Mepml, Html, Markdown, Org, Rtf, Docx, Odt, Latex, Pdf, Text, Unknown };
+enum class Format { Mepml, Html, Markdown, Org, Rtf, Docx, Odt, Latex, Pdf, Text, Pptx, Odp, Unknown };
 
 // By file extension (.md/.markdown, .org, .htm/.html, .rtf, .docx, .odt,
-// .tex, .pdf, .txt, .mepml).
+// .tex, .pdf, .txt, .pptx, .odp, .mepml).
 Format FormatFromPath(const std::string &path);
 Format FormatFromName(const std::string &name);  // "md", "markdown", "org", "html", ...
 std::string FormatExtension(Format f);           // "md", "org", "html", ...
@@ -48,10 +48,19 @@ std::string ToOrg(const Document &doc);
 std::string ToPlainText(const Document &doc);
 // `base_dir` resolves relative image paths (RTF embeds the pictures).
 std::string ToRtf(const Document &doc, const std::string &base_dir);
+// A presentation (`//? Type: presentation`, IsPresentation) is a Beamer
+// deck, so its PDF is too; any other document is an article.
 std::string ToLatex(const Document &doc, const std::string &base_dir);
+// ToHtml, or for a presentation ToSlidesHtml.
+std::string ToHtmlFor(const Document &doc);
 // Binary packages, written to `path`; false with *error on failure.
 bool WriteDocx(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error);
 bool WriteOdt(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error);
+// The document's slides (src/mepml_slides.cpp) as PowerPoint and Impress
+// decks: a title slide from the header, then one per \slide, each titled by
+// its first heading. False with *error when there is no slide.
+bool WritePptx(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error);
+bool WriteOdp(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error);
 // Any exportable format except PDF, chosen by `path`'s extension.
 bool ExportFile(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error);
 

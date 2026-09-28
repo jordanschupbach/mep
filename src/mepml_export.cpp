@@ -41,6 +41,8 @@ Format FormatFromName(const std::string &name_in) {
     if (n == "tex" || n == "latex") return Format::Latex;
     if (n == "pdf") return Format::Pdf;
     if (n == "txt" || n == "text") return Format::Text;
+    if (n == "pptx" || n == "powerpoint") return Format::Pptx;
+    if (n == "odp" || n == "impress") return Format::Odp;
     return Format::Unknown;
 }
 
@@ -63,6 +65,8 @@ std::string FormatExtension(Format f) {
         case Format::Latex: return "tex";
         case Format::Pdf: return "pdf";
         case Format::Text: return "txt";
+        case Format::Pptx: return "pptx";
+        case Format::Odp: return "odp";
         case Format::Unknown: break;
     }
     return "";
@@ -460,7 +464,11 @@ struct MdWriter {
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
-                case BlockKind::Citation: break;
+                case BlockKind::Citation:
+                // (A slide's content exports as ordinary blocks here; the
+                // slide formats -- beamer, pptx, odp -- are their own.)
+                case BlockKind::SlideBegin:
+                case BlockKind::SlideEnd: break;
             }
         }
         // The bibliography's entries, as mepml, in a comment.
@@ -676,7 +684,11 @@ struct OrgWriter {
                 }
                 case BlockKind::Meta:
                 case BlockKind::Import:
-                case BlockKind::Citation: break;
+                case BlockKind::Citation:
+                // (A slide's content exports as ordinary blocks here; the
+                // slide formats -- beamer, pptx, odp -- are their own.)
+                case BlockKind::SlideBegin:
+                case BlockKind::SlideEnd: break;
             }
         }
         if (!doc.citations.empty()) blocks.push_back("#+begin_comment\nmepml\n" + CitationsMepml(doc) + "\n#+end_comment");
@@ -807,7 +819,11 @@ struct TextWriter {
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
-                case BlockKind::Citation: break;
+                case BlockKind::Citation:
+                // (A slide's content exports as ordinary blocks here; the
+                // slide formats -- beamer, pptx, odp -- are their own.)
+                case BlockKind::SlideBegin:
+                case BlockKind::SlideEnd: break;
             }
         }
         std::string out = Join(blocks, "\n\n");
@@ -1116,7 +1132,11 @@ struct RtfWriter {
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
-                case BlockKind::Citation: break;
+                case BlockKind::Citation:
+                // (A slide's content exports as ordinary blocks here; the
+                // slide formats -- beamer, pptx, odp -- are their own.)
+                case BlockKind::SlideBegin:
+                case BlockKind::SlideEnd: break;
             }
         }
         std::string out = "{\\rtf1\\ansi\\ansicpg1252\\deff0\\uc1\n{\\fonttbl";
@@ -1490,7 +1510,11 @@ struct DocxWriter {
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
-                case BlockKind::Citation: break;
+                case BlockKind::Citation:
+                // (A slide's content exports as ordinary blocks here; the
+                // slide formats -- beamer, pptx, odp -- are their own.)
+                case BlockKind::SlideBegin:
+                case BlockKind::SlideEnd: break;
             }
         }
         return body;
@@ -1858,7 +1882,11 @@ struct OdtWriter {
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
-                case BlockKind::Citation: break;
+                case BlockKind::Citation:
+                // (A slide's content exports as ordinary blocks here; the
+                // slide formats -- beamer, pptx, odp -- are their own.)
+                case BlockKind::SlideBegin:
+                case BlockKind::SlideEnd: break;
             }
         }
         return body;
@@ -1933,11 +1961,16 @@ std::string ToRtf(const Document &doc, const std::string &base_dir) {
 std::string ToLatex(const Document &doc, const std::string &base_dir) {
     HtmlOptions opts;
     opts.standalone = false;
-    std::string author;
-    for (const auto &kv : doc.meta)
-        if (LowerStr(kv.first) == "author") author = kv.second;
+    const std::string author = MetaValue(doc, "author");
+    if (IsPresentation(doc)) {
+        std::vector<BeamerFrame> frames;
+        for (const SlideHtml &f : SlideFragments(doc, opts)) frames.push_back({f.title, f.body});
+        return ExportHtmlSlidesToBeamer(frames, doc.title, MetaValue(doc, "subtitle"), author, MetaValue(doc, "date"), base_dir);
+    }
     return ExportHtmlToLatex(ToHtml(doc, opts), doc.title, author, base_dir);
 }
+
+std::string ToHtmlFor(const Document &doc) { return IsPresentation(doc) ? ToSlidesHtml(doc) : ToHtml(doc); }
 
 bool WriteOdt(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error) {
     OdtWriter w{doc, base_dir, {}, {}, {}, 0, 0};
@@ -2072,7 +2105,9 @@ bool ExportFile(const Document &doc, const std::string &path, const std::string 
     switch (f) {
         case Format::Docx: return WriteDocx(doc, path, base_dir, error);
         case Format::Odt: return WriteOdt(doc, path, base_dir, error);
-        case Format::Html: text = ToHtml(doc); break;
+        case Format::Pptx: return WritePptx(doc, path, base_dir, error);
+        case Format::Odp: return WriteOdp(doc, path, base_dir, error);
+        case Format::Html: text = ToHtmlFor(doc); break;
         case Format::Markdown: text = ToMarkdown(doc); break;
         case Format::Org: text = ToOrg(doc); break;
         case Format::Rtf: text = ToRtf(doc, base_dir); break;

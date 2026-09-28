@@ -289,6 +289,10 @@ void RenderOrgCodeBlockLatex(const DomNode *div_node, std::string &out) {
 
 struct LatexCtx {
     std::string base_dir;
+    // Inside a Beamer frame: no sectioning (headings are bold lines),
+    // tabulars rather than longtables, pictures sized to the frame,
+    // callouts as blocks, and a figure's caption under it.
+    bool beamer = false;
 };
 
 /**
@@ -306,6 +310,42 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
     if (tag == "script" || tag == "style" || tag == "head" || tag == "title") return;
 
     int level;
+    if (ctx.beamer && IsHeadingTag(tag, level)) {
+        out += level <= 2 ? "\n\\par{\\large\\bfseries " : "\n\\par{\\bfseries ";
+        for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
+        out += "}\\par\\smallskip\n";
+        return;
+    }
+    if (ctx.beamer) {
+        const std::string cls = node->Class();
+        // A code block's language label says nothing on a slide.
+        if (tag == "figcaption" && cls == "lang") return;
+        if (tag == "figcaption" || ((tag == "div" || tag == "p") && cls == "caption")) {
+            out += "\n\\par{\\centering\\footnotesize\\color{mepCodeMuted}";
+            for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
+            out += "\\par}\n";
+            return;
+        }
+        // mepml's callouts (`// NOTE: ...`): a titled block.
+        if (tag == "div" && cls.compare(0, 8, "callout ") == 0) {
+            std::string title, text;
+            for (auto &c : node->children) {
+                if (c->type == DomNodeType::Element && c->Class() == "callout-title") WalkLatexNode(c.get(), ctx, title);
+                else WalkLatexNode(c.get(), ctx, text);
+            }
+            out += "\n\\begin{block}{" + title + "}\n" + text + "\n\\end{block}\n";
+            return;
+        }
+        if (tag == "pre") {
+            std::string raw = CollectRawText(node);
+            if (!raw.empty() && raw.front() == '\n') raw.erase(raw.begin());
+            while (!raw.empty() && raw.back() == '\n') raw.pop_back();
+            out += "\n\\begin{Verbatim}[fontsize=\\footnotesize,frame=single,rulecolor=\\color{mepCodeBorder}" +
+                   std::string(cls == "results" ? ",formatcom=\\color{mepCodeMuted}" : "") +
+                   ",commandchars=\\\\\\{\\}]\n" + LatexEscapeVerbatim(raw) + "\n\\end{Verbatim}\n";
+            return;
+        }
+    }
     if (IsHeadingTag(tag, level)) {
         // article class only goes 5 deep (section..subparagraph) --
         // clamp h5/h6 both to subparagraph rather than erroring.
@@ -342,6 +382,11 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
     }
     if (tag == "br") {
         out += " \\\\\n";
+        return;
+    }
+    // A task list's box (mepml's `- [ ]` / `- [x]`).
+    if (tag == "input" && node->attrs.count("type") && node->attrs.at("type") == "checkbox") {
+        out += node->attrs.count("checked") ? "$\\boxtimes$ " : "$\\square$ ";
         return;
     }
     if (tag == "hr") {
@@ -448,7 +493,10 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         auto src_it = node->attrs.find("src");
         std::string resolved = src_it != node->attrs.end() ? ResolveLocalPath(src_it->second, ctx.base_dir) : "";
         std::ifstream probe(resolved, std::ios::binary);
-        if (!resolved.empty() && probe) {
+        if (!resolved.empty() && probe && ctx.beamer) {
+            out += "\n\\begin{center}\\includegraphics[width=\\linewidth,height=0.62\\textheight,keepaspectratio]{" + resolved +
+                   "}\\end{center}\n";
+        } else if (!resolved.empty() && probe) {
             out += "\n\\begin{figure}[h]\n\\centering\n\\includegraphics[width=0.9\\linewidth]{" + resolved +
                    "}\n\\end{figure}\n";
         } else {
@@ -461,7 +509,14 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         CollectTableRows(node, rows);
         size_t max_cols = TableMaxCols(rows);
         if (max_cols == 0) return;
-        out += "\n\\begin{longtable}{|";
+        // A slide has no float for a table's <caption>: it goes above.
+        if (ctx.beamer)
+            if (const DomNode *cap = FindChildTag(node, "caption")) {
+                out += "\n\\par{\\centering\\footnotesize\\color{mepCodeMuted}";
+                for (auto &c : cap->children) WalkLatexNode(c.get(), ctx, out);
+                out += "\\par}\n";
+            }
+        out += ctx.beamer ? "\n\\begin{center}\\small\\begin{tabular}{|" : "\n\\begin{longtable}{|";
         for (size_t i = 0; i < max_cols; i++) out += "l|";
         out += "}\n\\hline\n";
         for (const DomNode *r : rows) {
@@ -476,7 +531,7 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
             }
             out += " \\\\\n\\hline\n";
         }
-        out += "\\end{longtable}\n";
+        out += ctx.beamer ? "\\end{tabular}\\end{center}\n" : "\\end{longtable}\n";
         return;
     }
     // Unrecognized container (div/span/body/#document/...) -- recurse
@@ -487,30 +542,22 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
 
 }  // namespace
 
-std::string ExportHtmlToLatex(const std::string &html, const std::string &title, const std::string &author,
-                               const std::string &base_dir) {
-    HtmlDoc doc;
-    ParseHtml(html, doc);
-    const DomNode *root = ContentRoot(doc.root.get());
-
-    LatexCtx ctx;
-    ctx.base_dir = base_dir;
-    std::string body;
-    if (root) {
-        for (auto &c : root->children) WalkLatexNode(c.get(), ctx, body);
-    }
-
-    std::ostringstream out;
-    out << "\\documentclass[11pt]{article}\n"
-        << "\\usepackage[utf8]{inputenc}\n"
+namespace {
+// The packages and definitions WalkLatexNode's output needs. Beamer
+// brings hyperref itself and sizes its own pages; longtable is article-only.
+void LatexPreamble(std::ostringstream &out, bool beamer) {
+    if (beamer)
+        out << "\\documentclass[11pt,aspectratio=169]{beamer}\n"
+            << "\\setbeamertemplate{navigation symbols}{}\n"
+            << "\\setbeamertemplate{footline}[frame number]\n";
+    else
+        out << "\\documentclass[11pt]{article}\n";
+    out << "\\usepackage[utf8]{inputenc}\n"
         << "\\usepackage[T1]{fontenc}\n"
         << "\\usepackage{graphicx}\n"
-        << "\\usepackage{longtable}\n"
         << "\\usepackage[normalem]{ulem}\n"
         << "\\usepackage{amsmath}\n"
         << "\\usepackage{amssymb}\n"
-        << "\\usepackage[margin=1in]{geometry}\n"
-        << "\\usepackage{hyperref}\n"
         // Code-block styling (RenderOrgCodeBlockLatex, above): xcolor for
         // \definecolor/\textcolor, fancyvrb for a Verbatim that can mix in
         // real LaTeX commands (commandchars) instead of rendering 100%
@@ -578,11 +625,67 @@ std::string ExportHtmlToLatex(const std::string &html, const std::string &title,
            "colback=mepCodeBg, colframe=mepCodeBorder, borderline west={3pt}{0pt}{mepCodeAccent}, "
            "fonttitle=\\ttfamily\\small, coltitle=mepCodeMuted, colbacktitle=mepCodeHeaderBg, "
            "title=#1, left=8pt, right=8pt, top=6pt, bottom=6pt}\n";
+    if (!beamer) out << "\\usepackage{longtable}\n\\usepackage[margin=1in]{geometry}\n\\usepackage{hyperref}\n";
+}
+
+}  // namespace
+
+std::string ExportHtmlToLatex(const std::string &html, const std::string &title, const std::string &author,
+                               const std::string &base_dir) {
+    HtmlDoc doc;
+    ParseHtml(html, doc);
+    const DomNode *root = ContentRoot(doc.root.get());
+
+    LatexCtx ctx;
+    ctx.base_dir = base_dir;
+    std::string body;
+    if (root) {
+        for (auto &c : root->children) WalkLatexNode(c.get(), ctx, body);
+    }
+
+    std::ostringstream out;
+    LatexPreamble(out, false);
     if (!title.empty()) out << "\\title{" << LatexEscape(title) << "}\n";
     if (!author.empty()) out << "\\author{" << LatexEscape(author) << "}\n";
     out << "\\date{}\n\\begin{document}\n";
     if (!title.empty()) out << "\\maketitle\n";
     out << body << "\n\\end{document}\n";
+    return out.str();
+}
+
+std::string ExportHtmlSlidesToBeamer(const std::vector<BeamerFrame> &frames, const std::string &title,
+                                     const std::string &subtitle, const std::string &author, const std::string &date,
+                                     const std::string &base_dir) {
+    LatexCtx ctx;
+    ctx.base_dir = base_dir;
+    ctx.beamer = true;
+    // A fragment's own content, walked as the article backend walks a page.
+    auto walk = [&](const std::string &html) {
+        HtmlDoc doc;
+        ParseHtml(html, doc);
+        std::string out;
+        if (const DomNode *root = ContentRoot(doc.root.get()))
+            for (auto &c : root->children) WalkLatexNode(c.get(), ctx, out);
+        return out;
+    };
+    std::ostringstream out;
+    LatexPreamble(out, true);
+    if (!title.empty()) out << "\\title{" << LatexEscape(title) << "}\n";
+    if (!subtitle.empty()) out << "\\subtitle{" << LatexEscape(subtitle) << "}\n";
+    if (!author.empty()) out << "\\author{" << LatexEscape(author) << "}\n";
+    out << "\\date{" << LatexEscape(date) << "}\n\\begin{document}\n";
+    if (!title.empty() || !subtitle.empty() || !author.empty()) out << "\\begin{frame}\n\\titlepage\n\\end{frame}\n\n";
+    for (const BeamerFrame &f : frames) {
+        // fragile: a frame may hold verbatim code. The title is walked
+        // like the body, so its inline markup and maths survive.
+        std::string t = walk(f.title_html);
+        while (!t.empty() && (t.back() == '\n' || t.back() == ' ')) t.pop_back();
+        while (!t.empty() && (t.front() == '\n' || t.front() == ' ')) t.erase(t.begin());
+        out << "\\begin{frame}[fragile]";
+        if (!t.empty()) out << "{" << t << "}";
+        out << "\n" << walk(f.body_html) << "\n\\end{frame}\n\n";
+    }
+    out << "\\end{document}\n";
     return out.str();
 }
 

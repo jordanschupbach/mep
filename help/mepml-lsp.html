@@ -41,7 +41,10 @@ Because it is an ordinary language server, other editors can use it too.</p>
 <tr><td><code>heading-skip</code></td><td>a heading two levels below the one before it</td></tr>
 <tr><td><code>duplicate-option</code></td><td>the same <code>//? Option:</code> set twice</td></tr>
 <tr><td><code>duplicate-citation</code></td><td>two entries with one key</td></tr>
-<tr><td><code>unclosed-code</code>, <code>unclosed-math</code>, <code>unclosed-results</code></td><td>a block that never ends</td></tr>
+<tr><td><code>unclosed-code</code>, <code>unclosed-math</code>, <code>unclosed-results</code>, <code>unclosed-slide</code></td><td>a block that never ends</td></tr>
+<tr><td><code>unknown-type</code></td><td>a <code>//? Type:</code> other than <code>document</code> or <code>presentation</code></td></tr>
+<tr><td><code>empty-presentation</code></td><td>a presentation with no <code>\slide</code></td></tr>
+<tr><td><code>off-slide</code></td><td>in a presentation, content on no slide (its slide exports leave it out)</td></tr>
 <tr><td><code>orphan-caption</code></td><td>a <code>\caption</code> or <code>\alttext</code> with nothing above to attach to</td></tr>
 <tr><td><code>deprecated-directive</code></td><td><code>@printbibliography</code> (now <code>\bibliography</code>), <code>@abstract{</code> (now <code>\abstract(</code>)</td></tr>
 </table>
@@ -85,6 +88,7 @@ has no directory to look in, so they are skipped rather than guessed.</p>
 <li>A misspelt directive, anchor or colour: change it to the nearest real one.</li>
 <li><code>@printbibliography</code>: rename it to <code>\bibliography</code>.</li>
 <li>The old <code>@abstract{...}</code>: rewrite it as <code>\abstract(...)</code>.</li>
+<li>A <code>\slide(</code> that is never closed: add its <code>)</code> under its last line.</li>
 <li>A table with ragged rows: pad every row to the same number of cells.</li>
 </ul>
 <p><b>Formatting</b> lines up every table's pipes, honouring each column's
@@ -92,10 +96,10 @@ alignment (<code>:---</code>, <code>:---:</code>, <code>---:</code>), and touche
 offered as a code action on any table that is not aligned yet.</p>
 <h1>Outline and folding</h1>
 <p>The outline lists the headings, nested by depth, with each section's
-figures, tables, code blocks and citations under it, numbered the way the
-captions number them. Folding covers the same blocks mep folds in the
-buffer: sections, document headers, code, citations, display maths, tables,
-lists and comment runs -- a code block and its results as two separate
+figures, tables, code blocks, citations and slides under it, numbered the
+way the captions number them. Folding covers the same blocks mep folds in
+the buffer: sections, document headers, slides, code, citations, display
+maths, tables, lists and comment runs -- a code block and its results as two separate
 folds.</p>
 <h1>See also</h1>
 <ul>

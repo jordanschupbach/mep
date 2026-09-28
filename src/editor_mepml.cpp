@@ -599,6 +599,9 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     for (const mepml::Block &b : doc.blocks)
         if (b.origin.empty() && b.kind == mepml::BlockKind::Citation)
             for (int row = b.line_start; row <= b.line_end; ++row) citation_rows.insert(row);
+    // Slide titles (their first heading), for the "Slide N" rule.
+    std::map<int, std::string> slide_titles;
+    for (const mepml::Slide &sl : mepml::Slides(doc, n)) slide_titles[sl.number] = sl.title;
     std::unordered_set<int> table_layout_rows, table_rows;
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty() || b.kind != mepml::BlockKind::Table) continue;
@@ -712,6 +715,29 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                 d.virt_text_hl = hl.empty() ? "Comment" : hl;
                 d.bold = (s.style & (mepml::kCallout | mepml::kCite)) != 0 && !s.replace.empty() &&
                          (s.style & mepml::kCallout);
+                // A slide's opener and closer: rules across the text,
+                // the opener's labelled "Slide N: title". A trailing
+                // comment keeps its place, so then the rule stops short.
+                if (s.style & mepml::kSlide) {
+                    const bool alone = line.find_first_not_of(" \t", static_cast<size_t>(s.col_end)) == std::string::npos;
+                    // (Never wider than the pane, where it would wrap.)
+                    const int pane_cols = TextColsForBuffer(CurrentBufferId());
+                    const int width = (pane_cols > 0 ? std::min(TextWidth(), pane_cols - 1) : TextWidth()) - s.col_start;
+                    std::string label;
+                    if (!s.replace.empty()) {
+                        label = "── " + s.replace;
+                        const int number = std::atoi(s.replace.c_str() + 6);  // "Slide N"
+                        auto t = slide_titles.find(number);
+                        if (t != slide_titles.end() && !t->second.empty()) label += ": " + t->second;
+                        label += " ";
+                    }
+                    d.virt_text = label + (alone ? Repeat("─", std::max(3, width - Codepoints(label))) : std::string());
+                    d.conceal = false;
+                    d.bold = !label.empty();
+                    d.virt_text_hl = label.empty() ? "Comment" : "Cyan";
+                    add(d);
+                    continue;
+                }
                 // An abstract's label: bold, and centred when it has its
                 // line to itself (the way a paper sets it).
                 if ((s.style & mepml::kAbstract) && !s.replace.empty()) {
@@ -1014,6 +1040,7 @@ void Editor::RecomputeMepmlFolds() {
         add(heads[k]->line_start, end);
     }
     for (const HeaderRun &run : HeaderRuns(doc)) add(run.first, run.last);
+    for (const mepml::Slide &sl : mepml::Slides(doc, n)) add(sl.line_start, sl.line_end);
     for (const mepml::Block &b : doc.blocks) {
         // \toc/\bibliography: one row of source drawn as a block of
         // generated lines -- folding it (a one-row fold, hiding no rows)

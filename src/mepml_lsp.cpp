@@ -337,6 +337,11 @@ std::string CodeFor(const std::string &message) {
         {"results region has no", "unclosed-results"},
         {"results marker not attached", "orphan-results"},
         {"display math is never closed", "unclosed-math"},
+        {"\\slide is never closed", "unclosed-slide"},
+        {"unknown document type", "unknown-type"},
+        {"a presentation with no", "empty-presentation"},
+        {"not on any slide", "off-slide"},
+        {"a slide's content goes on", "trailing-text"},
         {"citation has no key", "citation-no-key"},
         {"duplicate citation key", "duplicate-citation"},
         {"circular import", "import-cycle"},
@@ -536,6 +541,7 @@ const std::vector<Vocab> &DirectiveVocab() {
         {"bibliography", "\\bibliography", "The reference list: every cited entry, numbered in the order first cited."},
         {"toc", "\\toc", "The table of contents: every heading of this document, indented by depth."},
         {"abstract", "\\abstract(text)", "The document's abstract: prose over any number of lines, a blank line between paragraphs. Exports as each format's own abstract."},
+        {"slide", "\\slide( ... )", "A slide: \\slide( on a line of its own, then the slide's content -- headings, lists, code, pictures, any blocks -- and a line holding just ) to end it. Its first heading is its title."},
     };
     return v;
 }
@@ -559,7 +565,8 @@ const std::vector<Vocab> &MetaVocab() {
         {"Author", "//? Author: name", "The author, for the exports' metadata."},
         {"Date", "//? Date: text", "The date, for the exports' metadata."},
         {"Option", "//? Option: Name=value", "A document option: an integer, a decimal or a string (quote it to force a string)."},
-        {"Export", "//? Export: pdf", "The format the Run button (the pane header's play button, <leader>rr, gr) exports to and opens: html (the default), pdf, docx, odt, rtf, md, org, tex or txt."},
+        {"Export", "//? Export: pdf", "The format the Run button (the pane header's play button, <leader>rr, gr) exports to and opens: html (the default), pdf, docx, odt, rtf, md, org, tex, txt, pptx or odp."},
+        {"Type", "//? Type: presentation", "What the document is: document (the default) or presentation. A presentation's html, tex and pdf exports are a slideshow and a Beamer deck of its \\slide blocks, after a title slide from the header; pptx and odp decks work either way."},
         {"Exports", "//? Exports: results", "What the exports show of every code block: code, results, both (the default) or none. A block's own exports= (or echo=) wins. The editor always shows everything."},
         {"Import", "//? Import: file.mepml", "Includes another mepml file: its options and other header keys are inherited (this file's own win) and its content is included here, in the order the header lists its imports."},
     };
@@ -948,6 +955,16 @@ MepmlLspHoverInfo MepmlLspHover(const std::vector<std::string> &lines, int line,
             return found(ind, Len(l), VocabDoc(DirectiveVocab(), "abstract") + "\n\n" + std::to_string(paras) +
                                           (paras == 1 ? " paragraph" : " paragraphs"));
         }
+        case BlockKind::SlideBegin:
+        case BlockKind::SlideEnd: {
+            std::string t = "Slide " + std::to_string(b->level);
+            for (const mepml::Slide &sl : mepml::Slides(doc, static_cast<int>(lines.size())))
+                if (sl.number == b->level) {
+                    if (!sl.title.empty()) t += ": " + sl.title;
+                    t += "\n\nLines " + std::to_string(sl.line_start + 1) + "-" + std::to_string(sl.line_end + 1);
+                }
+            return found(ind, Len(l), t + "\n\n" + VocabDoc(DirectiveVocab(), "slide"));
+        }
         case BlockKind::Meta: {
             if (Lower(b->keyword) == "import") {
                 // As the expander resolves it, so it matches the blocks' origin.
@@ -1189,6 +1206,7 @@ std::vector<MepmlLspTextEdit> MepmlLspRename(const std::vector<std::string> &lin
 std::vector<MepmlLspSymbol> MepmlLspSymbols(const std::vector<std::string> &lines) {
     const Document doc = mepml::Parse(lines);
     const std::vector<std::string> labels = mepml::BlockLabels(doc);
+    const std::vector<mepml::Slide> slides = mepml::Slides(doc, static_cast<int>(lines.size()));
     std::vector<MepmlLspSymbol> out;
     std::vector<int> open;  // indices of the headings enclosing the current line, by depth
     const int n = static_cast<int>(lines.size());
@@ -1252,6 +1270,15 @@ std::vector<MepmlLspSymbol> MepmlLspSymbols(const std::vector<std::string> &line
             s.kind = MepmlLspSymbolKind::Namespace;
             s.name = "Abstract";
             s.detail = "abstract";
+        } else if (b.kind == BlockKind::SlideBegin) {
+            s.kind = MepmlLspSymbolKind::Namespace;
+            s.name = "Slide " + std::to_string(b.level);
+            s.detail = "slide";
+            for (const mepml::Slide &sl : slides)
+                if (sl.number == b.level) {
+                    if (!sl.title.empty()) s.name += ": " + sl.title;
+                    s.line_end = sl.line_end;
+                }
         } else {
             continue;
         }
@@ -1295,6 +1322,7 @@ std::vector<MepmlLspFold> MepmlLspFolds(const std::vector<std::string> &lines) {
         }
     }
     if (run_start >= 0) add(run_start, run_end, "");
+    for (const mepml::Slide &sl : mepml::Slides(doc, n)) add(sl.line_start, sl.line_end, "");
     for (const Block &b : doc.blocks) {
         if (b.kind == BlockKind::Comment) add(b.line_start, b.line_end, "comment");
         else if (b.kind == BlockKind::Code && b.result_line_start >= 0) {
@@ -1455,6 +1483,21 @@ std::vector<MepmlLspCodeAction> MepmlLspCodeActions(const std::vector<std::strin
             if (!near.empty()) {
                 const size_t k = l.find(key, static_cast<size_t>(d.col_start));
                 if (k != std::string::npos) replace("Change to \\cite(" + near + ")", d.code, static_cast<int>(k), static_cast<int>(k + key.size()), near);
+            }
+        } else if (d.code == "unclosed-slide") {
+            // Its closing bracket under its last line of content.
+            const size_t name = l.find("slide");
+            const char close = name != std::string::npos && name + 5 < l.size() && l[name + 5] == '(' ? ')' : '}';
+            for (const mepml::Slide &sl : mepml::Slides(doc, static_cast<int>(lines.size()))) {
+                if (sl.line_start != line) continue;
+                int end = sl.line_end;
+                while (end > sl.line_start && Trim(lines[static_cast<size_t>(end)]).empty()) --end;
+                MepmlLspCodeAction a;
+                a.title = std::string("Close the slide with ") + close;
+                a.fixes = d.code;
+                a.edits.push_back({end, Len(lines[static_cast<size_t>(end)]), end, Len(lines[static_cast<size_t>(end)]),
+                                   std::string("\n") + close});
+                out.push_back(a);
             }
         } else if (d.code == "deprecated-directive") {
             const size_t k = l.find("@printbibliography");

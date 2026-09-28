@@ -2,6 +2,7 @@
 #define MEP_DOC_EXPORT_H
 
 #include <string>
+#include <vector>
 
 // Both functions parse `html` via html_doc.h's own ParseHtml (a bare
 // fragment or a full <html>/<body>-wrapped document, either tolerated
@@ -37,6 +38,19 @@
  */
 std::string ExportHtmlToLatex(const std::string &html, const std::string &title, const std::string &author,
                                const std::string &base_dir);
+
+// A Beamer deck (16:9) from HTML fragments, one frame each: a title frame
+// from `title`/`subtitle`/`author`/`date` (when any is set), then a frame per
+// entry, titled by its title_html (may be empty). Frames are [fragile], so
+// code can go on them; inside, headings are bold lines, pictures are sized
+// to fit the frame, tables are tabulars and callouts are blocks.
+struct BeamerFrame {
+    std::string title_html;
+    std::string body_html;
+};
+std::string ExportHtmlSlidesToBeamer(const std::vector<BeamerFrame> &frames, const std::string &title,
+                                     const std::string &subtitle, const std::string &author, const std::string &date,
+                                     const std::string &base_dir);
 
 // Same DOM walk, targeting a real .odt package -- built from scratch
 // (mimetype/META-INF/manifest.xml/meta.xml/styles.xml/content.xml, plus

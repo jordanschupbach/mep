@@ -393,6 +393,25 @@ void TestActionsAndFormat() {
     const Lines new_abstract = Apply(old_abstract, fixes.front().edits);
     CHECK(new_abstract[0] == "\\abstract(" && new_abstract[1] == "Some {braced} text." && new_abstract[2] == ") // end");
     CHECK(MepmlLspDiagnostics(new_abstract, o).empty());
+    // A slide never closed: its `)` goes under its last line of content.
+    const Lines open_slide = {"\\slide(", "> Title", "- a point", "", "\\slide{", "Next", "}"};
+    CHECK(Has(MepmlLspDiagnostics(open_slide, o), "unclosed-slide"));
+    const std::vector<MepmlLspCodeAction> close = MepmlLspCodeActions(open_slide, 0, o);
+    CHECK(!close.empty() && close.front().fixes == "unclosed-slide");
+    const Lines closed = Apply(open_slide, close.front().edits);
+    CHECK(closed.size() == 8 && closed[2] == "- a point" && closed[3] == ")" && closed[4].empty());
+    CHECK(MepmlLspDiagnostics(closed, o).empty());
+    // Slides: a symbol each (titled by their first heading), a fold, a hover.
+    bool slide_symbol = false;
+    for (const MepmlLspSymbol &sy : MepmlLspSymbols(closed))
+        if (sy.name == "Slide 1: Title" && sy.line_start == 0 && sy.line_end == 3) slide_symbol = true;
+    CHECK(slide_symbol);
+    bool slide_fold = false;
+    for (const MepmlLspFold &f : MepmlLspFolds(closed)) slide_fold = slide_fold || (f.start_line == 0 && f.end_line == 3);
+    CHECK(slide_fold);
+    const MepmlLspHoverInfo slide_hover = MepmlLspHover(closed, 3, 0, o);
+    CHECK(slide_hover.found && slide_hover.text.rfind("Slide 1: Title", 0) == 0);
+
     // A ragged table: pad it.
     const Lines ragged = {"| a | b |", "| 1 |"};
     const Lines padded = Apply(ragged, MepmlLspCodeActions(ragged, 1, o).front().edits);

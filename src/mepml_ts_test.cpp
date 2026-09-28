@@ -106,6 +106,8 @@ bool Expected(const mepml::Block &b, Expect *e) {
         case BlockKind::Bibliography: e->type = "bibliography"; return true;
         case BlockKind::TableOfContents: e->type = "toc"; return true;
         case BlockKind::Abstract: e->type = "abstract"; return true;
+        case BlockKind::SlideBegin: e->type = "slide_open"; return true;
+        case BlockKind::SlideEnd: e->type = "slide_close"; return true;
     }
     return false;
 }
@@ -168,7 +170,8 @@ void CheckAgreement(TSParser *parser, const Lines &lines, const char *what) {
     std::set<int> directive_rows;
     for (const TsNode &n : nodes)
         if (n.type == "image" || n.type == "import" || n.type == "display_math" || n.type == "bibliography" ||
-            n.type == "toc" || n.type == "caption" || n.type == "alttext")
+            n.type == "toc" || n.type == "caption" || n.type == "alttext" || n.type == "slide_open" ||
+            n.type == "slide_close")
             directive_rows.insert(n.start_row);
         else if (n.type == "abstract")
             directive_rows.insert(n.end_row);  // after its closing brace
@@ -205,6 +208,12 @@ int main() {
             if (n.type == "section") sections.emplace_back(n.start_row, n.end_row);
         CHECK((sections == std::vector<std::pair<int, int>>{{0, 3}, {2, 3}, {4, 4}}));
     }
+
+    // --- Slides: every spelling, content of every kind, a stray bracket.
+    CheckAgreement(parser,
+                   {"> Deck", "", "\\slide(", "> Title", "- one", "- two", ") // end", "", "\\slide{", "Text that", "runs on",
+                    "}", "", "@slide{", "```{r}", "x <- 1", "```", "  )", "  }", "after", ")"},
+                   "slides");
 
     // --- Mutations: the scanner must neither crash nor hang, whatever the
     //     damage (half-typed markers, unclosed fences, stray braces, ...).

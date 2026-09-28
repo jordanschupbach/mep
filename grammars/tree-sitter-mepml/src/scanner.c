@@ -78,6 +78,8 @@ enum TokenType {
     RESULT_BEGIN_MARKDOWN,
     RESULT_END_ATTACHED,
     ATTRIBUTE_START,
+    SLIDE_START,
+    SLIDE_END,
     ERROR_SENTINEL,
 };
 
@@ -128,6 +130,9 @@ typedef struct {
     // Bit i: open group i is a `(...)` (a \name(...) command or directive),
     // not a `{...}` one. Each counts only its own kind of bracket.
     uint32_t paren_mask;
+    // The closing bracket of the slide open now (`)` for `\slide(`, `}` for
+    // `\slide{` / `@slide{`), 0 outside one. Slides do not nest.
+    uint8_t slide;
     uint8_t depths[MAX_DEPTH];  // bracket depth inside each open group
 } Scanner;
 
@@ -197,6 +202,7 @@ unsigned tree_sitter_mepml_external_scanner_serialize(void *payload, char *buffe
     buffer[n++] = (char)s->abstract_level;
     buffer[n++] = (char)s->table;
     for (unsigned k = 0; k < 4; ++k) buffer[n++] = (char)((s->paren_mask >> (8 * k)) & 0xff);
+    buffer[n++] = (char)s->slide;
     for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH; ++i) buffer[n++] = (char)s->depths[i];
     return n;
 }
@@ -205,7 +211,7 @@ void tree_sitter_mepml_external_scanner_deserialize(void *payload, const char *b
     Scanner *s = (Scanner *)payload;
     memset(s, 0, sizeof(*s));
     s->prev = '\n';
-    if (length < 13) return;
+    if (length < 14) return;
     s->prev = (uint8_t)buffer[0];
     s->context = (uint8_t)buffer[1];
     s->link_mode = (uint8_t)buffer[2];
@@ -215,7 +221,8 @@ void tree_sitter_mepml_external_scanner_deserialize(void *payload, const char *b
     s->abstract_level = (uint8_t)buffer[7];
     s->table = (uint8_t)buffer[8];
     for (unsigned k = 0; k < 4; ++k) s->paren_mask |= (uint32_t)(uint8_t)buffer[9 + k] << (8 * k);
-    for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH && 13 + i < length; ++i) s->depths[i] = (uint8_t)buffer[13 + i];
+    s->slide = (uint8_t)buffer[13];
+    for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH && 14 + i < length; ++i) s->depths[i] = (uint8_t)buffer[14 + i];
 }
 
 // --- groups ------------------------------------------------------------------
@@ -279,11 +286,26 @@ static bool backslash_directive_follows(TSLexer *lexer, char name[16]) {
 // paragraph otherwise -- a paragraph ends at a blank line or at a line that
 // starts some other block.
 
-static bool line_starts_block(TSLexer *lexer) {
+// The rest of a line, just past a bracket that could close the open
+// slide: blanks, then its end or a `// comment`.
+static bool slide_closer_rest(TSLexer *lexer) {
+    while (is_blank(la(lexer))) adv(lexer);
+    if (at_eol(lexer)) return true;
+    if (la(lexer) != '/') return false;
+    adv(lexer);
+    return la(lexer) == '/';
+}
+
+// `slide_close`: the open slide's closing bracket, 0 when none is open.
+static bool line_starts_block(TSLexer *lexer, int32_t slide_close) {
     // Called with the lexer at the first character of a line.
     while (is_blank(la(lexer))) adv(lexer);
     int32_t c = la(lexer);
     if (c == 0 || c == '\n' || c == '\r') return true;  // blank line
+    if (slide_close && c == slide_close) {
+        adv(lexer);
+        return slide_closer_rest(lexer);
+    }
     if (c == '/') {
         adv(lexer);
         return la(lexer) == '/';
@@ -301,7 +323,8 @@ static bool line_starts_block(TSLexer *lexer) {
     if (c == '\\') {
         adv(lexer);
         char name[16];
-        return la(lexer) == '[' || backslash_directive_follows(lexer, name);
+        if (la(lexer) == '[' || backslash_directive_follows(lexer, name)) return true;
+        return strcmp(name, "slide") == 0 && (la(lexer) == '(' || la(lexer) == '{');  // a slide opens
     }
     if (c == '|' || c == '@') return true;  // (approximate: tables, directives)
     if (c == '>') {
@@ -336,7 +359,7 @@ static bool scope_continues(Scanner *s, TSLexer *lexer) {
         while (is_blank(la(lexer))) adv(lexer);
         return !at_eol(lexer);
     }
-    return !line_starts_block(lexer);
+    return !line_starts_block(lexer, s->slide);
 }
 
 // A group has closed: leaving the abstract's own ends the abstract.
@@ -1203,6 +1226,19 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
         return true;
     }
 
+    // The open slide's closing bracket, alone on its line (a `// comment`
+    // may follow). Zero-width: the grammar reads the bracket itself.
+    if (s->slide && c == s->slide) {
+        adv(lexer);
+        if (slide_closer_rest(lexer) && valid[SLIDE_END]) {
+            s->slide = 0;
+            s->context = CTX_LINE;
+            lexer->result_symbol = SLIDE_END;
+            return true;
+        }
+        return fallback_line(s, lexer, valid, indent > 0);
+    }
+
     // `//` family: meta, results markers, callouts, comments.
     if (c == '/') {
         adv(lexer);
@@ -1302,11 +1338,20 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
     }
 
     // \name(...) directives.
-    if (c == '\\' && (valid[DIRECTIVE_START] || valid[ATTRIBUTE_START])) {
+    if (c == '\\' && (valid[DIRECTIVE_START] || valid[ATTRIBUTE_START] || valid[SLIDE_START])) {
         adv(lexer);
         if (is_alpha(la(lexer))) {
             char name[16];
-            if (backslash_directive_follows(lexer, name)) {
+            const bool directive = backslash_directive_follows(lexer, name);
+            // \slide( or \slide{ opens a slide (not inside another one).
+            if (!directive && strcmp(name, "slide") == 0 && (la(lexer) == '(' || la(lexer) == '{') && !s->slide &&
+                valid[SLIDE_START]) {
+                s->slide = la(lexer) == '(' ? ')' : '}';
+                s->context = CTX_LINE;
+                lexer->result_symbol = SLIDE_START;
+                return true;
+            }
+            if (directive) {
                 // A caption or alt text is its own start, so the line under
                 // a captioned block can tell it from the next directive.
                 const bool attribute = strcmp(name, "caption") == 0 || strcmp(name, "alttext") == 0;
@@ -1474,6 +1519,12 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
             adv(lexer);
         }
         const bool attribute = strcmp(name, "caption") == 0 || strcmp(name, "alttext") == 0;
+        if (strcmp(name, "slide") == 0 && la(lexer) == '{' && !s->slide && valid[SLIDE_START]) {
+            s->slide = '}';
+            s->context = CTX_LINE;
+            lexer->result_symbol = SLIDE_START;
+            return true;
+        }
         if (n > 0 && !is_alpha(la(lexer)) && is_bibtex_or_directive(name) && valid[attribute ? ATTRIBUTE_START : DIRECTIVE_START]) {
             s->context = CTX_LINE;
             lexer->result_symbol = attribute ? ATTRIBUTE_START : DIRECTIVE_START;
@@ -1590,7 +1641,8 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
                            valid[META_MARKER] || valid[H1_MARKER] || valid[LIST_MARKER] ||
                            valid[LIST_CONTINUATION] || valid[TABLE_ROW_START] || valid[RESULT_END] ||
                            valid[RESULT_END_ATTACHED] || valid[RESULT_BEGIN_MARKDOWN] ||
-                           valid[DIRECTIVE_START] || valid[ATTRIBUTE_START] || valid[FENCE_OPEN];
+                           valid[DIRECTIVE_START] || valid[ATTRIBUTE_START] || valid[FENCE_OPEN] ||
+                           valid[SLIDE_START] || valid[SLIDE_END];
         if (block_valid) {
             const bool ok = scan_line_start(s, lexer, valid);
             if (ok && lexer->result_symbol != TABLE_ROW_START && lexer->result_symbol != TABLE_DELIMITER_ROW)

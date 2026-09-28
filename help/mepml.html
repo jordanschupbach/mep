@@ -140,6 +140,58 @@ writes its own format's abstract: LaTeX's <code>abstract</code> environment, Org
 <code>#+begin_abstract</code>, Word's and LibreOffice's <i>Abstract</i> styles, and a
 <code>&lt;section class</code>"abstract"&gt;= in HTML. Imports read these back, and pandoc's
 abstracts as well.</p>
+<h1>Slides</h1>
+<pre>\slide(
+&gt; What we found
+- Any blocks at all: lists, code, pictures, tables, maths
+- *Inline* markup as anywhere else
+)</pre>
+<p><code>\slide(</code> on a line of its own opens a slide, and a line holding just its
+<code>)</code> ends it (a <code>// comment</code> may follow either). Everything between is
+ordinary mepml -- headings, lists, code blocks with their results,
+pictures -- so a slide is written the way the rest of the document is.
+<code>\slide{</code> ... <code>}</code> and <code>@slide{</code> ... <code>}</code> work too. The slide's first heading
+is its title.</p>
+<p>Slides do not nest: a <code>\slide(</code> inside an open slide ends that slide there,
+and both are flagged as never closed. A slide left open runs to the next
+<code>\slide(</code> or the end of the document. The language server offers to close
+it. Content on the opening line itself (<code>\slide(text)</code>) is flagged. The
+content goes on the lines after the opener.</p>
+<p>The editor draws the opener as a rule labelled <i>Slide N: title</i> and the
+closer as a plain rule. A slide folds as one block and appears in the
+outline. In an ordinary document, the HTML export puts each slide in a
+<code>&lt;section class</code>"slide"&gt;=, and the other document exports keep a slide's
+content as ordinary blocks, without the slide boundaries.</p>
+<h2>Presentations</h2>
+<p>A header line makes the whole document a presentation:</p>
+<pre>//? Title: Slides in mepml
+//? Subtitle: What a slide can hold
+//? Author: A. Person
+//? Type: presentation</pre>
+<p>Its exports are then slide decks. Each starts with a title slide made
+from <code>Title</code>, <code>Subtitle</code>, <code>Author</code> and <code>Date</code>, followed by one slide per
+<code>\slide</code>, titled by its first heading:</p>
+<table>
+<tr><th>Export</th><th>A presentation becomes</th></tr>
+<tr><td><code>html</code></td><td>a slideshow in one page</td></tr>
+<tr><td><code>tex</code>, <code>pdf</code></td><td>a Beamer deck (16:9), compiled by <code>tectonic</code> for the PDF</td></tr>
+<tr><td><code>pptx</code></td><td>a PowerPoint deck</td></tr>
+<tr><td><code>odp</code></td><td>a LibreOffice Impress deck</td></tr>
+</table>
+<p>In the slideshow, the arrow keys, space, a click or a swipe step through
+the slides, <code>Home</code> and <code>End</code> jump to either end, and <code>f</code> goes full screen.
+Printing it gives one slide per page. Slides are 16:9 in every format. A
+slide whose content is too tall for it is shrunk to fit: the slideshow
+scales it down, and the PowerPoint and Impress decks use smaller type.</p>
+<p>What is not on a slide is left out of these exports, and the language
+server flags it. Header lines and comments are not flagged. The <code>pptx</code> and <code>odp</code> decks
+can also be made from an ordinary document that has slides.
+<code>//? Type: document</code> is the default, and any other value is flagged.</p>
+<p>In the PowerPoint and Impress decks, a slide's text, lists, code and
+results, tables and pictures are real text boxes, tables and pictures you
+can edit. A single picture beside text goes on the right. Footnotes go at
+the bottom of their slide. Maths is shown as its TeX source, as in the
+Word export.</p>
 <h1>Inline formatting</h1>
 <table>
 <tr><th>Markup</th><th>Result</th></tr>
@@ -470,7 +522,7 @@ format:</p>
 <pre>//? Title: My report
 //? Export: pdf</pre>
 <p>Any format the table below lists works (<code>html</code>, <code>pdf</code>, <code>docx</code>, <code>odt</code>,
-<code>rtf</code>, <code>md</code>, <code>org</code>, <code>tex</code>, <code>txt</code>). <code>Export:</code> is singular: <code>//? Exports:</code>
+<code>rtf</code>, <code>md</code>, <code>org</code>, <code>tex</code>, <code>txt</code>, <code>pptx</code>, <code>odp</code>). <code>Export:</code> is singular: <code>//? Exports:</code>
 is a different key, choosing which parts of each code block the exports
 show.</p>
 <p><code>&lt;leader&gt;ke</code> (or <code>:MepmlExport</code>) exports the document beside its file,
@@ -487,6 +539,8 @@ pictures are embedded where the format can hold them:</p>
 <tr><td>Org (<code>.org</code>)</td><td>org-mode: <code>#+begin_src</code> blocks, <code>[cite:@key]</code>, footnotes</td></tr>
 <tr><td>LaTeX (<code>.tex</code>)</td><td>a standalone article</td></tr>
 <tr><td>Plain text (<code>.txt</code>)</td><td>the text, tables lined up, references listed</td></tr>
+<tr><td>PowerPoint (<code>.pptx</code>)</td><td>the slides as a deck (see Presentations, above)</td></tr>
+<tr><td>Impress (<code>.odp</code>)</td><td>the same, for LibreOffice</td></tr>
 </table>
 <p><code>&lt;leader&gt;ki</code> (or <code>:MepmlImport file</code>) goes the other way: an HTML,
 Markdown, Org, RTF, Word, OpenDocument or plain-text file becomes a

@@ -37,7 +37,10 @@ Because it is an ordinary language server, other editors can use it too.
 | =heading-skip=           | a heading two levels below the one before it               |
 | =duplicate-option=       | the same =//? Option:= set twice                           |
 | =duplicate-citation=     | two entries with one key                                   |
-| =unclosed-code=, =unclosed-math=, =unclosed-results= | a block that never ends       |
+| =unclosed-code=, =unclosed-math=, =unclosed-results=, =unclosed-slide= | a block that never ends |
+| =unknown-type=           | a =//? Type:= other than =document= or =presentation=       |
+| =empty-presentation=     | a presentation with no =\slide=                            |
+| =off-slide=              | in a presentation, content on no slide (its slide exports leave it out) |
 | =orphan-caption=         | a =\caption= or =\alttext= with nothing above to attach to |
 | =deprecated-directive=   | =@printbibliography= (now =\bibliography=), =@abstract{= (now =\abstract(=) |
 
@@ -101,6 +104,7 @@ The code actions on a line with a problem:
   one.
 - =@printbibliography=: rename it to =\bibliography=.
 - The old =@abstract{...}=: rewrite it as =\abstract(...)=.
+- A =\slide(= that is never closed: add its =)= under its last line.
 - A table with ragged rows: pad every row to the same number of cells.
 
 *Formatting* lines up every table's pipes, honouring each column's
@@ -110,10 +114,10 @@ offered as a code action on any table that is not aligned yet.
 * Outline and folding
 
 The outline lists the headings, nested by depth, with each section's
-figures, tables, code blocks and citations under it, numbered the way the
-captions number them. Folding covers the same blocks mep folds in the
-buffer: sections, document headers, code, citations, display maths, tables,
-lists and comment runs -- a code block and its results as two separate
+figures, tables, code blocks, citations and slides under it, numbered the
+way the captions number them. Folding covers the same blocks mep folds in
+the buffer: sections, document headers, slides, code, citations, display
+maths, tables, lists and comment runs -- a code block and its results as two separate
 folds.
 
 * See also

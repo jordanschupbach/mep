@@ -642,6 +642,107 @@ int main() {
         CHECK(html.find("<p>Second (bracketed) part.</p></section>") != std::string::npos);
     }
 
+    // --- \slide( ... ): markers around ordinary blocks.
+    {
+        Lines src = {
+            "\\slide(",                  // 0
+            "> Results",                  // 1
+            "- one",                      // 2
+            "- two",                      // 3
+            ") // end",                   // 4
+            "",                           // 5
+            "\\slide{",                  // 6
+            "Prose that",                 // 7
+            "runs on",                    // 8
+            "}",                          // 9
+            "@slide{",                    // 10
+            "  )",                        // 11 (not this slide's bracket: prose)
+            "  }",                        // 12
+            ")",                          // 13 (closes nothing: prose)
+            "\\slide( text here",        // 14
+            "\\slide(",                  // 15 (ends the one above, reported)
+            "Last",                       // 16
+        };
+        Document d = Parse(src);
+        std::vector<BlockKind> kinds;
+        for (const Block &b : d.blocks) kinds.push_back(b.kind);
+        const std::vector<BlockKind> want = {
+            BlockKind::SlideBegin, BlockKind::Heading, BlockKind::List, BlockKind::SlideEnd,
+            BlockKind::SlideBegin, BlockKind::Paragraph, BlockKind::SlideEnd,
+            BlockKind::SlideBegin, BlockKind::Paragraph, BlockKind::SlideEnd,
+            BlockKind::Paragraph,
+            BlockKind::SlideBegin, BlockKind::SlideBegin, BlockKind::Paragraph,
+        };
+        CHECK(kinds == want);
+        CHECK(d.blocks[2].line_end == 3);  // the list stops at the closer
+        CHECK(d.blocks[3].line_start == 4 && d.blocks[3].level == 1);
+        CHECK(d.blocks[5].line_start == 7 && d.blocks[5].line_end == 8);
+        CHECK(d.blocks[8].line_start == 11 && d.blocks[8].line_end == 11);
+        CHECK(d.blocks[9].line_start == 12 && d.blocks[9].level == 3);
+        CHECK(d.blocks[10].line_start == 13);
+        CHECK(d.blocks[11].level == 4 && d.blocks[12].level == 5);
+        int never_closed = 0;
+        bool trailing = false, comment_ok = true;
+        for (const Diagnostic &dg : d.diagnostics) {
+            if (dg.message.find("never closed") != std::string::npos) {
+                CHECK(dg.line == 14 || dg.line == 15);
+                ++never_closed;
+            }
+            if (dg.line == 14 && dg.message.find("content goes on the lines after") != std::string::npos) trailing = true;
+            if (dg.line == 4) comment_ok = false;
+        }
+        CHECK(never_closed == 2 && trailing && comment_ok);
+
+        const std::vector<Slide> slides = Slides(d, static_cast<int>(src.size()));
+        CHECK(slides.size() == 5);
+        CHECK(slides[0].line_start == 0 && slides[0].line_end == 4 && slides[0].closed && slides[0].title == "Results");
+        CHECK(slides[0].first_block == 0 && slides[0].last_block == 4);
+        CHECK(slides[1].title.empty() && slides[1].line_end == 9);
+        CHECK(slides[3].line_start == 14 && slides[3].line_end == 14 && !slides[3].closed);
+        CHECK(slides[4].line_end == 16 && !slides[4].closed && slides[4].last_block == d.blocks.size());
+
+        // The editor's spans: "Slide N" on the opener, the closer's bracket.
+        bool label = false, closer = false;
+        for (const Span &sp : Highlight(d)) {
+            if (sp.line == 0 && sp.markup && (sp.style & kSlide) && sp.replace == "Slide 1" && sp.col_end == 7) label = true;
+            if (sp.line == 4 && sp.markup && (sp.style & kSlide) && sp.col_start == 0 && sp.col_end == 1) closer = true;
+        }
+        CHECK(label && closer);
+
+        // HTML: one section per slide, a slide left open closed for it.
+        const std::string html = ToHtml(d);
+        CHECK(html.find("<section class=\"slide\" id=\"slide-1\">\n<h1 id=\"results\">Results</h1>") != std::string::npos);
+        size_t opens = 0, closes = 0;
+        for (size_t k = html.find("<section class=\"slide\""); k != std::string::npos; k = html.find("<section class=\"slide\"", k + 1)) ++opens;
+        for (size_t k = html.find("</section>"); k != std::string::npos; k = html.find("</section>", k + 1)) ++closes;
+        CHECK(opens == 5 && closes == 5);
+    }
+
+    // --- //? Type: presentation, and what its slide exports leave out.
+    {
+        Document d = Parse({"//? Type: Presentation", "", "Off the slides.", "", "// a comment is fine", "\\slide(", "> T", "On.", ")"});
+        CHECK(IsPresentation(d) && MetaValue(d, "TYPE") == "Presentation");
+        int off = 0;
+        for (const Diagnostic &dg : d.diagnostics) off += dg.message.find("not on any slide") != std::string::npos ? (dg.line == 2 ? 1 : 100) : 0;
+        CHECK(off == 1);
+        Document none = Parse({"//? Type: slides", "", "Text."});
+        CHECK(IsPresentation(none));
+        bool empty = false;
+        for (const Diagnostic &dg : none.diagnostics) empty = empty || dg.message.find("no \\slide") != std::string::npos;
+        CHECK(empty);
+        Document odd = Parse({"//? Type: poster"});
+        CHECK(!IsPresentation(odd) && odd.diagnostics.size() == 1 && odd.diagnostics[0].message.find("unknown document type") == 0);
+        CHECK(Parse({"//? Type: document", "", "Text."}).diagnostics.empty());
+        // The slideshow: a title slide from the header, then the slides.
+        Document deck = Parse({"//? Title: Deck", "//? Type: presentation", "\\slide(", "> One", "Text.", ")", "\\slide(", "Two.", ")"});
+        const std::string html = ToSlidesHtml(deck);
+        CHECK(html.find("<section class=\"slide title-slide\" id=\"slide-1\"><h1>Deck</h1>") != std::string::npos);
+        CHECK(html.find("id=\"slide-2\"><h2 class=\"slide-title\">One</h2>") != std::string::npos);
+        CHECK(html.find("id=\"slide-3\"><div class=\"slide-body\">") != std::string::npos);
+        const std::vector<SlideHtml> frags = SlideFragments(deck);
+        CHECK(frags.size() == 2 && frags[0].title == "One" && frags[0].body == "<p>Text.</p>\n" && frags[1].title.empty());
+    }
+
     // --- The old @abstract{...} no longer makes an abstract: it says so.
     {
         Document d = Parse({"@abstract{Old.}", "", "text"});
@@ -856,6 +957,7 @@ int main() {
         CHECK(count[BlockKind::List] >= 1);
         CHECK(count[BlockKind::Bibliography] == 1);
         CHECK(count[BlockKind::Abstract] == 1);
+        CHECK(count[BlockKind::SlideBegin] == 2 && count[BlockKind::SlideEnd] == 2);
         CHECK(d.footnote_count == 1);
         CHECK(d.cite_order.size() == 2);
         // Every inline kind appears somewhere.

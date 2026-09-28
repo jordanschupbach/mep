@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slides in mepml</title>
+<style>
+:root {
+  --fg: #1f2328; --muted: #59636e; --bg: #fff; --link: #0b5cad; --rule: #d1d9e0; --rule-strong: #1f2328;
+  --code-bg: #eff1f3; --pre-bg: #f6f8fa; --th-bg: #f6f8fa; --mark: #fff3a3; --results-bg: #fffbeb; --results-rule: #e5c07b;
+  --cite: #0b5cad; --missing: #c62828; --ins: #2f7d32; --del: #c62828;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --fg: #e6e6e6; --muted: #9ba3ad; --bg: #16181c; --link: #7cb7ff; --rule: #3a3f47; --rule-strong: #c9d1d9;
+  --code-bg: #262a31; --pre-bg: #1e2227; --th-bg: #1e2227; --mark: #6b5a00; --results-bg: #262216; --results-rule: #9c7c2c;
+  --cite: #7cb7ff; --missing: #ff7b72; --ins: #7ee787; --del: #ff7b72;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { font-family: Charter, 'Bitstream Charter', 'Sitka Text', Cambria, Georgia, 'Times New Roman', serif; font-size: 1.0625rem;
+  max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; line-height: 1.6; color: var(--fg); background: var(--bg);
+  overflow-wrap: break-word; font-kerning: normal; }
+h1, h2, h3, h4, h5, h6 { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; margin: 2em 0 .6em; scroll-margin-top: 1rem; text-wrap: balance; }
+h1 { font-size: 1.7em; padding-bottom: .25em; border-bottom: 1px solid var(--rule); }
+h2 { font-size: 1.35em; } h3 { font-size: 1.15em; } h4, h5, h6 { font-size: 1em; }
+h1.title { font-size: 2.2em; text-align: center; border: 0; margin: 0 0 .8em; }
+p { margin: 0 0 1em; }
+a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: .15em; }
+a.cite, a.footnote-ref, sup a { text-decoration: none; }
+.cite-missing { color: var(--missing); }
+ul, ol { padding-left: 1.6em; margin: 0 0 1em; } li { margin: .2em 0; } li > p { margin: 0; }
+blockquote { margin: 1em 0; padding: 0 1em; color: var(--muted); border-left: 3px solid var(--rule); }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 2em 0; }
+code, pre, kbd, .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86em; }
+code { background: var(--code-bg); padding: .1em .3em; border-radius: 4px; }
+pre { background: var(--pre-bg); border: 1px solid var(--rule); padding: .8em 1em; margin: 0 0 1em; overflow-x: auto; border-radius: 6px; line-height: 1.45; tab-size: 4; }
+pre code { background: none; padding: 0; font-size: 1em; border-radius: 0; }
+pre.results { background: var(--results-bg); border-color: var(--results-rule); border-left-width: 3px; }
+img, svg, video { max-width: 100%; height: auto; }
+figure { margin: 1.8em 0; text-align: center; }
+figure img { display: block; margin: 0 auto; }
+figure img + img { margin-top: 1em; }
+figure.code { text-align: left; margin: 1.2em 0; }
+figure.code > pre:last-child { margin-bottom: 0; }
+figure.code figcaption.lang { font: .72em system-ui, sans-serif; color: var(--muted); text-align: left; letter-spacing: .04em; text-transform: uppercase; margin: 0 0 .3em; max-width: none; }
+figcaption, caption, .caption { font-size: .9em; color: var(--muted); text-align: center; line-height: 1.45; }
+figcaption { margin: .7em auto 0; max-width: 38rem; }
+.caption { margin: -.4em 0 1.2em; }
+/* A table may use more than the text column, up to 60rem, centred on it. */
+.table-wrap { width: min(100vw - 2.5rem, 60rem); max-width: none; margin: 1.8em 0 1.8em calc(50% - min(50vw - 1.25rem, 30rem)); overflow-x: auto; }
+table { border-collapse: collapse; margin: 0 auto; font-size: .9em; line-height: 1.4; font-variant-numeric: lining-nums tabular-nums;
+  border-top: 2px solid var(--rule-strong); border-bottom: 2px solid var(--rule-strong); }
+caption { caption-side: top; padding-bottom: .6em; }
+th, td { padding: .4em .75em; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; font-size: .92em; font-weight: 600; background: var(--th-bg);
+  border-bottom: 1px solid var(--rule-strong); }
+tr:last-child > td { border-bottom: 0; }
+td img, th img { display: block; max-height: 13em; width: auto; margin: 0 auto; }
+figure.code > div.results { overflow-x: auto; }
+.big { font-size: 1.3em; } mark { background: var(--mark); color: inherit; padding: 0 .1em; } ins { color: var(--ins); } del { color: var(--del); }
+.callout { --c: #61afef; border-left: 4px solid var(--c); background: color-mix(in srgb, var(--c) 11%, transparent); padding: .7em 1em; margin: 1.2em 0; border-radius: 4px; }
+.callout > :last-child { margin-bottom: 0; }
+.callout-title { font: 600 .78em system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; margin-bottom: .3em; }
+.callout-warning, .callout-caution { --c: #e5a50a; }
+.callout-error, .callout-danger { --c: #e06c75; }
+.callout-tip, .callout-hint, .callout-success { --c: #98c379; }
+.callout-todo, .callout-fixme, .callout-important { --c: #c678dd; }
+.math-display { text-align: center; margin: 1.2em 0; max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+mjx-container[display="true"] { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.footnotes { font-size: .88em; color: var(--muted); border-top: 1px solid var(--rule); margin-top: 3em; padding-top: 1em; }
+.footnotes ol { padding-left: 1.4em; }
+.abstract { margin: 0 auto 2.5em; max-width: 38rem; font-size: .95em; padding: 1em 1.4em; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.abstract p:last-child { margin-bottom: 0; }
+.slide { margin: 1.5em 0; padding: .4em 1.4em 1em; border: 1px solid var(--rule); border-radius: 6px; }
+.slide > :first-child { margin-top: .6em; }
+.abstract-title { font: 600 .8em system-ui, sans-serif; text-align: center; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .6em; color: var(--muted); }
+.toc { margin: 0 0 2em; } .toc ul { list-style: none; padding-left: 0; } .toc a { text-decoration: none; }
+.toc-2 { padding-left: 1em; } .toc-3 { padding-left: 2em; } .toc-4 { padding-left: 3em; }
+@media (max-width: 36rem) {
+  body { font-size: 1rem; padding: 1.5rem 1rem 3rem; }
+  h1.title { font-size: 1.8em; }
+  .abstract { padding: .8em 0; }
+  .table-wrap { width: calc(100vw - 2rem); margin-left: calc(50% - 50vw + 1rem); }
+  pre { padding: .7em .8em; }
+}
+@media print {
+  @page { margin: 2cm; }
+  :root { --fg: #000; --bg: #fff; --link: #000; }
+  body { max-width: none; padding: 0; font-size: 11pt; }
+  a { text-decoration: none; }
+  h1, h2, h3, h4 { break-after: avoid; }
+  figure, table, pre, .math-display, .callout { break-inside: avoid; }
+  .table-wrap, pre, .math-display { overflow: visible; }
+  pre { white-space: pre-wrap; }
+}
+
+html, body { height: 100%; }
+body { max-width: none; margin: 0; padding: 0; overflow: hidden; background: #1b1d22; font-size: 26px; line-height: 1.4; }
+.deck { position: absolute; left: 50%; top: 50%; width: 1280px; height: 720px; transform: translate(-50%, -50%) scale(var(--scale, 1)); }
+.slide { position: absolute; inset: 0; margin: 0; padding: 44px 64px 40px; border: 0; border-radius: 0; background: var(--bg);
+  display: flex; flex-direction: column; overflow: hidden; visibility: hidden; box-shadow: 0 10px 40px rgba(0,0,0,.45); }
+.slide.current { visibility: visible; }
+.slide > :first-child { margin-top: 0; }
+.slide-title { font-size: 1.6em; margin: 0 0 .55em; padding-bottom: .2em; border-bottom: 3px solid var(--link); flex: none; }
+.slide-body { flex: 1; min-height: 0; transform-origin: top left; }
+.slide-body > :first-child { margin-top: 0; }
+.slide-body h1, .slide-body h2, .slide-body h3, .slide-body h4 { margin: .6em 0 .3em; border: 0; font-size: 1.1em; }
+.slide-body figure { margin: .6em 0; }
+.slide-body figure img, .slide-body > p > img { max-height: 480px; width: auto; }
+.slide-body .table-wrap { width: auto; margin: .6em 0; }
+.slide-body pre { font-size: .72em; }
+.slide-body .footnotes { margin-top: 1em; font-size: .6em; }
+.title-slide { justify-content: center; align-items: center; text-align: center; }
+.title-slide h1 { font-size: 2.3em; border: 0; margin: 0 0 .3em; }
+.title-slide .subtitle { font-size: 1.2em; color: var(--muted); margin: 0 0 1.4em; }
+.title-slide .author, .title-slide .date { margin: .2em 0; }
+.slide-number { position: absolute; right: 26px; bottom: 16px; font: 16px system-ui, sans-serif; color: var(--muted); }
+.progress { position: fixed; left: 0; bottom: 0; height: 4px; background: #6b8afd; transition: width .2s; }
+@media print {
+  @page { size: 1280px 720px; margin: 0; }
+  html, body { height: auto; overflow: visible; background: #fff; }
+  .deck { position: static; transform: none; width: 1280px; height: auto; }
+  .slide { position: relative; width: 1280px; height: 720px; visibility: visible; box-shadow: none; break-after: page; }
+  .progress { display: none; }
+}
+</style>
+<script>MathJax = { tex: { inlineMath: [['\\(', '\\)']] } };</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js"></script>
+</head>
+<body>
+<main class="deck">
+<section class="slide title-slide" id="slide-1"><h1>Slides in mepml</h1><p class="subtitle">A small deck that shows what a slide can hold</p><p class="author">Jordan Schupbach</p></section>
+<section class="slide" id="slide-2"><h2 class="slide-title">Slides in mepml</h2><div class="slide-body">
+<p>Any mepml can go on a slide. The slide's first heading is its title.</p>
+<ul><li>Open with <code>\slide(</code> on a line of its own</li><li>Close with <code>)</code> on a line of its own</li><li>Everything in between is ordinary mepml</li></ul>
+</div><div class="slide-number">2</div></section>
+<section class="slide" id="slide-3"><h2 class="slide-title">Inline formatting</h2><div class="slide-body">
+<ul><li><strong>Bold</strong>, <em>italic</em>, <u>underlined</u> and <mark>highlighted</mark> text</li><li><span class="mono">Monospaced</span>, <code>verbatim</code>, <sup>super</sup>script and <sub>sub</sub>script</li><li><span style="color:#2aa198">Coloured text</span> and <span style="font-size:16pt">larger text</span></li><li>Links such as <a href="../../../help/mepml.html">the mepml help</a></li></ul>
+</div><div class="slide-number">3</div></section>
+<section class="slide" id="slide-4"><h2 class="slide-title">Lists</h2><div class="slide-body">
+<ol><li>Numbered items</li><li>Nest as usual<ul><li>with bullets underneath</li><li>as deep as you need</li></ul></li></ol>
+<ul><li><input type="checkbox" disabled checked> Task lists work</li><li><input type="checkbox" disabled> and so do open tasks</li></ul>
+</div><div class="slide-number">4</div></section>
+<section class="slide" id="slide-5"><h2 class="slide-title">Maths</h2><div class="slide-body">
+<p>The linear discriminant maximises the ratio of between-group to within-group
+scatter:</p>
+<div class="math-display">\[J(w) = \frac{w^\top S_B\, w}{w^\top S_W\, w}\]<div class="caption">Fisher's criterion</div></div>
+<p>Inline maths works too: \(\Lambda = |W| / |W + B|\).</p>
+</div><div class="slide-number">5</div></section>
+<section class="slide" id="slide-6"><h2 class="slide-title">A table</h2><div class="slide-body">
+<div class="table-wrap"><table><caption>Table 1: Mean petal size by species, in cm</caption><tr><th style="text-align:left">Species</th><th style="text-align:right">Petal length</th><th style="text-align:right">Petal width</th></tr><tr><td style="text-align:left">setosa</td><td style="text-align:right">1.46</td><td style="text-align:right">0.25</td></tr><tr><td style="text-align:left">versicolor</td><td style="text-align:right">4.26</td><td style="text-align:right">1.33</td></tr><tr><td style="text-align:left">virginica</td><td style="text-align:right">5.55</td><td style="text-align:right">2.03</td></tr></table></div>
+</div><div class="slide-number">6</div></section>
+<section class="slide" id="slide-7"><h2 class="slide-title">A figure</h2><div class="slide-body">
+<figure><img src="../iris_r/figs/pairs.png" alt="A scatter-plot matrix of sepal and petal length and width, coloured by species"><figcaption>Figure 1: Every pair of the four iris measurements</figcaption></figure>
+</div><div class="slide-number">7</div></section>
+<section class="slide" id="slide-8"><h2 class="slide-title">Code and its results</h2><div class="slide-body">
+<figure class="code"><figcaption class="lang">python</figcaption><pre><code class="language-python">xs = [1, 2, 3, 4, 5]
+print(&quot;mean:&quot;, sum(xs) / len(xs))
+print(&quot;squares:&quot;, [x * x for x in xs])</code></pre><pre class="results">mean: 3.0
+squares: [1, 4, 9, 16, 25]</pre></figure>
+<p>Run the block with C-c C-c. Its results are written under it, on the slide.</p>
+</div><div class="slide-number">8</div></section>
+<section class="slide" id="slide-9"><h2 class="slide-title">Callouts</h2><div class="slide-body">
+<div class="callout callout-note"><span class="callout-title">NOTE</span>  A callout reads the same on a slide as it does anywhere else.</div>
+<div class="callout callout-tip"><span class="callout-title">TIP</span>  Fold a slide like any other block, or jump between slides from the  outline.</div>
+</div><div class="slide-number">9</div></section>
+<section class="slide" id="slide-10"><h2 class="slide-title">Other spellings</h2><div class="slide-body">
+<p>This slide opens with <code>\slide{</code> and closes with <code>}</code>.</p>
+</div><div class="slide-number">10</div></section>
+<section class="slide" id="slide-11"><div class="slide-body">
+<p>This slide uses <code>@slide{</code> and has no heading, so it has no title either.</p>
+</div><div class="slide-number">11</div></section>
+</main>
+<div class="progress"></div>
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.deck > .slide'));
+  var bar = document.querySelector('.progress');
+  var cur = 0;
+  function fitBody(s) {
+    var b = s.querySelector('.slide-body');
+    if (!b) return;
+    b.style.transform = ''; b.style.width = '';
+    var avail = b.clientHeight, need = b.scrollHeight;
+    if (need > avail + 1 && avail > 0) {
+      var k = Math.max(0.35, avail / need);
+      b.style.transform = 'scale(' + k + ')';
+      b.style.width = (100 / k) + '%';
+    }
+  }
+  function fit() {
+    var k = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+    document.documentElement.style.setProperty('--scale', k);
+    slides.forEach(fitBody);
+  }
+  function show(i) {
+    cur = Math.max(0, Math.min(slides.length - 1, i));
+    slides.forEach(function (s, j) { s.classList.toggle('current', j === cur); });
+    if (bar) bar.style.width = (slides.length > 1 ? 100 * cur / (slides.length - 1) : 100) + '%';
+    if (history.replaceState) history.replaceState(null, '', '#' + (cur + 1));
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    var k = e.key;
+    if (k === 'ArrowRight' || k === 'ArrowDown' || k === 'PageDown' || k === ' ' || k === 'n') show(cur + 1);
+    else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp' || k === 'Backspace' || k === 'p') show(cur - 1);
+    else if (k === 'Home') show(0);
+    else if (k === 'End') show(slides.length - 1);
+    else if (k === 'f' && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
+    else return;
+    e.preventDefault();
+  });
+  document.addEventListener('click', function (e) {
+    if (e.target.closest('a, button, input, select, textarea, video, audio')) return;
+    show(e.clientX > window.innerWidth / 2 ? cur + 1 : cur - 1);
+  });
+  var x0 = null;
+  document.addEventListener('touchstart', function (e) { x0 = e.touches[0].clientX; }, {passive: true});
+  document.addEventListener('touchend', function (e) {
+    if (x0 === null) return;
+    var dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 40) show(dx < 0 ? cur + 1 : cur - 1);
+    x0 = null;
+  });
+  window.addEventListener('resize', fit);
+  window.addEventListener('load', fit);
+  window.addEventListener('beforeprint', function () { slides.forEach(function (s) { var b = s.querySelector('.slide-body'); if (b) { b.style.transform = ''; b.style.width = ''; } }); });
+  window.addEventListener('afterprint', fit);
+  if (window.MathJax && MathJax.startup && MathJax.startup.promise) MathJax.startup.promise.then(fit);
+  else window.MathJax = Object.assign(window.MathJax || {}, {startup: {pageReady: function () { return MathJax.startup.defaultPageReady().then(fit); }}});
+  fit();
+  show((parseInt(location.hash.slice(1), 10) || 1) - 1);
+})();
+</script>
+</body>
+</html>

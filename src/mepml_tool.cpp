@@ -47,7 +47,8 @@ std::string ShellQuote(const std::string &s) {
 int Usage() {
     std::fprintf(stderr,
                  "usage: mep-mepml convert IN OUT\n"
-                 "  export from .mepml to: html md org rtf docx odt tex pdf txt\n"
+                 "  export from .mepml to: html md org rtf docx odt tex pdf txt pptx odp\n"
+                 "  (with //? Type: presentation, html/tex/pdf are a slideshow and a Beamer deck)\n"
                  "  import to .mepml from: html md org rtf docx odt txt\n");
     return 2;
 }

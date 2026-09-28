@@ -172,6 +172,74 @@ writes its own format's abstract: LaTeX's =abstract= environment, Org's
 =<section class="abstract">= in HTML. Imports read these back, and pandoc's
 abstracts as well.
 
+* Slides
+
+#+begin_example
+\slide(
+> What we found
+- Any blocks at all: lists, code, pictures, tables, maths
+- *Inline* markup as anywhere else
+)
+#+end_example
+
+=\slide(= on a line of its own opens a slide, and a line holding just its
+=)= ends it (a =// comment= may follow either). Everything between is
+ordinary mepml -- headings, lists, code blocks with their results,
+pictures -- so a slide is written the way the rest of the document is.
+=\slide{= ... =}= and =@slide{= ... =}= work too. The slide's first heading
+is its title.
+
+Slides do not nest: a =\slide(= inside an open slide ends that slide there,
+and both are flagged as never closed. A slide left open runs to the next
+=\slide(= or the end of the document. The language server offers to close
+it. Content on the opening line itself (=\slide(text)=) is flagged. The
+content goes on the lines after the opener.
+
+The editor draws the opener as a rule labelled /Slide N: title/ and the
+closer as a plain rule. A slide folds as one block and appears in the
+outline. In an ordinary document, the HTML export puts each slide in a
+=<section class="slide">=, and the other document exports keep a slide's
+content as ordinary blocks, without the slide boundaries.
+
+** Presentations
+
+A header line makes the whole document a presentation:
+
+#+begin_example
+//? Title: Slides in mepml
+//? Subtitle: What a slide can hold
+//? Author: A. Person
+//? Type: presentation
+#+end_example
+
+Its exports are then slide decks. Each starts with a title slide made
+from =Title=, =Subtitle=, =Author= and =Date=, followed by one slide per
+=\slide=, titled by its first heading:
+
+| Export            | A presentation becomes                                                  |
+|-------------------+-------------------------------------------------------------------------|
+| =html=            | a slideshow in one page                                                 |
+| =tex=, =pdf=      | a Beamer deck (16:9), compiled by =tectonic= for the PDF                |
+| =pptx=            | a PowerPoint deck                                                       |
+| =odp=             | a LibreOffice Impress deck                                              |
+
+In the slideshow, the arrow keys, space, a click or a swipe step through
+the slides, =Home= and =End= jump to either end, and =f= goes full screen.
+Printing it gives one slide per page. Slides are 16:9 in every format. A
+slide whose content is too tall for it is shrunk to fit: the slideshow
+scales it down, and the PowerPoint and Impress decks use smaller type.
+
+What is not on a slide is left out of these exports, and the language
+server flags it. Header lines and comments are not flagged. The =pptx= and =odp= decks
+can also be made from an ordinary document that has slides.
+=//? Type: document= is the default, and any other value is flagged.
+
+In the PowerPoint and Impress decks, a slide's text, lists, code and
+results, tables and pictures are real text boxes, tables and pictures you
+can edit. A single picture beside text goes on the right. Footnotes go at
+the bottom of their slide. Maths is shown as its TeX source, as in the
+Word export.
+
 * Inline formatting
 
 | Markup                    | Result                     |
@@ -608,7 +676,7 @@ format:
 #+end_example
 
 Any format the table below lists works (=html=, =pdf=, =docx=, =odt=,
-=rtf=, =md=, =org=, =tex=, =txt=). =Export:= is singular: =//? Exports:=
+=rtf=, =md=, =org=, =tex=, =txt=, =pptx=, =odp=). =Export:= is singular: =//? Exports:=
 is a different key, choosing which parts of each code block the exports
 show.
 
@@ -627,6 +695,8 @@ pictures are embedded where the format can hold them:
 | Org (=.org=)          | org-mode: =#+begin_src= blocks, =[cite:@key]=, footnotes     |
 | LaTeX (=.tex=)        | a standalone article                                        |
 | Plain text (=.txt=)   | the text, tables lined up, references listed                |
+| PowerPoint (=.pptx=)  | the slides as a deck (see Presentations, above)            |
+| Impress (=.odp=)      | the same, for LibreOffice                                   |
 
 =<leader>ki= (or =:MepmlImport file=) goes the other way: an HTML,
 Markdown, Org, RTF, Word, OpenDocument or plain-text file becomes a

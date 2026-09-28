@@ -1,0 +1,99 @@
+//? Title: Slides in mepml
+//? Subtitle: A small deck that shows what a slide can hold
+//? author: Jordan Schupbach
+//? Type: presentation
+
+// A slide is `\slide(` on a line of its own, the slide's content, and a
+// line holding just `)`. `//? Type: presentation` above makes the exports
+// slide decks: html is a slideshow, tex and pdf are Beamer, and pptx and
+// odp are PowerPoint and Impress decks (<leader>ke, or mep-mepml convert).
+// A deck holds only what is on a slide, so this comment is left out.
+
+\slide(
+> Slides in mepml
+Any mepml can go on a slide. The slide's first heading is its title.
+
+- Open with `\slide(` on a line of its own
+- Close with `)` on a line of its own
+- Everything in between is ordinary mepml
+)
+
+\slide(
+> Inline formatting
+- *Bold*, ~italic~, _underlined_ and =highlighted= text
+- |Monospaced|, `verbatim`, ^super^script and ,,sub,,script
+- \color(teal, Coloured text) and \fs(16, larger text)
+- Links such as [the mepml help|../../../help/mepml.html]
+) // a trailing comment on the closer is fine
+
+\slide(
+> Lists
+1. Numbered items
+2. Nest as usual
+   - with bullets underneath
+   - as deep as you need
+
+- [x] Task lists work
+- [ ] and so do open tasks
+)
+
+\slide(
+> Maths
+The linear discriminant maximises the ratio of between-group to within-group
+scatter:
+
+$$
+J(w) = \frac{w^\top S_B\, w}{w^\top S_W\, w}
+$$
+\caption(Fisher's criterion)
+
+Inline maths works too: $\Lambda = |W| / |W + B|$.
+)
+
+\slide(
+> A table
+| Species    | Petal length | Petal width |
+|:-----------|-------------:|------------:|
+| setosa     |         1.46 |        0.25 |
+| versicolor |         4.26 |        1.33 |
+| virginica  |         5.55 |        2.03 |
+\caption(Mean petal size by species, in cm)
+)
+
+\slide(
+> A figure
+\image(../iris_r/figs/pairs.png)
+\caption(Every pair of the four iris measurements)
+\alttext(A scatter-plot matrix of sepal and petal length and width, coloured by species)
+)
+
+\slide(
+> Code and its results
+```python
+xs = [1, 2, 3, 4, 5]
+print("mean:", sum(xs) / len(xs))
+print("squares:", [x * x for x in xs])
+```
+// result_begin:
+// mean: 3.0
+// squares: [1, 4, 9, 16, 25]
+// result_end
+
+Run the block with C-c C-c. Its results are written under it, on the slide.
+)
+
+\slide(
+> Callouts
+// NOTE: A callout reads the same on a slide as it does anywhere else.
+// TIP: Fold a slide like any other block, or jump between slides from the
+// outline.
+)
+
+\slide{
+> Other spellings
+This slide opens with `\slide{` and closes with `}`.
+}
+
+@slide{
+This slide uses `@slide{` and has no heading, so it has no title either.
+}

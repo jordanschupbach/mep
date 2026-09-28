@@ -16,6 +16,7 @@
 
 #include "mepml_convert.h"
 #include "mepml_doc.h"
+#include "zip_archive.h"
 
 namespace {
 void Check(bool condition, const char *expression, int line) {
@@ -126,7 +127,10 @@ Lines Signature(const Document &doc, const Keeps &k) {
             case BlockKind::Comment:
             case BlockKind::Meta:
             case BlockKind::Import:
-            case BlockKind::Citation: continue;
+            case BlockKind::Citation:
+            // The document formats keep a slide's content, not the slide.
+            case BlockKind::SlideBegin:
+            case BlockKind::SlideEnd: continue;
         }
         sig.push_back(s);
     }
@@ -223,7 +227,9 @@ void TestFormats() {
     CHECK(FormatFromPath("x.zzz") == Format::Unknown);
     CHECK(FormatFromName("markdown") == Format::Markdown);
     CHECK(FormatFromName("org") == Format::Org);
-    for (Format f : {Format::Html, Format::Markdown, Format::Org, Format::Rtf, Format::Docx, Format::Odt, Format::Latex, Format::Text}) {
+    CHECK(FormatFromPath("x.pptx") == Format::Pptx && FormatFromPath("x.odp") == Format::Odp);
+    for (Format f : {Format::Html, Format::Markdown, Format::Org, Format::Rtf, Format::Docx, Format::Odt, Format::Latex, Format::Text,
+                     Format::Pptx, Format::Odp}) {
         CHECK(CanExport(f));
         CHECK(FormatFromPath("x." + FormatExtension(f)) == f);
     }
@@ -329,12 +335,105 @@ void TestPackages() {
     std::string out;
     CHECK(!ImportFile(junk, Temp("junk.mepml"), &out, &err));
 }
+
+std::string ReadAll(const std::string &path) {
+    std::ifstream f(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+bool Entry(const std::string &zip_bytes, const char *name, std::string *out) {
+    return zip::Extract(reinterpret_cast<const unsigned char *>(zip_bytes.data()), zip_bytes.size(), name, *out);
+}
+size_t Count(const std::string &hay, const std::string &needle) {
+    size_t n = 0;
+    for (size_t k = hay.find(needle); k != std::string::npos; k = hay.find(needle, k + 1)) ++n;
+    return n;
+}
+
+// //? Type: presentation: html/tex are the slideshow and Beamer; pptx and
+// odp are decks of the slides, after a title slide.
+void TestPresentation() {
+    // A picture the decks can size (a PNG header is all they read).
+    const std::string png_path = Temp("pic.png");
+    {
+        const unsigned char png[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, 'I', 'H', 'D', 'R',
+                                     0, 0, 0, 40, 0, 0, 0, 20, 8, 2, 0, 0, 0, 0, 0, 0, 0};
+        std::ofstream(png_path, std::ios::binary).write(reinterpret_cast<const char *>(png), sizeof png);
+    }
+    const Lines src = {
+        "//? Title: The deck", "//? Subtitle: Sub", "//? Author: A. Person", "//? Type: presentation", "",
+        "Prose on no slide.", "",
+        "\\slide(", "> Results", "- one [link|https://example.com]", "- two\\fn(a note)", "",
+        "| a | b |", "|---|---|", "| 1 | 2 |", "\\caption(Numbers)", ")", "",
+        "\\slide(", "Untitled, with a picture:", "\\image(" + png_path + ")", "\\caption(Pic)", "",
+        "```python", "print(1)", "```", "// result_begin:", "// 1", "// result_end", ")",
+    };
+    const Document doc = Parse(src);
+    CHECK(IsPresentation(doc));
+    std::string err;
+
+    const std::string tex = ToLatex(doc, ".");
+    CHECK(tex.find("{beamer}") != std::string::npos);
+    CHECK(tex.find("\\titlepage") != std::string::npos && tex.find("\\subtitle{Sub}") != std::string::npos);
+    CHECK(tex.find("\\begin{frame}[fragile]{Results}") != std::string::npos);
+    CHECK(Count(tex, "\\begin{frame}") == 3);
+    CHECK(tex.find("\\begin{tabular}") != std::string::npos && tex.find("longtable") == std::string::npos);
+    CHECK(tex.find("Prose on no slide") == std::string::npos);
+    CHECK(tex.find("\\section") == std::string::npos);
+
+    const std::string html_path = Temp("deck.html");
+    CHECK(ExportFile(doc, html_path, ".", &err));
+    const std::string html = ReadAll(html_path);
+    CHECK(Count(html, "<section class=\"slide") == 3);
+    CHECK(html.find("<h2 class=\"slide-title\">Results</h2>") != std::string::npos);
+    CHECK(html.find("Prose on no slide") == std::string::npos);
+    CHECK(html.find("kSlides") == std::string::npos && html.find("function show(") != std::string::npos);
+
+    const std::string pptx_path = Temp("deck.pptx");
+    CHECK(ExportFile(doc, pptx_path, ".", &err));
+    const std::string pptx = ReadAll(pptx_path);
+    std::string part;
+    CHECK(Entry(pptx, "ppt/slides/slide3.xml", &part));
+    CHECK(!Entry(pptx, "ppt/slides/slide4.xml", &part));
+    CHECK(Entry(pptx, "ppt/slides/slide1.xml", &part) && part.find("The deck") != std::string::npos);
+    CHECK(Entry(pptx, "ppt/slides/slide2.xml", &part));
+    CHECK(part.find(">Results<") != std::string::npos && part.find("<a:tbl>") != std::string::npos);
+    CHECK(part.find("<a:buChar") != std::string::npos && part.find("Numbers") != std::string::npos);
+    CHECK(part.find("a note") != std::string::npos);  // the footnote, under the slide's content
+    CHECK(Entry(pptx, "ppt/slides/_rels/slide2.xml.rels", &part));
+    CHECK(part.find("Target=\"https://example.com\" TargetMode=\"External\"") != std::string::npos);
+    CHECK(Entry(pptx, "ppt/slides/slide3.xml", &part) && part.find("<p:pic>") != std::string::npos && part.find("print(1)") != std::string::npos);
+    CHECK(Entry(pptx, "ppt/media/image1.png", &part));
+    CHECK(Entry(pptx, "[Content_Types].xml", &part) && part.find("/ppt/slides/slide3.xml") != std::string::npos);
+    CHECK(Entry(pptx, "ppt/presentation.xml", &part) && Count(part, "<p:sldId ") == 3);
+
+    const std::string odp_path = Temp("deck.odp");
+    CHECK(ExportFile(doc, odp_path, ".", &err));
+    const std::string odp = ReadAll(odp_path);
+    CHECK(odp.find("mimetypeapplication/vnd.oasis.opendocument.presentation") == 30);
+    CHECK(Entry(odp, "content.xml", &part));
+    CHECK(Count(part, "<draw:page ") == 3 && part.find("<table:table>") != std::string::npos);
+    CHECK(part.find("xlink:href=\"https://example.com\"") != std::string::npos);
+    CHECK(part.find("Pictures/image1.png") != std::string::npos && part.find("Prose on no slide") == std::string::npos);
+    CHECK(Entry(odp, "Pictures/image1.png", &part));
+    CHECK(Entry(odp, "META-INF/manifest.xml", &part) && part.find("Pictures/image1.png") != std::string::npos);
+
+    // No slides: nothing to put in a deck.
+    const Document plain = Parse({"//? Title: T", "", "Text."});
+    CHECK(!IsPresentation(plain));
+    CHECK(!ExportFile(plain, Temp("none.pptx"), ".", &err) && err.find("slide") != std::string::npos);
+    CHECK(!ExportFile(plain, Temp("none.odp"), ".", &err));
+    // A document (no Type) keeps its article, slides and all.
+    const Document article = Parse({"//? Title: T", "", "\\slide(", "> S", "Text.", ")"});
+    CHECK(ToLatex(article, ".").find("{article}") != std::string::npos);
+    CHECK(ExportFile(article, Temp("article.pptx"), ".", &err));  // its slides still make a deck
+}
 }  // namespace
 
 int main() {
     TestFormats();
     TestEscaping();
     TestPackages();
+    TestPresentation();
     TestReference();
     std::error_code ec;
     std::filesystem::remove_all(std::filesystem::path(Temp("x")).parent_path(), ec);

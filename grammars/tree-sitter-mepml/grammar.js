@@ -94,6 +94,8 @@ module.exports = grammar({
     $._result_begin_markdown, // `// result_begin: markdown`
     $._result_end_attached, // `// result_end` with a \caption/\alttext under it
     $._attribute_start, // zero-width: the line is a \caption or \alttext
+    $._slide_start, // zero-width: the line opens a slide
+    $._slide_end, // zero-width: the line closes the open slide
     $._error_sentinel,
   ],
 
@@ -137,6 +139,7 @@ module.exports = grammar({
       $.bibliography,
       $.toc,
       $.abstract,
+      $.slide,
       $.caption,
       $.alttext,
       $.paragraph,
@@ -306,6 +309,21 @@ module.exports = grammar({
       alias($._paren_close, ')'),
       $._line_end,
     ),
+
+    // \slide( on a line of its own, the slide's content -- any blocks --
+    // and a line holding just its `)`; or `\slide{` / `@slide{` ... `}`.
+    // Slides do not nest (the scanner opens no slide inside one).
+    slide: $ => seq(
+      $.slide_open,
+      repeat(choice($._block, $._blank_line, $._any_section)),
+      $.slide_close,
+    ),
+    slide_open: $ => seq(
+      $._slide_start, optional($._ws),
+      choice(seq('\\', 'slide', choice('(', '{')), seq('@', 'slide', '{')),
+      $._line_end,
+    ),
+    slide_close: $ => seq($._slide_end, optional($._ws), choice(')', '}'), $._line_end),
 
     // \citation(key, field = value, ...) or @citation{key}{fields}
     citation: $ => seq(

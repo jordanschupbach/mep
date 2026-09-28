@@ -508,6 +508,7 @@ add_library(mep_core STATIC
     src/org_doc.cpp
     src/mepml_doc.cpp
     src/mepml_export.cpp
+    src/mepml_slides.cpp
     src/mepml_import.cpp
     src/notebook_doc.cpp
     src/text_diff.cpp
@@ -1617,7 +1618,7 @@ add_dependencies(tests mep-mepml-ts-test)
 # loaders, the HTML->LaTeX/ODT exporters and the zip writer -- none of
 # which needs a window.
 set(MEPML_CONVERT_SOURCES
-    src/mepml_doc.cpp src/mepml_export.cpp src/mepml_import.cpp
+    src/mepml_doc.cpp src/mepml_export.cpp src/mepml_slides.cpp src/mepml_import.cpp
     src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp
     src/office_doc.cpp src/office_odt.cpp src/doc_export.cpp src/zip_archive.cpp src/deflate.cpp src/xml_doc.cpp src/image_doc.cpp src/image_codec.cpp
     src/png_codec.cpp src/jpeg_codec.cpp src/gif_codec.cpp src/bmp_codec.cpp)

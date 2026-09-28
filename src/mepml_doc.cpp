@@ -669,6 +669,27 @@ bool IsKnownDirective(const std::string &name) {
            IsBibtexType(name);
 }
 
+// `\slide(` (or `\slide{`, `@slide{`) at the start of a line: the column
+// just past its bracket, with *close the bracket that ends the slide; -1
+// for any other line.
+int SlideOpener(const std::string &line, char *close = nullptr) {
+    const int i = Indent(line);
+    const char c = At(line, i);
+    if ((c != '\\' && c != '@') || !StartsAt(line, i + 1, "slide")) return -1;
+    const char b = At(line, i + 6);
+    if (b != '{' && (b != '(' || c != '\\')) return -1;
+    if (close) *close = b == '(' ? ')' : '}';
+    return i + 7;
+}
+// A line that ends a slide opened with `close`: that bracket on its own,
+// perhaps with a `// comment` after it.
+bool IsSlideCloser(const std::string &line, char close) {
+    const std::string t = Trim(line);
+    if (close == 0 || t.empty() || t[0] != close) return false;
+    const std::string rest = Trim(t.substr(1));
+    return rest.empty() || rest.rfind("//", 0) == 0;
+}
+
 // `\name(...)` (or the older `@name{...}`) at the start of a trimmed line;
 // *sigil gets the `\` or `@`. A backslash starts a directive only for a
 // directive's own name followed by its `(` (or nothing, `\toc`), so a
@@ -1363,7 +1384,7 @@ struct Parser {
         int base_indent = Indent(L(i));
         while (j < n) {
             const std::string &s = L(j);
-            if (Trim(s).empty()) break;
+            if (Trim(s).empty() || IsSlideCloser(s, slide_close)) break;
             if (j > i && !IsListItem(s) && Indent(s) <= base_indent) break;
             ++j;
         }
@@ -1403,6 +1424,7 @@ struct Parser {
         if (t.empty()) return true;
         if (HeadingLevel(s) || IsFence(t) || IsComment(s) || IsRule(t) || TableStartAt(j) || IsListItem(s)) return true;
         if (t.rfind("$$", 0) == 0 || t.rfind("\\[", 0) == 0) return true;
+        if (SlideOpener(s) >= 0 || IsSlideCloser(s, slide_close)) return true;
         std::string d = DirectiveName(s);
         return !d.empty() && IsKnownDirective(d);
     }
@@ -1425,7 +1447,16 @@ struct Parser {
                 ++i;
                 continue;
             }
-            if (IsMetaLine(s)) {
+            char close = 0;
+            if (IsSlideCloser(s, slide_close)) {
+                Block b = MakeBlock(BlockKind::SlideEnd, i, i);
+                b.level = slides;
+                doc.blocks.push_back(std::move(b));
+                slide_close = 0;
+                ++i;
+            } else if (const int col = SlideOpener(s, &close); col >= 0) {
+                i = ParseSlideOpen(i, col, close);
+            } else if (IsMetaLine(s)) {
                 i = ParseMetaRun(i);
             } else if (IsComment(s)) {
                 i = ParseComment(i);
@@ -1461,6 +1492,68 @@ struct Parser {
                 }
             }
         }
+        if (slide_close) SlideNeverClosed();
+        PresentationChecks();
+    }
+
+    // `//? Type:`: an unknown kind is flagged, and in a presentation so is
+    // what its slide exports leave out -- content on no slide.
+    void PresentationChecks() {
+        int type_line = -1;
+        std::string type;
+        for (const Block &b : doc.blocks)
+            if (b.kind == BlockKind::Meta && Lower(b.keyword) == "type") {
+                type = Lower(Trim(b.value));
+                type_line = b.line_start;
+            }
+        if (type_line < 0 || type == "document") return;
+        if (type != "presentation" && type != "slides") {
+            Diag(Diagnostic::Warning, type_line, 0, Len(L(type_line)),
+                 "unknown document type '" + type + "' (presentation or document)");
+            return;
+        }
+        if (slides == 0) {
+            Diag(Diagnostic::Warning, type_line, 0, Len(L(type_line)), "a presentation with no \\slide: its slide exports are empty");
+            return;
+        }
+        bool on_slide = false;
+        for (const Block &b : doc.blocks) {
+            if (b.kind == BlockKind::SlideBegin) on_slide = true;
+            else if (b.kind == BlockKind::SlideEnd) on_slide = false;
+            else if (!on_slide && b.kind != BlockKind::Meta && b.kind != BlockKind::Comment && b.kind != BlockKind::Import &&
+                     b.kind != BlockKind::Citation)
+                Diag(Diagnostic::Info, b.line_start, 0, Len(L(b.line_start)),
+                     "not on any slide: a presentation's slide exports leave it out");
+        }
+    }
+
+    // The slide open now (its closing bracket, 0 when none is), the line
+    // that opened it, and how many slides have opened so far.
+    char slide_close = 0;
+    int slide_line = -1;
+    int slides = 0;
+
+    void SlideNeverClosed() {
+        const std::string &s = L(slide_line);
+        Diag(Diagnostic::Error, slide_line, Indent(s), Len(s),
+             std::string("\\slide is never closed with a line holding just ") + slide_close);
+    }
+
+    // \slide( on a line of its own: the slide's content is the blocks that
+    // follow, up to a line holding just its `)`. Slides do not nest: one
+    // opening while another is open ends that one there (reported).
+    int ParseSlideOpen(int i, int col, char close) {
+        if (slide_close) SlideNeverClosed();
+        Block b = MakeBlock(BlockKind::SlideBegin, i, i);
+        b.level = ++slides;
+        const std::string rest = Trim(Sub(L(i), col, Len(L(i))));
+        if (!rest.empty() && rest.rfind("//", 0) != 0)
+            Diag(Diagnostic::Warning, i, col, Len(L(i)),
+                 std::string("a slide's content goes on the lines after its opener, up to a line holding just ") + close);
+        doc.blocks.push_back(std::move(b));
+        slide_close = close;
+        slide_line = i;
+        return i + 1;
     }
 };
 
@@ -1523,6 +1616,52 @@ void Finish(Document &doc) {
 }  // namespace
 
 int LineHeadingLevel(const std::string &line) { return HeadingLevel(line); }
+
+std::string MetaValue(const Document &doc, const std::string &key) {
+    std::string v;
+    const std::string k = Lower(key);
+    for (const auto &kv : doc.meta)
+        if (Lower(kv.first) == k) v = Trim(kv.second);
+    return v;
+}
+
+bool IsPresentation(const Document &doc) {
+    const std::string t = Lower(MetaValue(doc, "type"));
+    return t == "presentation" || t == "slides";
+}
+
+std::vector<Slide> Slides(const Document &doc, int line_count) {
+    std::vector<Slide> out;
+    bool open = false;
+    for (size_t i = 0; i < doc.blocks.size(); ++i) {
+        const Block &b = doc.blocks[i];
+        if (!b.origin.empty()) continue;
+        if (b.kind == BlockKind::SlideBegin) {
+            if (open) {
+                out.back().line_end = b.line_start - 1;
+                out.back().last_block = i;
+            }
+            Slide sl;
+            sl.number = b.level;
+            sl.line_start = b.line_start;
+            sl.first_block = i;
+            out.push_back(sl);
+            open = true;
+        } else if (open && b.kind == BlockKind::SlideEnd) {
+            out.back().line_end = b.line_start;
+            out.back().closed = true;
+            out.back().last_block = i + 1;
+            open = false;
+        } else if (open && b.kind == BlockKind::Heading && out.back().title.empty()) {
+            out.back().title = InlinePlainText(b.inlines);
+        }
+    }
+    if (open) {
+        out.back().line_end = std::max(out.back().line_start, line_count - 1);
+        out.back().last_block = doc.blocks.size();
+    }
+    return out;
+}
 
 std::vector<std::vector<Inline>> AbstractParagraphs(const Block &b) {
     std::vector<std::vector<Inline>> out;
@@ -2240,6 +2379,22 @@ struct Emitter {
                 }
                 break;
             }
+            case BlockKind::SlideBegin:
+            case BlockKind::SlideEnd: {
+                // The opener reads as the slide's "Slide N" label, the
+                // closing bracket goes away (the editor draws both as rules).
+                const std::string s = LineText(blk.line_start);
+                const int at = Indent(s);
+                const int to = blk.kind == BlockKind::SlideBegin ? SlideOpener(s) : at + 1;
+                if (to < 0) break;
+                Span mk;
+                mk.style = kDirective | kSlide;
+                mk.markup = true;
+                if (blk.kind == BlockKind::SlideBegin) mk.replace = "Slide " + std::to_string(blk.level);
+                Line(blk.line_start, at, to, mk);
+                TrailingComment(blk.line_start, to);
+                break;
+            }
         }
     }
 
@@ -2462,6 +2617,13 @@ struct HtmlWriter {
     std::string out;
     std::vector<std::pair<int, std::string>> footnotes;  // number, html
     std::map<std::string, int> cite_numbers;
+    bool in_slide = false;  // a <section class="slide"> is open
+
+    // Closes the open slide's section, if there is one.
+    void EndSlide() {
+        if (in_slide) out += "</section>\n";
+        in_slide = false;
+    }
 
     std::string Inlines(const std::vector<Inline> &ins) {
         std::string o;
@@ -2709,6 +2871,13 @@ struct HtmlWriter {
                 out += "</section>\n";
                 break;
             }
+            case BlockKind::SlideBegin:
+                // A slide left open ends where the next one starts.
+                EndSlide();
+                out += "<section class=\"slide\" id=\"slide-" + std::to_string(b.level) + "\">\n";
+                in_slide = true;
+                break;
+            case BlockKind::SlideEnd: EndSlide(); break;
         }
     }
 };
@@ -2790,6 +2959,8 @@ mjx-container[display="true"] { max-width: 100%; overflow-x: auto; overflow-y: h
 .footnotes ol { padding-left: 1.4em; }
 .abstract { margin: 0 auto 2.5em; max-width: 38rem; font-size: .95em; padding: 1em 1.4em; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 .abstract p:last-child { margin-bottom: 0; }
+.slide { margin: 1.5em 0; padding: .4em 1.4em 1em; border: 1px solid var(--rule); border-radius: 6px; }
+.slide > :first-child { margin-top: .6em; }
 .abstract-title { font: 600 .8em system-ui, sans-serif; text-align: center; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .6em; color: var(--muted); }
 .toc { margin: 0 0 2em; } .toc ul { list-style: none; padding-left: 0; } .toc a { text-decoration: none; }
 .toc-2 { padding-left: 1em; } .toc-3 { padding-left: 2em; } .toc-4 { padding-left: 3em; }
@@ -2815,11 +2986,12 @@ mjx-container[display="true"] { max-width: 100%; overflow-x: auto; overflow-y: h
 }  // namespace
 
 std::string ToHtml(const Document &doc, const HtmlOptions &opts) {
-    HtmlWriter w{doc, opts, {}, {}, {}};
+    HtmlWriter w{doc, opts, {}, {}, {}, false};
     const std::vector<std::string> labels = BlockLabels(doc);
     const std::vector<bool> export_hidden = ExportHidden(doc);
     for (size_t i = 0; i < doc.blocks.size(); ++i)
         if (!export_hidden[i]) w.Block_(doc.blocks[i], labels[i]);
+    w.EndSlide();
     if (!w.footnotes.empty()) {
         w.out += "<section class=\"footnotes\"><ol>";
         for (auto &fn : w.footnotes) {
@@ -2837,6 +3009,174 @@ std::string ToHtml(const Document &doc, const HtmlOptions &opts) {
     html += "</head>\n<body>\n";
     if (!doc.title.empty()) html += "<h1 class=\"title\">" + Esc(doc.title) + "</h1>\n";
     html += w.out + "</body>\n</html>\n";
+    return html;
+}
+
+namespace {
+
+// The slideshow's own look, over kCss's content styles: 1280x720 slides
+// (16:9) on a dark backdrop, the whole deck scaled to the window, one slide
+// shown at a time; printing gives each its own page.
+const char *kSlidesCss = R"css(
+html, body { height: 100%; }
+body { max-width: none; margin: 0; padding: 0; overflow: hidden; background: #1b1d22; font-size: 26px; line-height: 1.4; }
+.deck { position: absolute; left: 50%; top: 50%; width: 1280px; height: 720px; transform: translate(-50%, -50%) scale(var(--scale, 1)); }
+.slide { position: absolute; inset: 0; margin: 0; padding: 44px 64px 40px; border: 0; border-radius: 0; background: var(--bg);
+  display: flex; flex-direction: column; overflow: hidden; visibility: hidden; box-shadow: 0 10px 40px rgba(0,0,0,.45); }
+.slide.current { visibility: visible; }
+.slide > :first-child { margin-top: 0; }
+.slide-title { font-size: 1.6em; margin: 0 0 .55em; padding-bottom: .2em; border-bottom: 3px solid var(--link); flex: none; }
+.slide-body { flex: 1; min-height: 0; transform-origin: top left; }
+.slide-body > :first-child { margin-top: 0; }
+.slide-body h1, .slide-body h2, .slide-body h3, .slide-body h4 { margin: .6em 0 .3em; border: 0; font-size: 1.1em; }
+.slide-body figure { margin: .6em 0; }
+.slide-body figure img, .slide-body > p > img { max-height: 480px; width: auto; }
+.slide-body .table-wrap { width: auto; margin: .6em 0; }
+.slide-body pre { font-size: .72em; }
+.slide-body .footnotes { margin-top: 1em; font-size: .6em; }
+.title-slide { justify-content: center; align-items: center; text-align: center; }
+.title-slide h1 { font-size: 2.3em; border: 0; margin: 0 0 .3em; }
+.title-slide .subtitle { font-size: 1.2em; color: var(--muted); margin: 0 0 1.4em; }
+.title-slide .author, .title-slide .date { margin: .2em 0; }
+.slide-number { position: absolute; right: 26px; bottom: 16px; font: 16px system-ui, sans-serif; color: var(--muted); }
+.progress { position: fixed; left: 0; bottom: 0; height: 4px; background: #6b8afd; transition: width .2s; }
+@media print {
+  @page { size: 1280px 720px; margin: 0; }
+  html, body { height: auto; overflow: visible; background: #fff; }
+  .deck { position: static; transform: none; width: 1280px; height: auto; }
+  .slide { position: relative; width: 1280px; height: 720px; visibility: visible; box-shadow: none; break-after: page; }
+  .progress { display: none; }
+}
+)css";
+
+// Stepping through the deck, and fitting it: the deck scales to the
+// window, and a slide whose content runs past its bottom has that content
+// scaled down until it fits (again once maths and pictures have loaded).
+const char *kSlidesJs = R"js(
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.deck > .slide'));
+  var bar = document.querySelector('.progress');
+  var cur = 0;
+  function fitBody(s) {
+    var b = s.querySelector('.slide-body');
+    if (!b) return;
+    b.style.transform = ''; b.style.width = '';
+    var avail = b.clientHeight, need = b.scrollHeight;
+    if (need > avail + 1 && avail > 0) {
+      var k = Math.max(0.35, avail / need);
+      b.style.transform = 'scale(' + k + ')';
+      b.style.width = (100 / k) + '%';
+    }
+  }
+  function fit() {
+    var k = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+    document.documentElement.style.setProperty('--scale', k);
+    slides.forEach(fitBody);
+  }
+  function show(i) {
+    cur = Math.max(0, Math.min(slides.length - 1, i));
+    slides.forEach(function (s, j) { s.classList.toggle('current', j === cur); });
+    if (bar) bar.style.width = (slides.length > 1 ? 100 * cur / (slides.length - 1) : 100) + '%';
+    if (history.replaceState) history.replaceState(null, '', '#' + (cur + 1));
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    var k = e.key;
+    if (k === 'ArrowRight' || k === 'ArrowDown' || k === 'PageDown' || k === ' ' || k === 'n') show(cur + 1);
+    else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp' || k === 'Backspace' || k === 'p') show(cur - 1);
+    else if (k === 'Home') show(0);
+    else if (k === 'End') show(slides.length - 1);
+    else if (k === 'f' && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
+    else return;
+    e.preventDefault();
+  });
+  document.addEventListener('click', function (e) {
+    if (e.target.closest('a, button, input, select, textarea, video, audio')) return;
+    show(e.clientX > window.innerWidth / 2 ? cur + 1 : cur - 1);
+  });
+  var x0 = null;
+  document.addEventListener('touchstart', function (e) { x0 = e.touches[0].clientX; }, {passive: true});
+  document.addEventListener('touchend', function (e) {
+    if (x0 === null) return;
+    var dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 40) show(dx < 0 ? cur + 1 : cur - 1);
+    x0 = null;
+  });
+  window.addEventListener('resize', fit);
+  window.addEventListener('load', fit);
+  window.addEventListener('beforeprint', function () { slides.forEach(function (s) { var b = s.querySelector('.slide-body'); if (b) { b.style.transform = ''; b.style.width = ''; } }); });
+  window.addEventListener('afterprint', fit);
+  if (window.MathJax && MathJax.startup && MathJax.startup.promise) MathJax.startup.promise.then(fit);
+  else window.MathJax = Object.assign(window.MathJax || {}, {startup: {pageReady: function () { return MathJax.startup.defaultPageReady().then(fit); }}});
+  fit();
+  show((parseInt(location.hash.slice(1), 10) || 1) - 1);
+})();
+)js";
+
+}  // namespace
+
+std::vector<SlideHtml> SlideFragments(const Document &doc, const HtmlOptions &opts) {
+    HtmlWriter w{doc, opts, {}, {}, {}, false};
+    const std::vector<std::string> labels = BlockLabels(doc);
+    const std::vector<bool> export_hidden = ExportHidden(doc);
+    std::vector<SlideHtml> out;
+    for (const Slide &sl : Slides(doc, 0)) {
+        SlideHtml f;
+        f.number = sl.number;
+        w.out.clear();
+        w.footnotes.clear();
+        bool titled = false;
+        for (size_t i = sl.first_block; i < sl.last_block; ++i) {
+            const Block &b = doc.blocks[i];
+            if (b.kind == BlockKind::SlideBegin || b.kind == BlockKind::SlideEnd || export_hidden[i]) continue;
+            // The slide's first heading is its title, drawn at the top.
+            if (!titled && b.kind == BlockKind::Heading) {
+                f.title = w.Inlines(b.inlines);
+                titled = true;
+                continue;
+            }
+            w.Block_(b, labels[i]);
+        }
+        if (!w.footnotes.empty()) {
+            w.out += "<section class=\"footnotes\"><ol>";
+            for (auto &fn : w.footnotes)
+                w.out += "<li value=\"" + std::to_string(fn.first) + "\">" + fn.second + "</li>";
+            w.out += "</ol></section>\n";
+        }
+        f.body = w.out;
+        out.push_back(std::move(f));
+    }
+    return out;
+}
+
+std::string ToSlidesHtml(const Document &doc, const HtmlOptions &opts) {
+    const std::string subtitle = MetaValue(doc, "subtitle"), author = MetaValue(doc, "author"), date = MetaValue(doc, "date");
+    std::string deck;
+    int number = 0;
+    if (!doc.title.empty() || !subtitle.empty() || !author.empty()) {
+        ++number;
+        deck += "<section class=\"slide title-slide\" id=\"slide-" + std::to_string(number) + "\">";
+        if (!doc.title.empty()) deck += "<h1>" + Esc(doc.title) + "</h1>";
+        if (!subtitle.empty()) deck += "<p class=\"subtitle\">" + Esc(subtitle) + "</p>";
+        if (!author.empty()) deck += "<p class=\"author\">" + Esc(author) + "</p>";
+        if (!date.empty()) deck += "<p class=\"date\">" + Esc(date) + "</p>";
+        deck += "</section>\n";
+    }
+    for (const SlideHtml &f : SlideFragments(doc, opts)) {
+        ++number;
+        deck += "<section class=\"slide\" id=\"slide-" + std::to_string(number) + "\">";
+        if (!f.title.empty()) deck += "<h2 class=\"slide-title\">" + f.title + "</h2>";
+        deck += "<div class=\"slide-body\">\n" + f.body + "</div><div class=\"slide-number\">" + std::to_string(number) +
+                "</div></section>\n";
+    }
+    if (!opts.standalone) return deck;
+    const std::string page_title = doc.title.empty() ? "Slides" : doc.title;
+    std::string html = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + Esc(page_title) + "</title>\n";
+    html += "<style>" + std::string(kCss) + kSlidesCss + "</style>\n";
+    html += "<script>MathJax = { tex: { inlineMath: [['\\\\(', '\\\\)']] } };</script>\n";
+    html += "<script async src=\"https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js\"></script>\n";
+    html += "</head>\n<body>\n<main class=\"deck\">\n" + deck + "</main>\n<div class=\"progress\"></div>\n";
+    html += "<script>" + std::string(kSlidesJs) + "</script>\n</body>\n</html>\n";
     return html;
 }
 

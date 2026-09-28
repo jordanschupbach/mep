@@ -3001,14 +3001,15 @@ int l_mepml_export_html(lua_State *L) {
         lua_pushstring(L, ("cannot write " + path).c_str());
         return 2;
     }
-    f << mepml::ToHtml(doc);
+    f << mepml::ToHtmlFor(doc);  // a presentation is a slideshow
     lua_pushboolean(L, 1);
     return 1;
 }
 
 // mep.mepml_export(path) -> true | nil, err: exports the current buffer
 // (imports expanded) to the format `path`'s extension names -- html, md,
-// org, rtf, docx, odt, tex or txt (mepml_convert.h). Images resolve
+// org, rtf, docx, odt, tex, txt, pptx or odp (mepml_convert.h); a
+// presentation's html and tex are its slideshow and Beamer deck. Images resolve
 // against the buffer's own directory. PDF is the .tex compiled by the
 // caller (kBuiltinMepml runs tectonic without blocking the editor).
 /**
@@ -3021,7 +3022,7 @@ int l_mepml_export(lua_State *L) {
     const mepml::Format format = mepml::FormatFromPath(path);
     std::string err;
     if (format == mepml::Format::Mepml || !mepml::CanExport(format) || format == mepml::Format::Pdf) {
-        err = "cannot export to " + path + " (html, md, org, rtf, docx, odt, tex, txt)";
+        err = "cannot export to " + path + " (html, md, org, rtf, docx, odt, tex, txt, pptx, odp)";
     } else {
         Editor *ed = GetEditor(L);
         const std::string file = ed->MepmlCurrentFile();

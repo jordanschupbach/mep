@@ -180,6 +180,12 @@ struct ComputedStyle {
     bool is_list_item = false;
     bool ordered_list_item = false;  // marker is "N." vs a bullet
     int list_item_index = 0;         // 1-based position within its <ol>, for ordered markers
+    // `list-style: none` / `list-style-type: none` -- suppress the bullet/
+    // number marker on this list's items. Inherits like real CSS (setting
+    // it on the <ul>/<ol> applies to every <li> inside), so main.cpp's
+    // marker code can read it straight off the <li>'s own cascaded style.
+    // A common pattern for nav menus / any list styled as plain rows.
+    bool list_marker_none = false;
     // The nearest enclosing <a href>'s own href value, inherited down to
     // every descendant the same way color/bold/etc. do -- lets main.cpp's
     // word-splitting layout (which only ever sees a leaf text/img/etc.

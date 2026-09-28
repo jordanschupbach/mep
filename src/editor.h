@@ -4072,6 +4072,11 @@ public:
     // mep.opt.restore_workspaces / --no-session (Phase 10).
     void SetRestoreWorkspaces(bool on) { restore_workspaces_ = on; }
     bool RestoreWorkspaces() const { return restore_workspaces_ && session_enabled_; }
+    // mep.opt.restore_layouts: whether opening a project rebuilds each
+    // workspace's saved panes (true) or lays it out fresh with the default
+    // readme/tree/terminal layout (false, the default).
+    void SetRestoreLayouts(bool on) { restore_layouts_ = on; }
+    bool RestoreLayouts() const { return restore_layouts_; }
     // `--no-session`: neither restore nor write the per-project session
     // file (tests and throwaway runs must never touch the real data dir).
     void SetSessionPersistence(bool on) { session_enabled_ = on; }
@@ -4112,8 +4117,12 @@ public:
     // workspace whose saved layout won't rebuild is left with its fresh
     // empty tab for the default layout to fill (see RestoreWorkspaceLayout).
     // `keep_primary_tabs`: leave the primary workspace alone entirely
-    // (`mep <file>` already put something there).
-    bool RestoreWorkspaceState(int project_id, bool keep_primary_tabs);
+    // (`mep <file>` already put something there). `restore_layouts`:
+    // false restores the workspace list only, leaving every workspace with
+    // its fresh empty tab so the default readme/tree/terminal layout is
+    // applied (project open does this unless mep.opt.restore_layouts);
+    // `:wsrestore` always passes true.
+    bool RestoreWorkspaceState(int project_id, bool keep_primary_tabs, bool restore_layouts = true);
     // Folds alone, out of the same session file RestoreWorkspaceState
     // reads -- for the startup that deliberately does *not* restore a
     // layout (a bare `mep file.txt`, which leaves the pristine bootstrap
@@ -12484,6 +12493,7 @@ private:
     void AdoptWorktrees(int project_id, const std::vector<WorktreeEntry> &entries);
     std::string worktree_dir_override_;
     bool restore_workspaces_ = true;
+    bool restore_layouts_ = false;
     // Zero-based virtual cursor for the startup dashboard's action rows.
     // It deliberately is not the empty buffer's real cursor.
     int dashboard_selection_ = 0;

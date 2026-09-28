@@ -6182,6 +6182,11 @@ int l_workspace_set_restore(lua_State *L) {
     GetEditor(L)->SetRestoreWorkspaces(lua_toboolean(L, 1) != 0);
     return 0;
 }
+/** @brief Implements mep.workspace_set_restore_layouts(bool): backs mep.opt.restore_layouts. */
+int l_workspace_set_restore_layouts(lua_State *L) {
+    GetEditor(L)->SetRestoreLayouts(lua_toboolean(L, 1) != 0);
+    return 0;
+}
 /** @brief Implements mep.workspace_set_worktree_dir(dir): backs mep.opt.worktree_dir. */
 int l_workspace_set_worktree_dir(lua_State *L) {
     const char *dir = lua_tostring(L, 1);
@@ -12616,6 +12621,7 @@ const luaL_Reg kMepFuncs[] = {
     {"workspace_prune", l_workspace_prune},
     {"workspace_set_worktree_dir", l_workspace_set_worktree_dir},
     {"workspace_set_restore", l_workspace_set_restore},
+    {"workspace_set_restore_layouts", l_workspace_set_restore_layouts},
     {"workspace_set_git_dirty", l_workspace_set_git_dirty},
     {"workspace_state_save", l_workspace_state_save},
     {"workspace_state_restore", l_workspace_state_restore},

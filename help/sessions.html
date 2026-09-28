@@ -12,18 +12,20 @@
 </head>
 <body>
 <h1>Sessions</h1>
-<h1>Your layout comes back</h1>
-<p>Close mep and reopen the project, and you get what you left: the same
-workspaces, the same tabs, the same split arrangement at the same sizes, the
-same files open at the same cursor positions, your file tree, your terminals
--- and the window itself back at the size and zoom you had it.</p>
-<p>Nothing has to be enabled, and layouts are not named or managed. This is why
-there is no "save layout" command worth having -- see
-<a href="layouts-zen.html">Layouts, zoom and zen</a>.</p>
-<p>The standard default layout -- a file tree, your readme, a terminal -- is
-what you get when there is nothing to restore: a project opened for the first
-time, a workspace created since the last save, or a saved layout that could
-not be rebuilt. It is a fallback, never something applied on top of a layout
+<h1>Opening a project</h1>
+<p>Opening a project gives every workspace the standard default layout: the
+file tree down the left, the project's readme (if it has one) with the cursor
+in it, and a terminal below. Your workspaces themselves -- their names,
+worktrees and which one was active -- come back from the last session.</p>
+<h1>Getting your layout back</h1>
+<p>The layout you leave is still saved (see below). <code>:wsrestore</code> rebuilds it on
+demand, and setting</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.restore_layouts = <span class="tok-cyan">true</span></code></pre></div>
+<p>in <code>init.lua</code> makes opening a project restore it automatically: the same
+tabs, the same split arrangement at the same sizes, the same files open at the
+same cursor positions, your file tree, your terminals. With that on, the
+default layout is only a fallback -- for a workspace with nothing saved, or a
+saved layout that could not be rebuilt -- never applied on top of a layout
 that did come back.</p>
 <h1>What is saved</h1>
 <ul>

@@ -31516,7 +31516,7 @@ const char *kBuiltinPickerSources =
     "  end)\n"
     "end\n"
     // mep.opt: the small options table WORKSPACES_PLAN.md introduces
-    // (worktree_dir, restore_workspaces, workspace_git_dirty). Assignments
+    // (worktree_dir, restore_workspaces, restore_layouts, workspace_git_dirty). Assignments
     // are forwarded to the C++ side immediately so init.lua's
     // `mep.opt.worktree_dir = '...'` takes effect for the very next :wsnew.
     "mep.opt = mep.opt or {}\n"
@@ -31524,6 +31524,7 @@ const char *kBuiltinPickerSources =
     "  rawset(t, k, v)\n"
     "  if k == 'worktree_dir' then mep.workspace_set_worktree_dir(v or '')\n"
     "  elseif k == 'restore_workspaces' then mep.workspace_set_restore(v ~= false)\n"
+    "  elseif k == 'restore_layouts' then mep.workspace_set_restore_layouts(v and true or false)\n"
     "  end\n"
     "end})\n"
     "mep.command('MepWorkspaces', mep.workspaces)\n"
@@ -53689,12 +53690,13 @@ int main(int argc, char **argv) {
     // through session restore; a bare `mep` leaves the pristine bootstrap
     // workspace alone so the dashboard shows (Editor::ShouldShowDashboard),
     // matching the pre-session-restore behavior. RestoreWorkspaceState
-    // brings each workspace's saved tabs/panes/files back where it can, and
+    // brings the workspace list back (and, with mep.opt.restore_layouts,
+    // each workspace's saved tabs/panes/files where it can), and
     // project_apply_default_layout_to_empty_workspaces then lays out only
     // the workspaces it could not (skipping the primary one when a file was
     // already loaded into it).
     if (!project_arg.empty() && g_editor.RestoreWorkspaces()) {
-        g_editor.RestoreWorkspaceState(g_editor.ActiveProject().id, !file_arg.empty());
+        g_editor.RestoreWorkspaceState(g_editor.ActiveProject().id, !file_arg.empty(), g_editor.RestoreLayouts());
         lua->DoString(std::string("mep.project_apply_default_layout_to_empty_workspaces(") +
                       (file_arg.empty() ? "false" : "true") + ")");
     } else if (g_editor.RestoreWorkspaces()) {

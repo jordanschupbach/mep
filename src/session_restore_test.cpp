@@ -4,9 +4,11 @@
 // first one's session file. Builds a distinctive layout in one real mep
 // (splits, a file per pane, a background buffer tab, a moved cursor, the
 // file tree, a terminal), saves it, kills that mep, launches another on the
-// same project, and asserts the split tree came back the same shape with the
-// same files -- then corrupts the saved tree and asserts the next launch
-// falls back to the default layout instead of a half-built one.
+// same project with mep.opt.restore_layouts on, and asserts the split tree
+// came back the same shape with the same files -- then that a default open
+// (the option off) ignores the saved layout for tree/readme/terminal, and
+// that a corrupted saved tree makes the next restoring launch fall back to
+// the default layout instead of a half-built one.
 //
 // Same live-display requirement (and the same CHECK()-never-assert()
 // reasoning) as mep-agent-rpc-test, whose harness this shares. Every mep it
@@ -50,7 +52,17 @@ std::string SocketPathIn(const std::string &data_dir, pid_t pid) {
 
 // Spawns `mep --project <project>` with `XDG_DATA_HOME=<data_dir>` and waits
 // for its agent socket, returning the pid and a connected fd.
-pid_t SpawnMep(const char *mep_path, const std::string &data_dir, const std::string &project, int *fd_out) {
+// `restore_layouts` picks the init.lua it runs (XDG_CONFIG_HOME under
+// data_dir, so the user's own init.lua never leaks in): opening a project
+// only rebuilds saved panes with mep.opt.restore_layouts set.
+pid_t SpawnMep(const char *mep_path, const std::string &data_dir, const std::string &project, bool restore_layouts,
+               int *fd_out) {
+    const std::string config_home = data_dir + (restore_layouts ? "/config-restore" : "/config-default");
+    std::filesystem::create_directories(config_home + "/mep");
+    {
+        std::ofstream init(config_home + "/mep/init.lua");
+        if (restore_layouts) init << "mep.opt.restore_layouts = true\n";
+    }
     pid_t pid = fork();
     CHECK(pid >= 0);
     if (pid == 0) {
@@ -58,6 +70,7 @@ pid_t SpawnMep(const char *mep_path, const std::string &data_dir, const std::str
         // pointing at the real data dir, since nothing here reads it but
         // everything else on this machine does.
         setenv("XDG_DATA_HOME", data_dir.c_str(), 1);
+        setenv("XDG_CONFIG_HOME", config_home.c_str(), 1);
         execl(mep_path, mep_path, "--project", project.c_str(), nullptr);
         _exit(127);  // execl only returns on failure
     }
@@ -203,7 +216,7 @@ int main(int argc, char **argv) {
     // --- First run: build a layout worth restoring, and save it -------------
     std::string buf;
     int fd = -1;
-    pid_t pid = SpawnMep(mep_path, data, project, &fd);
+    pid_t pid = SpawnMep(mep_path, data, project, /*restore_layouts=*/false, &fd);
 
     // Whatever mep.project_default_layout built (a file-tree pane, a pane on
     // the readme, a terminal) is the starting point; this splits the readme
@@ -269,7 +282,7 @@ int main(int argc, char **argv) {
     KillMep(pid, fd);
 
     // --- Second run: the same layout, rebuilt from that file ---------------
-    pid = SpawnMep(mep_path, data, project, &fd);
+    pid = SpawnMep(mep_path, data, project, /*restore_layouts=*/true, &fd);
     const Json restored = OnlyWorkspace(Call(fd, 1, "state.dump", Json::Object(), &buf).get("result"));
     CHECK_CTX(restored.get("tabs").items().size() == 1, "restored=[" + restored.dump() + "]");
     const Json &restored_tab = restored.get("tabs").items()[0];
@@ -318,6 +331,24 @@ int main(int argc, char **argv) {
                                         " unnamed buffers behind (expected at most the one terminal)");
     KillMep(pid, fd);
 
+    // --- Default open: the saved layout is ignored ---------------------------
+    // Without mep.opt.restore_layouts, opening the project lays it out fresh
+    // (tree, readme, terminal) even though a deeper layout is saved.
+    pid = SpawnMep(mep_path, data, project, /*restore_layouts=*/false, &fd);
+    const Json fresh = OnlyWorkspace(Call(fd, 1, "state.dump", Json::Object(), &buf).get("result"));
+    const std::string fresh_shape = TreeShape(fresh.get("tabs").items()[0].get("root"));
+    CHECK_CTX(fresh_shape == TreeShape(first.get("tabs").items()[0].get("root")),
+              "opening a project should apply the default layout, got [" + fresh_shape + "]");
+    std::vector<Json> fresh_leaves;
+    CollectLeaves(fresh.get("tabs").items()[0].get("root"), &fresh_leaves);
+    const std::map<int, std::string> fresh_names = BufferNames(fd, 2, &buf);
+    bool fresh_has_readme = false;
+    for (const Json &pane : fresh_leaves) {
+        if (PaneFile(pane, fresh_names) == "README.md") fresh_has_readme = true;
+    }
+    CHECK_CTX(fresh_has_readme, "the default layout should have opened README.md");
+    KillMep(pid, fd);
+
     // --- Third run: an invalid saved tree falls back to the default layout --
     // A split with no children: valid JSON, not a layout (see
     // ValidWorkspaceStateTree), which is exactly the case that must not be
@@ -332,7 +363,7 @@ int main(int argc, char **argv) {
         root["children"] = Json::Array();
         CHECK(WriteJsonFile(state_file, doc));
     }
-    pid = SpawnMep(mep_path, data, project, &fd);
+    pid = SpawnMep(mep_path, data, project, /*restore_layouts=*/true, &fd);
     const Json fallback = OnlyWorkspace(Call(fd, 1, "state.dump", Json::Object(), &buf).get("result"));
     const std::string fallback_shape = TreeShape(fallback.get("tabs").items()[0].get("root"));
     CHECK_CTX(fallback_shape == TreeShape(first.get("tabs").items()[0].get("root")),

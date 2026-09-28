@@ -17203,14 +17203,16 @@ int Editor::ProjectLoad(const std::string &root_arg, bool *restored) {
     const int id = projects_.back().id;
     active_project_ = static_cast<int>(projects_.size()) - 1;
     AfterWorkspaceActivated();
-    // Restores the saved workspace list *and* each workspace's saved layout
-    // where it can (RestoreWorkspaceLayout). `*restored` stays false either
+    // Restores the saved workspace list and, with mep.opt.restore_layouts,
+    // each workspace's saved layout where it can (RestoreWorkspaceLayout);
+    // by default every workspace is left empty so the caller's
+    // readme/tree/terminal default layout applies. `*restored` stays false either
     // way: it means "this project was already open, leave it alone", and the
     // default layout that callers go on to apply is now skipped per
     // workspace by mep.project_apply_default_layout_to_empty_workspaces
     // rather than by this flag -- so a project that half-restored still gets
     // its un-restored workspaces laid out.
-    if (RestoreWorkspaces()) RestoreWorkspaceState(id, /*keep_primary_tabs=*/false);
+    if (RestoreWorkspaces()) RestoreWorkspaceState(id, /*keep_primary_tabs=*/false, RestoreLayouts());
     ProjectDetectGit(id);
     status_message_ = "project " + ActiveProject().name + " (" + root + ")";
     return id;
@@ -17884,10 +17886,11 @@ bool Editor::RestoreFoldsOnly(int project_id) {
 #endif
 }
 
-bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
+bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs, bool restore_layouts) {
 #if defined(__EMSCRIPTEN__)
     (void)project_id;
     (void)keep_primary_tabs;
+    (void)restore_layouts;
     return false;
 #else
     Project *project = FindProject(project_id);
@@ -17963,7 +17966,7 @@ bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs) {
         // `target` is a pointer into project->workspaces, which the layout
         // restore below both reads and writes (and whose buffers_ pushes can
         // reallocate other things), so take the stable id and let it re-find.
-        if (RestoreWorkspaceLayout(target->id, wj, &missing_files)) restored_layouts++;
+        if (restore_layouts && RestoreWorkspaceLayout(target->id, wj, &missing_files)) restored_layouts++;
     }
     const std::string active_name = doc.get("active_workspace").as_string("");
     for (size_t i = 0; i < project->workspaces.size(); i++) {

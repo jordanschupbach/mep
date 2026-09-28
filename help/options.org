@@ -72,7 +72,8 @@ a time.
 
 | Option                        | Default | Does                      |
 |-------------------------------+---------+---------------------------|
-| =restore_workspaces=          | true    | restore a project's layout |
+| =restore_workspaces=          | true    | restore a project's workspaces |
+| =restore_layouts=             | false   | restore saved panes instead of the default layout |
 | =worktree_dir=                |         | where new worktrees go    |
 | =workspace_git_dirty=         | false   | mark dirty workspaces with =+= |
 

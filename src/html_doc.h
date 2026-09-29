@@ -97,6 +97,12 @@ struct CssEdges {
     CssLength top, right, bottom, left;
 };
 
+// CSS `position`. Only Fixed is laid out out-of-flow by main.cpp today (a
+// pinned viewport panel -- the standard left/right sidebar); Sticky is treated
+// like Fixed; Static/Relative/Absolute all lay out in normal flow (Relative's
+// own offset and true Absolute containing-block positioning aren't modelled).
+enum class CssPosition { Static, Relative, Absolute, Fixed, Sticky };
+
 // Every property CSS could plausibly set, already resolved (inherited from
 // the parent, then the UA default for this tag, then <style> block rules,
 // then the inline style="" attribute, each layer only overriding what it
@@ -169,6 +175,31 @@ struct ComputedStyle {
     bool has_max_width = false;
     float max_width_em = 0.0f;
     bool margin_h_auto = false;
+    // CSS positioning. `position` and its offsets do not inherit (real CSS
+    // doesn't either) -- they reset to the defaults here on every node. Only
+    // Fixed/Sticky are acted on by the layout pass (main.cpp): the element is
+    // pulled out of normal flow and painted pinned to the pane viewport at
+    // (pos_left/pos_right, pos_top/pos_bottom) with its own `width`. `overflow`
+    // (hidden/auto/scroll on any axis) sets overflow_clip so the layout clips
+    // that box's content to its bounds -- what keeps a fixed sidebar's long
+    // labels from spilling past its width, matching a browser's overflow.
+    CssPosition position = CssPosition::Static;
+    CssLength pos_top, pos_right, pos_bottom, pos_left;
+    bool overflow_clip = false;
+    // `text-overflow: ellipsis` -- a clipped, non-wrapping box (typically a nav
+    // label) whose text is too wide gets its tail replaced with an ellipsis
+    // rather than hard-cut at the clip edge. Acted on for fixed-panel content by
+    // main.cpp's LayoutFixedElement. Does not inherit (real CSS doesn't either).
+    bool text_overflow_ellipsis = false;
+    // CSS `transform` -- only the translate family is modelled
+    // (translateX/translateY/translate(x,y)), which is what the off-canvas
+    // sidebar idiom needs: translateX(-100%) slides a fixed panel off by its own
+    // width, translateX(0) brings it back. Percentages resolve against the
+    // element's own box at layout time, so they stay as CssLength. Other
+    // functions (scale/rotate/...) are ignored. Applied to position:fixed
+    // elements by main.cpp's LayoutFixedElement; does not inherit.
+    bool has_transform = false;
+    CssLength transform_x, transform_y;
     // Block-level vertical spacing, in *lines* (not px -- main.cpp's
     // layout pass multiplies by whatever line height it's using for that
     // node's own font_scale), before/after this element's own content.
@@ -232,6 +263,12 @@ struct DomNode {
     bool form_checked = false;
     bool form_disabled = false;
     bool details_open = false;
+    // Independent scroll offset (px) of a `position:fixed`/sticky panel whose
+    // content overflows its box -- a scrollable sidebar. Lives on the node (not
+    // the per-frame HtmlFixedLayer) so it survives relayout; driven by the wheel
+    // when the pointer is over the panel (main.cpp records the panel rects;
+    // Editor::WheelScrollHtml routes the wheel here instead of the page).
+    float fixed_scroll_y = 0.0f;
     bool interaction_hover = false;
     bool interaction_focus = false;
     bool interaction_active = false;
@@ -359,6 +396,13 @@ void ParseHtml(const std::string &html, HtmlDoc &out);
  * @param doc Document whose tree gets its `style` fields (re)computed in place.
  */
 void ComputeStyles(HtmlDoc &doc);
+
+// Sets the viewport size and dark-mode preference that `@media` queries are
+// evaluated against by the NEXT ComputeStyles call (min/max-width, min/max-
+// height, prefers-color-scheme). Without this a page's mobile `max-width` rules
+// and desktop `min-width` rules would all apply at once. main.cpp calls it with
+// the browser pane's own size before re-styling on resize/theme change.
+void SetCssMediaContext(float viewport_w, float viewport_h, bool dark);
 
 // Selector helpers shared by the DOM binding. They use the same parser and
 // matcher as the CSS cascade, preventing querySelector from drifting away

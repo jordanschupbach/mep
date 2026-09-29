@@ -2659,6 +2659,24 @@ struct HtmlSession {
     std::string origin;
     float scroll_y = 0;
     int viewport_w = 0, viewport_h = 0;
+    // The (viewport width, dark) the CSS was last cascaded for, so DrawPane can
+    // re-run ComputeStyles only when they change -- `@media` queries resolve
+    // against the pane size (SetCssMediaContext), so a resize across a
+    // breakpoint (or a light/dark toggle) has to re-style. -1 forces a first
+    // pass. See Editor::RestyleHtmlForViewport.
+    float styled_media_w = -1.0f;
+    bool styled_media_dark = false;
+    // Scrollable `position:fixed` panels (a nav sidebar), recorded each frame by
+    // DrawPane with their on-screen rect and scroll range, so WheelScrollHtml
+    // can route the wheel to the panel under the pointer (scrolling its own
+    // node->fixed_scroll_y) instead of the page. `node` keys back to the DOM
+    // element that owns the persistent scroll offset. Rebuilt every frame.
+    struct FixedPanel {
+        DomNode *node = nullptr;
+        float x = 0, y = 0, w = 0, h = 0;  // screen rect
+        float max_scroll = 0;
+    };
+    std::vector<FixedPanel> fixed_panels;
     // Multiplies the pane's base font size -- same +/-/= convention as
     // ImageSession::zoom/PdfSession::zoom (Editor::HandleHtmlInput).
     float zoom = 1.0f;
@@ -5579,6 +5597,19 @@ public:
      * @return A const pointer to the HtmlSession, or nullptr if the buffer isn't an HTML pane.
      */
     const HtmlSession *GetHtml(int buffer_id) const;
+    // Re-cascades an HTML pane's CSS for the given viewport size / dark-mode if
+    // they changed since the last pass (its `@media` queries depend on them --
+    // SetCssMediaContext). A no-op on a stable-size pane after the first frame.
+    // Called by DrawPane before laying the page out.
+    void RestyleHtmlForViewport(int buffer_id, float viewport_w, float viewport_h, bool dark);
+    // Fixed-panel scroll registry (a scrollable sidebar). DrawPane clears then
+    // re-adds each scrollable fixed panel's screen rect + scroll range every
+    // frame; WheelScrollHtml calls ScrollHtmlFixedPanelAt first so a wheel over
+    // a panel scrolls IT (its node->fixed_scroll_y, clamped) and the page is
+    // left alone. Returns true when a panel consumed the wheel.
+    void ClearHtmlFixedPanels(int buffer_id);
+    void AddHtmlFixedPanel(int buffer_id, DomNode *node, float x, float y, float w, float h, float max_scroll);
+    bool ScrollHtmlFixedPanelAt(float mouse_x, float mouse_y, float dy);
     // One-shot flag set by HandleHtmlInput's plain 'f' and drained once
     // per frame by main.cpp's UpdateDrawFrame right after HandleInput():
     // the hint system's whole state (g_hint_mode_active/g_hint_targets/

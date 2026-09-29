@@ -67,6 +67,17 @@
 // "window.Foo = {...}" config-stashing pattern doesn't throw
 // ReferenceError.
 
+// Style-cascade dirty flag (see js_engine.h). Global (external linkage) so it
+// matches the header's declaration and the host can poll it; the mutation sites
+// below just call MarkHtmlStyleDirty().
+bool g_html_style_dirty = false;
+void MarkHtmlStyleDirty() { g_html_style_dirty = true; }
+bool TakeHtmlStyleDirty() {
+    bool d = g_html_style_dirty;
+    g_html_style_dirty = false;
+    return d;
+}
+
 namespace {
 
 // ---------------------------------------------------------------------
@@ -1234,6 +1245,10 @@ void SetProp(const ObjectPtr &obj, const std::string &key, Value val) {
     if (!obj) return;
     if (obj->dom_node && key.size() > 2 && key[0] == 'o' && key[1] == 'n') SetDomEventHandler(obj, key, val);
     if (obj->frozen) return;
+    // Any write to a DOM element / its style / dataset can change the cascade
+    // (className, id, style, reflected attrs); flag a restyle. Coarse on purpose
+    // -- textContent/value also flag it, which is harmless (coalesced per frame).
+    if (obj->dom_node || obj->style_node || obj->dataset_node) MarkHtmlStyleDirty();
     if (obj->is_location && key == "href") {
         std::string href = ToDisplayString(val);
         // A relative assignment (history.pushState(s, '', '?view=about'),
@@ -6767,7 +6782,7 @@ Value WrapDomNode(HtmlDoc &doc, DomNode *node) {
     });
     wrapper->props["setAttribute"] = MakeNativeFn([node](const std::vector<Value> &args, bool &threw, std::string &error) {
         if (args.size() < 2 || args[0].type != VType::String) { threw = true; error = "setAttribute requires name and value"; return Value::Undef(); }
-        node->attrs[args[0].str] = ToDisplayString(args[1]); return Value::Undef();
+        node->attrs[args[0].str] = ToDisplayString(args[1]); MarkHtmlStyleDirty(); return Value::Undef();
     });
     wrapper->props["getAttribute"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) {
         if (args.empty() || args[0].type != VType::String) return Value::MakeNull();
@@ -6861,17 +6876,18 @@ Value WrapDomNode(HtmlDoc &doc, DomNode *node) {
     auto class_list = std::make_shared<ObjectData>();
     class_list->props["contains"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) { return Value::Bool(!args.empty() && args[0].type == VType::String && DomHasClass(node, args[0].str)); });
     class_list->props["add"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) {
-        std::string classes = node->Class(); for (const Value &arg : args) if (arg.type == VType::String && !DomHasClass(node, arg.str)) classes += (classes.empty() ? "" : " ") + arg.str; node->attrs["class"] = classes; return Value::Undef();
+        std::string classes = node->Class(); for (const Value &arg : args) if (arg.type == VType::String && !DomHasClass(node, arg.str)) classes += (classes.empty() ? "" : " ") + arg.str; node->attrs["class"] = classes; MarkHtmlStyleDirty(); return Value::Undef();
     });
     class_list->props["remove"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) {
         std::unordered_set<std::string> remove; for (const Value &arg : args) if (arg.type == VType::String) remove.insert(arg.str);
-        std::istringstream words(node->Class()); std::string word, classes; while (words >> word) if (!remove.count(word)) classes += (classes.empty() ? "" : " ") + word; node->attrs["class"] = classes; return Value::Undef();
+        std::istringstream words(node->Class()); std::string word, classes; while (words >> word) if (!remove.count(word)) classes += (classes.empty() ? "" : " ") + word; node->attrs["class"] = classes; MarkHtmlStyleDirty(); return Value::Undef();
     });
     class_list->props["toggle"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) {
         if (args.empty() || args[0].type != VType::String) return Value::Bool(false);
         bool had = DomHasClass(node, args[0].str);
         if (had) { std::istringstream words(node->Class()); std::string word, classes; while (words >> word) if (word != args[0].str) classes += (classes.empty() ? "" : " ") + word; node->attrs["class"] = classes; }
         else node->attrs["class"] += (node->Class().empty() ? "" : " ") + args[0].str;
+        MarkHtmlStyleDirty();
         return Value::Bool(!had);
     });
     wrapper->props["classList"] = Value::Obj(class_list);
@@ -7221,6 +7237,21 @@ void SetupGlobals(Interpreter &interp, HtmlDoc &doc, const std::function<void(co
         });
         SettlePromise(interp, promise, 1, Value::Obj(response));
         return Value::Obj(promise);
+    }));
+    // EventSource: Server-Sent Events aren't supported (no background streaming
+    // in this renderer). Return an inert, spec-shaped object so a page's SSE /
+    // live-reload client constructs without a ReferenceError and simply never
+    // receives events, instead of throwing on line 1 and killing the rest of its
+    // <script>. `new` on a native fn uses its return value (same as XHR above).
+    global->Define("EventSource", MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) {
+        auto es = std::make_shared<ObjectData>();
+        es->props["url"] = Value::Str(args.empty() ? std::string{} : ToDisplayString(args[0]));
+        es->props["readyState"] = Value::Num(0);  // CONNECTING -- never advances
+        es->props["withCredentials"] = Value::Bool(false);
+        es->props["addEventListener"] = MakeNativeFn([](const std::vector<Value> &, bool &, std::string &) { return Value::Undef(); });
+        es->props["removeEventListener"] = MakeNativeFn([](const std::vector<Value> &, bool &, std::string &) { return Value::Undef(); });
+        es->props["close"] = MakeNativeFn([es](const std::vector<Value> &, bool &, std::string &) { es->props["readyState"] = Value::Num(2); return Value::Undef(); });
+        return Value::Obj(es);
     }));
     global->Define("XMLHttpRequest", MakeNativeFn([&interp, &doc, json_to_value](const std::vector<Value> &, bool &, std::string &) {
         auto xhr = std::make_shared<ObjectData>();

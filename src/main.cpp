@@ -36573,6 +36573,25 @@ struct HtmlBorderRect {
     float top_w = 0, right_w = 0, bottom_w = 0, left_w = 0;
     gfx::Color top_c{}, right_c{}, bottom_c{}, left_c{};
 };
+// A `position: fixed` (or sticky) element pulled out of normal flow: its own
+// sub-layout, positioned and painted pinned to the pane viewport rather than
+// scrolling with the document (the standard fixed sidebar / top bar). `x`/`y`
+// are viewport-content coordinates (relative to the same x+pad / content_y
+// origin the main layout uses); `content` is laid out in that local space with
+// its own origin at (x, y). Collected on the ROOT HtmlLayout regardless of how
+// deep in the tree the element sits, so it escapes its normal-flow ancestors.
+struct HtmlFixedLayer {
+    float x = 0, y = 0, w = 0, h = 0;
+    bool clip = false;      // overflow:hidden/auto/scroll -> scissor to the box
+    bool has_bg = false;    // fill the whole box (full height, unlike the
+    gfx::Color bg{};        //   content's own bg rect) so a short sidebar's
+                            //   background still reaches the viewport bottom
+    float content_h = 0;    // laid-out height of the panel's content, for the
+                            //   scroll range when it overflows the box
+    DomNode *node = nullptr;  // the fixed element -- carries its persistent
+                              //   fixed_scroll_y and identifies it to the wheel
+    std::shared_ptr<struct HtmlLayout> content;  // heap so HtmlLayout need not embed itself by value
+};
 struct HtmlLayout {
     std::vector<HtmlRun> runs;
     std::vector<HtmlRule> rules;
@@ -36582,6 +36601,7 @@ struct HtmlLayout {
     std::vector<HtmlSvgRun> svgs;
     std::vector<HtmlBgRect> backgrounds;
     std::vector<HtmlBorderRect> borders;
+    std::vector<std::shared_ptr<HtmlFixedLayer>> fixed_layers;
     float total_height = 0;
     // The previous block's CSS bottom margin is deferred until the next
     // block's top margin is known, allowing the two to collapse instead of
@@ -36600,6 +36620,16 @@ struct HtmlLayoutCtx {
     float zoom = 1.0f;  // matches HtmlSession::zoom -- local images scale with the same pane zoom as text does
     HtmlTextAlign text_align = HtmlTextAlign::Left;
     bool no_wrap = false;
+    // The pane's full content viewport, for resolving `position:fixed` boxes
+    // (their width/left/right/top/bottom and a `height:100vh`-style full-height
+    // fallback). 0 when unknown (e.g. the mepml block renderer, which has no
+    // scrolling viewport and simply lays fixed elements out in flow).
+    float viewport_w = 0.0f, viewport_h = 0.0f;
+    // True while laying out a fixed element's OWN subtree, so a fixed
+    // descendant of a fixed element isn't intercepted a second time (it just
+    // renders in flow inside its ancestor panel -- a rare case not worth a
+    // second escape hatch).
+    bool in_fixed_subtree = false;
 };
 
 /**
@@ -36967,6 +36997,7 @@ void HtmlCollectTextWords(const std::string &text, const ComputedStyle &style, c
 }
 
 void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out);
+void LayoutFixedElement(DomNode *node, const HtmlLayoutCtx &ctx, HtmlLayout &root_out);
 void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out);
 
 // Concatenates every descendant Text node's raw content in document order
@@ -37270,8 +37301,6 @@ void HtmlLayoutPreformatted(DomNode *node, float indent_x, float &cursor_y, cons
     cursor_y = cur.start_y + static_cast<float>(cur.line_index + 1) * cur.line_h;
 }
 
-constexpr float kHtmlListIndentPx = 24.0f;
-
 /**
  * @brief Recursively lays out a block element and its subtree: applies top margin, narrows the
  * layout column for a centered max-width box, pushes background/border boxes sized once the
@@ -37339,8 +37368,16 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     HtmlLayoutCtx narrowed_ctx = ctx;
     bool narrowed = false;
     if (node->style.has_max_width && node->style.margin_h_auto) {
-        float max_w_px = ctx.base_font_size * node->style.font_scale * node->style.max_width_em;
+        // Resolve max-width as a real length: a `px` value is those pixels
+        // exactly (NOT divided by 16 and re-scaled by the font, which collapsed
+        // an `860px` column to ~590px at mep's font size and made it grow/shrink
+        // with zoom); `em` scales with this element's font; `%` is of the
+        // available width. max_width_em stays the em fallback for a value the
+        // CssLength path didn't capture.
         float avail = std::max(0.0f, ctx.layout_width - indent_x);
+        float font_px = ctx.base_font_size * node->style.font_scale;
+        float max_w_px = node->style.max_width.set ? ResolveCssLength(node->style.max_width, font_px, avail)
+                                                   : font_px * node->style.max_width_em;
         if (max_w_px < avail) {
             indent_x += (avail - max_w_px) / 2.0f;
             // ctx.layout_width is the page's absolute right-edge x
@@ -37368,6 +37405,13 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     float margin_r = ResolveCssLength(cs.margin.right, font_size, available_w);
     float margin_t = ResolveCssLength(cs.margin.top, font_size, available_w);
     float margin_b = ResolveCssLength(cs.margin.bottom, font_size, available_w);
+    // The UA line-based margin (margin_top_lines/bottom_lines) is a DEFAULT, not
+    // a floor: if the page set that edge's margin, its value wins even when it's
+    // smaller (or zero) -- exactly as CSS overrides a UA default. Using max()
+    // here instead let mep's 1-line-at-heading-font UA margin swallow a site's
+    // tight/zero heading margins and blow out the vertical gaps.
+    const float eff_margin_t = cs.margin.top.set ? margin_t : ua_margin_t;
+    const float eff_margin_b = cs.margin.bottom.set ? margin_b : ua_margin_b;
     float pad_l = ResolveCssLength(cs.padding.left, font_size, available_w);
     float pad_r = ResolveCssLength(cs.padding.right, font_size, available_w);
     float pad_t = ResolveCssLength(cs.padding.top, font_size, available_w);
@@ -37398,7 +37442,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     box_ctx.layout_width = content_x + std::max(0.0f, border_w - extras_w);
     box_ctx.text_align = cs.text_align;
     box_ctx.no_wrap = cs.white_space == HtmlWhiteSpace::NoWrap;
-    cursor_y += std::max({out.pending_margin_bottom, margin_t, ua_margin_t});
+    cursor_y += std::max(out.pending_margin_bottom, eff_margin_t);
     out.pending_margin_bottom = 0.0f;
 
     // Pushed *before* this node's own content is laid out (a child's own
@@ -37487,7 +37531,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += tail_inset;
         finish_bg();
         finish_border();
-        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, eff_margin_b);
         return;
     }
     if (node->style.preserve_whitespace) {
@@ -37496,7 +37540,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += tail_inset;
         finish_bg();
         finish_border();
-        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, eff_margin_b);
         return;
     }
     if (node->tag == "math") {
@@ -37514,7 +37558,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += tail_inset;
         finish_bg();
         finish_border();
-        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, eff_margin_b);
         return;
     }
     if (node->tag == "canvas") {
@@ -37537,7 +37581,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += tail_inset;
         finish_bg();
         finish_border();
-        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, eff_margin_b);
         return;
     }
     if (node->tag == "svg") {
@@ -37551,7 +37595,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         if (!cs.width.set && svg_w > box_ctx.layout_width - content_x) { float scale = (box_ctx.layout_width - content_x) / svg_w; svg_w *= scale; svg_h *= scale; }
         out.svgs.push_back({content_x, cursor_y, svg_w, svg_h, node}); cursor_y += svg_h;
         enforce_height(); cursor_y += tail_inset; finish_bg(); finish_border();
-        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, eff_margin_b);
         return;
     }
     if (node->tag == "table") {
@@ -37560,7 +37604,7 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += tail_inset;
         finish_bg();
         finish_border();
-        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, eff_margin_b);
         return;
     }
     if (node->tag == "iframe") {
@@ -37580,11 +37624,16 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         cursor_y += tail_inset;
         finish_bg();
         finish_border();
-        out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, eff_margin_b);
         return;
     }
 
-    float my_indent = content_x + static_cast<float>(node->style.list_depth) * kHtmlListIndentPx;
+    // List indentation is carried by the UA/CSS left padding on the <ul>/<ol>
+    // (TagDefaults, html_doc.cpp) and is already folded into content_x above --
+    // no extra per-depth step here, which is what let deep lists drift right
+    // (the step compounded with the parent's already-indented content_x) and
+    // ignored a page's own `padding:0` list reset.
+    float my_indent = content_x;
     std::vector<HtmlPendingWord> words;
     if (node->style.is_list_item && !node->style.list_marker_none) {
         std::string marker =
@@ -37615,6 +37664,17 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
             continue;
         }
         if (c->style.display_none) continue;
+        // A fixed/sticky child leaves normal flow entirely: it neither consumes
+        // vertical space here nor shifts its siblings, and is laid out+painted
+        // pinned to the viewport by LayoutFixedElement (which appends to the
+        // root layout's fixed_layers). Only when the pane gave us a real
+        // viewport to position against -- otherwise it falls through as an
+        // ordinary in-flow block (the mepml block renderer path).
+        if ((c->style.position == CssPosition::Fixed || c->style.position == CssPosition::Sticky) &&
+            box_ctx.viewport_w > 0.0f && !box_ctx.in_fixed_subtree) {
+            LayoutFixedElement(c.get(), box_ctx, out);
+            continue;
+        }
         if (c->style.block) {
             flush_words();
             HtmlLayoutBlock(c.get(), my_indent, cursor_y, box_ctx, out);
@@ -37628,6 +37688,137 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
     finish_bg();
     finish_border();
     out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
+}
+
+// Lays out one `position:fixed`/sticky element as a pinned viewport panel and
+// appends it to root_out.fixed_layers, out of normal flow. The panel's box is
+// resolved from the pane viewport (ctx.viewport_w/h): its own `width` (or the
+// full viewport width if auto), placed by left/right (default: flush left) and
+// top/bottom (default: flush top), full viewport height when no `height` is
+// given (the `height:100vh` sidebar idiom this renderer can't parse as a unit).
+// The element's own subtree is laid out into a fresh sub-layout in the box's
+// local coordinate space; DrawPane paints it pinned (no scroll) and clipped.
+void LayoutFixedElement(DomNode *node, const HtmlLayoutCtx &ctx, HtmlLayout &root_out) {
+    const ComputedStyle &s = node->style;
+    const float vw = ctx.viewport_w, vh = ctx.viewport_h;
+    const float font = ctx.base_font_size;
+    const bool left_set = s.pos_left.set && !s.pos_left.auto_value;
+    const bool right_set = s.pos_right.set && !s.pos_right.auto_value;
+    const bool top_set = s.pos_top.set && !s.pos_top.auto_value;
+    const bool bottom_set = s.pos_bottom.set && !s.pos_bottom.auto_value;
+    const bool auto_w = !(s.width.set && !s.width.auto_value);
+
+    // Provisional width: an explicit `width` wins; an auto width stretches
+    // between left+right when BOTH are given; otherwise it is shrink-to-fit
+    // (computed from the laid-out content below). Laying auto content out at
+    // the full viewport first just gives the widest line room not to wrap.
+    float box_w;
+    if (!auto_w) box_w = std::clamp(ResolveCssLength(s.width, font, vw), 0.0f, vw);
+    else if (left_set && right_set)
+        box_w = std::max(0.0f, vw - ResolveCssLength(s.pos_left, font, vw) - ResolveCssLength(s.pos_right, font, vw));
+    else box_w = vw;
+
+    auto layer = std::make_shared<HtmlFixedLayer>();
+    layer->content = std::make_shared<HtmlLayout>();
+    HtmlLayoutCtx sub = ctx;
+    sub.layout_width = box_w;
+    sub.in_fixed_subtree = true;  // a nested fixed element inside isn't re-escaped
+    float cy = 0.0f;
+    HtmlLayoutBlock(node, 0.0f, cy, sub, *layer->content);
+    const float content_h = cy + layer->content->pending_margin_bottom;
+
+    // Height: an explicit `height` wins; else stretch between top+bottom when
+    // both are given; else shrink-to-fit the content. NOT the full viewport --
+    // an auto-height fixed widget (a floating toolbar/button) that defaulted to
+    // 100vh would blanket the column behind it with its own background. A
+    // `height:100vh` sidebar can't be parsed (vh isn't a unit here) so it falls
+    // to content height too, which for a real nav overflows the viewport and is
+    // clipped to it at paint time anyway -- the same full-height result.
+    float box_h;
+    if (s.height.set && !s.height.auto_value) box_h = ResolveCssLength(s.height, font, vh);
+    else if (top_set && bottom_set)
+        box_h = std::max(0.0f, vh - ResolveCssLength(s.pos_top, font, vh) - ResolveCssLength(s.pos_bottom, font, vh));
+    else box_h = content_h;
+
+    // Shrink-to-fit an auto width (unless stretched between left+right): a
+    // `position:fixed` element with no width is only as wide as its content in
+    // a real browser -- NOT the whole viewport, which would let an opaque
+    // JS-injected overlay (MathJax's measurement nodes, a toast, ...) blanket
+    // the page. Measured from visible content only, never the element's own
+    // full-box background/border rects.
+    if (auto_w && !(left_set && right_set)) {
+        float content_w = 0.0f;
+        for (const HtmlRun &r : layer->content->runs)
+            content_w = std::max(content_w,
+                                 r.x + gfx::MeasureTextEx(r.font ? *r.font : g_font, r.text.c_str(), r.font_size, 0).x);
+        for (const HtmlImageRun &im : layer->content->images) content_w = std::max(content_w, im.x + im.w);
+        for (const HtmlCanvasRun &c : layer->content->canvases) content_w = std::max(content_w, c.x + c.w);
+        for (const HtmlSvgRun &sv : layer->content->svgs) content_w = std::max(content_w, sv.x + sv.w);
+        box_w = std::clamp(content_w, 0.0f, vw);
+    }
+
+    // text-overflow:ellipsis -- in a clipped panel (a nav sidebar), a nowrap
+    // label wider than the box gets its tail replaced with an ellipsis rather
+    // than hard-cut at the clip edge. Applied only to runs whose own element
+    // opted in (`.nav-tree a { text-overflow: ellipsis }`), so ordinary
+    // overflowing content is still just clipped. `inset` keeps the ellipsis off
+    // the panel's right border, standing in for the box's right padding.
+    if (s.overflow_clip) {
+        constexpr float kEllipsisInset = 12.0f;
+        const float clip_right = box_w - kEllipsisInset;
+        // Three ASCII dots rather than U+2026: the HTML text font atlas doesn't
+        // bake the ellipsis glyph, so "…" would measure and draw as nothing.
+        const std::string ell = "...";
+        for (HtmlRun &r : layer->content->runs) {
+            if (!r.node || !r.node->style.text_overflow_ellipsis) continue;
+            const gfx::Font &f = r.font ? *r.font : g_font;
+            const float avail = clip_right - r.x;
+            if (avail <= 0.0f) { r.text.clear(); continue; }  // starts past the edge
+            if (gfx::MeasureTextEx(f, r.text.c_str(), r.font_size, 0).x <= avail) continue;  // fits
+            const float target = std::max(0.0f, avail - gfx::MeasureTextEx(f, ell.c_str(), r.font_size, 0).x);
+            std::string t = r.text;
+            // Trim whole UTF-8 codepoints from the end until the prefix fits.
+            while (!t.empty() && gfx::MeasureTextEx(f, t.c_str(), r.font_size, 0).x > target) {
+                size_t n = 1;
+                while (n < t.size() && (static_cast<unsigned char>(t[t.size() - n]) & 0xC0) == 0x80) ++n;
+                t.erase(t.size() - n);
+            }
+            while (!t.empty() && t.back() == ' ') t.pop_back();
+            r.text = t + ell;
+        }
+    }
+
+    // Placement, now that the final width is known. Left wins, else
+    // right-anchored, else flush left; same for top/bottom.
+    float box_x = 0.0f;
+    if (left_set) box_x = ResolveCssLength(s.pos_left, font, vw);
+    else if (right_set) box_x = vw - ResolveCssLength(s.pos_right, font, vw) - box_w;
+    float box_y = 0.0f;
+    if (top_set) box_y = ResolveCssLength(s.pos_top, font, vh);
+    else if (bottom_set) box_y = vh - ResolveCssLength(s.pos_bottom, font, vh) - box_h;
+
+    // CSS transform: translate shifts the whole panel (its background, content,
+    // and the wheel hit-rect all move with box_x/box_y). translate percentages
+    // are relative to the element's own box -- translateX(-100%) = -box_w, which
+    // slides an off-canvas drawer fully off the left edge; translateX(0) (set by
+    // a `body.nav-open` rule after the re-cascade) brings it back on screen.
+    if (s.has_transform) {
+        box_x += ResolveCssLength(s.transform_x, font, box_w);
+        box_y += ResolveCssLength(s.transform_y, font, box_h);
+    }
+
+    layer->x = box_x;
+    layer->y = box_y;
+    layer->w = box_w;
+    layer->h = box_h;
+    layer->content_h = content_h;
+    layer->node = node;
+    layer->clip = s.overflow_clip;
+    if (s.has_bg) {
+        layer->has_bg = true;
+        layer->bg = gfx::Color{s.bg_r, s.bg_g, s.bg_b, 255};
+    }
+    root_out.fixed_layers.push_back(std::move(layer));
 }
 
 // Basic table grid layout. Cells first occupy a coordinate grid, so a rowspan
@@ -44281,11 +44472,25 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         ctx.base_dir = urlutil::IsHttpUrl(html_sess->origin) ? html_sess->origin
                                                              : std::filesystem::path(html_sess->source).parent_path().string();
         ctx.zoom = html_sess->zoom;
+        // The viewport a `position:fixed` box positions against: the page's
+        // content area (same width the flow lays out in; full height of the
+        // pane content below the omnibar).
+        ctx.viewport_w = std::max(50.0f, w - kHtmlPad * 2.0f);
+        ctx.viewport_h = content_h;
         // Media clocks tick with the frame, then the device mirrors the DOM.
         g_editor.AdvanceHtmlMedia(pane.buffer_id, static_cast<double>(gfx::GetFrameTime()));
         // The page's own event loop turn for this frame (timers, rAF, promise jobs), before it is laid out.
         g_editor.PumpHtmlScripts(pane.buffer_id);
         SyncHtmlMediaPlayback();
+        // Re-cascade the page's CSS for this pane's width so its `@media`
+        // queries (mobile vs desktop layout, prefers-color-scheme) resolve
+        // against the actual viewport -- otherwise every @media body applies at
+        // once and a page's mobile rules stomp its desktop ones. A no-op once
+        // the width is stable. `dark` follows mep's own theme luminance so a
+        // page's prefers-color-scheme:dark rules match a dark mep.
+        gfx::Color nb = ResolveHlGroup("NormalBg");
+        bool ui_dark = (0.299 * nb.r + 0.587 * nb.g + 0.114 * nb.b) < 128.0;
+        g_editor.RestyleHtmlForViewport(pane.buffer_id, ctx.viewport_w, ctx.viewport_h, ui_dark);
         HtmlLayout layout = LayoutHtmlDoc(html_sess->doc, ctx);
         // Layout depends on real font metrics (MeasureTextEx), so unlike
         // ResizePdfViewport's pure-geometry clamp, the max scroll_y this
@@ -44301,6 +44506,42 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         bool theme = html_sess->theme_colors;
         PaintHtmlLayout(layout, ctx, x, kHtmlPad, top, content_y, content_h, theme, pane.id, pane.buffer_id, true);
         gfx::EndScissorMode();
+        // Fixed panels (sidebar/top bar): painted AFTER (over) the scrolled
+        // document and pinned -- their origin is the viewport edge, not the
+        // scrolled `top` -- so they stay put while the page scrolls beneath,
+        // exactly like a browser. Each clips to its own box (GL scissor is
+        // flat, not a stack, so this runs after the page's own scissor ended),
+        // keeping long nowrap labels from spilling past a narrow sidebar.
+        g_editor.ClearHtmlFixedPanels(pane.buffer_id);
+        for (const auto &fl : layout.fixed_layers) {
+            if (!fl || !fl->content) continue;
+            float fx = x + kHtmlPad + fl->x;
+            float fy = content_y + fl->y;
+            float fh = std::min(fl->h, content_y + content_h - fy);
+            float fw = std::min(fl->w, x + w - fx);
+            if (fh <= 0.0f || fw <= 0.0f) continue;
+            // A panel taller than its box scrolls independently: its own
+            // fixed_scroll_y (driven by the wheel over it, see WheelScrollHtml)
+            // shifts the content up, clamped to the overflow. Registered so the
+            // wheel handler can find the panel under the pointer next frame.
+            float max_scroll = std::max(0.0f, fl->content_h - fl->h);
+            float scroll = 0.0f;
+            if (fl->node) {
+                fl->node->fixed_scroll_y = std::clamp(fl->node->fixed_scroll_y, 0.0f, max_scroll);
+                scroll = fl->node->fixed_scroll_y;
+                g_editor.AddHtmlFixedPanel(pane.buffer_id, fl->node, fx, fy, fw, fh, max_scroll);
+            }
+            gfx::BeginScissorMode(static_cast<int>(fx), static_cast<int>(fy), static_cast<int>(fw),
+                                  static_cast<int>(fh));
+            if (fl->has_bg)
+                gfx::DrawRectangle(static_cast<int>(fx), static_cast<int>(fy), static_cast<int>(fw),
+                                   static_cast<int>(fh), theme ? ResolveHlGroup("NormalBg") : fl->bg);
+            // Paint the panel's own sub-layout with its origin at (fx, fy - scroll):
+            // the same x + pad + run.x / top + run.y math PaintHtmlLayout uses, so
+            // pass paint-x = fx and pad = 0, and cull against the panel box.
+            PaintHtmlLayout(*fl->content, ctx, fx, 0.0f, fy - scroll, fy, fh, theme, pane.id, pane.buffer_id, true);
+            gfx::EndScissorMode();
+        }
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }

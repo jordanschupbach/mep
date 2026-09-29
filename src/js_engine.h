@@ -74,4 +74,17 @@ bool ScriptsDispatchEvent(JsRuntime &runtime, DomNode *node, const std::string &
 /** @brief Whether the page registered any event listener at all (lets a host skip dispatch work for static pages). */
 bool ScriptsHaveListeners(JsRuntime &runtime);
 
+// Set true whenever script code mutates something that can change the CSS
+// cascade -- a class (classList/className), id, style, or any other attribute --
+// so the host can re-run ComputeStyles. Coarse and coalesced: the host reads and
+// clears it once per frame (see Editor::RestyleHtmlForViewport), so e.g. a
+// `body.classList.toggle('nav-open')` click reactively re-styles the page (a CSS
+// rule keyed on `.nav-open` only takes effect after a re-cascade). Module-global
+// because the mutation sites (js_engine's SetProp / classList) have no HtmlDoc
+// handle; single-threaded, so one flag is fine.
+/** @brief Marks the style cascade dirty after a script DOM-attribute mutation. */
+void MarkHtmlStyleDirty();
+/** @brief Returns whether a style-affecting mutation happened since the last call, clearing the flag. */
+bool TakeHtmlStyleDirty();
+
 #endif

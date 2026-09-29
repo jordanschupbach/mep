@@ -660,6 +660,17 @@ ComputedStyle TagDefaults(const std::string &tag) {
     } else if (tag == "ul" || tag == "ol") {
         s.margin_top_lines = 1;
         s.margin_bottom_lines = 1;
+        // UA default list indent, expressed as the list's own left padding the
+        // way real browsers do (`padding-inline-start`) rather than a
+        // hardcoded per-depth step in the layout pass -- so it accumulates
+        // linearly through nesting AND a page that sets `padding:0`/`margin:0`
+        // on its lists (the standard nav-menu reset) gets no indent at all.
+        // main.cpp's HtmlLayoutBlock adds no list indent of its own; the
+        // cascade here is the single source of truth. 24px matches the step
+        // main.cpp used before.
+        s.padding.left.set = true;
+        s.padding.left.value = 24.0f;
+        s.padding.left.unit = CssLength::Unit::Px;
     } else if (tag == "hr") {
         s.margin_top_lines = 1;
         s.margin_bottom_lines = 1;
@@ -808,7 +819,11 @@ bool NthMatches(const std::string &raw, int index) {
     return a != 0 && (index - b) * a >= 0 && (index - b) % a == 0;
 }
 
-bool MatchesSimple(const DomNode *node, const CssSimpleSelector &simple) {
+// `scope_root` is the element a `:scope`-relative query started from (the
+// receiver of element.querySelector[All]); `:scope` matches only it. Null in
+// the CSS-cascade context, where `:scope` degrades to `:root` (the <html>
+// element) as the spec says for a scope-less match.
+bool MatchesSimple(const DomNode *node, const CssSimpleSelector &simple, const DomNode *scope_root = nullptr) {
     if (!node || node->type != DomNodeType::Element) return false;
     if (!simple.tag.empty() && node->tag != simple.tag) return false;
     if (!simple.id.empty() && node->Id() != simple.id) return false;
@@ -841,37 +856,46 @@ bool MatchesSimple(const DomNode *node, const CssSimpleSelector &simple) {
         // default (which is what an "unknown pseudo matches anything" fallback
         // would cause, breaking the [data-theme] override on every child).
         if (name == "root" && node->tag != "html") return false;
+        if (name == "scope") {
+            if (scope_root ? (node != scope_root) : (node->tag != "html")) return false;
+        }
     }
     return true;
 }
 
-bool MatchesSelectorAt(const DomNode *node, const ParsedSelector &selector, int part) {
-    if (!MatchesSimple(node, selector.parts[static_cast<size_t>(part)])) return false;
+bool MatchesSelectorAt(const DomNode *node, const ParsedSelector &selector, int part,
+                       const DomNode *scope_root = nullptr) {
+    if (!MatchesSimple(node, selector.parts[static_cast<size_t>(part)], scope_root)) return false;
     if (part == 0) return true;
     char combinator = selector.combinators[static_cast<size_t>(part - 1)];
-    if (combinator == '>') return MatchesSelectorAt(node->parent, selector, part - 1);
+    if (combinator == '>') return MatchesSelectorAt(node->parent, selector, part - 1, scope_root);
     if (combinator == ' ') {
         for (const DomNode *ancestor = node->parent; ancestor; ancestor = ancestor->parent)
-            if (MatchesSelectorAt(ancestor, selector, part - 1)) return true;
+            if (MatchesSelectorAt(ancestor, selector, part - 1, scope_root)) return true;
         return false;
     }
     if (!node->parent) return false;
     const auto &siblings = node->parent->children;
     for (size_t i = 0; i < siblings.size(); ++i) if (siblings[i].get() == node) {
         if (combinator == '+') {
-            while (i > 0) { --i; if (siblings[i]->type == DomNodeType::Element) return MatchesSelectorAt(siblings[i].get(), selector, part - 1); }
+            while (i > 0) { --i; if (siblings[i]->type == DomNodeType::Element) return MatchesSelectorAt(siblings[i].get(), selector, part - 1, scope_root); }
             return false;
         }
-        while (i > 0) { --i; if (siblings[i]->type == DomNodeType::Element && MatchesSelectorAt(siblings[i].get(), selector, part - 1)) return true; }
+        while (i > 0) { --i; if (siblings[i]->type == DomNodeType::Element && MatchesSelectorAt(siblings[i].get(), selector, part - 1, scope_root)) return true; }
         return false;
     }
     return false;
 }
 
-void CollectSelectorMatches(DomNode *node, const ParsedSelector &selector, std::vector<DomNode *> &out) {
+// `scope_root` fixes what `:scope` matches for the whole walk (the element the
+// query was rooted at); the recursion's own `node` is just the current cursor.
+void CollectSelectorMatches(const DomNode *scope_root, DomNode *node, const ParsedSelector &selector,
+                            std::vector<DomNode *> &out) {
     if (!node) return;
-    if (node->type == DomNodeType::Element && MatchesSelectorAt(node, selector, static_cast<int>(selector.parts.size()) - 1)) out.push_back(node);
-    for (auto &child : node->children) CollectSelectorMatches(child.get(), selector, out);
+    if (node->type == DomNodeType::Element &&
+        MatchesSelectorAt(node, selector, static_cast<int>(selector.parts.size()) - 1, scope_root))
+        out.push_back(node);
+    for (auto &child : node->children) CollectSelectorMatches(scope_root, child.get(), selector, out);
 }
 
 /**
@@ -1277,6 +1301,120 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
             s.margin_h_auto = true;
         }
     }
+    // Positioning. `position` and its offsets don't inherit, so a plain
+    // assignment here (over the Static default WalkAndStyle seeded) is right.
+    if (auto it = decls.find("position"); it != decls.end()) {
+        const std::string &v = it->second;
+        if (v.find("fixed") != std::string::npos) s.position = CssPosition::Fixed;
+        else if (v.find("sticky") != std::string::npos) s.position = CssPosition::Sticky;
+        else if (v.find("absolute") != std::string::npos) s.position = CssPosition::Absolute;
+        else if (v.find("relative") != std::string::npos) s.position = CssPosition::Relative;
+        else s.position = CssPosition::Static;
+    }
+    for (const auto &[name, target] : std::initializer_list<std::pair<const char *, CssLength *>>{
+             {"top", &s.pos_top}, {"right", &s.pos_right}, {"bottom", &s.pos_bottom}, {"left", &s.pos_left}}) {
+        if (auto it = decls.find(name); it != decls.end()) ParseCssLength(it->second, *target);
+    }
+    // Any non-visible overflow (hidden/auto/scroll, on either axis or the
+    // shorthand) means "clip this box's content to its bounds" -- all this
+    // renderer needs to keep a fixed sidebar's nowrap labels from spilling.
+    for (const char *key : {"overflow", "overflow-x", "overflow-y"}) {
+        if (auto it = decls.find(key); it != decls.end()) {
+            const std::string &v = it->second;
+            if (v.find("hidden") != std::string::npos || v.find("auto") != std::string::npos ||
+                v.find("scroll") != std::string::npos)
+                s.overflow_clip = true;
+        }
+    }
+    if (auto it = decls.find("text-overflow"); it != decls.end() && it->second.find("ellipsis") != std::string::npos)
+        s.text_overflow_ellipsis = true;
+    // transform: only translate* is modelled (see ComputedStyle). Values are
+    // already lower-cased by ParseDeclarations. Percentages are kept unresolved
+    // (they're relative to the element's own box, known only at layout).
+    if (auto it = decls.find("transform"); it != decls.end() && it->second.find("none") == std::string::npos) {
+        const std::string &v = it->second;
+        auto fn_args = [&](const std::string &name) -> std::string {
+            size_t p = v.find(name);
+            if (p == std::string::npos) return {};
+            size_t open = p + name.size() - 1;  // `name` includes the '('
+            size_t close = v.find(')', open);
+            return close == std::string::npos ? std::string{} : v.substr(open + 1, close - open - 1);
+        };
+        std::string tx = fn_args("translatex(");
+        std::string ty = fn_args("translatey(");
+        std::string tboth = fn_args("translate(");  // translate(x[, y])
+        if (!tboth.empty()) {
+            size_t comma = tboth.find(',');
+            if (ParseCssLength(comma == std::string::npos ? tboth : tboth.substr(0, comma), s.transform_x)) s.has_transform = true;
+            if (comma != std::string::npos && ParseCssLength(tboth.substr(comma + 1), s.transform_y)) s.has_transform = true;
+        }
+        if (!tx.empty() && ParseCssLength(tx, s.transform_x)) s.has_transform = true;
+        if (!ty.empty() && ParseCssLength(ty, s.transform_y)) s.has_transform = true;
+    }
+}
+
+// The viewport/features `@media` queries are evaluated against. Set by
+// SetCssMediaContext before ComputeStyles runs (main.cpp re-styles a browser
+// pane whenever its width or theme changes). Defaults to a desktop width so a
+// page styled before any pane size is known doesn't briefly get its mobile
+// layout. `viewport_h` is tracked too for `min-height`/`max-height`.
+struct CssMediaContext {
+    float viewport_w = 1280.0f;
+    float viewport_h = 800.0f;
+    bool dark = false;
+};
+CssMediaContext &MediaContext() {
+    static CssMediaContext ctx;
+    return ctx;
+}
+}  // namespace
+
+void SetCssMediaContext(float viewport_w, float viewport_h, bool dark) {
+    MediaContext().viewport_w = viewport_w;
+    MediaContext().viewport_h = viewport_h;
+    MediaContext().dark = dark;
+}
+
+namespace {
+
+// Evaluates one `@media` prelude (everything after `@media`) against the
+// current MediaContext. Supports a comma-separated media-query list (matches if
+// ANY does), the `screen`/`all`/`print` media types, `and`-joined feature
+// tests, and the width/height/prefers-color-scheme features this renderer can
+// act on. Anything it doesn't recognise is treated as "matches" so an unusual
+// query never silently hides content -- the pre-existing behaviour was to apply
+// every @media body unconditionally, so "unknown => apply" stays the safe side.
+bool EvalMediaQuery(const std::string &prelude) {
+    const CssMediaContext &mc = MediaContext();
+    auto feature_value_px = [](const std::string &q, const std::string &name, double &out) -> bool {
+        size_t p = q.find(name);
+        if (p == std::string::npos) return false;
+        size_t colon = q.find(':', p);
+        if (colon == std::string::npos) return false;
+        out = std::strtod(q.c_str() + colon + 1, nullptr);
+        return true;
+    };
+    // Split on commas: a media-query list is a logical OR.
+    size_t start = 0;
+    while (start <= prelude.size()) {
+        size_t comma = prelude.find(',', start);
+        std::string q = ToLower(prelude.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+        start = comma == std::string::npos ? prelude.size() + 1 : comma + 1;
+        if (q.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+        bool ok = true;
+        if (q.find("print") != std::string::npos && q.find("screen") == std::string::npos) ok = false;  // screen-only renderer
+        double v = 0.0;
+        if (ok && feature_value_px(q, "min-width", v) && static_cast<double>(mc.viewport_w) < v) ok = false;
+        if (ok && feature_value_px(q, "max-width", v) && static_cast<double>(mc.viewport_w) > v) ok = false;
+        if (ok && feature_value_px(q, "min-height", v) && static_cast<double>(mc.viewport_h) < v) ok = false;
+        if (ok && feature_value_px(q, "max-height", v) && static_cast<double>(mc.viewport_h) > v) ok = false;
+        if (ok && q.find("prefers-color-scheme") != std::string::npos) {
+            bool wants_dark = q.find("dark") != std::string::npos;
+            if (wants_dark != mc.dark) ok = false;
+        }
+        if (ok) return true;  // this query in the OR-list matched
+    }
+    return false;
 }
 
 /**
@@ -1287,12 +1425,14 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
  * Brace-aware, unlike a flat find('{')/find('}') scan: it matches each
  * block's braces so a nested block (a `@media`/`@supports` wrapping other
  * rules, `@keyframes` with per-stop blocks) can't throw off the rules that
- * follow it. `@media`/`@supports`/`@container`/`@layer` bodies are parsed as
- * if their inner rules were top-level -- the condition is assumed to hold, a
- * deliberate simplification for a preview renderer with no viewport/feature
- * queries; every other at-rule (`@keyframes`/`@font-face`/`@page`/`@import`/
- * `@charset`) is skipped whole (its declarations aren't ones this renderer
- * applies, and skipping the block keeps the brace matching aligned).
+ * follow it. A `@media` body is included only when EvalMediaQuery says its
+ * condition holds for the current viewport (SetCssMediaContext) -- so a page's
+ * mobile `max-width` rules don't fire on a wide pane, nor its desktop
+ * `min-width` rules on a narrow one. `@supports`/`@container`/`@layer` bodies
+ * are still parsed as if top-level (their conditions are assumed to hold);
+ * every other at-rule (`@keyframes`/`@font-face`/`@page`/`@import`/`@charset`)
+ * is skipped whole (its declarations aren't ones this renderer applies, and
+ * skipping the block keeps the brace matching aligned).
  */
 void CollectCssRules(const std::string &css, std::vector<CssRule> &rules) {
     size_t i = 0, len = css.size();
@@ -1318,9 +1458,15 @@ void CollectCssRules(const std::string &css, std::vector<CssRule> &rules) {
         std::string body = css.substr(brace + 1, body_len);
         if (!head.empty() && head[0] == '@') {
             std::string keyword = ToLower(head.substr(1, head.find_first_of(" \t\r\n({", 1) - 1));
-            if (keyword == "media" || keyword == "supports" || keyword == "container" || keyword == "layer" ||
-                keyword == "document" || keyword == "scope")
+            if (keyword == "media") {
+                // The query is everything after `@media` up to the `{`.
+                size_t after = head.find_first_of(" \t(", 1);
+                std::string media_query = after == std::string::npos ? std::string() : head.substr(after);
+                if (EvalMediaQuery(media_query)) CollectCssRules(body, rules);
+            } else if (keyword == "supports" || keyword == "container" || keyword == "layer" ||
+                       keyword == "document" || keyword == "scope") {
                 CollectCssRules(body, rules);
+            }
             // else: keyframes/font-face/page/... -- skipped whole.
         } else {
             auto decls = ParseDeclarations(body);
@@ -1592,7 +1738,7 @@ void ComputeStyles(HtmlDoc &doc) {
 std::vector<DomNode *> QuerySelectorAll(DomNode *root, const std::string &selector) {
     ParsedSelector parsed = ParseSelector(ToLower(selector));
     std::vector<DomNode *> matches;
-    if (root && parsed.valid) CollectSelectorMatches(root, parsed, matches);
+    if (root && parsed.valid) CollectSelectorMatches(root, root, parsed, matches);
     return matches;
 }
 

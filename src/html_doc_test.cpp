@@ -81,6 +81,49 @@ int main() {
     doc.scripts = {"document.querySelector('#more').open = false;"};
     RunScripts(doc, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
     CHECK(!more->details_open);
+    // element.querySelector(':scope > ...') is rooted at the element: it matches
+    // only its own direct-child chain, NOT a matching descendant deeper in the
+    // subtree. (The nav-menu regression: `:scope` used to match any element, so
+    // `:scope > .nav-row > a` leaked into nested lists and returned the wrong
+    // node.) Here #outer has its own .nav-row>a plus a nested one; the scoped
+    // query must see 1, the plain descendant query 2.
+    HtmlDoc scope_doc;
+    ParseHtml("<ul><li id=\"outer\"><div class=\"nav-row\"><a>OUTER</a></div>"
+              "<ul><li><div class=\"nav-row\"><a>INNER</a></div></li></ul></li></ul>"
+              "<script>var o=document.getElementById('outer');"
+              "document.title=o.querySelectorAll(':scope > .nav-row > a').length+':'"
+              "+o.querySelectorAll('.nav-row > a').length+':'"
+              "+o.querySelector(':scope > .nav-row > a').textContent;</script>",
+              scope_doc);
+    RunScripts(scope_doc, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
+    CHECK(scope_doc.title == "1:2:OUTER");
+    // CSS transform parsing + reactive re-cascade on a class toggle -- the
+    // off-canvas drawer idiom: hidden by translateX(-100%), revealed when <body>
+    // gains .nav-open. Verifies (a) transform parses to a Percent length, (b) a
+    // scripted classList change flags a restyle (TakeHtmlStyleDirty), and (c)
+    // after re-cascading, the drawer's transform swaps to translateX(0).
+    HtmlDoc drawer;
+    ParseHtml("<style>#d{position:fixed;transform:translateX(-100%)} body.nav-open #d{transform:translateX(0)}</style>"
+              "<div id=\"d\">drawer</div>",
+              drawer);
+    DomNode *d = FindById(drawer.root.get(), "d");
+    CHECK(d && d->style.has_transform && d->style.transform_x.set);
+    CHECK(d->style.transform_x.value == -100.0f && d->style.transform_x.unit == CssLength::Unit::Percent);
+    (void)TakeHtmlStyleDirty();  // clear any state from parse/prior tests
+    drawer.scripts = {"document.body.classList.add('nav-open');"};
+    RunScripts(drawer, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
+    CHECK(TakeHtmlStyleDirty());  // the class mutation flagged a restyle...
+    ComputeStyles(drawer);       // ...which the host answers by re-cascading
+    CHECK(d->style.has_transform && d->style.transform_x.value == 0.0f);
+    // EventSource is stubbed (SSE unsupported) rather than undefined, so a page's
+    // live-reload client constructs + uses it without a ReferenceError killing the
+    // rest of its <script>. If it threw, RunScripts' error hook would abort below.
+    HtmlDoc sse;
+    ParseHtml("<script>var es = new EventSource('/events'); es.addEventListener('message', function(){}); es.close();"
+              " document.title = 'sse:' + (es.url) + ':' + es.readyState;</script>",
+              sse);
+    RunScripts(sse, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
+    CHECK(sse.title == "sse:/events:2");  // url echoed; close() set readyState=CLOSED(2)
     HtmlDoc document_roots;
     ParseHtml("<html><head><title>roots</title></head><body id=\"body\">body</body></html><script>document.title = document.documentElement.tagName + document.head.tagName + document.body.tagName;</script>", document_roots);
     RunScripts(document_roots, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });

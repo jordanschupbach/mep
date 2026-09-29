@@ -5593,6 +5593,11 @@ void Editor::WheelScrollHtml(float dx, float dy) {
         sess.zoom = std::clamp(sess.zoom * std::pow(kWheelZoomStepPerNotch, dy), 0.3f, 3.0f);
         return;
     }
+    // A wheel over a scrollable fixed panel (a nav sidebar) scrolls the panel,
+    // not the page -- exactly like a browser. The panel rects come from the
+    // previous frame's DrawPane (a frame's lag is imperceptible).
+    gfx::Vector2 mouse = gfx::GetMousePosition();
+    if (ScrollHtmlFixedPanelAt(mouse.x, mouse.y, dy)) return;
     if (dy != 0.0f) sess.scroll_y = std::max(0.0f, sess.scroll_y + (-dy * kWheelPixelsPerNotch));
 }
 
@@ -10908,6 +10913,47 @@ bool Editor::IsHtmlBuffer(int buffer_id) const { return htmldocs_.find(buffer_id
 const HtmlSession *Editor::GetHtml(int buffer_id) const {
     auto it = htmldocs_.find(buffer_id);
     return it == htmldocs_.end() ? nullptr : &it->second;
+}
+
+void Editor::RestyleHtmlForViewport(int buffer_id, float viewport_w, float viewport_h, bool dark) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    HtmlSession &sess = it->second;
+    // Re-cascade when the pane's size/theme changed OR a script mutated a class/
+    // style/attribute this frame (TakeHtmlStyleDirty, coalesced + cleared) -- the
+    // latter is what makes `body.classList.toggle('nav-open')` reactively apply
+    // its `.nav-open`-keyed rules (e.g. sliding the off-canvas drawer in).
+    bool dirty = TakeHtmlStyleDirty();
+    if (!dirty && sess.styled_media_w == viewport_w && sess.styled_media_dark == dark) return;
+    SetCssMediaContext(viewport_w, viewport_h, dark);
+    ComputeStyles(sess.doc);
+    sess.styled_media_w = viewport_w;
+    sess.styled_media_dark = dark;
+}
+
+void Editor::ClearHtmlFixedPanels(int buffer_id) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it != htmldocs_.end()) it->second.fixed_panels.clear();
+}
+
+void Editor::AddHtmlFixedPanel(int buffer_id, DomNode *node, float x, float y, float w, float h, float max_scroll) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end() || max_scroll <= 0.0f) return;  // only overflowing panels are scrollable
+    it->second.fixed_panels.push_back({node, x, y, w, h, max_scroll});
+}
+
+bool Editor::ScrollHtmlFixedPanelAt(float mouse_x, float mouse_y, float dy) {
+    auto it = htmldocs_.find(CurPane().buffer_id);
+    if (it == htmldocs_.end() || dy == 0.0f) return false;
+    // Later panels paint over earlier ones, so hit-test back to front.
+    const auto &panels = it->second.fixed_panels;
+    for (auto p = panels.rbegin(); p != panels.rend(); ++p) {
+        if (!p->node) continue;
+        if (mouse_x < p->x || mouse_x > p->x + p->w || mouse_y < p->y || mouse_y > p->y + p->h) continue;
+        p->node->fixed_scroll_y = std::clamp(p->node->fixed_scroll_y - dy * kWheelPixelsPerNotch, 0.0f, p->max_scroll);
+        return true;
+    }
+    return false;
 }
 
 std::vector<int> Editor::HtmlBufferIds() const {

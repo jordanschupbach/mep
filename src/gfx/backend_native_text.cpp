@@ -237,6 +237,7 @@ void NativeTextBackend::UnloadFont(gfx::Font font) {
 }
 
 void NativeTextBackend::SetTextureFilter(gfx::Texture2D texture, gfx::TextureFilter filter) {
+    impl_->renderer2d->FlushBatch();  // (a pending draw with this texture keeps its old filter)
     gl::BindTexture(gl::GL_TEXTURE_2D, texture.id);
     gl::GLint f = filter == gfx::TextureFilter::Bilinear ? static_cast<gl::GLint>(gl::GL_LINEAR)
                                                           : static_cast<gl::GLint>(gl::GL_NEAREST);

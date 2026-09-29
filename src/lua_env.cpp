@@ -3006,22 +3006,39 @@ int l_mepml_export_html(lua_State *L) {
     return 1;
 }
 
-// mep.mepml_export(path) -> true | nil, err: exports the current buffer
+// mep.mepml_export(path [, 'beamer']) -> true | nil, err: exports the current buffer
 // (imports expanded) to the format `path`'s extension names -- html, md,
 // org, rtf, docx, odt, tex, txt, pptx or odp (mepml_convert.h); a
 // presentation's html and tex are its slideshow and Beamer deck. Images resolve
 // against the buffer's own directory. PDF is the .tex compiled by the
-// caller (kBuiltinMepml runs tectonic without blocking the editor).
+// caller (kBuiltinMepml runs tectonic without blocking the editor). With
+// 'beamer', `path` is a .tex and gets the Beamer deck whatever the Type.
 /**
- * @brief Implements mep.mepml_export(path): writes the current mepml buffer in the format named by the path's extension.
+ * @brief Implements mep.mepml_export(path [, 'beamer']): writes the current mepml buffer in the format named by the path's extension.
  * @param L Lua state; arg 1 is the output path.
  * @return Number of values pushed (1 on success: true; 2 on failure: nil, message).
  */
 int l_mepml_export(lua_State *L) {
     const std::string path = luaL_checkstring(L, 1);
+    const bool beamer = lua_isstring(L, 2) && std::string(lua_tostring(L, 2)) == "beamer";
     const mepml::Format format = mepml::FormatFromPath(path);
     std::string err;
-    if (format == mepml::Format::Mepml || !mepml::CanExport(format) || format == mepml::Format::Pdf) {
+    if (beamer && format != mepml::Format::Latex) {
+        err = "a Beamer export is written as .tex, not " + path;
+    } else if (beamer) {
+        Editor *ed = GetEditor(L);
+        const std::string file = ed->MepmlCurrentFile();
+        const std::string base = file.empty() ? std::string(".") : std::filesystem::path(file).parent_path().string();
+        const std::string tex = mepml::ToBeamer(ed->MepmlParseCurrent(true), base, &err);
+        if (!tex.empty()) {
+            std::ofstream out(path, std::ios::binary);
+            if (out << tex) {
+                lua_pushboolean(L, 1);
+                return 1;
+            }
+            err = "cannot write " + path;
+        }
+    } else if (format == mepml::Format::Mepml || !mepml::CanExport(format) || format == mepml::Format::Pdf) {
         err = "cannot export to " + path + " (html, md, org, rtf, docx, odt, tex, txt, pptx, odp)";
     } else {
         Editor *ed = GetEditor(L);
@@ -9996,6 +10013,21 @@ int l_pdf_goto_page(lua_State *L) {
     return 0;
 }
 
+// mep.pdf_fit_page([buffer_id]): fits the whole page in each pane showing
+// the PDF (default: the current buffer), the `=` key's zoom -- at once, or
+// for a pane not drawn yet, once it knows its size. The Run button uses it
+// to show a freshly built slide deck a whole slide at a time.
+/**
+ * @brief Implements mep.pdf_fit_page([buffer_id]): fits the page to its pane(s) (Editor::RequestPdfFitPage).
+ * @param L Lua state; optional arg 1 is the buffer id.
+ * @return 0.
+ */
+int l_pdf_fit_page(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->RequestPdfFitPage(lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+
 // mep.pdf_current_page(buffer_id) -> 1-indexed current page, or 0 if
 // buffer_id isn't a PDF pane. Lets the Structure sidebar highlight the
 // bookmark closest to the page currently on screen, the PDF-outline
@@ -10245,6 +10277,194 @@ int l_sheet_next(lua_State *L) {
 }
 int l_sheet_prev(lua_State *L) {
     GetEditor(L)->PrevSheet();
+    return 0;
+}
+// --- The presentation editor (src/editor_pres.cpp) -----------------------------
+// mep.pres_* act on the focused pane's deck (a .pptx/.odp buffer); slide
+// and shape numbers are 1-based, lengths EMU (914400 to the inch).
+PresSession *LuaPres(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    PresSession *s = ed->GetPresMutable(ed->CurrentBufferId());
+    if (!s) luaL_error(L, "not a presentation buffer (open a .pptx or .odp, or :PresNew)");
+    return s;
+}
+const char *PresKindName(pres::ShapeKind k) {
+    switch (k) {
+        case pres::ShapeKind::Text: return "text";
+        case pres::ShapeKind::Rect: return "rect";
+        case pres::ShapeKind::RoundRect: return "roundrect";
+        case pres::ShapeKind::Ellipse: return "ellipse";
+        case pres::ShapeKind::Line: return "line";
+        case pres::ShapeKind::Image: return "image";
+    }
+    return "shape";
+}
+// mep.pres_info() -> {slide, slides, selected, mode, width, height, modified,
+// caret_para, caret_off, shapes = {{kind, name, x, y, w, h, text, fill,
+// line, font_pt, title, bold}}} for the current slide, or nil.
+int l_pres_info(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    PresSession *s = ed->GetPresMutable(ed->CurrentBufferId());
+    if (!s) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const pres::Slide *slide = ed->PresCurrentSlide(*s);
+    lua_newtable(L);
+    auto set_int = [&](const char *k, long v) {
+        lua_pushinteger(L, static_cast<lua_Integer>(v));
+        lua_setfield(L, -2, k);
+    };
+    set_int("slide", s->slide + 1);
+    set_int("slides", static_cast<long>(s->doc.slides.size()));
+    set_int("selected", s->selected + 1);
+    set_int("width", s->doc.width);
+    set_int("height", s->doc.height);
+    set_int("caret_para", s->caret_para + 1);
+    set_int("caret_off", s->caret_off);
+    lua_pushstring(L, ed->CurrentMode() == Mode::PresInsert ? "insert" : "normal");
+    lua_setfield(L, -2, "mode");
+    lua_pushboolean(L, s->modified);
+    lua_setfield(L, -2, "modified");
+    lua_pushstring(L, slide->background.c_str());
+    lua_setfield(L, -2, "background");
+    lua_newtable(L);
+    for (size_t i = 0; i < slide->shapes.size(); ++i) {
+        const pres::Shape &sh = slide->shapes[i];
+        lua_newtable(L);
+        lua_pushstring(L, PresKindName(sh.kind));
+        lua_setfield(L, -2, "kind");
+        lua_pushstring(L, sh.name.c_str());
+        lua_setfield(L, -2, "name");
+        set_int("x", sh.x);
+        set_int("y", sh.y);
+        set_int("w", sh.w);
+        set_int("h", sh.h);
+        lua_pushstring(L, sh.PlainText().c_str());
+        lua_setfield(L, -2, "text");
+        lua_pushstring(L, sh.fill.c_str());
+        lua_setfield(L, -2, "fill");
+        lua_pushstring(L, sh.line.c_str());
+        lua_setfield(L, -2, "line");
+        lua_pushstring(L, sh.text_color.c_str());
+        lua_setfield(L, -2, "text_color");
+        lua_pushnumber(L, sh.font_pt);
+        lua_setfield(L, -2, "font_pt");
+        lua_pushboolean(L, sh.is_title);
+        lua_setfield(L, -2, "title");
+        bool bold = !sh.paras.empty(), any = false;
+        for (const pres::Paragraph &p : sh.paras)
+            for (const pres::TextRun &r : p.runs) {
+                bold = bold && r.bold;
+                any = true;
+            }
+        lua_pushboolean(L, bold && any);
+        lua_setfield(L, -2, "bold");
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i) + 1);
+    }
+    lua_setfield(L, -2, "shapes");
+    return 1;
+}
+int l_pres_new(lua_State *L) {
+    lua_pushinteger(L, GetEditor(L)->NewPresentationBuffer(luaL_optstring(L, 1, "")));
+    return 1;
+}
+int l_pres_goto(lua_State *L) {
+    GetEditor(L)->PresGotoSlide(*LuaPres(L), static_cast<int>(luaL_checkinteger(L, 1)) - 1);
+    return 0;
+}
+int l_pres_select(lua_State *L) {
+    GetEditor(L)->PresSelect(*LuaPres(L), static_cast<int>(luaL_optinteger(L, 1, 0)) - 1);
+    return 0;
+}
+int l_pres_add_slide(lua_State *L) {
+    GetEditor(L)->PresAddSlide(*LuaPres(L), lua_toboolean(L, 1) != 0);
+    return 0;
+}
+int l_pres_delete_slide(lua_State *L) {
+    GetEditor(L)->PresDeleteSlide(*LuaPres(L));
+    return 0;
+}
+// mep.pres_add_shape("text"|"rect"|"roundrect"|"ellipse"|"line") -- selected.
+int l_pres_add_shape(lua_State *L) {
+    const std::string k = luaL_checkstring(L, 1);
+    pres::ShapeKind kind = pres::ShapeKind::Rect;
+    if (k == "text") kind = pres::ShapeKind::Text;
+    else if (k == "ellipse" || k == "oval") kind = pres::ShapeKind::Ellipse;
+    else if (k == "roundrect") kind = pres::ShapeKind::RoundRect;
+    else if (k == "line") kind = pres::ShapeKind::Line;
+    Editor *ed = GetEditor(L);
+    PresSession &s = *LuaPres(L);
+    ed->PresAddShape(s, kind);
+    // (A text box is added for typing into; from Lua, stay in PresNormal.)
+    ed->PresEndText(s);
+    lua_pushinteger(L, s.selected + 1);
+    return 1;
+}
+int l_pres_delete_shape(lua_State *L) {
+    GetEditor(L)->PresDeleteShape(*LuaPres(L));
+    return 0;
+}
+int l_pres_set_text(lua_State *L) {
+    GetEditor(L)->PresSetShapeText(*LuaPres(L), luaL_checkstring(L, 1));
+    return 0;
+}
+int l_pres_set_geometry(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    PresSession &s = *LuaPres(L);
+    pres::Shape *sh = ed->PresSelectedShape(s);
+    if (!sh) return luaL_error(L, "no shape selected");
+    ed->PresPushUndo(s);
+    sh->x = static_cast<long>(luaL_checkinteger(L, 1));
+    sh->y = static_cast<long>(luaL_checkinteger(L, 2));
+    sh->w = static_cast<long>(luaL_checkinteger(L, 3));
+    sh->h = static_cast<long>(luaL_checkinteger(L, 4));
+    ed->PresMarkModified(s);
+    return 0;
+}
+// mep.pres_style("b"|"i"|"u"|"s")
+int l_pres_style(lua_State *L) {
+    GetEditor(L)->PresToggleStyle(*LuaPres(L), luaL_checkstring(L, 1)[0]);
+    return 0;
+}
+int l_pres_font_size(lua_State *L) {
+    GetEditor(L)->PresStepFontSize(*LuaPres(L), luaL_checknumber(L, 1));
+    return 0;
+}
+int l_pres_align(lua_State *L) {
+    const std::string a = luaL_checkstring(L, 1);
+    GetEditor(L)->PresSetAlign(*LuaPres(L), a == "center" ? pres::Align::Center : a == "right" ? pres::Align::Right : pres::Align::Left);
+    return 0;
+}
+// mep.pres_color("fill"|"text"|"outline"|"background", "#rrggbb" or "")
+int l_pres_color(lua_State *L) {
+    const std::string which = luaL_checkstring(L, 1);
+    const std::string rgb = pres::NormalizeColor(luaL_optstring(L, 2, ""));
+    Editor *ed = GetEditor(L);
+    PresSession &s = *LuaPres(L);
+    if (which == "background") ed->PresSetBackground(s, rgb);
+    else ed->PresSetColor(s, which == "fill" ? 1 : which == "outline" ? 3 : 2, rgb);
+    return 0;
+}
+// mep.pres_math(tex) -- :PresMath: inline maths at the caret while typing,
+// else the selected equation's TeX, or a new equation.
+int l_pres_math(lua_State *L) {
+    GetEditor(L)->PresMath(*LuaPres(L), luaL_checkstring(L, 1));
+    return 0;
+}
+// mep.pres_theme([on]) -> on: theme colours (Ctrl-R) set, or read.
+int l_pres_theme(lua_State *L) {
+    PresSession *s = LuaPres(L);
+    if (!lua_isnoneornil(L, 1)) s->theme_colors = lua_toboolean(L, 1) != 0;
+    lua_pushboolean(L, s->theme_colors);
+    return 1;
+}
+int l_pres_undo(lua_State *L) {
+    GetEditor(L)->PresUndo(*LuaPres(L));
+    return 0;
+}
+int l_pres_redo(lua_State *L) {
+    GetEditor(L)->PresRedo(*LuaPres(L));
     return 0;
 }
 // mep.on_frame(fn): fn runs once per frame -- the polling-based building
@@ -12581,6 +12801,24 @@ const luaL_Reg kMepFuncs[] = {
     {"menubar_tap_toggle_set", l_menubar_tap_toggle_set},
     {"menubar_tap_toggle_enabled", l_menubar_tap_toggle_enabled},
     {"sheet_next", l_sheet_next},
+    {"pres_info", l_pres_info},
+    {"pres_new", l_pres_new},
+    {"pres_goto", l_pres_goto},
+    {"pres_select", l_pres_select},
+    {"pres_add_slide", l_pres_add_slide},
+    {"pres_delete_slide", l_pres_delete_slide},
+    {"pres_add_shape", l_pres_add_shape},
+    {"pres_delete_shape", l_pres_delete_shape},
+    {"pres_set_text", l_pres_set_text},
+    {"pres_set_geometry", l_pres_set_geometry},
+    {"pres_style", l_pres_style},
+    {"pres_font_size", l_pres_font_size},
+    {"pres_align", l_pres_align},
+    {"pres_color", l_pres_color},
+    {"pres_undo", l_pres_undo},
+    {"pres_math", l_pres_math},
+    {"pres_theme", l_pres_theme},
+    {"pres_redo", l_pres_redo},
     {"sheet_prev", l_sheet_prev},
     {"on_frame", l_on_frame},
     {"buffer_change_epoch", l_buffer_change_epoch},
@@ -12652,6 +12890,7 @@ const luaL_Reg kMepFuncs[] = {
     {"is_pdf_buffer", l_is_pdf_buffer},
     {"pdf_outline", l_pdf_outline},
     {"pdf_goto_page", l_pdf_goto_page},
+    {"pdf_fit_page", l_pdf_fit_page},
     {"pdf_current_page", l_pdf_current_page},
     {"office_reload", l_office_reload},
     {"doc_export_html_to_latex", l_doc_export_html_to_latex},

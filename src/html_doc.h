@@ -114,6 +114,14 @@ enum class CssPosition { Static, Relative, Absolute, Fixed, Sticky };
 // heading/list bookkeeping below.
 struct ComputedStyle {
     bool display_none = false;
+    // Laid out (takes its space) but not painted: `visibility: hidden`
+    // inherits and a descendant's `visibility: visible` shows it again;
+    // `opacity: 0` (opacity_zero, this element's own) hides the whole
+    // subtree, which nothing below can undo (faded).
+    bool visibility_hidden = false;
+    bool opacity_zero = false;
+    bool faded = false;
+    bool Invisible() const { return visibility_hidden || faded; }
     bool block = true;  // false = inline (flows with surrounding text)
     bool bold = false;
     bool italic = false;

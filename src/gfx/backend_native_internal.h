@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 // Internal wiring shared by gfx/backend_native.cpp and its
 // renderer2d/text implementation files (backend_native_renderer2d.cpp,
 // backend_native_text.cpp) -- not part of gfx/'s public API, just split
@@ -21,6 +23,11 @@ namespace gfx {
 struct NativeContext;
 void NativeContextFramebufferSize(NativeContext *ctx, int *w, int *h);
 void NativeContextSwapBuffers(NativeContext *ctx);
+// The 2D renderer's pending batch drawn now: whatever else issues GL
+// (the 3D renderer, a texture's filter changing) calls this first, so
+// draws reach the screen in the order they were made.
+void NativeContextFlush2D(NativeContext *ctx);
+void NativeContextSetFlush2D(NativeContext *ctx, std::function<void()> fn);
 
 class NativeAudioBackend : public IAudioBackend {
 public:
@@ -54,6 +61,8 @@ public:
     NativeRenderer2DBackend &operator=(const NativeRenderer2DBackend &) = delete;
 
     void BeginDrawing() override;
+    // Draws the pending batch now (see this class's .cpp).
+    void FlushBatch();
     void EndDrawing() override;
     void ClearBackground(Color color) override;
     void BeginScissorMode(int x, int y, int width, int height) override;

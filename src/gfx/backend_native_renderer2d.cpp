@@ -10,18 +10,22 @@
 // so sampling it through this ordinary "texture.rgba * tint" shader
 // already produces correctly tinted, anti-aliased glyphs.
 //
-// Deliberately immediate, not batched: every Draw* call is its own
-// glBufferData+glDrawArrays. Simpler and more obviously correct than a
-// batching system, at the cost of a much higher draw-call count than
-// raylib's own internal batcher -- correctness first, per PLAN's own
-// framing of this as "the most mechanically well-understood" chunk of
-// Stage B. Worth revisiting once this backend is actually swapped in and
-// real editor responsiveness can be measured (DrawLineFast alone issues
-// one glyph draw per on-screen character).
+// Batched: triangles go into one vertex batch and reach GL as a single
+// draw per run of the same texture (Impl::Flush). It used to be one
+// glBufferData+glDrawArrays per Draw* call -- a glyph each -- which put
+// ~2000 draws and 14000 GL calls into every frame of a screen of text;
+// on a real driver that kept Mesa's glthread and the driver's submission
+// thread busy (1.5 cores between them at 165 Hz) for an idle editor.
+// Solid fills carry a sentinel UV the shader reads as "untextured", so a
+// rectangle between two runs of text does not break their batch. The
+// batch is drawn before anything else touches GL state (scissor, render
+// target, clear, readback, a texture's contents, the 3D renderer: see
+// FlushBatch's callers and NativeContextFlush2D).
 
 #include "gfx/backend_native_internal.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -134,7 +138,8 @@ in vec4 vColor;
 uniform sampler2D uTex;
 out vec4 FragColor;
 void main() {
-    FragColor = texture(uTex, vUV) * vColor;
+    // A solid fill's sentinel UV (-2, -2): no texture, just its colour.
+    FragColor = vUV.x < -1.0 ? vColor : texture(uTex, vUV) * vColor;
 }
 )GLSL";
 
@@ -172,9 +177,47 @@ struct NativeRenderer2DBackend::Impl {
         std::memcpy(proj, ortho, sizeof(proj));
     }
 
+    // MEP_GFX_STATS=1: frames, draw calls and vertices a second, on stderr.
+    long stat_draws = 0, stat_verts = 0, stat_frames = 0;
+    double stat_since = -1.0;
+
+    // The pending batch: triangles all drawn with `batch_tex` (0 while it
+    // holds only solid fills, which any texture's batch can take).
+    std::vector<Vtx> batch;
+    gl::GLuint batch_tex = 0;
+
     void Flush(gl::GLuint program, gl::GLint proj_loc, gl::GLuint texture, const Vtx *verts, int count,
                gl::GLenum mode) {
         if (count <= 0) return;
+        // MEP_GFX_NOBATCH=1: one draw per call, as before batching (for
+        // comparing the two pixel for pixel).
+        static const bool kNoBatch = std::getenv("MEP_GFX_NOBATCH") != nullptr;
+        if (mode == gl::GL_TRIANGLES && program == solid_program && !kNoBatch) {
+            const bool solid = texture == white_texture;
+            if (!solid && batch_tex != 0 && batch_tex != texture) FlushBatch();
+            if (!solid) batch_tex = texture;
+            const size_t at = batch.size();
+            batch.insert(batch.end(), verts, verts + count);
+            if (solid)
+                for (size_t i = at; i < batch.size(); ++i) batch[i].u = batch[i].v = -2.0f;
+            if (batch.size() >= 96000) FlushBatch();
+            return;
+        }
+        FlushBatch();
+        Draw(program, proj_loc, texture, verts, count, mode);
+    }
+
+    void FlushBatch() {
+        if (batch.empty()) return;
+        Draw(solid_program, solid_proj_loc, batch_tex != 0 ? batch_tex : white_texture, batch.data(), static_cast<int>(batch.size()),
+             gl::GL_TRIANGLES);
+        batch.clear();
+        batch_tex = 0;
+    }
+
+    void Draw(gl::GLuint program, gl::GLint proj_loc, gl::GLuint texture, const Vtx *verts, int count, gl::GLenum mode) {
+        ++stat_draws;
+        stat_verts += count;
         gl::UseProgram(program);
         gl::UniformMatrix4fv(proj_loc, 1, gl::GL_FALSE_, proj);
         gl::ActiveTexture(gl::GL_TEXTURE0);
@@ -208,6 +251,7 @@ NativeRenderer2DBackend::~NativeRenderer2DBackend() {
 // than in the constructor, which runs before InitWindow.
 void NativeRenderer2DBackend::EnsureInit() {
     if (impl_->solid_program != 0) return;
+    NativeContextSetFlush2D(impl_->ctx, [this] { impl_->FlushBatch(); });
     impl_->solid_program = gl::BuildProgram(kSolidVertexSrc, kSolidFragmentSrc);
     impl_->solid_proj_loc = gl::GetUniformLocation(impl_->solid_program, "uProj");
 
@@ -236,17 +280,41 @@ void NativeRenderer2DBackend::EnsureInit() {
     gl::BlendFunc(gl::GL_SRC_ALPHA, gl::GL_ONE_MINUS_SRC_ALPHA);
 }
 
+void NativeRenderer2DBackend::FlushBatch() { impl_->FlushBatch(); }
+
 void NativeRenderer2DBackend::BeginDrawing() {
     EnsureInit();
+    impl_->FlushBatch();
     int w = 0, h = 0;
     NativeContextFramebufferSize(impl_->ctx, &w, &h);
     gl::Viewport(0, 0, w, h);
     impl_->UpdateProjection(w, h);
 }
 
-void NativeRenderer2DBackend::EndDrawing() { NativeContextSwapBuffers(impl_->ctx); }
+void NativeRenderer2DBackend::EndDrawing() {
+    static const bool kStats = std::getenv("MEP_GFX_STATS") != nullptr;
+    if (kStats) {
+        ++impl_->stat_frames;
+        const double now = static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                   std::chrono::steady_clock::now().time_since_epoch())
+                                                   .count()) /
+                           1000.0;
+        if (impl_->stat_since < 0) impl_->stat_since = now;
+        if (now - impl_->stat_since >= 2.0) {
+            const double dt = now - impl_->stat_since;
+            std::fprintf(stderr, "[gfx] %.0f fps, %.0f draws/frame, %.0f verts/frame\n", static_cast<double>(impl_->stat_frames) / dt,
+                         static_cast<double>(impl_->stat_draws) / static_cast<double>(std::max(1L, impl_->stat_frames)),
+                         static_cast<double>(impl_->stat_verts) / static_cast<double>(std::max(1L, impl_->stat_frames)));
+            impl_->stat_frames = impl_->stat_draws = impl_->stat_verts = 0;
+            impl_->stat_since = now;
+        }
+    }
+    impl_->FlushBatch();
+    NativeContextSwapBuffers(impl_->ctx);
+}
 
 void NativeRenderer2DBackend::ClearBackground(gfx::Color color) {
+    impl_->FlushBatch();
     gl::ClearColor(static_cast<float>(color.r) / 255.0f, static_cast<float>(color.g) / 255.0f,
                    static_cast<float>(color.b) / 255.0f, static_cast<float>(color.a) / 255.0f);
     // Depth too, not just color -- matches raylib's own ClearBackground
@@ -258,13 +326,17 @@ void NativeRenderer2DBackend::ClearBackground(gfx::Color color) {
 }
 
 void NativeRenderer2DBackend::BeginScissorMode(int x, int y, int width, int height) {
+    impl_->FlushBatch();
     gl::Enable(gl::GL_SCISSOR_TEST);
     // GL's scissor origin is bottom-left; gfx::'s is top-left (see
     // Impl::UpdateProjection's own Y-flip) -- flip y the same way here.
     gl::Scissor(x, impl_->target_height - y - height, width, height);
 }
 
-void NativeRenderer2DBackend::EndScissorMode() { gl::Disable(gl::GL_SCISSOR_TEST); }
+void NativeRenderer2DBackend::EndScissorMode() {
+    impl_->FlushBatch();
+    gl::Disable(gl::GL_SCISSOR_TEST);
+}
 
 void NativeRenderer2DBackend::DrawRectangle(int x, int y, int width, int height, gfx::Color color) {
     std::vector<Vtx> v;
@@ -572,12 +644,16 @@ gfx::Texture2D NativeRenderer2DBackend::LoadTextureFromImage(gfx::Image image) {
 }
 
 void NativeRenderer2DBackend::UpdateTexture(gfx::Texture2D texture, const void *pixels) {
+    impl_->FlushBatch();
     gl::BindTexture(gl::GL_TEXTURE_2D, texture.id);
     gl::TexSubImage2D(gl::GL_TEXTURE_2D, 0, 0, 0, texture.width, texture.height, gl::GL_RGBA, gl::GL_UNSIGNED_BYTE,
                        pixels);
 }
 
-void NativeRenderer2DBackend::UnloadTexture(gfx::Texture2D texture) { gl::DeleteTextures(1, &texture.id); }
+void NativeRenderer2DBackend::UnloadTexture(gfx::Texture2D texture) {
+    impl_->FlushBatch();
+    gl::DeleteTextures(1, &texture.id);
+}
 
 void NativeRenderer2DBackend::DrawTexturePro(gfx::Texture2D texture, gfx::Rectangle source, gfx::Rectangle dest,
                                               gfx::Vector2 origin, float rotation, gfx::Color tint) {
@@ -661,6 +737,7 @@ gfx::RenderTexture2D NativeRenderer2DBackend::LoadRenderTexture(int width, int h
 }
 
 void NativeRenderer2DBackend::UnloadRenderTexture(gfx::RenderTexture2D target) {
+    impl_->FlushBatch();
     for (size_t i = 0; i < impl_->targets.size(); i++) {
         if (impl_->targets[i].fbo == target.id) {
             gl::DeleteFramebuffers(1, &impl_->targets[i].fbo);
@@ -673,6 +750,7 @@ void NativeRenderer2DBackend::UnloadRenderTexture(gfx::RenderTexture2D target) {
 }
 
 void NativeRenderer2DBackend::BeginTextureMode(gfx::RenderTexture2D target) {
+    impl_->FlushBatch();
     gl::BindFramebuffer(gl::GL_FRAMEBUFFER, target.id);
     impl_->current_fbo = target.id;
     gl::Viewport(0, 0, target.texture.width, target.texture.height);
@@ -680,6 +758,7 @@ void NativeRenderer2DBackend::BeginTextureMode(gfx::RenderTexture2D target) {
 }
 
 void NativeRenderer2DBackend::EndTextureMode() {
+    impl_->FlushBatch();
     gl::BindFramebuffer(gl::GL_FRAMEBUFFER, 0);
     impl_->current_fbo = 0;
     int w = 0, h = 0;
@@ -689,6 +768,7 @@ void NativeRenderer2DBackend::EndTextureMode() {
 }
 
 gfx::Image NativeRenderer2DBackend::LoadImageFromTexture(gfx::Texture2D texture) {
+    impl_->FlushBatch();
     // glGetTexImage doesn't exist on OpenGL ES/WebGL, so texture readback
     // has to go through a framebuffer + glReadPixels (which does) instead
     // -- attach the texture to a throwaway FBO, read it, done. Works
@@ -729,10 +809,14 @@ unsigned char *ReadPixelsFlipped(int width, int height) {
 }  // namespace
 
 gfx::Image NativeRenderer2DBackend::LoadImageFromScreen() {
+    impl_->FlushBatch();
     int w = impl_->target_width, h = impl_->target_height;
     return gfx::Image{ReadPixelsFlipped(w, h), w, h, 1, gfx::kPixelFormatR8G8B8A8};
 }
 
-unsigned char *NativeRenderer2DBackend::ReadScreenPixels(int width, int height) { return ReadPixelsFlipped(width, height); }
+unsigned char *NativeRenderer2DBackend::ReadScreenPixels(int width, int height) {
+    impl_->FlushBatch();
+    return ReadPixelsFlipped(width, height);
+}
 
 }  // namespace gfx

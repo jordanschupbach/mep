@@ -1023,7 +1023,9 @@ void Editor::RecomputeMepmlFolds() {
         Buf().folds.push_back({start, end, closed, "mepml"});
     };
     // Heading sections: to the line before the next heading of the same or
-    // shallower depth, trailing blank lines excluded.
+    // shallower depth, trailing blank lines excluded -- and never past the
+    // end of the slide the heading is on (its closer is the slide's).
+    const std::vector<mepml::Slide> slides = mepml::Slides(doc, n);
     std::vector<const mepml::Block *> heads;
     for (const mepml::Block &b : doc.blocks)
         if (b.kind == mepml::BlockKind::Heading) heads.push_back(&b);
@@ -1035,12 +1037,16 @@ void Editor::RecomputeMepmlFolds() {
                 break;
             }
         }
+        for (const mepml::Slide &sl : slides) {
+            if (heads[k]->line_start <= sl.line_start || heads[k]->line_start > sl.line_end) continue;
+            end = std::min(end, sl.closed ? sl.line_end - 1 : sl.line_end);
+        }
         while (end > heads[k]->line_start && Buf().lines[static_cast<size_t>(end)].find_first_not_of(" \t") == std::string::npos)
             --end;
         add(heads[k]->line_start, end);
     }
     for (const HeaderRun &run : HeaderRuns(doc)) add(run.first, run.last);
-    for (const mepml::Slide &sl : mepml::Slides(doc, n)) add(sl.line_start, sl.line_end);
+    for (const mepml::Slide &sl : slides) add(sl.line_start, sl.line_end);
     for (const mepml::Block &b : doc.blocks) {
         // \toc/\bibliography: one row of source drawn as a block of
         // generated lines -- folding it (a one-row fold, hiding no rows)
@@ -1491,6 +1497,24 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
         const size_t z = l.find_last_not_of(" \t");
         return a == std::string::npos ? std::string() : l.substr(a, z - a + 1);
     };
+    // A slide: a card round everything on it, its `\slide(` line the
+    // title bar ("Slide N" and the slide's title), its closing `)` the
+    // floor. Pushed first, so its wash and outline go down under the cards
+    // of the blocks it holds (DrawPane insets those inside it). A slide
+    // still being typed (no closer yet) keeps its rules instead: it would
+    // otherwise swallow every slide after it.
+    for (const mepml::Slide &sl : mepml::Slides(doc, n)) {
+        if (!sl.closed) continue;
+        OrgBlockCard card;
+        card.meta_row = card.begin_row = sl.line_start;
+        card.end_row = sl.line_end;
+        card.kind = "slide";
+        card.chip = "Slide " + std::to_string(sl.number);
+        card.title = sl.title;
+        card.content_cols = widest(sl.line_start, sl.line_end);
+        card.fold_row = sl.line_start;
+        cards.push_back(std::move(card));
+    }
     for (const HeaderRun &run : HeaderRuns(doc)) {
         OrgBlockCard head;
         head.meta_row = head.begin_row = run.first;
@@ -1598,6 +1622,13 @@ void Editor::MepmlFitCards() {
         }
         // A block and its results line up on one right edge.
         code.content_cols = out.content_cols = std::max(code.content_cols, out.content_cols);
+    }
+    // A slide is at least as wide as the widest card it holds.
+    for (OrgBlockCard &slide : cards) {
+        if (slide.kind != "slide") continue;
+        for (const OrgBlockCard &c : cards)
+            if (&c != &slide && c.meta_row > slide.begin_row && c.end_row >= 0 && c.end_row < slide.end_row)
+                slide.content_cols = std::max(slide.content_cols, c.content_cols);
     }
 }
 

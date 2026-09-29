@@ -7,7 +7,11 @@
 // beside a single picture -- with font sizes shrunk until the estimated
 // content fits. The two writers only turn the placed shapes into their own
 // XML. A title slide comes first when the header has a Title, Subtitle or
-// Author. Maths is shown as its TeX source, as in the Word export.
+// Author. Maths is set as each format's own: a display equation is an
+// Office equation (OMML) in the .pptx and a formula object (MathML) in the
+// .odp; inline maths is an equation in the .pptx and, since an Impress
+// text box cannot hold a formula, typeset text in the .odp. A .pptx reader
+// that does not know Office equations gets that same text (math_markup.h).
 
 #include <algorithm>
 #include <cmath>
@@ -16,12 +20,18 @@
 #include <map>
 #include <sstream>
 
+#include "math_markup.h"
 #include "mepml_convert.h"
 #include "zip_archive.h"
 
 namespace mepml {
 
 namespace {
+
+MathPictureRenderer &MathRenderer() {
+    static MathPictureRenderer renderer;
+    return renderer;
+}
 
 // --- The deck ------------------------------------------------------------------
 
@@ -30,6 +40,8 @@ struct Run {
     bool bold = false, italic = false, underline = false, strike = false, mono = false, super = false, sub = false;
     std::string color;  // RRGGBB, "" for the default
     std::string link;
+    std::string tex;  // inline maths: its TeX (`text` is its plain-text spelling)
+    bool serif = false;  // maths set as text: in a serif, as maths is
 };
 
 enum class ParaKind { Body, Bullet, Number, Heading, Code, Result, Caption, Math, Note, Callout, Title, Subtitle, Byline };
@@ -48,7 +60,11 @@ Run Plain(std::string text) {
     return r;
 }
 
-enum class ItemKind { Text, Code, Table, Image };
+// Output: a code block's results, set apart from its code (Code).
+// Formula: one paragraph whose inline maths needs two dimensions, set as a
+// formula of its own (text and maths together) in an Impress deck -- see
+// SplitFormulaParagraphs.
+enum class ItemKind { Text, Code, Output, Table, Image, Math, Formula };
 
 struct Item {
     ItemKind kind = ItemKind::Text;
@@ -58,6 +74,7 @@ struct Item {
     std::string bytes, ext, alt;  // Image
     int px_w = 0, px_h = 0;
     std::vector<Run> caption;  // Table, Image
+    std::string tex;           // Math: a display equation's TeX
 };
 
 struct DeckSlide {
@@ -204,8 +221,8 @@ struct Builder {
                     out.push_back(s);
                     break;
                 case InlineKind::Math:
-                    s.italic = true;
-                    s.text = x.text;
+                    s.tex = x.text;
+                    s.text = TexToPlainText(x.text);
                     out.push_back(s);
                     break;
                 case InlineKind::Comment: break;
@@ -283,12 +300,10 @@ struct Builder {
                 break;
             }
             case BlockKind::MathBlock: {
-                Para p{ParaKind::Math, {}};
-                Run m;
-                m.italic = true;
-                m.text = Unwrap(b.code);
-                p.runs.push_back(m);
-                TextItem(items).push_back(p);
+                Item m;
+                m.kind = ItemKind::Math;
+                m.tex = b.code;
+                items.push_back(std::move(m));
                 std::vector<Run> cap = Caption(b, label);
                 if (!cap.empty()) TextItem(items).push_back(Para{ParaKind::Caption, cap});
                 break;
@@ -296,8 +311,11 @@ struct Builder {
             case BlockKind::Code: {
                 bool show_code = true, show_results = true;
                 CodeExports(doc, b, &show_code, &show_results);
-                Item code;
+                // The code and its results: two boxes, the results under the
+                // code (DrawPane's cards, as a deck can show them).
+                Item code, output;
                 code.kind = ItemKind::Code;
+                output.kind = ItemKind::Output;
                 auto lines = [&](const std::string &text, ParaKind kind) {
                     std::istringstream ss(text);
                     std::string l;
@@ -306,7 +324,7 @@ struct Builder {
                         r.mono = true;
                         r.text = l;
                         if (kind == ParaKind::Result) r.color = "57606A";
-                        code.paras.push_back(Para{kind, {r}});
+                        (kind == ParaKind::Result ? output : code).paras.push_back(Para{kind, {r}});
                     }
                 };
                 if (show_code) lines(b.code, ParaKind::Code);
@@ -325,6 +343,7 @@ struct Builder {
                     if (!text.empty()) lines(text, ParaKind::Result);
                 }
                 if (!code.paras.empty()) items.push_back(std::move(code));
+                if (!output.paras.empty()) items.push_back(std::move(output));
                 std::vector<Run> cap = Caption(b, label);
                 for (size_t k = 0; k < figures.size(); ++k)
                     Picture(items, figures[k], b.alt, k + 1 == figures.size() ? cap : std::vector<Run>());
@@ -411,6 +430,11 @@ constexpr long kEmuIn = 914400;
 constexpr long kPageW = 12192000, kPageH = 6858000;
 constexpr long kMarginX = kEmuIn * 55 / 100;
 constexpr long kGap = kEmuIn * 12 / 100;
+// A code block's results are marked by a bar this wide down their left
+// edge, in the theme's accent1 (the editor's own output cards are set
+// apart from the code the same way: another ground, no border).
+constexpr long kOutputBarW = kEmuIn * 5 / 100;
+constexpr const char *kOutputAccent = "6B8AFD";
 
 double BasePt(ParaKind k) {
     switch (k) {
@@ -486,11 +510,204 @@ long TableHeight(const Item &t, long width, double scale) {
     return h;
 }
 
+// A display equation's type scale: the slide's, or smaller when the
+// equation would be wider than the box.
+double MathScale(const std::string &tex, long width, double scale) {
+    double wem = 0, hem = 0;
+    TexMathExtent(tex, true, &wem, &hem);
+    const double pt = BasePt(ParaKind::Math) * scale;
+    const double width_in = wem * pt / 72.0, avail = static_cast<double>(width) / kEmuIn - 0.3;
+    return width_in > avail && width_in > 0 ? scale * avail / width_in : scale;
+}
+
+long MathHeight(const std::string &tex, long width, double scale) {
+    double wem = 0, hem = 0;
+    TexMathExtent(tex, true, &wem, &hem);
+    const double pt = BasePt(ParaKind::Math) * MathScale(tex, width, scale);
+    return static_cast<long>((hem * pt + pt * 0.5) / 72.0 * kEmuIn) + kEmuIn / 10;
+}
+
+// --- A paragraph as a formula ------------------------------------------------------
+//
+// Impress text cannot hold a formula, so a paragraph whose inline maths
+// needs two dimensions (TexNeedsLayout) becomes one formula object: its
+// words and its maths set together by LibreOffice Math, from a StarMath
+// annotation (the only way to give a formula's text the body's face).
+// Formulas do not wrap, so the lines are broken here, from the real
+// advance widths of that face; and since Impress stretches a formula to
+// its frame, the frame is sized from the same measurements.
+
+// Liberation Sans advance widths, in thousandths of an em, for U+0020..U+007E
+// then U+00A0..U+00FF (regular, bold, italic, bold italic) -- the face
+// Impress sets a formula's sans text in (tools: src/gfx/truetype.h).
+const unsigned short kSansWidths[4][191] = {
+    {277, 277, 354, 556, 556, 889, 666, 190, 333, 333, 389, 583, 277, 333, 277, 277, 556, 556, 556, 556, 556, 556, 556, 556,
+     556, 556, 277, 277, 583, 583, 583, 556, 1015, 666, 666, 722, 722, 666, 610, 777, 722, 277, 500, 666, 556, 833, 722, 777,
+     666, 777, 722, 666, 610, 722, 666, 943, 666, 666, 610, 277, 277, 277, 469, 556, 333, 556, 556, 500, 556, 556, 277, 556,
+     556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 277, 556, 500, 722, 500, 500, 500, 333, 259, 333, 583, 277,
+     333, 556, 556, 556, 556, 259, 556, 333, 736, 370, 556, 583, 333, 736, 552, 399, 548, 333, 333, 333, 576, 537, 333, 333,
+     333, 365, 556, 833, 833, 833, 610, 666, 666, 666, 666, 666, 666, 1000, 722, 666, 666, 666, 666, 277, 277, 277, 277, 722,
+     722, 777, 777, 777, 777, 777, 583, 777, 722, 722, 722, 722, 666, 666, 610, 556, 556, 556, 556, 556, 556, 889, 500, 556,
+     556, 556, 556, 277, 277, 277, 277, 556, 556, 556, 556, 556, 556, 556, 548, 610, 556, 556, 556, 556, 500, 556, 500},  // regular
+    {277, 333, 474, 556, 556, 889, 722, 237, 333, 333, 389, 583, 277, 333, 277, 277, 556, 556, 556, 556, 556, 556, 556, 556,
+     556, 556, 333, 333, 583, 583, 583, 610, 975, 722, 722, 722, 722, 666, 610, 777, 722, 277, 556, 722, 610, 833, 722, 777,
+     666, 777, 722, 666, 610, 722, 666, 943, 666, 666, 610, 333, 277, 333, 583, 556, 333, 556, 610, 556, 610, 556, 333, 610,
+     610, 277, 277, 556, 277, 889, 610, 610, 610, 610, 389, 556, 333, 610, 556, 777, 556, 556, 500, 389, 279, 389, 583, 277,
+     333, 556, 556, 556, 556, 279, 556, 333, 736, 370, 556, 583, 333, 736, 552, 399, 548, 333, 333, 333, 576, 556, 333, 333,
+     333, 365, 556, 833, 833, 833, 610, 722, 722, 722, 722, 722, 722, 1000, 722, 666, 666, 666, 666, 277, 277, 277, 277, 722,
+     722, 777, 777, 777, 777, 777, 583, 777, 722, 722, 722, 722, 666, 666, 610, 556, 556, 556, 556, 556, 556, 889, 556, 556,
+     556, 556, 556, 277, 277, 277, 277, 610, 610, 610, 610, 610, 610, 610, 548, 610, 610, 610, 610, 610, 556, 610, 556},  // bold
+    {277, 277, 354, 556, 556, 889, 666, 190, 333, 333, 389, 583, 277, 333, 277, 277, 556, 556, 556, 556, 556, 556, 556, 556,
+     556, 556, 277, 277, 583, 583, 583, 556, 1015, 666, 666, 722, 722, 666, 610, 777, 722, 277, 500, 666, 556, 833, 722, 777,
+     666, 777, 722, 666, 610, 722, 666, 943, 666, 666, 610, 277, 277, 277, 469, 556, 333, 556, 556, 500, 556, 556, 277, 556,
+     556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 277, 556, 500, 722, 500, 500, 500, 333, 259, 333, 583, 277,
+     333, 556, 556, 556, 556, 259, 556, 333, 736, 370, 556, 583, 333, 736, 552, 399, 548, 333, 333, 333, 576, 537, 333, 333,
+     333, 365, 556, 833, 833, 833, 610, 666, 666, 666, 666, 666, 666, 1000, 722, 666, 666, 666, 666, 277, 277, 277, 277, 722,
+     722, 777, 777, 777, 777, 777, 583, 777, 722, 722, 722, 722, 666, 666, 610, 556, 556, 556, 556, 556, 556, 889, 500, 556,
+     556, 556, 556, 277, 277, 277, 277, 556, 556, 556, 556, 556, 556, 556, 548, 610, 556, 556, 556, 556, 500, 556, 500},  // italic
+    {277, 333, 474, 556, 556, 889, 722, 237, 333, 333, 389, 583, 277, 333, 277, 277, 556, 556, 556, 556, 556, 556, 556, 556,
+     556, 556, 333, 333, 583, 583, 583, 610, 975, 722, 722, 722, 722, 666, 610, 777, 722, 277, 556, 722, 610, 833, 722, 777,
+     666, 777, 722, 666, 610, 722, 666, 943, 666, 666, 610, 333, 277, 333, 583, 556, 333, 556, 610, 556, 610, 556, 333, 610,
+     610, 277, 277, 556, 277, 889, 610, 610, 610, 610, 389, 556, 333, 610, 556, 777, 556, 556, 500, 389, 279, 389, 583, 277,
+     333, 556, 556, 556, 556, 279, 556, 333, 736, 370, 556, 583, 333, 736, 552, 399, 548, 333, 333, 333, 576, 556, 333, 333,
+     333, 365, 556, 833, 833, 833, 610, 722, 722, 722, 722, 722, 722, 1000, 722, 666, 666, 666, 666, 277, 277, 277, 277, 722,
+     722, 777, 777, 777, 777, 777, 583, 777, 722, 722, 722, 722, 666, 666, 610, 556, 556, 556, 556, 556, 556, 889, 556, 556,
+     556, 556, 556, 277, 277, 277, 277, 610, 610, 610, 610, 610, 610, 610, 548, 610, 610, 610, 610, 610, 556, 610, 556},  // bolditalic
+};
+
+// A run of `text`'s width in ems of the formula's text face (Liberation
+// Sans; Liberation Mono for code).
+double SansEm(const std::string &text, bool bold, bool italic, bool mono) {
+    const unsigned short *w = kSansWidths[(bold ? 1 : 0) + (italic ? 2 : 0)];
+    double em = 0;
+    for (size_t i = 0; i < text.size();) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        int cp = c, len = 1;
+        if (c >= 0xF0) { cp = c & 0x07; len = 4; }
+        else if (c >= 0xE0) { cp = c & 0x0F; len = 3; }
+        else if (c >= 0xC0) { cp = c & 0x1F; len = 2; }
+        for (int k = 1; k < len && i + static_cast<size_t>(k) < text.size(); ++k)
+            cp = cp << 6 | (static_cast<unsigned char>(text[i + static_cast<size_t>(k)]) & 0x3F);
+        i += static_cast<size_t>(len);
+        if (mono) em += 0.6;
+        else if (cp >= 0x20 && cp <= 0x7E) em += w[cp - 0x20] / 1000.0;
+        else if (cp >= 0xA0 && cp <= 0xFF) em += w[95 + cp - 0xA0] / 1000.0;
+        else em += 0.6;
+    }
+    return em;
+}
+
+// One unbreakable piece of a formula paragraph: a word of text (with the
+// space after it) or a whole inline expression. Sizes in ems.
+// Heights are split at the baseline the line's text sits on, so a line
+// holding a superscript and a subscript is as tall as both.
+struct FormulaUnit {
+    Run style;       // a word's run (`text` is the word), or the maths' (`tex`)
+    double w = 0, asc = 0, desc = 0;
+};
+struct FormulaLine {
+    std::vector<FormulaUnit> units;
+    double w = 0, asc = 0, desc = 0;
+    double h() const { return asc + desc; }
+};
+constexpr double kFormulaTextEm = 1.11;  // a line of text, as LibreOffice Math sets it
+constexpr double kFormulaTextAscEm = 0.8;  // (math_markup.cpp's Extent::kAsc)
+constexpr double kFormulaWidthScale = 1.03;  // LibreOffice Math's width for an em of ours (measured)
+
+// Prose in StarMath: quoted, its quotes and backslashes escaped.
+std::string StarMathQuote(const std::string &text) {
+    std::string o = "\"";
+    for (char c : text) {
+        if (c == '"' || c == '\\') o += '\\';
+        o += c;
+    }
+    return o + "\"";
+}
+constexpr double kFormulaLineGapEm = 0.17;  // (measured)
+
+// A paragraph's runs as the styles its text box would give them.
+std::vector<Run> ParaRuns(const Para &p) {
+    std::vector<Run> runs;
+    for (Run r : p.runs) {
+        if (p.kind == ParaKind::Heading || p.kind == ParaKind::Title) r.bold = true;
+        if ((p.kind == ParaKind::Caption || p.kind == ParaKind::Note) && r.color.empty()) r.color = "59636E";
+        if (p.kind == ParaKind::Caption && !r.bold) r.italic = true;
+        if (MonoKind(p.kind)) r.mono = true;
+        runs.push_back(std::move(r));
+    }
+    return runs;
+}
+
+// Breaks `p` into lines at most `avail_em` wide.
+std::vector<FormulaLine> FormulaLines(const Para &p, double avail_em) {
+    std::vector<FormulaUnit> units;
+    for (const Run &r : ParaRuns(p)) {
+        if (!r.tex.empty()) {
+            FormulaUnit u;
+            u.style = r;
+            double h = 0;
+            TexMathExtent(r.tex, false, &u.w, &h, &u.asc);
+            u.desc = h - u.asc;
+            units.push_back(std::move(u));
+            continue;
+        }
+        size_t i = 0;
+        while (i < r.text.size()) {
+            size_t j = r.text.find(' ', i);
+            j = j == std::string::npos ? r.text.size() : r.text.find_first_not_of(' ', j);
+            if (j == std::string::npos) j = r.text.size();
+            FormulaUnit u;
+            u.style = r;
+            u.style.text = r.text.substr(i, j - i);
+            u.w = SansEm(u.style.text, r.bold, r.italic, r.mono);
+            u.asc = kFormulaTextAscEm;
+            u.desc = kFormulaTextEm - kFormulaTextAscEm;
+            units.push_back(std::move(u));
+            i = j;
+        }
+    }
+    std::vector<FormulaLine> lines(1);
+    for (FormulaUnit &u : units) {
+        if (!lines.back().units.empty() && lines.back().w + u.w > avail_em) lines.emplace_back();
+        FormulaLine &l = lines.back();
+        l.w += u.w;
+        l.asc = std::max(l.asc, u.asc);
+        l.desc = std::max(l.desc, u.desc);
+        l.units.push_back(std::move(u));
+    }
+    return lines;
+}
+
+// Where a formula paragraph's text starts, and how wide it may be: past
+// the frame's padding (as a text box's), and a list item's label.
+constexpr long kFormulaPadX = 90000, kFormulaPadY = 46800;  // 0.25 cm, 0.13 cm
+long FormulaIndent(const Para &p) {
+    const bool list = p.kind == ParaKind::Bullet || p.kind == ParaKind::Number;
+    return kFormulaPadX + (list ? 324000L * p.level + 288000L : 0);  // OdpListStyles: 0.9 cm a level, 0.8 cm label
+}
+
+// A formula paragraph's lines at the slide's type scale, and its height.
+std::vector<FormulaLine> FormulaParaLines(const Para &p, long width, double scale) {
+    const double pt = BasePt(p.kind) * scale;
+    const double avail = static_cast<double>(width - FormulaIndent(p) - kFormulaPadX) / kEmuIn * 72.0 / pt;
+    return FormulaLines(p, std::max(4.0, avail));
+}
+double FormulaLinesHeightEm(const std::vector<FormulaLine> &lines) {
+    double h = 0;
+    for (const FormulaLine &l : lines) h += l.h();
+    return h + kFormulaLineGapEm * static_cast<double>(lines.size() - 1);
+}
+long FormulaParaHeight(const Para &p, long width, double scale) {
+    const double pt = BasePt(p.kind) * scale;
+    const double em = FormulaLinesHeightEm(FormulaParaLines(p, width, scale)) + ParaSpacing(p.kind);
+    return static_cast<long>(em * pt / 72.0 * kEmuIn) + 2 * kFormulaPadY;
+}
+
 long CaptionHeight(const std::vector<Run> &cap, long width, double scale) {
     return cap.empty() ? 0 : TextHeight(Chars(cap), BasePt(ParaKind::Caption) * scale, false, width, 0.2) + kEmuIn / 20;
 }
 
-enum class ShapeKind { Text, Code, Table, Image, Caption };
+enum class ShapeKind { Text, Code, Output, Table, Image, Caption, Math, Formula };
 
 struct Shape {
     ShapeKind kind = ShapeKind::Text;
@@ -499,7 +716,14 @@ struct Shape {
     const Item *item = nullptr;  // Table, Image
     double scale = 1.0;  // font sizes
     bool center = false;
+    std::string tex;  // Math
 };
+
+// The space after items[i]: less between code and its results, which
+// belong together.
+long GapAfter(const std::vector<Item> &items, size_t i) {
+    return items[i].kind == ItemKind::Code && i + 1 < items.size() && items[i + 1].kind == ItemKind::Output ? kGap / 2 : kGap;
+}
 
 // Places `items` in the box (x, y, w, h), shrinking fonts until they fit.
 void Stack(const std::vector<Item> &items, long x, long y, long w, long h, std::vector<Shape> &out) {
@@ -507,11 +731,14 @@ void Stack(const std::vector<Item> &items, long x, long y, long w, long h, std::
     double scale = 1.0;
     auto fixed_height = [&](double s) {
         long total = 0;
-        for (const Item &it : items) {
-            if (it.kind == ItemKind::Text || it.kind == ItemKind::Code) total += ParasHeight(it.paras, w, s);
+        for (size_t i = 0; i < items.size(); ++i) {
+            const Item &it = items[i];
+            if (it.kind == ItemKind::Text || it.kind == ItemKind::Code || it.kind == ItemKind::Output) total += ParasHeight(it.paras, w, s);
             else if (it.kind == ItemKind::Table) total += TableHeight(it, w, s) + CaptionHeight(it.caption, w, s);
+            else if (it.kind == ItemKind::Math) total += MathHeight(it.tex, w, s);
+            else if (it.kind == ItemKind::Formula) total += FormulaParaHeight(it.paras[0], w, s);
             else total += min_image + CaptionHeight(it.caption, w, s);
-            total += kGap;
+            total += GapAfter(items, i);
         }
         return total;
     };
@@ -520,7 +747,8 @@ void Stack(const std::vector<Item> &items, long x, long y, long w, long h, std::
     long images = 0, spare = h - fixed_height(scale);
     for (const Item &it : items) images += it.kind == ItemKind::Image;
     long cy = y;
-    for (const Item &it : items) {
+    for (size_t i = 0; i < items.size(); ++i) {
+        const Item &it = items[i];
         Shape s;
         s.scale = scale;
         s.x = x;
@@ -529,9 +757,23 @@ void Stack(const std::vector<Item> &items, long x, long y, long w, long h, std::
         switch (it.kind) {
             case ItemKind::Text:
             case ItemKind::Code:
-                s.kind = it.kind == ItemKind::Code ? ShapeKind::Code : ShapeKind::Text;
+            case ItemKind::Output:
+                s.kind = it.kind == ItemKind::Code ? ShapeKind::Code : it.kind == ItemKind::Output ? ShapeKind::Output : ShapeKind::Text;
                 s.paras = it.paras;
                 s.h = ParasHeight(it.paras, w, scale);
+                out.push_back(s);
+                break;
+            case ItemKind::Formula:
+                s.kind = ShapeKind::Formula;
+                s.paras = it.paras;
+                s.h = FormulaParaHeight(it.paras[0], w, scale);
+                out.push_back(s);
+                break;
+            case ItemKind::Math:
+                s.kind = ShapeKind::Math;
+                s.tex = it.tex;
+                s.scale = MathScale(it.tex, w, scale);
+                s.h = MathHeight(it.tex, w, scale);
                 out.push_back(s);
                 break;
             case ItemKind::Table: {
@@ -573,7 +815,7 @@ void Stack(const std::vector<Item> &items, long x, long y, long w, long h, std::
             out.push_back(c);
             cy += c.h;
         }
-        cy += kGap;
+        cy += GapAfter(items, i);
     }
     // Still too tall at the smallest type: squeeze the boxes into the page
     // (the text boxes shrink their own text to fit -- normAutofit,
@@ -685,6 +927,41 @@ PlacedSlide LayoutTitle(const Deck &d) {
     return p;
 }
 
+// Impress only: each paragraph whose inline maths needs two dimensions
+// comes out of its text box to be a formula of its own (see above).
+void SplitFormulaParagraphs(Deck &d) {
+    auto needs = [](const Para &p) {
+        if (MonoKind(p.kind) || p.kind == ParaKind::Title) return false;
+        for (const Run &r : p.runs)
+            if (!r.tex.empty() && TexNeedsLayout(r.tex)) return true;
+        return false;
+    };
+    for (DeckSlide &s : d.slides) {
+        std::vector<Item> items;
+        for (Item &it : s.items) {
+            if (it.kind != ItemKind::Text) {
+                items.push_back(std::move(it));
+                continue;
+            }
+            Item text;
+            for (Para &p : it.paras) {
+                if (!needs(p)) {
+                    text.paras.push_back(std::move(p));
+                    continue;
+                }
+                if (!text.paras.empty()) items.push_back(std::move(text));
+                text = Item{};
+                Item f;
+                f.kind = ItemKind::Formula;
+                f.paras.push_back(std::move(p));
+                items.push_back(std::move(f));
+            }
+            if (!text.paras.empty()) items.push_back(std::move(text));
+        }
+        s.items = std::move(items);
+    }
+}
+
 std::vector<PlacedSlide> Layout(const Deck &d) {
     std::vector<PlacedSlide> out;
     if (!d.title.empty() || !d.subtitle.empty() || !d.author.empty()) out.push_back(LayoutTitle(d));
@@ -713,6 +990,23 @@ std::string X(const std::string &s) {
 
 std::string Num(long v) { return std::to_string(v); }
 
+// Inline maths as ordinary runs: its typeset text, in the run's own style.
+std::vector<Run> MathRuns(const Run &r) {
+    std::vector<Run> out;
+    for (const MathTextRun &m : TexToTextRuns(r.tex)) {
+        Run x = r;
+        x.tex.clear();
+        x.text = m.text;
+        x.italic = m.italic;
+        x.bold = r.bold || m.bold;
+        x.super = r.super || m.script > 0;
+        x.sub = !x.super && (r.sub || m.script < 0);
+        x.serif = true;
+        out.push_back(std::move(x));
+    }
+    return out;
+}
+
 // --- PowerPoint ---------------------------------------------------------------------------
 
 const char *kPNs =
@@ -720,6 +1014,12 @@ const char *kPNs =
     "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" "
     "xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"";
 const char *kXmlHead = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
+// A slide's equations: Office Math inside PowerPoint 2010's a14:m, behind
+// markup compatibility's AlternateContent.
+const char *kMathNs =
+    "xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" "
+    "xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\" "
+    "xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\"";
 const std::string kRelNs = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
 
 const char *kGroupProps =
@@ -760,7 +1060,30 @@ struct PptxSlideWriter {
         return "<a:r><a:rPr" + a + ">" + inner + "</a:rPr><a:t>" + X(r.text) + "</a:t></a:r>";
     }
 
-    std::string ParaXml(const Para &p, double scale, bool center) {
+    // Every run of an equation names Cambria Math, as PowerPoint's own do.
+    static std::string OmmlRunProps(double pt) {
+        return "<a:rPr lang=\"en-US\" sz=\"" + Num(std::lround(pt * 100)) +
+               "\"><a:latin typeface=\"Cambria Math\"/><a:cs typeface=\"Cambria Math\"/></a:rPr>";
+    }
+
+    // A display equation's paragraph: an Office equation when `math`, else
+    // the text it reads as (the shape's fallback).
+    std::string MathParaXml(const std::string &tex, double scale, bool math) {
+        const double pt = BasePt(ParaKind::Math) * scale;
+        std::string o = "<a:p><a:pPr algn=\"ctr\"><a:buNone/></a:pPr>";
+        if (math) {
+            o += "<a14:m><m:oMathPara><m:oMathParaPr><m:jc m:val=\"centerGroup\"/></m:oMathParaPr>" + TexToOmml(tex, OmmlRunProps(pt)) +
+                 "</m:oMathPara></a14:m>";
+        } else {
+            Run r;
+            r.tex = tex;
+            for (const Run &x : MathRuns(r)) o += RunXml(x, pt);
+        }
+        return o + "<a:endParaRPr lang=\"en-US\" sz=\"" + Num(std::lround(pt * 100)) + "\"/></a:p>";
+    }
+
+    // `math`: inline maths as Office equations rather than as text.
+    std::string ParaXml(const Para &p, double scale, bool center, bool math = false) {
         const double pt = BasePt(p.kind) * scale;
         std::string ppr;
         const long indent = kEmuIn * 3 / 10;
@@ -783,6 +1106,14 @@ struct PptxSlideWriter {
             }
             if (p.kind == ParaKind::Caption && !r.bold) r.italic = true;
             if (MonoKind(p.kind)) r.mono = true;
+            if (!r.tex.empty()) {
+                if (math) {
+                    o += "<a14:m>" + TexToOmml(r.tex, OmmlRunProps(pt)) + "</a14:m>";
+                } else {
+                    for (const Run &x : MathRuns(r)) o += RunXml(x, pt);
+                }
+                continue;
+            }
             o += RunXml(r, pt);
         }
         o += "<a:endParaRPr lang=\"en-US\" sz=\"" + Num(std::lround(pt * 100)) + "\"/></a:p>";
@@ -794,27 +1125,79 @@ struct PptxSlideWriter {
                "\" cy=\"" + Num(s.h) + "\"/></" + ns + ":xfrm>";
     }
 
-    std::string TextShape(const Shape &s) {
+    static bool HasMath(const Shape &s) {
+        if (s.kind == ShapeKind::Math) return true;
+        for (const Para &p : s.paras)
+            for (const Run &r : p.runs)
+                if (!r.tex.empty()) return true;
+        return false;
+    }
+
+    // A shape holding maths twice over: with Office equations for the
+    // readers that know them (a14), and with its maths as text for the rest.
+    // A display equation's fallback is a picture of it when there is a
+    // renderer (as PowerPoint's own is), centred in the shape's box.
+    std::string MathTextShape(const Shape &s) {
+        const int id = next_id;
+        const std::string with = TextShape(s, true);
+        next_id = id;
+        std::string fallback;
+        MathPicture pic;
+        if (s.kind == ShapeKind::Math && MathRenderer() &&
+            MathRenderer()(s.tex, true, BasePt(ParaKind::Math) * s.scale, &pic) && !pic.png.empty() && pic.width_pt > 0) {
+            Shape f = s;
+            f.w = static_cast<long>(pic.width_pt / 72.0 * kEmuIn);
+            f.h = static_cast<long>(pic.height_pt / 72.0 * kEmuIn);
+            if (f.w > s.w) {
+                f.h = f.h * s.w / f.w;
+                f.w = s.w;
+            }
+            f.x = s.x + (s.w - f.w) / 2;
+            f.y = s.y + std::max(0L, (s.h - f.h) / 2);
+            fallback = PictureXml(f, pic.png, "png", s.tex);
+        } else {
+            fallback = TextShape(s, false);
+        }
+        return "<mc:AlternateContent><mc:Choice Requires=\"a14\">" + with + "</mc:Choice><mc:Fallback>" + fallback +
+               "</mc:Fallback></mc:AlternateContent>";
+    }
+
+    // A code block's results: a bar in the accent colour down their left
+    // edge, the text inset past it (TextShape).
+    std::string OutputBar(const Shape &s) {
         const int id = next_id++;
-        const bool code = s.kind == ShapeKind::Code;
-        std::string fill = code ? "<a:solidFill><a:srgbClr val=\"F6F8FA\"/></a:solidFill><a:ln w=\"9525\"><a:solidFill><a:srgbClr val=\"D0D7DE\"/></a:solidFill></a:ln>"
-                                : "<a:noFill/>";
-        std::string o = "<p:sp><p:nvSpPr><p:cNvPr id=\"" + Num(id) + "\" name=\"" + (code ? "Code " : "Text ") + Num(id) +
+        Shape bar = s;
+        bar.w = kOutputBarW;
+        return "<p:sp><p:nvSpPr><p:cNvPr id=\"" + Num(id) + "\" name=\"Output bar " + Num(id) +
+               "\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr>" + Xfrm(bar, "a") +
+               "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val=\"" + kOutputAccent +
+               "\"/></a:solidFill><a:ln><a:noFill/></a:ln></p:spPr></p:sp>";
+    }
+
+    std::string TextShape(const Shape &s, bool math = false) {
+        const int id = next_id++;
+        const bool code = s.kind == ShapeKind::Code, output = s.kind == ShapeKind::Output;
+        std::string fill = code     ? "<a:solidFill><a:srgbClr val=\"F6F8FA\"/></a:solidFill><a:ln w=\"9525\"><a:solidFill><a:srgbClr val=\"D0D7DE\"/></a:solidFill></a:ln>"
+                           : output ? "<a:noFill/><a:ln><a:noFill/></a:ln>"
+                                    : "<a:noFill/>";
+        std::string o = "<p:sp><p:nvSpPr><p:cNvPr id=\"" + Num(id) + "\" name=\"" + (code ? "Code " : output ? "Output " : "Text ") + Num(id) +
                         "\"/><p:cNvSpPr txBox=\"1\"/><p:nvPr/></p:nvSpPr><p:spPr>" + Xfrm(s, "a") +
                         "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>" + fill + "</p:spPr>";
-        o += "<p:txBody><a:bodyPr wrap=\"square\" lIns=\"91440\" tIns=\"45720\" rIns=\"91440\" bIns=\"45720\" anchor=\"" +
+        o += "<p:txBody><a:bodyPr wrap=\"square\" lIns=\"" + std::string(output ? Num(kOutputBarW + 137160) : "91440") + "\" tIns=\"45720\" rIns=\"91440\" bIns=\"45720\" anchor=\"" +
              std::string(s.paras.size() == 1 && s.paras[0].kind == ParaKind::Title ? "b" : "t") + "\"><a:normAutofit/></a:bodyPr><a:lstStyle/>";
-        for (const Para &p : s.paras) o += ParaXml(p, s.scale, s.center);
+        if (s.kind == ShapeKind::Math) o += MathParaXml(s.tex, s.scale, math);
+        for (const Para &p : s.paras) o += ParaXml(p, s.scale, s.center, math);
         return o + "</p:txBody></p:sp>";
     }
 
-    std::string ImageShape(const Shape &s) {
+    std::string ImageShape(const Shape &s) { return PictureXml(s, s.item->bytes, s.item->ext, s.item->alt); }
+
+    std::string PictureXml(const Shape &s, const std::string &bytes, const std::string &ext, const std::string &alt) {
         const int id = next_id++;
-        const Item &im = *s.item;
-        const std::string name = "image" + Num(++*image_counter) + "." + im.ext;
-        media.emplace_back("ppt/media/" + name, im.bytes);
+        const std::string name = "image" + Num(++*image_counter) + "." + ext;
+        media.emplace_back("ppt/media/" + name, bytes);
         const std::string rid = Rel("image", "../media/" + name);
-        return "<p:pic><p:nvPicPr><p:cNvPr id=\"" + Num(id) + "\" name=\"Picture " + Num(id) + "\" descr=\"" + X(im.alt) +
+        return "<p:pic><p:nvPicPr><p:cNvPr id=\"" + Num(id) + "\" name=\"Picture " + Num(id) + "\" descr=\"" + X(alt) +
                "\"/><p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"" +
                rid + "\"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>" + Xfrm(s, "a") +
                "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>";
@@ -859,9 +1242,11 @@ struct PptxSlideWriter {
         for (const Shape &s : ps.shapes) {
             if (s.kind == ShapeKind::Image) shapes += ImageShape(s);
             else if (s.kind == ShapeKind::Table) shapes += TableShape(s);
+            else if (HasMath(s)) shapes += MathTextShape(s);
+            else if (s.kind == ShapeKind::Output) shapes += OutputBar(s) + TextShape(s);
             else shapes += TextShape(s);
         }
-        return std::string(kXmlHead) + "<p:sld " + kPNs + "><p:cSld><p:spTree>" + kGroupProps + shapes +
+        return std::string(kXmlHead) + "<p:sld " + kPNs + " " + kMathNs + "><p:cSld><p:spTree>" + kGroupProps + shapes +
                "</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>";
     }
 
@@ -963,6 +1348,11 @@ struct OdpWriter {
     std::map<std::string, std::string> para_styles;
     std::string auto_styles;
     std::vector<std::pair<std::string, std::string>> pictures;  // (zip name, bytes)
+    struct Formula {
+        std::string name, mathml;  // mathml: the whole <math> document
+        double pt = 0;
+    };
+    std::vector<Formula> formulas;  // "Object N": a display equation's, or a formula paragraph's, object
 
     std::string TextStyle(const Run &r, double pt) {
         std::string props = "fo:font-size=\"" + Pt(pt) + "\"";
@@ -974,6 +1364,7 @@ struct OdpWriter {
         if (r.sub) props += " style:text-position=\"sub 58%\"";
         if (!r.color.empty()) props += " fo:color=\"#" + r.color + "\"";
         if (r.mono) props += " fo:font-family=\"'Liberation Mono'\" style:font-family-generic=\"modern\" style:font-pitch=\"fixed\"";
+        else if (r.serif) props += " fo:font-family=\"'Liberation Serif'\" style:font-family-generic=\"roman\"";
         auto it = text_styles.find(props);
         if (it != text_styles.end()) return it->second;
         const std::string name = "T" + Num(static_cast<long>(text_styles.size()) + 1);
@@ -1005,6 +1396,11 @@ struct OdpWriter {
             if ((p.kind == ParaKind::Caption || p.kind == ParaKind::Note) && r.color.empty()) r.color = "59636E";
             if (p.kind == ParaKind::Caption && !r.bold) r.italic = true;
             if (MonoKind(p.kind)) r.mono = true;
+            // Maths: its typeset text (a text box has no room for a formula).
+            if (!r.tex.empty()) {
+                for (const Run &x : MathRuns(r)) o += "<text:span text:style-name=\"" + TextStyle(x, pt) + "\">" + OdfText(x.text) + "</text:span>";
+                continue;
+            }
             // Impress reads a link as a field of plain text: the span goes outside.
             std::string text = OdfText(r.text);
             if (!r.link.empty()) text = "<text:a xlink:type=\"simple\" xlink:href=\"" + X(r.link) + "\">" + text + "</text:a>";
@@ -1037,7 +1433,12 @@ struct OdpWriter {
         for (const Para &p : s.paras)
             body += p.kind == ParaKind::Bullet || p.kind == ParaKind::Number ? ListXml(p, s.scale) : ParaXml(p, s.scale, s.center);
         const bool title = s.paras.size() == 1 && s.paras[0].kind == ParaKind::Title;
-        return Frame(s, s.kind == ShapeKind::Code ? "grCode" : title ? "grTitle" : "grText", "<draw:text-box>" + body + "</draw:text-box>");
+        const std::string frame = Frame(s, s.kind == ShapeKind::Code ? "grCode" : s.kind == ShapeKind::Output ? "grOutput" : title ? "grTitle" : "grText",
+                                        "<draw:text-box>" + body + "</draw:text-box>");
+        if (s.kind != ShapeKind::Output) return frame;
+        // The results' bar, down their left edge.
+        return "<draw:rect draw:style-name=\"grOutputBar\" draw:layer=\"layout\" svg:x=\"" + Cm(s.x) + "\" svg:y=\"" + Cm(s.y) +
+               "\" svg:width=\"" + Cm(kOutputBarW) + "\" svg:height=\"" + Cm(s.h) + "\"/>" + frame;
     }
 
     std::string ImageShape(const Shape &s) {
@@ -1047,6 +1448,104 @@ struct OdpWriter {
         std::string inner = "<draw:image xlink:href=\"" + name + "\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"><text:p/></draw:image>";
         if (!im.alt.empty()) inner += "<svg:title>" + X(im.alt) + "</svg:title><svg:desc>" + X(im.alt) + "</svg:desc>";
         return Frame(s, "grImage", inner);
+    }
+
+    // A display equation: a formula object of its own, centred in its box.
+    // Impress stretches a formula to fill its frame, so the frame is the
+    // formula's own size (TexMathExtent), not the box's.
+    std::string FormulaShape(const Shape &s) {
+        const std::string name = "Object " + Num(static_cast<long>(formulas.size()) + 1);
+        const double pt = BasePt(ParaKind::Math) * s.scale;
+        formulas.push_back({name, TexToMathMl(s.tex, true), pt});
+        double wem = 0, hem = 0;
+        TexMathExtent(s.tex, true, &wem, &hem);
+        Shape f = s;
+        f.w = std::min(s.w, static_cast<long>(wem * pt / 72.0 * kEmuIn));
+        f.h = std::min(s.h, static_cast<long>(hem * pt / 72.0 * kEmuIn));
+        f.x = s.x + (s.w - f.w) / 2;
+        f.y = s.y + (s.h - f.h) / 2;
+        return Frame(f, "grMath", "<draw:object xlink:href=\"./" + name + "\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>");
+    }
+
+    // A formula paragraph (SplitFormulaParagraphs): its object, and a list
+    // item's label as text beside it.
+    std::string FormulaParaShape(const Shape &s) {
+        const Para &p = s.paras[0];
+        const double pt = BasePt(p.kind) * s.scale;
+        const std::vector<FormulaLine> lines = FormulaParaLines(p, s.w, s.scale);
+        std::string star, mml = "<mtable columnalign=\"left\">";
+        for (size_t k = 0; k < lines.size(); ++k) {
+            star += (k ? " newline " : "") + std::string("alignl");
+            mml += "<mtr><mtd><mrow>";
+            // The line's words run together into one string per style: each
+            // separate element would get Math's own gap on either side.
+            std::vector<Run> pieces;
+            for (const FormulaUnit &u : lines[k].units) {
+                const Run &r = u.style;
+                if (!pieces.empty() && r.tex.empty() && pieces.back().tex.empty() && pieces.back().bold == r.bold &&
+                    pieces.back().italic == r.italic && pieces.back().mono == r.mono && pieces.back().underline == r.underline &&
+                    pieces.back().strike == r.strike && pieces.back().color == r.color) {
+                    pieces.back().text += r.text;
+                    continue;
+                }
+                pieces.push_back(r);
+            }
+            for (const Run &r : pieces) {
+                if (!r.tex.empty()) {
+                    star += " {" + TexToStarMath(r.tex) + "}";
+                    mml += TexToMathMlBody(r.tex, false);
+                    continue;
+                }
+                std::string t = r.text;
+                // (Trailing space at a line's end is not part of the line.)
+                if (&r == &pieces.back()) while (!t.empty() && t.back() == ' ') t.pop_back();
+                if (t.empty()) continue;
+                std::string word = (r.mono ? "font fixed " : "font sans ") + std::string(r.bold ? "bold " : "") + (r.italic ? "ital " : "") +
+                                   StarMathQuote(t);
+                if (r.underline) word = "underline{" + word + "}";
+                if (r.strike) word = "overstrike{" + word + "}";
+                if (!r.color.empty()) word = "color hex " + r.color + " {" + word + "}";
+                star += " " + word;
+                const char *variant = r.mono ? "monospace" : r.bold && r.italic ? "sans-serif-bold-italic" : r.bold ? "bold-sans-serif" : r.italic ? "sans-serif-italic" : "sans-serif";
+                std::string edge = t;
+                if (edge.front() == ' ') edge.replace(0, 1, "\u00a0");
+                if (edge.back() == ' ') edge.replace(edge.size() - 1, 1, "\u00a0");
+                mml += std::string("<mtext mathvariant=\"") + variant + "\"" + (r.color.empty() ? "" : " mathcolor=\"#" + r.color + "\"") + ">" + X(edge) + "</mtext>";
+            }
+            mml += "</mrow></mtd></mtr>";
+        }
+        mml += "</mtable>";
+        const std::string name = "Object " + Num(static_cast<long>(formulas.size()) + 1);
+        formulas.push_back({name,
+                            "<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\"><semantics>" + mml +
+                                "<annotation encoding=\"StarMath 5.0\">" + X(star) + "</annotation></semantics></math>",
+                            pt});
+        double wem = 0;
+        for (const FormulaLine &l : lines) wem = std::max(wem, l.w);
+        const long space = static_cast<long>(pt * ParaSpacing(p.kind) / 72.0 * kEmuIn);
+        Shape f = s;
+        f.x = s.x + FormulaIndent(p);
+        f.y = s.y + kFormulaPadY + space;
+        f.w = std::min(s.w - FormulaIndent(p), static_cast<long>(wem * kFormulaWidthScale * pt / 72.0 * kEmuIn));
+        f.h = static_cast<long>(FormulaLinesHeightEm(lines) * pt / 72.0 * kEmuIn);
+        std::string o = Frame(f, "grMath", "<draw:object xlink:href=\"./" + name + "\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>");
+        if (p.kind == ParaKind::Bullet || p.kind == ParaKind::Number) {
+            // The label, a text box of the list's own, level with the first line.
+            Shape label = s;
+            label.x = s.x + kFormulaPadX + 324000L * p.level;
+            label.w = 288000L + 2 * kFormulaPadX;
+            // On the first line's baseline: its text's top is that line's
+            // ascent less a line of text's.
+            const long text_h = static_cast<long>(kFormulaTextEm * pt / 72.0 * kEmuIn);
+            label.y = f.y + static_cast<long>((lines[0].asc - kFormulaTextAscEm) * pt / 72.0 * kEmuIn) - kFormulaPadY;
+            label.h = text_h + 2 * kFormulaPadY;
+            Run r;
+            r.text = p.kind == ParaKind::Number ? Num(std::max(1, p.number)) + "." : (p.level % 2 ? "–" : "•");
+            label.x -= kFormulaPadX;
+            o += Frame(label, "grTitle", "<draw:text-box><text:p text:style-name=\"" + ParaStyle("fo:margin-top=\"0cm\" fo:margin-bottom=\"0cm\"") +
+                                             "\"><text:span text:style-name=\"" + TextStyle(r, pt) + "\">" + X(r.text) + "</text:span></text:p></draw:text-box>");
+        }
+        return o;
     }
 
     std::string TableShape(const Shape &s) {
@@ -1071,7 +1570,9 @@ struct OdpWriter {
                 for (Run &run : p.runs) run.bold = run.bold || head;
                 const double pt = kTablePt * s.scale;
                 std::string para = "<text:p text:style-name=\"" + ParaStyle("fo:margin-top=\"0cm\" fo:margin-bottom=\"0cm\"") + "\">";
-                for (const Run &run : p.runs) para += "<text:span text:style-name=\"" + TextStyle(run, pt) + "\">" + OdfText(run.text) + "</text:span>";
+                for (const Run &run : p.runs)
+                    for (const Run &x : run.tex.empty() ? std::vector<Run>{run} : MathRuns(run))
+                        para += "<text:span text:style-name=\"" + TextStyle(x, pt) + "\">" + OdfText(x.text) + "</text:span>";
                 para += "</text:p>";
                 o += "<table:table-cell table:style-name=\"" + std::string(head ? "ceHead" : "ceBody") + "\">" + para + "</table:table-cell>";
             }
@@ -1085,6 +1586,8 @@ struct OdpWriter {
         for (const Shape &s : ps.shapes) {
             if (s.kind == ShapeKind::Image) o += ImageShape(s);
             else if (s.kind == ShapeKind::Table) o += TableShape(s);
+            else if (s.kind == ShapeKind::Math) o += FormulaShape(s);
+            else if (s.kind == ShapeKind::Formula) o += FormulaParaShape(s);
             else o += TextShape(s);
         }
         return o + "</draw:page>";
@@ -1120,6 +1623,8 @@ std::string OdpListStyles() {
 }
 
 }  // namespace
+
+void SetMathPictureRenderer(MathPictureRenderer renderer) { MathRenderer() = std::move(renderer); }
 
 bool WritePptx(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error) {
     const Deck deck = Builder{doc, base_dir, {}}.Build();
@@ -1208,7 +1713,8 @@ bool WritePptx(const Document &doc, const std::string &path, const std::string &
 }
 
 bool WriteOdp(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error) {
-    const Deck deck = Builder{doc, base_dir, {}}.Build();
+    Deck deck = Builder{doc, base_dir, {}}.Build();
+    SplitFormulaParagraphs(deck);
     if (deck.slides.empty()) {
         if (error) *error = "no \\slide in the document to export";
         return false;
@@ -1227,8 +1733,14 @@ bool WriteOdp(const Document &doc, const std::string &path, const std::string &b
         "<style:style style:name=\"grCode\" style:family=\"graphic\"><style:graphic-properties draw:stroke=\"solid\" svg:stroke-color=\"#d0d7de\" "
         "svg:stroke-width=\"0.03cm\" draw:fill=\"solid\" draw:fill-color=\"#f6f8fa\" draw:textarea-vertical-align=\"top\" draw:auto-grow-height=\"false\" "
         "fo:padding-top=\"0.13cm\" fo:padding-bottom=\"0.13cm\" fo:padding-left=\"0.25cm\" fo:padding-right=\"0.25cm\" style:shrink-to-fit=\"true\"/></style:style>"
+        "<style:style style:name=\"grOutput\" style:family=\"graphic\"><style:graphic-properties draw:stroke=\"none\" draw:fill=\"none\" "
+        "draw:textarea-vertical-align=\"top\" draw:auto-grow-height=\"false\" fo:padding-top=\"0.13cm\" fo:padding-bottom=\"0.13cm\" "
+        "fo:padding-left=\"" + Cm(kOutputBarW + 137160) + "\" fo:padding-right=\"0.25cm\" style:shrink-to-fit=\"true\"/></style:style>"
+        "<style:style style:name=\"grOutputBar\" style:family=\"graphic\"><style:graphic-properties draw:stroke=\"none\" draw:fill=\"solid\" "
+        "draw:fill-color=\"#" + std::string(kOutputAccent) + "\"/></style:style>"
         "<style:style style:name=\"grImage\" style:family=\"graphic\"><style:graphic-properties draw:stroke=\"none\" draw:fill=\"none\"/></style:style>"
         "<style:style style:name=\"grTable\" style:family=\"graphic\"><style:graphic-properties draw:stroke=\"none\" draw:fill=\"none\"/></style:style>"
+        "<style:style style:name=\"grMath\" style:family=\"graphic\"><style:graphic-properties draw:stroke=\"none\" draw:fill=\"none\"/></style:style>"
         "<style:style style:name=\"ceHead\" style:family=\"table-cell\"><style:graphic-properties draw:fill=\"solid\" draw:fill-color=\"#e8edf5\"/>"
         "<style:paragraph-properties fo:border=\"0.03pt solid #bfc5cc\"/></style:style>"
         "<style:style style:name=\"ceBody\" style:family=\"table-cell\"><style:graphic-properties draw:fill=\"none\"/>"
@@ -1260,6 +1772,11 @@ bool WriteOdp(const Document &doc, const std::string &path, const std::string &b
     for (const auto &p : w.pictures)
         manifest += "<manifest:file-entry manifest:full-path=\"" + p.first + "\" manifest:media-type=\"image/" +
                     (p.first.size() > 4 && p.first.compare(p.first.size() - 4, 4, ".png") == 0 ? "png" : "jpeg") + "\"/>";
+    for (const OdpWriter::Formula &f : w.formulas)
+        manifest += "<manifest:file-entry manifest:full-path=\"" + f.name + "/\" manifest:version=\"1.3\" "
+                    "manifest:media-type=\"application/vnd.oasis.opendocument.formula\"/>"
+                    "<manifest:file-entry manifest:full-path=\"" + f.name + "/content.xml\" manifest:media-type=\"text/xml\"/>"
+                    "<manifest:file-entry manifest:full-path=\"" + f.name + "/settings.xml\" manifest:media-type=\"text/xml\"/>";
     manifest += "</manifest:manifest>";
     std::vector<zip::EntryToWrite> entries = {
         {"mimetype", "application/vnd.oasis.opendocument.presentation", true},
@@ -1269,6 +1786,18 @@ bool WriteOdp(const Document &doc, const std::string &path, const std::string &b
         {"meta.xml", meta},
     };
     for (const auto &p : w.pictures) entries.push_back({p.first, p.second, true});
+    // A formula object is MathML, and its settings carry the size it is
+    // set at (LibreOffice Math's base font height, in points).
+    for (const OdpWriter::Formula &f : w.formulas) {
+        entries.push_back({f.name + "/content.xml", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + f.mathml});
+        entries.push_back({f.name + "/settings.xml",
+                           "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-settings "
+                           "xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" "
+                           "xmlns:config=\"urn:oasis:names:tc:opendocument:xmlns:config:1.0\" office:version=\"1.3\"><office:settings>"
+                           "<config:config-item-set config:name=\"ooo:configuration-settings\"><config:config-item config:name=\"BaseFontHeight\" "
+                           "config:type=\"short\">" + Num(std::lround(f.pt)) + "</config:config-item></config:config-item-set></office:settings>"
+                           "</office:document-settings>"});
+    }
     return WriteFile(path, zip::BuildArchive(entries), error);
 }
 

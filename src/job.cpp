@@ -1,4 +1,5 @@
 #include "job.h"
+#include "frame_activity.h"
 
 #include <algorithm>
 #include <chrono>
@@ -318,6 +319,7 @@ void Job::ReaderLoop() {
         }
         int rc = poll(fds, static_cast<nfds_t>(nfds), 200);  // 200ms so a kill mid-read isn't stuck forever
         if (rc < 0) break;
+        if (rc > 0) mep::WakeMainLoop();  // output (or its end) for the main loop to pick up
 
         if (out_open && out_idx >= 0 && (fds[out_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
             ssize_t n = read(stdout_fd_, buf, sizeof(buf));
@@ -355,6 +357,7 @@ void Job::ReaderLoop() {
     waitpid(pid_, &status, 0);
     exit_code_ = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     finished_ = true;
+    mep::WakeMainLoop();
 }
 #endif  // MEP_JOB_POSIX
 
@@ -465,7 +468,10 @@ void JobManager::PollAll() {
         if (on_stdout_raw) {
             auto should_poll_raw = jobs_[i].callbacks.should_poll_raw;
             if (!should_poll_raw || should_poll_raw()) {
-                for (const std::string &chunk : job->DrainRaw()) on_stdout_raw(chunk);
+                for (const std::string &chunk : job->DrainRaw()) {
+                    mep::NoteActivity();
+                    on_stdout_raw(chunk);
+                }
             }
         }
         if (kProf) { t_raw = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - j0).count(); }
@@ -474,6 +480,7 @@ void JobManager::PollAll() {
         auto l0 = std::chrono::steady_clock::now();
         for (const JobLine &line : job->DrainLines()) {
             ++n_lines;
+            mep::NoteActivity();
             if (line.is_stderr) {
                 if (on_stderr) on_stderr(line.text);
             } else {
@@ -484,6 +491,7 @@ void JobManager::PollAll() {
         auto e0 = std::chrono::steady_clock::now();
         if (job->Finished() && !jobs_[i].exit_reported) {
             jobs_[i].exit_reported = true;
+            mep::NoteActivity();
             auto on_exit = jobs_[i].callbacks.on_exit;
             if (on_exit) {
                 int code = job->Killed() || job->SpawnFailed() ? -1 : job->ExitCode();

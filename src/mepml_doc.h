@@ -273,6 +273,16 @@ std::string MetaValue(const Document &doc, const std::string &key);
 // default.
 bool IsPresentation(const Document &doc);
 
+// What `//? Export:` may name -- the format the Run button exports to and
+// opens -- each with a line describing it, canonical names first; the
+// aliases (markdown, latex, text, powerpoint, impress) follow. `beamer`
+// is the Beamer deck's PDF whatever the document's Type.
+struct ExportFormat {
+    const char *name;
+    const char *doc;
+};
+const std::vector<ExportFormat> &ExportFormats();
+
 // The callout keywords a `// KEYWORD:` comment recognises.
 const std::vector<std::string> &CalloutKeywords();
 

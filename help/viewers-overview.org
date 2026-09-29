@@ -17,6 +17,7 @@ ordinary pane, so splits, tabs, workspaces and the theme all apply.
 | =.pdf=                              | the PDF viewer        | [[file:pdf.html][PDF]] |
 | =.docx=, =.odt=                     | a word processor view | [[file:office.html][Word processor documents]] |
 | =.xlsx=, =.ods=, =.csv=             | a spreadsheet         | [[file:sheets.html][Spreadsheets]] |
+| =.pptx=, =.odp=                     | a slide editor        | [[file:presentations.html][Presentations]] |
 | =.ipynb=                            | a notebook            | [[file:notebooks.html][Jupyter notebooks]] |
 | =.png=, =.jpg=, =.bmp=, =.gif=      | the image viewer      | [[file:images.html][Viewing images]] |
 | =.obj=, =.gltf=, =.glb=, =.iqm=, =.vox=, =.m3d=, =.blend= | the 3D modeler | [[file:model3d.html][The 3D modeler]] |

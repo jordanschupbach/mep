@@ -4,6 +4,7 @@
 #include "pdf_doc.h"
 #include "office_doc.h"
 #include "sheet_doc.h"
+#include "pres_doc.h"
 #include "notebook_doc.h"
 #include "html_doc.h"
 #include "org_doc.h"
@@ -276,6 +277,14 @@ enum class Mode {
     SheetNormal,
     SheetInsert,
     SheetVisual,
+    // A focused presentation pane (a PresSession buffer -- a .pptx/.odp in
+    // the WYSIWYG slide editor, see below). PresNormal works on objects:
+    // select, move and resize shapes with the mouse or the keys, add and
+    // remove slides and shapes. PresInsert types into the selected shape's
+    // text. See Editor::HandlePresNormalInput/HandlePresInsertInput and
+    // main.cpp's DrawPresPane.
+    PresNormal,
+    PresInsert,
     // A focused Kanban-board pane (a KanbanSession, see below -- opened via
     // ":Kanban" on a .org buffer, closed back to plain text via ":Org").
     // Unlike Image/Pdf/Sheet/Office, the underlying Buffer::lines is NOT a
@@ -2299,6 +2308,10 @@ inline constexpr int kSheetRowHeight = 22;
 // join every pane's in-flight render_job before mutating the doc in place.
 struct PdfBufferState {
     int buffer_id = 0;
+    // Fit the whole page in the pane the next time a pane showing this
+    // buffer knows its size (Editor::RequestPdfFitPage) -- a slide deck
+    // the Run button just built, say, whose pane may not be drawn yet.
+    bool fit_page_pending = false;
     // shared_ptr so a background render (PdfSession::render_job) holds its
     // own reference and an in-place reload can't free it under a worker.
     std::shared_ptr<PdfDoc> doc;
@@ -2710,6 +2723,9 @@ struct HtmlSession {
     std::shared_ptr<JsRuntime> js;
     // The form field that owns the keyboard (clicked into); null otherwise.
     DomNode *focused_field = nullptr;
+    // The block the pointer was last over (Editor::HoverHtmlNode); only
+    // compared, never dereferenced -- the page may have removed it since.
+    const DomNode *hover_node = nullptr;
 };
 
 // One WYSIWYG office-document pane's state, keyed by buffer id the same
@@ -2861,6 +2877,51 @@ struct SheetSession {
     bool editing = false;
     std::string edit_buffer;
     int edit_cursor = 0;
+};
+
+// One presentation pane's state -- a .pptx/.odp open in the WYSIWYG slide
+// editor -- keyed by buffer id like SheetSession, whose Buffer::lines is
+// likewise a dummy: the deck lives here as a pres::Presentation (resolved
+// and flat -- see pres_doc.h), and :w writes it back in the format its
+// path names.
+struct PresSession {
+    int buffer_id = 0;
+    pres::Presentation doc;
+    int slide = 0;      // the slide on the canvas
+    int selected = -1;  // the selected shape (an index into that slide's shapes), -1 for none
+    // PresInsert's caret in the selected shape's text: a paragraph, and a
+    // byte offset into its plain text (Paragraph::PlainText).
+    int caret_para = 0, caret_off = 0;
+    bool modified = false;
+    // Full snapshots, one per committed edit (a drag, a typing session, a
+    // command) -- pictures are shared_ptr'd, so a snapshot is cheap.
+    std::vector<pres::Presentation> undo_stack, redo_stack;
+    bool presenting = false;  // the slide fills the pane, no chrome (F5)
+    // Theme colours (Ctrl-R, as in the PDF, image and HTML viewers; on by
+    // default): the slides drawn in the editor's colours -- each colour's
+    // lightness mapped onto the gradient from the theme's text colour to
+    // its background -- rather than as printed. Drawing only; the file
+    // keeps its own colours.
+    bool theme_colors = true;
+    // The command line was opened for maths from PresInsert (Ctrl-M, the
+    // toolbar's maths button): :PresMath goes in at the caret, and typing
+    // resumes after it.
+    bool math_from_typing = false;
+    bool has_clipboard = false;
+    pres::Shape clipboard;
+    // Which colour row the toolbar has open: 0 none, 1 fill, 2 text, 3 outline.
+    int palette = 0;
+    // Published by DrawPresPane each frame for the mouse: where the slide's
+    // top-left corner is on screen and how many pixels an EMU is.
+    float canvas_x = 0, canvas_y = 0, scale = 0;
+    // A mouse drag on the canvas: moving the selection, or resizing it by
+    // one of its eight handles (0..7 clockwise from the top-left corner).
+    enum class Drag { None, Move, Resize };
+    Drag drag = Drag::None;
+    int drag_handle = -1;
+    float drag_start_x = 0, drag_start_y = 0;
+    pres::Shape drag_orig;
+    bool drag_moved = false;
 };
 
 // One open Jupyter notebook's side model, keyed by buffer id (Editor::
@@ -3288,6 +3349,8 @@ struct OrgBlockCard {
     bool is_src = false;
     std::string lang;   // src blocks only, as written ("python", "C++")
     std::string title;  // #+NAME:/#+CAPTION:/:title value, "" when absent
+    // The kind chip's text when it isn't `lang`/`kind` ("Slide 3").
+    std::string chip;
     std::vector<OrgBlockOption> options;
     // Display columns of the block's widest line, counted over every row
     // the card encloses (`#+NAME:`/`#+HEADER:` stack, `#+begin_`, body,
@@ -3596,6 +3659,13 @@ public:
      * @return Frames per second ceiling; 0 means no ceiling.
      */
     int MaxFps() const { return max_fps_; }
+    // Frames a second while idle (`:set idlefps`): after a moment with no
+    // input or activity mep draws this often instead of at the display's
+    // refresh rate, and any input wakes it at once. 0 = never throttle.
+    int IdleFps() const { return idle_fps_; }
+    // Something on screen is moving on its own (a video or viewer
+    // playing): no idle throttling while it is.
+    bool WantsFullFrameRate() const;
     // <leader>oti / mep.org_images_toggle -- whether main.cpp's renderer
     // should substitute a rendered texture for a Buffer::org_image_rows
     // row instead of its ordinary [[file:...]] text.
@@ -5490,6 +5560,16 @@ public:
      * @param h The new viewport height in pixels.
      */
     void ResizePdfViewport(int pane_id, int w, int h);
+    /**
+     * @brief Sizes a PDF pane's current page to fit it whole (the `=` key), scrolled to that page's top-left.
+     * @param sess The pane's PDF session; a no-op until its viewport size is known.
+     */
+    void FitPdfPage(PdfSession &sess);
+    /**
+     * @brief Fits the page of every pane showing `buffer_id`, now or, for one not yet drawn, once it knows its size.
+     * @param buffer_id A PDF buffer (anything else is ignored).
+     */
+    void RequestPdfFitPage(int buffer_id);
     // Renders whichever of {page-1, page, page+1} aren't already cached at
     // the current rendered_scale (clearing the whole cache first if
     // rendered_scale changed since the last call), and evicts everything
@@ -5685,6 +5765,13 @@ public:
      * @return False when a listener called preventDefault() -- the caller must then not follow an enclosing link.
      */
     bool ClickHtmlNode(int buffer_id, DomNode *node);
+    /**
+     * @brief The pointer is over `node` in the html pane (null: not over the page): it and its ancestors match :hover, nothing else does.
+     * @param buffer_id The html buffer.
+     * @param node The innermost block under the pointer (from this frame's layout).
+     * @return True when that changed which elements are hovered -- styles were recomputed, so lay the page out again.
+     */
+    bool HoverHtmlNode(int buffer_id, DomNode *node);
     /** @brief The html buffer's keyboard-focused form field, or null. */
     const DomNode *HtmlFocusedField(int buffer_id) const;
     // Parses `bytes` (already-read HTML text) and opens it as a new
@@ -6078,6 +6165,59 @@ public:
      * @param buffer_id The buffer id to check.
      * @return True if the buffer has an active SheetSession.
      */
+    // --- Presentations (src/editor_pres.cpp) ---------------------------------
+    bool IsPresBuffer(int buffer_id) const;
+    const PresSession *GetPres(int buffer_id) const;
+    PresSession *GetPresMutable(int buffer_id);
+    // :PresNew [path] -- a new deck in a buffer of its own (named `path`
+    // when given, else unnamed until :w).
+    int NewPresentationBuffer(const std::string &path);
+    // The selected shape (nullptr when none) and the current slide.
+    pres::Shape *PresSelectedShape(PresSession &sess);
+    pres::Slide *PresCurrentSlide(PresSession &sess);
+    void PresPushUndo(PresSession &sess);
+    void PresMarkModified(PresSession &sess);
+    void PresUndo(PresSession &sess);
+    void PresRedo(PresSession &sess);
+    void PresGotoSlide(PresSession &sess, int slide);
+    void PresSelect(PresSession &sess, int shape);
+    // The topmost shape under a point on the slide (EMU), -1 for none.
+    int PresShapeAt(const PresSession &sess, double x, double y) const;
+    void PresAddSlide(PresSession &sess, bool duplicate);
+    void PresDeleteSlide(PresSession &sess);
+    void PresMoveSlide(PresSession &sess, int delta);
+    void PresAddShape(PresSession &sess, pres::ShapeKind kind);
+    bool PresInsertImage(PresSession &sess, const std::string &path);
+    void PresDeleteShape(PresSession &sess);
+    void PresDuplicateShape(PresSession &sess);
+    void PresCopyShape(PresSession &sess);
+    void PresPasteShape(PresSession &sess);
+    // Moves the selected shape back or front in the drawing order.
+    void PresRestack(PresSession &sess, int delta);
+    // Formatting of the selected shape (all its text when not typing, the
+    // caret's paragraph when typing): 'b' 'i' 'u' 's' toggle, sizes step.
+    void PresToggleStyle(PresSession &sess, char which);
+    void PresStepFontSize(PresSession &sess, double factor);
+    void PresSetAlign(PresSession &sess, pres::Align align);
+    void PresToggleBullets(PresSession &sess);
+    // which: 1 fill, 2 text, 3 outline; "" clears.
+    void PresSetColor(PresSession &sess, int which, const std::string &rgb);
+    void PresSetBackground(PresSession &sess, const std::string &rgb);
+    // Starts typing into the selected shape, the caret at its end (or at
+    // a paragraph and offset).
+    void PresBeginText(PresSession &sess, int para = -1, int off = -1);
+    // :PresMath <tex> -- inline maths at the caret while typing; else the
+    // selected equation's TeX replaced, or a new equation added.
+    void PresMath(PresSession &sess, const std::string &tex);
+    // Enter / double-click on an equation: its TeX on the command line.
+    void PresEditEquation(PresSession &sess);
+    // Stops typing (PresInsert -> PresNormal), the selection kept.
+    void PresEndText(PresSession &sess);
+    // Replaces the selected shape's text (one paragraph per line) -- for
+    // Lua and the agent API.
+    void PresSetShapeText(PresSession &sess, const std::string &text);
+    bool PresExport(PresSession &sess, const std::string &path, std::string *error);
+    void PresTogglePresenting(PresSession &sess);
     bool IsSheetBuffer(int buffer_id) const;
     /**
      * @brief Returns the SheetSession for a buffer, if it is a spreadsheet pane.
@@ -12561,6 +12701,16 @@ private:
     // Keyed by buffer_id -- one entry per open spreadsheet pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, SheetSession> sheetdocs_;
+    std::unordered_map<int, PresSession> presdocs_;
+    void HandlePresNormalInput();
+    void HandlePresInsertInput();
+    void OpenPresInPlace(const std::string &path);
+    // PresInsert's text editing on the selected shape.
+    void PresInsertText(PresSession &sess, const std::string &text);
+    void PresBackspace(PresSession &sess, bool forward);
+    void PresSplitParagraph(PresSession &sess);
+    void WheelPres(float dy);
+    float wheel_accum_pres_ = 0;
     // Keyed by buffer_id -- one entry per open Jupyter notebook pane; erased
     // (and its kernel killed) by NotebookCloseSession when the buffer is :bd'd.
     std::unordered_map<int, NotebookSession> notebooks_;
@@ -13105,6 +13255,7 @@ private:
     // `maxfps=30` quietly turns a 50/s caret into a 30/s one. See
     // NativeContextSwapBuffers, which implements the cap.
     int max_fps_ = 0;
+    int idle_fps_ = 10;
     // :set pasteindent/nopasteindent (default on) -- whether a multi-line paste
     // is re-aligned onto the indent of wherever it lands (PasteAfter/
     // PasteBefore, and the Insert-mode paste through InsertTextAsTyped) instead

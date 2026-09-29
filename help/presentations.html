@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Presentations</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Documents and media">
+<meta name="help-order" content="42">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Presentations</h1>
+<h1>Opening</h1>
+<p><code>.pptx</code> (PowerPoint) and <code>.odp</code> (LibreOffice Impress) open in a slide
+editor: the slide drawn to scale on a canvas, a strip of slide thumbnails
+down the left, and a toolbar across the top. Opening a path that does not
+exist yet starts a new deck there; <code>:PresNew</code> starts one with no name.</p>
+<h1>Working on a slide</h1>
+<p>Click a shape to select it, drag it to move it, and drag one of its eight
+handles to resize it (a picture keeps its shape from a corner). Double-click
+a shape's text, or press <code>Enter</code>, to type into it; <code>Esc</code> stops typing.</p>
+<table>
+<tr><th>Key (not typing)</th><th>Does</th></tr>
+<tr><td><code>j</code> / <code>k</code>, <code>PgDn</code> / <code>PgUp</code></td><td>next / previous slide</td></tr>
+<tr><td><code>gg</code> / <code>G</code></td><td>first / last slide</td></tr>
+<tr><td><code>Tab</code> / <code>Shift-Tab</code></td><td>select the next / previous shape</td></tr>
+<tr><td>arrows</td><td>nudge the selection (<code>Shift</code> moves further)</td></tr>
+<tr><td><code>t</code> <code>r</code> <code>o</code> <code>O</code> <code>L</code></td><td>add a text box, rectangle, ellipse, rounded rectangle, line</td></tr>
+<tr><td><code>n</code> / <code>N</code> / <code>X</code></td><td>new slide / duplicate slide / delete slide</td></tr>
+<tr><td><code>J</code> / <code>K</code></td><td>move the slide later / earlier</td></tr>
+<tr><td><code>x</code>, <code>Delete</code></td><td>delete the selected shape</td></tr>
+<tr><td><code>y</code> / <code>p</code> / <code>D</code></td><td>copy / paste / duplicate the selected shape</td></tr>
+<tr><td><code>]</code> / <code>[</code></td><td>bring forward / send backward</td></tr>
+<tr><td><code>+</code> / <code>-</code></td><td>larger / smaller text</td></tr>
+<tr><td><code>b</code></td><td>bullets on or off</td></tr>
+<tr><td><code>Ctrl-B</code> <code>Ctrl-I</code> <code>Ctrl-U</code></td><td>bold, italic, underline</td></tr>
+<tr><td><code>u</code>, <code>Ctrl-Z</code> / <code>Ctrl-Y</code></td><td>undo / redo</td></tr>
+<tr><td><code>Ctrl-R</code></td><td>theme colours on or off (in any mode)</td></tr>
+<tr><td><code>P</code></td><td>present (<code>Esc</code> ends; arrows, <code>j=/=k</code> or a click move on)</td></tr>
+</table>
+<p>While typing, <code>Enter</code> starts a new paragraph, <code>Tab</code> / <code>Shift-Tab</code> indent a
+list item, and <code>Ctrl-B</code> / <code>Ctrl-I</code> / <code>Ctrl-U</code> style the paragraph the caret
+is in. Without typing, styling applies to all of the selected shape's text.</p>
+<p>The toolbar has the same actions, plus alignment and colour rows for a
+shape's fill, its text, its outline, and the slide's background.</p>
+<p>Slides are drawn in the editor's theme colours by default, as PDFs and
+pictures are: each colour's lightness is placed on the gradient from the
+theme's text colour to its background, so a white slide with black text
+takes the theme's background and text colours. <code>Ctrl-R</code> (or the toolbar's
+half-circle button) switches to the slides' own colours and back. This is
+only how the editor draws them -- the file keeps its own colours.</p>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:PresNew [path]</code></td><td>a new deck</td></tr>
+<tr><td><code>:PresImage path</code></td><td>a picture on the current slide</td></tr>
+<tr><td><code>:PresBackground #rrggbb</code></td><td>the slide's background (<code>none</code> clears it)</td></tr>
+<tr><td><code>:PresExport path</code></td><td>a copy in the format the path names</td></tr>
+<tr><td><code>:PresPresent</code></td><td>present</td></tr>
+<tr><td><code>:PresMath tex</code></td><td>an equation (see Maths)</td></tr>
+</table>
+<h1>Maths</h1>
+<p>Equations are typeset by mep's own maths engine, the one the editor uses
+for LaTeX elsewhere: PowerPoint's equations (Office Math), Impress formula
+objects, and the maths mep's own mepml exports write.</p>
+<table>
+<tr><th>Key or command</th><th>Does</th></tr>
+<tr><td><code>:PresMath tex</code></td><td>a new equation (or, with an equation selected, its new TeX)</td></tr>
+<tr><td><code>Ctrl-M</code></td><td>while typing: maths at the caret, typing carries on after it</td></tr>
+<tr><td><code>Enter</code>, double-click an equation</td><td>its TeX on the command line, to change</td></tr>
+</table>
+<p>An equation is one character to the caret: arrows step over it and
+<code>Backspace</code> deletes it whole.</p>
+<p>In a <code>.pptx</code> equations are Office equations, with a picture of each
+displayed equation (and inline maths as text) for programs that cannot show
+those -- LibreOffice Impress among them. In an <code>.odp</code> a displayed equation
+is a formula object, while inline maths in a text box is written as text
+(Impress text boxes cannot hold a formula), so it reads back as text.</p>
+<h1>Saving</h1>
+<p><code>:w</code> writes the deck in the format its name gives it, so <code>:w talk.odp</code> on a
+<code>.pptx</code> is also how one converts. mep reads what a file inherits from its
+masters, layouts and theme and writes every shape out on its own slide:
+the deck looks the same in PowerPoint and Impress afterwards, but its
+placeholders become ordinary text boxes. What mep has no model for --
+animations, transitions, charts, SmartArt, speaker notes' formatting --
+is not kept. A picture mep cannot draw (an EMF or WMF metafile) shows as a
+labelled box and is saved unchanged.</p>
+<h1>Scripting</h1>
+<p><code>mep.pres_info()</code> describes the current slide (its shapes, their positions
+in EMU -- 914400 to the inch -- and their text). <code>mep.pres_goto(n)</code>,
+<code>mep.pres_select(n)</code>, <code>mep.pres_add_slide()</code>, <code>mep.pres_add_shape(kind)</code>,
+<code>mep.pres_set_text(text)</code>, <code>mep.pres_set_geometry(x, y, w, h)</code>,
+<code>mep.pres_style("b")</code>, <code>mep.pres_align("center")</code>,
+<code>mep.pres_color("fill", "#6b8afd")</code>, <code>mep.pres_math(tex)</code>, <code>mep.pres_theme(on)</code>, <code>mep.pres_undo()</code> and <code>mep.pres_redo()</code>
+do what the keys do.</p>
+</body>
+</html>

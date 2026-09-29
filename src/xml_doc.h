@@ -146,6 +146,8 @@ public:
                                   xml_encoding encoding = encoding_utf8);
 
     xml_node child(const char *name) const;
+    // The root element, whatever its name (pugixml's document_element()).
+    xml_node document_element() const;
     xml_node append_child(const char *name);
     xml_node append_child(xml_node_type type);
     void save(std::ostream &os, const char *indent = "", xml_format_flags flags = format_raw) const;

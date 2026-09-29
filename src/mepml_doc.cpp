@@ -1494,6 +1494,26 @@ struct Parser {
         }
         if (slide_close) SlideNeverClosed();
         PresentationChecks();
+        ExportChecks();
+    }
+
+    // `//? Export:` names a format the Run button can make; a Beamer deck
+    // needs slides to hold.
+    void ExportChecks() {
+        for (const Block &b : doc.blocks) {
+            if (b.kind != BlockKind::Meta || Lower(b.keyword) != "export") continue;
+            std::string f = Lower(Trim(b.value));
+            if (!f.empty() && f[0] == '.') f.erase(0, 1);
+            bool known = false;
+            for (const ExportFormat &e : ExportFormats()) known = known || f == e.name;
+            if (!known) {
+                std::string names;
+                for (const ExportFormat &e : ExportFormats()) names += (names.empty() ? "" : " ") + std::string(e.name);
+                Diag(Diagnostic::Warning, b.line_start, 0, Len(L(b.line_start)), "unknown export format '" + f + "' (" + names + ")");
+            } else if (f == "beamer" && slides == 0) {
+                Diag(Diagnostic::Warning, b.line_start, 0, Len(L(b.line_start)), "a Beamer export with no \\slide: the deck is empty");
+            }
+        }
     }
 
     // `//? Type:`: an unknown kind is flagged, and in a presentation so is
@@ -1628,6 +1648,29 @@ std::string MetaValue(const Document &doc, const std::string &key) {
 bool IsPresentation(const Document &doc) {
     const std::string t = Lower(MetaValue(doc, "type"));
     return t == "presentation" || t == "slides";
+}
+
+const std::vector<ExportFormat> &ExportFormats() {
+    static const std::vector<ExportFormat> v = {
+        {"html", "HTML (the default); a presentation's is a slideshow"},
+        {"pdf", "PDF, LaTeX compiled by tectonic; a presentation's is a Beamer deck"},
+        {"beamer", "a Beamer slide deck as PDF, whatever the document's Type"},
+        {"docx", "Word"},
+        {"odt", "OpenDocument text"},
+        {"rtf", "Rich Text"},
+        {"md", "Markdown"},
+        {"org", "Org"},
+        {"tex", "LaTeX source; a presentation's is a Beamer deck"},
+        {"txt", "plain text"},
+        {"pptx", "PowerPoint slides"},
+        {"odp", "Impress slides"},
+        {"markdown", "Markdown (md)"},
+        {"latex", "LaTeX source (tex)"},
+        {"text", "plain text (txt)"},
+        {"powerpoint", "PowerPoint slides (pptx)"},
+        {"impress", "Impress slides (odp)"},
+    };
+    return v;
 }
 
 std::vector<Slide> Slides(const Document &doc, int line_count) {
@@ -3022,8 +3065,8 @@ html, body { height: 100%; }
 body { max-width: none; margin: 0; padding: 0; overflow: hidden; background: #1b1d22; font-size: 26px; line-height: 1.4; }
 .deck { position: absolute; left: 50%; top: 50%; width: 1280px; height: 720px; transform: translate(-50%, -50%) scale(var(--scale, 1)); }
 .slide { position: absolute; inset: 0; margin: 0; padding: 44px 64px 40px; border: 0; border-radius: 0; background: var(--bg);
-  display: flex; flex-direction: column; overflow: hidden; visibility: hidden; box-shadow: 0 10px 40px rgba(0,0,0,.45); }
-.slide.current { visibility: visible; }
+  display: none; flex-direction: column; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,.45); }
+.slide.current { display: flex; }
 .slide > :first-child { margin-top: 0; }
 .slide-title { font-size: 1.6em; margin: 0 0 .55em; padding-bottom: .2em; border-bottom: 3px solid var(--link); flex: none; }
 .slide-body { flex: 1; min-height: 0; transform-origin: top left; }
@@ -3040,12 +3083,20 @@ body { max-width: none; margin: 0; padding: 0; overflow: hidden; background: #1b
 .title-slide .author, .title-slide .date { margin: .2em 0; }
 .slide-number { position: absolute; right: 26px; bottom: 16px; font: 16px system-ui, sans-serif; color: var(--muted); }
 .progress { position: fixed; left: 0; bottom: 0; height: 4px; background: #6b8afd; transition: width .2s; }
+.nav { position: fixed; left: 0; right: 0; bottom: 0; height: 96px; z-index: 10; display: flex; justify-content: center; align-items: center;
+  gap: 18px; text-align: center; opacity: 0; transition: opacity .25s; background: linear-gradient(transparent, rgba(0,0,0,.35)); }
+.nav:hover, .nav:focus-within { opacity: 1; }
+.nav button { width: 52px; height: 52px; border: 0; border-radius: 50%; background: rgba(20,22,27,.8); color: #fff; font: bold 26px/1 system-ui, sans-serif;
+  cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,.4); }
+.nav button:hover { background: #6b8afd; }
+.nav button:disabled { opacity: .3; cursor: default; background: rgba(20,22,27,.8); }
+.nav .count { min-width: 5em; text-align: center; font: 16px system-ui, sans-serif; color: #fff; text-shadow: 0 1px 3px #000; }
 @media print {
   @page { size: 1280px 720px; margin: 0; }
   html, body { height: auto; overflow: visible; background: #fff; }
   .deck { position: static; transform: none; width: 1280px; height: auto; }
-  .slide { position: relative; width: 1280px; height: 720px; visibility: visible; box-shadow: none; break-after: page; }
-  .progress { display: none; }
+  .slide { position: relative; width: 1280px; height: 720px; display: flex; box-shadow: none; break-after: page; }
+  .progress, .nav { display: none; }
 }
 )css";
 
@@ -3056,6 +3107,8 @@ const char *kSlidesJs = R"js(
 (function () {
   var slides = Array.prototype.slice.call(document.querySelectorAll('.deck > .slide'));
   var bar = document.querySelector('.progress');
+  var prev = document.querySelector('.nav .prev'), next = document.querySelector('.nav .next');
+  var count = document.querySelector('.nav .count');
   var cur = 0;
   function fitBody(s) {
     var b = s.querySelector('.slide-body');
@@ -3077,21 +3130,29 @@ const char *kSlidesJs = R"js(
     cur = Math.max(0, Math.min(slides.length - 1, i));
     slides.forEach(function (s, j) { s.classList.toggle('current', j === cur); });
     if (bar) bar.style.width = (slides.length > 1 ? 100 * cur / (slides.length - 1) : 100) + '%';
+    if (prev) prev.disabled = cur === 0;
+    if (next) next.disabled = cur === slides.length - 1;
+    if (count) count.textContent = (cur + 1) + ' / ' + slides.length;
     if (history.replaceState) history.replaceState(null, '', '#' + (cur + 1));
   }
   document.addEventListener('keydown', function (e) {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
     var k = e.key;
-    if (k === 'ArrowRight' || k === 'ArrowDown' || k === 'PageDown' || k === ' ' || k === 'n') show(cur + 1);
-    else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp' || k === 'Backspace' || k === 'p') show(cur - 1);
+    if (k === 'ArrowRight' || k === 'ArrowDown' || k === 'PageDown' || k === ' ' || k === 'n' || k === 'l' || k === '>') show(cur + 1);
+    else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'PageUp' || k === 'Backspace' || k === 'p' || k === 'h' || k === '<') show(cur - 1);
     else if (k === 'Home') show(0);
     else if (k === 'End') show(slides.length - 1);
     else if (k === 'f' && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
     else return;
     e.preventDefault();
   });
+  // The buttons in the bottom strip, which shows itself while the mouse
+  // is over it; a click leaves no focus behind, so Space still steps.
+  function step(d) { return function (e) { show(cur + d); e.currentTarget.blur(); }; }
+  if (prev) prev.addEventListener('click', step(-1));
+  if (next) next.addEventListener('click', step(1));
   document.addEventListener('click', function (e) {
-    if (e.target.closest('a, button, input, select, textarea, video, audio')) return;
+    if (typeof e.clientX !== 'number' || e.target.closest('a, button, input, select, textarea, video, audio, .nav')) return;
     show(e.clientX > window.innerWidth / 2 ? cur + 1 : cur - 1);
   });
   var x0 = null;
@@ -3176,6 +3237,9 @@ std::string ToSlidesHtml(const Document &doc, const HtmlOptions &opts) {
     html += "<script>MathJax = { tex: { inlineMath: [['\\\\(', '\\\\)']] } };</script>\n";
     html += "<script async src=\"https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js\"></script>\n";
     html += "</head>\n<body>\n<main class=\"deck\">\n" + deck + "</main>\n<div class=\"progress\"></div>\n";
+    html += "<nav class=\"nav\"><button class=\"prev\" title=\"Previous (h)\" aria-label=\"Previous slide\">&lt;</button>"
+            "<span class=\"count\"></span>"
+            "<button class=\"next\" title=\"Next (l)\" aria-label=\"Next slide\">&gt;</button></nav>\n";
     html += "<script>" + std::string(kSlidesJs) + "</script>\n</body>\n</html>\n";
     return html;
 }

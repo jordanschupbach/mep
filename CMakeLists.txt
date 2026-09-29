@@ -529,11 +529,16 @@ add_library(mep_core STATIC
     src/sheet_doc.cpp
     src/sheet_xlsx.cpp
     src/sheet_ods.cpp
+    src/office_math.cpp
+    src/pres_doc.cpp
+    src/pres_pptx.cpp
+    src/pres_odp.cpp
     src/js_engine.cpp
     src/http_client.cpp
     src/http_server.cpp
     src/editor.cpp
     src/editor_mepml.cpp
+    src/editor_pres.cpp
     # Another program's window inside the document (mepml exec-gui):
     # gui_embed.cpp is the platform-free half, gui_embed_x11.cpp the X11
     # implementor (compiled to nothing without MEP_GUI_EMBED_X11).
@@ -547,6 +552,7 @@ add_library(mep_core STATIC
     src/maxima_format.cpp
     src/maxima_ast.cpp
     src/math_tex.cpp
+    src/math_markup.cpp
     src/workspace_git.cpp
     ${MEP_GFX_NATIVE_SOURCES}
 )
@@ -1613,6 +1619,15 @@ target_compile_options(mep-mepml-ts-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANIT
 target_link_options(mep-mepml-ts-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-mepml-ts-test)
 
+# The presentation editor's model and its .pptx/.odp readers and writers
+# (src/pres_doc.h) -- no window.
+add_executable(mep-pres-test EXCLUDE_FROM_ALL src/pres_doc_test.cpp src/pres_doc.cpp src/pres_pptx.cpp src/pres_odp.cpp
+    src/office_math.cpp src/math_markup.cpp src/math_tex.cpp src/zip_archive.cpp src/deflate.cpp src/xml_doc.cpp)
+target_include_directories(mep-pres-test PRIVATE src)
+target_compile_options(mep-pres-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pres-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pres-test)
+
 # mepml's converters (src/mepml_export.cpp / mepml_import.cpp) and the
 # pieces of mep they build on: the HTML DOM parser, the office document
 # loaders, the HTML->LaTeX/ODT exporters and the zip writer -- none of
@@ -1621,7 +1636,7 @@ set(MEPML_CONVERT_SOURCES
     src/mepml_doc.cpp src/mepml_export.cpp src/mepml_slides.cpp src/mepml_import.cpp
     src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp
     src/office_doc.cpp src/office_odt.cpp src/doc_export.cpp src/zip_archive.cpp src/deflate.cpp src/xml_doc.cpp src/image_doc.cpp src/image_codec.cpp
-    src/png_codec.cpp src/jpeg_codec.cpp src/gif_codec.cpp src/bmp_codec.cpp)
+    src/png_codec.cpp src/jpeg_codec.cpp src/gif_codec.cpp src/bmp_codec.cpp src/math_tex.cpp src/math_markup.cpp src/office_math.cpp)
 # `mep-mepml convert IN OUT`: every mepml conversion from the command line
 # (built by default and installed beside mep, like mep-org-lsp).
 add_executable(mep-mepml src/mepml_tool.cpp ${MEPML_CONVERT_SOURCES})

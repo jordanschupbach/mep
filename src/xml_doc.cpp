@@ -197,6 +197,11 @@ void xml_document::reset() {
 }
 
 xml_node xml_document::child(const char *name) const { return xml_node(root_.get()).child(name); }
+xml_node xml_document::document_element() const {
+    for (xml_node c = xml_node(root_.get()).first_child(); c; c = c.next_sibling())
+        if (c.type() == node_element) return c;
+    return {};
+}
 xml_node xml_document::append_child(const char *name) { return xml_node(root_.get()).append_child(name); }
 xml_node xml_document::append_child(xml_node_type type) { return xml_node(root_.get()).append_child(type); }
 

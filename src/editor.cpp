@@ -4771,6 +4771,12 @@ void Editor::HandleInput() {
         case Mode::SheetVisual:
             HandleSheetVisualInput();
             break;
+        case Mode::PresNormal:
+            HandlePresNormalInput();
+            break;
+        case Mode::PresInsert:
+            HandlePresInsertInput();
+            break;
         case Mode::KanbanNormal:
             HandleKanbanNormalInput();
             break;
@@ -5675,6 +5681,7 @@ Mode Editor::WheelModeForBuffer(int buffer_id) const {
     if (IsSidebarPaneBuffer(buffer_id)) return Mode::SidebarPane;
     if (IsOfficeBuffer(buffer_id)) return Mode::OfficeNormal;
     if (IsSheetBuffer(buffer_id)) return Mode::SheetNormal;
+    if (IsPresBuffer(buffer_id)) return Mode::PresNormal;
     if (IsKanbanViewActive(buffer_id)) return Mode::KanbanNormal;
     if (IsGanttViewActive(buffer_id)) return Mode::GanttNormal;
     return Mode::Normal;
@@ -5764,6 +5771,10 @@ void Editor::DispatchMouseWheel(float dx, float dy) {
         case Mode::SheetNormal:
         case Mode::SheetVisual:
             WheelScrollSheet(dx, dy);
+            break;
+        case Mode::PresNormal:
+        case Mode::PresInsert:
+            WheelPres(dy);
             break;
         case Mode::Pdf:
         case Mode::PdfNav:
@@ -7191,6 +7202,12 @@ void Editor::SyncModeToActivePaneBuffer() {
     } else if (IsSheetBuffer(CurPane().buffer_id)) {
         // Always re-enters at SheetNormal, same reasoning as Office above.
         mode_ = Mode::SheetNormal;
+    } else if (IsPresBuffer(CurPane().buffer_id)) {
+        // Keeps typing: a click into the text being typed focuses its own
+        // pane (the pane's catch-all click region) mid-edit -- and keeps a
+        // command line a click just opened (double-clicking an equation
+        // puts its TeX there).
+        if (mode_ != Mode::PresInsert && mode_ != Mode::Command) mode_ = Mode::PresNormal;
     } else if (IsKanbanViewActive(CurPane().buffer_id)) {
         // Unlike every branch above, this isn't a buffer *identity* check
         // (a Kanban/Gantt view sits over an ordinary org text buffer) --
@@ -7205,6 +7222,7 @@ void Editor::SyncModeToActivePaneBuffer() {
                mode_ == Mode::Html ||
                mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
                mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual ||
+               mode_ == Mode::PresNormal || mode_ == Mode::PresInsert ||
                mode_ == Mode::KanbanNormal || mode_ == Mode::KanbanInsert || mode_ == Mode::GanttNormal ||
                mode_ == Mode::GanttInsert || mode_ == Mode::Sidebar || mode_ == Mode::SidebarPane) {
         // Mode::Sidebar included here (unlike every other case above,
@@ -11088,6 +11106,27 @@ bool Editor::ClickHtmlNode(int buffer_id, DomNode *node) {
     return proceed;
 }
 
+bool Editor::HoverHtmlNode(int buffer_id, DomNode *node) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return false;
+    HtmlSession &sess = it->second;
+    if (sess.hover_node == node) return false;
+    sess.hover_node = node;
+    std::unordered_set<const DomNode *> chain;
+    for (DomNode *cur = node; cur; cur = cur->parent) chain.insert(cur);
+    bool changed = false;
+    std::function<void(DomNode *)> walk = [&](DomNode *cur) {
+        if (!cur) return;
+        const bool want = chain.count(cur) != 0;
+        if (cur->interaction_hover != want) { cur->interaction_hover = want; changed = true; }
+        for (const auto &child : cur->children) walk(child.get());
+        if (cur->shadow_root) walk(cur->shadow_root.get());
+    };
+    walk(sess.doc.root.get());
+    if (changed) ComputeStyles(sess.doc);
+    return changed;
+}
+
 // Parses `bytes` into `sess`'s DOM and runs its scripts -- shared by
 // OpenHtmlInPlace's create-branch (a fresh HtmlSession) and
 // ReloadHtmlBuffer (an existing one, overwritten in place). Runs any
@@ -11101,6 +11140,7 @@ void Editor::PopulateHtmlSession(HtmlSession &sess, const std::string &origin, c
     sess.source = source;
     sess.js.reset();  // the old page's runtime points into the tree being replaced
     sess.focused_field = nullptr;
+    sess.hover_node = nullptr;
     sess.doc = HtmlDoc();
     ParseHtml(std::string(reinterpret_cast<const char *>(bytes), len), sess.doc);
     const bool remote_origin = origin.rfind("http://", 0) == 0 || origin.rfind("https://", 0) == 0;
@@ -11480,14 +11520,59 @@ void Editor::HandleHtmlInput() {
      * @return True if the key is freshly pressed or repeating this frame.
      */
     auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
-    if (shift && held(gfx::Key::H)) NavigateHtmlHistory(CurPane().buffer_id, -1);
-    if (shift && held(gfx::Key::L)) NavigateHtmlHistory(CurPane().buffer_id, 1);
-    if (held(gfx::Key::J) || held(gfx::Key::Down)) sess->scroll_y += kScrollStep;
-    if (held(gfx::Key::K) || held(gfx::Key::Up)) sess->scroll_y = std::max(0.0f, sess->scroll_y - kScrollStep);
-    if ((ctrl && held(gfx::Key::D)) || held(gfx::Key::PageDown)) {
+    // The page sees a keystroke first, as in a browser: a `keydown` at its
+    // body, and a key a listener calls preventDefault() on is the page's
+    // (a slideshow's h/l or arrows) -- the viewer's own binding for it
+    // below is skipped. Ctrl chords, ':' and the leader stay the editor's.
+    std::vector<int> chars;
+    for (int ch = gfx::GetCharPressed(); ch > 0; ch = gfx::GetCharPressed()) chars.push_back(ch);
+    std::vector<int> page_chars;
+    std::vector<gfx::Key> page_keys;
+    if (sess->js && !ctrl && ScriptsHaveListeners(*sess->js)) {
+        const bool alt = gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt);
+        DomNode *target = sess->doc.root.get();
+        for (const auto &child : sess->doc.root->children) {
+            if (child->tag != "html") continue;
+            target = child.get();
+            for (const auto &grandchild : child->children) if (grandchild->tag == "body") target = grandchild.get();
+        }
+        static const std::pair<gfx::Key, const char *> kNamedKeys[] = {
+            {gfx::Key::Left, "ArrowLeft"}, {gfx::Key::Right, "ArrowRight"}, {gfx::Key::Up, "ArrowUp"}, {gfx::Key::Down, "ArrowDown"},
+            {gfx::Key::PageUp, "PageUp"}, {gfx::Key::PageDown, "PageDown"}, {gfx::Key::Home, "Home"}, {gfx::Key::End, "End"},
+            {gfx::Key::Backspace, "Backspace"}, {gfx::Key::Enter, "Enter"}, {gfx::Key::Tab, "Tab"}, {gfx::Key::Escape, "Escape"}};
+        for (const auto &[key, name] : kNamedKeys) {
+            if (held(key) && !ScriptsDispatchKey(*sess->js, target, "keydown", name, name, shift, false, alt)) page_keys.push_back(key);
+        }
+        for (const int ch : chars) {
+            if (ch == ':' || ch == static_cast<int>(leader_key_)) continue;
+            std::string key;
+            const unsigned cp = static_cast<unsigned>(ch);
+            if (cp < 0x80) key += static_cast<char>(cp);
+            else if (cp < 0x800) { key += static_cast<char>(0xC0 | (cp >> 6)); key += static_cast<char>(0x80 | (cp & 0x3F)); }
+            else if (cp < 0x10000) { key += static_cast<char>(0xE0 | (cp >> 12)); key += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); key += static_cast<char>(0x80 | (cp & 0x3F)); }
+            else { key += static_cast<char>(0xF0 | (cp >> 18)); key += static_cast<char>(0x80 | ((cp >> 12) & 0x3F)); key += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); key += static_cast<char>(0x80 | (cp & 0x3F)); }
+            std::string code;
+            if (cp < 0x80 && std::isalpha(ch)) code = std::string("Key") + static_cast<char>(std::toupper(ch));
+            else if (cp < 0x80 && std::isdigit(ch)) code = std::string("Digit") + static_cast<char>(ch);
+            else if (ch == ' ') code = "Space";
+            if (!ScriptsDispatchKey(*sess->js, target, "keydown", key, code, shift, false, alt)) page_chars.push_back(ch);
+        }
+        // A listener may have navigated or replaced the page.
+        auto again = htmldocs_.find(CurPane().buffer_id);
+        if (again == htmldocs_.end()) return;
+        sess = &again->second;
+    }
+    auto page_took = [&](gfx::Key key) { return std::find(page_keys.begin(), page_keys.end(), key) != page_keys.end(); };
+    auto page_took_char = [&](int ch) { return std::find(page_chars.begin(), page_chars.end(), ch) != page_chars.end(); };
+    if (shift && held(gfx::Key::H) && !page_took_char('H')) NavigateHtmlHistory(CurPane().buffer_id, -1);
+    if (shift && held(gfx::Key::L) && !page_took_char('L')) NavigateHtmlHistory(CurPane().buffer_id, 1);
+    if ((held(gfx::Key::J) && !page_took_char('j')) || (held(gfx::Key::Down) && !page_took(gfx::Key::Down))) sess->scroll_y += kScrollStep;
+    if ((held(gfx::Key::K) && !page_took_char('k')) || (held(gfx::Key::Up) && !page_took(gfx::Key::Up)))
+        sess->scroll_y = std::max(0.0f, sess->scroll_y - kScrollStep);
+    if ((ctrl && held(gfx::Key::D)) || (held(gfx::Key::PageDown) && !page_took(gfx::Key::PageDown))) {
         sess->scroll_y += static_cast<float>(sess->viewport_h) * 0.5f;
     }
-    if ((ctrl && held(gfx::Key::U)) || held(gfx::Key::PageUp)) {
+    if ((ctrl && held(gfx::Key::U)) || (held(gfx::Key::PageUp) && !page_took(gfx::Key::PageUp))) {
         sess->scroll_y = std::max(0.0f, sess->scroll_y - static_cast<float>(sess->viewport_h) * 0.5f);
     }
     // Mirrors PdfSession::theme_colors' own Ctrl-R toggle (HandlePdfInput) --
@@ -11531,8 +11616,8 @@ void Editor::HandleHtmlInput() {
     // so any value at or past the true bottom lands exactly on it. Every
     // other printable key is a deliberate no-op -- there's no text to
     // insert/operate on.
-    int cp = gfx::GetCharPressed();
-    while (cp > 0) {
+    for (const int cp : chars) {
+        if (page_took_char(cp)) continue;
         if (cp == 'g') {
             if (pending_g_) {
                 pending_g_ = false;
@@ -11568,7 +11653,6 @@ void Editor::HandleHtmlInput() {
                 link_hint_request_ = true;
             }
         }
-        cp = gfx::GetCharPressed();
     }
 }
 
@@ -11661,6 +11745,31 @@ float Editor::PdfPageScreenHeightPx(PdfSession &sess, int page_index) {
     return static_cast<float>(PdfPageSizePt(sess, page_index).second * static_cast<double>(sess.rendered_scale) * static_cast<double>(sess.zoom));
 }
 
+void Editor::FitPdfPage(PdfSession &sess) {
+    if (sess.viewport_w <= 0 || sess.viewport_h <= 0 || !sess.doc || sess.doc->PageCount() <= 0) return;
+    auto [pw, ph] = PdfPageSizePt(sess, sess.page);
+    const double base_w = pw * static_cast<double>(sess.rendered_scale), base_h = ph * static_cast<double>(sess.rendered_scale);
+    if (base_w <= 0 || base_h <= 0) return;
+    const float fit = std::min(static_cast<float>(sess.viewport_w) / static_cast<float>(base_w),
+                               static_cast<float>(sess.viewport_h) / static_cast<float>(base_h));
+    sess.zoom = std::clamp(fit, kMinPdfZoom, kMaxPdfZoom);
+    sess.pan_x = 0;
+    sess.scroll_y = 0;
+    SettlePdfZoom(sess);
+}
+
+void Editor::RequestPdfFitPage(int buffer_id) {
+    PdfBufferState *state = PdfBufferFor(buffer_id);
+    if (!state) return;
+    bool fitted = false;
+    for (auto &[pane_id, sess] : pdfs_) {
+        if (sess.buffer_id != buffer_id || sess.viewport_w <= 0 || sess.viewport_h <= 0) continue;
+        FitPdfPage(sess);
+        fitted = true;
+    }
+    state->fit_page_pending = !fitted;
+}
+
 void Editor::ResizePdfViewport(int pane_id, int w, int h) {
     auto it = pdfs_.find(pane_id);
     if (it == pdfs_.end()) return;
@@ -11668,6 +11777,10 @@ void Editor::ResizePdfViewport(int pane_id, int w, int h) {
     sess.viewport_w = w;
     sess.viewport_h = h;
     if (!sess.doc || sess.doc->PageCount() <= 0) return;
+    if (PdfBufferState *state = PdfBufferFor(sess.buffer_id); state && state->fit_page_pending && w > 0 && h > 0) {
+        state->fit_page_pending = false;
+        FitPdfPage(sess);
+    }
     double page_w_pt = PdfPageSizePt(sess, sess.page).first;
     int page_w_px = static_cast<int>(page_w_pt * static_cast<double>(sess.rendered_scale) * static_cast<double>(sess.zoom));
     int max_pan_x = std::max(0, page_w_px - w);
@@ -13012,11 +13125,7 @@ void Editor::HandlePdfInput() {
     // this, since rendered_scale absorbs exactly the zoom drift being
     // removed, leaving each page's on-screen size unchanged. SettlePdfZoom/
     // ApplyPdfZoom (editor.h) do the actual work -- also reused by
-    // HandleMouseWheel's Pdf branch for Ctrl-scroll.
-    /**
-     * @brief Settles the current PDF zoom, folding excess zoom into rendered_scale and clearing cached rasters when out of range.
-     */
-    auto settle_zoom = [&]() { SettlePdfZoom(*sess); };
+    // HandleMouseWheel's Pdf branch for Ctrl-scroll, and `=` is FitPdfPage.
     /**
      * @brief Applies a new zoom level to the current PDF session, re-anchored on the viewport center.
      * @param new_zoom The target zoom factor.
@@ -13063,17 +13172,8 @@ void Editor::HandlePdfInput() {
             apply_zoom(sess->zoom * kPdfZoomStep);
         } else if (cp == '-') {
             apply_zoom(sess->zoom / kPdfZoomStep);
-        } else if (cp == '=' && sess->viewport_w > 0 && sess->viewport_h > 0) {
-            auto [pw, ph] = PdfPageSizePt(*sess, sess->page);
-            double base_w = pw * static_cast<double>(sess->rendered_scale), base_h = ph * static_cast<double>(sess->rendered_scale);
-            if (base_w > 0 && base_h > 0) {
-                float fit = std::min(static_cast<float>(sess->viewport_w) / static_cast<float>(base_w),
-                                      static_cast<float>(sess->viewport_h) / static_cast<float>(base_h));
-                sess->zoom = std::clamp(fit, kMinPdfZoom, kMaxPdfZoom);
-                sess->pan_x = 0;
-                sess->scroll_y = 0;
-                settle_zoom();
-            }
+        } else if (cp == '=') {
+            FitPdfPage(*sess);
         } else if (nav && cp >= '0' && cp <= '9') {
             // Count prefix for Space/f/b, accumulated into the shared
             // pending_count_ (same digit rules as normal mode's own count:
@@ -14393,6 +14493,14 @@ void Editor::SetOfficeZoom(float factor) {
 }
 
 // --- Spreadsheet panes --------------------------------------------------
+
+bool Editor::WantsFullFrameRate() const {
+    for (const auto &kv : video_sessions_)
+        if (kv.second.playing) return true;
+    for (const auto &kv : viewer_sessions_)
+        if (kv.second.playing) return true;
+    return false;
+}
 
 bool Editor::IsSheetBuffer(int buffer_id) const { return sheetdocs_.find(buffer_id) != sheetdocs_.end(); }
 
@@ -22287,8 +22395,14 @@ void Editor::HandleCommandInput() {
         UpdateCmdlineCompletion();
         return;
     }
+    // Back from the command line to a presentation's own mode (EnterNormal
+    // is plain Normal, which a deck's keys do not go through).
+    auto back_to_pres = [this] {
+        if (mode_ == Mode::Normal && IsPresBuffer(CurPane().buffer_id)) SyncModeToActivePaneBuffer();
+    };
     if (escape) {
         EnterNormal();
+        back_to_pres();
         return;
     }
     if (enter) {
@@ -22298,6 +22412,7 @@ void Editor::HandleCommandInput() {
             command_history_.push_back(cmd);
         }
         ExecuteCommandLine(cmd);
+        back_to_pres();
         return;
     }
     if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
@@ -25647,7 +25762,7 @@ bool Editor::IsQuickJumpTextBuffer(int buffer_id) const {
            !IsPdfBuffer(buffer_id) &&
            !IsVideoBuffer(buffer_id) &&
            !IsHtmlBuffer(buffer_id) && !IsSidebarPaneBuffer(buffer_id) && !IsOfficeBuffer(buffer_id) &&
-           !IsSheetBuffer(buffer_id) && !IsKanbanViewActive(buffer_id) && !IsGanttViewActive(buffer_id);
+           !IsSheetBuffer(buffer_id) && !IsPresBuffer(buffer_id) && !IsKanbanViewActive(buffer_id) && !IsGanttViewActive(buffer_id);
 }
 
 void Editor::BeginQuickJump() {
@@ -26183,6 +26298,8 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::OfficeVisual: return "VISUAL";
         case Mode::SheetNormal: return "NORMAL";
         case Mode::SheetInsert: return "INSERT";
+        case Mode::PresNormal: return "NORMAL";
+        case Mode::PresInsert: return "INSERT";
         case Mode::SheetVisual: return "VISUAL";
         case Mode::KanbanNormal: return "NORMAL";
         case Mode::KanbanInsert: return "INSERT";
@@ -26249,7 +26366,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "bnext", "bn", "bprevious", "bprev", "bp", "bNext", "bN", "bdelete", "bd", "bdelete!", "bd!",
         "set", "normal", "norm", "normal!", "norm!", "MepNotifyClear", "MepNotifyDismiss",
         "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "MepPaneZoom", "colorscheme", "colo", "lua", "source",
-        "MepNextSheet", "MepPrevSheet", "Model3DNew", "SketchNew", "CadNew", "CadExport", "Viewer", "ViewerBind", "ViewerRun", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave",
+        "MepNextSheet", "MepPrevSheet", "PresNew", "PresImage", "PresExport", "PresPresent", "PresBackground", "PresMath", "Model3DNew", "SketchNew", "CadNew", "CadExport", "Viewer", "ViewerBind", "ViewerRun", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave",
         "CollabStatus", "AgentSocket",
     };
     return kNames;
@@ -28686,6 +28803,16 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
                     } else {
                         status_message_ = "E521: Number required after =: " + opt;
                     }
+                } else if (key == "idlefps") {
+                    // How often an idle mep redraws (0 = every frame, as
+                    // busy as when in use) -- see Editor::IdleFps.
+                    char *val_end = nullptr;
+                    long v = std::strtol(val.c_str(), &val_end, 10);
+                    if (val_end != val.c_str() && *val_end == '\0' && v >= 0 && v <= 1000) {
+                        idle_fps_ = static_cast<int>(v);
+                    } else {
+                        status_message_ = "E521: Number required after =: " + opt;
+                    }
                 } else if (key == "caretdelay" || key == "caretrate") {
                     // How long a held motion key waits before the caret
                     // starts repeating (ms) and how fast it repeats once
@@ -28754,6 +28881,34 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         NextSheet();
     } else if (name == "MepPrevSheet") {
         PrevSheet();
+    } else if (name == "PresNew" || name == "PresImage" || name == "PresExport" || name == "PresPresent" || name == "PresBackground" ||
+               name == "PresMath") {
+        const size_t arg_a = args.find_first_not_of(" \t"), arg_z = args.find_last_not_of(" \t");
+        const std::string arg = arg_a == std::string::npos ? std::string() : args.substr(arg_a, arg_z - arg_a + 1);
+        PresSession *sess = GetPresMutable(CurPane().buffer_id);
+        if (name == "PresNew") {
+            // :PresNew [path] -- a new slide deck, to be saved as `path`.
+            NewPresentationBuffer(arg);
+        } else if (!sess) {
+            status_message_ = "E: :" + name + " works in a presentation (.pptx/.odp) buffer";
+        } else if (name == "PresImage") {
+            // :PresImage <path> -- a picture on the current slide.
+            if (!PresInsertImage(*sess, arg)) status_message_ = "E: cannot insert picture \"" + arg + "\"";
+        } else if (name == "PresExport") {
+            // :PresExport <path> -- a copy in the format the path names; the
+            // buffer keeps its own file.
+            std::string err;
+            if (PresExport(*sess, arg, &err)) status_message_ = "exported " + arg;
+            else status_message_ = "E: " + err;
+        } else if (name == "PresPresent") {
+            PresTogglePresenting(*sess);
+        } else if (name == "PresMath") {
+            // :PresMath <tex> -- maths: inline while typing, else an equation.
+            PresMath(*sess, arg);
+        } else {
+            // :PresBackground <#rrggbb|none>
+            PresSetBackground(*sess, arg == "none" ? std::string() : pres::NormalizeColor(arg));
+        }
     } else if (name == "Model3DNew") {
         NewModel3DScene();
     } else if (name == "CadNew") {
@@ -32065,6 +32220,23 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
         save_epoch_++;
         return true;
     }
+    // A deck is written in the format its path names -- so `:w deck.odp`
+    // on a .pptx is also how one converts.
+    if (IsPresBuffer(buffer_id)) {
+        PresSession &sess = presdocs_.at(buffer_id);
+        std::string err;
+        if (!pres::Save(sess.doc, io_path, &err)) {
+            status_message_ = "E212: Can't write \"" + path + "\": " + err;
+            return false;
+        }
+        buf.filename = path;
+        buf.modified = false;
+        sess.modified = false;
+        save_epoch_++;
+        status_message_ = "\"" + path + "\" written, " + std::to_string(sess.doc.slides.size()) + " slide" +
+                          (sess.doc.slides.size() == 1 ? "" : "s");
+        return true;
+    }
     if (IsSheetBuffer(buffer_id)) {
         auto it = sheetdocs_.find(buffer_id);
         if (it == sheetdocs_.end()) {
@@ -32746,6 +32918,13 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
             OpenNotebookInPlace(path, text);
         }
 #endif
+        SyncModeToActivePaneBuffer();
+        return;
+    }
+    // A slide deck: the presentation editor (src/editor_pres.cpp). A path
+    // that does not exist yet starts a new deck to be saved there.
+    if (pres::IsPresentationPath(path)) {
+        OpenPresInPlace(path);
         SyncModeToActivePaneBuffer();
         return;
     }

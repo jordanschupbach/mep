@@ -1,4 +1,5 @@
 #include "tcp_client.h"
+#include "frame_activity.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -132,8 +133,11 @@ void TcpConnection::ReaderLoop() {
     for (;;) {
         ssize_t n = read(fd_, buf, sizeof(buf));
         if (n > 0) {
-            std::lock_guard<std::mutex> lk(mu_);
-            pending_.emplace_back(buf, static_cast<size_t>(n));
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                pending_.emplace_back(buf, static_cast<size_t>(n));
+            }
+            mep::WakeMainLoop();
         } else if (n == 0) {
             break;  // peer closed
         } else {
@@ -195,7 +199,10 @@ void TcpJsonRpcManager::PollAll() {
         std::shared_ptr<TcpConnection> conn = conns_[i].conn;
         auto on_data_raw = conns_[i].callbacks.on_data_raw;
         if (on_data_raw) {
-            for (const std::string &chunk : conn->DrainRaw()) on_data_raw(chunk);
+            for (const std::string &chunk : conn->DrainRaw()) {
+                mep::NoteActivity();
+                on_data_raw(chunk);
+            }
         }
         if (conn->Finished() && !conns_[i].exit_reported) {
             conns_[i].exit_reported = true;

@@ -6885,6 +6885,11 @@ Value WrapDomNode(HtmlDoc &doc, DomNode *node) {
     class_list->props["toggle"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) {
         if (args.empty() || args[0].type != VType::String) return Value::Bool(false);
         bool had = DomHasClass(node, args[0].str);
+        // toggle(name, force): force true only adds, false only removes.
+        if (args.size() > 1 && args[1].type != VType::Undefined) {
+            const bool want = args[1].Truthy();
+            if (want == had) return Value::Bool(want);
+        }
         if (had) { std::istringstream words(node->Class()); std::string word, classes; while (words >> word) if (word != args[0].str) classes += (classes.empty() ? "" : " ") + word; node->attrs["class"] = classes; }
         else node->attrs["class"] += (node->Class().empty() ? "" : " ") + args[0].str;
         MarkHtmlStyleDirty();
@@ -6893,6 +6898,24 @@ Value WrapDomNode(HtmlDoc &doc, DomNode *node) {
     wrapper->props["classList"] = Value::Obj(class_list);
     auto style = std::make_shared<ObjectData>();
     style->style_node = node;
+    // setProperty/getPropertyValue/removeProperty take the CSS name
+    // ("--scale", "background-color"), which is what the camelCase
+    // property path above already writes; a fresh wrapper per call keeps
+    // the functions from holding `style` itself alive.
+    auto style_for = [node]() { auto s = std::make_shared<ObjectData>(); s->style_node = node; return s; };
+    style->props["setProperty"] = MakeNativeFn([style_for](const std::vector<Value> &args, bool &, std::string &) {
+        if (!args.empty()) SetProp(style_for(), ToDisplayString(args[0]), args.size() > 1 ? Value::Str(ToDisplayString(args[1])) : Value::Str(""));
+        return Value::Undef();
+    });
+    style->props["getPropertyValue"] = MakeNativeFn([style_for](const std::vector<Value> &args, bool &, std::string &) {
+        if (args.empty()) return Value::Str("");
+        Value v = GetProp(style_for(), ToDisplayString(args[0]));
+        return v.type == VType::String ? v : Value::Str("");
+    });
+    style->props["removeProperty"] = MakeNativeFn([style_for](const std::vector<Value> &args, bool &, std::string &) {
+        if (!args.empty()) SetProp(style_for(), ToDisplayString(args[0]), Value::Str(""));
+        return Value::Str("");
+    });
     wrapper->props["style"] = Value::Obj(style);
     return Value::Obj(wrapper);
 }
@@ -8543,6 +8566,30 @@ bool ScriptsDispatchEvent(JsRuntime &runtime, DomNode *node, const std::string &
     ReportAbrupt(runtime, "microtask error", DrainMicrotasks(runtime.interp));
     ComputeStyles(*runtime.doc);
     return proceed;
+}
+
+bool ScriptsDispatchKey(JsRuntime &runtime, DomNode *node, const std::string &type, const std::string &key, const std::string &code,
+                        bool shift, bool ctrl, bool alt) {
+    if (!node) return true;
+    ActiveRuntime active(runtime);
+    bool threw = false;
+    std::string error;
+    runtime.interp.steps = 0;
+    Value event = MakeSyntheticEvent(type, true, true);
+    event.obj->props["key"] = Value::Str(key);
+    event.obj->props["code"] = Value::Str(code);
+    event.obj->props["shiftKey"] = Value::Bool(shift);
+    event.obj->props["ctrlKey"] = Value::Bool(ctrl);
+    event.obj->props["altKey"] = Value::Bool(alt);
+    event.obj->props["metaKey"] = Value::Bool(false);
+    event.obj->props["repeat"] = Value::Bool(false);
+    event.obj->props["isTrusted"] = Value::Bool(true);
+    std::vector<Value> args{event};
+    const Value result = DispatchDomEvent(runtime.interp, runtime.doc, node, args, threw, error);
+    if (threw) runtime.on_error("event error: " + error);
+    ReportAbrupt(runtime, "microtask error", DrainMicrotasks(runtime.interp));
+    ComputeStyles(*runtime.doc);
+    return !threw && result.Truthy();
 }
 
 bool ScriptsHaveListeners(JsRuntime &runtime) {

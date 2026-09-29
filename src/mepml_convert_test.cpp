@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "math_markup.h"
 #include "mepml_convert.h"
 #include "mepml_doc.h"
 #include "zip_archive.h"
@@ -379,6 +380,14 @@ void TestPresentation() {
     CHECK(tex.find("\\begin{tabular}") != std::string::npos && tex.find("longtable") == std::string::npos);
     CHECK(tex.find("Prose on no slide") == std::string::npos);
     CHECK(tex.find("\\section") == std::string::npos);
+    // ToBeamer (//? Export: beamer): the deck whatever the Type, and an
+    // error rather than an empty deck when there are no slides.
+    Lines as_document = src;
+    as_document[3] = "//? Type: document";
+    const Document as_doc = Parse(as_document);
+    CHECK(!IsPresentation(as_doc) && ToLatex(as_doc, ".").find("{beamer}") == std::string::npos);
+    CHECK(ToBeamer(as_doc, ".", &err) == tex);
+    CHECK(ToBeamer(Parse({"//? Title: No slides", "", "Text."}), ".", &err).empty() && err.find("no \\slide") != std::string::npos);
 
     const std::string html_path = Temp("deck.html");
     CHECK(ExportFile(doc, html_path, ".", &err));
@@ -402,6 +411,9 @@ void TestPresentation() {
     CHECK(Entry(pptx, "ppt/slides/_rels/slide2.xml.rels", &part));
     CHECK(part.find("Target=\"https://example.com\" TargetMode=\"External\"") != std::string::npos);
     CHECK(Entry(pptx, "ppt/slides/slide3.xml", &part) && part.find("<p:pic>") != std::string::npos && part.find("print(1)") != std::string::npos);
+    // The code's results are a box of their own, marked by a bar.
+    CHECK(part.find("name=\"Code ") != std::string::npos && part.find("name=\"Output bar ") != std::string::npos);
+    CHECK(part.find("name=\"Output ") > part.find("name=\"Code "));
     CHECK(Entry(pptx, "ppt/media/image1.png", &part));
     CHECK(Entry(pptx, "[Content_Types].xml", &part) && part.find("/ppt/slides/slide3.xml") != std::string::npos);
     CHECK(Entry(pptx, "ppt/presentation.xml", &part) && Count(part, "<p:sldId ") == 3);
@@ -414,6 +426,8 @@ void TestPresentation() {
     CHECK(Count(part, "<draw:page ") == 3 && part.find("<table:table>") != std::string::npos);
     CHECK(part.find("xlink:href=\"https://example.com\"") != std::string::npos);
     CHECK(part.find("Pictures/image1.png") != std::string::npos && part.find("Prose on no slide") == std::string::npos);
+    CHECK(part.find("draw:style-name=\"grCode\"") < part.find("draw:style-name=\"grOutputBar\""));
+    CHECK(part.find("draw:style-name=\"grOutput\"") != std::string::npos);
     CHECK(Entry(odp, "Pictures/image1.png", &part));
     CHECK(Entry(odp, "META-INF/manifest.xml", &part) && part.find("Pictures/image1.png") != std::string::npos);
 
@@ -427,6 +441,86 @@ void TestPresentation() {
     CHECK(ToLatex(article, ".").find("{article}") != std::string::npos);
     CHECK(ExportFile(article, Temp("article.pptx"), ".", &err));  // its slides still make a deck
 }
+
+// Maths in the decks: each format's own equations, never TeX source. A
+// .pptx carries Office Math behind a fallback -- a picture when there is
+// a renderer (the editor's typesetter), else typeset text -- and a .odp a
+// formula object (MathML) per display equation and typeset text inline.
+void TestPresentationMath() {
+    const Document doc = Parse({"//? Type: presentation", "", "\\slide(", "> Maths", "Inline $\\alpha^2$ here.", "",
+                                "$$", "\\frac{a}{b}", "$$", "", "Half $\\frac{1}{2}$ *and* more.", "", "- An item with $\\sqrt{x+y}$", ")"});
+    std::string err, part;
+
+    SetMathPictureRenderer(nullptr);
+    const std::string pptx_path = Temp("math.pptx");
+    CHECK(ExportFile(doc, pptx_path, ".", &err));
+    std::string pptx = ReadAll(pptx_path);
+    CHECK(Entry(pptx, "ppt/slides/slide1.xml", &part));
+    CHECK(part.find("\\frac") == std::string::npos && part.find("\\alpha") == std::string::npos);
+    CHECK(Count(part, "<mc:AlternateContent>") == 3);  // the two text boxes with inline maths, and the equation
+    CHECK(part.find("<a14:m><m:oMathPara>") != std::string::npos && part.find("<m:f><m:num>") != std::string::npos);
+    CHECK(part.find("<a14:m><m:oMath>") != std::string::npos);
+    CHECK(part.find(">α</a:t>") != std::string::npos && part.find("baseline=\"30000\"><a:latin") != std::string::npos);
+    CHECK(part.find(">/</a:t>") != std::string::npos);  // no renderer: the equation's fallback is text (a/b)
+    CHECK(part.find("<p:pic>") == std::string::npos);
+
+    int rendered = 0;
+    SetMathPictureRenderer([&](const std::string &tex, bool display, double pt, MathPicture *out) {
+        CHECK(tex.find("\\frac{a}{b}") != std::string::npos && display && pt > 10);
+        ++rendered;
+        out->png = "\x89PNG";
+        out->width_pt = 30;
+        out->height_pt = 40;
+        return true;
+    });
+    CHECK(ExportFile(doc, pptx_path, ".", &err));
+    SetMathPictureRenderer(nullptr);
+    pptx = ReadAll(pptx_path);
+    CHECK(rendered == 1);
+    CHECK(Entry(pptx, "ppt/slides/slide1.xml", &part));
+    const size_t fallback = part.find("<mc:Fallback><p:pic>");
+    CHECK(fallback != std::string::npos);
+    CHECK(part.find("<a:ext cx=\"381000\" cy=\"508000\"/>", fallback) != std::string::npos);  // 30 x 40 pt
+    CHECK(Entry(pptx, "ppt/media/image1.png", &part) && part == "\x89PNG");
+
+    const std::string odp_path = Temp("math.odp");
+    CHECK(ExportFile(doc, odp_path, ".", &err));
+    const std::string odp = ReadAll(odp_path);
+    CHECK(Entry(odp, "content.xml", &part));
+    CHECK(part.find("\\frac") == std::string::npos && part.find("\\alpha") == std::string::npos);
+    CHECK(part.find("<draw:object xlink:href=\"./Object 1\"") != std::string::npos);
+    CHECK(part.find(">α</text:span>") != std::string::npos && part.find("style:text-position=\"super 58%\"") != std::string::npos);
+    CHECK(Entry(odp, "Object 1/content.xml", &part));
+    CHECK(part.find("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\">") != std::string::npos);
+    CHECK(part.find("<mfrac><mi>a</mi><mi>b</mi></mfrac>") != std::string::npos);
+    CHECK(Entry(odp, "Object 1/settings.xml", &part) && part.find("BaseFontHeight") != std::string::npos);
+    CHECK(Entry(odp, "META-INF/manifest.xml", &part));
+    CHECK(part.find("manifest:full-path=\"Object 1/\" manifest:version=\"1.3\" manifest:media-type=\"application/vnd.oasis.opendocument.formula\"") !=
+          std::string::npos);
+    // Inline maths that needs two dimensions takes its paragraph with it:
+    // one formula, laid out by LibreOffice from StarMath, the words in the
+    // body's face. Maths that reads as a line stays text, in a serif.
+    CHECK(Entry(odp, "content.xml", &part));
+    CHECK(part.find(">Half") == std::string::npos && part.find(">Inline") != std::string::npos);
+    CHECK(part.find("fo:font-family=\"'Liberation Serif'\"") != std::string::npos);
+    CHECK(part.find(">•</text:span>") != std::string::npos);  // the item's label, beside its formula
+    CHECK(Entry(odp, "Object 2/content.xml", &part));
+    CHECK(part.find("<annotation encoding=\"StarMath 5.0\">alignl font sans &quot;Half &quot; {") != std::string::npos);
+    CHECK(part.find(" over ") != std::string::npos && part.find("} font sans &quot; &quot; font sans bold &quot;and&quot; font sans &quot; more.&quot;<") != std::string::npos);
+    CHECK(part.find("<mtext mathvariant=\"sans-serif\">Half\u00a0</mtext><mfrac>") != std::string::npos);
+    CHECK(Entry(odp, "Object 3/content.xml", &part) && part.find("sqrt{") != std::string::npos);
+    // (A .pptx keeps its paragraphs: PowerPoint sets equations inline.)
+    CHECK(Entry(pptx, "ppt/slides/slide1.xml", &part) && part.find(">Half </a:t>") != std::string::npos);
+
+    CHECK(!TexNeedsLayout("\\alpha^2 + x_i") && !TexNeedsLayout("\\sqrt{x}") && !TexNeedsLayout("a \\le b"));
+    CHECK(TexNeedsLayout("x_i^2") && TexNeedsLayout("\\frac{a}{b}") && TexNeedsLayout("\\sqrt{x+1}") && TexNeedsLayout("\\sum_i x_i") &&
+          TexNeedsLayout("\\hat{\\beta}"));
+    // StarMath: operators bare, prose quoted, delimiters escaped, faces explicit.
+    CHECK(TexToStarMath("a + b") == "{ital a + ital b}");
+    CHECK(TexToStarMath("(a, b]") == "{\\( ital a , ital b \\]}");
+    CHECK(TexToStarMath("\\text{if and}") == "{\"if and\"}");
+    CHECK(TexToStarMath("\\Lambda") == "{nitalic Λ}");
+}
 }  // namespace
 
 int main() {
@@ -434,6 +528,7 @@ int main() {
     TestEscaping();
     TestPackages();
     TestPresentation();
+    TestPresentationMath();
     TestReference();
     std::error_code ec;
     std::filesystem::remove_all(std::filesystem::path(Temp("x")).parent_path(), ec);

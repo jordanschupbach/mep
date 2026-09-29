@@ -157,8 +157,11 @@ and both are flagged as never closed. A slide left open runs to the next
 <code>\slide(</code> or the end of the document. The language server offers to close
 it. Content on the opening line itself (<code>\slide(text)</code>) is flagged. The
 content goes on the lines after the opener.</p>
-<p>The editor draws the opener as a rule labelled <i>Slide N: title</i> and the
-closer as a plain rule. A slide folds as one block and appears in the
+<p>The editor draws a slide as a card: the opener becomes its title bar,
+labelled <i>Slide N</i>, and the closer its bottom edge, with the cards of the
+code blocks and results on the slide set inside it. A slide still missing
+its closer is drawn as a rule labelled <i>Slide N: title</i> instead. A slide
+folds as one block, collapsing to its title bar, and appears in the
 outline. In an ordinary document, the HTML export puts each slide in a
 <code>&lt;section class</code>"slide"&gt;=, and the other document exports keep a slide's
 content as ordinary blocks, without the slide boundaries.</p>
@@ -178,8 +181,9 @@ from <code>Title</code>, <code>Subtitle</code>, <code>Author</code> and <code>Da
 <tr><td><code>pptx</code></td><td>a PowerPoint deck</td></tr>
 <tr><td><code>odp</code></td><td>a LibreOffice Impress deck</td></tr>
 </table>
-<p>In the slideshow, the arrow keys, space, a click or a swipe step through
-the slides, <code>Home</code> and <code>End</code> jump to either end, and <code>f</code> goes full screen.
+<p>In the slideshow, <code>h</code> and <code>l</code>, the arrow keys, space, a click or a swipe step
+through the slides, as do the <code>&lt;</code> and <code>&gt;</code> buttons that show when the mouse
+is over the bottom of the window. <code>Home</code> and <code>End</code> jump to either end, and <code>f</code> goes full screen.
 Printing it gives one slide per page. Slides are 16:9 in every format. A
 slide whose content is too tall for it is shrunk to fit: the slideshow
 scales it down, and the PowerPoint and Impress decks use smaller type.</p>
@@ -190,8 +194,12 @@ can also be made from an ordinary document that has slides.
 <p>In the PowerPoint and Impress decks, a slide's text, lists, code and
 results, tables and pictures are real text boxes, tables and pictures you
 can edit. A single picture beside text goes on the right. Footnotes go at
-the bottom of their slide. Maths is shown as its TeX source, as in the
-Word export.</p>
+the bottom of their slide. Maths is set as real equations: Office
+equations in PowerPoint, formula objects in Impress. Inline maths in
+Impress is typeset text (a text box cannot hold a formula), and so is
+every equation in a <code>pptx</code> opened by a program without Office equations,
+except that a deck exported from mep's editor (rather than by
+<code>mep-mepml</code>) shows its display equations there as pictures.</p>
 <h1>Inline formatting</h1>
 <table>
 <tr><th>Markup</th><th>Result</th></tr>
@@ -521,10 +529,11 @@ instead of opening another. It exports HTML unless the header names a
 format:</p>
 <pre>//? Title: My report
 //? Export: pdf</pre>
-<p>Any format the table below lists works (<code>html</code>, <code>pdf</code>, <code>docx</code>, <code>odt</code>,
+<p>Any format the table below lists works (<code>html</code>, <code>pdf</code>, <code>beamer</code>, <code>docx</code>, <code>odt</code>,
 <code>rtf</code>, <code>md</code>, <code>org</code>, <code>tex</code>, <code>txt</code>, <code>pptx</code>, <code>odp</code>). <code>Export:</code> is singular: <code>//? Exports:</code>
 is a different key, choosing which parts of each code block the exports
-show.</p>
+show. <code>beamer</code> is the <code>\slide</code> blocks as a Beamer PDF whatever the
+document's <code>Type</code>, and a slide-deck PDF opens sized to show a whole slide.</p>
 <p><code>&lt;leader&gt;ke</code> (or <code>:MepmlExport</code>) exports the document beside its file,
 <code>notes.mepml</code> becoming <code>notes.docx</code> and so on. Imports are expanded and
 pictures are embedded where the format can hold them:</p>
@@ -532,6 +541,7 @@ pictures are embedded where the format can hold them:</p>
 <tr><th>Format</th><th>Written as</th></tr>
 <tr><td>HTML</td><td>a standalone page (<code>&lt;leader&gt;ko</code> opens it)</td></tr>
 <tr><td>PDF</td><td>the LaTeX export, compiled by <code>tectonic</code> in the background</td></tr>
+<tr><td>Beamer (<code>beamer</code>)</td><td>the slides as a Beamer deck, compiled to PDF the same way</td></tr>
 <tr><td>Word (<code>.docx</code>)</td><td>named styles, real lists, footnotes, links, embedded images</td></tr>
 <tr><td>OpenDocument (<code>.odt</code>)</td><td>the same, for LibreOffice</td></tr>
 <tr><td>Rich Text (<code>.rtf</code>)</td><td>the same, with a stylesheet and list tables</td></tr>

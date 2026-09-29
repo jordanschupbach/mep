@@ -1,3 +1,4 @@
+#include "frame_activity.h"
 #include "agent_rpc.h"
 #include "agent_ui_input.h"
 #include "gfx/audio.h"
@@ -18,6 +19,7 @@
 #include "cad_fem_api.h"
 #include "lua_env.h"
 #include "math_tex.h"
+#include "mepml_convert.h"
 #include "org_doc.h"
 #include "tcp_client.h"
 #include "sheet_doc.h"
@@ -1254,6 +1256,7 @@ std::deque<std::function<void()>> g_ui_input_queue;
  */
 void DrainUiInputQueueOneStep() {
     if (g_ui_input_queue.empty()) return;
+    mep::NoteActivity();
     std::function<void()> step = std::move(g_ui_input_queue.front());
     g_ui_input_queue.pop_front();
     step();
@@ -2484,11 +2487,25 @@ void LoadOfficeFonts() {
     // those are in the ASCII range either, and would otherwise fall back to
     // Liberation Sans's "missing glyph" box both in the palette popup and
     // once actually inserted into a paragraph.
-    constexpr int kCodepointCount = 96 + kOfficeSpecialCharCount;
-    static int codepoints[kCodepointCount];
-    for (int c = 32; c <= 126; c++) codepoints[c - 32] = c;
-    codepoints[95] = 0x2022;
-    for (int i = 0; i < kOfficeSpecialCharCount; i++) codepoints[96 + i] = kOfficeSpecialChars[i];
+    // Also Latin-1 (accented letters), Greek, curly quotes and the common
+    // maths symbols: what real slide decks and documents are written in
+    // (the presentation editor draws its text with these faces too).
+    static std::vector<int> codepoint_list;
+    codepoint_list.clear();
+    for (int c = 32; c <= 126; c++) codepoint_list.push_back(c);
+    codepoint_list.push_back(0x2022);
+    for (int i = 0; i < kOfficeSpecialCharCount; i++) codepoint_list.push_back(kOfficeSpecialChars[i]);
+    for (int c = 0xA0; c <= 0xFF; c++) codepoint_list.push_back(c);
+    for (int c = 0x391; c <= 0x3C9; c++)
+        if (c != 0x3A2) codepoint_list.push_back(c);
+    // (Each one Liberation has: a codepoint it lacks would claim an empty
+    // glyph and stop a fallback face from drawing it.)
+    for (int c : {0x2018, 0x2019, 0x201C, 0x201D, 0x25E6, 0x2212, 0x221A, 0x221E, 0x2211, 0x2032, 0x00B7})
+        codepoint_list.push_back(c);
+    std::sort(codepoint_list.begin(), codepoint_list.end());
+    codepoint_list.erase(std::unique(codepoint_list.begin(), codepoint_list.end()), codepoint_list.end());
+    const int kCodepointCount = static_cast<int>(codepoint_list.size());
+    int *codepoints = codepoint_list.data();
     g_office_font_regular = gfx::LoadFontFromMemory(".ttf", kLiberationSansRegularTtf,
                                                 static_cast<int>(kLiberationSansRegularTtfLen),
                                                 kOfficeFontBasePt * 2, codepoints, kCodepointCount);
@@ -24072,9 +24089,10 @@ const char *kBuiltinMepml =
     "\n"
     "-- Every format mepml_convert.h writes; PDF is the LaTeX export compiled by\n"
     "-- tectonic in the background. In a presentation (//? Type: presentation)\n"
-    "-- html, tex and pdf are the slideshow and the Beamer deck.\n"
+    "-- html, tex and pdf are the slideshow and the Beamer deck; beamer is that\n"
+    "-- deck's PDF whatever the Type.\n"
     "local mep_mepml_formats = {\n"
-    "  {'html', 'HTML'}, {'pdf', 'PDF (LaTeX via tectonic)'}, {'docx', 'Word (.docx)'},\n"
+    "  {'html', 'HTML'}, {'pdf', 'PDF (LaTeX via tectonic)'}, {'beamer', 'Beamer slides (PDF)'}, {'docx', 'Word (.docx)'},\n"
     "  {'odt', 'OpenDocument text (.odt)'}, {'rtf', 'Rich Text (.rtf)'}, {'md', 'Markdown'},\n"
     "  {'org', 'Org'}, {'tex', 'LaTeX'}, {'txt', 'Plain text'},\n"
     "  {'pptx', 'PowerPoint slides (.pptx)'}, {'odp', 'Impress slides (.odp)'},\n"
@@ -24087,29 +24105,30 @@ const char *kBuiltinMepml =
     "-- its file (name.fmt); on_done(path) on success, on_fail(err) otherwise.\n"
     "function mep.mepml_export_as(fmt, on_done, on_fail)\n"
     "  fmt = (fmt or ''):lower():gsub('^%.', '')\n"
-    "  if fmt == 'markdown' then fmt = 'md' elseif fmt == 'latex' or fmt == 'beamer' then fmt = 'tex' elseif fmt == 'text' then fmt = 'txt'\n"
+    "  if fmt == 'markdown' then fmt = 'md' elseif fmt == 'latex' then fmt = 'tex' elseif fmt == 'text' then fmt = 'txt'\n"
     "  elseif fmt == 'powerpoint' then fmt = 'pptx' elseif fmt == 'impress' then fmt = 'odp' end\n"
     "  local known = false\n"
     "  for _, f in ipairs(mep_mepml_formats) do known = known or f[1] == fmt end\n"
     "  if not known then\n"
-    "    mep.notify('mepml: no export to \"' .. fmt .. '\" (html pdf docx odt rtf md org tex txt pptx odp)', 'error')\n"
+    "    mep.notify('mepml: no export to \"' .. fmt .. '\" (html pdf beamer docx odt rtf md org tex txt pptx odp)', 'error')\n"
     "    if on_fail then on_fail('unknown format ' .. fmt) end\n"
     "    return\n"
     "  end\n"
-    "  local out = mep_mepml_out(fmt)\n"
+    "  local beamer = fmt == 'beamer'\n"
+    "  local out = mep_mepml_out(beamer and 'pdf' or fmt)\n"
     "  local function done(ok, err)\n"
     "    if ok then mep.notify('Exported ' .. out) else mep.notify('mepml export failed: ' .. tostring(err), 'error') end\n"
     "    if ok and on_done then on_done(out) end\n"
     "    if not ok and on_fail then on_fail(err) end\n"
     "  end\n"
-    "  if fmt ~= 'pdf' then return done(mep.mepml_export(out)) end\n"
+    "  if fmt ~= 'pdf' and not beamer then return done(mep.mepml_export(out)) end\n"
     "  if not mep_org_babel_has_exe('tectonic') then return done(nil, \"tectonic not found on PATH (see flake.nix's devShell)\") end\n"
     "  -- The .tex goes beside the document (its pictures resolve from there)\n"
     "  -- under a name of its own, and the PDF takes the document's name.\n"
     "  local dir = mep_mepml_dir(mep.filename())\n"
     "  local stem = out:match('([^/]+)%.pdf$')\n"
     "  local tex = dir .. '/.' .. stem .. '.mepml-export.tex'\n"
-    "  local ok, err = mep.mepml_export(tex)\n"
+    "  local ok, err = mep.mepml_export(tex, beamer and 'beamer' or nil)\n"
     "  if not ok then return done(nil, err) end\n"
     "  mep.notify('Compiling ' .. out .. ' ...')\n"
     "  local errs = {}\n"
@@ -27978,12 +27997,23 @@ const char *kBuiltinRunButton =
     "      mep.notify('Run: unknown //? Export: ' .. fmt .. ', defaulting to html', 'warn')\n"
     "      fmt = 'html'\n"
     "    end\n"
+    // Whether the PDF will be a slide deck: beamer, or a presentation's pdf.\n"
+    "    local deck = fmt == 'beamer'\n"
+    "    for i = 1, mep.line_count() do\n"
+    "      local t = mep.get_line(i):match('^%s*//%?%s*[Tt][Yy][Pp][Ee]%s*:%s*(%S+)')\n"
+    "      if t then t = t:lower() deck = deck or t == 'presentation' or t == 'slides' end\n"
+    "    end\n"
     // Slide decks have no pane of their own: they open in the system's
     // presentation program.\n"
     "    mep.mepml_export_as(fmt, function(path)\n"
     "      done()\n"
     "      if path:match('%.pptx$') or path:match('%.odp$') then mep.open_url(path) mep.notify('Run: wrote ' .. path)\n"
-    "      else mep_run_button_show_org_output(path, 'Run') end\n"
+    "      else\n"
+    "        mep_run_button_show_org_output(path, 'Run')\n"
+    // A Beamer deck shows a whole slide at a time.\n"
+    "        local pdf = path:match('%.pdf$') and deck and mep_run_button_pane_for_path(path)\n"
+    "        if pdf then mep.pdf_fit_page(pdf) end\n"
+    "      end\n"
     "    end, done)\n"
     "  end)\n"
     "  if not ok then\n"
@@ -30921,6 +30951,7 @@ const char *kBuiltinHelp =
     "  org = 'org-basics', md = 'markdown', markdown = 'markdown',\n"
     "  ipynb = 'notebooks', pdf = 'pdf', docx = 'office', odt = 'office',\n"
     "  xlsx = 'sheets', ods = 'sheets', csv = 'sheets',\n"
+    "  pptx = 'presentations', odp = 'presentations',\n"
     "  png = 'images', jpg = 'images', jpeg = 'images', bmp = 'images', gif = 'images',\n"
     "  obj = 'model3d', gltf = 'model3d', glb = 'model3d', iqm = 'model3d',\n"
     "  vox = 'model3d', m3d = 'model3d', blend = 'model3d',\n"
@@ -36482,6 +36513,36 @@ void DrawMathLayout(float x, float y, const MathLayoutResult &m, gfx::Color colo
     for (const MathDelimRun &d : m.delims) DrawMathDelimiter(d, x, y, color);
 }
 
+// A mepml .pptx's display equations fall back to a picture for readers
+// without Office Math (LibreOffice Impress among them) -- drawn here, by
+// the typesetter the editor sets maths with (mepml::SetMathPictureRenderer).
+// At the math faces' own baked size, so no glyph is resampled, on the
+// deck's white (blending onto a transparent ground would square every
+// anti-aliased edge's alpha and leave the equation faint).
+bool RenderMathPicture(const std::string &tex, bool display, double pt, mepml::MathPicture *out) {
+    constexpr float kPx = 64.0f;
+    const MathLayoutResult m = LayoutMathExpression(tex, kPx, display);
+    if (m.width <= 0.0f || m.height <= 0.0f) return false;
+    constexpr int kPad = 4;
+    const int w = static_cast<int>(std::ceil(m.width)) + 2 * kPad;
+    const int h = static_cast<int>(std::ceil(m.height)) + 2 * kPad;
+    gfx::RenderTexture2D rt = gfx::LoadRenderTexture(w, h);
+    gfx::BeginTextureMode(rt);
+    gfx::ClearBackground(gfx::Color{255, 255, 255, 255});
+    DrawMathLayout(static_cast<float>(kPad), static_cast<float>(kPad), m, gfx::Color{0x1f, 0x23, 0x28, 255});
+    gfx::EndTextureMode();
+    gfx::Image img = gfx::LoadImageFromTexture(rt.texture);
+    gfx::ImageFlipVertical(&img);  // render textures are stored bottom-up
+    const std::vector<unsigned char> png = gfx::ExportImageToMemory(img, ".png");
+    gfx::UnloadImage(img);
+    gfx::UnloadRenderTexture(rt);
+    if (png.empty()) return false;
+    out->png.assign(png.begin(), png.end());
+    out->width_pt = static_cast<double>(w) / static_cast<double>(kPx) * pt;
+    out->height_pt = static_cast<double>(h) / static_cast<double>(kPx) * pt;
+    return true;
+}
+
 // --- HTML-preview pane layout ---------------------------------------------
 //
 // Word-wrap/positioning for an HtmlDoc, mirroring the exact split
@@ -36592,8 +36653,15 @@ struct HtmlFixedLayer {
                               //   fixed_scroll_y and identifies it to the wheel
     std::shared_ptr<struct HtmlLayout> content;  // heap so HtmlLayout need not embed itself by value
 };
+// A laid-out block element's vertical extent across the layout width:
+// what the pointer is over, for :hover (Editor::HoverHtmlNode).
+struct HtmlHitBox {
+    float x = 0, y = 0, w = 0, h = 0;
+    DomNode *node = nullptr;
+};
 struct HtmlLayout {
     std::vector<HtmlRun> runs;
+    std::vector<HtmlHitBox> boxes;
     std::vector<HtmlRule> rules;
     std::vector<HtmlImageRun> images;
     std::vector<HtmlMathRun> math_runs;
@@ -37312,8 +37380,26 @@ void HtmlLayoutPreformatted(DomNode *node, float indent_x, float &cursor_y, cons
  * @param ctx Layout context (wrap width, base font size, base dir, zoom).
  * @param out Layout output to append runs, rules, images, math runs, backgrounds, and borders to.
  */
+void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out);
+// One block element: its content (HtmlLayoutBlockContent), then its hit
+// box. An invisible one (visibility: hidden, opacity: 0) keeps its space
+// and its hit box -- it can still be hovered, which is how an overlay
+// that shows itself on :hover works -- but nothing it drew is kept.
 void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out) {
     if (node->style.display_none) return;
+    const float y0 = cursor_y;
+    const size_t runs = out.runs.size(), rules = out.rules.size(), images = out.images.size(), maths = out.math_runs.size(),
+                 canvases = out.canvases.size(), svgs = out.svgs.size(), backgrounds = out.backgrounds.size(), borders = out.borders.size();
+    HtmlLayoutBlockContent(node, indent_x, cursor_y, ctx, out);
+    if (node->style.Invisible()) {
+        auto drop = [](auto &v, size_t keep) { v.erase(v.begin() + static_cast<std::ptrdiff_t>(keep), v.end()); };
+        drop(out.runs, runs); drop(out.rules, rules); drop(out.images, images); drop(out.math_runs, maths);
+        drop(out.canvases, canvases); drop(out.svgs, svgs); drop(out.backgrounds, backgrounds); drop(out.borders, borders);
+    }
+    out.boxes.push_back({indent_x, y0, std::max(0.0f, ctx.layout_width - indent_x), cursor_y + out.pending_margin_bottom - y0, node});
+}
+
+void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out) {
     // A <slot> in a shadow root projects matching light-DOM children from
     // its host.  Keeping assignment in layout (rather than moving ownership)
     // preserves both the host's DOM API and the shadow fallback subtree.
@@ -38002,6 +38088,14 @@ HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
     }
     cursor_y += out.pending_margin_bottom;
     out.total_height = cursor_y;
+    // An inline element that is invisible (a block one was handled in
+    // HtmlLayoutBlock) keeps its words' space but draws none of them.
+    auto drop_invisible_runs = [](HtmlLayout &layout) {
+        layout.runs.erase(std::remove_if(layout.runs.begin(), layout.runs.end(), [](const HtmlRun &run) { return run.node && run.node->style.Invisible(); }),
+                          layout.runs.end());
+    };
+    drop_invisible_runs(out);
+    for (const auto &layer : out.fixed_layers) drop_invisible_runs(*layer->content);
     return out;
 }
 
@@ -43629,6 +43723,905 @@ void PaintHtmlLayout(const HtmlLayout &layout, const HtmlLayoutCtx &ctx, float x
     }
 }
 
+// --- Presentation editor pane (a PresSession: src/editor_pres.cpp) ----------------------
+//
+// A deck's slide drawn to scale in the office faces (g_office_font_*), a
+// strip of slide thumbnails down the left, and a toolbar across the top.
+// The canvas is immediate-mode for the mouse, like the image editor's:
+// click selects the topmost shape, dragging moves it, dragging one of the
+// eight handles resizes it, and a double-click types into it at the
+// clicked character. What is drawn is laid out from the model each frame
+// (LayoutPresText), so the caret, the click-to-character mapping and the
+// picture all come from one layout.
+
+// The pane being drawn's theme-colours state (PresSession::theme_colors),
+// set by DrawPresPane: while on, every colour of a slide goes through
+// PresTheme -- its lightness placed on the gradient from the theme's text
+// colour to its background, as the PDF viewer recolours a page.
+bool g_pres_themed = false;
+gfx::Color g_pres_theme_fg{}, g_pres_theme_bg{};
+
+gfx::Color PresTheme(gfx::Color c) {
+    if (!g_pres_themed) return c;
+    const float lum = (0.299f * c.r + 0.587f * c.g + 0.114f * c.b) / 255.0f;
+    return gfx::Color{ThemedPdfChannel(g_pres_theme_fg.r, g_pres_theme_bg.r, lum), ThemedPdfChannel(g_pres_theme_fg.g, g_pres_theme_bg.g, lum),
+                      ThemedPdfChannel(g_pres_theme_fg.b, g_pres_theme_bg.b, lum), c.a};
+}
+
+// A file's RRGGBB as drawn (not themed: the toolbar's swatches).
+gfx::Color PresRawColor(const std::string &rgb, gfx::Color fallback) {
+    if (rgb.size() != 6) return fallback;
+    const long v = std::strtol(rgb.c_str(), nullptr, 16);
+    return gfx::Color{static_cast<unsigned char>((v >> 16) & 0xFF), static_cast<unsigned char>((v >> 8) & 0xFF),
+                      static_cast<unsigned char>(v & 0xFF), 255};
+}
+
+// A slide's RRGGBB, themed when the pane is; `fallback` (for "" or not a
+// colour) is returned as given -- callers theme a literal fallback
+// themselves, and pass an already-themed one through untouched.
+gfx::Color PresColor(const std::string &rgb, gfx::Color fallback) {
+    if (rgb.size() != 6) return fallback;
+    return PresTheme(PresRawColor(rgb, fallback));
+}
+
+// The office face a run is drawn in: its family from the font's name
+// (anything we have no face for is the sans), then bold and italic.
+const gfx::Font &PresFont(const pres::TextRun &r) {
+    std::string f = r.font;
+    for (char &c : f) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    DocFormat fmt;
+    fmt.bold = r.bold;
+    fmt.italic = r.italic;
+    if (f.find("mono") != std::string::npos || f.find("courier") != std::string::npos || f.find("consolas") != std::string::npos)
+        fmt.font_family = OfficeFontFamily::Mono;
+    else if (f.find("serif") != std::string::npos && f.find("sans") == std::string::npos) fmt.font_family = OfficeFontFamily::Serif;
+    else if (f.find("times") != std::string::npos || f.find("georgia") != std::string::npos || f.find("cambria") != std::string::npos ||
+             f.find("garamond") != std::string::npos)
+        fmt.font_family = OfficeFontFamily::Serif;
+    return OfficeFontFor(fmt);
+}
+
+// A tab reads as four spaces (the faces have no glyph for it).
+std::string PresDisplayText(const std::string &s) {
+    std::string o;
+    for (char c : s) {
+        if (c == '\t') o += "    ";
+        else o += c;
+    }
+    return o;
+}
+
+struct PresLaidRun {
+    std::string text;  // as in the paragraph (tabs included)
+    const gfx::Font *font = nullptr;
+    float size = 0;    // pixels
+    gfx::Color color{};
+    bool underline = false, strike = false;
+    int baseline = 0;  // +1 raised (superscript), -1 lowered
+    float x = 0, w = 0;
+    int off = 0;       // byte offset of `text` in its paragraph
+    // Maths: typeset by mep's own engine (LayoutMathExpression) -- one
+    // unbreakable piece, drawn with its alignment line on the text's baseline.
+    const MathLayoutResult *math = nullptr;
+};
+struct PresLaidLine {
+    std::vector<PresLaidRun> runs;
+    int para = 0, start = 0, end = 0;  // the paragraph and the bytes of it on this line
+    float y = 0, h = 0, max_size = 0;  // relative to the shape's top-left
+    float asc = 0;                     // from the line's top to its baseline
+    float x = 0;                       // where the text starts
+    std::string label;                 // a list item's bullet or number, on its first line
+    float label_x = 0, label_size = 0;
+    gfx::Color label_color{};
+};
+struct PresLayout {
+    std::vector<PresLaidLine> lines;
+};
+
+// A maths run typeset at a size, kept between frames (the canvas and every
+// thumbnail lay their slides out again each frame).
+const MathLayoutResult &PresMathLayout(const std::string &tex, float size, bool display) {
+    static std::unordered_map<std::string, MathLayoutResult> cache;
+    if (cache.size() > 2000) cache.clear();
+    char key_size[32];
+    std::snprintf(key_size, sizeof key_size, "%.1f|%d|", static_cast<double>(size), display ? 1 : 0);
+    const std::string key = key_size + tex;
+    auto it = cache.find(key);
+    if (it != cache.end()) return it->second;
+    return cache.emplace(key, LayoutMathExpression(tex, size, display)).first->second;
+}
+
+bool PresFontHas(const gfx::Font &f, int cp) {
+    const int i = gfx::GetGlyphIndex(f, cp);
+    return f.glyphs != nullptr && i >= 0 && i < f.glyphCount && f.glyphs[i].value == cp;
+}
+
+// Text split where the run's face has no glyph (a maths symbol typed as
+// text, ∈ or ℝ): those characters come from mep's maths faces instead.
+std::vector<std::pair<const gfx::Font *, std::string>> PresSegments(const gfx::Font &f, const std::string &text) {
+    std::vector<std::pair<const gfx::Font *, std::string>> out;
+    const std::string shown = PresDisplayText(text);
+    for (size_t i = 0; i < shown.size();) {
+        int n = 1;
+        const int cp = gfx::GetCodepointNext(shown.c_str() + i, &n);
+        const gfx::Font *face = &f;
+        if (cp >= 0x80 && !PresFontHas(f, cp)) {
+            if (PresFontHas(g_math_serif_font, cp)) face = &g_math_serif_font;
+            else if (PresFontHas(g_math_font, cp)) face = &g_math_font;
+        }
+        if (out.empty() || out.back().first != face) out.push_back({face, std::string()});
+        out.back().second.append(shown, i, static_cast<size_t>(n));
+        i += static_cast<size_t>(n);
+    }
+    return out;
+}
+
+float PresMeasure(const gfx::Font &f, const std::string &text, float size) {
+    if (text.empty()) return 0.0f;
+    float w = 0;
+    for (const auto &seg : PresSegments(f, text)) w += gfx::MeasureTextEx(*seg.first, seg.second.c_str(), size, 0).x;
+    return w;
+}
+
+// Lays out a shape's text at `k` pixels per EMU: words wrapped to the box
+// less its insets, lists indented, lines aligned and the whole block
+// anchored top/middle/bottom -- and, for a shrink-to-fit shape, set
+// smaller until it fits.
+PresLayout LayoutPresText(const pres::Shape &sh, float k) {
+    PresLayout out;
+    if (!sh.HasText()) return out;
+    const float box_w = std::fabs(static_cast<float>(sh.w)) * k, box_h = std::fabs(static_cast<float>(sh.h)) * k;
+    const float ins_x = 91440.0f * k, ins_y = 45720.0f * k;
+    const float pt_px = 12700.0f * k;
+    const gfx::Color default_color = PresColor(sh.text_color, PresTheme(gfx::Color{0, 0, 0, 255}));
+    for (float fit = 1.0f; fit >= 0.3f; fit -= 0.08f) {
+        out.lines.clear();
+        float y = 0;
+        std::map<int, int> numbers;  // a numbered list's count, per level
+        for (size_t pi = 0; pi < sh.paras.size(); ++pi) {
+            const pres::Paragraph &p = sh.paras[pi];
+            const bool listed = p.bullet || p.numbered;
+            const float indent = 342900.0f * k * static_cast<float>(p.level + (listed ? 1 : 0));
+            const float avail = std::max(4.0f, box_w - 2 * ins_x - indent);
+            if (!p.numbered) numbers.erase(p.level);
+            float para_size = static_cast<float>(sh.font_pt) * pt_px * fit;
+            // Words: text up to and including the spaces after it.
+            struct Word {
+                size_t run;
+                int off;
+                std::string text;
+                float w;
+                const MathLayoutResult *math = nullptr;
+            };
+            std::vector<Word> words;
+            int off = 0;
+            for (size_t ri = 0; ri < p.runs.size(); ++ri) {
+                const pres::TextRun &r = p.runs[ri];
+                const float size = static_cast<float>(r.size_pt > 0 ? r.size_pt : sh.font_pt) * pt_px * fit * (r.baseline ? 0.62f : 1.0f);
+                if (ri == 0) para_size = size;
+                if (r.IsMath()) {
+                    // One piece, with a little air either side when inline.
+                    const MathLayoutResult &m = PresMathLayout(r.tex, size, r.display);
+                    Word wd{ri, off, r.text, m.width + (r.display ? 0.0f : size * 0.15f), &m};
+                    words.push_back(std::move(wd));
+                    off += static_cast<int>(r.text.size());
+                    continue;
+                }
+                const gfx::Font &f = PresFont(r);
+                size_t i = 0;
+                while (i < r.text.size()) {
+                    size_t j = r.text.find_first_of(" \t", i);
+                    j = j == std::string::npos ? r.text.size() : r.text.find_first_not_of(" \t", j);
+                    if (j == std::string::npos) j = r.text.size();
+                    Word wd{ri, off + static_cast<int>(i), r.text.substr(i, j - i), 0};
+                    wd.w = PresMeasure(f, wd.text, size);
+                    words.push_back(std::move(wd));
+                    i = j;
+                }
+                off += static_cast<int>(r.text.size());
+            }
+            const float spacing = pi == 0 ? 0.0f : para_size * 0.2f;
+            y += spacing;
+            // Break into lines.
+            std::vector<std::vector<const Word *>> lines(1);
+            float line_w = 0;
+            for (const Word &wd : words) {
+                if (!lines.back().empty() && line_w + wd.w > avail) {
+                    lines.emplace_back();
+                    line_w = 0;
+                }
+                lines.back().push_back(&wd);
+                line_w += wd.w;
+            }
+            for (size_t li = 0; li < lines.size(); ++li) {
+                PresLaidLine line;
+                line.para = static_cast<int>(pi);
+                line.max_size = lines[li].empty() ? para_size : 0.0f;
+                line.start = lines[li].empty() ? (li == 0 ? 0 : off) : lines[li].front()->off;
+                line.end = li + 1 < lines.size() && !lines[li + 1].empty() ? lines[li + 1].front()->off : off;
+                float x = 0;
+                float asc = lines[li].empty() ? para_size * 0.9f : 0.0f, desc = lines[li].empty() ? para_size * 0.3f : 0.0f;
+                for (const Word *wd : lines[li]) {
+                    const pres::TextRun &r = p.runs[wd->run];
+                    const float full = static_cast<float>(r.size_pt > 0 ? r.size_pt : sh.font_pt) * pt_px * fit;
+                    const float size = full * (r.baseline ? 0.62f : 1.0f);
+                    line.max_size = std::max(line.max_size, full);
+                    if (wd->math) {
+                        PresLaidRun lr;
+                        lr.text = wd->text;
+                        lr.font = &PresFont(r);
+                        lr.size = size;
+                        lr.color = PresColor(r.color, default_color);
+                        lr.x = x + (r.display ? 0.0f : size * 0.075f);
+                        lr.w = wd->w;
+                        lr.off = wd->off;
+                        lr.math = wd->math;
+                        asc = std::max(asc, wd->math->baseline);
+                        desc = std::max(desc, wd->math->height - wd->math->baseline);
+                        line.runs.push_back(std::move(lr));
+                        x += wd->w;
+                        continue;
+                    }
+                    asc = std::max(asc, full * 0.9f);
+                    desc = std::max(desc, full * 0.3f);
+                    if (!line.runs.empty() && !line.runs.back().math && line.runs.back().off + static_cast<int>(line.runs.back().text.size()) == wd->off &&
+                        line.runs.back().font == &PresFont(r) && line.runs.back().size == size && line.runs.back().baseline == r.baseline &&
+                        line.runs.back().color.r == PresColor(r.color, default_color).r && line.runs.back().color.g == PresColor(r.color, default_color).g &&
+                        line.runs.back().color.b == PresColor(r.color, default_color).b) {
+                        line.runs.back().text += wd->text;
+                        line.runs.back().w += wd->w;
+                    } else {
+                        PresLaidRun lr;
+                        lr.text = wd->text;
+                        lr.font = &PresFont(r);
+                        lr.size = size;
+                        lr.color = PresColor(r.color, default_color);
+                        lr.underline = r.underline || !r.link.empty();
+                        lr.strike = r.strike;
+                        lr.baseline = r.baseline;
+                        lr.x = x;
+                        lr.w = wd->w;
+                        lr.off = wd->off;
+                        line.runs.push_back(std::move(lr));
+                    }
+                    x += wd->w;
+                }
+                // Trailing spaces do not count when aligning.
+                float text_w = x;
+                if (!line.runs.empty() && !line.runs.back().math) {
+                    const PresLaidRun &last = line.runs.back();
+                    std::string trimmed = last.text;
+                    while (!trimmed.empty() && (trimmed.back() == ' ' || trimmed.back() == '\t')) trimmed.pop_back();
+                    text_w = last.x + PresMeasure(*last.font, trimmed, last.size);
+                }
+                float dx = 0;
+                if (p.align == pres::Align::Center) dx = (avail - text_w) / 2;
+                else if (p.align == pres::Align::Right) dx = avail - text_w;
+                line.x = ins_x + indent + std::max(0.0f, dx);
+                for (PresLaidRun &lr : line.runs) lr.x += line.x;
+                line.asc = asc;
+                line.h = asc + desc;
+                line.y = y;
+                if (li == 0 && listed) {
+                    if (p.numbered) line.label = std::to_string(++numbers[p.level]) + ".";
+                    else line.label = p.level % 2 ? "\xE2\x80\x93" : "\xE2\x80\xA2";  // en dash / bullet
+                    line.label_size = para_size;
+                    line.label_x = ins_x + indent - 342900.0f * k;
+                    line.label_color = p.runs.empty() ? default_color : PresColor(p.runs[0].color, default_color);
+                }
+                y += line.h;
+                out.lines.push_back(std::move(line));
+            }
+        }
+        const float total = y + 2 * ins_y;
+        if (!sh.autofit || total <= box_h || fit - 0.08f < 0.3f) {
+            float dy = ins_y;
+            if (sh.valign == pres::VAlign::Middle) dy = (box_h - y) / 2;
+            else if (sh.valign == pres::VAlign::Bottom) dy = box_h - ins_y - y;
+            for (PresLaidLine &l : out.lines) l.y += dy;
+            break;
+        }
+    }
+    return out;
+}
+
+// A picture's texture, decoded once per image (keyed by the model's
+// shared bytes, so undo's copies share it) and dropped once no deck holds
+// the bytes any more.
+// (Themed pictures are a texture of their own, remade when the theme is.)
+struct PresTexture {
+    std::weak_ptr<const std::string> owner;
+    gfx::Texture2D tex{};
+    bool ok = false;
+    int theme_epoch = -1;
+};
+std::map<std::pair<const std::string *, bool>, PresTexture> g_pres_textures;
+
+const gfx::Texture2D *PresImageTexture(const std::shared_ptr<const std::string> &bytes) {
+    if (!bytes) return nullptr;
+    const auto key = std::make_pair(bytes.get(), g_pres_themed);
+    const int epoch = g_pres_themed ? g_editor.ThemeEpoch() : -1;
+    auto it = g_pres_textures.find(key);
+    if (it != g_pres_textures.end()) {
+        if (it->second.owner.lock() == bytes && it->second.theme_epoch == epoch) return it->second.ok ? &it->second.tex : nullptr;
+        if (it->second.ok) gfx::UnloadTexture(it->second.tex);
+        g_pres_textures.erase(it);
+    }
+    PresTexture &e = g_pres_textures[key];
+    e.owner = bytes;
+    e.theme_epoch = epoch;
+    ImageDoc doc;
+    e.ok = doc.LoadFromMemory(reinterpret_cast<const unsigned char *>(bytes->data()), bytes->size());
+    if (!e.ok) return nullptr;
+    std::vector<unsigned char> themed;
+    if (g_pres_themed) {
+        const size_t n = static_cast<size_t>(doc.Width()) * static_cast<size_t>(doc.Height());
+        themed.assign(doc.Pixels(), doc.Pixels() + n * 4);
+        for (size_t i = 0; i < n; ++i) {
+            unsigned char *px = &themed[i * 4];
+            const gfx::Color c = PresTheme(gfx::Color{px[0], px[1], px[2], px[3]});
+            px[0] = c.r;
+            px[1] = c.g;
+            px[2] = c.b;
+        }
+    }
+    gfx::Image img{};
+    img.data = const_cast<unsigned char *>(g_pres_themed ? themed.data() : doc.Pixels());
+    img.width = doc.Width();
+    img.height = doc.Height();
+    img.mipmaps = 1;
+    img.format = gfx::kPixelFormatR8G8B8A8;
+    e.tex = gfx::LoadTextureFromImage(img);
+    gfx::SetTextureFilter(e.tex, gfx::TextureFilter::Bilinear);
+    return &e.tex;
+}
+
+void SweepPresTextures() {
+    for (auto it = g_pres_textures.begin(); it != g_pres_textures.end();) {
+        if (it->second.owner.expired()) {
+            if (it->second.ok) gfx::UnloadTexture(it->second.tex);
+            it = g_pres_textures.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void DrawPresEllipse(float cx, float cy, float rx, float ry, gfx::Color c) {
+    constexpr int kSegs = 48;
+    gfx::Vector2 pts[kSegs + 2];
+    pts[0] = {cx, cy};
+    for (int i = 0; i <= kSegs; ++i) {
+        // Clockwise on screen (y down), as DrawTriangleFan wants.
+        const float a = -2.0f * 3.14159265f * static_cast<float>(i) / kSegs;
+        pts[i + 1] = {cx + rx * std::cos(a), cy + ry * std::sin(a)};
+    }
+    gfx::DrawTriangleFan(pts, kSegs + 2, c);
+}
+
+// One shape at (ox, oy) + its position * k.
+void DrawPresShape(const pres::Shape &sh, float ox, float oy, float k, const PresLayout &lay) {
+    const float x0 = ox + static_cast<float>(std::min(sh.x, sh.x + sh.w)) * k, y0 = oy + static_cast<float>(std::min(sh.y, sh.y + sh.h)) * k;
+    const float w = std::fabs(static_cast<float>(sh.w)) * k, h = std::fabs(static_cast<float>(sh.h)) * k;
+    const gfx::Rectangle r{x0, y0, w, h};
+    const float line_px = std::max(1.0f, static_cast<float>(sh.line_pt) * 12700.0f * k);
+    const bool fill = !sh.fill.empty(), stroke = !sh.line.empty() && sh.line_pt > 0;
+    const gfx::Color fc = PresColor(sh.fill, gfx::Blank), lc = PresColor(sh.line, gfx::Blank);
+    switch (sh.kind) {
+        case pres::ShapeKind::Image: {
+            if (const gfx::Texture2D *t = PresImageTexture(sh.image)) {
+                gfx::DrawTexturePro(*t, gfx::Rectangle{0, 0, static_cast<float>(t->width), static_cast<float>(t->height)}, r, gfx::Vector2{0, 0}, 0.0f,
+                                    gfx::White);
+            } else {
+                // A format mep cannot draw (EMF/WMF, PowerPoint's own
+                // metafiles): a labelled box. The picture itself is kept,
+                // and saved as it came.
+                gfx::DrawRectangleRec(r, PresTheme(gfx::Color{225, 228, 232, 255}));
+                gfx::DrawRectangleLinesEx(r, 1.0f, PresTheme(gfx::Color{150, 155, 160, 255}));
+                const std::string label = sh.image_ext.empty() ? std::string("picture") : sh.image_ext + " picture";
+                const float ls = std::min(h * 0.3f, 14.0f);
+                if (ls >= 6.0f) {
+                    const float lw = gfx::MeasureTextEx(g_office_font_regular, label.c_str(), ls, 0).x;
+                    if (lw < w - 4)
+                        gfx::DrawTextEx(g_office_font_regular, label.c_str(), gfx::Vector2{x0 + (w - lw) / 2, y0 + (h - ls) / 2}, ls, 0,
+                                        PresTheme(gfx::Color{110, 115, 120, 255}));
+                }
+            }
+            return;
+        }
+        case pres::ShapeKind::Line: {
+            const gfx::Vector2 a{ox + static_cast<float>(sh.x) * k, oy + static_cast<float>(sh.y) * k};
+            const gfx::Vector2 b{ox + static_cast<float>(sh.x + sh.w) * k, oy + static_cast<float>(sh.y + sh.h) * k};
+            gfx::DrawLineEx(a, b, line_px, stroke ? lc : PresTheme(gfx::Color{31, 35, 40, 255}));
+            return;
+        }
+        case pres::ShapeKind::Ellipse:
+            if (fill) DrawPresEllipse(x0 + w / 2, y0 + h / 2, w / 2, h / 2, fc);
+            if (stroke)
+                for (float t = 0; t < line_px; t += 1.0f)
+                    gfx::DrawEllipseLines(static_cast<int>(x0 + w / 2), static_cast<int>(y0 + h / 2), w / 2 - t, h / 2 - t, lc);
+            break;
+        case pres::ShapeKind::RoundRect: {
+            const float rr = std::min(1.0f, 0.33f);
+            if (fill) gfx::DrawRectangleRounded(r, rr, 8, fc);
+            if (stroke) gfx::DrawRectangleRoundedLinesEx(r, rr, 8, line_px, lc);
+            break;
+        }
+        default:
+            if (fill) gfx::DrawRectangleRec(r, fc);
+            if (stroke) gfx::DrawRectangleLinesEx(r, line_px, lc);
+            break;
+    }
+    // Text, clipped to nothing (a box's text may run past its bottom, as
+    // in the programs that made it).
+    for (const PresLaidLine &l : lay.lines) {
+        const float base = y0 + l.y;
+        if (!l.label.empty())
+            gfx::DrawTextEx(g_office_font_regular, l.label.c_str(), gfx::Vector2{x0 + l.label_x, base + l.asc - l.label_size * 0.9f}, l.label_size, 0,
+                            l.label_color);
+        for (const PresLaidRun &run : l.runs) {
+            if (run.math && run.size >= 2.5f) {
+                DrawMathLayout(x0 + run.x, base + l.asc - run.math->baseline, *run.math, run.color);
+                continue;
+            }
+            if (run.size < 2.5f) {
+                // Too small to read (a thumbnail): a bar where the words are.
+                gfx::DrawRectangle(static_cast<int>(x0 + run.x), static_cast<int>(base + l.max_size * 0.3f), static_cast<int>(std::max(1.0f, run.w * 0.95f)),
+                                   std::max(1, static_cast<int>(l.max_size * 0.5f)), gfx::Fade(run.color, 0.5f));
+                continue;
+            }
+            const float ry = base + l.asc - run.size * 0.9f - (run.baseline > 0 ? l.max_size * 0.32f : run.baseline < 0 ? -l.max_size * 0.08f : 0.0f);
+            float sx = x0 + run.x;
+            for (const auto &seg : PresSegments(*run.font, run.text)) {
+                gfx::DrawTextEx(*seg.first, seg.second.c_str(), gfx::Vector2{sx, ry}, run.size, 0, run.color);
+                sx += gfx::MeasureTextEx(*seg.first, seg.second.c_str(), run.size, 0).x;
+            }
+            if (run.underline) gfx::DrawRectangle(static_cast<int>(x0 + run.x), static_cast<int>(ry + run.size * 0.95f), static_cast<int>(run.w),
+                                                  std::max(1, static_cast<int>(run.size / 16)), run.color);
+            if (run.strike) gfx::DrawRectangle(static_cast<int>(x0 + run.x), static_cast<int>(ry + run.size * 0.55f), static_cast<int>(run.w),
+                                               std::max(1, static_cast<int>(run.size / 16)), run.color);
+        }
+    }
+}
+
+void DrawPresSlide(const pres::Presentation &doc, const pres::Slide &s, float x, float y, float k) {
+    const gfx::Rectangle page{x, y, static_cast<float>(doc.width) * k, static_cast<float>(doc.height) * k};
+    gfx::DrawRectangleRec(page, PresColor(s.background, PresTheme(gfx::White)));
+    gfx::BeginScissorMode(static_cast<int>(page.x), static_cast<int>(page.y), static_cast<int>(page.width) + 1, static_cast<int>(page.height) + 1);
+    for (const pres::Shape &sh : s.shapes) DrawPresShape(sh, x, y, k, LayoutPresText(sh, k));
+    gfx::EndScissorMode();
+}
+
+// The caret's position in a laid-out shape: its top and height, relative
+// to the shape.
+bool PresCaretRect(const PresLayout &lay, const pres::Shape &sh, int para, int off, float *cx, float *cy, float *ch) {
+    const PresLaidLine *best = nullptr;
+    for (const PresLaidLine &l : lay.lines)
+        if (l.para == para && off >= l.start) best = &l;
+    if (!best) return false;
+    float x = best->x;
+    for (const PresLaidRun &r : best->runs) {
+        const int len = static_cast<int>(r.text.size());
+        if (off <= r.off) break;
+        if (off >= r.off + len || r.math) {
+            x = r.x + r.w;
+            continue;
+        }
+        x = r.x + PresMeasure(*r.font, r.text.substr(0, static_cast<size_t>(off - r.off)), r.size);
+        break;
+    }
+    if (best->runs.empty()) {
+        const pres::Paragraph &p = sh.paras[static_cast<size_t>(para)];
+        if (p.align == pres::Align::Center) x = best->x;
+    }
+    *cx = x;
+    *cy = best->y;
+    *ch = best->h;
+    return true;
+}
+
+// The paragraph and byte offset nearest a point inside a laid-out shape.
+void PresCaretFromPoint(const PresLayout &lay, float px, float py, int *para, int *off) {
+    const PresLaidLine *line = nullptr;
+    for (const PresLaidLine &l : lay.lines) {
+        line = &l;
+        if (py < l.y + l.h) break;
+    }
+    if (!line) {
+        *para = 0;
+        *off = 0;
+        return;
+    }
+    *para = line->para;
+    *off = line->start;
+    for (const PresLaidRun &r : line->runs) {
+        if (px >= r.x + r.w) {
+            *off = r.off + static_cast<int>(r.text.size());
+            continue;
+        }
+        if (r.math) {
+            // An equation is one character: before it or after it.
+            *off = px < r.x + r.w / 2 ? r.off : r.off + static_cast<int>(r.text.size());
+            return;
+        }
+        // Within this run: the nearest character boundary.
+        int best = r.off;
+        float best_d = 1e9f;
+        for (size_t i = 0; i <= r.text.size(); ++i) {
+            if (i < r.text.size() && (static_cast<unsigned char>(r.text[i]) & 0xC0) == 0x80) continue;
+            const float cx = r.x + PresMeasure(*r.font, r.text.substr(0, i), r.size);
+            const float d = std::fabs(cx - px);
+            if (d < best_d) {
+                best_d = d;
+                best = r.off + static_cast<int>(i);
+            }
+        }
+        *off = best;
+        return;
+    }
+    // Past the end: not after the line's trailing space when it wraps.
+    if (*off > line->start && *off == line->end && line != &lay.lines.back() && lay.lines[static_cast<size_t>(line - lay.lines.data()) + 1].para == line->para)
+        --*off;
+}
+
+// The eight resize handles of a box (0..7 clockwise from the top-left
+// corner), or a line's two ends (0 and 4).
+std::vector<std::pair<int, gfx::Vector2>> PresHandles(const pres::Shape &sh, float ox, float oy, float k) {
+    std::vector<std::pair<int, gfx::Vector2>> out;
+    const float x0 = ox + static_cast<float>(sh.x) * k, y0 = oy + static_cast<float>(sh.y) * k;
+    const float x1 = ox + static_cast<float>(sh.x + sh.w) * k, y1 = oy + static_cast<float>(sh.y + sh.h) * k;
+    if (sh.kind == pres::ShapeKind::Line) {
+        out.push_back({0, {x0, y0}});
+        out.push_back({4, {x1, y1}});
+        return out;
+    }
+    const float xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
+    const gfx::Vector2 pts[8] = {{x0, y0}, {xm, y0}, {x1, y0}, {x1, ym}, {x1, y1}, {xm, y1}, {x0, y1}, {x0, ym}};
+    for (int i = 0; i < 8; ++i) out.push_back({i, pts[i]});
+    return out;
+}
+
+gfx::Rectangle g_pres_toolbar_rect{};  // (for the pane's catch-all click exclusion)
+double g_pres_last_click_time = -10.0;
+int g_pres_last_click_shape = -2;
+
+void DrawPresPane(const Pane &pane, PresSession &sess, float x, float y, float w, float h, bool is_active) {
+    SweepPresTextures();
+    g_pres_themed = sess.theme_colors;
+    g_pres_theme_fg = ResolveHlGroup("Normal");
+    g_pres_theme_bg = ResolveHlGroup("NormalBg");
+    const pres::Presentation &doc = sess.doc;
+    if (doc.slides.empty()) sess.doc.slides.push_back(pres::Slide{});
+    sess.slide = std::clamp(sess.slide, 0, static_cast<int>(doc.slides.size()) - 1);
+    const pres::Slide &slide = doc.slides[static_cast<size_t>(sess.slide)];
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+    const bool mouse_in_pane = mouse.x >= x && mouse.x < x + w && mouse.y >= y && mouse.y < y + h;
+    const Mode mode = g_editor.CurrentMode();
+    // Mouse input is this pane's when it is focused in one of its own
+    // modes (not with the command line or a popup open), or when it is
+    // clicked while another pane has focus.
+    const bool mouse_ok = mouse_in_pane && (is_active ? (mode == Mode::PresNormal || mode == Mode::PresInsert) : true);
+    const int pane_id = pane.id, buffer_id = pane.buffer_id;
+
+    if (sess.presenting) {
+        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h), gfx::Black);
+        const float k = std::min(w / static_cast<float>(doc.width), h / static_cast<float>(doc.height));
+        const float sx = x + (w - static_cast<float>(doc.width) * k) / 2, sy = y + (h - static_cast<float>(doc.height) * k) / 2;
+        DrawPresSlide(doc, slide, sx, sy, k);
+        if (mouse_ok && gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
+            if (!is_active) g_editor.FocusPaneById(pane_id);
+            g_editor.PresGotoSlide(sess, sess.slide + 1);
+        }
+        return;
+    }
+
+    const float fs = MenuFontSize();
+    const gfx::Color bar_bg = ResolveHlGroup("MenuBar"), fg = ResolveHlGroup("Normal"), muted = ResolveHlGroup("Comment");
+    const gfx::Color accent = ResolveHlGroup("Accent");
+
+    // --- Toolbar -----------------------------------------------------------------
+    const float bar_h = std::round(fs * 2.0f);
+    const float row_h = sess.palette != 0 ? bar_h : 0.0f;
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(bar_h + row_h), bar_bg);
+    g_pres_toolbar_rect = gfx::Rectangle{x, y, w, bar_h + row_h};
+    pres::Shape *sel = g_editor.PresSelectedShape(sess);
+    float bx = x + 6;
+    auto button = [&](const std::string &label, const std::string &tip, bool on, std::function<void(PresSession &)> act) {
+        const float bw = MeasureUiText(label, fs) + 14;
+        const gfx::Rectangle r{bx, y + 4, bw, bar_h - 8};
+        if (bx + bw > x + w - 4) return;
+        const bool hover = mouse_in_pane && mouse.x >= r.x && mouse.x < r.x + r.width && mouse.y >= r.y && mouse.y < r.y + r.height;
+        if (on || hover) gfx::DrawRectangleRounded(r, 0.3f, 6, gfx::Fade(accent, on ? 0.35f : 0.18f));
+        DrawUiText(label, gfx::Vector2{r.x + 7, r.y + (r.height - fs) / 2}, fs, fg);
+        if (hover && !tip.empty()) {
+            g_pane_control_tooltip_text = tip;
+            g_pane_control_tooltip_anchor = gfx::Rectangle{r.x, r.y, r.width, static_cast<float>(LineHeight())};
+        }
+        RegisterClickRegionOnTop(r, [pane_id, buffer_id, act] {
+            g_editor.FocusPaneById(pane_id);
+            if (PresSession *s = g_editor.GetPresMutable(buffer_id)) act(*s);
+        });
+        bx += bw + 3;
+    };
+    auto gap = [&] {
+        gfx::DrawRectangle(static_cast<int>(bx + 3), static_cast<int>(y + 8), 1, static_cast<int>(bar_h - 16), gfx::Fade(muted, 0.6f));
+        bx += 9;
+    };
+    // Font Awesome glyphs from the icon font (DrawUiText routes the PUA).
+    auto icon = [](int cp) { return Utf8FromCodepoint(cp); };
+    button(icon(0xf067) + " Slide", "New slide after this one (n)", false, [](PresSession &s) { g_editor.PresAddSlide(s, false); });
+    button(icon(0xf246), "Text box (t)", false, [](PresSession &s) { g_editor.PresAddShape(s, pres::ShapeKind::Text); });
+    button(icon(0xf0c8), "Rectangle (r)", false, [](PresSession &s) { g_editor.PresAddShape(s, pres::ShapeKind::Rect); });
+    button(icon(0xf111), "Ellipse (o)", false, [](PresSession &s) { g_editor.PresAddShape(s, pres::ShapeKind::Ellipse); });
+    button(icon(0xf068), "Line (L)", false, [](PresSession &s) { g_editor.PresAddShape(s, pres::ShapeKind::Line); });
+    button(icon(0xf03e), "Insert a picture (:PresImage path)", false, [](PresSession &) { g_editor.BeginCommand("PresImage "); });
+    button("\xE2\x88\x91", "Maths: an equation, or inline maths while typing (:PresMath tex)", false, [](PresSession &s) {
+        if (const pres::Shape *sh = g_editor.PresSelectedShape(s); sh && pres::IsEquationShape(*sh)) {
+            g_editor.PresEditEquation(s);
+        } else {
+            s.math_from_typing = g_editor.CurrentMode() == Mode::PresInsert;
+            g_editor.BeginCommand("PresMath ");
+        }
+    });
+    gap();
+    bool all_b = sel && sel->HasText(), all_i = all_b, all_u = all_b, any_run = false;
+    if (sel && sel->HasText())
+        for (const pres::Paragraph &p : sel->paras)
+            for (const pres::TextRun &r : p.runs) {
+                all_b = all_b && r.bold;
+                all_i = all_i && r.italic;
+                all_u = all_u && r.underline;
+                any_run = any_run || !r.text.empty();
+            }
+    all_b = all_b && any_run;
+    all_i = all_i && any_run;
+    all_u = all_u && any_run;
+    button(icon(0xf032), "Bold (Ctrl-B)", all_b, [](PresSession &s) { g_editor.PresToggleStyle(s, 'b'); });
+    button(icon(0xf033), "Italic (Ctrl-I)", all_i, [](PresSession &s) { g_editor.PresToggleStyle(s, 'i'); });
+    button(icon(0xf0cd), "Underline (Ctrl-U)", all_u, [](PresSession &s) { g_editor.PresToggleStyle(s, 'u'); });
+    button("A-", "Smaller text (-)", false, [](PresSession &s) { g_editor.PresStepFontSize(s, 1 / 1.1); });
+    button("A+", "Larger text (+)", false, [](PresSession &s) { g_editor.PresStepFontSize(s, 1.1); });
+    gap();
+    button(icon(0xf036), "Align left", false, [](PresSession &s) { g_editor.PresSetAlign(s, pres::Align::Left); });
+    button(icon(0xf037), "Centre", false, [](PresSession &s) { g_editor.PresSetAlign(s, pres::Align::Center); });
+    button(icon(0xf038), "Align right", false, [](PresSession &s) { g_editor.PresSetAlign(s, pres::Align::Right); });
+    button(icon(0xf0ca), "Bullets on/off (b)", false, [](PresSession &s) { g_editor.PresToggleBullets(s); });
+    gap();
+    button(icon(0xf043), "Fill colour", sess.palette == 1, [](PresSession &s) { s.palette = s.palette == 1 ? 0 : 1; });
+    button(icon(0xf031), "Text colour", sess.palette == 2, [](PresSession &s) { s.palette = s.palette == 2 ? 0 : 2; });
+    button(icon(0xf096), "Outline colour", sess.palette == 3, [](PresSession &s) { s.palette = s.palette == 3 ? 0 : 3; });
+    button(icon(0xf108), "Slide background", sess.palette == 4, [](PresSession &s) { s.palette = s.palette == 4 ? 0 : 4; });
+    gap();
+    button(icon(0xf0e2), "Undo (u)", false, [](PresSession &s) { g_editor.PresUndo(s); });
+    button(icon(0xf01e), "Redo (Ctrl-Y)", false, [](PresSession &s) { g_editor.PresRedo(s); });
+    button(icon(0xf042), "Theme colours: the slides in the editor's colours (Ctrl-R)", sess.theme_colors,
+           [](PresSession &s) { s.theme_colors = !s.theme_colors; });
+    button(icon(0xf04b) + " Present", "Present (P; Esc ends)", false, [](PresSession &s) { g_editor.PresTogglePresenting(s); });
+    // The colour row.
+    if (sess.palette != 0) {
+        static const char *const kSwatches[] = {"",       "FFFFFF", "000000", "1F2328", "59636E", "D0D7DE", "F6F8FA", "C62828", "E5A50A",
+                                                "2F7D32", "0B7285", "6B8AFD", "3F5FD6", "8250DF", "C678DD", "F9E2AF", "FDDDE6", "DDF4E4"};
+        float sx = x + 10;
+        const float sw = bar_h - 14;
+        const int which = sess.palette;
+        const char *what = which == 1 ? "Fill:" : which == 2 ? "Text:" : which == 3 ? "Outline:" : "Background:";
+        DrawUiText(what, gfx::Vector2{sx, y + bar_h + (bar_h - fs) / 2}, fs, muted);
+        sx += MeasureUiText(what, fs) + 10;
+        for (const char *sw_hex : kSwatches) {
+            const gfx::Rectangle r{sx, y + bar_h + 7, sw, sw};
+            const std::string hex = sw_hex;
+            if (hex.empty()) {
+                gfx::DrawRectangleLinesEx(r, 1.0f, muted);
+                gfx::DrawLineEx({r.x + 2, r.y + r.height - 2}, {r.x + r.width - 2, r.y + 2}, 1.5f, ResolveHlGroup("Red"));
+            } else {
+                gfx::DrawRectangleRec(r, PresRawColor(hex, gfx::White));
+                gfx::DrawRectangleLinesEx(r, 1.0f, gfx::Fade(muted, 0.7f));
+            }
+            RegisterClickRegionOnTop(r, [pane_id, buffer_id, which, hex] {
+                g_editor.FocusPaneById(pane_id);
+                PresSession *s = g_editor.GetPresMutable(buffer_id);
+                if (!s) return;
+                if (which == 4) g_editor.PresSetBackground(*s, hex == "FFFFFF" ? std::string() : hex);
+                else g_editor.PresSetColor(*s, which, hex);
+            });
+            sx += sw + 5;
+        }
+    }
+
+    // --- Thumbnails ------------------------------------------------------------
+    const float top = y + bar_h + row_h;
+    const float avail_h = h - (top - y);
+    const float thumbs_w = w > 520 ? std::clamp(w * 0.15f, 110.0f, 210.0f) : 0.0f;
+    if (thumbs_w > 0) {
+        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(top), static_cast<int>(thumbs_w), static_cast<int>(avail_h), gfx::Fade(bar_bg, 0.8f));
+        const float tk = (thumbs_w - 34) / static_cast<float>(doc.width);
+        const float th = static_cast<float>(doc.height) * tk;
+        const float step = th + 14;
+        const int n = static_cast<int>(doc.slides.size());
+        const int visible = std::max(1, static_cast<int>((avail_h - 8) / step));
+        const int first = std::clamp(sess.slide - visible + 2, 0, std::max(0, n - visible));
+        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(top), static_cast<int>(thumbs_w), static_cast<int>(avail_h));
+        for (int i = first; i < n && i < first + visible + 1; ++i) {
+            const float tx = x + 26, ty = top + 8 + static_cast<float>(i - first) * step;
+            DrawUiText(std::to_string(i + 1), gfx::Vector2{x + 6, ty}, fs * 0.8f, muted);
+            DrawPresSlide(doc, doc.slides[static_cast<size_t>(i)], tx, ty, tk);
+            const gfx::Rectangle tr{tx, ty, static_cast<float>(doc.width) * tk, th};
+            gfx::DrawRectangleLinesEx(tr, i == sess.slide ? 2.5f : 1.0f, i == sess.slide ? accent : gfx::Fade(muted, 0.6f));
+            RegisterClickRegionOnTop(tr, [pane_id, buffer_id, i] {
+                g_editor.FocusPaneById(pane_id);
+                if (PresSession *s = g_editor.GetPresMutable(buffer_id)) g_editor.PresGotoSlide(*s, i);
+            });
+        }
+        gfx::EndScissorMode();
+    }
+
+    // --- Canvas ------------------------------------------------------------------
+    const float cx0 = x + thumbs_w, cw = w - thumbs_w;
+    const float footer_h = fs * 1.6f;
+    const float ch = avail_h - footer_h;
+    gfx::DrawRectangle(static_cast<int>(cx0), static_cast<int>(top), static_cast<int>(cw), static_cast<int>(avail_h), gfx::Fade(bar_bg, 0.45f));
+    const float margin = 24;
+    const float k = std::max(1e-6f, std::min((cw - 2 * margin) / static_cast<float>(doc.width), (ch - 2 * margin) / static_cast<float>(doc.height)));
+    const float sx = cx0 + (cw - static_cast<float>(doc.width) * k) / 2, sy = top + (ch - static_cast<float>(doc.height) * k) / 2;
+    sess.canvas_x = sx;
+    sess.canvas_y = sy;
+    sess.scale = k;
+    const gfx::Rectangle page{sx, sy, static_cast<float>(doc.width) * k, static_cast<float>(doc.height) * k};
+    gfx::DrawRectangle(static_cast<int>(page.x + 4), static_cast<int>(page.y + 4), static_cast<int>(page.width), static_cast<int>(page.height),
+                       gfx::Color{0, 0, 0, 60});
+    DrawPresSlide(doc, slide, sx, sy, k);
+
+    // Selection, handles and the caret.
+    sel = g_editor.PresSelectedShape(sess);
+    const bool typing = is_active && mode == Mode::PresInsert && sel;
+    if (sel) {
+        const float x0 = sx + static_cast<float>(std::min(sel->x, sel->x + sel->w)) * k, y0 = sy + static_cast<float>(std::min(sel->y, sel->y + sel->h)) * k;
+        const gfx::Rectangle box{x0, y0, std::fabs(static_cast<float>(sel->w)) * k, std::fabs(static_cast<float>(sel->h)) * k};
+        if (sel->kind != pres::ShapeKind::Line) gfx::DrawRectangleLinesEx(box, typing ? 2.0f : 1.5f, typing ? gfx::Fade(accent, 0.6f) : accent);
+        if (!typing)
+            for (const auto &hd : PresHandles(*sel, sx, sy, k)) {
+                const gfx::Rectangle hr{hd.second.x - 4, hd.second.y - 4, 8, 8};
+                gfx::DrawRectangleRec(hr, gfx::White);
+                gfx::DrawRectangleLinesEx(hr, 1.5f, accent);
+            }
+        if (typing) {
+            const PresLayout lay = LayoutPresText(*sel, k);
+            float cxp = 0, cyp = 0, chp = 0;
+            if (PresCaretRect(lay, *sel, sess.caret_para, sess.caret_off, &cxp, &cyp, &chp)) {
+                const bool blink = std::fmod(gfx::GetTime(), 1.0) < 0.6;
+                if (blink) gfx::DrawRectangle(static_cast<int>(x0 + cxp), static_cast<int>(y0 + cyp), 2, static_cast<int>(std::max(4.0f, chp)), accent);
+            }
+        }
+    }
+
+    // Footer: where you are, and what the keys do.
+    {
+        const float fy = top + avail_h - footer_h;
+        std::string info = "Slide " + std::to_string(sess.slide + 1) + " / " + std::to_string(doc.slides.size());
+        if (sess.theme_colors) info += "  \xC2\xB7  themed (Ctrl-R)";
+        if (sel) info += "  \xC2\xB7  " + (sel->name.empty() ? std::string("shape") : sel->name);
+        const std::string keys = typing ? "typing -- Esc when done  \xC2\xB7  Enter new paragraph  \xC2\xB7  Tab indents"
+                                        : "n slide  \xC2\xB7  t r o L add  \xC2\xB7  Enter edit  \xC2\xB7  x delete  \xC2\xB7  j/k slides  \xC2\xB7  P present  \xC2\xB7  :w save";
+        DrawUiText(info, gfx::Vector2{cx0 + 10, fy + (footer_h - fs) / 2}, fs, fg);
+        const float kw = MeasureUiText(keys, fs * 0.9f);
+        if (cx0 + 10 + MeasureUiText(info, fs) + 30 + kw < cx0 + cw) DrawUiText(keys, gfx::Vector2{cx0 + cw - kw - 10, fy + (footer_h - fs) / 2}, fs * 0.9f, muted);
+    }
+
+    // --- Mouse on the canvas -------------------------------------------------------
+    const bool over_canvas = mouse_ok && mouse.x >= cx0 && mouse.y >= top && mouse.y < top + ch;
+    const double ex = static_cast<double>((mouse.x - sx) / k), ey = static_cast<double>((mouse.y - sy) / k);
+    if (over_canvas && gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
+        if (!is_active) g_editor.FocusPaneById(pane_id);
+        // A handle of the selection first (they sit on its edge).
+        int handle = -1;
+        if (sel && !typing)
+            for (const auto &hd : PresHandles(*sel, sx, sy, k))
+                if (std::fabs(mouse.x - hd.second.x) <= 6 && std::fabs(mouse.y - hd.second.y) <= 6) handle = hd.first;
+        if (handle >= 0) {
+            sess.drag = PresSession::Drag::Resize;
+            sess.drag_handle = handle;
+        } else {
+            const int hit = g_editor.PresShapeAt(sess, ex, ey);
+            const double now = gfx::GetTime();
+            const bool dbl = hit >= 0 && hit == g_pres_last_click_shape && now - g_pres_last_click_time < kDoubleClickThresholdSec;
+            g_pres_last_click_time = now;
+            g_pres_last_click_shape = hit;
+            if (hit >= 0 && (dbl || (typing && hit == sess.selected))) {
+                // Type into it, the caret at the clicked character.
+                g_editor.PresSelect(sess, hit);
+                pres::Shape &target = g_editor.PresCurrentSlide(sess)->shapes[static_cast<size_t>(hit)];
+                if (pres::IsEquationShape(target)) {
+                    g_editor.PresEditEquation(sess);
+                } else if (target.HasText()) {
+                    const PresLayout lay = LayoutPresText(target, k);
+                    int para = 0, off = 0;
+                    PresCaretFromPoint(lay, mouse.x - (sx + static_cast<float>(std::min(target.x, target.x + target.w)) * k),
+                                       mouse.y - (sy + static_cast<float>(std::min(target.y, target.y + target.h)) * k), &para, &off);
+                    if (g_editor.CurrentMode() == Mode::PresInsert) {
+                        sess.caret_para = para;
+                        sess.caret_off = off;
+                    } else {
+                        g_editor.PresBeginText(sess, para, off);
+                    }
+                }
+                sess.drag = PresSession::Drag::None;
+            } else {
+                g_editor.PresSelect(sess, hit);
+                sess.drag = hit >= 0 ? PresSession::Drag::Move : PresSession::Drag::None;
+            }
+        }
+        if (sess.drag != PresSession::Drag::None) {
+            if (const pres::Shape *s = g_editor.PresSelectedShape(sess)) sess.drag_orig = *s;
+            sess.drag_start_x = mouse.x;
+            sess.drag_start_y = mouse.y;
+            sess.drag_moved = false;
+        }
+    }
+    if (sess.drag != PresSession::Drag::None && gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
+        const float mdx = mouse.x - sess.drag_start_x, mdy = mouse.y - sess.drag_start_y;
+        if (!sess.drag_moved && std::fabs(mdx) + std::fabs(mdy) >= 3) {
+            g_editor.PresPushUndo(sess);
+            sess.drag_moved = true;
+        }
+        pres::Shape *s = g_editor.PresSelectedShape(sess);
+        if (sess.drag_moved && s) {
+            const long dx = std::lround(mdx / k), dy = std::lround(mdy / k);
+            *s = sess.drag_orig;
+            if (sess.drag == PresSession::Drag::Move) {
+                s->x += dx;
+                s->y += dy;
+            } else {
+                const long min_size = doc.width / 100;
+                const int hd = sess.drag_handle;
+                const bool line = s->kind == pres::ShapeKind::Line;
+                // Which edges this handle drags.
+                const bool left = !line && (hd == 0 || hd == 6 || hd == 7), right = !line && (hd == 2 || hd == 3 || hd == 4);
+                const bool top_e = !line && (hd == 0 || hd == 1 || hd == 2), bottom = !line && (hd == 4 || hd == 5 || hd == 6);
+                if (line) {
+                    if (hd == 0) {
+                        s->x += dx;
+                        s->y += dy;
+                        s->w -= dx;
+                        s->h -= dy;
+                    } else {
+                        s->w += dx;
+                        s->h += dy;
+                    }
+                } else {
+                    if (left) {
+                        const long nw = std::max(min_size, s->w - dx);
+                        s->x += s->w - nw;
+                        s->w = nw;
+                    }
+                    if (right) s->w = std::max(min_size, s->w + dx);
+                    if (top_e) {
+                        const long nh = std::max(min_size, s->h - dy);
+                        s->y += s->h - nh;
+                        s->h = nh;
+                    }
+                    if (bottom) s->h = std::max(min_size, s->h + dy);
+                    // A picture keeps its shape from a corner.
+                    if (s->kind == pres::ShapeKind::Image && (hd % 2) == 0 && sess.drag_orig.h != 0) {
+                        const double aspect = static_cast<double>(sess.drag_orig.w) / static_cast<double>(sess.drag_orig.h);
+                        const long nh = std::lround(static_cast<double>(s->w) / aspect);
+                        if (top_e) s->y += s->h - nh;
+                        s->h = nh;
+                    }
+                }
+            }
+            g_editor.PresMarkModified(sess);
+        }
+    }
+    if (sess.drag != PresSession::Drag::None && !gfx::IsMouseButtonDown(gfx::MouseButton::Left)) sess.drag = PresSession::Drag::None;
+    // The pointer says what a press would do.
+    if (over_canvas && sel && !typing && sess.drag == PresSession::Drag::None) {
+        for (const auto &hd : PresHandles(*sel, sx, sy, k))
+            if (std::fabs(mouse.x - hd.second.x) <= 6 && std::fabs(mouse.y - hd.second.y) <= 6)
+                gfx::SetMouseCursor(hd.first == 3 || hd.first == 7 ? gfx::MouseCursor::ResizeEw : hd.first == 1 || hd.first == 5 ? gfx::MouseCursor::ResizeNs
+                                                                                                                                  : gfx::MouseCursor::PointingHand);
+    }
+}
+
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active) {
     int line_height = LineHeight();
     int header_h = PaneHeaderHeight();
@@ -44073,6 +45066,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float text_w = gfx::MeasureTextEx(g_font, label.c_str(), font_size, 0).x;
             float text_x = x + std::max(0.0f, (w - text_w) / 2.0f);
             gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{text_x, label_y}, font_size, 0, ResolveHlGroup("Normal"));
+        } else if (const PresSession *pres_label = g_editor.GetPres(pane.buffer_id)) {
+            std::string label = (buf.filename.empty() ? std::string("Untitled presentation") : buf.filename) + "  (slide " +
+                                std::to_string(pres_label->slide + 1) + "/" + std::to_string(pres_label->doc.slides.size()) + ")" +
+                                (buf.modified ? " [+]" : "");
+            gfx::Vector2 ts = gfx::MeasureTextEx(g_font, label.c_str(), font_size, 0);
+            gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + std::max(6.0f, (w - ts.x) / 2.0f), label_y}, font_size, 0,
+                            ResolveHlGroup("Normal"));
         } else if (office_sess) {
             // Just the filename -- no more "(para X/Y) Z%" (the Docs-style
             // status line below now carries page/word-count/zoom instead).
@@ -44375,6 +45375,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         return;
     }
 
+    if (PresSession *pres_sess = g_editor.GetPresMutable(pane.buffer_id)) {
+        DrawPresPane(pane, *pres_sess, x, content_y, w, content_h, is_active);
+        DrawPaneBorder(x, y, w, h, is_active);
+        return;
+    }
+
     if (ViewerSession *viewer_sess = g_editor.GetViewerMutable(pane.buffer_id);
         viewer_sess != nullptr) {
         DrawViewerPane(pane, *viewer_sess, x, content_y, w, content_h, is_active);
@@ -44492,6 +45498,33 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         bool ui_dark = (0.299 * nb.r + 0.587 * nb.g + 0.114 * nb.b) < 128.0;
         g_editor.RestyleHtmlForViewport(pane.buffer_id, ctx.viewport_w, ctx.viewport_h, ui_dark);
         HtmlLayout layout = LayoutHtmlDoc(html_sess->doc, ctx);
+        {
+            // :hover follows the pointer: the innermost block under it
+            // (boxes are pushed children first). A change restyles the
+            // page, so it is laid out again for this same frame.
+            const gfx::Vector2 mouse = gfx::GetMousePosition();
+            DomNode *hovered = nullptr;
+            if (mouse.x >= x && mouse.x < x + w && mouse.y >= content_y && mouse.y < content_y + content_h) {
+                const float px = mouse.x - x - kHtmlPad;
+                auto hit = [](const HtmlLayout &l, float hx, float hy) {
+                    for (const HtmlHitBox &box : l.boxes)
+                        if (hx >= box.x && hx < box.x + box.w && hy >= box.y && hy < box.y + box.h) return box.node;
+                    return static_cast<DomNode *>(nullptr);
+                };
+                // A fixed layer is over the page, the last one on top; its
+                // content is laid out from its own box's origin, and scrolls
+                // by its node's fixed_scroll_y.
+                const float py = mouse.y - content_y;
+                for (auto it = layout.fixed_layers.rbegin(); it != layout.fixed_layers.rend() && !hovered; ++it) {
+                    const HtmlFixedLayer &fl = **it;
+                    if (!fl.content || px < fl.x || px >= fl.x + fl.w || py < fl.y || py >= fl.y + fl.h) continue;
+                    hovered = hit(*fl.content, px - fl.x, py - fl.y + (fl.node ? fl.node->fixed_scroll_y : 0.0f));
+                    if (!hovered) hovered = fl.node;  // over the panel itself: nothing beneath it is hovered
+                }
+                if (!hovered) hovered = hit(layout, px, py + html_sess->scroll_y);
+            }
+            if (g_editor.HoverHtmlNode(pane.buffer_id, hovered)) layout = LayoutHtmlDoc(html_sess->doc, ctx);
+        }
         // Layout depends on real font metrics (MeasureTextEx), so unlike
         // ResizePdfViewport's pure-geometry clamp, the max scroll_y this
         // frame's own content actually supports can only be known here,
@@ -44531,6 +45564,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 scroll = fl->node->fixed_scroll_y;
                 g_editor.AddHtmlFixedPanel(pane.buffer_id, fl->node, fx, fy, fw, fh, max_scroll);
             }
+            // What the panel covers can't be clicked through it.
+            const int covered_pane = pane.id;
+            g_html_click_rects.erase(std::remove_if(g_html_click_rects.begin(), g_html_click_rects.end(), [&](const HtmlClickRect &r) {
+                return r.pane_id == covered_pane && r.rect.x < fx + fw && r.rect.x + r.rect.width > fx &&
+                       r.rect.y < fy + fh && r.rect.y + r.rect.height > fy;
+            }), g_html_click_rects.end());
             gfx::BeginScissorMode(static_cast<int>(fx), static_cast<int>(fy), static_cast<int>(fw),
                                   static_cast<int>(fh));
             if (fl->has_bg)
@@ -46481,6 +47520,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         bool folded = false;
         int folded_rows = 0;
         const OrgBlockCard *card = nullptr;
+        // Inside a mepml slide's card: that card's right edge and wash,
+        // laid back over whatever this one paints opaque.
+        float slide_right = 0.0f;
+        gfx::Color slide_wash{0, 0, 0, 0};
     };
     std::vector<OrgCardBox> org_card_boxes;
     // End-of-line virtual text (a diagnostic message, git blame) whose row
@@ -46512,11 +47555,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // Row -> the wash of the card it sits in, so a cover that paints the
     // pane's own background over part of a row (a faked-italic redraw, an
     // overlay's cover) can lay the card's tint back on top of it.
-    std::unordered_map<int, gfx::Color> org_card_row_wash;
+    // (Every wash, in the order drawn: a card inside a mepml slide's
+    // card sits on the slide's.)
+    std::unordered_map<int, std::vector<gfx::Color>> org_card_row_wash;
     auto cover_card_wash = [&](int row, float x0, float y0, float w0, float h0) {
         auto it = org_card_row_wash.find(row);
-        if (it != org_card_row_wash.end())
-            gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(y0), static_cast<int>(w0), static_cast<int>(h0), it->second);
+        if (it == org_card_row_wash.end()) return;
+        for (const gfx::Color &c : it->second)
+            gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(y0), static_cast<int>(w0), static_cast<int>(h0), c);
     };
     // Org tables drawn as a real grid (Editor::OrgTables): continuous
     // column rules through the `|` glyphs, a drawn horizontal rule in
@@ -46752,7 +47798,27 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // nothing is hidden by stopping here.
             return std::min(card_limit_right, want);
         };
+        // A mepml slide's card holds the cards of the blocks on it: those
+        // are inset from its edges, so the two outlines never coincide.
+        struct SlideSpan {
+            int first, last, content_cols;
+        };
+        std::vector<SlideSpan> slide_spans;
+        for (const OrgBlockCard &card : g_editor.OrgBlockCards(pane.buffer_id))
+            if (card.kind == "slide" && card.end_row >= 0) slide_spans.push_back({card.begin_row, card.end_row, card.content_cols});
+        const float slide_nest = std::max(3.0f, std::round(card_inset * 0.5f));
+        const gfx::Color slide_wash = gfx::Fade(ResolveHlGroup("Cyan"), 0.06f);
         for (const OrgBlockCard &card : g_editor.OrgBlockCards(pane.buffer_id)) {
+            const bool is_slide = card.kind == "slide";
+            float nest = 0.0f, nest_right = 0.0f;
+            if (!is_slide) {
+                for (const SlideSpan &sp : slide_spans) {
+                    if (card.meta_row > sp.first && card.meta_row < sp.last) {
+                        nest = slide_nest;
+                        nest_right = card_right_for(sp.content_cols);
+                    }
+                }
+            }
             // An unterminated block (still being typed) runs to the end of
             // the buffer rather than not drawing at all.
             const int last_row = card.end_row >= 0 ? card.end_row : buf.LineCount() - 1;
@@ -46773,6 +47839,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     own_fold = &fold;
                     continue;
                 }
+                // A slide folds what's on it (a code block, a section)
+                // without losing its own card: the slot walk already
+                // collapsed those rows.
+                if (is_slide && fold.start_row > card.begin_row && fold.end_row < card.end_row) continue;
                 skip = true;
                 break;
             }
@@ -46792,7 +47862,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 box.is_src = card.is_src;
                 box.folded = true;
                 box.folded_rows = own_fold->end_row - own_fold->start_row + 1;
-                box.rect = gfx::Rectangle{card_left, top, card_right_for(card.content_cols) - card_left, bottom - top};
+                box.slide_right = nest_right;
+                box.slide_wash = slide_wash;
+                box.rect = gfx::Rectangle{card_left + nest, top, card_right_for(card.content_cols) - card_left - 2.0f * nest,
+                                          bottom - top};
                 // No raw line to reveal under the cursor (it would only be
                 // the fold's summary): the bar stays, and a brighter
                 // outline says the cursor is on it.
@@ -46802,12 +47875,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const float rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(box.rect.width, box.rect.height)));
                 gfx::DrawRectangleRounded(box.rect, rr, 6,
                                           card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                          : is_slide  ? slide_wash
                                                       : gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
                 org_card_folded_rows.insert(own_fold->start_row);
                 org_card_boxes.push_back(box);
                 continue;
             }
-            if (g_editor.OrgImagesVisible() || g_editor.OrgLatexVisible()) {
+            // (A slide's wash is faint enough that a rendering inside it
+            // can simply sit on top.)
+            if (!is_slide && (g_editor.OrgImagesVisible() || g_editor.OrgLatexVisible())) {
                 for (int r = card.meta_row; r <= last_row && !skip; r++) {
                     // A figure a mepml code block drew sits inside its
                     // output card on purpose (Editor::MepmlScan).
@@ -46862,7 +47938,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             box.card = &card;
             box.is_src = card.is_src;
             const float card_right = card_right_for(card.content_cols);
-            box.rect = gfx::Rectangle{card_left, top, card_right - card_left, bottom - top};
+            box.rect = gfx::Rectangle{card_left + nest, top, card_right - card_left - 2.0f * nest, bottom - top};
+            box.slide_right = nest_right;
+            box.slide_wash = slide_wash;
             box.active = is_active && pane.cursor.row >= card.meta_row && pane.cursor.row <= last_row;
             // Keyed off the card's own top rather than the meta row's,
             // so a block whose `#+NAME:` has scrolled off the top edge
@@ -46873,14 +47951,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (!card.bare && row_bottom(card.begin_row, &header_bottom)) {
                 const bool cursor_in_header = is_active && pane.cursor.row >= card.meta_row && pane.cursor.row <= card.begin_row;
                 const bool sel_in_header = sel_lo >= 0 && sel_lo <= card.begin_row && sel_hi >= card.meta_row;
-                box.header = gfx::Rectangle{card_left, box.rect.y, box.rect.width, header_bottom - box.rect.y - 1.0f};
+                box.header = gfx::Rectangle{box.rect.x, box.rect.y, box.rect.width, header_bottom - box.rect.y - 1.0f};
                 box.conceal_header = box.header.height > 1.0f && !cursor_in_header && !sel_in_header;
             }
             float footer_top = 0.0f, footer_bottom = 0.0f;
             if (!card.bare && card.end_row >= 0 && row_top(card.end_row, &footer_top) && row_bottom(card.end_row, &footer_bottom)) {
                 const bool cursor_on_end = is_active && pane.cursor.row == card.end_row;
                 const bool sel_on_end = sel_lo >= 0 && sel_lo <= card.end_row && sel_hi >= card.end_row;
-                box.footer = gfx::Rectangle{card_left, footer_top, box.rect.width, footer_bottom - footer_top - 1.0f};
+                box.footer = gfx::Rectangle{box.rect.x, footer_top, box.rect.width, footer_bottom - footer_top - 1.0f};
                 box.conceal_footer = box.footer.height > 1.0f && !cursor_on_end && !sel_on_end;
             }
             // A wash, not a fill: an alpha tint over whatever the pane's
@@ -46892,9 +47970,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const float rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(box.rect.width, box.rect.height)));
             const gfx::Color wash = card.bare     ? gfx::Fade(ResolveHlGroup(card.kind == "abstract" ? "Cyan" : "Purple"), 0.07f)
                                     : card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                    : is_slide    ? slide_wash
                                                   : gfx::Fade(ResolveHlGroup("Comment"), 0.08f);
             gfx::DrawRectangleRounded(box.rect, rr, 6, wash);
-            for (int r = card.meta_row; r <= last_row; r++) org_card_row_wash[r] = wash;
+            for (int r = card.meta_row; r <= last_row; r++) org_card_row_wash[r].push_back(wash);
             // Every row the card paints over, so the decoration loop can
             // hand that row's end-of-line virtual text to the post-pass
             // rather than drawing it where the bar is about to land. A
@@ -49661,16 +50740,29 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // stands in for the concealed header, then the card outline -- both
     // after the row text, so the bar covers the raw `#+begin_src ...`
     // line underneath it and the rounded outline stays crisp on top.
-    for (const OrgCardBox &cb : org_card_boxes) {
+    // A mepml slide's card goes last: the cards inside it paint opaque
+    // bands (a concealed header, a row's overflow) that would cut its
+    // outline.
+    std::vector<const OrgCardBox *> org_card_order;
+    for (const OrgCardBox &cb : org_card_boxes)
+        if (cb.card->kind != "slide") org_card_order.push_back(&cb);
+    for (const OrgCardBox &cb : org_card_boxes)
+        if (cb.card->kind == "slide") org_card_order.push_back(&cb);
+    for (const OrgCardBox *cbp : org_card_order) {
+        const OrgCardBox &cb = *cbp;
         const OrgBlockCard &card = *cb.card;
         const gfx::Color accent = ResolveHlGroup("Accent");
         // The same washes the fill pass used, plus the opaque background
         // they sit on: a concealing band has to cover the raw header text
         // outright, so it paints NormalBg first and the wash over it,
         // landing on exactly the color the card body already shows.
-        const gfx::Color card_wash = cb.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
-                                                : gfx::Fade(ResolveHlGroup("Comment"), 0.08f);
-        const gfx::Color header_wash = cb.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.20f)
+        // A mepml slide is tinted in Cyan, the colour its markers take.
+        const bool cb_slide = card.kind == "slide";
+        const gfx::Color card_wash = cb.is_src   ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                     : cb_slide  ? cb.slide_wash
+                                                 : gfx::Fade(ResolveHlGroup("Comment"), 0.08f);
+        const gfx::Color header_wash = cb.is_src  ? gfx::Fade(ResolveHlGroup("Accent"), 0.20f)
+                                       : cb_slide ? gfx::Fade(ResolveHlGroup("Cyan"), 0.16f)
                                                   : gfx::Fade(ResolveHlGroup("Comment"), 0.16f);
         const gfx::Color opaque_bg = ResolveHlGroup("NormalBg");
         const float card_rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(cb.rect.width, cb.rect.height)));
@@ -49690,6 +50782,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (to <= from) return;
             gfx::DrawRectangle(static_cast<int>(from), static_cast<int>(band.y), static_cast<int>(to - from),
                           static_cast<int>(band.height), ResolveHlGroup("NormalBg"));
+            // Inside a slide: the slide's own paper, up to its edge.
+            if (cb.slide_right > from) {
+                gfx::DrawRectangle(static_cast<int>(from), static_cast<int>(band.y), static_cast<int>(cb.slide_right - from),
+                                   static_cast<int>(band.height), cb.slide_wash);
+            }
+        };
+        // An opaque band inside a slide: the slide's wash goes back on
+        // under this card's own.
+        auto slide_under = [&](const gfx::Rectangle &band) {
+            if (cb.slide_right <= 0.0f) return;
+            gfx::DrawRectangle(static_cast<int>(band.x), static_cast<int>(band.y), static_cast<int>(band.width),
+                               static_cast<int>(band.height), cb.slide_wash);
         };
         // The play button's own left edge once it has been laid out
         // below, 0 when this card has none: the end-of-line virtual text
@@ -49701,6 +50805,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             clear_overflow(cb.header);
             gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y),
                           static_cast<int>(cb.header.width), static_cast<int>(cb.header.height), opaque_bg);
+            slide_under(cb.header);
             // A touch more tint than the body, so the bar reads as the
             // card's header rather than as part of the code.
             gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y),
@@ -49935,18 +51040,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // The language (or, for a non-src block, the block word) as a
             // filled chip -- the one piece that is always there, and the
             // block's identity at a glance.
-            const std::string kind_text = card.is_src ? (card.lang.empty() ? std::string("src") : card.lang) : card.kind;
+            const std::string kind_text = !card.chip.empty() ? card.chip
+                                          : card.is_src      ? (card.lang.empty() ? std::string("src") : card.lang)
+                                                             : card.kind;
             const float kind_w = gfx::MeasureTextEx(g_font, kind_text.c_str(), g_font_size, 0).x + 14.0f;
             if (fits(kind_w)) {
                 const gfx::Rectangle chip{cx, chip_y, kind_w, chip_h};
-                gfx::DrawRectangleRounded(chip, 0.5f, 6, cb.is_src ? accent : ResolveHlGroup("Border"));
+                gfx::DrawRectangleRounded(chip, 0.5f, 6, cb.is_src ? accent : cb_slide ? ResolveHlGroup("Cyan") : ResolveHlGroup("Border"));
                 gfx::DrawTextEx(g_font, kind_text.c_str(), gfx::Vector2{cx + 7.0f, text_y}, g_font_size, 0,
                            ResolveHlGroup("NormalBg"));
                 cx += kind_w + 8.0f;
                 // The title (#+NAME:/#+CAPTION:/:title), drawn twice one
                 // pixel apart for a bold that g_font has no real face for
                 // -- the same fake-bold a Decoration::bold span uses.
-                if (!card.title.empty()) {
+                // (An open slide's title is its heading, just below.)
+                if (!card.title.empty() && !(cb_slide && !cb.folded)) {
                     const float title_w = gfx::MeasureTextEx(g_font, card.title.c_str(), g_font_size, 0).x;
                     if (fits(title_w + 8.0f)) {
                         const gfx::Color title_col = ResolveHlGroup("Normal");
@@ -50008,6 +51116,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             clear_overflow(cb.footer);
             gfx::DrawRectangle(static_cast<int>(cb.footer.x), static_cast<int>(cb.footer.y),
                           static_cast<int>(cb.footer.width), static_cast<int>(cb.footer.height), opaque_bg);
+            slide_under(cb.footer);
             gfx::DrawRectangle(static_cast<int>(cb.footer.x), static_cast<int>(cb.footer.y),
                           static_cast<int>(cb.footer.width), static_cast<int>(cb.footer.height), card_wash);
             // Only for a src block, and only while the cursor is off the
@@ -50075,6 +51184,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
         gfx::Color border = card.bare   ? gfx::Fade(ResolveHlGroup(card.kind == "abstract" ? "Cyan" : "Purple"), cb.active ? 0.8f : 0.4f)
                             : cb.is_src ? (cb.active ? accent : gfx::Fade(accent, 0.55f))
+                            : cb_slide  ? gfx::Fade(ResolveHlGroup("Cyan"), cb.active ? 0.85f : 0.5f)
                                         : gfx::Fade(ResolveHlGroup("Border"), cb.active ? 1.0f : 0.7f);
         gfx::DrawRectangleRoundedLinesEx(cb.rect, card_rr, 6, cb.active ? 2.0f : 1.0f, border);
         // End-of-line virtual text belonging to a row this card conceals
@@ -53987,6 +55097,15 @@ int main(int argc, char **argv) {
 #endif
     LoadOfficeFonts();
     LoadMathFonts();
+    mepml::SetMathPictureRenderer(RenderMathPicture);
+    pres::SetMathPictureRenderer([](const std::string &tex, double pt, std::string *png, double *w_pt, double *h_pt) {
+        mepml::MathPicture pic;
+        if (!RenderMathPicture(tex, true, pt, &pic)) return false;
+        *png = std::move(pic.png);
+        *w_pt = pic.width_pt;
+        *h_pt = pic.height_pt;
+        return true;
+    });
     BuildMenus();
     RecomputeMenuLabelLayout();
 
@@ -54225,6 +55344,32 @@ int main(int argc, char **argv) {
     // of why a caret paced at one step per frame went unnoticed as a
     // 165-steps-per-second caret on a 165Hz panel.
     gfx::SetTargetFPS(g_editor.MaxFps());
+    // Idle: when nothing has happened for a moment -- no input, no job
+    // output, no agent message -- sleep on the X connection between frames
+    // (at most 1/idlefps), so an idle mep costs next to nothing instead
+    // of a full redraw at the display's refresh rate. Any window-system
+    // event wakes it at once; output from a job keeps it at full rate
+    // only briefly, so a background process that prints now and then does
+    // not pin it there.
+    auto idle_wait = [] {
+        static double last_input = 0, last_activity = 0;
+        static unsigned long last_epoch = 0;
+        const double now = gfx::GetTime();
+        if (gfx::EventsThisFrame()) last_input = now;
+        const unsigned long epoch = mep::ActivityEpoch().load(std::memory_order_relaxed);
+        if (epoch != last_epoch) {
+            last_epoch = epoch;
+            last_activity = now;
+        }
+        const int idle_fps = g_editor.IdleFps();
+        if (idle_fps <= 0 || g_editor.WantsFullFrameRate()) return 0.0;
+        if (now - last_input < 1.0 || now - last_activity < 0.2) return 0.0;
+        // Idle for a while longer: slower still (clocks and a caret blink
+        // need no more than a couple of frames a second).
+        const double quiet = std::min(now - last_input, now - last_activity);
+        const int fps = quiet > 10.0 ? std::min(idle_fps, 2) : idle_fps;
+        return 1.0 / static_cast<double>(fps);
+    };
     static const bool kPdfProf = std::getenv("MEP_PDF_PROF") != nullptr;
     int prof_frame = 0;
     while (!gfx::WindowShouldClose() && !g_editor.ShouldQuit()) {
@@ -54238,6 +55383,8 @@ int main(int argc, char **argv) {
             UpdateDrawFrame();
         }
         TickWindowStatePersistence();
+        if (const double wait = idle_wait(); wait > 0.0) gfx::WaitEvents(wait, mep::WakeFd());
+        mep::DrainWakes();
     }
 
     // Explicit, bounded teardown of every spawned child (:terminal shells,

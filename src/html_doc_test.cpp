@@ -565,5 +565,48 @@ int main() {
     CHECK(vg->style.has_color && vg->style.color_r == 0x01 && vg->style.color_g == 0x02 && vg->style.color_b == 0x03);
     // @keyframes block was skipped whole, not misparsed into a stray rule.
 
+    // A slideshow's needs: a later display undoes an earlier none, @media
+    // blocks are matched as blocks (print's rules stay out, and the rule
+    // after one still applies), unknown pseudo-classes match nothing, and
+    // visibility/opacity/position: fixed are read.
+    {
+        HtmlDoc page;
+        ParseHtml("<style>.s { display: none } .s.on { display: flex }"
+                  "@media print { .p { display: none } @page { margin: 0 } } .after { visibility: hidden }"
+                  "@media screen and (min-width: 600px) { .wide { display: none } } @media (prefers-color-scheme: dark) { .p { display: none } }"
+                  "/* @media print { */ .fade { opacity: 0 } .fade i { opacity: 1 } .shown { visibility: visible }"
+                  "button:disabled { display: none } div:focus-within { display: none } .fx { position: fixed; bottom: 0 }</style>"
+                  "<div id='a' class='s'></div><div id='b' class='s on'></div><p id='p' class='p'></p><p id='after' class='after'><b id='shown' class='shown'></b></p>"
+                  "<p id='wide' class='wide'></p><div id='fade' class='fade'><i id='under'></i></div><button id='btn'></button><div id='fw'></div>"
+                  "<nav id='fx' class='fx'></nav>", page);
+        auto node = [&](const char *id) { return FindById(page.root.get(), id); };
+        CHECK(node("a")->style.display_none && !node("b")->style.display_none && node("b")->style.block);
+        CHECK(!node("p")->style.display_none && node("wide")->style.display_none);
+        CHECK(node("after")->style.Invisible() && !node("shown")->style.Invisible());
+        CHECK(node("fade")->style.Invisible() && node("under")->style.Invisible());
+        CHECK(!node("btn")->style.display_none && !node("fw")->style.display_none);
+        CHECK(node("fx")->style.position == CssPosition::Fixed && node("fx")->style.pos_bottom.set && !node("fx")->style.pos_top.set);
+        node("fw")->interaction_focus = true;
+        ComputeStyles(page);
+        CHECK(node("fw")->style.display_none);
+    }
+    // classList.toggle(name, force), style.setProperty, and a keystroke a
+    // listener cancels (the host then skips its own binding for it).
+    {
+        HtmlDoc page;
+        ParseHtml("<body><div id='x' class='on'></div><script>var x = document.getElementById('x');"
+                  "x.classList.toggle('on', true); x.classList.toggle('off', false);"
+                  "x.style.setProperty('--scale', '2'); x.style.setProperty('margin-top', '3px');"
+                  "var seen = ''; document.addEventListener('keydown', function (e) { seen += e.key; document.title = seen; if (e.key === 'l') e.preventDefault(); });"
+                  "</script></body>", page);
+        std::shared_ptr<JsRuntime> js = StartScripts(page, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
+        DomNode *x = FindById(page.root.get(), "x");
+        CHECK(x->Class() == "on" && x->attrs["style"].find("--scale: 2;") != std::string::npos && x->attrs["style"].find("margin-top: 3px;") != std::string::npos);
+        DomNode *body = x->parent;
+        CHECK(!ScriptsDispatchKey(*js, body, "keydown", "l", "KeyL", false, false, false));
+        CHECK(ScriptsDispatchKey(*js, body, "keydown", "j", "KeyJ", false, false, false));
+        CHECK(page.title == "lj");
+        js.reset();
+    }
     std::cout << "html_doc_test passed\n";
 }

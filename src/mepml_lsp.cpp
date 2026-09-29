@@ -340,6 +340,8 @@ std::string CodeFor(const std::string &message) {
         {"\\slide is never closed", "unclosed-slide"},
         {"unknown document type", "unknown-type"},
         {"a presentation with no", "empty-presentation"},
+        {"unknown export format", "unknown-export"},
+        {"a Beamer export with no", "empty-presentation"},
         {"not on any slide", "off-slide"},
         {"a slide's content goes on", "trailing-text"},
         {"citation has no key", "citation-no-key"},
@@ -565,7 +567,7 @@ const std::vector<Vocab> &MetaVocab() {
         {"Author", "//? Author: name", "The author, for the exports' metadata."},
         {"Date", "//? Date: text", "The date, for the exports' metadata."},
         {"Option", "//? Option: Name=value", "A document option: an integer, a decimal or a string (quote it to force a string)."},
-        {"Export", "//? Export: pdf", "The format the Run button (the pane header's play button, <leader>rr, gr) exports to and opens: html (the default), pdf, docx, odt, rtf, md, org, tex, txt, pptx or odp."},
+        {"Export", "//? Export: pdf", "The format the Run button (the pane header's play button, <leader>rr, gr) exports to and opens: html (the default), pdf, beamer (the slides as a Beamer PDF), docx, odt, rtf, md, org, tex, txt, pptx or odp."},
         {"Type", "//? Type: presentation", "What the document is: document (the default) or presentation. A presentation's html, tex and pdf exports are a slideshow and a Beamer deck of its \\slide blocks, after a title slide from the header; pptx and odp decks work either way."},
         {"Exports", "//? Exports: results", "What the exports show of every code block: code, results, both (the default) or none. A block's own exports= (or echo=) wins. The editor always shows everything."},
         {"Import", "//? Import: file.mepml", "Includes another mepml file: its options and other header keys are inherited (this file's own win) and its content is included here, in the order the header lists its imports."},
@@ -670,7 +672,22 @@ std::vector<MepmlLspCompletionItem> MepmlLspCompletions(const std::vector<std::s
             Offer(out, path, col, PathCands(opts, path, {".mepml", ".bib"}));
             return out;
         }
-        if (typed.find(':') == std::string::npos && lead.size() > 3) Offer(out, typed, col, Cands(MetaVocab(), MepmlLspKind::Field, ": "));
+        // The value after `//? Export:` / `//? Type:`: the formats and kinds there are.
+        if (colon != std::string::npos) {
+            const std::string key = Lower(Trim(typed.substr(0, colon)));
+            const std::string value = Trim(typed.substr(colon + 1));
+            std::vector<Candidate> c;
+            if (key == "export")
+                for (const mepml::ExportFormat &f : mepml::ExportFormats()) c.push_back({f.name, "", MepmlLspKind::Value, "export format", f.doc, ""});
+            else if (key == "type") {
+                c.push_back({"document", "", MepmlLspKind::Value, "document type", "An ordinary document (the default).", ""});
+                c.push_back({"presentation", "", MepmlLspKind::Value, "document type",
+                             "A slide deck: its html is a slideshow and its tex and pdf a Beamer deck, of its \\slide blocks.", ""});
+            }
+            if (!c.empty()) Offer(out, value, col, c);
+            return out;
+        }
+        if (lead.size() > 3) Offer(out, typed, col, Cands(MetaVocab(), MepmlLspKind::Field, ": "));
         return out;
     }
 

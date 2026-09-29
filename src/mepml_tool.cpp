@@ -46,9 +46,10 @@ std::string ShellQuote(const std::string &s) {
 
 int Usage() {
     std::fprintf(stderr,
-                 "usage: mep-mepml convert IN OUT\n"
+                 "usage: mep-mepml convert [--beamer] IN OUT\n"
                  "  export from .mepml to: html md org rtf docx odt tex pdf txt pptx odp\n"
-                 "  (with //? Type: presentation, html/tex/pdf are a slideshow and a Beamer deck)\n"
+                 "  (with //? Type: presentation, html/tex/pdf are a slideshow and a Beamer deck;\n"
+                 "  --beamer makes tex/pdf the Beamer deck of the \\slide blocks whatever the Type)\n"
                  "  import to .mepml from: html md org rtf docx odt txt\n");
     return 2;
 }
@@ -56,8 +57,9 @@ int Usage() {
 }  // namespace
 
 int main(int argc, char **argv) {
-    if (argc != 4 || std::string(argv[1]) != "convert") return Usage();
-    const std::string in = argv[2], out = argv[3];
+    const bool beamer = argc == 5 && std::string(argv[2]) == "--beamer";
+    if (argc != 4 + (beamer ? 1 : 0) || std::string(argv[1]) != "convert") return Usage();
+    const std::string in = argv[argc - 2], out = argv[argc - 1];
     const mepml::Format fin = mepml::FormatFromPath(in), fout = mepml::FormatFromPath(out);
     std::error_code ec;
     const std::string in_abs = std::filesystem::absolute(in, ec).string();
@@ -91,12 +93,28 @@ int main(int argc, char **argv) {
     const mepml::Document doc = mepml::ParseWithImports(in_abs, lines, [](const std::string &p, std::vector<std::string> *l) {
         return ReadLines(p, l);
     });
+    std::string latex;
+    if (fout == mepml::Format::Pdf || fout == mepml::Format::Latex) {
+        latex = beamer ? mepml::ToBeamer(doc, base_dir, &err) : mepml::ToLatex(doc, base_dir);
+        if (latex.empty()) {
+            std::fprintf(stderr, "mep-mepml: %s\n", err.c_str());
+            return 1;
+        }
+    } else if (beamer) {
+        std::fprintf(stderr, "mep-mepml: --beamer writes .tex or .pdf, not %s\n", out.c_str());
+        return 2;
+    }
+    if (fout == mepml::Format::Latex) {
+        std::ofstream o(out);
+        o << latex;
+        return o ? 0 : 1;
+    }
     if (fout == mepml::Format::Pdf) {
         const std::filesystem::path pdf = std::filesystem::absolute(out, ec);
         const std::filesystem::path tex = std::filesystem::path(pdf).replace_extension(".tex");
         {
             std::ofstream o(tex);
-            o << mepml::ToLatex(doc, base_dir);
+            o << latex;
         }
         const std::string cmd = "tectonic -X compile " + ShellQuote(tex.string()) + " --outdir " +
                                 ShellQuote(pdf.parent_path().string()) + " >/dev/null 2>&1";

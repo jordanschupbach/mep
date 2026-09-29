@@ -1,6 +1,7 @@
 #ifndef MEP_MEPML_CONVERT_H
 #define MEP_MEPML_CONVERT_H
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,9 @@ std::string ToRtf(const Document &doc, const std::string &base_dir);
 // A presentation (`//? Type: presentation`, IsPresentation) is a Beamer
 // deck, so its PDF is too; any other document is an article.
 std::string ToLatex(const Document &doc, const std::string &base_dir);
+// The Beamer deck whatever the document's Type: a title frame from the
+// header, then a frame per \slide. "" with *error when there is no slide.
+std::string ToBeamer(const Document &doc, const std::string &base_dir, std::string *error);
 // ToHtml, or for a presentation ToSlidesHtml.
 std::string ToHtmlFor(const Document &doc);
 // Binary packages, written to `path`; false with *error on failure.
@@ -61,6 +65,17 @@ bool WriteOdt(const Document &doc, const std::string &path, const std::string &b
 // its first heading. False with *error when there is no slide.
 bool WritePptx(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error);
 bool WriteOdp(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error);
+// A picture of a TeX equation: PNG bytes and the size it is set at, in
+// points. A .pptx's display equations carry one for the readers that
+// cannot show Office Math (LibreOffice Impress is one). The editor sets a
+// renderer (its own typesetter); without one -- mep-mepml -- such a reader
+// gets the equation as text instead.
+struct MathPicture {
+    std::string png;
+    double width_pt = 0, height_pt = 0;
+};
+using MathPictureRenderer = std::function<bool(const std::string &tex, bool display, double pt, MathPicture *out)>;
+void SetMathPictureRenderer(MathPictureRenderer renderer);
 // Any exportable format except PDF, chosen by `path`'s extension.
 bool ExportFile(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error);
 

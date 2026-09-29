@@ -73,6 +73,7 @@ to every matching line. =:norm= is the short form.
 | =caretdelay=MS=              | system  | hold before the caret repeats   |
 | =caretrate=N=                | system  | caret steps per second held     |
 | =maxfps=N=                   | 0       | cap on frames drawn per second  |
+| =idlefps=N=                  | 10      | frames per second while idle    |
 
 Prefix a boolean option with =no= to turn it off: =:set nowrap=,
 =:set nonumber norelativenumber=.
@@ -103,22 +104,21 @@ most one step per frame drawn.
 
 =:set maxfps=N= caps how many frames a second mep draws. =0=, the default,
 means no cap: vsync paces the loop, so mep draws at the display's refresh
-rate.
+rate while anything is happening.
 
-Worth setting on a laptop. mep redraws every frame whether or not anything
-changed, so an idle editor's CPU cost is almost entirely redrawing, and a
-cap gives back CPU in proportion to the frames it skips -- measured on a
-165Hz screen, as a percentage of one core while idle:
+When nothing is, mep slows down on its own. A second after the last key,
+click or mouse movement -- and once a job, terminal or agent has gone quiet
+for a fraction of a second -- it draws =idlefps= frames a second (=10= by
+default), and after ten quiet seconds, two. Input, and output arriving from
+a job, a terminal, a language server or an agent, wake it at once, so none
+of this delays anything; only purely clock-driven drawing (a caret blinking
+while you are away) runs at the slower rate. Playing video or a slideshow
+keeps the full rate. =:set idlefps=0= turns this off and draws every frame.
 
-| =maxfps= | frames drawn | idle CPU |
-|----------+--------------+----------|
-| =0=      | 163/s        | 32%      |
-| =120=    | 119/s        | 24%      |
-| =60=     | 60/s         | 12%      |
-| =30=     | 30/s         | 6%       |
-
-The cost is smoothness: scrolling and caret movement on a high-refresh
-screen are visibly less fluid capped than not. Nothing tears either way.
+=maxfps= matters for what is left: the frames drawn while you are actually
+working. The cost of a cap is smoothness: scrolling and caret movement on a
+high-refresh screen are visibly less fluid capped than not. Nothing tears
+either way.
 
 One interaction to know: the caret moves at most one step per frame, so a
 =maxfps= below your caret rate becomes the caret's ceiling -- =:set

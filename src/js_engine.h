@@ -71,6 +71,10 @@ bool ScriptsClick(JsRuntime &runtime, DomNode *node);
 /** @brief Dispatches a synthetic event (`input`, `change`, `submit`, ...) at `node`; false when a listener called preventDefault(). */
 bool ScriptsDispatchEvent(JsRuntime &runtime, DomNode *node, const std::string &type, bool bubbles);
 
+/** @brief A user keystroke: a bubbling, cancelable KeyboardEvent (`keydown`/`keyup`) at `node` carrying `key`/`code`; false when a listener called preventDefault() (the host then skips its own binding for the key). */
+bool ScriptsDispatchKey(JsRuntime &runtime, DomNode *node, const std::string &type, const std::string &key, const std::string &code,
+                        bool shift, bool ctrl, bool alt);
+
 /** @brief Whether the page registered any event listener at all (lets a host skip dispatch work for static pages). */
 bool ScriptsHaveListeners(JsRuntime &runtime);
 

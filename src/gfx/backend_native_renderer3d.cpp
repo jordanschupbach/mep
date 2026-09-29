@@ -609,6 +609,7 @@ NativeRenderer3DBackend::NativeRenderer3DBackend(NativeContext *ctx) : impl_(new
 NativeRenderer3DBackend::~NativeRenderer3DBackend() { delete impl_; }
 
 void NativeRenderer3DBackend::BeginMode3D(gfx::Camera3D camera, int render_width, int render_height) {
+    NativeContextFlush2D(impl_->ctx);
     impl_->EnsureInit();
     int w = render_width, h = render_height;
     if (w <= 0 || h <= 0) NativeContextFramebufferSize(impl_->ctx, &w, &h);
@@ -619,7 +620,8 @@ void NativeRenderer3DBackend::BeginMode3D(gfx::Camera3D camera, int render_width
     gl::Enable(gl::GL_DEPTH_TEST);
 }
 
-void NativeRenderer3DBackend::EndMode3D() { gl::Disable(gl::GL_DEPTH_TEST); }
+void NativeRenderer3DBackend::EndMode3D() {
+    NativeContextFlush2D(impl_->ctx); gl::Disable(gl::GL_DEPTH_TEST); }
 
 // Shadow-map pass (CHESS_REALISM_PLAN.md Phase 3): a self-contained
 // depth-only pass that must run entirely (BeginShadowPass, every
@@ -636,6 +638,7 @@ void NativeRenderer3DBackend::EndMode3D() { gl::Disable(gl::GL_DEPTH_TEST); }
 // ComputeSceneWorldBounds) fit the orthographic frustum tightly to the
 // actual scene instead of guessing a fixed size.
 void NativeRenderer3DBackend::BeginShadowPass(gfx::Vector3 light_dir, gfx::Vector3 scene_min, gfx::Vector3 scene_max) {
+    NativeContextFlush2D(impl_->ctx);
     impl_->EnsureInit();
     Vector3 center = Vector3Scale(Vector3Add(scene_min, scene_max), 0.5f);
     float radius = 0.5f * Vector3Length(Vector3Subtract(scene_max, scene_min));
@@ -655,6 +658,7 @@ void NativeRenderer3DBackend::BeginShadowPass(gfx::Vector3 light_dir, gfx::Vecto
 }
 
 void NativeRenderer3DBackend::DrawMeshShadow(gfx::Mesh mesh, gfx::Matrix transform) {
+    NativeContextFlush2D(impl_->ctx);
     if (mesh.vaoId == 0) return;
     Matrix mvp = MatrixMultiply(transform, impl_->light_space_matrix);
     UploadMatrix(impl_->depth_mvp_loc, mvp);
@@ -667,6 +671,7 @@ void NativeRenderer3DBackend::DrawMeshShadow(gfx::Mesh mesh, gfx::Matrix transfo
 }
 
 void NativeRenderer3DBackend::EndShadowPass() {
+    NativeContextFlush2D(impl_->ctx);
     impl_->has_shadow_map = true;
     gl::Disable(gl::GL_DEPTH_TEST);
     gl::BindFramebuffer(gl::GL_FRAMEBUFFER, 0);
@@ -676,6 +681,7 @@ void NativeRenderer3DBackend::EndShadowPass() {
 }
 
 void NativeRenderer3DBackend::DrawGrid(int slices, float spacing) {
+    NativeContextFlush2D(impl_->ctx);
     std::vector<FlatVtx> verts;
     float half = static_cast<float>(slices) * spacing * 0.5f;
     for (int i = 0; i <= slices; i++) {
@@ -695,12 +701,14 @@ void NativeRenderer3DBackend::DrawLine3D(gfx::Vector3 start, gfx::Vector3 end, g
 
 void NativeRenderer3DBackend::DrawCube(gfx::Vector3 position, float width, float height, float length,
                                         gfx::Color color) {
+    NativeContextFlush2D(impl_->ctx);
     std::vector<FlatVtx> verts;
     AppendCubeTris(verts, position, width * 0.5f, height * 0.5f, length * 0.5f);
     impl_->FlushFlat(verts, color, gl::GL_TRIANGLES);
 }
 
 void NativeRenderer3DBackend::DrawSphere(gfx::Vector3 center, float radius, gfx::Color color) {
+    NativeContextFlush2D(impl_->ctx);
     std::vector<FlatVtx> verts;
     AppendSphereTris(verts, center, radius);
     impl_->FlushFlat(verts, color, gl::GL_TRIANGLES);
@@ -708,12 +716,14 @@ void NativeRenderer3DBackend::DrawSphere(gfx::Vector3 center, float radius, gfx:
 
 void NativeRenderer3DBackend::DrawCylinderEx(gfx::Vector3 start, gfx::Vector3 end, float start_radius,
                                               float end_radius, int sides, gfx::Color color) {
+    NativeContextFlush2D(impl_->ctx);
     std::vector<FlatVtx> verts;
     AppendCylinderTris(verts, start, end, start_radius, end_radius, sides);
     impl_->FlushFlat(verts, color, gl::GL_TRIANGLES);
 }
 
 void NativeRenderer3DBackend::DrawBoundingBox(gfx::BoundingBox box, gfx::Color color) {
+    NativeContextFlush2D(impl_->ctx);
     gfx::Vector3 p[8] = {
         {box.min.x, box.min.y, box.min.z}, {box.max.x, box.min.y, box.min.z}, {box.max.x, box.max.y, box.min.z},
         {box.min.x, box.max.y, box.min.z}, {box.min.x, box.min.y, box.max.z}, {box.max.x, box.min.y, box.max.z},
@@ -790,6 +800,7 @@ gfx::Model NativeRenderer3DBackend::LoadModel(const char *file_name) {
 }
 
 void NativeRenderer3DBackend::UnloadModel(gfx::Model model) {
+    NativeContextFlush2D(impl_->ctx);
     // model3d_doc.cpp reads .meshes and, per-material, .maps[kMaterialMapAlbedo]
     // (color and, if present, a GPU texture it reads back via
     // LoadImageFromTexture) from an import, then discards the Model -- so
@@ -820,6 +831,7 @@ void NativeRenderer3DBackend::UnloadModel(gfx::Model model) {
 }
 
 void NativeRenderer3DBackend::UnloadMesh(gfx::Mesh mesh) {
+    NativeContextFlush2D(impl_->ctx);
     if (mesh.vaoId != 0) {
         auto vao = static_cast<gl::GLuint>(mesh.vaoId);
         gl::DeleteVertexArrays(1, &vao);
@@ -926,6 +938,7 @@ void ComputeFallbackNormalsAndTangents(const gfx::Mesh &mesh, bool need_normals,
 }  // namespace
 
 void NativeRenderer3DBackend::UploadMesh(gfx::Mesh *mesh, bool dynamic) {
+    NativeContextFlush2D(impl_->ctx);
     gl::GLenum usage = dynamic ? gl::GL_DYNAMIC_DRAW : gl::GL_STATIC_DRAW;
     gl::GLuint vao = 0;
     gl::GenVertexArrays(1, &vao);
@@ -1009,6 +1022,7 @@ void NativeRenderer3DBackend::UploadMesh(gfx::Mesh *mesh, bool dynamic) {
 }
 
 void NativeRenderer3DBackend::DrawMesh(gfx::Mesh mesh, gfx::Material material, gfx::Matrix transform) {
+    NativeContextFlush2D(impl_->ctx);
     if (mesh.vaoId == 0) return;
     // The composed model matrix (transform * whatever PushMatrix/
     // MultMatrix accumulated on the stack) -- CurrentMvp computes this
@@ -1345,21 +1359,25 @@ gfx::RayCollision NativeRenderer3DBackend::GetRayCollisionBox(gfx::Ray ray, gfx:
 // this reason (see its rlgl.h), so matching that on Emscripten is full
 // parity with this app's existing web build, not a regression.
 void NativeRenderer3DBackend::EnableWireMode() {
+    NativeContextFlush2D(impl_->ctx);
 #ifndef __EMSCRIPTEN__
     gl::PolygonMode(gl::GL_FRONT_AND_BACK, gl::GL_LINE);
 #endif
 }
 void NativeRenderer3DBackend::DisableWireMode() {
+    NativeContextFlush2D(impl_->ctx);
 #ifndef __EMSCRIPTEN__
     gl::PolygonMode(gl::GL_FRONT_AND_BACK, gl::GL_FILL);
 #endif
 }
 
 void NativeRenderer3DBackend::SetUnlitMode(bool unlit) {
+    NativeContextFlush2D(impl_->ctx);
     impl_->unlit_mode = unlit;
 }
 
 void NativeRenderer3DBackend::SetSceneLights(const SceneLight *lights, int count) {
+    NativeContextFlush2D(impl_->ctx);
     const SceneLight &legacy = Impl::LegacyKeyLight();
     const SceneLight *src = (count > 0 && lights != nullptr) ? lights : &legacy;
     int n = (count > 0 && lights != nullptr) ? count : 1;

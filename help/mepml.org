@@ -195,8 +195,11 @@ and both are flagged as never closed. A slide left open runs to the next
 it. Content on the opening line itself (=\slide(text)=) is flagged. The
 content goes on the lines after the opener.
 
-The editor draws the opener as a rule labelled /Slide N: title/ and the
-closer as a plain rule. A slide folds as one block and appears in the
+The editor draws a slide as a card: the opener becomes its title bar,
+labelled /Slide N/, and the closer its bottom edge, with the cards of the
+code blocks and results on the slide set inside it. A slide still missing
+its closer is drawn as a rule labelled /Slide N: title/ instead. A slide
+folds as one block, collapsing to its title bar, and appears in the
 outline. In an ordinary document, the HTML export puts each slide in a
 =<section class="slide">=, and the other document exports keep a slide's
 content as ordinary blocks, without the slide boundaries.
@@ -223,8 +226,9 @@ from =Title=, =Subtitle=, =Author= and =Date=, followed by one slide per
 | =pptx=            | a PowerPoint deck                                                       |
 | =odp=             | a LibreOffice Impress deck                                              |
 
-In the slideshow, the arrow keys, space, a click or a swipe step through
-the slides, =Home= and =End= jump to either end, and =f= goes full screen.
+In the slideshow, =h= and =l=, the arrow keys, space, a click or a swipe step
+through the slides, as do the =<= and =>= buttons that show when the mouse
+is over the bottom of the window. =Home= and =End= jump to either end, and =f= goes full screen.
 Printing it gives one slide per page. Slides are 16:9 in every format. A
 slide whose content is too tall for it is shrunk to fit: the slideshow
 scales it down, and the PowerPoint and Impress decks use smaller type.
@@ -237,8 +241,12 @@ can also be made from an ordinary document that has slides.
 In the PowerPoint and Impress decks, a slide's text, lists, code and
 results, tables and pictures are real text boxes, tables and pictures you
 can edit. A single picture beside text goes on the right. Footnotes go at
-the bottom of their slide. Maths is shown as its TeX source, as in the
-Word export.
+the bottom of their slide. Maths is set as real equations: Office
+equations in PowerPoint, formula objects in Impress. Inline maths in
+Impress is typeset text (a text box cannot hold a formula), and so is
+every equation in a =pptx= opened by a program without Office equations,
+except that a deck exported from mep's editor (rather than by
+=mep-mepml=) shows its display equations there as pictures.
 
 * Inline formatting
 
@@ -675,10 +683,11 @@ format:
 //? Export: pdf
 #+end_example
 
-Any format the table below lists works (=html=, =pdf=, =docx=, =odt=,
+Any format the table below lists works (=html=, =pdf=, =beamer=, =docx=, =odt=,
 =rtf=, =md=, =org=, =tex=, =txt=, =pptx=, =odp=). =Export:= is singular: =//? Exports:=
 is a different key, choosing which parts of each code block the exports
-show.
+show. =beamer= is the =\slide= blocks as a Beamer PDF whatever the
+document's =Type=, and a slide-deck PDF opens sized to show a whole slide.
 
 =<leader>ke= (or =:MepmlExport=) exports the document beside its file,
 =notes.mepml= becoming =notes.docx= and so on. Imports are expanded and
@@ -688,6 +697,7 @@ pictures are embedded where the format can hold them:
 |-----------------------+-------------------------------------------------------------|
 | HTML                  | a standalone page (=<leader>ko= opens it)                    |
 | PDF                   | the LaTeX export, compiled by =tectonic= in the background  |
+| Beamer (=beamer=)     | the slides as a Beamer deck, compiled to PDF the same way   |
 | Word (=.docx=)        | named styles, real lists, footnotes, links, embedded images |
 | OpenDocument (=.odt=) | the same, for LibreOffice                                   |
 | Rich Text (=.rtf=)    | the same, with a stylesheet and list tables                 |

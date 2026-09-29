@@ -1,0 +1,101 @@
+#+TITLE: Presentations
+#+HTML_HEAD: <meta name="help-section" content="Documents and media">
+#+HTML_HEAD: <meta name="help-order" content="42">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening
+
+=.pptx= (PowerPoint) and =.odp= (LibreOffice Impress) open in a slide
+editor: the slide drawn to scale on a canvas, a strip of slide thumbnails
+down the left, and a toolbar across the top. Opening a path that does not
+exist yet starts a new deck there; =:PresNew= starts one with no name.
+
+* Working on a slide
+
+Click a shape to select it, drag it to move it, and drag one of its eight
+handles to resize it (a picture keeps its shape from a corner). Double-click
+a shape's text, or press =Enter=, to type into it; =Esc= stops typing.
+
+| Key (not typing)      | Does                                           |
+|-----------------------+------------------------------------------------|
+| =j= / =k=, =PgDn= / =PgUp= | next / previous slide                     |
+| =gg= / =G=            | first / last slide                             |
+| =Tab= / =Shift-Tab=   | select the next / previous shape               |
+| arrows                | nudge the selection (=Shift= moves further)    |
+| =t= =r= =o= =O= =L=   | add a text box, rectangle, ellipse, rounded rectangle, line |
+| =n= / =N= / =X=       | new slide / duplicate slide / delete slide     |
+| =J= / =K=             | move the slide later / earlier                 |
+| =x=, =Delete=         | delete the selected shape                      |
+| =y= / =p= / =D=       | copy / paste / duplicate the selected shape    |
+| =]= / =[=             | bring forward / send backward                  |
+| =+= / =-=             | larger / smaller text                          |
+| =b=                   | bullets on or off                              |
+| =Ctrl-B= =Ctrl-I= =Ctrl-U= | bold, italic, underline                   |
+| =u=, =Ctrl-Z= / =Ctrl-Y= | undo / redo                                 |
+| =Ctrl-R=              | theme colours on or off (in any mode)          |
+| =P=                   | present (=Esc= ends; arrows, =j=/=k= or a click move on) |
+
+While typing, =Enter= starts a new paragraph, =Tab= / =Shift-Tab= indent a
+list item, and =Ctrl-B= / =Ctrl-I= / =Ctrl-U= style the paragraph the caret
+is in. Without typing, styling applies to all of the selected shape's text.
+
+The toolbar has the same actions, plus alignment and colour rows for a
+shape's fill, its text, its outline, and the slide's background.
+
+Slides are drawn in the editor's theme colours by default, as PDFs and
+pictures are: each colour's lightness is placed on the gradient from the
+theme's text colour to its background, so a white slide with black text
+takes the theme's background and text colours. =Ctrl-R= (or the toolbar's
+half-circle button) switches to the slides' own colours and back. This is
+only how the editor draws them -- the file keeps its own colours.
+
+| Command                   | Does                                      |
+|---------------------------+-------------------------------------------|
+| =:PresNew [path]=         | a new deck                                |
+| =:PresImage path=         | a picture on the current slide            |
+| =:PresBackground #rrggbb= | the slide's background (=none= clears it) |
+| =:PresExport path=        | a copy in the format the path names       |
+| =:PresPresent=            | present                                   |
+| =:PresMath tex=           | an equation (see Maths)                   |
+
+* Maths
+
+Equations are typeset by mep's own maths engine, the one the editor uses
+for LaTeX elsewhere: PowerPoint's equations (Office Math), Impress formula
+objects, and the maths mep's own mepml exports write.
+
+| Key or command     | Does                                                           |
+|--------------------+----------------------------------------------------------------|
+| =:PresMath tex=    | a new equation (or, with an equation selected, its new TeX)   |
+| =Ctrl-M=           | while typing: maths at the caret, typing carries on after it  |
+| =Enter=, double-click an equation | its TeX on the command line, to change  |
+
+An equation is one character to the caret: arrows step over it and
+=Backspace= deletes it whole.
+
+In a =.pptx= equations are Office equations, with a picture of each
+displayed equation (and inline maths as text) for programs that cannot show
+those -- LibreOffice Impress among them. In an =.odp= a displayed equation
+is a formula object, while inline maths in a text box is written as text
+(Impress text boxes cannot hold a formula), so it reads back as text.
+
+* Saving
+
+=:w= writes the deck in the format its name gives it, so =:w talk.odp= on a
+=.pptx= is also how one converts. mep reads what a file inherits from its
+masters, layouts and theme and writes every shape out on its own slide:
+the deck looks the same in PowerPoint and Impress afterwards, but its
+placeholders become ordinary text boxes. What mep has no model for --
+animations, transitions, charts, SmartArt, speaker notes' formatting --
+is not kept. A picture mep cannot draw (an EMF or WMF metafile) shows as a
+labelled box and is saved unchanged.
+
+* Scripting
+
+=mep.pres_info()= describes the current slide (its shapes, their positions
+in EMU -- 914400 to the inch -- and their text). =mep.pres_goto(n)=,
+=mep.pres_select(n)=, =mep.pres_add_slide()=, =mep.pres_add_shape(kind)=,
+=mep.pres_set_text(text)=, =mep.pres_set_geometry(x, y, w, h)=,
+=mep.pres_style("b")=, =mep.pres_align("center")=,
+=mep.pres_color("fill", "#6b8afd")=, =mep.pres_math(tex)=, =mep.pres_theme(on)=, =mep.pres_undo()= and =mep.pres_redo()=
+do what the keys do.

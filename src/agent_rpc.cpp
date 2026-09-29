@@ -1,4 +1,5 @@
 #include "agent_rpc.h"
+#include "frame_activity.h"
 #include "cad_fem_api.h"
 #include "editor.h"
 #include "image_procgen.h"
@@ -132,8 +133,11 @@ struct Connection {
             bool ok = PumpRpcFrames(read_buffer, [this](const std::string &body) {
                 Json msg;
                 if (!Json::Parse(body, &msg) || !msg.is_object()) return;
-                std::lock_guard<std::mutex> lock(mutex);
-                pending.push_back(std::move(msg));
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    pending.push_back(std::move(msg));
+                }
+                mep::WakeMainLoop();
             });
             if (!ok) {
                 // Unrecoverable framing violation (see rpc_framing.h) --
@@ -2842,6 +2846,7 @@ void PollOnce(Editor &editor) {
             std::lock_guard<std::mutex> conn_lock(conn->mutex);
             requests.swap(conn->pending);
         }
+        if (!requests.empty()) mep::NoteActivity();
         for (const Json &request : requests) {
             const Json &id = request.get("id");
             const std::string method = request.get("method").as_string();

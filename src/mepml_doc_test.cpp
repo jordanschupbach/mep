@@ -730,6 +730,13 @@ int main() {
         bool empty = false;
         for (const Diagnostic &dg : none.diagnostics) empty = empty || dg.message.find("no \\slide") != std::string::npos;
         CHECK(empty);
+        // `//? Export:` names a known format; beamer needs a slide.
+        CHECK(Parse({"//? Export: pdf"}).diagnostics.empty() && Parse({"//? Export: .HTML"}).diagnostics.empty());
+        const Document bad_export = Parse({"//? Export: pfd"});
+        CHECK(bad_export.diagnostics.size() == 1 && bad_export.diagnostics[0].message.find("unknown export format 'pfd'") == 0);
+        const Document no_deck = Parse({"//? Export: beamer", "", "Text."});
+        CHECK(no_deck.diagnostics.size() == 1 && no_deck.diagnostics[0].message.find("a Beamer export with no") == 0);
+        CHECK(Parse({"//? Export: beamer", "\\slide(", "One.", ")"}).diagnostics.empty());
         Document odd = Parse({"//? Type: poster"});
         CHECK(!IsPresentation(odd) && odd.diagnostics.size() == 1 && odd.diagnostics[0].message.find("unknown document type") == 0);
         CHECK(Parse({"//? Type: document", "", "Text."}).diagnostics.empty());
@@ -739,6 +746,9 @@ int main() {
         CHECK(html.find("<section class=\"slide title-slide\" id=\"slide-1\"><h1>Deck</h1>") != std::string::npos);
         CHECK(html.find("id=\"slide-2\"><h2 class=\"slide-title\">One</h2>") != std::string::npos);
         CHECK(html.find("id=\"slide-3\"><div class=\"slide-body\">") != std::string::npos);
+        // Previous/next buttons in the bottom strip, and h/l to step.
+        CHECK(html.find("<nav class=\"nav\"><button class=\"prev\"") != std::string::npos);
+        CHECK(html.find("k === 'l'") != std::string::npos && html.find("k === 'h'") != std::string::npos);
         const std::vector<SlideHtml> frags = SlideFragments(deck);
         CHECK(frags.size() == 2 && frags[0].title == "One" && frags[0].body == "<p>Text.</p>\n" && frags[1].title.empty());
     }

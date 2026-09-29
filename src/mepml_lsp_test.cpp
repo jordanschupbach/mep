@@ -252,6 +252,11 @@ void TestCompletion() {
     CHECK(at("```{r, cmd", "cmdline").has_value());  // a babel header argument
     const std::optional<MepmlLspCompletionItem> m = at("//? Ti", "Title");
     CHECK(m && m->insert_text == "Title: ");
+    // The value of `//? Export:` and `//? Type:`.
+    const std::optional<MepmlLspCompletionItem> ex = at("//? Export: bea", "beamer");
+    CHECK(ex && ex->insert_text == "beamer" && ex->replace_start == 12);
+    CHECK(at("//? Type: pre", "presentation").has_value());
+    CHECK(!at("//? Title: bea", "beamer").has_value());
     CHECK(at("// WAR", "WARNING").has_value());
     CHECK(!at("// the", "THE").has_value());
     // Nothing inside a code block's body.

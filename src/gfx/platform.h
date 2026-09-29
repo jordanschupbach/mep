@@ -17,6 +17,8 @@ inline void InitWindow(int width, int height, const char *title) {
 inline void CloseWindow() { GetBackends().platform->CloseWindow(); }
 inline bool IsWindowReady() { return GetBackends().platform->IsWindowReady(); }
 inline bool WindowShouldClose() { return GetBackends().platform->WindowShouldClose(); }
+inline bool EventsThisFrame() { return GetBackends().platform->EventsThisFrame(); }
+inline void WaitEvents(double timeout_sec, int extra_fd = -1) { GetBackends().platform->WaitEvents(timeout_sec, extra_fd); }
 inline void SetWindowResizable() { GetBackends().platform->SetWindowResizable(); }
 inline void MaximizeWindow() { GetBackends().platform->MaximizeWindow(); }
 inline bool IsWindowMaximized() { return GetBackends().platform->IsWindowMaximized(); }

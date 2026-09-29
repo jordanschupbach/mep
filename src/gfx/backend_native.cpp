@@ -202,6 +202,8 @@ struct NativeContext {
     // negative means the limiter isn't running (no cap, or just enabled).
     int target_fps = 0;
     double frame_deadline = -1.0;
+    std::function<void()> flush_2d;  // NativeContextFlush2D
+    bool events_this_frame = true;   // EventsThisFrame
     std::string clipboard_text;  // cached text we own the CLIPBOARD selection with
 
     // Set on FocusOut, cleared at the top of the next frame's poll --
@@ -234,6 +236,12 @@ struct NativeContext {
 
     Cursor cursors[4] = {};  // indexed by gfx::MouseCursor, X11 XIDs (0 = not yet created)
 };
+
+void NativeContextFlush2D(NativeContext *ctx) {
+    if (ctx && ctx->flush_2d) ctx->flush_2d();
+}
+
+void NativeContextSetFlush2D(NativeContext *ctx, std::function<void()> fn) { ctx->flush_2d = std::move(fn); }
 
 void NativeContextFramebufferSize(NativeContext *ctx, int *w, int *h) {
     if (ctx->window == 0) {
@@ -703,6 +711,21 @@ public:
         if (ctx_->display != nullptr) XCloseDisplay(ctx_->display);
     }
     bool IsWindowReady() override { return ctx_->window != 0; }
+    bool EventsThisFrame() override { return ctx_->events_this_frame; }
+    // Sleeps on the X connection itself, so any event wakes it at once.
+    void WaitEvents(double timeout_sec, int extra_fd) override {
+        if (ctx_->display == nullptr || timeout_sec <= 0.0) return;
+        if (XPending(ctx_->display) > 0) return;
+        const int fd = ConnectionNumber(ctx_->display);
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+        if (extra_fd >= 0) FD_SET(extra_fd, &fds);
+        timeval tv;
+        tv.tv_sec = static_cast<long>(timeout_sec);
+        tv.tv_usec = static_cast<long>((timeout_sec - static_cast<double>(tv.tv_sec)) * 1e6);
+        select(std::max(fd, extra_fd) + 1, &fds, nullptr, nullptr, &tv);
+    }
     bool WindowShouldClose() override {
         for (bool &b : ctx_->key_pressed) b = false;
         for (bool &b : ctx_->key_repeat) b = false;
@@ -712,9 +735,11 @@ public:
         ctx_->focus_lost = false;
         ctx_->scroll_x = 0.0;
         ctx_->scroll_y = 0.0;
+        ctx_->events_this_frame = false;
         while (XPending(ctx_->display) > 0) {
             XEvent event;
             XNextEvent(ctx_->display, &event);
+            ctx_->events_this_frame = true;
             if (ctx_->input_context == nullptr || XFilterEvent(&event, 0) == False) {  // 0 == None (no target window filter)
                 ProcessEvent(ctx_, event);
             }

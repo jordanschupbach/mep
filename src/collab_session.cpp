@@ -1,3 +1,4 @@
+#include "frame_activity.h"
 #include "collab_session.h"
 
 #include "collab_websocket.h"
@@ -150,7 +151,11 @@ void CollabSession::Run() {
     { std::lock_guard<std::mutex> lock(mutex_); connected_ = true; }
     Json request = Json::Object(); request["type"] = "sync_request"; Send(request);
     std::string text;
-    while (holder.socket.ReceiveText(&text, &conn_error)) ReceiveMessage(text);
+    while (holder.socket.ReceiveText(&text, &conn_error)) {
+        ReceiveMessage(text);
+        mep::NoteActivity();
+        mep::WakeMainLoop();
+    }
     { std::lock_guard<std::mutex> send_lock(send_mutex_); socket_ = nullptr; }
     std::lock_guard<std::mutex> lock(mutex_);
     connected_ = false;

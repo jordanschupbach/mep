@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <filesystem>
 #include <functional>
@@ -790,6 +791,22 @@ ParsedSelector ParseSelector(const std::string &raw) {
     return out;
 }
 
+bool MatchesSelectorAt(const DomNode *node, const ParsedSelector &selector, int part, const DomNode *scope_root = nullptr);
+
+// :focus-within -- `node` or anything inside it has focus.
+bool HasFocusWithin(const DomNode *node) {
+    if (node->interaction_focus) return true;
+    for (const auto &child : node->children) if (HasFocusWithin(child.get())) return true;
+    return false;
+}
+
+bool IsLastElementChild(const DomNode *node) {
+    if (!node->parent) return true;
+    for (auto it = node->parent->children.rbegin(); it != node->parent->children.rend(); ++it)
+        if ((*it)->type == DomNodeType::Element) return it->get() == node;
+    return true;
+}
+
 bool HasClass(const DomNode *node, const std::string &want) {
     std::istringstream words(node->Class());
     std::string word;
@@ -846,25 +863,36 @@ bool MatchesSimple(const DomNode *node, const CssSimpleSelector &simple, const D
         }
         if (name == "nth-child" && !NthMatches(argument, ElementIndex(node, false))) return false;
         if (name == "nth-of-type" && !NthMatches(argument, ElementIndex(node, true))) return false;
-        if (name == "hover" && !node->interaction_hover) return false;
-        if (name == "focus" && !node->interaction_focus) return false;
-        if (name == "active" && !node->interaction_active) return false;
-        // :root is the document root element (<html>). Matching it correctly
-        // matters for custom properties: `:root { --x: ... }` defines the
-        // theme's variables, and descendants must *inherit* them rather than
-        // each re-match `:root` and reset the variable to its light-theme
-        // default (which is what an "unknown pseudo matches anything" fallback
-        // would cause, breaking the [data-theme] override on every child).
-        if (name == "root" && node->tag != "html") return false;
-        if (name == "scope") {
-            if (scope_root ? (node != scope_root) : (node->tag != "html")) return false;
+        else if (name == "hover") { if (!node->interaction_hover) return false; }
+        else if (name == "focus" || name == "focus-visible") { if (!node->interaction_focus) return false; }
+        else if (name == "active") { if (!node->interaction_active) return false; }
+        else if (name == "focus-within") { if (!HasFocusWithin(node)) return false; }
+        else if (name == "disabled" || name == "enabled") {
+            const bool control = node->tag == "button" || node->tag == "input" || node->tag == "select" || node->tag == "textarea";
+            const bool disabled = control && node->attrs.count("disabled");
+            if (!control || disabled != (name == "disabled")) return false;
         }
+        else if (name == "checked") { if (!node->form_checked) return false; }
+        else if (name == "root") { if (node->tag != "html") return false; }
+        else if (name == "only-child") { if (ElementIndex(node, false) != 1 || !IsLastElementChild(node)) return false; }
+        else if (name == "first-of-type") { if (ElementIndex(node, true) != 1) return false; }
+        else if (name == "empty") { if (!node->children.empty()) return false; }
+        else if (name == "link" || name == "any-link") { if (node->tag != "a" || !node->attrs.count("href")) return false; }
+        else if (name == "scope") { if (scope_root ? (node != scope_root) : (node->tag != "html")) return false; }
+        else if (name == "not") {
+            const ParsedSelector inner = ParseSelector(argument);
+            if (!inner.valid || MatchesSelectorAt(node, inner, static_cast<int>(inner.parts.size()) - 1, scope_root)) return false;
+        }
+        // One this does not know (:visited, :last-of-type, ...) matches
+        // nothing, rather than everything: `button:disabled` must not
+        // style every button.
+        else if (name != "first-child" && name != "last-child" && name != "nth-child" && name != "nth-of-type") return false;
     }
     return true;
 }
 
 bool MatchesSelectorAt(const DomNode *node, const ParsedSelector &selector, int part,
-                       const DomNode *scope_root = nullptr) {
+                       const DomNode *scope_root) {
     if (!MatchesSimple(node, selector.parts[static_cast<size_t>(part)], scope_root)) return false;
     if (part == 0) return true;
     char combinator = selector.combinators[static_cast<size_t>(part - 1)];
@@ -1252,11 +1280,37 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
         }
     }
     if (auto it = decls.find("display"); it != decls.end()) {
+        // Any display but none undoes an earlier rule's none (`.slide {
+        // display: none }` then `.slide.current { display: flex }`).
         if (it->second == "none") s.display_none = true;
-        else if (it->second == "block" || it->second == "list-item")
+        else s.display_none = false;
+        if (it->second == "block" || it->second == "list-item" || it->second == "flex" || it->second == "grid" || it->second == "table")
             s.block = true;
-        else if (it->second == "inline" || it->second == "inline-block")
+        else if (it->second == "inline" || it->second == "inline-block" || it->second == "inline-flex")
             s.block = false;
+    }
+    if (auto it = decls.find("inset"); it != decls.end()) {
+        // inset: <top> [<right> [<bottom> [<left>]]], the margin shorthand's order.
+        std::istringstream parts(it->second);
+        std::vector<std::string> values;
+        for (std::string v; parts >> v;) values.push_back(v);
+        if (!values.empty()) {
+            const std::string &top = values[0];
+            const std::string &right = values.size() >= 2 ? values[1] : top;
+            const std::string &bottom = values.size() >= 3 ? values[2] : top;
+            const std::string &left = values.size() >= 4 ? values[3] : right;
+            ParseCssLength(top, s.pos_top); ParseCssLength(right, s.pos_right);
+            ParseCssLength(bottom, s.pos_bottom); ParseCssLength(left, s.pos_left);
+        }
+    }
+    if (auto it = decls.find("visibility"); it != decls.end()) {
+        if (it->second == "hidden" || it->second == "collapse") s.visibility_hidden = true;
+        else if (it->second == "visible") s.visibility_hidden = false;
+    }
+    if (auto it = decls.find("opacity"); it != decls.end()) {
+        char *end = nullptr;
+        const double value = std::strtod(it->second.c_str(), &end);
+        if (end != it->second.c_str()) s.opacity_zero = (*end == '%' ? value / 100.0 : value) < 0.01;
     }
     if (auto it = decls.find("font-size"); it != decls.end()) {
         const std::string &v = it->second;
@@ -1377,44 +1431,63 @@ void SetCssMediaContext(float viewport_w, float viewport_h, bool dark) {
 
 namespace {
 
-// Evaluates one `@media` prelude (everything after `@media`) against the
-// current MediaContext. Supports a comma-separated media-query list (matches if
-// ANY does), the `screen`/`all`/`print` media types, `and`-joined feature
-// tests, and the width/height/prefers-color-scheme features this renderer can
-// act on. Anything it doesn't recognise is treated as "matches" so an unusual
-// query never silently hides content -- the pre-existing behaviour was to apply
-// every @media body unconditionally, so "unknown => apply" stays the safe side.
-bool EvalMediaQuery(const std::string &prelude) {
+// Whether an @media prelude ("@media screen and (max-width: 600px)")
+// holds for this renderer: a screen, the pane's viewport and colour scheme
+// (MediaContext, set by SetCssMediaContext). A comma list holds when any
+// part does; a feature this does not know makes its part fail, so a print
+// block never leaks into the page.
+bool MediaQueryApplies(const std::string &prelude) {
+    const std::string q = ToLower(prelude.substr(prelude.find("media") + 5));
     const CssMediaContext &mc = MediaContext();
-    auto feature_value_px = [](const std::string &q, const std::string &name, double &out) -> bool {
-        size_t p = q.find(name);
-        if (p == std::string::npos) return false;
-        size_t colon = q.find(':', p);
-        if (colon == std::string::npos) return false;
-        out = std::strtod(q.c_str() + colon + 1, nullptr);
-        return true;
-    };
-    // Split on commas: a media-query list is a logical OR.
-    size_t start = 0;
-    while (start <= prelude.size()) {
-        size_t comma = prelude.find(',', start);
-        std::string q = ToLower(prelude.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
-        start = comma == std::string::npos ? prelude.size() + 1 : comma + 1;
-        if (q.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+    auto part_applies = [&mc](std::string part) {
+        bool negate = false;
+        auto word_at_start = [&](const char *w) {
+            const size_t a = part.find_first_not_of(" \t\r\n");
+            const size_t n = std::strlen(w);
+            if (a == std::string::npos || part.compare(a, n, w) != 0) return false;
+            part.erase(0, a + n);
+            return true;
+        };
+        if (word_at_start("not")) negate = true;
+        else word_at_start("only");
         bool ok = true;
-        if (q.find("print") != std::string::npos && q.find("screen") == std::string::npos) ok = false;  // screen-only renderer
-        double v = 0.0;
-        if (ok && feature_value_px(q, "min-width", v) && static_cast<double>(mc.viewport_w) < v) ok = false;
-        if (ok && feature_value_px(q, "max-width", v) && static_cast<double>(mc.viewport_w) > v) ok = false;
-        if (ok && feature_value_px(q, "min-height", v) && static_cast<double>(mc.viewport_h) < v) ok = false;
-        if (ok && feature_value_px(q, "max-height", v) && static_cast<double>(mc.viewport_h) > v) ok = false;
-        if (ok && q.find("prefers-color-scheme") != std::string::npos) {
-            bool wants_dark = q.find("dark") != std::string::npos;
-            if (wants_dark != mc.dark) ok = false;
+        const size_t a = part.find_first_not_of(" \t\r\n");
+        if (a != std::string::npos && part[a] != '(') {
+            size_t b = a;
+            while (b < part.size() && std::isalpha(static_cast<unsigned char>(part[b]))) ++b;
+            const std::string type = part.substr(a, b - a);
+            ok = type == "screen" || type == "all";
+            part.erase(0, b);
         }
-        if (ok) return true;  // this query in the OR-list matched
+        for (size_t open = part.find('('); ok && open != std::string::npos; open = part.find('(', open + 1)) {
+            const size_t close = part.find(')', open);
+            if (close == std::string::npos) { ok = false; break; }
+            std::string feature = part.substr(open + 1, close - open - 1);
+            feature.erase(std::remove_if(feature.begin(), feature.end(), [](char c) { return std::isspace(static_cast<unsigned char>(c)); }), feature.end());
+            const size_t colon = feature.find(':');
+            const std::string name = feature.substr(0, colon), value = colon == std::string::npos ? "" : feature.substr(colon + 1);
+            if (name == "prefers-color-scheme") ok = value == (mc.dark ? "dark" : "light");
+            else if (name == "prefers-reduced-motion") ok = value == "no-preference";
+            else if (name == "hover" || name == "any-hover") ok = value == "hover";
+            else if (name == "pointer" || name == "any-pointer") ok = value == "fine";
+            else if (name == "min-width" || name == "max-width" || name == "min-height" || name == "max-height") {
+                char *end = nullptr;
+                double px = std::strtod(value.c_str(), &end);
+                if (end == value.c_str()) { ok = false; break; }
+                if (std::strncmp(end, "em", 2) == 0 || std::strncmp(end, "rem", 3) == 0) px *= 16.0;
+                const double have = static_cast<double>(name.find("width") != std::string::npos ? mc.viewport_w : mc.viewport_h);
+                ok = name.compare(0, 3, "min") == 0 ? have >= px : have <= px;
+            } else ok = false;
+        }
+        return negate ? !ok : ok;
+    };
+    size_t from = 0;
+    while (true) {
+        const size_t comma = q.find(',', from);
+        if (part_applies(q.substr(from, comma == std::string::npos ? std::string::npos : comma - from))) return true;
+        if (comma == std::string::npos) return false;
+        from = comma + 1;
     }
-    return false;
 }
 
 /**
@@ -1425,7 +1498,7 @@ bool EvalMediaQuery(const std::string &prelude) {
  * Brace-aware, unlike a flat find('{')/find('}') scan: it matches each
  * block's braces so a nested block (a `@media`/`@supports` wrapping other
  * rules, `@keyframes` with per-stop blocks) can't throw off the rules that
- * follow it. A `@media` body is included only when EvalMediaQuery says its
+ * follow it. A `@media` body is included only when MediaQueryApplies says its
  * condition holds for the current viewport (SetCssMediaContext) -- so a page's
  * mobile `max-width` rules don't fire on a wide pane, nor its desktop
  * `min-width` rules on a narrow one. `@supports`/`@container`/`@layer` bodies
@@ -1459,10 +1532,7 @@ void CollectCssRules(const std::string &css, std::vector<CssRule> &rules) {
         if (!head.empty() && head[0] == '@') {
             std::string keyword = ToLower(head.substr(1, head.find_first_of(" \t\r\n({", 1) - 1));
             if (keyword == "media") {
-                // The query is everything after `@media` up to the `{`.
-                size_t after = head.find_first_of(" \t(", 1);
-                std::string media_query = after == std::string::npos ? std::string() : head.substr(after);
-                if (EvalMediaQuery(media_query)) CollectCssRules(body, rules);
+                if (MediaQueryApplies(head)) CollectCssRules(body, rules);
             } else if (keyword == "supports" || keyword == "container" || keyword == "layer" ||
                        keyword == "document" || keyword == "scope") {
                 CollectCssRules(body, rules);
@@ -1680,6 +1750,7 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
     // (below) gets a chance to override it for this node.
     s.list_marker_none = parent.list_marker_none;
     s.list_depth = list_depth;
+    s.visibility_hidden = parent.visibility_hidden;
     s.link_href = parent.link_href;
     s.link_node = parent.link_node;
     if (n->tag == "a") {
@@ -1693,6 +1764,7 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
     if (auto it = n->attrs.find("style"); it != n->attrs.end()) inline_decls = ParseDeclarations(it->second);
     ApplyMatchingRules(n, s, rules, inline_decls, vars);
     s.preserve_whitespace = s.white_space == HtmlWhiteSpace::Pre;
+    s.faded = parent.faded || s.opacity_zero;
     n->style = s;
 
     bool is_list_container = n->tag == "ul" || n->tag == "ol";

@@ -35,6 +35,17 @@ public:
     // rather than as a size (see persist.h's WindowState).
     virtual bool IsWindowMaximized() = 0;
     virtual void SetTargetFPS(int fps) = 0;
+    // Whether this frame's WindowShouldClose poll took any window-system
+    // event (input, a resize, focus, an expose) -- and a sleep until the
+    // next one arrives or `timeout_sec` passes. An idle mep uses the pair
+    // to stop redrawing (main()'s loop); a backend without them (wasm)
+    // simply keeps rendering every frame.
+    virtual bool EventsThisFrame() { return true; }
+    // `extra_fd` (>= 0) also ends the wait when it becomes readable.
+    virtual void WaitEvents(double timeout_sec, int extra_fd = -1) {
+        (void)timeout_sec;
+        (void)extra_fd;
+    }
     virtual int GetScreenWidth() = 0;
     virtual int GetScreenHeight() = 0;
     virtual double GetTime() = 0;

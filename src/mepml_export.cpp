@@ -1958,16 +1958,29 @@ std::string ToRtf(const Document &doc, const std::string &base_dir) {
     return w.Write();
 }
 
-std::string ToLatex(const Document &doc, const std::string &base_dir) {
+namespace {
+std::string BeamerDeck(const Document &doc, const std::string &base_dir) {
     HtmlOptions opts;
     opts.standalone = false;
-    const std::string author = MetaValue(doc, "author");
-    if (IsPresentation(doc)) {
-        std::vector<BeamerFrame> frames;
-        for (const SlideHtml &f : SlideFragments(doc, opts)) frames.push_back({f.title, f.body});
-        return ExportHtmlSlidesToBeamer(frames, doc.title, MetaValue(doc, "subtitle"), author, MetaValue(doc, "date"), base_dir);
+    std::vector<BeamerFrame> frames;
+    for (const SlideHtml &f : SlideFragments(doc, opts)) frames.push_back({f.title, f.body});
+    return ExportHtmlSlidesToBeamer(frames, doc.title, MetaValue(doc, "subtitle"), MetaValue(doc, "author"), MetaValue(doc, "date"), base_dir);
+}
+}  // namespace
+
+std::string ToBeamer(const Document &doc, const std::string &base_dir, std::string *error) {
+    if (Slides(doc, 0).empty()) {
+        if (error) *error = "no \\slide in the document: a Beamer deck is made of its \\slide blocks";
+        return "";
     }
-    return ExportHtmlToLatex(ToHtml(doc, opts), doc.title, author, base_dir);
+    return BeamerDeck(doc, base_dir);
+}
+
+std::string ToLatex(const Document &doc, const std::string &base_dir) {
+    if (IsPresentation(doc)) return BeamerDeck(doc, base_dir);
+    HtmlOptions opts;
+    opts.standalone = false;
+    return ExportHtmlToLatex(ToHtml(doc, opts), doc.title, MetaValue(doc, "author"), base_dir);
 }
 
 std::string ToHtmlFor(const Document &doc) { return IsPresentation(doc) ? ToSlidesHtml(doc) : ToHtml(doc); }

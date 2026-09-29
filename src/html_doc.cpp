@@ -101,8 +101,27 @@ std::string DecodeEntities(const std::string &s) {
             const char *num_start = body.c_str() + (hex ? 2 : 1);
             char *end = nullptr;
             long cp = std::strtol(num_start, &end, hex ? 16 : 10);
-            if (end != num_start && cp > 0 && cp < 128) {
-                out += static_cast<char>(cp);
+            // Any valid scalar value, encoded as UTF-8 -- the text fonts cover
+            // far more than ASCII (a literal U+2014 em-dash in page text
+            // already renders), so "&#8212;" must not survive as source text.
+            // A codepoint the atlas lacks draws as nothing, which still beats
+            // showing markup. Surrogates/0/out-of-range fall through as-is.
+            if (end != num_start && cp > 0 && cp < 0x110000 && !(cp >= 0xD800 && cp <= 0xDFFF)) {
+                if (cp < 0x80) {
+                    out += static_cast<char>(cp);
+                } else if (cp < 0x800) {
+                    out += static_cast<char>(0xC0 | (cp >> 6));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                } else if (cp < 0x10000) {
+                    out += static_cast<char>(0xE0 | (cp >> 12));
+                    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                } else {
+                    out += static_cast<char>(0xF0 | (cp >> 18));
+                    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                }
                 i = semi + 1;
                 continue;
             }
@@ -378,7 +397,7 @@ bool IsModuleScriptType(const std::unordered_map<std::string, std::string> &attr
 }  // namespace
 
 
-void ParseHtml(const std::string &html, HtmlDoc &out) {
+void ParseHtml(const std::string &html, HtmlDoc &out, bool full_document) {
     out.root = std::make_unique<DomNode>();
     out.root->type = DomNodeType::Element;
     out.root->tag = "#document";
@@ -504,6 +523,56 @@ void ParseHtml(const std::string &html, HtmlDoc &out) {
         if (!tr.self_closing && !IsVoidTag(tr.tag)) stack.push_back(raw);
     }
     flush_text();
+
+    // Browsers always give a page <html> and <body> even when the markup
+    // omits them (fragment parses skip this -- their nodes graft into an
+    // existing tree): document.body must be an element (pages hang state off it --
+    // the `body.nav-open` off-canvas drawer idiom), and body-/`:root`-keyed
+    // selectors need something to match. Synthesize the missing wrappers
+    // around the parsed content; a page that wrote its own keeps exactly the
+    // tree it wrote. Neither tag carries UA styles here, so a fragment's
+    // rendering is unchanged by the extra layers.
+    auto find_tag = [](DomNode *n, const std::string &tag) -> DomNode * {
+        std::function<DomNode *(DomNode *)> walk = [&](DomNode *cur) -> DomNode * {
+            if (cur->type == DomNodeType::Element && cur->tag == tag) return cur;
+            for (auto &c : cur->children)
+                if (DomNode *r = walk(c.get())) return r;
+            return nullptr;
+        };
+        return walk(n);
+    };
+    DomNode *html_el = full_document ? find_tag(out.root.get(), "html") : nullptr;
+    if (full_document && !html_el) {
+        auto html_node = std::make_unique<DomNode>();
+        html_node->type = DomNodeType::Element;
+        html_node->tag = "html";
+        html_node->parent = out.root.get();
+        html_el = html_node.get();
+        for (auto &c : out.root->children) {
+            c->parent = html_el;
+            html_el->children.push_back(std::move(c));
+        }
+        out.root->children.clear();
+        out.root->children.push_back(std::move(html_node));
+    }
+    if (full_document && !find_tag(out.root.get(), "body")) {
+        auto body_node = std::make_unique<DomNode>();
+        body_node->type = DomNodeType::Element;
+        body_node->tag = "body";
+        body_node->parent = html_el;
+        DomNode *body_el = body_node.get();
+        std::vector<std::unique_ptr<DomNode>> kept;  // <head> stays a sibling of <body>, not a child
+        for (auto &c : html_el->children) {
+            if (c->type == DomNodeType::Element && c->tag == "head") {
+                kept.push_back(std::move(c));
+                continue;
+            }
+            c->parent = body_el;
+            body_el->children.push_back(std::move(c));
+        }
+        html_el->children = std::move(kept);
+        html_el->children.push_back(std::move(body_node));
+    }
 
     // <title> is always near the document's start in practice, so a plain
     // breadth-first search (rather than a depth-first walk that might
@@ -678,8 +747,19 @@ ComputedStyle TagDefaults(const std::string &tag) {
     } else if (tag == "head" || tag == "style" || tag == "script" || tag == "title" || tag == "meta" ||
                tag == "link" || tag == "#comment") {
         s.display_none = true;
+    } else if (tag == "mark") {
+        // Highlighted match text (search results) -- inline, browser-default
+        // yellow-on-dark-text look softened to just a color accent.
+        s.block = false;
+        s.has_color = true;
+        s.color_r = 230;
+        s.color_g = 170;
+        s.color_b = 60;
+        s.bold = true;
     } else if (tag == "span" || tag == "small" || tag == "label" || tag == "td" || tag == "th" || tag == "br" ||
-               tag == "img" || tag == "audio" || tag == "video" || tag == "input" || tag == "button" || tag == "select" || tag == "textarea" || tag == "option") {
+               tag == "img" || tag == "audio" || tag == "video" || tag == "input" || tag == "button" || tag == "select" || tag == "textarea" || tag == "option" ||
+               tag == "sub" || tag == "sup" || tag == "abbr" || tag == "cite" || tag == "q" || tag == "time" ||
+               tag == "var" || tag == "dfn" || tag == "ins" || tag == "wbr" || tag == "bdi" || tag == "output") {
         s.block = false;
     } else if (tag == "math") {
         // Synthetic tag ExtractMathSpans (below) inserts for a \(..\)/\[..\]/
@@ -699,12 +779,6 @@ ComputedStyle TagDefaults(const std::string &tag) {
     return s;
 }
 
-struct CssRule {
-    std::string selector;
-    std::unordered_map<std::string, std::string> decls;
-    size_t source_order = 0;
-};
-
 struct CssSimpleSelector {
     struct Attribute { std::string name, value; char op = 0; };
     std::string tag;
@@ -719,6 +793,24 @@ struct ParsedSelector {
     std::vector<char> combinators;         // relation parts[i] -> parts[i + 1]
     int id_count = 0, class_count = 0, tag_count = 0;
     bool valid = false;
+    // 'b'/'a' when the selector targets the last part's ::before/::after
+    // pseudo-element (the pseudo itself is stripped from that part's pseudos,
+    // so element matching works normally). The cascade routes such a rule's
+    // `content` into ComputedStyle::content_before/content_after instead of
+    // applying its declarations to the element; querySelector never matches
+    // pseudo-element selectors, same as a real browser.
+    char pseudo_element = 0;
+};
+
+struct CssRule {
+    std::string selector;
+    std::unordered_map<std::string, std::string> decls;
+    size_t source_order = 0;
+    // Selector parsed ONCE when the rule is collected. The cascade used to
+    // re-run ParseSelector per (node, rule) pair -- ~2000 nodes x ~150 rules
+    // = 300k string parses per ComputeStyles, the whole reason a class
+    // toggle (opening the nav drawer) took visible fractions of a second.
+    ParsedSelector parsed;
 };
 
 bool IsCssIdentChar(char c) {
@@ -755,18 +847,28 @@ ParsedSelector ParseSelector(const std::string &raw) {
                 if (begin == std::string::npos) return out;
                 body = body.substr(begin, end - begin + 1);
                 CssSimpleSelector::Attribute attr;
-                size_t op = body.find("~=");
-                if (op != std::string::npos) attr.op = '~'; else { op = body.find('='); if (op != std::string::npos) attr.op = '='; }
+                // The full attribute-operator set: ~= (word), ^= (prefix),
+                // $= (suffix), *= (substring), |= (exact or "value-" prefix),
+                // plain = (exact). `a[href^="#"]` is how pages find their own
+                // in-page anchor links (the scroll-spy rail idiom).
+                size_t op = std::string::npos;
+                for (const char *two : {"~=", "^=", "$=", "*=", "|="}) {
+                    op = body.find(two);
+                    if (op != std::string::npos) { attr.op = two[0]; break; }
+                }
+                if (op == std::string::npos) { op = body.find('='); if (op != std::string::npos) attr.op = '='; }
                 attr.name = ToLower(body.substr(0, op == std::string::npos ? body.size() : op));
                 if (op != std::string::npos) {
-                    size_t value_at = op + (attr.op == '~' ? 2 : 1);
+                    size_t value_at = op + (attr.op == '=' ? 1 : 2);
                     attr.value = body.substr(value_at);
                     if (attr.value.size() >= 2 && (attr.value.front() == '\'' || attr.value.front() == '"') && attr.value.back() == attr.value.front()) attr.value = attr.value.substr(1, attr.value.size() - 2);
                 }
                 if (attr.name.empty()) return out;
                 simple.attributes.push_back(std::move(attr)); out.class_count++; has_piece = true; i = close + 1;
             } else if (raw[i] == ':') {
-                size_t name_start = ++i; while (i < raw.size() && IsCssIdentChar(raw[i])) ++i;
+                ++i;
+                if (i < raw.size() && raw[i] == ':') ++i;  // ::before / ::after pseudo-element syntax
+                size_t name_start = i; while (i < raw.size() && IsCssIdentChar(raw[i])) ++i;
                 if (name_start == i) return out;
                 std::string name = raw.substr(name_start, i - name_start);
                 std::string argument;
@@ -786,6 +888,20 @@ ParsedSelector ParseSelector(const std::string &raw) {
         if (raw[i] == '>' || raw[i] == '+' || raw[i] == '~') { pending = raw[i++]; spaces(); }
         else if (had_space) pending = ' ';
         else return out;
+    }
+    // A trailing (::)before/after on the last compound targets a
+    // pseudo-element: record it on the selector and strip it from the part so
+    // element matching (MatchesSimple) sees only real pseudo-classes.
+    if (!out.parts.empty()) {
+        auto &pseudos = out.parts.back().pseudos;
+        for (size_t p = 0; p < pseudos.size();) {
+            if (pseudos[p].first == "before" || pseudos[p].first == "after") {
+                out.pseudo_element = pseudos[p].first[0] == 'b' ? 'b' : 'a';
+                pseudos.erase(pseudos.begin() + static_cast<std::ptrdiff_t>(p));
+            } else {
+                ++p;
+            }
+        }
     }
     out.valid = !out.parts.empty();
     return out;
@@ -808,9 +924,18 @@ bool IsLastElementChild(const DomNode *node) {
 }
 
 bool HasClass(const DomNode *node, const std::string &want) {
-    std::istringstream words(node->Class());
-    std::string word;
-    while (words >> word) if (word == want) return true;
+    // Plain scan, no istringstream: this is the hottest call in the whole
+    // cascade (every class simple-selector for every node goes through it),
+    // and a stream's constructor alone costs more than the entire match.
+    const std::string &cls = node->Class();
+    if (cls.empty() || want.empty()) return false;
+    size_t i = 0;
+    while (i < cls.size()) {
+        while (i < cls.size() && std::isspace(static_cast<unsigned char>(cls[i]))) ++i;
+        size_t start = i;
+        while (i < cls.size() && !std::isspace(static_cast<unsigned char>(cls[i]))) ++i;
+        if (i - start == want.size() && cls.compare(start, want.size(), want) == 0) return true;
+    }
     return false;
 }
 
@@ -847,10 +972,18 @@ bool MatchesSimple(const DomNode *node, const CssSimpleSelector &simple, const D
     for (const std::string &klass : simple.classes) if (!HasClass(node, klass)) return false;
     for (const auto &attr : simple.attributes) {
         auto it = node->attrs.find(attr.name); if (it == node->attrs.end()) return false;
-        if (attr.op == '=' && it->second != attr.value) return false;
+        const std::string &have = it->second;
+        const std::string &want = attr.value;
+        if (attr.op == '=' && have != want) return false;
+        if (attr.op == '^' && (want.empty() || have.rfind(want, 0) != 0)) return false;
+        if (attr.op == '$' && (want.empty() || have.size() < want.size() ||
+                               have.compare(have.size() - want.size(), want.size(), want) != 0))
+            return false;
+        if (attr.op == '*' && (want.empty() || have.find(want) == std::string::npos)) return false;
+        if (attr.op == '|' && have != want && have.rfind(want + "-", 0) != 0) return false;
         if (attr.op == '~') {
-            std::istringstream words(it->second); std::string word; bool found = false;
-            while (words >> word) if (word == attr.value) { found = true; break; }
+            std::istringstream words(have); std::string word; bool found = false;
+            while (words >> word) if (word == want) { found = true; break; }
             if (!found) return false;
         }
     }
@@ -992,8 +1125,31 @@ std::unordered_map<std::string, std::string> ParseDeclarations(const std::string
  * @param b Set to the parsed blue component on success.
  * @return True if `raw` was recognized and `r`/`g`/`b` were set; false otherwise (left untouched).
  */
-bool ParseColor(const std::string &raw, unsigned char *r, unsigned char *g, unsigned char *b) {
+bool ParseColor(const std::string &raw, unsigned char *r, unsigned char *g, unsigned char *b,
+                unsigned char *a = nullptr) {
     std::string v = raw;
+    if (a) *a = 255;
+    // rgb(r, g, b) / rgba(r, g, b, alpha) -- the alpha channel matters for
+    // shadows and dimming backdrops (`--shadow: rgba(0,0,0,.5)`); callers
+    // that pass no `a` slot just get the opaque components.
+    if (v.rfind("rgb", 0) == 0) {
+        size_t open = v.find('('), close = v.rfind(')');
+        if (open == std::string::npos || close == std::string::npos || close <= open) return false;
+        std::string body = v.substr(open + 1, close - open - 1);
+        for (char &c : body) if (c == ',' || c == '/') c = ' ';
+        std::istringstream parts(body);
+        double rr = 0, gg = 0, bb = 0, aa = 1.0;
+        if (!(parts >> rr >> gg >> bb)) return false;
+        parts >> aa;  // optional; stays 1.0 when absent
+        auto clamp255 = [](double x) {
+            return static_cast<unsigned char>(std::clamp(x, 0.0, 255.0));
+        };
+        *r = clamp255(rr);
+        *g = clamp255(gg);
+        *b = clamp255(bb);
+        if (a) *a = static_cast<unsigned char>(std::clamp(aa, 0.0, 1.0) * 255.0 + 0.5);
+        return true;
+    }
     if (!v.empty() && v[0] == '#') {
         v = v.substr(1);
         /**
@@ -1088,7 +1244,10 @@ void ParseBorderEdge(const std::string &val, ComputedStyle::BorderEdge &edge) {
     if (any) edge.present = true;
 }
 
-bool ParseCssLength(const std::string &raw, CssLength &out, bool allow_auto = false) {
+// `allow_negative` is for the properties CSS itself allows below zero
+// (transform translations; box lengths like width/padding stay invalid when
+// negative, matching the spec, so a page's `-1px` typo can't corrupt layout).
+bool ParseCssLength(const std::string &raw, CssLength &out, bool allow_auto = false, bool allow_negative = false) {
     std::string v = raw;
     size_t a = v.find_first_not_of(" \t\r\n"), b = v.find_last_not_of(" \t\r\n");
     if (a == std::string::npos) return false;
@@ -1099,15 +1258,52 @@ bool ParseCssLength(const std::string &raw, CssLength &out, bool allow_auto = fa
         out.auto_value = true;
         return true;
     }
+    // calc() with only px/rem terms constant-folds to a px length right here:
+    // in this engine 1rem is always 16 CSS px (layout scales the whole px
+    // space by the real root font later, ResolveCssLength in main.cpp), so
+    // `calc(220px - 2.3rem)` is 183.2px at parse time. Terms in other units
+    // (%/em/vw) would need layout context, so such a calc stays unparsed.
+    if (v.rfind("calc(", 0) == 0 && v.back() == ')') {
+        std::string body = v.substr(5, v.size() - 6);
+        float total_px = 0.0f;
+        float sign = 1.0f;
+        size_t i = 0;
+        bool ok = !body.empty();
+        while (ok && i < body.size()) {
+            while (i < body.size() && std::isspace(static_cast<unsigned char>(body[i]))) ++i;
+            size_t start = i;
+            while (i < body.size() && !std::isspace(static_cast<unsigned char>(body[i]))) ++i;
+            std::string token = body.substr(start, i - start);
+            if (token.empty()) break;
+            if (token == "+") { continue; }
+            if (token == "-") { sign = -sign; continue; }
+            CssLength term;
+            if (!ParseCssLength(token, term, false, true) ||
+                (term.unit != CssLength::Unit::Px && term.unit != CssLength::Unit::Rem)) {
+                ok = false;
+                break;
+            }
+            total_px += sign * (term.unit == CssLength::Unit::Rem ? term.value * 16.0f : term.value);
+            sign = 1.0f;
+        }
+        if (!ok || (total_px < 0.0f && !allow_negative)) return false;
+        out.set = true;
+        out.auto_value = false;
+        out.value = total_px;
+        out.unit = CssLength::Unit::Px;
+        return true;
+    }
     char *end = nullptr;
     double value = std::strtod(v.c_str(), &end);
-    if (end == v.c_str() || value < 0.0) return false;
+    if (end == v.c_str() || (value < 0.0 && !allow_negative)) return false;
     std::string suffix = end;
     CssLength::Unit unit = CssLength::Unit::Px;
     if (suffix.empty() || suffix == "px") unit = CssLength::Unit::Px;
     else if (suffix == "%") unit = CssLength::Unit::Percent;
     else if (suffix == "em") unit = CssLength::Unit::Em;
     else if (suffix == "rem") unit = CssLength::Unit::Rem;
+    else if (suffix == "vw") unit = CssLength::Unit::Vw;
+    else if (suffix == "vh") unit = CssLength::Unit::Vh;
     else return false;
     out.set = true;
     out.auto_value = false;
@@ -1146,11 +1342,42 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
         s.color_b = b;
     }
     for (const char *key : {"background-color", "background"}) {
-        if (auto it = decls.find(key); it != decls.end() && ParseColor(it->second, &r, &g, &b)) {
+        unsigned char bg_alpha = 255;
+        if (auto it = decls.find(key); it != decls.end() && ParseColor(it->second, &r, &g, &b, &bg_alpha)) {
             s.has_bg = true;
             s.bg_r = r;
             s.bg_g = g;
             s.bg_b = b;
+            s.bg_a = bg_alpha;
+        }
+    }
+    if (auto it = decls.find("opacity"); it != decls.end()) {
+        char *end = nullptr;
+        double v = std::strtod(it->second.c_str(), &end);
+        if (end != it->second.c_str()) s.opacity = static_cast<float>(std::clamp(v, 0.0, 1.0));
+    }
+    if (auto it = decls.find("transition"); it != decls.end()) {
+        // Only `transform <duration>` is modelled (the drawer slide). The
+        // duration is the first "<number>s"/"<number>ms" token after the
+        // word "transform" in that comma-separated entry.
+        size_t at = it->second.find("transform");
+        if (at != std::string::npos) {
+            const std::string tail = it->second.substr(at);
+            size_t i = 0;
+            while (i < tail.size()) {
+                if (std::isdigit(static_cast<unsigned char>(tail[i])) || tail[i] == '.') {
+                    char *end = nullptr;
+                    double v = std::strtod(tail.c_str() + i, &end);
+                    std::string suffix(end);
+                    if (suffix.rfind("ms", 0) == 0) { s.transition_transform_s = static_cast<float>(v / 1000.0); break; }
+                    if (!suffix.empty() && suffix[0] == 's') { s.transition_transform_s = static_cast<float>(v); break; }
+                    i = static_cast<size_t>(end - tail.c_str());
+                } else if (tail[i] == ',') {
+                    break;  // next transition entry -- transform had no duration
+                } else {
+                    ++i;
+                }
+            }
         }
     }
     if (auto it = decls.find("border"); it != decls.end()) {
@@ -1280,15 +1507,22 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
         }
     }
     if (auto it = decls.find("display"); it != decls.end()) {
-        // Any display but none undoes an earlier rule's none (`.slide {
-        // display: none }` then `.slide.current { display: flex }`).
-        if (it->second == "none") s.display_none = true;
-        else s.display_none = false;
-        if (it->second == "block" || it->second == "list-item" || it->second == "flex" || it->second == "grid" || it->second == "table")
+        // A later `display` declaration REPLACES an earlier one entirely --
+        // the ubiquitous "hidden by default, revealed by a media/state rule"
+        // pattern is `display:none` in one rule and `display:flex` in a more
+        // specific one, so any non-none value must clear display_none, not
+        // leave it latched from the earlier layer.
+        s.display_none = it->second == "none";
+        s.flex_container = it->second == "flex" || it->second == "inline-flex";
+        if (it->second == "block" || it->second == "list-item" || it->second == "flex" ||
+            it->second == "grid" || it->second == "table")
             s.block = true;
-        else if (it->second == "inline" || it->second == "inline-block" || it->second == "inline-flex")
+        else if (it->second == "inline" || it->second == "inline-block" || it->second == "inline-flex" ||
+                 it->second == "inline-grid")
             s.block = false;
     }
+    if (auto it = decls.find("flex-direction"); it != decls.end())
+        s.flex_column = it->second.find("column") != std::string::npos;
     if (auto it = decls.find("inset"); it != decls.end()) {
         // inset: <top> [<right> [<bottom> [<left>]]], the margin shorthand's order.
         std::istringstream parts(it->second);
@@ -1382,6 +1616,98 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
     }
     if (auto it = decls.find("text-overflow"); it != decls.end() && it->second.find("ellipsis") != std::string::npos)
         s.text_overflow_ellipsis = true;
+    if (auto it = decls.find("border-radius"); it != decls.end()) {
+        // Only the shorthand's first value (uniform corners) is modelled.
+        std::istringstream toks(it->second);
+        std::string first;
+        toks >> first;
+        ParseCssLength(first, s.border_radius);
+    }
+    if (auto it = decls.find("box-shadow"); it != decls.end()) {
+        if (it->second == "none") {
+            s.has_shadow = false;
+        } else {
+            // Minimal `x y blur [spread] color` form: the 3rd length is the
+            // blur, the color token is whatever ParseColor recognizes
+            // (rgba(...) keeps its internal spaces -- tokenize paren-aware).
+            std::vector<std::string> toks;
+            std::string cur;
+            int depth = 0;
+            for (char c : it->second) {
+                if (c == '(') depth++;
+                if (c == ')') depth--;
+                if (std::isspace(static_cast<unsigned char>(c)) && depth == 0) {
+                    if (!cur.empty()) toks.push_back(std::move(cur));
+                    cur.clear();
+                } else {
+                    cur += c;
+                }
+            }
+            if (!cur.empty()) toks.push_back(std::move(cur));
+            int length_index = 0;
+            for (const std::string &tok : toks) {
+                unsigned char sr = 0, sg = 0, sb = 0, sa = 255;
+                CssLength len;
+                if (ParseColor(tok, &sr, &sg, &sb, &sa)) {
+                    s.shadow_r = sr; s.shadow_g = sg; s.shadow_b = sb; s.shadow_a = sa;
+                    s.has_shadow = true;
+                } else if (ParseCssLength(tok, len, false, /*allow_negative=*/true)) {
+                    if (length_index == 2) { s.shadow_blur = len; s.has_shadow = true; }
+                    ++length_index;
+                }
+            }
+        }
+    }
+    if (auto it = decls.find("align-items"); it != decls.end())
+        s.align_items_center = it->second.find("center") != std::string::npos;
+    if (auto it = decls.find("justify-content"); it != decls.end())
+        s.justify_content_center = it->second.find("center") != std::string::npos;
+    if (auto it = decls.find("text-transform"); it != decls.end()) {
+        if (it->second == "uppercase") s.text_transform = ComputedStyle::TextTransform::Upper;
+        else if (it->second == "lowercase") s.text_transform = ComputedStyle::TextTransform::Lower;
+        else if (it->second == "capitalize") s.text_transform = ComputedStyle::TextTransform::Capitalize;
+        else s.text_transform = ComputedStyle::TextTransform::None;
+    }
+    for (const char *key : {"column-count", "columns"}) {
+        if (auto it = decls.find(key); it != decls.end()) {
+            char *end = nullptr;
+            long n = std::strtol(it->second.c_str(), &end, 10);
+            // `columns` can also carry a width ("columns: 12em 2") -- only a
+            // leading integer count is taken; `auto`/width-only resets to 0.
+            s.column_count = (end != it->second.c_str() && n >= 1 && n <= 12) ? static_cast<int>(n) : 0;
+        }
+    }
+    if (auto it = decls.find("inset"); it != decls.end()) {
+        // Shorthand for top/right/bottom/left, margin-style 1-4 value order.
+        // `inset: 0` is the standard full-viewport overlay idiom.
+        std::istringstream toks(it->second);
+        std::vector<std::string> vals;
+        std::string tok;
+        while (toks >> tok && vals.size() < 4) vals.push_back(tok);
+        if (!vals.empty()) {
+            const std::string &top_v = vals[0];
+            const std::string &right_v = vals.size() > 1 ? vals[1] : vals[0];
+            const std::string &bottom_v = vals.size() > 2 ? vals[2] : vals[0];
+            const std::string &left_v = vals.size() > 3 ? vals[3] : right_v;
+            ParseCssLength(top_v, s.pos_top, true);
+            ParseCssLength(right_v, s.pos_right, true);
+            ParseCssLength(bottom_v, s.pos_bottom, true);
+            ParseCssLength(left_v, s.pos_left, true);
+        }
+    }
+    // `gap` doubles as the flex-row inter-item gap (main.cpp inserts a
+    // spacer between inline-approximated flex items). Single-value gap sets
+    // both axes; a two-value gap's SECOND value is the column (inline) gap.
+    for (const char *key : {"gap", "column-gap"}) {
+        if (auto it = decls.find(key); it != decls.end()) {
+            std::istringstream toks(it->second);
+            std::string tok, last;
+            while (toks >> tok) last = tok;
+            if (!last.empty()) ParseCssLength(last, s.column_gap);
+        }
+    }
+    if (auto it = decls.find("border-collapse"); it != decls.end())
+        s.border_collapse = it->second == "collapse";
     // transform: only translate* is modelled (see ComputedStyle). Values are
     // already lower-cased by ParseDeclarations. Percentages are kept unresolved
     // (they're relative to the element's own box, known only at layout).
@@ -1399,11 +1725,17 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
         std::string tboth = fn_args("translate(");  // translate(x[, y])
         if (!tboth.empty()) {
             size_t comma = tboth.find(',');
-            if (ParseCssLength(comma == std::string::npos ? tboth : tboth.substr(0, comma), s.transform_x)) s.has_transform = true;
-            if (comma != std::string::npos && ParseCssLength(tboth.substr(comma + 1), s.transform_y)) s.has_transform = true;
+            if (ParseCssLength(comma == std::string::npos ? tboth : tboth.substr(0, comma), s.transform_x,
+                               /*allow_auto=*/false, /*allow_negative=*/true))
+                s.has_transform = true;
+            if (comma != std::string::npos && ParseCssLength(tboth.substr(comma + 1), s.transform_y,
+                                                             /*allow_auto=*/false, /*allow_negative=*/true))
+                s.has_transform = true;
         }
-        if (!tx.empty() && ParseCssLength(tx, s.transform_x)) s.has_transform = true;
-        if (!ty.empty() && ParseCssLength(ty, s.transform_y)) s.has_transform = true;
+        if (!tx.empty() && ParseCssLength(tx, s.transform_x, /*allow_auto=*/false, /*allow_negative=*/true))
+            s.has_transform = true;
+        if (!ty.empty() && ParseCssLength(ty, s.transform_y, /*allow_auto=*/false, /*allow_negative=*/true))
+            s.has_transform = true;
     }
 }
 
@@ -1423,10 +1755,16 @@ CssMediaContext &MediaContext() {
 }
 }  // namespace
 
+// Bumped whenever the media context actually changes -- part of the
+// rule-cache key, since @media gating decides WHICH rules get collected.
+size_t g_css_media_version = 1;
+
 void SetCssMediaContext(float viewport_w, float viewport_h, bool dark) {
-    MediaContext().viewport_w = viewport_w;
-    MediaContext().viewport_h = viewport_h;
-    MediaContext().dark = dark;
+    CssMediaContext &ctx = MediaContext();
+    if (ctx.viewport_w != viewport_w || ctx.viewport_h != viewport_h || ctx.dark != dark) ++g_css_media_version;
+    ctx.viewport_w = viewport_w;
+    ctx.viewport_h = viewport_h;
+    ctx.dark = dark;
 }
 
 namespace {
@@ -1546,7 +1884,11 @@ void CollectCssRules(const std::string &css, std::vector<CssRule> &rules) {
                 std::string one = head.substr(s, (comma == std::string::npos ? head.size() : comma) - s);
                 size_t a = one.find_first_not_of(" \t\r\n");
                 size_t b = one.find_last_not_of(" \t\r\n");
-                if (a != std::string::npos) rules.push_back({ToLower(one.substr(a, b - a + 1)), decls, rules.size()});
+                if (a != std::string::npos) {
+                    CssRule rule{ToLower(one.substr(a, b - a + 1)), decls, rules.size(), {}};
+                    rule.parsed = ParseSelector(rule.selector);
+                    rules.push_back(std::move(rule));
+                }
                 if (comma == std::string::npos) break;
                 s = comma + 1;
             }
@@ -1619,6 +1961,51 @@ std::string ResolveCssVars(const std::string &value, const std::unordered_map<st
     return out;
 }
 
+// Decodes a CSS `content` property value to the literal UTF-8 text it
+// produces: strips the surrounding quotes and resolves backslash escapes
+// (`\2039` hex-with-optional-trailing-space, `\"` literal). `none`/`normal`/
+// unquoted values produce "" -- only plain string content is modelled
+// (no counters/attr()/url()).
+std::string DecodeCssContent(const std::string &raw) {
+    size_t a = raw.find_first_not_of(" \t\r\n"), b = raw.find_last_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    std::string v = raw.substr(a, b - a + 1);
+    if (v.size() < 2 || (v.front() != '"' && v.front() != '\'') || v.back() != v.front()) return "";
+    v = v.substr(1, v.size() - 2);
+    std::string out;
+    for (size_t i = 0; i < v.size();) {
+        if (v[i] != '\\') { out += v[i++]; continue; }
+        ++i;
+        if (i >= v.size()) break;
+        if (std::isxdigit(static_cast<unsigned char>(v[i]))) {
+            size_t start = i, len = 0;
+            while (i < v.size() && len < 6 && std::isxdigit(static_cast<unsigned char>(v[i]))) { ++i; ++len; }
+            long cp = std::strtol(v.substr(start, len).c_str(), nullptr, 16);
+            if (i < v.size() && v[i] == ' ') ++i;  // an escape may be terminated by one space
+            if (cp > 0 && cp < 0x110000 && !(cp >= 0xD800 && cp <= 0xDFFF)) {
+                if (cp < 0x80) {
+                    out += static_cast<char>(cp);
+                } else if (cp < 0x800) {
+                    out += static_cast<char>(0xC0 | (cp >> 6));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                } else if (cp < 0x10000) {
+                    out += static_cast<char>(0xE0 | (cp >> 12));
+                    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                } else {
+                    out += static_cast<char>(0xF0 | (cp >> 18));
+                    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                }
+            }
+        } else {
+            out += v[i++];  // \" \' \\ and any other escaped literal
+        }
+    }
+    return out;
+}
+
 // Cascade for one element: gather every matching rule (plus the element's
 // inline style) in specificity/source order, then apply. Custom properties
 // are handled in two passes so var() resolves against the element's *final*
@@ -1627,34 +2014,83 @@ std::string ResolveCssVars(const std::string &value, const std::unordered_map<st
 // normal properties with their var() references substituted. `vars` is
 // updated in place so the caller can pass it down to this element's children,
 // which is how custom properties inherit.
+// `vars` enters pointing at the INHERITED custom-property map and is only
+// swapped to a private copy (built in `own_vars`) when this element actually
+// declares a `--x` of its own -- most elements just share their ancestor's
+// map, which is what makes the cascade affordable (the old copy-per-node was
+// ~2000 map clones per ComputeStyles).
 void ApplyMatchingRules(const DomNode *n, ComputedStyle &style, const std::vector<CssRule> &rules,
                          const std::unordered_map<std::string, std::string> &inline_decls,
-                         std::unordered_map<std::string, std::string> &vars) {
-    struct Match { const CssRule *rule; ParsedSelector selector; };
+                         const std::unordered_map<std::string, std::string> *&vars_ptr,
+                         std::unordered_map<std::string, std::string> &own_vars) {
+    struct Match { const CssRule *rule; const ParsedSelector *selector; };
     std::vector<Match> matches;
     for (const CssRule &r : rules) {
-        ParsedSelector selector = ParseSelector(r.selector);
-        if (selector.valid && MatchesSelectorAt(n, selector, static_cast<int>(selector.parts.size()) - 1))
-            matches.push_back({&r, std::move(selector)});
+        // r.parsed was built once when the rule was collected -- matching is
+        // pure reads from here on (the per-pair ParseSelector this replaces
+        // dominated ComputeStyles' whole runtime).
+        if (r.parsed.valid && MatchesSelectorAt(n, r.parsed, static_cast<int>(r.parsed.parts.size()) - 1))
+            matches.push_back({&r, &r.parsed});
     }
     std::stable_sort(matches.begin(), matches.end(), [](const Match &a, const Match &b) {
-        if (a.selector.id_count != b.selector.id_count) return a.selector.id_count < b.selector.id_count;
-        if (a.selector.class_count != b.selector.class_count) return a.selector.class_count < b.selector.class_count;
-        if (a.selector.tag_count != b.selector.tag_count) return a.selector.tag_count < b.selector.tag_count;
+        if (a.selector->id_count != b.selector->id_count) return a.selector->id_count < b.selector->id_count;
+        if (a.selector->class_count != b.selector->class_count) return a.selector->class_count < b.selector->class_count;
+        if (a.selector->tag_count != b.selector->tag_count) return a.selector->tag_count < b.selector->tag_count;
         return a.rule->source_order < b.rule->source_order;
     });
     // Cascade layers, lowest priority first: matched rules (already sorted),
-    // then the inline style="" (always wins over any rule).
+    // then the inline style="" (always wins over any rule). A ::before/
+    // ::after rule is NOT a layer on the element itself -- only its `content`
+    // is captured, into the pseudo slots (later matches win, same order as
+    // the layers). `content: none`/"" clears an earlier match's value.
     std::vector<const std::unordered_map<std::string, std::string> *> layers;
     layers.reserve(matches.size() + 1);
-    for (const Match &match : matches) layers.push_back(&match.rule->decls);
+    for (const Match &match : matches) {
+        if (match.selector->pseudo_element) {
+            if (auto content = match.rule->decls.find("content"); content != match.rule->decls.end()) {
+                std::string &slot = match.selector->pseudo_element == 'b' ? style.content_before : style.content_after;
+                slot = DecodeCssContent(content->second);
+            }
+            continue;
+        }
+        layers.push_back(&match.rule->decls);
+    }
     if (!inline_decls.empty()) layers.push_back(&inline_decls);
 
-    for (const auto *decls : layers)
-        for (const auto &[key, val] : *decls)
-            if (key.size() >= 2 && key[0] == '-' && key[1] == '-') vars[key] = ResolveCssVars(val, vars);
+    bool has_custom = false;
+    for (const auto *decls : layers) {
+        for (const auto &[key, val] : *decls) {
+            if (key.size() >= 2 && key[0] == '-' && key[1] == '-') { has_custom = true; break; }
+        }
+        if (has_custom) break;
+    }
+    if (has_custom) {
+        own_vars = *vars_ptr;  // the one copy, only for elements that redefine something
+        for (const auto *decls : layers)
+            for (const auto &[key, val] : *decls)
+                if (key.size() >= 2 && key[0] == '-' && key[1] == '-') own_vars[key] = ResolveCssVars(val, own_vars);
+        vars_ptr = &own_vars;
+    }
+    const std::unordered_map<std::string, std::string> &vars = *vars_ptr;
 
     for (const auto *decls : layers) {
+        // A layer with no var() references applies as-is; only var()-using
+        // values are resolved, into a small scratch overlay, sparing a map
+        // rebuild per (node, matched rule).
+        bool needs_resolve = false;
+        for (const auto &[key, val] : *decls) {
+            if ((key.size() < 2 || key[0] != '-' || key[1] != '-') && val.find("var(") != std::string::npos) {
+                needs_resolve = true;
+                break;
+            }
+        }
+        bool has_custom_keys = false;
+        for (const auto &[key, val] : *decls)
+            if (key.size() >= 2 && key[0] == '-' && key[1] == '-') { has_custom_keys = true; break; }
+        if (!needs_resolve && !has_custom_keys) {
+            ApplyDeclarations(style, *decls);
+            continue;
+        }
         std::unordered_map<std::string, std::string> resolved;
         for (const auto &[key, val] : *decls) {
             if (key.size() >= 2 && key[0] == '-' && key[1] == '-') continue;  // custom property, not a real property
@@ -1698,9 +2134,10 @@ bool MathIsOnlyChild(const DomNode *n) {
 void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<CssRule> &rules, int list_depth,
                    bool in_ordered, const std::unordered_map<std::string, std::string> &parent_vars) {
     if (n->type != DomNodeType::Element) return;
-    // Custom properties inherit: this element starts from its parent's set and
-    // the cascade (ApplyMatchingRules, below) folds in any it redefines.
-    std::unordered_map<std::string, std::string> vars = parent_vars;
+    // Custom properties inherit: this element reads its parent's set and only
+    // gets a private copy (inside ApplyMatchingRules) if it redefines one.
+    const std::unordered_map<std::string, std::string> *vars_ptr = &parent_vars;
+    std::unordered_map<std::string, std::string> own_vars;
     ComputedStyle s = TagDefaults(n->tag);
     if (n->tag == "math") {
         bool display = n->attrs.count("display") && n->attrs.at("display") == "1";
@@ -1743,6 +2180,7 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
     s.line_height_multiplier = parent.line_height_multiplier;
     s.line_height_length = parent.line_height_length;
     s.letter_spacing = parent.letter_spacing;
+    s.text_transform = parent.text_transform;  // inherits in real CSS (children opt out with `none`)
     if (n->tag != "pre") s.white_space = parent.white_space;
     // list-style-type inherits in real CSS: a `list-style: none` on the
     // <ul> reaches its <li> children (and deeper nested lists) unless one
@@ -1762,9 +2200,23 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
 
     std::unordered_map<std::string, std::string> inline_decls;
     if (auto it = n->attrs.find("style"); it != n->attrs.end()) inline_decls = ParseDeclarations(it->second);
-    ApplyMatchingRules(n, s, rules, inline_decls, vars);
+    ApplyMatchingRules(n, s, rules, inline_decls, vars_ptr, own_vars);
+    const std::unordered_map<std::string, std::string> &vars = *vars_ptr;
     s.preserve_whitespace = s.white_space == HtmlWhiteSpace::Pre;
     s.faded = parent.faded || s.opacity_zero;
+    // Flex items: a ROW-direction flex container's element children flow
+    // inline on one line (the `.nav-row` toggle + label idiom); a column
+    // container's children keep block stacking. Only the flow direction of
+    // flex is approximated -- no grow/shrink/basis sizing. A container with a
+    // SINGLE element child is the centering-wrapper idiom (a modal inside a
+    // full-screen backdrop) -- that child must stay a block or its whole card
+    // collapses into inline text.
+    if (parent.flex_container && !parent.flex_column && !s.display_none && n->parent) {
+        int element_kids = 0;
+        for (const auto &sib : n->parent->children)
+            if (sib->type == DomNodeType::Element) ++element_kids;
+        if (element_kids >= 2) s.block = false;
+    }
     n->style = s;
 
     bool is_list_container = n->tag == "ul" || n->tag == "ol";
@@ -1798,10 +2250,38 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
 
 }  // namespace
 
+bool CssEvalMediaQuery(const std::string &query) { return MediaQueryApplies(query); }
+
 void ComputeStyles(HtmlDoc &doc) {
     if (!doc.root) return;
-    std::vector<CssRule> rules;
-    CollectStyleRules(doc.root.get(), rules);
+    // Rule cache: re-collecting + re-parsing every <style> block per cascade
+    // dominated ComputeStyles once selector matching got cheap. The key
+    // fingerprints each style text (length + endpoints) plus the @media
+    // version, so script-injected styles and media flips rebuild it while the
+    // hot path (a class toggle) reuses the parsed rules untouched.
+    size_t key = 1469598103934665603ULL ^ (g_css_media_version * 1099511628211ULL);
+    std::function<void(const DomNode *)> fingerprint = [&](const DomNode *n) {
+        if (n->type == DomNodeType::Element && n->tag == "style") {
+            for (const auto &c : n->children) {
+                if (c->type != DomNodeType::Text) continue;
+                key = (key ^ c->text.size()) * 1099511628211ULL;
+                const size_t probe = std::min<size_t>(c->text.size(), 32);
+                for (size_t i = 0; i < probe; ++i) key = (key ^ static_cast<unsigned char>(c->text[i])) * 1099511628211ULL;
+                for (size_t i = c->text.size() >= 32 ? c->text.size() - 32 : 0; i < c->text.size(); ++i)
+                    key = (key ^ static_cast<unsigned char>(c->text[i])) * 1099511628211ULL;
+            }
+        }
+        for (const auto &c : n->children) fingerprint(c.get());
+    };
+    fingerprint(doc.root.get());
+    auto cached = std::static_pointer_cast<std::vector<CssRule>>(doc.css_rules_cache);
+    if (!cached || doc.css_rules_key != key) {
+        cached = std::make_shared<std::vector<CssRule>>();
+        CollectStyleRules(doc.root.get(), *cached);
+        doc.css_rules_cache = cached;
+        doc.css_rules_key = key;
+    }
+    const std::vector<CssRule> &rules = *cached;
     ComputedStyle root_style;  // no color/bold/italic -- layout falls back to the pane's theme colors
     const std::unordered_map<std::string, std::string> root_vars;  // custom properties cascade down from here
     for (auto &c : doc.root->children) WalkAndStyle(c.get(), root_style, rules, 0, false, root_vars);
@@ -1810,7 +2290,9 @@ void ComputeStyles(HtmlDoc &doc) {
 std::vector<DomNode *> QuerySelectorAll(DomNode *root, const std::string &selector) {
     ParsedSelector parsed = ParseSelector(ToLower(selector));
     std::vector<DomNode *> matches;
-    if (root && parsed.valid) CollectSelectorMatches(root, root, parsed, matches);
+    // Pseudo-element selectors (::before/::after) never match real elements
+    // in querySelector -- they only exist for the cascade's generated content.
+    if (root && parsed.valid && !parsed.pseudo_element) CollectSelectorMatches(root, root, parsed, matches);
     return matches;
 }
 
@@ -1853,6 +2335,32 @@ AccessibleNode BuildAccessibilityTree(const HtmlDoc &doc) {
         if (node->shadow_root) if (const DomNode *found = self(node->shadow_root.get(), id, self)) return found;
         return nullptr;
     };
+    // Appends `node`'s accessible children to `out_children`, mirroring how a
+    // real browser's tree treats document structure: <html>/<body> are
+    // transparent containers (their children surface directly -- so the
+    // wrappers ParseHtml synthesizes around a body-less page never shift the
+    // tree), and non-rendered subtrees (<head>, <style>, <script>, <title>)
+    // are excluded entirely.
+    std::function<void(const DomNode *, std::vector<AccessibleNode> &, const std::function<AccessibleNode(const DomNode *)> &)>
+        append_children_impl = [&](const DomNode *node, std::vector<AccessibleNode> &out_children,
+                                   const std::function<AccessibleNode(const DomNode *)> &build_one) {
+            for (const auto &child : node->children) {
+                if (child->type != DomNodeType::Element || child->style.display_none) continue;
+                auto hidden = child->attrs.find("aria-hidden");
+                if (hidden != child->attrs.end() && hidden->second == "true") continue;
+                if (child->tag == "head" || child->tag == "style" || child->tag == "script" || child->tag == "title")
+                    continue;
+                if (child->tag == "html" || child->tag == "body") {
+                    append_children_impl(child.get(), out_children, build_one);
+                    continue;
+                }
+                out_children.push_back(build_one(child.get()));
+            }
+        };
+    auto append_children = [&](const DomNode *node, std::vector<AccessibleNode> &out_children, auto &&builder) {
+        append_children_impl(node, out_children,
+                             [&](const DomNode *child) { return builder(child, builder); });
+    };
     auto build = [&](const DomNode *node, auto &&self) -> AccessibleNode {
         AccessibleNode accessible; accessible.role = role_for(node);
         auto label = node->attrs.find("aria-label");
@@ -1876,18 +2384,11 @@ AccessibleNode BuildAccessibilityTree(const HtmlDoc &doc) {
         }
         accessible.disabled = node->form_disabled || node->attrs.count("aria-disabled") != 0;
         accessible.checked = node->form_checked || node->attrs.count("aria-checked") != 0;
-        for (const auto &child : node->children) {
-            if (child->type != DomNodeType::Element || child->style.display_none) continue;
-            auto hidden = child->attrs.find("aria-hidden");
-            if (hidden != child->attrs.end() && hidden->second == "true") continue;
-            accessible.children.push_back(self(child.get(), self));
-        }
+        append_children(node, accessible.children, self);
         return accessible;
     };
     AccessibleNode root; root.role = "document"; root.name = doc.title;
-    if (doc.root) for (const auto &child : doc.root->children)
-        if (child->type == DomNodeType::Element && !child->style.display_none &&
-            !(child->attrs.count("aria-hidden") && child->attrs.at("aria-hidden") == "true")) root.children.push_back(build(child.get(), build));
+    if (doc.root) append_children(doc.root.get(), root.children, build);
     return root;
 }
 

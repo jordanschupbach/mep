@@ -115,6 +115,77 @@ int main() {
     CHECK(TakeHtmlStyleDirty());  // the class mutation flagged a restyle...
     ComputeStyles(drawer);       // ...which the host answers by re-cascading
     CHECK(d->style.has_transform && d->style.transform_x.value == 0.0f);
+    // classList.toggle's optional `force` argument pins the outcome instead
+    // of flipping -- pages use toggle(name, state) as an idempotent sync
+    // (yappopotamus's `toggle('nav-collapsed', contains('nav-collapsed'))`
+    // startup call must be a no-op, not an add).
+    HtmlDoc toggle_force;
+    ParseHtml("<div id=\"t\"></div><script>var t=document.getElementById('t');"
+              "document.title=[t.classList.toggle('a',false),t.classList.contains('a'),"
+              "t.classList.toggle('a',true),t.classList.contains('a'),"
+              "t.classList.toggle('a',true),t.classList.contains('a'),"
+              "t.classList.toggle('a')].join(':');</script>",
+              toggle_force);
+    RunScripts(toggle_force, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
+    CHECK(toggle_force.title == "false:false:true:true:true:true:false");
+    // CSS ::before/::after generated content, viewport units, and px/rem
+    // calc() folding -- the sidebar/collapse-button idioms: an icon-only
+    // button's glyph exists only as `content`, the sidebar's height is 100vh
+    // (what makes it independently scrollable), and the button is placed by
+    // `left: calc(220px - 2.3rem)` (= 183.2 CSS px).
+    HtmlDoc pseudo;
+    ParseHtml("<style>#b::before{content:\"\\2039\"} #b::after{content:'!'}"
+              " #s{height:100vh;width:82vw} #p{left:calc(220px - 2.3rem)}</style>"
+              "<button id=\"b\"></button><div id=\"s\"></div><div id=\"p\"></div>",
+              pseudo);
+    DomNode *pb = FindById(pseudo.root.get(), "b");
+    CHECK(pb && pb->style.content_before == "\xE2\x80\xB9" && pb->style.content_after == "!");
+    DomNode *ps = FindById(pseudo.root.get(), "s");
+    CHECK(ps && ps->style.height.set && ps->style.height.unit == CssLength::Unit::Vh && ps->style.height.value == 100.0f);
+    CHECK(ps->style.width.set && ps->style.width.unit == CssLength::Unit::Vw && ps->style.width.value == 82.0f);
+    DomNode *pp = FindById(pseudo.root.get(), "p");
+    CHECK(pp && pp->style.pos_left.set && pp->style.pos_left.unit == CssLength::Unit::Px);
+    CHECK(pp->style.pos_left.value > 183.1f && pp->style.pos_left.value < 183.3f);
+    // querySelector never matches a pseudo-element selector.
+    CHECK(QuerySelectorAll(pseudo.root.get(), "#b::before").empty());
+    // Attribute-selector operators: ^= prefix (the `a[href^="#"]` in-page
+    // anchor idiom scroll-spies are built from), $= suffix, *= substring,
+    // |= exact-or-dash-prefix.
+    HtmlDoc attrops;
+    ParseHtml("<a id=\"x\" href=\"#intro\" lang=\"en-US\" class=\"c\"></a>"
+              "<a id=\"y\" href=\"/page.html\"></a>",
+              attrops);
+    CHECK(QuerySelectorAll(attrops.root.get(), "a[href^=\"#\"]").size() == 1);
+    CHECK(QuerySelectorAll(attrops.root.get(), "a[href$=\".html\"]").size() == 1);
+    CHECK(QuerySelectorAll(attrops.root.get(), "a[href*=\"age\"]").size() == 1);
+    CHECK(QuerySelectorAll(attrops.root.get(), "a[lang|=\"en\"]").size() == 1);
+    CHECK(QuerySelectorAll(attrops.root.get(), "a[lang|=\"e\"]").empty());
+    // The Firefox-look CSS pass: border-radius/box-shadow (rounded shadowed
+    // cards), flex centering flags, text-transform, multi-column, and
+    // border-collapse all parse into ComputedStyle; array elision parses in
+    // scripts (MathJax's minified `[,,x]` idiom).
+    HtmlDoc slick;
+    ParseHtml("<style>#card{border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.5);"
+              "align-items:center;justify-content:center;text-transform:uppercase;letter-spacing:2px}"
+              " #cols{columns:2;column-gap:1.6rem} #t{border-collapse:collapse}</style>"
+              "<div id=\"card\"><span id=\"kid\">hi</span></div><div id=\"cols\"></div><table id=\"t\"></table>"
+              "<script>var a=[,,3]; document.title=a.length+':'+(a[0]===undefined)+':'+a[2];</script>",
+              slick);
+    DomNode *card = FindById(slick.root.get(), "card");
+    CHECK(card && card->style.border_radius.set && card->style.border_radius.value == 8.0f);
+    CHECK(card->style.has_shadow && card->style.shadow_blur.set && card->style.shadow_blur.value == 18.0f);
+    CHECK(card->style.shadow_a == 128 || card->style.shadow_a == 127);  // rgba .5 alpha
+    CHECK(card->style.align_items_center && card->style.justify_content_center);
+    CHECK(card->style.text_transform == ComputedStyle::TextTransform::Upper);
+    DomNode *kid = FindById(slick.root.get(), "kid");
+    CHECK(kid && kid->style.text_transform == ComputedStyle::TextTransform::Upper);  // inherits
+    DomNode *cols = FindById(slick.root.get(), "cols");
+    CHECK(cols && cols->style.column_count == 2 && cols->style.column_gap.set &&
+          cols->style.column_gap.unit == CssLength::Unit::Rem);
+    DomNode *tbl = FindById(slick.root.get(), "t");
+    CHECK(tbl && tbl->style.border_collapse);
+    RunScripts(slick, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
+    CHECK(slick.title == "3:true:3");
     // EventSource is stubbed (SSE unsupported) rather than undefined, so a page's
     // live-reload client constructs + uses it without a ReferenceError killing the
     // rest of its <script>. If it threw, RunScripts' error hook would abort below.

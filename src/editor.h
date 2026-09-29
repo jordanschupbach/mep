@@ -2678,6 +2678,10 @@ struct HtmlSession {
     // breakpoint (or a light/dark toggle) has to re-style. -1 forces a first
     // pass. See Editor::RestyleHtmlForViewport.
     float styled_media_w = -1.0f;
+    // Smooth-scroll destination a page's scrollIntoView asked for (negative =
+    // no animation running); advanced toward each frame by
+    // AdvanceHtmlScrollAnimation, cancelled by a user wheel.
+    float scroll_anim_target = -1.0f;
     bool styled_media_dark = false;
     // Scrollable `position:fixed` panels (a nav sidebar), recorded each frame by
     // DrawPane with their on-screen rect and scroll range, so WheelScrollHtml
@@ -5682,6 +5686,15 @@ public:
     // SetCssMediaContext). A no-op on a stable-size pane after the first frame.
     // Called by DrawPane before laying the page out.
     void RestyleHtmlForViewport(int buffer_id, float viewport_w, float viewport_h, bool dark);
+    // Mirrors the pane's live scroll/viewport into the page's HtmlDoc (what
+    // getBoundingClientRect reads) and fires window `scroll`/`resize` events
+    // when they change -- the scroll-spy feed. Call once per drawn frame,
+    // before the restyle.
+    void SyncHtmlViewportState(int buffer_id, float scroll_y, float view_w, float view_h);
+    // Consumes a page's scrollIntoView request and eases scroll_y toward it
+    // (`behavior: smooth`); clamped to [0, max_scroll]. Call after layout,
+    // when max_scroll is known, just before ClampHtmlScroll.
+    void AdvanceHtmlScrollAnimation(int buffer_id, float max_scroll, float dt);
     // Fixed-panel scroll registry (a scrollable sidebar). DrawPane clears then
     // re-adds each scrollable fixed panel's screen rect + scroll range every
     // frame; WheelScrollHtml calls ScrollHtmlFixedPanelAt first so a wheel over

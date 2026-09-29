@@ -5604,7 +5604,10 @@ void Editor::WheelScrollHtml(float dx, float dy) {
     // previous frame's DrawPane (a frame's lag is imperceptible).
     gfx::Vector2 mouse = gfx::GetMousePosition();
     if (ScrollHtmlFixedPanelAt(mouse.x, mouse.y, dy)) return;
-    if (dy != 0.0f) sess.scroll_y = std::max(0.0f, sess.scroll_y + (-dy * kWheelPixelsPerNotch));
+    if (dy != 0.0f) {
+        sess.scroll_anim_target = -1.0f;  // a user wheel wins over a running scrollIntoView glide
+        sess.scroll_y = std::max(0.0f, sess.scroll_y + (-dy * kWheelPixelsPerNotch));
+    }
 }
 
 void Editor::WheelScrollTerminal(float dy) {
@@ -10949,6 +10952,42 @@ void Editor::RestyleHtmlForViewport(int buffer_id, float viewport_w, float viewp
     sess.styled_media_dark = dark;
 }
 
+void Editor::SyncHtmlViewportState(int buffer_id, float scroll_y, float view_w, float view_h) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    HtmlSession &sess = it->second;
+    const bool scrolled = sess.doc.view_scroll_y != scroll_y;
+    const bool resized = sess.doc.view_w != view_w || sess.doc.view_h != view_h;
+    sess.doc.view_scroll_y = scroll_y;
+    sess.doc.view_w = view_w;
+    sess.doc.view_h = view_h;
+    if (sess.js && ScriptsHaveListeners(*sess.js)) {
+        if (scrolled) ScriptsDispatchWindowEvent(*sess.js, "scroll");
+        if (resized) ScriptsDispatchWindowEvent(*sess.js, "resize");
+    }
+}
+
+void Editor::AdvanceHtmlScrollAnimation(int buffer_id, float max_scroll, float dt) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    HtmlSession &sess = it->second;
+    if (sess.doc.scroll_request_y >= 0.0f) {
+        // Land the section just under the top edge, matching the site's own
+        // ACTIVE_OFFSET band so the scroll-spy immediately marks it active.
+        sess.scroll_anim_target = std::clamp(sess.doc.scroll_request_y - 12.0f, 0.0f, max_scroll);
+        sess.doc.scroll_request_y = -1.0f;
+    }
+    if (sess.scroll_anim_target < 0.0f) return;
+    const float target = std::clamp(sess.scroll_anim_target, 0.0f, max_scroll);
+    // Exponential ease-out (~0.3s to settle), snapping at the end.
+    const float alpha = 1.0f - std::exp(-dt / 0.1f);
+    sess.scroll_y += (target - sess.scroll_y) * alpha;
+    if (std::fabs(target - sess.scroll_y) < 1.0f) {
+        sess.scroll_y = target;
+        sess.scroll_anim_target = -1.0f;
+    }
+}
+
 void Editor::ClearHtmlFixedPanels(int buffer_id) {
     auto it = htmldocs_.find(buffer_id);
     if (it != htmldocs_.end()) it->second.fixed_panels.clear();
@@ -11164,7 +11203,22 @@ void Editor::PopulateHtmlSession(HtmlSession &sess, const std::string &origin, c
         return true;
     }();
     (void)fetcher_installed;
+    // Seed the media context's color-scheme from the editor theme BEFORE any
+    // page script runs: the standard theme-restore head script asks
+    // `matchMedia('(prefers-color-scheme: dark)')` on its very first line,
+    // and must see the answer a real browser on this desktop would give.
+    {
+        ThemeColor nb{};
+        const bool ui_dark =
+            !ResolveHighlight("NormalBg", &nb) || (0.299 * nb.r + 0.587 * nb.g + 0.114 * nb.b) < 128.0;
+        SetCssMediaContext(1280.0f, 800.0f, ui_dark);  // dims refined by the first drawn frame
+    }
     if (remote_origin) {
+        // A page that came over http(s) renders with its OWN colors and
+        // stylesheets, like a real browser -- the reading-mode theme recolor
+        // stays the default only for local documents (rendered help/org).
+        // Ctrl-R still toggles either way.
+        sess.theme_colors = false;
         // A page that came over http(s) loads its stylesheets and scripts
         // from there too, resolved against its own URL, before its scripts
         // run -- without this a served page is unstyled and inert.
@@ -11177,11 +11231,19 @@ void Editor::PopulateHtmlSession(HtmlSession &sess, const std::string &origin, c
     // Local <audio>/<video> sources are decoded before scripts so
     // `duration`/`readyState` are already meaningful to inline code.
     LoadHtmlMedia(sess.doc, std::filesystem::path(source).parent_path().string());
-    // Info-level console messages surface as plain notifications; script errors are prefixed with the page's source.
+    // A PAGE's own script problems are the page author's business, not the
+    // person browsing: real browsers put them in the devtools console, never
+    // in browser chrome (a partially-working site -- e.g. MathJax's bundle
+    // using APIs this engine lacks -- still renders fine). Log them for
+    // debugging instead of raising an error toast over the pane. Console
+    // messages likewise stay out of the notification stream.
     sess.js = StartScripts(
-        sess.doc, [this](const std::string &msg) { Notify(msg, NotifyLevel::Info); },
-        [this, source](const std::string &msg) { Notify(source + ": " + msg, NotifyLevel::Error); });
+        sess.doc, [](const std::string &msg) { std::fprintf(stderr, "[page-console] %s\n", msg.c_str()); },
+        [source](const std::string &msg) {
+            std::fprintf(stderr, "[page-script-error] %s: %s\n", source.c_str(), msg.c_str());
+        });
     sess.scroll_y = 0;
+    sess.hover_node = nullptr;  // the previous page's DOM is gone
     sess.omnibar_active = false;
 }
 
@@ -11365,6 +11427,49 @@ void Editor::HandleHtmlInput() {
     constexpr float kScrollStep = 60.0f;
     bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
     bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+
+    // Page-first global shortcuts: modifier chords and Escape reach the
+    // page's document-level keydown listeners BEFORE mep's own html-mode
+    // bindings, the way a real browser lets Ctrl+K open a site's search
+    // overlay. Only chords + Escape are forwarded -- plain letters stay
+    // editor keys (j/k scroll, f link hints), the modal-editor compromise
+    // this pane already makes everywhere else. A listener that calls
+    // preventDefault() consumes the key entirely.
+    if (sess->js && !sess->omnibar_active && sess->doc.root) {
+        DomNode *doc_target = sess->doc.root.get();
+        auto page_consumed = [&](const std::string &key_name) {
+            return !ScriptsDispatchKeyEvent(*sess->js, doc_target, "keydown", key_name, ctrl, shift, false, false);
+        };
+        if (ctrl) {
+            for (int i = 0; i < 26; ++i) {
+                gfx::Key key = static_cast<gfx::Key>(static_cast<int>(gfx::Key::A) + i);
+                if (!gfx::IsKeyPressed(key)) continue;
+                if (page_consumed(std::string(1, static_cast<char>('a' + i)))) return;
+                break;
+            }
+        } else if (gfx::IsKeyPressed(gfx::Key::Escape) && ScriptsHaveListeners(*sess->js)) {
+            if (page_consumed("Escape")) {
+                while (gfx::GetCharPressed() > 0) {}
+                return;
+            }
+        }
+    }
+
+    // A page script can move focus itself (search.js focuses its input right
+    // after Ctrl+K opens the overlay): adopt any script-focused text field as
+    // this session's keyboard owner, exactly as a click on it would have; and
+    // release it again when a script blurs it (Escape closing the overlay),
+    // or plain letters would keep editing an invisible field.
+    if (sess->focused_field && !sess->focused_field->interaction_focus) sess->focused_field = nullptr;
+    if (!sess->focused_field && sess->doc.root) {
+        std::function<DomNode *(DomNode *)> find_focused = [&](DomNode *n) -> DomNode * {
+            if (n->interaction_focus && IsHtmlTextField(n)) return n;
+            for (auto &child : n->children)
+                if (DomNode *found = find_focused(child.get())) return found;
+            return nullptr;
+        };
+        sess->focused_field = find_focused(sess->doc.root.get());
+    }
 
     // A focused form field owns the keyboard the way the omnibar does:
     // characters edit its value and raise `input` (what frameworks listen

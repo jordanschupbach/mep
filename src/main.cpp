@@ -2470,6 +2470,24 @@ constexpr int kOfficeSpecialChars[] = {
 };
 constexpr int kOfficeSpecialCharCount = sizeof(kOfficeSpecialChars) / sizeof(kOfficeSpecialChars[0]);
 
+// Glyphs HTML pages produce through CSS generated content / UI text that
+// aren't in kOfficeSpecialChars: ‹ › (nav collapse carets), ▼ ▲ ► (what
+// SubstituteHtmlIconGlyphs maps the small-triangle/hamburger icons to --
+// Liberation has no ▾/▸/☰), ≡ (hamburger stand-in), · (middot separator).
+// Baked into the office fonts (which HtmlFontFor serves the html renderer
+// from) but NOT added to kOfficeSpecialChars itself -- that array doubles as
+// the office pane's special-character insert palette, which shouldn't grow
+// icons.
+constexpr int kHtmlUiGlyphs[] = {0x2039, 0x203A, 0x25BC, 0x25B2, 0x25BA, 0x2261, 0x00B7, 0x25CF,
+                                 // NBSP (&#xa0; -- org tables pad empty cells with it; unbaked it
+                                 // drew as "?") -- Liberation gives it a plain space advance.
+                                 0x00A0};
+// Greek basic block (letters only) -- academic notes drop plain-text Greek
+// into tables/prose outside math spans; Liberation covers all of it.
+constexpr int kGreekFirst = 0x0391, kGreekLast = 0x03C9;
+constexpr int kGreekCount = kGreekLast - kGreekFirst + 1;
+constexpr int kHtmlUiGlyphCount = sizeof(kHtmlUiGlyphs) / sizeof(kHtmlUiGlyphs[0]);
+
 // Bakes the 4 office-pane fonts once, at startup only (see g_office_font_*'s
 // own comment for why -- no ApplyFontSize-style reload-per-size-change).
 // Baked at a fixed oversampled size (kOfficeFontBasePt * 2, mirroring
@@ -2489,14 +2507,18 @@ void LoadOfficeFonts() {
     // once actually inserted into a paragraph.
     // Also Latin-1 (accented letters), Greek, curly quotes and the common
     // maths symbols: what real slide decks and documents are written in
-    // (the presentation editor draws its text with these faces too).
+    // (the presentation editor draws its text with these faces too), plus the
+    // HTML-UI glyphs the html renderer serves from these same faces.
     static std::vector<int> codepoint_list;
     codepoint_list.clear();
+    codepoint_list.reserve(96 + kOfficeSpecialCharCount + kHtmlUiGlyphCount + kGreekCount + 96 + 11);
     for (int c = 32; c <= 126; c++) codepoint_list.push_back(c);
     codepoint_list.push_back(0x2022);
     for (int i = 0; i < kOfficeSpecialCharCount; i++) codepoint_list.push_back(kOfficeSpecialChars[i]);
+    for (int i = 0; i < kHtmlUiGlyphCount; i++) codepoint_list.push_back(kHtmlUiGlyphs[i]);
     for (int c = 0xA0; c <= 0xFF; c++) codepoint_list.push_back(c);
-    for (int c = 0x391; c <= 0x3C9; c++)
+    // 0x3A2 is a reserved (unassigned) slot in the Greek block -- skip it.
+    for (int c = kGreekFirst; c <= kGreekLast; c++)
         if (c != 0x3A2) codepoint_list.push_back(c);
     // (Each one Liberation has: a codepoint it lacks would claim an empty
     // glyph and stop a fallback face from drawing it.)
@@ -3842,7 +3864,9 @@ const char *kBuiltinTextTools =
     "    if fname ~= '' and fname:match('%.html?$') then target = fname end\n"
     "  end\n"
     "  if not target then\n"
-    "    mep.ui_input('Browse:', 'https://', function(input)\n"
+    // Preset favors the local-dev loop (browse the project you're serving)
+    // over the open web -- type over it for a remote URL.
+    "    mep.ui_input('Browse:', 'http://localhost:', function(input)\n"
     "      if input and input ~= '' then open_fn(input) end\n"
     "    end)\n"
     "    return\n"
@@ -36618,6 +36642,17 @@ struct HtmlSvgRun { float x = 0, y = 0, w = 0, h = 0; const DomNode *node = null
 struct HtmlBgRect {
     float x = 0, y = 0, w = 0, h = 0;
     gfx::Color color{};
+    // Corner radius + drop shadow, resolved to pixels at push time
+    // (ComputedStyle::border_radius / has_shadow -- see html_doc.h). The
+    // shadow paints as a few concentric translucent rounded rects just
+    // before this background.
+    float radius = 0;
+    float shadow_blur = 0;  // 0 = no shadow
+    gfx::Color shadow{};
+    // The element this box belongs to -- lets LayoutFixedElement's flex
+    // centering shift DESCENDANT boxes with their content while leaving the
+    // fixed element's own full-box background pinned.
+    const DomNode *owner = nullptr;
 };
 // A block element's own border box (ComputedStyle.border_top/right/bottom/
 // left, html_doc.cpp's ApplyDeclarations) -- same "pushed by HtmlLayoutBlock
@@ -36633,6 +36668,11 @@ struct HtmlBorderRect {
     float x = 0, y = 0, w = 0, h = 0;
     float top_w = 0, right_w = 0, bottom_w = 0, left_w = 0;
     gfx::Color top_c{}, right_c{}, bottom_c{}, left_c{};
+    // Uniform corner radius; a rounded border only draws as one rounded
+    // outline when all four edges share a width and color (the common card
+    // case) -- mixed edges fall back to the square per-edge rects.
+    float radius = 0;
+    const DomNode *owner = nullptr;  // see HtmlBgRect::owner
 };
 // A `position: fixed` (or sticky) element pulled out of normal flow: its own
 // sub-layout, positioned and painted pinned to the pane viewport rather than
@@ -36649,6 +36689,9 @@ struct HtmlFixedLayer {
                             //   background still reaches the viewport bottom
     float content_h = 0;    // laid-out height of the panel's content, for the
                             //   scroll range when it overflows the box
+    float radius = 0;       // corner radius for the box bg (resolved px)
+    float shadow_blur = 0;  // box-shadow blur (0 = none), painted before the bg
+    gfx::Color shadow{};
     DomNode *node = nullptr;  // the fixed element -- carries its persistent
                               //   fixed_scroll_y and identifies it to the wheel
     std::shared_ptr<struct HtmlLayout> content;  // heap so HtmlLayout need not embed itself by value
@@ -36708,13 +36751,31 @@ struct HtmlLayoutCtx {
  */
 float HtmlLineHeight(float font_size) { return font_size + 6.0f; }
 
-float ResolveCssLength(const CssLength &length, float font_size, float containing_width) {
+// Resolves a CSS length to layout pixels. `rem_px` is the document's root font
+// size in layout pixels (ctx.base_font_size: the editor font, times pane zoom
+// for the browser pane). CSS `px` values scale by rem_px/16 -- pages are
+// authored against the browser default of 1rem = 16px, so this keeps their
+// px-to-text proportions at mep's font size and zoom, exactly how browser zoom
+// scales px lengths. Raw px against ~2x-of-16px text made a `width:220px`
+// sidebar hold about half the words a real browser fits (labels truncated) and
+// px columns wrap far too early.
+// The viewport vw/vh units resolve against, set from the layout ctx at the
+// top of every LayoutHtmlDoc pass (0x0 for the mepml block renderer, which
+// has no scrolling viewport -- a vh length there resolves to 0, i.e. behaves
+// as if unset). File-scope rather than threaded through every ResolveCssLength
+// call site, matching g_font_size's own precedent; layout runs only on the
+// main thread.
+float g_css_viewport_w = 0.0f, g_css_viewport_h = 0.0f;
+
+float ResolveCssLength(const CssLength &length, float font_size, float containing_width, float rem_px) {
     if (!length.set || length.auto_value) return 0.0f;
     switch (length.unit) {
-        case CssLength::Unit::Px: return length.value;
+        case CssLength::Unit::Px: return length.value * (rem_px / 16.0f);
         case CssLength::Unit::Percent: return containing_width * length.value / 100.0f;
         case CssLength::Unit::Em: return font_size * length.value;
-        case CssLength::Unit::Rem: return g_font_size * length.value;
+        case CssLength::Unit::Rem: return rem_px * length.value;
+        case CssLength::Unit::Vw: return g_css_viewport_w * length.value / 100.0f;
+        case CssLength::Unit::Vh: return g_css_viewport_h * length.value / 100.0f;
     }
     return 0.0f;
 }
@@ -36744,6 +36805,17 @@ struct HtmlPendingWord {
     float image_w = 0, image_h = 0;
     bool is_math = false;
     MathLayoutResult math{};
+    // A draw-nothing inline spacer's line advance (an empty element with an
+    // explicit CSS width -- the `.nav-toggle-spacer` alignment idiom). 0 for
+    // every ordinary word.
+    float fixed_advance = 0.0f;
+    // True when the source had NO whitespace between this word and the one
+    // before it (an intra-word style change: "num<b>b</b>er") -- laid out
+    // with no inter-word gap and never wrapped away from its predecessor.
+    bool glue_prev = false;
+    // Whether this word's source text node ended in whitespace -- what the
+    // NEXT text node's first word consults to decide glue_prev.
+    bool trailing_space = false;
     // Copied straight from the source node's ComputedStyle::link_href/
     // link_node (html_doc.h) -- empty/null when this word isn't inside an
     // <a href>. Threaded through to HtmlRun/HtmlImageRun below so
@@ -36882,6 +36954,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
      * @return The word's width in pixels.
      */
     auto word_width = [](const HtmlPendingWord &w) -> float {
+        if (w.fixed_advance > 0.0f) return w.fixed_advance;
         if (w.is_image) return w.image_w;
         if (w.is_math) return w.math.width;
         return gfx::MeasureTextEx(w.font ? *w.font : g_font, w.text.c_str(), w.font_size, w.letter_spacing).x;
@@ -36979,14 +37052,21 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
         line.clear();
         x = indent_x;
     };
-    for (const HtmlPendingWord &w : words) {
+    for (size_t wi = 0; wi < words.size(); ++wi) {
+        const HtmlPendingWord &w = words[wi];
         if (w.text == "\n" && !w.is_image && !w.is_math) {
             flush_line(true);
             continue;
         }
         float word_w = word_width(w);
         const gfx::Font &font = w.font ? *w.font : g_font;
-        float space_w = line.empty() ? 0 : gfx::MeasureTextEx(font, " ", w.font_size, w.letter_spacing).x;
+        float space_w = (line.empty() || w.glue_prev) ? 0 : gfx::MeasureTextEx(font, " ", w.font_size, w.letter_spacing).x;
+        // The wrap decision at a cluster head sees the WHOLE glued cluster
+        // ("num"+"b"+"er" is one word to the reader), so a mid-word style
+        // change can't strand its tail on the next line.
+        float cluster_w = word_w;
+        if (!w.glue_prev)
+            for (size_t k = wi + 1; k < words.size() && words[k].glue_prev; ++k) cluster_w += word_width(words[k]);
         // ctx.layout_width is the page's absolute right edge (measured
         // from the same x=0 indent_x itself is), constant regardless of
         // indent -- matching every box-width formula elsewhere in this
@@ -36998,8 +37078,10 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
         // nested lists produce, but badly wrong for a deliberately
         // narrowed+centered block (ComputedStyle::has_max_width), whose
         // indent_x can be hundreds of pixels.
-        if (!line.empty() && !ctx.no_wrap && !w.no_wrap && x + space_w + word_w > ctx.layout_width) flush_line(false);
-        if (!line.empty()) x += gfx::MeasureTextEx(font, " ", w.font_size, w.letter_spacing).x;
+        if (!line.empty() && !ctx.no_wrap && !w.no_wrap && !w.glue_prev &&
+            x + space_w + cluster_w > ctx.layout_width)
+            flush_line(false);
+        if (!line.empty() && !w.glue_prev) x += gfx::MeasureTextEx(font, " ", w.font_size, w.letter_spacing).x;
         line.push_back({&w, x});
         x += word_w;
     }
@@ -37031,17 +37113,85 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
  * @param ctx Layout context supplying the base font size and fallback color.
  * @param out Word list to append the split words to.
  */
-void HtmlCollectTextWords(const std::string &text, const ComputedStyle &style, const HtmlLayoutCtx &ctx,
+// Replaces the handful of icon codepoints pages commonly use that the bundled
+// Liberation faces have NO glyph for (they'd draw as nothing) with covered
+// lookalikes: U+25BE/25B4 small triangles -> U+25BC/25B2, U+25B8/25B6 right
+// triangles -> U+25BA, U+2630 hamburger -> U+2261 triple bar. All are 3-byte
+// UTF-8 sequences starting 0xE2, so text without that byte passes through
+// untouched.
+std::string SubstituteHtmlIconGlyphs(std::string text) {
+    if (text.find('\xE2') == std::string::npos) return text;
+    static constexpr std::pair<const char *, const char *> kMap[] = {
+        {"\xE2\x96\xBE", "\xE2\x96\xBC"},  // ▾ -> ▼
+        {"\xE2\x96\xB4", "\xE2\x96\xB2"},  // ▴ -> ▲
+        {"\xE2\x96\xB8", "\xE2\x96\xBA"},  // ▸ -> ►
+        {"\xE2\x96\xB6", "\xE2\x96\xBA"},  // ▶ -> ►
+        {"\xE2\x98\xB0", "\xE2\x89\xA1"},  // ☰ -> ≡
+        {"\xE2\x97\x89", "\xE2\x97\x8F"},  // ◉ (fisheye, the Learn icon) -> ●
+        {"\xE2\x9C\x95", "\xC3\x97"},      // ✕ (close button) -> × multiplication sign
+    };
+    for (const auto &[from, to] : kMap) {
+        const size_t to_len = std::strlen(to);
+        size_t pos = 0;
+        while ((pos = text.find(from, pos)) != std::string::npos) {
+            text.replace(pos, 3, to);
+            pos += to_len;
+        }
+    }
+    return text;
+}
+
+// Whether a codepoint should render from the emoji font rather than the
+// Liberation text faces (which have no glyphs there): the emoji planes plus
+// the misc-symbols/dingbats blocks. Geometric shapes (25xx) stay text -- the
+// nav carets live there and Liberation covers the ones we substitute to.
+bool IsEmojiCodepoint(long cp) {
+    return cp >= 0x1F000 || (cp >= 0x2600 && cp <= 0x27BF);
+}
+
+void HtmlCollectTextWords(const std::string &raw_text, const ComputedStyle &style, const HtmlLayoutCtx &ctx,
                            std::vector<HtmlPendingWord> &out) {
+    std::string text = SubstituteHtmlIconGlyphs(raw_text);
+    // text-transform (inherited; ASCII-only case mapping -- enough for the
+    // "CONTENTS"/"ON THIS PAGE" header idiom this exists for).
+    switch (style.text_transform) {
+        case ComputedStyle::TextTransform::Upper:
+            for (char &c : text) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            break;
+        case ComputedStyle::TextTransform::Lower:
+            for (char &c : text)
+                if (static_cast<unsigned char>(c) < 0x80) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            break;
+        case ComputedStyle::TextTransform::Capitalize: {
+            bool at_word_start = true;
+            for (char &c : text) {
+                if (std::isalpha(static_cast<unsigned char>(c))) {
+                    if (at_word_start) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                    at_word_start = false;
+                } else {
+                    at_word_start = std::isspace(static_cast<unsigned char>(c)) != 0;
+                }
+            }
+            break;
+        }
+        case ComputedStyle::TextTransform::None: break;
+    }
     float fs = ctx.base_font_size * style.font_scale;
     gfx::Color color = HtmlResolveColor(style, ctx);
     size_t i = 0, n = text.size();
+    bool first_word_of_node = true;
     while (i < n) {
         while (i < n && std::isspace(static_cast<unsigned char>(text[i]))) i++;
         size_t start = i;
         while (i < n && !std::isspace(static_cast<unsigned char>(text[i]))) i++;
         if (i > start) {
             HtmlPendingWord word;
+            // Glue across the element boundary when neither side had
+            // whitespace ("num<b>b</b>er" reads as one word) -- see
+            // HtmlPendingWord::glue_prev.
+            word.glue_prev = first_word_of_node && start == 0 && !out.empty() && !out.back().trailing_space &&
+                             !out.back().is_image && !out.back().is_math && out.back().text != "\n";
+            first_word_of_node = false;
             word.text = text.substr(start, i - start);
             word.font_size = fs;
             word.color = color;
@@ -37050,18 +37200,71 @@ void HtmlCollectTextWords(const std::string &text, const ComputedStyle &style, c
             word.underline = style.underline;
             word.strikethrough = style.strikethrough;
             word.font = &HtmlFontFor(style);
-            word.letter_spacing = ResolveCssLength(style.letter_spacing, fs, ctx.layout_width);
+            word.letter_spacing = ResolveCssLength(style.letter_spacing, fs, ctx.layout_width, ctx.base_font_size);
             word.line_height = style.line_height_multiplier > 0.0f
                                    ? style.line_height_multiplier * fs
                                    : (style.line_height_length.set
-                                          ? ResolveCssLength(style.line_height_length, fs, ctx.layout_width)
+                                          ? ResolveCssLength(style.line_height_length, fs, ctx.layout_width, ctx.base_font_size)
                                           : HtmlLineHeight(fs));
             word.no_wrap = style.white_space == HtmlWhiteSpace::NoWrap;
             word.link_href = style.link_href;
             word.link_node = style.link_node;
-            out.push_back(std::move(word));
+            // Emoji render from g_emoji_font (Liberation has no glyphs
+            // there): split the token into text/emoji segments, each its own
+            // word with the right font. U+FE0F variation selectors are
+            // dropped (they'd draw as a stray box). The common all-text case
+            // takes the single-push fast path.
+            bool has_emoji = false;
+            for (size_t b = 0; b < word.text.size();) {
+                unsigned char lead = static_cast<unsigned char>(word.text[b]);
+                size_t len = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+                if (len >= 3 && b + len <= word.text.size()) {
+                    long cp = lead & (len == 3 ? 0x0F : 0x07);
+                    for (size_t k = 1; k < len; ++k) cp = (cp << 6) | (static_cast<unsigned char>(word.text[b + k]) & 0x3F);
+                    if (IsEmojiCodepoint(cp) || cp == 0xFE0F) { has_emoji = true; break; }
+                }
+                b += len;
+            }
+            if (!has_emoji) {
+                out.push_back(std::move(word));
+            } else {
+                std::string segment;
+                bool segment_emoji = false;
+                bool first_piece = true;
+                auto flush_segment = [&]() {
+                    if (segment.empty()) return;
+                    HtmlPendingWord piece = word;
+                    piece.text = segment;
+                    if (segment_emoji) piece.font = &g_emoji_font;
+                    if (!first_piece) piece.glue_prev = true;  // intra-word split: keep the pieces attached
+                    first_piece = false;
+                    out.push_back(std::move(piece));
+                    segment.clear();
+                };
+                for (size_t b = 0; b < word.text.size();) {
+                    unsigned char lead = static_cast<unsigned char>(word.text[b]);
+                    size_t len = lead < 0x80 ? 1 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : 4;
+                    len = std::min(len, word.text.size() - b);
+                    long cp = 0;
+                    if (len == 1) cp = lead;
+                    else {
+                        cp = lead & (len == 2 ? 0x1F : len == 3 ? 0x0F : 0x07);
+                        for (size_t k = 1; k < len; ++k) cp = (cp << 6) | (static_cast<unsigned char>(word.text[b + k]) & 0x3F);
+                    }
+                    if (cp == 0xFE0F) { b += len; continue; }
+                    bool emoji = IsEmojiCodepoint(cp);
+                    if (emoji != segment_emoji) { flush_segment(); segment_emoji = emoji; }
+                    segment.append(word.text, b, len);
+                    b += len;
+                }
+                flush_segment();
+            }
         }
     }
+    // Whether this node's text ended in whitespace decides if the NEXT
+    // node's first word may glue to ours; a whitespace-only node (no words
+    // pushed) still separates its neighbors this way.
+    if (!out.empty() && n > 0 && std::isspace(static_cast<unsigned char>(text[n - 1]))) out.back().trailing_space = true;
 }
 
 void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out);
@@ -37163,7 +37366,10 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
                 double v = std::strtod(it->second.c_str(), &end);
                 return end != it->second.c_str() ? static_cast<float>(v) : 0;
             };
-            float want_w = attr_px("width"), want_h = attr_px("height");
+            // width/height attributes are CSS pixels in a browser, so they
+            // follow the same rem_px/16 scale as px lengths (ResolveCssLength).
+            const float attr_scale = ctx.base_font_size / 16.0f;
+            float want_w = attr_px("width") * attr_scale, want_h = attr_px("height") * attr_scale;
             float w, h;
             if (want_w > 0 && want_h > 0) {
                 w = want_w;
@@ -37215,15 +37421,28 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
     }
     if (c->tag == "button") {
         std::string label; HtmlCollectRawText(c, label);
-        // A button with no text label of its own (its glyph/content comes
-        // only from CSS ::before/::after or a background image, neither of
-        // which this renderer supports) would draw as a bare "[  ]" box --
-        // visual noise, most often a decorative icon/toggle control (e.g. a
-        // nav-menu collapse caret). Draw nothing for it rather than an empty
-        // bracket pair; a button that actually has a label still gets one.
+        label = SubstituteHtmlIconGlyphs(std::move(label));  // a "✕" close button must not render "[ ? ]"
         bool has_text = label.find_first_not_of(" \t\r\n") != std::string::npos;
-        if (has_text)
-            out.push_back({"[ " + label + " ]", ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), true, false, false, false});
+        // An icon-only control (no text of its own; its glyph comes from CSS
+        // ::before/::after generated content -- the classic nav collapse
+        // caret) renders that glyph bare, with no bracket frame: it must be
+        // visible and clickable but reads as an icon, not a form button.
+        if (!has_text) {
+            std::string glyph = c->style.content_before + c->style.content_after;
+            if (!glyph.empty()) {
+                HtmlPendingWord gen;
+                gen.text = SubstituteHtmlIconGlyphs(std::move(glyph));
+                gen.font_size = ctx.base_font_size * c->style.font_scale;
+                gen.color = HtmlResolveColor(c->style, ctx);
+                gen.font = &HtmlFontFor(c->style);
+                out.push_back(std::move(gen));
+            }
+            // Otherwise: a button with neither text nor generated content
+            // (decorative background-image control) still draws nothing --
+            // an empty "[  ]" box would be visual noise.
+            return;
+        }
+        out.push_back({"[ " + label + " ]", ctx.base_font_size * c->style.font_scale, HtmlResolveColor(c->style, ctx), true, false, false, false});
         return;
     }
     if (c->tag == "textarea") {
@@ -37270,7 +37489,41 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
         out.push_back(std::move(word));
         return;
     }
+    // An empty inline element with an explicit CSS width is a spacer (the
+    // `.nav-toggle-spacer` alignment idiom): draws nothing, but must advance
+    // the line by its width or the labels after it lose their alignment.
+    bool has_content_child = false;
+    for (auto &gc : c->children) {
+        if (gc->type == DomNodeType::Element ||
+            (gc->type == DomNodeType::Text && gc->text.find_first_not_of(" \t\r\n") != std::string::npos)) {
+            has_content_child = true;
+            break;
+        }
+    }
+    if (!has_content_child && c->style.width.set && !c->style.width.auto_value &&
+        c->style.content_before.empty() && c->style.content_after.empty()) {
+        HtmlPendingWord spacer;
+        spacer.font_size = ctx.base_font_size * c->style.font_scale;
+        spacer.fixed_advance =
+            ResolveCssLength(c->style.width, spacer.font_size, ctx.layout_width, ctx.base_font_size);
+        if (spacer.fixed_advance > 0.0f) out.push_back(std::move(spacer));
+        return;
+    }
+    // CSS generated content brackets the element's real children in flow --
+    // this is what makes the nav-tree's `::before` collapse carets exist.
+    auto push_generated = [&](const std::string &text) {
+        HtmlPendingWord gen;
+        gen.text = SubstituteHtmlIconGlyphs(text);
+        gen.font_size = ctx.base_font_size * c->style.font_scale;
+        gen.color = HtmlResolveColor(c->style, ctx);
+        gen.bold = c->style.bold;
+        gen.italic = c->style.italic;
+        gen.font = &HtmlFontFor(c->style);
+        out.push_back(std::move(gen));
+    };
+    if (!c->style.content_before.empty()) push_generated(c->style.content_before);
     for (auto &gc : c->children) HtmlCollectInlineChild(gc.get(), c->style, ctx, out);
+    if (!c->style.content_after.empty()) push_generated(c->style.content_after);
 }
 
 // Per-line cursor state HtmlLayoutPreNode (below) mutates as it walks a
@@ -37454,16 +37707,18 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     HtmlLayoutCtx narrowed_ctx = ctx;
     bool narrowed = false;
     if (node->style.has_max_width && node->style.margin_h_auto) {
-        // Resolve max-width as a real length: a `px` value is those pixels
-        // exactly (NOT divided by 16 and re-scaled by the font, which collapsed
-        // an `860px` column to ~590px at mep's font size and made it grow/shrink
-        // with zoom); `em` scales with this element's font; `%` is of the
-        // available width. max_width_em stays the em fallback for a value the
-        // CssLength path didn't capture.
+        // Resolve max-width as a real length: a `px` value scales by the root
+        // font / 16 like every other px length (ResolveCssLength), so an
+        // `860px` readable column holds the same ~53 rem-widths of text it
+        // does in a real browser -- not the raw 860 device pixels, which at
+        // mep's larger-than-16px font wrapped far too early; `em` scales with
+        // this element's font; `%` is of the available width. max_width_em
+        // stays the em fallback for a value the CssLength path didn't capture.
         float avail = std::max(0.0f, ctx.layout_width - indent_x);
         float font_px = ctx.base_font_size * node->style.font_scale;
-        float max_w_px = node->style.max_width.set ? ResolveCssLength(node->style.max_width, font_px, avail)
-                                                   : font_px * node->style.max_width_em;
+        float max_w_px = node->style.max_width.set
+                             ? ResolveCssLength(node->style.max_width, font_px, avail, ctx.base_font_size)
+                             : font_px * node->style.max_width_em;
         if (max_w_px < avail) {
             indent_x += (avail - max_w_px) / 2.0f;
             // ctx.layout_width is the page's absolute right-edge x
@@ -37487,10 +37742,10 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     const ComputedStyle &cs = node->style;
     float font_size = eff_ctx.base_font_size * cs.font_scale;
     float available_w = std::max(0.0f, eff_ctx.layout_width - indent_x);
-    float margin_l = ResolveCssLength(cs.margin.left, font_size, available_w);
-    float margin_r = ResolveCssLength(cs.margin.right, font_size, available_w);
-    float margin_t = ResolveCssLength(cs.margin.top, font_size, available_w);
-    float margin_b = ResolveCssLength(cs.margin.bottom, font_size, available_w);
+    float margin_l = ResolveCssLength(cs.margin.left, font_size, available_w, eff_ctx.base_font_size);
+    float margin_r = ResolveCssLength(cs.margin.right, font_size, available_w, eff_ctx.base_font_size);
+    float margin_t = ResolveCssLength(cs.margin.top, font_size, available_w, eff_ctx.base_font_size);
+    float margin_b = ResolveCssLength(cs.margin.bottom, font_size, available_w, eff_ctx.base_font_size);
     // The UA line-based margin (margin_top_lines/bottom_lines) is a DEFAULT, not
     // a floor: if the page set that edge's margin, its value wins even when it's
     // smaller (or zero) -- exactly as CSS overrides a UA default. Using max()
@@ -37498,17 +37753,23 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     // tight/zero heading margins and blow out the vertical gaps.
     const float eff_margin_t = cs.margin.top.set ? margin_t : ua_margin_t;
     const float eff_margin_b = cs.margin.bottom.set ? margin_b : ua_margin_b;
-    float pad_l = ResolveCssLength(cs.padding.left, font_size, available_w);
-    float pad_r = ResolveCssLength(cs.padding.right, font_size, available_w);
-    float pad_t = ResolveCssLength(cs.padding.top, font_size, available_w);
-    float pad_b = ResolveCssLength(cs.padding.bottom, font_size, available_w);
-    float border_l = cs.border_left.present ? cs.border_left.width_px : 0.0f;
-    float border_r = cs.border_right.present ? cs.border_right.width_px : 0.0f;
-    float border_t = cs.border_top.present ? cs.border_top.width_px : 0.0f;
-    float border_b = cs.border_bottom.present ? cs.border_bottom.width_px : 0.0f;
-    float fixed_w = ResolveCssLength(cs.width, font_size, available_w);
-    float min_w = ResolveCssLength(cs.min_width, font_size, available_w);
-    float max_w = cs.max_width.set ? ResolveCssLength(cs.max_width, font_size, available_w) : available_w;
+    float pad_l = ResolveCssLength(cs.padding.left, font_size, available_w, eff_ctx.base_font_size);
+    float pad_r = ResolveCssLength(cs.padding.right, font_size, available_w, eff_ctx.base_font_size);
+    float pad_t = ResolveCssLength(cs.padding.top, font_size, available_w, eff_ctx.base_font_size);
+    float pad_b = ResolveCssLength(cs.padding.bottom, font_size, available_w, eff_ctx.base_font_size);
+    // Border widths are authored px too, so they follow the same rem_px/16
+    // scale as every other px length (a 1px hairline stays >= 1px).
+    const float border_px_scale = eff_ctx.base_font_size / 16.0f;
+    auto border_w_of = [&](const ComputedStyle::BorderEdge &e) {
+        return e.present ? std::max(1.0f, e.width_px * border_px_scale) : 0.0f;
+    };
+    float border_l = border_w_of(cs.border_left);
+    float border_r = border_w_of(cs.border_right);
+    float border_t = border_w_of(cs.border_top);
+    float border_b = border_w_of(cs.border_bottom);
+    float fixed_w = ResolveCssLength(cs.width, font_size, available_w, eff_ctx.base_font_size);
+    float min_w = ResolveCssLength(cs.min_width, font_size, available_w, eff_ctx.base_font_size);
+    float max_w = cs.max_width.set ? ResolveCssLength(cs.max_width, font_size, available_w, eff_ctx.base_font_size) : available_w;
     float extras_w = pad_l + border_l + border_r + pad_r;
     float border_w = cs.width.set ? (cs.border_box ? fixed_w : fixed_w + extras_w) : available_w - margin_l - margin_r;
     border_w = std::max(border_w, cs.border_box ? min_w : min_w + extras_w);
@@ -37540,15 +37801,31 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     // height, so it's filled in by finish_bg() at every one of this
     // function's own return points instead of at push time.
     float block_top = cursor_y;
-    size_t bg_index = node->style.has_bg ? out.backgrounds.size() : static_cast<size_t>(-1);
+    const float radius_px = ResolveCssLength(cs.border_radius, font_size, available_w, eff_ctx.base_font_size);
+    const float shadow_blur_px =
+        cs.has_shadow ? std::max(4.0f, ResolveCssLength(cs.shadow_blur, font_size, available_w, eff_ctx.base_font_size))
+                      : 0.0f;
+    // Table cells push neither border nor background here: the table pass
+    // (HtmlLayoutTable) draws the shared grid AND full-cell-height
+    // backgrounds (a th band / zebra stripe must fill the ROW height, which
+    // only the table pass knows).
+    const bool is_table_cell = node->tag == "td" || node->tag == "th";
+    size_t bg_index = node->style.has_bg && !is_table_cell ? out.backgrounds.size() : static_cast<size_t>(-1);
     if (bg_index != static_cast<size_t>(-1)) {
         // Backgrounds paint the border box (not the content box), so padding
         // is colored but margins stay transparent, matching CSS's normal
         // background-clip:border-box default.
-        float bg_x = border_x;
-        float bg_w = border_w;
-        out.backgrounds.push_back(
-            {bg_x, block_top, bg_w, 0.0f, gfx::Color{node->style.bg_r, node->style.bg_g, node->style.bg_b, 255}});
+        HtmlBgRect bg;
+        bg.x = border_x;
+        bg.y = block_top;
+        bg.w = border_w;
+        bg.color = gfx::Color{node->style.bg_r, node->style.bg_g, node->style.bg_b,
+                              static_cast<unsigned char>(static_cast<float>(cs.bg_a) * cs.opacity)};
+        bg.radius = radius_px;
+        bg.owner = node;
+        bg.shadow_blur = shadow_blur_px;
+        if (shadow_blur_px > 0.0f) bg.shadow = gfx::Color{cs.shadow_r, cs.shadow_g, cs.shadow_b, cs.shadow_a};
+        out.backgrounds.push_back(bg);
     }
     /**
      * @brief Fills in the pushed background box's height (from `block_top` to the current
@@ -37558,28 +37835,34 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     auto finish_bg = [&]() {
         if (bg_index != static_cast<size_t>(-1)) out.backgrounds[bg_index].h = cursor_y - block_top;
     };
-    bool has_border = cs.border_top.present || cs.border_right.present || cs.border_bottom.present ||
-                       cs.border_left.present;
+    // Table cells never push their own border box: the table pass
+    // (HtmlLayoutTable) draws the full grid for them, and stacking the cell's
+    // CSS `td { border: 1px }` rect on top of it doubled every rule.
+    bool has_border = (cs.border_top.present || cs.border_right.present || cs.border_bottom.present ||
+                       cs.border_left.present) &&
+                      node->tag != "td" && node->tag != "th";
     size_t border_index = has_border ? out.borders.size() : static_cast<size_t>(-1);
     if (border_index != static_cast<size_t>(-1)) {
         HtmlBorderRect br;
         br.x = border_x;
         br.y = block_top;
         br.w = border_w;
+        br.radius = radius_px;
+        br.owner = node;
         if (cs.border_top.present) {
-            br.top_w = cs.border_top.width_px;
+            br.top_w = border_t;
             br.top_c = gfx::Color{cs.border_top.r, cs.border_top.g, cs.border_top.b, 255};
         }
         if (cs.border_right.present) {
-            br.right_w = cs.border_right.width_px;
+            br.right_w = border_r;
             br.right_c = gfx::Color{cs.border_right.r, cs.border_right.g, cs.border_right.b, 255};
         }
         if (cs.border_bottom.present) {
-            br.bottom_w = cs.border_bottom.width_px;
+            br.bottom_w = border_b;
             br.bottom_c = gfx::Color{cs.border_bottom.r, cs.border_bottom.g, cs.border_bottom.b, 255};
         }
         if (cs.border_left.present) {
-            br.left_w = cs.border_left.width_px;
+            br.left_w = border_l;
             br.left_c = gfx::Color{cs.border_left.r, cs.border_left.g, cs.border_left.b, 255};
         }
         out.borders.push_back(br);
@@ -37591,6 +37874,13 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
      */
     auto finish_border = [&]() {
         if (border_index != static_cast<size_t>(-1)) out.borders[border_index].h = cursor_y - block_top;
+        // Every return path runs through here, so it doubles as the geometry
+        // stamp: the node's laid-out border box in page-content coordinates,
+        // what getBoundingClientRect/scrollIntoView read (DomNode::layout_*).
+        node->layout_x = border_x;
+        node->layout_y = block_top;
+        node->layout_w = border_w;
+        node->layout_h = cursor_y - block_top;
     };
 
     cursor_y += border_t + pad_t;
@@ -37598,9 +37888,9 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     const float content_top = cursor_y;
     auto enforce_height = [&]() {
         float content_h = cursor_y - content_top;
-        float requested = ResolveCssLength(cs.height, font_size, available_w);
-        float min_h = ResolveCssLength(cs.min_height, font_size, available_w);
-        float max_h = cs.max_height.set ? ResolveCssLength(cs.max_height, font_size, available_w) : content_h;
+        float requested = ResolveCssLength(cs.height, font_size, available_w, eff_ctx.base_font_size);
+        float min_h = ResolveCssLength(cs.min_height, font_size, available_w, eff_ctx.base_font_size);
+        float max_h = cs.max_height.set ? ResolveCssLength(cs.max_height, font_size, available_w, eff_ctx.base_font_size) : content_h;
         if (cs.height.set && cs.border_box) requested = std::max(0.0f, requested - border_t - pad_t - pad_b - border_b);
         float target = cs.height.set ? requested : content_h;
         target = std::max(target, min_h);
@@ -37654,7 +37944,7 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
         float natural_w = static_cast<float>(node->canvas_width);
         float natural_h = static_cast<float>(node->canvas_height);
         float canvas_w = cs.width.set ? std::max(1.0f, box_ctx.layout_width - content_x) : natural_w;
-        float canvas_h = cs.height.set ? std::max(1.0f, ResolveCssLength(cs.height, font_size, available_w)) : natural_h;
+        float canvas_h = cs.height.set ? std::max(1.0f, ResolveCssLength(cs.height, font_size, available_w, eff_ctx.base_font_size)) : natural_h;
         // Keep an unstyled canvas within the page instead of letting its
         // intrinsic width create horizontal overflow in the preview pane.
         if (!cs.width.set && canvas_w > box_ctx.layout_width - content_x) {
@@ -37675,8 +37965,8 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
         // aspect (SvgIntrinsicSize), else HTML's 300x150 replaced default.
         float intrinsic_w = 300.0f, intrinsic_h = 150.0f;
         SvgIntrinsicSize(*node, intrinsic_w, intrinsic_h);
-        float svg_w = cs.width.set ? std::max(1.0f, ResolveCssLength(cs.width, font_size, available_w)) : std::max(1.0f, intrinsic_w);
-        float svg_h = cs.height.set ? std::max(1.0f, ResolveCssLength(cs.height, font_size, available_w)) : std::max(1.0f, intrinsic_h);
+        float svg_w = cs.width.set ? std::max(1.0f, ResolveCssLength(cs.width, font_size, available_w, eff_ctx.base_font_size)) : std::max(1.0f, intrinsic_w);
+        float svg_h = cs.height.set ? std::max(1.0f, ResolveCssLength(cs.height, font_size, available_w, eff_ctx.base_font_size)) : std::max(1.0f, intrinsic_h);
         if (cs.width.set && !cs.height.set && intrinsic_w > 0.0f) svg_h = svg_w * intrinsic_h / intrinsic_w;
         if (!cs.width.set && svg_w > box_ctx.layout_width - content_x) { float scale = (box_ctx.layout_width - content_x) / svg_w; svg_w *= scale; svg_h *= scale; }
         out.svgs.push_back({content_x, cursor_y, svg_w, svg_h, node}); cursor_y += svg_h;
@@ -37704,7 +37994,7 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
         std::vector<HtmlPendingWord> words;
         words.push_back({label, font_size, HtmlResolveColor(node->style, box_ctx), false, false, false, false});
         cursor_y = HtmlFlushWords(words, content_x, cursor_y, box_ctx, out);
-        const float requested_h = cs.height.set ? ResolveCssLength(cs.height, font_size, available_w) : 150.0f;
+        const float requested_h = cs.height.set ? ResolveCssLength(cs.height, font_size, available_w, eff_ctx.base_font_size) : 150.0f;
         cursor_y += std::max(0.0f, requested_h - line_h);
         enforce_height();
         cursor_y += tail_inset;
@@ -37727,6 +38017,19 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
         words.push_back({marker, box_ctx.base_font_size * node->style.font_scale, HtmlResolveColor(node->style, box_ctx),
                           node->style.bold, node->style.italic, false, false});
     }
+    // This block's own ::before generated content leads its inline flow (the
+    // ::after counterpart is pushed just before the final flush below).
+    if (!node->style.content_before.empty()) {
+        HtmlPendingWord gen;
+        gen.text = SubstituteHtmlIconGlyphs(node->style.content_before);
+        gen.font_size = box_ctx.base_font_size * node->style.font_scale;
+        gen.color = HtmlResolveColor(node->style, box_ctx);
+        gen.bold = node->style.bold;
+        gen.italic = node->style.italic;
+        gen.font = &HtmlFontFor(node->style);
+        gen.node = node;
+        words.push_back(std::move(gen));
+    }
     /**
      * @brief Lays out any words buffered so far (via HtmlFlushWords) at `my_indent`, advances
      * `cursor_y` past them, and clears the buffer. No-op if nothing is buffered.
@@ -37738,6 +38041,54 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     };
 
     const auto &rendered_children = node->shadow_root ? node->shadow_root->children : node->children;
+
+    // CSS multi-column (`columns: N`): each child block is laid out WHOLE
+    // into the currently-shortest column (which is also what the site's
+    // break-inside:avoid wants -- a TOC section never splits mid-list).
+    // Children get absolute coordinates directly, so their sub-layouts
+    // splice straight into `out` with no translation pass.
+    if (node->style.column_count > 1) {
+        const int ncols = node->style.column_count;
+        const float gap = node->style.column_gap.set
+                              ? ResolveCssLength(node->style.column_gap, font_size, available_w, eff_ctx.base_font_size)
+                              : font_size;  // CSS's `column-gap: normal` is 1em
+        const float total_w = std::max(0.0f, box_ctx.layout_width - content_x);
+        const float col_w = std::max(50.0f, (total_w - gap * static_cast<float>(ncols - 1)) / static_cast<float>(ncols));
+        std::vector<float> col_h(static_cast<size_t>(ncols), 0.0f);
+        for (auto &c : rendered_children) {
+            if (c->type != DomNodeType::Element || c->style.display_none) continue;
+            int best = 0;
+            for (int k = 1; k < ncols; ++k)
+                if (col_h[static_cast<size_t>(k)] < col_h[static_cast<size_t>(best)]) best = k;
+            float col_x = content_x + static_cast<float>(best) * (col_w + gap);
+            HtmlLayoutCtx col_ctx = box_ctx;
+            col_ctx.layout_width = col_x + col_w;  // absolute right edge, per this renderer's convention
+            HtmlLayout tmp;
+            float cy = cursor_y + col_h[static_cast<size_t>(best)];
+            HtmlLayoutBlock(c.get(), col_x, cy, col_ctx, tmp);
+            cy += tmp.pending_margin_bottom;
+            col_h[static_cast<size_t>(best)] = cy - cursor_y;
+            for (auto &r : tmp.runs) out.runs.push_back(std::move(r));
+            for (auto &r : tmp.rules) out.rules.push_back(std::move(r));
+            for (auto &r : tmp.images) out.images.push_back(std::move(r));
+            for (auto &r : tmp.math_runs) out.math_runs.push_back(std::move(r));
+            for (auto &r : tmp.canvases) out.canvases.push_back(std::move(r));
+            for (auto &r : tmp.svgs) out.svgs.push_back(std::move(r));
+            for (auto &r : tmp.backgrounds) out.backgrounds.push_back(std::move(r));
+            for (auto &r : tmp.borders) out.borders.push_back(std::move(r));
+            for (auto &r : tmp.fixed_layers) out.fixed_layers.push_back(std::move(r));
+        }
+        float tallest = 0.0f;
+        for (float v : col_h) tallest = std::max(tallest, v);
+        cursor_y += tallest;
+        enforce_height();
+        cursor_y += tail_inset;
+        finish_bg();
+        finish_border();
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, eff_margin_b);
+        return;
+    }
+
     for (auto &c : rendered_children) {
         // A closed <details> exposes only its <summary>; the state lives on
         // DomNode so Phase 11 can toggle exactly this branch on click.
@@ -37765,8 +38116,31 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
             flush_words();
             HtmlLayoutBlock(c.get(), my_indent, cursor_y, box_ctx, out);
         } else {
+            // Flex-row `gap`: the visual separation between flex items (which
+            // this renderer lays out as inline runs). Glued on both sides so
+            // the gap IS the spacing -- no stray word-space around it.
+            if (node->style.flex_container && !node->style.flex_column && node->style.column_gap.set &&
+                c->type == DomNodeType::Element && !words.empty()) {
+                HtmlPendingWord gap_word;
+                gap_word.font_size = font_size;
+                gap_word.fixed_advance = std::max(
+                    0.0f, ResolveCssLength(node->style.column_gap, font_size, available_w, eff_ctx.base_font_size));
+                gap_word.glue_prev = true;
+                if (gap_word.fixed_advance > 0.0f) words.push_back(std::move(gap_word));
+            }
             HtmlCollectInlineChild(c.get(), node->style, box_ctx, words);
         }
+    }
+    if (!node->style.content_after.empty()) {
+        HtmlPendingWord gen;
+        gen.text = SubstituteHtmlIconGlyphs(node->style.content_after);
+        gen.font_size = box_ctx.base_font_size * node->style.font_scale;
+        gen.color = HtmlResolveColor(node->style, box_ctx);
+        gen.bold = node->style.bold;
+        gen.italic = node->style.italic;
+        gen.font = &HtmlFontFor(node->style);
+        gen.node = node;
+        words.push_back(std::move(gen));
     }
     flush_words();
     enforce_height();
@@ -37799,10 +38173,15 @@ void LayoutFixedElement(DomNode *node, const HtmlLayoutCtx &ctx, HtmlLayout &roo
     // (computed from the laid-out content below). Laying auto content out at
     // the full viewport first just gives the widest line room not to wrap.
     float box_w;
-    if (!auto_w) box_w = std::clamp(ResolveCssLength(s.width, font, vw), 0.0f, vw);
+    if (!auto_w) box_w = std::clamp(ResolveCssLength(s.width, font, vw, font), 0.0f, vw);
     else if (left_set && right_set)
-        box_w = std::max(0.0f, vw - ResolveCssLength(s.pos_left, font, vw) - ResolveCssLength(s.pos_right, font, vw));
+        box_w = std::max(0.0f, vw - ResolveCssLength(s.pos_left, font, vw, font) - ResolveCssLength(s.pos_right, font, vw, font));
     else box_w = vw;
+    // A max-width bounds even an explicit width -- the mobile-drawer idiom is
+    // `width: 82vw; max-width: 300px`, whose panel must not track the pane
+    // past its cap.
+    if (s.max_width.set && !s.max_width.auto_value)
+        box_w = std::min(box_w, ResolveCssLength(s.max_width, font, vw, font));
 
     auto layer = std::make_shared<HtmlFixedLayer>();
     layer->content = std::make_shared<HtmlLayout>();
@@ -37821,9 +38200,9 @@ void LayoutFixedElement(DomNode *node, const HtmlLayoutCtx &ctx, HtmlLayout &roo
     // to content height too, which for a real nav overflows the viewport and is
     // clipped to it at paint time anyway -- the same full-height result.
     float box_h;
-    if (s.height.set && !s.height.auto_value) box_h = ResolveCssLength(s.height, font, vh);
+    if (s.height.set && !s.height.auto_value) box_h = ResolveCssLength(s.height, font, vh, font);
     else if (top_set && bottom_set)
-        box_h = std::max(0.0f, vh - ResolveCssLength(s.pos_top, font, vh) - ResolveCssLength(s.pos_bottom, font, vh));
+        box_h = std::max(0.0f, vh - ResolveCssLength(s.pos_top, font, vh, font) - ResolveCssLength(s.pos_bottom, font, vh, font));
     else box_h = content_h;
 
     // Shrink-to-fit an auto width (unless stretched between left+right): a
@@ -37840,6 +38219,12 @@ void LayoutFixedElement(DomNode *node, const HtmlLayoutCtx &ctx, HtmlLayout &roo
         for (const HtmlImageRun &im : layer->content->images) content_w = std::max(content_w, im.x + im.w);
         for (const HtmlCanvasRun &c : layer->content->canvases) content_w = std::max(content_w, c.x + c.w);
         for (const HtmlSvgRun &sv : layer->content->svgs) content_w = std::max(content_w, sv.x + sv.w);
+        // Runs start at pad_l (already inside content_w via r.x), but the
+        // box's own RIGHT padding/border is part of its width too -- without
+        // it a right-anchored button (`right: 1.25rem`) lands short-box too
+        // far right and its label clips at the pane edge.
+        content_w += ResolveCssLength(s.padding.right, font, vw, font) +
+                     (s.border_right.present ? s.border_right.width_px * (font / 16.0f) : 0.0f);
         box_w = std::clamp(content_w, 0.0f, vw);
     }
 
@@ -37874,23 +38259,77 @@ void LayoutFixedElement(DomNode *node, const HtmlLayoutCtx &ctx, HtmlLayout &roo
         }
     }
 
+    // Flex centering (`align-items`/`justify-content: center`) -- the icon-
+    // button idiom: a fixed 2.6rem box whose only content is a glyph. Measure
+    // the laid-out content's extents and shift every visible piece so it sits
+    // centered in the box; backgrounds/borders stay put (they ARE the box).
+    if ((s.align_items_center || s.justify_content_center) && !layer->content->runs.empty()) {
+        float min_x = std::numeric_limits<float>::max(), max_x = std::numeric_limits<float>::lowest();
+        float min_y = std::numeric_limits<float>::max(), max_y = std::numeric_limits<float>::lowest();
+        for (const HtmlRun &r : layer->content->runs) {
+            if (r.text.empty()) continue;
+            float rw = gfx::MeasureTextEx(r.font ? *r.font : g_font, r.text.c_str(), r.font_size, 0).x;
+            min_x = std::min(min_x, r.x);
+            max_x = std::max(max_x, r.x + rw);
+            min_y = std::min(min_y, r.y);
+            max_y = std::max(max_y, r.y + r.font_size);
+        }
+        if (min_x <= max_x) {
+            float dx = s.justify_content_center ? (box_w - (max_x - min_x)) / 2.0f - min_x : 0.0f;
+            float dy = s.align_items_center ? (box_h - (max_y - min_y)) / 2.0f - min_y : 0.0f;
+            if (dx != 0.0f || dy != 0.0f) {
+                for (HtmlRun &r : layer->content->runs) { r.x += dx; r.y += dy; }
+                for (HtmlImageRun &im : layer->content->images) { im.x += dx; im.y += dy; }
+                for (HtmlSvgRun &sv : layer->content->svgs) { sv.x += dx; sv.y += dy; }
+                for (HtmlMathRun &mr : layer->content->math_runs) { mr.x += dx; mr.y += dy; }
+                // Descendant boxes (a centered modal's own card background)
+                // move with their content; the fixed element's OWN full-box
+                // background stays put -- it IS the box being centered into.
+                for (HtmlBgRect &bg : layer->content->backgrounds)
+                    if (bg.owner != node) { bg.x += dx; bg.y += dy; }
+                for (HtmlBorderRect &br : layer->content->borders)
+                    if (br.owner != node) { br.x += dx; br.y += dy; }
+            }
+        }
+    }
+
     // Placement, now that the final width is known. Left wins, else
     // right-anchored, else flush left; same for top/bottom.
     float box_x = 0.0f;
-    if (left_set) box_x = ResolveCssLength(s.pos_left, font, vw);
-    else if (right_set) box_x = vw - ResolveCssLength(s.pos_right, font, vw) - box_w;
+    if (left_set) box_x = ResolveCssLength(s.pos_left, font, vw, font);
+    else if (right_set) box_x = vw - ResolveCssLength(s.pos_right, font, vw, font) - box_w;
     float box_y = 0.0f;
-    if (top_set) box_y = ResolveCssLength(s.pos_top, font, vh);
-    else if (bottom_set) box_y = vh - ResolveCssLength(s.pos_bottom, font, vh) - box_h;
+    if (top_set) box_y = ResolveCssLength(s.pos_top, font, vh, font);
+    else if (bottom_set) box_y = vh - ResolveCssLength(s.pos_bottom, font, vh, font) - box_h;
 
     // CSS transform: translate shifts the whole panel (its background, content,
     // and the wheel hit-rect all move with box_x/box_y). translate percentages
     // are relative to the element's own box -- translateX(-100%) = -box_w, which
     // slides an off-canvas drawer fully off the left edge; translateX(0) (set by
     // a `body.nav-open` rule after the re-cascade) brings it back on screen.
-    if (s.has_transform) {
-        box_x += ResolveCssLength(s.transform_x, font, box_w);
-        box_y += ResolveCssLength(s.transform_y, font, box_h);
+    if (s.has_transform || node->anim_translate_init) {
+        float target_tx = s.has_transform ? ResolveCssLength(s.transform_x, font, box_w, font) : 0.0f;
+        float tx = target_tx;
+        // `transition: transform` eases the panel toward its target instead
+        // of jumping -- the off-canvas drawer's slide. State lives on the
+        // node (anim_translate_x) so it survives the per-frame relayout; the
+        // first sighting snaps to the target so nothing flies in on load.
+        if (s.transition_transform_s > 0.0f) {
+            if (!node->anim_translate_init) {
+                node->anim_translate_x = target_tx;
+                node->anim_translate_init = true;
+            }
+            const float dt = gfx::GetFrameTime();
+            const float tau = std::max(0.03f, s.transition_transform_s / 3.0f);
+            node->anim_translate_x += (target_tx - node->anim_translate_x) * (1.0f - std::exp(-dt / tau));
+            if (std::fabs(target_tx - node->anim_translate_x) < 0.5f) node->anim_translate_x = target_tx;
+            tx = node->anim_translate_x;
+        } else {
+            node->anim_translate_x = target_tx;
+            node->anim_translate_init = true;
+        }
+        box_x += tx;
+        box_y += ResolveCssLength(s.transform_y, font, box_h, font);
     }
 
     layer->x = box_x;
@@ -37900,9 +38339,15 @@ void LayoutFixedElement(DomNode *node, const HtmlLayoutCtx &ctx, HtmlLayout &roo
     layer->content_h = content_h;
     layer->node = node;
     layer->clip = s.overflow_clip;
+    layer->radius = ResolveCssLength(s.border_radius, font, box_w, font);
+    if (s.has_shadow) {
+        layer->shadow_blur = std::max(4.0f, ResolveCssLength(s.shadow_blur, font, box_w, font));
+        layer->shadow = gfx::Color{s.shadow_r, s.shadow_g, s.shadow_b, s.shadow_a};
+    }
     if (s.has_bg) {
         layer->has_bg = true;
-        layer->bg = gfx::Color{s.bg_r, s.bg_g, s.bg_b, 255};
+        layer->bg = gfx::Color{s.bg_r, s.bg_g, s.bg_b,
+                               static_cast<unsigned char>(static_cast<float>(s.bg_a) * s.opacity)};
     }
     root_out.fixed_layers.push_back(std::move(layer));
 }
@@ -37949,11 +38394,24 @@ void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const Htm
         }
     }
     if (columns == 0) return;
+    // A cell's padding comes from its own CSS (`th, td { padding: ... }`),
+    // falling back to the legacy 6/4px when unstyled -- honoring it is most
+    // of what separates a cramped grid from a browser's roomy table.
+    auto cell_padding = [&](const DomNode *cell, float &l, float &r, float &t, float &b) {
+        const ComputedStyle &cst = cell->style;
+        const float fs = ctx.base_font_size * cst.font_scale;
+        l = cst.padding.left.set ? ResolveCssLength(cst.padding.left, fs, 0.0f, ctx.base_font_size) : 6.0f;
+        r = cst.padding.right.set ? ResolveCssLength(cst.padding.right, fs, 0.0f, ctx.base_font_size) : 6.0f;
+        t = cst.padding.top.set ? ResolveCssLength(cst.padding.top, fs, 0.0f, ctx.base_font_size) : 4.0f;
+        b = cst.padding.bottom.set ? ResolveCssLength(cst.padding.bottom, fs, 0.0f, ctx.base_font_size) : 4.0f;
+    };
     std::vector<float> widths(columns, 24.0f);
     for (const TableCell &cell : cells) {
         std::string text; HtmlCollectRawText(cell.node, text);
         const float font_size = ctx.base_font_size * cell.node->style.font_scale;
-        const float natural = gfx::MeasureTextEx(HtmlFontFor(cell.node->style), text.c_str(), font_size, 0).x + 12.0f;
+        float pl, pr, pt, pb;
+        cell_padding(cell.node, pl, pr, pt, pb);
+        const float natural = gfx::MeasureTextEx(HtmlFontFor(cell.node->style), text.c_str(), font_size, 0).x + pl + pr;
         const float each = natural / static_cast<float>(cell.colspan);
         for (size_t i = 0; i < cell.colspan; ++i) widths[cell.column + i] = std::max(widths[cell.column + i], each);
     }
@@ -37982,14 +38440,17 @@ void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const Htm
     for (const TableCell &cell : cells) {
         float cell_w = 0.0f;
         for (size_t i = 0; i < cell.colspan; ++i) cell_w += widths[cell.column + i];
-        // Same geometry as the real pass below: content is indented 6px and
-        // wraps at the cell's right edge, so the probe wraps identically.
+        float ppl, ppr, ppt, ppb;
+        cell_padding(cell.node, ppl, ppr, ppt, ppb);
+        // Same geometry as the real pass below: content indented by the left
+        // padding, wrapping short of the right one, so the probe wraps
+        // identically.
         HtmlLayoutCtx probe_ctx = ctx;
-        probe_ctx.layout_width = cell_w;
+        probe_ctx.layout_width = std::max(ppl + 1.0f, cell_w - ppr);
         HtmlLayout scratch;
         float probe_y = 0.0f;
-        HtmlLayoutBlock(cell.node, 6.0f, probe_y, probe_ctx, scratch);
-        const float wanted = probe_y + 8.0f;  // the 4px above the content, and as much below
+        HtmlLayoutBlock(cell.node, ppl, probe_y, probe_ctx, scratch);
+        const float wanted = probe_y + ppt + ppb;
         float have = 0.0f;
         for (size_t rr = cell.row; rr < cell.row + cell.rowspan; ++rr) have += row_heights[rr];
         if (wanted > have) row_heights[cell.row + cell.rowspan - 1] += wanted - have;
@@ -38003,10 +38464,37 @@ void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const Htm
         for (size_t i = 0; i < cell.column; ++i) x += widths[i];
         for (size_t i = 0; i < cell.colspan; ++i) cell_w += widths[cell.column + i];
         for (size_t rr = cell.row; rr < cell.row + cell.rowspan; ++rr) cell_h += row_heights[rr];
-        HtmlLayoutCtx cell_ctx = ctx; cell_ctx.layout_width = x + cell_w;
-        float cell_y = row_tops[cell.row] + 4.0f;
-        HtmlLayoutBlock(cell.node, x + 6.0f, cell_y, cell_ctx, out);
-        out.borders.push_back({x, row_tops[cell.row], cell_w, cell_h, 1, 1, 1, 1, border, border, border, border});
+        float cpl, cpr, cpt, cpb;
+        cell_padding(cell.node, cpl, cpr, cpt, cpb);
+        // The cell's background fills its WHOLE box (header band, zebra
+        // stripe) -- the generic block path skips td/th bgs since only this
+        // pass knows the full row height.
+        const ComputedStyle &cst = cell.node->style;
+        if (cst.has_bg) {
+            HtmlBgRect cell_bg;
+            cell_bg.x = x;
+            cell_bg.y = row_tops[cell.row];
+            cell_bg.w = cell_w;
+            cell_bg.h = cell_h;
+            cell_bg.color = gfx::Color{cst.bg_r, cst.bg_g, cst.bg_b,
+                                       static_cast<unsigned char>(static_cast<float>(cst.bg_a) * cst.opacity)};
+            cell_bg.owner = cell.node;
+            out.backgrounds.push_back(cell_bg);
+        }
+        HtmlLayoutCtx cell_ctx = ctx; cell_ctx.layout_width = std::max(x + cpl + 1.0f, x + cell_w - cpr);
+        float cell_y = row_tops[cell.row] + cpt;
+        HtmlLayoutBlock(cell.node, x + cpl, cell_y, cell_ctx, out);
+        // border-collapse: adjacent cells share ONE grid line instead of each
+        // drawing all four edges (which doubles every interior rule). Each
+        // cell keeps its top+left; the last column/row close the outer frame.
+        if (table->style.border_collapse) {
+            const float right_w = cell.column + cell.colspan >= columns ? 1.0f : 0.0f;
+            const float bottom_w = cell.row + cell.rowspan >= row_count ? 1.0f : 0.0f;
+            out.borders.push_back(
+                {x, row_tops[cell.row], cell_w, cell_h, 1, right_w, bottom_w, 1, border, border, border, border});
+        } else {
+            out.borders.push_back({x, row_tops[cell.row], cell_w, cell_h, 1, 1, 1, 1, border, border, border, border});
+        }
     }
     cursor_y = table_bottom;
 }
@@ -38081,6 +38569,10 @@ void SyncHtmlMediaPlayback() {
 HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
     HtmlLayout out;
     if (!doc.root) return out;
+    // vw/vh lengths resolve against this pass's viewport (see the globals'
+    // own comment at ResolveCssLength).
+    g_css_viewport_w = ctx.viewport_w;
+    g_css_viewport_h = ctx.viewport_h;
     float cursor_y = 0;
     for (auto &c : doc.root->children) {
         if (c->type != DomNodeType::Element || c->style.display_none) continue;
@@ -43352,6 +43844,29 @@ constexpr float kMepmlHtmlPad = 8.0f;
 void PaintHtmlLayout(const HtmlLayout &layout, const HtmlLayoutCtx &ctx, float x, float pad, float top, float content_y,
                      float content_h, bool theme, int pane_id, int buffer_id, bool interactive);  // just below
 
+// DrawRectangleRounded's `roundness` is a 0..1 fraction of the shorter side's
+// half-extent, not a pixel radius -- convert so CSS's px radius means px.
+float HtmlRoundness(float radius_px, float w, float h) {
+    float half = std::min(w, h) * 0.5f;
+    return half <= 0.0f ? 0.0f : std::clamp(radius_px / half, 0.0f, 1.0f);
+}
+
+// Fake box-shadow: the backend has no blur, so paint a few concentric rounded
+// rects stepping outward from the box, splitting the shadow's alpha across
+// them -- reads as a soft halo at UI scale. Offsets/spread aren't modelled
+// (the site's shadows are all centered glows or small drops).
+void DrawHtmlShadow(float x, float y, float w, float h, float radius_px, float blur_px, gfx::Color color) {
+    if (blur_px <= 0.0f || color.a == 0 || w <= 0.0f || h <= 0.0f) return;
+    constexpr int kSteps = 3;
+    gfx::Color step_color = color;
+    step_color.a = static_cast<unsigned char>(std::max(1, color.a / (kSteps + 1)));
+    for (int i = kSteps; i >= 1; --i) {
+        float grow = blur_px * static_cast<float>(i) / static_cast<float>(kSteps);
+        gfx::Rectangle rec{x - grow, y - grow, w + 2.0f * grow, h + 2.0f * grow};
+        gfx::DrawRectangleRounded(rec, HtmlRoundness(radius_px + grow, rec.width, rec.height), 8, step_color);
+    }
+}
+
 const HtmlDoc &MepmlHtmlDoc(const std::string &html, const std::string &base_dir) {
     static std::unordered_map<std::string, std::unique_ptr<HtmlDoc>> cache;
     std::string key = base_dir;
@@ -43481,13 +43996,22 @@ void PaintHtmlLayout(const HtmlLayout &layout, const HtmlLayoutCtx &ctx, float x
     // Skipped entirely in theme mode -- the base NormalBg fill just
     // above already covers the whole pane, so a page's own background
     // boxes would otherwise paint page-colored islands over it.
-    if (!theme) {
-        for (const HtmlBgRect &bg : layout.backgrounds) {
-            float ry = top + bg.y;
-            if (ry + bg.h < content_y || ry > content_y + content_h) continue;
-            gfx::DrawRectangle(static_cast<int>(x + pad + bg.x), static_cast<int>(ry), static_cast<int>(bg.w),
-                          static_cast<int>(bg.h), bg.color);
-        }
+    for (const HtmlBgRect &bg : layout.backgrounds) {
+        float ry = top + bg.y;
+        if (ry + bg.h < content_y || ry > content_y + content_h) continue;
+        float rx = x + pad + bg.x;
+        // Shadows draw in BOTH modes -- they're depth cues around a card, not
+        // page-colored background islands, so theme mode keeps them.
+        if (bg.shadow_blur > 0.0f) DrawHtmlShadow(rx, ry, bg.w, bg.h, bg.radius, bg.shadow_blur, bg.shadow);
+        // Theme mode flattens OPAQUE page backgrounds only; a translucent
+        // one (a dimming backdrop, an rgba tint) is an effect, not content
+        // coloring, and keeps its own paint. Fully transparent draws nothing.
+        if ((theme && bg.color.a == 255) || bg.color.a == 0) continue;
+        if (bg.radius > 0.0f)
+            gfx::DrawRectangleRounded({rx, ry, bg.w, bg.h}, HtmlRoundness(bg.radius, bg.w, bg.h), 8, bg.color);
+        else
+            gfx::DrawRectangle(static_cast<int>(rx), static_cast<int>(ry), static_cast<int>(bg.w),
+                               static_cast<int>(bg.h), bg.color);
     }
     // Element border boxes (layout.borders, same document-order/paint-
     // order reasoning as layout.backgrounds just above) -- each edge is
@@ -43503,6 +44027,20 @@ void PaintHtmlLayout(const HtmlLayout &layout, const HtmlLayoutCtx &ctx, float x
         float ry = top + br.y;
         if (ry + br.h < content_y || ry > content_y + content_h) continue;
         float bx = x + pad + br.x;
+        // A rounded card border draws as one rounded outline when all four
+        // edges share one width and color (theme mode forces one color
+        // anyway); mixed edges keep the square per-edge rects below.
+        if (br.radius > 0.0f && br.top_w > 0.0f && br.top_w == br.bottom_w && br.top_w == br.left_w &&
+            br.top_w == br.right_w) {
+            auto same = [](gfx::Color a, gfx::Color b) {
+                return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+            };
+            if (theme || (same(br.top_c, br.bottom_c) && same(br.top_c, br.left_c) && same(br.top_c, br.right_c))) {
+                gfx::DrawRectangleRoundedLinesEx({bx, ry, br.w, br.h}, HtmlRoundness(br.radius, br.w, br.h), 8,
+                                                 br.top_w, theme ? theme_border : br.top_c);
+                continue;
+            }
+        }
         if (br.top_w > 0.0f) gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(ry), static_cast<int>(br.w),
                                             static_cast<int>(br.top_w), theme ? theme_border : br.top_c);
         if (br.bottom_w > 0.0f)
@@ -45494,9 +46032,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // once and a page's mobile rules stomp its desktop ones. A no-op once
         // the width is stable. `dark` follows mep's own theme luminance so a
         // page's prefers-color-scheme:dark rules match a dark mep.
+        // Mirror the pane's live scroll/viewport into the page and fire the
+        // window scroll/resize events a scroll-spy listens for, BEFORE the
+        // restyle so a listener's class changes land in this frame's cascade.
+        g_editor.SyncHtmlViewportState(pane.buffer_id, html_sess->scroll_y, ctx.viewport_w, ctx.viewport_h);
         gfx::Color nb = ResolveHlGroup("NormalBg");
         bool ui_dark = (0.299 * nb.r + 0.587 * nb.g + 0.114 * nb.b) < 128.0;
-        g_editor.RestyleHtmlForViewport(pane.buffer_id, ctx.viewport_w, ctx.viewport_h, ui_dark);
+        // @media breakpoints are authored CSS px (1rem = 16px), while the
+        // viewport here is layout pixels where px lengths scale by
+        // base_font_size/16 (ResolveCssLength) -- convert so a pane holding
+        // ~900 CSS px of content compares as ~900, not its larger device
+        // width, keeping breakpoint decisions consistent with the px
+        // lengths the chosen rules then lay out with.
+        const float css_px_scale = ctx.base_font_size / 16.0f;
+        g_editor.RestyleHtmlForViewport(pane.buffer_id, ctx.viewport_w / css_px_scale,
+                                        ctx.viewport_h / css_px_scale, ui_dark);
         HtmlLayout layout = LayoutHtmlDoc(html_sess->doc, ctx);
         {
             // :hover follows the pointer: the innermost block under it
@@ -45529,6 +46079,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // ResizePdfViewport's pure-geometry clamp, the max scroll_y this
         // frame's own content actually supports can only be known here,
         // after LayoutHtmlDoc runs -- see ClampHtmlScroll's own comment.
+        // scrollIntoView glide, then the ordinary clamp -- the animation runs
+        // here (post-layout) because only now is the real max scroll known.
+        g_editor.AdvanceHtmlScrollAnimation(pane.buffer_id, std::max(0.0f, layout.total_height - content_h),
+                                            gfx::GetFrameTime());
         g_editor.ClampHtmlScroll(pane.buffer_id, std::max(0.0f, layout.total_height - content_h));
 
         gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
@@ -45548,10 +46102,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         g_editor.ClearHtmlFixedPanels(pane.buffer_id);
         for (const auto &fl : layout.fixed_layers) {
             if (!fl || !fl->content) continue;
+            if (std::getenv("MEP_HTML_DEBUG"))
+                std::fprintf(stderr, "[html-fixed] x=%.1f y=%.1f w=%.1f h=%.1f content_h=%.1f runs=%zu\n",
+                             static_cast<double>(fl->x), static_cast<double>(fl->y), static_cast<double>(fl->w),
+                             static_cast<double>(fl->h), static_cast<double>(fl->content_h), fl->content->runs.size());
             float fx = x + kHtmlPad + fl->x;
             float fy = content_y + fl->y;
-            float fh = std::min(fl->h, content_y + content_h - fy);
-            float fw = std::min(fl->w, x + w - fx);
+            // Clip the panel's box to the pane on ALL four edges -- a fixed
+            // layer can sit past the left/top too (an off-canvas drawer parks
+            // at translateX(-100%), i.e. its own width left of the pane), and
+            // GL scissor rects aren't otherwise bounded by the pane, so an
+            // unclamped rect paints over the neighboring pane. fx/fy stay the
+            // paint origin; only the scissor/bg/hit rect shrinks.
+            float clip_x = std::max(fx, x);
+            float clip_y = std::max(fy, content_y);
+            float fw = std::min(fx + fl->w, x + w) - clip_x;
+            float fh = std::min(fy + fl->h, content_y + content_h) - clip_y;
             if (fh <= 0.0f || fw <= 0.0f) continue;
             // A panel taller than its box scrolls independently: its own
             // fixed_scroll_y (driven by the wheel over it, see WheelScrollHtml)
@@ -45562,25 +46128,53 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (fl->node) {
                 fl->node->fixed_scroll_y = std::clamp(fl->node->fixed_scroll_y, 0.0f, max_scroll);
                 scroll = fl->node->fixed_scroll_y;
-                g_editor.AddHtmlFixedPanel(pane.buffer_id, fl->node, fx, fy, fw, fh, max_scroll);
+                g_editor.AddHtmlFixedPanel(pane.buffer_id, fl->node, clip_x, clip_y, fw, fh, max_scroll);
             }
-            // What the panel covers can't be clicked through it.
+            // What the panel covers can't be clicked through it (matched to the
+            // clamped-to-pane rect, the same box the panel actually paints into).
             const int covered_pane = pane.id;
             g_html_click_rects.erase(std::remove_if(g_html_click_rects.begin(), g_html_click_rects.end(), [&](const HtmlClickRect &r) {
-                return r.pane_id == covered_pane && r.rect.x < fx + fw && r.rect.x + r.rect.width > fx &&
-                       r.rect.y < fy + fh && r.rect.y + r.rect.height > fy;
+                return r.pane_id == covered_pane && r.rect.x < clip_x + fw && r.rect.x + r.rect.width > clip_x &&
+                       r.rect.y < clip_y + fh && r.rect.y + r.rect.height > clip_y;
             }), g_html_click_rects.end());
-            gfx::BeginScissorMode(static_cast<int>(fx), static_cast<int>(fy), static_cast<int>(fw),
+            // The panel's shadow spills OUTSIDE its box, so it's clipped to
+            // the pane (not the panel) and painted before the panel scissor.
+            if (fl->shadow_blur > 0.0f) {
+                gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
+                                      static_cast<int>(content_h));
+                DrawHtmlShadow(fx, fy, fl->w, fl->h, fl->radius, fl->shadow_blur, fl->shadow);
+                gfx::EndScissorMode();
+            }
+            gfx::BeginScissorMode(static_cast<int>(clip_x), static_cast<int>(clip_y), static_cast<int>(fw),
                                   static_cast<int>(fh));
-            if (fl->has_bg)
-                gfx::DrawRectangle(static_cast<int>(fx), static_cast<int>(fy), static_cast<int>(fw),
-                                   static_cast<int>(fh), theme ? ResolveHlGroup("NormalBg") : fl->bg);
+            if (fl->has_bg) {
+                gfx::Color panel_bg = (theme && fl->bg.a == 255) ? ResolveHlGroup("NormalBg") : fl->bg;
+                // The bg rect uses the panel's UNCLIPPED box so its rounded
+                // corners land on the box's own corners; the scissor trims it.
+                if (fl->radius > 0.0f)
+                    gfx::DrawRectangleRounded({fx, fy, fl->w, fl->h}, HtmlRoundness(fl->radius, fl->w, fl->h), 8,
+                                              panel_bg);
+                else
+                    gfx::DrawRectangle(static_cast<int>(clip_x), static_cast<int>(clip_y), static_cast<int>(fw),
+                                       static_cast<int>(fh), panel_bg);
+            }
             // Paint the panel's own sub-layout with its origin at (fx, fy - scroll):
             // the same x + pad + run.x / top + run.y math PaintHtmlLayout uses, so
             // pass paint-x = fx and pad = 0, and cull against the panel box.
-            PaintHtmlLayout(*fl->content, ctx, fx, 0.0f, fy - scroll, fy, fh, theme, pane.id, pane.buffer_id, true);
+            PaintHtmlLayout(*fl->content, ctx, fx, 0.0f, fy - scroll, clip_y, fh, theme, pane.id, pane.buffer_id, true);
+            // A fixed icon BUTTON's whole box is the click target, not just
+            // its glyph run (clicking the padding of the 2.6rem hamburger
+            // must work). Pushed after the content rects, so the
+            // smallest-rect-wins dispatch still prefers an inner link.
+            if (fl->node && fl->node->tag == "button")
+                g_html_click_rects.push_back(
+                    {pane.id, pane.buffer_id, gfx::Rectangle{clip_x, clip_y, fw, fh}, fl->node, ""});
             gfx::EndScissorMode();
         }
+        // :hover from THIS frame's just-painted click rects (the per-frame
+        // list was cleared before DrawPane ran, so this must sit after the
+        // paint): smallest rect under the pointer wins, the same rule
+        // DispatchHtmlLinkClicks uses. Restyles (next frame) only on change.
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
@@ -52612,6 +53206,9 @@ void NavigateHtmlLink(int buffer_id, const std::string &href) {
 void DispatchHtmlLinkClicks() {
     if (!gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) return;
     Mode mode = g_editor.CurrentMode();
+    if (std::getenv("MEP_HTML_DEBUG"))
+        std::fprintf(stderr, "[html-click] press mode=%d modal=%d rects=%zu\n", static_cast<int>(mode),
+                     static_cast<int>(IsModalOverlayMode(mode)), g_html_click_rects.size());
     if (IsModalOverlayMode(mode) && mode != Mode::Sidebar) return;
     gfx::Vector2 mouse = gfx::GetMousePosition();
     // The DOM sees the click first, at the smallest laid-out piece under the
@@ -52621,6 +53218,21 @@ void DispatchHtmlLinkClicks() {
     for (const HtmlClickRect &candidate : g_html_click_rects) {
         if (!PointInRect(mouse, candidate.rect)) continue;
         if (!hit || candidate.rect.width * candidate.rect.height <= hit->rect.width * hit->rect.height) hit = &candidate;
+    }
+    if (std::getenv("MEP_HTML_DEBUG")) {
+        std::fprintf(stderr, "[html-click] mouse=%.0f,%.0f hit=%d node=%p tag=%s\n", static_cast<double>(mouse.x),
+                     static_cast<double>(mouse.y), hit ? 1 : 0, hit ? static_cast<void *>(hit->node) : nullptr,
+                     hit && hit->node ? hit->node->tag.c_str() : "-");
+        if (!hit) {
+            for (const HtmlClickRect &candidate : g_html_click_rects) {
+                if (std::fabs(candidate.rect.x - mouse.x) > 250.0f || std::fabs(candidate.rect.y - mouse.y) > 250.0f)
+                    continue;
+                std::fprintf(stderr, "[html-click]   near rect %.0f,%.0f %ux%u tag=%s\n",
+                             static_cast<double>(candidate.rect.x), static_cast<double>(candidate.rect.y),
+                             static_cast<unsigned>(candidate.rect.width), static_cast<unsigned>(candidate.rect.height),
+                             candidate.node ? candidate.node->tag.c_str() : "-");
+            }
+        }
     }
     if (hit) {
         const int pane_id = hit->pane_id, buffer_id = hit->buffer_id;

@@ -75,6 +75,20 @@ bool ScriptsDispatchEvent(JsRuntime &runtime, DomNode *node, const std::string &
 bool ScriptsDispatchKey(JsRuntime &runtime, DomNode *node, const std::string &type, const std::string &key, const std::string &code,
                         bool shift, bool ctrl, bool alt);
 
+/**
+ * @brief Dispatches a synthetic keyboard event (keydown/keyup) at `node` with the `key` string
+ * and modifier flags pages read (`e.ctrlKey && e.key === 'k'` global shortcuts).
+ * @return False when a listener called preventDefault() (the host should swallow the key).
+ */
+bool ScriptsDispatchKeyEvent(JsRuntime &runtime, DomNode *node, const std::string &type, const std::string &key,
+                              bool ctrl, bool shift, bool alt, bool meta);
+
+/**
+ * @brief Dispatches a synthetic event (scroll/resize) directly at the window object -- what a
+ * page's `window.addEventListener('scroll', ...)` scroll-spy listens for.
+ */
+void ScriptsDispatchWindowEvent(JsRuntime &runtime, const std::string &type);
+
 /** @brief Whether the page registered any event listener at all (lets a host skip dispatch work for static pages). */
 bool ScriptsHaveListeners(JsRuntime &runtime);
 

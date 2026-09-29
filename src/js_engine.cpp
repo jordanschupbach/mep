@@ -603,7 +603,7 @@ void RetireChildren(DomNode *node);
 
 void ReplaceInnerHtml(DomNode *node, const std::string &html) {
     if (!node || node->type != DomNodeType::Element) return;
-    HtmlDoc fragment; ParseHtml(html, fragment);
+    HtmlDoc fragment; ParseHtml(html, fragment, /*full_document=*/false);
     RetireChildren(node);
     if (!fragment.root) return;
     for (auto &child : fragment.root->children) { child->parent = node; node->children.push_back(std::move(child)); }
@@ -1057,6 +1057,11 @@ Value GetProp(const ObjectPtr &obj, const std::string &key) {
     });
     if (obj->dom_node && key == "textContent") return Value::Str(GetTextContent(obj->dom_node));
     if (obj->dom_node && key == "innerHTML") { std::string html; for (const auto &child : obj->dom_node->children) html += SerializeDomNode(child.get()); return Value::Str(html); }
+    // The panel-scroll offset a fixed overflowing box carries (rail body /
+    // sidebar auto-scroll); a non-panel node just reads back 0.
+    if (obj->dom_node && key == "scrollTop") return Value::Num(static_cast<double>(obj->dom_node->fixed_scroll_y));
+    if (obj->dom_node && (key == "scrollWidth" || key == "clientWidth")) return Value::Num(static_cast<double>(obj->dom_node->layout_w));
+    if (obj->dom_node && (key == "scrollHeight" || key == "clientHeight")) return Value::Num(static_cast<double>(obj->dom_node->layout_h));
     if (obj->dom_node && key == "outerHTML") return Value::Str(SerializeDomNode(obj->dom_node));
     if (obj->dom_node && obj->owner_doc) {
         DomNode *node = obj->dom_node;
@@ -1291,6 +1296,7 @@ void SetProp(const ObjectPtr &obj, const std::string &key, Value val) {
         return;
     }
     if (obj->dom_node && key == "innerHTML") { ReplaceInnerHtml(obj->dom_node, ToDisplayString(val)); return; }
+    if (obj->dom_node && key == "scrollTop") { obj->dom_node->fixed_scroll_y = static_cast<float>(std::max(0.0, ToNumber(val))); return; }
     if (obj->dom_node && obj->dom_node->tag == "select" && key == "value") { SetSelectValue(obj->dom_node, ToDisplayString(val)); return; }
     if (obj->dom_node && obj->dom_node->tag == "select" && key == "selectedIndex") {
         std::vector<DomNode *> options;
@@ -3586,6 +3592,16 @@ struct Parser {
         if (Match(Tok::LBracket)) {
             auto n = std::make_unique<Node>(NodeKind::ArrayLit);
             while (ok && !Check(Tok::RBracket)) {
+                // Elision: `[,,x]` -- an empty slot between commas is an
+                // undefined element (minified bundles lean on this; MathJax's
+                // `[,,{smp:t}]` used to kill its whole script). A trailing
+                // comma before `]` adds no element, per spec.
+                if (Check(Tok::Comma)) {
+                    Advance();
+                    n->elements.push_back(std::make_unique<Node>(NodeKind::UndefinedLit));
+                    n->element_spread.push_back(false);
+                    continue;
+                }
                 const bool spread = Match(Tok::Ellipsis);
                 n->elements.push_back(ParseAssignExpr());
                 n->element_spread.push_back(spread);
@@ -6372,10 +6388,31 @@ Value WrapDomNode(HtmlDoc &doc, DomNode *node) {
         return ElementsBy(*doc_ptr, node, true, args.empty() ? "" : ToDisplayString(args[0]));
     });
     wrapper->props["hasChildNodes"] = MakeNativeFn([node](const std::vector<Value> &, bool &, std::string &) { return Value::Bool(!node->children.empty()); });
-    wrapper->props["getBoundingClientRect"] = MakeNativeFn([](const std::vector<Value> &, bool &, std::string &) {
+    wrapper->props["getBoundingClientRect"] = MakeNativeFn([doc_ptr = &doc, node](const std::vector<Value> &, bool &, std::string &) {
+        // Viewport-relative box from the layout pass's stamped geometry
+        // (DomNode::layout_*, page-content coordinates) and the pane's live
+        // scroll (HtmlDoc::view_scroll_y) -- what a scroll-spy compares
+        // against 0 to find the section under the top of the viewport.
         auto rect = std::make_shared<ObjectData>();
-        for (const char *name : {"x", "y", "top", "left", "right", "bottom", "width", "height"}) rect->props[name] = Value::Num(0);
+        const double top = static_cast<double>(node->layout_y) - static_cast<double>(doc_ptr->view_scroll_y);
+        const double left = static_cast<double>(node->layout_x);
+        const double width = static_cast<double>(node->layout_w);
+        const double height = static_cast<double>(node->layout_h);
+        rect->props["x"] = Value::Num(left);
+        rect->props["left"] = Value::Num(left);
+        rect->props["y"] = Value::Num(top);
+        rect->props["top"] = Value::Num(top);
+        rect->props["width"] = Value::Num(width);
+        rect->props["height"] = Value::Num(height);
+        rect->props["right"] = Value::Num(left + width);
+        rect->props["bottom"] = Value::Num(top + height);
         return Value::Obj(rect);
+    });
+    wrapper->props["scrollIntoView"] = MakeNativeFn([doc_ptr = &doc, node](const std::vector<Value> &, bool &, std::string &) {
+        // The host consumes this each frame and animates the pane's scroll
+        // toward it -- `behavior: smooth` for free, instant is just faster.
+        doc_ptr->scroll_request_y = std::max(0.0f, node->layout_y);
+        return Value::Undef();
     });
     if (node->type == DomNodeType::Element) {
         auto dataset = std::make_shared<ObjectData>();
@@ -6851,7 +6888,7 @@ Value WrapDomNode(HtmlDoc &doc, DomNode *node) {
             if (args.size() < 2) return Value::Undef();
             const std::string where = LowerAscii(ToDisplayString(args[0]));
             HtmlDoc fragment;
-            ParseHtml(ToDisplayString(args[1]), fragment);
+            ParseHtml(ToDisplayString(args[1]), fragment, /*full_document=*/false);
             if (!fragment.root) return Value::Undef();
             DomNode *parent = (where == "beforebegin" || where == "afterend") ? node->parent : node;
             DomNode *before = nullptr;
@@ -6885,15 +6922,18 @@ Value WrapDomNode(HtmlDoc &doc, DomNode *node) {
     class_list->props["toggle"] = MakeNativeFn([node](const std::vector<Value> &args, bool &, std::string &) {
         if (args.empty() || args[0].type != VType::String) return Value::Bool(false);
         bool had = DomHasClass(node, args[0].str);
-        // toggle(name, force): force true only adds, false only removes.
-        if (args.size() > 1 && args[1].type != VType::Undefined) {
-            const bool want = args[1].Truthy();
-            if (want == had) return Value::Bool(want);
-        }
+        // The optional `force` argument (spec: toggle(name, force)) pins the
+        // outcome instead of flipping: force=true always adds, force=false
+        // always removes. Pages lean on this as an idempotent "sync class to
+        // state" call -- ignoring it turned yappopotamus's no-op
+        // `toggle('nav-collapsed', contains('nav-collapsed'))` startup sync
+        // into an add that collapsed the sidebar on every load.
+        bool want = args.size() >= 2 ? args[1].Truthy() : !had;
+        if (want == had) return Value::Bool(had);
         if (had) { std::istringstream words(node->Class()); std::string word, classes; while (words >> word) if (word != args[0].str) classes += (classes.empty() ? "" : " ") + word; node->attrs["class"] = classes; }
         else node->attrs["class"] += (node->Class().empty() ? "" : " ") + args[0].str;
         MarkHtmlStyleDirty();
-        return Value::Bool(!had);
+        return Value::Bool(want);
     });
     wrapper->props["classList"] = Value::Obj(class_list);
     auto style = std::make_shared<ObjectData>();
@@ -8156,6 +8196,21 @@ void SetupGlobals(Interpreter &interp, HtmlDoc &doc, const std::function<void(co
     window->props["innerWidth"] = Value::Num(1024);
     window->props["innerHeight"] = Value::Num(768);
     window->props["devicePixelRatio"] = Value::Num(1);
+    // Real matchMedia, answered by the same evaluator the @media gate uses
+    // (SetCssMediaContext supplies the viewport + color scheme) -- the
+    // standard theme-restore head script's `matchMedia('(prefers-color-
+    // scheme: dark)')` must see the desktop's actual preference or every
+    // page opens in the wrong theme. Change listeners are accepted and
+    // ignored (the context is per-frame; a flip re-runs the cascade anyway).
+    window->props["matchMedia"] = MakeNativeFn([](const std::vector<Value> &args, bool &, std::string &) {
+        const std::string query = args.empty() ? std::string() : ToDisplayString(args[0]);
+        auto mql = std::make_shared<ObjectData>();
+        mql->props["media"] = Value::Str(query);
+        mql->props["matches"] = Value::Bool(CssEvalMediaQuery(query));
+        for (const char *fn : {"addEventListener", "removeEventListener", "addListener", "removeListener"})
+            mql->props[fn] = MakeNativeFn([](const std::vector<Value> &, bool &, std::string &) { return Value::Undef(); });
+        return Value::Obj(mql);
+    });
     {
         auto navigator = std::make_shared<ObjectData>();
         navigator->props["userAgent"] = Value::Str("Mozilla/5.0 (mep) mep-html/1.0");
@@ -8590,6 +8645,46 @@ bool ScriptsDispatchKey(JsRuntime &runtime, DomNode *node, const std::string &ty
     ReportAbrupt(runtime, "microtask error", DrainMicrotasks(runtime.interp));
     ComputeStyles(*runtime.doc);
     return !threw && result.Truthy();
+}
+
+void ScriptsDispatchWindowEvent(JsRuntime &runtime, const std::string &type) {
+    ActiveRuntime active(runtime);
+    bool threw = false;
+    std::string error;
+    runtime.interp.steps = 0;
+    std::vector<Value> args{MakeSyntheticEvent(type, /*bubbles=*/false, /*cancelable=*/false)};
+    (void)DispatchDomEvent(runtime.interp, runtime.doc, &GetDomEventState(*runtime.doc)->window_node, args, threw,
+                           error);
+    if (threw) runtime.on_error("event error: " + error);
+    ReportAbrupt(runtime, "microtask error", DrainMicrotasks(runtime.interp));
+    // No ComputeStyles here, deliberately: `scroll` fires on every scrolled
+    // frame and its listeners are rAF-throttled anyway -- class mutations
+    // they make raise the style-dirty flag, which the host's per-frame
+    // restyle already consumes.
+}
+
+bool ScriptsDispatchKeyEvent(JsRuntime &runtime, DomNode *node, const std::string &type, const std::string &key,
+                              bool ctrl, bool shift, bool alt, bool meta) {
+    if (!node) return true;
+    ActiveRuntime active(runtime);
+    bool threw = false;
+    std::string error;
+    runtime.interp.steps = 0;
+    // A KeyboardEvent the way pages read it: `key` plus the modifier flags
+    // (the `(e.ctrlKey||e.metaKey) && e.key === 'k'` global-shortcut idiom).
+    std::vector<Value> args{MakeSyntheticEvent(type, /*bubbles=*/true, /*cancelable=*/true)};
+    ObjectData &event = *args[0].obj;
+    event.props["key"] = Value::Str(key);
+    event.props["ctrlKey"] = Value::Bool(ctrl);
+    event.props["shiftKey"] = Value::Bool(shift);
+    event.props["altKey"] = Value::Bool(alt);
+    event.props["metaKey"] = Value::Bool(meta);
+    Value result = DispatchDomEvent(runtime.interp, runtime.doc, node, args, threw, error);
+    const bool proceed = threw ? false : result.Truthy();
+    if (threw) runtime.on_error("event error: " + error);
+    ReportAbrupt(runtime, "microtask error", DrainMicrotasks(runtime.interp));
+    ComputeStyles(*runtime.doc);
+    return proceed;
 }
 
 bool ScriptsHaveListeners(JsRuntime &runtime) {

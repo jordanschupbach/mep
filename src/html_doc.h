@@ -86,7 +86,7 @@ bool CanvasGradientColorAt(const CanvasGradient &gradient, float x, float y,
 // effective font size are available. `auto_value` is meaningful for margins;
 // other properties simply treat it as their normal automatic value.
 struct CssLength {
-    enum class Unit { Px, Percent, Em, Rem };
+    enum class Unit { Px, Percent, Em, Rem, Vw, Vh };
     bool set = false;
     bool auto_value = false;
     float value = 0.0f;
@@ -139,7 +139,18 @@ struct ComputedStyle {
     bool has_color = false;
     unsigned char color_r = 0, color_g = 0, color_b = 0;
     bool has_bg = false;
-    unsigned char bg_r = 0, bg_g = 0, bg_b = 0;
+    // bg_a carries an rgba() background's alpha times the element's own CSS
+    // `opacity` -- what makes a dimming backdrop (`rgba(0,0,0,.45)`, faded in
+    // by `opacity: 0 -> 1`) translucent instead of an opaque black sheet.
+    unsigned char bg_r = 0, bg_g = 0, bg_b = 0, bg_a = 255;
+    // CSS `opacity` (0..1). Only applied to backgrounds (an opacity:0 element
+    // with visible TEXT would need full compositing); it also gates
+    // pointer-visibility of fixed panels like the backdrop.
+    float opacity = 1.0f;
+    // `transition: transform <dur>` -- the only transition modelled: a fixed
+    // panel's translate animates toward its target over this many seconds
+    // (the off-canvas drawer's slide). 0 = jump instantly.
+    float transition_transform_s = 0.0f;
     // One edge of a CSS border (border-top/-right/-bottom/-left, or the
     // border shorthand applying the same value to all four) -- style
     // keywords (solid/dashed/...) are parsed but not distinguished, every
@@ -208,6 +219,47 @@ struct ComputedStyle {
     // elements by main.cpp's LayoutFixedElement; does not inherit.
     bool has_transform = false;
     CssLength transform_x, transform_y;
+    // CSS generated content: the decoded string value of a matching
+    // `::before`/`::after` rule's `content` property (already unescaped to
+    // UTF-8; empty = none). Only plain string values are modelled -- no
+    // counters/attr()/url(). The layout pass renders content_before ahead of
+    // the element's own children and content_after behind them; an icon-only
+    // control (the classic collapse-caret <button>) is visible and clickable
+    // through exactly this. Does not inherit (real CSS pseudo-elements
+    // don't either).
+    std::string content_before, content_after;
+    // display:flex/inline-flex bookkeeping. Real flex layout isn't modelled;
+    // ComputeStyles approximates a ROW-direction flex container by flowing its
+    // element children inline on one line (the `.nav-row` toggle+label idiom),
+    // while a column container keeps normal block stacking (which already
+    // looks like flex-direction:column). Non-inherited.
+    bool flex_container = false;
+    bool flex_column = false;
+    // Flex alignment -- only the `center` value is modelled, and only
+    // main.cpp's LayoutFixedElement acts on it (centering an icon button's
+    // glyph inside its fixed box). Non-inherited.
+    bool align_items_center = false;
+    bool justify_content_center = false;
+    // Rounded corners: the border-radius shorthand's FIRST value (per-corner
+    // radii aren't modelled). Purely painterly -- resolved and stored on the
+    // bg/border rects at layout time, drawn with DrawRectangleRounded.
+    CssLength border_radius;
+    // Drop shadow: box-shadow's blur radius and color (offsets/spread/inset
+    // ignored -- close enough for the "soft card" look). Painted as a few
+    // concentric translucent rounded rects behind the element's background.
+    bool has_shadow = false;
+    CssLength shadow_blur;
+    unsigned char shadow_r = 0, shadow_g = 0, shadow_b = 0, shadow_a = 64;
+    // text-transform -- INHERITS (a child resets it with `none`, exactly how
+    // the site's .toc-count opts back out of its header's uppercase).
+    enum class TextTransform { None, Upper, Lower, Capitalize };
+    TextTransform text_transform = TextTransform::None;
+    // CSS multi-column (`columns: N` / `column-count: N`); 0 = normal flow.
+    // main.cpp lays each child block out whole into the shortest column
+    // (which is also what the site's break-inside:avoid asks for).
+    int column_count = 0;
+    CssLength column_gap;  // unset = the CSS `normal` default (1em)
+    bool border_collapse = false;  // table only: shared grid lines, not doubled per-cell edges
     // Block-level vertical spacing, in *lines* (not px -- main.cpp's
     // layout pass multiplies by whatever line height it's using for that
     // node's own font_scale), before/after this element's own content.
@@ -277,6 +329,19 @@ struct DomNode {
     // when the pointer is over the panel (main.cpp records the panel rects;
     // Editor::WheelScrollHtml routes the wheel here instead of the page).
     float fixed_scroll_y = 0.0f;
+    // Laid-out border box in page-content coordinates, stamped by main.cpp's
+    // HtmlLayoutBlock on every layout pass (for a node inside a fixed panel
+    // these are the panel's local coordinates). What getBoundingClientRect
+    // and scrollIntoView read; viewport-relative conversion subtracts
+    // HtmlDoc::view_scroll_y.
+    float layout_x = 0.0f, layout_y = 0.0f, layout_w = 0.0f, layout_h = 0.0f;
+    // Animated translateX state for a fixed panel with `transition: transform`
+    // (the off-canvas drawer): the CURRENT offset in px, advanced toward the
+    // cascade's target each frame by main.cpp's LayoutFixedElement. On the
+    // node (not the per-frame layer) so it survives relayout, like
+    // fixed_scroll_y above.
+    float anim_translate_x = 0.0f;
+    bool anim_translate_init = false;
     bool interaction_hover = false;
     bool interaction_focus = false;
     bool interaction_active = false;
@@ -321,6 +386,24 @@ struct DomNode {
 
 struct HtmlDoc {
     std::unique_ptr<DomNode> root;  // synthetic node wrapping the whole document; never null after a successful parse
+    // The hosting pane's live view state, synced every frame by the editor
+    // (Editor::SyncHtmlViewportState): current scroll offset and viewport
+    // size in layout px. getBoundingClientRect converts layout coordinates
+    // to viewport space with these; window `scroll`/`resize` events fire
+    // when they change.
+    float view_scroll_y = 0.0f, view_w = 0.0f, view_h = 0.0f;
+    // A script asked to scroll the page (element.scrollIntoView): the target
+    // page-space y to bring to the top band, or a negative sentinel for
+    // "no request". The editor consumes it each frame and animates toward it
+    // (the smooth-scroll behavior pages ask for).
+    float scroll_request_y = -1.0f;
+    // ComputeStyles' collected-rule cache (opaque here; the CssRule type is
+    // html_doc.cpp-local). Keyed by a fingerprint of every <style> text plus
+    // the @media context version, so script-injected styles and media flips
+    // invalidate it automatically while the common cascade (a class toggle)
+    // skips re-parsing the whole stylesheet.
+    std::shared_ptr<void> css_rules_cache;
+    size_t css_rules_key = 0;
     std::string title;              // <title> text, "" if absent -- kept denormalized (not re-walked from the tree) since js_engine.cpp's document.title can rewrite it directly
 
     // Every <script> element's own text content, in document order, *not*
@@ -386,8 +469,11 @@ struct AccessibleNode {
  * @brief Parses HTML markup into a DOM tree, extracts math spans, and computes styles, always succeeding (tolerant of malformed markup).
  * @param html Already-decoded UTF-8 HTML text to parse.
  * @param out Destination document; its root/title/scripts are reset and repopulated.
+ * @param full_document When true (a page), missing <html>/<body> wrappers are synthesized the
+ * way a browser's parser does (document.body always exists). Pass false for markup fragments
+ * (innerHTML/insertAdjacentHTML), whose nodes graft into an existing tree unwrapped.
  */
-void ParseHtml(const std::string &html, HtmlDoc &out);
+void ParseHtml(const std::string &html, HtmlDoc &out, bool full_document = true);
 
 // Walks `doc.root`, resolving every node's `style` per this file's own
 // header comment (inherit from parent, then this tag's UA default, then
@@ -411,6 +497,12 @@ void ComputeStyles(HtmlDoc &doc);
 // and desktop `min-width` rules would all apply at once. main.cpp calls it with
 // the browser pane's own size before re-styling on resize/theme change.
 void SetCssMediaContext(float viewport_w, float viewport_h, bool dark);
+
+/**
+ * @brief Evaluates one media-query string against the current media context (SetCssMediaContext)
+ * -- what window.matchMedia answers with. Unknown queries match, same as the @media gate.
+ */
+bool CssEvalMediaQuery(const std::string &query);
 
 // Selector helpers shared by the DOM binding. They use the same parser and
 // matcher as the CSS cascade, preventing querySelector from drifting away

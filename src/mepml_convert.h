@@ -42,6 +42,14 @@ Format FormatFromName(const std::string &name);  // "md", "markdown", "org", "ht
 std::string FormatExtension(Format f);           // "md", "org", "html", ...
 bool CanExport(Format f);
 bool CanImport(Format f);
+// What an export of `doc` to `f` is called, for \when / \raw
+// (FormatsMatch), most specific first: html {"html"} ({"html", "slides"}
+// for a presentation's slideshow), tex {"tex", "latex"} (a Beamer deck
+// {"beamer", "tex", "latex", "slides"}), pdf the same with "pdf" first, md
+// {"md", "markdown"}, docx {"docx", "word", "office"}, pptx {"pptx",
+// "powerpoint", "office", "slides"} ... `beamer` is the Beamer deck
+// whatever the document's Type. Mepml itself has none.
+std::vector<std::string> ExportTags(Format f, const Document &doc, bool beamer = false);
 
 // --- Export -------------------------------------------------------------
 std::string ToMarkdown(const Document &doc);

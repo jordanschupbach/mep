@@ -544,6 +544,7 @@ const std::vector<Vocab> &DirectiveVocab() {
         {"toc", "\\toc", "The table of contents: every heading of this document, indented by depth."},
         {"abstract", "\\abstract(text)", "The document's abstract: prose over any number of lines, a blank line between paragraphs. Exports as each format's own abstract."},
         {"slide", "\\slide( ... )", "A slide: \\slide( on a line of its own, then the slide's content -- headings, lists, code, pictures, any blocks -- and a line holding just ) to end it. Its first heading is its title."},
+        {"define", "\\define(name(params), template)", "A command of your own: \\name(a, b) becomes the template with #param (or #{param}, #1) replaced by the arguments -- the last parameter takes the rest of the call, commas and all. The template may choose by export with \\when(html, ...) \\otherwise(...) and write the export's own markup with \\raw(html, ...). Exports expand the calls; the editor shows them as written."},
     };
     return v;
 }
@@ -556,6 +557,9 @@ const std::vector<Vocab> &CommandVocab() {
         {"color", "\\color(name, text)", "Coloured text: a name (red, blue, ...) or #rrggbb."},
         {"f", "\\f(family, text)", "Text in another font family (serif, sans, mono, or a font name)."},
         {"fs", "\\fs(points, text)", "Text at a size in points (body text is 12)."},
+        {"when", "\\when(formats, text)", "Text only in the exports named -- html, tex, pdf, beamer, slides, md, docx, office ... (spaces or | between them; !html for all but HTML; * for all). An \\otherwise(text) right after one or more \\when()s is used when none matched."},
+        {"otherwise", "\\otherwise(text)", "After \\when(formats, ...): the text for every other export."},
+        {"raw", "\\raw(formats, text)", "Text written as it is into the exports named -- HTML markup for html, LaTeX for tex/pdf/beamer, and so on -- and left out of the rest."},
     };
     return v;
 }
@@ -588,6 +592,20 @@ const std::vector<Vocab> &CodeOptionVocab() {
     return v;
 }
 
+// A user command as it is called: \name(p1, p2).
+std::string CommandSignature(const mepml::UserCommand &c) {
+    std::string params;
+    for (const std::string &p : c.params) params += (params.empty() ? "" : ", ") + p;
+    return "\\" + c.name + "(" + params + ")";
+}
+// Where it is defined and the start of its template.
+std::string CommandDoc(const mepml::UserCommand &c) {
+    std::string t = "Your command, defined " + (c.origin.empty() ? std::string("on line ") : "in " + c.origin + ", line ") +
+                    std::to_string(c.line + 1) + ".";
+    std::string body = c.body;
+    if (body.size() > 400) body = body.substr(0, 400) + " ...";
+    return t + "\n\n" + body;
+}
 std::vector<Candidate> Cands(const std::vector<Vocab> &v, MepmlLspKind kind, const std::string &suffix) {
     std::vector<Candidate> out;
     for (const Vocab &e : v) out.push_back({e.name, "", kind, e.detail, e.doc, suffix});
@@ -734,6 +752,15 @@ std::vector<MepmlLspCompletionItem> MepmlLspCompletions(const std::vector<std::s
             return out;
         }
         const std::string next = paren ? ", " : "";  // after the argument: on to the text
+        // \when(formats, ...) / \raw(formats, ...): the export names.
+        if (paren && sigil == '\\' && (name == "when" || name == "raw")) {
+            if (typed.find(',') != std::string::npos) return out;
+            const size_t word = typed.find_last_of(" |!");
+            std::vector<Candidate> c;
+            for (const std::string &t : mepml::KnownFormatTags()) c.push_back({t, "", MepmlLspKind::Value, "export", "", ""});
+            Offer(out, word == std::string::npos ? typed : typed.substr(word + 1), col, c);
+            return out;
+        }
         if (sigil == '\\' && name == "color") {
             std::vector<Candidate> c;
             for (const std::string &cn : mepml::ColorNames()) {
@@ -807,6 +834,7 @@ std::vector<MepmlLspCompletionItem> MepmlLspCompletions(const std::vector<std::s
         while (n > 0 && std::isalpha(static_cast<unsigned char>(before[n - 1])) != 0) --n;
         if (n > 0 && before[n - 1] == '\\') {
             std::vector<Candidate> c = Cands(CommandVocab(), MepmlLspKind::Function, "(");
+            for (const auto &kv : doc.commands) c.push_back({kv.first, "", MepmlLspKind::Function, CommandSignature(kv.second), CommandDoc(kv.second), "("});
             for (Candidate &k : c) k.label = "\\" + k.text;
             if (ind != std::string::npos && n - 1 == ind) {
                 const std::vector<Candidate> d = directives();
@@ -859,6 +887,7 @@ const char *InlineName(InlineKind k) {
         case InlineKind::Delete: return "Deleted: !text!";
         case InlineKind::Verbatim: return "Verbatim: `text` (no formatting inside)";
         case InlineKind::Math: return "Maths (TeX): $...$ or \\(...\\)";
+        case InlineKind::Raw: return "Raw text: written as it is into the exports named, left out of the rest";
         default: return nullptr;
     }
 }
@@ -867,6 +896,14 @@ std::string VocabDoc(const std::vector<Vocab> &v, const std::string &name) {
     for (const Vocab &e : v)
         if (Lower(e.name) == Lower(name)) return std::string(e.detail) + "\n\n" + e.doc;
     return "";
+}
+
+// Hovering a call of `name`.
+std::string CommandHover(const Document &doc, const std::string &name) {
+    if (name == "when" || name == "otherwise") return VocabDoc(CommandVocab(), name);
+    auto it = doc.commands.find(name);
+    if (it == doc.commands.end()) return "Unknown command \\" + name + ": no \\define(" + name + "(...), ...) for it";
+    return CommandSignature(it->second) + "\n\n" + CommandDoc(it->second);
 }
 
 }  // namespace
@@ -925,6 +962,8 @@ MepmlLspHoverInfo MepmlLspHover(const std::vector<std::string> &lines, int line,
             case InlineKind::Font: return found(cs, ce, "Font family: " + x->arg);
             case InlineKind::FontSize: return found(cs, ce, "Font size: " + x->arg + " pt (body text is 12)");
             case InlineKind::Math: return found(cs, ce, std::string("Maths (TeX)") + (x->alt.empty() ? "" : "\n\nAlt text: " + x->alt));
+            case InlineKind::Command: return found(cs, ce, CommandHover(doc, x->arg));
+            case InlineKind::Raw: return found(cs, ce, "Raw text for: " + x->arg + "\n\nWritten as it is into those exports, left out of the rest.");
             default:
                 if (const char *name = InlineName(x->kind)) return found(cs, ce, name);
         }
@@ -964,6 +1003,25 @@ MepmlLspHoverInfo MepmlLspHover(const std::vector<std::string> &lines, int line,
             return found(ind, Len(l), "Citation '" + b->value + "'\n\n" + CitationSummary(doc, b->value) + "\n\nCited " + std::to_string(uses) +
                                           (uses == 1 ? " time" : " times"));
         }
+        case BlockKind::Define: {
+            if (line != b->line_start) break;
+            auto it = doc.commands.find(b->keyword);
+            if (it == doc.commands.end()) return found(ind, Len(l), VocabDoc(DirectiveVocab(), "define"));
+            int uses = 0;
+            ForEachOwnBlock(doc, [&](const Block &o) {
+                if (o.kind == BlockKind::Command && o.keyword == b->keyword) ++uses;
+                ForEachInline(o, [&](const Inline &x) {
+                    if (x.kind == InlineKind::Command && x.arg == b->keyword) ++uses;
+                });
+            });
+            return found(ind, Len(l), CommandHover(doc, b->keyword) + "\n\nCalled " + std::to_string(uses) + (uses == 1 ? " time" : " times"));
+        }
+        case BlockKind::Command:
+            if (line != b->line_start) break;
+            return found(ind, Len(l), CommandHover(doc, b->keyword));
+        case BlockKind::Raw:
+            if (line != b->line_start) break;
+            return found(ind, Len(l), "Raw text for: " + b->lang + "\n\n" + VocabDoc(CommandVocab(), "raw"));
         case BlockKind::Bibliography: return found(ind, Len(l), VocabDoc(DirectiveVocab(), "bibliography"));
         case BlockKind::TableOfContents: return found(ind, Len(l), VocabDoc(DirectiveVocab(), "toc"));
         case BlockKind::Abstract: {

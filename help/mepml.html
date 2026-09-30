@@ -521,6 +521,95 @@ image, the block stays drawn when the cursor is on it; toggle concealment
 from entry to entry, with the current one highlighted, and past the first
 or last line they move on to the text around it. On a contents entry,
 <code>Enter</code> jumps to its heading (<code>C-o</code> comes back).</p>
+<h1>Commands of your own</h1>
+<p><code>\define</code> makes a command. Its first argument is the command's name and
+its parameters, written the way a call is written, and the rest is the
+template the call is replaced by:</p>
+<pre>\define(today, 29 September 2026)
+\define(term(word, meaning), *#word* (#meaning))
+
+Written \today(); a \term(monad, a monoid in the category of endofunctors).</pre>
+<p>In the template, <code>#word</code> (or <code>#{word}</code>, when a letter follows it, or
+<code>#1</code>, <code>#2</code> ... by position) is replaced by that argument, and <code>##</code> is a
+<code>#</code>. A <code>#</code> before anything else stays as it is, so an HTML colour such as
+<code>#2c7fb8</code> is safe. Arguments end at the call's first commas, one per
+parameter but the last, and the last argument takes the rest of the call,
+commas and all, as the text of <code>\color(red, text)</code> does. A command without
+parameters is called with empty parentheses: <code>\today()</code>. A template may
+run over any number of lines, blank ones included, and may call other
+commands (a command that calls itself is stopped after 64 levels).</p>
+<p>A call alone on its lines is a block: <code>\definition(...)</code> may hold several
+paragraphs, split by blank lines, like <code>\abstract(...)</code>. A call inside a
+paragraph is expanded in place. Code blocks, maths and <code>`verbatim`</code> text
+are never expanded.</p>
+<h2>Choosing by export</h2>
+<p><code>\when(formats, text)</code> keeps its text only in the exports it names, and an
+<code>\otherwise(text)</code> right after one or more <code>\when(...)</code> keeps its text when
+none of them matched:</p>
+<pre>This page is \when(html, interactive) \when(pdf, printable) \otherwise(plain).</pre>
+<p>A format list is names separated by spaces or <code>|</code>: <code>\when(tex pdf, ...)</code>.
+<code>!html</code> means every export but HTML, and <code>*</code> means every export. Each
+export answers to several names, most specific first:</p>
+<table>
+<tr><th>Export</th><th>Names</th></tr>
+<tr><td>HTML</td><td><code>html</code>, and <code>slides</code> for a presentation</td></tr>
+<tr><td>LaTeX</td><td><code>tex</code>, <code>latex</code></td></tr>
+<tr><td>PDF</td><td><code>pdf</code>, <code>tex</code>, <code>latex</code></td></tr>
+<tr><td>Beamer (and a presentation's <code>tex</code>, <code>pdf</code>)</td><td><code>beamer</code>, <code>tex</code>, <code>latex</code>, <code>slides</code>, and <code>pdf</code> for the PDF</td></tr>
+<tr><td>Word</td><td><code>docx</code>, <code>word</code>, <code>office</code></td></tr>
+<tr><td>OpenDocument text</td><td><code>odt</code>, <code>office</code></td></tr>
+<tr><td>PowerPoint</td><td><code>pptx</code>, <code>powerpoint</code>, <code>office</code>, <code>slides</code></td></tr>
+<tr><td>Impress</td><td><code>odp</code>, <code>impress</code>, <code>office</code>, <code>slides</code></td></tr>
+<tr><td>Markdown, Org, RTF, text</td><td><code>md</code> (<code>markdown</code>), <code>org</code>, <code>rtf</code>, <code>txt</code> (<code>text</code>)</td></tr>
+</table>
+<p>The language server flags a name no export has, but it still works: it
+simply never matches.</p>
+<h2>Writing an export's own markup</h2>
+<p><code>\raw(formats, text)</code> writes its text, exactly as it is, into the exports
+it names and leaves it out of every other: HTML for <code>html</code>, LaTeX for
+<code>tex</code>, <code>pdf</code> and <code>beamer</code>, Markdown for <code>md</code>, and so on. On lines of its
+own it is a block, and the text may run over several lines:</p>
+<pre>\raw(html, &lt;kbd&gt;Ctrl&lt;/kbd&gt;)
+\raw(tex pdf,
+\clearpage
+)</pre>
+<p>The text's parentheses must balance. The slide decks (<code>pptx</code>, <code>odp</code>) take
+no raw markup. Use <code>\when</code> to give them ordinary mepml instead.</p>
+<h2>Putting it together: a definition box</h2>
+<pre>\define(definition(term, body),
+\when(html,
+\raw(html, &lt;div class="definition" style="border-left: 4px solid #2c7fb8; padding: .5em 1em"&gt;)
+\raw(html, &lt;b&gt;Definition: #term&lt;/b&gt;)
+
+#body
+
+\raw(html, &lt;/div&gt;)
+)
+\when(beamer,
+\raw(beamer, \begin{block}{Definition: #term})
+
+#body
+
+\raw(beamer, \end{block})
+)
+\otherwise(
+*Definition (#term).* #body
+)
+)
+
+\definition(Orthogonal projection, The point of $S$ closest to $\mathbf{y}$.)</pre>
+<p>The HTML export draws a box, the Beamer deck a titled block, and every
+other export a paragraph that opens with the term in bold. The <code>#term</code>
+inside <code>\raw</code> goes in as written, so keep it to plain text and TeX maths.
+Put definitions in a file of their own and <code>//? Import:</code> it to share them
+between documents: commands defined in an imported file work in the
+document that imports it.</p>
+<p>The editor shows a document as written. A <code>\define</code> is drawn as code and
+a call keeps its name, so the source stays editable, and the exports are
+where the commands are expanded. The language server completes the
+commands you define (and export names inside <code>\when(</code> and <code>\raw(</code>), shows
+a command's template when you hover over a call, and flags calls of
+commands that are not defined and calls missing an argument.</p>
 <h1>Exporting and importing</h1>
 <p>The play button in the pane's header (or <code>gr</code>, or <code>&lt;leader&gt;rr</code>) saves the
 document, exports it, and opens the result in a split on the right -- an
@@ -535,7 +624,8 @@ is a different key, choosing which parts of each code block the exports
 show. <code>beamer</code> is the <code>\slide</code> blocks as a Beamer PDF whatever the
 document's <code>Type</code>, and a slide-deck PDF opens sized to show a whole slide.</p>
 <p><code>&lt;leader&gt;ke</code> (or <code>:MepmlExport</code>) exports the document beside its file,
-<code>notes.mepml</code> becoming <code>notes.docx</code> and so on. Imports are expanded and
+<code>notes.mepml</code> becoming <code>notes.docx</code> and so on. Imports are expanded,
+commands are expanded for the format (see Commands of your own), and
 pictures are embedded where the format can hold them:</p>
 <table>
 <tr><th>Format</th><th>Written as</th></tr>

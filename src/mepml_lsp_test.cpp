@@ -463,8 +463,29 @@ void TestFuzz() {
 }
 }  // namespace
 
+// User commands: completion of the ones defined, export names in \when( and
+// \raw(, hover on a call, and the checks on calls.
+void TestCommands() {
+    const MepmlLspOptions o = NoFiles();
+    const Lines doc = {"\\define(definition(term, body), *#term.* #body)", "", "\\definition(Word, meaning)", "",
+                       "See \\defi", "\\when(ht", "\\raw(tex|p", "\\nosuch(x) and \\definition(only)"};
+    const std::optional<MepmlLspCompletionItem> c = Item(MepmlLspCompletions(doc, 4, 10, o), "\\definition");
+    CHECK(c && c->insert_text == "definition(" && c->detail == "\\definition(term, body)");
+    CHECK(Item(MepmlLspCompletions(doc, 5, 9, o), "html").has_value());
+    CHECK(Item(MepmlLspCompletions(doc, 6, 11, o), "pdf").has_value());  // after the `|`
+    const MepmlLspHoverInfo h = MepmlLspHover(doc, 2, 3, o);
+    CHECK(h.found && h.text.find("\\definition(term, body)") == 0 && h.text.find("*#term.* #body") != std::string::npos);
+    int unknown = 0, missing = 0;
+    for (const MepmlLspDiagnostic &d : MepmlLspDiagnostics(doc, o)) {
+        unknown += d.message.find("unknown command \\nosuch") == 0;
+        missing += d.message.find("missing argument: \\definition") == 0;
+    }
+    CHECK(unknown == 1 && missing == 1);
+}
+
 int main() {
     TestDiagnostics();
+    TestCommands();
     TestFiles();
     TestCompletion();
     TestHoverAndDefinition();

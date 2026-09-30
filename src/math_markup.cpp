@@ -151,7 +151,7 @@ struct MathMlWriter {
 
     std::string Scripts(const std::string &base, const MathNode &n) {
         if (!HasScripts(n)) return base;
-        const bool limits = display && n.limits_above;
+        const bool limits = (display && n.limits_above) || n.limits_always;
         const std::string sub = n.sub.empty() ? "" : Node(n.sub[0]);
         const std::string sup = n.sup.empty() ? "" : Node(n.sup[0]);
         std::string tag;
@@ -228,6 +228,11 @@ struct MathMlWriter {
             }
             case MathKind::Accent: {
                 const std::string base = Group(n.children);
+                if (n.accent_brace) {
+                    // The brace, then its label (limits_always) beyond it.
+                    if (n.accent_below) return Scripts("<munder><mrow>" + base + "</mrow><mo stretchy=\"true\">" + Utf8(0x23DF) + "</mo></munder>", n);
+                    return Scripts("<mover><mrow>" + base + "</mrow><mo stretchy=\"true\">" + Utf8(0x23DE) + "</mo></mover>", n);
+                }
                 const std::string mark = "<mo stretchy=\"" + std::string(n.accent_stretch ? "true" : "false") + "\">" +
                                          XmlEsc(SpacingAccent(n.accent, n.accent_below)) + "</mo>";
                 if (n.accent_below) return Scripts("<munder accentunder=\"true\">" + base + mark + "</munder>", n);
@@ -319,20 +324,80 @@ struct StarMathWriter {
 
     std::string Group(const std::vector<MathNode> &kids) {
         std::string o;
-        for (const MathNode &c : kids) {
+        for (size_t k = 0; k < kids.size(); ++k) {
+            const MathNode &c = kids[k];
             if (c.kind == MathKind::Row && c.children.empty() && !HasScripts(c)) continue;
             if (!o.empty()) o += " ";
-            o += Node(c);
+            const std::string op = display ? StarOperator(c) : "";
+            if (op.empty()) {
+                o += Node(c);
+                continue;
+            }
+            // The operator takes the atom after it as its body (as OMML's
+            // n-ary does); one that ends its row gets an empty body.
+            std::string term = op;
+            if (!c.sub.empty()) term += " from" + Group(c.sub);
+            if (!c.sup.empty()) term += " to" + Group(c.sup);
+            size_t next = k + 1;
+            while (next < kids.size() && kids[next].kind == MathKind::Row && kids[next].children.empty() && !HasScripts(kids[next])) ++next;
+            const bool operand = next < kids.size() && kids[next].cls != MathClass::Rel && kids[next].cls != MathClass::Bin &&
+                                 kids[next].cls != MathClass::Punct && kids[next].cls != MathClass::Close;
+            if (operand) {
+                term += " " + Node(kids[next]);
+                k = next;
+            } else {
+                term += " {}";
+            }
+            o += "{" + term + "}";
         }
+        // A relation needs something either side of it in StarMath (`> 0`
+        // alone, a brace's label, is a syntax error): an empty group.
+        const MathNode *first = nullptr, *last = nullptr;
+        for (const MathNode &c : kids) {
+            if (c.kind == MathKind::Row && c.children.empty() && !HasScripts(c)) continue;
+            if (!first) first = &c;
+            last = &c;
+        }
+        if (first && first->kind == MathKind::Text && first->cls == MathClass::Rel) o = "{} " + o;
+        if (last && last->kind == MathKind::Text && (last->cls == MathClass::Rel || last->cls == MathClass::Bin) && (first != last || last->cls == MathClass::Rel))
+            o += " {}";
         return "{" + (o.empty() ? std::string() : o) + "}";
     }
 
     std::string Scripts(const std::string &base, const MathNode &n) {
         std::string o = base;
-        if (!n.sub.empty()) o += "_" + Group(n.sub);
-        if (!n.sup.empty()) o += "^" + Group(n.sup);
+        // Stacked over/under (\overset, a brace's label) is csup/csub.
+        const bool limits = (display && n.limits_above) || n.limits_always;
+        if (!n.sub.empty()) o += (limits ? " csub " : "_") + Group(n.sub);
+        if (!n.sup.empty()) o += (limits ? " csup " : "^") + Group(n.sup);
         return HasScripts(n) ? "{" + o + "}" : o;
     }
+
+    // Display style's big operators, with their limits over and under:
+    // StarMath's own `sum from{..} to{..} body`, which (unlike a plain ∑
+    // with csub/csup) also sets the sign at display size. Empty for an
+    // operator StarMath has no keyword for.
+    static std::string StarOperator(const MathNode &n) {
+        if (n.kind == MathKind::Text && n.big_op) {
+            switch (FirstCp(n.text)) {
+                case 0x2211: return "sum";
+                case 0x220F: return "prod";
+                case 0x2210: return "coprod";
+                case 0x222B: return "int";
+                case 0x222C: return "iint";
+                case 0x222D: return "iiint";
+                case 0x222E: return "lint";
+                default: return "";
+            }
+        }
+        if (n.kind == MathKind::Row && n.cls == MathClass::Op && n.limits_above && IsWord(n)) {
+            const std::string w = WordText(n);
+            if (w == "lim" || w == "max" || w == "min" || w == "sup" || w == "inf" || w == "liminf" || w == "limsup") return w;
+        }
+        return "";
+    }
+
+    bool display = false;
 
     std::string Node(const MathNode &n) {
         switch (n.kind) {
@@ -346,8 +411,13 @@ struct StarMathWriter {
                 }
                 return Scripts(Group(n.children), n);
             case MathKind::Frac: {
+                // A fraction's parts are text style, even in a display: a
+                // sum there keeps its limits beside it, as TeX sets it.
+                const bool was_display = display;
+                display = false;
                 const std::string num = Group({n.children[0]});
                 const std::string den = Group({n.children.size() > 1 ? n.children[1] : MathNode{}});
+                display = was_display;
                 if (!n.frac_bar) return Scripts("{stack{" + num + " # " + den + "}}", n);
                 return Scripts("{" + num + " over " + den + "}", n);
             }
@@ -362,6 +432,16 @@ struct StarMathWriter {
             case MathKind::Fenced:
                 return Scripts("{left " + StarFence(n.open_delim) + " " + Group(n.children) + " right " + StarFence(n.close_delim) + "}", n);
             case MathKind::Accent: {
+                if (n.accent_brace) {
+                    // `{base} underbrace {label}`: StarMath's brace takes its
+                    // label as an operand, so that label is not a script.
+                    MathNode rest = n;
+                    std::vector<MathNode> &label = n.accent_below ? rest.sub : rest.sup;
+                    const std::string lab = label.empty() ? "{}" : Group(label);
+                    label.clear();
+                    rest.limits_always = false;
+                    return Scripts("{" + Group(n.children) + (n.accent_below ? " underbrace " : " overbrace ") + lab + "}", rest);
+                }
                 std::string cmd;
                 switch (FirstCp(n.accent)) {
                     case 0x5E: cmd = n.accent_stretch ? "widehat" : "hat"; break;
@@ -446,7 +526,7 @@ struct OmmlWriter {
 
     std::string Scripts(const std::string &base, const MathNode &n) {
         if (!HasScripts(n)) return base;
-        if (display && n.limits_above) {
+        if ((display && n.limits_above) || n.limits_always) {
             std::string o = base;
             if (!n.sup.empty()) o = "<m:limUpp><m:e>" + o + "</m:e>" + Arg("lim", n.sup) + "</m:limUpp>";
             if (!n.sub.empty()) o = "<m:limLow><m:e>" + o + "</m:e>" + Arg("lim", n.sub) + "</m:limLow>";
@@ -539,6 +619,11 @@ struct OmmlWriter {
                                    "\"/></m:dPr>" + Arg("e", n.children) + "</m:d>",
                                n);
             case MathKind::Accent: {
+                if (n.accent_brace)
+                    return Scripts("<m:groupChr><m:groupChrPr><m:chr m:val=\"" + Utf8(n.accent_below ? 0x23DF : 0x23DE) + "\"/><m:pos m:val=\"" +
+                                       std::string(n.accent_below ? "bot" : "top") + "\"/><m:vertJc m:val=\"" + (n.accent_below ? "top" : "bot") +
+                                       "\"/></m:groupChrPr>" + Arg("e", n.children) + "</m:groupChr>",
+                                   n);
                 if (n.accent.empty() && n.accent_stretch)
                     return Scripts("<m:bar><m:barPr><m:pos m:val=\"" + std::string(n.accent_below ? "bot" : "top") + "\"/></m:barPr>" +
                                        Arg("e", n.children) + "</m:bar>",
@@ -668,7 +753,7 @@ struct TextRunWriter {
                 const size_t before = out.size();
                 for (const MathNode &c : n.children) Node(c, script);
                 // The mark combines with the last character set.
-                const int comb = CombiningAccent(n.accent, n.accent_below);
+                const int comb = n.accent_brace ? 0 : CombiningAccent(n.accent, n.accent_below);
                 if (comb != 0 && out.size() > before) out.back().text += Utf8(comb);
                 break;
             }
@@ -761,7 +846,11 @@ Extent Measure(const MathNode &n, bool display, bool script) {
                 e.desc += 0.12;
             }
             break;
-        case MathKind::Accent: e = row(n.children); e.asc += 0.1; break;
+        case MathKind::Accent:
+            e = row(n.children);
+            if (n.accent_brace) (n.accent_below ? e.desc : e.asc) += 0.35;
+            else e.asc += 0.1;
+            break;
         case MathKind::Matrix: {
             const size_t cols = static_cast<size_t>(std::max(1, n.cols));
             std::vector<double> widths(cols, 0.0);
@@ -784,7 +873,7 @@ Extent Measure(const MathNode &n, bool display, bool script) {
         case MathKind::Phantom: e = row(n.children); break;
     }
     if (HasScripts(n)) {
-        const bool limits = display && n.limits_above;
+        const bool limits = (display && n.limits_above) || n.limits_always;
         double sw = 0;
         for (const MathNode &sn : n.sub) {
             const Extent x = Measure(sn, display, true);
@@ -820,9 +909,18 @@ std::string TexToMathMlBody(const std::string &latex, bool display) {
     return w.Group({ParseTexMath(latex)});
 }
 
-std::string TexToStarMath(const std::string &latex) {
+std::string TexToStarMath(const std::string &latex, bool display) {
     StarMathWriter w;
+    w.display = display;
     return w.Node(ParseTexMath(latex));
+}
+
+std::string TexToLibreOfficeMathMl(const std::string &latex, bool display) {
+    std::string body = TexToMathMlBody(latex, display);
+    if (body.rfind("<mrow", 0) != 0) body = "<mrow>" + body + "</mrow>";
+    return std::string("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"") + (display ? "block" : "inline") +
+           "\"><semantics>" + body + "<annotation encoding=\"StarMath 5.0\">" + XmlEsc(TexToStarMath(latex, display)) +
+           "</annotation><annotation encoding=\"application/x-tex\">" + XmlEsc(latex) + "</annotation></semantics></math>";
 }
 
 bool TexNeedsLayout(const std::string &latex) { return NeedsLayout(ParseTexMath(latex)); }

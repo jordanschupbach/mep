@@ -131,7 +131,11 @@ Lines Signature(const Document &doc, const Keeps &k) {
             case BlockKind::Citation:
             // The document formats keep a slide's content, not the slide.
             case BlockKind::SlideBegin:
-            case BlockKind::SlideEnd: continue;
+            case BlockKind::SlideEnd:
+            // An export's own markup, which no import reads back as \raw.
+            case BlockKind::Raw:
+            case BlockKind::Define: continue;  // exports expand the calls
+            case BlockKind::Command: s = "X " + b.text; break;
         }
         sig.push_back(s);
     }
@@ -242,7 +246,14 @@ void TestReference() {
     Lines lines;
     CHECK(ReadLines(MEPML_REFERENCE_FILE, &lines));
     const std::string base_dir = std::filesystem::path(MEPML_REFERENCE_FILE).parent_path().string();
-    const Document doc = ParseWithImports(MEPML_REFERENCE_FILE, lines, [](const std::string &p, Lines *l) { return ReadLines(p, l); });
+    const ReadFileFn read = [](const std::string &p, Lines *l) { return ReadLines(p, l); };
+    const Document written = ParseWithImports(MEPML_REFERENCE_FILE, lines, read);
+    // What an export to `ext` holds: the document with its commands, \when
+    // and \raw expanded for that format -- the reference a round trip
+    // through it is compared with.
+    auto as_exported = [&](const char *ext) {
+        return ParseForExport(MEPML_REFERENCE_FILE, lines, read, ExportTags(FormatFromName(ext), written));
+    };
 
     struct Case {
         const char *ext = "";
@@ -255,6 +266,7 @@ void TestReference() {
     md.code_captions = true;
     const Case cases[] = {{"md", md}, {"org", Keeps()}, {"html", Keeps()}, {"rtf", office}, {"docx", office}, {"odt", office}};
     for (const Case &c : cases) {
+        const Document doc = as_exported(c.ext);
         std::string text;
         const Document back = RoundTrip(doc, base_dir, c.ext, &text);
         const std::string what = std::string("round trip through .") + c.ext;
@@ -285,6 +297,7 @@ void TestReference() {
     // The word-processor formats carry what they have no element for as
     // custom properties: metadata and options, and every inline construct.
     for (const char *ext : {"docx", "odt", "rtf"}) {
+        const Document doc = as_exported(ext);
         const Document back = RoundTrip(doc, base_dir, ext);
         // Every header key but Import (an export has its imports inlined).
         const auto keys = [](const Document &d) {
@@ -305,11 +318,64 @@ void TestReference() {
 
     // Plain text and LaTeX are export-only; they must at least produce the
     // words.
-    const std::string txt = ToPlainText(doc);
+    const std::string txt = ToPlainText(as_exported("txt"));
     CHECK(txt.find("Heading level 1") != std::string::npos);
     CHECK(txt.find("echo \"Hello, world\"") != std::string::npos);
-    const std::string tex = ToLatex(doc, base_dir);
+    const std::string tex = ToLatex(as_exported("tex"), base_dir);
     CHECK(tex.find("\\section") != std::string::npos);
+}
+
+// User commands, \when and \raw, through each export: every format gets
+// its own branch, raw markup lands only where it is meant to, and the
+// definition itself never shows.
+void TestCommands() {
+    const Lines src = {
+        "//? Title: Commands",
+        "",
+        "\\define(definition(term, body),",
+        "\\when(html,",
+        "\\raw(html, <div class=\"definition\" style=\"border-left:4px solid #2c7fb8\"><b>#term</b>)",
+        "",
+        "#body",
+        "",
+        "\\raw(html, </div>)",
+        ")",
+        "\\when(tex,",
+        "\\raw(tex, \\begin{quote}\\textbf{#term})",
+        "",
+        "#body",
+        "",
+        "\\raw(tex, \\end{quote})",
+        ")",
+        "\\otherwise(*Definition (#term).* #body)",
+        ")",
+        "",
+        "\\definition(Projection, The closest point, $\\hat{y}$, in a subspace.)",
+        "",
+        "Inline: \\raw(md, <kbd>md</kbd>)\\when(!md, plain) end.",
+    };
+    auto exported = [&](const char *ext) {
+        const Format f = FormatFromName(ext);
+        return ParseForExport("/tmp/commands.mepml", src, [](const std::string &, Lines *) { return false; },
+                              ExportTags(f, Parse(src)));
+    };
+    const std::string html = ToHtml(exported("html"));
+    CHECK(html.find("<div class=\"definition\" style=\"border-left:4px solid #2c7fb8\"><b>Projection</b>") != std::string::npos);
+    CHECK(html.find("<p>The closest point, \\(\\hat{y}\\), in a subspace.</p>\n</div>") != std::string::npos);
+    CHECK(html.find("Definition (") == std::string::npos && html.find("\\define(") == std::string::npos);
+    CHECK(html.find("Inline: plain end.") != std::string::npos);
+    const std::string tex = ToLatex(exported("tex"), ".");
+    CHECK(tex.find("\\begin{quote}\\textbf{Projection}") != std::string::npos);
+    CHECK(tex.find("\\end{quote}") != std::string::npos && tex.find("<div") == std::string::npos);
+    const std::string md = ToMarkdown(exported("md"));
+    CHECK(md.find("**Definition (Projection).** The closest point, $\\hat{y}$, in a subspace.") != std::string::npos);
+    CHECK(md.find("Inline: <kbd>md</kbd> end.") != std::string::npos);
+    const std::string org = ToOrg(exported("org"));
+    CHECK(org.find("*Definition (Projection).*") != std::string::npos && org.find("kbd") == std::string::npos);
+    // A command no \define names is written as it is.
+    const Lines unknown = {"Text \\nosuch(a, b)."};
+    CHECK(ToMarkdown(ParseForExport("/tmp/u.mepml", unknown, [](const std::string &, Lines *) { return false; }, {"md"}))
+              .find("\\nosuch(a, b)") != std::string::npos);
 }
 
 // The packages must be readable ZIPs with the parts other programs look
@@ -520,6 +586,19 @@ void TestPresentationMath() {
     CHECK(TexToStarMath("(a, b]") == "{\\( ital a , ital b \\]}");
     CHECK(TexToStarMath("\\text{if and}") == "{\"if and\"}");
     CHECK(TexToStarMath("\\Lambda") == "{nitalic Λ}");
+    // Braces and stacked notes, which LibreOffice's MathML import drops.
+    CHECK(TexToStarMath("\\underbrace{a}_{n}").find("underbrace {{ital n}}") != std::string::npos);
+    CHECK(TexToStarMath("\\overset{a}{=}").find("csup {{ital a}}") != std::string::npos);
+    CHECK(TexToStarMath("\\underbrace{x}_{> 0}").find("{{} > 0}") != std::string::npos);  // a relation needs a left side
+    // Display style: a big operator's limits over and under it, the next
+    // atom its body; inside a fraction, text style again.
+    CHECK(TexToStarMath("\\sum_{i=1}^{n} x_i", true).find("sum from{") != std::string::npos);
+    CHECK(TexToStarMath("\\sum_{i} x_i", false).find("sum") == std::string::npos);
+    CHECK(TexToStarMath("\\frac{\\sum_i x_i}{n}", true).find("sum from") == std::string::npos);
+    const std::string lo = TexToLibreOfficeMathMl("\\hat{x}", true);
+    CHECK(lo.find("encoding=\"StarMath 5.0\">{{hat") != std::string::npos && lo.find("encoding=\"application/x-tex\">\\hat{x}<") != std::string::npos);
+    CHECK(TexToMathMl("\\underbrace{a}_{n}", false).find("<munder><munder><mrow>") != std::string::npos);
+    CHECK(TexToOmml("\\underbrace{a}_{n}").find("<m:limLow><m:e><m:groupChr>") != std::string::npos);
 }
 }  // namespace
 
@@ -530,6 +609,7 @@ int main() {
     TestPresentation();
     TestPresentationMath();
     TestReference();
+    TestCommands();
     std::error_code ec;
     std::filesystem::remove_all(std::filesystem::path(Temp("x")).parent_path(), ec);
     std::printf("mepml convert tests passed\n");

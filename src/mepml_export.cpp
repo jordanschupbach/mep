@@ -23,6 +23,16 @@ namespace mepml {
 // --- formats --------------------------------------------------------------
 
 namespace {
+// A paragraph of nothing but \raw text: its text is the export's own
+// markup (a whole <w:p>, say), so it gets no paragraph around it.
+bool OnlyRaw(const std::vector<Inline> &ins) {
+    bool any = false;
+    for (const Inline &x : ins) {
+        if (x.kind == InlineKind::Raw) any = true;
+        else if (x.kind != InlineKind::Text || x.text.find_first_not_of(" \t\n") != std::string::npos) return false;
+    }
+    return any;
+}
 std::string LowerStr(std::string s) {
     for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
@@ -51,6 +61,29 @@ Format FormatFromPath(const std::string &path) {
     const size_t slash = path.find_last_of('/');
     if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) return Format::Unknown;
     return FormatFromName(path.substr(dot + 1));
+}
+
+std::vector<std::string> ExportTags(Format f, const Document &doc, bool beamer) {
+    const bool deck = beamer || IsPresentation(doc);
+    switch (f) {
+        case Format::Html: return deck && !beamer ? std::vector<std::string>{"html", "slides"} : std::vector<std::string>{"html"};
+        case Format::Latex:
+            return deck ? std::vector<std::string>{"beamer", "tex", "latex", "slides"} : std::vector<std::string>{"tex", "latex"};
+        case Format::Pdf:
+            return deck ? std::vector<std::string>{"pdf", "beamer", "tex", "latex", "slides"}
+                        : std::vector<std::string>{"pdf", "tex", "latex"};
+        case Format::Markdown: return {"md", "markdown"};
+        case Format::Org: return {"org"};
+        case Format::Rtf: return {"rtf"};
+        case Format::Docx: return {"docx", "word", "office"};
+        case Format::Odt: return {"odt", "office"};
+        case Format::Text: return {"txt", "text"};
+        case Format::Pptx: return {"pptx", "powerpoint", "office", "slides"};
+        case Format::Odp: return {"odp", "impress", "office", "slides"};
+        case Format::Mepml:
+        case Format::Unknown: break;
+    }
+    return {};
 }
 
 std::string FormatExtension(Format f) {
@@ -312,6 +345,8 @@ struct MdWriter {
             case InlineKind::CiteP: return "[@" + x.text + "]";
             case InlineKind::Math: return x.arg == "display" ? "$$" + x.text + "$$" : "$" + x.text + "$";
             case InlineKind::Comment: return "";
+            case InlineKind::Raw: return x.text;  // for this export: as it is
+            case InlineKind::Command: return Esc("\\" + x.arg + "(" + x.text + ")");  // no \define: as written
         }
         return "";
     }
@@ -469,6 +504,9 @@ struct MdWriter {
                 // slide formats -- beamer, pptx, odp -- are their own.)
                 case BlockKind::SlideBegin:
                 case BlockKind::SlideEnd: break;
+                case BlockKind::Define: break;
+                case BlockKind::Raw: blocks.push_back(b.code); break;
+                case BlockKind::Command: blocks.push_back(Esc(b.text)); break;
             }
         }
         // The bibliography's entries, as mepml, in a comment.
@@ -562,6 +600,8 @@ struct OrgWriter {
             case InlineKind::CiteP: return "[cite:@" + x.text + "]";
             case InlineKind::Math: return x.arg == "display" ? "\\[" + x.text + "\\]" : "\\(" + x.text + "\\)";
             case InlineKind::Comment: return "";
+            case InlineKind::Raw: return x.text;
+            case InlineKind::Command: return Text("\\" + x.arg + "(" + x.text + ")");
             // No org equivalent: the text, unstyled.
             case InlineKind::Small:
             case InlineKind::Big:
@@ -689,6 +729,9 @@ struct OrgWriter {
                 // slide formats -- beamer, pptx, odp -- are their own.)
                 case BlockKind::SlideBegin:
                 case BlockKind::SlideEnd: break;
+                case BlockKind::Define: break;
+                case BlockKind::Raw: blocks.push_back(b.code); break;
+                case BlockKind::Command: blocks.push_back(SafeLines(Text(b.text))); break;
             }
         }
         if (!doc.citations.empty()) blocks.push_back("#+begin_comment\nmepml\n" + CitationsMepml(doc) + "\n#+end_comment");
@@ -712,8 +755,9 @@ struct TextWriter {
     std::string Inl(const std::vector<Inline> &ins) {
         std::string o;
         for (const Inline &x : ins) {
-            if (x.kind == InlineKind::Text || x.kind == InlineKind::Verbatim) o += x.text;
+            if (x.kind == InlineKind::Text || x.kind == InlineKind::Verbatim || x.kind == InlineKind::Raw) o += x.text;
             else if (x.kind == InlineKind::Math) o += x.text;
+            else if (x.kind == InlineKind::Command) o += "\\" + x.arg + "(" + x.text + ")";  // no \define: as written
             else if (x.kind == InlineKind::Footnote) {
                 footnotes.emplace_back(x.number, Unwrap(Inl(x.children)));
                 o += "[" + std::to_string(x.number) + "]";
@@ -824,6 +868,9 @@ struct TextWriter {
                 // slide formats -- beamer, pptx, odp -- are their own.)
                 case BlockKind::SlideBegin:
                 case BlockKind::SlideEnd: break;
+                case BlockKind::Define: break;
+                case BlockKind::Raw: blocks.push_back(b.code); break;
+                case BlockKind::Command: blocks.push_back(b.text); break;
             }
         }
         std::string out = Join(blocks, "\n\n");
@@ -967,6 +1014,8 @@ struct RtfWriter {
                        Esc(CiteLabel(doc, x.text, x.kind == InlineKind::CiteP)) + "}}}";
             case InlineKind::Math: return "{\\cs31\\i " + Esc(x.text) + "}";
             case InlineKind::Comment: return "";
+            case InlineKind::Raw: return x.text;
+            case InlineKind::Command: return Esc("\\" + x.arg + "(" + x.text + ")");
         }
         return in;
     }
@@ -1021,7 +1070,7 @@ struct RtfWriter {
             bool show_code = true, show_results = true;
             if (b.kind == BlockKind::Code) CodeExports(doc, b, &show_code, &show_results);
             switch (b.kind) {
-                case BlockKind::Paragraph: body += Para("", Inl(b.inlines)); break;
+                case BlockKind::Paragraph: body += OnlyRaw(b.inlines) ? Inl(b.inlines) : Para("", Inl(b.inlines)); break;
                 case BlockKind::Heading: {
                     const int lvl = std::min(6, std::max(1, b.level));
                     body += Para("\\s" + std::to_string(lvl) + "\\sb240\\keepn\\b\\outlinelevel" + std::to_string(lvl - 1) + "\\fs" +
@@ -1137,6 +1186,9 @@ struct RtfWriter {
                 // slide formats -- beamer, pptx, odp -- are their own.)
                 case BlockKind::SlideBegin:
                 case BlockKind::SlideEnd: break;
+                case BlockKind::Define: break;
+                case BlockKind::Raw: body += b.code + "\n"; break;
+                case BlockKind::Command: body += Para("", Esc(b.text)); break;
             }
         }
         std::string out = "{\\rtf1\\ansi\\ansicpg1252\\deff0\\uc1\n{\\fonttbl";
@@ -1326,6 +1378,8 @@ struct DocxWriter {
                        Run(CiteLabel(doc, x.text, x.kind == InlineKind::CiteP), f) + "</w:hyperlink>";
             case InlineKind::Math: return OMath(x.text);
             case InlineKind::Comment: return "";
+            case InlineKind::Raw: return x.text;  // WordprocessingML runs, as written
+            case InlineKind::Command: return Run("\\" + x.arg + "(" + x.text + ")", f);
         }
         return Inl(x.children, f);
     }
@@ -1389,7 +1443,7 @@ struct DocxWriter {
             bool show_code = true, show_results = true;
             if (b.kind == BlockKind::Code) CodeExports(doc, b, &show_code, &show_results);
             switch (b.kind) {
-                case BlockKind::Paragraph: body += P("", Inl(b.inlines, none)); break;
+                case BlockKind::Paragraph: body += OnlyRaw(b.inlines) ? Inl(b.inlines, none) : P("", Inl(b.inlines, none)); break;
                 case BlockKind::Heading:
                     body += P(Style("Heading" + std::to_string(std::min(6, std::max(1, b.level)))), Inl(b.inlines, none));
                     break;
@@ -1515,6 +1569,9 @@ struct DocxWriter {
                 // slide formats -- beamer, pptx, odp -- are their own.)
                 case BlockKind::SlideBegin:
                 case BlockKind::SlideEnd: break;
+                case BlockKind::Define: break;
+                case BlockKind::Raw: body += b.code; break;
+                case BlockKind::Command: body += P("", Run(b.text, none)); break;
             }
         }
         return body;
@@ -1697,6 +1754,8 @@ struct OdtWriter {
                        Run(CiteLabel(doc, x.text, x.kind == InlineKind::CiteP), f) + "</text:a>";
             case InlineKind::Math: return "<text:span text:style-name=\"Math\">" + Run(x.text, OdtFmt()) + "</text:span>";
             case InlineKind::Comment: return "";
+            case InlineKind::Raw: return x.text;  // ODF inline XML, as written
+            case InlineKind::Command: return Run("\\" + x.arg + "(" + x.text + ")", f);
         }
         return Inl(x.children, f);
     }
@@ -1752,7 +1811,7 @@ struct OdtWriter {
             bool show_code = true, show_results = true;
             if (b.kind == BlockKind::Code) CodeExports(doc, b, &show_code, &show_results);
             switch (b.kind) {
-                case BlockKind::Paragraph: body += P("", Inl(b.inlines, none)); break;
+                case BlockKind::Paragraph: body += OnlyRaw(b.inlines) ? Inl(b.inlines, none) : P("", Inl(b.inlines, none)); break;
                 case BlockKind::Heading: {
                     const int lvl = std::min(6, std::max(1, b.level));
                     body += "<text:h text:style-name=\"Heading_20_" + std::to_string(lvl) + "\" text:outline-level=\"" +
@@ -1887,6 +1946,9 @@ struct OdtWriter {
                 // slide formats -- beamer, pptx, odp -- are their own.)
                 case BlockKind::SlideBegin:
                 case BlockKind::SlideEnd: break;
+                case BlockKind::Define: break;
+                case BlockKind::Raw: body += b.code; break;
+                case BlockKind::Command: body += P("", Run(b.text, none)); break;
             }
         }
         return body;

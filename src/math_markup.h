@@ -31,10 +31,18 @@ std::string TexToOmml(const std::string &latex, const std::string &run_props = s
 std::string TexToMathMlBody(const std::string &latex, bool display);
 
 // The expression in StarMath, LibreOffice Math's own language, set as
-// inline (text-style) maths: scripts beside a big operator, not over it.
+// inline (text-style) maths -- scripts beside a big operator, not over it
+// -- or, with `display`, with a big operator's limits over and under it.
 // LibreOffice lays a formula out from a StarMath annotation when there is
-// one, and it is the only way to choose the face of a formula's text.
-std::string TexToStarMath(const std::string &latex);
+// one, and it is the only way to choose the face of a formula's text; it
+// is also the only way to keep accents and braces, which LibreOffice's
+// MathML import drops (\hat, \bar and \underbrace all come out bare).
+std::string TexToStarMath(const std::string &latex, bool display = false);
+
+// A whole <math> element for a LibreOffice formula object: the MathML,
+// with the StarMath annotation LibreOffice actually lays it out from, and
+// the TeX (what mep reads back).
+std::string TexToLibreOfficeMathMl(const std::string &latex, bool display);
 
 // Whether the expression needs two dimensions -- a fraction, a root over
 // more than one symbol, a sub- and a superscript on one base, a big

@@ -670,6 +670,121 @@ from entry to entry, with the current one highlighted, and past the first
 or last line they move on to the text around it. On a contents entry,
 =Enter= jumps to its heading (=C-o= comes back).
 
+* Commands of your own
+
+=\define= makes a command. Its first argument is the command's name and
+its parameters, written the way a call is written, and the rest is the
+template the call is replaced by:
+
+#+begin_example
+\define(today, 29 September 2026)
+\define(term(word, meaning), *#word* (#meaning))
+
+Written \today(); a \term(monad, a monoid in the category of endofunctors).
+#+end_example
+
+In the template, =#word= (or =#{word}=, when a letter follows it, or
+=#1=, =#2= ... by position) is replaced by that argument, and =##= is a
+=#=. A =#= before anything else stays as it is, so an HTML colour such as
+=#2c7fb8= is safe. Arguments end at the call's first commas, one per
+parameter but the last, and the last argument takes the rest of the call,
+commas and all, as the text of =\color(red, text)= does. A command without
+parameters is called with empty parentheses: =\today()=. A template may
+run over any number of lines, blank ones included, and may call other
+commands (a command that calls itself is stopped after 64 levels).
+
+A call alone on its lines is a block: =\definition(...)= may hold several
+paragraphs, split by blank lines, like =\abstract(...)=. A call inside a
+paragraph is expanded in place. Code blocks, maths and =`verbatim`= text
+are never expanded.
+
+** Choosing by export
+
+=\when(formats, text)= keeps its text only in the exports it names, and an
+=\otherwise(text)= right after one or more =\when(...)= keeps its text when
+none of them matched:
+
+#+begin_example
+This page is \when(html, interactive) \when(pdf, printable) \otherwise(plain).
+#+end_example
+
+A format list is names separated by spaces or =|=: =\when(tex pdf, ...)=.
+=!html= means every export but HTML, and =*= means every export. Each
+export answers to several names, most specific first:
+
+| Export                    | Names                                        |
+|---------------------------+----------------------------------------------|
+| HTML                      | =html=, and =slides= for a presentation     |
+| LaTeX                     | =tex=, =latex=                               |
+| PDF                       | =pdf=, =tex=, =latex=                        |
+| Beamer (and a presentation's =tex=, =pdf=) | =beamer=, =tex=, =latex=, =slides=, and =pdf= for the PDF |
+| Word                      | =docx=, =word=, =office=                     |
+| OpenDocument text         | =odt=, =office=                              |
+| PowerPoint                | =pptx=, =powerpoint=, =office=, =slides=     |
+| Impress                   | =odp=, =impress=, =office=, =slides=         |
+| Markdown, Org, RTF, text  | =md= (=markdown=), =org=, =rtf=, =txt= (=text=) |
+
+The language server flags a name no export has, but it still works: it
+simply never matches.
+
+** Writing an export's own markup
+
+=\raw(formats, text)= writes its text, exactly as it is, into the exports
+it names and leaves it out of every other: HTML for =html=, LaTeX for
+=tex=, =pdf= and =beamer=, Markdown for =md=, and so on. On lines of its
+own it is a block, and the text may run over several lines:
+
+#+begin_example
+\raw(html, <kbd>Ctrl</kbd>)
+\raw(tex pdf,
+\clearpage
+)
+#+end_example
+
+The text's parentheses must balance. The slide decks (=pptx=, =odp=) take
+no raw markup. Use =\when= to give them ordinary mepml instead.
+
+** Putting it together: a definition box
+
+#+begin_example
+\define(definition(term, body),
+\when(html,
+\raw(html, <div class="definition" style="border-left: 4px solid #2c7fb8; padding: .5em 1em">)
+\raw(html, <b>Definition: #term</b>)
+
+#body
+
+\raw(html, </div>)
+)
+\when(beamer,
+\raw(beamer, \begin{block}{Definition: #term})
+
+#body
+
+\raw(beamer, \end{block})
+)
+\otherwise(
+*Definition (#term).* #body
+)
+)
+
+\definition(Orthogonal projection, The point of $S$ closest to $\mathbf{y}$.)
+#+end_example
+
+The HTML export draws a box, the Beamer deck a titled block, and every
+other export a paragraph that opens with the term in bold. The =#term=
+inside =\raw= goes in as written, so keep it to plain text and TeX maths.
+Put definitions in a file of their own and =//? Import:= it to share them
+between documents: commands defined in an imported file work in the
+document that imports it.
+
+The editor shows a document as written. A =\define= is drawn as code and
+a call keeps its name, so the source stays editable, and the exports are
+where the commands are expanded. The language server completes the
+commands you define (and export names inside =\when(= and =\raw(=), shows
+a command's template when you hover over a call, and flags calls of
+commands that are not defined and calls missing an argument.
+
 * Exporting and importing
 
 The play button in the pane's header (or =gr=, or =<leader>rr=) saves the
@@ -690,7 +805,8 @@ show. =beamer= is the =\slide= blocks as a Beamer PDF whatever the
 document's =Type=, and a slide-deck PDF opens sized to show a whole slide.
 
 =<leader>ke= (or =:MepmlExport=) exports the document beside its file,
-=notes.mepml= becoming =notes.docx= and so on. Imports are expanded and
+=notes.mepml= becoming =notes.docx= and so on. Imports are expanded,
+commands are expanded for the format (see Commands of your own), and
 pictures are embedded where the format can hold them:
 
 | Format                | Written as                                                  |

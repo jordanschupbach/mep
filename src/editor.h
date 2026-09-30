@@ -9443,6 +9443,12 @@ public:
      */
     mepml::Document MepmlParseCurrent(bool with_imports) const;
     /**
+     * @brief Parses the current buffer as an export sees it: imports expanded, user commands, \when and \raw resolved.
+     * @param tags What the export is (mepml::ExportTags), e.g. {"pdf", "beamer", "tex", "latex", "slides"}.
+     * @return The parsed, expanded document (mepml::ParseForExport).
+     */
+    mepml::Document MepmlParseForExport(const std::vector<std::string> &tags) const;
+    /**
      * @brief The current buffer's file as an absolute path (empty for an unnamed buffer).
      * @return The path; relative image and \import paths resolve against its directory.
      */

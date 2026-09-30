@@ -90,9 +90,13 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "mep-mepml: cannot read %s files\n", in.c_str());
         return 2;
     }
-    const mepml::Document doc = mepml::ParseWithImports(in_abs, lines, [](const std::string &p, std::vector<std::string> *l) {
-        return ReadLines(p, l);
-    });
+    // Commands, \when and \raw are expanded for this export: its tags say
+    // what it is (html, pdf, beamer, docx ...).
+    const std::vector<std::string> tags = mepml::ExportTags(fout, mepml::Parse(lines), beamer);
+    const mepml::Document doc = mepml::ParseForExport(
+        in_abs, lines, [](const std::string &p, std::vector<std::string> *l) { return ReadLines(p, l); }, tags);
+    for (const mepml::Diagnostic &d : doc.diagnostics)
+        if (d.message.rfind("expanding commands: ", 0) == 0) std::fprintf(stderr, "mep-mepml: %s\n", d.message.c_str());
     std::string latex;
     if (fout == mepml::Format::Pdf || fout == mepml::Format::Latex) {
         latex = beamer ? mepml::ToBeamer(doc, base_dir, &err) : mepml::ToLatex(doc, base_dir);

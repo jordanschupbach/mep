@@ -937,6 +937,90 @@ int main() {
         CHECK(!ParseColor("notacolor", &rgb));
     }
 
+    // --- User commands: \define, calls, \when/\otherwise, \raw.
+    {
+        const Lines src = {
+            "\\define(box(title, body),",       // 0
+            "\\when(html, <b>#title</b>: #body)",  // 1
+            "\\otherwise(#{title}!: #body)",     // 2
+            ")",                                 // 3
+            "",                                  // 4
+            "\\define(today, 29 September 2026)",  // 5
+            "",                                  // 6
+            "\\box(Note, one, two, three)",      // 7  a block of its own
+            "",                                  // 8
+            "Written \\today() by \\who(me) \\raw(html, <kbd>k</kbd>).",  // 9
+            "\\raw(tex|pdf,",                    // 10
+            "\\newpage",                         // 11
+            ")",                                 // 12
+            "\\box(only)",                       // 13
+        };
+        const Document d = Parse(src);
+        CHECK(d.blocks.size() == 6);
+        CHECK(d.blocks[0].kind == BlockKind::Define && d.blocks[0].keyword == "box" && d.blocks[0].line_end == 3);
+        CHECK(d.blocks[0].field_order == Lines({"title", "body"}));
+        CHECK(d.blocks[0].code == "\\when(html, <b>#title</b>: #body)\n\\otherwise(#{title}!: #body)");
+        CHECK(d.blocks[0].code_line_start == 1 && d.blocks[0].code_line_end == 2);
+        CHECK(d.commands.size() == 2 && d.commands.at("today").params.empty() && d.commands.at("today").body == "29 September 2026");
+        CHECK(d.blocks[2].kind == BlockKind::Command && d.blocks[2].keyword == "box" && d.blocks[2].value == "Note, one, two, three");
+        // A paragraph holds inline calls and raw text.
+        const Block &para = d.blocks[3];
+        CHECK(para.kind == BlockKind::Paragraph);
+        const Inline *today = FindKind(para.inlines, InlineKind::Command);
+        CHECK(today && today->arg == "today" && today->text.empty());
+        const Inline *raw = FindKind(para.inlines, InlineKind::Raw);
+        CHECK(raw && raw->arg == "html" && raw->text == "<kbd>k</kbd>");
+        CHECK(d.blocks[4].kind == BlockKind::Raw && d.blocks[4].lang == "tex|pdf" && d.blocks[4].code == "\\newpage");
+        // An unknown command and a missing argument are flagged; \today() is fine.
+        int unknown = 0, missing = 0;
+        for (const Diagnostic &g : d.diagnostics) {
+            unknown += g.message.find("unknown command \\who") == 0 && g.line == 9;
+            missing += g.message.find("missing argument: \\box") == 0 && g.line == 13;
+        }
+        CHECK(unknown == 1 && missing == 1 && d.diagnostics.size() == 2);
+        // Highlighting: the call's name is a directive; the define's body code.
+        const std::vector<Span> spans = Highlight(d);
+        CHECK(HasSpan(spans, 7, 0, 5, kDirective, false));
+        CHECK(HasSpan(spans, 1, 0, 33, kCode, false));
+
+        // Expansion, per export.
+        const Lines html = ExpandCommands(src, d.commands, {"html"});
+        CHECK(html == Lines({"", "", "<b>Note</b>: one, two, three", "",
+                             "Written 29 September 2026 by \\who(me) \\raw(html, <kbd>k</kbd>).", "<b>only</b>:"}));
+        const Lines pdf = ExpandCommands(src, d.commands, {"pdf", "tex", "latex"});
+        CHECK(pdf == Lines({"", "", "Note!: one, two, three", "", "Written 29 September 2026 by \\who(me).", "\\raw(tex|pdf,",
+                            "\\newpage", ")", "only!:"}));
+        // Formats: lists, `|`, negation, `*`.
+        CHECK(FormatsMatch("html tex", {"tex", "latex"}) && FormatsMatch("html|slides", {"html", "slides"}));
+        CHECK(!FormatsMatch("!html", {"html"}) && FormatsMatch("!html", {"md"}) && FormatsMatch("*", {"docx"}));
+        CHECK(!FormatsMatch("", {"html"}) && !FormatsMatch("beamer", {"tex", "latex"}));
+        // Parameters: #name, #{name}, #1; ## is #; a colour is not a parameter.
+        const Lines p = {"\\define(c(x), ## #x #{x}y #1 #1a #2c7fb8 #nope)", "\\c(v)"};
+        CHECK(ExpandCommands(p, Parse(p).commands, {"html"}) == Lines({"# v vy v #1a #2c7fb8 #nope"}));
+        // Commands call commands; one calling itself stops, with a message.
+        const Lines nest = {"\\define(a(x), [\\b(#x)])", "\\define(b(y), <#y>)", "\\a(z)", "", "\\define(loop, \\loop())", "\\loop()"};
+        std::vector<std::string> errors;
+        const Lines out = ExpandCommands(nest, Parse(nest).commands, {"md"}, &errors);
+        CHECK(out.size() >= 1 && out[0] == "[<z>]");
+        CHECK(errors.size() == 1 && errors[0].find("64 deep") != std::string::npos);
+        // Code, maths and verbatim are left alone.
+        const Lines lit = {"\\define(x, X)", "`\\x()` $\\x()$ \\x()", "```", "\\x()", "```"};
+        CHECK(ExpandCommands(lit, Parse(lit).commands, {"md"}) == Lines({"`\\x()` $\\x()$ X", "```", "\\x()", "```"}));
+        // ParseForExport picks up commands from an import.
+        const auto read = [](const std::string &path, Lines *l) {
+            if (path != "/d/defs.mepml") return false;
+            *l = {"\\define(hi(n), Hello, #n.)"};
+            return true;
+        };
+        const Document ex = ParseForExport("/d/m.mepml", {"//? Import: defs.mepml", "", "\\hi(you)"}, read, {"html"});
+        CHECK(ex.export_tags == Lines({"html"}));
+        bool hello = false;
+        for (const Block &b : ex.blocks) hello = hello || (b.kind == BlockKind::Paragraph && InlinePlainText(b.inlines) == "Hello, you.");
+        CHECK(hello);
+        // Built-in names cannot be redefined.
+        CHECK(Parse({"\\define(image(p), x)"}).commands.empty());
+    }
+
     // --- The reference file parses without surprises.
     {
         Lines src;
@@ -968,6 +1052,7 @@ int main() {
         CHECK(count[BlockKind::Bibliography] == 1);
         CHECK(count[BlockKind::Abstract] == 1);
         CHECK(count[BlockKind::SlideBegin] == 2 && count[BlockKind::SlideEnd] == 2);
+        CHECK(count[BlockKind::Define] >= 1 && count[BlockKind::Raw] >= 1 && count[BlockKind::Command] >= 1);
         CHECK(d.footnote_count == 1);
         CHECK(d.cite_order.size() == 2);
         // Every inline kind appears somewhere.
@@ -987,7 +1072,7 @@ int main() {
                              InlineKind::Highlight, InlineKind::Strike, InlineKind::Insert, InlineKind::Delete,
                              InlineKind::Verbatim, InlineKind::Link, InlineKind::Font, InlineKind::FontSize,
                              InlineKind::Color, InlineKind::Footnote, InlineKind::Cite, InlineKind::CiteP,
-                             InlineKind::Math, InlineKind::Comment}) {
+                             InlineKind::Math, InlineKind::Comment, InlineKind::Raw, InlineKind::Command}) {
             if (!kinds[k]) std::fprintf(stderr, "reference file lacks inline kind %d\n", static_cast<int>(k));
             CHECK(kinds[k] > 0);
         }

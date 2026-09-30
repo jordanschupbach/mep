@@ -104,7 +104,7 @@ Lists use -, * or + for bullets and 1. or 1) for numbers; indent to nest:
 1. numbered
 2. and another
 
-Commands are \name(arguments, text): the arguments end at the first commas,
+Commands are `\name(arguments, text)`: the arguments end at the first commas,
 so the text may hold commas of its own, and an unmatched parenthesis in it
 takes a backslash, \). The older \fs{12}{braced} spelling still reads, as
 do the @image{...}, @caption{...} and other @name{...} directives; only the
@@ -312,6 +312,28 @@ and `@slide{` ... `}` work too). A slide's first heading is its title.
 @slide{
 Two slides in a row, this one untitled.
 }
+
+User commands: `\define(name(params), template)` makes a command of your
+own, and `\name(args)` calls it -- the template with `#param` replaced by
+the arguments. A template (or any text) can choose what each export gets
+with `\when(formats, text)` and `\otherwise(text)`, and write an export's
+own markup with `\raw(formats, text)`.
+
+\define(definition(term, body),
+\raw(html, <div class="definition">)
+
+*Definition (#term).* #body
+
+\raw(html, </div>)
+)
+
+\definition(Literate programming, Prose and code in one document, the code
+run and its results kept beside it.)
+
+This paragraph was exported as \when(html, a web page) \otherwise(anything
+but a web page)\raw(tex, \footnote{typeset by \LaTeX}).
+
+\raw(tex, \clearpage)
 
 A bibtex-style entry works as well (so a .bib file can be @imported):
 

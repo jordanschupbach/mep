@@ -96,6 +96,10 @@ module.exports = grammar({
     $._attribute_start, // zero-width: the line is a \caption or \alttext
     $._slide_start, // zero-width: the line opens a slide
     $._slide_end, // zero-width: the line closes the open slide
+    $._command_block_start, // zero-width: \define(, or a \raw( / user command's call on lines of its own
+    $._opaque_text, // a \define's template or a \raw's text: up to its closing `)`, unparsed
+    $._cmd_raw, // `\raw` before (formats, text)
+    $._cmd_user, // `\name` of a user command (or \when, \otherwise) before (args)
     $._error_sentinel,
   ],
 
@@ -140,6 +144,9 @@ module.exports = grammar({
       $.toc,
       $.abstract,
       $.slide,
+      $.define,
+      $.raw_block,
+      $.command_block,
       $.caption,
       $.alttext,
       $.paragraph,
@@ -310,6 +317,45 @@ module.exports = grammar({
       $._line_end,
     ),
 
+    // \define(name(p1, p2), template): a user command. The template is
+    // text -- parsed only where a call expands it.
+    define: $ => seq(
+      $._command_block_start, '\\', 'define', '(',
+      optional($._ws), field('name', $.command_name),
+      optional(seq(
+        alias(/[ \t]*\(/, '('),
+        optional(seq(field('parameter', $.parameter), repeat(seq($._comma, field('parameter', $.parameter))))),
+        alias(/[ \t]*\)/, ')'),
+      )),
+      optional(seq(alias(/[ \t]*,/, ','), optional(field('template', alias($._opaque_text, $.template))))),
+      ')',
+      $._line_end,
+    ),
+    command_name: _ => /[A-Za-z]+/,
+    parameter: _ => /[A-Za-z_][A-Za-z0-9_]*/,
+
+    // \raw(formats, text) on lines of its own: the exports named get the
+    // text as it is.
+    raw_block: $ => seq(
+      $._command_block_start, '\\', 'raw', '(',
+      optional($._ws), field('formats', $.formats), alias(/[ \t]*,/, ','),
+      optional(field('text', alias($._opaque_text, $.raw_text))),
+      ')',
+      $._line_end,
+    ),
+    formats: _ => /[^,()\s][^,()\n]*/,
+
+    // A user command's call on lines of its own (its arguments prose over
+    // any number of lines, as an abstract's are); \when(...) and
+    // \otherwise(...) too.
+    command_block: $ => seq(
+      $._command_block_start, '\\', field('name', $.command_name),
+      alias($._abstract_open, '('),
+      optional(alias(repeat1(choice($._inline, $._abstract_break)), $.content)),
+      alias($._paren_close, ')'),
+      $._line_end,
+    ),
+
     // \slide( on a line of its own, the slide's content -- any blocks --
     // and a line holding just its `)`; or `\slide{` / `@slide{` ... `}`.
     // Slides do not nest (the scanner opens no slide inside one).
@@ -397,6 +443,8 @@ module.exports = grammar({
       $.footnote,
       $.cite,
       $.citep,
+      $.raw,
+      $.command,
     ),
 
     ...Object.fromEntries(EMPHASIS.map(([name, open, close]) => [
@@ -430,6 +478,17 @@ module.exports = grammar({
     footnote: $ => seq(alias($._cmd_fn, '\\fn'), choice($._paren_content_group, $._content_group)),
     cite: $ => seq(alias($._cmd_cite, '\\cite'), choice($._paren_arg_group, $._arg_group)),
     citep: $ => seq(alias($._cmd_citep, '\\citep'), choice($._paren_arg_group, $._arg_group)),
+
+    // \raw(formats, text) in prose, and a user command's call.
+    raw: $ => seq(
+      alias($._cmd_raw, '\\raw'),
+      alias($._paren_open, '('),
+      optional(alias($._arg_text, $.formats)),
+      alias($._arg_comma, ','),
+      optional(alias($._opaque_text, $.raw_text)),
+      alias($._paren_close, ')'),
+    ),
+    command: $ => seq(alias($._cmd_user, $.command_name), $._paren_content_group),
 
     _paren_arg_group: $ => seq(
       alias($._paren_open, '('),

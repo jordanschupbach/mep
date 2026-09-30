@@ -72,12 +72,16 @@ struct MathNode {
     // name like \lim can set it without also being scaled up.
     bool big_op = false;
     bool limits_above = false;
+    // Scripts that stack over/under this atom in every style, not just
+    // display: \underbrace's label, \overset's annotation.
+    bool limits_always = false;
 
     std::string open_delim, close_delim;  // Fenced: either may be empty (`\left.`)
 
     std::string accent;           // Accent: the mark to draw
     bool accent_below = false;    // \underline et al rather than \hat et al
     bool accent_stretch = false;  // \overline/\widehat: as wide as the base, not one glyph
+    bool accent_brace = false;    // \overbrace/\underbrace: a horizontal curly brace, not a rule
 
     bool frac_bar = true;  // Frac: \binom and \atop stack with no rule
 

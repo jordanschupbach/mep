@@ -75,6 +75,11 @@ enum class InlineKind {
     Math,         // $x$ or \(x\); `text` is the TeX, `alt` any \alttext();
                   // `arg` is "display" for an inline $$x$$
     Comment,      // `text // comment` to the end of the line (not rendered)
+    Raw,          // \raw(formats, text): `arg` the formats it is for, `text`
+                  // written into those exports verbatim (see ExpandCommands)
+    Command,      // \name(args) calling a user command (\define): `arg` the
+                  // name, `text` the arguments as written, `children` them
+                  // parsed as prose -- how the editor shows the call
 };
 
 struct Inline {
@@ -119,6 +124,18 @@ enum class BlockKind {
     // next one starts, or at the end of the document.
     SlideBegin,
     SlideEnd,
+    // \define(name(params), template): a user command. `keyword` is its
+    // name, `field_order` its parameters, `code` the template and
+    // code_line_start..code_line_end the lines it spans. Exports expand
+    // the calls and drop the definition (ExpandCommands).
+    Define,
+    // \raw(formats, text) on lines of its own: `lang` the formats, `code`
+    // the text, written verbatim by those exports and left out of others.
+    Raw,
+    // \name(args) on lines of its own, calling a user command (a paragraph
+    // may hold calls too, as InlineKind::Command): `keyword` the name,
+    // `value` the arguments as written, `inlines` them parsed as prose.
+    Command,
 };
 
 enum class Align { Default, Left, Center, Right };
@@ -230,6 +247,18 @@ struct Citation {
     int line = -1;
 };
 
+// A user command, from `\define(name(p1, p2), template)`. A call
+// `\name(a1, a2)` becomes the template with `#p1`/`#1` replaced by the
+// arguments; the last parameter takes the rest of the call, commas and
+// all, as the built-in commands' text does.
+struct UserCommand {
+    std::string name;
+    std::vector<std::string> params;
+    std::string body;
+    int line = -1;       // the \define's line
+    std::string origin;  // "" for this document, else the imported file
+};
+
 struct Document {
     std::string title;
     std::vector<std::pair<std::string, std::string>> meta;  // every //? Key: value, in order
@@ -237,6 +266,11 @@ struct Document {
     std::vector<Block> blocks;
     std::map<std::string, Citation> citations;
     std::vector<std::string> cite_order;  // keys in first-cited order
+    std::map<std::string, UserCommand> commands;  // every \define, imports' too
+    // What ParseForExport expanded the document for (empty: as written).
+    // The HTML export writes a \raw for HTML as it is and wraps any other
+    // (LaTeX, on its way through HTML to a .tex) for the next step.
+    std::vector<std::string> export_tags;
     int footnote_count = 0;
     std::vector<Diagnostic> diagnostics;
 
@@ -306,6 +340,41 @@ std::vector<Inline> ParseInlines(const std::string &text, int *footnote_counter 
 using ReadFileFn = std::function<bool(const std::string &path, std::vector<std::string> *lines)>;
 std::string ResolvePath(const std::string &base_file, const std::string &path);
 Document ParseWithImports(const std::string &file, const std::vector<std::string> &lines, const ReadFileFn &read);
+
+// ---------------------------------------------------------------------------
+// User commands and export conditions.
+//
+// `\define(name(params), template)` makes a command; `\when(formats,
+// text)` keeps its text only in the exports it names, and an
+// `\otherwise(text)` right after one or more \when()s keeps its text when
+// none of them matched; `\raw(formats, text)` writes text verbatim into
+// the exports it names (HTML, LaTeX, Markdown ...). These are expanded as
+// text, before the export parses the document -- the editor and the
+// language server see the document as written.
+//
+// An export is a list of tags, most specific first: a PDF of an article is
+// {"pdf", "tex", "latex"}, a presentation's HTML {"html", "slides"} (see
+// ExportTags in mepml_convert.h). `formats` is a list of names separated by
+// spaces or `|`; it matches when any name is one of the tags (`*` matches
+// every export), and a `!name` excludes an export (`!html`).
+bool FormatsMatch(const std::string &formats, const std::vector<std::string> &tags);
+// The names \when, \otherwise and \raw understand: every tag some export
+// has. Others still work -- they just never match -- so a document can
+// name formats a later mep adds.
+const std::vector<std::string> &KnownFormatTags();
+// `lines` with the user commands called in them expanded for an export
+// tagged `tags`, \when/\otherwise resolved, \raw kept only for a matching
+// export and \define blocks removed. Code, maths, comments and header lines
+// are left alone. Problems (a missing argument, runaway recursion) are
+// appended to *errors as "line N: message".
+std::vector<std::string> ExpandCommands(const std::vector<std::string> &lines,
+                                        const std::map<std::string, UserCommand> &commands,
+                                        const std::vector<std::string> &tags,
+                                        std::vector<std::string> *errors = nullptr);
+// The document as an export tagged `tags` sees it: its commands (and its
+// imports' commands) expanded in it and in every file it imports.
+Document ParseForExport(const std::string &file, const std::vector<std::string> &lines, const ReadFileFn &read,
+                        const std::vector<std::string> &tags);
 
 // ---------------------------------------------------------------------------
 // Editor highlighting. One span per styled run on one line; a construct

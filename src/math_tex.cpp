@@ -822,8 +822,32 @@ struct MathParser {
             n.accent = acc->second.cp != 0 ? MathUtf8(acc->second.cp) : "";
             n.accent_below = acc->second.below;
             n.accent_stretch = acc->second.stretch;
+            // A brace's label (its `_{..}`/`^{..}`) always sits under/over it.
+            n.accent_brace = name == "overbrace" || name == "underbrace";
+            n.limits_always = n.accent_brace;
             n.children.push_back(ParseGroupOrAtom());
             return n;
+        }
+        if (name == "overset" || name == "underset" || name == "stackrel") {
+            // `\overset{a}{b}`: b, with a stacked over it as a limit. The
+            // stack keeps b's class (`\overset{iid}{\sim}` is a relation),
+            // and sits inside a row of its own so that a trailing `^`/`_`
+            // attaches beside the whole stack rather than replacing `a`.
+            MathNode note = ParseGroupOrAtom();
+            MathNode base = ParseGroupOrAtom();
+            MathClass cls = base.cls;
+            if (base.kind == MathKind::Row && base.children.size() == 1) cls = base.children[0].cls;
+            MathNode stack;
+            stack.kind = MathKind::Row;
+            stack.cls = cls;
+            stack.limits_always = true;
+            stack.children.push_back(std::move(base));
+            (name == "underset" ? stack.sub : stack.sup).push_back(std::move(note));
+            MathNode outer;
+            outer.kind = MathKind::Row;
+            outer.cls = cls;
+            outer.children.push_back(std::move(stack));
+            return outer;
         }
         if (auto fn = FunctionNameTable().find(name); fn != FunctionNameTable().end()) {
             return FunctionNode(name, fn->second);

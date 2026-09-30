@@ -9,4 +9,7 @@
   (comment)
   (callout)
   (abstract)
+  (define)
+  (raw_block)
+  (command_block)
 ] @fold

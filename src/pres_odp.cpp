@@ -711,7 +711,7 @@ public:
         f.x = std::min(s.x, s.x + s.w) + (std::labs(s.w) - f.w) / 2;
         f.y = std::min(s.y, s.y + s.h) + (std::labs(s.h) - f.h) / 2;
         const std::string obj = "Object " + Num(static_cast<long>(formulas.size()) + 1);
-        formulas.emplace_back(obj, TexToMathMl(r.tex, true));
+        formulas.emplace_back(obj, TexToLibreOfficeMathMl(r.tex, true));
         return "<draw:frame draw:style-name=\"" + GraphicStyle(Shape{}, true) + "\" draw:layer=\"layout\"" + name + " " + Geom(f) +
                "><draw:object xlink:href=\"./" + obj + "\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/></draw:frame>";
     }

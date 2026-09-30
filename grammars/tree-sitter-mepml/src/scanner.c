@@ -80,6 +80,10 @@ enum TokenType {
     ATTRIBUTE_START,
     SLIDE_START,
     SLIDE_END,
+    COMMAND_BLOCK_START,
+    OPAQUE_TEXT,
+    CMD_RAW,
+    CMD_USER,
     ERROR_SENTINEL,
 };
 
@@ -264,19 +268,57 @@ static bool is_backslash_directive(const char *name) {
     return false;
 }
 
-// Just past a line's leading backslash: reads the name after it and says
-// whether it starts a directive (its `(`, or nothing, must follow).
-static bool backslash_directive_follows(TSLexer *lexer, char name[16]) {
-    memset(name, 0, 16);
+
+// Names mepml gives a meaning after `\\` (IsBuiltinCommandName in
+// mepml_doc.cpp); any other `\\name(` calls a user command.
+static bool is_builtin_command(const char *name) {
+    static const char *const kNames[] = {"f",        "fs",    "color",  "fn",           "cite",
+                                         "citep",    "alttext", "caption", "image",       "import",
+                                         "citation", "toc",   "bibliography", "printbibliography",
+                                         "abstract", "slide", "define", "raw"};
+    for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
+        if (strcmp(name, kNames[i]) == 0) return true;
+    return false;
+}
+
+// Reads a name of letters (the lexer just past its backslash); a name too
+// long for `name` is cut short but still read whole.
+static int read_name(TSLexer *lexer, char *name, int cap) {
     int n = 0;
-    while (is_alpha(la(lexer)) && n < 15) {
-        name[n++] = (char)la(lexer);
+    while (is_alpha(la(lexer))) {
+        if (n < cap - 1) name[n] = (char)la(lexer);
+        n++;
         adv(lexer);
     }
-    if (n == 0 || is_alpha(la(lexer)) || !is_backslash_directive(name)) return false;
-    const int32_t next = la(lexer);
-    return next == '(' || is_blank(next) || at_eol(lexer);
+    name[n < cap - 1 ? n : cap - 1] = 0;
+    return n;
 }
+
+// The lexer at a `(`: whether its group closes (over any number of lines,
+// blank ones too) at the end of a line, a `// comment` allowed after it
+// (CommandBlockAt in mepml_doc.cpp). *crossed (when given): whether the
+// lexer has left the line.
+static bool group_ends_line_crossed(TSLexer *lexer, bool *crossed) {
+    int depth = 0;
+    while (true) {
+        const int32_t c = la(lexer);
+        if (c == 0 && lexer->eof(lexer)) return false;
+        if (c == '\n' && crossed) *crossed = true;
+        adv(lexer);
+        if (c == '\\') {
+            if (!lexer->eof(lexer)) adv(lexer);
+            continue;
+        }
+        if (c == '(') depth++;
+        if (c == ')' && --depth == 0) break;
+    }
+    while (is_blank(la(lexer))) adv(lexer);
+    if (at_eol(lexer)) return true;
+    if (la(lexer) != '/') return false;
+    adv(lexer);
+    return la(lexer) == '/';
+}
+static bool group_ends_line(TSLexer *lexer) { return group_ends_line_crossed(lexer, NULL); }
 
 // --- lookahead scope ------------------------------------------------------------
 //
@@ -322,9 +364,18 @@ static bool line_starts_block(TSLexer *lexer, int32_t slide_close) {
     }
     if (c == '\\') {
         adv(lexer);
-        char name[16];
-        if (la(lexer) == '[' || backslash_directive_follows(lexer, name)) return true;
-        return strcmp(name, "slide") == 0 && (la(lexer) == '(' || la(lexer) == '{');  // a slide opens
+        if (la(lexer) == '[') return true;
+        char name[64];
+        const int n = read_name(lexer, name, (int)sizeof name);
+        const int32_t next = la(lexer);
+        if (n == 0) return false;
+        if (n < (int)sizeof name && is_backslash_directive(name) && (next == '(' || is_blank(next) || at_eol(lexer))) return true;
+        if (strcmp(name, "slide") == 0 && (next == '(' || next == '{')) return true;  // a slide opens
+        // \define(, or \raw( / a user command's call ending a line.
+        if (next != '(') return false;
+        if (strcmp(name, "define") == 0) return true;
+        if (n < (int)sizeof name && strcmp(name, "raw") != 0 && is_builtin_command(name)) return false;
+        return group_ends_line(lexer);
     }
     if (c == '|' || c == '@') return true;  // (approximate: tables, directives)
     if (c == '>') {
@@ -650,9 +701,9 @@ static bool is_link_bar(TSLexer *lexer) {
 
 // Reads a command's name (the lexer just past the backslash); false when it
 // is too long to be one.
-static bool read_command_name(TSLexer *lexer, char name[8]) {
+static bool read_command_name(TSLexer *lexer, char name[64]) {
     int n = 0;
-    while (is_alpha(la(lexer)) && n < 7) {
+    while (is_alpha(la(lexer)) && n < 63) {
         name[n++] = (char)la(lexer);
         adv(lexer);
     }
@@ -675,7 +726,20 @@ static bool scan_command_named(Scanner *s, TSLexer *lexer, const bool *valid, co
     else if (strcmp(name, "fn") == 0) tok = CMD_FN, groups = 1;
     else if (strcmp(name, "cite") == 0) tok = CMD_CITE, groups = 1;
     else if (strcmp(name, "citep") == 0) tok = CMD_CITEP, groups = 1;
-    else return false;
+    else if (strcmp(name, "raw") == 0) {
+        // \raw(formats, text): its first comma ends the formats.
+        if (!valid[CMD_RAW] || la(lexer) != '(') return false;
+        lexer->mark_end(lexer);
+        bool comma = false;
+        if (!skip_group_comma(s, lexer, &comma) || !comma) return false;
+        return emit(s, lexer, CMD_RAW, 'w');
+    } else if (!is_builtin_command(name)) {
+        // A user command's call (\when and \otherwise too): `\name(...)`.
+        if (!valid[CMD_USER] || la(lexer) != '(') return false;
+        lexer->mark_end(lexer);
+        if (!skip_group(s, lexer)) return false;
+        return emit(s, lexer, CMD_USER, name[n - 1]);
+    } else return false;
     if (!valid[tok] || (la(lexer) != '{' && la(lexer) != '(')) return false;
     lexer->mark_end(lexer);
     int32_t last = name[n - 1];
@@ -693,7 +757,7 @@ static bool scan_command_named(Scanner *s, TSLexer *lexer, const bool *valid, co
 }
 
 static bool scan_command(Scanner *s, TSLexer *lexer, const bool *valid) {
-    char name[8];
+    char name[64];
     return read_command_name(lexer, name) && scan_command_named(s, lexer, valid, name);
 }
 
@@ -1338,11 +1402,13 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
     }
 
     // \name(...) directives.
-    if (c == '\\' && (valid[DIRECTIVE_START] || valid[ATTRIBUTE_START] || valid[SLIDE_START])) {
+    if (c == '\\' && (valid[DIRECTIVE_START] || valid[ATTRIBUTE_START] || valid[SLIDE_START] || valid[COMMAND_BLOCK_START])) {
         adv(lexer);
         if (is_alpha(la(lexer))) {
-            char name[16];
-            const bool directive = backslash_directive_follows(lexer, name);
+            char name[64];
+            const int n = read_name(lexer, name, (int)sizeof name);
+            const bool directive = n < 16 && is_backslash_directive(name) &&
+                                   (la(lexer) == '(' || is_blank(la(lexer)) || at_eol(lexer));
             // \slide( or \slide{ opens a slide (not inside another one).
             if (!directive && strcmp(name, "slide") == 0 && (la(lexer) == '(' || la(lexer) == '{') && !s->slide &&
                 valid[SLIDE_START]) {
@@ -1360,6 +1426,18 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
                     lexer->result_symbol = attribute ? ATTRIBUTE_START : DIRECTIVE_START;
                     return true;
                 }
+            }
+            // \define(, and \raw( or a user command's call whose group
+            // ends a line: a block of its own.
+            if (valid[COMMAND_BLOCK_START] && la(lexer) == '(' &&
+                (strcmp(name, "define") == 0 || strcmp(name, "raw") == 0 || n >= (int)sizeof name || !is_builtin_command(name))) {
+                bool crossed = false;
+                if (strcmp(name, "define") == 0 || group_ends_line_crossed(lexer, &crossed)) {
+                    s->context = CTX_LINE;
+                    lexer->result_symbol = COMMAND_BLOCK_START;
+                    return true;
+                }
+                if (crossed) return fallback_line_after(s, lexer, valid, indent > 0, kNever);
             }
             return fallback_line(s, lexer, valid, indent > 0);
         }
@@ -1553,6 +1631,31 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
     if (valid[ERROR_SENTINEL]) return false;
     const bool col0 = lexer->get_column(lexer) == 0;
 
+    // A \define's template or a \raw's text: everything up to its group's
+    // closing `)` -- over any number of lines, blank ones too -- unparsed
+    // (ReadGroup in mepml_doc.cpp: only parentheses nest, `\x` escapes).
+    if (valid[OPAQUE_TEXT] && la(lexer) != ')' && !lexer->eof(lexer)) {
+        int depth = 0;
+        int32_t last = 0;
+        while (!lexer->eof(lexer)) {
+            const int32_t c = la(lexer);
+            if (c == ')' && depth == 0) break;
+            adv(lexer);
+            last = c;
+            if (c == '\\') {
+                if (!lexer->eof(lexer)) {
+                    last = la(lexer);
+                    adv(lexer);
+                }
+                continue;
+            }
+            if (c == '(') depth++;
+            if (c == ')') depth--;
+        }
+        lexer->mark_end(lexer);
+        return emit(s, lexer, OPAQUE_TEXT, last);
+    }
+
     // Code block body: everything up to the closing fence, as one token.
     if (col0 && (valid[CODE_CONTENT] || valid[FENCE_CLOSE])) {
         lexer->mark_end(lexer);
@@ -1642,7 +1745,7 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
                            valid[LIST_CONTINUATION] || valid[TABLE_ROW_START] || valid[RESULT_END] ||
                            valid[RESULT_END_ATTACHED] || valid[RESULT_BEGIN_MARKDOWN] ||
                            valid[DIRECTIVE_START] || valid[ATTRIBUTE_START] || valid[FENCE_OPEN] ||
-                           valid[SLIDE_START] || valid[SLIDE_END];
+                           valid[SLIDE_START] || valid[SLIDE_END] || valid[COMMAND_BLOCK_START];
         if (block_valid) {
             const bool ok = scan_line_start(s, lexer, valid);
             if (ok && lexer->result_symbol != TABLE_ROW_START && lexer->result_symbol != TABLE_DELIMITER_ROW)
@@ -1716,7 +1819,7 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
     if (valid[ALTTEXT_MARKER] && la(lexer) == '\\') {
         adv(lexer);
         lexer->mark_end(lexer);
-        char name[8];
+        char name[64];
         const bool named = is_alpha(la(lexer)) && read_command_name(lexer, name);
         if (named && strcmp(name, "alttext") == 0 && la(lexer) == '(') {
             lexer->mark_end(lexer);

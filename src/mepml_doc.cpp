@@ -340,6 +340,56 @@ bool TryMath(InlineCtx &ctx, int i, int e, Inline *node) {
     return true;
 }
 
+// Names mepml itself gives a meaning after `\`: the inline commands, the
+// directives and the command machinery. Any other `\name(` is a call of a
+// user command (\define), or of \when / \otherwise.
+bool IsBuiltinCommandName(const std::string &name) {
+    static const std::set<std::string> k = {"f",      "fs",      "color",        "fn",         "cite",
+                                            "citep",  "alttext", "caption",      "image",      "import",
+                                            "citation", "toc",   "bibliography", "printbibliography",
+                                            "abstract", "slide", "define",       "raw"};
+    return k.count(name) > 0;
+}
+bool IsUserCommandName(const std::string &name) { return !name.empty() && !IsBuiltinCommandName(name); }
+
+// `\raw(formats, text)`: the text goes into the matching exports as it is.
+bool TryRaw(InlineCtx &ctx, int i, int j, int e, Inline *node) {
+    const std::string &s = ctx.s;
+    if (At(s, j) != '(') return false;
+    const int g = ReadGroup(s, j, e);
+    if (g < 0) return false;
+    const std::vector<int> commas = ArgCommas(s, j + 1, g - 1, 1);
+    if (commas.empty()) return false;
+    node->kind = InlineKind::Raw;
+    node->start = i;
+    node->arg = Trim(Sub(s, j + 1, commas[0]));
+    int from = commas[0] + 1;
+    while (from < g - 1 && (s[static_cast<size_t>(from)] == ' ' || s[static_cast<size_t>(from)] == '\t')) ++from;
+    node->inner_start = from;
+    node->inner_end = g - 1;
+    node->end = g;
+    node->text = Sub(s, from, g - 1);
+    return true;
+}
+
+// `\name(args)` calling a user command: the arguments read as prose, so
+// the editor styles what they hold.
+bool TryUserCommand(InlineCtx &ctx, int i, int j, int e, const std::string &name, Inline *node) {
+    const std::string &s = ctx.s;
+    if (At(s, j) != '(') return false;
+    const int g = ReadGroup(s, j, e);
+    if (g < 0) return false;
+    node->kind = InlineKind::Command;
+    node->start = i;
+    node->arg = name;
+    node->inner_start = j + 1;
+    node->inner_end = g - 1;
+    node->end = g;
+    node->text = Sub(s, j + 1, g - 1);
+    ParseRange(ctx, node->inner_start, node->inner_end, node->children);
+    return true;
+}
+
 bool TryCommand(InlineCtx &ctx, int i, int e, Inline *node) {
     const std::string &s = ctx.s;
     int j = i + 1;
@@ -354,6 +404,8 @@ bool TryCommand(InlineCtx &ctx, int i, int e, Inline *node) {
     else if (name == "fn") kind = InlineKind::Footnote, ngroups = 1;
     else if (name == "cite") kind = InlineKind::Cite, ngroups = 1;
     else if (name == "citep") kind = InlineKind::CiteP, ngroups = 1;
+    else if (name == "raw") return TryRaw(ctx, i, j, e, node);
+    else if (IsUserCommandName(name)) return TryUserCommand(ctx, i, j, e, name, node);
     else return false;
     int g1 = ReadGroup(s, j, e);
     if (g1 < 0) return false;
@@ -709,6 +761,29 @@ std::string DirectiveName(const std::string &line, char *sigil = nullptr) {
     }
     if (sigil) *sigil = c;
     return name;
+}
+
+// `\name(` at the start of a line, for \define, \raw and user commands
+// (\when and \otherwise included): the name, with *paren the column of
+// its `(`; "" for any other line.
+std::string LineCommand(const std::string &line, int *paren) {
+    const int i = Indent(line);
+    if (At(line, i) != '\\') return "";
+    int j = i + 1;
+    while (IsAlpha(At(line, j))) ++j;
+    const std::string name = Sub(line, i + 1, j);
+    if (At(line, j) != '(') return "";
+    if (name != "define" && name != "raw" && !IsUserCommandName(name)) return "";
+    *paren = j;
+    return name;
+}
+
+// A command's identifier: a letter or `_`, then letters, digits and `_`.
+bool IsIdentifier(const std::string &s) {
+    if (s.empty() || !(IsAlpha(s[0]) || s[0] == '_')) return false;
+    for (char c : s)
+        if (!(IsAlpha(c) || IsDigit(c) || c == '_')) return false;
+    return true;
 }
 
 // Parses "k = v, k = {v}, k = "v"" fields out of a citation body.
@@ -1247,32 +1322,138 @@ struct Parser {
         return j + 1;
     }
 
-    // \abstract( ... ): prose up to the matching parenthesis, over any
-    // number of lines; a blank line inside starts a new paragraph.
-    int ParseAbstract(int i, int col) {
-        const std::string &s = L(i);
-        if (At(s, col) != '(') {
-            Diag(Diagnostic::Error, i, Indent(s), Len(s), "\\abstract needs a (...) body");
-            doc.blocks.push_back(MakeBlock(BlockKind::Paragraph, i, i));
-            return i + 1;
-        }
+    // The group opened at (line, paren), over as many lines as it takes --
+    // blank lines included: its closing line (-1 when it never closes)
+    // with *after the column past its `)`.
+    int GroupEnd(int line, int paren, int *after) {
         std::string joined;
-        int j = i, g = -1;
-        for (; j < n; ++j) {
-            if (j > i) joined += '\n';
-            joined += L(j);
-            g = ReadGroup(joined, col, Len(joined));
-            if (g >= 0) break;
+        for (int k = line; k < n; ++k) {
+            if (k > line) joined += '\n';
+            const int start = Len(joined);
+            joined += L(k);
+            const int g = ReadGroup(joined, paren, Len(joined));
+            if (g >= 0) {
+                *after = g - start;
+                return k;
+            }
         }
-        if (g < 0) {
-            Diag(Diagnostic::Error, i, Indent(s), Len(s), "\\abstract is never closed with )");
-            j = n - 1;
+        *after = -1;
+        return -1;
+    }
+    // Whether the command opened at (line, paren) is a block of its own:
+    // its group closes at the end of a line (a `// comment` may follow).
+    bool CommandBlockAt(int line, int paren, int *last, int *after) {
+        *last = GroupEnd(line, paren, after);
+        if (*last < 0) return false;
+        const std::string rest = Trim(Sub(L(*last), *after, Len(L(*last))));
+        return rest.empty() || rest.rfind("//", 0) == 0;
+    }
+
+    // \define(name(p1, p2), template): the template is everything after
+    // the first top-level comma, over any number of lines (blank ones
+    // too), read as text -- not parsed -- until a call expands it.
+    int ParseDefine(int i, int paren) {
+        const std::string &s = L(i);
+        int after = -1;
+        int last = GroupEnd(i, paren, &after);
+        if (last < 0) {
+            Diag(Diagnostic::Error, i, Indent(s), paren + 1, "\\define is never closed with )");
+            last = n - 1;
+        } else {
+            CheckTrailing(last, after);
         }
-        Block b = MakeBlock(BlockKind::Abstract, i, j);
-        const int body_end = g < 0 ? Len(b.text) : g - 1;
-        if (g >= 0) CheckTrailing(j, g - b.line_offsets.back());
-        // Paragraphs: runs of lines with any text, split at blank ones.
-        int from = col + 1;
+        Block b = MakeBlock(BlockKind::Define, i, last);
+        const int close = after < 0 ? Len(b.text) : b.line_offsets.back() + after - 1;
+        const std::vector<int> comma = ArgCommas(b.text, paren + 1, close, 1);
+        const int sig_end = comma.empty() ? close : comma[0];
+        const std::string sig = Trim(Sub(b.text, paren + 1, sig_end));
+        // name, or name(p1, p2)
+        const size_t open = sig.find('(');
+        b.keyword = Trim(sig.substr(0, open));
+        bool ok = !b.keyword.empty();
+        for (char c : b.keyword) ok = ok && IsAlpha(c);
+        if (!ok) {
+            Diag(Diagnostic::Error, i, Indent(s), Len(s), "\\define needs a name of letters: \\define(name(params), template)");
+            b.keyword.clear();
+        } else if (IsBuiltinCommandName(b.keyword)) {
+            Diag(Diagnostic::Error, i, Indent(s), Len(s), "\\" + b.keyword + " is built in; a \\define cannot replace it");
+            b.keyword.clear();
+        } else if (b.keyword == "when" || b.keyword == "otherwise") {
+            Diag(Diagnostic::Error, i, Indent(s), Len(s), "\\" + b.keyword + " chooses text by export; a \\define cannot replace it");
+            b.keyword.clear();
+        }
+        if (open != std::string::npos) {
+            if (sig.back() != ')') {
+                Diag(Diagnostic::Error, i, Indent(s), Len(s), "\\define's parameters end with ): \\define(name(p1, p2), template)");
+            } else {
+                const std::string plist = sig.substr(open + 1, sig.size() - open - 2);
+                size_t k = 0;
+                while (!Trim(plist).empty() && k <= plist.size()) {
+                    size_t c = plist.find(',', k);
+                    const std::string p = Trim(plist.substr(k, c == std::string::npos ? std::string::npos : c - k));
+                    if (!IsIdentifier(p))
+                        Diag(Diagnostic::Error, i, Indent(s), Len(s), "\\define: '" + p + "' is not a parameter name (letters, digits, _)");
+                    else if (std::find(b.field_order.begin(), b.field_order.end(), p) != b.field_order.end())
+                        Diag(Diagnostic::Error, i, Indent(s), Len(s), "\\define: parameter '" + p + "' is named twice");
+                    else
+                        b.field_order.push_back(p);
+                    if (c == std::string::npos) break;
+                    k = c + 1;
+                }
+            }
+        }
+        // The template: from after the comma (and the line break, when the
+        // template starts on the next line), less trailing blanks.
+        int from = comma.empty() ? close : comma[0] + 1;
+        while (from < close && (b.text[static_cast<size_t>(from)] == ' ' || b.text[static_cast<size_t>(from)] == '\t')) ++from;
+        if (from < close && b.text[static_cast<size_t>(from)] == '\n') ++from;
+        int to = close;
+        while (to > from && IsSpace(b.text[static_cast<size_t>(to - 1)])) --to;
+        b.code = Sub(b.text, from, to);
+        if (to > from) {
+            b.code_line_start = b.OffsetToPos(from).line;
+            b.code_line_end = b.OffsetToPos(to - 1).line;
+        }
+        if (comma.empty() && !b.keyword.empty())
+            Diag(Diagnostic::Warning, i, Indent(s), Len(s), "\\define(" + b.keyword + ") has no template: its calls expand to nothing");
+        if (!b.keyword.empty())
+            for (const Block &o : doc.blocks)
+                if (o.kind == BlockKind::Define && o.origin.empty() && o.keyword == b.keyword)
+                    Diag(Diagnostic::Warning, i, Indent(s), Len(s),
+                         "\\" + b.keyword + " is defined again (line " + std::to_string(o.line_start + 1) + "); the later one wins");
+        doc.blocks.push_back(std::move(b));
+        return last + 1;
+    }
+
+    // \raw(formats, text) or a user command's call, on lines of its own
+    // (`last`/`after`: where its group closes).
+    int ParseCommandBlock(int i, const std::string &name, int paren, int last, int after) {
+        Block b = MakeBlock(name == "raw" ? BlockKind::Raw : BlockKind::Command, i, last);
+        CheckTrailing(last, after);
+        const int from = paren + 1;
+        const int to = b.line_offsets.back() + after - 1;
+        if (name == "raw") {
+            const std::vector<int> comma = ArgCommas(b.text, from, to, 1);
+            if (comma.empty()) {
+                Diag(Diagnostic::Error, i, Indent(L(i)), Len(L(i)), "\\raw needs the formats it is for: \\raw(html, text)");
+                b.code = Trim(Sub(b.text, from, to));
+            } else {
+                b.lang = Trim(Sub(b.text, from, comma[0]));
+                b.code = Trim(Sub(b.text, comma[0] + 1, to));
+            }
+        } else {
+            b.keyword = name;
+            b.value = Sub(b.text, from, to);
+            ParagraphInlines(b, from, to);  // blank lines split its prose, as in \abstract
+        }
+        doc.blocks.push_back(std::move(b));
+        return last + 1;
+    }
+
+    // Prose over [from, body_end) of b.text into b.inlines, a paragraph per
+    // run of lines with any text (blank lines split them), each starting at
+    // an index in b.paragraph_starts.
+    void ParagraphInlines(Block &b, int from, int body_end) {
         while (from < body_end) {
             while (from < body_end && IsSpace(b.text[static_cast<size_t>(from)])) ++from;
             if (from >= body_end) break;
@@ -1298,6 +1479,33 @@ struct Parser {
             for (Inline &x : Inlines(b, from, end)) b.inlines.push_back(std::move(x));
             from = to;
         }
+    }
+
+    // \abstract( ... ): prose up to the matching parenthesis, over any
+    // number of lines; a blank line inside starts a new paragraph.
+    int ParseAbstract(int i, int col) {
+        const std::string &s = L(i);
+        if (At(s, col) != '(') {
+            Diag(Diagnostic::Error, i, Indent(s), Len(s), "\\abstract needs a (...) body");
+            doc.blocks.push_back(MakeBlock(BlockKind::Paragraph, i, i));
+            return i + 1;
+        }
+        std::string joined;
+        int j = i, g = -1;
+        for (; j < n; ++j) {
+            if (j > i) joined += '\n';
+            joined += L(j);
+            g = ReadGroup(joined, col, Len(joined));
+            if (g >= 0) break;
+        }
+        if (g < 0) {
+            Diag(Diagnostic::Error, i, Indent(s), Len(s), "\\abstract is never closed with )");
+            j = n - 1;
+        }
+        Block b = MakeBlock(BlockKind::Abstract, i, j);
+        const int body_end = g < 0 ? Len(b.text) : g - 1;
+        if (g >= 0) CheckTrailing(j, g - b.line_offsets.back());
+        ParagraphInlines(b, col + 1, body_end);
         if (b.paragraph_starts.empty()) Diag(Diagnostic::Warning, i, Indent(s), Len(s), "empty \\abstract");
         for (const Block &o : doc.blocks)
             if (o.kind == BlockKind::Abstract && o.origin.empty())
@@ -1425,6 +1633,9 @@ struct Parser {
         if (HeadingLevel(s) || IsFence(t) || IsComment(s) || IsRule(t) || TableStartAt(j) || IsListItem(s)) return true;
         if (t.rfind("$$", 0) == 0 || t.rfind("\\[", 0) == 0) return true;
         if (SlideOpener(s) >= 0 || IsSlideCloser(s, slide_close)) return true;
+        int paren = -1, last = -1, after = -1;
+        const std::string cmd = LineCommand(s, &paren);
+        if (cmd == "define" || (!cmd.empty() && CommandBlockAt(j, paren, &last, &after))) return true;
         std::string d = DirectiveName(s);
         return !d.empty() && IsKnownDirective(d);
     }
@@ -1479,6 +1690,11 @@ struct Parser {
                 i = ParseTable(i);
             } else if (IsListItem(s)) {
                 i = ParseList(i);
+            } else if (int paren = -1, last = -1, after = -1; LineCommand(s, &paren) == "define") {
+                i = ParseDefine(i, paren);
+            } else if (const std::string cmd = LineCommand(s, &paren);
+                       !cmd.empty() && CommandBlockAt(i, paren, &last, &after)) {
+                i = ParseCommandBlock(i, cmd, paren, last, after);
             } else {
                 char sigil = 0;
                 std::string d = DirectiveName(s, &sigil);
@@ -1541,7 +1757,7 @@ struct Parser {
             if (b.kind == BlockKind::SlideBegin) on_slide = true;
             else if (b.kind == BlockKind::SlideEnd) on_slide = false;
             else if (!on_slide && b.kind != BlockKind::Meta && b.kind != BlockKind::Comment && b.kind != BlockKind::Import &&
-                     b.kind != BlockKind::Citation)
+                     b.kind != BlockKind::Citation && b.kind != BlockKind::Define)
                 Diag(Diagnostic::Info, b.line_start, 0, Len(L(b.line_start)),
                      "not on any slide: a presentation's slide exports leave it out");
         }
@@ -1601,6 +1817,94 @@ void CollectCites(const std::vector<Inline> &ins, const Block &b, Document &doc,
     }
 }
 
+// Every inline run a block holds: its prose, caption, list items, cells.
+void ForEachInlines(const Block &b, const std::function<void(const std::vector<Inline> &)> &f) {
+    f(b.inlines);
+    f(b.caption_inlines);
+    for (const ListItem &it : b.items) f(it.content);
+    for (const auto &row : b.rows)
+        for (const TableCell &c : row) f(c.content);
+}
+
+// Names in a \when / \raw format list that no export is tagged with.
+std::vector<std::string> UnknownFormats(const std::string &formats) {
+    std::vector<std::string> out;
+    std::string w;
+    auto flush = [&] {
+        std::string t = Lower(w);
+        w.clear();
+        if (!t.empty() && t[0] == '!') t.erase(0, 1);
+        if (t.empty() || t == "*") return;
+        const auto &known = KnownFormatTags();
+        if (std::find(known.begin(), known.end(), t) == known.end()) out.push_back(t);
+    };
+    for (char c : formats) {
+        if (IsSpace(c) || c == '|') flush();
+        else w += c;
+    }
+    flush();
+    return out;
+}
+
+// Calls of user commands (and \when, and \raw's formats) in this
+// document's own blocks: unknown commands, missing arguments, formats no
+// export has. Regenerated on every Finish, like the citation checks.
+void CheckCommands(Document &doc) {
+    auto diag = [&](const Block &b, int from, int to, Diagnostic::Severity sev, const std::string &msg) {
+        const Block::Pos p = b.OffsetToPos(from);
+        const Block::Pos q = b.OffsetToPos(to);
+        Diagnostic d;
+        d.severity = sev;
+        d.line = p.line;
+        d.col_start = p.col;
+        d.col_end = q.line == p.line ? q.col : p.col + 1;
+        d.message = msg;
+        doc.diagnostics.push_back(std::move(d));
+    };
+    std::string known;
+    for (const std::string &t : KnownFormatTags()) known += (known.empty() ? "" : " ") + t;
+    auto formats = [&](const Block &b, int from, int to, const std::string &list) {
+        for (const std::string &u : UnknownFormats(list))
+            diag(b, from, to, Diagnostic::Info, "no export is tagged '" + u + "' (" + known + ")");
+    };
+    // A call named `name` with arguments `args`, over [from, to) of b.text.
+    auto call = [&](const Block &b, int from, int to, const std::string &name, const std::string &args) {
+        if (name == "otherwise") return;
+        if (name == "when") {
+            const std::vector<int> c = ArgCommas(args, 0, Len(args), 1);
+            if (c.empty()) diag(b, from, to, Diagnostic::Warning, "missing argument: \\when(formats, text)");
+            else formats(b, from, to, Sub(args, 0, c[0]));
+            return;
+        }
+        auto it = doc.commands.find(name);
+        if (it == doc.commands.end()) {
+            diag(b, from, to, Diagnostic::Warning, "unknown command \\" + name + ": no \\define(" + name + "(...), ...) for it");
+            return;
+        }
+        const std::vector<std::string> &params = it->second.params;
+        const size_t given = Trim(args).empty() ? 0 : ArgCommas(args, 0, Len(args), params.empty() ? 1 : params.size() - 1).size() + 1;
+        std::string sig;
+        for (const std::string &p : params) sig += (sig.empty() ? "" : ", ") + p;
+        if (given < params.size())
+            diag(b, from, to, Diagnostic::Warning, "missing argument: \\" + name + "(" + sig + ") takes " + std::to_string(params.size()));
+        else if (params.empty() && given > 0)
+            diag(b, from, to, Diagnostic::Warning, "missing argument: \\" + name + " takes no arguments (write \\" + name + "())");
+    };
+    std::function<void(const Block &, const std::vector<Inline> &)> walk = [&](const Block &b, const std::vector<Inline> &ins) {
+        for (const Inline &x : ins) {
+            if (x.kind == InlineKind::Command) call(b, x.start, x.end, x.arg, x.text);
+            if (x.kind == InlineKind::Raw) formats(b, x.start, x.end, x.arg);
+            walk(b, x.children);
+        }
+    };
+    for (const Block &b : doc.blocks) {
+        if (!b.origin.empty()) continue;
+        if (b.kind == BlockKind::Command) call(b, 0, Len(b.text), b.keyword, b.value);
+        if (b.kind == BlockKind::Raw) formats(b, 0, Len(b.text), b.lang);
+        ForEachInlines(b, [&](const std::vector<Inline> &ins) { walk(b, ins); });
+    }
+}
+
 void Finish(Document &doc) {
     std::set<std::string> seen;
     doc.cite_order.clear();
@@ -1608,9 +1912,26 @@ void Finish(Document &doc) {
     // Diagnostics about unknown keys are regenerated here.
     doc.diagnostics.erase(std::remove_if(doc.diagnostics.begin(), doc.diagnostics.end(),
                                          [](const Diagnostic &d) {
-                                             return d.message.rfind("unknown citation key", 0) == 0;
+                                             return d.message.rfind("unknown citation key", 0) == 0 ||
+                                                    d.message.rfind("unknown command \\", 0) == 0 ||
+                                                    d.message.rfind("missing argument: ", 0) == 0 ||
+                                                    d.message.rfind("no export is tagged ", 0) == 0;
                                          }),
                           doc.diagnostics.end());
+    // Commands: every \define, in document order (imports' where they are
+    // imported), the later of two with one name winning.
+    doc.commands.clear();
+    for (const Block &b : doc.blocks) {
+        if (b.kind != BlockKind::Define || b.keyword.empty()) continue;
+        UserCommand c;
+        c.name = b.keyword;
+        c.params = b.field_order;
+        c.body = b.code;
+        c.line = b.line_start;
+        c.origin = b.origin;
+        doc.commands[c.name] = std::move(c);
+    }
+    CheckCommands(doc);
     int fn = 0;
     std::function<void(std::vector<Inline> &)> renumber = [&](std::vector<Inline> &ins) {
         for (Inline &x : ins) {
@@ -1900,6 +2221,329 @@ Document ParseWithImports(const std::string &file, const std::vector<std::string
 }
 
 // ---------------------------------------------------------------------------
+// User commands and export conditions
+
+const std::vector<std::string> &KnownFormatTags() {
+    static const std::vector<std::string> k = {"html",  "slides", "tex",  "latex", "pdf",  "beamer",     "md",
+                                               "markdown", "org",  "txt",  "text",  "rtf",  "docx",       "word",
+                                               "odt",   "office", "pptx", "powerpoint", "odp", "impress"};
+    return k;
+}
+
+bool FormatsMatch(const std::string &formats, const std::vector<std::string> &tags) {
+    bool any_positive = false, positive = false, negative = false;
+    std::string w;
+    auto flush = [&] {
+        std::string t = Lower(w);
+        w.clear();
+        if (t.empty()) return;
+        const bool neg = t[0] == '!';
+        if (neg) t.erase(0, 1);
+        bool hit = t == "*";
+        for (const std::string &g : tags) hit = hit || Lower(g) == t;
+        if (neg) {
+            negative = negative || hit;
+        } else {
+            any_positive = true;
+            positive = positive || hit;
+        }
+    };
+    for (char c : formats) {
+        if (IsSpace(c) || c == '|') flush();
+        else w += c;
+    }
+    flush();
+    return (positive || !any_positive) && !negative && (any_positive || !Trim(formats).empty());
+}
+
+namespace {
+
+// Blank characters -- line breaks too -- trimmed from both ends.
+std::string TrimBlank(const std::string &s) {
+    size_t b = 0, e = s.size();
+    while (b < e && IsSpace(s[b])) ++b;
+    while (e > b && IsSpace(s[e - 1])) --e;
+    return s.substr(b, e - b);
+}
+
+// Text-level expansion of commands, \when/\otherwise and \raw for one
+// export (see ExpandCommands).
+struct CommandExpander {
+    const std::map<std::string, UserCommand> &commands;
+    const std::vector<std::string> &tags;
+    std::vector<std::string> *errors = nullptr;
+    int line = 0;  // the block being expanded, for messages
+
+    void Error(const std::string &msg) {
+        if (errors) errors->push_back("line " + std::to_string(line + 1) + ": " + msg);
+    }
+
+    // `body` with #param, #{param} and #1..#9 replaced by `args`; ## is #.
+    // A # before anything else -- a colour's #2c7fb8, a #word that names
+    // no parameter -- stays as written.
+    static std::string Substitute(const std::string &body, const std::vector<std::string> &params,
+                                  const std::vector<std::string> &args) {
+        std::string out;
+        const int n = Len(body);
+        for (int i = 0; i < n; ++i) {
+            const char c = body[static_cast<size_t>(i)];
+            if (c != '#') {
+                out += c;
+                continue;
+            }
+            const char d = At(body, i + 1);
+            if (d == '#') {
+                out += '#';
+                ++i;
+            } else if (d >= '1' && d <= '9' && !IsAlpha(At(body, i + 2)) && !IsDigit(At(body, i + 2))) {
+                // #1..#9 -- but not the start of a longer word: #2c7fb8 is a colour
+                const size_t k = static_cast<size_t>(d - '1');
+                out += k < args.size() ? args[k] : "";
+                ++i;
+            } else if (d == '{' || IsAlpha(d) || d == '_') {
+                const bool braced = d == '{';
+                int j = i + (braced ? 2 : 1);
+                const int from = j;
+                while (j < n && (IsAlpha(body[static_cast<size_t>(j)]) || IsDigit(body[static_cast<size_t>(j)]) ||
+                                 body[static_cast<size_t>(j)] == '_'))
+                    ++j;
+                const std::string name = Sub(body, from, j);
+                const auto it = std::find(params.begin(), params.end(), name);
+                if (it == params.end() || (braced && At(body, j) != '}')) {
+                    out += '#';  // not a parameter: as written
+                    continue;
+                }
+                out += args[static_cast<size_t>(it - params.begin())];
+                i = braced ? j : j - 1;
+            } else {
+                out += '#';
+            }
+        }
+        return out;
+    }
+
+    // Whether s[i..] starts a `\when(` or `\otherwise(`; sets *name.
+    static bool ChainStart(const std::string &s, int i, std::string *name) {
+        for (const char *w : {"when", "otherwise"}) {
+            const std::string lit = std::string("\\") + w + "(";
+            if (s.compare(static_cast<size_t>(i), lit.size(), lit) == 0) {
+                *name = w;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // A \when(...) chain starting at s[i]: the text of its first branch that
+    // matches (an \otherwise matches when nothing before it did), with
+    // *end just past the chain.
+    std::string Chain(const std::string &s, int i, int *end) {
+        bool chosen = false;
+        std::string pick, name;
+        int k = i;
+        *end = i;
+        while (ChainStart(s, k, &name)) {
+            const int open = k + 1 + Len(name);
+            const int g = ReadGroup(s, open, Len(s));
+            if (g < 0) break;
+            if (name == "when") {
+                const std::vector<int> comma = ArgCommas(s, open + 1, g - 1, 1);
+                if (comma.empty()) {
+                    Error("\\when needs formats and text: \\when(html, text)");
+                } else if (!chosen && FormatsMatch(Sub(s, open + 1, comma[0]), tags)) {
+                    pick = Sub(s, comma[0] + 1, g - 1);
+                    chosen = true;
+                }
+            } else if (!chosen) {
+                pick = Sub(s, open + 1, g - 1);
+                chosen = true;
+            }
+            *end = g;
+            if (name == "otherwise") break;
+            int m = g;
+            while (m < Len(s) && IsSpace(s[static_cast<size_t>(m)])) ++m;
+            std::string next;
+            if (!ChainStart(s, m, &next)) break;
+            k = m;
+        }
+        return TrimBlank(pick);
+    }
+
+    std::string Run(const std::string &s, int depth) {
+        if (depth > 64) {
+            Error("commands nest more than 64 deep (does one call itself?)");
+            return s;
+        }
+        std::string out;
+        const int n = Len(s);
+        int i = 0;
+        // Copies s[i, to) unchanged.
+        auto copy = [&](int to) {
+            out += Sub(s, i, to);
+            i = to;
+        };
+        while (i < n) {
+            const char c = s[static_cast<size_t>(i)];
+            if (c == '`') {  // verbatim: as written
+                const size_t close = s.find('`', static_cast<size_t>(i) + 1);
+                copy(close == std::string::npos ? i + 1 : static_cast<int>(close) + 1);
+                continue;
+            }
+            if (c == '$') {  // maths: as written
+                const bool dbl = At(s, i + 1) == '$';
+                const size_t close = s.find(dbl ? "$$" : "$", static_cast<size_t>(i + (dbl ? 2 : 1)));
+                copy(close == std::string::npos ? i + 1 : static_cast<int>(close) + (dbl ? 2 : 1));
+                continue;
+            }
+            if (c != '\\') {
+                copy(i + 1);
+                continue;
+            }
+            if (At(s, i + 1) == '(') {  // \( maths \)
+                const size_t close = s.find("\\)", static_cast<size_t>(i) + 2);
+                copy(close == std::string::npos ? i + 2 : static_cast<int>(close) + 2);
+                continue;
+            }
+            int j = i + 1;
+            while (j < n && IsAlpha(s[static_cast<size_t>(j)])) ++j;
+            const std::string name = Sub(s, i + 1, j);
+            const bool ours = name == "when" || name == "otherwise" || name == "raw" || commands.count(name) > 0;
+            const int g = ours && At(s, j) == '(' ? ReadGroup(s, j, n) : -1;
+            if (g < 0) {
+                copy(j > i + 1 ? j : std::min(n, i + 2));  // `\name` or an escape, as written
+                continue;
+            }
+            std::string repl;
+            int end = g;
+            if (name == "raw") {
+                const std::vector<int> comma = ArgCommas(s, j + 1, g - 1, 1);
+                if (comma.empty() || FormatsMatch(Sub(s, j + 1, comma[0]), tags)) repl = Sub(s, i, g);
+            } else if (name == "when" || name == "otherwise") {
+                repl = Run(Chain(s, i, &end), depth + 1);
+            } else {
+                const UserCommand &cmd = commands.at(name);
+                std::vector<std::string> args;
+                const size_t max = cmd.params.empty() ? 0 : cmd.params.size() - 1;
+                int from = j + 1;
+                for (int comma : ArgCommas(s, j + 1, g - 1, max)) {
+                    args.push_back(TrimBlank(Sub(s, from, comma)));
+                    from = comma + 1;
+                }
+                if (!cmd.params.empty()) args.push_back(TrimBlank(Sub(s, from, g - 1)));
+                if (args.size() == 1 && args[0].empty() && cmd.params.size() > 1) args.clear();
+                while (args.size() < cmd.params.size()) {
+                    Error("\\" + name + " is missing its argument '" + cmd.params[args.size()] + "'");
+                    args.emplace_back();
+                }
+                repl = Run(Substitute(cmd.body, cmd.params, args), depth + 1);
+            }
+            // Something that expanded to nothing, alone on its line, takes
+            // the line with it (so no stray blank line splits a paragraph).
+            if (repl.empty()) {
+                size_t back = out.size();
+                while (back > 0 && (out[back - 1] == ' ' || out[back - 1] == '\t')) --back;
+                int fwd = end;
+                while (fwd < n && (s[static_cast<size_t>(fwd)] == ' ' || s[static_cast<size_t>(fwd)] == '\t')) ++fwd;
+                if ((back == 0 || out[back - 1] == '\n') && (fwd >= n || s[static_cast<size_t>(fwd)] == '\n')) {
+                    out.resize(back);
+                    if (fwd < n) ++fwd;
+                    else if (!out.empty()) out.pop_back();  // the text ends here: drop the break before
+                    end = fwd;
+                } else if (back < out.size() &&
+                           (end >= n || std::string(" \t\n.,;:!?)").find(s[static_cast<size_t>(end)]) != std::string::npos)) {
+                    out.resize(back);  // and in a line, no doubled space (or one before a full stop)
+                }
+            }
+            out += repl;
+            i = end;
+        }
+        return out;
+    }
+};
+
+}  // namespace
+
+std::vector<std::string> ExpandCommands(const std::vector<std::string> &lines,
+                                        const std::map<std::string, UserCommand> &commands,
+                                        const std::vector<std::string> &tags, std::vector<std::string> *errors) {
+    const Document doc = Parse(lines);
+    CommandExpander ex{commands, tags, errors};
+    std::vector<std::string> out;
+    int next = 0;  // the next line of `lines` not yet written
+    auto push_text = [&](const std::string &text) {
+        size_t k = 0;
+        while (true) {
+            const size_t e = text.find('\n', k);
+            out.push_back(text.substr(k, e == std::string::npos ? std::string::npos : e - k));
+            if (e == std::string::npos) break;
+            k = e + 1;
+        }
+    };
+    for (const Block &b : doc.blocks) {
+        if (b.line_start < next) continue;
+        for (; next < b.line_start; ++next) out.push_back(lines[static_cast<size_t>(next)]);
+        next = b.line_end + 1;
+        switch (b.kind) {
+            case BlockKind::Define:
+                break;  // gone from the export
+            case BlockKind::Code:
+            case BlockKind::MathBlock:
+            case BlockKind::Meta:
+            case BlockKind::Comment:
+            case BlockKind::Callout:
+            case BlockKind::Citation:
+            case BlockKind::Import:
+            case BlockKind::Bibliography:
+            case BlockKind::TableOfContents:
+            case BlockKind::SlideBegin:
+            case BlockKind::SlideEnd:
+            case BlockKind::Rule:
+                for (int k = b.line_start; k <= b.line_end; ++k) out.push_back(lines[static_cast<size_t>(k)]);
+                break;
+            case BlockKind::Paragraph:
+            case BlockKind::Heading:
+            case BlockKind::Image:
+            case BlockKind::Table:
+            case BlockKind::List:
+            case BlockKind::Abstract:
+            case BlockKind::Raw:
+            case BlockKind::Command: {
+                ex.line = b.line_start;
+                const std::string text = ex.Run(b.text, 0);
+                // A block that expanded to nothing leaves no line behind.
+                if (!TrimBlank(text).empty()) push_text(text);
+                break;
+            }
+        }
+    }
+    for (; next < static_cast<int>(lines.size()); ++next) out.push_back(lines[static_cast<size_t>(next)]);
+    return out;
+}
+
+Document ParseForExport(const std::string &file, const std::vector<std::string> &lines, const ReadFileFn &read,
+                        const std::vector<std::string> &tags) {
+    // The commands come from the document as written, imports included;
+    // then every file is expanded as it is read.
+    const std::map<std::string, UserCommand> commands = ParseWithImports(file, lines, read).commands;
+    const ReadFileFn expanded = [&](const std::string &path, std::vector<std::string> *out) {
+        if (!read(path, out)) return false;
+        *out = ExpandCommands(*out, commands, tags);
+        return true;
+    };
+    std::vector<std::string> errors;
+    Document doc = ParseWithImports(file, ExpandCommands(lines, commands, tags, &errors), expanded);
+    for (const std::string &e : errors) {
+        Diagnostic d;
+        d.severity = Diagnostic::Warning;
+        d.message = "expanding commands: " + e;
+        doc.diagnostics.push_back(std::move(d));
+    }
+    doc.commands = commands;
+    doc.export_tags = tags;
+    return doc;
+}
+
+// ---------------------------------------------------------------------------
 // Results
 
 std::string HtmlResultFragment(const std::string &html) {
@@ -2069,7 +2713,8 @@ std::uint32_t FlagFor(InlineKind k) {
         case InlineKind::Strike: return kStrike;
         case InlineKind::Insert: return kInsert;
         case InlineKind::Delete: return kDelete;
-        case InlineKind::Verbatim: return kVerbatim;
+        case InlineKind::Verbatim:
+        case InlineKind::Raw: return kVerbatim;
         case InlineKind::Link: return kLink;
         case InlineKind::Math: return kMath;
         case InlineKind::Comment: return kComment;
@@ -2173,6 +2818,19 @@ struct Emitter {
                 Range(x.start, x.inner_start, mk);
                 Range(x.inner_start, x.inner_end, st);
                 Range(x.inner_end, x.end, mk);
+                return;
+            }
+            // `\raw(fmt, ` and `\name(` stay visible (they say what the text
+            // is for), in the directive colour.
+            case InlineKind::Raw:
+            case InlineKind::Command: {
+                Span d = base;
+                d.style |= kDirective;
+                d.target = x.kind == InlineKind::Command ? x.arg : "";
+                Range(x.start, x.inner_start, d);
+                if (x.kind == InlineKind::Raw) Range(x.inner_start, x.inner_end, st);
+                else Inlines(x.children, base);
+                Range(x.inner_end, x.end, d);
                 return;
             }
             default:
@@ -2418,6 +3076,45 @@ struct Emitter {
                     close.replace.clear();
                     Range(g - 1, g, close);
                     Block::Pos p = blk.OffsetToPos(g);
+                    TrailingComment(p.line, p.col);
+                }
+                break;
+            }
+            case BlockKind::Define:
+            case BlockKind::Raw:
+            case BlockKind::Command: {
+                // `\name(` (a \define's up to its template, a \raw's up to its
+                // text) and the closing `)` in the directive colour; a
+                // template is code, a \raw's text verbatim, a call's
+                // arguments prose.
+                const std::string s = LineText(blk.line_start);
+                const int at = Indent(s);
+                const int open = static_cast<int>(s.find('(', static_cast<size_t>(at)));
+                const int g = open < 0 ? -1 : ReadGroup(blk.text, open, static_cast<int>(blk.text.size()));
+                Span d;
+                d.style = kDirective;
+                d.target = blk.keyword;
+                int body = open + 1;
+                if (blk.kind != BlockKind::Command && open >= 0) {
+                    const std::vector<int> c = ArgCommas(blk.text, open + 1, g < 0 ? static_cast<int>(blk.text.size()) : g - 1, 1);
+                    if (!c.empty()) body = c[0] + 1;
+                }
+                Range(at, std::max(at, body), d);
+                if (blk.kind == BlockKind::Define) {
+                    Span c;
+                    c.style = kCode;
+                    const int to = g < 0 ? static_cast<int>(blk.text.size()) : g - 1;
+                    Range(body, to, c);
+                } else if (blk.kind == BlockKind::Raw) {
+                    Span v;
+                    v.style = kVerbatim;
+                    Range(body, g < 0 ? static_cast<int>(blk.text.size()) : g - 1, v);
+                } else {
+                    Inlines(blk.inlines, none);
+                }
+                if (g > 0) {
+                    Range(g - 1, g, d);
+                    const Block::Pos p = blk.OffsetToPos(g);
                     TrailingComment(p.line, p.col);
                 }
                 break;
@@ -2734,8 +3431,32 @@ struct HtmlWriter {
                 return o;
             }
             case InlineKind::Comment: return "";
+            case InlineKind::Raw: return Raw(x.arg, x.text, "span");
+            case InlineKind::Command: return Esc("\\" + x.arg + "(" + x.text + ")");  // no \define: as written
         }
         return "";
+    }
+
+    // A \raw's text: as it is for HTML; for another format (LaTeX, when this
+    // HTML is on its way to a .tex) in a mep-raw element that step reads.
+    std::string Raw(const std::string &formats, const std::string &text, const char *tag) {
+        const bool html = doc.export_tags.empty() ? FormatsMatch(formats, {"html"})
+                                                  : FormatsMatch(formats, doc.export_tags) &&
+                                                        std::find(doc.export_tags.begin(), doc.export_tags.end(), "html") !=
+                                                            doc.export_tags.end();
+        if (html) return text;
+        // In an attribute, where no step reads `\(...\)` as maths.
+        return std::string("<") + tag + " class=\"mep-raw\" data-format=\"" + Esc(formats) + "\" data-raw=\"" + Esc(text) + "\"></" + tag +
+               ">";
+    }
+    // A paragraph of nothing but \raw text: no <p> around it.
+    static bool OnlyRaw(const std::vector<Inline> &ins) {
+        bool any = false;
+        for (const Inline &x : ins) {
+            if (x.kind == InlineKind::Raw) any = true;
+            else if (x.kind != InlineKind::Text || !Trim(x.text).empty()) return false;
+        }
+        return any;
     }
 
     std::string Caption(const Block &b) {
@@ -2745,7 +3466,13 @@ struct HtmlWriter {
 
     void Block_(const Block &b, const std::string &label) {
         switch (b.kind) {
-            case BlockKind::Paragraph: out += "<p>" + Inlines(b.inlines) + "</p>\n"; break;
+            case BlockKind::Paragraph:
+                if (OnlyRaw(b.inlines)) out += Inlines(b.inlines) + "\n";
+                else out += "<p>" + Inlines(b.inlines) + "</p>\n";
+                break;
+            case BlockKind::Define: break;  // expanded away before an export
+            case BlockKind::Raw: out += Raw(b.lang, b.code, "div") + "\n"; break;
+            case BlockKind::Command: out += "<p>" + Esc(b.text) + "</p>\n"; break;
             case BlockKind::Heading: {
                 int lvl = std::min(6, b.level + 0);
                 std::string t = PlainText(b.inlines);
@@ -3002,6 +3729,7 @@ mjx-container[display="true"] { max-width: 100%; overflow-x: auto; overflow-y: h
 .footnotes ol { padding-left: 1.4em; }
 .abstract { margin: 0 auto 2.5em; max-width: 38rem; font-size: .95em; padding: 1em 1.4em; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 .abstract p:last-child { margin-bottom: 0; }
+.mep-raw { display: none; }
 .slide { margin: 1.5em 0; padding: .4em 1.4em 1em; border: 1px solid var(--rule); border-radius: 6px; }
 .slide > :first-child { margin-top: .6em; }
 .abstract-title { font: 600 .8em system-ui, sans-serif; text-align: center; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .6em; color: var(--muted); }
@@ -3067,11 +3795,16 @@ body { max-width: none; margin: 0; padding: 0; overflow: hidden; background: #1b
 .slide { position: absolute; inset: 0; margin: 0; padding: 44px 64px 40px; border: 0; border-radius: 0; background: var(--bg);
   display: none; flex-direction: column; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,.45); }
 .slide.current { display: flex; }
+.slide.measuring { display: flex; visibility: hidden; }
 .slide > :first-child { margin-top: 0; }
 .slide-title { font-size: 1.6em; margin: 0 0 .55em; padding-bottom: .2em; border-bottom: 3px solid var(--link); flex: none; }
 .slide-body { flex: 1; min-height: 0; transform-origin: top left; }
 .slide-body > :first-child { margin-top: 0; }
 .slide-body h1, .slide-body h2, .slide-body h3, .slide-body h4 { margin: .6em 0 .3em; border: 0; font-size: 1.1em; }
+.slide-body p, .slide-body ul, .slide-body ol, .slide-body pre, .slide-body blockquote { margin-bottom: .45em; }
+.slide-body li { margin: .1em 0; }
+.slide-body .math-display { margin: .45em 0; }
+.slide-body .math-display > mjx-container[display="true"] { margin: 0; }
 .slide-body figure { margin: .6em 0; }
 .slide-body figure img, .slide-body > p > img { max-height: 480px; width: auto; }
 .slide-body .table-wrap { width: auto; margin: .6em 0; }
@@ -3110,9 +3843,14 @@ const char *kSlidesJs = R"js(
   var prev = document.querySelector('.nav .prev'), next = document.querySelector('.nav .next');
   var count = document.querySelector('.nav .count');
   var cur = 0;
+  // A slide that is not the one showing has no layout (display: none), so
+  // it is shown, unseen, for as long as it takes to measure it -- or only
+  // the slide on screen at load time would ever be fitted.
   function fitBody(s) {
     var b = s.querySelector('.slide-body');
     if (!b) return;
+    var hidden = !s.classList.contains('current');
+    if (hidden) s.classList.toggle('measuring', true);
     b.style.transform = ''; b.style.width = '';
     var avail = b.clientHeight, need = b.scrollHeight;
     if (need > avail + 1 && avail > 0) {
@@ -3120,6 +3858,7 @@ const char *kSlidesJs = R"js(
       b.style.transform = 'scale(' + k + ')';
       b.style.width = (100 / k) + '%';
     }
+    if (hidden) s.classList.toggle('measuring', false);
   }
   function fit() {
     var k = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
@@ -3134,6 +3873,8 @@ const char *kSlidesJs = R"js(
     if (next) next.disabled = cur === slides.length - 1;
     if (count) count.textContent = (cur + 1) + ' / ' + slides.length;
     if (history.replaceState) history.replaceState(null, '', '#' + (cur + 1));
+    // (Fitting is a nicety: a viewer that cannot measure must still step.)
+    try { fitBody(slides[cur]); } catch (err) {}
   }
   document.addEventListener('keydown', function (e) {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
@@ -3165,8 +3906,12 @@ const char *kSlidesJs = R"js(
   });
   window.addEventListener('resize', fit);
   window.addEventListener('load', fit);
-  window.addEventListener('beforeprint', function () { slides.forEach(function (s) { var b = s.querySelector('.slide-body'); if (b) { b.style.transform = ''; b.style.width = ''; } }); });
-  window.addEventListener('afterprint', fit);
+  // (A printed slide is the same 1280x720 as a shown one, so the fit
+  // made for the screen is the fit for the page.)
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+  Array.prototype.forEach.call(document.querySelectorAll('.slide-body img'), function (im) {
+    if (!im.complete) im.addEventListener('load', function () { fitBody(im.closest('.slide')); });
+  });
   if (window.MathJax && MathJax.startup && MathJax.startup.promise) MathJax.startup.promise.then(fit);
   else window.MathJax = Object.assign(window.MathJax || {}, {startup: {pageReady: function () { return MathJax.startup.defaultPageReady().then(fit); }}});
   fit();
@@ -3461,7 +4206,11 @@ void FlattenInlines(const Document &doc, const std::vector<Inline> &ins, std::ui
                 break;
             case InlineKind::Verbatim:
             case InlineKind::Math:
+            case InlineKind::Raw:
                 emit(x.text, st);
+                break;
+            case InlineKind::Command:
+                emit("\\" + x.arg + "(" + x.text + ")", style);
                 break;
             case InlineKind::Cite:
             case InlineKind::CiteP:

@@ -286,6 +286,19 @@ int main() {
         CHECK(Flatten(ParseTexMath("\\overline{AB}")) == "acc(AB)");
         CHECK(OnlyTerm(ParseTexMath("\\underline{x}")).accent_below);
         CHECK(!OnlyTerm(ParseTexMath("\\overline{x}")).accent_below);
+        // A brace is not a rule, and its label stacks under/over it in
+        // every style (not beside it as a subscript).
+        const MathNode brace = OnlyTerm(ParseTexMath("\\underbrace{a+b}_{n}"));
+        CHECK(brace.kind == MathKind::Accent && brace.accent_brace && brace.accent_below && brace.limits_always);
+        CHECK(brace.sub.size() == 1 && Flatten(brace.sub[0]) == "n");
+        CHECK(OnlyTerm(ParseTexMath("\\overbrace{x}")).accent_brace && !OnlyTerm(ParseTexMath("\\overbrace{x}")).accent_below);
+        // \overset/\underset/\stackrel stack a note over (under) a base that
+        // keeps its own class: `\overset{iid}{\sim}` is still a relation.
+        const MathNode over = OnlyTerm(ParseTexMath("\\overset{\\text{iid}}{\\sim}"));
+        CHECK(over.kind == MathKind::Row && over.cls == MathClass::Rel);
+        CHECK(over.children.size() == 1 && over.children[0].limits_always && over.children[0].sup.size() == 1);
+        CHECK(OnlyTerm(ParseTexMath("\\underset{x}{\\max}")).children[0].sub.size() == 1);
+        CHECK(OnlyTerm(ParseTexMath("\\stackrel{d}{=}")).cls == MathClass::Rel);
         // \binom is a bar-less fraction inside parentheses.
         CHECK(Flatten(ParseTexMath("\\binom{n}{k}")) == "((n)atop(k))");
         // A prime binds like a superscript rather than sitting on the

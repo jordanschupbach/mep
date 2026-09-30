@@ -308,6 +308,14 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
     }
     const std::string &tag = node->tag;
     if (tag == "script" || tag == "style" || tag == "head" || tag == "title") return;
+    // A mepml \raw(tex, ...) (mepml::ToHtml wraps a \raw that is not for
+    // HTML in a mep-raw element): its text is LaTeX, written as it is.
+    if ((tag == "span" || tag == "div") && node->Class() == "mep-raw") {
+        const auto it = node->attrs.find("data-raw");
+        const std::string raw = it == node->attrs.end() ? CollectRawText(node) : it->second;
+        out += tag == "div" ? "\n" + raw + "\n" : raw;
+        return;
+    }
 
     int level;
     if (ctx.beamer && IsHeadingTag(tag, level)) {

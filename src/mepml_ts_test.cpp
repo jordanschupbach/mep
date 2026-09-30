@@ -108,6 +108,9 @@ bool Expected(const mepml::Block &b, Expect *e) {
         case BlockKind::Abstract: e->type = "abstract"; return true;
         case BlockKind::SlideBegin: e->type = "slide_open"; return true;
         case BlockKind::SlideEnd: e->type = "slide_close"; return true;
+        case BlockKind::Define: e->type = "define"; return true;
+        case BlockKind::Raw: e->type = "raw_block"; return true;
+        case BlockKind::Command: e->type = "command_block"; return true;
     }
     return false;
 }
@@ -124,6 +127,7 @@ const std::map<mepml::InlineKind, std::string> kInlineNode = {
     {mepml::InlineKind::Color, "color"},         {mepml::InlineKind::Footnote, "footnote"},
     {mepml::InlineKind::Cite, "cite"},           {mepml::InlineKind::CiteP, "citep"},
     {mepml::InlineKind::Math, "inline_math"},    {mepml::InlineKind::Comment, "inline_comment"},
+    {mepml::InlineKind::Raw, "raw"},             {mepml::InlineKind::Command, "command"},
 };
 
 void CountInlines(const std::vector<mepml::Inline> &ins, std::map<std::string, int> &counts) {
@@ -173,8 +177,8 @@ void CheckAgreement(TSParser *parser, const Lines &lines, const char *what) {
             n.type == "toc" || n.type == "caption" || n.type == "alttext" || n.type == "slide_open" ||
             n.type == "slide_close")
             directive_rows.insert(n.start_row);
-        else if (n.type == "abstract")
-            directive_rows.insert(n.end_row);  // after its closing brace
+        else if (n.type == "abstract" || n.type == "define" || n.type == "raw_block" || n.type == "command_block")
+            directive_rows.insert(n.end_row);  // after its closing bracket
     for (const TsNode &n : nodes)
         if (n.type != "inline_comment" || !directive_rows.count(n.start_row)) got[n.type]++;
     int mismatched = 0;
@@ -214,6 +218,15 @@ int main() {
                    {"> Deck", "", "\\slide(", "> Title", "- one", "- two", ") // end", "", "\\slide{", "Text that", "runs on",
                     "}", "", "@slide{", "```{r}", "x <- 1", "```", "  )", "  }", "after", ")"},
                    "slides");
+
+    // --- User commands, \when and \raw: blocks of their own and inline.
+    CheckAgreement(parser,
+                   {"\\define(box(title, body),", "\\when(html,", "\\raw(html, <div class=\"box\">(#title))", "", "#body", ")",
+                    "\\otherwise(*#title.* #body)", ")", "", "\\define(today, 29 September 2026)", "", "Text before",
+                    "\\box(Note, one, *two*,", "", "three) // a call",
+                    "after, written \\today() with \\raw(html, <kbd>(k)</kbd>) and \\when(md, x).", "", "\\raw(tex|pdf,",
+                    "\\newpage", ")", "", "\\box(inline) not a block", "\\definitionwithaveryveryverylongname(x)"},
+                   "commands");
 
     // --- Mutations: the scanner must neither crash nor hang, whatever the
     //     damage (half-typed markers, unclosed fences, stray braces, ...).

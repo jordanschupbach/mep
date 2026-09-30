@@ -143,7 +143,9 @@ std::string Unwrap(const std::string &t) {
     bool nl = false;
     for (char c : t) {
         if (c == '\n' || c == '\r') {
-            if (!o.empty() && o.back() != ' ') o += ' ';
+            // (Even a text that is nothing but the break: between `*bold*`
+            // and `$maths$` on the next line, it is the only space there.)
+            if (o.empty() || o.back() != ' ') o += ' ';
             nl = true;
             continue;
         }
@@ -225,7 +227,14 @@ struct Builder {
                     s.text = TexToPlainText(x.text);
                     out.push_back(s);
                     break;
-                case InlineKind::Comment: break;
+                case InlineKind::Comment:
+                // A deck is built for both .pptx and .odp, so there is no one
+                // markup a \raw could be written in: it is left out.
+                case InlineKind::Raw: break;
+                case InlineKind::Command:  // no \define: as written
+                    s.text = "\\" + x.arg + "(" + x.text + ")";
+                    out.push_back(s);
+                    break;
             }
         }
     }
@@ -388,7 +397,15 @@ struct Builder {
             case BlockKind::Rule:
             case BlockKind::TableOfContents:
             case BlockKind::SlideBegin:
-            case BlockKind::SlideEnd: break;
+            case BlockKind::SlideEnd:
+            case BlockKind::Define:
+            case BlockKind::Raw: break;  // see Runs: no markup of its own
+            case BlockKind::Command: {
+                Run r;
+                r.text = b.text;
+                TextItem(items).push_back(Para{ParaKind::Body, {r}});
+                break;
+            }
         }
     }
 
@@ -482,16 +499,28 @@ long ParasHeight(const std::vector<Para> &ps, long width, double scale) {
     return h;
 }
 
-// Column widths of a table, from its cells' longest text.
+double SansEm(const std::string &text, bool bold, bool italic, bool mono);
+
+// Column widths of a table, from its cells' widest text -- measured in the
+// face the cells are set in, header rows bold, so that a header like
+// "Estimate" is not a hair too narrow and broken over two lines (which
+// makes the table taller than it was placed for).
 std::vector<long> TableColumns(const Item &t, long width, double scale) {
     size_t cols = 0;
     for (const auto &row : t.rows) cols = std::max(cols, row.size());
     std::vector<double> want(cols, 1.0);
-    for (const auto &row : t.rows)
-        for (size_t c = 0; c < row.size(); ++c) want[c] = std::max(want[c], static_cast<double>(Chars(row[c])));
-    const double char_emu = kTablePt * scale / 72.0 * 0.5 * kEmuIn;
+    for (size_t r = 0; r < t.rows.size(); ++r) {
+        const bool head = static_cast<int>(r) < t.header_rows;
+        for (size_t c = 0; c < t.rows[r].size(); ++c) {
+            double em = 0;
+            for (const Run &run : t.rows[r][c]) em += SansEm(run.text, run.bold || head, run.italic, run.mono);
+            want[c] = std::max(want[c], em);
+        }
+    }
+    const double em_emu = kTablePt * scale / 72.0 * kEmuIn;
     double natural = 0;
-    for (double &w : want) natural += w = w * char_emu + kEmuIn * 0.25;
+    // (The cell's own margins, 0.15 in, and a little slack.)
+    for (double &w : want) natural += w = w * em_emu + kEmuIn * 0.25;
     const double k = std::min(1.0, static_cast<double>(width) / natural);
     std::vector<long> out;
     for (double w : want) out.push_back(static_cast<long>(w * k));
@@ -749,6 +778,22 @@ void Stack(const std::vector<Item> &items, long x, long y, long w, long h, std::
     long cy = y;
     for (size_t i = 0; i < items.size(); ++i) {
         const Item &it = items[i];
+        // A table's caption goes above it, as in the Beamer deck and the
+        // HTML slideshow; a picture's below.
+        const bool caption_above = it.kind == ItemKind::Table && !it.caption.empty();
+        if (caption_above) {
+            Shape c;
+            c.kind = ShapeKind::Caption;
+            c.scale = scale;
+            c.x = x;
+            c.w = w;
+            c.y = cy;
+            c.h = CaptionHeight(it.caption, w, scale);
+            c.center = true;
+            c.paras.push_back(Para{ParaKind::Caption, it.caption});
+            out.push_back(c);
+            cy += c.h;
+        }
         Shape s;
         s.scale = scale;
         s.x = x;
@@ -802,7 +847,7 @@ void Stack(const std::vector<Item> &items, long x, long y, long w, long h, std::
             }
         }
         cy += s.h;
-        if (!it.caption.empty() && (it.kind == ItemKind::Table || it.kind == ItemKind::Image)) {
+        if (!it.caption.empty() && it.kind == ItemKind::Image) {
             Shape c;
             c.kind = ShapeKind::Caption;
             c.scale = scale;
@@ -845,7 +890,14 @@ PlacedSlide LayoutSlide(const DeckSlide &s) {
         Para tp{ParaKind::Heading, s.title};
         tp.kind = ParaKind::Title;
         t.paras.push_back(tp);
-        t.scale = kSlideTitlePt / BasePt(ParaKind::Title);
+        // A long title steps down in size to stay on one line (down to
+        // 22 pt): a second line would run into the slide's content.
+        double title_em = 0;
+        for (const Run &r : s.title) title_em += SansEm(r.text, true, r.italic, r.mono);
+        // (Measured in Liberation Sans; the face a reader substitutes is
+        // often a little wider, and the box has its insets.)
+        const double fit_pt = (static_cast<double>(t.w) / kEmuIn - 0.25) * 72.0 / std::max(1.0, title_em * 1.08);
+        t.scale = std::max(22.0, std::min(kSlideTitlePt, fit_pt)) / BasePt(ParaKind::Title);
         p.shapes.push_back(t);
         top = kEmuIn * 135 / 100;
     }
@@ -1086,7 +1138,9 @@ struct PptxSlideWriter {
     std::string ParaXml(const Para &p, double scale, bool center, bool math = false) {
         const double pt = BasePt(p.kind) * scale;
         std::string ppr;
-        const long indent = kEmuIn * 3 / 10;
+        // A number ("10.") needs a wider hang than a bullet, or it runs
+        // into its text.
+        const long indent = p.kind == ParaKind::Number ? kEmuIn * 2 / 5 : kEmuIn * 3 / 10;
         if (p.kind == ParaKind::Bullet || p.kind == ParaKind::Number) {
             ppr = " marL=\"" + Num(indent * (p.level + 1)) + "\" indent=\"-" + Num(indent) + "\"";
         } else if (center || p.kind == ParaKind::Math || p.kind == ParaKind::Caption) {
@@ -1272,7 +1326,11 @@ std::string PptxTheme() {
         three_lines += "<a:ln w=\"6350\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:ln>";
         three_effects += "<a:effectStyle><a:effectLst/></a:effectStyle>";
     }
-    const std::string font = "<a:latin typeface=\"Calibri\"/><a:ea typeface=\"\"/><a:cs typeface=\"\"/>";
+    // Arial, not Office's Calibri: the layout above is measured in Liberation
+    // Sans, which is Arial's metrics, and every reader has one or the other
+    // -- where Calibri is missing (Linux) it falls back to something far
+    // wider, and table headers and titles break over lines.
+    const std::string font = "<a:latin typeface=\"Arial\"/><a:ea typeface=\"\"/><a:cs typeface=\"\"/>";
     return std::string(kXmlHead) +
            "<a:theme xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" name=\"mep\"><a:themeElements>"
            "<a:clrScheme name=\"mep\">" +
@@ -1456,7 +1514,7 @@ struct OdpWriter {
     std::string FormulaShape(const Shape &s) {
         const std::string name = "Object " + Num(static_cast<long>(formulas.size()) + 1);
         const double pt = BasePt(ParaKind::Math) * s.scale;
-        formulas.push_back({name, TexToMathMl(s.tex, true), pt});
+        formulas.push_back({name, TexToLibreOfficeMathMl(s.tex, true), pt});
         double wem = 0, hem = 0;
         TexMathExtent(s.tex, true, &wem, &hem);
         Shape f = s;

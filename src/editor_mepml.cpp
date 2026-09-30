@@ -379,6 +379,10 @@ mepml::Document Editor::MepmlParseCurrent(bool with_imports) const {
     return mepml::ParseWithImports(file, buf.lines, ReadFileLines);
 }
 
+mepml::Document Editor::MepmlParseForExport(const std::vector<std::string> &tags) const {
+    return mepml::ParseForExport(MepmlCurrentFile(), Buf().lines, ReadFileLines, tags);
+}
+
 void Editor::MepmlScan(int ns, bool own_diagnostics) {
     Buffer &buf = Buf();
     buf.mepml_heading_rows.clear();

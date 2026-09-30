@@ -24152,7 +24152,7 @@ const char *kBuiltinMepml =
     "  local dir = mep_mepml_dir(mep.filename())\n"
     "  local stem = out:match('([^/]+)%.pdf$')\n"
     "  local tex = dir .. '/.' .. stem .. '.mepml-export.tex'\n"
-    "  local ok, err = mep.mepml_export(tex, beamer and 'beamer' or nil)\n"
+    "  local ok, err = mep.mepml_export(tex, beamer and 'beamer' or '', 'pdf')\n"
     "  if not ok then return done(nil, err) end\n"
     "  mep.notify('Compiling ' .. out .. ' ...')\n"
     "  local errs = {}\n"
@@ -35708,7 +35708,9 @@ struct MathGlyphRun {
 // and wrongly weighted, and gfx::MultMatrix composes into the *3D*
 // renderer's matrix stack, which gfx::DrawTextEx (2D) never reads -- so
 // there is no transform to stretch a glyph with in the first place.
-enum class MathDelimKind { Paren, Bracket, Brace, Bar, DoubleBar, Floor, Ceil, Angle, Slash };
+// HBrace is \underbrace/\overbrace's horizontal brace, lying along the
+// base (mirrored = the \overbrace one, spike up); the rest stand upright.
+enum class MathDelimKind { Paren, Bracket, Brace, Bar, DoubleBar, Floor, Ceil, Angle, Slash, HBrace };
 struct MathDelimRun {
     float rel_x = 0, rel_y = 0, w = 0, h = 0, thickness = 1;
     MathDelimKind kind = MathDelimKind::Paren;
@@ -36015,7 +36017,7 @@ MathLayoutResult LayoutMathRow(const std::vector<MathNode> &terms, float base_si
             continue;
         }
         MathLayoutResult combined;
-        if (t.limits_above && style == MathStyle::Display) {
+        if ((t.limits_above && style == MathStyle::Display) || t.limits_always) {
             combined = MathStackLimits(core, t, base_size, style);
         } else {
             // TeX's own script shifts, as fractions of the *base* size so
@@ -36250,6 +36252,22 @@ MathLayoutResult LayoutMathAtom(const MathNode &n, float base_size, MathStyle st
             r.baseline = base.baseline;
             r.height = base.height;
             MathAppendShifted(&r, base, 0, 0);
+            if (n.accent_brace) {
+                // \underbrace / \overbrace: a curly brace the base's full
+                // width, spike away from it; LayoutMathRow stacks the label
+                // (limits_always) beyond the brace.
+                MathDelimRun d;
+                d.kind = MathDelimKind::HBrace;
+                d.mirrored = !n.accent_below;
+                d.w = base.width;
+                d.h = std::max(3.0f, font_size * 0.3f);
+                d.thickness = std::max(1.0f, font_size * 0.05f);
+                d.rel_x = 0;
+                d.rel_y = n.accent_below ? ink_bottom + gap : ink_top - gap - d.h;
+                r.delims.push_back(d);
+                MathNormalizeBox(&r);
+                return r;
+            }
             if (n.accent.empty()) {
                 // \overline / \underline: a rule the base's full width.
                 if (n.accent_below) {
@@ -36263,8 +36281,12 @@ MathLayoutResult LayoutMathAtom(const MathNode &n, float base_size, MathStyle st
             const gfx::Font &font = MathGlyphFont(n.accent, MathFace::Upright);
             // A stretchy accent (\widehat) grows with the base, up to the
             // point where it would look like a tent rather than a hat.
-            const float mark_size =
-                n.accent_stretch ? std::min(font_size * 2.0f, std::max(font_size, base.width * 1.1f)) : font_size;
+            // The ASCII `^`/`~` standing in for \hat/\tilde are text-sized
+            // marks, far bigger than TeX's accents: set them smaller.
+            const bool ascii_mark = n.accent == "^" || n.accent == "~";
+            const float mark_size = n.accent_stretch ? std::min(font_size * 2.0f, std::max(font_size, base.width * 1.1f))
+                                    : ascii_mark     ? font_size * 0.72f
+                                                     : font_size;
             const float mark_w = gfx::MeasureTextEx(font, n.accent.c_str(), mark_size, 0).x;
             float mark_ink_top = 0, mark_ink_bottom = mark_size;
             MathInkExtent(font, n.accent, mark_size, &mark_ink_top, &mark_ink_bottom);
@@ -36503,6 +36525,23 @@ void DrawMathDelimiter(const MathDelimRun &d, float x, float y, gfx::Color color
         case MathDelimKind::Slash:
             gfx::DrawLineEx({at(0.1f), bottom}, {at(0.9f), top}, thick, color);
             break;
+        case MathDelimKind::HBrace: {
+            // The upright Brace turned on its side: four arcs, the outer
+            // two curling from the ends and the inner two meeting at the
+            // spike in the middle. `v` maps 0 (the edge by the base) .. 1
+            // (the spike's tip) to y, flipped for \overbrace.
+            const float right = left + d.w;
+            const float cx = (left + right) / 2.0f;
+            auto v = [&](float t) { return d.mirrored ? bottom - t * d.h : top + t * d.h; };
+            const float r = std::min(d.h * 0.5f, d.w * 0.25f);
+            DrawMathCurve({left, v(0.0f)}, {left, v(0.5f)}, {left + r, v(0.5f)}, thick, color);
+            gfx::DrawLineEx({left + r, v(0.5f)}, {cx - r, v(0.5f)}, thick, color);
+            DrawMathCurve({cx - r, v(0.5f)}, {cx, v(0.5f)}, {cx, v(1.0f)}, thick, color);
+            DrawMathCurve({cx, v(1.0f)}, {cx, v(0.5f)}, {cx + r, v(0.5f)}, thick, color);
+            gfx::DrawLineEx({cx + r, v(0.5f)}, {right - r, v(0.5f)}, thick, color);
+            DrawMathCurve({right - r, v(0.5f)}, {right, v(0.5f)}, {right, v(0.0f)}, thick, color);
+            break;
+        }
     }
 }
 

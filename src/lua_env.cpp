@@ -2994,7 +2994,9 @@ int l_mepml_link_at(lua_State *L) {
  */
 int l_mepml_export_html(lua_State *L) {
     const std::string path = luaL_checkstring(L, 1);
-    const mepml::Document doc = GetEditor(L)->MepmlParseCurrent(true);
+    Editor *ed = GetEditor(L);
+    const mepml::Document doc =
+        ed->MepmlParseForExport(mepml::ExportTags(mepml::Format::Html, ed->MepmlParseCurrent(false)));
     std::ofstream f(path, std::ios::binary);
     if (!f) {
         lua_pushnil(L);
@@ -3012,7 +3014,9 @@ int l_mepml_export_html(lua_State *L) {
 // presentation's html and tex are its slideshow and Beamer deck. Images resolve
 // against the buffer's own directory. PDF is the .tex compiled by the
 // caller (kBuiltinMepml runs tectonic without blocking the editor). With
-// 'beamer', `path` is a .tex and gets the Beamer deck whatever the Type.
+// 'beamer', `path` is a .tex and gets the Beamer deck whatever the Type; a
+// further 'pdf' says the .tex is on its way to a PDF (so \when(pdf, ...)
+// matches).
 /**
  * @brief Implements mep.mepml_export(path [, 'beamer']): writes the current mepml buffer in the format named by the path's extension.
  * @param L Lua state; arg 1 is the output path.
@@ -3021,7 +3025,13 @@ int l_mepml_export_html(lua_State *L) {
 int l_mepml_export(lua_State *L) {
     const std::string path = luaL_checkstring(L, 1);
     const bool beamer = lua_isstring(L, 2) && std::string(lua_tostring(L, 2)) == "beamer";
+    const bool pdf = lua_isstring(L, 3) && std::string(lua_tostring(L, 3)) == "pdf";
     const mepml::Format format = mepml::FormatFromPath(path);
+    // What the export is, for \when / \raw.
+    auto tags = [&](Editor *e) {
+        return mepml::ExportTags(pdf && format == mepml::Format::Latex ? mepml::Format::Pdf : format,
+                                 e->MepmlParseCurrent(false), beamer);
+    };
     std::string err;
     if (beamer && format != mepml::Format::Latex) {
         err = "a Beamer export is written as .tex, not " + path;
@@ -3029,7 +3039,7 @@ int l_mepml_export(lua_State *L) {
         Editor *ed = GetEditor(L);
         const std::string file = ed->MepmlCurrentFile();
         const std::string base = file.empty() ? std::string(".") : std::filesystem::path(file).parent_path().string();
-        const std::string tex = mepml::ToBeamer(ed->MepmlParseCurrent(true), base, &err);
+        const std::string tex = mepml::ToBeamer(ed->MepmlParseForExport(tags(ed)), base, &err);
         if (!tex.empty()) {
             std::ofstream out(path, std::ios::binary);
             if (out << tex) {
@@ -3044,7 +3054,7 @@ int l_mepml_export(lua_State *L) {
         Editor *ed = GetEditor(L);
         const std::string file = ed->MepmlCurrentFile();
         const std::string base = file.empty() ? std::string(".") : std::filesystem::path(file).parent_path().string();
-        if (mepml::ExportFile(ed->MepmlParseCurrent(true), path, base, &err)) {
+        if (mepml::ExportFile(ed->MepmlParseForExport(tags(ed)), path, base, &err)) {
             lua_pushboolean(L, 1);
             return 1;
         }

@@ -90,3 +90,15 @@
 (argument) @string.special
 (cite (argument) @markup.link)
 (citep (argument) @markup.link)
+
+; --- user commands, \when/\otherwise, \raw
+(define "\\" @keyword.directive "define" @keyword.directive)
+(define name: (command_name) @function.macro)
+(define parameter: (parameter) @property)
+(template) @markup.raw.block
+(raw_block "\\" @keyword.directive "raw" @keyword.directive)
+(raw "\\raw" @keyword.directive)
+(formats) @string.special
+(raw_text) @markup.raw
+(command_block "\\" @function.macro name: (command_name) @function.macro)
+(command (command_name) @function.macro)

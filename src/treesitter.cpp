@@ -598,9 +598,16 @@ struct RawSpan {
  * @param root The root node to search under.
  * @param text The full source text captures' nodes index into.
  * @param out Vector to append every accepted capture's RawSpan to.
+ * @param row_lo First row to collect captures for (default: the whole tree).
+ * @param row_hi One past the last row (default: the whole tree).
  */
-void CollectRawSpans(const TSQuery *query, const TSNode &root, const std::string &text, std::vector<RawSpan> &out) {
+void CollectRawSpans(const TSQuery *query, const TSNode &root, const std::string &text, std::vector<RawSpan> &out,
+                     uint32_t row_lo = 0, uint32_t row_hi = UINT32_MAX) {
     TSQueryCursor *cursor = ts_query_cursor_new();
+    // Rows [row_lo, row_hi) only: matches whose nodes intersect them
+    // (a capture starting above row_lo still comes back whole).
+    if (row_lo > 0 || row_hi != UINT32_MAX)
+        ts_query_cursor_set_point_range(cursor, TSPoint{row_lo, 0}, TSPoint{row_hi, 0});
     ts_query_cursor_exec(cursor, query, root);
     TSQueryMatch match;
     while (ts_query_cursor_next_match(cursor, &match)) {
@@ -903,6 +910,76 @@ void CollectMarkdownInlineSpans(const TSNode &block_root, const std::string &tex
     ts_query_cursor_delete(cursor);
 }
 
+namespace {
+/**
+ * @brief Orders raw captures the way the highlight passes emit them: widest first, then ascending pattern index.
+ * @param raw The captures, sorted in place.
+ */
+void SortRawSpans(std::vector<RawSpan> &raw) {
+    // Widest spans first: mep's renderer paints same-namespace decoration
+    // spans in insertion order and later draws win, so emitting broad
+    // captures (e.g. a whole call_expression) before the narrow ones
+    // nested inside them (e.g. the function name) makes the narrow, more
+    // specific highlight the one that actually shows.
+    //
+    // Two captures covering the exact *same* bytes can't be separated
+    // that way, and those are common: a highlights.scm routinely starts
+    // with a catch-all ((identifier) @variable) and then narrows it with
+    // later, predicate-guarded patterns over the same node (python's
+    // @constructor/@constant/@variable.builtin identifier conventions,
+    // for one). These queries are all written to nvim's convention, where
+    // the *last* pattern to match a node is the one that wins, so equal-
+    // width spans go in ascending pattern order -- the later pattern
+    // paints last. Without that tiebreak std::sort's own unspecified
+    // order for equal keys decided it, which is why e.g. an ALL_CAPS
+    // python name could come out Blue (@constructor) in one place and
+    // Cyan (@constant) in another within the same file. stable_sort, so
+    // anything still fully tied (two captures of the same span from the
+    // same pattern, or from the separate markdown-inline query) keeps its
+    // collection order rather than reshuffling run to run.
+    // Comparator: widest span first, then ascending query pattern index.
+    std::stable_sort(raw.begin(), raw.end(), [](const RawSpan &a, const RawSpan &b) {
+        uint32_t a_len = a.end_byte - a.start_byte, b_len = b.end_byte - b.start_byte;
+        if (a_len != b_len) return a_len > b_len;
+        return a.pattern_index < b.pattern_index;
+    });
+
+}
+
+/**
+ * @brief Splits raw captures at line boundaries into per-line spans, in `raw`'s order.
+ * @param raw The captures (already sorted).
+ * @param text The text they index into.
+ * @param out Where the per-line spans go.
+ */
+void ClipRawSpans(const std::vector<RawSpan> &raw, const std::string &text, std::vector<TSHighlightSpan> &out) {
+    // Split every span at line boundaries -- mep's decoration model is
+    // strictly per-line. TSPoint.column is already a byte offset within
+    // its row, matching the byte-oriented column convention the rest of
+    // the decoration/rendering pipeline uses (see main.cpp's use of
+    // std::string::substr on col_start/col_end).
+    for (const RawSpan &rs : raw) {
+        size_t pos = rs.start_byte;
+        uint32_t row = rs.start_row;
+        uint32_t col = rs.start_col;
+        while (pos < rs.end_byte) {
+            size_t nl = text.find('\n', pos);
+            size_t line_end = (nl == std::string::npos || nl >= rs.end_byte) ? static_cast<size_t>(rs.end_byte) : nl;
+            TSHighlightSpan span;
+            span.row = static_cast<int>(row);
+            span.col_start = static_cast<int>(col);
+            span.col_end = static_cast<int>(col + (line_end - pos));
+            span.capture = rs.capture;
+            out.push_back(std::move(span));
+            if (line_end >= rs.end_byte) break;
+            pos = line_end + 1;  // skip the newline itself
+            row++;
+            col = 0;
+        }
+    }
+}
+}  // namespace
+
 /**
  * @brief Runs markdown's block highlight query over `text` (via GetTree's
  * cache) and then layers in the separate inline-formatting pass via
@@ -963,59 +1040,188 @@ std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, co
 #endif
     }
 
-    // Widest spans first: mep's renderer paints same-namespace decoration
-    // spans in insertion order and later draws win, so emitting broad
-    // captures (e.g. a whole call_expression) before the narrow ones
-    // nested inside them (e.g. the function name) makes the narrow, more
-    // specific highlight the one that actually shows.
-    //
-    // Two captures covering the exact *same* bytes can't be separated
-    // that way, and those are common: a highlights.scm routinely starts
-    // with a catch-all ((identifier) @variable) and then narrows it with
-    // later, predicate-guarded patterns over the same node (python's
-    // @constructor/@constant/@variable.builtin identifier conventions,
-    // for one). These queries are all written to nvim's convention, where
-    // the *last* pattern to match a node is the one that wins, so equal-
-    // width spans go in ascending pattern order -- the later pattern
-    // paints last. Without that tiebreak std::sort's own unspecified
-    // order for equal keys decided it, which is why e.g. an ALL_CAPS
-    // python name could come out Blue (@constructor) in one place and
-    // Cyan (@constant) in another within the same file. stable_sort, so
-    // anything still fully tied (two captures of the same span from the
-    // same pattern, or from the separate markdown-inline query) keeps its
-    // collection order rather than reshuffling run to run.
-    // Comparator: widest span first, then ascending query pattern index.
-    std::stable_sort(raw.begin(), raw.end(), [](const RawSpan &a, const RawSpan &b) {
-        uint32_t a_len = a.end_byte - a.start_byte, b_len = b.end_byte - b.start_byte;
-        if (a_len != b_len) return a_len > b_len;
-        return a.pattern_index < b.pattern_index;
-    });
+    SortRawSpans(raw);
+    ClipRawSpans(raw, text, out);
+    return out;
+}
 
-    // Split every span at line boundaries -- mep's decoration model is
-    // strictly per-line. TSPoint.column is already a byte offset within
-    // its row, matching the byte-oriented column convention the rest of
-    // the decoration/rendering pipeline uses (see main.cpp's use of
-    // std::string::substr on col_start/col_end).
-    for (const RawSpan &rs : raw) {
-        size_t pos = rs.start_byte;
-        uint32_t row = rs.start_row;
-        uint32_t col = rs.start_col;
-        while (pos < rs.end_byte) {
-            size_t nl = text.find('\n', pos);
-            size_t line_end = (nl == std::string::npos || nl >= rs.end_byte) ? static_cast<size_t>(rs.end_byte) : nl;
-            TSHighlightSpan span;
-            span.row = static_cast<int>(row);
-            span.col_start = static_cast<int>(col);
-            span.col_end = static_cast<int>(col + (line_end - pos));
-            span.capture = rs.capture;
-            out.push_back(std::move(span));
-            if (line_end >= rs.end_byte) break;
-            pos = line_end + 1;  // skip the newline itself
-            row++;
-            col = 0;
+namespace {
+// TreesitterHighlightRows' state, one per cache key: the per-row spans it
+// last answered with, the text they describe, and a copy of the tree they
+// came from. Its own copy (not ParseCache's tree), so another consumer
+// reparsing the same key in between -- the fold pass does -- cannot lose
+// the "what changed since I last looked" this needs.
+struct RowHighlightState {
+    std::string text;
+    TSTree *tree = nullptr;
+    const TSLanguage *language = nullptr;
+    const TSQuery *query = nullptr;
+    std::vector<std::vector<TSHighlightSpan>> rows;
+    RowHighlightState() = default;
+    RowHighlightState(const RowHighlightState &) = delete;
+    RowHighlightState &operator=(const RowHighlightState &) = delete;
+    ~RowHighlightState() {
+        if (tree) ts_tree_delete(tree);
+    }
+};
+std::unordered_map<std::string, RowHighlightState> &RowHighlightTable() {
+    static std::unordered_map<std::string, RowHighlightState> table;
+    return table;
+}
+}  // namespace
+
+std::vector<TSCodeBlockRange> TreesitterMepmlCodeBlocks(const std::string &text) {
+    std::vector<TSCodeBlockRange> out;
+    auto it = LanguageTable().find("mepml");
+    if (it == LanguageTable().end()) return out;
+    const TSTree *tree = GetTree("mepml", it->second.language(), text);
+    if (!tree) return out;
+    // Code blocks are block-level, but may sit inside sections, slides and
+    // other containers: walk the whole tree, not only the root's children.
+    std::vector<TSNode> stack{ts_tree_root_node(tree)};
+    std::vector<TSCodeBlockRange> found;
+    while (!stack.empty()) {
+        const TSNode node = stack.back();
+        stack.pop_back();
+        if (std::strcmp(ts_node_type(node), "code_block") == 0) {
+            TSCodeBlockRange b;
+            bool has_body = false;
+            const uint32_t n = ts_node_child_count(node);
+            for (uint32_t i = 0; i < n; ++i) {
+                const TSNode c = ts_node_child(node, i);
+                const char *type = ts_node_type(c);
+                if (std::strcmp(type, "info") == 0) {
+                    const TSNode lang = ts_node_child_by_field_name(c, "language", 8);
+                    if (!ts_node_is_null(lang))
+                        b.lang = text.substr(ts_node_start_byte(lang), ts_node_end_byte(lang) - ts_node_start_byte(lang));
+                } else if (std::strcmp(type, "code_content") == 0) {
+                    const TSPoint s0 = ts_node_start_point(c), e0 = ts_node_end_point(c);
+                    b.first_row = static_cast<int>(s0.row);
+                    b.last_row = static_cast<int>(e0.column == 0 && e0.row > s0.row ? e0.row - 1 : e0.row);
+                    has_body = b.last_row >= b.first_row;
+                }
+            }
+            if (has_body) found.push_back(std::move(b));
+            continue;  // a code block holds no code blocks
+        }
+        const uint32_t n = ts_node_child_count(node);
+        for (uint32_t i = n; i > 0; --i) stack.push_back(ts_node_child(node, i - 1));
+    }
+    std::sort(found.begin(), found.end(), [](const TSCodeBlockRange &a, const TSCodeBlockRange &b) { return a.first_row < b.first_row; });
+    out = std::move(found);
+    return out;
+}
+
+const std::vector<std::vector<TSHighlightSpan>> &TreesitterHighlightRows(const std::string &filetype,
+                                                                        const std::string &text,
+                                                                        const std::string &cache_key) {
+    const std::string &key = cache_key.empty() ? filetype : cache_key;
+    RowHighlightState &st = RowHighlightTable()[key];
+    const size_t n_rows = static_cast<size_t>(std::count(text.begin(), text.end(), '\n')) + 1;
+    auto from_spans = [&](const std::vector<TSHighlightSpan> &spans) {
+        st.rows.assign(n_rows, {});
+        for (const TSHighlightSpan &sp : spans)
+            if (sp.row >= 0 && static_cast<size_t>(sp.row) < n_rows) st.rows[static_cast<size_t>(sp.row)].push_back(sp);
+    };
+
+    const TSLanguage *language = nullptr;
+    const char *query_source = nullptr;
+    if (auto it = LanguageTable().find(filetype); it != LanguageTable().end()) {
+        if (filetype != "md" && filetype != "markdown") {
+            language = it->second.language();
+            query_source = it->second.query_source;
         }
     }
-    return out;
+#if !defined(__EMSCRIPTEN__)
+    else if (auto dit = DynamicLanguageTable().find(filetype); dit != DynamicLanguageTable().end()) {
+        language = LoadDynamicLanguage(dit->second.canonical_name);
+        query_source = dit->second.query_source;
+    }
+#endif
+    const TSQuery *query = language ? QueryFor(language, query_source) : nullptr;
+    // Markdown's second (inline) grammar, or anything without a plain
+    // grammar and query: the whole-text pass, grouped by row.
+    if (!query) {
+        from_spans(TreesitterHighlight(filetype, text, cache_key));
+        st.text = text;
+        if (st.tree) ts_tree_delete(st.tree);
+        st.tree = nullptr;
+        return st.rows;
+    }
+    const TSTree *tree = GetTree(key, language, text);
+    if (!tree) {
+        st.rows.clear();
+        return st.rows;
+    }
+    if (st.tree && st.language == language && st.query == query && st.text == text) return st.rows;
+
+    auto full = [&] {
+        std::vector<RawSpan> raw;
+        CollectRawSpans(query, ts_tree_root_node(tree), text, raw);
+        SortRawSpans(raw);
+        std::vector<TSHighlightSpan> spans;
+        ClipRawSpans(raw, text, spans);
+        from_spans(spans);
+    };
+
+    if (!st.tree || st.language != language || st.query != query) {
+        full();
+    } else {
+        // Rows that can differ: the edited rows (the text diff) and every
+        // range whose syntax changed (an opened string or comment reaches
+        // far past the edit), in the new text's rows.
+        const TSInputEdit edit = ComputeEdit(st.text, text);
+        ts_tree_edit(st.tree, &edit);
+        std::vector<std::pair<uint32_t, uint32_t>> spans_of_rows = {{edit.start_point.row, edit.new_end_point.row}};
+        uint32_t count = 0;
+        TSRange *changed = ts_tree_get_changed_ranges(st.tree, tree, &count);
+        for (uint32_t i = 0; i < count; ++i) spans_of_rows.emplace_back(changed[i].start_point.row, changed[i].end_point.row);
+        free(changed);
+        std::sort(spans_of_rows.begin(), spans_of_rows.end());
+        std::vector<std::pair<uint32_t, uint32_t>> merged;
+        size_t affected = 0;
+        for (auto iv : spans_of_rows) {
+            iv.second = std::min<uint32_t>(iv.second, static_cast<uint32_t>(n_rows - 1));
+            if (iv.first > iv.second) continue;
+            if (!merged.empty() && iv.first <= merged.back().second + 1) merged.back().second = std::max(merged.back().second, iv.second);
+            else merged.push_back(iv);
+        }
+        for (const auto &iv : merged) affected += iv.second - iv.first + 1;
+        if (affected * 2 > n_rows) {
+            full();
+        } else {
+            // Unaffected rows carry over, those after the edit shifted by
+            // the lines it added or removed.
+            const long delta = static_cast<long>(edit.new_end_point.row) - static_cast<long>(edit.old_end_point.row);
+            std::vector<std::vector<TSHighlightSpan>> rows(n_rows);
+            for (size_t r = 0; r < n_rows; ++r) {
+                long from = -1;
+                if (r < edit.start_point.row) from = static_cast<long>(r);
+                else if (r > edit.new_end_point.row) from = static_cast<long>(r) - delta;
+                if (from < 0 || static_cast<size_t>(from) >= st.rows.size()) continue;
+                rows[r] = std::move(st.rows[static_cast<size_t>(from)]);
+                for (TSHighlightSpan &sp : rows[r]) sp.row = static_cast<int>(r);
+            }
+            for (const auto &iv : merged) {
+                for (uint32_t r = iv.first; r <= iv.second; ++r) rows[r].clear();
+                std::vector<RawSpan> raw;
+                CollectRawSpans(query, ts_tree_root_node(tree), text, raw, iv.first, iv.second + 1);
+                SortRawSpans(raw);
+                std::vector<TSHighlightSpan> spans;
+                ClipRawSpans(raw, text, spans);
+                for (TSHighlightSpan &sp : spans)
+                    if (sp.row >= static_cast<int>(iv.first) && sp.row <= static_cast<int>(iv.second))
+                        rows[static_cast<size_t>(sp.row)].push_back(std::move(sp));
+            }
+            st.rows = std::move(rows);
+        }
+    }
+    st.text = text;
+    st.language = language;
+    st.query = query;
+    if (st.tree) ts_tree_delete(st.tree);
+    st.tree = ts_tree_copy(tree);
+    return st.rows;
 }
 
 bool TreesitterHasFoldQuery(const std::string &filetype) { return FoldQueryTable().count(filetype) != 0; }

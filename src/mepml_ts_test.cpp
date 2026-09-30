@@ -249,6 +249,29 @@ int main() {
         CHECK(large < small * 9.0);
     }
 
+    // --- One very long line of dense markup is linear too: the scanner used
+    // to ask for the lexer's column on every call, and tree-sitter answers
+    // that by walking back to the line's start.
+    {
+        auto line_ms = [&](int words) {
+            std::string text = "> H\n\n";
+            for (int i = 0; i < words; ++i) text += (i % 7 == 0) ? "*b* " : "word ";
+            text += "\n";
+            double best = 1e9;
+            for (int rep = 0; rep < 3; ++rep) {
+                const auto t0 = std::chrono::steady_clock::now();
+                TSTree *tree = ts_parser_parse_string(parser, nullptr, text.c_str(), static_cast<uint32_t>(text.size()));
+                const auto t1 = std::chrono::steady_clock::now();
+                ts_tree_delete(tree);
+                best = std::min(best, std::chrono::duration<double, std::milli>(t1 - t0).count());
+            }
+            return best;
+        };
+        const double small = line_ms(2000), large = line_ms(8000);
+        std::printf("long-line growth: %.2f ms -> %.2f ms (%.1fx for 4x the text)\n", small, large, large / small);
+        CHECK(large < small * 9.0);
+    }
+
     // --- User commands, \when and \raw: blocks of their own and inline.
     CheckAgreement(parser,
                    {"\\define(box(title, body),", "\\when(html,", "\\raw(html, <div class=\"box\">(#title))", "", "#body", ")",

@@ -441,6 +441,87 @@ const std::vector<mepml::Span> &Editor::MepmlSpansCurrent(bool with_imports) con
     return c.spans;
 }
 
+namespace {
+// Buffers shorter than this parse in place when asked (a few hundred
+// microseconds); only above it is the parse worth a thread and a frame's delay.
+constexpr int kMepmlAsyncParseMinLines = 2000;
+}  // namespace
+
+bool Editor::MepmlParseReady() {
+    if (!IsMepmlBuffer()) return true;
+    const Buffer &buf = Buf();
+    if (buf.LineCount() < kMepmlAsyncParseMinLines) return true;
+    const int id = CurrentBufferId();
+    MepmlParseCache &plain = mepml_parse_cache_[0][id];
+    auto fresh = [&] {
+        if (!(plain.valid && plain.lines == buf.lines)) return false;
+        if (!plain.has_imports) return true;
+        const MepmlParseCache &imp = mepml_parse_cache_[1][id];
+        return imp.valid && imp.lines == buf.lines;
+    };
+    if (fresh()) return true;
+
+    MepmlAsyncParse &a = mepml_async_[id];
+    if (a.running && a.result.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        MepmlAsyncResult r = a.result.get();
+        a.running = false;
+        if (r.lines == buf.lines) {
+            plain.doc = std::move(r.plain);
+            plain.spans = std::move(r.plain_spans);
+            plain.spans_valid = true;
+            plain.lines = r.lines;
+            plain.valid = true;
+            plain.has_imports = r.has_imports;
+            plain.generation = ++mepml_parse_generation_;
+            if (r.has_imports) {
+                MepmlParseCache &imp = mepml_parse_cache_[1][id];
+                imp.doc = std::move(r.imports);
+                imp.spans = std::move(r.imports_spans);
+                imp.spans_valid = true;
+                imp.lines = std::move(r.lines);
+                imp.file = r.file;
+                imp.reads = std::move(r.reads);
+                imp.valid = true;
+                imp.generation = ++mepml_parse_generation_;
+            }
+            return true;
+        }
+    }
+    if (!a.running) {
+        std::string file = buf.filename;
+        std::error_code ec;
+        if (!file.empty() && file[0] != '/') file = std::filesystem::absolute(file, ec).string();
+        // Parse, Highlight and ParseWithImports keep no shared mutable
+        // state (mepml_doc.cpp: function-local const tables only), so a
+        // snapshot of the lines is all the worker needs.
+        a.result = std::async(std::launch::async, [lines = buf.lines, file]() mutable {
+            MepmlAsyncResult r;
+            r.lines = std::move(lines);
+            r.file = file;
+            r.plain = mepml::Parse(r.lines);
+            for (const mepml::Block &b : r.plain.blocks) {
+                std::string k = b.keyword;
+                for (char &ch : k) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                if (b.kind == mepml::BlockKind::Import || (b.kind == mepml::BlockKind::Meta && k == "import")) {
+                    r.has_imports = true;
+                    break;
+                }
+            }
+            r.plain_spans = mepml::Highlight(r.plain);
+            if (r.has_imports) {
+                r.imports = mepml::ParseWithImports(file, r.lines, [&r](const std::string &path, std::vector<std::string> *out) {
+                    r.reads.emplace_back(path, FileMtime(path));
+                    return ReadFileLines(path, out);
+                });
+                r.imports_spans = mepml::Highlight(r.imports);
+            }
+            return r;
+        });
+        a.running = true;
+    }
+    return false;
+}
+
 mepml::Document Editor::MepmlParseForExport(const std::vector<std::string> &tags) const {
     return mepml::ParseForExport(MepmlCurrentFile(), Buf().lines, ReadFileLines, tags);
 }
@@ -503,7 +584,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     const int text_width = TextWidth();
     const int scan_pane_cols = CurPane().text_cols, scan_buffer_cols = TextColsForBuffer(CurrentBufferId());
     const bool images = OrgImagesVisible();
-    std::unordered_set<int> patch_rows;
+    std::unordered_set<int> patch_rows, patch_tables;
     const bool same_inputs = entry && state.valid && state.doc == entry && state.generation == entry->generation &&
                              state.ns == ns && state.own_diagnostics == own_diagnostics && state.conceal == conceal &&
                              state.images == images && state.text_width == text_width &&
@@ -524,8 +605,6 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         auto touches = [&](int first, int last) {
             return (state.cur_row >= first && state.cur_row <= last) || (cur_row >= first && cur_row <= last);
         };
-        for (const mepml::Block &b : d.blocks)
-            if (b.origin.empty() && b.kind == mepml::BlockKind::Table && touches(b.line_start, b.line_end)) patch = false;
         for (const HeaderRun &run : HeaderRuns(d))
             if (touches(run.first, run.last)) patch = false;
         if (patch) {
@@ -533,6 +612,14 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             for (int r : revealed_for(d, cur_row)) patch_rows.insert(r);
             patch_rows.insert(state.cur_row);
             patch_rows.insert(cur_row);
+            // A table lays out around the cursor's row (its every other
+            // row is aligned to a grid; the cursor's shows its raw text), so
+            // a table the cursor left or entered is re-laid out whole.
+            for (const mepml::Block &b : d.blocks) {
+                if (!b.origin.empty() || b.kind != mepml::BlockKind::Table || !touches(b.line_start, b.line_end)) continue;
+                patch_tables.insert(b.line_start);
+                for (int r = b.line_start; r <= b.line_end; ++r) patch_rows.insert(r);
+            }
             std::vector<Decoration> &v = buf.decorations[ns];
             v.erase(std::remove_if(v.begin(), v.end(), [&](const Decoration &x) { return patch_rows.count(x.row) > 0; }),
                     v.end());
@@ -774,7 +861,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     // MepmlTableLayout, which draws the missing pipe in the markup's place.
     std::set<std::pair<int, int>> table_edge_markup;  // (row, col_start)
     for (const mepml::Span &s : spans) {
-        if (patch) break;  // a patch has no table rows in scope
+        if (!in_scope(s.line)) continue;
         if (!s.markup || (s.style & (mepml::kMath | mepml::kDirective)) || !table_layout_rows.count(s.line)) continue;
         const std::string &line = buf.lines[static_cast<size_t>(s.line)];
         const std::vector<std::pair<int, int>> cells = mepml::TableCells(line);
@@ -1003,6 +1090,17 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
 
     if (!patch) {
         if (conceal) MepmlTableLayout(doc, spans, table_layout_rows, table_edge_markup, ns);
+        MepmlFitCards();
+    } else if (!patch_tables.empty() && conceal) {
+        // Replace just these tables' grids and picture rows.
+        std::vector<OrgTableGrid> &grids = mepml_table_grids_[CurrentBufferId()];
+        grids.erase(std::remove_if(grids.begin(), grids.end(),
+                                   [&](const OrgTableGrid &g) { return patch_tables.count(g.start_row) > 0; }),
+                    grids.end());
+        for (const mepml::Block &b : doc.blocks)
+            if (b.origin.empty() && b.kind == mepml::BlockKind::Table && patch_tables.count(b.line_start))
+                for (int r = b.line_start; r <= b.line_end; ++r) buf.mepml_table_images.erase(r);
+        MepmlTableLayout(doc, spans, table_layout_rows, table_edge_markup, ns, &patch_tables);
         MepmlFitCards();
     }
 
@@ -1355,7 +1453,8 @@ std::vector<OrgLiteralSpan> Editor::MepmlLiteralSpans() const {
 
 void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepml::Span> &spans,
                               const std::unordered_set<int> &rows,
-                              const std::set<std::pair<int, int>> &edge_markup, int ns) {
+                              const std::set<std::pair<int, int>> &edge_markup, int ns,
+                              const std::unordered_set<int> *only_tables) {
     Buffer &buf = Buf();
     const int n = buf.LineCount();
     const bool pictures = OrgImagesVisible();
@@ -1394,6 +1493,8 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
 
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty() || b.kind != mepml::BlockKind::Table) continue;
+        // MepmlScan's patch lays out only the tables the cursor left or entered.
+        if (only_tables && !only_tables->count(b.line_start)) continue;
         int body_end = b.line_end;
         if (b.caption_line >= 0) body_end = std::min(body_end, b.caption_line - 1);
         if (b.alt_line >= 0) body_end = std::min(body_end, b.alt_line - 1);

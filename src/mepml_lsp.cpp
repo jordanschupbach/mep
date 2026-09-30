@@ -138,12 +138,55 @@ std::string FilePart(std::string url) {
 
 // --- The parsed document -------------------------------------------------------
 
-Document Analyze(const std::vector<std::string> &lines, const MepmlLspOptions &opts) {
-    if (opts.check_files && !opts.doc_path.empty())
-        return mepml::ParseWithImports(opts.doc_path, lines, [](const std::string &p, std::vector<std::string> *l) {
+// Every request used to parse the document again -- hover, completion,
+// symbols and folds each cost a full parse (5.7 ms at 16k lines;
+// plans/MEPML_PERFORMANCE_PLAN.md). The server answers one request at a
+// time, so one cached parse per kind (plain, and with imports) keyed on
+// the text itself does: an edit changes the text and so the key, and an
+// imported file is re-read when its modification time moves.
+long long LspFileMtime(const std::string &path) {
+    std::error_code ec;
+    const auto t = std::filesystem::last_write_time(path, ec);
+    return ec ? -1 : static_cast<long long>(t.time_since_epoch().count());
+}
+
+struct CachedParse {
+    bool valid = false;
+    std::vector<std::string> lines;
+    std::string doc_path;
+    std::vector<std::pair<std::string, long long>> reads;
+    Document doc;
+};
+
+const Document &ParsePlain(const std::vector<std::string> &lines) {
+    static CachedParse c;
+    if (!(c.valid && c.lines == lines)) {
+        c.doc = mepml::Parse(lines);
+        c.lines = lines;
+        c.valid = true;
+    }
+    return c.doc;
+}
+
+const Document &Analyze(const std::vector<std::string> &lines, const MepmlLspOptions &opts) {
+    if (!(opts.check_files && !opts.doc_path.empty())) return ParsePlain(lines);
+    static CachedParse c;
+    bool fresh = c.valid && c.doc_path == opts.doc_path && c.lines == lines;
+    for (const auto &r : c.reads) {
+        if (!fresh) break;
+        fresh = LspFileMtime(r.first) == r.second;
+    }
+    if (!fresh) {
+        c.reads.clear();
+        c.doc = mepml::ParseWithImports(opts.doc_path, lines, [](const std::string &p, std::vector<std::string> *l) {
+            c.reads.emplace_back(p, LspFileMtime(p));
             return ReadFileLines(p, l);
         });
-    return mepml::Parse(lines);
+        c.lines = lines;
+        c.doc_path = opts.doc_path;
+        c.valid = true;
+    }
+    return c.doc;
 }
 
 struct Pos {
@@ -368,7 +411,7 @@ std::string CodeFor(const std::string &message) {
 // ===========================================================================
 
 std::vector<MepmlLspDiagnostic> MepmlLspDiagnostics(const std::vector<std::string> &lines, const MepmlLspOptions &opts) {
-    const Document doc = Analyze(lines, opts);
+    const Document &doc = Analyze(lines, opts);
     std::vector<MepmlLspDiagnostic> out;
     auto add = [&](int line, int cs, int ce, MepmlLspSeverity sev, const std::string &code, const std::string &msg) {
         MepmlLspDiagnostic d;
@@ -646,7 +689,7 @@ std::vector<MepmlLspCompletionItem> MepmlLspCompletions(const std::vector<std::s
     const std::string lead = ind == std::string::npos ? "" : before.substr(ind);
 
     // Inside a code block, only its fence line is mepml.
-    const Document doc = Analyze(lines, opts);
+    const Document &doc = Analyze(lines, opts);
     if (const Block *b = OwnBlockAt(doc, line)) {
         if (b->kind == BlockKind::Code && line >= b->code_line_start && line <= b->code_line_end) return out;
     }
@@ -912,7 +955,7 @@ MepmlLspHoverInfo MepmlLspHover(const std::vector<std::string> &lines, int line,
     MepmlLspHoverInfo h;
     if (line < 0 || line >= static_cast<int>(lines.size())) return h;
     const std::string &l = lines[static_cast<size_t>(line)];
-    const Document doc = Analyze(lines, opts);
+    const Document &doc = Analyze(lines, opts);
     const Block *b = OwnBlockAt(doc, line);
     if (!b) return h;
     auto found = [&](int cs, int ce, const std::string &text) {
@@ -1144,7 +1187,7 @@ Target TargetAt(const Document &doc, const std::vector<std::string> &lines, int 
 MepmlLspLocation MepmlLspDefinition(const std::vector<std::string> &lines, int line, int col, const MepmlLspOptions &opts) {
     MepmlLspLocation loc;
     if (line < 0 || line >= static_cast<int>(lines.size())) return loc;
-    const Document doc = Analyze(lines, opts);
+    const Document &doc = Analyze(lines, opts);
     const Block *b = OwnBlockAt(doc, line);
     if (!b) return loc;
     if (const Inline *x = InlineAt(*b, line, col)) {
@@ -1204,7 +1247,7 @@ MepmlLspReferenceSet MepmlLspReferences(const std::vector<std::string> &lines, i
                                         const MepmlLspOptions &opts) {
     MepmlLspReferenceSet set;
     if (line < 0 || line >= static_cast<int>(lines.size())) return set;
-    const Document doc = Analyze(lines, opts);
+    const Document &doc = Analyze(lines, opts);
     const Target t = TargetAt(doc, lines, line, col);
     if (t.kind == Target::None) return set;
     set.found = true;
@@ -1279,7 +1322,7 @@ std::vector<MepmlLspTextEdit> MepmlLspRename(const std::vector<std::string> &lin
 // ===========================================================================
 
 std::vector<MepmlLspSymbol> MepmlLspSymbols(const std::vector<std::string> &lines) {
-    const Document doc = mepml::Parse(lines);
+    const Document &doc = ParsePlain(lines);
     const std::vector<std::string> labels = mepml::BlockLabels(doc);
     const std::vector<mepml::Slide> slides = mepml::Slides(doc, static_cast<int>(lines.size()));
     std::vector<MepmlLspSymbol> out;
@@ -1364,7 +1407,7 @@ std::vector<MepmlLspSymbol> MepmlLspSymbols(const std::vector<std::string> &line
 }
 
 std::vector<MepmlLspFold> MepmlLspFolds(const std::vector<std::string> &lines) {
-    const Document doc = mepml::Parse(lines);
+    const Document &doc = ParsePlain(lines);
     const int n = static_cast<int>(lines.size());
     std::vector<MepmlLspFold> out;
     auto add = [&](int a, int b, const char *kind) {
@@ -1508,7 +1551,7 @@ bool TableEdit(const Block &b, const std::vector<std::string> &lines, MepmlLspTe
 }  // namespace
 
 std::vector<MepmlLspTextEdit> MepmlLspFormat(const std::vector<std::string> &lines) {
-    const Document doc = mepml::Parse(lines);
+    const Document &doc = ParsePlain(lines);
     std::vector<MepmlLspTextEdit> edits;
     for (const Block &b : doc.blocks) {
         if (b.kind != BlockKind::Table) continue;
@@ -1522,7 +1565,7 @@ std::vector<MepmlLspCodeAction> MepmlLspCodeActions(const std::vector<std::strin
                                                     const MepmlLspOptions &opts) {
     std::vector<MepmlLspCodeAction> out;
     if (line < 0 || line >= static_cast<int>(lines.size())) return out;
-    const Document doc = Analyze(lines, opts);
+    const Document &doc = Analyze(lines, opts);
     const std::string &l = lines[static_cast<size_t>(line)];
     auto replace = [&](const std::string &title, const std::string &fixes, int cs, int ce, const std::string &text) {
         MepmlLspCodeAction a;

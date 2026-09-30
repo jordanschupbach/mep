@@ -59,6 +59,42 @@ bool TreesitterHasGrammar(const std::string &filetype);
 std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, const std::string &text,
                                                  const std::string &cache_key = "");
 
+// TreesitterHighlight's answer grouped by row -- each row's spans in the
+// same order the whole-text pass gives them -- kept per cache key and
+// updated incrementally: only the rows an edit touched, and those whose
+// syntax the edit changed (ts_tree_get_changed_ranges), are re-queried;
+// the rest carry over, shifted past the edit. Re-querying a whole
+// 16k-line document on every keystroke was the largest single cost of
+// typing in one (plans/MEPML_PERFORMANCE_PLAN.md).
+/**
+ * @brief Per-row highlight captures for `text`, updated incrementally from the previous call with the same key.
+ * @param filetype Bare file extension identifying the language.
+ * @param text Full text to highlight.
+ * @param cache_key Parse and row-cache key; empty means `filetype`.
+ * @return One vector of spans per row of `text` (valid until the next call with this key).
+ */
+const std::vector<std::vector<TSHighlightSpan>> &TreesitterHighlightRows(const std::string &filetype,
+                                                                        const std::string &text,
+                                                                        const std::string &cache_key = "");
+
+// A mepml code block's body, from the grammar's tree: 0-based inclusive
+// rows of its code_content, and the header's language ("" when none).
+struct TSCodeBlockRange {
+    std::string lang;
+    int first_row = 0;
+    int last_row = 0;
+};
+// The mepml code blocks in `text`, read off the tree the "mepml" highlight
+// pass already parsed (the same cache key, so no second parse) -- instead
+// of a full mepml::Parse just to find them, which was the syntax pass's
+// second-largest cost after an edit (plans/MEPML_PERFORMANCE_PLAN.md).
+/**
+ * @brief Every code block's body rows and language in a mepml text, from its tree-sitter tree.
+ * @param text The mepml text.
+ * @return The blocks with a body, in document order.
+ */
+std::vector<TSCodeBlockRange> TreesitterMepmlCodeBlocks(const std::string &text);
+
 // One foldable range, 0-indexed rows, both inclusive (mep's own Fold
 // struct convention -- see main.cpp's Fold).
 struct TSFoldRange {

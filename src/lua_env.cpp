@@ -2859,6 +2859,48 @@ int l_mepml_code_blocks(lua_State *L) {
     return 1;
 }
 
+// mep.mepml_parse_ready() -> whether the current buffer's mepml parse can be
+// had without parsing on this thread (Editor::MepmlParseReady); asking
+// starts a background parse when a large buffer's is stale. True for any
+// buffer that is not mepml.
+/**
+ * @brief Implements mep.mepml_parse_ready(): whether the current mepml buffer's parse is ready.
+ * @param L Lua state.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_mepml_parse_ready(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->MepmlParseReady());
+    return 1;
+}
+
+// mep.mepml_ts_code_blocks(text) -> the same shape as mep.mepml_code_blocks,
+// read off the grammar's tree for `text` (TreesitterMepmlCodeBlocks) -- for
+// the syntax pass, which has just parsed that tree and would otherwise
+// run a whole mepml::Parse after every edit only to find the blocks.
+/**
+ * @brief Implements mep.mepml_ts_code_blocks(text): the code-block bodies of a mepml text, from its tree-sitter tree.
+ * @param L Lua state; arg 1 the mepml text.
+ * @return Number of values pushed (1: an array of {lang=, first=, last=}, rows 1-based inclusive).
+ */
+int l_mepml_ts_code_blocks(lua_State *L) {
+    size_t len = 0;
+    const char *text = luaL_checklstring(L, 1, &len);
+    const std::vector<TSCodeBlockRange> blocks = TreesitterMepmlCodeBlocks(std::string(text, len));
+    lua_createtable(L, static_cast<int>(blocks.size()), 0);
+    lua_Integer k = 1;
+    for (const TSCodeBlockRange &b : blocks) {
+        lua_createtable(L, 0, 3);
+        lua_pushlstring(L, b.lang.data(), b.lang.size());
+        lua_setfield(L, -2, "lang");
+        lua_pushinteger(L, b.first_row + 1);
+        lua_setfield(L, -2, "first");
+        lua_pushinteger(L, b.last_row + 1);
+        lua_setfield(L, -2, "last");
+        lua_rawseti(L, -2, k++);
+    }
+    return 1;
+}
+
 // mep.mepml_outline() -> {{level=, title=, row=}, ...} (row 1-based).
 /**
  * @brief Implements mep.mepml_outline(): lists the current mepml buffer's headings.
@@ -3593,23 +3635,32 @@ int l_ts_highlight(lua_State *L) {
     // Resolved once per distinct capture name, not once per capture.
     std::unordered_map<std::string, const std::string *> resolved;
     Editor *ed = GetEditor(L);
-    for (const TSHighlightSpan &sp : TreesitterHighlight(filetype, std::string(text, len), cache_key)) {
-        auto r = resolved.find(sp.capture);
-        if (r == resolved.end()) {
-            auto it = hl_map.find(sp.capture);
-            if (it == hl_map.end()) {
-                const size_t dot = sp.capture.find('.');
-                it = hl_map.find(dot == std::string::npos ? sp.capture : sp.capture.substr(0, dot));
+    // Row by row: each row's spans in the whole-text pass's order, which is
+    // all the renderer's per-row draw order depends on.
+    const std::vector<std::vector<TSHighlightSpan>> &rows =
+        TreesitterHighlightRows(filetype, std::string(text, len), cache_key);
+    size_t total = 0;
+    for (const auto &row : rows) total += row.size();
+    ed->ReserveDecorations(ns, total);
+    for (const auto &row : rows) {
+        for (const TSHighlightSpan &sp : row) {
+            auto r = resolved.find(sp.capture);
+            if (r == resolved.end()) {
+                auto it = hl_map.find(sp.capture);
+                if (it == hl_map.end()) {
+                    const size_t dot = sp.capture.find('.');
+                    it = hl_map.find(dot == std::string::npos ? sp.capture : sp.capture.substr(0, dot));
+                }
+                r = resolved.emplace(sp.capture, it == hl_map.end() ? nullptr : &it->second).first;
             }
-            r = resolved.emplace(sp.capture, it == hl_map.end() ? nullptr : &it->second).first;
+            if (!r->second) continue;
+            Decoration d;
+            d.row = sp.row + row_offset;
+            d.col_start = sp.col_start;
+            d.col_end = sp.col_end;
+            d.hl_group = *r->second;
+            ed->AddDecoration(ns, std::move(d));
         }
-        if (!r->second) continue;
-        Decoration d;
-        d.row = sp.row + row_offset;
-        d.col_start = sp.col_start;
-        d.col_end = sp.col_end;
-        d.hl_group = *r->second;
-        ed->AddDecoration(ns, d);
     }
     lua_pushboolean(L, 1);
     return 1;
@@ -4168,10 +4219,13 @@ int l_buf_clear_latex_inline(lua_State *L) {
     return 0;
 }
 
-// mep.buf_set_latex_preview(first_row, last_row, col[, path]) -- the math
-// preview popup's fragment (Buffer::org_latex_preview), 1-indexed rows and
-// column; without `path` the render already set is kept (the fragment
-// moved, or its newest state is still compiling).
+// mep.buf_set_latex_preview(first_row, last_row, col[, path | opts]) -- the
+// math preview popup's fragment (Buffer::org_latex_preview), 1-indexed rows
+// and column; without `path` the render already set is kept (the fragment
+// moved, or its newest state is still compiling). `opts` = {path=,
+// path_tex=, tex=}: the render, the source it came from, and the
+// fragment's current source (the popup lays that out itself until a
+// render of it lands).
 /**
  * @brief Implements mep.buf_set_latex_preview(first_row, last_row, col[, path]): sets the current buffer's math preview popup fragment.
  * @param L Lua state; args 1/2 the fragment's 1-indexed first/last rows, arg 3 its 1-indexed column, optional arg 4 the rendered PNG path.
@@ -4181,7 +4235,20 @@ int l_buf_set_latex_preview(lua_State *L) {
     int first_row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
     int last_row = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
     int col = static_cast<int>(luaL_checkinteger(L, 3)) - 1;
-    if (lua_isstring(L, 4)) {
+    if (lua_istable(L, 4)) {
+        // {path=, path_tex=, tex=}: each optional, absent ones kept.
+        auto field = [&](const char *name, std::string *out) {
+            lua_getfield(L, 4, name);
+            const bool has = lua_isstring(L, -1) != 0;
+            if (has) *out = lua_tostring(L, -1);
+            lua_pop(L, 1);
+            return has;
+        };
+        std::string path, path_tex, tex;
+        const bool has_path = field("path", &path), has_path_tex = field("path_tex", &path_tex), has_tex = field("tex", &tex);
+        GetEditor(L)->SetOrgLatexPreview(first_row, last_row, col, has_path ? &path : nullptr,
+                                         has_path_tex ? &path_tex : nullptr, has_tex ? &tex : nullptr);
+    } else if (lua_isstring(L, 4)) {
         const std::string path = lua_tostring(L, 4);
         GetEditor(L)->SetOrgLatexPreview(first_row, last_row, col, &path);
     } else {
@@ -12913,6 +12980,8 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_folds", l_mepml_folds},
     {"mepml_block_at", l_mepml_block_at},
     {"mepml_code_blocks", l_mepml_code_blocks},
+    {"mepml_ts_code_blocks", l_mepml_ts_code_blocks},
+    {"mepml_parse_ready", l_mepml_parse_ready},
     {"mepml_outline", l_mepml_outline},
     {"mepml_splice_results", l_mepml_splice_results},
     {"mepml_link_at", l_mepml_link_at},

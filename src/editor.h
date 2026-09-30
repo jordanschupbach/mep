@@ -1294,6 +1294,13 @@ struct Buffer {
         int first_row = -1;
         int last_row = -1;
         int col = 0;
+        // The fragment's current source (delimiters included), and the
+        // source `path` was rendered from. While they differ -- tectonic is
+        // still behind the typing -- the popup lays out `tex` with mep's own
+        // math engine (LayoutMathExpression) in the same frame instead of
+        // showing the stale PNG.
+        std::string tex;
+        std::string path_tex;
     };
     OrgLatexPreview org_latex_preview;
 
@@ -7576,6 +7583,25 @@ public:
         size_t deco_count = 0;  // the namespace's size after the scan: anything else touching it forces a full one
     };
     std::unordered_map<int, MepmlScanState> mepml_scan_state_;
+    // MepmlParseReady's background parse, per buffer: a snapshot of the
+    // lines parsed and highlighted (with imports too, when it has any) on
+    // a worker thread, installed into mepml_parse_cache_ only if the
+    // buffer still holds those lines when it finishes.
+    struct MepmlAsyncResult {
+        std::vector<std::string> lines;
+        std::string file;
+        mepml::Document plain;
+        std::vector<mepml::Span> plain_spans;
+        bool has_imports = false;
+        mepml::Document imports;
+        std::vector<mepml::Span> imports_spans;
+        std::vector<std::pair<std::string, long long>> reads;
+    };
+    struct MepmlAsyncParse {
+        bool running = false;
+        std::future<MepmlAsyncResult> result;
+    };
+    std::unordered_map<int, MepmlAsyncParse> mepml_async_;
     // Aligns the table containing 0-based `row` on its pipes -- the same
     // rewrite :MepOrgTableAlign does, but for a row that isn't
     // necessarily the cursor's (and silently, with no "Not on a table
@@ -9080,6 +9106,15 @@ public:
      * @return The added decoration's id.
      */
     int AddDecoration(int ns, Decoration deco);
+    /**
+     * @brief Reserves room for `extra` more decorations in `ns` (current buffer), ahead of a batch of AddDecoration calls.
+     * @param ns The namespace.
+     * @param extra How many are about to be added.
+     */
+    void ReserveDecorations(int ns, size_t extra) {
+        std::vector<Decoration> &v = Buf().decorations[ns];
+        v.reserve(v.size() + extra);
+    }
 
     // --- Spell checking (src/spell.h) -------------------------------------
     // Loads the bundled wordlist (`dict_path`) and the user's personal
@@ -9522,6 +9557,14 @@ public:
      */
     const std::vector<mepml::Span> &MepmlSpansCurrent(bool with_imports) const;
     /**
+     * @brief Whether the current mepml buffer's parse is ready without parsing on this thread: small buffers
+     * always are (they parse in place when asked); a large one is once a background parse of its current
+     * text has finished, and asking starts one. Edit hooks that read the parse ask first and retry on a
+     * later frame, so typing in a large document never waits on its parse (plans/MEPML_PERFORMANCE_PLAN.md).
+     * @return True if MepmlParseCurrent/MepmlSpansCurrent will answer from the cache (or cheaply).
+     */
+    bool MepmlParseReady();
+    /**
      * @brief Parses the current buffer as an export sees it: imports expanded, user commands, \when and \raw resolved.
      * @param tags What the export is (mepml::ExportTags), e.g. {"pdf", "beamer", "tex", "latex", "slides"}.
      * @return The parsed, expanded document (mepml::ParseForExport).
@@ -9582,10 +9625,11 @@ public:
      * @param rows The table rows to lay out (every row but the cursor's, while concealing).
      * @param edge_markup Concealed markup, as (row, column), at the open edge of a GFM row (one without that outer pipe): the missing pipe is drawn in its place, and the caller has not drawn it.
      * @param ns Decoration namespace.
+     * @param only_tables When given, lay out only the tables starting at these rows (MepmlScan's patch).
      */
     void MepmlTableLayout(const mepml::Document &doc, const std::vector<mepml::Span> &spans,
                           const std::unordered_set<int> &rows, const std::set<std::pair<int, int>> &edge_markup,
-                          int ns);
+                          int ns, const std::unordered_set<int> *only_tables = nullptr);
     // Marker folding (za/zm/zr/zR/zM), enabled by default for every
     // filetype: rebuilds provider="marker" folds from literal `{{{`/`}}}`
     // text markers (vim's classic foldmethod=marker), same lazy
@@ -9981,8 +10025,11 @@ public:
      * @param last_row The fragment's last row (0-indexed, inclusive).
      * @param col The display column the popup lines up with.
      * @param path The rendered PNG, or nullptr to keep the one already set.
+     * @param path_tex The source `path` was rendered from, or nullptr to keep it.
+     * @param tex The fragment's current source, or nullptr to keep it.
      */
-    void SetOrgLatexPreview(int first_row, int last_row, int col, const std::string *path);
+    void SetOrgLatexPreview(int first_row, int last_row, int col, const std::string *path,
+                            const std::string *path_tex = nullptr, const std::string *tex = nullptr);
     /**
      * @brief Clears the current buffer's math preview popup fragment.
      */

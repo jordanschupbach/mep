@@ -3528,7 +3528,9 @@ const char *kBuiltinViewer =
     "end\n";
 
 // on_buffer_changed(fn, interval): `interval` may also be a function of
-// the hook's own last run time in seconds (kBuiltinSyntax's adaptive one).
+// the hook's own last run time in seconds (kBuiltinSyntax's adaptive one),
+// and `fn` may return false to say it could not run yet (asked again the
+// next frame).
 //
 // The hooks share a per-frame budget (MEP_EDIT_HOOK_FRAME_BUDGET): a hook
 // that falls due waits for a later frame when, by its own last run time,
@@ -3557,11 +3559,17 @@ const char *kBuiltinEditHooks =
     "      due_since = due_since or now\n"
     "      if now - due_since < MEP_EDIT_HOOK_MAX_DEFER then return end\n"
     "    end\n"
-    "    last_epoch, last_run, due_since = epoch, now, nil\n"
     "    local t = mep.clock()\n"
-    "    fn()\n"
-    "    cost = mep.clock() - t\n"
-    "    mep_edit_hook_spent = mep_edit_hook_spent + cost\n"
+    "    local done = fn()\n"
+    "    local spent = mep.clock() - t\n"
+    "    mep_edit_hook_spent = mep_edit_hook_spent + spent\n"
+    // `false` from the hook: not done (its input is not ready yet -- a
+    // large mepml buffer's background parse, say). The edit stays
+    // unconsumed and the hook is asked again next frame; its cost is not
+    // what it would take to run, so it does not replace the last one.
+    "    if done == false then return end\n"
+    "    cost = spent\n"
+    "    last_epoch, last_run, due_since = epoch, now, nil\n"
     "  end)\n"
     "end\n"
     "function mep.on_buffer_saved(fn)\n"
@@ -12690,13 +12698,19 @@ const char *kBuiltinSyntax =
     // language, the way org's src blocks are. The styling proper (bold,
     // sizes, concealment) is Editor::MepmlScan's, in its own namespace.
     "  if ft == 'mepml' then\n"
-    "    mep.ts_highlight(mep_syntax_ns, 'mepml', table.concat(lines, '\\n'), mep_mepml_capture_hl, 0)\n"
+    "    local text = table.concat(lines, '\\n')\n"
+    "    mep.ts_highlight(mep_syntax_ns, 'mepml', text, mep_mepml_capture_hl, 0)\n"
     // Each block keeps its own incremental tree (the cache key: buffer and
     // the block's ordinal among blocks of its language), so a document's
     // many python blocks stop evicting one another's.
     "    local nth = {}\n"
     "    local bufid = mep.current_buffer()\n"
-    "    for _, cb in ipairs(mep.mepml_code_blocks()) do\n"
+    // The blocks as the grammar just parsed them (same tree, no second
+    // parse): after an edit, mep.mepml_code_blocks() ran a whole
+    // mepml::Parse only to find them. The two agree on any well-formed
+    // document; on a broken one (an unclosed fence) this follows the
+    // grammar that colours everything around the blocks.
+    "    for _, cb in ipairs(mep.mepml_ts_code_blocks(text)) do\n"
     "      local embed_ft = mep_org_babel_lang_ts_ft and mep_org_babel_lang_ts_ft[cb.lang:lower()] or cb.lang:lower()\n"
     "      if embed_ft ~= '' then\n"
     "        nth[embed_ft] = (nth[embed_ft] or 0) + 1\n"
@@ -12922,7 +12936,10 @@ const char *kBuiltinSpell =
     "    end\n"
     "  end\n"
     "end\n"
-    "mep.on_buffer_changed(function() mep.spell_highlight() end)\n"
+    "mep.on_buffer_changed(function()\n"
+    "  if not mep.mepml_parse_ready() then return false end\n"
+    "  mep.spell_highlight()\n"
+    "end)\n"
     // The word under (or immediately after) the cursor, with its row + column
     // span. Returns a {word,row,s,e} table or nil.
     "local function mep_spell_word_at_cursor()\n"
@@ -18701,7 +18718,7 @@ const char *kBuiltinOrgLatex =
     // still the newest render there is), at the fragment's current rows.
     "    local at = mep_org_latex_preview_at\n"
     "    if png_path and not nxt and at and at.buf == req.buf and mep.current_buffer() == req.buf then\n"
-    "      mep.buf_set_latex_preview(at.first, at.last, at.col, png_path)\n"
+    "      mep.buf_set_latex_preview(at.first, at.last, at.col, {path = png_path, path_tex = req.body})\n"
     "    end\n"
     "    if nxt then mep_org_latex_preview_run(nxt) end\n"
     "  end, -1)\n"
@@ -18713,7 +18730,7 @@ const char *kBuiltinOrgLatex =
     "MEP_ORG_LATEX_PREVIEW_DELAY = 0.4\n"
     "local mep_org_latex_preview_wait = nil\n"
     "local function mep_org_latex_preview(first, last, col, body)\n"
-    "  mep.buf_set_latex_preview(first, last, col)\n"
+    "  mep.buf_set_latex_preview(first, last, col, {tex = body})\n"
     "  mep_org_latex_preview_at = {buf = mep.current_buffer(), first = first, last = last, col = col}\n"
     "  mep_org_latex_preview_wait = {gen = mep_org_latex_gen, buf = mep.current_buffer(), first = first, last = last,\n"
     "                                col = col, body = body, at = mep.now()}\n"
@@ -18776,7 +18793,9 @@ const char *kBuiltinOrgLatex =
     "mep.leader_map('otl', 'Toggle LaTeX/math preview (org/tex)', mep.org_latex_toggle_ui)\n"
     "\n"
     "mep.on_buffer_changed(function()\n"
-    "  if mep_latex_preview_ft(mep.filename()) then mep.org_latex_scan() end\n"
+    "  if not mep_latex_preview_ft(mep.filename()) then return end\n"
+    "  if not mep.mepml_parse_ready() then return false end\n"
+    "  mep.org_latex_scan()\n"
     "end)\n"
     "local mep_org_latex_last_file = nil\n"
     "mep.on_frame(function()\n"
@@ -24220,8 +24239,13 @@ const char *kBuiltinMepml =
     "  mep.mepml_scan(mep_mepml_ns, not lsp)\n"
     "end\n"
     "mep.command('MepmlRender', mep.mepml_render)\n"
+    // A large buffer's parse runs in the background after an edit
+    // (Editor::MepmlParseReady): until it lands, the scan waits rather than
+    // parsing on this thread, and the previous decorations stand.
     "mep.on_buffer_changed(function()\n"
-    "  if mep_mepml_is(mep.filename()) then mep.mepml_render() end\n"
+    "  if not mep_mepml_is(mep.filename()) then return end\n"
+    "  if not mep.mepml_parse_ready() then return false end\n"
+    "  mep.mepml_render()\n"
     "end)\n"
     "local mep_mepml_last_file, mep_mepml_last_row = nil, nil\n"
     "mep.on_frame(function()\n"
@@ -24232,6 +24256,7 @@ const char *kBuiltinMepml =
     "  end\n"
     "  local row = mep.cursor()\n"
     "  if fname ~= mep_mepml_last_file or row ~= mep_mepml_last_row then\n"
+    "    if not mep.mepml_parse_ready() then return end\n"
     "    mep_mepml_last_file, mep_mepml_last_row = fname, row\n"
     "    mep.mepml_render()\n"
     "  end\n"
@@ -36734,6 +36759,35 @@ MathLayoutResult LayoutMathAtom(const MathNode &n, float base_size, MathStyle st
  * @param display True for a `\\[..\\]`/`$$..$$` span, which is set in display style.
  * @return The laid-out expression's glyph runs, bar runs, size, and baseline.
  */
+/**
+ * @brief A LaTeX fragment's source without its delimiters -- `$...$`, `$$...$$`, `\(...\)` or `\[...\]` -- for
+ * LayoutMathExpression, and whether they make it display maths. Anything else (an environment) is passed whole,
+ * as display maths.
+ * @param body The fragment as written, delimiters included.
+ * @param display Set to whether it is display maths.
+ * @return The maths inside the delimiters.
+ */
+std::string StripMathDelimiters(const std::string &body, bool *display) {
+    size_t a = body.find_first_not_of(" \t\r\n"), z = body.find_last_not_of(" \t\r\n");
+    if (a == std::string::npos) {
+        *display = false;
+        return std::string();
+    }
+    const std::string t = body.substr(a, z - a + 1);
+    auto wrapped = [&](const char *open, const char *close) {
+        const size_t lo = std::strlen(open), lc = std::strlen(close);
+        return t.size() >= lo + lc && t.compare(0, lo, open) == 0 && t.compare(t.size() - lc, lc, close) == 0;
+    };
+    auto inner = [&](size_t lo, size_t lc) { return t.substr(lo, t.size() - lo - lc); };
+    *display = true;
+    if (wrapped("$$", "$$") || wrapped("\\[", "\\]")) return inner(2, 2);
+    *display = false;
+    if (wrapped("\\(", "\\)")) return inner(2, 2);
+    if (wrapped("$", "$")) return inner(1, 1);
+    *display = true;
+    return t;
+}
+
 MathLayoutResult LayoutMathExpression(const std::string &latex, float font_size, bool display) {
     return LayoutMathAtom(ParseTexMath(latex), font_size, display ? MathStyle::Display : MathStyle::Text);
 }
@@ -52361,14 +52415,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // while the cursor is in it) comes from Buffer::org_latex_preview.
         // Otherwise, the one it registered before the cursor arrived.
         const Buffer::OrgLatexPreview &pv = buf.org_latex_preview;
-        if (!pv.path.empty() && cr >= pv.first_row && cr <= pv.last_row) {
-            preview_path = pv.path;
+        // Its source, laid out by mep's own math engine, while tectonic is
+        // behind it (or has nothing yet): the popup keeps up with every
+        // keystroke instead of trailing a compile by a second or more.
+        std::string live_tex;
+        const bool pv_here = cr >= pv.first_row && cr <= pv.last_row && (!pv.path.empty() || !pv.tex.empty());
+        if (pv_here) {
+            if (!pv.tex.empty() && (pv.path.empty() || pv.path_tex != pv.tex)) live_tex = pv.tex;
+            else preview_path = pv.path;
             first_row = pv.first_row;
             last_row = pv.last_row;
             anchor_col = pv.col;
         }
         for (const auto &kv : buf.org_latex_rows) {
-            if (!preview_path.empty()) break;
+            if (pv_here || !preview_path.empty()) break;
             if (cr >= kv.first && cr <= kv.second.end_row && !kv.second.path.empty()) {
                 preview_path = kv.second.path;
                 first_row = kv.first;
@@ -52376,7 +52436,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 break;
             }
         }
-        if (preview_path.empty()) {
+        if (!pv_here && preview_path.empty()) {
             auto it = buf.org_latex_inline.find(cr);
             if (it != buf.org_latex_inline.end()) {
                 // Several fragments can share the row: the one under the
@@ -52417,15 +52477,32 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
         const gfx::Texture2D *tex = preview_path.empty() ? nullptr : GetOrLoadOrgLatexTexture(preview_path);
-        if (tex && tex->width > 0 && tex->height > 0) {
+        // The live layout, redone only when the source or the font size changes.
+        static std::string live_key;
+        static MathLayoutResult live_layout;
+        const MathLayoutResult *layout = nullptr;
+        if (!live_tex.empty()) {
+            bool display = false;
+            const std::string inner = StripMathDelimiters(live_tex, &display);
+            const std::string key = std::to_string(g_font_size) + (display ? "D" : "T") + inner;
+            if (key != live_key) {
+                live_layout = LayoutMathExpression(inner, g_font_size, display);
+                live_key = key;
+            }
+            if (live_layout.width > 0 && live_layout.height > 0) layout = &live_layout;
+        }
+        const float src_w = layout ? layout->width : tex ? static_cast<float>(tex->width) : 0.0f;
+        const float src_h = layout ? layout->height : tex ? static_cast<float>(tex->height) : 0.0f;
+        if (src_w > 0 && src_h > 0) {
             const float pad = 6.0f;
             const float content_bottom = content_y + content_h;
             const float max_w = std::max(40.0f, w - (text_x - x) - kMarginX) - pad * 2.0f;
             const float max_h = std::max(static_cast<float>(line_height), content_h * 0.45f) - pad * 2.0f;
-            const float scale = std::min({1.0f, max_w / static_cast<float>(tex->width),
-                                          max_h / static_cast<float>(tex->height)});
-            const float box_w = static_cast<float>(tex->width) * scale + pad * 2.0f;
-            const float box_h = static_cast<float>(tex->height) * scale + pad * 2.0f;
+            // A texture shrinks to fit; a layout is drawn at its own size
+            // (the pane's scissor clips the rare one wider than the pane).
+            const float scale = layout ? 1.0f : std::min({1.0f, max_w / src_w, max_h / src_h});
+            const float box_w = src_w * scale + pad * 2.0f;
+            const float box_h = src_h * scale + pad * 2.0f;
             // The fragment's own top and bottom edges on screen (its first
             // row may have scrolled off the top; RowSlot counts from it).
             const float top_y = first_row >= pane.scroll_row
@@ -52443,7 +52520,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                static_cast<int>(box_h), ResolveHlGroup("FloatBg"));
             gfx::DrawRectangleLines(static_cast<int>(box_x), static_cast<int>(box_y), static_cast<int>(box_w),
                                     static_cast<int>(box_h), ResolveHlGroup("FloatBorder"));
-            gfx::DrawTextureEx(*tex, gfx::Vector2{box_x + pad, box_y + pad}, 0.0f, scale, gfx::White);
+            if (layout) DrawMathLayout(box_x + pad, box_y + pad, *layout, ResolveHlGroup("Normal"));
+            else gfx::DrawTextureEx(*tex, gfx::Vector2{box_x + pad, box_y + pad}, 0.0f, scale, gfx::White);
         }
     }
 

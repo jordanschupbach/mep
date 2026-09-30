@@ -1630,7 +1630,13 @@ static bool at_fence_close_line(TSLexer *lexer, bool consume) {
 bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid) {
     Scanner *s = (Scanner *)payload;
     if (valid[ERROR_SENTINEL]) return false;
-    const bool col0 = lexer->get_column(lexer) == 0;
+    // Whether the lexer is at a line start -- asked only when a token that
+    // needs one is valid: get_column walks back to the line's start, so
+    // asking on every call made each token cost its column, and a long
+    // line quadratic (an 8000-word paragraph on one line: 65 ms;
+    // plans/MEPML_PERFORMANCE_PLAN.md).
+    int col0_cached = -1;
+#define COL0() (col0_cached < 0 ? (col0_cached = lexer->get_column(lexer) == 0) : col0_cached)
 
     // A \define's template or a \raw's text: everything up to its group's
     // closing `)` -- over any number of lines, blank ones too -- unparsed
@@ -1658,7 +1664,7 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
     }
 
     // Code block body: everything up to the closing fence, as one token.
-    if (col0 && (valid[CODE_CONTENT] || valid[FENCE_CLOSE])) {
+    if ((valid[CODE_CONTENT] || valid[FENCE_CLOSE]) && COL0()) {
         lexer->mark_end(lexer);
         if (at_fence_close_line(lexer, true)) {
             if (!valid[FENCE_CLOSE]) return false;
@@ -1764,20 +1770,21 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
     }
 
     // Line starts.
-    if (col0) {
+    {
         bool block_valid = valid[BLANK_LINE] || valid[PARAGRAPH_START] || valid[COMMENT_MARKER] ||
                            valid[META_MARKER] || valid[H1_MARKER] || valid[LIST_MARKER] ||
                            valid[LIST_CONTINUATION] || valid[TABLE_ROW_START] || valid[RESULT_END] ||
                            valid[RESULT_END_ATTACHED] || valid[RESULT_BEGIN_MARKDOWN] ||
                            valid[DIRECTIVE_START] || valid[ATTRIBUTE_START] || valid[FENCE_OPEN] ||
                            valid[SLIDE_START] || valid[SLIDE_END] || valid[COMMAND_BLOCK_START];
-        if (block_valid) {
+        if (block_valid && COL0()) {
             const bool ok = scan_line_start(s, lexer, valid);
             if (ok && lexer->result_symbol != TABLE_ROW_START && lexer->result_symbol != TABLE_DELIMITER_ROW)
                 s->table = TABLE_NONE;
             return ok;
         }
     }
+#undef COL0
 
     // Line ends.
     if (valid[NEWLINE]) {

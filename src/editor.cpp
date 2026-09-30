@@ -23492,8 +23492,9 @@ void Editor::ClearNamespace(int ns) { Buf().decorations.erase(ns); }
 
 int Editor::AddDecoration(int ns, Decoration deco) {
     deco.id = Buf().next_decoration_id++;
-    Buf().decorations[ns].push_back(deco);
-    return deco.id;
+    const int id = deco.id;
+    Buf().decorations[ns].push_back(std::move(deco));
+    return id;
 }
 
 const std::unordered_map<int, std::vector<Decoration>> &Editor::CurrentBufferDecorations() const {
@@ -23813,7 +23814,7 @@ void Editor::ClearOrgLatexRows() {
     if (b.org_latex_preview.path.empty()) {
         for (const auto &kv : b.org_latex_rows) {
             if (cr >= kv.first && cr <= kv.second.end_row && !kv.second.path.empty()) {
-                b.org_latex_preview = Buffer::OrgLatexPreview{kv.second.path, kv.first, kv.second.end_row, 0};
+                b.org_latex_preview = Buffer::OrgLatexPreview{kv.second.path, kv.first, kv.second.end_row, 0, {}, {}};
                 break;
             }
         }
@@ -23878,7 +23879,7 @@ void Editor::ClearOrgLatexInlineSpans() {
                 const int first = span.first_row < 0 ? kv.first : span.first_row;
                 const int last = span.last_row < 0 ? kv.first : span.last_row;
                 if (cr >= first && cr <= last && !span.path.empty()) {
-                    b.org_latex_preview = Buffer::OrgLatexPreview{span.path, first, last, span.col_start};
+                    b.org_latex_preview = Buffer::OrgLatexPreview{span.path, first, last, span.col_start, {}, {}};
                     break;
                 }
             }
@@ -23888,12 +23889,15 @@ void Editor::ClearOrgLatexInlineSpans() {
     b.org_latex_inline.clear();
 }
 
-void Editor::SetOrgLatexPreview(int first_row, int last_row, int col, const std::string *path) {
+void Editor::SetOrgLatexPreview(int first_row, int last_row, int col, const std::string *path,
+                                const std::string *path_tex, const std::string *tex) {
     Buffer::OrgLatexPreview &p = Buf().org_latex_preview;
     p.first_row = first_row;
     p.last_row = std::max(first_row, last_row);
     p.col = std::max(0, col);
     if (path) p.path = *path;
+    if (path_tex) p.path_tex = *path_tex;
+    if (tex) p.tex = *tex;
 }
 
 void Editor::ClearOrgLatexPreview() { Buf().org_latex_preview = Buffer::OrgLatexPreview{}; }

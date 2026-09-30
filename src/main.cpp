@@ -46016,10 +46016,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         ctx.base_dir = urlutil::IsHttpUrl(html_sess->origin) ? html_sess->origin
                                                              : std::filesystem::path(html_sess->source).parent_path().string();
         ctx.zoom = html_sess->zoom;
-        // The viewport a `position:fixed` box positions against: the page's
-        // content area (same width the flow lays out in; full height of the
-        // pane content below the omnibar).
-        ctx.viewport_w = std::max(50.0f, w - kHtmlPad * 2.0f);
+        // The viewport a `position:fixed` box positions against: the FULL
+        // pane (not the content area inset by kHtmlPad). A browser positions
+        // fixed elements against the true viewport edge, so `left:0` must land
+        // flush at the pane's left, not 12px in -- otherwise an off-canvas
+        // drawer at translateX(-100%) fails to fully clear the edge and leaves
+        // a ~12px sliver (plus its shadow) clinging to the left. Paired with
+        // the fixed-layer draw offset below, which likewise drops kHtmlPad.
+        ctx.viewport_w = std::max(50.0f, w);
         ctx.viewport_h = content_h;
         // Media clocks tick with the frame, then the device mirrors the DOM.
         g_editor.AdvanceHtmlMedia(pane.buffer_id, static_cast<double>(gfx::GetFrameTime()));
@@ -46106,7 +46110,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 std::fprintf(stderr, "[html-fixed] x=%.1f y=%.1f w=%.1f h=%.1f content_h=%.1f runs=%zu\n",
                              static_cast<double>(fl->x), static_cast<double>(fl->y), static_cast<double>(fl->w),
                              static_cast<double>(fl->h), static_cast<double>(fl->content_h), fl->content->runs.size());
-            float fx = x + kHtmlPad + fl->x;
+            // Fixed layers position against the true pane viewport (its left
+            // edge is `x`, no kHtmlPad content gutter) -- see ctx.viewport_w
+            // above. This is what lets `left:0; translateX(-100%)` park the
+            // drawer exactly flush off the left so fw collapses to 0 and it
+            // (and its shadow) is skipped entirely.
+            float fx = x + fl->x;
             float fy = content_y + fl->y;
             // Clip the panel's box to the pane on ALL four edges -- a fixed
             // layer can sit past the left/top too (an off-canvas drawer parks

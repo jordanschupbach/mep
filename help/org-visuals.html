@@ -196,6 +196,30 @@ other three delimiters are unambiguous and carry none of those conditions.</p>
 <code>pdftoppm</code> (both in the flake's dev shell); without them on <code>PATH</code> the
 maths simply stays as source text, and mep says so once per session rather
 than once per fragment.</p>
+<h1>Plain text: turning the rendering off</h1>
+<table>
+<tr><th>Key / command</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;otr</code></td><td>toggle plain text for this pane</td></tr>
+<tr><td><code>:MepOrgPlainToggle</code></td><td>the same</td></tr>
+</table>
+<p>Everything on this page is rendering: markup hidden behind what it marks
+up, headings drawn at a size, images and formulas in place of their links
+and their source, blocks drawn as cards, tables drawn as grids. One key
+turns all of it off at once and shows the file as it is on disk -- still
+syntax-coloured, but with nothing drawn that isn't in the file:</p>
+<pre>* Top level heading
+Some *bold* text and a link [[https://example.com][Example]] here.
+| a | b |
+|---+---|</pre>
+<p>This one is <b>per pane</b>, not per editor -- the eight toggles beside it are
+editor-wide. <code>:vsplit</code> and turn one side plain and you have the source and
+the document side by side, scrolling independently; a split inherits the
+state of the pane it came from. A pane left plain and then pointed at a
+file that isn't org renders it exactly as it always did.</p>
+<p>It is a master switch over the individual toggles rather than a
+replacement for them: while a pane is plain nothing renders in it, and
+turning it back on restores whatever the individual toggles were set to.
+Nothing is rescanned on the way back, so it is instant either way.</p>
 <h1>Markup concealment and heading sizes</h1>
 <table>
 <tr><th>Key / command</th><th>Does</th></tr>

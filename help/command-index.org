@@ -5,7 +5,7 @@
 
 * Every command
 
-All 349 ex commands mep defines: 109 built in and 241 registered from Lua.
+All 357 ex commands mep defines: 116 built in and 242 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -212,6 +212,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepOrgNarrow= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgNext= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgPlainCursorLineToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =:MepOrgPlainToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgPrev= | -- |
 | =:MepOrgPriority= | [[file:org-todo.html][TODO keywords and tags]] |
 | =:MepOrgPromote= | [[file:org-basics.html][Org files in mep]] |
@@ -278,12 +279,19 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepWorkspaces= | -- |
 | =:MepZen= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
 | =:Model3DNew= | [[file:model3d.html][The 3D modeler]] |
+| =:music= | -- |
 | =:norm= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:norm!= | -- |
 | =:normal= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:normal!= | -- |
 | =:NotebookNew= | [[file:notebooks.html][Jupyter notebooks]] |
 | =:Org= | [[file:architecture.html][How mep is put together]] |
+| =:PresBackground= | [[file:presentations.html][Presentations]] |
+| =:PresExport= | [[file:presentations.html][Presentations]] |
+| =:PresImage= | [[file:presentations.html][Presentations]] |
+| =:PresMath= | [[file:presentations.html][Presentations]] |
+| =:PresNew= | [[file:presentations.html][Presentations]] |
+| =:PresPresent= | [[file:presentations.html][Presentations]] |
 | =:project= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:projectclose= | [[file:projects.html][Projects]] |
 | =:projectclose!= | [[file:projects.html][Projects]] |

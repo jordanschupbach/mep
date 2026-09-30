@@ -1375,6 +1375,15 @@ struct Pane {
     CursorPos cursor;
     CursorPos visual_anchor;
     int scroll_row = 0;
+    // <leader>otr: this pane shows an org buffer as the file's own text --
+    // no concealment, no scaled headlines, no images/LaTeX/block cards/
+    // laid-out tables. Per *pane* rather than per editor (the way the
+    // eight ot* toggles beside it are) so the same file can be raw source
+    // in one split and a rendered document in another; a split inherits
+    // it from the pane it split off. Never read directly -- every gate
+    // asks Editor::PaneOrgPlain(pane), which is also what makes it a
+    // no-op on a buffer that isn't org.
+    bool org_plain = false;
     // Set each frame by UpdateScrollForPane (called once per rendered pane
     // from main.cpp, the only place that knows pixel geometry) so H/M/L
     // have something to work with without editor.cpp needing to know
@@ -9761,9 +9770,11 @@ public:
      * @param buf The buffer to look `row` up in.
      * @param row The buffer row to look up.
      * @param cursor_row The rendering pane's cursor row, or a negative value to disable the reveal.
+     * @param pane_plain The pane's plain-text state (Editor::PaneOrgPlain): true renders nothing at all.
      * @return The registered render, or nullptr.
      */
-    const Buffer::OrgLatexRender *OrgLatexRenderForRow(const Buffer &buf, int row, int cursor_row) const;
+    const Buffer::OrgLatexRender *OrgLatexRenderForRow(const Buffer &buf, int row, int cursor_row,
+                                                      bool pane_plain) const;
     /**
      * @brief The drawn render (an org LaTeX fragment or a mepml html result) whose skipped source rows include `row` -- a row DrawPane never draws on its own.
      * @param pane The pane (its cursor decides whether a render is revealed).
@@ -9806,6 +9817,30 @@ public:
      * @return The new state.
      */
     bool ToggleOrgHeadingScale();
+    // <leader>otr: flips the *active pane's* Pane::org_plain and returns
+    // the new state (true = plain text). Unlike every toggle around it
+    // this is per pane, not per editor -- see Pane::org_plain.
+    /**
+     * @brief Toggles plain-text (unrendered) display of org buffers in the active pane.
+     * @return The new state; true means the pane now shows raw org text.
+     */
+    bool ToggleOrgPlainPane();
+    /**
+     * @brief Returns whether the active pane shows org buffers as plain text.
+     * @return True if the active pane is in plain-text mode.
+     */
+    bool OrgPlainActivePane() const;
+    // The one question every org render gate asks: does `pane` draw its
+    // buffer as plain text? False for a buffer that isn't org, so a pane
+    // left in plain mode and then pointed at a .cpp file renders it
+    // exactly as it always did. Cheap enough to ask per row (a filetype
+    // sniff), which is what the slot walkers do.
+    /**
+     * @brief Returns whether `pane` renders its (org) buffer as plain text.
+     * @param pane The pane to ask about.
+     * @return True if the pane is in plain-text mode and its buffer is an org buffer.
+     */
+    bool PaneOrgPlain(const Pane &pane) const;
     // <leader>otc: flips org_plain_cursor_line_ and returns the new
     // state, same shape as ToggleOrgImages.
     /**

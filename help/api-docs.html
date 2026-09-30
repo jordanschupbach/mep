@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (178)</h1>
+<h1>The bindings (181)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -166,6 +166,8 @@ that it does nothing.</p>
 <tr><td><code>mep.org_parse_results</code></td><td>parses a babel header args string's :results modes</td></tr>
 <tr><td><code>mep.org_parse_vars</code></td><td>parses a babel header args string's :var entries</td></tr>
 <tr><td><code>mep.org_plain_cursor_line_toggle</code></td><td>toggles plain rendering of the cursor's own row</td></tr>
+<tr><td><code>mep.org_plain_toggle</code></td><td>toggles plain-text org display in the active pane</td></tr>
+<tr><td><code>mep.org_plain_visible</code></td><td>whether the active pane shows org as plain text</td></tr>
 <tr><td><code>mep.org_property_get</code></td><td>reads an org property drawer value from a headline</td></tr>
 <tr><td><code>mep.org_property_remove</code></td><td>removes a property from a headline's property drawer</td></tr>
 <tr><td><code>mep.org_property_set</code></td><td>writes an org property drawer value on a headline</td></tr>
@@ -192,6 +194,7 @@ that it does nothing.</p>
 <tr><td><code>mep.org_timestamp_insert</code></td><td>inserts an org timestamp at the cursor</td></tr>
 <tr><td><code>mep.org_timestamp_shift</code></td><td>shifts the org timestamp under/near the cursor by a number of days</td></tr>
 <tr><td><code>mep.pdf_current_page</code></td><td>1-indexed current page, or 0 if</td></tr>
+<tr><td><code>mep.pdf_fit_page</code></td><td>fits the page to its pane(s) (Editor::RequestPdfFitPage)</td></tr>
 <tr><td><code>mep.pdf_goto_page</code></td><td>jumps buffer_id's own PDF viewer</td></tr>
 <tr><td><code>mep.pdf_note_latex_done</code></td><td>async callback (from kBuiltinPdfAnnot's</td></tr>
 <tr><td><code>mep.pdf_outline</code></td><td>array of {title, page, depth}, or nil if</td></tr>

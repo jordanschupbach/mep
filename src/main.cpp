@@ -14847,6 +14847,18 @@ const char *kBuiltinOrgLinks =
     "end\n"
     "mep.command('MepOrgTableWrapToggle', mep.org_table_wrap_toggle_ui)\n"
     "mep.leader_map('otw', 'Org: toggle wrapped table rendering', mep.org_table_wrap_toggle_ui)\n"
+    // The master switch (<leader>otr, Pane::org_plain): plain text for
+    // the whole pane -- no concealment, no scaled headlines, no images,
+    // LaTeX, block cards or laid-out tables, just the file's own
+    // characters with the theme's ordinary syntax colours still on them.
+    // Per *pane*, so `:vsplit` gives you the source and the document
+    // side by side; a split inherits the state of the pane it came from.
+    "function mep.org_plain_toggle_ui()\n"
+    "  local plain = mep.org_plain_toggle()\n"
+    "  mep.notify('Org rendering: ' .. (plain and 'off (plain text)' or 'on'))\n"
+    "end\n"
+    "mep.command('MepOrgPlainToggle', mep.org_plain_toggle_ui)\n"
+    "mep.leader_map('otr', 'Org: toggle plain text (no inline rendering)', mep.org_plain_toggle_ui)\n"
     // Plain cursor line: the row the caret is on drops every decoration
     // -- syntax colours included -- and shows its own raw characters.
     // On by default (Editor::OrgPlainCursorLineVisible); this toggle is
@@ -48327,7 +48339,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // scroll a fragment's worth of slots off. The pane's own cursor,
     // always, is the one rule all four can follow.
     const int latex_cursor_row = pane.cursor.row;
-    if (is_org_buffer || is_mepml_buffer) {
+    // <leader>otr (Pane::org_plain): this pane shows its org buffer as
+    // the file's own text. Every org render pass below asks one of these
+    // locals rather than the editor-wide getter, so the rule is stated
+    // once instead of at ~25 sites -- and so a plain pane and a rendered
+    // one can show the same buffer side by side. Syntax colouring is
+    // deliberately NOT part of it: what goes away is everything that
+    // changes which characters are drawn or how many slots a row claims,
+    // not the theme. The concealment half is dropped a few lines below,
+    // where decos_by_row is built.
+    const bool org_plain = g_editor.PaneOrgPlain(pane);
+    const bool show_org_images = g_editor.OrgImagesVisible() && !org_plain;
+    const bool show_org_latex = g_editor.OrgLatexVisible() && !org_plain;
+    const bool show_org_cards = g_editor.OrgBlockCardsVisible() && !org_plain;
+    const bool show_org_conceal = g_editor.OrgConcealVisible() && !org_plain;
+    const bool show_org_head_scale = g_editor.OrgHeadingScaleVisible() && !org_plain;
+    const bool show_org_table_wrap = g_editor.OrgTableWrapVisible() && !org_plain;
+    // The drawn table grid (wash, zebra banding, rounded outline, column
+    // rules) is rendering too, so a plain pane leaves these maps empty
+    // and every table draws as the pipes and dashes in the file.
+    if ((is_org_buffer || is_mepml_buffer) && !org_plain) {
         for (const Editor::OrgTableGrid &t : g_editor.OrgTables(pane.buffer_id)) {
             // OrgTables' returned reference is into Editor's own scratch
             // vector, refilled on the next call -- taking addresses into
@@ -48344,7 +48375,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
     // mepml code blocks and their results draw as cards too
     // (Editor::MepmlBuildCards feeds OrgBlockCards).
-    if (g_editor.OrgBlockCardsVisible() && (is_org_buffer || is_mepml_buffer)) {
+    if (show_org_cards && (is_org_buffer || is_mepml_buffer)) {
         // Row -> its first visual slot, and how many slots it claims,
         // walked exactly the way the draw loop below walks (a closed fold
         // collapses to one slot, an org image/LaTeX row claims its own
@@ -48360,14 +48391,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
                 slot_start[r] = vslot;
                 auto img_it = buf.org_image_rows.find(r);
-                const Buffer::OrgLatexRender *latex = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row);
+                const Buffer::OrgLatexRender *latex = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row, org_plain);
                 auto tw_it = buf.org_table_wrap_rows.find(r);
                 int slots = 1;
                 int next = r + 1;
                 if (f) {
                     next = f->end_row + 1;
                     slots += g_editor.RowTopPadSlots(buf, r);  // a folded mepml header's large title
-                } else if (g_editor.OrgImagesVisible() && img_it != buf.org_image_rows.end()) {
+                } else if (show_org_images && img_it != buf.org_image_rows.end()) {
                     slots = g_editor.OrgImageLayoutForRow(img_it->second, pane.text_cols).slots;
                 } else if (latex != nullptr) {
                     slots = latex->slots;
@@ -48375,7 +48406,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 } else if (const Buffer::MepmlVirtualBlock *vb =
                                g_editor.MepmlVirtualBlockForRow(buf, r, latex_cursor_row)) {
                     slots = static_cast<int>(vb->lines.size());
-                } else if (g_editor.OrgTableWrapVisible() && tw_it != buf.org_table_wrap_rows.end() &&
+                } else if (show_org_table_wrap && tw_it != buf.org_table_wrap_rows.end() &&
                            !tw_it->second.lines.empty()) {
                     // An over-wide table's row draws as its wrapped
                     // layout's lines -- see Buffer::org_table_wrap_rows.
@@ -48388,7 +48419,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     slots += nb_sess ? g_editor.NotebookTrailingSlots(pane.buffer_id, r) : 0;
                     // An org headline's own extra slot (kOrgHeadingStyles)
                     // -- one of the four walkers that has to agree on it.
-                    if (g_editor.OrgHeadingScaleVisible()) {
+                    if (show_org_head_scale) {
                         slots += Editor::HeadingExtraSlotsForLevel(Editor::HeadingLevelForRow(buf, r));
                     }
                     slots += g_editor.RowTopPadSlots(buf, r);
@@ -48525,13 +48556,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             // (A slide's wash is faint enough that a rendering inside it
             // can simply sit on top.)
-            if (!is_slide && (g_editor.OrgImagesVisible() || g_editor.OrgLatexVisible())) {
+            if (!is_slide && (show_org_images || show_org_latex)) {
                 for (int r = card.meta_row; r <= last_row && !skip; r++) {
                     // A figure a mepml code block drew sits inside its
                     // output card on purpose (Editor::MepmlScan).
-                    if (g_editor.OrgImagesVisible() && !is_mepml_buffer && buf.org_image_rows.count(r) != 0) skip = true;
+                    if (show_org_images && !is_mepml_buffer && buf.org_image_rows.count(r) != 0) skip = true;
                     // (An html result is drawn inside its own output card, on purpose.)
-                    const Buffer::OrgLatexRender *lr = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row);
+                    const Buffer::OrgLatexRender *lr = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row, org_plain);
                     if (lr != nullptr && lr->html.empty() && lr->term_run < 0) skip = true;
                 }
             }
@@ -48657,7 +48688,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // the one exception.
     std::unordered_map<int, std::vector<const Decoration *>> decos_by_row;
     for (const auto &ns_decos : buf.decorations) {
-        for (const Decoration &d : ns_decos.second) decos_by_row[d.row].push_back(&d);
+        for (const Decoration &d : ns_decos.second) {
+            // <leader>otr: the markup shows as itself in a plain pane.
+            // virt_overlay and conceal are exactly the two fields that
+            // replace or hide buffer columns (editor.h), so dropping
+            // them here -- at the one funnel both the collapse pass and
+            // the decoration-drawing pass read from -- un-conceals every
+            // namespace at once (org links, emphasis, the {{{hl}}}
+            // macros) without touching the scans that emit them, and
+            // with the two passes agreeing for free. Every colour /
+            // bold / italic / underline decoration carries neither and
+            // survives, which is what keeps syntax highlighting on.
+            if (org_plain && (d.virt_overlay || d.conceal)) continue;
+            decos_by_row[d.row].push_back(&d);
+        }
     }
     // Decorations from different namespaces land in the same per-row
     // vector above in whatever order buf.decorations (keyed by namespace
@@ -48731,7 +48775,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // `disp_line`: this branch runs before that is built, and a
         // folded row is one of a handful on screen.
         const int star_hide =
-            (is_heading_buffer && g_editor.OrgConcealVisible() && !(is_active && fold_row == pane.cursor.row))
+            (is_heading_buffer && show_org_conceal && !(is_active && fold_row == pane.cursor.row))
                 ? Editor::HeadingHideLenForRow(buf, fold_row)
                 : 0;
         // How far left the title slid: the stars and their space out,
@@ -49000,7 +49044,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // so it claims its slots below and is excluded from soft-wrap the
         // same way an image/LaTeX row is.
         const Buffer::OrgTableWrapRow *tbl_wrap = nullptr;
-        if (!fold_here && is_org_buffer && g_editor.OrgTableWrapVisible()) {
+        if (!fold_here && is_org_buffer && show_org_table_wrap) {
             auto tw_it = buf.org_table_wrap_rows.find(row);
             if (tw_it != buf.org_table_wrap_rows.end() && !tw_it->second.lines.empty()) tbl_wrap = &tw_it->second;
         }
@@ -49020,9 +49064,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             row_wrap_slots = static_cast<int>(tbl_wrap->lines.size());
             visual_slot += row_wrap_slots - 1;  // visual_slot++ above already accounted for 1
         } else if (!fold_here && wrap_cols > 0) {
-            bool is_org_image = g_editor.OrgImagesVisible() && buf.org_image_rows.count(row) != 0;
+            bool is_org_image = show_org_images && buf.org_image_rows.count(row) != 0;
             bool is_org_latex =
-                !is_org_image && g_editor.OrgLatexRenderForRow(buf, row, latex_cursor_row) != nullptr;
+                !is_org_image && g_editor.OrgLatexRenderForRow(buf, row, latex_cursor_row, org_plain) != nullptr;
             if (!is_org_image && !is_org_latex) {
                 row_wraps = true;
                 int len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
@@ -49318,7 +49362,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // branch just below (org's own heading-based folds never start on
         // a src-block/results line in practice, so this never actually
         // has to arbitrate between the two).
-        if (!fold_here && g_editor.OrgImagesVisible()) {
+        if (!fold_here && show_org_images) {
             auto img_it = buf.org_image_rows.find(row);
             if (img_it != buf.org_image_rows.end()) {
                 const Buffer::OrgImageRender &img = img_it->second;
@@ -49451,7 +49495,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // inside that range: with the interior skipped there would be no
         // row to put a caret on at all.
         if (!fold_here) {
-            const Buffer::OrgLatexRender *latex_render = g_editor.OrgLatexRenderForRow(buf, row, latex_cursor_row);
+            const Buffer::OrgLatexRender *latex_render = g_editor.OrgLatexRenderForRow(buf, row, latex_cursor_row, org_plain);
             if (latex_render != nullptr) {
                 const Buffer::OrgLatexRender &render = *latex_render;
                 if (render.term_run >= 0) {
@@ -49579,7 +49623,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // replacement text to lose, and the scaled renderer reads the
         // collapse instead of ignoring it (see head_star_hide below).
         const std::string &raw_line = buf.lines[static_cast<size_t>(row)];
-        const bool headline_row = is_heading_buffer && g_editor.OrgHeadingScaleVisible() &&
+        const bool headline_row = is_heading_buffer && show_org_head_scale &&
                                   Editor::HeadingLevelForRow(buf, row) > 0;
         // A table row's `|` columns are load-bearing: the drawn grid's
         // rules are the columns every row of the table carries a `|` at
@@ -49613,7 +49657,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // the row's stored columns: collapsing the row it sits on would
         // leave it two columns off the glyph it is on.
         const int head_star_hide =
-            (is_heading_buffer && g_editor.OrgConcealVisible() && !plain_row && tbl_wrap == nullptr &&
+            (is_heading_buffer && show_org_conceal && !plain_row && tbl_wrap == nullptr &&
              !ghost_covers_row(row) && !(is_active && row == pane.cursor.row))
                 ? Editor::HeadingHideLenForRow(buf, row)
                 : 0;
@@ -49679,7 +49723,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // the rest of the row closes over them, which is as close to
             // "the formula continues above" as a row-at-a-time renderer
             // gets.
-            if (g_editor.OrgLatexVisible() && !latex_plain_row) {
+            if (show_org_latex && !latex_plain_row) {
                 auto latex_inline_it = buf.org_latex_inline.find(row);
                 if (latex_inline_it != buf.org_latex_inline.end()) {
                     for (const Buffer::OrgLatexInlineSpan &span : latex_inline_it->second) {
@@ -50067,7 +50111,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // (kOrgHeadingStyles, editor.h): `* Top` largest, each level
         // below it smaller, level 4 and deeper at plain body size.
         int org_head_level = 0;
-        if (g_editor.OrgHeadingScaleVisible() && is_heading_buffer) {
+        if (show_org_head_scale && is_heading_buffer) {
             org_head_level = Editor::HeadingLevelForRow(buf, row);
         }
         // The extra slots come first and unconditionally -- they are what
@@ -50773,7 +50817,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // center the render on it. The rectangle then has to span at
         // least the original [col_start, col_end), since anything short
         // of col_end is raw markup that would otherwise show through.
-        if (g_editor.OrgLatexVisible() && !latex_plain_row) {
+        if (show_org_latex && !latex_plain_row) {
             auto inline_it = buf.org_latex_inline.find(row);
             if (inline_it != buf.org_latex_inline.end()) {
                 for (const Buffer::OrgLatexInlineSpan &span : inline_it->second) {
@@ -51008,7 +51052,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (fold.closed && fold.start_row == r) f = &fold;
             }
             auto img_it = buf.org_image_rows.find(r);
-            const Buffer::OrgLatexRender *latex = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row);
+            const Buffer::OrgLatexRender *latex = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row, org_plain);
             auto tw_it = buf.org_table_wrap_rows.find(r);
             // A notebook code cell's output block hangs under row r (see
             // the draw loop's notebook branch); it counts with that row.
@@ -51017,7 +51061,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // A folded mepml header's large title claims its headroom.
                 slot += 1 + g_editor.RowTopPadSlots(buf, r);
                 r = f->end_row + 1;
-            } else if (g_editor.OrgImagesVisible() && img_it != buf.org_image_rows.end()) {
+            } else if (show_org_images && img_it != buf.org_image_rows.end()) {
                 r += 1;
                 slot += g_editor.OrgImageLayoutForRow(img_it->second, pane.text_cols).slots + nb_trailing;
             } else if (latex != nullptr) {
@@ -51027,7 +51071,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // A mepml \toc/\bibliography row: one slot per generated line.
                 r += 1;
                 slot += static_cast<int>(vb->lines.size()) + nb_trailing;
-            } else if (g_editor.OrgTableWrapVisible() && tw_it != buf.org_table_wrap_rows.end() &&
+            } else if (show_org_table_wrap && tw_it != buf.org_table_wrap_rows.end() &&
                        !tw_it->second.lines.empty()) {
                 // An over-wide org table's row draws as its wrapped
                 // layout's lines (Buffer::org_table_wrap_rows) -- the
@@ -51041,7 +51085,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 slot += nb_trailing;
                 // An org headline's own extra slot (kOrgHeadingStyles) --
                 // the third of the four walkers that has to agree on it.
-                if (is_heading_buffer && g_editor.OrgHeadingScaleVisible()) {
+                if (is_heading_buffer && show_org_head_scale) {
                     slot += Editor::HeadingExtraSlotsForLevel(Editor::HeadingLevelForRow(buf, r));
                 }
                 slot += g_editor.RowTopPadSlots(buf, r);
@@ -51061,14 +51105,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // not drawn at all) -- an outline around what was drawn stands in
         // for the usual per-character/per-column cursor cell.
         auto cursor_img_it = buf.org_image_rows.find(pane.cursor.row);
-        bool cursor_on_image = g_editor.OrgImagesVisible() && cursor_img_it != buf.org_image_rows.end();
+        bool cursor_on_image = show_org_images && cursor_img_it != buf.org_image_rows.end();
         // Always nullptr in practice while the reveal rule is on (the
         // cursor's own row is inside its own fragment by definition), but
         // resolved through the same function as every other lookup so
         // that turning the rule off (<leader>otc) still gets the outline
         // the cursor used to get on a rendered fragment's row.
         const Buffer::OrgLatexRender *cursor_latex =
-            g_editor.OrgLatexRenderForRow(buf, pane.cursor.row, latex_cursor_row);
+            g_editor.OrgLatexRenderForRow(buf, pane.cursor.row, latex_cursor_row, org_plain);
         bool cursor_on_latex = cursor_latex != nullptr;
         // A mepml \toc/\bibliography row is outlined as a whole band the
         // same way (its text is the generated content, not the directive).
@@ -51184,7 +51228,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // about whether this row's markup is concealed right now.
             const bool plain_cursor_row = g_editor.OrgPlainCursorLineVisible();
             bool cursor_in_concealed_latex = false;
-            if (g_editor.OrgLatexVisible() && !plain_cursor_row) {
+            if (show_org_latex && !plain_cursor_row) {
                 auto it = buf.org_latex_inline.find(pane.cursor.row);
                 if (it != buf.org_latex_inline.end()) {
                     for (const Buffer::OrgLatexInlineSpan &span : it->second) {
@@ -51289,11 +51333,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (!participant.has_location || participant.buffer_id != pane.buffer_id) continue;
         if (participant.row < pane.scroll_row || participant.row >= pane.scroll_row + pane.visible_lines) continue;
 
-        bool p_on_image = g_editor.OrgImagesVisible() && buf.org_image_rows.count(participant.row) != 0;
+        bool p_on_image = show_org_images && buf.org_image_rows.count(participant.row) != 0;
         // Resolved against the *local* cursor, same as RowSlot just
         // above: a fragment this pane revealed draws as text for
         // everyone looking at this pane, remote participant included.
-        bool p_on_latex = g_editor.OrgLatexRenderForRow(buf, participant.row, latex_cursor_row) != nullptr;
+        bool p_on_latex = g_editor.OrgLatexRenderForRow(buf, participant.row, latex_cursor_row, org_plain) != nullptr;
         int p_wrap_cols = (!p_on_image && !p_on_latex) ? wrap_cols : 0;
         gfx::Vector2 p_pos = WrapPos(participant.col, p_wrap_cols, text_x, content_y + static_cast<float>(RowSlot(participant.row) * line_height),
                                  line_height);

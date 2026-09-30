@@ -4832,6 +4832,11 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // nothing next to the per-row work every caller is already doing, and
     // hoisting it would mean threading it through every helper below.
     const bool org_buffer = LspFiletype(buf.filename) == "org" || LspFiletype(buf.filename) == "mepml";
+    // <leader>otr: a pane showing this org buffer as plain text draws
+    // every row as its own text, so none of the "one row, N slots"
+    // branches below apply to it -- the same answer all four walkers
+    // have to give (Pane::org_plain).
+    const bool plain = PaneOrgPlain(pane);
     // An org headline claims an extra slot at the shallower
     // depths (kOrgHeadingStyles) -- the room its larger text is
     // drawn in. Same "one row, more than one slot" shape as an
@@ -4839,15 +4844,16 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // image it doesn't replace the row's own text, so it adds to
     // whatever the branches below work out rather than
     // short-circuiting them.
-    const int heading_extra =
-        (org_heading_scale_visible_ && org_buffer) ? HeadingExtraSlotsForLevel(HeadingLevelForRow(buf, row)) : 0;
-    if (org_images_visible_) {
+    const int heading_extra = (org_heading_scale_visible_ && org_buffer && !plain)
+                                  ? HeadingExtraSlotsForLevel(HeadingLevelForRow(buf, row))
+                                  : 0;
+    if (org_images_visible_ && !plain) {
         auto img_it = buf.org_image_rows.find(row);
         if (img_it != buf.org_image_rows.end()) {
             return OrgImageLayoutForRow(img_it->second, pane.text_cols).slots + trailing;
         }
     }
-    if (const Buffer::OrgLatexRender *latex = OrgLatexRenderForRow(buf, row, pane.cursor.row)) {
+    if (const Buffer::OrgLatexRender *latex = OrgLatexRenderForRow(buf, row, pane.cursor.row, plain)) {
         return latex->slots + trailing;
     }
     // A mepml \toc/\bibliography row: one slot per generated line.
@@ -4859,7 +4865,7 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // -- the same "one row, N slots" shape as the two above, and
     // like them it replaces the row's own text, so soft-wrap
     // below must not also measure it.
-    if (org_table_wrap_visible_ && org_buffer) {
+    if (org_table_wrap_visible_ && org_buffer && !plain) {
         auto it = buf.org_table_wrap_rows.find(row);
         if (it != buf.org_table_wrap_rows.end() && !it->second.lines.empty()) {
             return static_cast<int>(it->second.lines.size()) + trailing;
@@ -4881,7 +4887,7 @@ int Editor::PaneFigureSlots(const Pane &pane, const Buffer &buf, int row) const 
     if (const Buffer::MepmlVirtualBlock *vb = MepmlVirtualBlockForRow(buf, row, -1)) {
         return static_cast<int>(vb->lines.size());
     }
-    if (!org_images_visible_) return 0;
+    if (!org_images_visible_ || PaneOrgPlain(pane)) return 0;
     auto it = buf.org_image_rows.find(row);
     if (it == buf.org_image_rows.end()) return 0;
     // A closed fold over the row wins in the render (see PaneRowSlots),
@@ -4897,7 +4903,7 @@ int Editor::PaneNextDrawnRow(const Pane &pane, const Buffer &buf, int row) const
     for (const Fold &f : buf.folds) {
         if (f.closed && f.start_row == row) next = std::max(next, f.end_row + 1);
     }
-    if (const Buffer::OrgLatexRender *latex = OrgLatexRenderForRow(buf, row, pane.cursor.row)) {
+    if (const Buffer::OrgLatexRender *latex = OrgLatexRenderForRow(buf, row, pane.cursor.row, PaneOrgPlain(pane))) {
         next = std::max(next, latex->end_row + 1);  // its remaining source rows are never drawn
     }
     return next;
@@ -4926,10 +4932,11 @@ int Editor::PanePrevDrawnRow(const Pane &pane, const Buffer &buf, int row) const
 }
 
 const Buffer::OrgLatexRender *Editor::RenderContaining(const Pane &pane, const Buffer &buf, int row, int *start) const {
+    const bool plain = PaneOrgPlain(pane);
     auto scan = [&](const std::unordered_map<int, Buffer::OrgLatexRender> &rows) -> const Buffer::OrgLatexRender * {
         for (const auto &kv : rows) {
             if (row > kv.first && row <= kv.second.end_row) {
-                if (const Buffer::OrgLatexRender *r = OrgLatexRenderForRow(buf, kv.first, pane.cursor.row)) {
+                if (const Buffer::OrgLatexRender *r = OrgLatexRenderForRow(buf, kv.first, pane.cursor.row, plain)) {
                     *start = kv.first;
                     return r;
                 }
@@ -4938,7 +4945,7 @@ const Buffer::OrgLatexRender *Editor::RenderContaining(const Pane &pane, const B
         return nullptr;
     };
     if (const Buffer::OrgLatexRender *r = scan(buf.mepml_html_rows)) return r;
-    return org_latex_visible_ ? scan(buf.org_latex_rows) : nullptr;
+    return (org_latex_visible_ && !plain) ? scan(buf.org_latex_rows) : nullptr;
 }
 
 int Editor::PaneSlotOffsetOfRow(const Pane &pane, const Buffer &buf, int row, int wrap_cols, int cap) const {
@@ -5304,10 +5311,11 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
         // which is exactly the shape whose render is tallest relative to
         // the rows it occupies, and so the one most in need of the slide.
         // Bounded to a screenful by the check above.
-        bool render_involved = OrgLatexRenderForRow(buf, pane.cursor.row, pane.cursor.row) != nullptr;
+        const bool plain = PaneOrgPlain(pane);
+        bool render_involved = OrgLatexRenderForRow(buf, pane.cursor.row, pane.cursor.row, plain) != nullptr;
         const int scan_hi = std::max(pane.scroll_row, target);
         for (int r = std::min(pane.scroll_row, target); !render_involved && r <= scan_hi; r++) {
-            if (OrgLatexRenderForRow(buf, r, pane.cursor.row) != nullptr) render_involved = true;
+            if (OrgLatexRenderForRow(buf, r, pane.cursor.row, plain) != nullptr) render_involved = true;
         }
         slide = render_involved;
     }
@@ -6518,6 +6526,10 @@ void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg, bool ne
     new_pane.buffer_id = new_buffer_id;
     new_pane.cursor = file_arg.empty() ? original_pane.cursor : CursorPos{0, 0};
     new_pane.scroll_row = file_arg.empty() ? original_pane.scroll_row : 0;
+    // A split of a plain-text org pane is plain too (Pane::org_plain):
+    // splitting is how you get a second view of the same file, and the
+    // one you already had is the one you were reading.
+    new_pane.org_plain = original_pane.org_plain;
 
     auto original_leaf = std::make_unique<SplitNode>();
     original_leaf->dir = SplitDir::Leaf;
@@ -19100,6 +19112,7 @@ void Editor::SplitPaneWithBufferTab(int source_pane_id, int buffer_id, int dest_
     new_pane.buffer_id = buffer_id;
     new_pane.buffer_tabs = {buffer_id};
     new_pane.buffer_tab_index = 0;
+    new_pane.org_plain = dst_node->pane.org_plain;  // inherited, same as SplitCurrentPane
 
     Pane existing_pane = dst_node->pane;  // keeps its own id/buffer_tabs/cursor/scroll/jumplist
 
@@ -19148,6 +19161,7 @@ void Editor::OpenFileInPane(int dest_pane_id, const std::string &path, bool spli
     new_pane.buffer_id = placeholder;
     new_pane.buffer_tabs = {placeholder};
     new_pane.buffer_tab_index = 0;
+    new_pane.org_plain = dst_node->pane.org_plain;  // inherited, same as SplitCurrentPane
 
     Pane existing_pane = dst_node->pane;
 
@@ -19221,6 +19235,7 @@ void Editor::OpenBufferInPane(int dest_pane_id, int buffer_id, bool split, Split
     new_pane.buffer_id = buffer_id;
     new_pane.buffer_tabs = {buffer_id};
     new_pane.buffer_tab_index = 0;
+    new_pane.org_plain = dst_node->pane.org_plain;  // inherited, same as SplitCurrentPane
 
     Pane existing_pane = dst_node->pane;
 
@@ -23791,7 +23806,13 @@ void Editor::SetOrgLatexRow(int row, const std::string &path, int slots, int end
 
 void Editor::ClearOrgLatexRows() { Buf().org_latex_rows.clear(); }
 
-const Buffer::OrgLatexRender *Editor::OrgLatexRenderForRow(const Buffer &buf, int row, int cursor_row) const {
+const Buffer::OrgLatexRender *Editor::OrgLatexRenderForRow(const Buffer &buf, int row, int cursor_row,
+                                                          bool pane_plain) const {
+    // <leader>otr: a plain-text pane draws every row as its own text, so
+    // there is no render for any row in it -- asked here rather than at
+    // each call site so the four slot walkers and DrawPane keep agreeing
+    // about which rows are tall (see Pane::org_plain).
+    if (pane_plain) return nullptr;
     // A mepml html result: drawn while concealing, its raw markup back
     // whenever the cursor is inside it (so it can be read and edited).
     if (org_conceal_visible_) {
@@ -31058,6 +31079,28 @@ bool Editor::ToggleOrgConceal() {
 bool Editor::ToggleOrgHeadingScale() {
     org_heading_scale_visible_ = !org_heading_scale_visible_;
     return org_heading_scale_visible_;
+}
+
+// <leader>otr. Per pane, so this flips the *active* pane's own flag --
+// every other Toggle* around it writes an editor-wide field.
+bool Editor::ToggleOrgPlainPane() {
+    Pane &pane = CurPane();
+    pane.org_plain = !pane.org_plain;
+    return pane.org_plain;
+}
+
+bool Editor::OrgPlainActivePane() const {
+    return CurPane().org_plain;
+}
+
+bool Editor::PaneOrgPlain(const Pane &pane) const {
+    if (!pane.org_plain) return false;
+    if (pane.buffer_id < 0 || pane.buffer_id >= static_cast<int>(buffers_.size())) return false;
+    // Org only. A .mepml buffer's own rendering runs off the same
+    // concealment machinery but is not what this toggle is about, and a
+    // pane left in plain mode and then pointed at a .cpp file must
+    // render it exactly as it always did.
+    return LspFiletype(buffers_[static_cast<size_t>(pane.buffer_id)].filename) == "org";
 }
 
 bool Editor::ToggleOrgPlainCursorLine() {

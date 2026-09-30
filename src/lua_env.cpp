@@ -3181,6 +3181,30 @@ int l_org_heading_scale_toggle(lua_State *L) {
     return 1;
 }
 
+// mep.org_plain_toggle()/mep.org_plain_visible(): plain-text (unrendered)
+// display of org buffers in the *active pane* (<leader>otr) -- see
+// Pane::org_plain / Editor::PaneOrgPlain. Per pane, unlike every other
+// org toggle here, so the state a getter can report is the active pane's.
+/**
+ * @brief Implements mep.org_plain_toggle(): toggles plain-text org display in the active pane.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new state, true = plain text).
+ */
+int l_org_plain_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleOrgPlainPane());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.org_plain_visible(): whether the active pane shows org as plain text.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the state).
+ */
+int l_org_plain_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->OrgPlainActivePane());
+    return 1;
+}
+
 // mep.org_plain_cursor_line_toggle(): plain (undecorated) rendering of
 // the cursor's own row (<leader>otc) -- see
 // Editor::OrgPlainCursorLineVisible.
@@ -12727,6 +12751,8 @@ const luaL_Reg kMepFuncs[] = {
     {"org_conceal_visible", l_org_conceal_visible},
     {"org_heading_scale_toggle", l_org_heading_scale_toggle},
     {"org_plain_cursor_line_toggle", l_org_plain_cursor_line_toggle},
+    {"org_plain_toggle", l_org_plain_toggle},
+    {"org_plain_visible", l_org_plain_visible},
     {"org_table_wrap_scan", l_org_table_wrap_scan},
     {"org_table_wrap_toggle", l_org_table_wrap_toggle},
     {"buf_add_latex_inline", l_buf_add_latex_inline},

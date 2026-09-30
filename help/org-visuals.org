@@ -235,6 +235,37 @@ This is *on by default* too. Rendering shells out to =tectonic= and
 maths simply stays as source text, and mep says so once per session rather
 than once per fragment.
 
+* Plain text: turning the rendering off
+
+| Key / command          | Does                                           |
+|------------------------+------------------------------------------------|
+| =<leader>otr=          | toggle plain text for this pane                |
+| =:MepOrgPlainToggle=   | the same                                       |
+
+Everything on this page is rendering: markup hidden behind what it marks
+up, headings drawn at a size, images and formulas in place of their links
+and their source, blocks drawn as cards, tables drawn as grids. One key
+turns all of it off at once and shows the file as it is on disk -- still
+syntax-coloured, but with nothing drawn that isn't in the file:
+
+#+begin_example
+* Top level heading
+Some *bold* text and a link [[https://example.com][Example]] here.
+| a | b |
+|---+---|
+#+end_example
+
+This one is *per pane*, not per editor -- the eight toggles beside it are
+editor-wide. =:vsplit= and turn one side plain and you have the source and
+the document side by side, scrolling independently; a split inherits the
+state of the pane it came from. A pane left plain and then pointed at a
+file that isn't org renders it exactly as it always did.
+
+It is a master switch over the individual toggles rather than a
+replacement for them: while a pane is plain nothing renders in it, and
+turning it back on restores whatever the individual toggles were set to.
+Nothing is rescanned on the way back, so it is instant either way.
+
 * Markup concealment and heading sizes
 
 | Key / command                  | Does                            |

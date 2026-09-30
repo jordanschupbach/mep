@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (178)
+* The bindings (181)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -162,6 +162,8 @@ that it does nothing.
 | =mep.org_parse_results= | parses a babel header args string's :results modes |
 | =mep.org_parse_vars= | parses a babel header args string's :var entries |
 | =mep.org_plain_cursor_line_toggle= | toggles plain rendering of the cursor's own row |
+| =mep.org_plain_toggle= | toggles plain-text org display in the active pane |
+| =mep.org_plain_visible= | whether the active pane shows org as plain text |
 | =mep.org_property_get= | reads an org property drawer value from a headline |
 | =mep.org_property_remove= | removes a property from a headline's property drawer |
 | =mep.org_property_set= | writes an org property drawer value on a headline |
@@ -188,6 +190,7 @@ that it does nothing.
 | =mep.org_timestamp_insert= | inserts an org timestamp at the cursor |
 | =mep.org_timestamp_shift= | shifts the org timestamp under/near the cursor by a number of days |
 | =mep.pdf_current_page= | 1-indexed current page, or 0 if |
+| =mep.pdf_fit_page= | fits the page to its pane(s) (Editor::RequestPdfFitPage) |
 | =mep.pdf_goto_page= | jumps buffer_id's own PDF viewer |
 | =mep.pdf_note_latex_done= | async callback (from kBuiltinPdfAnnot's |
 | =mep.pdf_outline= | array of {title, page, depth}, or nil if |

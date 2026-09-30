@@ -1652,6 +1652,19 @@ target_compile_options(mep-mepml-convert-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_
 target_link_options(mep-mepml-convert-test PRIVATE ${MEP_SANITIZE_FLAGS})
 target_sources(mep-mepml-convert-test PUBLIC FILE_SET CXX_MODULES FILES src/path_util.cppm)
 add_dependencies(tests mep-mepml-convert-test)
+# `just bench-mepml`: timed runs of every headless mepml path -- parser,
+# highlight spans, exporters, importers, language-server analyses and the
+# tree-sitter grammar -- over generated corpora (plans/MEPML_PERFORMANCE_PLAN.md).
+# Results go to bench_results/history.jsonl like the other bench binaries.
+add_executable(mep-mepml-bench EXCLUDE_FROM_ALL src/mepml_bench.cpp ${MEPML_CONVERT_SOURCES}
+    src/mepml_lsp.cpp src/org_lsp.cpp src/org_doc.cpp)
+target_include_directories(mep-mepml-bench PRIVATE src)
+target_link_libraries(mep-mepml-bench PRIVATE tree_sitter ts_mepml)
+target_compile_definitions(mep-mepml-bench PRIVATE MEPML_REFERENCE_FILE="${CMAKE_SOURCE_DIR}/test.mepml")
+target_compile_options(mep-mepml-bench PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-mepml-bench PRIVATE ${MEP_SANITIZE_FLAGS})
+target_sources(mep-mepml-bench PUBLIC FILE_SET CXX_MODULES FILES src/path_util.cppm)
+add_dependencies(tests mep-mepml-bench)
 
 # :terminal's VT emulator (vterm.cpp is dependency-free): Unicode width
 # classification (VTermCharWidth), zero-width drops, and wide (CJK/emoji)

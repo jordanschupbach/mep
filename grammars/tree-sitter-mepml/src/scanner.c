@@ -84,6 +84,7 @@ enum TokenType {
     OPAQUE_TEXT,
     CMD_RAW,
     CMD_USER,
+    MATH_TRAILING,
     ERROR_SENTINEL,
 };
 
@@ -1675,6 +1676,30 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
             if (at_fence_close_line(lexer, false)) break;
         }
         return emit(s, lexer, CODE_CONTENT, '\n');
+    }
+
+    // Text after a display-maths closer on its line (grammar.js's
+    // display_math): anything but blanks or a `//` comment, which
+    // _line_end reads itself. Nothing is consumed at a line end or a
+    // `/` right after the closer, so the rest of this function still
+    // reads the newline or the comment; after blanks, returning false
+    // hands them back to _ws.
+    if (valid[MATH_TRAILING] && !at_eol(lexer) && !lexer->eof(lexer) && la(lexer) != '/') {
+        while (la(lexer) == ' ' || la(lexer) == '\t') adv(lexer);
+        int32_t last = 0;
+        if (la(lexer) == '/') {
+            adv(lexer);
+            if (la(lexer) == '/') return false;
+            last = '/';
+        } else if (at_eol(lexer) || lexer->eof(lexer)) {
+            return false;
+        }
+        while (!at_eol(lexer) && !lexer->eof(lexer)) {
+            last = la(lexer);
+            adv(lexer);
+        }
+        lexer->mark_end(lexer);
+        return emit(s, lexer, MATH_TRAILING, last);
     }
 
     // Display maths body and closer.

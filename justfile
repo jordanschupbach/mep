@@ -232,6 +232,26 @@ bench: build-native
     echo
     python3 tools/bench_report.py
 
+# plans/MEPML_PERFORMANCE_PLAN.md: every mepml path, timed. The headless
+# half (mep-mepml-bench: parser, highlight spans, exporters, importers,
+# language server, tree-sitter grammar) over generated corpora, then the
+# editor half (tools/mepml_editor_bench.py: a throwaway mep on its own
+# Xvfb display -- per-edit hooks, idle/scroll/typing frames, cold maths
+# rendering). Both append to bench_results/history.jsonl, so
+# tools/bench_report.py compares each run with the last. Pass
+# `--no-record` through `args` to look without recording.
+bench-mepml *args: build-native
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmake --build {{native_build_dir}} -j --target mep-mepml-bench
+    mkdir -p bench_results
+    echo "== mep-mepml-bench"
+    "./{{native_build_dir}}/mep-mepml-bench" {{args}}
+    echo "== mepml editor bench"
+    python3 tools/mepml_editor_bench.py --build-dir {{native_build_dir}} {{args}}
+    echo
+    python3 tools/bench_report.py
+
 # The tests that drive a real `mep` window: the agent-RPC test (spawns
 # mep, needs a display and a working GL driver -- under Xvfb that means a
 # GPU-capable/llvmpipe driver; the sandbox WORKSPACES_PLAN.md was written

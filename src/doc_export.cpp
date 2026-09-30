@@ -641,7 +641,8 @@ void LatexPreamble(std::ostringstream &out, bool beamer) {
 std::string ExportHtmlToLatex(const std::string &html, const std::string &title, const std::string &author,
                                const std::string &base_dir) {
     HtmlDoc doc;
-    ParseHtml(html, doc);
+    // The LaTeX walker reads tags, attributes and text, never a computed style.
+    ParseHtml(html, doc, /*full_document=*/true, /*compute_styles=*/false);
     const DomNode *root = ContentRoot(doc.root.get());
 
     LatexCtx ctx;
@@ -670,7 +671,7 @@ std::string ExportHtmlSlidesToBeamer(const std::vector<BeamerFrame> &frames, con
     // A fragment's own content, walked as the article backend walks a page.
     auto walk = [&](const std::string &html) {
         HtmlDoc doc;
-        ParseHtml(html, doc);
+        ParseHtml(html, doc, /*full_document=*/true, /*compute_styles=*/false);
         std::string out;
         if (const DomNode *root = ContentRoot(doc.root.get()))
             for (auto &c : root->children) WalkLatexNode(c.get(), ctx, out);

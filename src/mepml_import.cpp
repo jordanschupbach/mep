@@ -1066,7 +1066,8 @@ std::vector<std::string> HtmlResultSources(const std::string &html) {
 
 std::string FromHtml(const std::string &html) {
     HtmlDoc dom;
-    ParseHtml(html, dom);
+    // The reader walks tags, attributes and text; the CSS cascade was most of the import.
+    ParseHtml(html, dom, /*full_document=*/true, /*compute_styles=*/false);
     HtmlReader r;
     r.html_result_sources = HtmlResultSources(html);
     if (!dom.root) return "";

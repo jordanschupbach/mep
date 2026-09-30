@@ -100,6 +100,7 @@ module.exports = grammar({
     $._opaque_text, // a \define's template or a \raw's text: up to its closing `)`, unparsed
     $._cmd_raw, // `\raw` before (formats, text)
     $._cmd_user, // `\name` of a user command (or \when, \otherwise) before (args)
+    $.math_trailing, // text after a display-maths closer, up to the end of its line
     $._error_sentinel,
   ],
 
@@ -237,10 +238,17 @@ module.exports = grammar({
     _results_attributes: $ => prec.right(seq(alias($._result_end_attached, $.result_end), $._newline, repeat1($._attribute))),
 
     // --- $$ ... $$ and \[ ... \] ------------------------------------------
+    // Text after the closer (`$$.`, `\] and so on`) still closes the block,
+    // as mepml_doc.cpp's ParseDisplayMath does (it warns instead). Without
+    // math_trailing the rule failed at that line, and error recovery
+    // re-ran math_content -- a scan to the next `$$` -- again and again:
+    // quadratic in the rest of the document, 1.7 s a keystroke on 4000
+    // lines (plans/MEPML_PERFORMANCE_PLAN.md).
     display_math: $ => prec.right(seq(
       $.math_open,
       optional($.math_content),
       $.math_close,
+      optional($.math_trailing),
       $._line_end,
       choice(repeat($._attribute), $._results_attributes),
     )),

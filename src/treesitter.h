@@ -51,9 +51,13 @@ bool TreesitterHasGrammar(const std::string &filetype);
  * an incrementally-reparsed cached tree when available.
  * @param filetype Bare file extension identifying the language.
  * @param text Full buffer text to parse and highlight.
+ * @param cache_key Which incremental-parse cache entry to reuse; empty means `filetype`. Separate keys let
+ * several texts of one language (a document's code blocks) each keep their own tree instead of evicting
+ * one another's.
  * @return Every highlight capture as a line-clipped span; empty if no grammar is available for `filetype`.
  */
-std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, const std::string &text);
+std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, const std::string &text,
+                                                 const std::string &cache_key = "");
 
 // One foldable range, 0-indexed rows, both inclusive (mep's own Fold
 // struct convention -- see main.cpp's Fold).

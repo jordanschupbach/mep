@@ -16,6 +16,7 @@
 #include "treesitter.h"
 
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <ctime>
 #include <cctype>
@@ -32,6 +33,7 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -2116,6 +2118,38 @@ int l_ns_create(lua_State *L) {
     return 1;
 }
 
+// mep.ns_decorations(ns) -> array of strings: every decoration of `ns` in
+// the current buffer, in insertion order, each as one line holding all of
+// its fields but its id (row first). For tests that compare two ways of
+// producing a namespace's decorations -- MepmlScan's patch against its
+// full scan, say -- where insertion order within a row is what the
+// renderer sees and the ids never match.
+/**
+ * @brief Implements mep.ns_decorations(ns): the current buffer's decorations in `ns`, one descriptive string each.
+ * @param L Lua state; arg 1 is the namespace id.
+ * @return Number of values pushed (1: an array of strings).
+ */
+int l_ns_decorations(lua_State *L) {
+    const int ns = static_cast<int>(luaL_checkinteger(L, 1));
+    const auto &all = GetEditor(L)->CurrentBufferDecorations();
+    auto it = all.find(ns);
+    const size_t count = it == all.end() ? 0 : it->second.size();
+    lua_createtable(L, static_cast<int>(count), 0);
+    for (size_t i = 0; i < count; ++i) {
+        const Decoration &d = it->second[i];
+        char nums[256];
+        std::snprintf(nums, sizeof nums, "%d|%d|%d|%d|%d%d%d%d|%d%d|%d|%d|%d%d%d%d|%g|%g", d.row, d.col_start, d.col_end,
+                      d.priority, d.whole_line, d.underline, d.bold, d.italic, d.virt_overlay, d.virt_text_eol,
+                      d.sign_badge, d.strikethrough, d.has_swatch, d.has_fg_color, d.conceal, d.bg_fill,
+                      static_cast<double>(d.virt_scale), static_cast<double>(d.virt_raise));
+        const std::string line = std::string(nums) + "|" + d.hl_group + "|" + d.virt_text + "|" + d.virt_text_hl + "|" +
+                                 d.sign + "|" + d.sign_hl + "|" + d.sign_shape + "|" + d.virt_family;
+        lua_pushlstring(L, line.data(), line.size());
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
+}
+
 /**
  * @brief Implements mep.ns_clear(ns): removes every decoration previously added under a namespace id.
  * @param L Lua state; arg 1 is the namespace id.
@@ -2767,7 +2801,7 @@ void PushMepmlValue(lua_State *L, const mepml::Value &v) {
  */
 int l_mepml_block_at(lua_State *L) {
     const int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
-    const mepml::Document doc = GetEditor(L)->MepmlParseCurrent(false);
+    const mepml::Document &doc = GetEditor(L)->MepmlParseCurrent(false);
     for (const mepml::Block &b : doc.blocks) {
         if (b.kind != mepml::BlockKind::Code || row < b.line_start || row > b.line_end) continue;
         lua_newtable(L);
@@ -2808,7 +2842,7 @@ int l_mepml_block_at(lua_State *L) {
  * @return Number of values pushed (1: the array).
  */
 int l_mepml_code_blocks(lua_State *L) {
-    const mepml::Document doc = GetEditor(L)->MepmlParseCurrent(false);
+    const mepml::Document &doc = GetEditor(L)->MepmlParseCurrent(false);
     lua_newtable(L);
     lua_Integer k = 1;
     for (const mepml::Block &b : doc.blocks) {
@@ -2832,7 +2866,7 @@ int l_mepml_code_blocks(lua_State *L) {
  * @return Number of values pushed (1: the array).
  */
 int l_mepml_outline(lua_State *L) {
-    const mepml::Document doc = GetEditor(L)->MepmlParseCurrent(false);
+    const mepml::Document &doc = GetEditor(L)->MepmlParseCurrent(false);
     lua_newtable(L);
     lua_Integer k = 1;
     for (const mepml::Block &b : doc.blocks) {
@@ -3115,7 +3149,7 @@ int l_mepml_header_toggle(lua_State *L) {
  * @return Number of values pushed (1: the array).
  */
 int l_mepml_diagnostics(lua_State *L) {
-    const mepml::Document doc = GetEditor(L)->MepmlParseCurrent(true);
+    const mepml::Document &doc = GetEditor(L)->MepmlParseCurrent(true);
     lua_newtable(L);
     lua_Integer k = 1;
     for (const mepml::Diagnostic &d : doc.diagnostics) {
@@ -3215,6 +3249,16 @@ int l_org_plain_visible(lua_State *L) {
  */
 int l_org_plain_cursor_line_toggle(lua_State *L) {
     lua_pushboolean(L, GetEditor(L)->ToggleOrgPlainCursorLine());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.org_plain_cursor_line_visible(): reports whether the cursor's own row (and any math fragment it is in) renders as raw source.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the current state).
+ */
+int l_org_plain_cursor_line_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->OrgPlainCursorLineVisible());
     return 1;
 }
 
@@ -3512,6 +3556,63 @@ int l_ts_apply_captures(lua_State *L) {
         }
     }
     return 0;
+}
+
+// mep.ts_highlight(ns, filetype, text, hl_map[, row_offset[, cache_key]])
+// -> true, or nil when `filetype` has no grammar: mep.ts_captures and
+// mep.ts_apply_captures in one step, with no Lua table per capture in
+// between. In a 16k-line mepml buffer that round trip -- a table of four
+// fields for each of ~100k captures, then read back field by field --
+// plus the garbage it left was a large share of every highlight pass
+// (plans/MEPML_PERFORMANCE_PLAN.md). `cache_key` keeps a separate
+// incremental parse tree (TreesitterHighlight), for one text of many in
+// the same language: a document's code blocks.
+/**
+ * @brief Implements mep.ts_highlight(ns, filetype, text, hl_map[, row_offset[, cache_key]]): highlights text with its Treesitter grammar straight into decorations in `ns`.
+ * @param L Lua state; arg 1 the namespace id, arg 2 the filetype, arg 3 the text, arg 4 a capture-name-to-highlight-group table, optional arg 5 a row offset (default 0), optional arg 6 a parse-cache key.
+ * @return Number of values pushed (1: true, or nil if the filetype has no grammar).
+ */
+int l_ts_highlight(lua_State *L) {
+    const int ns = static_cast<int>(luaL_checkinteger(L, 1));
+    const char *filetype = luaL_checkstring(L, 2);
+    size_t len = 0;
+    const char *text = luaL_checklstring(L, 3, &len);
+    luaL_checktype(L, 4, LUA_TTABLE);
+    const int row_offset = static_cast<int>(luaL_optinteger(L, 5, 0));
+    const char *cache_key = luaL_optstring(L, 6, "");
+    if (!TreesitterHasGrammar(filetype)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    std::unordered_map<std::string, std::string> hl_map;
+    lua_pushnil(L);
+    while (lua_next(L, 4) != 0) {
+        if (lua_type(L, -2) == LUA_TSTRING && lua_isstring(L, -1)) hl_map[lua_tostring(L, -2)] = lua_tostring(L, -1);
+        lua_pop(L, 1);
+    }
+    // Resolved once per distinct capture name, not once per capture.
+    std::unordered_map<std::string, const std::string *> resolved;
+    Editor *ed = GetEditor(L);
+    for (const TSHighlightSpan &sp : TreesitterHighlight(filetype, std::string(text, len), cache_key)) {
+        auto r = resolved.find(sp.capture);
+        if (r == resolved.end()) {
+            auto it = hl_map.find(sp.capture);
+            if (it == hl_map.end()) {
+                const size_t dot = sp.capture.find('.');
+                it = hl_map.find(dot == std::string::npos ? sp.capture : sp.capture.substr(0, dot));
+            }
+            r = resolved.emplace(sp.capture, it == hl_map.end() ? nullptr : &it->second).first;
+        }
+        if (!r->second) continue;
+        Decoration d;
+        d.row = sp.row + row_offset;
+        d.col_start = sp.col_start;
+        d.col_end = sp.col_end;
+        d.hl_group = *r->second;
+        ed->AddDecoration(ns, d);
+    }
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 // mep.ts_fold_ranges(filetype, text) -> array of {start_row, end_row}
@@ -4031,13 +4132,15 @@ int l_org_latex_visible(lua_State *L) {
     return 1;
 }
 
-// mep.buf_add_latex_inline(row, col_start, col_end, path) -- same 1-indexed/
-// exclusive-col_end convention as mep.deco_add's opts table. Appends one
-// inline-math span (Buffer::OrgLatexInlineSpan) for `row`; called once per
-// match by mep_org_latex_register_inline (kBuiltinOrgLatex).
+// mep.buf_add_latex_inline(row, col_start, col_end, path[, first_row,
+// last_row]) -- same 1-indexed/exclusive-col_end convention as
+// mep.deco_add's opts table. Appends one inline-math span
+// (Buffer::OrgLatexInlineSpan) for `row`; called once per match by
+// mep_org_latex_register_inline (kBuiltinOrgLatex). first_row/last_row
+// (1-indexed) are the whole fragment's rows, for one that wraps.
 /**
- * @brief Implements mep.buf_add_latex_inline(row, col_start, col_end, path): appends one inline-math span for a line of the current buffer.
- * @param L Lua state; arg 1 is the 1-indexed row, arg 2 the 1-indexed start column, arg 3 the 1-indexed exclusive end column, arg 4 the rendered fragment's path.
+ * @brief Implements mep.buf_add_latex_inline(row, col_start, col_end, path[, first_row, last_row]): appends one inline-math span for a line of the current buffer.
+ * @param L Lua state; arg 1 is the 1-indexed row, arg 2 the 1-indexed start column, arg 3 the 1-indexed exclusive end column, arg 4 the rendered fragment's path, optional args 5/6 the fragment's first/last 1-indexed rows.
  * @return Number of values pushed (0).
  */
 int l_buf_add_latex_inline(lua_State *L) {
@@ -4045,7 +4148,9 @@ int l_buf_add_latex_inline(lua_State *L) {
     int col_start = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
     int col_end = static_cast<int>(luaL_checkinteger(L, 3)) - 1;
     const char *path = luaL_checkstring(L, 4);
-    GetEditor(L)->AddOrgLatexInlineSpan(row, col_start, col_end, path);
+    int first_row = static_cast<int>(luaL_optinteger(L, 5, 0)) - 1;
+    int last_row = static_cast<int>(luaL_optinteger(L, 6, 0)) - 1;
+    GetEditor(L)->AddOrgLatexInlineSpan(row, col_start, col_end, path, first_row, last_row);
     return 0;
 }
 
@@ -4060,6 +4165,39 @@ int l_buf_add_latex_inline(lua_State *L) {
  */
 int l_buf_clear_latex_inline(lua_State *L) {
     GetEditor(L)->ClearOrgLatexInlineSpans();
+    return 0;
+}
+
+// mep.buf_set_latex_preview(first_row, last_row, col[, path]) -- the math
+// preview popup's fragment (Buffer::org_latex_preview), 1-indexed rows and
+// column; without `path` the render already set is kept (the fragment
+// moved, or its newest state is still compiling).
+/**
+ * @brief Implements mep.buf_set_latex_preview(first_row, last_row, col[, path]): sets the current buffer's math preview popup fragment.
+ * @param L Lua state; args 1/2 the fragment's 1-indexed first/last rows, arg 3 its 1-indexed column, optional arg 4 the rendered PNG path.
+ * @return Number of values pushed (0).
+ */
+int l_buf_set_latex_preview(lua_State *L) {
+    int first_row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    int last_row = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    int col = static_cast<int>(luaL_checkinteger(L, 3)) - 1;
+    if (lua_isstring(L, 4)) {
+        const std::string path = lua_tostring(L, 4);
+        GetEditor(L)->SetOrgLatexPreview(first_row, last_row, col, &path);
+    } else {
+        GetEditor(L)->SetOrgLatexPreview(first_row, last_row, col, nullptr);
+    }
+    return 0;
+}
+
+// mep.buf_clear_latex_preview(): the cursor is in no fragment any more.
+/**
+ * @brief Implements mep.buf_clear_latex_preview(): clears the current buffer's math preview popup fragment.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_buf_clear_latex_preview(lua_State *L) {
+    GetEditor(L)->ClearOrgLatexPreview();
     return 0;
 }
 
@@ -7491,15 +7629,26 @@ int l_org_refile_move(lua_State *L) {
 // current buffer's literal (non-prose) spans -- see OrgLiteralSpans
 // (org_doc.h) for what counts as one. Empty for a buffer that is not an
 // org file, so a caller needs no filetype test of its own.
+// An optional set of rows ({[row]=true, ...}, 1-based) limits the answer
+// to those rows: the spell checker asks only about rows with a misspelling,
+// and a table per literal span of a large document was most of its pass.
 /**
- * @brief Implements mep.org_literal_spans(): the current buffer's literal (non-prose) spans.
- * @param L Lua state.
+ * @brief Implements mep.org_literal_spans([rows]): the current buffer's literal (non-prose) spans.
+ * @param L Lua state; optional arg 1 a set of 1-based rows to limit the answer to.
  * @return Number of values pushed (1: an array of {row=,col_start=,col_end=} tables).
  */
 int l_org_literal_spans(lua_State *L) {
+    const bool filtered = lua_istable(L, 1);
     const std::vector<OrgLiteralSpan> spans = GetEditor(L)->BufferLiteralSpans();
-    lua_createtable(L, static_cast<int>(spans.size()), 0);
+    lua_createtable(L, filtered ? 0 : static_cast<int>(spans.size()), 0);
+    int out = 0;
     for (size_t i = 0; i < spans.size(); i++) {
+        if (filtered) {
+            lua_rawgeti(L, 1, spans[i].row);
+            const bool wanted = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+            if (!wanted) continue;
+        }
         lua_createtable(L, 0, 3);
         lua_pushinteger(L, spans[i].row);
         lua_setfield(L, -2, "row");
@@ -7507,7 +7656,7 @@ int l_org_literal_spans(lua_State *L) {
         lua_setfield(L, -2, "col_start");
         lua_pushinteger(L, spans[i].col_end);
         lua_setfield(L, -2, "col_end");
-        lua_rawseti(L, -2, static_cast<int>(i + 1));
+        lua_rawseti(L, -2, ++out);
     }
     return 1;
 }
@@ -10528,6 +10677,34 @@ int l_now(lua_State *L) {
     return 1;
 }
 
+// mep.cpu_count(): the machine's hardware threads (at least 1), for sizing
+// how many background jobs a feature runs at once (kBuiltinOrgLatex's
+// tectonic cap).
+/**
+ * @brief Implements mep.cpu_count(): the number of hardware threads, at least 1.
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_cpu_count(lua_State *L) {
+    lua_pushinteger(L, static_cast<lua_Integer>(std::max(1U, std::thread::hardware_concurrency())));
+    return 1;
+}
+
+// mep.clock(): a monotonic clock in seconds, read when called. mep.now()
+// is the frame's own timestamp (fixed for the whole frame), so it cannot
+// time anything that runs inside one; this is what a benchmark or a
+// profiling script measures a call with.
+/**
+ * @brief Implements mep.clock(): monotonic seconds, read at the call (unlike mep.now(), which is fixed per frame).
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_clock(lua_State *L) {
+    const auto t = std::chrono::steady_clock::now().time_since_epoch();
+    lua_pushnumber(L, std::chrono::duration<double>(t).count());
+    return 1;
+}
+
 // mep.set_statusline(fn): fn(), called each frame, returns an array of
 // {text=, hl=} segments replacing the built-in status line (Phase 11).
 int l_set_statusline(lua_State *L) {
@@ -12578,6 +12755,7 @@ const luaL_Reg kMepFuncs[] = {
     {"hover_focus_enter", l_hover_focus_enter},
     {"ns_create", l_ns_create},
     {"ns_clear", l_ns_clear},
+    {"ns_decorations", l_ns_decorations},
     {"deco_add", l_deco_add},
     {"ts_captures", l_ts_captures},
     {"ts_fold_ranges", l_ts_fold_ranges},
@@ -12636,6 +12814,7 @@ const luaL_Reg kMepFuncs[] = {
     {"git_reset_hunk_native", l_git_reset_hunk_native},
     {"git_stage_hunk", l_git_stage_hunk},
     {"ts_apply_captures", l_ts_apply_captures},
+    {"ts_highlight", l_ts_highlight},
     {"buffer_set_lines", l_buffer_set_lines},
     {"buffer_delete", l_buffer_delete},
     {"buffer_set_drag_resolver", l_buffer_set_drag_resolver},
@@ -12753,10 +12932,13 @@ const luaL_Reg kMepFuncs[] = {
     {"org_plain_cursor_line_toggle", l_org_plain_cursor_line_toggle},
     {"org_plain_toggle", l_org_plain_toggle},
     {"org_plain_visible", l_org_plain_visible},
+    {"org_plain_cursor_line_visible", l_org_plain_cursor_line_visible},
     {"org_table_wrap_scan", l_org_table_wrap_scan},
     {"org_table_wrap_toggle", l_org_table_wrap_toggle},
     {"buf_add_latex_inline", l_buf_add_latex_inline},
     {"buf_clear_latex_inline", l_buf_clear_latex_inline},
+    {"buf_set_latex_preview", l_buf_set_latex_preview},
+    {"buf_clear_latex_preview", l_buf_clear_latex_preview},
     {"font_size", l_font_size},
     {"image_size", l_image_size},
     {"image_set_nav", l_image_set_nav},
@@ -12860,6 +13042,8 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_change_epoch", l_buffer_change_epoch},
     {"buffer_save_epoch", l_buffer_save_epoch},
     {"now", l_now},
+    {"clock", l_clock},
+    {"cpu_count", l_cpu_count},
     {"list_dir", l_list_dir},
     {"is_image_path", l_is_image_path},
     {"fs_mkdir", l_fs_mkdir},

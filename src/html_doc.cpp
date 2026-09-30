@@ -397,7 +397,7 @@ bool IsModuleScriptType(const std::unordered_map<std::string, std::string> &attr
 }  // namespace
 
 
-void ParseHtml(const std::string &html, HtmlDoc &out, bool full_document) {
+void ParseHtml(const std::string &html, HtmlDoc &out, bool full_document, bool compute_styles) {
     out.root = std::make_unique<DomNode>();
     out.root->type = DomNodeType::Element;
     out.root->tag = "#document";
@@ -577,10 +577,13 @@ void ParseHtml(const std::string &html, HtmlDoc &out, bool full_document) {
     // <title> is always near the document's start in practice, so a plain
     // breadth-first search (rather than a depth-first walk that might
     // detour deep into <body> first) finds it in the fewest node visits.
+    // Walked by index, never by erasing the front: a page with no <title>
+    // (every exported fragment) visits every node, and erase(begin())
+    // shifted the whole queue each time -- O(nodes^2), a third of a large
+    // LaTeX export (plans/MEPML_PERFORMANCE_PLAN.md).
     std::vector<DomNode *> queue = {out.root.get()};
-    while (!queue.empty() && out.title.empty()) {
-        DomNode *cur = queue.front();
-        queue.erase(queue.begin());
+    for (size_t qi = 0; qi < queue.size() && out.title.empty(); qi++) {
+        DomNode *cur = queue[qi];
         if (cur->type == DomNodeType::Element && cur->tag == "title") {
             for (const auto &c : cur->children) {
                 if (c->type == DomNodeType::Text) out.title += c->text;
@@ -591,7 +594,7 @@ void ParseHtml(const std::string &html, HtmlDoc &out, bool full_document) {
     }
 
     ExtractMathSpans(out);
-    ComputeStyles(out);
+    if (compute_styles) ComputeStyles(out);
 }
 
 namespace {

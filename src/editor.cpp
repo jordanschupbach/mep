@@ -23804,7 +23804,22 @@ void Editor::SetOrgLatexRow(int row, const std::string &path, int slots, int end
     Buf().org_latex_rows[row] = Buffer::OrgLatexRender{path, std::max(1, slots), std::max(row, end_row), {}, {}, 0, -1, {}, 1.0f};
 }
 
-void Editor::ClearOrgLatexRows() { Buf().org_latex_rows.clear(); }
+void Editor::ClearOrgLatexRows() {
+    // The fragment being edited loses its render here (the scan defers
+    // it); until the preview's own render of the edit compiles, the popup
+    // keeps showing this one rather than blinking out.
+    Buffer &b = Buf();
+    const int cr = CurPane().cursor.row;
+    if (b.org_latex_preview.path.empty()) {
+        for (const auto &kv : b.org_latex_rows) {
+            if (cr >= kv.first && cr <= kv.second.end_row && !kv.second.path.empty()) {
+                b.org_latex_preview = Buffer::OrgLatexPreview{kv.second.path, kv.first, kv.second.end_row, 0};
+                break;
+            }
+        }
+    }
+    b.org_latex_rows.clear();
+}
 
 const Buffer::OrgLatexRender *Editor::OrgLatexRenderForRow(const Buffer &buf, int row, int cursor_row,
                                                           bool pane_plain) const {
@@ -23839,12 +23854,49 @@ bool Editor::ToggleOrgLatex() {
     return org_latex_visible_;
 }
 
-void Editor::AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path) {
+void Editor::AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path, int first_row,
+                                   int last_row) {
     if (row < 0 || row >= Buf().LineCount()) return;
-    Buf().org_latex_inline[row].push_back({col_start, col_end, path});
+    Buf().org_latex_inline[row].push_back(
+        {col_start, col_end, path, first_row < 0 ? row : first_row, last_row < 0 ? row : last_row});
 }
 
-void Editor::ClearOrgLatexInlineSpans() { Buf().org_latex_inline.clear(); }
+bool Editor::OrgLatexInlineRevealed(const Buffer::OrgLatexInlineSpan &span, int row, int cursor_row) const {
+    if (!org_plain_cursor_line_ || cursor_row < 0) return false;
+    const int first = span.first_row < 0 ? row : span.first_row;
+    const int last = span.last_row < 0 ? row : span.last_row;
+    return cursor_row >= first && cursor_row <= last;
+}
+
+void Editor::ClearOrgLatexInlineSpans() {
+    // Same seeding as ClearOrgLatexRows.
+    Buffer &b = Buf();
+    const int cr = CurPane().cursor.row;
+    if (b.org_latex_preview.path.empty()) {
+        for (const auto &kv : b.org_latex_inline) {
+            for (const Buffer::OrgLatexInlineSpan &span : kv.second) {
+                const int first = span.first_row < 0 ? kv.first : span.first_row;
+                const int last = span.last_row < 0 ? kv.first : span.last_row;
+                if (cr >= first && cr <= last && !span.path.empty()) {
+                    b.org_latex_preview = Buffer::OrgLatexPreview{span.path, first, last, span.col_start};
+                    break;
+                }
+            }
+            if (!b.org_latex_preview.path.empty()) break;
+        }
+    }
+    b.org_latex_inline.clear();
+}
+
+void Editor::SetOrgLatexPreview(int first_row, int last_row, int col, const std::string *path) {
+    Buffer::OrgLatexPreview &p = Buf().org_latex_preview;
+    p.first_row = first_row;
+    p.last_row = std::max(first_row, last_row);
+    p.col = std::max(0, col);
+    if (path) p.path = *path;
+}
+
+void Editor::ClearOrgLatexPreview() { Buf().org_latex_preview = Buffer::OrgLatexPreview{}; }
 
 bool Editor::IsRowHiddenByFold(int row, int *fold_start_row) const {
     for (const Fold &f : Buf().folds) {

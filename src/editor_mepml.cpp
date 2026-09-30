@@ -370,13 +370,75 @@ std::string Editor::MepmlCurrentFile() const {
     return file;
 }
 
-mepml::Document Editor::MepmlParseCurrent(bool with_imports) const {
+namespace {
+long long FileMtime(const std::string &path) {
+    std::error_code ec;
+    const auto t = std::filesystem::last_write_time(path, ec);
+    return ec ? -1 : static_cast<long long>(t.time_since_epoch().count());
+}
+}  // namespace
+
+Editor::MepmlParseCache &Editor::MepmlCacheEntry(bool with_imports) const {
     const Buffer &buf = Buf();
-    if (!with_imports) return mepml::Parse(buf.lines);
+    const int id = CurrentBufferId();
+    MepmlParseCache &plain = mepml_parse_cache_[0][id];
+    if (!(plain.valid && plain.lines == buf.lines)) {
+        plain.doc = mepml::Parse(buf.lines);
+        plain.lines = buf.lines;
+        plain.valid = true;
+        plain.spans_valid = false;
+        plain.spans.clear();
+        plain.has_imports = false;
+        plain.generation = ++mepml_parse_generation_;
+        for (const mepml::Block &b : plain.doc.blocks) {
+            if (b.kind == mepml::BlockKind::Import) plain.has_imports = true;
+            if (b.kind == mepml::BlockKind::Meta && b.keyword.size() == 6) {
+                std::string k = b.keyword;
+                for (char &ch : k) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                if (k == "import") plain.has_imports = true;
+            }
+            if (plain.has_imports) break;
+        }
+    }
+    if (!with_imports || !plain.has_imports) return plain;
+
     std::string file = buf.filename;
     std::error_code ec;
     if (!file.empty() && file[0] != '/') file = std::filesystem::absolute(file, ec).string();
-    return mepml::ParseWithImports(file, buf.lines, ReadFileLines);
+    MepmlParseCache &c = mepml_parse_cache_[1][id];
+    if (c.valid && c.file == file && c.lines == buf.lines) {
+        bool fresh = true;
+        for (const auto &r : c.reads) {
+            if (FileMtime(r.first) != r.second) {
+                fresh = false;
+                break;
+            }
+        }
+        if (fresh) return c;
+    }
+    c.reads.clear();
+    c.doc = mepml::ParseWithImports(file, buf.lines, [&c](const std::string &path, std::vector<std::string> *out) {
+        c.reads.emplace_back(path, FileMtime(path));
+        return ReadFileLines(path, out);
+    });
+    c.file = file;
+    c.lines = buf.lines;
+    c.valid = true;
+    c.spans_valid = false;
+    c.spans.clear();
+    c.generation = ++mepml_parse_generation_;
+    return c;
+}
+
+const mepml::Document &Editor::MepmlParseCurrent(bool with_imports) const { return MepmlCacheEntry(with_imports).doc; }
+
+const std::vector<mepml::Span> &Editor::MepmlSpansCurrent(bool with_imports) const {
+    MepmlParseCache &c = MepmlCacheEntry(with_imports);
+    if (!c.spans_valid) {
+        c.spans = mepml::Highlight(c.doc);
+        c.spans_valid = true;
+    }
+    return c.spans;
 }
 
 mepml::Document Editor::MepmlParseForExport(const std::vector<std::string> &tags) const {
@@ -385,20 +447,119 @@ mepml::Document Editor::MepmlParseForExport(const std::vector<std::string> &tags
 
 void Editor::MepmlScan(int ns, bool own_diagnostics) {
     Buffer &buf = Buf();
-    buf.mepml_heading_rows.clear();
-    buf.mepml_row_scale.clear();
-    buf.mepml_table_images.clear();
-    buf.mepml_virtual_rows.clear();
-    buf.mepml_fold_summaries.clear();
-    buf.mepml_html_rows.clear();
-    mepml_table_grids_.erase(CurrentBufferId());
-    mepml_block_cards_.erase(CurrentBufferId());
-    if (!IsMepmlBuffer()) return;
-    ClearOrgImageRows();
-    buf.org_link_spans.clear();
+    int cur_row = 0, cur_col = 0;
+    GetCursorForLua(&cur_row, &cur_col);
+    const bool conceal = OrgConcealVisible();
 
-    const mepml::Document doc = MepmlParseCurrent(true);
+    // The rows of a caption or alt text the cursor is in show their source,
+    // every one of them (the rendered text stands in for all of them).
+    // So do all the rows of a formula spanning lines that the cursor is in:
+    // its render is withdrawn for the whole fragment (OrgLatexRenderForRow,
+    // OrgLatexInlineRevealed), and a `\(` or `$$` left concealed on another
+    // of its rows read as a missing delimiter.
+    auto revealed_for = [](const mepml::Document &d, int row) {
+        std::unordered_set<int> out;
+        auto reveal = [&](int first, int last) {
+            if (first >= 0 && row >= first && row <= last)
+                for (int r = first; r <= last; ++r) out.insert(r);
+        };
+        std::function<void(const mepml::Block &, const std::vector<mepml::Inline> &)> reveal_math =
+            [&](const mepml::Block &b, const std::vector<mepml::Inline> &ins) {
+                for (const mepml::Inline &x : ins) {
+                    if (x.kind == mepml::InlineKind::Math) reveal(b.OffsetToPos(x.start).line, b.OffsetToPos(x.end).line);
+                    else reveal_math(b, x.children);
+                }
+            };
+        for (const mepml::Block &b : d.blocks) {
+            if (!b.origin.empty()) continue;
+            reveal(b.caption_line, b.caption_line_end);
+            reveal(b.alt_line, b.alt_line_end);
+            if (b.kind == mepml::BlockKind::MathBlock) {
+                int end = b.line_end;
+                if (b.caption_line >= 0) end = std::min(end, b.caption_line - 1);
+                if (b.alt_line >= 0) end = std::min(end, b.alt_line - 1);
+                reveal(b.line_start, end);
+            }
+            reveal_math(b, b.inlines);
+            for (const mepml::ListItem &it : b.items) reveal_math(b, it.content);
+        }
+        return out;
+    };
+
+    // Patch or full. A scan that differs from the last full one only in
+    // the cursor's row (same parse, same toggles and widths, nothing else
+    // having touched the namespace) re-emits just the rows that depend on
+    // the cursor: the old and new cursor rows and whatever each reveals
+    // as a unit. Everything the rest of this function builds -- the
+    // registries, cards, table grids, header layout -- depends on the
+    // document alone, except where a table or a document header holds
+    // the cursor (both lay out around the cursor's row), which takes the
+    // full scan. So does a buffer with a running terminal or program
+    // window, whose results rows the full scan follows.
+    MepmlScanState &state = mepml_scan_state_[CurrentBufferId()];
+    const MepmlParseCache *entry = IsMepmlBuffer() ? &MepmlCacheEntry(true) : nullptr;
+    // Widths the scan lays out to: captions and HTML results (TextWidth,
+    // the pane's columns) and the slide rule (TextColsForBuffer).
+    const int text_width = TextWidth();
+    const int scan_pane_cols = CurPane().text_cols, scan_buffer_cols = TextColsForBuffer(CurrentBufferId());
+    const bool images = OrgImagesVisible();
+    std::unordered_set<int> patch_rows;
+    const bool same_inputs = entry && state.valid && state.doc == entry && state.generation == entry->generation &&
+                             state.ns == ns && state.own_diagnostics == own_diagnostics && state.conceal == conceal &&
+                             state.images == images && state.text_width == text_width &&
+                             state.pane_cols == scan_pane_cols && state.buffer_cols == scan_buffer_cols &&
+                             buf.decorations.count(ns) && buf.decorations[ns].size() == state.deco_count;
+    bool patch = same_inputs && state.cur_row != cur_row;
+    bool runs_here = false;
+    for (const auto &kv : mepml_terms_)
+        if (kv.second.buffer_id == CurrentBufferId()) runs_here = true;
+    for (const auto &kv : mepml_guis_)
+        if (kv.second.buffer_id == CurrentBufferId()) runs_here = true;
+    // Nothing it depends on has changed -- which is often: the edit hooks
+    // fire on the change epoch, which most keys bump, motions included.
+    if (same_inputs && state.cur_row == cur_row && !runs_here) return;
+    if (runs_here) patch = false;
+    if (patch) {
+        const mepml::Document &d = entry->doc;
+        auto touches = [&](int first, int last) {
+            return (state.cur_row >= first && state.cur_row <= last) || (cur_row >= first && cur_row <= last);
+        };
+        for (const mepml::Block &b : d.blocks)
+            if (b.origin.empty() && b.kind == mepml::BlockKind::Table && touches(b.line_start, b.line_end)) patch = false;
+        for (const HeaderRun &run : HeaderRuns(d))
+            if (touches(run.first, run.last)) patch = false;
+        if (patch) {
+            patch_rows = revealed_for(d, state.cur_row);
+            for (int r : revealed_for(d, cur_row)) patch_rows.insert(r);
+            patch_rows.insert(state.cur_row);
+            patch_rows.insert(cur_row);
+            std::vector<Decoration> &v = buf.decorations[ns];
+            v.erase(std::remove_if(v.begin(), v.end(), [&](const Decoration &x) { return patch_rows.count(x.row) > 0; }),
+                    v.end());
+        }
+    }
+    // Only these rows are emitted in a patch; every row in a full scan.
+    auto in_scope = [&](int row) { return !patch || patch_rows.count(row) > 0; };
+
+    if (!patch) {
+        ClearNamespace(ns);
+        buf.mepml_heading_rows.clear();
+        buf.mepml_row_scale.clear();
+        buf.mepml_table_images.clear();
+        buf.mepml_virtual_rows.clear();
+        buf.mepml_fold_summaries.clear();
+        buf.mepml_html_rows.clear();
+        mepml_table_grids_.erase(CurrentBufferId());
+        mepml_block_cards_.erase(CurrentBufferId());
+        state.valid = false;
+        if (!IsMepmlBuffer()) return;
+        ClearOrgImageRows();
+        buf.org_link_spans.clear();
+    }
+
+    const mepml::Document &doc = MepmlParseCurrent(true);
     const int n = buf.LineCount();
+    if (!patch) {
     // Terminals running in this buffer's blocks: follow each to its block
     // (MepmlTermRun::fence_row), and give its results rows its screen.
     for (auto &kv : mepml_terms_) {
@@ -432,9 +593,6 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             buf.mepml_html_rows[b->result_line_start + 1] = std::move(r);
         }
     }
-    int cur_row = 0, cur_col = 0;
-    GetCursorForLua(&cur_row, &cur_col);
-    const bool conceal = OrgConcealVisible();
 
     // Registries: headings, images, clickable links.
     std::function<void(const mepml::Block &, const std::vector<mepml::Inline> &)> links =
@@ -572,6 +730,8 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             for (const mepml::TableCell &c : row) links(b, c.content);
     }
 
+    }  // !patch: the registries
+
     auto add = [&](Decoration d) {
         if (d.row < 0 || d.row >= n) return;
         const int len = static_cast<int>(buf.lines[static_cast<size_t>(d.row)].size());
@@ -584,18 +744,10 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         AddDecoration(ns, std::move(d));
     };
 
-    const std::vector<mepml::Span> spans = mepml::Highlight(doc);
+    const std::vector<mepml::Span> &spans = MepmlSpansCurrent(true);
 
-    // The rows of a caption or alt text the cursor is in show their source,
-    // every one of them (the rendered text stands in for all of them).
-    std::unordered_set<int> revealed_rows;
-    for (const mepml::Block &b : doc.blocks) {
-        if (!b.origin.empty()) continue;
-        for (const auto &range : {std::make_pair(b.caption_line, b.caption_line_end), std::make_pair(b.alt_line, b.alt_line_end)})
-            if (range.first >= 0 && cur_row >= range.first && cur_row <= range.second)
-                for (int row = range.first; row <= range.second; ++row) revealed_rows.insert(row);
-    }
-    MepmlBuildCards(doc);
+    const std::unordered_set<int> revealed_rows = revealed_for(doc, cur_row);
+    if (!patch) MepmlBuildCards(doc);
     // Table rows laid out by MepmlTableLayout below (every row of a table
     // but the cursor's, while concealing): their pipes are drawn there,
     // so the per-span pass leaves them alone.
@@ -622,6 +774,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     // MepmlTableLayout, which draws the missing pipe in the markup's place.
     std::set<std::pair<int, int>> table_edge_markup;  // (row, col_start)
     for (const mepml::Span &s : spans) {
+        if (patch) break;  // a patch has no table rows in scope
         if (!s.markup || (s.style & (mepml::kMath | mepml::kDirective)) || !table_layout_rows.count(s.line)) continue;
         const std::string &line = buf.lines[static_cast<size_t>(s.line)];
         const std::vector<std::pair<int, int>> cells = mepml::TableCells(line);
@@ -635,7 +788,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     }
 
     for (const mepml::Span &s : spans) {
-        if (s.line < 0 || s.line >= n) continue;
+        if (s.line < 0 || s.line >= n || !in_scope(s.line)) continue;
         const std::string &line = buf.lines[static_cast<size_t>(s.line)];
         const bool on_cursor = s.line == cur_row || revealed_rows.count(s.line) > 0;
         const bool heading_row = buf.mepml_heading_rows.count(s.line) > 0;
@@ -848,13 +1001,16 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         }
     }
 
-    if (conceal) MepmlTableLayout(doc, spans, table_layout_rows, table_edge_markup, ns);
-    MepmlFitCards();
+    if (!patch) {
+        if (conceal) MepmlTableLayout(doc, spans, table_layout_rows, table_edge_markup, ns);
+        MepmlFitCards();
+    }
 
     // Callouts get a coloured bar in the sign column on every line.
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty() || b.kind != mepml::BlockKind::Callout) continue;
         for (int row = b.line_start; row <= b.line_end; ++row) {
+            if (!in_scope(row)) continue;
             Decoration d;
             d.row = row;
             d.whole_line = true;
@@ -870,6 +1026,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     // coloured by type. The card behind them comes from MepmlBuildCards;
     // the cursor's row shows its raw line, like any other markup.
     for (const HeaderRun &run : HeaderRuns(doc)) {
+        if (patch) break;  // never holds the cursor in a patch; its fold summaries are the full scan's
         int label_w = 0;
         for (const mepml::Block *e : run.entries) {
             const std::string k = Lowered(e->keyword);
@@ -986,7 +1143,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     // itself only on the cursor's row, where it is being asked about.
     for (const mepml::Diagnostic &dg : doc.diagnostics) {
         if (!own_diagnostics) break;  // the language server's, a superset, are drawn instead
-        if (dg.line < 0 || dg.line >= n) continue;
+        if (dg.line < 0 || dg.line >= n || !in_scope(dg.line)) continue;
         const char *group = dg.severity == mepml::Diagnostic::Error ? "Error" : "Warn";
         Decoration u;
         u.row = dg.line;
@@ -1005,6 +1162,19 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             AddDecoration(ns, std::move(m));
         }
     }
+
+    state.valid = true;
+    state.doc = &MepmlCacheEntry(true);
+    state.generation = MepmlCacheEntry(true).generation;
+    state.ns = ns;
+    state.own_diagnostics = own_diagnostics;
+    state.conceal = conceal;
+    state.images = images;
+    state.text_width = text_width;
+    state.pane_cols = scan_pane_cols;
+    state.buffer_cols = scan_buffer_cols;
+    state.cur_row = cur_row;
+    state.deco_count = buf.decorations.count(ns) ? buf.decorations[ns].size() : 0;
 }
 
 void Editor::RecomputeMepmlFolds() {
@@ -1013,7 +1183,7 @@ void Editor::RecomputeMepmlFolds() {
         if (f.provider == "mepml") old_folds.push_back(f);
     ClearFoldsFromProvider("mepml");
     if (!IsMepmlBuffer()) return;
-    const mepml::Document doc = MepmlParseCurrent(false);
+    const mepml::Document &doc = MepmlParseCurrent(false);
     const int n = Buf().LineCount();
     auto add = [&](int start, int end) {
         if (end < start) return;
@@ -1099,7 +1269,17 @@ bool Editor::MepmlSpliceResults(int buffer_id, int fence_row, const std::string 
 // it describes.
 OrgLatexFragments Editor::MepmlLatexFragments() const {
     OrgLatexFragments out;
-    const mepml::Document doc = MepmlParseCurrent(false);
+    const mepml::Document &doc = MepmlParseCurrent(false);
+    // Whether nothing but blanks shares the fragment's first line before it
+    // or its last line after it.
+    auto blank = [](const std::string &t) { return t.find_first_not_of(" \t") == std::string::npos; };
+    auto MepmlOwnsRows = [&](mepml::Block::Pos p, mepml::Block::Pos q) {
+        const std::vector<std::string> &lines = Buf().lines;
+        if (p.line < 0 || q.line >= static_cast<int>(lines.size())) return false;
+        const std::string &first = lines[static_cast<size_t>(p.line)], &last = lines[static_cast<size_t>(q.line)];
+        return blank(first.substr(0, std::min(first.size(), static_cast<size_t>(p.col)))) &&
+               blank(last.substr(std::min(last.size(), static_cast<size_t>(q.col))));
+    };
     std::function<void(const mepml::Block &, const std::vector<mepml::Inline> &)> walk =
         [&](const mepml::Block &b, const std::vector<mepml::Inline> &ins) {
             for (const mepml::Inline &x : ins) {
@@ -1108,6 +1288,19 @@ OrgLatexFragments Editor::MepmlLatexFragments() const {
                     const bool display = x.arg == "display";
                     f.body = (display ? "\\[" : "$") + x.text + (display ? "\\]" : "$");
                     mepml::Block::Pos p = b.OffsetToPos(x.start), q = b.OffsetToPos(x.end);
+                    // A fragment that spans lines and has them to itself (a
+                    // `\(` alone on its line, the maths, then `\)`) is a
+                    // display in all but name: rendered inline it was squeezed
+                    // to one text row, with the rows under it left blank.
+                    // Drawn as a block instead, like a `$$` one.
+                    if (p.line != q.line && MepmlOwnsRows(p, q)) {
+                        OrgLatexBlockFragment blk;
+                        blk.start_row = p.line + 1;
+                        blk.end_row = q.line + 1;
+                        blk.body = std::move(f.body);
+                        out.blocks.push_back(std::move(blk));
+                        continue;
+                    }
                     for (int line = p.line; line <= q.line; ++line) {
                         OrgLatexInlinePart part;
                         part.row = line + 1;
@@ -1144,13 +1337,12 @@ OrgLatexFragments Editor::MepmlLatexFragments() const {
 
 std::vector<OrgLiteralSpan> Editor::MepmlLiteralSpans() const {
     std::vector<OrgLiteralSpan> out;
-    const mepml::Document doc = MepmlParseCurrent(false);
     constexpr std::uint32_t kLiteral = mepml::kCode | mepml::kResult | mepml::kVerbatim | mepml::kMath |
                                        mepml::kMeta | mepml::kDirective | mepml::kCite | mepml::kTableRule |
                                        mepml::kRule;
     // Markup covers a link's `|url]` and a command's `\color{red}{` too,
     // so a URL or a colour name is never checked as a word.
-    for (const mepml::Span &s : mepml::Highlight(doc)) {
+    for (const mepml::Span &s : MepmlSpansCurrent(false)) {
         if (!s.markup && !(s.style & kLiteral)) continue;
         OrgLiteralSpan sp;
         sp.row = s.line + 1;

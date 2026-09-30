@@ -1301,6 +1301,18 @@
             "name": "math_close"
           },
           {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "math_trailing"
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
+          },
+          {
             "type": "SYMBOL",
             "name": "_line_end"
           },
@@ -4793,6 +4805,10 @@
     {
       "type": "SYMBOL",
       "name": "_cmd_user"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "math_trailing"
     },
     {
       "type": "SYMBOL",

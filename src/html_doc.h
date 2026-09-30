@@ -472,8 +472,11 @@ struct AccessibleNode {
  * @param full_document When true (a page), missing <html>/<body> wrappers are synthesized the
  * way a browser's parser does (document.body always exists). Pass false for markup fragments
  * (innerHTML/insertAdjacentHTML), whose nodes graft into an existing tree unwrapped.
+ * @param compute_styles When false, skip the CSS cascade (ComputeStyles): for callers that only
+ * walk the DOM's tags, attributes and text (the LaTeX exporter, mepml's HTML importer), where the
+ * cascade was ~40% of the parse and every node's `style` would go unread.
  */
-void ParseHtml(const std::string &html, HtmlDoc &out, bool full_document = true);
+void ParseHtml(const std::string &html, HtmlDoc &out, bool full_document = true, bool compute_styles = true);
 
 // Walks `doc.root`, resolving every node's `style` per this file's own
 // header comment (inherit from parent, then this tag's UA default, then

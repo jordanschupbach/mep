@@ -3527,19 +3527,41 @@ const char *kBuiltinViewer =
     "  view.label({0,0,l}, 'Z', view.colors.blue)\n"
     "end\n";
 
+// on_buffer_changed(fn, interval): `interval` may also be a function of
+// the hook's own last run time in seconds (kBuiltinSyntax's adaptive one).
+//
+// The hooks share a per-frame budget (MEP_EDIT_HOOK_FRAME_BUDGET): a hook
+// that falls due waits for a later frame when, by its own last run time,
+// it would take this frame over budget -- unless nothing has run yet this
+// frame, so a hook costlier than the whole budget still gets a frame to
+// itself -- for at most MEP_EDIT_HOOK_MAX_DEFER seconds, then it runs
+// regardless. Each hook alone is throttled, but they fell due
+// together: in a 16k-line mepml buffer syntax (70 ms), spell (51), the
+// mepml scan (37), maths (9) and folds (7) all landed in one frame, and
+// that frame was the typing lag (plans/MEPML_PERFORMANCE_PLAN.md).
 const char *kBuiltinEditHooks =
+    "MEP_EDIT_HOOK_FRAME_BUDGET = MEP_EDIT_HOOK_FRAME_BUDGET or 0.008\n"
+    "MEP_EDIT_HOOK_MAX_DEFER = MEP_EDIT_HOOK_MAX_DEFER or 0.5\n"
+    "local mep_edit_hook_frame, mep_edit_hook_spent = nil, 0\n"
     "function mep.on_buffer_changed(fn, interval_sec)\n"
     "  interval_sec = interval_sec or 0.3\n"
-    "  local last_epoch, last_run = -1, 0\n"
+    "  local last_epoch, last_run, cost, due_since = -1, 0, 0, nil\n"
     "  mep.on_frame(function()\n"
     "    local epoch = mep.buffer_change_epoch()\n"
-    "    if epoch ~= last_epoch then\n"
-    "      local now = mep.now()\n"
-    "      if now - last_run >= interval_sec then\n"
-    "        last_epoch, last_run = epoch, now\n"
-    "        fn()\n"
-    "      end\n"
+    "    if epoch == last_epoch then return end\n"
+    "    local now = mep.now()\n"
+    "    local interval = type(interval_sec) == 'function' and interval_sec(cost) or interval_sec\n"
+    "    if now - last_run < interval then return end\n"
+    "    if mep_edit_hook_frame ~= now then mep_edit_hook_frame, mep_edit_hook_spent = now, 0 end\n"
+    "    if mep_edit_hook_spent > 0 and mep_edit_hook_spent + cost > MEP_EDIT_HOOK_FRAME_BUDGET then\n"
+    "      due_since = due_since or now\n"
+    "      if now - due_since < MEP_EDIT_HOOK_MAX_DEFER then return end\n"
     "    end\n"
+    "    last_epoch, last_run, due_since = epoch, now, nil\n"
+    "    local t = mep.clock()\n"
+    "    fn()\n"
+    "    cost = mep.clock() - t\n"
+    "    mep_edit_hook_spent = mep_edit_hook_spent + cost\n"
     "  end)\n"
     "end\n"
     "function mep.on_buffer_saved(fn)\n"
@@ -12668,23 +12690,28 @@ const char *kBuiltinSyntax =
     // language, the way org's src blocks are. The styling proper (bold,
     // sizes, concealment) is Editor::MepmlScan's, in its own namespace.
     "  if ft == 'mepml' then\n"
-    "    local captures = mep.ts_captures('mepml', table.concat(lines, '\\n'))\n"
-    "    if captures then mep.ts_apply_captures(mep_syntax_ns, captures, mep_mepml_capture_hl, 0) end\n"
+    "    mep.ts_highlight(mep_syntax_ns, 'mepml', table.concat(lines, '\\n'), mep_mepml_capture_hl, 0)\n"
+    // Each block keeps its own incremental tree (the cache key: buffer and
+    // the block's ordinal among blocks of its language), so a document's
+    // many python blocks stop evicting one another's.
+    "    local nth = {}\n"
+    "    local bufid = mep.current_buffer()\n"
     "    for _, cb in ipairs(mep.mepml_code_blocks()) do\n"
     "      local embed_ft = mep_org_babel_lang_ts_ft and mep_org_babel_lang_ts_ft[cb.lang:lower()] or cb.lang:lower()\n"
-    "      local body = {}\n"
-    "      for k = cb.first, cb.last do body[#body + 1] = lines[k] end\n"
-    "      local captures = embed_ft ~= '' and mep.ts_captures(embed_ft, table.concat(body, '\\n'))\n"
-    "      if captures then mep.ts_apply_captures(mep_syntax_ns, captures, mep.ts_capture_hl, cb.first - 1) end\n"
+    "      if embed_ft ~= '' then\n"
+    "        nth[embed_ft] = (nth[embed_ft] or 0) + 1\n"
+    "        local body = {}\n"
+    "        for k = cb.first, cb.last do body[#body + 1] = lines[k] end\n"
+    "        mep.ts_highlight(mep_syntax_ns, embed_ft, table.concat(body, '\\n'), mep.ts_capture_hl, cb.first - 1,\n"
+    "                         'mepml-block:' .. bufid .. ':' .. embed_ft .. ':' .. nth[embed_ft])\n"
+    "      end\n"
     "    end\n"
     "    return\n"
     "  end\n"
     // Real grammar available: parse + run its highlights.scm query
     // (mep.ts_captures, backed by src/treesitter.cpp) and stop -- this
     // *is* Treesitter syntax highlighting, not a fallback path.
-    "  local captures = mep.ts_captures(ft, table.concat(lines, '\\n'))\n"
-    "  if captures then\n"
-    "    mep.ts_apply_captures(mep_syntax_ns, captures, mep.ts_capture_hl, 0)\n"
+    "  if mep.ts_highlight(mep_syntax_ns, ft, table.concat(lines, '\\n'), mep.ts_capture_hl, 0) then\n"
     "    if ft == 'org' then\n"
     "      mep_syntax_highlight_org_src_blocks(mep_syntax_ns, lines)\n"
     "      mep.org_highlight_emphasis(mep_syntax_ns)\n"
@@ -12753,7 +12780,10 @@ const char *kBuiltinSyntax =
     // it. Tunable: :lua mep.syntax_interval = <sec> before this loads, or
     // re-register the hook, to trade latency for rebuild frequency.
     "mep.syntax_interval = mep.syntax_interval or 0.03\n"
-    "mep.on_buffer_changed(function() if mep.syntax_auto then mep.syntax_highlight() end end, mep.syntax_interval)\n"
+    // ...but never more often than twice its own cost: in a 16k-line mepml
+    // buffer a pass takes ~70 ms, and at 0.03 s it ran nearly every frame.
+    "mep.on_buffer_changed(function() if mep.syntax_auto then mep.syntax_highlight() end end,\n"
+    "  function(cost) return math.max(mep.syntax_interval, 2 * cost) end)\n"
     "local mep_syntax_last_file = nil\n"
     "mep.on_frame(function()\n"
     "  if not mep.syntax_auto then return end\n"
@@ -12815,9 +12845,9 @@ const char *kBuiltinSpell =
     // Keyed by row into an array of spans, because the squiggle pass and
     // both jumps below each walk every row and would otherwise re-scan
     // the whole list per word.
-    "local function mep_spell_skip_index()\n"
+    "local function mep_spell_skip_index(only_rows)\n"
     "  local rows = {}\n"
-    "  for _, sp in ipairs(mep.org_literal_spans()) do\n"
+    "  for _, sp in ipairs(mep.org_literal_spans(only_rows)) do\n"
     "    local at = rows[sp.row]\n"
     "    if not at then at = {} rows[sp.row] = at end\n"
     "    at[#at + 1] = sp\n"
@@ -12835,19 +12865,61 @@ const char *kBuiltinSpell =
     "  end\n"
     "  return false\n"
     "end\n"
+    // Each line's misspelled words, keyed by the line's text: an edit
+    // changes a line or two, and re-checking every word of every line was
+    // 51 ms a pass in a 16k-line document (plans/MEPML_PERFORMANCE_PLAN.md).
+    // Rebuilt from the lines seen each pass, so it holds only what is in
+    // the buffer now, and dropped whenever the personal dictionary changes
+    // (mep.spell_add / mep.spell_wrong, wrapped below). The literal spans
+    // (code, maths, links: mep.org_literal_spans) are only fetched when
+    // there is a misspelling to test against them.
+    "local mep_spell_line_cache = {}\n"
+    "local mep_spell_no_bad = {}\n"
+    "for _, name in ipairs({'spell_add', 'spell_wrong'}) do\n"
+    "  local orig = mep[name]\n"
+    "  if orig then\n"
+    "    mep[name] = function(...)\n"
+    "      mep_spell_line_cache = {}\n"
+    "      return orig(...)\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
     "function mep.spell_highlight()\n"
     "  if not mep_spell_ns then mep_spell_ns = mep.ns_create('spell') end\n"
     "  mep.ns_clear(mep_spell_ns)\n"
     "  if not mep_spell_active_here() then return end\n"
-    "  local skip = mep_spell_skip_index()\n"
+    "  local old, cache = mep_spell_line_cache, {}\n"
+    "  local bad_rows = {}\n"
     "  local n = mep.line_count()\n"
     "  for row = 1, n do\n"
     "    local line = mep.get_line(row) or ''\n"
-    "    mep_spell_each_word(line, function(word, ws, we)\n"
-    "      if mep.spell_bad(word) and not mep_spell_skipped(skip, row, ws, we) then\n"
+    "    local bad = cache[line] or old[line]\n"
+    "    if not bad then\n"
+    "      bad = mep_spell_no_bad\n"
+    "      mep_spell_each_word(line, function(word, ws, we)\n"
+    "        if mep.spell_bad(word) then\n"
+    "          if bad == mep_spell_no_bad then bad = {} end\n"
+    "          bad[#bad + 1] = ws\n"
+    "          bad[#bad + 1] = we\n"
+    "        end\n"
+    "      end)\n"
+    "    end\n"
+    "    cache[line] = bad\n"
+    "    if bad ~= mep_spell_no_bad then bad_rows[#bad_rows + 1] = row end\n"
+    "  end\n"
+    "  mep_spell_line_cache = cache\n"
+    "  if #bad_rows == 0 then return end\n"
+    "  local wanted = {}\n"
+    "  for _, row in ipairs(bad_rows) do wanted[row] = true end\n"
+    "  local skip = mep_spell_skip_index(wanted)\n"
+    "  for _, row in ipairs(bad_rows) do\n"
+    "    local bad = cache[mep.get_line(row) or '']\n"
+    "    for k = 1, #bad, 2 do\n"
+    "      local ws, we = bad[k], bad[k + 1]\n"
+    "      if not mep_spell_skipped(skip, row, ws, we) then\n"
     "        mep.deco_add(mep_spell_ns, {row=row, col_start=ws, col_end=we+1, hl_group='SpellBad', underline=true})\n"
     "      end\n"
-    "    end)\n"
+    "    end\n"
     "  end\n"
     "end\n"
     "mep.on_buffer_changed(function() mep.spell_highlight() end)\n"
@@ -18317,36 +18389,148 @@ const char *kBuiltinOrgLatex =
     "  return string.format('%08x', h)\n"
     "end\n"
     "\n"
+    // Both memoized: each was a blocking shell-out on the UI thread, and
+    // the cache dir was asked for once per fragment per scan -- a rescan
+    // every 0.3 s while typing, so a formula-heavy document stalled the
+    // typing with a fork per fragment. Only a found executable is
+    // remembered, so installing one mid-session still takes effect.
+    "local mep_org_latex_dir = nil\n"
     "local function mep_org_latex_cache_dir()\n"
-    "  local dir = (os.getenv('HOME') or '/tmp') .. '/.cache/mep/latex'\n"
-    "  os.execute('mkdir -p ' .. dir)\n"
-    "  return dir\n"
+    "  if not mep_org_latex_dir then\n"
+    "    mep_org_latex_dir = (os.getenv('HOME') or '/tmp') .. '/.cache/mep/latex'\n"
+    "    os.execute('mkdir -p ' .. mep_org_latex_dir)\n"
+    "  end\n"
+    "  return mep_org_latex_dir\n"
+    "end\n"
+    "local mep_org_latex_exe_found = {}\n"
+    "local function mep_org_latex_has_exe(exe)\n"
+    "  if not mep_org_latex_exe_found[exe] then mep_org_latex_exe_found[exe] = mep_org_babel_has_exe(exe) end\n"
+    "  return mep_org_latex_exe_found[exe]\n"
     "end\n"
     "local mep_org_latex_inflight = {}\n"
+    // Fragments that failed to compile, by cache key -> the error. Without
+    // it every rescan (one per debounced edit, anywhere in the buffer)
+    // re-ran tectonic on every broken fragment and warned again. The error
+    // is handed back with `cached` set so the caller can stay quiet about
+    // one it has already reported. A missing executable is never cached,
+    // so installing it mid-session still takes effect.
+    "local mep_org_latex_failed = {}\n"
     "\n"
-    "function mep_org_latex_render(tex_body, on_done)\n"
+    // The line of tectonic's stderr worth showing: its first `error:` that
+    // is not one of the generic "XeTeX failed" wrappers, else TeX's own
+    // `! ...` line. Never a `warning:`/`note:` -- tectonic's first line on
+    // every failure is "warning: accessing absolute path `/dev/null`",
+    // which was what the notification used to say.
+    "local function mep_org_latex_error_line(lines)\n"
+    "  for _, l in ipairs(lines) do\n"
+    "    local m = l:match('^error: (.*)')\n"
+    "    if m and not m:match('^something bad happened') and not m:match('^the XeTeX engine') then\n"
+    "      return (m:gsub('^!%s*', ''))\n"
+    "    end\n"
+    "  end\n"
+    "  for _, l in ipairs(lines) do\n"
+    "    if l:match('^! ') then return l:sub(3) end\n"
+    "  end\n"
+    "  for _, l in ipairs(lines) do\n"
+    "    if l:match('%S') and not l:match('^warning:') and not l:match('^note:') then return l end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "\n"
+    // At most MEP_ORG_LATEX_MAX_JOBS compiles run at once; the rest wait
+    // in mep_org_latex_queue. A scan asks for every fragment in the
+    // document the moment it opens, and each used to start its own
+    // tectonic straight away -- 42 at once for 52 fragments, one per
+    // fragment however many there were (plans/MEPML_PERFORMANCE_PLAN.md).
+    // A freed slot goes to the waiting fragment nearest the cursor (read
+    // when the slot frees, so scrolling reorders what is left), and the
+    // preview popup's render (`row` = -1) ahead of all of them.
+    // Half the machine's threads, 2 to 16: at 6 on a 32-thread machine a
+    // document's first render took twice as long as running them all at
+    // once; at "all at once" a 1000-fragment document starts 1000.
+    "MEP_ORG_LATEX_MAX_JOBS = MEP_ORG_LATEX_MAX_JOBS or math.max(2, math.min(16, mep.cpu_count() // 2))\n"
+    "local mep_org_latex_running = 0\n"
+    "local mep_org_latex_queue = {}\n"
+    "local function mep_org_latex_pump()\n"
+    "  while mep_org_latex_running < MEP_ORG_LATEX_MAX_JOBS and #mep_org_latex_queue > 0 do\n"
+    "    local cur = mep.cursor()\n"
+    "    local best, best_d = 1, nil\n"
+    "    for i, item in ipairs(mep_org_latex_queue) do\n"
+    "      local d = item.row < 0 and -1 or math.abs(item.row - cur)\n"
+    "      if not best_d or d < best_d then best, best_d = i, d end\n"
+    "    end\n"
+    "    local item = table.remove(mep_org_latex_queue, best)\n"
+    "    if item.wanted() then\n"
+    "      mep_org_latex_running = mep_org_latex_running + 1\n"
+    "      item.start()\n"
+    "    else\n"
+    "      item.drop()\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
+    "local function mep_org_latex_release()\n"
+    "  mep_org_latex_running = math.max(0, mep_org_latex_running - 1)\n"
+    "  mep_org_latex_pump()\n"
+    "end\n"
+    "\n"
+    // `row` (1-based, optional) orders the queue; -1 goes first.
+    // `alive` (optional) says whether on_done still wants the answer. A
+    // rescan runs on every edit and asks again for every fragment still
+    // waiting, so without it each request left one more callback behind
+    // on the in-flight entry, and a fragment typed or deleted away still
+    // took its turn at a compile. Dead waiters are pruned as new ones
+    // join, and a queued compile nobody alive wants is dropped unrun.
+    "local function mep_org_latex_wanted(waiters)\n"
+    "  for _, w in ipairs(waiters or {}) do\n"
+    "    if not w.alive or w.alive() then return true end\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    "function mep_org_latex_render(tex_body, on_done, row, alive)\n"
     "  local dpi = math.floor(72 * mep.font_size() / 11 + 0.5)\n"
     "  local key = mep_org_latex_hash(tex_body .. '|' .. dpi)\n"
     "  local dir = mep_org_latex_cache_dir()\n"
     "  local png_path = dir .. '/' .. key .. '.png'\n"
+    "  if mep_org_latex_failed[key] then\n"
+    "    on_done(nil, mep_org_latex_failed[key], true)\n"
+    "    return\n"
+    "  end\n"
     "  if mep_org_babel_file_exists(png_path) then\n"
     "    on_done(png_path)\n"
     "    return\n"
     "  end\n"
-    "  if mep_org_latex_inflight[key] then\n"
-    "    table.insert(mep_org_latex_inflight[key], on_done)\n"
+    "  local waiter = {cb = on_done, alive = alive}\n"
+    "  local pending = mep_org_latex_inflight[key]\n"
+    "  if pending then\n"
+    "    local kept = {waiter}\n"
+    "    for _, w in ipairs(pending) do\n"
+    "      if not w.alive or w.alive() then kept[#kept + 1] = w end\n"
+    "    end\n"
+    "    mep_org_latex_inflight[key] = kept\n"
     "    return\n"
     "  end\n"
-    "  mep_org_latex_inflight[key] = {on_done}\n"
+    "  mep_org_latex_inflight[key] = {waiter}\n"
+    "  local started = false\n"
     "  local function finish(result, err)\n"
+    "    if started then\n"
+    "      started = false\n"
+    "      mep_org_latex_release()\n"
+    "    end\n"
     "    local waiters = mep_org_latex_inflight[key] or {}\n"
     "    mep_org_latex_inflight[key] = nil\n"
-    "    for _, cb in ipairs(waiters) do cb(result, err) end\n"
+    "    if not result and err and not err:find('not found on PATH', 1, true) then\n"
+    "      mep_org_latex_failed[key] = err\n"
+    "    end\n"
+    "    for _, w in ipairs(waiters) do\n"
+    "      if not w.alive or w.alive() then w.cb(result, err) end\n"
+    "    end\n"
     "  end\n"
-    "  if not mep_org_babel_has_exe('tectonic') then\n"
+    "  if not mep_org_latex_has_exe('tectonic') then\n"
     "    finish(nil, \"tectonic not found on PATH (see flake.nix's devShell)\")\n"
     "    return\n"
     "  end\n"
+    "  local function start()\n"
+    "  started = true\n"
     "  local tex_path = dir .. '/' .. key .. '.tex'\n"
     "  local pdf_path = dir .. '/' .. key .. '.pdf'\n"
     "  local f = io.open(tex_path, 'w')\n"
@@ -18362,10 +18546,10 @@ const char *kBuiltinOrgLatex =
     "    on_exit = function(code)\n"
     "      os.remove(tex_path)\n"
     "      if code ~= 0 or not mep_org_babel_file_exists(pdf_path) then\n"
-    "        finish(nil, mep_org_babel_first_error_line(compile_err) or 'tectonic compile failed')\n"
+    "        finish(nil, mep_org_latex_error_line(compile_err) or 'tectonic compile failed')\n"
     "        return\n"
     "      end\n"
-    "      if not mep_org_babel_has_exe('pdftoppm') then\n"
+    "      if not mep_org_latex_has_exe('pdftoppm') then\n"
     "        os.remove(pdf_path)\n"
     "        finish(nil, \"pdftoppm not found on PATH (see flake.nix's devShell)\")\n"
     "        return\n"
@@ -18384,6 +18568,14 @@ const char *kBuiltinOrgLatex =
     "      })\n"
     "    end,\n"
     "  })\n"
+    "  end\n"
+    "  table.insert(mep_org_latex_queue, {\n"
+    "    row = row or math.huge,\n"
+    "    start = start,\n"
+    "    wanted = function() return mep_org_latex_wanted(mep_org_latex_inflight[key]) end,\n"
+    "    drop = function() mep_org_latex_inflight[key] = nil end,\n"
+    "  })\n"
+    "  mep_org_latex_pump()\n"
     "end\n"
     "\n"
     // Render failures are reported through one funnel rather than a bare
@@ -18399,8 +18591,8 @@ const char *kBuiltinOrgLatex =
     // shows once per scan, so fixing it and breaking it again still warns.
     "local mep_org_latex_err_seen_scan = {}\n"
     "local mep_org_latex_err_seen_session = {}\n"
-    "local function mep_org_latex_notify_err(err)\n"
-    "  if not err then return end\n"
+    "local function mep_org_latex_notify_err(err, cached)\n"
+    "  if not err or cached then return end\n"
     "  if err:find('not found on PATH', 1, true) then\n"
     "    if mep_org_latex_err_seen_session[err] then return end\n"
     "    mep_org_latex_err_seen_session[err] = true\n"
@@ -18411,10 +18603,23 @@ const char *kBuiltinOrgLatex =
     "  mep.notify('LaTeX: ' .. err, 'warn')\n"
     "end\n"
     "\n"
+    // Every scan bumps mep_org_latex_gen, and a render only registers if
+    // no scan has run since the one that asked for it (and the buffer is
+    // still the one it was for): a tectonic job outlives the edits after
+    // it, and its callback used to land on rows the text had since moved
+    // off -- a stale render showing over, or under the cursor of, a
+    // fragment being edited. A newer scan that wants the same render has
+    // queued its own waiter on the in-flight job (mep_org_latex_render).
+    "local mep_org_latex_gen = 0\n"
+    "local function mep_org_latex_current(gen, buf)\n"
+    "  return gen == mep_org_latex_gen and mep.current_buffer() == buf\n"
+    "end\n"
     "local function mep_org_latex_register(start_row, end_row, tex_body)\n"
-    "  mep_org_latex_render(tex_body, function(png_path, err)\n"
+    "  local gen, buf = mep_org_latex_gen, mep.current_buffer()\n"
+    "  mep_org_latex_render(tex_body, function(png_path, err, cached)\n"
+    "    if not mep_org_latex_current(gen, buf) then return end\n"
     "    if not png_path then\n"
-    "      mep_org_latex_notify_err(err)\n"
+    "      mep_org_latex_notify_err(err, cached)\n"
     "      return\n"
     "    end\n"
     "    local w, h = mep.image_size(png_path)\n"
@@ -18422,7 +18627,7 @@ const char *kBuiltinOrgLatex =
     "    local line_height = math.floor(mep.font_size()) + 6\n"
     "    local slots = math.max(1, math.ceil(h / line_height))\n"
     "    mep.buf_set_latex_row(start_row, png_path, slots, end_row)\n"
-    "  end)\n"
+    "  end, start_row, function() return mep_org_latex_current(gen, buf) end)\n"
     "end\n"
     "\n"
     "-- Same idea as mep_org_latex_register, but for one inline fragment rather\n"
@@ -18436,16 +18641,21 @@ const char *kBuiltinOrgLatex =
     // every part is registered from inside this one callback, never
     // before it, so a fragment whose TeX does not compile leaves its
     // source fully visible instead of hiding half of it behind nothing.
+    // Each part also carries the fragment's whole row range, so a cursor
+    // on any of its rows reveals all of them (Editor::OrgLatexInlineRevealed).
     "local function mep_org_latex_register_inline(frag)\n"
-    "  mep_org_latex_render(frag.body, function(png_path, err)\n"
+    "  local gen, buf = mep_org_latex_gen, mep.current_buffer()\n"
+    "  mep_org_latex_render(frag.body, function(png_path, err, cached)\n"
+    "    if not mep_org_latex_current(gen, buf) then return end\n"
     "    if not png_path then\n"
-    "      mep_org_latex_notify_err(err)\n"
+    "      mep_org_latex_notify_err(err, cached)\n"
     "      return\n"
     "    end\n"
+    "    local first, last = frag.parts[1].row, frag.parts[#frag.parts].row\n"
     "    for i, part in ipairs(frag.parts) do\n"
-    "      mep.buf_add_latex_inline(part.row, part.col_start, part.col_end, i == 1 and png_path or '')\n"
+    "      mep.buf_add_latex_inline(part.row, part.col_start, part.col_end, i == 1 and png_path or '', first, last)\n"
     "    end\n"
-    "  end)\n"
+    "  end, frag.parts[1].row, function() return mep_org_latex_current(gen, buf) end)\n"
     "end\n"
     "\n"
     // 'tex' alongside 'org' (here and in the two rescan hooks below):
@@ -18462,7 +18672,63 @@ const char *kBuiltinOrgLatex =
     "  local ft = mep_lsp_filetype(fname)\n"
     "  return ft == 'org' or ft == 'tex' or ft == 'mepml'\n"
     "end\n"
+    // The fragment the cursor is in is not rendered at all while the
+    // plain-cursor-line rule (<leader>otc) would reveal its source anyway:
+    // typing maths otherwise started a tectonic compile of every
+    // half-typed state (most of which fail, and each warned), which is
+    // what made typing in a formula lag. Its rows are remembered in
+    // mep_org_latex_deferred, and the frame hook below rescans once the
+    // cursor leaves them, so it renders when you are done with it.
+    "local mep_org_latex_deferred = nil\n"
+    "\n"
+    // The math preview popup (DrawPane, Buffer::org_latex_preview) still
+    // shows the deferred fragment as it is typed: it gets its own render,
+    // one compile at a time -- a request made while one runs replaces any
+    // still waiting, so a burst of keystrokes costs two compiles, not one
+    // per state -- and never warns (a half-typed formula failing is the
+    // normal case). A failure leaves the popup on the last render that
+    // compiled; mep_org_latex_failed keeps a broken state from recompiling.
+    "local mep_org_latex_preview_busy = false\n"
+    "local mep_org_latex_preview_at = nil\n"
+    "local mep_org_latex_preview_next = nil\n"
+    "local function mep_org_latex_preview_run(req)\n"
+    "  mep_org_latex_preview_busy = true\n"
+    "  mep_org_latex_render(req.body, function(png_path)\n"
+    "    mep_org_latex_preview_busy = false\n"
+    "    local nxt = mep_org_latex_preview_next\n"
+    "    mep_org_latex_preview_next = nil\n"
+    // Shown even when edits have landed since it was asked for (it is
+    // still the newest render there is), at the fragment's current rows.
+    "    local at = mep_org_latex_preview_at\n"
+    "    if png_path and not nxt and at and at.buf == req.buf and mep.current_buffer() == req.buf then\n"
+    "      mep.buf_set_latex_preview(at.first, at.last, at.col, png_path)\n"
+    "    end\n"
+    "    if nxt then mep_org_latex_preview_run(nxt) end\n"
+    "  end, -1)\n"
+    "end\n"
+    // The compile waits for a pause in the typing (the frame hook below
+    // starts it MEP_ORG_LATEX_PREVIEW_DELAY seconds after the last edit's
+    // scan): compiling mid-burst only raced the keystrokes for CPU to
+    // render states nobody looks at. The popup's rows follow at once.
+    "MEP_ORG_LATEX_PREVIEW_DELAY = 0.4\n"
+    "local mep_org_latex_preview_wait = nil\n"
+    "local function mep_org_latex_preview(first, last, col, body)\n"
+    "  mep.buf_set_latex_preview(first, last, col)\n"
+    "  mep_org_latex_preview_at = {buf = mep.current_buffer(), first = first, last = last, col = col}\n"
+    "  mep_org_latex_preview_wait = {gen = mep_org_latex_gen, buf = mep.current_buffer(), first = first, last = last,\n"
+    "                                col = col, body = body, at = mep.now()}\n"
+    "end\n"
+    "mep.on_frame(function()\n"
+    "  local req = mep_org_latex_preview_wait\n"
+    "  if not req or mep.now() - req.at < MEP_ORG_LATEX_PREVIEW_DELAY then return end\n"
+    "  mep_org_latex_preview_wait = nil\n"
+    "  if not mep_org_latex_current(req.gen, req.buf) then return end\n"
+    "  if mep_org_latex_preview_busy then mep_org_latex_preview_next = req else mep_org_latex_preview_run(req) end\n"
+    "end)\n"
+    "\n"
     "function mep.org_latex_scan()\n"
+    "  mep_org_latex_gen = mep_org_latex_gen + 1\n"
+    "  mep_org_latex_deferred = nil\n"
     "  mep_org_latex_err_seen_scan = {}\n"
     "  mep.buf_clear_latex_rows()\n"
     "  mep.buf_clear_latex_inline()\n"
@@ -18470,17 +18736,38 @@ const char *kBuiltinOrgLatex =
     "  if not mep.org_latex_visible() then return end\n"
     "  if not mep_latex_preview_ft(mep.filename()) then return end\n"
     "  local fragments = mep.org_latex_scan_fragments()\n"
+    "  local cur = mep.org_plain_cursor_line_visible() and mep.cursor() or nil\n"
+    "  local previewed = false\n"
+    "  local function defer(first, last, col, body)\n"
+    "    if not (cur and cur >= first and cur <= last) then return false end\n"
+    "    if not previewed then\n"
+    "      previewed = true\n"
+    "      mep_org_latex_preview(first, last, col, body)\n"
+    "    end\n"
+    "    local d = mep_org_latex_deferred\n"
+    "    if d then first, last = math.min(first, d.first), math.max(last, d.last) end\n"
+    "    mep_org_latex_deferred = {buf = mep.current_buffer(), first = first, last = last}\n"
+    "    return true\n"
+    "  end\n"
     "  for _, b in ipairs(fragments.blocks) do\n"
-    "    mep_org_latex_register(b.start_row, b.end_row, b.body)\n"
+    "    if not defer(b.start_row, b.end_row, 1, b.body) then mep_org_latex_register(b.start_row, b.end_row, b.body) end\n"
     "  end\n"
     "  for _, s in ipairs(fragments.inlines) do\n"
-    "    mep_org_latex_register_inline(s)\n"
+    "    if not defer(s.parts[1].row, s.parts[#s.parts].row, s.parts[1].col_start, s.body) then\n"
+    "      mep_org_latex_register_inline(s)\n"
+    "    end\n"
+    "  end\n"
+    "  if not previewed then\n"
+    "    mep_org_latex_preview_wait = nil\n"
+    "    mep_org_latex_preview_at = nil\n"
+    "    mep.buf_clear_latex_preview()\n"
     "  end\n"
     "end\n"
     "\n"
     "mep.command('MepOrgLatexScan', mep.org_latex_scan)\n"
     "\n"
     "function mep.org_latex_toggle_ui()\n"
+    "  mep_org_latex_failed = {}\n"
     "  local visible = mep.org_latex_toggle()\n"
     "  mep.notify('LaTeX preview: ' .. (visible and 'on' or 'off'))\n"
     "  mep.org_latex_scan()\n"
@@ -18497,6 +18784,12 @@ const char *kBuiltinOrgLatex =
     "  if fname ~= mep_org_latex_last_file then\n"
     "    mep_org_latex_last_file = fname\n"
     "    if mep_latex_preview_ft(fname) then mep.org_latex_scan() end\n"
+    "    return\n"
+    "  end\n"
+    "  local d = mep_org_latex_deferred\n"
+    "  if d and mep.current_buffer() == d.buf then\n"
+    "    local row = mep.cursor()\n"
+    "    if row < d.first or row > d.last then mep.org_latex_scan() end\n"
     "  end\n"
     "end)\n";
 
@@ -23917,7 +24210,9 @@ const char *kBuiltinMepml =
     "local function mep_mepml_is(fname) return mep_lsp_filetype(fname or '') == 'mepml' end\n"
     "function mep.mepml_render()\n"
     "  if not mep_mepml_ns then mep_mepml_ns = mep.ns_create('mepml') end\n"
-    "  mep.ns_clear(mep_mepml_ns)\n"
+    // No ns_clear here: the scan clears the namespace itself, except when
+    // only the cursor moved, where it replaces just the rows that depend
+    // on it (Editor::MepmlScan's patch path).
     "  -- With mep's mepml language server attached (kBuiltinLsp's mepml_ls),\n"
     "  -- its diagnostics -- the parser's plus cross-reference checks -- are\n"
     "  -- the ones drawn; the scan's own would double every underline.\n"
@@ -48686,6 +48981,37 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // decorations actually on visible rows) -- for everything else in
     // this function, "visible" already means "cheap"; decorations were
     // the one exception.
+    //
+    // Only rows the row loop below can actually reach are bucketed (and
+    // sorted): bucketing every decoration in the buffer made an *idle*
+    // frame grow with the document -- 1 ms at 342 lines, 7 ms at 16k
+    // (plans/MEPML_PERFORMANCE_PLAN.md). The bound walks the same jumps
+    // the loop takes (a closed fold, a whole-row LaTeX/HTML render) and
+    // counts each step as one slot; the loop spends at least one slot
+    // per step (wraps, headroom and images spend more), so it never gets
+    // past `deco_row_end`. Two slots of slack cover a partly scrolled
+    // first row.
+    int deco_row_end = pane.scroll_row;
+    {
+        std::unordered_map<int, int> closed_fold_end;
+        for (const Fold &f : buf.folds) {
+            if (!f.closed) continue;
+            auto it = closed_fold_end.find(f.start_row);
+            if (it == closed_fold_end.end()) closed_fold_end[f.start_row] = f.end_row;
+            else it->second = std::max(it->second, f.end_row);
+        }
+        const int line_count = buf.LineCount();
+        for (int slots = 0; deco_row_end < line_count && slots < visible_lines + 2; slots++) {
+            auto fe = closed_fold_end.find(deco_row_end);
+            if (fe != closed_fold_end.end()) {
+                deco_row_end = fe->second + 1;
+            } else if (const Buffer::OrgLatexRender *lr = g_editor.OrgLatexRenderForRow(buf, deco_row_end, latex_cursor_row, org_plain)) {
+                deco_row_end = std::max(deco_row_end, lr->end_row) + 1;
+            } else {
+                deco_row_end++;
+            }
+        }
+    }
     std::unordered_map<int, std::vector<const Decoration *>> decos_by_row;
     for (const auto &ns_decos : buf.decorations) {
         for (const Decoration &d : ns_decos.second) {
@@ -48700,7 +49026,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // bold / italic / underline decoration carries neither and
             // survives, which is what keeps syntax highlighting on.
             if (org_plain && (d.virt_overlay || d.conceal)) continue;
-            decos_by_row[d.row].push_back(&d);
+            if (d.row >= pane.scroll_row && d.row < deco_row_end) decos_by_row[d.row].push_back(&d);
         }
     }
     // Decorations from different namespaces land in the same per-row
@@ -49003,14 +49329,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const bool plain_row =
             is_org_buffer && g_editor.OrgPlainCursorLineVisible() && is_active && row == pane.cursor.row;
         // The same reveal for this row's math previews -- inline spans
-        // here, whole-row fragments through Editor::OrgLatexRenderForRow
-        // (which applies it itself, across the fragment's whole source
-        // range). Not gated on is_org_buffer, unlike plain_row's
-        // stripping of colors and faces: the math preview runs in .tex
-        // buffers too (mep_latex_preview_ft, kBuiltinOrgLatex), where a
-        // "$...$" you cannot see the source of is just as uneditable.
-        const bool latex_plain_row =
-            g_editor.OrgPlainCursorLineVisible() && is_active && row == pane.cursor.row;
+        // through Editor::OrgLatexInlineRevealed, whole-row fragments
+        // through Editor::OrgLatexRenderForRow (each applies it across the
+        // fragment's whole source range, so a cursor on any row of a
+        // multi-line `\(..\)` shows all of its source). Not gated on
+        // is_org_buffer, unlike plain_row's stripping of colors and faces:
+        // the math preview runs in .tex buffers too (mep_latex_preview_ft,
+        // kBuiltinOrgLatex), where a "$...$" you cannot see the source of
+        // is just as uneditable.
+        const int latex_reveal_cursor = is_active ? pane.cursor.row : -1;
 
         // Closed fold starting here: render a one-line summary in its
         // place and skip straight past its hidden rows (Phase 5) -- a row
@@ -49723,11 +50050,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // the rest of the row closes over them, which is as close to
             // "the formula continues above" as a row-at-a-time renderer
             // gets.
-            if (show_org_latex && !latex_plain_row) {
+            if (show_org_latex) {
                 auto latex_inline_it = buf.org_latex_inline.find(row);
                 if (latex_inline_it != buf.org_latex_inline.end()) {
                     for (const Buffer::OrgLatexInlineSpan &span : latex_inline_it->second) {
                         if (span.col_end <= span.col_start) continue;
+                        if (g_editor.OrgLatexInlineRevealed(span, row, latex_reveal_cursor)) continue;
                         int draw_cols = 0;
                         if (!span.path.empty()) {
                             const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
@@ -49846,6 +50174,35 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             disp_line.append(raw_line, static_cast<size_t>(pos));
         }
         const std::string &draw_line = conceal_runs.empty() ? raw_line : disp_line;
+        // draw_line's byte offset for each column (ColumnToByteOffset,
+        // answered from a table), built the first time a decoration asks.
+        // The recolor pass converts both ends of every wrap piece of every
+        // decoration, and each ColumnToByteOffset rescans from the start of
+        // the line: on a 30 KB soft-wrapped paragraph with ~700 styled
+        // spans that was 222 ms a frame (plans/MEPML_PERFORMANCE_PLAN.md).
+        std::vector<int> draw_line_col_byte;
+        /**
+         * @brief ColumnToByteOffset(draw_line, col), from a per-row table.
+         * @param col The column.
+         * @return The byte offset of column `col` in draw_line, clamped to its length.
+         */
+        auto DrawLineByteAt = [&](int col) -> int {
+            if (col <= 0) return 0;
+            if (draw_line_col_byte.empty()) {
+                const char *text = draw_line.c_str();
+                const int len = static_cast<int>(draw_line.size());
+                draw_line_col_byte.reserve(static_cast<size_t>(len) + 1);
+                for (int i = 0; i < len;) {
+                    draw_line_col_byte.push_back(i);
+                    int cp_size = 0;
+                    gfx::GetCodepointNext(&text[i], &cp_size);
+                    i += std::max(1, cp_size);
+                }
+                draw_line_col_byte.push_back(len);
+            }
+            const size_t idx = std::min(static_cast<size_t>(col), draw_line_col_byte.size() - 1);
+            return std::min(draw_line_col_byte[idx], static_cast<int>(draw_line.size()));
+        };
         /**
          * @brief Reports whether a decoration's span is one of this row's collapsed runs.
          * @param d The decoration to look up.
@@ -50390,10 +50747,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                           // has_fg_color content isn't guaranteed ASCII-only (ditto the
                                           // hl_group branch's own byte-offset-as-column convention, which
                                           // ColumnToByteOffset happens to reproduce exactly for it too).
-                                          int byte_a = std::min(static_cast<int>(draw_line.size()),
-                                                                 static_cast<int>(ColumnToByteOffset(draw_line, pa)));
-                                          int byte_b = std::min(static_cast<int>(draw_line.size()),
-                                                                 static_cast<int>(ColumnToByteOffset(draw_line, pb)));
+                                          int byte_a = DrawLineByteAt(pa);
+                                          int byte_b = DrawLineByteAt(pb);
                                           std::string piece = draw_line.substr(static_cast<size_t>(byte_a), static_cast<size_t>(byte_b - byte_a));
                                           if (d.has_fg_color) {
                                               gfx::DrawTextEx(span_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, c);
@@ -50817,10 +51172,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // center the render on it. The rectangle then has to span at
         // least the original [col_start, col_end), since anything short
         // of col_end is raw markup that would otherwise show through.
-        if (show_org_latex && !latex_plain_row) {
+        if (show_org_latex) {
             auto inline_it = buf.org_latex_inline.find(row);
             if (inline_it != buf.org_latex_inline.end()) {
                 for (const Buffer::OrgLatexInlineSpan &span : inline_it->second) {
+                    if (g_editor.OrgLatexInlineRevealed(span, row, latex_reveal_cursor)) continue;
                     const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
                     if (!tex) continue;
                     // Drawn columns (DispCol): this span's own collapse,
@@ -51223,7 +51579,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // that texture from being drawn on this row, so the markup
             // under the caret is real, visible text again and does need
             // punching back through.
-            // Matches the row loop's own latex_plain_row exactly (the
+            // Matches the row loop's OrgLatexInlineRevealed exactly (the
             // math preview is not org-only), so the two never disagree
             // about whether this row's markup is concealed right now.
             const bool plain_cursor_row = g_editor.OrgPlainCursorLineVisible();
@@ -51985,6 +52341,110 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         else border = gfx::Fade(ResolveHlGroup("Border"), 0.9f);
         const float rr = std::min(1.0f, 16.0f / std::max(1.0f, std::min(cb.rect.width, cb.rect.height)));
         gfx::DrawRectangleRoundedLinesEx(cb.rect, rr, 5, cb.active ? 2.0f : 1.0f, border);
+    }
+
+    // Math preview popup: the reveal rule (OrgLatexRenderForRow,
+    // OrgLatexInlineRevealed) puts a fragment's raw TeX back while the
+    // cursor is inside it, so the render it would have drawn floats just
+    // above the fragment's first row instead -- source to type in, and
+    // what it typesets to, both in view. Below the last row when there is
+    // no room above. While it is edited the popup follows the typing
+    // (Buffer::org_latex_preview, rendered by kBuiltinOrgLatex's
+    // mep_org_latex_preview), keeping the last render that compiled.
+    // Drawn last (inside the pane's scissor) so it sits over the text.
+    if (is_active && show_org_latex && g_editor.OrgPlainCursorLineVisible() &&
+        !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row && pane.cursor.row < row) {
+        const int cr = pane.cursor.row;
+        std::string preview_path;
+        int first_row = -1, last_row = -1, anchor_col = 0;
+        // The fragment being edited: its own render (the scan defers it
+        // while the cursor is in it) comes from Buffer::org_latex_preview.
+        // Otherwise, the one it registered before the cursor arrived.
+        const Buffer::OrgLatexPreview &pv = buf.org_latex_preview;
+        if (!pv.path.empty() && cr >= pv.first_row && cr <= pv.last_row) {
+            preview_path = pv.path;
+            first_row = pv.first_row;
+            last_row = pv.last_row;
+            anchor_col = pv.col;
+        }
+        for (const auto &kv : buf.org_latex_rows) {
+            if (!preview_path.empty()) break;
+            if (cr >= kv.first && cr <= kv.second.end_row && !kv.second.path.empty()) {
+                preview_path = kv.second.path;
+                first_row = kv.first;
+                last_row = kv.second.end_row;
+                break;
+            }
+        }
+        if (preview_path.empty()) {
+            auto it = buf.org_latex_inline.find(cr);
+            if (it != buf.org_latex_inline.end()) {
+                // Several fragments can share the row: the one under the
+                // caret, else the nearest one.
+                const int ccol =
+                    ByteOffsetToColumn(buf.lines[static_cast<size_t>(cr)], pane.cursor.col);
+                const Buffer::OrgLatexInlineSpan *best = nullptr;
+                int best_dist = 0;
+                for (const Buffer::OrgLatexInlineSpan &span : it->second) {
+                    if (!g_editor.OrgLatexInlineRevealed(span, cr, cr)) continue;
+                    const int dist = ccol < span.col_start ? span.col_start - ccol
+                                     : ccol >= span.col_end ? ccol - span.col_end + 1
+                                                            : 0;
+                    if (!best || dist < best_dist) {
+                        best = &span;
+                        best_dist = dist;
+                    }
+                }
+                if (best) {
+                    first_row = best->first_row < 0 ? cr : best->first_row;
+                    last_row = best->last_row < 0 ? cr : best->last_row;
+                    // A fragment wrapping across lines carries its render
+                    // on the row it starts on; the rest are conceal-only.
+                    for (int r = first_row; r <= last_row && preview_path.empty(); r++) {
+                        auto rit = buf.org_latex_inline.find(r);
+                        if (rit == buf.org_latex_inline.end()) continue;
+                        for (const Buffer::OrgLatexInlineSpan &span : rit->second) {
+                            const int sf = span.first_row < 0 ? r : span.first_row;
+                            const int sl = span.last_row < 0 ? r : span.last_row;
+                            if (sf == first_row && sl == last_row && !span.path.empty()) {
+                                preview_path = span.path;
+                                if (r == first_row) anchor_col = span.col_start;  // already a display column
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        const gfx::Texture2D *tex = preview_path.empty() ? nullptr : GetOrLoadOrgLatexTexture(preview_path);
+        if (tex && tex->width > 0 && tex->height > 0) {
+            const float pad = 6.0f;
+            const float content_bottom = content_y + content_h;
+            const float max_w = std::max(40.0f, w - (text_x - x) - kMarginX) - pad * 2.0f;
+            const float max_h = std::max(static_cast<float>(line_height), content_h * 0.45f) - pad * 2.0f;
+            const float scale = std::min({1.0f, max_w / static_cast<float>(tex->width),
+                                          max_h / static_cast<float>(tex->height)});
+            const float box_w = static_cast<float>(tex->width) * scale + pad * 2.0f;
+            const float box_h = static_cast<float>(tex->height) * scale + pad * 2.0f;
+            // The fragment's own top and bottom edges on screen (its first
+            // row may have scrolled off the top; RowSlot counts from it).
+            const float top_y = first_row >= pane.scroll_row
+                                    ? content_y + static_cast<float>((RowSlot(first_row) - g_editor.RowTopPadSlots(buf, first_row)) * line_height)
+                                    : content_y;
+            const float bottom_y =
+                content_y + static_cast<float>((RowSlot(last_row + 1) - g_editor.RowTopPadSlots(buf, last_row + 1)) * line_height);
+            float box_y = top_y - box_h - 2.0f;
+            if (box_y < content_y) box_y = bottom_y + 2.0f;
+            if (box_y + box_h > content_bottom) box_y = std::max(content_y, top_y - box_h - 2.0f);
+            float box_x = text_x + static_cast<float>(anchor_col) * g_char_width - pad;
+            box_x = std::min(box_x, x + w - kMarginX - box_w);
+            box_x = std::max(box_x, x);
+            gfx::DrawRectangle(static_cast<int>(box_x), static_cast<int>(box_y), static_cast<int>(box_w),
+                               static_cast<int>(box_h), ResolveHlGroup("FloatBg"));
+            gfx::DrawRectangleLines(static_cast<int>(box_x), static_cast<int>(box_y), static_cast<int>(box_w),
+                                    static_cast<int>(box_h), ResolveHlGroup("FloatBorder"));
+            gfx::DrawTextureEx(*tex, gfx::Vector2{box_x + pad, box_y + pad}, 0.0f, scale, gfx::White);
+        }
     }
 
     gfx::EndScissorMode();

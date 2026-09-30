@@ -1274,8 +1274,28 @@ struct Buffer {
         int col_start = 0;
         int col_end = 0;  // exclusive
         std::string path;
+        // The whole fragment's source rows (0-indexed, inclusive): a
+        // fragment that wraps across line breaks has one span per row but
+        // is revealed as a unit, so a cursor on any of its rows puts every
+        // row's raw TeX back (Editor::OrgLatexInlineRevealed).
+        int first_row = -1;
+        int last_row = -1;
     };
     std::unordered_map<int, std::vector<OrgLatexInlineSpan>> org_latex_inline;
+    // The math preview popup's render (DrawPane, main.cpp) for the
+    // fragment the cursor is in. The scan defers that fragment's own
+    // render while it is being edited (mep.org_latex_scan), so the popup
+    // gets its own, set by mep.buf_set_latex_preview: rows move with the
+    // fragment at once, and `path` keeps the last render that compiled
+    // until a newer one does. Rows are 0-indexed and inclusive; `col` is
+    // the display column the popup lines up with.
+    struct OrgLatexPreview {
+        std::string path;
+        int first_row = -1;
+        int last_row = -1;
+        int col = 0;
+    };
+    OrgLatexPreview org_latex_preview;
 
     // Org links (Editor::OrgLinkScan): every `[[target]]`/`[[target][desc]]`
     // and every bare `http(s)://...` on a row, in column order. Two
@@ -7513,6 +7533,49 @@ public:
     // DrawPane's org card pass draws them: tinted card, language chip,
     // options, play button), per buffer id, rebuilt by MepmlScan.
     std::unordered_map<int, std::vector<OrgBlockCard>> mepml_block_cards_;
+    // MepmlParseCurrent's cache: one parse per buffer (and per with_imports
+    // flag) for as long as its text is the same. An edit used to parse the
+    // document five times over -- the scan, folds, code-block list for
+    // syntax, maths fragments and spell-check spans each on its own
+    // (plans/MEPML_PERFORMANCE_PLAN.md). Keyed on the text itself, compared
+    // line by line (a memcmp's cost next to a parse), not on an edit
+    // counter, so no mutation path can leave it stale. `reads` are the
+    // files an \import pulled in and their mtimes (-1: unreadable); any
+    // change re-parses.
+    struct MepmlParseCache {
+        bool valid = false;
+        std::string file;
+        std::vector<std::string> lines;
+        std::vector<std::pair<std::string, long long>> reads;
+        mepml::Document doc;
+        bool spans_valid = false;  // `spans` is mepml::Highlight(doc), computed on first ask
+        std::vector<mepml::Span> spans;
+        // Plain entry only: whether the text has an \import (or //? Import:).
+        // Without one, expanding imports changes nothing, and the plain
+        // parse answers for both flags -- one parse per edit, not two.
+        bool has_imports = false;
+        unsigned long generation = 0;  // new on every reparse (MepmlScan's patch check)
+    };
+    mutable std::unordered_map<int, MepmlParseCache> mepml_parse_cache_[2];
+    mutable unsigned long mepml_parse_generation_ = 0;
+    MepmlParseCache &MepmlCacheEntry(bool with_imports) const;
+    // What the last full MepmlScan of a buffer was made from, so a scan
+    // that differs only in the cursor's row can re-emit just the rows that
+    // depend on it (MepmlScan's patch path). Moving the cursor re-ran the
+    // whole scan -- every decoration in the document rebuilt, every image
+    // stat'ed, every HTML result laid out -- 35 ms a row at 16k lines
+    // (plans/MEPML_PERFORMANCE_PLAN.md).
+    struct MepmlScanState {
+        bool valid = false;
+        const void *doc = nullptr;
+        unsigned long generation = 0;
+        int ns = -1;
+        bool own_diagnostics = false, conceal = false, images = false;
+        int text_width = 0, pane_cols = 0, buffer_cols = 0;
+        int cur_row = -1;
+        size_t deco_count = 0;  // the namespace's size after the scan: anything else touching it forces a full one
+    };
+    std::unordered_map<int, MepmlScanState> mepml_scan_state_;
     // Aligns the table containing 0-based `row` on its pipes -- the same
     // rewrite :MepOrgTableAlign does, but for a row that isn't
     // necessarily the cursor's (and silently, with no "Not on a table
@@ -9446,11 +9509,18 @@ public:
      */
     void RecomputeMepmlFolds();
     /**
-     * @brief Parses the current buffer as mepml, resolving \import relative to its file.
+     * @brief Parses the current buffer as mepml, resolving \import relative to its file -- cached per buffer
+     * (mepml_parse_cache_), so every per-edit consumer shares one parse of the same text.
      * @param with_imports Expand \import directives (reads files).
-     * @return The parsed document.
+     * @return The parsed document; valid until the next call for this buffer and flag sees different text.
      */
-    mepml::Document MepmlParseCurrent(bool with_imports) const;
+    const mepml::Document &MepmlParseCurrent(bool with_imports) const;
+    /**
+     * @brief mepml::Highlight of MepmlParseCurrent(with_imports), cached with it.
+     * @param with_imports Which cached parse to highlight.
+     * @return The spans; valid as long as MepmlParseCurrent's result is.
+     */
+    const std::vector<mepml::Span> &MepmlSpansCurrent(bool with_imports) const;
     /**
      * @brief Parses the current buffer as an export sees it: imports expanded, user commands, \when and \raw resolved.
      * @param tags What the export is (mepml::ExportTags), e.g. {"pdf", "beamer", "tex", "latex", "slides"}.
@@ -9885,14 +9955,38 @@ public:
      * @param col_start The fragment's start column.
      * @param col_end The fragment's end column.
      * @param path The rendered PNG file path.
+     * @param first_row The fragment's first source row (-1: just `row`).
+     * @param last_row The fragment's last source row (-1: just `row`).
      */
-    void AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path);
+    void AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path, int first_row = -1,
+                               int last_row = -1);
+    /**
+     * @brief Whether an inline-math span shows its raw source rather than its render: the plain-cursor-line
+     * rule, applied across the fragment's whole row range so a multi-line fragment is revealed as a unit.
+     * @param span The span (on row `row`).
+     * @param row The row the span is on.
+     * @param cursor_row The active pane's cursor row, or -1 for an inactive pane.
+     * @return True if the span's source is revealed.
+     */
+    bool OrgLatexInlineRevealed(const Buffer::OrgLatexInlineSpan &span, int row, int cursor_row) const;
     // Clears every entry -- called by mep.org_latex_scan() before
     // rescanning (and when the toggle turns off).
     /**
      * @brief Clears every registered org LaTeX inline-math span in the current buffer.
      */
     void ClearOrgLatexInlineSpans();
+    /**
+     * @brief Sets the math preview popup's fragment (Buffer::org_latex_preview) in the current buffer.
+     * @param first_row The fragment's first row (0-indexed).
+     * @param last_row The fragment's last row (0-indexed, inclusive).
+     * @param col The display column the popup lines up with.
+     * @param path The rendered PNG, or nullptr to keep the one already set.
+     */
+    void SetOrgLatexPreview(int first_row, int last_row, int col, const std::string *path);
+    /**
+     * @brief Clears the current buffer's math preview popup fragment.
+     */
+    void ClearOrgLatexPreview();
 
     // --- Sidebar/panel widget (NVIM_PARITY_PLAN.md Part I Phase 7) ---
     /**

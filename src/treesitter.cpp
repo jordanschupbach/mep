@@ -3,8 +3,10 @@
 #include <tree_sitter/api.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <regex>
 #include <stdint.h>
 #include <unordered_map>
@@ -540,13 +542,23 @@ bool EvalPredicates(const TSQuery *query, const TSQueryMatch &match, const std::
             if ((op == "eq?") != eq) return false;
         } else if (op == "match?" || op == "not-match?") {
             if (operands.size() < 2) continue;
-            bool matched = false;
-            try {
-                std::regex re(operands[1], std::regex::ECMAScript);
-                matched = std::regex_search(operands[0], re);
-            } catch (const std::regex_error &) {
-                matched = false;
+            // Compiled once per pattern, not once per match: building the
+            // std::regex was ~15% of every highlight pass in a large mepml
+            // buffer (plans/MEPML_PERFORMANCE_PLAN.md). The patterns come
+            // from the queries, so the set is small and fixed. A pattern
+            // std::regex rejects is remembered as nullptr: never matches.
+            static std::unordered_map<std::string, std::unique_ptr<std::regex>> compiled;
+            auto it = compiled.find(operands[1]);
+            if (it == compiled.end()) {
+                std::unique_ptr<std::regex> re;
+                try {
+                    re = std::make_unique<std::regex>(operands[1], std::regex::ECMAScript);
+                } catch (const std::regex_error &) {
+                    re = nullptr;
+                }
+                it = compiled.emplace(operands[1], std::move(re)).first;
             }
+            const bool matched = it->second && std::regex_search(operands[0], *it->second);
             if ((op == "match?") != matched) return false;
         } else if (op == "any-of?" || op == "not-any-of?") {
             bool any = false;
@@ -633,6 +645,7 @@ struct ParseCache {
     std::string text;
     TSTree *tree = nullptr;
     const TSLanguage *language = nullptr;
+    double last_parse_ms = 0.0;  // the last parse that finished (sets the next one's budget)
     /**
      * @brief Deletes the cached TSTree, if one is held.
      */
@@ -766,7 +779,48 @@ TSTree *GetTree(const std::string &cache_key, const TSLanguage *language, const 
         cache.tree = nullptr;
     }
 
-    TSTree *tree = ts_parser_parse_string(parser, old_tree, text.c_str(), static_cast<uint32_t>(text.size()));
+    // A time budget for incremental reparses: max(100 ms, 3x the last
+    // parse that finished). A grammar with a quadratic corner (mepml's
+    // display maths had one: 1.7 s a keystroke on 4000 lines,
+    // plans/MEPML_PERFORMANCE_PLAN.md) would otherwise stall the UI on
+    // every edit for as long as the text stays in that shape. Over
+    // budget, the previous tree -- already shifted by ts_tree_edit to
+    // the new text's positions -- stands in until a reparse finishes, so
+    // the highlights stay roughly in place instead of the editor
+    // freezing. A first parse has no tree to fall back to, and a large
+    // file's first parse is legitimately slow, so it gets no budget.
+    struct Budget {
+        std::chrono::steady_clock::time_point deadline;
+    } budget{std::chrono::steady_clock::now() +
+             std::chrono::microseconds(static_cast<long long>(std::max(100.0, cache.last_parse_ms * 3.0) * 1000.0))};
+    TSInput input{};
+    input.payload = const_cast<std::string *>(&text);
+    input.read = [](void *payload, uint32_t byte_index, TSPoint, uint32_t *bytes_read) -> const char * {
+        const std::string &t = *static_cast<const std::string *>(payload);
+        if (byte_index >= t.size()) {
+            *bytes_read = 0;
+            return "";
+        }
+        *bytes_read = static_cast<uint32_t>(t.size() - byte_index);
+        return t.data() + byte_index;
+    };
+    input.encoding = TSInputEncodingUTF8;
+    TSParseOptions options{};
+    options.payload = &budget;
+    // Returning true cancels the parse.
+    options.progress_callback = [](TSParseState *state) -> bool {
+        return std::chrono::steady_clock::now() > static_cast<Budget *>(state->payload)->deadline;
+    };
+    const auto parse_start = std::chrono::steady_clock::now();
+    TSTree *tree = old_tree ? ts_parser_parse_with_options(parser, old_tree, input, options)
+                            : ts_parser_parse_string(parser, nullptr, text.c_str(), static_cast<uint32_t>(text.size()));
+    if (!tree && old_tree) {
+        cache.tree = old_tree;  // over budget: the edited old tree stands in
+        cache.text = text;
+        ts_parser_delete(parser);
+        return cache.tree;
+    }
+    cache.last_parse_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - parse_start).count();
     if (old_tree) ts_tree_delete(old_tree);  // superseded by `tree` (or by nothing, if parsing failed)
     cache.tree = tree;
     cache.text = text;
@@ -884,16 +938,18 @@ bool TreesitterHasGrammar(const std::string &filetype) {
     return false;
 }
 
-std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, const std::string &text) {
+std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, const std::string &text,
+                                                 const std::string &cache_key) {
     std::vector<TSHighlightSpan> out;
     std::vector<RawSpan> raw;
+    const std::string &key = cache_key.empty() ? filetype : cache_key;
 
     if (auto it = LanguageTable().find(filetype); it != LanguageTable().end()) {
         const LangEntry &entry = it->second;
         if (filetype == "md" || filetype == "markdown") {
-            HighlightMarkdown(filetype, text, raw);
+            HighlightMarkdown(key, text, raw);
         } else {
-            ParseAndCollect(filetype, entry.language(), entry.query_source, text, raw);
+            ParseAndCollect(key, entry.language(), entry.query_source, text, raw);
         }
     } else {
 #if !defined(__EMSCRIPTEN__)
@@ -901,7 +957,7 @@ std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, co
         if (dit == DynamicLanguageTable().end()) return out;
         const TSLanguage *language = LoadDynamicLanguage(dit->second.canonical_name);
         if (!language) return out;
-        ParseAndCollect(filetype, language, dit->second.query_source, text, raw);
+        ParseAndCollect(key, language, dit->second.query_source, text, raw);
 #else
         return out;
 #endif

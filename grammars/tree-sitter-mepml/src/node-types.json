@@ -1035,6 +1035,10 @@
           "named": true
         },
         {
+          "type": "math_trailing",
+          "named": true
+        },
+        {
           "type": "result_end",
           "named": true
         }
@@ -3762,6 +3766,10 @@
   },
   {
     "type": "math_open",
+    "named": true
+  },
+  {
+    "type": "math_trailing",
     "named": true
   },
   {

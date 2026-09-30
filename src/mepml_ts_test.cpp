@@ -9,6 +9,7 @@
 // CHECK(), never assert(): the Release build strips assert() entirely.
 #include <tree_sitter/api.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -218,6 +219,35 @@ int main() {
                    {"> Deck", "", "\\slide(", "> Title", "- one", "- two", ") // end", "", "\\slide{", "Text that", "runs on",
                     "}", "", "@slide{", "```{r}", "x <- 1", "```", "  )", "  }", "after", ")"},
                    "slides");
+
+    // --- A display-maths closer with text after it still closes the block
+    // (mepml_doc.cpp warns), and costs no more than one that doesn't: the
+    // grammar used to fail the rule there and have error recovery rescan
+    // to the next `$$` over and over -- quadratic in the rest of the
+    // document (plans/MEPML_PERFORMANCE_PLAN.md). Timed as a growth
+    // ratio, so any machine and the Sanitize build give the same answer:
+    // linear is ~4x for 4x the text, the old behaviour ~16x.
+    CheckAgreement(parser, {"$$", "  x^2", "$$.", "", "After it.", "", "\\[ a \\] and more"},
+                   "display maths closer with trailing text");
+    {
+        auto doc_ms = [&](int sections) {
+            std::string text = "> H\n\n$$\n  x^2\n$$ *unclosed \\fn(open $x^2\n\n";
+            for (int i = 0; i < sections; ++i)
+                text += "Prose with *bold* and $a$ here.\n\n$$\n  \\int_0^1 x\\,dx\n$$\n\\alttext(an integral)\n\n";
+            double best = 1e9;
+            for (int rep = 0; rep < 3; ++rep) {
+                const auto t0 = std::chrono::steady_clock::now();
+                TSTree *tree = ts_parser_parse_string(parser, nullptr, text.c_str(), static_cast<uint32_t>(text.size()));
+                const auto t1 = std::chrono::steady_clock::now();
+                ts_tree_delete(tree);
+                best = std::min(best, std::chrono::duration<double, std::milli>(t1 - t0).count());
+            }
+            return best;
+        };
+        const double small = doc_ms(250), large = doc_ms(1000);
+        std::printf("trailing-closer growth: %.2f ms -> %.2f ms (%.1fx for 4x the text)\n", small, large, large / small);
+        CHECK(large < small * 9.0);
+    }
 
     // --- User commands, \when and \raw: blocks of their own and inline.
     CheckAgreement(parser,

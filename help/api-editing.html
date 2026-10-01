@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (171)</h1>
+<h1>The bindings (180)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -72,6 +72,8 @@ that it does nothing.</p>
 <tr><td><code>mep.cad_zoom</code></td><td>--</td></tr>
 <tr><td><code>mep.clipboard_get</code></td><td>returns the system clipboard's text</td></tr>
 <tr><td><code>mep.clipboard_set</code></td><td>copies text to the system clipboard</td></tr>
+<tr><td><code>mep.clock</code></td><td>monotonic seconds, read at the call (unlike mep.now(), which is fixed per frame)</td></tr>
+<tr><td><code>mep.cpu_count</code></td><td>the number of hardware threads, at least 1</td></tr>
 <tr><td><code>mep.current_buffer</code></td><td>returns the active pane's buffer id</td></tr>
 <tr><td><code>mep.current_pane_id</code></td><td>returns the active pane's id</td></tr>
 <tr><td><code>mep.current_tab_id</code></td><td>returns the active tab's stable id</td></tr>
@@ -104,11 +106,18 @@ that it does nothing.</p>
 <tr><td><code>mep.mepml_import</code></td><td>converts a document to mepml and writes it</td></tr>
 <tr><td><code>mep.mepml_link_at</code></td><td>the target of the mepml link at a 1-based position</td></tr>
 <tr><td><code>mep.mepml_outline</code></td><td>lists the current mepml buffer's headings</td></tr>
+<tr><td><code>mep.mepml_parse_ready</code></td><td>whether the current mepml buffer's parse is ready</td></tr>
+<tr><td><code>mep.mepml_present</code></td><td>starts presenting the current mepml document's slides</td></tr>
+<tr><td><code>mep.mepml_present_caret</code></td><td>a cursor in the presented slide, or none</td></tr>
+<tr><td><code>mep.mepml_present_goto</code></td><td>shows page n of the running presentation</td></tr>
+<tr><td><code>mep.mepml_present_info</code></td><td>the running presentation's state, or nil</td></tr>
+<tr><td><code>mep.mepml_present_stop</code></td><td>ends the running mepml presentation</td></tr>
 <tr><td><code>mep.mepml_scan</code></td><td>re-parses the current mepml buffer and emits its decorations into `ns`</td></tr>
 <tr><td><code>mep.mepml_splice_results</code></td><td>--</td></tr>
 <tr><td><code>mep.mepml_terminal_focus</code></td><td>sends the keyboard to the terminal of the block under the cursor</td></tr>
 <tr><td><code>mep.mepml_terminal_start</code></td><td>runs a block's program in a terminal inside its results</td></tr>
 <tr><td><code>mep.mepml_terminal_stop</code></td><td>stops the mepml block running under the cursor</td></tr>
+<tr><td><code>mep.mepml_ts_code_blocks</code></td><td>the code-block bodies of a mepml text, from its tree-sitter tree</td></tr>
 <tr><td><code>mep.mod1_name</code></td><td>returns the display name of whichever modifier is currently mod1</td></tr>
 <tr><td><code>mep.pres_add_shape</code></td><td>selected</td></tr>
 <tr><td><code>mep.pres_add_slide</code></td><td>--</td></tr>

@@ -33,6 +33,8 @@ language.
 | =<leader>kh=          | fold or unfold the document header (the =//?= lines)      |
 | =<leader>kl=          | follow the link under the cursor (clicking works too)     |
 | =<leader>km=          | toggle markup concealment                                 |
+| =<leader>kp=          | present the slides, filling the editor                    |
+| =<leader>kP=          | present the slides full screen                            |
 | =:MepmlExecute=       | run the code block under the cursor                       |
 | =:MepmlExecuteAll=    | run every code block                                      |
 | =:MepmlStop=          | stop the running block under the cursor                   |
@@ -46,6 +48,7 @@ language.
 | =:MepmlLinkFollow=    | follow the link under the cursor                          |
 | =:MepmlRender=        | re-render the buffer now                                  |
 | =:MepmlFoldsRecompute= | rebuild folds (=za=, =zc= and =zo= do this themselves)  |
+| =:MepmlPresent= [mode] | present the slides: =fill= (the default), =full=, =stop= |
 
 Folding (=za=, =zM=, =zR=) folds heading sections, code blocks,
 citations, display maths, tables, lists, comment runs and the rendered
@@ -237,6 +240,54 @@ What is not on a slide is left out of these exports, and the language
 server flags it. Header lines and comments are not flagged. The =pptx= and =odp= decks
 can also be made from an ordinary document that has slides.
 =//? Type: document= is the default, and any other value is flagged.
+
+** Presenting in the editor
+
+=<leader>kp= (=:MepmlPresent=) shows the deck one slide at a time in the
+editor itself, starting at the slide the cursor is on: the pane takes the
+whole editor area, the slide's text is set as prose, and the cursor is
+hidden until you ask for it (=n=, normal mode). =<leader>kP= (=:MepmlPresent full=) takes the window full screen
+too, hides everything else and sets the text large enough to read across
+a room; a slide too full for the screen gets smaller text so that all of
+it shows.
+
+A slide reads the way an export does. A code block shows its results, not
+its code, unless the header or the block says otherwise (=exports=both=,
+=exports=code=, =echo=true= ...); a block that has not been run yet shows
+its code. Code shows without its options, figures without their
+=// \image(...)= lines, and comments, result markers and =\define=s are
+left out. Your commands are expanded for the =present= export name, so
+=\when(present, ...)= can say something for this view only, and
+=\otherwise(...)= applies wherever nothing else does. Citations read as
+their labels.
+
+| Key                                   | Does                                          |
+|---------------------------------------+-----------------------------------------------|
+| =l=, =→=, =↓=, space, =PageDown=, =Enter= | the next slide                            |
+| =h=, =←=, =↑=, =Backspace=, =PageUp=      | the previous slide                        |
+| =C-n= / =C-p=                         | the next / previous slide, in normal mode too (every slide starts in presentation mode) |
+| =g=, =Home= / =G=, =End=              | the first / last slide                        |
+| =n= / =P=                             | normal mode: a cursor on the slide, at its first character, and vim's keys; =P= goes back to presentation mode |
+| =C-c C-c=                             | run the code block under the cursor; with no cursor, every one on the slide (a web page or app it shows too, even with its code hidden; =C-c C-c= again stops one that runs) |
+| =f=                                   | switch between filling the editor and full screen |
+| =+=, =-=, =0=                          | larger, smaller, back to the starting size    |
+| =r=                                   | rebuild the slides from the document          |
+| =:=                                   | a command line                                |
+| =q=, =Esc=                            | stop, back in the document at the slide shown |
+
+=f=, =+=, =-=, =0=, =r= and =q= do the same in normal mode (so there
+they are not vim's), and every slide you turn to starts in presentation
+mode again.
+
+A code block runs as the document's own block -- with the options the
+slide leaves out -- and its results go into the document, so the slide
+shows them as soon as they are in. Only a block whose code the slide
+shows can be run from it.
+
+The slides follow the document: an edit made elsewhere, or a block that
+finishes running, shows on the slide within half a second. The slides
+themselves are not for editing (an edit in normal mode is undone, and =:w=
+refuses them); edit the document instead.
 
 In the PowerPoint and Impress decks, a slide's text, lists, code and
 results, tables and pictures are real text boxes, tables and pictures you
@@ -562,6 +613,51 @@ language org can run works here (=bash=, =python=, =r=, =c=, =cpp=,
 =stdin=. =mep-lua= runs inside mep itself and returns its values. Blocks
 run in the document's own directory.
 
+** Web pages and apps
+
+=results=web= shows what a block makes as a live web page, in a browser
+window inside the block's results -- a d3 graphic you can hover, a Shiny
+app you can drive. An =html= block is the page itself:
+
+#+begin_example
+```{html, results=web, rows=12, file="figs/scatter.png"}
+<script src="js/d3.v7.min.js"></script>
+<svg width="600" height="300"></svg>
+<script> d3.select("svg").append("circle").attr("cx", 50).attr("cy", 50).attr("r", 20) </script>
+```
+#+end_example
+
+Any other block is a program that serves a page, opened at the first
+=http://= address it prints -- a Shiny app prints =Listening on
+http://127.0.0.1:...= when it is ready:
+
+#+begin_example
+```{r, results=web, rows=16, file="figs/app.png"}
+library(shiny)
+ui <- fluidPage(sliderInput("n", "Points", 10, 500, 100), plotOutput("p"))
+server <- function(input, output) output$p <- renderPlot(plot(rnorm(input$n)))
+runApp(shinyApp(ui, server), launch.browser = FALSE)
+```
+#+end_example
+
+=C-c C-c= starts it, and =C-c C-k= stops it -- for an app, its server
+too. The mouse reaches the page directly (hovering, clicking and dragging
+just work), while the keyboard stays with mep even with the mouse over
+the page; =Enter= on the block (or the page taking it, for a text field)
+hands it the keyboard, and =Ctrl-\= or a click outside takes it back. Stopping keeps a picture of the page as the block's results (at
+=file==, else beside the document), and that picture is what the slides,
+PDF and Office exports show until it runs again; an HTML export embeds an
+=html= block's page itself, live. =rows== sets its height. The page is
+written beside the document, so the paths it names (a script, a picture)
+are the document's. The browser is the first of =chromium=,
+=chromium-browser=, =google-chrome= or =brave-browser= on =PATH= (or
+=$MEP_WEB_BROWSER=), and an app's language needs whatever it uses (Shiny
+for R). In a presentation (=<leader>kp=), a slide's web pages and apps start by
+themselves when the slide is shown and run live on it, code hidden or
+not; they keep running while other slides show, and stop (each leaving
+its picture as its results) when the presentation ends. =C-c C-c= on a
+slide stops or restarts them.
+
 * Images and tables
 
 #+begin_example
@@ -723,6 +819,7 @@ export answers to several names, most specific first:
 | PowerPoint                | =pptx=, =powerpoint=, =office=, =slides=     |
 | Impress                   | =odp=, =impress=, =office=, =slides=         |
 | Markdown, Org, RTF, text  | =md= (=markdown=), =org=, =rtf=, =txt= (=text=) |
+| Presenting in the editor  | =present=, =slides=                          |
 
 The language server flags a name no export has, but it still works: it
 simply never matches.

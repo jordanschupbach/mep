@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (82)
+* The bindings (83)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -41,6 +41,7 @@ that it does nothing.
 | =mep.notify_sidebar_id= | returns the Notifications SidebarInstance id, creating it if needed |
 | =mep.ns_clear= | removes every decoration previously added under a namespace id |
 | =mep.ns_create= | looks up (or creates) a stable decoration namespace id for a given name |
+| =mep.ns_decorations= | the current buffer's decorations in `ns`, one descriptive string each |
 | =mep.pane_buffers= | lists the buffer ids shown by panes in the active tab's split layout |
 | =mep.pane_close_buffer= | closes the focused pane's current buffer tab |
 | =mep.pane_focus= | focuses a pane of the active tab by id |

@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <set>
 #include <utility>
 
@@ -45,6 +47,27 @@ int Indent(const std::string &s) {
 std::string Lower(std::string s) {
     for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
+}
+
+// A code block's `name=` option as written ("" when it has none).
+std::string OptionText(const Block &b, const char *name) {
+    std::string v;
+    for (const Option &o : b.options)
+        if (Lower(o.name) == name) v = o.value.s;
+    return v;
+}
+// ```{html, results=web}: the block is a web page, shown live (in the
+// editor, a browser window in its results; in an HTML export, an iframe).
+bool IsWebPage(const Block &b) {
+    const std::string r = Lower(Trim(OptionText(b, "results")));
+    return b.kind == BlockKind::Code && (r == "web" || r == "app") && Lower(Trim(b.lang)) == "html";
+}
+// Its height in an export: height= pixels, else rows= text rows (20).
+int WebPageHeight(const Block &b) {
+    const int px = std::atoi(OptionText(b, "height").c_str());
+    if (px > 0) return px;
+    const int rows = std::atoi(OptionText(b, "rows").c_str());
+    return (rows > 0 ? rows : 20) * 24;
 }
 
 // Reads a `{...}` or `(...)` group starting at s[i] == '{' or '(',
@@ -2226,7 +2249,8 @@ Document ParseWithImports(const std::string &file, const std::vector<std::string
 const std::vector<std::string> &KnownFormatTags() {
     static const std::vector<std::string> k = {"html",  "slides", "tex",  "latex", "pdf",  "beamer",     "md",
                                                "markdown", "org",  "txt",  "text",  "rtf",  "docx",       "word",
-                                               "odt",   "office", "pptx", "powerpoint", "odp", "impress"};
+                                               "odt",   "office", "pptx", "powerpoint", "odp", "impress",
+                                               "present"};
     return k;
 }
 
@@ -2628,10 +2652,10 @@ void ResultsReplaceRange(const Block &b, int *first, int *last) {
 // ---------------------------------------------------------------------------
 // What the exports show of a code block
 
-void CodeExports(const Document &doc, const Block &b, bool *code, bool *results) {
+void CodeExports(const Document &doc, const Block &b, bool *code, bool *results, const std::string &fallback) {
     // org-babel's :exports, from the document's header (`//? Exports:` or an
     // `exports` option), then the block's own `exports=` or knitr's `echo=`.
-    std::string mode;
+    std::string mode = fallback;
     for (const auto &kv : doc.meta)
         if (Lower(Trim(kv.first)) == "exports") mode = Lower(Trim(kv.second));
     if (const Option *o = doc.FindOption("exports")) mode = Lower(Trim(o->value.s));
@@ -3500,6 +3524,24 @@ struct HtmlWriter {
             case BlockKind::Code: {
                 bool show_code = true, show_results = true;
                 CodeExports(doc, b, &show_code, &show_results);
+                // (Only for HTML itself: the Beamer deck is made from this
+                // markup too, and takes the run's picture instead.)
+                const bool html_out = doc.export_tags.empty() ||
+                                      std::find(doc.export_tags.begin(), doc.export_tags.end(), "html") != doc.export_tags.end();
+                if (show_results && html_out && IsWebPage(b)) {
+                    // A web page (```{html, results=web}): the page itself,
+                    // live, rather than the picture a run left behind.
+                    if (show_code)
+                        out += "<figure class=\"code\"><figcaption class=\"lang\">html</figcaption><pre><code class=\"language-html\">" +
+                               Esc(b.code) + "</code></pre></figure>\n";
+                    out += "<figure class=\"web\"><iframe class=\"web-page\" srcdoc=\"" + Esc(b.code) +
+                           "\" style=\"width:100%;height:" + std::to_string(WebPageHeight(b)) +
+                           "px;border:0;background:#fff\"></iframe>";
+                    if (!b.caption_inlines.empty())
+                        out += "<figcaption>" + Esc(label) + ": " + Caption(b) + "</figcaption>";
+                    out += "</figure>\n";
+                    break;
+                }
                 std::string fig;
                 if (show_code) {
                     if (!b.lang.empty()) fig += "<figcaption class=\"lang\">" + Esc(b.lang) + "</figcaption>";
@@ -4311,4 +4353,491 @@ std::vector<RenderedLine> RenderAltText(const std::string &alt, int width, bool 
 
 namespace mepml {
 std::string HeadingSlug(const std::string &title) { return Slug(title); }
+}  // namespace mepml
+
+// ---------------------------------------------------------------------------
+// The presentation view's pages.
+
+namespace mepml {
+namespace {
+
+// Every citation in `ins` (recursively), as the source range it covers.
+void CollectCites(const std::vector<Inline> &ins, std::vector<const Inline *> *out) {
+    for (const Inline &x : ins) {
+        if (x.kind == InlineKind::Cite || x.kind == InlineKind::CiteP) out->push_back(&x);
+        else CollectCites(x.children, out);
+    }
+}
+
+// About how many columns TeX source takes typeset, erring wide (a line
+// that ends early reads better than one broken mid-word): a command is one
+// symbol (or nothing, for the ones that only style or space), a binary
+// operator or relation takes the room either side of it too, braces and
+// sub/superscript marks take none, and the fragment is set a little apart
+// from the text round it.
+int MathColumns(const std::string &tex) {
+    static const std::set<std::string> kSilent = {
+        "hat", "bar", "tilde", "vec", "dot", "ddot", "overline", "underline", "widehat", "widetilde", "mathrm",
+        "mathbf", "mathit", "mathsf", "mathtt", "mathcal", "mathbb", "boldsymbol", "text", "textrm", "textbf",
+        "textit", "operatorname", "left", "right", "big", "Big", "bigg", "Bigg", ",", ";", "!", "displaystyle",
+        "limits", "nolimits", "frac", "dfrac", "tfrac", "sqrt", "overset", "underset", "underbrace", "overbrace"};
+    static const std::set<std::string> kRelations = {"le", "leq", "ge", "geq", "ne", "neq", "approx", "sim", "equiv",
+                                                     "pm", "mp", "times", "cdot", "in", "notin", "subset", "to",
+                                                     "mid", "propto", "sim", "simeq", "cong"};
+    double w = 0;
+    for (size_t i = 0; i < tex.size();) {
+        const char c = tex[i];
+        if (c == '\\') {
+            size_t j = i + 1;
+            while (j < tex.size() && IsAlpha(tex[j])) ++j;
+            if (j == i + 1 && j < tex.size()) ++j;  // \, \{ ...
+            const std::string name = tex.substr(i + 1, j - i - 1);
+            if (name == "quad") w += 2;
+            else if (name == "qquad") w += 4;
+            else if (kRelations.count(name)) w += 3;
+            else if (!kSilent.count(name)) w += 1;
+            i = j;
+            continue;
+        }
+        if (c == '=' || c == '+' || c == '-' || c == '<' || c == '>') w += 3;
+        else if (c != '{' && c != '}' && c != '^' && c != '_' && c != ' ' && c != '$' &&
+                 (static_cast<unsigned char>(c) & 0xC0) != 0x80)
+            w += 1;
+        ++i;
+    }
+    return static_cast<int>(std::ceil(w * 1.2)) + 2;
+}
+
+// Whether any of `ins` is maths whose source spans lines of b.text.
+bool MultiLineMath(const Block &b, const std::vector<Inline> &ins) {
+    for (const Inline &x : ins) {
+        if (x.kind == InlineKind::Math && b.text.find('\n', static_cast<size_t>(std::max(0, x.start))) <
+                                                static_cast<size_t>(std::max(0, x.end)))
+            return true;
+        if (MultiLineMath(b, x.children)) return true;
+    }
+    return false;
+}
+
+// Each byte's width in `s` as the editor draws it concealed, and which
+// bytes a line may not break inside of.
+void ConcealedWidths(const std::string &s, std::vector<int> *width, std::vector<bool> *keep) {
+    width->assign(s.size(), 0);
+    keep->assign(s.size(), false);
+    for (size_t i = 0; i < s.size(); ++i)
+        if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80) (*width)[i] = 1;
+    std::function<void(const std::vector<Inline> &)> walk = [&](const std::vector<Inline> &ins) {
+        for (const Inline &x : ins) {
+            const int a = std::max(0, x.start), z = std::min(static_cast<int>(s.size()), x.end);
+            if (z <= a) continue;
+            auto zero = [&](int from, int to) {
+                for (int k = std::max(from, 0); k < std::min(to, static_cast<int>(s.size())); ++k) (*width)[static_cast<size_t>(k)] = 0;
+            };
+            auto whole = [&](int w) {
+                zero(a, z);
+                (*width)[static_cast<size_t>(a)] = w;
+                for (int k = a; k < z; ++k) (*keep)[static_cast<size_t>(k)] = true;
+            };
+            switch (x.kind) {
+                case InlineKind::Math: whole(MathColumns(x.text)); break;
+                case InlineKind::Footnote: whole(static_cast<int>(std::to_string(std::max(1, x.number)).size())); break;
+                case InlineKind::Comment: zero(a, z); break;
+                case InlineKind::Verbatim:
+                case InlineKind::Link:
+                case InlineKind::Cite:
+                case InlineKind::CiteP:
+                    for (int k = a; k < z; ++k) (*keep)[static_cast<size_t>(k)] = true;
+                    [[fallthrough]];
+                default:
+                    if (x.kind != InlineKind::Text) {
+                        zero(a, x.inner_start);
+                        zero(x.inner_end, z);
+                    } else if (x.inner_start > a) {
+                        zero(a, x.inner_start);  // an escape's backslash
+                    }
+                    walk(x.children);
+                    break;
+            }
+        }
+    };
+    walk(ParseInlines(s));
+}
+
+// Text set as plain prose (a header value, a citation label): as it is
+// when it reads as plain text, else with every markup character escaped
+// (an escape's backslash is concealed, but leaves a gap where it was).
+std::string PlainProse(const std::string &s) {
+    bool plain = true;
+    for (const Inline &x : ParseInlines(s)) plain = plain && x.kind == InlineKind::Text && x.inner_start == x.start;
+    if (plain && (s.empty() || (s[0] != '>' && s[0] != '-' && s[0] != '/'))) return s;
+    std::string out;
+    for (char c : s) {
+        if (std::strchr("*~_^,<>|=-+!`[\\$/", c) != nullptr) out += '\\';
+        out += c;
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<std::string> FillProse(const std::string &text, int cols, const std::string &first, const std::string &rest) {
+    std::vector<int> width;
+    std::vector<bool> keep;
+    ConcealedWidths(text, &width, &keep);
+    std::vector<std::string> out;
+    const int n = static_cast<int>(text.size());
+    int at = 0;
+    while (at < n && text[static_cast<size_t>(at)] == ' ') ++at;
+    while (at < n) {
+        const std::string &lead = out.empty() ? first : rest;
+        const int room = std::max(8, cols - static_cast<int>(lead.size()));
+        // The last blank this line can end at, else the first after it (a
+        // word longer than the line runs over).
+        int used = 0, fits = -1, k = at;
+        for (; k < n; ++k) {
+            if (text[static_cast<size_t>(k)] == ' ' && !keep[static_cast<size_t>(k)] && k > at) {
+                if (used > room) break;
+                fits = k;
+            }
+            used += width[static_cast<size_t>(k)];
+        }
+        const int cut = k >= n && used <= room ? n : fits >= 0 ? fits : k;
+        int end = cut;
+        while (end > at && text[static_cast<size_t>(end - 1)] == ' ') --end;
+        out.push_back(lead + text.substr(static_cast<size_t>(at), static_cast<size_t>(end - at)));
+        at = cut;
+        while (at < n && text[static_cast<size_t>(at)] == ' ') ++at;
+    }
+    if (out.empty()) out.push_back(first);
+    return out;
+}
+
+std::vector<PresentationPage> PresentationPages(const std::string &file, const std::vector<std::string> &lines,
+                                                const ReadFileFn &read, int wrap_cols) {
+    static const std::vector<std::string> kTags = {"present", "slides"};
+    // Where each slide is in the buffer as written; the pages come from the
+    // document with its commands expanded, whose lines differ.
+    const Document as_written = Parse(lines);
+    const std::vector<Slide> written = Slides(as_written, static_cast<int>(lines.size()));
+    const std::map<std::string, UserCommand> commands = ParseWithImports(file, lines, read).commands;
+    const ReadFileFn expanded_read = [&](const std::string &path, std::vector<std::string> *out) {
+        if (!read(path, out)) return false;
+        *out = ExpandCommands(*out, commands, kTags);
+        return true;
+    };
+    const std::vector<std::string> ex = ExpandCommands(lines, commands, kTags);
+    const Document doc = ParseWithImports(file, ex, expanded_read);
+    const int n = static_cast<int>(ex.size());
+    const std::vector<Slide> slides = Slides(doc, n);
+    const std::vector<bool> export_hidden = ExportHidden(doc);
+
+    std::vector<PresentationPage> pages;
+    const std::string subtitle = MetaValue(doc, "subtitle"), author = MetaValue(doc, "author"),
+                      date = MetaValue(doc, "date");
+    if (IsPresentation(doc) && (!doc.title.empty() || !subtitle.empty() || !author.empty())) {
+        PresentationPage p;
+        p.title = doc.title;
+        if (!doc.title.empty()) p.lines.push_back("> " + PlainProse(doc.title));
+        if (!subtitle.empty()) {
+            if (!p.lines.empty()) p.lines.push_back("");
+            p.lines.push_back(">" + PlainProse(subtitle) + "<");
+        }
+        if (!author.empty() || !date.empty()) {
+            if (!p.lines.empty()) p.lines.push_back("");
+            if (!author.empty()) p.lines.push_back(PlainProse(author) + (date.empty() ? "" : "  "));
+            if (!date.empty()) p.lines.push_back("~" + PlainProse(date) + "~");
+        }
+        pages.push_back(std::move(p));
+    }
+
+    for (size_t si = 0; si < slides.size(); ++si) {
+        const Slide &sl = slides[si];
+        PresentationPage page;
+        page.number = sl.number;
+        page.title = sl.title;
+        if (si < written.size()) {
+            page.source_line = written[si].line_start;
+            page.source_end = written[si].line_end;
+        }
+        // What becomes of each line of the slide: kept (with its citations
+        // rendered), dropped, or replaced by lines of its own.
+        const int from = sl.line_start + 1, to = sl.closed ? sl.line_end - 1 : sl.line_end;
+        const int count = std::max(0, to - from + 1);
+        std::vector<bool> drop(static_cast<size_t>(count), false);
+        std::map<int, std::vector<std::string>> insert;  // before line k (k in [from, to])
+        // Which inserted lines are a code block's opening fence, and the
+        // fence it is in the document as written (its code blocks are the
+        // expanded slide's, in the same order).
+        std::map<int, std::map<size_t, int>> insert_fence;
+        // Each code block's emitted lines (keyed like `insert`) and, while
+        // its program runs, which of them is its live output's fence.
+        std::map<int, PresentationPage::Shown> insert_block;
+        std::map<int, size_t> insert_live;
+        std::vector<int> source_fences;
+        if (si < written.size())
+            for (size_t i = written[si].first_block; i < written[si].last_block; ++i) {
+                const Block &w = as_written.blocks[i];
+                if (w.kind == BlockKind::Code && w.origin.empty()) source_fences.push_back(w.code_line_start - 1);
+            }
+        size_t code_seen = 0;
+        std::map<int, std::vector<std::pair<std::pair<int, int>, std::string>>> cites;  // line -> [(col range), label]
+        auto drop_lines = [&](int a, int b) {
+            for (int k = std::max(a, from); k <= std::min(b, to); ++k) drop[static_cast<size_t>(k - from)] = true;
+        };
+        auto note_cites = [&](const Block &b, const std::vector<Inline> &ins) {
+            std::vector<const Inline *> found;
+            CollectCites(ins, &found);
+            for (const Inline *c : found) {
+                const Block::Pos a = b.OffsetToPos(c->start), z = b.OffsetToPos(c->end);
+                if (a.line != z.line) continue;
+                cites[a.line].push_back({{a.col, z.col}, CiteLabel(doc, c->text, c->kind == InlineKind::CiteP)});
+            }
+        };
+        // [from, to) of b.text as one line: its citations rendered, its
+        // comments gone and its line breaks (and indentation) single blanks.
+        auto prose = [&](const Block &b, int from_off, int to_off, const std::vector<Inline> &ins) {
+            std::vector<std::pair<std::pair<int, int>, std::string>> edits;
+            std::vector<const Inline *> found;
+            CollectCites(ins, &found);
+            for (const Inline *c : found)
+                edits.push_back({{c->start, c->end}, PlainProse(CiteLabel(doc, c->text, c->kind == InlineKind::CiteP))});
+            std::function<void(const std::vector<Inline> &)> comments = [&](const std::vector<Inline> &xs) {
+                for (const Inline &x : xs) {
+                    if (x.kind == InlineKind::Comment) edits.push_back({{x.start, x.end}, ""});
+                    else comments(x.children);
+                }
+            };
+            comments(ins);
+            std::sort(edits.begin(), edits.end(), [](const auto &x, const auto &y) { return x.first.first > y.first.first; });
+            std::string t = Sub(b.text, from_off, to_off);
+            for (const auto &e : edits) {
+                const int a = e.first.first - from_off, z = e.first.second - from_off;
+                if (a < 0 || z > static_cast<int>(t.size()) || a > z) continue;
+                t.replace(static_cast<size_t>(a), static_cast<size_t>(z - a), e.second);
+            }
+            std::string one;
+            bool blank = false;
+            for (char ch : t) {
+                if (ch == '\n' || ch == '\r' || ch == '\t' || ch == ' ') {
+                    blank = true;
+                    continue;
+                }
+                if (blank && !one.empty()) one += ' ';
+                blank = false;
+                one += ch;
+            }
+            return one;
+        };
+        for (size_t i = sl.first_block; i < sl.last_block; ++i) {
+            const Block &b = doc.blocks[i];
+            if (!b.origin.empty() || b.kind == BlockKind::SlideBegin || b.kind == BlockKind::SlideEnd) continue;
+            if (export_hidden[i]) {
+                drop_lines(b.line_start, b.line_end);
+                continue;
+            }
+            switch (b.kind) {
+                case BlockKind::Comment:
+                case BlockKind::Meta:
+                case BlockKind::Define:
+                case BlockKind::Raw:
+                case BlockKind::Citation: drop_lines(b.line_start, b.line_end); break;
+                case BlockKind::TableOfContents: {
+                    drop_lines(b.line_start, b.line_end);
+                    std::vector<std::string> &out = insert[b.line_start];
+                    for (const Slide &t : slides)
+                        if (!t.title.empty()) out.push_back("- " + PlainProse(t.title));
+                    break;
+                }
+                case BlockKind::Bibliography: {
+                    drop_lines(b.line_start, b.line_end);
+                    std::vector<std::string> &out = insert[b.line_start];
+                    int k = 0;
+                    for (const std::string &key : doc.cite_order) {
+                        const BibEntryParts e = BibEntry(doc.citations.at(key));
+                        std::string entry = std::to_string(++k) + ". " + PlainProse(e.lead);
+                        if (!e.title.empty()) entry += "~" + PlainProse(e.title) + "~";
+                        out.push_back(entry + PlainProse(e.rest));
+                    }
+                    break;
+                }
+                case BlockKind::Code: {
+                    const int source_fence = code_seen < source_fences.size() ? source_fences[code_seen] : -1;
+                    ++code_seen;
+                    bool code = true, results = true;
+                    CodeExports(doc, b, &code, &results, "results");
+                    bool as_code = true, as_results = true;
+                    CodeExports(doc, b, &as_code, &as_results, "code");
+                    const bool unspecified = code != as_code || results != as_results;
+                    const bool has_results = b.result_line_start >= 0;
+                    // Nothing to show of a block never run: its code, then.
+                    if (unspecified && !has_results) code = true;
+                    drop_lines(b.line_start, b.line_end);
+                    if (b.result_format == "markdown" && b.result_line_end > b.line_end)
+                        drop_lines(b.result_line_end, b.result_line_end);  // the closing marker
+                    std::vector<std::string> &out = insert[b.line_start];
+                    const bool html = b.result_format == "html";
+                    std::string res_kind;
+                    for (const Option &o : b.options) {
+                        const std::string nm = Lower(o.name);
+                        if (nm == "results" || (nm == "output" && res_kind.empty())) res_kind = Lower(Trim(o.value.s));
+                    }
+                    const std::string lang_l = Lower(b.lang);
+                    PresentationPage::Shown shown;
+                    shown.source_fence = source_fence;
+                    shown.code = code;
+                    shown.live = res_kind == "web" || res_kind == "app" || res_kind == "exec-gui" || lang_l == "exec-gui" ||
+                                 lang_l == "gui";
+                    if (code || (html && results && has_results)) {
+                        // An html result is drawn as part of its block, so
+                        // it keeps a fence (bare when the code is hidden).
+                        if (code && source_fence >= 0) insert_fence[b.line_start][out.size()] = source_fence;
+                        out.push_back("```" + (html && results && has_results ? "{" + b.lang + ", results=html}" : b.lang));
+                        if (code)
+                            for (int k = b.code_line_start; k <= b.code_line_end; ++k)
+                                out.push_back(ex[static_cast<size_t>(k)]);
+                        out.push_back("```");
+                        if (html && results && has_results)
+                            for (int k = b.result_line_start; k <= b.result_line_end; ++k)
+                                out.push_back(ex[static_cast<size_t>(k)]);
+                    }
+                    auto separate = [&out] {
+                        if (!out.empty()) out.push_back("");
+                    };
+                    if (results && has_results && !html && b.result_format != "markdown") {
+                        std::vector<std::string> text;
+                        for (const std::string &line : b.result_lines) {
+                            std::string img;
+                            if (ResultImagePath(line, &img)) continue;
+                            text.push_back(line);
+                        }
+                        while (!text.empty() && Trim(text.back()).empty()) text.pop_back();
+                        if (!text.empty()) {
+                            separate();
+                            // A program running in a window: the window is
+                            // drawn under this fence (Editor::MepmlScan).
+                            if (b.result_format == "gui") insert_live[b.line_start] = out.size();
+                            out.push_back("```");
+                            for (std::string &t : text) {
+                                // A line of just ``` would end the fence early.
+                                if (Trim(t) == "```") t = " " + t;
+                                out.push_back(t);
+                            }
+                            out.push_back("```");
+                        }
+                        if (!b.result_images.empty()) separate();
+                        for (const auto &img : b.result_images) out.push_back("\\image(" + img.second + ")");
+                    }
+                    // A live block with nothing to show yet (never run):
+                    // a line saying how to start it, so the slide has it.
+                    if (shown.live && out.empty()) {
+                        out.push_back("```");
+                        out.push_back("(not running -- C-c C-c starts it)");
+                        out.push_back("```");
+                    }
+                    if (!out.empty()) insert_block[b.line_start] = shown;
+                    // Its caption and alt text follow whatever is left of it.
+                    if (!out.empty()) {
+                        std::vector<std::pair<int, int>> attrs;
+                        if (b.caption_line >= 0) attrs.emplace_back(b.caption_line, b.caption_line_end);
+                        if (b.alt_line >= 0) attrs.emplace_back(b.alt_line, b.alt_line_end);
+                        std::sort(attrs.begin(), attrs.end());
+                        for (const auto &a : attrs)
+                            for (int k = a.first; k <= a.second; ++k) out.push_back(ex[static_cast<size_t>(k)]);
+                    }
+                    break;
+                }
+                case BlockKind::Paragraph:
+                    // Maths written over several lines is drawn over them
+                    // (a matrix, say): such a paragraph keeps its lines.
+                    if (wrap_cols > 0 && !MultiLineMath(b, b.inlines)) {
+                        drop_lines(b.line_start, b.line_end);
+                        std::vector<std::string> &out = insert[b.line_start];
+                        for (const std::string &l : FillProse(prose(b, 0, static_cast<int>(b.text.size()), b.inlines), wrap_cols))
+                            out.push_back(l);
+                    } else {
+                        note_cites(b, b.inlines);
+                    }
+                    break;
+                case BlockKind::List:
+                    if (wrap_cols > 0) {
+                        drop_lines(b.line_start, b.line_end);
+                        std::vector<std::string> &out = insert[b.line_start];
+                        for (const ListItem &it : b.items) {
+                            const int line_at = b.line_offsets[static_cast<size_t>(it.line - b.line_start)];
+                            const std::string marker = Sub(b.text, line_at, it.content_start);
+                            for (const std::string &l : FillProse(prose(b, it.content_start, it.content_end, it.content),
+                                                                  wrap_cols, marker, std::string(marker.size(), ' ')))
+                                out.push_back(l);
+                        }
+                    } else {
+                        for (const ListItem &it : b.items) note_cites(b, it.content);
+                    }
+                    break;
+                case BlockKind::Table:
+                    for (const auto &row : b.rows)
+                        for (const TableCell &c : row) note_cites(b, c.content);
+                    note_cites(b, b.caption_inlines);
+                    break;
+                default:
+                    note_cites(b, b.inlines);
+                    note_cites(b, b.caption_inlines);
+                    break;
+            }
+        }
+        // Result markers of a Markdown result whose block isn't on this
+        // page's lines, and any stray comment line between blocks.
+        for (int k = from; k <= to; ++k) {
+            const std::string t = Trim(ex[static_cast<size_t>(k)]);
+            if (t.rfind("// result_end", 0) == 0) drop[static_cast<size_t>(k - from)] = true;
+        }
+
+        std::vector<std::string> out;
+        auto emit = [&](const std::string &line) {
+            const bool blank = Trim(line).empty();
+            if (blank && (out.empty() || Trim(out.back()).empty())) return;
+            out.push_back(line);
+        };
+        for (int k = from; k <= to; ++k) {
+            auto ins = insert.find(k);
+            if (ins != insert.end()) {
+                // A replacement is a block of its own: blank lines around it.
+                if (!ins->second.empty()) {
+                    emit("");
+                    const auto fences = insert_fence.find(k);
+                    const auto shown = insert_block.find(k);
+                    const auto live = insert_live.find(k);
+                    PresentationPage::Shown sh = shown != insert_block.end() ? shown->second : PresentationPage::Shown();
+                    sh.first = static_cast<int>(out.size());
+                    for (size_t j = 0; j < ins->second.size(); ++j) {
+                        if (fences != insert_fence.end() && fences->second.count(j))
+                            page.code_blocks.emplace_back(static_cast<int>(out.size()), fences->second.at(j));
+                        if (live != insert_live.end() && live->second == j) sh.live_fence = static_cast<int>(out.size());
+                        emit(ins->second[j]);
+                    }
+                    sh.last = static_cast<int>(out.size()) - 1;
+                    if (shown != insert_block.end()) page.blocks.push_back(sh);
+                    emit("");
+                }
+            }
+            if (drop[static_cast<size_t>(k - from)]) continue;
+            std::string line = ex[static_cast<size_t>(k)];
+            auto c = cites.find(k);
+            if (c != cites.end()) {
+                auto &rs = c->second;
+                std::sort(rs.begin(), rs.end(), [](const auto &x, const auto &y) { return x.first.first > y.first.first; });
+                for (const auto &r : rs) {
+                    if (r.first.first < 0 || r.first.second > static_cast<int>(line.size())) continue;
+                    line.replace(static_cast<size_t>(r.first.first), static_cast<size_t>(r.first.second - r.first.first),
+                                 PlainProse(r.second));
+                }
+            }
+            emit(line);
+        }
+        while (!out.empty() && Trim(out.back()).empty()) out.pop_back();
+        page.lines = std::move(out);
+        pages.push_back(std::move(page));
+    }
+    return pages;
+}
+
 }  // namespace mepml

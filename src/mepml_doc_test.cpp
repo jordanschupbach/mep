@@ -753,6 +753,190 @@ int main() {
         CHECK(frags.size() == 2 && frags[0].title == "One" && frags[0].body == "<p>Text.</p>\n" && frags[1].title.empty());
     }
 
+    // --- The presentation view's pages (PresentationPages).
+    {
+        const std::map<std::string, Lines> files = {
+            {"/d/style.mepml",
+             {"\\define(fact(name, body), \\when(html, \\raw(html, <b>#name</b>) #body)\\otherwise(*#name.* #body))",
+              "\\citation(knuth, author = Donald Knuth, title = Literate Programming, year = 1984)"}},
+        };
+        ReadFileFn read = [&](const std::string &p, Lines *out) {
+            auto it = files.find(p);
+            if (it == files.end()) return false;
+            *out = it->second;
+            return true;
+        };
+        Lines src = {
+            "//? Title: Deck",                        // 0
+            "//? Subtitle: A *test*",                 // 1
+            "//? Author: Ada",                        // 2
+            "//? Type: presentation",                 // 3
+            "",                                       // 4
+            "\\import(style.mepml)",                  // 5
+            "",                                       // 6
+            "\\slide(",                               // 7
+            "> First",                                // 8
+            "// a note to self",                      // 9
+            "",                                       // 10
+            "",                                       // 11
+            "\\fact(Big, Things grow) as \\citep(knuth).",  // 12
+            "",                                       // 13
+            "```{r, fig=1}",                          // 14
+            "plot(1)",                                // 15
+            "```",                                    // 16
+            "// result_begin:",                       // 17
+            "// [1] 42",                              // 18
+            "// \\image(a.png)",                      // 19
+            "// result_end",                          // 20
+            "\\caption(A plot)",                      // 21
+            ")",                                      // 22
+            "\\slide(",                               // 23
+            "```{python, exports=both}",              // 24
+            "print(1)",                               // 25
+            "```",                                    // 26
+            "// result_begin:",                       // 27
+            "// 1",                                   // 28
+            "// result_end",                          // 29
+            "",                                       // 30
+            "```{r}",                                 // 31
+            "never_run()",                            // 32
+            "```",                                    // 33
+            "",                                       // 34
+            "```{r, exports=none}",                   // 35
+            "hidden()",                               // 36
+            "```",                                    // 37
+            "\\bibliography",                         // 38
+            ")",                                      // 39
+        };
+        const std::vector<PresentationPage> pages = PresentationPages("/d/main.mepml", src, read);
+        CHECK(pages.size() == 3);
+        if (pages.size() == 3) {
+            // The title page, from the header.
+            CHECK(pages[0].number == 0 && pages[0].source_line == -1 && pages[0].title == "Deck");
+            CHECK((pages[0].lines == Lines{"> Deck", "", ">A \\*test\\*<", "", "Ada"}));
+            // Commands expanded (\otherwise: not html), citations rendered,
+            // comments and code options gone, results only by default.
+            CHECK(pages[1].number == 1 && pages[1].source_line == 7 && pages[1].source_end == 22 && pages[1].title == "First");
+            CHECK((pages[1].lines == Lines{"> First", "", "*Big.* Things grow as (Knuth, 1984).", "", "```", "[1] 42",
+                                           "```", "", "\\image(a.png)", "\\caption(A plot)"}));
+            // exports=both keeps both; a block never run shows its code;
+            // exports=none nothing; the bibliography is its entries.
+            CHECK(pages[2].number == 2 && pages[2].source_line == 23 && pages[2].source_end == 39 && pages[2].title.empty());
+            const Lines want = {"```python", "print(1)", "```", "", "```", "1", "```", "", "```r", "never_run()", "```", "",
+                                "1. Donald Knuth (1984). ~Literate Programming~."};
+            CHECK(pages[2].lines == want);
+            // The code blocks each page shows, to run from it: the fence's
+            // line on the page and in the document (results-only code has
+            // none, nor does exports=none).
+            CHECK(pages[1].code_blocks.empty());
+            CHECK((pages[2].code_blocks == std::vector<std::pair<int, int>>{{0, 24}, {8, 31}}));
+            // Every page parses clean as mepml of its own.
+            for (const PresentationPage &pg : pages) {
+                const Document d = Parse(pg.lines);
+                for (const Diagnostic &dg : d.diagnostics)
+                    std::fprintf(stderr, "page %d: line %d: %s\n", pg.number, dg.line, dg.message.c_str());
+                CHECK(d.diagnostics.empty());
+            }
+        }
+        // A document header saying Exports: code shows the code instead,
+        // and a document that isn't a presentation has no title page.
+        const std::vector<PresentationPage> code = PresentationPages(
+            "/d/x.mepml", {"//? Title: T", "//? Exports: code", "\\slide(", "```r", "x", "```", "// result_begin:", "// 1", "// result_end", ")"}, read);
+        CHECK(code.size() == 1 && (code[0].lines == Lines{"```r", "x", "```"}));
+    }
+
+    // --- Live output (results=web): the page in an HTML export, the slide's
+    // block extents and its running window's fence.
+    {
+        const Lines src = {
+            "//? Type: presentation",                       // 0
+            "//? Exports: results",                         // 1
+            "\\slide(",                                     // 2
+            "```{html, results=web, rows=10}",              // 3
+            "<p id=\"x\">d3 goes here</p>",                 // 4
+            "```",                                          // 5
+            "// result_begin:",                             // 6
+            "// \\image(shot.png)",                         // 7
+            "// result_end",                                // 8
+            ")",                                            // 9
+            "\\slide(",                                     // 10
+            "```{r, results=web}",                          // 11
+            "shiny::runApp()",                              // 12
+            "```",                                          // 13
+            "// result_begin: gui",                         // 14
+            "// [running] r program",                       // 15
+            "// result_end",                                // 16
+            "",                                             // 17
+            "```{r, results=web}",                          // 18
+            "never_run()",                                  // 19
+            "```",                                          // 20
+            ")",                                            // 21
+        };
+        const Document d = Parse(src);
+        const std::string html = ToHtml(d);
+        CHECK(html.find("<iframe class=\"web-page\" srcdoc=\"&lt;p id=&quot;x&quot;&gt;d3 goes here&lt;/p&gt;\" style=\"width:100%;height:240px") !=
+              std::string::npos);
+        CHECK(html.find("shot.png") == std::string::npos);  // the page, not its picture
+        // A Beamer deck (made from this HTML) takes the picture instead.
+        Document beamer = d;
+        beamer.export_tags = {"beamer", "tex", "latex", "slides"};
+        CHECK(ToHtml(beamer).find("<iframe") == std::string::npos && ToHtml(beamer).find("shot.png") != std::string::npos);
+
+        const std::vector<PresentationPage> pages =
+            PresentationPages("/d/x.mepml", src, [](const std::string &, Lines *) { return false; });
+        CHECK(pages.size() == 2);
+        if (pages.size() == 2) {
+            CHECK((pages[0].lines == Lines{"\\image(shot.png)"}));
+            CHECK(pages[0].blocks.size() == 1 && pages[0].blocks[0].first == 0 && pages[0].blocks[0].last == 0 &&
+                  pages[0].blocks[0].source_fence == 3 && !pages[0].blocks[0].code && pages[0].blocks[0].live &&
+                  pages[0].blocks[0].live_fence == -1);
+            // Running: its window goes under the output fence. Never run: a
+            // line saying how to start it.
+            CHECK((pages[1].lines == Lines{"```", "[running] r program", "```", "", "```", "(not running -- C-c C-c starts it)", "```"}));
+            CHECK(pages[1].blocks.size() == 2 && pages[1].blocks[0].live_fence == 0 && pages[1].blocks[0].source_fence == 11 &&
+                  pages[1].blocks[1].first == 4 && pages[1].blocks[1].last == 6 && pages[1].blocks[1].source_fence == 18);
+        }
+    }
+
+    // --- FillProse: fills by the width drawn, not the bytes written.
+    {
+        CHECK((FillProse("one two three four", 9) == Lines{"one two", "three", "four"}));
+        // Markup is concealed: `*two*` is three columns wide, not five.
+        CHECK((FillProse("one *two* six", 10) == Lines{"one *two*", "six"}));
+        CHECK((FillProse("one *two* six", 11) == Lines{"one *two* six"}));
+        CHECK((FillProse("one *two* x", 11) == Lines{"one *two* x"}));
+        // Maths is as wide as it typesets, and never broken.
+        CHECK((FillProse("a $\\hat{\\beta}_1 + x$ b", 14) == Lines{"a $\\hat{\\beta}_1 + x$ b"}));
+        CHECK((FillProse("a $\\hat{\\beta}_1 + x$ b", 8) == Lines{"a", "$\\hat{\\beta}_1 + x$", "b"}));
+        CHECK((FillProse("aaaa bbbb $x + y$ c", 10) == Lines{"aaaa bbbb", "$x + y$ c"}));
+        // A list item's marker leads, the indent under it follows; an
+        // overlong word runs over rather than being cut.
+        CHECK((FillProse("alpha beta gamma", 10, "- ", "  ") == Lines{"- alpha", "  beta", "  gamma"}));
+        CHECK((FillProse("abcdefghijklmnop q", 10) == Lines{"abcdefghijklmnop", "q"}));
+        CHECK((FillProse("", 10, "- ") == Lines{"- "}));
+        // Pages filled to a width: the source's line breaks and comments go.
+        const std::vector<PresentationPage> pages = PresentationPages(
+            "/d/x.mepml",
+            {"\\slide(", "> Title", "Some prose that was", "broken by hand. // a comment", "", "- item one that is",
+             "  long", "- two", ")"},
+            [](const std::string &, Lines *) { return false; }, 20);
+        CHECK(pages.size() == 1 &&
+              (pages[0].lines == Lines{"> Title", "", "Some prose that was", "broken by hand.", "", "- item one that is",
+                                       "  long", "- two"}));
+        const std::vector<PresentationPage> wide = PresentationPages(
+            "/d/x.mepml", {"\\slide(", "Some prose that was", "broken by hand.", ")"},
+            [](const std::string &, Lines *) { return false; }, 80);
+        CHECK(wide.size() == 1 && (wide[0].lines == Lines{"Some prose that was broken by hand."}));
+        // Plain header text stays as written; a paragraph with maths over
+        // several lines keeps its lines.
+        const std::vector<PresentationPage> plain = PresentationPages(
+            "/d/x.mepml",
+            {"//? Type: presentation", "//? Title: Fitting, a straight-line model", "\\slide(", "Then", "\\(", "x", "\\)", "end.", ")"},
+            [](const std::string &, Lines *) { return false; }, 80);
+        CHECK(plain.size() == 2 && (plain[0].lines == Lines{"> Fitting, a straight-line model"}) &&
+              (plain[1].lines == Lines{"Then", "\\(", "x", "\\)", "end."}));
+    }
+
     // --- The old @abstract{...} no longer makes an abstract: it says so.
     {
         Document d = Parse({"@abstract{Old.}", "", "text"});

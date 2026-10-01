@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (181)
+* The bindings (184)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -24,9 +24,11 @@ that it does nothing.
 | =mep.buf_add_latex_inline= | appends one inline-math span for a line of the current buffer |
 | =mep.buf_clear_image_rows= | clears the current buffer's whole inline-image row registry |
 | =mep.buf_clear_latex_inline= | clears the current buffer's whole inline-LaTeX span registry |
+| =mep.buf_clear_latex_preview= | clears the current buffer's math preview popup fragment |
 | =mep.buf_clear_latex_rows= | clears the current buffer's whole rendered-LaTeX row registry |
 | =mep.buf_clear_org_lsp_status= | clears the current buffer's org src-block LSP status registry |
 | =mep.buf_set_image_row= | registers an inline-image target for a line of the current buffer |
+| =mep.buf_set_latex_preview= | sets the current buffer's math preview popup fragment |
 | =mep.buf_set_latex_row= | registers a rendered LaTeX fragment for a source-line span of the current buffer |
 | =mep.buf_set_org_lsp_status= | registers one org src block's language-server status |
 | =mep.doc_export_html_to_latex= | thin |
@@ -162,6 +164,7 @@ that it does nothing.
 | =mep.org_parse_results= | parses a babel header args string's :results modes |
 | =mep.org_parse_vars= | parses a babel header args string's :var entries |
 | =mep.org_plain_cursor_line_toggle= | toggles plain rendering of the cursor's own row |
+| =mep.org_plain_cursor_line_visible= | reports whether the cursor's own row (and any math fragment it is in) renders as raw source |
 | =mep.org_plain_toggle= | toggles plain-text org display in the active pane |
 | =mep.org_plain_visible= | whether the active pane shows org as plain text |
 | =mep.org_property_get= | reads an org property drawer value from a headline |

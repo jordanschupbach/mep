@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <unordered_map>
 #include <unordered_set>
 #include <filesystem>
@@ -16,6 +18,8 @@
 
 #include "editor.h"
 #include "gfx/input.h"
+#include "gfx/platform.h"
+#include "lua_env.h"
 #include "job.h"
 #include "mepml_doc.h"
 #include "png_codec.h"
@@ -522,10 +526,6 @@ bool Editor::MepmlParseReady() {
     return false;
 }
 
-mepml::Document Editor::MepmlParseForExport(const std::vector<std::string> &tags) const {
-    return mepml::ParseForExport(MepmlCurrentFile(), Buf().lines, ReadFileLines, tags);
-}
-
 void Editor::MepmlScan(int ns, bool own_diagnostics) {
     Buffer &buf = Buf();
     int cur_row = 0, cur_col = 0;
@@ -595,7 +595,9 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     for (const auto &kv : mepml_terms_)
         if (kv.second.buffer_id == CurrentBufferId()) runs_here = true;
     for (const auto &kv : mepml_guis_)
-        if (kv.second.buffer_id == CurrentBufferId()) runs_here = true;
+        if (kv.second.buffer_id == CurrentBufferId() ||
+            (present_.active && CurrentBufferId() == present_.view_buffer && kv.second.buffer_id == present_.source_buffer))
+            runs_here = true;  // (a presented slide shows the document's windows)
     // Nothing it depends on has changed -- which is often: the edit hooks
     // fire on the change epoch, which most keys bump, motions included.
     if (same_inputs && state.cur_row == cur_row && !runs_here) return;
@@ -678,6 +680,30 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             r.end_row = b->result_line_end - 1;
             r.slots = run.rows;
             buf.mepml_html_rows[b->result_line_start + 1] = std::move(r);
+        }
+    }
+
+    // A presented slide (MepmlPresentStart): a program running in the
+    // document's block shows its window under the slide's output fence for
+    // that block (mepml::PresentationPage::Shown::live_fence).
+    if (present_.active && CurrentBufferId() == present_.view_buffer && !present_.pages.empty()) {
+        const mepml::PresentationPage &page = present_.pages[static_cast<size_t>(present_.page)];
+        for (auto &kv : mepml_guis_) {
+            if (kv.second.buffer_id != present_.source_buffer) continue;
+            const int fence = MepmlPresentSourceFence(kv.first);
+            for (const mepml::PresentationPage::Shown &sh : page.blocks) {
+                if (sh.source_fence != fence || sh.live_fence < 0) continue;
+                const int view_fence = sh.live_fence + 1;  // the view's first row is the cursor's blank
+                for (const mepml::Block &b : doc.blocks) {
+                    if (b.kind != mepml::BlockKind::Code || b.code_line_start - 1 != view_fence) continue;
+                    if (b.code_line_end < b.code_line_start) continue;
+                    Buffer::OrgLatexRender r;
+                    r.term_run = kv.first;
+                    r.end_row = b.code_line_end;
+                    r.slots = kv.second.rows;
+                    buf.mepml_html_rows[b.code_line_start] = std::move(r);
+                }
+            }
         }
     }
 
@@ -1365,14 +1391,14 @@ bool Editor::MepmlSpliceResults(int buffer_id, int fence_row, const std::string 
 // heuristics: a `$` inside a code block or a results region is never
 // math here, and a trailing \alttext() is hidden along with the formula
 // it describes.
-OrgLatexFragments Editor::MepmlLatexFragments() const {
+namespace {
+// MepmlLatexFragments for any mepml text (the presentation's pages too).
+OrgLatexFragments MepmlLatexFragmentsOf(const mepml::Document &doc, const std::vector<std::string> &lines) {
     OrgLatexFragments out;
-    const mepml::Document &doc = MepmlParseCurrent(false);
     // Whether nothing but blanks shares the fragment's first line before it
     // or its last line after it.
     auto blank = [](const std::string &t) { return t.find_first_not_of(" \t") == std::string::npos; };
     auto MepmlOwnsRows = [&](mepml::Block::Pos p, mepml::Block::Pos q) {
-        const std::vector<std::string> &lines = Buf().lines;
         if (p.line < 0 || q.line >= static_cast<int>(lines.size())) return false;
         const std::string &first = lines[static_cast<size_t>(p.line)], &last = lines[static_cast<size_t>(q.line)];
         return blank(first.substr(0, std::min(first.size(), static_cast<size_t>(p.col)))) &&
@@ -1403,7 +1429,7 @@ OrgLatexFragments Editor::MepmlLatexFragments() const {
                         OrgLatexInlinePart part;
                         part.row = line + 1;
                         part.col_start = (line == p.line ? p.col : 0) + 1;
-                        part.col_end = (line == q.line ? q.col : static_cast<int>(Buf().lines[static_cast<size_t>(line)].size())) + 1;
+                        part.col_end = (line == q.line ? q.col : static_cast<int>(lines[static_cast<size_t>(line)].size())) + 1;
                         f.parts.push_back(part);
                     }
                     out.inlines.push_back(std::move(f));
@@ -1432,6 +1458,9 @@ OrgLatexFragments Editor::MepmlLatexFragments() const {
     }
     return out;
 }
+}  // namespace
+
+OrgLatexFragments Editor::MepmlLatexFragments() const { return MepmlLatexFragmentsOf(MepmlParseCurrent(false), Buf().lines); }
 
 std::vector<OrgLiteralSpan> Editor::MepmlLiteralSpans() const {
     std::vector<OrgLiteralSpan> out;
@@ -2206,7 +2235,53 @@ std::string CodeHash(const std::string &code) {
     std::snprintf(buf, sizeof buf, "%08x", h);
     return buf;
 }
+
+// Where a program window's picture is kept: file= (relative to the
+// document), else beside the document under a name its code decides.
+// `*ref` is how the results name it, `*path` where it is (absolute).
+void GuiSnapshotPaths(const mepml::Block &b, const std::filesystem::path &doc_file, std::string *ref, std::string *path) {
+    *ref = StrOption(b, "file");
+    if (ref->empty()) *ref = doc_file.stem().string() + "-gui-" + CodeHash(b.code) + ".png";
+    const std::filesystem::path p(*ref);
+    *path = (p.is_absolute() ? p : doc_file.parent_path() / p).lexically_normal().string();
+}
 }  // namespace
+
+mepml::Document Editor::MepmlParseForExport(const std::vector<std::string> &tags) const {
+    const std::string file = MepmlCurrentFile();
+    if (file.empty()) return mepml::ParseForExport(file, Buf().lines, ReadFileLines, tags);
+    // A program still running in its window (a web app, a GUI) has only
+    // "[running]" for results: an export shows a picture of it instead --
+    // taken now while it runs, else the last one kept on disk.
+    std::vector<std::string> lines = Buf().lines;
+    const mepml::Document doc = mepml::Parse(lines);
+    for (auto b = doc.blocks.rbegin(); b != doc.blocks.rend(); ++b) {
+        if (!b->origin.empty() || b->kind != mepml::BlockKind::Code || b->result_format != "gui") continue;
+        std::string ref, path;
+        GuiSnapshotPaths(*b, file, &ref, &path);
+        for (const auto &kv : mepml_guis_) {
+            const MepmlGuiRun &run = kv.second;
+            if (run.buffer_id != CurrentBufferId() || !run.app || BlockForRun(doc, run.code, run.fence_row) != &*b) continue;
+            const mep::gui_embed::Snapshot &snap = run.app->LastSnapshot();
+            if (snap.Empty() || run.snapshot_path.empty()) break;
+            const std::string png = png::Encode(snap.width, snap.height, 4, snap.rgba.data(), snap.width * 4);
+            std::ofstream f(run.snapshot_path, std::ios::binary);
+            if (!png.empty() && f.write(png.data(), static_cast<std::streamsize>(png.size()))) {
+                ref = run.snapshot_ref;
+                path = run.snapshot_path;
+            }
+            break;
+        }
+        std::error_code ec;
+        if (!std::filesystem::exists(path, ec)) continue;
+        int first = 0, last = 0;
+        mepml::ResultsReplaceRange(*b, &first, &last);
+        const std::vector<std::string> res = mepml::FormatResults("\\image(" + ref + ")");
+        lines.erase(lines.begin() + first, lines.begin() + std::min(last, static_cast<int>(lines.size())));
+        lines.insert(lines.begin() + first, res.begin(), res.end());
+    }
+    return mepml::ParseForExport(file, lines, ReadFileLines, tags);
+}
 
 int Editor::MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::string> *argv,
                           const std::vector<std::string> &temp_files) {
@@ -2267,18 +2342,19 @@ int Editor::MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::s
     int cols = TextWidth() - 2;
     if (CurPane().text_cols > 8) cols = std::min(cols, CurPane().text_cols - 4);
     run.cols = std::clamp(IntOption(*blk, "cols", cols), 10, 400);
-    run.label = argv ? blk->lang + " program" : command.substr(0, command.find('\n'));
+    const std::string res = Lowered(StrOption(*blk, "results"));
+    run.label = !argv                              ? command.substr(0, command.find('\n'))
+                : (res == "web" || res == "app") ? (lang == "html" ? std::string("web page") : blk->lang + " web app")
+                                                 : blk->lang + " program";
+    run.web = res == "web" || res == "app";
+    // A web page is part of what it shows: hovering and dragging reach it
+    // without a click to hand it the keyboard first.
+    if (run.web) run.app->SetPointerThrough(true);
     run.temp_files = temp_files;
     // Its last picture goes to file= (relative to the document), else
     // beside the document under a name its code decides; an unsaved
     // document keeps none.
-    if (!doc_file.empty()) {
-        std::string ref = StrOption(*blk, "file");
-        if (ref.empty()) ref = doc_file.stem().string() + "-gui-" + CodeHash(blk->code) + ".png";
-        const std::filesystem::path p(ref);
-        run.snapshot_ref = ref;
-        run.snapshot_path = (p.is_absolute() ? p : doc_file.parent_path() / p).lexically_normal().string();
-    }
+    if (!doc_file.empty()) GuiSnapshotPaths(*blk, doc_file, &run.snapshot_ref, &run.snapshot_path);
     int first = 0, last = 0;
     mepml::ResultsReplaceRange(*blk, &first, &last);
     if (first == last && first > static_cast<int>(buf.lines.size())) first = last = static_cast<int>(buf.lines.size());
@@ -2316,6 +2392,13 @@ void Editor::MepmlGuiPlace(int run_id, const mep::gui_embed::Rect &full, const m
 }
 
 void Editor::MepmlGuisEndFrame() {
+    // A web page lets the pointer straight through, so mep keeps the
+    // keyboard on a focus proxy while one is on screen (else the keys would
+    // go to the page whenever the mouse rests over it).
+    bool web_shown = false;
+    for (const auto &kv : mepml_guis_)
+        if (kv.second.web && kv.second.app->GetState() == mep::gui_embed::EmbeddedApp::State::Shown) web_shown = true;
+    gfx::SetKeyboardFocusProxy(web_shown);
     for (auto &kv : mepml_guis_) {
         kv.second.app->EndFrame();
         if (mepml_gui_focus_ == kv.first && kv.second.app->TakeFocusLost()) {
@@ -2344,6 +2427,11 @@ void Editor::MepmlGuisTick() {
             continue;
         }
         run.app->Tick(now_, waiting == 1);
+        if (run.app->TakeFocusGained()) {
+            // A web page clicked into: it has the keyboard now.
+            mepml_gui_focus_ = it->first;
+            status_message_ = "The page has the keyboard: Ctrl-\\ or a click outside it comes back";
+        }
         if (mepml_gui_focus_ == it->first) {
             bool lost = run.app->TakeFocusLost() || !run.app->Focused();
             // mep only sees a click while the program has the keyboard
@@ -2384,7 +2472,8 @@ void Editor::MepmlGuisTick() {
         const std::vector<std::string> &out = run.app->Stdout();
         for (size_t k = out.size() > 40 ? out.size() - 40 : 0; k < out.size(); ++k) lines.push_back(out[k]);
         if (run.app->Stops() > 0) {
-            lines.push_back("[stopped]");
+            // A web page or app runs until it is stopped: its picture says it all.
+            if (!run.web || lines.empty()) lines.push_back("[stopped]");
         } else if (run.app->ExitCode() != 0) {
             const std::vector<std::string> &err = run.app->Stderr();
             for (size_t k = err.size() > 10 ? err.size() - 10 : 0; k < err.size(); ++k) lines.push_back(err[k]);
@@ -2406,4 +2495,654 @@ void Editor::MepmlGuisTick() {
         RemoveTempFiles(run.temp_files);
         it = mepml_guis_.erase(it);
     }
+}
+
+// --- The presentation view ---------------------------------------------------
+
+// main.cpp owns the text font; full-screen mode sets it large.
+float GetFontSizePx();
+void SetFontSizePx(float px);
+
+namespace {
+// The view's first row is left blank: the cursor waits there while
+// presenting, where it reveals nothing, and it is the slide's top margin.
+constexpr int kPresentParkRow = 0;
+// Full-screen text is sized so that this many rows and columns fill the
+// screen -- a slide written for a 16:9 Beamer frame fits, and reads across
+// a room.
+constexpr float kPresentRows = 22.0f;
+constexpr float kPresentCols = 64.0f;
+constexpr float kPresentFontStep = 1.1f;
+// The longest a slide stays blank waiting for its maths (one that fails
+// to compile never arrives).
+constexpr double kPresentRevealWait = 5.0;
+}  // namespace
+
+bool Editor::MepmlPresentStart(bool fullscreen, std::string *error) {
+    if (present_.active) {
+        MepmlPresentSetFullscreen(fullscreen);
+        return true;
+    }
+    if (!IsMepmlBuffer()) {
+        if (error) *error = "Not a mepml document";
+        return false;
+    }
+    const Buffer &src = Buf();
+    const int wrap = std::max(0, CurPane().text_cols - 1);
+    std::vector<mepml::PresentationPage> pages =
+        mepml::PresentationPages(MepmlCurrentFile(), src.lines, ReadFileLines, wrap);
+    if (pages.empty()) {
+        if (error) *error = "No slides: a presentation's slides are \\slide( ... ) blocks";
+        return false;
+    }
+    MepmlPresentState st;
+    st.active = true;
+    st.source_buffer = CurrentBufferId();
+    st.pane_id = ActivePaneId();
+    st.source_lines = src.lines;
+    st.wrap_cols = wrap;
+    st.pages = std::move(pages);
+    st.source_cursor = CurPane().cursor;
+    st.source_scroll = CurPane().scroll_row;
+    st.saved_zoomed_pane = zoomed_pane_id_;
+    st.saved_zen = zen_mode_;
+    // Start at the slide the cursor is on (the title page before the first).
+    const int row = CurPane().cursor.row;
+    for (size_t i = 0; i < st.pages.size(); ++i)
+        if (st.pages[i].source_line >= 0 && st.pages[i].source_line <= row) st.page = static_cast<int>(i);
+
+    // The view: a buffer beside the source (relative pictures resolve the
+    // same), hidden by its dot, never written.
+    const std::filesystem::path path(MepmlCurrentFile());
+    const std::string view_name =
+        (path.parent_path() / ("." + path.stem().string() + ".present.mepml")).string();
+    int view = -1;
+    for (size_t i = 0; i < buffers_.size(); ++i)
+        if (buffers_[i].mepml_present_view && buffers_[i].filename == view_name) view = static_cast<int>(i);
+    if (view < 0) view = CreateEmptyBuffer();
+    Buffer &vb = buffers_[static_cast<size_t>(view)];
+    vb.filename = view_name;
+    vb.mepml_present_view = true;
+    vb.deleted = false;
+    vb.hide_line_numbers = true;
+    vb.workspace_id = src.workspace_id;
+    st.view_buffer = view;
+    present_ = std::move(st);
+
+    CurPane().buffer_id = view;
+    zoomed_pane_id_ = present_.pane_id;
+    present_.warm_pending = true;
+    MepmlPresentShowPage();
+    if (fullscreen) MepmlPresentApplyFullscreen(true);
+    SyncModeToActivePaneBuffer();
+    mode_ = Mode::Normal;
+    MepmlPresentAutoStart();
+    status_message_ = "Presenting: h/l (or C-n/C-p, arrows) change slide, n for normal mode, C-c C-c runs code, f " +
+                      std::string(fullscreen ? "to leave full screen" : "for full screen") + ", q to stop";
+    return true;
+}
+
+void Editor::MepmlPresentShowPage(bool keep_cursor) {
+    if (!present_.active || present_.pages.empty()) return;
+    present_.page = std::clamp(present_.page, 0, static_cast<int>(present_.pages.size()) - 1);
+    std::vector<std::string> lines = {""};
+    for (const std::string &l : present_.pages[static_cast<size_t>(present_.page)].lines) lines.push_back(l);
+    present_.view_lines = lines;
+    Buffer &vb = buffers_[static_cast<size_t>(present_.view_buffer)];
+    vb.lines = std::move(lines);
+    vb.modified = false;
+    vb.undo_stack.clear();
+    vb.redo_stack.clear();
+    vb.folds.clear();
+    // Tells the buffer-change hooks (the mepml render, highlighting).
+    change_epoch_++;
+    // What has to be rendered before the slide may show.
+    present_.need_rows.clear();
+    present_.need_inline.clear();
+    const OrgLatexFragments frags = MepmlLatexFragmentsOf(mepml::Parse(vb.lines), vb.lines);
+    for (const OrgLatexBlockFragment &b : frags.blocks) present_.need_rows.push_back(b.start_row - 1);
+    for (const OrgLatexInlineFragment &f : frags.inlines)
+        if (!f.parts.empty()) present_.need_inline.emplace_back(f.parts[0].row - 1, f.parts[0].col_start - 1);
+    if (ActivePaneId() == present_.pane_id && CurPane().buffer_id == present_.view_buffer) {
+        if (present_.caret && keep_cursor) {
+            ClampCursor();  // the same slide again (its source changed): the cursor stays put
+        } else {
+            CurPane().cursor = present_.caret ? CursorPos{std::min(kPresentParkRow + 1, vb.LineCount() - 1), 0}
+                                              : CursorPos{kPresentParkRow, 0};
+            CurPane().scroll_row = 0;
+        }
+        // Render now rather than from next frame's hooks: formulas already
+        // in the cache are then on the slide in the very frame it appears.
+        if (lua_) lua_->DoString("if mep.mepml_render then mep.mepml_render() end "
+                                 "if mep.org_latex_scan then mep.org_latex_scan() end");
+    }
+    MepmlPresentUpdateReveal();
+}
+
+bool Editor::MepmlPresentMathReady() const {
+    if (!OrgLatexVisible()) return true;
+    const Buffer &vb = buffers_[static_cast<size_t>(present_.view_buffer)];
+    for (int row : present_.need_rows)
+        if (!vb.org_latex_rows.count(row)) return false;
+    for (const auto &need : present_.need_inline) {
+        auto it = vb.org_latex_inline.find(need.first);
+        if (it == vb.org_latex_inline.end()) return false;
+        bool found = false;
+        for (const Buffer::OrgLatexInlineSpan &sp : it->second) found = found || (sp.col_start == need.second && !sp.path.empty());
+        if (!found) return false;
+    }
+    return true;
+}
+
+void Editor::MepmlPresentUpdateReveal() {
+    if (!present_.active) return;
+    const double now = gfx::GetTime();
+    bool ready = MepmlPresentMathReady();
+    // Full screen also waits for the size the slide fits at (known at once
+    // for a slide shown before).
+    if (ready && present_.fullscreen && present_.autofit)
+        ready = present_.fit_checked;
+    if (present_.timed_out_page == present_.page) ready = true;
+    if (ready) {
+        present_.revealed = true;
+        return;
+    }
+    if (present_.revealed) {
+        present_.revealed = false;
+        present_.reveal_deadline = now + kPresentRevealWait;
+    } else if (now >= present_.reveal_deadline) {
+        present_.timed_out_page = present_.page;
+        present_.revealed = true;
+    }
+}
+
+void Editor::MepmlPresentGoto(int page) {
+    if (!present_.active) return;
+    page = std::clamp(page, 0, static_cast<int>(present_.pages.size()) - 1);
+    if (page == present_.page) return;
+    present_.page = page;
+    // Every slide starts the way the presentation does: no cursor.
+    if (present_.caret) {
+        present_.caret = false;
+        if (mode_ != Mode::Command) mode_ = Mode::Normal;
+    }
+    present_.fit_checked = present_.settled.count(page) > 0;
+    present_.timed_out_page = -1;
+    // Each slide starts from the screen's text size (the last may have
+    // needed less, MepmlPresentTick).
+    if (present_.fullscreen && present_.autofit && present_.fit_px > 0.0f) {
+        auto known = present_.page_px.find(page);
+        const float px = known != present_.page_px.end() ? known->second : present_.fit_px;
+        if (GetFontSizePx() != px) SetFontSizePx(px);
+    }
+    MepmlPresentShowPage();
+    MepmlPresentAutoStart();
+}
+
+void Editor::MepmlPresentApplyFullscreen(bool on) {
+    present_.fullscreen = on;
+    present_.page_px.clear();
+    present_.settled.clear();
+    present_.fit_checked = false;
+    present_.warm_pending = true;
+    zen_mode_ = on ? true : present_.saved_zen;
+    gfx::SetWindowFullscreen(on);
+    if (on) {
+        // The text is sized by MepmlPresentTick, from the screen once the
+        // window has become full screen (a frame or two from now).
+        if (present_.saved_font_px <= 0.0f) present_.saved_font_px = GetFontSizePx();
+        present_.autofit = true;
+        present_.fit_w = present_.fit_h = -1;
+    } else if (present_.saved_font_px > 0.0f) {
+        SetFontSizePx(present_.saved_font_px);
+        present_.saved_font_px = 0.0f;
+    }
+}
+
+void Editor::MepmlPresentSetFullscreen(bool on) {
+    if (!present_.active || on == present_.fullscreen) return;
+    MepmlPresentApplyFullscreen(on);
+}
+
+void Editor::MepmlPresentSetCaret(bool on) {
+    if (!present_.active) return;
+    present_.caret = on;
+    if (ActivePaneId() == present_.pane_id && CurPane().buffer_id == present_.view_buffer) {
+        const Buffer &vb = buffers_[static_cast<size_t>(present_.view_buffer)];
+        CurPane().cursor = on ? CursorPos{std::min(kPresentParkRow + 1, vb.LineCount() - 1), 0}
+                              : CursorPos{kPresentParkRow, 0};
+        if (!on) CurPane().scroll_row = 0;
+    }
+    mode_ = Mode::Normal;
+    status_message_ = on ? "Normal mode on the slide: move and yank as usual, C-c C-c runs the block under the cursor, P to present"
+                         : "";
+}
+
+void Editor::MepmlPresentRebuild() {
+    if (!present_.active) return;
+    const Buffer &src = buffers_[static_cast<size_t>(present_.source_buffer)];
+    std::string file = src.filename;
+    std::error_code ec;
+    if (!file.empty() && file[0] != '/') file = std::filesystem::absolute(file, ec).string();
+    std::vector<mepml::PresentationPage> pages =
+        mepml::PresentationPages(file, src.lines, ReadFileLines, present_.wrap_cols);
+    present_.source_lines = src.lines;
+    if (pages.empty()) return;  // every slide gone mid-edit: keep what is shown
+    // Stay on the same slide: by its number, else by position.
+    const mepml::PresentationPage &was = present_.pages[static_cast<size_t>(present_.page)];
+    int page = std::min(present_.page, static_cast<int>(pages.size()) - 1);
+    for (size_t i = 0; i < pages.size(); ++i)
+        if (pages[i].number == was.number) page = static_cast<int>(i);
+    const bool same = page == present_.page;
+    present_.pages = std::move(pages);
+    present_.page = page;
+    MepmlPresentShowPage(same);
+}
+
+void Editor::MepmlPresentStop() {
+    if (!present_.active) return;
+    // The web pages and apps it started itself stop with it (each leaves
+    // its picture as its block's results).
+    for (int fence : present_.auto_started) {
+        const int run = MepmlPresentRunningAt(fence);
+        if (run >= 0) MepmlTerminalStop(run);
+    }
+    if (present_.fullscreen) gfx::SetWindowFullscreen(false);
+    if (present_.saved_font_px > 0.0f) SetFontSizePx(present_.saved_font_px);
+    zen_mode_ = present_.saved_zen;
+    zoomed_pane_id_ = present_.saved_zoomed_pane;
+    // Back to the source, at the slide last shown.
+    const int page_line = present_.pages.empty() ? -1 : present_.pages[static_cast<size_t>(present_.page)].source_line;
+    const MepmlPresentState st = std::move(present_);
+    present_ = MepmlPresentState();
+    if (ActivePaneId() != st.pane_id) FocusPaneById(st.pane_id);
+    if (st.source_buffer >= 0 && st.source_buffer < static_cast<int>(buffers_.size()) &&
+        CurPane().buffer_id == st.view_buffer) {
+        CurPane().buffer_id = st.source_buffer;
+        if (page_line >= 0) {
+            CurPane().cursor = {page_line, 0};
+            CurPane().scroll_row = page_line;
+        } else {
+            CurPane().cursor = st.source_cursor;
+            CurPane().scroll_row = st.source_scroll;
+        }
+        ClampCursor();
+    }
+    if (st.view_buffer >= 0 && st.view_buffer < static_cast<int>(buffers_.size())) {
+        Buffer &vb = buffers_[static_cast<size_t>(st.view_buffer)];
+        vb.lines = {""};
+        vb.deleted = true;
+    }
+    SyncModeToActivePaneBuffer();
+    mode_ = Mode::Normal;
+    status_message_.clear();
+}
+
+void Editor::MepmlPresentTick() {
+    if (!present_.active) return;
+    const bool here = ActivePaneId() == present_.pane_id;
+    // The pane went on to show something else (:e, :b): the presentation
+    // is over, without taking the pane back.
+    if (here && CurPane().buffer_id != present_.view_buffer) {
+        const int shown = CurPane().buffer_id;
+        const CursorPos cur = CurPane().cursor;
+        const int scroll = CurPane().scroll_row;
+        MepmlPresentStop();
+        CurPane().buffer_id = shown;
+        CurPane().cursor = cur;
+        CurPane().scroll_row = scroll;
+        ClampCursor();
+        SyncModeToActivePaneBuffer();
+        return;
+    }
+    if (present_.source_buffer >= static_cast<int>(buffers_.size()) ||
+        buffers_[static_cast<size_t>(present_.source_buffer)].deleted) {
+        MepmlPresentStop();
+        return;
+    }
+    Buffer &vb = buffers_[static_cast<size_t>(present_.view_buffer)];
+    if (vb.lines != present_.view_lines) {
+        // An edit in caret mode: the view is the deck's, not a draft.
+        vb.lines = present_.view_lines;
+        vb.modified = false;
+        change_epoch_++;
+        if (mode_ == Mode::Insert) mode_ = Mode::Normal;
+        if (here) ClampCursor();
+        status_message_ = "The slides are read-only here: edit the source (q leaves the presentation)";
+    }
+    // Without caret mode nothing moves the cursor off its blank row (a
+    // click, the wheel, a drag): it would reveal the source under it.
+    if (here && !present_.caret && CurPane().buffer_id == present_.view_buffer &&
+        (CurPane().cursor.row != kPresentParkRow || CurPane().cursor.col != 0 || CurPane().scroll_row != 0)) {
+        CurPane().cursor = {kPresentParkRow, 0};
+        CurPane().scroll_row = 0;
+        if (mode_ == Mode::Visual || mode_ == Mode::VisualLine || mode_ == Mode::VisualBlock) mode_ = Mode::Normal;
+    }
+    // Full screen: the text sized to the screen, again whenever it changes
+    // size, until +/- says otherwise.
+    bool sized = false;
+    if (present_.fullscreen && present_.autofit) {
+        const int w = gfx::GetScreenWidth(), h = gfx::GetScreenHeight();
+        if ((w != present_.fit_w || h != present_.fit_h) && w > 0 && h > 0) {
+            present_.fit_w = w;
+            present_.fit_h = h;
+            present_.fit_px = std::min(static_cast<float>(h) / kPresentRows - 6.0f,
+                                       static_cast<float>(w) / (kPresentCols * 0.6f));
+            SetFontSizePx(present_.fit_px);
+            present_.page_px.clear();
+            present_.settled.clear();
+            present_.fit_checked = false;
+            present_.warm_pending = true;
+            sized = true;
+        }
+    }
+    // Prose is filled to the pane's width: again when that changes (the
+    // text size, full screen, the window).
+    if (here && CurPane().text_cols > 1 && CurPane().text_cols - 1 != present_.wrap_cols) {
+        present_.wrap_cols = CurPane().text_cols - 1;
+        MepmlPresentRebuild();
+        sized = true;
+    }
+    // A slide taller than the screen at that size gets smaller text, a
+    // step a frame (once the last step's layout has been drawn), down to
+    // half. Only ever smaller: a formula whose picture arrives late still
+    // gets its room.
+    if (GetFontSizePx() != present_.seen_px) {
+        present_.seen_px = GetFontSizePx();
+        sized = true;  // the pane has not been drawn at this size yet
+    }
+    if (!sized && here && present_.fullscreen && present_.autofit && present_.fit_px > 0.0f &&
+        CurPane().buffer_id == present_.view_buffer && MepmlPresentMathReady()) {
+        const Pane &pane = CurPane();
+        int slots = 0;
+        // Walked the way the draw loop walks: a formula's (or an html
+        // result's) further source rows are drawn by its first one.
+        for (int r = 0; r < vb.LineCount(); ++r) {
+            int first = 0;
+            if (RenderContaining(pane, vb, r, &first)) continue;
+            slots += PaneRowSlots(pane, vb, r, pane.text_cols);
+        }
+        if (slots > pane.visible_lines && GetFontSizePx() > present_.fit_px * 0.5f) {
+            SetFontSizePx(GetFontSizePx() / 1.08f);
+            present_.page_px[present_.page] = GetFontSizePx();
+        } else if (!present_.fit_checked) {
+            present_.fit_checked = true;
+            present_.page_px[present_.page] = GetFontSizePx();
+            present_.settled.insert(present_.page);
+        }
+    }
+    MepmlPresentUpdateReveal();
+    // Follow the source (a block that finished running, an edit in
+    // another pane) a couple of times a second.
+    const double now = gfx::GetTime();
+    if (now >= present_.next_source_check) {
+        present_.next_source_check = now + 0.5;
+        if (buffers_[static_cast<size_t>(present_.source_buffer)].lines != present_.source_lines) {
+            MepmlPresentRebuild();
+            present_.warm_pending = true;
+        }
+    }
+}
+
+bool Editor::HandleMepmlPresentInput() {
+    if (!present_.active || ActivePaneId() != present_.pane_id || CurPane().buffer_id != present_.view_buffer)
+        return false;
+    auto held = [](gfx::Key k) { return gfx::IsKeyPressed(k) || gfx::IsKeyPressedRepeat(k); };
+    const bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    const bool alt = gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt);
+    if (present_.caret) {
+        // (Ctrl-n / Ctrl-p come off the key queue in Normal mode, which
+        // reads every Ctrl combination from it: HandleNormalInput.)
+        // The presentation's own keys still work with a cursor (they are
+        // the presentation's, not vim's, while presenting): f, + = - 0, r
+        // and q. Read off the key state -- the typed-character queue
+        // belongs to Normal mode, which would then see nothing.
+        if (!ctrl && !alt) {
+            const bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+            int key = 0;
+            if (gfx::IsKeyPressed(gfx::Key::F) && !shift) key = 'f';
+            else if (held(gfx::Key::Equal)) key = shift ? '+' : '=';
+            else if (held(gfx::Key::Minus) && !shift) key = '-';
+            else if (gfx::IsKeyPressed(gfx::Key::Zero) && !shift) key = '0';
+            else if (gfx::IsKeyPressed(gfx::Key::R) && !shift) key = 'r';
+            else if (gfx::IsKeyPressed(gfx::Key::Q) && !shift) key = 'q';
+            if (key != 0) {
+                while (gfx::GetCharPressed() > 0) {
+                }
+                MepmlPresentKey(key);
+                return true;
+            }
+        }
+        // Normal mode's own keys: C-c C-c runs the block under the cursor
+        // (TryRunOrgBabelAtCursor), and P goes back to presenting (its
+        // typed character is Normal mode's, HandleNormalInput).
+        return false;
+    }
+    // Ctrl combinations come off the key queue, as Normal mode reads them
+    // (a key-down poll misses them on a slow frame): Ctrl-n / Ctrl-p step
+    // through the slides, and C-c C-c runs every code block the slide shows.
+    if (ctrl && !alt) {
+        int ctrl_step = 0;
+        bool ours = false;
+        for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+            if (key == gfx::Key::N) ctrl_step = 1, ours = true;
+            else if (key == gfx::Key::P) ctrl_step = -1, ours = true;
+            else if (key == gfx::Key::C) {
+                ours = true;
+                if (pending_ctrl_c_ && (now_ - pending_ctrl_c_time_) < kCtrlCChordTimeoutSec) {
+                    pending_ctrl_c_ = false;
+                    MepmlPresentRunBlocks(-1);
+                } else {
+                    pending_ctrl_c_ = true;
+                    pending_ctrl_c_time_ = now_;
+                }
+            }
+        }
+        if (held(gfx::Key::N) && !ours) ctrl_step = 1, ours = true;  // held down: repeat
+        if (held(gfx::Key::P) && !ours) ctrl_step = -1, ours = true;
+        if (ctrl_step != 0) MepmlPresentGoto(present_.page + ctrl_step);
+        while (gfx::GetCharPressed() > 0) {
+        }
+        if (ours) return true;
+    }
+    if (ctrl || alt) return false;  // window/pane chords still work
+    int step = 0;
+    if (held(gfx::Key::Right) || held(gfx::Key::Down) || held(gfx::Key::PageDown) || held(gfx::Key::Enter) ||
+        held(gfx::Key::KpEnter))
+        step = 1;
+    if (held(gfx::Key::Left) || held(gfx::Key::Up) || held(gfx::Key::PageUp) || held(gfx::Key::Backspace)) step = -1;
+    if (gfx::IsKeyPressed(gfx::Key::Home)) MepmlPresentGoto(0);
+    if (gfx::IsKeyPressed(gfx::Key::End)) MepmlPresentGoto(MepmlPresentPageCount() - 1);
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+        MepmlPresentStop();
+        return true;
+    }
+    int ch = 0;
+    while ((ch = gfx::GetCharPressed()) > 0) {
+        switch (ch) {
+            case ' ': case 'l': step = 1; break;
+            case 'h': step = -1; break;
+            // n: normal mode -- the cursor on the slide, at its first
+            // character, and vim's keys (P comes back).
+            case 'n':
+                MepmlPresentSetCaret(true);
+                while (gfx::GetCharPressed() > 0) {
+                }
+                return true;
+            case 'g': MepmlPresentGoto(0); break;
+            case 'G': MepmlPresentGoto(MepmlPresentPageCount() - 1); break;
+            case 'f': case 'r': case '+': case '=': case '-': case '0': MepmlPresentKey(ch); break;
+            case 'q':
+                MepmlPresentKey(ch);
+                while (gfx::GetCharPressed() > 0) {
+                }
+                return true;
+            case ':':
+                EnterCommand();
+                while (gfx::GetCharPressed() > 0) {
+                }
+                return true;
+            default: break;
+        }
+        if (!present_.active) return true;
+    }
+    if (step != 0) MepmlPresentGoto(present_.page + step);
+    return true;
+}
+
+void Editor::MepmlPresentKey(int ch) {
+    switch (ch) {
+        case 'f': MepmlPresentSetFullscreen(!present_.fullscreen); break;
+        case 'r': MepmlPresentRebuild(); break;
+        case 'q': MepmlPresentStop(); break;
+        case '+': case '=': case '-': case '0':
+            if (present_.saved_font_px <= 0.0f) present_.saved_font_px = GetFontSizePx();
+            present_.autofit = false;
+            present_.page_px.clear();
+            present_.settled.clear();
+            present_.warm_pending = true;
+            if (ch == '0') {
+                // Back to the size before the presentation, or in full
+                // screen to the size that fits it.
+                present_.autofit = present_.fullscreen;
+                present_.fit_w = present_.fit_h = -1;
+                if (!present_.fullscreen) SetFontSizePx(present_.saved_font_px);
+            } else {
+                SetFontSizePx(ch == '-' ? GetFontSizePx() / kPresentFontStep : GetFontSizePx() * kPresentFontStep);
+            }
+            break;
+        default: break;
+    }
+}
+
+int Editor::MepmlPresentSourceFence(int run_id) const {
+    int code_fence = -1;
+    std::string code;
+    int buffer = -1;
+    if (auto g = mepml_guis_.find(run_id); g != mepml_guis_.end()) {
+        code = g->second.code;
+        code_fence = g->second.fence_row;
+        buffer = g->second.buffer_id;
+    } else if (auto t = mepml_terms_.find(run_id); t != mepml_terms_.end()) {
+        code = t->second.code;
+        code_fence = t->second.fence_row;
+        buffer = t->second.buffer_id;
+    }
+    if (buffer < 0 || buffer >= static_cast<int>(buffers_.size())) return -1;
+    // Where its block is now (the document may have changed above it).
+    const mepml::Document doc = mepml::Parse(buffers_[static_cast<size_t>(buffer)].lines);
+    const mepml::Block *blk = BlockForRun(doc, code, code_fence);
+    return blk ? blk->code_line_start - 1 : -1;
+}
+
+int Editor::MepmlPresentRunningAt(int fence) const {
+    if (!present_.active) return -1;
+    for (const auto &kv : mepml_guis_)
+        if (kv.second.buffer_id == present_.source_buffer && MepmlPresentSourceFence(kv.first) == fence) return kv.first;
+    for (const auto &kv : mepml_terms_)
+        if (kv.second.buffer_id == present_.source_buffer && MepmlPresentSourceFence(kv.first) == fence) return kv.first;
+    return -1;
+}
+
+void Editor::MepmlPresentStartFences(const std::vector<int> &fences) {
+    if (fences.empty() || !lua_ || !present_.active) return;
+    // mep_mepml_run_block reads the block and the file from the current
+    // buffer and remembers which buffer to write back to, so the source is
+    // current just while each run starts.
+    const int view = CurPane().buffer_id;
+    const CursorPos cursor = CurPane().cursor;
+    const int scroll = CurPane().scroll_row;
+    CurPane().buffer_id = present_.source_buffer;
+    for (int fence : fences) lua_->DoString("mep.mepml_run_block_at(" + std::to_string(fence + 1) + ")");
+    CurPane().buffer_id = view;
+    CurPane().cursor = cursor;
+    CurPane().scroll_row = scroll;
+}
+
+void Editor::MepmlPresentAutoStart() {
+    if (!present_.active || present_.pages.empty()) return;
+    // A web page or app on the slide is the slide's: it runs (live, under
+    // the mouse) as soon as the slide is shown, rather than as its last
+    // picture. It keeps running while other slides show; the
+    // presentation's end stops it.
+    std::vector<int> start;
+    for (const mepml::PresentationPage::Shown &sh : present_.pages[static_cast<size_t>(present_.page)].blocks) {
+        if (!sh.live || sh.source_fence < 0 || MepmlPresentRunningAt(sh.source_fence) >= 0) continue;
+        start.push_back(sh.source_fence);
+        present_.auto_started.insert(sh.source_fence);
+    }
+    MepmlPresentStartFences(start);
+}
+
+bool Editor::MepmlPresentRunBlocks(int view_row) {
+    if (!present_.active || present_.pages.empty()) return false;
+    const mepml::PresentationPage &page = present_.pages[static_cast<size_t>(present_.page)];
+    // What can run from the slide: a block whose code it shows, or a live
+    // one (a web page, an app, a window) whose output it shows. The view's
+    // first row is the cursor's blank, so page line k is view row k + 1.
+    std::vector<int> fences;
+    for (const mepml::PresentationPage::Shown &sh : page.blocks) {
+        if (!sh.code && !sh.live) continue;
+        if (view_row >= 0 && (view_row < sh.first + 1 || view_row > sh.last + 1)) continue;
+        fences.push_back(sh.source_fence);
+    }
+    if (fences.empty()) {
+        status_message_ = view_row < 0 ? "Nothing on this slide to run" : "Not on a block the slide can run";
+        return false;
+    }
+    if (!lua_) return false;
+    // A program already running from one of them (a web app, a window): this
+    // stops it instead, so C-c C-c starts and stops a live block.
+    int stopped = 0;
+    std::vector<int> start;
+    for (int fence : fences) {
+        const int running = MepmlPresentRunningAt(fence);
+        if (running >= 0) {
+            MepmlTerminalStop(running);
+            present_.auto_started.erase(fence);
+            ++stopped;
+        } else {
+            start.push_back(fence);
+        }
+    }
+    // Run in the document: its block has the options the slide leaves out,
+    // and its results region is where they go (the slide follows).
+    // mep_mepml_run_block reads the block and the file from the current
+    // buffer and remembers which buffer to write back to, so the source is
+    // current just while each run starts.
+    MepmlPresentStartFences(start);
+    std::string msg;
+    if (!start.empty()) msg = "Running " + std::to_string(start.size()) + (start.size() == 1 ? " block" : " blocks");
+    if (stopped > 0) msg += std::string(msg.empty() ? "Stopping " : ", stopping ") + std::to_string(stopped);
+    status_message_ = msg;
+    return true;
+}
+
+std::vector<std::pair<std::string, float>> Editor::MepmlPresentTakeWarm() {
+    std::vector<std::pair<std::string, float>> out;
+    if (!present_.active || !present_.warm_pending || present_.pages.empty()) return out;
+    // Full screen renders at the size the screen gets, known once the
+    // window has become full screen; ask again then.
+    const bool fitted = present_.fullscreen && present_.autofit;
+    if (fitted && present_.fit_px <= 0.0f) return out;
+    present_.warm_pending = false;
+    const int n = static_cast<int>(present_.pages.size());
+    std::set<std::pair<std::string, float>> seen;
+    // The slide shown, the ones after it in order, then those before.
+    for (int k = 0; k < n; ++k) {
+        const int page = (present_.page + k) % n;
+        float px = GetFontSizePx();
+        if (fitted) {
+            auto known = present_.page_px.find(page);
+            px = known != present_.page_px.end() ? known->second : present_.fit_px;
+        }
+        const std::vector<std::string> &lines = present_.pages[static_cast<size_t>(page)].lines;
+        const OrgLatexFragments frags = MepmlLatexFragmentsOf(mepml::Parse(lines), lines);
+        auto add = [&](const std::string &body) {
+            if (seen.insert({body, px}).second) out.emplace_back(body, px);
+        };
+        for (const OrgLatexBlockFragment &b : frags.blocks) add(b.body);
+        for (const OrgLatexInlineFragment &f : frags.inlines) add(f.body);
+    }
+    return out;
 }

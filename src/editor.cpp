@@ -4660,6 +4660,9 @@ void Editor::HandleInput() {
     }
     if (HandleMod1Shortcuts()) return;
     if (HandleTabShortcuts()) return;
+    // A mepml presentation's slide keys (h/l, arrows ...) come before
+    // Normal mode's, unless its caret mode is on.
+    if (mode_ == Mode::Normal && HandleMepmlPresentInput()) return;
     switch (mode_) {
         case Mode::Normal:
             HandleNormalInput();
@@ -17897,11 +17900,21 @@ Json Editor::SplitStateJson(const Workspace &ws, const SplitNode &node) const {
         j["dir"] = "leaf";
         Json pj = Json::Object();
         pj["id"] = pane.id;
+        // A pane presenting a mepml deck (MepmlPresentStart) is saved as
+        // its document, at the slide it shows: the view is never on disk.
+        int bid = pane.buffer_id;
+        CursorPos cursor = pane.cursor;
+        int scroll = pane.scroll_row;
+        if (present_.active && bid == present_.view_buffer) {
+            bid = present_.source_buffer;
+            const int line = present_.pages.empty() ? 0 : std::max(0, present_.pages[static_cast<size_t>(present_.page)].source_line);
+            cursor = {line, 0};
+            scroll = line;
+        }
         pj["cursor"] = Json::Array();
-        pj["cursor"].push_back(Json(pane.cursor.row));
-        pj["cursor"].push_back(Json(pane.cursor.col));
-        pj["scroll"] = pane.scroll_row;
-        const int bid = pane.buffer_id;
+        pj["cursor"].push_back(Json(cursor.row));
+        pj["cursor"].push_back(Json(cursor.col));
+        pj["scroll"] = scroll;
         const bool valid = bid >= 0 && bid < static_cast<int>(buffers_.size());
         if (valid && GetTerminal(bid)) {
             pj["kind"] = "terminal";
@@ -17915,7 +17928,7 @@ Json Editor::SplitStateJson(const Workspace &ws, const SplitNode &node) const {
         for (int other : pane.buffer_tabs) {
             if (other == bid || other < 0 || other >= static_cast<int>(buffers_.size())) continue;
             const Buffer &b = buffers_[static_cast<size_t>(other)];
-            if (b.deleted || b.filename.empty() || GetTerminal(other)) continue;
+            if (b.deleted || b.filename.empty() || b.mepml_present_view || GetTerminal(other)) continue;
             tabs.push_back(Json(RelativeToRoot(b.filename, ws.root)));
         }
         pj["buffer_tabs"] = std::move(tabs);
@@ -19728,8 +19741,11 @@ void Editor::HandleNormalInput() {
     // here), worth remembering if either is ever reported flaky too.
     bool ctrl_v = false, ctrl_d = false, ctrl_u = false, ctrl_f = false, ctrl_b = false, ctrl_a = false,
          ctrl_x = false, ctrl_o = false, ctrl_i = false, ctrl_c = false, ctrl_e = false, ctrl_k = false;
+    int ctrl_np = 0;  // Ctrl-N (+1) / Ctrl-P (-1): only a presented mepml slide binds them (below)
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (!ctrl) continue;
+        if (key == gfx::Key::N) ctrl_np = 1;
+        else if (key == gfx::Key::P) ctrl_np = -1;
         if (key == gfx::Key::V) ctrl_v = true;
         else if (key == gfx::Key::D) ctrl_d = true;
         else if (key == gfx::Key::U) ctrl_u = true;
@@ -19742,6 +19758,13 @@ void Editor::HandleNormalInput() {
         else if (key == gfx::Key::C) ctrl_c = true;
         else if (key == gfx::Key::E) ctrl_e = true;
         else if (key == gfx::Key::K) ctrl_k = true;
+    }
+    // A presented mepml slide with its cursor showing (caret mode): Ctrl-N /
+    // Ctrl-P change slide, as they do without the cursor
+    // (Editor::HandleMepmlPresentInput).
+    if (ctrl_np != 0 && present_.active && CurPane().buffer_id == present_.view_buffer) {
+        MepmlPresentGoto(present_.page + ctrl_np);
+        return;
     }
     // Held-repeat for the four page-scroll combos only (D/U/F/B) -- not
     // the queue-drained loop above (which only ever sees a key's initial
@@ -21192,6 +21215,12 @@ bool Editor::DispatchNormalKey(int cp) {
             break;
         }
         case 'P': {
+            // On a presented mepml slide, P is "back to presenting" (out of
+            // the normal mode `n` entered, Editor::HandleMepmlPresentInput).
+            if (present_.active && CurPane().buffer_id == present_.view_buffer) {
+                MepmlPresentSetCaret(false);
+                break;
+            }
             char reg_name = 0;
             bool append = false;
             TakeRegisterSpec(&reg_name, &append);
@@ -23858,8 +23887,16 @@ bool Editor::ToggleOrgLatex() {
 void Editor::AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path, int first_row,
                                    int last_row) {
     if (row < 0 || row >= Buf().LineCount()) return;
-    Buf().org_latex_inline[row].push_back(
-        {col_start, col_end, path, first_row < 0 ? row : first_row, last_row < 0 ? row : last_row});
+    // A fragment registered again (a presentation's stand-in render
+    // replaced by tectonic's) takes its old span's place.
+    std::vector<Buffer::OrgLatexInlineSpan> &spans = Buf().org_latex_inline[row];
+    for (Buffer::OrgLatexInlineSpan &sp : spans) {
+        if (sp.col_start == col_start && sp.col_end == col_end) {
+            sp = {col_start, col_end, path, first_row < 0 ? row : first_row, last_row < 0 ? row : last_row};
+            return;
+        }
+    }
+    spans.push_back({col_start, col_end, path, first_row < 0 ? row : first_row, last_row < 0 ? row : last_row});
 }
 
 bool Editor::OrgLatexInlineRevealed(const Buffer::OrgLatexInlineSpan &span, int row, int cursor_row) const {
@@ -27837,6 +27874,12 @@ void Editor::JumpListForward() {
 }
 
 void Editor::TryRunOrgBabelAtCursor() {
+    // A presented slide's code runs as the document's block (its options
+    // and results are the document's, not the slide's).
+    if (present_.active && CurPane().buffer_id == present_.view_buffer) {
+        MepmlPresentRunBlocks(CurPane().cursor.row);
+        return;
+    }
     const std::string &filename = Buf().filename;
     // C-c C-c in a mepml document runs its code block (kBuiltinMepml).
     if (IsMepmlBuffer()) {
@@ -32328,6 +32371,10 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
         buf.modified = false;
         save_epoch_++;
         return true;
+    }
+    if (buf.mepml_present_view) {
+        status_message_ = "The presentation's slides are generated from its source; save that instead";
+        return false;
     }
     if (path.empty()) {
         status_message_ = "E32: No file name";

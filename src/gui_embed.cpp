@@ -174,6 +174,7 @@ void EmbeddedApp::Tick(double now, bool allow_unowned) {
     if (!window_) {
         if (pid_ > 0) window_ = backend_.Adopt(ProcessTree(pid_), allow_unowned);
         if (window_) {
+            window_->SetPointerThrough(pointer_through_);
             state_ = State::Shown;
             title_ = window_->Title();
             last_snapshot_ = -1.0;
@@ -196,6 +197,12 @@ void EmbeddedApp::Tick(double now, bool allow_unowned) {
             focused_ = false;
             focus_lost_ = true;
         }
+    } else if (pointer_through_ && shown_ && window_->HasFocus()) {
+        // Clicked into (the pointer reaches it directly): it has taken the
+        // keyboard, so it is focused -- Ctrl-\ or a click outside gives it back.
+        window_->Focus(true);
+        focused_ = true;
+        focus_gained_ = true;
     }
     // (What was on screen: a window clipped by the pane's edge leaves the
     // part that showed.)
@@ -243,6 +250,17 @@ bool EmbeddedApp::Focus(bool on) {
     window_->Focus(on);
     focused_ = on;
     return true;
+}
+
+void EmbeddedApp::SetPointerThrough(bool on) {
+    pointer_through_ = on;
+    if (window_) window_->SetPointerThrough(on);
+}
+
+bool EmbeddedApp::TakeFocusGained() {
+    const bool gained = focus_gained_;
+    focus_gained_ = false;
+    return gained;
 }
 
 bool EmbeddedApp::TakeFocusLost() {

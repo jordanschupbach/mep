@@ -12827,8 +12827,11 @@ const char *kBuiltinSpell =
     "  org=true,tex=true,latex=true,rst=true,adoc=true,asciidoc=true,mepml=true,wiki=true}\n"
     "local function mep_spell_active_here()\n"
     "  if not mep.spell_ready() or not mep.spell_enabled() then return false end\n"
-    "  if not mep.spell_prose_only then return true end\n"
     "  local fn = mep.filename() or ''\n"
+    // A mepml presentation's slides (Editor::MepmlPresentStart) are shown,
+    // not edited: no squiggles on them.
+    "  if fn:match('%.present%.mepml$') then return false end\n"
+    "  if not mep.spell_prose_only then return true end\n"
     "  local ext = fn:match('%.([%w]+)$')\n"
     "  if not ext then return true end\n"
     "  return mep_spell_prose[ext:lower()] == true\n"
@@ -18491,6 +18494,8 @@ const char *kBuiltinOrgLatex =
     "end\n"
     "\n"
     // `row` (1-based, optional) orders the queue; -1 goes first.
+    // `font_px` (optional) renders for that text size rather than the
+    // current one (a presentation rendering its slides ahead).
     // `alive` (optional) says whether on_done still wants the answer. A
     // rescan runs on every edit and asks again for every fragment still
     // waiting, so without it each request left one more callback behind
@@ -18503,8 +18508,8 @@ const char *kBuiltinOrgLatex =
     "  end\n"
     "  return false\n"
     "end\n"
-    "function mep_org_latex_render(tex_body, on_done, row, alive)\n"
-    "  local dpi = math.floor(72 * mep.font_size() / 11 + 0.5)\n"
+    "function mep_org_latex_render(tex_body, on_done, row, alive, font_px, no_stand_in)\n"
+    "  local dpi = math.floor(72 * (font_px or mep.font_size()) / 11 + 0.5)\n"
     "  local key = mep_org_latex_hash(tex_body .. '|' .. dpi)\n"
     "  local dir = mep_org_latex_cache_dir()\n"
     "  local png_path = dir .. '/' .. key .. '.png'\n"
@@ -18515,6 +18520,15 @@ const char *kBuiltinOrgLatex =
     "  if mep_org_babel_file_exists(png_path) then\n"
     "    on_done(png_path)\n"
     "    return\n"
+    "  end\n"
+    // A presentation never shows TeX source: until tectonic's render is
+    // in, the editor's own typesetter stands in (instantly, in-process),
+    // and on_done is called again with the real one when it arrives.
+    "  if not no_stand_in and mep.mepml_present_info and mep.mepml_present_info() then\n"
+    "    local fast = dir .. '/' .. key .. '.fast.png'\n"
+    "    if mep_org_babel_file_exists(fast) or mep.math_render_fast(tex_body, font_px or mep.font_size(), fast) then\n"
+    "      on_done(fast)\n"
+    "    end\n"
     "  end\n"
     "  local waiter = {cb = on_done, alive = alive}\n"
     "  local pending = mep_org_latex_inflight[key]\n"
@@ -24279,6 +24293,94 @@ const char *kBuiltinMepml =
     "-- Runs the code block covering 1-based `row` and writes its output into\n"
     "-- the block's results region; `on_done` (optional) is called once that\n"
     "-- has happened or the block was skipped, so blocks can be chained.\n"
+    // results=web (Editor::MepmlGuiStart shows the window): a page in a
+    // browser's own window inside the block's results. MEP_WEB_RUN is the
+    // program that window belongs to: given a page's URL it opens it;
+    // given "" and a server's command line, it starts the server, waits
+    // for the first http(s) address the server prints (Shiny's "Listening
+    // on http://127.0.0.1:...") and opens that, and stops the server when
+    // the window closes (a stop asks it to close; a kill takes the whole
+    // process group). The browser is the first chromium-family one on
+    // PATH, or $MEP_WEB_BROWSER -- an --app window is a bare page -- on a
+    // throwaway profile of its own.
+    "local MEP_WEB_RUN = [==[\n"
+    "url=\"$1\"; shift\n"
+    // A profile of its own: a browser started on a profile already in use
+    // hands its page to that browser and exits, so two pages at once (or
+    // one beside the user's own browser) would never get a window here.
+    "profile=$(mktemp -d \"${TMPDIR:-/tmp}/mep-web.XXXXXX\")\n"
+    "srv=''; log=''; br=''\n"
+    "cleanup() { [ -n \"$br\" ] && kill $br 2>/dev/null; [ -n \"$srv\" ] && kill $srv 2>/dev/null; [ -n \"$log\" ] && rm -f \"$log\"; rm -rf \"$profile\"; }\n"
+    "trap cleanup EXIT\n"
+    "trap 'exit 143' INT TERM HUP\n"
+    "if [ -z \"$url\" ]; then\n"
+    "  log=$(mktemp)\n"
+    "  \"$@\" >\"$log\" 2>&1 &\n"
+    "  srv=$!\n"
+    "  i=0\n"
+    "  while [ $i -lt 1200 ]; do\n"
+    "    url=$(grep -o -m1 'https\\{0,1\\}://[^ \"'\"'\"'<>]*' \"$log\" | head -n1)\n"
+    "    [ -n \"$url\" ] && break\n"
+    "    if ! kill -0 $srv 2>/dev/null; then cat \"$log\"; echo '[the program ended without printing a web address]'; exit 1; fi\n"
+    "    sleep 0.1; i=$((i+1))\n"
+    "  done\n"
+    "  if [ -z \"$url\" ]; then cat \"$log\"; echo '[no web address after two minutes]'; exit 1; fi\n"
+    "fi\n"
+    "browser=''\n"
+    "for b in \"$MEP_WEB_BROWSER\" chromium chromium-browser google-chrome google-chrome-stable brave-browser; do\n"
+    "  if [ -n \"$b\" ] && command -v \"$b\" >/dev/null 2>&1; then browser=$b; break; fi\n"
+    "done\n"
+    "if [ -z \"$browser\" ]; then echo '[no chromium-family browser on PATH: set MEP_WEB_BROWSER]'; exit 1; fi\n"
+    // In the background, waited for: a signal (a stop, or mep exiting --
+    // its jobs get SIGTERM then) interrupts `wait`, so the trap closes the
+    // browser too instead of leaving it behind.
+    "\"$browser\" --app=\"$url\" --user-data-dir=\"$profile\" --no-first-run --no-default-browser-check \\\n"
+    "  --disable-gpu --disable-session-crashed-bubble >/dev/null 2>&1 &\n"
+    "br=$!\n"
+    "wait $br\n"
+    "]==]\n"
+    "local function mep_mepml_web_hash(s)\n"
+    "  local h = 2166136261\n"
+    "  for i = 1, #s do h = ((h ~ s:byte(i)) * 16777619) & 0xffffffff end\n"
+    "  return string.format('%08x', h)\n"
+    "end\n"
+    "function mep_mepml_run_web(blk, lang, on_done)\n"
+    "  on_done = on_done or function() end\n"
+    "  local buf = mep.current_buffer()\n"
+    "  local dir = mep_mepml_dir(mep.filename())\n"
+    "  if lang == 'html' then\n"
+    // The page sits beside the document (a hidden file), so the paths it
+    // names -- a script, a picture -- are the document's.
+    "    local path = dir .. '/.mep-web-' .. mep_mepml_web_hash(blk.code) .. '.html'\n"
+    "    local f = io.open(path, 'w')\n"
+    "    if not f then mep.notify('mepml: cannot write ' .. path, 'warn') on_done() return end\n"
+    "    f:write(blk.code)\n"
+    "    f:close()\n"
+    "    if path:sub(1, 1) ~= '/' then path = (os.getenv('PWD') or '.') .. '/' .. path end\n"
+    "    mep.mepml_gui_start(buf, blk.fence_row, {'/bin/sh', '-c', MEP_WEB_RUN, 'mep-web', 'file://' .. path}, {})\n"
+    "    on_done()\n"
+    "    return\n"
+    "  end\n"
+    "  local args = {}\n"
+    "  for _, o in ipairs(blk.option_list) do args[#args + 1] = ':' .. o.name .. ' ' .. o.value end\n"
+    "  local args_str = table.concat(args, ' ')\n"
+    "  local lang_def, exe = mep_org_babel_resolve_lang(lang, args_str)\n"
+    "  if not lang_def then mep.notify('mepml: ' .. tostring(exe), 'warn') on_done() return end\n"
+    "  local script = mep_org_babel_prepare_script(lang, lang_def, {}, mep_mepml_split(blk.code), args_str, {}, nil)\n"
+    "  mep_org_babel_prepare_exec(lang_def, exe, script, args_str, dir, function(argv, extra, stage)\n"
+    "    if not argv then\n"
+    "      mep.notify('mepml: ' .. tostring(stage or 'build') .. ' failed', 'warn')\n"
+    "      mep.mepml_splice_results(buf, blk.fence_row, blk.code, table.concat(extra or {}, '\\n'))\n"
+    "      on_done()\n"
+    "      return\n"
+    "    end\n"
+    "    local cmd = {'/bin/sh', '-c', MEP_WEB_RUN, 'mep-web', ''}\n"
+    "    for _, a in ipairs(argv) do cmd[#cmd + 1] = a end\n"
+    "    mep.notify('Starting the ' .. lang .. ' web app...')\n"
+    "    mep.mepml_gui_start(buf, blk.fence_row, cmd, extra)\n"
+    "    on_done()\n"
+    "  end)\n"
+    "end\n"
     "local function mep_mepml_run_block(row, on_done)\n"
     "  on_done = on_done or function() end\n"
     "  local blk = mep.mepml_block_at(row)\n"
@@ -24293,6 +24395,9 @@ const char *kBuiltinMepml =
     "  -- An exec block (or a shell block with results=terminal) runs as a\n"
     "  -- program in a terminal inside its results, not as a batch job.\n"
     "  local res = tostring(blk.options.results or blk.options.output or ''):lower()\n"
+    "  -- results=web: what the block makes is a web page -- an html block is\n"
+    "  -- the page, any other block a program serving one (a Shiny app ...).\n"
+    "  if res == 'web' or res == 'app' then mep_mepml_run_web(blk, lang, on_done) return end\n"
     "  -- An exec-gui block's program opens a window, shown inside its results.\n"
     "  if lang == 'exec-gui' or lang == 'gui' then\n"
     "    mep.mepml_gui_start(mep.current_buffer(), blk.fence_row)\n"
@@ -24408,6 +24513,9 @@ const char *kBuiltinMepml =
     "  end, dir)\n"
     "end\n"
     "function mep.mepml_execute() mep_mepml_run_block((mep.cursor())) end\n"
+    // The block at 1-based `row` of the current buffer (a presentation runs
+    // the document's block for the slide's, Editor::MepmlPresentRunBlocks).
+    "function mep.mepml_run_block_at(row) mep_mepml_run_block(row) end\n"
     "mep.command('MepmlExecute', mep.mepml_execute)\n"
     "\n"
     "-- Every code block in the document, top to bottom, each started only once\n"
@@ -24596,6 +24704,31 @@ const char *kBuiltinMepml =
     "end\n"
     "mep.command('MepmlHeaderToggle', mep.mepml_header_toggle_ui)\n"
     "mep.command('MepmlFoldsRecompute', mep.mepml_folds)\n"
+    // The presentation view (Editor::MepmlPresentStart): :MepmlPresent
+    // [fill|full|stop], starting at the slide the cursor is on.
+    "function mep.mepml_present_ui(mode)\n"
+    "  local ok, err = mep.mepml_present(mode)\n"
+    "  if not ok then mep.notify(err, 'warn') end\n"
+    "end\n"
+    // Every slide's maths is rendered ahead, in the background, the slide
+    // shown first: turning to a slide then finds its formulas in the
+    // cache instead of starting tectonic. Queued behind whatever is on
+    // screen (rows past any real one), dropped once nobody presents.
+    "mep.on_frame(function()\n"
+    "  local list = mep.mepml_present_warm()\n"
+    "  if not list or not mep_org_latex_render or not mep.org_latex_visible() then return end\n"
+    "  local alive = function() return mep.mepml_present_info() ~= nil end\n"
+    "  for i, item in ipairs(list) do\n"
+    "    mep_org_latex_render(item.tex, function() end, 1000000 + i, alive, item.px, true)\n"
+    "  end\n"
+    "end)\n"
+    "mep.command('MepmlPresent', function(args)\n"
+    "  local a = ((args or ''):match('^%s*(.-)%s*$')):lower()\n"
+    "  if a == 'stop' or a == 'off' then mep.mepml_present_stop() return end\n"
+    "  if a == '' or a == 'fill' or a == 'max' then mep.mepml_present_ui('fill') return end\n"
+    "  if a == 'full' or a == 'fullscreen' then mep.mepml_present_ui('full') return end\n"
+    "  mep.notify('MepmlPresent [fill|full|stop]', 'warn')\n"
+    "end)\n"
     "\n"
     "mep.leader_group('k', 'mepml', 0xf121, 'Cyan')\n"
     "mep.leader_map('kx', 'mepml: run code block at cursor', mep.mepml_execute)\n"
@@ -24607,6 +24740,8 @@ const char *kBuiltinMepml =
     "mep.leader_map('ks', 'mepml: stop the running block', mep.mepml_stop)\n"
     "mep.leader_map('kt', 'mepml: type into the running block', mep.mepml_terminal)\n"
     "mep.leader_map('kh', 'mepml: fold/unfold the document header', mep.mepml_header_toggle_ui)\n"
+    "mep.leader_map('kp', 'mepml: present the slides (fill the editor)', function() mep.mepml_present_ui('fill') end)\n"
+    "mep.leader_map('kP', 'mepml: present the slides full screen', function() mep.mepml_present_ui('full') end)\n"
     "mep.leader_map('kl', 'mepml: follow link', mep.mepml_link_follow)\n"
     "mep.leader_map('km', 'mepml: toggle markup concealment', function()\n"
     "  local visible = mep.org_conceal_toggle()\n"
@@ -36967,6 +37102,47 @@ bool RenderMathPicture(const std::string &tex, bool display, double pt, mepml::M
     return true;
 }
 
+// The LaTeX preview's instant stand-in (mep.math_render_fast, used while a
+// mepml presentation waits for tectonic): `body` -- `$..$`, `\(..\)`,
+// `\[..\]` or `$$..$$`, as mep_org_latex_render gets it -- set by the
+// editor's own typesetter at `px` and written to `path` as a PNG in the
+// shape tectonic+pdftoppm's are (black ink on white, see
+// GetOrLoadOrgLatexTexture), so the same texture path draws either.
+// False when the typesetter cannot set it (the slide then waits).
+bool RenderMathFastPng(const std::string &body, float px, const std::string &path) {
+    std::string tex = body;
+    bool display = false;
+    auto strip = [&tex](const char *open, const char *close) {
+        const size_t lo = std::strlen(open), lc = std::strlen(close);
+        if (tex.size() >= lo + lc && tex.compare(0, lo, open) == 0 && tex.compare(tex.size() - lc, lc, close) == 0) {
+            tex = tex.substr(lo, tex.size() - lo - lc);
+            return true;
+        }
+        return false;
+    };
+    if (strip("\\[", "\\]") || strip("$$", "$$")) display = true;
+    else if (!strip("\\(", "\\)")) strip("$", "$");
+    const MathLayoutResult m = LayoutMathExpression(tex, px, display);
+    if (m.width <= 0.0f || m.height <= 0.0f) return false;
+    const int pad = std::max(2, static_cast<int>(px / 11.0f));
+    const int w = static_cast<int>(std::ceil(m.width)) + 2 * pad;
+    const int h = static_cast<int>(std::ceil(m.height)) + 2 * pad;
+    gfx::RenderTexture2D rt = gfx::LoadRenderTexture(w, h);
+    gfx::BeginTextureMode(rt);
+    gfx::ClearBackground(gfx::Color{255, 255, 255, 255});
+    DrawMathLayout(static_cast<float>(pad), static_cast<float>(pad), m, gfx::Color{0, 0, 0, 255});
+    gfx::EndTextureMode();
+    gfx::Image img = gfx::LoadImageFromTexture(rt.texture);
+    gfx::ImageFlipVertical(&img);  // render textures are stored bottom-up
+    const std::vector<unsigned char> png = gfx::ExportImageToMemory(img, ".png");
+    gfx::UnloadImage(img);
+    gfx::UnloadRenderTexture(rt);
+    if (png.empty()) return false;
+    std::ofstream f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char *>(png.data()), static_cast<std::streamsize>(png.size()));
+    return static_cast<bool>(f);
+}
+
 // --- HTML-preview pane layout ---------------------------------------------
 //
 // Word-wrap/positioning for an HtmlDoc, mirroring the exact split
@@ -45561,8 +45737,29 @@ void DrawPresPane(const Pane &pane, PresSession &sess, float x, float y, float w
 }
 
 void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_active) {
+    // A mepml presentation's slide (Editor::MepmlPresentStart): no header,
+    // a margin all round, the page number in the bottom one, and no cursor
+    // -- drawn as an inactive pane, which also reveals no markup under it --
+    // unless its caret mode is on.
+    const bool presenting = g_editor.IsMepmlPresentPane(pane.id, pane.buffer_id);
+    if (presenting) {
+        const float mx = std::round(std::min(w * 0.05f, g_char_width * 6.0f));
+        const float my = std::round(std::min(h * 0.04f, static_cast<float>(LineHeight())));
+        const float num_size = MenuFontSize();
+        const float bottom = std::max(my, num_size + 8.0f);
+        const std::string num =
+            std::to_string(g_editor.MepmlPresentPage() + 1) + " / " + std::to_string(g_editor.MepmlPresentPageCount());
+        const float num_w = MeasureUiText(num, num_size);
+        gfx::DrawTextEx(g_font, num.c_str(), gfx::Vector2{x + w - mx - num_w, y + h - bottom + (bottom - num_size) / 2.0f},
+                        num_size, 0, ResolveHlGroup("Comment"));
+        x += mx;
+        w -= 2.0f * mx;
+        y += my;
+        h -= my + bottom;
+        if (!g_editor.MepmlPresentCaret()) is_active = false;
+    }
     int line_height = LineHeight();
-    int header_h = PaneHeaderHeight();
+    int header_h = presenting ? 0 : PaneHeaderHeight();
     float font_size = MenuFontSize();
     // Captured inside the is_active cursor block below, consumed after
     // EndScissorMode() -- see the hover-tooltip comment down there.
@@ -45795,7 +45992,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             },
             nullptr, control_font_size, control_label_y);
     };
-    if (pane.buffer_tabs.size() > 1) {
+    if (presenting) {
+        // No header (header_h is 0).
+    } else if (pane.buffer_tabs.size() > 1) {
         // Per-pane buffer-tab strip: more than one buffer open in this pane
         // splits the header evenly, one filename chip per tab, highlighting
         // whichever is active -- takes over the header entirely regardless
@@ -48339,7 +48538,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // relativenumber off. Previously this whole gutter only existed at
     // all once :set number had reserved it, so every sign-producing
     // feature was invisible unless line numbers happened to be on too.
-    float sign_w = g_char_width;
+    // (A presented slide has no gutter at all: no git or diagnostic signs.)
+    float sign_w = presenting ? 0.0f : g_char_width;
     // :set number/relativenumber -- a right-aligned gutter wide enough
     // for the buffer's largest line number plus one trailing space,
     // drawn once here and used to shift every other x-coordinate below
@@ -50338,7 +50538,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
                 row_bg_plain = false;
             }
-            if ((!d.sign.empty() || !d.sign_shape.empty()) && d.priority > sign_priority) {
+            if ((!d.sign.empty() || !d.sign_shape.empty()) && d.priority > sign_priority && !presenting) {
                 sign = d.sign;
                 sign_shape = d.sign_shape;
                 sign_hl = d.sign_hl;
@@ -51932,7 +52132,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const OrgBlockPlay play = OrgBlockPlayFor(play_in);
             // Minimize (a bar) / restore (a plus), at the far right: folds
             // or unfolds the card's own fold, as za on its first row would.
-            if (card.fold_row >= 0 && card.end_row >= 0) {
+            // (A presented slide shows neither this nor the play button.)
+            if (card.fold_row >= 0 && card.end_row >= 0 && !presenting) {
                 const float min_w = std::max(20.0f, chip_h + 4.0f);
                 const gfx::Rectangle min_rect{right_limit - min_w, chip_y, min_w, chip_h};
                 if (min_rect.x >= cb.header.x + 9.0f + g_char_width * 3.0f) {
@@ -51994,7 +52195,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     play_left = stop_rect.x;
                 }
             }
-            if (play != OrgBlockPlay::kHidden && card.term_run < 0) {
+            if (play != OrgBlockPlay::kHidden && card.term_run < 0 && !presenting) {
                 const float play_w = std::max(20.0f, chip_h + 4.0f);
                 const gfx::Rectangle play_rect{right_limit - play_w, chip_y, play_w, chip_h};
                 // Dropped entirely rather than overlapping the kind chip,
@@ -52136,8 +52337,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // The language (or, for a non-src block, the block word) as a
             // filled chip -- the one piece that is always there, and the
             // block's identity at a glance.
+            // A presented slide's fence without a language is a block's
+            // output (mepml::PresentationPages).
             const std::string kind_text = !card.chip.empty() ? card.chip
-                                          : card.is_src      ? (card.lang.empty() ? std::string("src") : card.lang)
+                                          : card.is_src      ? (card.lang.empty() ? std::string(presenting ? "output" : "src")
+                                                                                  : card.lang)
                                                              : card.kind;
             const float kind_w = gfx::MeasureTextEx(g_font, kind_text.c_str(), g_font_size, 0).x + 14.0f;
             if (fits(kind_w)) {
@@ -52538,7 +52742,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         gfx::EndScissorMode();
     }
 
-    DrawPaneBorder(x, y, w, h, is_active);
+    if (!presenting) DrawPaneBorder(x, y, w, h, is_active);
+    // A slide whose maths is still rendering stays blank rather than show
+    // its TeX source (Editor::MepmlPresentShowing).
+    if (presenting && !g_editor.MepmlPresentShowing())
+        gfx::DrawRectangle(static_cast<int>(x) - 2, static_cast<int>(y) - 2, static_cast<int>(w) + 4, static_cast<int>(h) + 4,
+                           ResolveHlGroup("NormalBg"));
     // Hover tooltip (Phase 3 gap): recorded here but drawn later, once, by
     // the caller after the *entire* pane tree has finished -- text can be
     // much wider/taller (multi-line LSP docs) than a narrow split pane, so
@@ -53245,7 +53454,14 @@ void DrawEditor() {
     // zen is on) or transient overlays/toasts (functionally necessary
     // regardless of chrome visibility).
     int status_bar_height = zen ? 0 : line_height;
-    int command_bar_height = line_height;
+    // A full-screen mepml presentation is the slide alone: the command
+    // line appears only while one is being typed.
+    const bool present_full = g_editor.MepmlPresentFullscreen();
+    const Mode draw_mode = g_editor.CurrentMode();
+    int command_bar_height =
+        present_full && draw_mode != Mode::Command && draw_mode != Mode::SearchForward && draw_mode != Mode::SearchBackward
+            ? 0
+            : line_height;
     // Hidden by zen mode, or by the user tapping mod1 (Editor::
     // IsMenuBarVisible) -- either way the pane area below simply
     // grows into the freed row, since content_top is derived from
@@ -53267,7 +53483,9 @@ void DrawEditor() {
     // is wide enough to spare it -- pure cosmetic, doesn't touch the pane
     // tree's own geometry/state.
     float pane_x = 0.0f, pane_w;  // both branches below set pane_w before any read
-    if (zen) {
+    if (present_full) {
+        pane_w = static_cast<float>(screen_w);
+    } else if (zen) {
         float pad = std::max(0.0f, (static_cast<float>(screen_w) - 900.0f) / 2.0f);
         pane_x = pad;
         pane_w = static_cast<float>(screen_w) - 2 * pad;
@@ -55344,6 +55562,7 @@ void UpdateDrawFrame() {
         UDF_TIME("JobManager::PollAll", JobManager::Instance().PollAll());
         // mepml blocks whose program ended: their final screens become results.
         UDF_TIME("MepmlTerminalsTick", g_editor.MepmlTerminalsTick());
+        g_editor.MepmlPresentTick();
         UDF_TIME("TcpJsonRpc::PollAll", TcpJsonRpcManager::Instance().PollAll());
         UDF_TIME("agent::PollOnce", mep::agent::PollOnce(g_editor));
         UDF_TIME("DrainUiInputQueue", DrainUiInputQueueOneStep());
@@ -55562,6 +55781,15 @@ float GetCharWidthPx() { return g_char_width; }
 // lua_env.cpp's own mep.font_size() binding (kBuiltinOrgLatex's DPI/
 // slot-count math) reaches it through this accessor.
 float GetFontSizePx() { return g_font_size; }
+// mep.math_render_fast (lua_env.cpp): the typesetter's instant stand-in.
+bool MathRenderFastPng(const std::string &body, float px, const std::string &path) {
+    return RenderMathFastPng(body, px, path);
+}
+// Editor::MepmlPresent* sets the text size for a full-screen deck (and back).
+void SetFontSizePx(float px) {
+    PreviewFontSize(px);
+    RecomputeMenuLabelLayout();
+}
 
 // Same reasoning: EvictOrgInlineImageTexture (and the cache it operates on)
 // live in the anonymous namespace above; lua_env.cpp's own

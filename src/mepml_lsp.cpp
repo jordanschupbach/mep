@@ -628,7 +628,7 @@ const std::vector<Vocab> &CodeOptionVocab() {
         {"eval", "eval=false", "eval=false (or no, never) stops the block from running."},
         {"exports", "exports=results", "What the exports show of this block: code, results, both or none (the document's Exports: header by default)."},
         {"echo", "echo=false", "echo=false (knitr's name): the exports show the block's results but not its code."},
-        {"results", "results=html | markdown | terminal | exec | exec-gui", "results=html: the block prints HTML, kept as markup and drawn rendered. results=markdown (or md, asis): it prints Markdown, read as part of the document -- a table it prints is a table. results=terminal (a shell block): it runs as a program in a terminal inside its results. results=exec (any language): the block is a program -- compiled first when the language is -- run in a terminal inside its results that you can type into and stop. results=exec-gui: the same, for a program that opens a window: the window is shown inside the results."},
+        {"results", "results=html | markdown | terminal | exec | exec-gui | web", "results=html: the block prints HTML, kept as markup and drawn rendered. results=markdown (or md, asis): it prints Markdown, read as part of the document -- a table it prints is a table. results=terminal (a shell block): it runs as a program in a terminal inside its results. results=exec (any language): the block is a program -- compiled first when the language is -- run in a terminal inside its results that you can type into and stop. results=exec-gui: the same, for a program that opens a window: the window is shown inside the results. results=web: a web page, live in a browser window inside the results -- an html block is the page (d3 and the like); any other block is a program serving one (a Shiny app ...), opened at the first http address it prints. Stopping it keeps its picture as the results; an HTML export embeds an html block's page itself."},
         {"rows", "rows=16", "The height of an exec block's terminal, or of an exec-gui block's window, in rows (16 and 20 by default)."},
         {"cols", "cols=80", "The width of an exec block's terminal, or of an exec-gui block's window, in columns (the text width by default)."},
     };
@@ -1128,12 +1128,20 @@ MepmlLspHoverInfo MepmlLspHover(const std::vector<std::string> &lines, int line,
             for (const mepml::Option &o : b->options) t += "\n" + o.name + " = " + o.value.s;
             bool in_terminal = Lower(b->lang) == "exec" || Lower(b->lang) == "executable";
             bool in_window = Lower(b->lang) == "exec-gui" || Lower(b->lang) == "gui";
+            bool on_web = false;
             for (const mepml::Option &o : b->options) {
                 const std::string n = Lower(o.name), v = Lower(o.value.s);
                 if ((n == "results" || n == "output") && (v == "exec" || v == "terminal")) in_terminal = true;
                 if ((n == "results" || n == "output") && v == "exec-gui") in_window = true;
+                if ((n == "results" || n == "output") && (v == "web" || v == "app")) on_web = true;
             }
-            if (in_window)
+            if (on_web)
+                t += Lower(b->lang) == "html"
+                         ? "\n\nA web page: C-c C-c opens it in a browser window inside its results (a click types into it, "
+                           "C-c C-k stops it, keeping its picture). An HTML export embeds the page itself."
+                         : "\n\nA web app: C-c C-c runs it and opens the first http address it prints in a browser window inside "
+                           "its results (a click types into it, C-c C-k stops it and the server, keeping its picture).";
+            else if (in_window)
                 t += "\n\nC-c C-c runs it and shows its window inside its results: Enter or a click types into it, Ctrl-\\ returns, "
                      "C-c C-k stops it. Its last picture (and what it printed) is kept as the results.";
             else if (in_terminal)

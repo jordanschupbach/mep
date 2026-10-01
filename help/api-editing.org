@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (171)
+* The bindings (180)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -68,6 +68,8 @@ that it does nothing.
 | =mep.cad_zoom= | -- |
 | =mep.clipboard_get= | returns the system clipboard's text |
 | =mep.clipboard_set= | copies text to the system clipboard |
+| =mep.clock= | monotonic seconds, read at the call (unlike mep.now(), which is fixed per frame) |
+| =mep.cpu_count= | the number of hardware threads, at least 1 |
 | =mep.current_buffer= | returns the active pane's buffer id |
 | =mep.current_pane_id= | returns the active pane's id |
 | =mep.current_tab_id= | returns the active tab's stable id |
@@ -100,11 +102,18 @@ that it does nothing.
 | =mep.mepml_import= | converts a document to mepml and writes it |
 | =mep.mepml_link_at= | the target of the mepml link at a 1-based position |
 | =mep.mepml_outline= | lists the current mepml buffer's headings |
+| =mep.mepml_parse_ready= | whether the current mepml buffer's parse is ready |
+| =mep.mepml_present= | starts presenting the current mepml document's slides |
+| =mep.mepml_present_caret= | a cursor in the presented slide, or none |
+| =mep.mepml_present_goto= | shows page n of the running presentation |
+| =mep.mepml_present_info= | the running presentation's state, or nil |
+| =mep.mepml_present_stop= | ends the running mepml presentation |
 | =mep.mepml_scan= | re-parses the current mepml buffer and emits its decorations into `ns` |
 | =mep.mepml_splice_results= | -- |
 | =mep.mepml_terminal_focus= | sends the keyboard to the terminal of the block under the cursor |
 | =mep.mepml_terminal_start= | runs a block's program in a terminal inside its results |
 | =mep.mepml_terminal_stop= | stops the mepml block running under the cursor |
+| =mep.mepml_ts_code_blocks= | the code-block bodies of a mepml text, from its tree-sitter tree |
 | =mep.mod1_name= | returns the display name of whichever modifier is currently mod1 |
 | =mep.pres_add_shape= | selected |
 | =mep.pres_add_slide= | -- |

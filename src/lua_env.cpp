@@ -64,6 +64,8 @@ extern float GetCharWidthPx();
 // (g_font_size). Needed by kBuiltinOrgLatex's mep.font_size() binding; see
 // its own comment for why.
 extern float GetFontSizePx();
+// main.cpp: the editor's own typesetter, a LaTeX fragment to a PNG.
+extern bool MathRenderFastPng(const std::string &body, float px, const std::string &path);
 // Defined in main.cpp -- drops any cached inline-image texture for an
 // already-resolved path, forcing an unconditional reload on next use. See
 // its own comment (EvictOrgInlineImageTexture, main.cpp) for why
@@ -3181,6 +3183,130 @@ int l_mepml_header_toggle(lua_State *L) {
     const int r = GetEditor(L)->MepmlToggleHeaderFolds();
     if (r < 0) lua_pushnil(L);
     else lua_pushstring(L, r == 1 ? "folded" : "unfolded");
+    return 1;
+}
+
+// mep.mepml_present(mode?) -> true | nil, err: presents the current mepml
+// document's slides (Editor::MepmlPresentStart), `mode` "fill" (the
+// default: the pane takes the editor area) or "full" (the window goes full
+// screen). While presenting, switches between the two.
+/**
+ * @brief Implements mep.mepml_present(mode?): starts presenting the current mepml document's slides.
+ * @param L Lua state.
+ * @return Number of values pushed (1: true, or 2: nil and the reason).
+ */
+int l_mepml_present(lua_State *L) {
+    const std::string mode = luaL_optstring(L, 1, "fill");
+    if (mode != "fill" && mode != "full") return luaL_error(L, "mep.mepml_present: mode is 'fill' or 'full'");
+    std::string err;
+    if (GetEditor(L)->MepmlPresentStart(mode == "full", &err)) {
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+    lua_pushnil(L);
+    lua_pushstring(L, err.c_str());
+    return 2;
+}
+
+// mep.mepml_present_stop(): ends the presentation, back at the slide shown.
+/**
+ * @brief Implements mep.mepml_present_stop(): ends the running mepml presentation.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_mepml_present_stop(lua_State *L) {
+    GetEditor(L)->MepmlPresentStop();
+    return 0;
+}
+
+// mep.mepml_present_goto(n): shows page n (1-based; the title page is 1
+// when there is one).
+/**
+ * @brief Implements mep.mepml_present_goto(n): shows page n of the running presentation.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_mepml_present_goto(lua_State *L) {
+    GetEditor(L)->MepmlPresentGoto(static_cast<int>(luaL_checkinteger(L, 1)) - 1);
+    return 0;
+}
+
+// mep.mepml_present_caret(on): turns the presentation's caret mode on or off.
+/**
+ * @brief Implements mep.mepml_present_caret(on): a cursor in the presented slide, or none.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_mepml_present_caret(lua_State *L) {
+    GetEditor(L)->MepmlPresentSetCaret(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+// mep.mepml_present_info() -> {page=, pages=, mode=, caret=} | nil.
+/**
+ * @brief Implements mep.mepml_present_info(): the running presentation's state, or nil.
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_mepml_present_info(lua_State *L) {
+    const Editor *ed = GetEditor(L);
+    if (!ed->MepmlPresentActive()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushinteger(L, ed->MepmlPresentPage() + 1);
+    lua_setfield(L, -2, "page");
+    lua_pushinteger(L, ed->MepmlPresentPageCount());
+    lua_setfield(L, -2, "pages");
+    lua_pushstring(L, ed->MepmlPresentFullscreen() ? "full" : "fill");
+    lua_setfield(L, -2, "mode");
+    lua_pushboolean(L, ed->MepmlPresentCaret() ? 1 : 0);
+    lua_setfield(L, -2, "caret");
+    return 1;
+}
+
+// mep.math_render_fast(body, px, path) -> bool: sets a LaTeX fragment
+// (`$..$`, `\[..\]` ...) with the editor's own typesetter at `px` and
+// writes it to `path` as a PNG shaped like the tectonic renders -- the
+// instant stand-in a presentation shows while tectonic works.
+/**
+ * @brief Implements mep.math_render_fast(body, px, path): renders a math fragment in-process to a PNG.
+ * @param L Lua state.
+ * @return Number of values pushed (1: whether it was written).
+ */
+int l_math_render_fast(lua_State *L) {
+    const std::string body = luaL_checkstring(L, 1);
+    const float px = static_cast<float>(luaL_checknumber(L, 2));
+    const std::string path = luaL_checkstring(L, 3);
+    lua_pushboolean(L, MathRenderFastPng(body, px, path) ? 1 : 0);
+    return 1;
+}
+
+// mep.mepml_present_warm() -> {{tex=, px=}, ...} | nil: the running
+// presentation's maths to render ahead (Editor::MepmlPresentTakeWarm),
+// once per change; nil when there is nothing new.
+/**
+ * @brief Implements mep.mepml_present_warm(): the presentation's formulas to render ahead of time, or nil.
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_mepml_present_warm(lua_State *L) {
+    const std::vector<std::pair<std::string, float>> list = GetEditor(L)->MepmlPresentTakeWarm();
+    if (list.empty()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, static_cast<int>(list.size()), 0);
+    lua_Integer k = 1;
+    for (const auto &item : list) {
+        lua_createtable(L, 0, 2);
+        lua_pushstring(L, item.first.c_str());
+        lua_setfield(L, -2, "tex");
+        lua_pushnumber(L, static_cast<lua_Number>(item.second));
+        lua_setfield(L, -2, "px");
+        lua_rawseti(L, -2, k++);
+    }
     return 1;
 }
 
@@ -12992,6 +13118,13 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_export_html", l_mepml_export_html},
     {"mepml_export", l_mepml_export},
     {"mepml_header_toggle", l_mepml_header_toggle},
+    {"mepml_present", l_mepml_present},
+    {"mepml_present_stop", l_mepml_present_stop},
+    {"mepml_present_goto", l_mepml_present_goto},
+    {"mepml_present_caret", l_mepml_present_caret},
+    {"mepml_present_info", l_mepml_present_info},
+    {"mepml_present_warm", l_mepml_present_warm},
+    {"math_render_fast", l_math_render_fast},
     {"mepml_import", l_mepml_import},
     {"mepml_diagnostics", l_mepml_diagnostics},
     {"org_table_auto_align", l_org_table_auto_align},

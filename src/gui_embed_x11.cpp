@@ -7,7 +7,8 @@
 //      one whose _NET_WM_PID is the program or one of its children --
 //      the largest, if it has several, and never a transient dialog.
 //   2. Withdrawn (XWithdrawWindow), so a window manager lets go of it and
-//      takes its frame away.
+//      takes its frame away, and made override-redirect so it never takes
+//      it again (a program may map its window again on its own).
 //   3. Reparented into a *container*: a plain child window of mep's that
 //      this backend owns and sizes to the part of the block on screen, so
 //      the program is clipped at the pane's edges instead of drawing over
@@ -19,7 +20,9 @@
 //      resting over the program. Focus(true) takes the shield away and
 //      gives the program the X input focus; a passive grab of Ctrl-\ on
 //      the container is how the keyboard comes back (it is the one key
-//      mep still sees while the program has focus).
+//      mep still sees while the program has focus). A pointer-through
+//      window (SetPointerThrough: a web page) has no shield: the pointer
+//      reaches it directly, and it takes the keyboard when clicked.
 //
 // Everything goes through this backend's *own* connection to the X server
 // (not the gfx backend's): a program's window can vanish between any two
@@ -70,6 +73,7 @@ public:
         : dpy_(dpy), parent_(parent), root_(DefaultRootWindow(dpy)), display_name_(std::move(display_name)) {
         wm_state_ = XInternAtom(dpy_, "WM_STATE", False);
         net_wm_pid_ = XInternAtom(dpy_, "_NET_WM_PID", False);
+        net_client_list_ = XInternAtom(dpy_, "_NET_CLIENT_LIST", False);
         net_wm_name_ = XInternAtom(dpy_, "_NET_WM_NAME", False);
         utf8_ = XInternAtom(dpy_, "UTF8_STRING", False);
         wm_protocols_ = XInternAtom(dpy_, "WM_PROTOCOLS", False);
@@ -187,6 +191,31 @@ private:
     // stack first.
     std::vector<Window> ClientWindows() const {
         std::vector<Window> out;
+        // The window manager's own list of the windows it manages
+        // (_NET_CLIENT_LIST): the frames it puts them in may be
+        // override-redirect themselves (awesome's are), which the walk
+        // below has to skip, so without this no program's window was ever
+        // found under such a window manager.
+        {
+            Atom type = 0;
+            int format = 0;
+            unsigned long n = 0, after = 0;
+            unsigned char *data = nullptr;
+            if (XGetWindowProperty(dpy_, root_, net_client_list_, 0, 4096, False, XA_WINDOW, &type, &format, &n, &after, &data) ==
+                    Success &&
+                data && format == 32) {
+                const unsigned long *wins = reinterpret_cast<const unsigned long *>(data);
+                for (unsigned long k = 0; k < n; ++k) {
+                    const Window w = static_cast<Window>(wins[k]);
+                    if (w == parent_ || w == own_top_) continue;
+                    XWindowAttributes a;
+                    if (XGetWindowAttributes(dpy_, w, &a) && a.map_state == IsViewable) out.push_back(w);
+                }
+            }
+            if (data) XFree(data);
+        }
+        // With no window manager (or one that keeps no such list): root's
+        // own mapped children, and the client inside each frame.
         Window root = 0, parent = 0, *kids = nullptr;
         unsigned int n = 0;
         if (!XQueryTree(dpy_, root_, &root, &parent, &kids, &n) || !kids) return out;
@@ -197,7 +226,7 @@ private:
             if (!XGetWindowAttributes(dpy_, top, &a) || a.override_redirect || a.map_state != IsViewable || a.c_class == InputOnly)
                 continue;
             const Window client = ClientIn(top, 0);
-            if (client && client != parent_) out.push_back(client);
+            if (client && client != parent_ && std::find(out.begin(), out.end(), client) == out.end()) out.push_back(client);
         }
         XFree(kids);
         return out;
@@ -207,6 +236,7 @@ private:
     Window parent_, root_, own_top_ = 0;
     std::string display_name_;
     Atom wm_state_ = 0, net_wm_pid_ = 0, net_wm_name_ = 0, utf8_ = 0, wm_protocols_ = 0, wm_delete_ = 0;
+    Atom net_client_list_ = 0;
     std::set<Window> known_;
     std::map<Window, X11Window *> windows_;  // the adopted window and its container -> which
 };
@@ -236,6 +266,12 @@ public:
         // one is handled by Reparented.)
         for (int k = 0; k < 100 && ParentOf(win_) != be_.root() && ParentOf(win_) != 0; ++k)
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        // Out of the window manager's hands for good: some programs map
+        // their window again when someone else unmaps it (Chromium does),
+        // and a window manager seeing that from a window still on the root
+        // frames it again (awesome does) -- an override-redirect window it
+        // never manages.
+        SetOverrideRedirect(true);
         XReparentWindow(d, win_, container_, 0, 0);
         XMapWindow(d, win_);
         XSync(d, False);
@@ -249,6 +285,7 @@ public:
         // has already lost it).
         if (ParentOf(win_) == container_) {
             XUnmapWindow(d, win_);
+            SetOverrideRedirect(false);  // a window manager's again
             XReparentWindow(d, win_, be_.root(), 0, 0);
         }
         if (focused_ && !dead_) XSetInputFocus(d, be_.parent(), RevertToParent, CurrentTime);
@@ -266,15 +303,25 @@ public:
         if (dead_) return;
         const Window now = ParentOf(win_);
         if (now == container_) return;
-        if (now == be_.root() && retakes_ < 5) {
+        // Back on the root (a window manager letting go late), or into a
+        // window manager's frame (it took the window again before it was
+        // ours): taken back in.
+        if (now != 0 && retakes_ < 5) {
             ++retakes_;
             Display *d = be_.dpy();
+            SetOverrideRedirect(true);
             XReparentWindow(d, win_, container_, inner_rect_.x, inner_rect_.y);
             XMapWindow(d, win_);
             geometry_ok_ = false;
             return;
         }
         dead_ = true;
+    }
+    void SetOverrideRedirect(bool on) {
+        XSetWindowAttributes a;
+        std::memset(&a, 0, sizeof a);
+        a.override_redirect = on ? True : False;
+        XChangeWindowAttributes(be_.dpy(), win_, CWOverrideRedirect, &a);
     }
     void MarkMoved() { geometry_ok_ = false; }
     void MarkReleaseRequest() { release_requested_ = true; }
@@ -309,7 +356,7 @@ public:
             XMapWindow(d, container_);
             shown_ = true;
         }
-        const bool shield = !focused_;
+        const bool shield = !focused_ && !pointer_through_;
         if (shield != shield_up_) {
             if (shield) {
                 XMapRaised(d, shield_);
@@ -341,7 +388,7 @@ public:
             Grab(true);
         } else {
             Grab(false);
-            if (shown_ && !shield_up_) {
+            if (shown_ && !shield_up_ && !pointer_through_) {
                 XMapRaised(d, shield_);
                 shield_up_ = true;
             }
@@ -353,6 +400,19 @@ public:
             if (f == win_ || f == container_ || be_.IsInside(f, win_)) XSetInputFocus(d, be_.parent(), RevertToParent, CurrentTime);
         }
         XFlush(d);
+    }
+
+    void SetPointerThrough(bool on) override {
+        pointer_through_ = on;
+        if (dead_ || !shown_) return;
+        Display *d = be_.dpy();
+        const bool shield = !focused_ && !pointer_through_;
+        if (shield != shield_up_) {
+            if (shield) XMapRaised(d, shield_);
+            else XUnmapWindow(d, shield_);
+            shield_up_ = shield;
+            XFlush(d);
+        }
     }
 
     bool HasFocus() override {
@@ -507,7 +567,7 @@ private:
     X11Backend &be_;
     Window win_, container_ = 0, shield_ = 0;
     Rect container_rect_, inner_rect_;
-    bool shown_ = false, shield_up_ = false, focused_ = false, grabbed_ = false;
+    bool shown_ = false, shield_up_ = false, focused_ = false, grabbed_ = false, pointer_through_ = false;
     bool dead_ = false, geometry_ok_ = false, release_requested_ = false;
     int retakes_ = 0;
 };

@@ -70,6 +70,10 @@ public:
     virtual void Hide() = 0;
     // Gives it the keyboard (true) or gives the keyboard back to mep.
     virtual void Focus(bool on) = 0;
+    // The pointer goes straight to the program, with no shield over it (a
+    // web page: hovering and dragging have to just work). The keyboard
+    // still stays with mep until the program takes it itself.
+    virtual void SetPointerThrough(bool on) { (void)on; }
     // True while it actually holds the keyboard (the user may have clicked
     // another window since Focus(true)).
     virtual bool HasFocus() = 0;
@@ -187,6 +191,11 @@ public:
     // True once when the user gave the keyboard back from inside the
     // program, or clicked away from it.
     bool TakeFocusLost();
+    // See EmbeddedWindow::SetPointerThrough; kept for a window adopted later.
+    void SetPointerThrough(bool on);
+    // True once each time the program took the keyboard by itself (a click
+    // into a pointer-through window): the editor then treats it as focused.
+    bool TakeFocusGained();
 
     // Stops it: first politely (a close request, else SIGTERM), then for good.
     void Stop();
@@ -220,6 +229,8 @@ private:
     double started_at_ = -1.0;
     double last_snapshot_ = -1.0;
     bool placed_ = false;       // placed during the frame being drawn
+    bool pointer_through_ = false;
+    bool focus_gained_ = false;
     bool shown_ = false;        // placed during the last frame drawn
     bool focused_ = false;
     bool focus_lost_ = false;

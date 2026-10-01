@@ -426,6 +426,10 @@
             # (then tectonic, already above -- not knitr::knit2pdf's own
             # pdflatex/texi2pdf, to avoid a second LaTeX toolchain) for
             # .Rnw.
+            # shiny backs mepml's results=web R blocks (a Shiny app shown
+            # live in the block's results, kBuiltinMepml's
+            # mep_mepml_run_web) -- tmp/linear_regression.mepml's
+            # "Least squares, by hand" slide among them.
             (pkgs.rWrapper.override {
               packages = with pkgs.rPackages; [
                 languageserver
@@ -434,6 +438,7 @@
                 rmarkdown
                 knitr
                 fda
+                shiny
               ] ++ [ vscDebuggerR ]; # mep.dap_adapters.r (see vscDebuggerR above)
             })
             # air is gf's R formatter (mep.format_languages.R, kBuiltinFormat

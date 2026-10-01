@@ -523,8 +523,10 @@ std::vector<SlideHtml> SlideFragments(const Document &doc, const HtmlOptions &op
 // `code`, `results`, `both` (the default) or `none`. The document's header
 // sets it for every block (`//? Exports: results`, or an `exports` option);
 // a block's own `exports=` wins, and so does knitr's `echo=false` (results
-// only). The editor always shows everything.
-void CodeExports(const Document &doc, const Block &b, bool *code, bool *results);
+// only). The editor always shows everything. `fallback` is the mode when
+// neither the header nor the block names one (the presentation view uses
+// "results").
+void CodeExports(const Document &doc, const Block &b, bool *code, bool *results, const std::string &fallback = "both");
 // Parallel to doc.blocks: true for a block the exports leave out -- one
 // between the markers of `results=markdown` results that are not exported.
 std::vector<bool> ExportHidden(const Document &doc);
@@ -555,6 +557,64 @@ std::string HtmlResultFragment(const std::string &html);
 // For block b: the half-open line range [first, last) of `lines` that
 // FormatResults' output replaces. first == last means "insert at first".
 void ResultsReplaceRange(const Block &b, int *first, int *last);
+
+// ---------------------------------------------------------------------------
+// The editor's presentation view (Editor::MepmlPresentStart): each page of
+// the deck as mepml text of its own, to be drawn by the editor's ordinary
+// renderer but reading like an export rather than like the source. A title
+// page from the header comes first for a presentation (`//? Type:`) with a
+// Title, Subtitle or Author, then one page per \slide, holding only what an
+// export shows of it:
+//   - user commands expanded for the tags {"present", "slides"} (so
+//     `\when(present, ...)` picks out the view, and `\otherwise` applies
+//     where nothing else does), \define and \raw blocks dropped;
+//   - code blocks as CodeExports says, with "results" the default when
+//     neither the header nor the block names one (a block with no results
+//     yet then shows its code, rather than nothing): the code as a bare
+//     ```lang fence without its options, text output as a plain fence,
+//     figures as \image() lines, Markdown output as the document's own
+//     text; option (`//?`) lines, comments and result markers dropped;
+//   - citations as their rendered labels, \bibliography as the list of
+//     references and \toc as the list of slide titles, so a page needs no
+//     \import to read right.
+// With `wrap_cols` > 0, paragraphs and list items -- whose line breaks read
+// as spaces -- are refilled to that many columns as the editor draws them
+// (markup concealed, maths about as wide as it typesets), breaking only
+// between words and never inside maths, code, a link or a citation; so a
+// slide reads as prose at any size rather than as the source's lines.
+// A page's lines never start or end with a blank line nor hold two in a row.
+struct PresentationPage {
+    int number = 0;         // the \slide's number; 0 for the title page
+    int source_line = -1;   // the \slide( line in `lines`, -1 for the title page
+    int source_end = -1;    // the slide's last line (its closer, if any)
+    std::string title;      // the slide's first heading, or the document's title
+    std::vector<std::string> lines;
+    // Each code block whose code the page shows: (the line of `lines` its
+    // opening fence is on, the line in the document as written of the
+    // block's own fence) -- what running it from the page runs.
+    std::vector<std::pair<int, int>> code_blocks;
+    // Every code block the page shows anything of, in order: the lines of
+    // `lines` it takes (code, output, figures and caption), its fence in
+    // the document as written, whether its code shows, whether it is a
+    // live one -- its output a program that runs on (results=web, an
+    // exec-gui window) -- and, while that program runs, the line of the
+    // output fence its window is drawn under (-1 otherwise).
+    struct Shown {
+        int first = -1, last = -1;
+        int source_fence = -1;
+        bool code = false;
+        bool live = false;
+        int live_fence = -1;
+    };
+    std::vector<Shown> blocks;
+};
+std::vector<PresentationPage> PresentationPages(const std::string &file, const std::vector<std::string> &lines,
+                                                const ReadFileFn &read, int wrap_cols = 0);
+// One line of prose (no line breaks) filled to `cols` columns as above:
+// the first line after `first`, the rest after `rest` (a list item's
+// marker and the indent under it).
+std::vector<std::string> FillProse(const std::string &text, int cols, const std::string &first = "",
+                                   const std::string &rest = "");
 
 }  // namespace mepml
 

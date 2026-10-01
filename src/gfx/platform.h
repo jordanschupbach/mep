@@ -22,6 +22,8 @@ inline void WaitEvents(double timeout_sec, int extra_fd = -1) { GetBackends().pl
 inline void SetWindowResizable() { GetBackends().platform->SetWindowResizable(); }
 inline void MaximizeWindow() { GetBackends().platform->MaximizeWindow(); }
 inline bool IsWindowMaximized() { return GetBackends().platform->IsWindowMaximized(); }
+inline void SetWindowFullscreen(bool on) { GetBackends().platform->SetWindowFullscreen(on); }
+inline void SetKeyboardFocusProxy(bool on) { GetBackends().platform->SetKeyboardFocusProxy(on); }
 inline void SetTargetFPS(int fps) { GetBackends().platform->SetTargetFPS(fps); }
 inline int GetScreenWidth() { return GetBackends().platform->GetScreenWidth(); }
 inline int GetScreenHeight() { return GetBackends().platform->GetScreenHeight(); }

@@ -924,6 +924,10 @@ struct Buffer {
     // this flag only distinguishes it for :MepScratch's find-or-create and
     // its tab/status-line label ("[Scratch]" instead of "[No Name]").
     bool scratch = false;
+    // The page a mepml presentation shows (Editor::MepmlPresentStart): a
+    // generated view of the deck's current slide, never written anywhere
+    // -- `:w` refuses it, and edits made in its caret mode are undone.
+    bool mepml_present_view = false;
     // mep.buffer_set_hide_line_numbers(id, true): opts a real, ordinary
     // buffer out of the :set number/relativenumber gutter regardless of
     // that global setting -- for a buffer whose lines aren't really "line
@@ -9490,6 +9494,99 @@ public:
      * @brief Once per frame: writes each finished run's final screen into its block's results, and forgets it.
      */
     void MepmlTerminalsTick();
+    // --- The presentation view of a mepml deck ------------------------------
+    // One slide at a time, drawn by the ordinary mepml renderer from a
+    // generated page (mepml::PresentationPages: export-like -- results, not
+    // code, unless the document says otherwise; no options, comments or
+    // markers) in a view buffer shown in the pane the deck was in. No cursor
+    // is drawn and nothing under it is revealed until caret mode (c) is on.
+    // Two modes: `fill` gives the pane the whole editor area (pane zoom),
+    // `full` also takes the window full screen, hides every piece of chrome
+    // and sets the text large enough to read across a room. Keys while
+    // presenting: l/Right/Down/Space/PageDown/Enter next, h/Left/Up/
+    // Backspace/PageUp previous, g/G first/last, f switches fill <-> full,
+    // +/-/0 text size, c caret mode (Esc leaves it), r rebuilds from the
+    // source, q/Esc stop, `:` a command line.
+    /**
+     * @brief Starts presenting the current mepml buffer's slides, from the slide the cursor is on.
+     * @param fullscreen True for full-screen mode, false for fill mode.
+     * @param error Set to why nothing was started (not a mepml buffer, no slides).
+     * @return True when the presentation started (or switched mode, when one is running).
+     */
+    bool MepmlPresentStart(bool fullscreen, std::string *error);
+    /**
+     * @brief Ends the presentation: the pane shows the source again, at the slide last shown.
+     */
+    void MepmlPresentStop();
+    bool MepmlPresentActive() const { return present_.active; }
+    /**
+     * @brief Full-screen mode is on (the window and chrome are the presentation's).
+     */
+    bool MepmlPresentFullscreen() const { return present_.active && present_.fullscreen; }
+    /**
+     * @brief Whether `pane_id` is the pane presenting, showing `buffer_id` (the view): DrawPane draws it as a slide.
+     */
+    bool IsMepmlPresentPane(int pane_id, int buffer_id) const {
+        return present_.active && pane_id == present_.pane_id && buffer_id == present_.view_buffer;
+    }
+    bool MepmlPresentCaret() const { return present_.active && present_.caret; }
+    /**
+     * @brief Whether the presented slide may be drawn: false while its maths is still rendering (DrawPane blanks it rather than show TeX source).
+     */
+    bool MepmlPresentShowing() const { return !present_.active || present_.caret || present_.revealed; }
+    /**
+     * @brief Shows page `page` (0-based, clamped).
+     */
+    void MepmlPresentGoto(int page);
+    int MepmlPresentPage() const { return present_.page; }
+    int MepmlPresentPageCount() const { return static_cast<int>(present_.pages.size()); }
+    /**
+     * @brief Switches between fill and full-screen mode while presenting.
+     */
+    void MepmlPresentSetFullscreen(bool on);
+    /**
+     * @brief Turns caret mode on (a cursor, vim motions, yanking) or off.
+     */
+    void MepmlPresentSetCaret(bool on);
+    /**
+     * @brief Re-reads the source buffer (and its imports) into pages, keeping the slide shown.
+     */
+    void MepmlPresentRebuild();
+    /**
+     * @brief The presentation's keys (HandleInput, ahead of Normal mode's own).
+     * @return True when the keys this frame were the presentation's.
+     */
+    bool HandleMepmlPresentInput();
+    /**
+     * @brief Once per frame: follows edits to the source, undoes edits to the view, ends the presentation when its pane moved on.
+     */
+    void MepmlPresentTick();
+    /**
+     * @brief The maths of every page to render ahead of time, once per change (kBuiltinMepml's frame hook hands it to the LaTeX renderer).
+     * @return {TeX body as the preview renders it, text size in px to render it for}, the slide shown first, then the ones after it; empty when nothing new is wanted.
+     */
+    std::vector<std::pair<std::string, float>> MepmlPresentTakeWarm();
+    /**
+     * @brief Runs code blocks the slide shows, in the document (C-c C-c while presenting): the one at `view_row` of the slide, or with -1 every one on it.
+     * @return True when at least one run was started.
+     */
+    bool MepmlPresentRunBlocks(int view_row);
+    /**
+     * @brief The fence row its block has in its document now, for a running terminal or GUI run; -1 when it has none.
+     */
+    int MepmlPresentSourceFence(int run_id) const;
+    /**
+     * @brief The running terminal or GUI run of the source block whose fence is `fence`, or -1.
+     */
+    int MepmlPresentRunningAt(int fence) const;
+    /**
+     * @brief Starts the source blocks with these fences (the source current just while each starts).
+     */
+    void MepmlPresentStartFences(const std::vector<int> &fences);
+    /**
+     * @brief Starts the shown slide's live blocks (web pages, apps) that are not running yet.
+     */
+    void MepmlPresentAutoStart();
     // --- GUI programs inside mepml results ---------------------------------
     // An `exec-gui` block (or results=exec-gui) runs a program whose own
     // window is shown inside the block's results (gui_embed.h: an X11
@@ -12828,6 +12925,57 @@ private:
         std::vector<std::string> temp_files;  // results=exec: the program's source/binary
     };
     std::map<int, MepmlTermRun> mepml_terms_;
+    // The presentation (MepmlPresentStart), and what it changed that its
+    // end puts back.
+    struct MepmlPresentState {
+        bool active = false;
+        bool fullscreen = false;
+        bool caret = false;
+        int source_buffer = -1;
+        int view_buffer = -1;
+        int pane_id = -1;
+        int page = 0;
+        std::vector<mepml::PresentationPage> pages;
+        std::vector<std::string> source_lines;  // what `pages` were built from
+        std::vector<std::string> view_lines;    // what the view buffer should hold
+        double next_source_check = 0.0;
+        CursorPos source_cursor;
+        int source_scroll = 0;
+        int saved_zoomed_pane = -1;
+        bool saved_zen = false;
+        float saved_font_px = 0.0f;  // 0: the font was never changed
+        bool autofit = false;        // full screen sizes the text to the screen
+        int fit_w = -1, fit_h = -1;  // the screen size it was last sized for
+        float fit_px = 0.0f;         // the text size that screen gets; a slide too full for it gets less
+        float seen_px = 0.0f;        // the text size of the last frame MepmlPresentTick saw
+        int wrap_cols = 0;           // the pane's text width the pages were filled to
+        // Full screen: the size each slide visited settled at (smaller than
+        // fit_px when it had to shrink), so going back to it is instant.
+        std::map<int, float> page_px;
+        std::set<int> settled;  // pages measured at their page_px and found to fit
+        // Every page's maths is rendered ahead (MepmlPresentTakeWarm):
+        // set when that list changes (a start, a new text size, an edit).
+        bool warm_pending = false;
+        // Live blocks (web pages, apps) the presentation started itself on
+        // showing their slide, by source fence: its end stops them.
+        std::set<int> auto_started;
+        // A slide is shown only once it is ready -- every formula on it
+        // rendered and, full screen, its size settled -- so its TeX source
+        // is never on screen; until then the slide area is blank
+        // (MepmlPresentShowing), for at most kPresentRevealWait seconds.
+        bool revealed = true;
+        double reveal_deadline = 0.0;
+        int timed_out_page = -1;  // a page shown anyway (a formula that fails to compile)
+        bool fit_checked = false;  // full screen: this page was measured and fits
+        std::vector<int> need_rows;                   // display formulas' first rows (org_latex_rows keys)
+        std::vector<std::pair<int, int>> need_inline;  // inline formulas' (row, col_start)
+    };
+    MepmlPresentState present_;
+    void MepmlPresentShowPage(bool keep_cursor = false);
+    bool MepmlPresentMathReady() const;
+    void MepmlPresentKey(int ch);  // f, r, q, + = - 0: the presentation's own keys
+    void MepmlPresentUpdateReveal();
+    void MepmlPresentApplyFullscreen(bool on);
     int next_mepml_term_ = 1;
     // GUI runs (MepmlGuiStart). The backend is declared first so that it
     // outlives every run's window.
@@ -12841,6 +12989,7 @@ private:
         int results_end = -1;
         int rows = 20, cols = 0;
         std::string label;          // the command, for "starting ..."
+        bool web = false;           // results=web: stopping is how it normally ends
         std::string snapshot_path;  // where its last picture is saved (absolute), "" = nowhere
         std::string snapshot_ref;   // ... and how the results name it
         std::vector<std::string> temp_files;

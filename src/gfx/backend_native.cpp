@@ -177,6 +177,9 @@ struct NativeContext {
     Display *display = nullptr;
     int screen = 0;
     Window window = 0;
+    // SetKeyboardFocusProxy: the 1x1 input-only child that holds the
+    // keyboard while it is on (0 = off).
+    Window focus_proxy = 0;
     Colormap colormap = 0;
     GLXContext glx_context = nullptr;
     XIM input_method = nullptr;
@@ -186,6 +189,7 @@ struct NativeContext {
     Atom net_wm_state = 0;
     Atom net_wm_state_maximized_horz = 0;
     Atom net_wm_state_maximized_vert = 0;
+    Atom net_wm_state_fullscreen = 0;
     Atom clipboard_atom = 0;
     Atom utf8_string_atom = 0;
     Atom targets_atom = 0;
@@ -512,13 +516,37 @@ void HandleSelectionRequest(NativeContext *ctx, XSelectionRequestEvent *req) {
 // blocked waiting on a paste (a real keypress, or a SelectionRequest
 // asking us to serve our own copied text to another app at that same
 // moment) are still handled instead of silently dropped.
+// mep's own X connection: a protocol error is logged and survived. Xlib's
+// default handler prints it and exits the process, which turned any
+// harmless race -- a focus request for a window a window manager unmapped
+// a moment before, say -- into mep vanishing with no core dump. (Other
+// connections' handlers chain in front of this one: gui_embed_x11.cpp.)
+int LogXError(Display *display, XErrorEvent *e) {
+    char text[256] = {0};
+    XGetErrorText(display, e->error_code, text, static_cast<int>(sizeof(text)));
+    std::fprintf(stderr, "mep: X error %s (request %d.%d, resource 0x%lx) -- ignored\n", text, e->request_code, e->minor_code,
+                 e->resourceid);
+    return 0;
+}
+
 void ProcessEvent(NativeContext *ctx, const XEvent &event) {
     switch (event.type) {
         case KeyPress: HandleKeyPress(ctx, const_cast<XKeyEvent *>(&event.xkey)); break;
         case KeyRelease: HandleKeyRelease(ctx, const_cast<XKeyEvent *>(&event.xkey)); break;
         case FocusOut:
+            // Only the main window's own events count: the proxy's mirror
+            // them, and focus moving within mep (to the proxy, to a program
+            // embedded in mep's window) is not mep losing it -- though keys
+            // held across that are let go, as on any focus change.
+            if (event.xfocus.window != ctx->window || event.xfocus.detail == NotifyPointer) break;
             ReleaseAllKeys(ctx);
-            ctx->focus_lost = true;
+            if (event.xfocus.detail != NotifyInferior) ctx->focus_lost = true;
+            break;
+        case FocusIn:
+            // The keyboard came to the main window (the window manager, or a
+            // program embedded in it giving it back): on to the proxy.
+            if (ctx->focus_proxy != 0 && event.xfocus.window == ctx->window && event.xfocus.detail != NotifyPointer)
+                XSetInputFocus(ctx->display, ctx->focus_proxy, RevertToParent, CurrentTime);
             break;
         case ButtonPress: {
             unsigned int b = event.xbutton.button;
@@ -577,6 +605,7 @@ public:
             std::fprintf(stderr, "gfx native: XOpenDisplay failed\n");
             std::abort();
         }
+        XSetErrorHandler(LogXError);
         ctx_->screen = DefaultScreen(ctx_->display);
 
         int visual_attribs[] = {GLX_X_RENDERABLE,
@@ -639,6 +668,7 @@ public:
         ctx_->net_wm_state = XInternAtom(ctx_->display, "_NET_WM_STATE", False);
         ctx_->net_wm_state_maximized_horz = XInternAtom(ctx_->display, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
         ctx_->net_wm_state_maximized_vert = XInternAtom(ctx_->display, "_NET_WM_STATE_MAXIMIZED_VERT", False);
+        ctx_->net_wm_state_fullscreen = XInternAtom(ctx_->display, "_NET_WM_STATE_FULLSCREEN", False);
         ctx_->clipboard_atom = XInternAtom(ctx_->display, "CLIPBOARD", False);
         ctx_->utf8_string_atom = utf8;
         ctx_->targets_atom = XInternAtom(ctx_->display, "TARGETS", False);
@@ -765,6 +795,43 @@ public:
         event.xclient.data.l[0] = 1;  // _NET_WM_STATE_ADD
         event.xclient.data.l[1] = static_cast<long>(ctx_->net_wm_state_maximized_horz);
         event.xclient.data.l[2] = static_cast<long>(ctx_->net_wm_state_maximized_vert);
+        event.xclient.data.l[3] = 1;  // source indication: normal application
+        XSendEvent(ctx_->display, RootWindow(ctx_->display, ctx_->screen), False,
+                   SubstructureRedirectMask | SubstructureNotifyMask, &event);
+        XFlush(ctx_->display);
+    }
+    void SetKeyboardFocusProxy(bool on) override {
+        if (ctx_->display == nullptr || ctx_->window == 0 || on == (ctx_->focus_proxy != 0)) return;
+        Display *d = ctx_->display;
+        Window focus = 0;
+        int revert = 0;
+        XGetInputFocus(d, &focus, &revert);
+        if (on) {
+            // Off to the side of the window, so the pointer is never in it.
+            XSetWindowAttributes a{};
+            a.event_mask = KeyPressMask | KeyReleaseMask | FocusChangeMask;
+            ctx_->focus_proxy = XCreateWindow(d, ctx_->window, -10, -10, 1, 1, 0, 0, InputOnly, CopyFromParent, CWEventMask, &a);
+            XMapWindow(d, ctx_->focus_proxy);
+            if (focus == ctx_->window) XSetInputFocus(d, ctx_->focus_proxy, RevertToParent, CurrentTime);
+        } else {
+            if (focus == ctx_->focus_proxy) XSetInputFocus(d, ctx_->window, RevertToParent, CurrentTime);
+            XDestroyWindow(d, ctx_->focus_proxy);
+            ctx_->focus_proxy = 0;
+        }
+        XFlush(d);
+    }
+    void SetWindowFullscreen(bool on) override {
+        // The same EWMH _NET_WM_STATE request as MaximizeWindow, for the
+        // fullscreen state.
+        if (ctx_->display == nullptr || ctx_->window == 0 || ctx_->net_wm_state_fullscreen == 0) return;
+        XEvent event{};
+        event.type = ClientMessage;
+        event.xclient.window = ctx_->window;
+        event.xclient.message_type = ctx_->net_wm_state;
+        event.xclient.format = 32;
+        event.xclient.data.l[0] = on ? 1 : 0;  // _NET_WM_STATE_ADD / _REMOVE
+        event.xclient.data.l[1] = static_cast<long>(ctx_->net_wm_state_fullscreen);
+        event.xclient.data.l[2] = 0;
         event.xclient.data.l[3] = 1;  // source indication: normal application
         XSendEvent(ctx_->display, RootWindow(ctx_->display, ctx_->screen), False,
                    SubstructureRedirectMask | SubstructureNotifyMask, &event);

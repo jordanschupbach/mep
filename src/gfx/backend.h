@@ -34,6 +34,18 @@ public:
     // the screen's, so "maximized" has to be saved as a state of its own
     // rather than as a size (see persist.h's WindowState).
     virtual bool IsWindowMaximized() = 0;
+    // Full screen (no window-manager frame, covering the monitor) or back.
+    // A request to the window manager, so it lands a frame or two later
+    // (the next frame's screen size shows it). A no-op where unsupported.
+    virtual void SetWindowFullscreen(bool on) { (void)on; }
+    // While another program's window is embedded in mep's with the pointer
+    // passing straight to it (a web page in a mepml block), X would deliver
+    // mep's keys to that window whenever the pointer rests over it (keys go
+    // to the window under the pointer when the focus is on an ancestor of
+    // it). `on` keeps the keyboard on a small window of mep's own beside
+    // it instead -- a focus proxy, as XEmbed embedders do. A no-op where
+    // there is no such problem.
+    virtual void SetKeyboardFocusProxy(bool on) { (void)on; }
     virtual void SetTargetFPS(int fps) = 0;
     // Whether this frame's WindowShouldClose poll took any window-system
     // event (input, a resize, focus, an expose) -- and a sleep until the

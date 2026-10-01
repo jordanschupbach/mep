@@ -39,6 +39,8 @@ language.</p>
 <tr><td><code>&lt;leader&gt;kh</code></td><td>fold or unfold the document header (the <code>//?</code> lines)</td></tr>
 <tr><td><code>&lt;leader&gt;kl</code></td><td>follow the link under the cursor (clicking works too)</td></tr>
 <tr><td><code>&lt;leader&gt;km</code></td><td>toggle markup concealment</td></tr>
+<tr><td><code>&lt;leader&gt;kp</code></td><td>present the slides, filling the editor</td></tr>
+<tr><td><code>&lt;leader&gt;kP</code></td><td>present the slides full screen</td></tr>
 <tr><td><code>:MepmlExecute</code></td><td>run the code block under the cursor</td></tr>
 <tr><td><code>:MepmlExecuteAll</code></td><td>run every code block</td></tr>
 <tr><td><code>:MepmlStop</code></td><td>stop the running block under the cursor</td></tr>
@@ -52,6 +54,7 @@ language.</p>
 <tr><td><code>:MepmlLinkFollow</code></td><td>follow the link under the cursor</td></tr>
 <tr><td><code>:MepmlRender</code></td><td>re-render the buffer now</td></tr>
 <tr><td><code>:MepmlFoldsRecompute</code></td><td>rebuild folds (<code>za</code>, <code>zc</code> and <code>zo</code> do this themselves)</td></tr>
+<tr><td><code>:MepmlPresent</code> [mode]</td><td>present the slides: <code>fill</code> (the default), <code>full</code>, <code>stop</code></td></tr>
 </table>
 <p>Folding (<code>za</code>, <code>zM</code>, <code>zR</code>) folds heading sections, code blocks,
 citations, display maths, tables, lists, comment runs and the rendered
@@ -191,6 +194,48 @@ scales it down, and the PowerPoint and Impress decks use smaller type.</p>
 server flags it. Header lines and comments are not flagged. The <code>pptx</code> and <code>odp</code> decks
 can also be made from an ordinary document that has slides.
 <code>//? Type: document</code> is the default, and any other value is flagged.</p>
+<h2>Presenting in the editor</h2>
+<p><code>&lt;leader&gt;kp</code> (<code>:MepmlPresent</code>) shows the deck one slide at a time in the
+editor itself, starting at the slide the cursor is on: the pane takes the
+whole editor area, the slide's text is set as prose, and the cursor is
+hidden until you ask for it (<code>n</code>, normal mode). <code>&lt;leader&gt;kP</code> (<code>:MepmlPresent full</code>) takes the window full screen
+too, hides everything else and sets the text large enough to read across
+a room; a slide too full for the screen gets smaller text so that all of
+it shows.</p>
+<p>A slide reads the way an export does. A code block shows its results, not
+its code, unless the header or the block says otherwise (<code>exports=both</code>,
+<code>exports=code</code>, <code>echo=true</code> ...); a block that has not been run yet shows
+its code. Code shows without its options, figures without their
+<code>// \image(...)</code> lines, and comments, result markers and =\define=s are
+left out. Your commands are expanded for the <code>present</code> export name, so
+<code>\when(present, ...)</code> can say something for this view only, and
+<code>\otherwise(...)</code> applies wherever nothing else does. Citations read as
+their labels.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>l</code>, <code>→</code>, <code>↓</code>, space, <code>PageDown</code>, <code>Enter</code></td><td>the next slide</td></tr>
+<tr><td><code>h</code>, <code>←</code>, <code>↑</code>, <code>Backspace</code>, <code>PageUp</code></td><td>the previous slide</td></tr>
+<tr><td><code>C-n</code> / <code>C-p</code></td><td>the next / previous slide, in normal mode too (every slide starts in presentation mode)</td></tr>
+<tr><td><code>g</code>, <code>Home</code> / <code>G</code>, <code>End</code></td><td>the first / last slide</td></tr>
+<tr><td><code>n</code> / <code>P</code></td><td>normal mode: a cursor on the slide, at its first character, and vim's keys; <code>P</code> goes back to presentation mode</td></tr>
+<tr><td><code>C-c C-c</code></td><td>run the code block under the cursor; with no cursor, every one on the slide (a web page or app it shows too, even with its code hidden; <code>C-c C-c</code> again stops one that runs)</td></tr>
+<tr><td><code>f</code></td><td>switch between filling the editor and full screen</td></tr>
+<tr><td><code>+</code>, <code>-</code>, <code>0</code></td><td>larger, smaller, back to the starting size</td></tr>
+<tr><td><code>r</code></td><td>rebuild the slides from the document</td></tr>
+<tr><td><code>:</code></td><td>a command line</td></tr>
+<tr><td><code>q</code>, <code>Esc</code></td><td>stop, back in the document at the slide shown</td></tr>
+</table>
+<p><code>f</code>, <code>+</code>, <code>-</code>, <code>0</code>, <code>r</code> and <code>q</code> do the same in normal mode (so there
+they are not vim's), and every slide you turn to starts in presentation
+mode again.</p>
+<p>A code block runs as the document's own block -- with the options the
+slide leaves out -- and its results go into the document, so the slide
+shows them as soon as they are in. Only a block whose code the slide
+shows can be run from it.</p>
+<p>The slides follow the document: an edit made elsewhere, or a block that
+finishes running, shows on the slide within half a second. The slides
+themselves are not for editing (an edit in normal mode is undone, and <code>:w</code>
+refuses them); edit the document instead.</p>
 <p>In the PowerPoint and Impress decks, a slide's text, lists, code and
 results, tables and pictures are real text boxes, tables and pictures you
 can edit. A single picture beside text goes on the right. Footnotes go at
@@ -442,6 +487,41 @@ language org can run works here (<code>bash</code>, <code>python</code>, <code>r
 <code>julia</code>, ...), and so do babel's header options such as <code>cmdline</code> and
 <code>stdin</code>. <code>mep-lua</code> runs inside mep itself and returns its values. Blocks
 run in the document's own directory.</p>
+<h2>Web pages and apps</h2>
+<p><code>results=web</code> shows what a block makes as a live web page, in a browser
+window inside the block's results -- a d3 graphic you can hover, a Shiny
+app you can drive. An <code>html</code> block is the page itself:</p>
+<pre>```{html, results=web, rows=12, file="figs/scatter.png"}
+&lt;script src="js/d3.v7.min.js"&gt;&lt;/script&gt;
+&lt;svg width="600" height="300"&gt;&lt;/svg&gt;
+&lt;script&gt; d3.select("svg").append("circle").attr("cx", 50).attr("cy", 50).attr("r", 20) &lt;/script&gt;
+```</pre>
+<p>Any other block is a program that serves a page, opened at the first
+<code>http://</code> address it prints -- a Shiny app prints =Listening on
+http://127.0.0.1:...= when it is ready:</p>
+<pre>```{r, results=web, rows=16, file="figs/app.png"}
+library(shiny)
+ui &lt;- fluidPage(sliderInput("n", "Points", 10, 500, 100), plotOutput("p"))
+server &lt;- function(input, output) output$p &lt;- renderPlot(plot(rnorm(input$n)))
+runApp(shinyApp(ui, server), launch.browser = FALSE)
+```</pre>
+<p><code>C-c C-c</code> starts it, and <code>C-c C-k</code> stops it -- for an app, its server
+too. The mouse reaches the page directly (hovering, clicking and dragging
+just work), while the keyboard stays with mep even with the mouse over
+the page; <code>Enter</code> on the block (or the page taking it, for a text field)
+hands it the keyboard, and <code>Ctrl-\</code> or a click outside takes it back. Stopping keeps a picture of the page as the block's results (at
+<code>file=</code>, else beside the document), and that picture is what the slides,
+PDF and Office exports show until it runs again; an HTML export embeds an
+<code>html</code> block's page itself, live. <code>rows=</code> sets its height. The page is
+written beside the document, so the paths it names (a script, a picture)
+are the document's. The browser is the first of <code>chromium</code>,
+<code>chromium-browser</code>, <code>google-chrome</code> or <code>brave-browser</code> on <code>PATH</code> (or
+<code>$MEP_WEB_BROWSER</code>), and an app's language needs whatever it uses (Shiny
+for R). In a presentation (<code>&lt;leader&gt;kp</code>), a slide's web pages and apps start by
+themselves when the slide is shown and run live on it, code hidden or
+not; they keep running while other slides show, and stop (each leaving
+its picture as its results) when the presentation ends. <code>C-c C-c</code> on a
+slide stops or restarts them.</p>
 <h1>Images and tables</h1>
 <pre>\image(./figures/plot.png)
 \caption(A caption, with *formatting*)
@@ -561,6 +641,7 @@ export answers to several names, most specific first:</p>
 <tr><td>PowerPoint</td><td><code>pptx</code>, <code>powerpoint</code>, <code>office</code>, <code>slides</code></td></tr>
 <tr><td>Impress</td><td><code>odp</code>, <code>impress</code>, <code>office</code>, <code>slides</code></td></tr>
 <tr><td>Markdown, Org, RTF, text</td><td><code>md</code> (<code>markdown</code>), <code>org</code>, <code>rtf</code>, <code>txt</code> (<code>text</code>)</td></tr>
+<tr><td>Presenting in the editor</td><td><code>present</code>, <code>slides</code></td></tr>
 </table>
 <p>The language server flags a name no export has, but it still works: it
 simply never matches.</p>

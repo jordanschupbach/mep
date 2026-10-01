@@ -42,19 +42,27 @@ struct BakedGlyph {
 // frees .data regardless of format).
 constexpr int kGlyphBitmapFormat = 1;
 
-// Simple shelf packer: fixed atlas width, glyphs placed left-to-right,
-// wrapping to a new "shelf" (row) when one doesn't fit; `padding` empty
-// pixels are reserved around every glyph so DrawLineFast's own padding-
-// expansion trick (see its comment in main.cpp) samples transparent
-// pixels instead of a neighboring glyph.
-constexpr int kAtlasWidth = 2048;
+// Simple shelf packer: glyphs placed left-to-right, wrapping to a new
+// "shelf" (row) when one doesn't fit; `padding` empty pixels are reserved
+// around every glyph so DrawLineFast's own padding-expansion trick (see
+// its comment in main.cpp) samples transparent pixels instead of a
+// neighboring glyph.
+//
+// The width starts at kMinAtlasWidth and doubles while the packed atlas
+// would come out taller than it is wide. A fixed 2048 width made the
+// ~3,500-glyph icon font's atlas 2048 x ~18,900 at its 96px bake cap
+// (font size >= 48) -- past the 16384 GL_MAX_TEXTURE_SIZE of common
+// GPUs, so glTexImage2D silently failed and every icon drew as a solid
+// black box. Keeping it roughly square holds that bake to ~8192 x ~4700.
+constexpr int kMinAtlasWidth = 2048;
+constexpr int kMaxAtlasWidth = 16384;
 
-void PackShelf(std::vector<BakedGlyph> &glyphs, int padding, int *out_width, int *out_height) {
+int PackShelfAtWidth(std::vector<BakedGlyph> &glyphs, int padding, int atlas_width) {
     int pen_x = padding, pen_y = padding, shelf_h = 0;
     for (BakedGlyph &g : glyphs) {
         int cell_w = g.width + padding * 2;
         int cell_h = g.height + padding * 2;
-        if (pen_x + cell_w > kAtlasWidth) {
+        if (pen_x + cell_w > atlas_width) {
             pen_x = padding;
             pen_y += shelf_h + padding;
             shelf_h = 0;
@@ -64,8 +72,18 @@ void PackShelf(std::vector<BakedGlyph> &glyphs, int padding, int *out_width, int
         pen_x += cell_w;
         shelf_h = std::max(shelf_h, cell_h);
     }
-    *out_width = kAtlasWidth;
-    *out_height = pen_y + shelf_h + padding;
+    return pen_y + shelf_h + padding;
+}
+
+void PackShelf(std::vector<BakedGlyph> &glyphs, int padding, int *out_width, int *out_height) {
+    int width = kMinAtlasWidth;
+    int height = PackShelfAtWidth(glyphs, padding, width);
+    while (height > width && width < kMaxAtlasWidth) {
+        width *= 2;
+        height = PackShelfAtWidth(glyphs, padding, width);
+    }
+    *out_width = width;
+    *out_height = height;
 }
 
 std::vector<int> DefaultCodepoints() {

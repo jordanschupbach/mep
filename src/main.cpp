@@ -155,9 +155,9 @@ bool SameWindowState(const WindowState &a, const WindowState &b) {
 
 // Ceiling on the icon font's *bake* size (not its draw size). g_icon_font
 // holds ~3,500 glyphs, so its atlas area grows quadratically with the bake
-// size: at the old kMaxFontSize of 48 (bake 96px) the atlas already came
-// out around 6k x 6k -- close to the 8192 GL_MAX_TEXTURE_SIZE floor some
-// GPUs still report. kMaxFontSize now goes to 96, and an uncapped 192px
+// size: at a 96px bake the atlas is ~8192 x ~4700 (the shelf packer in
+// gfx/backend_native_text.cpp widens to stay roughly square) -- already
+// at the 8192 GL_MAX_TEXTURE_SIZE floor some GPUs still report. kMaxFontSize now goes to 96, and an uncapped 192px
 // bake would blow well past that limit and fail (or silently truncate) the
 // atlas. 96px is the largest bake the pre-raise code ever produced, i.e. a
 // proven-safe ceiling; past font size 48 icons are bilinear-upscaled from

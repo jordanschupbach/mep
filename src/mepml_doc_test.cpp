@@ -718,6 +718,120 @@ int main() {
         CHECK(opens == 5 && closes == 5);
     }
 
+    // --- Boxes: \definition( ... ) and its kin, markers around ordinary blocks.
+    {
+        Lines src = {
+            "\\definition(Odds and *log*-odds,",                // 0
+            "The odds are $\\pi / (1 - \\pi)$.",               // 1
+            "",                                                // 2
+            "$$",                                              // 3
+            "x",                                               // 4
+            "$$",                                              // 5
+            ") // end",                                        // 6
+            "\\theorem(Pythagoras, If $a \\perp b$ then",      // 7
+            "the lengths add.",                                // 8
+            ")",                                               // 9
+            "\\remark(Short, with a comma.)",                  // 10
+            "\\proof(",                                       // 11
+            "\\lemma(Inner\\, with a comma, text",             // 12
+            "that ends here.)",                                // 13
+            ")",                                               // 14
+            "\\example(All text and no title)",                 // 15
+            "\\example(f(x) is fine)",                         // 16
+            "\\fact(Never closed,",                           // 17
+            "Text.",                                           // 18
+        };
+        Document d = Parse(src);
+        std::vector<BlockKind> kinds;
+        for (const Block &b : d.blocks) kinds.push_back(b.kind);
+        const std::vector<BlockKind> want = {
+            BlockKind::BoxBegin, BlockKind::Paragraph, BlockKind::MathBlock, BlockKind::BoxEnd,
+            BlockKind::BoxBegin, BlockKind::BoxEnd,
+            BlockKind::BoxBegin,
+            BlockKind::BoxBegin, BlockKind::BoxBegin, BlockKind::BoxEnd,
+            BlockKind::BoxBegin, BlockKind::BoxBegin,
+            BlockKind::BoxBegin, BlockKind::Paragraph,
+        };
+        CHECK(kinds == want);
+        const Block &def = d.blocks[0];
+        CHECK(def.keyword == "definition" && def.caption == "Odds and *log*-odds" && def.inlines.empty() && !def.box_closed);
+        CHECK(InlinePlainText(def.caption_inlines) == "Odds and log-odds" && def.level == 1);
+        CHECK(BoxHeading(def) == "Definition: Odds and log-odds");
+        CHECK(d.blocks[3].keyword == "definition" && d.blocks[3].line_start == 6);
+        // Text after the title runs on as the box's first paragraph.
+        const Block &thm = d.blocks[4];
+        CHECK(thm.line_start == 7 && thm.line_end == 8 && thm.caption == "Pythagoras" && !thm.box_closed);
+        CHECK(InlinePlainText(thm.inlines) == "If a \\perp b then\nthe lengths add.");
+        CHECK(d.blocks[5].line_start == 9);
+        // Closed where its text ends.
+        CHECK(d.blocks[6].box_closed && d.blocks[6].caption == "Short" && InlinePlainText(d.blocks[6].inlines) == "with a comma.");
+        // Nested: the inner one closes at the end of its paragraph, an
+        // escaped comma stays in its title.
+        CHECK(d.blocks[7].keyword == "proof" && d.blocks[7].caption.empty() && d.blocks[7].level == 1);
+        CHECK(d.blocks[8].keyword == "lemma" && d.blocks[8].level == 2 && d.blocks[8].box_closed && d.blocks[8].line_end == 13);
+        CHECK(InlinePlainText(d.blocks[8].caption_inlines) == "Inner, with a comma");
+        CHECK(InlinePlainText(d.blocks[8].inlines) == "text\nthat ends here.");
+        CHECK(d.blocks[9].keyword == "proof" && d.blocks[9].line_start == 14);
+        // No comma: one closed on its line is all text, parentheses balance.
+        CHECK(d.blocks[10].caption.empty() && InlinePlainText(d.blocks[10].inlines) == "All text and no title");
+        CHECK(d.blocks[11].box_closed && InlinePlainText(d.blocks[11].inlines) == "f(x) is fine");
+        int never = 0;
+        for (const Diagnostic &dg : d.diagnostics) {
+            if (dg.message.find("\\fact is never closed") == 0) {
+                CHECK(dg.line == 17);
+                ++never;
+            } else if (dg.severity != Diagnostic::Info) {
+                std::fprintf(stderr, "diag %d: %s\n", dg.line + 1, dg.message.c_str());
+                CHECK(false);
+            }
+        }
+        CHECK(never == 1);
+        // A box's name is built in: no \define may take it, and a call of
+        // it mid-paragraph is plain text.
+        CHECK(Parse({"\\define(definition(a), x)"}).commands.empty());
+        CHECK(Parse({"See \\definition(x) here."}).blocks[0].kind == BlockKind::Paragraph);
+
+        // The editor's spans: the label in place of `\definition(`, the title
+        // bold, the comma and the `)` concealed.
+        const std::vector<Span> spans = Highlight(d);
+        bool label = false, title = false, comma = false, closer = false, run_in = false;
+        for (const Span &sp : spans) {
+            if (!(sp.style & kBox)) continue;
+            if (sp.line == 0 && sp.markup && sp.col_start == 0 && sp.col_end == 12 && sp.replace == "Definition: " && sp.target == "definition") label = true;
+            if (sp.line == 0 && !sp.markup && (sp.style & kBold) && sp.col_start == 12) title = true;
+            if (sp.line == 0 && sp.markup && sp.col_start == static_cast<int>(src[0].size()) - 1 && sp.replace.empty()) comma = true;
+            if (sp.line == 6 && sp.markup && sp.col_start == 0 && sp.col_end == 1) closer = true;
+            if (sp.line == 7 && sp.markup && sp.replace == ".") run_in = true;  // the comma before text on its line (its space stays)
+        }
+        CHECK(label && title && comma && closer && run_in);
+
+        // HTML: a div per box, nested ones inside, the one left open closed.
+        const std::string html = ToHtml(d);
+        CHECK(html.find("<div class=\"mbox mbox-definition\" data-kind=\"definition\"><p class=\"mbox-title\"><span class=\"mbox-label\">Definition</span> "
+                        "<span class=\"mbox-name\">Odds and <strong>log</strong>-odds</span></p>") != std::string::npos);
+        CHECK(html.find("<span class=\"mbox-label\">Proof</span></p>\n<div class=\"mbox mbox-lemma\"") != std::string::npos);
+        CHECK(html.find(".mbox-theorem { --c: #6a51a3; }") != std::string::npos);
+        size_t opens = 0, closes = 0;
+        for (size_t k = html.find("<div class=\"mbox "); k != std::string::npos; k = html.find("<div class=\"mbox ", k + 1)) ++opens;
+        for (size_t k = html.find("</div>"); k != std::string::npos; k = html.find("</div>", k + 1)) ++closes;
+        CHECK(opens == 8 && closes >= 8);
+
+        // On a slide: a box closes before the slide, and one left open is
+        // closed by the slide's end.
+        const Document sd = Parse({"\\slide(", "\\definition(T,", "x", ")", "\\fact(U,", "y", ")"});
+        std::vector<BlockKind> sk;
+        for (const Block &b : sd.blocks) sk.push_back(b.kind);
+        CHECK((sk == std::vector<BlockKind>{BlockKind::SlideBegin, BlockKind::BoxBegin, BlockKind::Paragraph, BlockKind::BoxEnd,
+                                            BlockKind::BoxBegin, BlockKind::Paragraph, BlockKind::BoxEnd}));
+        const std::vector<SlideHtml> frags = SlideFragments(sd);
+        CHECK(frags.size() == 1 && frags[0].body.find("</div>\n<div class=\"mbox mbox-fact\"") != std::string::npos);
+
+        // Commands expand in a box's title and text; its lines stay.
+        const Lines with_cmd = {"\\define(R, $\\mathbb{R}$)", "\\definition(Reals \\R(),", "In \\R().", ")"};
+        const std::vector<std::string> ex = ExpandCommands(with_cmd, Parse(with_cmd).commands, {"html"});
+        CHECK(ex.size() == 3 && ex[0] == "\\definition(Reals $\\mathbb{R}$," && ex[1] == "In $\\mathbb{R}$." && ex[2] == ")");
+    }
+
     // --- //? Type: presentation, and what its slide exports leave out.
     {
         Document d = Parse({"//? Type: Presentation", "", "Off the slides.", "", "// a comment is fine", "\\slide(", "> T", "On.", ")"});
@@ -757,7 +871,7 @@ int main() {
     {
         const std::map<std::string, Lines> files = {
             {"/d/style.mepml",
-             {"\\define(fact(name, body), \\when(html, \\raw(html, <b>#name</b>) #body)\\otherwise(*#name.* #body))",
+             {"\\define(claim(name, body), \\when(html, \\raw(html, <b>#name</b>) #body)\\otherwise(*#name.* #body))",
               "\\citation(knuth, author = Donald Knuth, title = Literate Programming, year = 1984)"}},
         };
         ReadFileFn read = [&](const std::string &p, Lines *out) {
@@ -779,7 +893,7 @@ int main() {
             "// a note to self",                      // 9
             "",                                       // 10
             "",                                       // 11
-            "\\fact(Big, Things grow) as \\citep(knuth).",  // 12
+            "\\claim(Big, Things grow) as \\citep(knuth).",  // 12
             "",                                       // 13
             "```{r, fig=1}",                          // 14
             "plot(1)",                                // 15
@@ -1229,7 +1343,8 @@ int main() {
         CHECK(count[BlockKind::Code] >= 4);
         CHECK(count[BlockKind::Image] == 2);
         CHECK(count[BlockKind::Table] == 4);  // two typed, one GFM, one printed by a block
-        CHECK(count[BlockKind::MathBlock] == 2);
+        CHECK(count[BlockKind::MathBlock] == 3);
+        CHECK(count[BlockKind::BoxBegin] == 5 && count[BlockKind::BoxEnd] == 3);
         CHECK(count[BlockKind::Citation] == 2);
         CHECK(count[BlockKind::Callout] >= 3);
         CHECK(count[BlockKind::List] >= 1);

@@ -299,6 +299,67 @@ every equation in a =pptx= opened by a program without Office equations,
 except that a deck exported from mep's editor (rather than by
 =mep-mepml=) shows its display equations there as pictures.
 
+* Boxes: definitions, theorems and their kin
+
+#+begin_example
+\definition(Orthogonal projection,
+The point of a subspace $S$ closest to $\mathbf{y}$:
+
+$$
+\hat{\mathbf{y}} = P\mathbf{y}
+$$
+)
+
+\theorem(Pythagoras, If $\mathbf{a} \perp \mathbf{b}$, the squared lengths add up.
+)
+
+\remark(A one-liner, closed where its text ends.)
+#+end_example
+
+=\definition(Title,= on a line of its own opens a box, and a line holding
+just =)= closes it (a =// comment= may follow). Everything between is
+ordinary mepml -- paragraphs, display maths, lists, code, pictures, other
+boxes -- so a box holds whatever a slide can. The kinds are:
+
+| Command         | Label       | Colour                         |
+|-----------------+-------------+--------------------------------|
+| =\definition=   | Definition  | blue                           |
+| =\theorem=      | Theorem     | purple                         |
+| =\lemma=        | Lemma       | purple                         |
+| =\proposition=  | Proposition | purple                         |
+| =\corollary=    | Corollary   | purple                         |
+| =\fact=         | Fact        | orange                         |
+| =\example=      | Example     | green                          |
+| =\remark=       | Remark      | teal                           |
+| =\proof=        | Proof       | grey, ending with a tombstone ∎ |
+
+The title is everything before the first comma (escape a comma that
+belongs to it: =\,=), and may hold inline markup and maths. Text after
+the comma on the opening line starts the box's first paragraph, which runs
+on over the lines after it like any paragraph; a box whose =)= ends that
+paragraph (=\remark(Title, text)= on one line) needs no closing line of its
+own. Leave the title out with nothing before the comma, or with nothing at
+all for a box opened on a line of its own (=\proof(=); a box closed on its
+opening line without a comma is all text (=\example(Just text.)=).
+
+Boxes nest, each closing before the one around it, and on a slide they
+close before the slide does: a =)= line ends the innermost box first. A
+box left open is flagged and closed where its slide (or the document)
+ends. The names are built in, so =\define= cannot take them.
+
+The editor draws a box as a card tinted in its kind's colour with a rule
+down its left edge: =\definition(= reads as a bold *Definition:* label in
+that colour, the title is bold, and the comma and the closing =)= are
+hidden (a proof's becomes its ∎). Moving the cursor onto a line shows it
+as written. A nested box is set inside the one around it. A box folds as
+one block, collapsing to a bar with its kind and title, and the
+presentation view draws boxes the same way. In the exports, HTML (and the
+HTML slideshow) draws the box with its label in small capitals, LaTeX and
+the Beamer deck a coloured =tcolorbox=, Markdown and Org a bold heading
+(Org as a =#+begin_definition= special block), and Word, LibreOffice, RTF,
+PowerPoint and Impress a coloured heading over the box's content. HTML,
+Markdown and Org imports read boxes back.
+
 * Inline formatting
 
 | Markup                    | Result                     |
@@ -789,7 +850,7 @@ parameters is called with empty parentheses: =\today()=. A template may
 run over any number of lines, blank ones included, and may call other
 commands (a command that calls itself is stopped after 64 levels).
 
-A call alone on its lines is a block: =\definition(...)= may hold several
+A call alone on its lines is a block: =\glossary(...)= may hold several
 paragraphs, split by blank lines, like =\abstract(...)=. A call inside a
 paragraph is expanded in place. Code blocks, maths and =`verbatim`= text
 are never expanded.
@@ -841,37 +902,41 @@ own it is a block, and the text may run over several lines:
 The text's parentheses must balance. The slide decks (=pptx=, =odp=) take
 no raw markup. Use =\when= to give them ordinary mepml instead.
 
-** Putting it together: a definition box
+** Putting it together: a glossary entry
+
+Definitions, theorems and the like are built in (see /Boxes/); a command
+of your own suits anything else that should look a particular way in
+each export, such as a glossary entry:
 
 #+begin_example
-\define(definition(term, body),
+\define(glossary(term, body),
 \when(html,
-\raw(html, <div class="definition" style="border-left: 4px solid #2c7fb8; padding: .5em 1em">)
-\raw(html, <b>Definition: #term</b>)
+\raw(html, <div class="glossary" style="border-left: 4px solid #2c7fb8; padding: .5em 1em">)
+\raw(html, <b>#term</b>)
 
 #body
 
 \raw(html, </div>)
 )
 \when(beamer,
-\raw(beamer, \begin{block}{Definition: #term})
+\raw(beamer, \begin{block}{#term})
 
 #body
 
 \raw(beamer, \end{block})
 )
 \otherwise(
-*Definition (#term).* #body
+*#term.* #body
 )
 )
 
-\definition(Orthogonal projection, The point of $S$ closest to $\mathbf{y}$.)
+\glossary(Monad, A monoid in the category of endofunctors.)
 #+end_example
 
 The HTML export draws a box, the Beamer deck a titled block, and every
 other export a paragraph that opens with the term in bold. The =#term=
 inside =\raw= goes in as written, so keep it to plain text and TeX maths.
-Put definitions in a file of their own and =//? Import:= it to share them
+Put commands in a file of their own and =//? Import:= it to share them
 between documents: commands defined in an imported file work in the
 document that imports it.
 

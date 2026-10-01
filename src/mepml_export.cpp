@@ -496,6 +496,18 @@ struct MdWriter {
                     blocks.push_back(Join(parts, "\n\n"));
                     break;
                 }
+                case BlockKind::BoxBegin: {
+                    // Markdown has no box: a bold heading, its content, and
+                    // markers (holding the title) mep's importer reads back.
+                    const BoxKind *k = FindBoxKind(b.keyword);
+                    const std::string title = b.caption_inlines.empty() ? "" : Unwrap(Inl(b.caption_inlines));
+                    blocks.push_back("<!-- mepml:box " + b.keyword + (title.empty() ? "" : " " + title) + " -->\n**" +
+                                     (k ? k->label : b.keyword) + (title.empty() ? "" : ": " + title) + "**");
+                    if (!b.inlines.empty()) blocks.push_back(Inl(b.inlines));
+                    if (b.box_closed) blocks.push_back("<!-- /mepml:box -->");
+                    break;
+                }
+                case BlockKind::BoxEnd: blocks.push_back("<!-- /mepml:box -->"); break;
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -722,6 +734,16 @@ struct OrgWriter {
                     blocks.push_back("#+begin_abstract\n" + Join(paras, "\n\n") + "\n#+end_abstract");
                     break;
                 }
+                // Org's special blocks: #+begin_definition Title ... #+end_definition.
+                case BlockKind::BoxBegin: {
+                    const std::string title = b.caption_inlines.empty() ? "" : SafeLines(Inl(b.caption_inlines));
+                    std::string o = "#+begin_" + b.keyword + (title.empty() ? "" : " " + title);
+                    if (!b.inlines.empty()) o += "\n" + SafeLines(Inl(b.inlines));
+                    if (b.box_closed) o += "\n#+end_" + b.keyword;
+                    blocks.push_back(o);
+                    break;
+                }
+                case BlockKind::BoxEnd: blocks.push_back("#+end_" + b.keyword); break;
                 case BlockKind::Meta:
                 case BlockKind::Import:
                 case BlockKind::Citation:
@@ -860,6 +882,10 @@ struct TextWriter {
                     blocks.push_back(Join(parts, "\n\n"));
                     break;
                 }
+                case BlockKind::BoxBegin:
+                    blocks.push_back(BoxHeading(b) + (b.inlines.empty() ? "" : ". " + Inl(b.inlines)));
+                    break;
+                case BlockKind::BoxEnd: break;
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -1178,6 +1204,20 @@ struct RtfWriter {
                     body += Para("\\s22\\qc\\sb240\\keepn\\b\\fs22", "Abstract");
                     for (const std::vector<Inline> &para : AbstractParagraphs(b)) body += Para("\\s21\\li720\\ri720\\fs20", Inl(para));
                     break;
+                case BlockKind::BoxBegin: {
+                    // A heading paragraph ruled down its left in the box's
+                    // colour, on its paper (paragraph formatting only: the
+                    // words read back as they were written).
+                    const BoxKind *k = FindBoxKind(b.keyword);
+                    const std::string rule = std::to_string(ColorIndex(k ? k->color : "#2c7fb8"));
+                    const std::string tint = std::to_string(ColorIndex(k ? k->tint : "#eef5fb"));
+                    std::string heading = Esc(std::string(k ? k->label : b.keyword.c_str()));
+                    if (!b.caption_inlines.empty()) heading += ": " + Inl(b.caption_inlines);
+                    body += Para("\\s23\\keepn\\sb200\\li120\\brdrl\\brdrs\\brdrw40\\brsp100\\brdrcf" + rule + "\\cbpat" + tint, heading);
+                    if (!b.inlines.empty()) body += Para("", Inl(b.inlines));
+                    break;
+                }
+                case BlockKind::BoxEnd: break;
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -1207,7 +1247,7 @@ struct RtfWriter {
         out += "{\\s7\\sbasedon0 Title;}{\\s8\\sbasedon0 Source Code;}{\\s9\\sbasedon0 Quote;}{\\s10\\sbasedon0 caption;}";
         for (int l = 1; l <= 6; ++l) out += "{\\s" + std::to_string(10 + l) + "\\sbasedon0 toc " + std::to_string(l) + ";}";
         out += "{\\s17\\sbasedon0 Bibliography;}{\\s18\\sbasedon0 Math Display;}{\\s19\\sbasedon0 TOC Heading;}{\\s20\\sbasedon0 List Paragraph;}"
-               "{\\s21\\sbasedon0 Abstract;}{\\s22\\sbasedon0 Abstract Title;}"
+               "{\\s21\\sbasedon0 Abstract;}{\\s22\\sbasedon0 Abstract Title;}{\\s23\\sbasedon0 Box Title;}"
                "{\\*\\cs30 Verbatim Char;}{\\*\\cs31 Math;}}\n";  // (bare: some readers apply a character style's look to paragraphs)
         if (!lists.empty()) {
             std::string table = "{\\*\\listtable", overrides = "{\\*\\listoverridetable";
@@ -1561,6 +1601,18 @@ struct DocxWriter {
                     body += P(Style("AbstractTitle"), Run("Abstract", none));
                     for (const std::vector<Inline> &para : AbstractParagraphs(b)) body += P(Style("Abstract"), Inl(para, none));
                     break;
+                case BlockKind::BoxBegin: {
+                    // A heading paragraph in the box's own style (Styles():
+                    // bold, its colour, a rule down the left on its paper).
+                    const BoxKind *k = FindBoxKind(b.keyword);
+                    const std::string name = k ? k->name : "definition";
+                    std::string heading = Run(std::string(k ? k->label : b.keyword.c_str()) + (b.caption_inlines.empty() ? "" : ": "), none);
+                    if (!b.caption_inlines.empty()) heading += Inl(b.caption_inlines, none);
+                    body += P(Style("Box" + std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])))) + name.substr(1)), heading);
+                    if (!b.inlines.empty()) body += P("", Inl(b.inlines, none));
+                    break;
+                }
+                case BlockKind::BoxEnd: break;
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -1599,6 +1651,16 @@ struct DocxWriter {
              "<w:style w:type=\"paragraph\" w:styleId=\"Bibliography\"><w:name w:val=\"Bibliography\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:ind w:left=\"567\" w:hanging=\"567\"/></w:pPr></w:style>"
              "<w:style w:type=\"paragraph\" w:styleId=\"AbstractTitle\"><w:name w:val=\"Abstract Title\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Abstract\"/><w:pPr><w:keepNext/><w:jc w:val=\"center\"/><w:spacing w:before=\"240\" w:after=\"80\"/></w:pPr><w:rPr><w:b/><w:sz w:val=\"22\"/></w:rPr></w:style>"
              "<w:style w:type=\"paragraph\" w:styleId=\"Abstract\"><w:name w:val=\"Abstract\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:ind w:left=\"720\" w:right=\"720\"/></w:pPr><w:rPr><w:sz w:val=\"20\"/></w:rPr></w:style>";
+        // mepml's boxes: a heading per kind ("Definition Box"), bold in its
+        // colour, ruled down the left on its paper.
+        for (const BoxKind &k : BoxKinds()) {
+            std::string id = k.name, colour = k.color + 1, tint = k.tint + 1;
+            id[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(id[0])));
+            s += "<w:style w:type=\"paragraph\" w:styleId=\"Box" + id + "\"><w:name w:val=\"" + k.label + " Box\"/><w:basedOn w:val=\"Normal\"/>"
+                 "<w:pPr><w:keepNext/><w:pBdr><w:left w:val=\"single\" w:sz=\"24\" w:space=\"6\" w:color=\"" + colour + "\"/></w:pBdr>"
+                 "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"" + tint + "\"/><w:spacing w:before=\"200\" w:after=\"80\"/><w:ind w:left=\"120\"/></w:pPr>"
+                 "<w:rPr><w:b/><w:color w:val=\"" + colour + "\"/></w:rPr></w:style>";
+        }
         for (int i = 1; i <= 6; ++i)
             s += "<w:style w:type=\"paragraph\" w:styleId=\"TOC" + std::to_string(i) + "\"><w:name w:val=\"toc " + std::to_string(i) +
                  "\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:spacing w:after=\"60\"/><w:ind w:left=\"" + std::to_string(240 * (i - 1)) + "\"/></w:pPr></w:style>";
@@ -1938,6 +2000,17 @@ struct OdtWriter {
                     body += P("Abstract_20_Title", Run("Abstract", none));
                     for (const std::vector<Inline> &para : AbstractParagraphs(b)) body += P("Abstract", Inl(para, none));
                     break;
+                case BlockKind::BoxBegin: {
+                    // A heading paragraph in the box's own style (see the
+                    // styles: bold, its colour, ruled down the left).
+                    const BoxKind *k = FindBoxKind(b.keyword);
+                    std::string heading = Run(std::string(k ? k->label : b.keyword.c_str()) + (b.caption_inlines.empty() ? "" : ": "), none);
+                    if (!b.caption_inlines.empty()) heading += Inl(b.caption_inlines, none);
+                    body += P("Box_20_" + std::string(k ? k->label : "Definition"), heading);
+                    if (!b.inlines.empty()) body += P("", Inl(b.inlines, none));
+                    break;
+                }
+                case BlockKind::BoxEnd: break;
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -1996,8 +2069,15 @@ std::string OdtStyles() {
          "<style:style style:name=\"Bibliography\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:margin-left=\"0.8cm\" fo:text-indent=\"-0.8cm\"/></style:style>"
          "<style:style style:name=\"Rule\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:border-bottom=\"0.05pt solid #000000\"/></style:style>"
          "<style:style style:name=\"Abstract_20_Title\" style:display-name=\"Abstract Title\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:text-align=\"center\" fo:margin-top=\"0.4cm\" fo:keep-with-next=\"always\"/><style:text-properties fo:font-weight=\"bold\"/></style:style>"
-         "<style:style style:name=\"Abstract\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:margin-left=\"1.25cm\" fo:margin-right=\"1.25cm\"/><style:text-properties fo:font-size=\"10pt\"/></style:style>"
-         "<text:list-style style:name=\"LBullet\">";
+         "<style:style style:name=\"Abstract\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:margin-left=\"1.25cm\" fo:margin-right=\"1.25cm\"/><style:text-properties fo:font-size=\"10pt\"/></style:style>";
+    // mepml's boxes: a heading per kind, bold in its colour, ruled down
+    // the left on its paper.
+    for (const BoxKind &k : BoxKinds())
+        s += "<style:style style:name=\"Box_20_" + std::string(k.label) + "\" style:display-name=\"" + k.label +
+             " Box\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:margin-top=\"0.35cm\" "
+             "fo:keep-with-next=\"always\" fo:border-left=\"0.1cm solid " + k.color + "\" fo:padding-left=\"0.25cm\" fo:background-color=\"" + k.tint +
+             "\"/><style:text-properties fo:font-weight=\"bold\" fo:color=\"" + k.color + "\"/></style:style>";
+    s += "<text:list-style style:name=\"LBullet\">";
     for (int l = 1; l <= 10; ++l)
         s += "<text:list-level-style-bullet text:level=\"" + std::to_string(l) + "\" text:bullet-char=\"" + (l % 2 ? "•" : "◦") +
              "\"><style:list-level-properties text:list-level-position-and-space-mode=\"label-alignment\"><style:list-level-label-alignment text:label-followed-by=\"listtab\" fo:text-indent=\"-0.5cm\" fo:margin-left=\"" +

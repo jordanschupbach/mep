@@ -409,6 +409,30 @@ struct Out {
         for (const std::string &t : texts) body += (body.empty() ? "" : "\n\n") + t;
         Block("\\abstract(\n" + ParenEsc(body) + "\n)");
     }
+    // A box (\definition, ...): its opening line, `kind` one of BoxKinds,
+    // then its content as ordinary blocks, then BoxClose's `)`.
+    void BoxOpen(const std::string &kind, const std::vector<Seg> &title_segs) {
+        std::vector<Seg> segs = title_segs;
+        Coalesce(segs);
+        std::string title;
+        for (char c : Trim(RenderSegs(segs))) title += c == '\n' ? ' ' : c;
+        // The title ends at the first comma that is not escaped.
+        std::string safe;
+        int depth = 0;
+        for (size_t k = 0; k < title.size(); ++k) {
+            const char c = title[k];
+            if (c == '\\' && k + 1 < title.size()) {
+                safe += title.substr(k, 2);
+                ++k;
+                continue;
+            }
+            if (c == '(') ++depth;
+            if (c == ')') --depth;
+            safe += c == ',' && depth == 0 ? std::string("\\,") : std::string(1, c);
+        }
+        Block("\\" + kind + "(" + ParenEsc(safe) + ",");
+    }
+    void BoxClose() { Block(")"); }
     void Rule() { Block("---"); }
     void Comment(const std::string &text) {
         std::string o;
@@ -882,9 +906,11 @@ struct HtmlReader {
         pending.clear();
     }
 
+    const DomNode *skip_node = nullptr;  // a box's title, read already
     void Blocks(const DomNode *n) {
         for (const auto &cp : n->children) {
             const DomNode *c = cp.get();
+            if (c == skip_node) continue;
             if (c->type == DomNodeType::Text) {
                 Inl(c, Fmt(), pending);
                 continue;
@@ -942,6 +968,23 @@ struct HtmlReader {
                 out.Callout("NOTE", InlOf(c));
             } else if (t == "nav" && HasClass(c, "toc")) {
                 out.Block("\\toc");
+            } else if (t == "div" && FindBoxKind(Attr(c, "data-kind"))) {
+                // mep's own boxes (mepml::ToHtml): the title paragraph, then
+                // the content, read as blocks.
+                std::vector<Seg> title;
+                const DomNode *title_p = nullptr;
+                for (const auto &k : c->children)
+                    if (k->type == DomNodeType::Element && HasClass(k.get(), "mbox-title")) title_p = k.get();
+                if (title_p)
+                    for (const auto &k : title_p->children)
+                        if (k->type == DomNodeType::Element && HasClass(k.get(), "mbox-name")) title = InlOf(k.get());
+                out.BoxOpen(Attr(c, "data-kind"), title);
+                const DomNode *outer = skip_node;
+                skip_node = title_p;
+                Blocks(c);
+                skip_node = outer;
+                Flush();
+                out.BoxClose();
             } else if ((t == "section" || t == "div") && HasClass(c, "abstract")) {
                 // mep's own and pandoc's: a title element, then paragraphs.
                 std::vector<std::vector<Seg>> paras;
@@ -1627,6 +1670,7 @@ struct MdReader {
             return cells;
         };
 
+        int md_boxes = 0;  // boxes opened by a <!-- mepml:box --> marker, not yet closed
         for (size_t i = 0; i < lines.size(); ++i) {
             const std::string &l = lines[i];
             const std::string t = Trim(l);
@@ -1781,6 +1825,27 @@ struct MdReader {
                     for (; n < lines.size() && Trim(lines[n]) != "<!-- /mepml:results -->"; ++n) raw.push_back(lines[n]);
                     i = n;
                     out.Results(raw, "html");
+                    continue;
+                }
+                // A box (see MdWriter): the title rides in the marker; the
+                // bold heading line under it is skipped.
+                if (StartsWith(text, "mepml:box ")) {
+                    std::string rest = Trim(text.substr(10));
+                    const size_t sp = rest.find(' ');
+                    const std::string kind = rest.substr(0, sp);
+                    const std::string title = sp == std::string::npos ? "" : Trim(rest.substr(sp));
+                    if (FindBoxKind(kind)) {
+                        out.BoxOpen(kind, InlOf(title));
+                        ++md_boxes;
+                        if (i + 1 < lines.size() && StartsWith(Trim(lines[i + 1]), "**")) ++i;
+                    }
+                    continue;
+                }
+                if (text == "/mepml:box") {
+                    if (md_boxes > 0) {
+                        out.BoxClose();
+                        --md_boxes;
+                    }
                     continue;
                 }
                 // An abstract (see MdWriter): its paragraphs up to the
@@ -2194,6 +2259,7 @@ struct OrgReader {
             return Lower(t.substr(2, colon - 2));
         };
 
+        int org_boxes = 0;  // boxes opened by a #+begin_definition (...) not yet closed
         for (size_t i = 0; i < lines.size(); ++i) {
             const std::string &l = lines[i];
             const std::string t = Trim(l);
@@ -2259,6 +2325,19 @@ struct OrgReader {
                 if (!image.empty()) res.push_back("\\image(" + ParenEsc(image) + ")");
                 out.Results(res, format);
                 TakeCaption();
+                continue;
+            }
+            // mep's boxes (see OrgWriter): special blocks whose content is
+            // read on as the document's own blocks.
+            if ((key.rfind("begin_", 0) == 0 && FindBoxKind(key.substr(6))) || (key.rfind("end_", 0) == 0 && FindBoxKind(key.substr(4)))) {
+                flush();
+                if (key[0] == 'b') {
+                    out.BoxOpen(key.substr(6), InlOf(value));
+                    ++org_boxes;
+                } else if (org_boxes > 0) {
+                    out.BoxClose();
+                    --org_boxes;
+                }
                 continue;
             }
             if (key.rfind("begin_", 0) == 0) {
@@ -3479,6 +3558,10 @@ struct OdtReader {
                     ts.f.size = buf;
                 }
             }
+            // mep's box headings ("Definition Box", see OdtWriter): their
+            // bold and colour are the heading's look, not the words'.
+            for (const BoxKind &k : BoxKinds())
+                if (ts.display == Lower(std::string(k.label) + " box")) ts.f = {};
             const xml::xml_node pp = st.child("style:paragraph-properties");
             if (pp) {
                 const std::string al = Attr(pp, "fo:text-align");

@@ -587,6 +587,22 @@ const std::vector<Vocab> &DirectiveVocab() {
         {"toc", "\\toc", "The table of contents: every heading of this document, indented by depth."},
         {"abstract", "\\abstract(text)", "The document's abstract: prose over any number of lines, a blank line between paragraphs. Exports as each format's own abstract."},
         {"slide", "\\slide( ... )", "A slide: \\slide( on a line of its own, then the slide's content -- headings, lists, code, pictures, any blocks -- and a line holding just ) to end it. Its first heading is its title."},
+#define MEPML_BOX(name, Label, colour)                                                                                       \
+    {name, "\\" name "(Title, ...)",                                                                                         \
+     "A " name ", drawn as a titled box (" colour "): \\" name "(Title, on a line of its own, then its content -- prose, "  \
+     "maths, lists, code, any blocks -- and a line holding just ) to close it; or \\" name "(Title, text) on one line. "     \
+     "The title (before the first comma) may be left out. Exports as each format's own: a box in HTML and PDF, a "            \
+     "heading in the others. Label: " Label "."}
+        MEPML_BOX("definition", "Definition", "blue"),
+        MEPML_BOX("theorem", "Theorem", "purple"),
+        MEPML_BOX("lemma", "Lemma", "purple"),
+        MEPML_BOX("proposition", "Proposition", "purple"),
+        MEPML_BOX("corollary", "Corollary", "purple"),
+        MEPML_BOX("fact", "Fact", "orange"),
+        MEPML_BOX("example", "Example", "green"),
+        MEPML_BOX("remark", "Remark", "teal"),
+        MEPML_BOX("proof", "Proof", "grey, ending with a tombstone"),
+#undef MEPML_BOX
         {"define", "\\define(name(params), template)", "A command of your own: \\name(a, b) becomes the template with #param (or #{param}, #1) replaced by the arguments -- the last parameter takes the rest of the call, commas and all. The template may choose by export with \\when(html, ...) \\otherwise(...) and write the export's own markup with \\raw(html, ...). Exports expand the calls; the editor shows them as written."},
     };
     return v;
@@ -1073,6 +1089,27 @@ MepmlLspHoverInfo MepmlLspHover(const std::vector<std::string> &lines, int line,
             return found(ind, Len(l), VocabDoc(DirectiveVocab(), "abstract") + "\n\n" + std::to_string(paras) +
                                           (paras == 1 ? " paragraph" : " paragraphs"));
         }
+        case BlockKind::BoxBegin:
+        case BlockKind::BoxEnd: {
+            // A box's heading and its extent, from either end.
+            const Block *begin = b;
+            int end_line = b->box_closed ? b->line_end : -1;
+            std::vector<const Block *> open;
+            for (const Block &o : doc.blocks) {
+                if (!o.origin.empty()) continue;
+                if (o.kind == BlockKind::BoxBegin && !o.box_closed) open.push_back(&o);
+                if (o.kind == BlockKind::BoxEnd && !open.empty()) {
+                    if (&o == b) begin = open.back();
+                    if (open.back() == b) end_line = o.line_end;
+                    open.pop_back();
+                }
+            }
+            if (b->kind == BlockKind::BoxEnd) end_line = b->line_end;
+            std::string t = mepml::BoxHeading(*begin);
+            if (end_line >= 0) t += "\n\nLines " + std::to_string(begin->line_start + 1) + "-" + std::to_string(end_line + 1);
+            else t += "\n\nNot closed: end it with a line holding just )";
+            return found(ind, Len(l), t + "\n\n" + VocabDoc(DirectiveVocab(), begin->keyword));
+        }
         case BlockKind::SlideBegin:
         case BlockKind::SlideEnd: {
             std::string t = "Slide " + std::to_string(b->level);
@@ -1333,6 +1370,19 @@ std::vector<MepmlLspSymbol> MepmlLspSymbols(const std::vector<std::string> &line
     const Document &doc = ParsePlain(lines);
     const std::vector<std::string> labels = mepml::BlockLabels(doc);
     const std::vector<mepml::Slide> slides = mepml::Slides(doc, static_cast<int>(lines.size()));
+    // Each box's last line: its closing `)`, or its own for one closed there.
+    std::map<const Block *, int> box_ends;
+    {
+        std::vector<const Block *> open;
+        for (const Block &b : doc.blocks) {
+            if (b.kind == BlockKind::BoxBegin && b.box_closed) box_ends[&b] = b.line_end;
+            else if (b.kind == BlockKind::BoxBegin) open.push_back(&b);
+            else if (b.kind == BlockKind::BoxEnd && !open.empty()) {
+                box_ends[open.back()] = b.line_end;
+                open.pop_back();
+            }
+        }
+    }
     std::vector<MepmlLspSymbol> out;
     std::vector<int> open;  // indices of the headings enclosing the current line, by depth
     const int n = static_cast<int>(lines.size());
@@ -1396,6 +1446,12 @@ std::vector<MepmlLspSymbol> MepmlLspSymbols(const std::vector<std::string> &line
             s.kind = MepmlLspSymbolKind::Namespace;
             s.name = "Abstract";
             s.detail = "abstract";
+        } else if (b.kind == BlockKind::BoxBegin) {
+            s.kind = MepmlLspSymbolKind::Object;
+            s.name = mepml::BoxHeading(b);
+            s.detail = b.keyword;
+            auto end = box_ends.find(&b);
+            if (end != box_ends.end()) s.line_end = end->second;
         } else if (b.kind == BlockKind::SlideBegin) {
             s.kind = MepmlLspSymbolKind::Namespace;
             s.name = "Slide " + std::to_string(b.level);
@@ -1449,6 +1505,17 @@ std::vector<MepmlLspFold> MepmlLspFolds(const std::vector<std::string> &lines) {
     }
     if (run_start >= 0) add(run_start, run_end, "");
     for (const mepml::Slide &sl : mepml::Slides(doc, n)) add(sl.line_start, sl.line_end, "");
+    {
+        std::vector<const Block *> open;  // boxes
+        for (const Block &b : doc.blocks) {
+            if (b.kind == BlockKind::BoxBegin && b.box_closed) add(b.line_start, b.line_end, "");
+            else if (b.kind == BlockKind::BoxBegin) open.push_back(&b);
+            else if (b.kind == BlockKind::BoxEnd && !open.empty()) {
+                add(open.back()->line_start, b.line_end, "");
+                open.pop_back();
+            }
+        }
+    }
     for (const Block &b : doc.blocks) {
         if (b.kind == BlockKind::Comment) add(b.line_start, b.line_end, "comment");
         else if (b.kind == BlockKind::Code && b.result_line_start >= 0) {

@@ -101,6 +101,11 @@ module.exports = grammar({
     $._cmd_raw, // `\raw` before (formats, text)
     $._cmd_user, // `\name` of a user command (or \when, \otherwise) before (args)
     $.math_trailing, // text after a display-maths closer, up to the end of its line
+    $._box_start, // zero-width: the line opens a box (\definition( ...) whose content follows
+    $._box_line_start, // zero-width: the line opens a box that closes where its text ends
+    $._box_open, // a box's `(`
+    $._box_break, // a line break inside a box's first paragraph
+    $._box_end, // zero-width: the line closes the open box
     $._error_sentinel,
   ],
 
@@ -145,6 +150,7 @@ module.exports = grammar({
       $.toc,
       $.abstract,
       $.slide,
+      $.box,
       $.define,
       $.raw_block,
       $.command_block,
@@ -378,6 +384,34 @@ module.exports = grammar({
       $._line_end,
     ),
     slide_close: $ => seq($._slide_end, optional($._ws), choice(')', '}'), $._line_end),
+
+    // A titled box: `\definition(Title,` on a line of its own, its content
+    // -- any blocks -- and a line holding just `)`; or one closed where its
+    // text ends, `\remark(Title, text)`. Text after the title (the comma
+    // is part of the content) is the box's first paragraph. Boxes nest.
+    box: $ => choice(
+      seq(
+        $.box_open,
+        repeat(choice($._block, $._blank_line, $._any_section)),
+        $.box_close,
+      ),
+      alias($._box_line, $.box_open),
+    ),
+    box_open: $ => seq(
+      $._box_start, optional($._ws), '\\', field('kind', $.box_kind),
+      alias($._box_open, '('),
+      optional(alias(repeat1(choice($._inline, $._box_break)), $.content)),
+      $._newline,
+    ),
+    _box_line: $ => seq(
+      $._box_line_start, optional($._ws), '\\', field('kind', $.box_kind),
+      alias($._box_open, '('),
+      optional(alias(repeat1(choice($._inline, $._box_break)), $.content)),
+      alias($._paren_close, ')'),
+      $._line_end,
+    ),
+    box_kind: _ => choice('definition', 'theorem', 'lemma', 'proposition', 'corollary', 'fact', 'example', 'remark', 'proof'),
+    box_close: $ => seq($._box_end, optional($._ws), ')', $._line_end),
 
     // \citation(key, field = value, ...) or @citation{key}{fields}
     citation: $ => seq(

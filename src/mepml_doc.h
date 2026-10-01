@@ -136,6 +136,21 @@ enum class BlockKind {
     // may hold calls too, as InlineKind::Command): `keyword` the name,
     // `value` the arguments as written, `inlines` them parsed as prose.
     Command,
+    // A titled box -- `\definition(Title,` on a line of its own opens one
+    // (or \theorem, \lemma ...: see BoxKinds), a line holding just `)`
+    // closes it, and what lies between is its content, ordinary blocks of
+    // the document, as on a slide. Boxes nest, and close before the slide
+    // they are on. BoxBegin: `keyword` the kind, `caption` /
+    // `caption_inlines` the title (before the first top-level comma; empty
+    // for `\proof(`), `inlines` any text after the comma -- the box's
+    // first paragraph, over as many lines as it runs -- and `box_closed`
+    // when its `)` ends that text (`\remark(Title, text)` on one line):
+    // then no BoxEnd follows. Without a comma, a box closed on its opening
+    // line is all text (`\remark(text)`) and any other's opening line is
+    // its title. BoxEnd: `keyword` the kind of the box it closes. `level`
+    // is the box's depth on both, 1 for one not inside another.
+    BoxBegin,
+    BoxEnd,
 };
 
 enum class Align { Default, Left, Center, Right };
@@ -224,6 +239,8 @@ struct Block {
     // inlines[paragraph_starts[k] .. paragraph_starts[k+1]) (see
     // AbstractParagraphs). Always starts with 0 when there is any text.
     std::vector<size_t> paragraph_starts;
+
+    bool box_closed = false;  // BoxBegin: closed on its own lines (see BlockKind::BoxBegin)
 
     // Offset (into text) of the first byte that belongs to each line.
     std::vector<int> line_offsets;
@@ -320,6 +337,25 @@ const std::vector<ExportFormat> &ExportFormats();
 // The callout keywords a `// KEYWORD:` comment recognises.
 const std::vector<std::string> &CalloutKeywords();
 
+// The kinds of titled box (BlockKind::BoxBegin): the command's name, the
+// label every rendering puts before the title ("Definition"), and its
+// colours -- `color` the accent (#rrggbb), `tint` the paper behind the
+// content, `hl` the editor's highlight group for the accent. A proof is
+// quieter than the rest and ends with a tombstone (∎).
+struct BoxKind {
+    const char *name;
+    const char *label;
+    const char *color;
+    const char *tint;
+    const char *hl;
+};
+const std::vector<BoxKind> &BoxKinds();
+// The kind named `name` ("definition"), nullptr for anything else.
+const BoxKind *FindBoxKind(const std::string &name);
+// "Definition: Title", "Definition" without one -- a box's heading as the
+// exports without a box of their own (Markdown, plain text ...) write it.
+std::string BoxHeading(const Block &b);
+
 Document Parse(const std::vector<std::string> &lines);
 // A line's heading depth by its own text (`>`..`>>>>>>` then a space), 0
 // otherwise. Context-free: Document::blocks is the authority on whether the
@@ -415,6 +451,10 @@ enum StyleFlag : std::uint32_t {
     kTableRule = 1u << 28,  // a table's own `|` pipes / |---| separator row
     kAbstract = 1u << 29,   // a \abstract's `\abstract(` / `)` (replace = its "Abstract" label)
     kSlide = 1u << 30,      // a \slide's `\slide(` / `)` lines (replace = "Slide N" on the opener)
+    // A box's own markup (`\definition(`, the comma after its title, its
+    // `)`; replace = its label on the opener) and its title; `target` is
+    // the box's kind.
+    kBox = 1u << 31,
 };
 
 struct Span {
@@ -615,6 +655,9 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
 // marker and the indent under it).
 std::vector<std::string> FillProse(const std::string &text, int cols, const std::string &first = "",
                                    const std::string &rest = "");
+// How many columns a line of prose takes as the editor draws it: markup
+// concealed, maths about as wide as it typesets (FillProse's measure).
+int ProseColumns(const std::string &line);
 
 }  // namespace mepml
 

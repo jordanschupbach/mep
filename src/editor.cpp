@@ -4878,7 +4878,7 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // determines how many visual slots it claims, same "one row ->
     // N slots" shape as the image/table cases above.
     if (wrap_cols > 0) {
-        int len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
+        int len = WrapLenForRow(buf, row);
         return std::max(1, (len + wrap_cols - 1) / wrap_cols) + trailing + heading_extra + RowTopPadSlots(buf, row);
     }
     return 1 + trailing + heading_extra + RowTopPadSlots(buf, row);
@@ -23884,9 +23884,30 @@ bool Editor::ToggleOrgLatex() {
     return org_latex_visible_;
 }
 
+int Editor::LatexInlineDrawCols(const std::string &path) const {
+    int w = 0, h = 0;
+    ImagePixelSizeCached(path, &w, &h);
+    if (w <= 0 || h <= 0 || render_char_width_ <= 0.0 || render_line_height_ <= 0.0) return -1;
+    // DrawPane's OrgLatexInlineScale / OrgLatexInlineCols, from the size.
+    const double scale = std::min(1.0, render_line_height_ * 0.95 / static_cast<double>(h));
+    return std::max(1, static_cast<int>(std::ceil(static_cast<double>(w) * scale / render_char_width_ - 0.05)));
+}
+
 void Editor::AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path, int first_row,
                                    int last_row) {
     if (row < 0 || row >= Buf().LineCount()) return;
+    // In a mepml table laid out for another width: lay it out again.
+    {
+        Buffer &b = Buf();
+        auto used = b.mepml_table_math_cols.find({row, col_start});
+        if (used != b.mepml_table_math_cols.end() && !path.empty()) {
+            const int cols = LatexInlineDrawCols(path);
+            if (cols != used->second) {
+                used->second = cols;
+                ++b.mepml_table_math_gen;
+            }
+        }
+    }
     // A fragment registered again (a presentation's stand-in render
     // replaced by tectonic's) takes its old span's place.
     std::vector<Buffer::OrgLatexInlineSpan> &spans = Buf().org_latex_inline[row];

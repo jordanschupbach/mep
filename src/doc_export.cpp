@@ -1,6 +1,7 @@
 #include "doc_export.h"
 #include "html_doc.h"
 #include "image_doc.h"
+#include "mepml_doc.h"
 
 #include <algorithm>
 #include <cctype>
@@ -378,6 +379,29 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         out += "\\end{abstract}\n";
         return;
     }
+    // A mepml box (\definition and its kin, mepml::ToHtml): a tcolorbox in
+    // the kind's colours, its label in small capitals before the title.
+    if (tag == "div" && node->attrs.count("data-kind") && node->Class().rfind("mbox", 0) == 0) {
+        const std::string kind = node->attrs.at("data-kind");
+        const std::string colour = mepml::FindBoxKind(kind) ? "mepbox" + kind : "mepboxdefinition";
+        std::string label, name, body;
+        for (auto &c : node->children) {
+            if (c->type == DomNodeType::Element && c->Class() == "mbox-title") {
+                for (auto &t : c->children) {
+                    if (t->type != DomNodeType::Element) continue;
+                    if (t->Class() == "mbox-label") label = LatexEscape(CollectRawText(t.get()));
+                    else if (t->Class() == "mbox-name")
+                        for (auto &k : t->children) WalkLatexNode(k.get(), ctx, name);
+                }
+            } else {
+                WalkLatexNode(c.get(), ctx, body);
+            }
+        }
+        out += "\n\\begin{mepbox}{" + colour + "}\n{\\sffamily\\bfseries\\footnotesize\\color{" + colour + "}\\MakeUppercase{" + label +
+               "}}" + (name.empty() ? "" : "\\enspace\\textbf{" + name + "}") + "\\par\\smallskip\n" + body +
+               (kind == "proof" ? "\\hfill\\ensuremath{\\blacksquare}\n" : "") + "\\end{mepbox}\n";
+        return;
+    }
     if (tag == "div" && node->Class() == "org-code-block") {
         RenderOrgCodeBlockLatex(node, out);
         return;
@@ -633,6 +657,21 @@ void LatexPreamble(std::ostringstream &out, bool beamer) {
            "colback=mepCodeBg, colframe=mepCodeBorder, borderline west={3pt}{0pt}{mepCodeAccent}, "
            "fonttitle=\\ttfamily\\small, coltitle=mepCodeMuted, colbacktitle=mepCodeHeaderBg, "
            "title=#1, left=8pt, right=8pt, top=6pt, bottom=6pt}\n";
+    // mepml's boxes (\definition, \theorem ...): each kind's accent and
+    // the paper behind it, from mepml::BoxKinds like the HTML's.
+    auto hex = [](const char *c) {
+        std::string h = c[0] == '#' ? c + 1 : c;
+        for (char &ch : h) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+        return h;
+    };
+    for (const mepml::BoxKind &k : mepml::BoxKinds())
+        out << "\\definecolor{mepbox" << k.name << "}{HTML}{" << hex(k.color) << "}\n"
+            << "\\definecolor{mepbox" << k.name << "tint}{HTML}{" << hex(k.tint) << "}\n";
+    // (On a slide, room is short: smaller text and tighter spacing.)
+    out << "\\newtcolorbox{mepbox}[1]{enhanced, breakable, frame hidden, boxrule=0pt, arc=2pt, colback=#1tint, "
+           "borderline west={3pt}{0pt}{#1}, "
+        << (beamer ? "fontupper=\\small, left=6pt, right=6pt, top=2pt, bottom=3pt, before skip=4pt, after skip=4pt}\n"
+                   : "left=8pt, right=8pt, top=5pt, bottom=6pt, before skip=8pt, after skip=8pt}\n");
     if (!beamer) out << "\\usepackage{longtable}\n\\usepackage[margin=1in]{geometry}\n\\usepackage{hyperref}\n";
 }
 

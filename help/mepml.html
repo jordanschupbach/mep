@@ -245,6 +245,59 @@ Impress is typeset text (a text box cannot hold a formula), and so is
 every equation in a <code>pptx</code> opened by a program without Office equations,
 except that a deck exported from mep's editor (rather than by
 <code>mep-mepml</code>) shows its display equations there as pictures.</p>
+<h1>Boxes: definitions, theorems and their kin</h1>
+<pre>\definition(Orthogonal projection,
+The point of a subspace $S$ closest to $\mathbf{y}$:
+
+$$
+\hat{\mathbf{y}} = P\mathbf{y}
+$$
+)
+
+\theorem(Pythagoras, If $\mathbf{a} \perp \mathbf{b}$, the squared lengths add up.
+)
+
+\remark(A one-liner, closed where its text ends.)</pre>
+<p>=\definition(Title,= on a line of its own opens a box, and a line holding
+just <code>)</code> closes it (a <code>// comment</code> may follow). Everything between is
+ordinary mepml -- paragraphs, display maths, lists, code, pictures, other
+boxes -- so a box holds whatever a slide can. The kinds are:</p>
+<table>
+<tr><th>Command</th><th>Label</th><th>Colour</th></tr>
+<tr><td><code>\definition</code></td><td>Definition</td><td>blue</td></tr>
+<tr><td><code>\theorem</code></td><td>Theorem</td><td>purple</td></tr>
+<tr><td><code>\lemma</code></td><td>Lemma</td><td>purple</td></tr>
+<tr><td><code>\proposition</code></td><td>Proposition</td><td>purple</td></tr>
+<tr><td><code>\corollary</code></td><td>Corollary</td><td>purple</td></tr>
+<tr><td><code>\fact</code></td><td>Fact</td><td>orange</td></tr>
+<tr><td><code>\example</code></td><td>Example</td><td>green</td></tr>
+<tr><td><code>\remark</code></td><td>Remark</td><td>teal</td></tr>
+<tr><td><code>\proof</code></td><td>Proof</td><td>grey, ending with a tombstone ∎</td></tr>
+</table>
+<p>The title is everything before the first comma (escape a comma that
+belongs to it: =\,=), and may hold inline markup and maths. Text after
+the comma on the opening line starts the box's first paragraph, which runs
+on over the lines after it like any paragraph; a box whose <code>)</code> ends that
+paragraph (<code>\remark(Title, text)</code> on one line) needs no closing line of its
+own. Leave the title out with nothing before the comma, or with nothing at
+all for a box opened on a line of its own (<code>\proof(</code>); a box closed on its
+opening line without a comma is all text (<code>\example(Just text.)</code>).</p>
+<p>Boxes nest, each closing before the one around it, and on a slide they
+close before the slide does: a <code>)</code> line ends the innermost box first. A
+box left open is flagged and closed where its slide (or the document)
+ends. The names are built in, so <code>\define</code> cannot take them.</p>
+<p>The editor draws a box as a card tinted in its kind's colour with a rule
+down its left edge: <code>\definition(</code> reads as a bold <b>Definition:</b> label in
+that colour, the title is bold, and the comma and the closing <code>)</code> are
+hidden (a proof's becomes its ∎). Moving the cursor onto a line shows it
+as written. A nested box is set inside the one around it. A box folds as
+one block, collapsing to a bar with its kind and title, and the
+presentation view draws boxes the same way. In the exports, HTML (and the
+HTML slideshow) draws the box with its label in small capitals, LaTeX and
+the Beamer deck a coloured <code>tcolorbox</code>, Markdown and Org a bold heading
+(Org as a <code>#+begin_definition</code> special block), and Word, LibreOffice, RTF,
+PowerPoint and Impress a coloured heading over the box's content. HTML,
+Markdown and Org imports read boxes back.</p>
 <h1>Inline formatting</h1>
 <table>
 <tr><th>Markup</th><th>Result</th></tr>
@@ -618,7 +671,7 @@ commas and all, as the text of <code>\color(red, text)</code> does. A command wi
 parameters is called with empty parentheses: <code>\today()</code>. A template may
 run over any number of lines, blank ones included, and may call other
 commands (a command that calls itself is stopped after 64 levels).</p>
-<p>A call alone on its lines is a block: <code>\definition(...)</code> may hold several
+<p>A call alone on its lines is a block: <code>\glossary(...)</code> may hold several
 paragraphs, split by blank lines, like <code>\abstract(...)</code>. A call inside a
 paragraph is expanded in place. Code blocks, maths and <code>`verbatim`</code> text
 are never expanded.</p>
@@ -656,33 +709,36 @@ own it is a block, and the text may run over several lines:</p>
 )</pre>
 <p>The text's parentheses must balance. The slide decks (<code>pptx</code>, <code>odp</code>) take
 no raw markup. Use <code>\when</code> to give them ordinary mepml instead.</p>
-<h2>Putting it together: a definition box</h2>
-<pre>\define(definition(term, body),
+<h2>Putting it together: a glossary entry</h2>
+<p>Definitions, theorems and the like are built in (see <i>Boxes</i>); a command
+of your own suits anything else that should look a particular way in
+each export, such as a glossary entry:</p>
+<pre>\define(glossary(term, body),
 \when(html,
-\raw(html, &lt;div class="definition" style="border-left: 4px solid #2c7fb8; padding: .5em 1em"&gt;)
-\raw(html, &lt;b&gt;Definition: #term&lt;/b&gt;)
+\raw(html, &lt;div class="glossary" style="border-left: 4px solid #2c7fb8; padding: .5em 1em"&gt;)
+\raw(html, &lt;b&gt;#term&lt;/b&gt;)
 
 #body
 
 \raw(html, &lt;/div&gt;)
 )
 \when(beamer,
-\raw(beamer, \begin{block}{Definition: #term})
+\raw(beamer, \begin{block}{#term})
 
 #body
 
 \raw(beamer, \end{block})
 )
 \otherwise(
-*Definition (#term).* #body
+*#term.* #body
 )
 )
 
-\definition(Orthogonal projection, The point of $S$ closest to $\mathbf{y}$.)</pre>
+\glossary(Monad, A monoid in the category of endofunctors.)</pre>
 <p>The HTML export draws a box, the Beamer deck a titled block, and every
 other export a paragraph that opens with the term in bold. The <code>#term</code>
 inside <code>\raw</code> goes in as written, so keep it to plain text and TeX maths.
-Put definitions in a file of their own and <code>//? Import:</code> it to share them
+Put commands in a file of their own and <code>//? Import:</code> it to share them
 between documents: commands defined in an imported file work in the
 document that imports it.</p>
 <p>The editor shows a document as written. A <code>\define</code> is drawn as code and

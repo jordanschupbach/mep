@@ -2874,6 +2874,15 @@ int l_mepml_parse_ready(lua_State *L) {
     lua_pushboolean(L, GetEditor(L)->MepmlParseReady());
     return 1;
 }
+/**
+ * @brief Implements mep.mepml_tables_stale(): whether a table's inline maths rendered at another width than it was laid out for.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the flag).
+ */
+int l_mepml_tables_stale(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->MepmlTablesStale());
+    return 1;
+}
 
 // mep.mepml_ts_code_blocks(text) -> the same shape as mep.mepml_code_blocks,
 // read off the grammar's tree for `text` (TreesitterMepmlCodeBlocks) -- for
@@ -10609,6 +10618,62 @@ int l_menubar_toggle(lua_State *L) {
     return 0;
 }
 /**
+ * @brief Implements mep.tabbar_toggle(): shows/hides the tab bar at the top of the window.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_tabbar_toggle(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->SetTabBarVisible(!ed->IsTabBarVisible());
+    return 0;
+}
+/**
+ * @brief Implements mep.tabbar_set_visible(on): shows or hides the tab bar outright.
+ * @param L Lua state; arg 1 is whether the bar is shown.
+ * @return Number of values pushed (0).
+ */
+int l_tabbar_set_visible(lua_State *L) {
+    GetEditor(L)->SetTabBarVisible(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+/**
+ * @brief Implements mep.tabbar_visible(): returns whether the tab bar is shown (zen mode aside).
+ * @param L Lua state.
+ * @return Number of values pushed (1: the visibility flag).
+ */
+int l_tabbar_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->IsTabBarVisible());
+    return 1;
+}
+/**
+ * @brief Implements mep.statusbar_toggle(): shows/hides the status line at the foot of the window.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_statusbar_toggle(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->SetStatusBarVisible(!ed->IsStatusBarVisible());
+    return 0;
+}
+/**
+ * @brief Implements mep.statusbar_set_visible(on): shows or hides the status line outright.
+ * @param L Lua state; arg 1 is whether the line is shown.
+ * @return Number of values pushed (0).
+ */
+int l_statusbar_set_visible(lua_State *L) {
+    GetEditor(L)->SetStatusBarVisible(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+/**
+ * @brief Implements mep.statusbar_visible(): returns whether the status line is shown (zen mode aside).
+ * @param L Lua state.
+ * @return Number of values pushed (1: the visibility flag).
+ */
+int l_statusbar_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->IsStatusBarVisible());
+    return 1;
+}
+/**
  * @brief Implements mep.menubar_set_visible(on): shows or hides the top menu bar outright.
  * @param L Lua state; arg 1 is whether the bar is shown.
  * @return Number of values pushed (0).
@@ -13108,6 +13173,7 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_code_blocks", l_mepml_code_blocks},
     {"mepml_ts_code_blocks", l_mepml_ts_code_blocks},
     {"mepml_parse_ready", l_mepml_parse_ready},
+    {"mepml_tables_stale", l_mepml_tables_stale},
     {"mepml_outline", l_mepml_outline},
     {"mepml_splice_results", l_mepml_splice_results},
     {"mepml_link_at", l_mepml_link_at},
@@ -13216,6 +13282,12 @@ const luaL_Reg kMepFuncs[] = {
     {"scratch", l_scratch},
     {"toggle_zen", l_toggle_zen},
     {"menubar_toggle", l_menubar_toggle},
+    {"tabbar_toggle", l_tabbar_toggle},
+    {"tabbar_set_visible", l_tabbar_set_visible},
+    {"tabbar_visible", l_tabbar_visible},
+    {"statusbar_toggle", l_statusbar_toggle},
+    {"statusbar_set_visible", l_statusbar_set_visible},
+    {"statusbar_visible", l_statusbar_visible},
     {"menubar_set_visible", l_menubar_set_visible},
     {"menubar_visible", l_menubar_visible},
     {"menubar_tap_toggle_set", l_menubar_tap_toggle_set},

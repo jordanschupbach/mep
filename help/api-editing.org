@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (180)
+* The bindings (188)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -86,6 +86,7 @@ that it does nothing.
 | =mep.insert_text= | inserts text at the cursor position |
 | =mep.jump_to_buffer= | switches workspace/tab/pane to land on a buffer wherever it lives |
 | =mep.line_count= | returns the number of lines in the current buffer |
+| =mep.math_render_fast= | renders a math fragment in-process to a PNG |
 | =mep.menubar_set_visible= | shows or hides the top menu bar outright |
 | =mep.menubar_tap_toggle_enabled= | returns whether a bare mod1 tap toggles the menu bar |
 | =mep.menubar_tap_toggle_set= | enables/disables the bare mod1 (Alt) tap that toggles the menu bar |
@@ -108,6 +109,7 @@ that it does nothing.
 | =mep.mepml_present_goto= | shows page n of the running presentation |
 | =mep.mepml_present_info= | the running presentation's state, or nil |
 | =mep.mepml_present_stop= | ends the running mepml presentation |
+| =mep.mepml_present_warm= | the presentation's formulas to render ahead of time, or nil |
 | =mep.mepml_scan= | re-parses the current mepml buffer and emits its decorations into `ns` |
 | =mep.mepml_splice_results= | -- |
 | =mep.mepml_terminal_focus= | sends the keyboard to the terminal of the block under the cursor |
@@ -160,6 +162,12 @@ that it does nothing.
 | =mep.sketch_set_point_fixed= | bool |
 | =mep.sketch_solve= | table |
 | =mep.split_below= | opens a new horizontal split below the focused pane |
+| =mep.statusbar_set_visible= | shows or hides the status line outright |
+| =mep.statusbar_toggle= | shows/hides the status line at the foot of the window |
+| =mep.statusbar_visible= | returns whether the status line is shown (zen mode aside) |
+| =mep.tabbar_set_visible= | shows or hides the tab bar outright |
+| =mep.tabbar_toggle= | shows/hides the tab bar at the top of the window |
+| =mep.tabbar_visible= | returns whether the tab bar is shown (zen mode aside) |
 | =mep.term_resize= | resizes a PTY-backed job's terminal dimensions |
 | =mep.term_start= | spawns a subprocess against a real PTY (raw stdout only, no separate stderr stream) instead of plain pipes |
 | =mep.termsend_candidates= | lists terminal buffer ids currently shown by a pane in the active tab |

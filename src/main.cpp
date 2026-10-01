@@ -534,8 +534,8 @@ gfx::Font g_math_serif_bold_font{};
 // LayoutMathCommand), a legible degradation rather than a missing glyph.
 // Also carries the super/subscript digits, the box-drawing rules and the
 // bullet that mepml's concealed rendering substitutes for its markup
-// (Editor::MepmlScan: `^2^` -> ², `|` -> │, `---` -> ───), all checked
-// present in JetBrains Mono's own cmap.
+// (Editor::MepmlScan: `^2^` -> ², `|` -> │, `---` -> ───, a \proof's
+// `)` -> ∎), all checked present in JetBrains Mono's own cmap.
 constexpr int kMathCodepoints[] = {
     0xa3, 0xa7, 0xa8, 0xa9, 0xac, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb6, 0xb7,
     0xb9, 0xd7, 0xf7, 0x127, 0x2c7, 0x2d8, 0x2dc, 0x391, 0x393, 0x394, 0x398, 0x39b,
@@ -546,7 +546,7 @@ constexpr int kMathCodepoints[] = {
     0x207c, 0x2080, 0x2081, 0x2082, 0x2083, 0x2084, 0x2085, 0x2086, 0x2087, 0x2088, 0x2089, 0x2102,
     0x210d, 0x2113, 0x2115, 0x2119, 0x211a, 0x211d, 0x2124, 0x2190, 0x2191, 0x2192, 0x2193, 0x2194,
     0x2195, 0x2196, 0x2197, 0x2198, 0x2199, 0x21a6, 0x21a9, 0x21aa, 0x21d0, 0x21d2, 0x21d4, 0x2200,
-    0x2201, 0x2202, 0x2203, 0x2205, 0x2207, 0x2208, 0x2209, 0x220b, 0x220f, 0x2210, 0x2211, 0x2212,
+    0x2201, 0x2202, 0x2203, 0x2205, 0x2207, 0x2208, 0x2209, 0x220b, 0x220e, 0x220f, 0x2210, 0x2211, 0x2212,
     0x2213, 0x2218, 0x2219, 0x221a, 0x221e, 0x2223, 0x2224, 0x2225, 0x2227, 0x2228, 0x2229, 0x222a,
     0x222b, 0x2234, 0x2235, 0x223c, 0x2243, 0x2245, 0x2248, 0x224d, 0x2254, 0x2260, 0x2261, 0x2264,
     0x2265, 0x226a, 0x226b, 0x227a, 0x227b, 0x2282, 0x2283, 0x2286, 0x2287, 0x2288, 0x228e, 0x2291,
@@ -11805,7 +11805,10 @@ const char *kBuiltinDocs =
 // to. mep.menubar_tap_toggle_set(true) in init.lua brings the old tap back.
 const char *kBuiltinMenubarBindings =
     "mep.command('Menu', mep.menubar_toggle)\n"
-    "mep.leader_map('um', 'Toggle the top menu bar', mep.menubar_toggle)\n";
+    "mep.leader_map('um', 'Toggle the top menu bar', mep.menubar_toggle)\n"
+    // The tab bar and the status line, each on by default.
+    "mep.leader_map('ub', 'Toggle the tab bar', mep.tabbar_toggle)\n"
+    "mep.leader_map('us', 'Toggle the status bar', mep.statusbar_toggle)\n";
 
 // DAP client (Phase 26, extended for full debugging support -- see
 // TODO.org's "Add DAP debugging capabilities"): reuses Phase 20's
@@ -24273,6 +24276,9 @@ const char *kBuiltinMepml =
     "    if not mep.mepml_parse_ready() then return end\n"
     "    mep_mepml_last_file, mep_mepml_last_row = fname, row\n"
     "    mep.mepml_render()\n"
+    // A table's maths rendered at another width than it was laid out for.
+    "  elseif mep.mepml_tables_stale() then\n"
+    "    mep.mepml_render()\n"
     "  end\n"
     "end)\n"
     "\n"
@@ -33121,8 +33127,8 @@ void DrawSidebars() {
     // Same menu-bar-may-be-hidden rule as DrawEditor's own
     // menu_bar_height above; these two have to agree or a docked
     // sidebar stops lining up with the pane tree beside it.
-    int content_top = (g_editor.IsMenuBarVisible() ? MenuBarHeight() : 0) + TabBarHeight();
-    int content_bottom = screen_h - 2 * LineHeight();  // status bar + command bar
+    int content_top = (g_editor.IsMenuBarVisible() ? MenuBarHeight() : 0) + (g_editor.IsTabBarVisible() ? TabBarHeight() : 0);
+    int content_bottom = screen_h - (g_editor.IsStatusBarVisible() ? 2 : 1) * LineHeight();  // status bar + command bar
     // FocusedSidebarId() alone isn't enough now that mod1+hjkl can blur a
     // sidebar back into the pane tree without closing it (NavigatePane
     // Direction) -- that leaves focused_sidebar_id_ set (so mod1+hjkl back
@@ -34349,7 +34355,7 @@ void DrawWhichKeyOverlay() {
     // (zen mode hides the status bar but keeps the command line).
     int line_height = LineHeight();
     int command_bar_height = line_height;
-    int status_bar_height = g_editor.IsZenMode() ? 0 : line_height;
+    int status_bar_height = g_editor.IsZenMode() || !g_editor.IsStatusBarVisible() ? 0 : line_height;
     int bottom_margin = command_bar_height + status_bar_height + 8;
 
     gfx::DrawRectangle(0, 0, screen_w, screen_h, ResolveHlGroup("Overlay"));
@@ -34454,7 +34460,7 @@ void DrawFoldPrefixOverlay() {
     // bars rather than over them.
     int line_height = LineHeight();
     int command_bar_height = line_height;
-    int status_bar_height = g_editor.IsZenMode() ? 0 : line_height;
+    int status_bar_height = g_editor.IsZenMode() || !g_editor.IsStatusBarVisible() ? 0 : line_height;
     int bottom_margin = command_bar_height + status_bar_height + 8;
 
     int box_x = (screen_w - box_w) / 2;
@@ -48634,7 +48640,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         for (int r = 0; r < nb_rows; r++) {
             int slots = 1;
             if (wrap_cols > 0) {
-                int len = static_cast<int>(buf.lines[static_cast<size_t>(r)].size());
+                int len = Editor::WrapLenForRow(buf, r);
                 slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
             }
             slots += g_editor.NotebookTrailingSlots(pane.buffer_id, r);
@@ -48962,7 +48968,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     slots = static_cast<int>(tw_it->second.lines.size());
                 } else {
                     if (wrap_cols > 0) {
-                        int len = static_cast<int>(buf.lines[static_cast<size_t>(r)].size());
+                        int len = Editor::WrapLenForRow(buf, r);
                         slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
                     }
                     slots += nb_sess ? g_editor.NotebookTrailingSlots(pane.buffer_id, r) : 0;
@@ -49020,26 +49026,33 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // nothing is hidden by stopping here.
             return std::min(card_limit_right, want);
         };
-        // A mepml slide's card holds the cards of the blocks on it: those
-        // are inset from its edges, so the two outlines never coincide.
+        // A mepml slide's card holds the cards of the blocks on it, and a
+        // box's (\definition ...) those of the blocks in it: those are inset
+        // from its edges, one step per container round them, so no two
+        // outlines coincide.
         struct SlideSpan {
             int first, last, content_cols;
+            bool slide;
         };
         std::vector<SlideSpan> slide_spans;
         for (const OrgBlockCard &card : g_editor.OrgBlockCards(pane.buffer_id))
-            if (card.kind == "slide" && card.end_row >= 0) slide_spans.push_back({card.begin_row, card.end_row, card.content_cols});
+            if ((card.kind == "slide" || card.kind == "box") && card.end_row >= 0)
+                slide_spans.push_back({card.begin_row, card.end_row, card.content_cols, card.kind == "slide"});
         const float slide_nest = std::max(3.0f, std::round(card_inset * 0.5f));
         const gfx::Color slide_wash = gfx::Fade(ResolveHlGroup("Cyan"), 0.06f);
         for (const OrgBlockCard &card : g_editor.OrgBlockCards(pane.buffer_id)) {
             const bool is_slide = card.kind == "slide";
             float nest = 0.0f, nest_right = 0.0f;
             if (!is_slide) {
+                int depth = 0;
                 for (const SlideSpan &sp : slide_spans) {
-                    if (card.meta_row > sp.first && card.meta_row < sp.last) {
-                        nest = slide_nest;
-                        nest_right = card_right_for(sp.content_cols);
-                    }
+                    if (card.meta_row <= sp.first || card.meta_row >= sp.last) continue;
+                    ++depth;
+                    // (The cards on a slide paint its wash back under their
+                    // opaque bands, up to its right edge.)
+                    if (sp.slide) nest_right = card_right_for(sp.content_cols);
                 }
+                nest = slide_nest * static_cast<float>(depth);
             }
             // An unterminated block (still being typed) runs to the end of
             // the buffer rather than not drawing at all.
@@ -49064,7 +49077,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // A slide folds what's on it (a code block, a section)
                 // without losing its own card: the slot walk already
                 // collapsed those rows.
-                if (is_slide && fold.start_row > card.begin_row && fold.end_row < card.end_row) continue;
+                if ((is_slide || card.kind == "box") && fold.start_row > card.begin_row && fold.end_row < card.end_row) continue;
                 skip = true;
                 break;
             }
@@ -49104,8 +49117,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 continue;
             }
             // (A slide's wash is faint enough that a rendering inside it
-            // can simply sit on top.)
-            if (!is_slide && (show_org_images || show_org_latex)) {
+            // can simply sit on top; so is a mepml box's, which holds
+            // display maths more often than not.)
+            if (!is_slide && card.kind != "box" && (show_org_images || show_org_latex)) {
                 for (int r = card.meta_row; r <= last_row && !skip; r++) {
                     // A figure a mepml code block drew sits inside its
                     // output card on purpose (Editor::MepmlScan).
@@ -49153,6 +49167,54 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             float bottom = 0.0f;
             if (!row_bottom(last_row, &bottom)) bottom = content_y + content_h + static_cast<float>(line_height);
+            // A mepml box ends just under its last line of content: its
+            // closing `)` (concealed) and any blank lines before it would
+            // otherwise leave an empty band at its foot. Not while the
+            // cursor is on those rows -- the raw `)` shows there.
+            int wash_last = last_row;
+            // (A proof keeps its `)` row: its tombstone is drawn there.)
+            if (card.kind == "box" && card.chip != "Proof" && card.end_row > card.begin_row) {
+                auto blank_row = [&](int r) {
+                    return buf.lines[static_cast<size_t>(r)].find_first_not_of(" \t") == std::string::npos;
+                };
+                const std::string &closer = buf.lines[static_cast<size_t>(card.end_row)];
+                const size_t at = closer.find_first_not_of(" \t");
+                int floor_row = card.end_row;
+                if (at != std::string::npos && closer[at] == ')') {
+                    floor_row = card.end_row - 1;
+                    while (floor_row > card.begin_row && blank_row(floor_row)) --floor_row;
+                }
+                const bool cursor_below = is_active && pane.cursor.row > floor_row && pane.cursor.row <= card.end_row;
+                // A last row inside a multi-row rendering (display maths)
+                // has no slot of its own: the rendering's first row does.
+                int floor_anchor = floor_row;
+                const Buffer::OrgLatexRender *floor_render = nullptr;
+                for (const auto &kv : buf.org_latex_rows) {
+                    if (kv.first > floor_row || kv.second.end_row < floor_row) continue;
+                    floor_render = g_editor.OrgLatexRenderForRow(buf, kv.first, latex_cursor_row, org_plain);
+                    if (floor_render != nullptr) floor_anchor = kv.first;
+                    break;
+                }
+                float floor_bottom = 0.0f;
+                if (floor_row < card.end_row && !cursor_below && row_bottom(floor_anchor, &floor_bottom)) {
+                    // Display maths: its picture is drawn from the top of its
+                    // slots, which round its height up -- end at the picture.
+                    const gfx::Texture2D *tex = floor_render != nullptr && floor_render->html.empty() && floor_render->styled.empty() &&
+                                                        floor_render->term_run < 0
+                                                    ? GetOrLoadOrgLatexTexture(floor_render->path)
+                                                    : nullptr;
+                    float pic_top = 0.0f;
+                    if (tex != nullptr && tex->height > 0 && row_top(floor_anchor, &pic_top)) {
+                        const float slot_h = static_cast<float>(line_height) * static_cast<float>(floor_render->slots);
+                        const float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
+                        const float scale =
+                            std::min({avail_w / static_cast<float>(tex->width), slot_h / static_cast<float>(tex->height), 1.0f});
+                        floor_bottom = std::min(floor_bottom, pic_top + static_cast<float>(tex->height) * scale);
+                    }
+                    bottom = std::min(bottom, floor_bottom + std::round(static_cast<float>(line_height) * 0.3f));
+                    wash_last = floor_row;
+                }
+            }
             top += 1.0f;
             bottom -= 1.0f;
             if (bottom <= top + 2.0f) continue;
@@ -49190,12 +49252,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // theme's own AccentTint group is 82% accent -- right for an
             // active toolbar control, far too loud behind a page of code.)
             const float rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(box.rect.width, box.rect.height)));
-            const gfx::Color wash = card.bare     ? gfx::Fade(ResolveHlGroup(card.kind == "abstract" ? "Cyan" : "Purple"), 0.07f)
+            const gfx::Color wash = card.bare     ? gfx::Fade(ResolveHlGroup(!card.tint.empty()       ? card.tint.c_str()
+                                                                             : card.kind == "abstract" ? "Cyan"
+                                                                                                       : "Purple"),
+                                                              card.kind == "box" ? 0.09f : 0.07f)
                                     : card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
                                     : is_slide    ? slide_wash
                                                   : gfx::Fade(ResolveHlGroup("Comment"), 0.08f);
             gfx::DrawRectangleRounded(box.rect, rr, 6, wash);
-            for (int r = card.meta_row; r <= last_row; r++) org_card_row_wash[r].push_back(wash);
+            for (int r = card.meta_row; r <= wash_last; r++) org_card_row_wash[r].push_back(wash);
             // Every row the card paints over, so the decoration loop can
             // hand that row's end-of-line virtual text to the post-pass
             // rather than drawing it where the bar is about to land. A
@@ -49650,7 +49715,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 !is_org_image && g_editor.OrgLatexRenderForRow(buf, row, latex_cursor_row, org_plain) != nullptr;
             if (!is_org_image && !is_org_latex) {
                 row_wraps = true;
-                int len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
+                int len = Editor::WrapLenForRow(buf, row);
                 row_wrap_slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
                 visual_slot += row_wrap_slots - 1;  // visual_slot++ above already accounted for 1
             }
@@ -51690,7 +51755,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 slot += static_cast<int>(tw_it->second.lines.size()) + nb_trailing;
             } else {
                 slot += (wrap_cols > 0)
-                            ? std::max(1, (static_cast<int>(buf.lines[static_cast<size_t>(r)].size()) + wrap_cols - 1) / wrap_cols)
+                            ? std::max(1, (Editor::WrapLenForRow(buf, r) + wrap_cols - 1) / wrap_cols)
                             : 1;
                 slot += nb_trailing;
                 // An org headline's own extra slot (kOrgHeadingStyles) --
@@ -52346,7 +52411,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const float kind_w = gfx::MeasureTextEx(g_font, kind_text.c_str(), g_font_size, 0).x + 14.0f;
             if (fits(kind_w)) {
                 const gfx::Rectangle chip{cx, chip_y, kind_w, chip_h};
-                gfx::DrawRectangleRounded(chip, 0.5f, 6, cb.is_src ? accent : cb_slide ? ResolveHlGroup("Cyan") : ResolveHlGroup("Border"));
+                gfx::DrawRectangleRounded(chip, 0.5f, 6,
+                                          cb.is_src            ? accent
+                                          : cb_slide           ? ResolveHlGroup("Cyan")
+                                          : !card.tint.empty() ? ResolveHlGroup(card.tint.c_str())
+                                                               : ResolveHlGroup("Border"));
                 gfx::DrawTextEx(g_font, kind_text.c_str(), gfx::Vector2{cx + 7.0f, text_y}, g_font_size, 0,
                            ResolveHlGroup("NormalBg"));
                 cx += kind_w + 8.0f;
@@ -52482,11 +52551,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
-        gfx::Color border = card.bare   ? gfx::Fade(ResolveHlGroup(card.kind == "abstract" ? "Cyan" : "Purple"), cb.active ? 0.8f : 0.4f)
+        const char *bare_hl = !card.tint.empty() ? card.tint.c_str() : card.kind == "abstract" ? "Cyan" : "Purple";
+        gfx::Color border = card.bare   ? gfx::Fade(ResolveHlGroup(bare_hl), cb.active ? 0.8f : card.kind == "box" ? 0.3f : 0.4f)
                             : cb.is_src ? (cb.active ? accent : gfx::Fade(accent, 0.55f))
                             : cb_slide  ? gfx::Fade(ResolveHlGroup("Cyan"), cb.active ? 0.85f : 0.5f)
                                         : gfx::Fade(ResolveHlGroup("Border"), cb.active ? 1.0f : 0.7f);
         gfx::DrawRectangleRoundedLinesEx(cb.rect, card_rr, 6, cb.active ? 2.0f : 1.0f, border);
+        // A mepml box's accent: a rule down its left edge in its colour,
+        // as the exports draw it.
+        if (card.kind == "box" && cb.rect.height > 8.0f) {
+            // (Never over the text: a nested box has less room before it.)
+            const float stripe_w = std::max(2.0f, std::min(std::round(g_char_width * 0.35f), std::floor(text_x - cb.rect.x - 3.0f)));
+            gfx::DrawRectangleRounded(gfx::Rectangle{cb.rect.x + 1.0f, cb.rect.y + 1.0f, stripe_w, cb.rect.height - 2.0f}, 0.5f, 4,
+                                      ResolveHlGroup(bare_hl));
+        }
         // End-of-line virtual text belonging to a row this card conceals
         // (org_card_eol_texts above): a diagnostic on the `#+begin_src`
         // line, most often. Drawn last of all -- after the title bar, the
@@ -53453,7 +53531,8 @@ void DrawEditor() {
     // sidebars -- but not the command line (still needed to type `:` while
     // zen is on) or transient overlays/toasts (functionally necessary
     // regardless of chrome visibility).
-    int status_bar_height = zen ? 0 : line_height;
+    const bool show_status = !zen && g_editor.IsStatusBarVisible();
+    int status_bar_height = show_status ? line_height : 0;
     // A full-screen mepml presentation is the slide alone: the command
     // line appears only while one is being typed.
     const bool present_full = g_editor.MepmlPresentFullscreen();
@@ -53471,7 +53550,8 @@ void DrawEditor() {
     // second tab exists -- Ctrl-T/the tab bar's own '+' button are the
     // discovery path for tabs at all, which a bar that only appears after
     // the fact can't provide.
-    bool show_tabs = !zen;
+    // (<leader>ub hides it.)
+    bool show_tabs = !zen && g_editor.IsTabBarVisible();
     int tab_bar_height = show_tabs ? TabBarHeight() : 0;
     int content_top = menu_bar_height + tab_bar_height;
     int pane_area_h = screen_h - content_top - status_bar_height - command_bar_height;
@@ -53559,8 +53639,8 @@ void DrawEditor() {
     // entirely in zen mode. An office (docx/odt) pane draws its own Docs-
     // style status footer inside DrawPane instead (scoped to that pane, not
     // this app-wide bar), so this stays the plain vim-style line always --
-    // see DrawPane's office branch for the footer.
-    if (!zen) {
+    // see DrawPane's office branch for the footer. <leader>us hides it too.
+    if (show_status) {
         const Buffer &buf = g_editor.CurrentBuffer();
         CursorPos cursor = g_editor.Cursor();
         int status_y = screen_h - command_bar_height - status_bar_height;

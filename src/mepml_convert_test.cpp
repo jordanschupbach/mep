@@ -65,6 +65,7 @@ struct Keeps {
     bool captions = true;       // table/figure captions
     bool code_captions = false; // a caption on a code block that has not been run
     bool list_kinds = true;     // bullets vs numbers per item
+    bool boxes = true;          // \definition(...) boxes (else a heading paragraph)
 };
 
 // One line per block that matters, in order.
@@ -121,6 +122,18 @@ Lines Signature(const Document &doc, const Keeps &k) {
             case BlockKind::Rule: s = "R"; break;
             case BlockKind::TableOfContents: s = "TOC"; break;
             case BlockKind::Bibliography: s = "BIB"; break;
+            // A box opened by its heading and closed by `)` the same in any
+            // form (its text on its opening line or the next); the formats
+            // without boxes keep the heading as a paragraph.
+            case BlockKind::BoxBegin:
+                sig.push_back(k.boxes ? "B " + b.keyword + " " + Plain(b.caption_inlines) : "P " + Squash(BoxHeading(b)));
+                if (!b.inlines.empty()) sig.push_back("P " + Plain(b.inlines));
+                if (b.box_closed && k.boxes) sig.push_back("E");
+                continue;
+            case BlockKind::BoxEnd:
+                if (!k.boxes) continue;
+                s = "E";
+                break;
             case BlockKind::Abstract:
                 s = "A";
                 for (const std::vector<Inline> &para : AbstractParagraphs(b)) s += "\n" + Plain(para);
@@ -262,6 +275,7 @@ void TestReference() {
     Keeps office;
     office.code_options = true;
     office.code_captions = true;
+    office.boxes = false;
     Keeps md;
     md.code_captions = true;
     const Case cases[] = {{"md", md}, {"org", Keeps()}, {"html", Keeps()}, {"rtf", office}, {"docx", office}, {"odt", office}};
@@ -332,7 +346,7 @@ void TestCommands() {
     const Lines src = {
         "//? Title: Commands",
         "",
-        "\\define(definition(term, body),",
+        "\\define(glossary(term, body),",
         "\\when(html,",
         "\\raw(html, <div class=\"definition\" style=\"border-left:4px solid #2c7fb8\"><b>#term</b>)",
         "",
@@ -350,7 +364,7 @@ void TestCommands() {
         "\\otherwise(*Definition (#term).* #body)",
         ")",
         "",
-        "\\definition(Projection, The closest point, $\\hat{y}$, in a subspace.)",
+        "\\glossary(Projection, The closest point, $\\hat{y}$, in a subspace.)",
         "",
         "Inline: \\raw(md, <kbd>md</kbd>)\\when(!md, plain) end.",
     };

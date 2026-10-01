@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (180)</h1>
+<h1>The bindings (188)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -90,6 +90,7 @@ that it does nothing.</p>
 <tr><td><code>mep.insert_text</code></td><td>inserts text at the cursor position</td></tr>
 <tr><td><code>mep.jump_to_buffer</code></td><td>switches workspace/tab/pane to land on a buffer wherever it lives</td></tr>
 <tr><td><code>mep.line_count</code></td><td>returns the number of lines in the current buffer</td></tr>
+<tr><td><code>mep.math_render_fast</code></td><td>renders a math fragment in-process to a PNG</td></tr>
 <tr><td><code>mep.menubar_set_visible</code></td><td>shows or hides the top menu bar outright</td></tr>
 <tr><td><code>mep.menubar_tap_toggle_enabled</code></td><td>returns whether a bare mod1 tap toggles the menu bar</td></tr>
 <tr><td><code>mep.menubar_tap_toggle_set</code></td><td>enables/disables the bare mod1 (Alt) tap that toggles the menu bar</td></tr>
@@ -112,6 +113,7 @@ that it does nothing.</p>
 <tr><td><code>mep.mepml_present_goto</code></td><td>shows page n of the running presentation</td></tr>
 <tr><td><code>mep.mepml_present_info</code></td><td>the running presentation's state, or nil</td></tr>
 <tr><td><code>mep.mepml_present_stop</code></td><td>ends the running mepml presentation</td></tr>
+<tr><td><code>mep.mepml_present_warm</code></td><td>the presentation's formulas to render ahead of time, or nil</td></tr>
 <tr><td><code>mep.mepml_scan</code></td><td>re-parses the current mepml buffer and emits its decorations into `ns`</td></tr>
 <tr><td><code>mep.mepml_splice_results</code></td><td>--</td></tr>
 <tr><td><code>mep.mepml_terminal_focus</code></td><td>sends the keyboard to the terminal of the block under the cursor</td></tr>
@@ -164,6 +166,12 @@ that it does nothing.</p>
 <tr><td><code>mep.sketch_set_point_fixed</code></td><td>bool</td></tr>
 <tr><td><code>mep.sketch_solve</code></td><td>table</td></tr>
 <tr><td><code>mep.split_below</code></td><td>opens a new horizontal split below the focused pane</td></tr>
+<tr><td><code>mep.statusbar_set_visible</code></td><td>shows or hides the status line outright</td></tr>
+<tr><td><code>mep.statusbar_toggle</code></td><td>shows/hides the status line at the foot of the window</td></tr>
+<tr><td><code>mep.statusbar_visible</code></td><td>returns whether the status line is shown (zen mode aside)</td></tr>
+<tr><td><code>mep.tabbar_set_visible</code></td><td>shows or hides the tab bar outright</td></tr>
+<tr><td><code>mep.tabbar_toggle</code></td><td>shows/hides the tab bar at the top of the window</td></tr>
+<tr><td><code>mep.tabbar_visible</code></td><td>returns whether the tab bar is shown (zen mode aside)</td></tr>
 <tr><td><code>mep.term_resize</code></td><td>resizes a PTY-backed job's terminal dimensions</td></tr>
 <tr><td><code>mep.term_start</code></td><td>spawns a subprocess against a real PTY (raw stdout only, no separate stderr stream) instead of plain pipes</td></tr>
 <tr><td><code>mep.termsend_candidates</code></td><td>lists terminal buffer ids currently shown by a pane in the active tab</td></tr>

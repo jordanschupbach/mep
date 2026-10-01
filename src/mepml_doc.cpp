@@ -230,6 +230,36 @@ const std::vector<std::string> &CalloutKeywords() {
     return k;
 }
 
+const std::vector<BoxKind> &BoxKinds() {
+    // Definitions blue and facts orange, as decks set them; the theorem
+    // family shares one purple; examples green; remarks teal; proofs grey.
+    static const std::vector<BoxKind> k = {
+        {"definition", "Definition", "#2c7fb8", "#eef5fb", "Blue"},
+        {"theorem", "Theorem", "#6a51a3", "#f4f1fa", "Purple"},
+        {"lemma", "Lemma", "#6a51a3", "#f4f1fa", "Purple"},
+        {"proposition", "Proposition", "#6a51a3", "#f4f1fa", "Purple"},
+        {"corollary", "Corollary", "#6a51a3", "#f4f1fa", "Purple"},
+        {"fact", "Fact", "#d95f0e", "#fdf2e9", "Orange"},
+        {"example", "Example", "#2e8b57", "#edf7f1", "Green"},
+        {"remark", "Remark", "#1b7f86", "#ecf6f6", "Cyan"},
+        {"proof", "Proof", "#5f6b7a", "#ffffff", "Comment"},
+    };
+    return k;
+}
+
+const BoxKind *FindBoxKind(const std::string &name) {
+    for (const BoxKind &k : BoxKinds())
+        if (name == k.name) return &k;
+    return nullptr;
+}
+
+std::string BoxHeading(const Block &b) {
+    const BoxKind *k = FindBoxKind(b.keyword);
+    std::string h = k ? k->label : b.keyword;
+    const std::string title = InlinePlainText(b.caption_inlines);
+    return title.empty() ? h : h + ": " + title;
+}
+
 // ---------------------------------------------------------------------------
 // Inline parser
 
@@ -371,7 +401,7 @@ bool IsBuiltinCommandName(const std::string &name) {
                                             "citep",  "alttext", "caption",      "image",      "import",
                                             "citation", "toc",   "bibliography", "printbibliography",
                                             "abstract", "slide", "define",       "raw"};
-    return k.count(name) > 0;
+    return k.count(name) > 0 || FindBoxKind(name) != nullptr;
 }
 bool IsUserCommandName(const std::string &name) { return !name.empty() && !IsBuiltinCommandName(name); }
 
@@ -755,6 +785,19 @@ int SlideOpener(const std::string &line, char *close = nullptr) {
     if (b != '{' && (b != '(' || c != '\\')) return -1;
     if (close) *close = b == '(' ? ')' : '}';
     return i + 7;
+}
+// `\definition(` (any BoxKinds name) at the start of a line: the column of
+// its `(`, with *kind the name; -1 for any other line.
+int BoxOpener(const std::string &line, std::string *kind = nullptr) {
+    const int i = Indent(line);
+    if (At(line, i) != '\\') return -1;
+    int j = i + 1;
+    while (IsAlpha(At(line, j))) ++j;
+    if (At(line, j) != '(') return -1;
+    const std::string name = Sub(line, i + 1, j);
+    if (!FindBoxKind(name)) return -1;
+    if (kind) *kind = name;
+    return j;
 }
 // A line that ends a slide opened with `close`: that bracket on its own,
 // perhaps with a `// comment` after it.
@@ -1615,7 +1658,7 @@ struct Parser {
         int base_indent = Indent(L(i));
         while (j < n) {
             const std::string &s = L(j);
-            if (Trim(s).empty() || IsSlideCloser(s, slide_close)) break;
+            if (Trim(s).empty() || IsCloser(s)) break;
             if (j > i && !IsListItem(s) && Indent(s) <= base_indent) break;
             ++j;
         }
@@ -1655,7 +1698,7 @@ struct Parser {
         if (t.empty()) return true;
         if (HeadingLevel(s) || IsFence(t) || IsComment(s) || IsRule(t) || TableStartAt(j) || IsListItem(s)) return true;
         if (t.rfind("$$", 0) == 0 || t.rfind("\\[", 0) == 0) return true;
-        if (SlideOpener(s) >= 0 || IsSlideCloser(s, slide_close)) return true;
+        if (SlideOpener(s) >= 0 || IsCloser(s) || BoxOpener(s) >= 0) return true;
         int paren = -1, last = -1, after = -1;
         const std::string cmd = LineCommand(s, &paren);
         if (cmd == "define" || (!cmd.empty() && CommandBlockAt(j, paren, &last, &after))) return true;
@@ -1682,14 +1725,26 @@ struct Parser {
                 continue;
             }
             char close = 0;
-            if (IsSlideCloser(s, slide_close)) {
+            std::string box_kind;
+            if (!open_boxes.empty() && IsSlideCloser(s, ')')) {
+                Block b = MakeBlock(BlockKind::BoxEnd, i, i);
+                b.keyword = doc.blocks[open_boxes.back()].keyword;
+                b.level = static_cast<int>(open_boxes.size());
+                doc.blocks.push_back(std::move(b));
+                open_boxes.pop_back();
+                ++i;
+            } else if (IsSlideCloser(s, slide_close)) {
+                BoxesNeverClosed();
                 Block b = MakeBlock(BlockKind::SlideEnd, i, i);
                 b.level = slides;
                 doc.blocks.push_back(std::move(b));
                 slide_close = 0;
                 ++i;
             } else if (const int col = SlideOpener(s, &close); col >= 0) {
+                BoxesNeverClosed();
                 i = ParseSlideOpen(i, col, close);
+            } else if (const int box_paren = BoxOpener(s, &box_kind); box_paren >= 0) {
+                i = ParseBoxOpen(i, box_kind, box_paren);
             } else if (IsMetaLine(s)) {
                 i = ParseMetaRun(i);
             } else if (IsComment(s)) {
@@ -1731,6 +1786,7 @@ struct Parser {
                 }
             }
         }
+        BoxesNeverClosed();
         if (slide_close) SlideNeverClosed();
         PresentationChecks();
         ExportChecks();
@@ -1784,6 +1840,98 @@ struct Parser {
                 Diag(Diagnostic::Info, b.line_start, 0, Len(L(b.line_start)),
                      "not on any slide: a presentation's slide exports leave it out");
         }
+    }
+
+    // The boxes open now, innermost last, as indices into doc.blocks of
+    // their BoxBegin blocks.
+    std::vector<size_t> open_boxes;
+
+    // A line that ends what is open: a box's `)`, else the slide's bracket.
+    bool IsCloser(const std::string &s) const {
+        return (!open_boxes.empty() && IsSlideCloser(s, ')')) || IsSlideCloser(s, slide_close);
+    }
+
+    // Boxes still open where a slide ends or another starts, or the
+    // document ends: each reported, and closed there.
+    void BoxesNeverClosed() {
+        for (size_t k : open_boxes) {
+            const Block &b = doc.blocks[k];
+            const std::string &s = L(b.line_start);
+            Diag(Diagnostic::Error, b.line_start, Indent(s), Len(s),
+                 "\\" + b.keyword + " is never closed with a line holding just )");
+        }
+        open_boxes.clear();
+    }
+
+    // `\definition(Title,` (any box kind): see BlockKind::BoxBegin.
+    int ParseBoxOpen(int i, const std::string &kind, int paren) {
+        const std::string &s = L(i);
+        // Where the group closes, if it does on this line.
+        const int g = ReadGroup(s, paren, Len(s));
+        const std::vector<int> comma = ArgCommas(s, paren + 1, g < 0 ? Len(s) : g - 1, 1);
+        int title_to = comma.empty() ? (g < 0 ? Len(s) : paren + 1) : comma[0];
+        int lead_from = comma.empty() ? (g < 0 ? Len(s) : paren + 1) : comma[0] + 1;
+        int last = i;
+        bool closed = g >= 0;
+        if (closed) {
+            CheckTrailing(i, g);
+        } else if (!Trim(Sub(s, lead_from, Len(s))).empty()) {
+            // Text after the title: the box's first paragraph, running on
+            // over the lines that follow until a block starts, or until the
+            // box's own `)` ends one of them.
+            int depth = 0;
+            auto count = [&depth](const std::string &t, int from) {
+                for (int j = from; j < Len(t); ++j) {
+                    const char c = t[static_cast<size_t>(j)];
+                    if (c == '\\') {
+                        ++j;
+                        continue;
+                    }
+                    if (c == '(') ++depth;
+                    if (c == ')') --depth;
+                }
+            };
+            count(s, paren);
+            // (A line of just `)` is this box's own end, as anywhere else.)
+            for (int k = i + 1; k < n && !StartsBlock(k) && !IsSlideCloser(L(k), ')'); ++k) {
+                last = k;
+                const std::string &t = L(k);
+                count(t, 0);
+                const std::string rest = Trim(t);
+                if (depth == 0 && !rest.empty() && rest.back() == ')') {
+                    closed = true;
+                    break;
+                }
+            }
+        }
+        Block b = MakeBlock(BlockKind::BoxBegin, i, last);
+        b.keyword = kind;
+        b.box_closed = closed;
+        b.level = static_cast<int>(open_boxes.size()) + 1;
+        // The text's end: the closing `)`, when the box closes here.
+        int text_end = Len(b.text);
+        if (closed) {
+            text_end = last == i ? g - 1 : static_cast<int>(b.text.rfind(')'));
+            title_to = std::min(title_to, text_end);
+            lead_from = std::min(lead_from, text_end);
+        }
+        // `\remark(text)`: no comma, closed on its line -- all text.
+        int title_from = paren + 1;
+        if (closed && comma.empty()) title_from = title_to = paren + 1, lead_from = paren + 1;
+        while (title_from < title_to && IsSpace(b.text[static_cast<size_t>(title_from)])) ++title_from;
+        while (title_to > title_from && IsSpace(b.text[static_cast<size_t>(title_to - 1)])) --title_to;
+        b.caption = OneSpaced(Sub(b.text, title_from, title_to));
+        if (title_to > title_from) b.caption_inlines = Inlines(b, title_from, title_to);
+        while (lead_from < text_end && IsSpace(b.text[static_cast<size_t>(lead_from)])) ++lead_from;
+        int lead_to = text_end;
+        while (lead_to > lead_from && IsSpace(b.text[static_cast<size_t>(lead_to - 1)])) --lead_to;
+        if (lead_to > lead_from) b.inlines = Inlines(b, lead_from, lead_to);
+        if (b.caption.empty() && b.inlines.empty() && closed)
+            Diag(Diagnostic::Warning, i, Indent(s), Len(s), "empty \\" + kind);
+        const size_t at = doc.blocks.size();
+        doc.blocks.push_back(std::move(b));
+        if (!closed) open_boxes.push_back(at);
+        return last + 1;
     }
 
     // The slide open now (its closing bracket, 0 when none is), the line
@@ -2521,6 +2669,7 @@ std::vector<std::string> ExpandCommands(const std::vector<std::string> &lines,
             case BlockKind::TableOfContents:
             case BlockKind::SlideBegin:
             case BlockKind::SlideEnd:
+            case BlockKind::BoxEnd:
             case BlockKind::Rule:
                 for (int k = b.line_start; k <= b.line_end; ++k) out.push_back(lines[static_cast<size_t>(k)]);
                 break;
@@ -2530,6 +2679,7 @@ std::vector<std::string> ExpandCommands(const std::vector<std::string> &lines,
             case BlockKind::Table:
             case BlockKind::List:
             case BlockKind::Abstract:
+            case BlockKind::BoxBegin:  // its title and first paragraph
             case BlockKind::Raw:
             case BlockKind::Command: {
                 ex.line = b.line_start;
@@ -3143,6 +3293,59 @@ struct Emitter {
                 }
                 break;
             }
+            case BlockKind::BoxBegin:
+            case BlockKind::BoxEnd: {
+                // `\definition(` reads as the box's label ("Definition: "),
+                // its title is bold, the comma after it goes (or reads ". "
+                // before text on the same line), and the closing `)` goes.
+                Span mk;
+                mk.style = kDirective | kBox;
+                mk.markup = true;
+                mk.target = blk.keyword;
+                const std::string s = LineText(blk.line_start);
+                const int at = Indent(s);
+                // A proof ends with a tombstone where its `)` was.
+                if (blk.kind == BlockKind::BoxEnd) {
+                    if (blk.keyword == "proof") mk.replace = "\u220E";
+                    Line(blk.line_start, at, at + 1, mk);
+                    TrailingComment(blk.line_start, at + 1);
+                    break;
+                }
+                const int paren = BoxOpener(s);
+                if (paren < 0) break;
+                const BoxKind *kind = FindBoxKind(blk.keyword);
+                const std::string label = kind ? kind->label : blk.keyword;
+                const int close = blk.box_closed ? (blk.line_start == blk.line_end
+                                                        ? ReadGroup(blk.text, paren, static_cast<int>(s.size())) - 1
+                                                        : static_cast<int>(blk.text.rfind(')')))
+                                                 : -1;
+                const int body_end = close >= 0 ? close : static_cast<int>(s.size());
+                const std::vector<int> comma = ArgCommas(blk.text, paren + 1, body_end, 1);
+                // Text after the title on the opening line itself.
+                const bool on_line =
+                    !comma.empty() && !Trim(Sub(s, comma[0] + 1, close >= 0 && close < Len(s) ? close : Len(s))).empty();
+                const bool titled = !blk.caption_inlines.empty();
+                mk.replace = label + (titled ? ": " : !blk.inlines.empty() ? ". " : "");
+                Line(blk.line_start, at, paren + 1, mk);
+                Span title;
+                title.style = kBold | kBox;
+                title.target = blk.keyword;
+                Inlines(blk.caption_inlines, title);
+                if (!comma.empty()) {
+                    Span c = mk;
+                    c.replace = titled && on_line ? (At(blk.text, comma[0] + 1) == ' ' ? "." : ". ") : "";
+                    Range(comma[0], comma[0] + 1, c);
+                }
+                Inlines(blk.inlines, none);
+                if (close >= 0) {
+                    Span c = mk;
+                    c.replace = blk.keyword == "proof" ? " \u220E" : "";
+                    Range(close, close + 1, c);
+                    const Block::Pos p = blk.OffsetToPos(close + 1);
+                    TrailingComment(p.line, p.col);
+                }
+                break;
+            }
             case BlockKind::SlideBegin:
             case BlockKind::SlideEnd: {
                 // The opener reads as the slide's "Slide N" label, the
@@ -3382,11 +3585,16 @@ struct HtmlWriter {
     std::vector<std::pair<int, std::string>> footnotes;  // number, html
     std::map<std::string, int> cite_numbers;
     bool in_slide = false;  // a <section class="slide"> is open
+    int open_boxes = 0;     // <div class="mbox">es open
 
-    // Closes the open slide's section, if there is one.
+    // Closes the boxes left open, then the open slide's section.
     void EndSlide() {
+        EndBoxes();
         if (in_slide) out += "</section>\n";
         in_slide = false;
+    }
+    void EndBoxes() {
+        for (; open_boxes > 0; --open_boxes) out += "</div>\n";
     }
 
     std::string Inlines(const std::vector<Inline> &ins) {
@@ -3690,9 +3898,51 @@ struct HtmlWriter {
                 in_slide = true;
                 break;
             case BlockKind::SlideEnd: EndSlide(); break;
+            case BlockKind::BoxBegin: {
+                // (ExportHtmlToLatex makes this a tcolorbox; data-kind lets
+                // an HTML import rebuild the box.)
+                out += "<div class=\"mbox mbox-" + Esc(b.keyword) + "\" data-kind=\"" + Esc(b.keyword) + "\">";
+                const BoxKind *kind = FindBoxKind(b.keyword);
+                out += "<p class=\"mbox-title\"><span class=\"mbox-label\">" + Esc(kind ? kind->label : b.keyword) + "</span>";
+                if (!b.caption_inlines.empty()) out += " <span class=\"mbox-name\">" + Inlines(b.caption_inlines) + "</span>";
+                out += "</p>\n";
+                if (!b.inlines.empty()) out += "<p>" + Inlines(b.inlines) + "</p>\n";
+                if (b.box_closed) out += "</div>\n";
+                else ++open_boxes;
+                break;
+            }
+            case BlockKind::BoxEnd:
+                if (open_boxes > 0) {
+                    out += "</div>\n";
+                    --open_boxes;
+                }
+                break;
         }
     }
 };
+
+// The boxes' look (\definition and its kin), each kind in its accent:
+// a rule down the left, the accent faintly behind the content, and the
+// kind's label in small capitals before the title. A proof is set plainer
+// and ends with a tombstone.
+std::string BoxCss() {
+    std::string css =
+        ".mbox { --c: #2c7fb8; border-left: 4px solid var(--c); background: color-mix(in srgb, var(--c) 8%, var(--bg)); "
+        "border-radius: 4px; padding: .6em 1.1em .7em; margin: 1.2em 0; }\n"
+        ".mbox > :last-child { margin-bottom: 0; }\n"
+        ".mbox .mbox { margin: .8em 0; }\n"
+        ".mbox-title { margin: 0 0 .4em; line-height: 1.35; }\n"
+        ".mbox-label { font: 700 .74em system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; letter-spacing: .08em; "
+        "text-transform: uppercase; color: var(--c); }\n"
+        ".mbox-name { font-weight: 600; margin-left: .3em; }\n"
+        ".mbox-proof { background: none; border-left-color: var(--rule); }\n"
+        ".mbox-proof::after { content: \"\\220E\"; display: block; text-align: right; line-height: 1; margin-top: .2em; }\n"
+        "@media print { .mbox { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }\n";
+    for (const BoxKind &k : BoxKinds()) css += ".mbox-" + std::string(k.name) + " { --c: " + k.color + "; }\n";
+    // The proof's own rule stays grey.
+    css += ".mbox-proof { --c: var(--muted); }\n";
+    return css;
+}
 
 // The standalone page's default look: a readable serif column that nothing
 // may widen (images scale down, wide tables and display math scroll inside
@@ -3816,7 +4066,7 @@ std::string ToHtml(const Document &doc, const HtmlOptions &opts) {
     if (!opts.standalone) return w.out;
     std::string title = doc.title.empty() ? "Untitled" : doc.title;
     std::string html = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + Esc(title) + "</title>\n";
-    html += "<style>" + std::string(kCss) + "</style>\n";
+    html += "<style>" + std::string(kCss) + BoxCss() + "</style>\n";
     html += "<script>MathJax = { tex: { inlineMath: [['\\\\(', '\\\\)']] } };</script>\n";
     html += "<script async src=\"https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js\"></script>\n";
     html += "</head>\n<body>\n";
@@ -3846,6 +4096,8 @@ body { max-width: none; margin: 0; padding: 0; overflow: hidden; background: #1b
 .slide-body p, .slide-body ul, .slide-body ol, .slide-body pre, .slide-body blockquote { margin-bottom: .45em; }
 .slide-body li { margin: .1em 0; }
 .slide-body .math-display { margin: .45em 0; }
+.slide-body .mbox { margin: .5em 0; padding: .45em .9em .5em; }
+.slide-body .mbox-title { margin-bottom: .25em; }
 .slide-body .math-display > mjx-container[display="true"] { margin: 0; }
 .slide-body figure { margin: .6em 0; }
 .slide-body figure img, .slide-body > p > img { max-height: 480px; width: auto; }
@@ -3985,6 +4237,7 @@ std::vector<SlideHtml> SlideFragments(const Document &doc, const HtmlOptions &op
             }
             w.Block_(b, labels[i]);
         }
+        w.EndBoxes();
         if (!w.footnotes.empty()) {
             w.out += "<section class=\"footnotes\"><ol>";
             for (auto &fn : w.footnotes)
@@ -4020,7 +4273,7 @@ std::string ToSlidesHtml(const Document &doc, const HtmlOptions &opts) {
     if (!opts.standalone) return deck;
     const std::string page_title = doc.title.empty() ? "Slides" : doc.title;
     std::string html = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + Esc(page_title) + "</title>\n";
-    html += "<style>" + std::string(kCss) + kSlidesCss + "</style>\n";
+    html += "<style>" + std::string(kCss) + BoxCss() + kSlidesCss + "</style>\n";
     html += "<script>MathJax = { tex: { inlineMath: [['\\\\(', '\\\\)']] } };</script>\n";
     html += "<script async src=\"https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js\"></script>\n";
     html += "</head>\n<body>\n<main class=\"deck\">\n" + deck + "</main>\n<div class=\"progress\"></div>\n";
@@ -4479,6 +4732,15 @@ std::string PlainProse(const std::string &s) {
 }
 
 }  // namespace
+
+int ProseColumns(const std::string &line) {
+    std::vector<int> width;
+    std::vector<bool> keep;
+    ConcealedWidths(line, &width, &keep);
+    int cols = 0;
+    for (int w : width) cols += w;
+    return cols;
+}
 
 std::vector<std::string> FillProse(const std::string &text, int cols, const std::string &first, const std::string &rest) {
     std::vector<int> width;

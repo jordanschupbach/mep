@@ -4,6 +4,7 @@ compile_commands.json
 mep.nvim
 result
 test/
+tmp/
 .ts-grammars/
 examples/gantt_example.gantt.*
 reports/
@@ -11,7 +12,6 @@ tmp_assets/
 .cache/
 *.pdf
 README.html
-./tmp
 .scratch/
 
 # NAFEMS example films and stills: build output, written by

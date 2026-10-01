@@ -376,6 +376,21 @@ struct Builder {
             case BlockKind::Abstract:
                 for (const std::vector<Inline> &para : AbstractParagraphs(b)) TextItem(items).push_back(Para{ParaKind::Body, Runs(para)});
                 break;
+            case BlockKind::BoxBegin: {
+                // A deck has no box: the heading in the box's colour, bold.
+                const BoxKind *k = FindBoxKind(b.keyword);
+                Run kind_run;
+                kind_run.bold = true;
+                kind_run.color = k ? std::string(k->color + 1) : "2C7FB8";
+                kind_run.text = std::string(k ? k->label : b.keyword.c_str()) + (b.caption_inlines.empty() ? "" : ": ");
+                Para p{ParaKind::Body, {kind_run}};
+                Run title_style;
+                title_style.bold = true;
+                if (!b.caption_inlines.empty()) Runs(b.caption_inlines, title_style, p.runs);
+                TextItem(items).push_back(p);
+                if (!b.inlines.empty()) TextItem(items).push_back(Para{ParaKind::Body, Runs(b.inlines)});
+                break;
+            }
             case BlockKind::Bibliography: {
                 int n = 0;
                 for (const std::string &key : doc.cite_order) {
@@ -398,6 +413,7 @@ struct Builder {
             case BlockKind::TableOfContents:
             case BlockKind::SlideBegin:
             case BlockKind::SlideEnd:
+            case BlockKind::BoxEnd:
             case BlockKind::Define:
             case BlockKind::Raw: break;  // see Runs: no markup of its own
             case BlockKind::Command: {

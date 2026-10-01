@@ -1286,6 +1286,19 @@ struct Buffer {
         int last_row = -1;
     };
     std::unordered_map<int, std::vector<OrgLatexInlineSpan>> org_latex_inline;
+    // mepml tables (Editor::MepmlTableLayout) size a cell holding inline
+    // maths by its render's drawn columns: the columns each fragment in a
+    // laid-out table row was measured at, keyed by (row, col_start), -1
+    // for one with no render yet (measured by its source). A render that
+    // lands with other columns bumps mepml_table_math_gen, which makes the
+    // next frame lay the tables out again (Editor::MepmlTablesStale).
+    std::map<std::pair<int, int>, int> mepml_table_math_cols;
+    // The columns each laid-out mepml table row is drawn across (its
+    // grid's), which is what soft-wrap measures it by rather than its
+    // source (Editor::WrapLenForRow): a row whose markup and maths draw
+    // narrower than they are written fits on one line.
+    std::unordered_map<int, int> mepml_table_row_cols;
+    unsigned long mepml_table_math_gen = 0;
     // The math preview popup's render (DrawPane, main.cpp) for the
     // fragment the cursor is in. The scan defers that fragment's own
     // render while it is being edited (mep.org_latex_scan), so the popup
@@ -3409,6 +3422,10 @@ struct OrgBlockCard {
     // content, drawn over a plain wash (a mepml document header -- its
     // `//?` lines are rendered in place, see Editor::MepmlScan).
     bool bare = false;
+    // A bare card's colour, as a highlight group ("" for its kind's own):
+    // a mepml box (\definition ...) takes its kind's (mepml::BoxKind::hl),
+    // for its wash, its outline and the rule down its left edge.
+    std::string tint;
     // A mepml block whose program is running in a terminal inside its
     // results (Editor::MepmlTerminalStart): the bar shows a stop button.
     int term_run = -1;
@@ -7584,6 +7601,7 @@ public:
         bool own_diagnostics = false, conceal = false, images = false;
         int text_width = 0, pane_cols = 0, buffer_cols = 0;
         int cur_row = -1;
+        unsigned long table_math_gen = 0;  // Buffer::mepml_table_math_gen laid out for
         size_t deco_count = 0;  // the namespace's size after the scan: anything else touching it forces a full one
     };
     std::unordered_map<int, MepmlScanState> mepml_scan_state_;
@@ -10099,6 +10117,21 @@ public:
      * @param first_row The fragment's first source row (-1: just `row`).
      * @param last_row The fragment's last source row (-1: just `row`).
      */
+    // Columns an inline maths render at `path` takes on the drawn grid
+    // (DrawPane's OrgLatexInlineCols, from the image's size); -1 when the
+    // image cannot be read.
+    int LatexInlineDrawCols(const std::string &path) const;
+    // The length soft-wrap measures a row by: a laid-out mepml table row's
+    // drawn width, any other row's raw length. Every walker that counts a
+    // row's slots (UpdateScrollForPane, DrawPane's draw loop, RowSlot,
+    // PaneRowSlots, the notebook prefix) goes through this, so they agree.
+    static int WrapLenForRow(const Buffer &buf, int row) {
+        auto it = buf.mepml_table_row_cols.find(row);
+        return it != buf.mepml_table_row_cols.end() ? it->second : static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
+    }
+    // Whether a mepml table's inline maths rendered at another width than
+    // the table was laid out for: mepml_render must run again.
+    bool MepmlTablesStale();
     void AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path, int first_row = -1,
                                int last_row = -1);
     /**
@@ -10957,6 +10990,14 @@ public:
     // mep.menubar_visible()/mep.menubar_set_visible(on), so a config that
     // wants the bar up all the time can just say so in init.lua.
     bool IsMenuBarVisible() const { return menu_bar_visible_; }
+    // The tab bar under it and the status line at the foot, each shown by
+    // default and hidden on request (<leader>ub / <leader>us,
+    // mep.tabbar_toggle() / mep.statusbar_toggle()); zen mode hides both
+    // whatever these say. The pane area grows into what they free.
+    bool IsTabBarVisible() const { return tab_bar_visible_; }
+    void SetTabBarVisible(bool visible) { tab_bar_visible_ = visible; }
+    bool IsStatusBarVisible() const { return status_bar_visible_; }
+    void SetStatusBarVisible(bool visible) { status_bar_visible_ = visible; }
     void ToggleMenuBar() { SetMenuBarVisible(!menu_bar_visible_); }
     void SetMenuBarVisible(bool visible);
     // Whether a *bare* mod1 tap (ConsumeMod1Tap) toggles the menu bar. Off
@@ -13392,6 +13433,8 @@ private:
     // spells the gesture out on the empty-workspace screen every session
     // starts on (DrawDashboard, main.cpp).
     bool menu_bar_visible_ = false;
+    bool tab_bar_visible_ = true;
+    bool status_bar_visible_ = true;
     // See MenuBarTapToggleEnabled. Off by default so a bare Alt tap no
     // longer flips the menu bar; the explicit <leader>m / :Menu binding
     // replaces it.

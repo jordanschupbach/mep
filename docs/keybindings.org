@@ -400,6 +400,15 @@ Lua: =mep.menubar_toggle()=, =mep.menubar_visible()= and
 =<leader>hk= keymaps picker too, under =Global=, worded for whichever
 way the tap will go next.
 
+The other two bars toggle from the =<leader>u= (UI) group as well:
+=<leader>ub= hides and shows the tab bar along the top, and =<leader>us=
+the status line along the bottom (=<leader>um= is the menu bar). Both are
+on by default, and the panes grow into the space they free; zen mode
+hides them either way. The command line stays, since =:= needs it. From
+Lua: =mep.tabbar_toggle()= / =mep.tabbar_visible()= /
+=mep.tabbar_set_visible(on)= and the same three for =statusbar=, so
+=init.lua= can start with either bar hidden.
+
 =mod1= (=Alt= by default, any mode): =mod1+s= / =mod1+v= split
 horizontal/vertical; =mod1+h/j/k/l= move focus to the pane spatially
 left/down/up/right of the current one (picking the one with the most

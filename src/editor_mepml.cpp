@@ -589,6 +589,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                              state.ns == ns && state.own_diagnostics == own_diagnostics && state.conceal == conceal &&
                              state.images == images && state.text_width == text_width &&
                              state.pane_cols == scan_pane_cols && state.buffer_cols == scan_buffer_cols &&
+                             state.table_math_gen == buf.mepml_table_math_gen &&
                              buf.decorations.count(ns) && buf.decorations[ns].size() == state.deco_count;
     bool patch = same_inputs && state.cur_row != cur_row;
     bool runs_here = false;
@@ -635,6 +636,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         buf.mepml_heading_rows.clear();
         buf.mepml_row_scale.clear();
         buf.mepml_table_images.clear();
+        buf.mepml_table_row_cols.clear();
         buf.mepml_virtual_rows.clear();
         buf.mepml_fold_summaries.clear();
         buf.mepml_html_rows.clear();
@@ -932,6 +934,12 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         if (s.style & mepml::kCallout) hl = CalloutColor(s.callout);
         if (s.style & mepml::kRule) hl = "Comment";
         if (s.style & mepml::kListMarker) hl = "Yellow";
+        // A box's label and markup in its kind's colour; its title keeps
+        // the text's own, in bold.
+        if (s.style & mepml::kBox) {
+            const mepml::BoxKind *kind = mepml::FindBoxKind(s.target);
+            hl = !s.markup ? "" : kind ? kind->hl : "Cyan";
+        }
 
         // Inside a table the grid's band is one line tall, so a run is
         // capped at what fits a line rather than given headroom.
@@ -983,8 +991,9 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                     d.conceal = s.replace.empty();
                 }
                 d.virt_text_hl = hl.empty() ? "Comment" : hl;
-                d.bold = (s.style & (mepml::kCallout | mepml::kCite)) != 0 && !s.replace.empty() &&
-                         (s.style & mepml::kCallout);
+                d.bold = ((s.style & (mepml::kCallout | mepml::kCite)) != 0 && !s.replace.empty() &&
+                          (s.style & mepml::kCallout)) ||
+                         ((s.style & mepml::kBox) && !s.replace.empty());
                 // A slide's opener and closer: rules across the text,
                 // the opener's labelled "Slide N: title". A trailing
                 // comment keeps its place, so then the rule stops short.
@@ -1015,6 +1024,13 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                     d.virt_text_hl = HeadingColor(2);
                     if (s.replace == "Abstract" && line.find_first_not_of(" \t", static_cast<size_t>(s.col_end)) == std::string::npos)
                         d.virt_text = std::string(static_cast<size_t>(std::max(0, (TextWidth() - Codepoints(s.replace)) / 2)), ' ') + s.replace;
+                }
+                // A proof's tombstone, where its `)` was: at the right edge.
+                if ((s.style & mepml::kBox) && s.replace == "\u220E") {
+                    const int pane_cols = TextColsForBuffer(CurrentBufferId());
+                    const int width = (pane_cols > 0 ? std::min(TextWidth(), pane_cols - 1) : TextWidth()) - s.col_start;
+                    d.virt_text = std::string(static_cast<size_t>(std::max(0, width - 2)), ' ') + s.replace;
+                    d.bold = false;
                 }
                 add(d);
             } else {
@@ -1298,6 +1314,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     state.pane_cols = scan_pane_cols;
     state.buffer_cols = scan_buffer_cols;
     state.cur_row = cur_row;
+    state.table_math_gen = buf.mepml_table_math_gen;
     state.deco_count = buf.decorations.count(ns) ? buf.decorations[ns].size() : 0;
 }
 
@@ -1345,6 +1362,19 @@ void Editor::RecomputeMepmlFolds() {
     }
     for (const HeaderRun &run : HeaderRuns(doc)) add(run.first, run.last);
     for (const mepml::Slide &sl : slides) add(sl.line_start, sl.line_end);
+    // Boxes (\definition ...): from the opening line to the closing `)`.
+    {
+        std::vector<const mepml::Block *> open;
+        for (const mepml::Block &b : doc.blocks) {
+            if (!b.origin.empty()) continue;
+            if (b.kind == mepml::BlockKind::BoxBegin && b.box_closed) add(b.line_start, b.line_end);
+            else if (b.kind == mepml::BlockKind::BoxBegin) open.push_back(&b);
+            else if (b.kind == mepml::BlockKind::BoxEnd && !open.empty()) {
+                add(open.back()->line_start, b.line_end);
+                open.pop_back();
+            }
+        }
+    }
     for (const mepml::Block &b : doc.blocks) {
         // \toc/\bibliography: one row of source drawn as a block of
         // generated lines -- folding it (a one-row fold, hiding no rows)
@@ -1480,6 +1510,12 @@ std::vector<OrgLiteralSpan> Editor::MepmlLiteralSpans() const {
     return out;
 }
 
+bool Editor::MepmlTablesStale() {
+    if (!IsMepmlBuffer()) return false;
+    auto it = mepml_scan_state_.find(CurrentBufferId());
+    return it != mepml_scan_state_.end() && it->second.valid && it->second.table_math_gen != Buf().mepml_table_math_gen;
+}
+
 void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepml::Span> &spans,
                               const std::unordered_set<int> &rows,
                               const std::set<std::pair<int, int>> &edge_markup, int ns,
@@ -1519,6 +1555,29 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
         if (d.row < 0 || d.row >= n || d.col_end <= d.col_start) return;
         AddDecoration(ns, std::move(d));
     };
+    // Inline maths is drawn as its render, at the render's own width --
+    // not the TeX's -- so a cell holding some is as wide as that draws
+    // (DrawPane's collapse), else every pipe after it lands off its rule.
+    // The columns each fragment was measured at are recorded: a render
+    // that lands later at another width lays the table out again.
+    struct MathRun {
+        int col_start, col_end, cols;
+    };
+    const int cursor_row = CurPane().cursor.row;
+    auto math_runs = [&](int row) {
+        std::vector<MathRun> out;
+        if (!OrgLatexVisible()) return out;
+        auto it = buf.org_latex_inline.find(row);
+        if (it == buf.org_latex_inline.end()) return out;
+        for (const Buffer::OrgLatexInlineSpan &sp : it->second) {
+            if (sp.col_end <= sp.col_start || OrgLatexInlineRevealed(sp, row, cursor_row)) continue;
+            // A fragment's continuation row draws nothing (its render is
+            // on the row it starts on).
+            const int cols = sp.path.empty() ? 0 : LatexInlineDrawCols(sp.path);
+            if (cols >= 0) out.push_back({sp.col_start, sp.col_end, cols});
+        }
+        return out;
+    };
 
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty() || b.kind != mepml::BlockKind::Table) continue;
@@ -1528,6 +1587,10 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
         if (b.caption_line >= 0) body_end = std::min(body_end, b.caption_line - 1);
         if (b.alt_line >= 0) body_end = std::min(body_end, b.alt_line - 1);
         if (b.rows_end >= 0) body_end = std::min(body_end, b.rows_end);
+        // This table's record of its maths' widths starts afresh.
+        for (auto it = buf.mepml_table_math_cols.lower_bound({b.line_start, -1});
+             it != buf.mepml_table_math_cols.end() && it->first.first <= body_end;)
+            it = buf.mepml_table_math_cols.erase(it);
 
         struct Cell {
             int ws_start, cs, ce, ws_end;  // segment [ws_start, ws_end), content [cs, ce)
@@ -1563,8 +1626,33 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
                 if (!c.image.empty()) {
                     c.width = 0;
                 } else if (it != by_line.end()) {
+                    const std::vector<MathRun> maths = math_runs(row);
+                    auto in_math = [&](const mepml::Span &sp) {
+                        for (const MathRun &m : maths)
+                            if (sp.col_start >= m.col_start && sp.col_end <= m.col_end) return true;
+                        return false;
+                    };
                     for (const mepml::Span *sp : it->second)
-                        if (sp->col_start >= c.cs && sp->col_end <= c.ce) c.width += span_width(*sp, line);
+                        if (sp->col_start >= c.cs && sp->col_end <= c.ce && !in_math(*sp)) c.width += span_width(*sp, line);
+                    for (const MathRun &m : maths)
+                        if (m.col_start >= c.cs && m.col_end <= c.ce) c.width += m.cols;
+                    // Every fragment in the row, rendered or not yet.
+                    for (const mepml::Span *sp : it->second) {
+                        if (!(sp->style & mepml::kMath) || sp->markup) continue;
+                        int used = -1;
+                        int start = sp->col_start;
+                        for (const MathRun &m : maths)
+                            if (sp->col_start >= m.col_start && sp->col_end <= m.col_end) used = m.cols, start = m.col_start;
+                        if (used < 0) {
+                            // Unrendered: keyed by where its fragment (with
+                            // its opening `$` or `\(`) starts.
+                            start = sp->col_start;
+                            while (start > 0 && (line[static_cast<size_t>(start - 1)] == '$' || line[static_cast<size_t>(start - 1)] == '(' ||
+                                                 line[static_cast<size_t>(start - 1)] == '\\'))
+                                --start;
+                        }
+                        buf.mepml_table_math_cols[{row, start}] = used;
+                    }
                 } else {
                     c.width = Codepoints(line.substr(static_cast<size_t>(c.cs), static_cast<size_t>(c.ce - c.cs)));
                 }
@@ -1621,6 +1709,12 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             for (int row = g.start_row; row <= g.end_row; ++row)
                 if (!rows.count(row)) g.raw_rows.push_back(row);
             mepml_table_grids_[CurrentBufferId()].push_back(g);
+            // Soft-wrap measures the laid-out rows by the grid they draw
+            // across (Editor::WrapLenForRow); the cursor's raw row by its text.
+            for (int row = g.start_row; row <= g.end_row; ++row) {
+                if (rows.count(row)) buf.mepml_table_row_cols[row] = g.indent + g.width;
+                else buf.mepml_table_row_cols.erase(row);
+            }
             // Each picture in its cell's content box (after the `| `).
             for (const auto &kv : cells) {
                 Buffer::MepmlTableImageRow pics;
@@ -1652,12 +1746,9 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             const RowShape &shape = shapes[row];
             if (shape.cells.empty()) continue;
             if (row == b.separator_line) {
-                std::string rule = "├";
-                for (size_t k = 0; k < widths.size(); ++k) {
-                    if (k) rule += "┼";
-                    rule += Repeat("─", widths[k] + 2);
-                }
-                rule += "┤";
+                // Blank: the grid pass draws the rule across the table.
+                std::string rule = " ";
+                for (size_t k = 0; k < widths.size(); ++k) rule += std::string(static_cast<size_t>(widths[k]) + 3, ' ');
                 Decoration d;
                 d.row = row;
                 d.col_start = shape.first;
@@ -1707,15 +1798,16 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             for (size_t k = 0; k < nb; ++k) {
                 std::string text;
                 if (k > 0 && k - 1 < widths.size()) text += std::string(static_cast<size_t>(after[k - 1]), ' ') + " ";
-                // ASCII, like org's own pipes: the grid pass draws the
-                // rules and outline over it, and a full-height box glyph
-                // would poke out past the outline's rounded corners.
-                text += picture_row ? " " : "|";
+                // Blank: the grid pass draws the column rules and the
+                // outline at exactly these columns, as unbroken lines; a
+                // drawn `|` beside them only read as a stray glyph.
+                (void)picture_row;
+                text += " ";
                 if (k < cs.size()) text += " " + std::string(static_cast<size_t>(before[k]), ' ');
                 // A short row: draw its missing cells after the last pipe.
                 if (k + 1 == nb)
                     for (size_t m = cs.size(); m < widths.size(); ++m)
-                        text += " " + std::string(static_cast<size_t>(widths[m]), ' ') + " |";
+                        text += " " + std::string(static_cast<size_t>(widths[m]), ' ') + "  ";
                 Decoration d;
                 d.row = row;
                 d.virt_overlay = true;
@@ -1850,6 +1942,55 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
         head.content_cols = widest(run.first, run.last);
         cards.push_back(std::move(head));
     }
+    // A box (\definition ...): a plain card in its kind's colour from its
+    // opening line to its closing `)` -- the same line for one closed
+    // where its text ends.
+    {
+        std::set<int> math_rows;
+        for (const mepml::Block &b : doc.blocks)
+            if (b.origin.empty() && b.kind == mepml::BlockKind::MathBlock)
+                for (int r = b.line_start; r <= b.line_end; ++r) math_rows.insert(r);
+        std::vector<size_t> open;
+        for (size_t i = 0; i < doc.blocks.size(); ++i) {
+            const mepml::Block &b = doc.blocks[i];
+            if (!b.origin.empty()) continue;
+            int first = -1, last = -1;
+            const mepml::Block *begin = nullptr;
+            if (b.kind == mepml::BlockKind::BoxBegin && b.box_closed) {
+                begin = &b;
+                first = b.line_start;
+                last = b.line_end;
+            } else if (b.kind == mepml::BlockKind::BoxBegin) {
+                open.push_back(i);
+                continue;
+            } else if (b.kind == mepml::BlockKind::BoxEnd && !open.empty()) {
+                begin = &doc.blocks[open.back()];
+                open.pop_back();
+                first = begin->line_start;
+                last = b.line_end;
+            } else {
+                continue;
+            }
+            const mepml::BoxKind *kind = mepml::FindBoxKind(begin->keyword);
+            OrgBlockCard card;
+            card.meta_row = card.begin_row = first;
+            card.end_row = last;
+            card.kind = "box";
+            card.bare = true;
+            card.tint = kind ? kind->hl : "Cyan";
+            // Folded, it collapses to a bar naming it.
+            card.chip = kind ? kind->label : begin->keyword;
+            card.title = mepml::InlinePlainText(begin->caption_inlines);
+            if (last > first) card.fold_row = first;
+            // As wide as its text as drawn -- markup concealed, maths about as
+            // wide as it typesets -- not as its source: display maths' TeX
+            // and inline markup are far wider than what is on screen.
+            for (int r = first; r <= last; ++r)
+                if (!math_rows.count(r))
+                    card.content_cols = std::max(card.content_cols, mepml::ProseColumns(buf.lines[static_cast<size_t>(r)]));
+            cards.push_back(std::move(card));
+        }
+    }
     // An abstract: a plain card of its own behind its prose.
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty() || b.kind != mepml::BlockKind::Abstract) continue;
@@ -1949,9 +2090,9 @@ void Editor::MepmlFitCards() {
         // A block and its results line up on one right edge.
         code.content_cols = out.content_cols = std::max(code.content_cols, out.content_cols);
     }
-    // A slide is at least as wide as the widest card it holds.
+    // A slide (or a box) is at least as wide as the widest card it holds.
     for (OrgBlockCard &slide : cards) {
-        if (slide.kind != "slide") continue;
+        if (slide.kind != "slide" && slide.kind != "box") continue;
         for (const OrgBlockCard &c : cards)
             if (&c != &slide && c.meta_row > slide.begin_row && c.end_row >= 0 && c.end_row < slide.end_row)
                 slide.content_cols = std::max(slide.content_cols, c.content_cols);

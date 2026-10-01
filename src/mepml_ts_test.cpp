@@ -112,6 +112,8 @@ bool Expected(const mepml::Block &b, Expect *e) {
         case BlockKind::Define: e->type = "define"; return true;
         case BlockKind::Raw: e->type = "raw_block"; return true;
         case BlockKind::Command: e->type = "command_block"; return true;
+        case BlockKind::BoxBegin: e->type = "box_open"; return true;
+        case BlockKind::BoxEnd: e->type = "box_close"; return true;
     }
     return false;
 }
@@ -176,7 +178,7 @@ void CheckAgreement(TSParser *parser, const Lines &lines, const char *what) {
     for (const TsNode &n : nodes)
         if (n.type == "image" || n.type == "import" || n.type == "display_math" || n.type == "bibliography" ||
             n.type == "toc" || n.type == "caption" || n.type == "alttext" || n.type == "slide_open" ||
-            n.type == "slide_close")
+            n.type == "slide_close" || n.type == "box_close")
             directive_rows.insert(n.start_row);
         else if (n.type == "abstract" || n.type == "define" || n.type == "raw_block" || n.type == "command_block")
             directive_rows.insert(n.end_row);  // after its closing bracket

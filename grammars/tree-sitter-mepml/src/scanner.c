@@ -85,6 +85,11 @@ enum TokenType {
     CMD_RAW,
     CMD_USER,
     MATH_TRAILING,
+    BOX_START,
+    BOX_LINE_START,
+    BOX_OPEN,
+    BOX_BREAK,
+    BOX_END,
     ERROR_SENTINEL,
 };
 
@@ -138,6 +143,13 @@ typedef struct {
     // The closing bracket of the slide open now (`)` for `\slide(`, `}` for
     // `\slide{` / `@slide{`), 0 outside one. Slides do not nest.
     uint8_t slide;
+    // Boxes (\definition( ...): how many are open (a line holding just `)`
+    // closes the innermost first); while a box's opening line is read, the
+    // depth_count its group sits at (0 otherwise); and whether text after
+    // its title runs on over the lines that follow (its first paragraph).
+    uint8_t boxes;
+    uint8_t box_level;
+    uint8_t box_lead;
     uint8_t depths[MAX_DEPTH];  // bracket depth inside each open group
 } Scanner;
 
@@ -208,6 +220,9 @@ unsigned tree_sitter_mepml_external_scanner_serialize(void *payload, char *buffe
     buffer[n++] = (char)s->table;
     for (unsigned k = 0; k < 4; ++k) buffer[n++] = (char)((s->paren_mask >> (8 * k)) & 0xff);
     buffer[n++] = (char)s->slide;
+    buffer[n++] = (char)s->boxes;
+    buffer[n++] = (char)s->box_level;
+    buffer[n++] = (char)s->box_lead;
     for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH; ++i) buffer[n++] = (char)s->depths[i];
     return n;
 }
@@ -216,7 +231,7 @@ void tree_sitter_mepml_external_scanner_deserialize(void *payload, const char *b
     Scanner *s = (Scanner *)payload;
     memset(s, 0, sizeof(*s));
     s->prev = '\n';
-    if (length < 14) return;
+    if (length < 17) return;
     s->prev = (uint8_t)buffer[0];
     s->context = (uint8_t)buffer[1];
     s->link_mode = (uint8_t)buffer[2];
@@ -227,7 +242,10 @@ void tree_sitter_mepml_external_scanner_deserialize(void *payload, const char *b
     s->table = (uint8_t)buffer[8];
     for (unsigned k = 0; k < 4; ++k) s->paren_mask |= (uint32_t)(uint8_t)buffer[9 + k] << (8 * k);
     s->slide = (uint8_t)buffer[13];
-    for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH && 14 + i < length; ++i) s->depths[i] = (uint8_t)buffer[14 + i];
+    s->boxes = (uint8_t)buffer[14];
+    s->box_level = (uint8_t)buffer[15];
+    s->box_lead = (uint8_t)buffer[16];
+    for (unsigned i = 0; i < s->depth_count && i < MAX_DEPTH && 17 + i < length; ++i) s->depths[i] = (uint8_t)buffer[17 + i];
 }
 
 // --- groups ------------------------------------------------------------------
@@ -270,6 +288,15 @@ static bool is_backslash_directive(const char *name) {
 }
 
 
+// The kinds of box, `\\definition(` ... (BoxKinds in mepml_doc.cpp).
+static bool is_box_kind(const char *name) {
+    static const char *const kNames[] = {"definition", "theorem", "lemma",  "proposition", "corollary",
+                                         "fact",       "example", "remark", "proof"};
+    for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
+        if (strcmp(name, kNames[i]) == 0) return true;
+    return false;
+}
+
 // Names mepml gives a meaning after `\\` (IsBuiltinCommandName in
 // mepml_doc.cpp); any other `\\name(` calls a user command.
 static bool is_builtin_command(const char *name) {
@@ -279,7 +306,7 @@ static bool is_builtin_command(const char *name) {
                                          "abstract", "slide", "define", "raw"};
     for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
         if (strcmp(name, kNames[i]) == 0) return true;
-    return false;
+    return is_box_kind(name);
 }
 
 // Reads a name of letters (the lexer just past its backslash); a name too
@@ -339,13 +366,14 @@ static bool slide_closer_rest(TSLexer *lexer) {
     return la(lexer) == '/';
 }
 
-// `slide_close`: the open slide's closing bracket, 0 when none is open.
-static bool line_starts_block(TSLexer *lexer, int32_t slide_close) {
+// `slide_close`: the open slide's closing bracket, 0 when none is open;
+// `box_open`: a box is open (its `)` closes it).
+static bool line_starts_block(TSLexer *lexer, int32_t slide_close, bool box_open) {
     // Called with the lexer at the first character of a line.
     while (is_blank(la(lexer))) adv(lexer);
     int32_t c = la(lexer);
     if (c == 0 || c == '\n' || c == '\r') return true;  // blank line
-    if (slide_close && c == slide_close) {
+    if ((slide_close && c == slide_close) || (box_open && c == ')')) {
         adv(lexer);
         return slide_closer_rest(lexer);
     }
@@ -372,6 +400,7 @@ static bool line_starts_block(TSLexer *lexer, int32_t slide_close) {
         if (n == 0) return false;
         if (n < (int)sizeof name && is_backslash_directive(name) && (next == '(' || is_blank(next) || at_eol(lexer))) return true;
         if (strcmp(name, "slide") == 0 && (next == '(' || next == '{')) return true;  // a slide opens
+        if (next == '(' && n < (int)sizeof name && is_box_kind(name)) return true;       // a box opens
         // \define(, or \raw( / a user command's call ending a line.
         if (next != '(') return false;
         if (strcmp(name, "define") == 0) return true;
@@ -411,12 +440,73 @@ static bool scope_continues(Scanner *s, TSLexer *lexer) {
         while (is_blank(la(lexer))) adv(lexer);
         return !at_eol(lexer);
     }
-    return !line_starts_block(lexer, s->slide);
+    return !line_starts_block(lexer, s->slide, s->boxes > 0);
 }
 
-// A group has closed: leaving the abstract's own ends the abstract.
+// A group has closed: leaving the abstract's own ends the abstract, and
+// leaving a box's opening group ends its opening line(s).
 static void group_closed(Scanner *s) {
     if (s->abstract_level > s->depth_count) s->abstract_level = 0;
+    if (s->box_level > s->depth_count) s->box_level = s->box_lead = 0;
+}
+
+// A box's opening line(s) are over: its group, and anything opened in it,
+// closes with them.
+static void box_line_done(Scanner *s) {
+    if (s->box_level == 0) return;
+    while (s->depth_count >= s->box_level && s->depth_count > 0) pop_group(s);
+    s->box_level = s->box_lead = 0;
+    group_closed(s);
+}
+
+// The lexer at a box's `(`: whether the box closes where its text ends --
+// on this line (`\\remark(Title, text)`), or at a `)` ending a later line
+// of the paragraph its text starts (ParseBoxOpen in mepml_doc.cpp); *lead:
+// whether text follows its title on this line.
+static bool box_closes(TSLexer *lexer, int32_t slide_close, bool *lead) {
+    int depth = 0;
+    bool comma = false;
+    *lead = false;
+    while (!at_eol(lexer)) {
+        const int32_t c = la(lexer);
+        adv(lexer);
+        if (c == '\\') {
+            if (!at_eol(lexer)) adv(lexer);
+            if (comma) *lead = true;
+            continue;
+        }
+        if (c == '(') depth++;
+        if (c == ')' && --depth == 0) return true;
+        if (c == ',' && depth == 1 && !comma) {
+            comma = true;
+            continue;
+        }
+        if (comma && !is_blank(c)) *lead = true;
+    }
+    if (!*lead) return false;
+    // Its first paragraph, line by line: closed when a line ends with the
+    // box's own `)`.
+    while (true) {
+        if (la(lexer) == '\r') adv(lexer);
+        if (la(lexer) != '\n') return false;
+        adv(lexer);
+        // (A line of just `)` is this box's own end, as anywhere else.)
+        if (line_starts_block(lexer, slide_close, true)) return false;
+        int32_t last = 0;
+        while (!at_eol(lexer)) {
+            const int32_t c = la(lexer);
+            adv(lexer);
+            if (c == '\\') {
+                if (!at_eol(lexer)) adv(lexer);
+                last = 'a';
+                continue;
+            }
+            if (c == '(') depth++;
+            if (c == ')') depth--;
+            if (!is_blank(c)) last = c;
+        }
+        if (depth == 0 && last == ')') return true;
+    }
 }
 
 // --- inline constructs ----------------------------------------------------------
@@ -1291,6 +1381,19 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
         return true;
     }
 
+    // The open box's `)`, alone on its line (a `// comment` may follow):
+    // boxes close before the slide they are on.
+    if (s->boxes && c == ')') {
+        adv(lexer);
+        if (slide_closer_rest(lexer) && valid[BOX_END]) {
+            s->boxes--;
+            s->context = CTX_LINE;
+            lexer->result_symbol = BOX_END;
+            return true;
+        }
+        return fallback_line(s, lexer, valid, indent > 0);
+    }
+
     // The open slide's closing bracket, alone on its line (a `// comment`
     // may follow). Zero-width: the grammar reads the bracket itself.
     if (s->slide && c == s->slide) {
@@ -1403,7 +1506,8 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
     }
 
     // \name(...) directives.
-    if (c == '\\' && (valid[DIRECTIVE_START] || valid[ATTRIBUTE_START] || valid[SLIDE_START] || valid[COMMAND_BLOCK_START])) {
+    if (c == '\\' && (valid[DIRECTIVE_START] || valid[ATTRIBUTE_START] || valid[SLIDE_START] || valid[COMMAND_BLOCK_START] ||
+                      valid[BOX_START])) {
         adv(lexer);
         if (is_alpha(la(lexer))) {
             char name[64];
@@ -1416,6 +1520,18 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
                 s->slide = la(lexer) == '(' ? ')' : '}';
                 s->context = CTX_LINE;
                 lexer->result_symbol = SLIDE_START;
+                return true;
+            }
+            // \definition( and its kin open a box -- or are one, closed
+            // where their text ends.
+            if (!directive && n < (int)sizeof name && is_box_kind(name) && la(lexer) == '(' && valid[BOX_START] &&
+                valid[BOX_LINE_START]) {
+                bool lead = false;
+                const bool closed = box_closes(lexer, s->slide, &lead);
+                if (!closed) s->boxes++;
+                s->box_lead = lead;
+                s->context = CTX_LINE;
+                lexer->result_symbol = closed ? BOX_LINE_START : BOX_START;
                 return true;
             }
             if (directive) {
@@ -1741,6 +1857,38 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
         return last ? emit(s, lexer, MATH_CONTENT, last) : false;
     }
 
+    // A box's `(`: its group opens; text after its title reads as a
+    // paragraph's, over the lines it runs on.
+    if (valid[BOX_OPEN] && la(lexer) == '(') {
+        adv(lexer);
+        lexer->mark_end(lexer);
+        push_group(s, true);
+        s->box_level = s->depth_count;
+        s->context = s->box_lead ? CTX_PARAGRAPH : CTX_LINE;
+        return emit(s, lexer, BOX_OPEN, '(');
+    }
+    // A line break in a box's first paragraph; where the paragraph ends,
+    // the box's opening lines end too.
+    if ((valid[BOX_BREAK] || valid[NEWLINE]) && s->box_level > 0 && s->depth_count >= s->box_level &&
+        (la(lexer) == '\n' || la(lexer) == '\r')) {
+        if (la(lexer) == '\r') adv(lexer);
+        if (la(lexer) == '\n') {
+            adv(lexer);
+            lexer->mark_end(lexer);
+            s->prev = '\n';
+            if (s->box_lead && valid[BOX_BREAK] && !line_starts_block(lexer, s->slide, s->boxes > 0)) {
+                s->context = CTX_PARAGRAPH;
+                lexer->result_symbol = BOX_BREAK;
+                return true;
+            }
+            if (!valid[NEWLINE]) return false;
+            box_line_done(s);
+            s->context = CTX_PARAGRAPH;
+            lexer->result_symbol = NEWLINE;
+            return true;
+        }
+    }
+
     // \abstract(: its group opens, and its prose reads as a paragraph's.
     if (valid[ABSTRACT_OPEN] && la(lexer) == '(') {
         adv(lexer);
@@ -1776,7 +1924,8 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
                            valid[LIST_CONTINUATION] || valid[TABLE_ROW_START] || valid[RESULT_END] ||
                            valid[RESULT_END_ATTACHED] || valid[RESULT_BEGIN_MARKDOWN] ||
                            valid[DIRECTIVE_START] || valid[ATTRIBUTE_START] || valid[FENCE_OPEN] ||
-                           valid[SLIDE_START] || valid[SLIDE_END] || valid[COMMAND_BLOCK_START];
+                           valid[SLIDE_START] || valid[SLIDE_END] || valid[COMMAND_BLOCK_START] || valid[BOX_START] ||
+                           valid[BOX_END];
         if (block_valid && COL0()) {
             const bool ok = scan_line_start(s, lexer, valid);
             if (ok && lexer->result_symbol != TABLE_ROW_START && lexer->result_symbol != TABLE_DELIMITER_ROW)
@@ -1802,6 +1951,7 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
         if (lexer->eof(lexer) && s->prev != '\n') {
             lexer->mark_end(lexer);
             s->prev = '\n';
+            box_line_done(s);
             lexer->result_symbol = NEWLINE;
             return true;
         }

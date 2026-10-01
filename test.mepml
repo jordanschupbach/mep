@@ -313,13 +313,43 @@ and `@slide{` ... `}` work too). A slide's first heading is its title.
 Two slides in a row, this one untitled.
 }
 
+Boxes: `\definition(Title,` on a line of its own, then the box's content --
+any blocks -- and a line holding just `)` to close it. `\theorem`, `\lemma`,
+`\proposition`, `\corollary`, `\fact`, `\example`, `\remark` and `\proof`
+work the same way, each in its own colour. The title is everything before
+the first comma; text after it on the same line starts the box's first
+paragraph, and a box closed where its text ends needs no line of its own.
+
+\definition(Orthogonal projection,
+The point of a subspace $S$ closest to $\mathbf{y}$:
+
+$$
+\hat{\mathbf{y}} = P\mathbf{y}, \qquad P = X (X^\top X)^{-1} X^\top
+$$
+
+- $P$ is *symmetric*
+- $P^2 = P$
+)
+
+\theorem(Pythagoras, If $\mathbf{a} \perp \mathbf{b}$, the squared lengths
+add up: $\| \mathbf{a} + \mathbf{b} \|^2 = \| \mathbf{a} \|^2 + \| \mathbf{b} \|^2$.
+)
+
+\proof(
+Expand the square; the cross term is $2\, \mathbf{a}^\top \mathbf{b} = 0$.
+
+\remark(Nested, Boxes nest, each closing before the one around it.)
+)
+
+\example(No comma means no title: this box is all text.)
+
 User commands: `\define(name(params), template)` makes a command of your
 own, and `\name(args)` calls it -- the template with `#param` replaced by
 the arguments. A template (or any text) can choose what each export gets
 with `\when(formats, text)` and `\otherwise(text)`, and write an export's
 own markup with `\raw(formats, text)`.
 
-\define(definition(term, body),
+\define(glossary(term, body),
 \raw(html, <div class="definition">)
 
 *Definition (#term).* #body
@@ -327,7 +357,7 @@ own markup with `\raw(formats, text)`.
 \raw(html, </div>)
 )
 
-\definition(Literate programming, Prose and code in one document, the code
+\glossary(Literate programming, Prose and code in one document, the code
 run and its results kept beside it.)
 
 This paragraph was exported as \when(html, a web page) \otherwise(anything

@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 145 =<leader>= sequences registered at startup. Press
+All 147 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -140,7 +140,9 @@ the features live.
 | =<leader>ss= | Open structure pane (treesitter) | [[file:sidebars.html][Sidebars]] |
 | =<leader>tT= | Toggle tests pane | [[file:sidebars.html][Sidebars]] |
 | =<leader>tt= | Toggle todo pane | [[file:org-clock.html][Clocking and the Todo panel]] |
+| =<leader>ub= | Toggle the tab bar | -- |
 | =<leader>um= | Toggle the top menu bar | -- |
+| =<leader>us= | Toggle the status bar | -- |
 | =<leader>ut= | Theme picker | [[file:pickers.html][Pickers]] |
 | =<leader>uu= | Language UI mode (toggle) | [[file:language-ui.html][Language UI modes]] |
 | =<leader>vv= | Speech-to-text: toggle live transcription | -- |

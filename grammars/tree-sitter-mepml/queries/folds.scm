@@ -9,6 +9,7 @@
   (comment)
   (callout)
   (abstract)
+  (box)
   (define)
   (raw_block)
   (command_block)

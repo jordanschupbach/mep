@@ -467,18 +467,18 @@ void TestFuzz() {
 // \raw(, hover on a call, and the checks on calls.
 void TestCommands() {
     const MepmlLspOptions o = NoFiles();
-    const Lines doc = {"\\define(definition(term, body), *#term.* #body)", "", "\\definition(Word, meaning)", "",
-                       "See \\defi", "\\when(ht", "\\raw(tex|p", "\\nosuch(x) and \\definition(only)"};
-    const std::optional<MepmlLspCompletionItem> c = Item(MepmlLspCompletions(doc, 4, 10, o), "\\definition");
-    CHECK(c && c->insert_text == "definition(" && c->detail == "\\definition(term, body)");
+    const Lines doc = {"\\define(glossary(term, body), *#term.* #body)", "", "\\glossary(Word, meaning)", "",
+                       "See \\glos", "\\when(ht", "\\raw(tex|p", "\\nosuch(x) and \\glossary(only)"};
+    const std::optional<MepmlLspCompletionItem> c = Item(MepmlLspCompletions(doc, 4, 10, o), "\\glossary");
+    CHECK(c && c->insert_text == "glossary(" && c->detail == "\\glossary(term, body)");
     CHECK(Item(MepmlLspCompletions(doc, 5, 9, o), "html").has_value());
     CHECK(Item(MepmlLspCompletions(doc, 6, 11, o), "pdf").has_value());  // after the `|`
     const MepmlLspHoverInfo h = MepmlLspHover(doc, 2, 3, o);
-    CHECK(h.found && h.text.find("\\definition(term, body)") == 0 && h.text.find("*#term.* #body") != std::string::npos);
+    CHECK(h.found && h.text.find("\\glossary(term, body)") == 0 && h.text.find("*#term.* #body") != std::string::npos);
     int unknown = 0, missing = 0;
     for (const MepmlLspDiagnostic &d : MepmlLspDiagnostics(doc, o)) {
         unknown += d.message.find("unknown command \\nosuch") == 0;
-        missing += d.message.find("missing argument: \\definition") == 0;
+        missing += d.message.find("missing argument: \\glossary") == 0;
     }
     CHECK(unknown == 1 && missing == 1);
 }

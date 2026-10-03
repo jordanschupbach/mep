@@ -1,0 +1,77 @@
+/* paper.mepss -- a quiet, bookish look with inks of its own rather than the
+ * editor theme's.
+ *
+ *   //? Style: paper.mepss
+ *
+ * The palette is a handful of custom properties on the document, so the
+ * rules below are written once: light inks for the editor's dark page,
+ * dark ones for an export's white paper (@media).
+ */
+
+document {
+  --ink: #c9a26b;      /* headings, labels, markers */
+  --ink-2: #b8926a;
+  --strong: #e8d5b0;
+  --soft: #d8c8a8;
+  --code: #8fbf9f;
+  --mono: #8fb8bf;
+  --link: #7fa8d8;
+  --math: #c8a8d8;
+  --warn: #d88a7a;
+  --quiet: #8a8272;
+}
+@media html, print, slides {
+  document {
+    --ink: #8a5a2b;
+    --ink-2: #7a4f28;
+    --strong: #3b2a17;
+    --soft: #5a4630;
+    --code: #2f6f4f;
+    --mono: #2f5f6f;
+    --link: #2a5a9a;
+    --math: #6a3f8a;
+    --warn: #a8402e;
+    --quiet: #6f6a60;
+  }
+}
+
+heading          { color: var(--ink); }
+heading[level=1] { font-size: 1.9; }
+heading[level=2] { font-size: 1.4; color: var(--ink-2); }
+heading[level=3] { font-size: 1.15; font-style: italic; }
+
+meta[key=title]    { color: var(--strong); font-size: 2.4; }
+meta[key=subtitle] { color: var(--quiet); }
+header             { background: none; border-color: fade(var(--ink), 0.35); }
+header:active      { border-color: var(--ink); }
+
+bold      { color: var(--strong); }
+italic    { color: var(--soft); }
+verbatim  { color: var(--code); }
+mono      { color: var(--mono); }
+link      { color: var(--link); text-decoration: underline; }
+highlight { background: fade(var(--ink), 0.35); }
+math, math-block { color: var(--math); }
+
+list-item::marker                { content: "–"; color: var(--ink); }
+list-item[checked=false]::marker { content: "○"; }
+list-item[checked=true]::marker  { content: "●"; }
+
+/* Boxes: one ink for all of them, told apart by their labels alone. */
+box            { --accent: var(--ink); background: fade(var(--ink), 0.06); border-color: none; }
+box:active     { border-color: fade(var(--ink), 0.5); }
+box[kind=definition], box[kind=theorem], box[kind=lemma], box[kind=proposition],
+box[kind=corollary], box[kind=fact], box[kind=example], box[kind=remark] { --accent: var(--ink); }
+box[kind=proof] { --accent: var(--quiet); background: none; border-left-color: none; }
+box::label     { font-style: italic; }
+box[kind=proof]::end { content: "□"; }
+
+callout        { --accent: var(--ink); }
+callout[kind=warning], callout[kind=caution], callout[kind=error], callout[kind=danger] { --accent: var(--warn); }
+
+abstract        { background: none; border-color: none; }
+abstract::label { color: var(--ink); }
+
+code    { background: fade(var(--mono), 0.07); border-color: fade(var(--mono), 0.35); }
+results { background: none; }
+rule    { content: "·"; color: var(--ink); }

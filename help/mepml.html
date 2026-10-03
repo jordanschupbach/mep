@@ -287,6 +287,17 @@ paragraph (<code>\remark(Title, text)</code> on one line) needs no closing line 
 own. Leave the title out with nothing before the comma, or with nothing at
 all for a box opened on a line of its own (<code>\proof(</code>); a box closed on its
 opening line without a comma is all text (<code>\example(Just text.)</code>).</p>
+<p>A box of a kind of your own is <code>\boxed(kind, Title,= ... =)</code>: the kind is
+any name (letters, digits and <code>-</code>), and everything after it reads as it
+does for the kinds above.</p>
+<pre>\boxed(axiom, Choice,
+Every family of non-empty sets has a choice function.
+)</pre>
+<p>It is labelled with its kind ("Axiom"; <code>key-result</code> reads "Key result")
+and drawn like a plain box until a style sheet says otherwise --
+<code>box[kind=axiom] { --accent: #e07a00; }</code> for its colour,
+<code>box[kind=axiom]::label { content: "Axiom"; }</code> for its label (see Style
+sheets below).</p>
 <p>Boxes nest, each closing before the one around it, and on a slide they
 close before the slide does: a <code>)</code> line ends the innermost box first. A
 box left open is flagged and closed where its slide (or the document)
@@ -752,6 +763,85 @@ where the commands are expanded. The language server completes the
 commands you define (and export names inside <code>\when(</code> and <code>\raw(</code>), shows
 a command's template when you hover over a call, and flags calls of
 commands that are not defined and calls missing an argument.</p>
+<h1>Style sheets</h1>
+<p>What a document <i>is</i> and how it <i>looks</i> are separate. mepml says the
+first -- this is a heading, that a definition -- and a style sheet says
+the second. mep's own look is a style sheet too
+(<code>assets/mepml/default.mepss</code>), so everything it draws can be changed
+from a file.</p>
+<pre>//? Style: paper.mepss</pre>
+<p>names a sheet for the document, a path relative to the document. Several
+<code>Style:</code> lines apply in order, a file brought in with <code>//? Import:</code>
+contributes its sheets ahead of the document's own, and a sheet in
+<code>~/.config/mep/mepml.mepss</code> applies to every document. Later sheets win.
+Saving a sheet restyles the documents that use it at once.</p>
+<p>A sheet can also be written in the document, as a <code>\raw</code> block for the
+format <code>style</code> (which no export has, so the block is in none of them):</p>
+<pre>\raw(style,
+box[kind=axiom] { --accent: #e07a00; }
+.term { color: #00a080; font-weight: bold; }
+)</pre>
+<p>It applies after the sheets the header names.</p>
+<p>A sheet is a list of rules in CSS's syntax:</p>
+<pre>/* Definitions in green, under another name. */
+box[kind=definition]        { --accent: #2e8b57; }
+box[kind=definition]::label { content: "Def."; }
+
+heading[level=1]  { font-size: 1.8; color: theme(Blue, #0b5cad); }
+verbatim          { color: #d95f0e; font-weight: bold; }
+list-item::marker { content: "→"; }
+
+@media present { heading[level=1] { font-size: 2.4; } }</pre>
+<ul>
+<li>A selector names an element (<code>heading</code>, <code>paragraph</code>, <code>bold</code>, <code>italic</code>, <code>verbatim</code>, <code>link</code>, <code>math</code>, <code>list-item</code>, <code>table-cell</code>, <code>code</code>, <code>results</code>, <code>box</code>, <code>callout</code>, <code>slide</code>, <code>abstract</code>, <code>meta</code> ...), narrows it by attribute (<code>heading[level=2]</code>, <code>box[kind=proof]</code>, <code>callout[kind=warning]</code>, <code>list-item[checked=true]</code>, <code>meta[key=title]</code>), by what it is inside (<code>slide heading</code>, <code>box &gt; paragraph</code>), and picks a part of it with <code>::</code>: <code>::label</code> (a box's "Definition", a callout's badge, "Slide 3"), <code>::title</code>, <code>::marker</code> (a list's bullet), <code>::end</code> (a proof's tombstone), <code>::markup</code> (the syntax characters on a line shown as source), <code>::header</code> (a code block's title band), <code>::option</code> (its option chips), <code>::button</code> (its run, stop and fold controls), <code>::rule</code> (a table's grid lines). <code>:active</code> is the block the cursor is in.</li>
+<li><code>.name</code> selects text given that name in the document, <code>\class(name, text)</code>: a <code>\class(term, group)</code> is styled by <code>.term { ... }</code>, in the editor and in the HTML and PDF exports. It has no look of its own.</li>
+<li>Properties: <code>color</code>, <code>background</code>, <code>font-weight</code>, <code>font-style</code>, <code>text-decoration</code> (<code>underline</code>, <code>line-through</code>, <code>none</code>), <code>text-decoration-color</code>, <code>font-size</code> (a multiple of the surrounding text, or <code>14pt</code>), <code>font-family</code> (<code>serif</code>, <code>sans</code>, <code>mono</code>), <code>vertical-align</code>, <code>text-align</code>, <code>content</code> (generated text; <code>%n</code> is the element's number and <code>%k</code> its kind), <code>border-color</code> and <code>border-left-color</code>.</li>
+<li>In the editor <code>text-align</code> sets a heading and running text (a paragraph, a list, a callout, the abstract) centred or flush right line by line; the line the cursor is on stays where you type it. <code>text-decoration</code> draws a rule under or through a heading too.</li>
+<li>Generated text is a part's <code>content</code>: a list's marker, a box's label and end mark, a callout's badge (=" %k "=), "Abstract", a slide's "Slide %n", and the word before a caption's number (<code>caption[of=figure]::label { content: "Fig. %n"; }</code>). The editor draws any character its text face has; one it lacks shows as <code>?</code>.</li>
+<li>Colours are <code>#rrggbb</code>, a colour name, <code>theme(Group, #fallback)</code> -- the colour your editor theme gives <code>Group</code> (<code>Blue</code>, <code>Comment</code>, <code>Accent</code> ...), and the fallback in an export -- or <code>fade(colour, 0.2)</code>. <code>none</code> removes one. A custom property (<code>--accent: ...;</code>, read back with <code>var(--accent)</code>) is inherited, which is how one line recolours a box's label, rule and paper together.</li>
+<li><code>@media</code> limits rules to a renderer: <code>editor</code>, <code>source</code> (a line shown as its source, like the cursor's), <code>present</code> (the presentation view), and the export names <code>\when()</code> takes.</li>
+</ul>
+<p>An unknown property or a value a property cannot take drops that one
+declaration, never the sheet. In a <code>.mepss</code> file the language server
+underlines both, along with selectors that name an element or a part mepml
+has none of, and completes element names, <code>[attributes]</code> and their values,
+<code>::parts</code>, property names and each property's values (colour functions,
+theme groups, colour names) and <code>@media</code> tags; hover explains a property,
+a part or a function. <code>docs/mepml-spec/</code> is the full
+specification -- the elements, the language and what a renderer must do
+-- and <code>examples/mepml-styles/</code> has three complete sheets to start from
+(a quiet one, a loud one, and one for presenting a deck). <code>test.mepml</code>,
+the document that shows everything mepml can do, names <code>test.mepss</code>
+beside it.
+From a shell, <code>mep-mepml style FILE</code> prints the style every element of a
+document computes to, and <code>mep-mepml tree FILE</code> its structure as JSON.</p>
+<p>While presenting (<code>&lt;leader&gt;kp</code>) a page is its slide: <code>slide heading</code> and
+<code>slide box</code> select on it, the slide's <code>background</code> is the page's paper
+and its <code>color</code> the page's text. The title page is <code>slide[title]</code>, with
+the header's <code>meta[key=title]</code>, <code>meta[key=subtitle]</code> and
+<code>meta[key=author]</code> on it:</p>
+<pre>@media present {
+  slide        { background: #0b1d33; color: #e6edf5; }
+  slide[title] { background: #12345a; }
+  slide[title] meta[key=title] { color: #ffd000; font-size: 2.4; }
+  slide heading[level=1]       { font-size: 2.2; }
+}</pre>
+<p>The exports take the same sheets, each as far as its format goes, over
+its own built-in look (so a document with no sheet exports exactly as
+before). Use <code>@media</code> to give paper its own colours -- <code>html</code>, <code>print</code>
+(PDF, Word, Writer, RTF), <code>slides</code>, or a single format's name:</p>
+<pre>heading { color: #ffd000; }                    /* on the editor's dark page */
+@media html, print { heading { color: #8a5a2b; } }</pre>
+<ul>
+<li><b>HTML</b> (and the HTML slideshow): every rule that has something to select on the page, written into it as CSS -- colours, weights, sizes, faces, alignment, list markers, box and callout accents and labels.</li>
+<li><b>PDF and LaTeX</b> (and Beamer): colour, weight and slant of headings, paragraphs and inline markup; a box's colours, label and end mark.</li>
+<li><b>Word and Writer</b>: the same colour, weight and slant, kept as named character styles so the text reads back into mepml as it was written; a class's look; a box's label and colours.</li>
+<li><b>PowerPoint and Impress</b>: colour, weight and slant of inline markup; a box's label and colour.</li>
+<li><b>RTF</b>: a box's label and colours.</li>
+<li><b>Markdown, plain text</b>: a box's label.</li>
+</ul>
+<p>A <code>theme(Group)</code> colour needs its fallback (<code>theme(Blue, #0b5cad)</code>) to
+reach an export, which has no editor theme to ask.</p>
 <h1>Exporting and importing</h1>
 <p>The play button in the pane's header (or <code>gr</code>, or <code>&lt;leader&gt;rr</code>) saves the
 document, exports it, and opens the result in a split on the right -- an

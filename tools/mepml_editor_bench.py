@@ -126,7 +126,7 @@ def main():
             subprocess.run([bench, "--dump", name], stdout=f, check=True)
         fixtures.append({"name": name, "path": path})
     # test.mepml imports its neighbours; give it them.
-    for extra in ("refs.mepml", "opts.mepml"):
+    for extra in ("refs.mepml", "opts.mepml", "test.mepss"):
         shutil.copy(os.path.join(REPO, extra), work)
 
     xvfb = subprocess.Popen(["Xvfb", args.display, "-screen", "0", "1600x1000x24"], stdout=subprocess.DEVNULL,

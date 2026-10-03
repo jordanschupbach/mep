@@ -127,7 +127,7 @@ const std::map<mepml::InlineKind, std::string> kInlineNode = {
     {mepml::InlineKind::Insert, "insertion"},    {mepml::InlineKind::Delete, "deletion"},
     {mepml::InlineKind::Verbatim, "verbatim"},   {mepml::InlineKind::Link, "link"},
     {mepml::InlineKind::Font, "font"},           {mepml::InlineKind::FontSize, "font_size"},
-    {mepml::InlineKind::Color, "color"},         {mepml::InlineKind::Footnote, "footnote"},
+    {mepml::InlineKind::Class, "class"},         {mepml::InlineKind::Color, "color"},         {mepml::InlineKind::Footnote, "footnote"},
     {mepml::InlineKind::Cite, "cite"},           {mepml::InlineKind::CiteP, "citep"},
     {mepml::InlineKind::Math, "inline_math"},    {mepml::InlineKind::Comment, "inline_comment"},
     {mepml::InlineKind::Raw, "raw"},             {mepml::InlineKind::Command, "command"},

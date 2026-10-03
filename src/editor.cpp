@@ -1346,6 +1346,22 @@ std::vector<std::string> Editor::ThemeNames() const {
 }
 
 bool Editor::ResolveHighlight(const std::string &name, ThemeColor *out) const {
+    // A literal colour, "#rrggbb" or "#rrggbbaa": what a mepml style sheet's
+    // own colours (as against its theme(Group) ones) reach the renderer as.
+    if ((name.size() == 7 || name.size() == 9) && name[0] == '#') {
+        unsigned v[4] = {0, 0, 0, 255};
+        bool ok = true;
+        for (size_t i = 0; i + 2 < name.size() && ok; i += 2) {
+            const char hex[3] = {name[i + 1], name[i + 2], 0};
+            if (!std::isxdigit(static_cast<unsigned char>(hex[0])) || !std::isxdigit(static_cast<unsigned char>(hex[1]))) ok = false;
+            else v[i / 2] = static_cast<unsigned>(std::strtoul(hex, nullptr, 16));
+        }
+        if (ok) {
+            *out = ThemeColor{static_cast<unsigned char>(v[0]), static_cast<unsigned char>(v[1]), static_cast<unsigned char>(v[2]),
+                              static_cast<unsigned char>(v[3])};
+            return true;
+        }
+    }
     auto it = current_theme_groups_.find(name);
     if (it == current_theme_groups_.end()) return false;
     *out = it->second;
@@ -4920,7 +4936,7 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // whatever the branches below work out rather than
     // short-circuiting them.
     const int heading_extra = (org_heading_scale_visible_ && org_buffer && !plain)
-                                  ? HeadingExtraSlotsForLevel(HeadingLevelForRow(buf, row))
+                                  ? HeadingExtraSlotsForRow(buf, row)
                                   : 0;
     if (org_images_visible_ && !plain) {
         auto img_it = buf.org_image_rows.find(row);
@@ -25296,7 +25312,7 @@ std::string IconForFilename(const std::string &name) {
         {"lua", 0xe620},  {"py", 0xe606},   {"js", 0xe60c},   {"ts", 0xe628},   {"jsx", 0xe625},  {"tsx", 0xe7ba},
         {"rs", 0xe68b},   {"go", 0xe627},   {"java", 0xe738}, {"rb", 0xe791},   {"sh", 0xe795},   {"bash", 0xe760},
         {"zsh", 0xe795},  {"md", 0xf48a},   {"markdown", 0xe609}, {"org", 0xe633}, {"txt", 0xf0219}, {"json", 0xe60b},
-        {"yaml", 0xe8eb}, {"yml", 0xe8eb},  {"toml", 0xe6b2}, {"xml", 0xf05c0}, {"html", 0xe736}, {"css", 0xe6b8},
+        {"yaml", 0xe8eb}, {"yml", 0xe8eb},  {"toml", 0xe6b2}, {"xml", 0xf05c0}, {"html", 0xe736}, {"css", 0xe6b8}, {"mepss", 0xe6b8},
         {"scss", 0xe603}, {"sql", 0xe706},  {"vim", 0xe62b},  {"lock", 0xe672}, {"log", 0xf0331}, {"cs", 0xf031b},
         {"php", 0xe608},  {"csv", 0xe64a},  {"env", 0xf462},
         {"git", 0xe702},  {"png", 0xe60d},  {"jpg", 0xe60d},  {"jpeg", 0xe60d}, {"gif", 0xe60d},  {"svg", 0xf0721},
@@ -25334,7 +25350,7 @@ std::string HlGroupForFilename(const std::string &name) {
         {"rb", "Red"},      {"sh", "Green"},    {"bash", "Green"},  {"zsh", "Green"},
         {"md", "Cyan"},     {"markdown", "Cyan"}, {"org", "Green"}, {"txt", "MutedFg"}, {"json", "Yellow"},
         {"yaml", "Yellow"}, {"yml", "Yellow"},  {"toml", "Yellow"}, {"xml", "Orange"},  {"html", "Orange"},
-        {"css", "Blue"},    {"scss", "Blue"},   {"sql", "Purple"},  {"vim", "Green"},   {"lock", "MutedFg"},
+        {"css", "Blue"},    {"mepss", "Blue"},  {"scss", "Blue"},   {"sql", "Purple"},  {"vim", "Green"},   {"lock", "MutedFg"},
         {"log", "MutedFg"}, {"cs", "Red"},      {"php", "Purple"},  {"csv", "Green"},   {"env", "Yellow"},
         {"git", "Orange"},  {"png", "Purple"},  {"jpg", "Purple"},  {"jpeg", "Purple"}, {"gif", "Purple"},
         {"svg", "Purple"},  {"pdf", "Red"},     {"zip", "Orange"},  {"tar", "Orange"},  {"gz", "Orange"},

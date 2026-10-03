@@ -18,3 +18,4 @@ README.html
 # `just nafems`. A repository is not a video host.
 examples/nafems/film/
 examples/nafems/fv42.step
+tools/__pycache__/

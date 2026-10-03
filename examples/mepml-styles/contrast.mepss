@@ -1,0 +1,61 @@
+/* contrast.mepss -- loud on purpose: strong colours, heavy outlines, plain
+ * ASCII markers. Good on a projector, and a quick way to see every hook a
+ * sheet has.
+ *
+ *   //? Style: contrast.mepss
+ */
+
+heading          { font-weight: bold; }
+heading[level=1] { color: #ffd000; font-size: 2.0; }
+heading[level=2] { color: #00d0ff; font-size: 1.5; }
+
+italic    { color: #ffd000; }
+verbatim  { color: #00ff9c; font-weight: bold; }
+link      { color: #00d0ff; }
+highlight { background: #7a3cff; }
+
+/* White on the editor's dark page; an export's paper is white already,
+   and takes darker versions of the same colours. */
+@media editor, present {
+  heading { color: #ffffff; }
+  bold    { color: #ffffff; }
+}
+@media html, print {
+  heading[level=1] { color: #b07a00; }
+  heading[level=2] { color: #0077a8; }
+  italic    { color: #8a6500; }
+  verbatim  { color: #00794a; }
+  link      { color: #0077a8; }
+  highlight { background: #d9c8ff; }
+}
+strike    { text-decoration-color: #ff3355; }
+big       { font-size: 1.6; }
+
+list-item::marker                { content: "*"; color: #ffd000; }
+list-item[checked=false]::marker { content: "[ ]"; }
+list-item[checked=true]::marker  { content: "[x]"; color: #00ff9c; }
+
+callout::label { content: "[%k]"; }
+
+box            { background: fade(var(--accent), 0.18); border-color: var(--accent); }
+box:active     { border-color: #ffffff; }
+box[kind=definition] { --accent: #00d0ff; }
+box[kind=theorem], box[kind=lemma], box[kind=proposition], box[kind=corollary] { --accent: #ff66cc; }
+box[kind=fact]       { --accent: #ffd000; }
+box[kind=example]    { --accent: #00ff9c; }
+box[kind=proof]::end { content: "QED"; }
+
+slide        { border-color: #ffd000; }
+slide::label { color: #ffd000; }
+
+/* Only while presenting (<leader>kp): a page is its slide, so the slide's
+   background is the page's paper; the title page is slide[title], with
+   the header's title, subtitle and author on it. */
+@media present {
+  slide        { background: #0b1d33; color: #e6edf5; }
+  slide[title] { background: #12345a; }
+  slide[title] meta[key=title]    { color: #ffd000; font-size: 2.4; font-weight: bold; }
+  slide[title] meta[key=subtitle] { color: #9fc4e8; font-style: italic; }
+  slide heading[level=1] { font-size: 2.2; }
+  big { font-size: 2.0; }
+}

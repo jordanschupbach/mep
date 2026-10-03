@@ -6,6 +6,7 @@
 #include "gfx/input.h"
 #include "gfx/platform.h"
 #include "gfx/renderer2d.h"
+#include "gfx/truetype.h"
 #include "gfx/renderer3d.h"
 #include "gfx/text.h"
 #include "gfx/vecmath.h"
@@ -535,8 +536,14 @@ gfx::Font g_math_serif_bold_font{};
 // Also carries the super/subscript digits, the box-drawing rules and the
 // bullet that mepml's concealed rendering substitutes for its markup
 // (Editor::MepmlScan: `^2^` -> ², `|` -> │, `---` -> ───, a \proof's
-// `)` -> ∎), all checked present in JetBrains Mono's own cmap.
+// `)` -> ∎), all checked present in JetBrains Mono's own cmap. The first
+// row is for mepml style sheets: the marks a sheet is likely to name as a
+// list marker, a rule or an end mark (`content: "–"`) -- dashes, guillemets,
+// curly quotes, squares, triangles, diamonds, circles, a cross, a chevron
+// (tools/font_coverage.py --check; anything else draws as `?`).
 constexpr int kMathCodepoints[] = {
+    0xab, 0xbb, 0x2013, 0x2014, 0x2018, 0x2019, 0x201c, 0x201d, 0x25a0, 0x25aa, 0x25b6, 0x25b8,
+    0x25ba, 0x25c6, 0x25c7, 0x25cb, 0x25cf, 0x25e6, 0x2717, 0x276f,
     0xa3, 0xa7, 0xa8, 0xa9, 0xac, 0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb6, 0xb7,
     0xb9, 0xd7, 0xf7, 0x127, 0x2c7, 0x2d8, 0x2dc, 0x391, 0x393, 0x394, 0x398, 0x39b,
     0x39e, 0x3a0, 0x3a3, 0x3a5, 0x3a6, 0x3a8, 0x3a9, 0x3b1, 0x3b2, 0x3b3, 0x3b4, 0x3b5,
@@ -580,9 +587,18 @@ constexpr int kMathSerifCodepoints[] = {
  * @param cp Unicode codepoint to test.
  * @return True if `cp` is one of the math-font codepoints.
  */
+// Glyphs baked into g_math_font beyond kMathCodepoints, on demand: the
+// characters a mepml style sheet's `content` uses (a list marker, an end
+// mark -- Editor::MepmlGlyphs), so a sheet may name any glyph JetBrains
+// Mono has rather than only the ones listed above.
+std::vector<int> g_math_extra_codepoints;
+
 bool IsMathCodepoint(int cp) {
     if (cp < 0x80) return false;  // ASCII always renders from the caller's own font tier
     for (int c : kMathCodepoints) {
+        if (c == cp) return true;
+    }
+    for (int c : g_math_extra_codepoints) {
         if (c == cp) return true;
     }
     return false;
@@ -2316,6 +2332,21 @@ void CacheGlyphIndices() {
  * @brief Reloads g_font (and the icon/math/terminal fonts) at a new size and recomputes layout metrics.
  * @param size Requested font size in pixels, clamped to [kMinFontSize, kMaxFontSize].
  */
+// Bakes g_math_font: ASCII, kMathCodepoints and whatever has been asked
+// for since (g_math_extra_codepoints).
+void BakeMathFont() {
+    if (g_math_font.texture.id != 0) gfx::UnloadFont(g_math_font);
+    static std::vector<int> math_codepoints;
+    math_codepoints.clear();
+    for (int c = 32; c <= 126; c++) math_codepoints.push_back(c);
+    for (int c : kMathCodepoints) math_codepoints.push_back(c);
+    for (int c : g_math_extra_codepoints) math_codepoints.push_back(c);
+    g_math_font = gfx::LoadFontFromMemory(".ttf", kJetBrainsMonoRegularTtf, static_cast<int>(kJetBrainsMonoRegularTtfLen),
+                                      static_cast<int>(g_font_size * 2), math_codepoints.data(),
+                                      static_cast<int>(math_codepoints.size()));
+    gfx::SetTextureFilter(g_math_font.texture, gfx::TextureFilter::Bilinear);
+}
+
 void ApplyFontSize(float size) {
     g_font_size = std::max(kMinFontSize, std::min(size, kMaxFontSize));
     if (g_font.texture.id != 0) gfx::UnloadFont(g_font);
@@ -2370,15 +2401,7 @@ void ApplyFontSize(float size) {
 #endif
     gfx::SetTextureFilter(g_icon_font.texture, gfx::TextureFilter::Bilinear);
 
-    if (g_math_font.texture.id != 0) gfx::UnloadFont(g_math_font);
-    constexpr int kMathExtraCount = sizeof(kMathCodepoints) / sizeof(kMathCodepoints[0]);
-    static int math_codepoints[95 + kMathExtraCount];
-    for (int c = 32; c <= 126; c++) math_codepoints[c - 32] = c;
-    for (int i = 0; i < kMathExtraCount; i++) math_codepoints[95 + i] = kMathCodepoints[i];
-    g_math_font = gfx::LoadFontFromMemory(".ttf", kJetBrainsMonoRegularTtf, static_cast<int>(kJetBrainsMonoRegularTtfLen),
-                                      static_cast<int>(g_font_size * 2), math_codepoints,
-                                      95 + kMathExtraCount);
-    gfx::SetTextureFilter(g_math_font.texture, gfx::TextureFilter::Bilinear);
+    BakeMathFont();
 
     if (g_terminal_font.texture.id != 0) gfx::UnloadFont(g_terminal_font);
     // ASCII + several contiguous Unicode block ranges (box drawing, block
@@ -6663,7 +6686,8 @@ const char *kBuiltinLsp =
     // on its own: citations from @imported files, missing images and link
     // targets, heading anchors. While it is attached, kBuiltinMepml leaves
     // the diagnostics to it rather than drawing the parser's a second time.
-    "  mepml_ls = {cmd = {mep.bundled_tool('mep-mepml-lsp')}, filetypes = {'mepml'}},\n"
+    // (It answers for mepml's style sheets, .mepss, too.)
+    "  mepml_ls = {cmd = {mep.bundled_tool('mep-mepml-lsp')}, filetypes = {'mepml', 'mepss'}},\n"
     "}\n"
     // (filetype .. '@' .. workspace root) -> client_id: one client per
     // filetype *per workspace root* (WORKSPACES_PLAN.md Phase 5), since
@@ -44432,10 +44456,12 @@ void DrawStyledRun(const std::string &text, float x, float y, int cols, float sc
 // its style's colour and weight, the rest as body text.
 void DrawRenderedLine(const mepml::RenderedLine &l, float x, float y, float scale) {
     const float stride = g_char_width * scale;
-    auto run = [&](int from, int to, std::uint32_t style) {
+    auto run = [&](int from, int to, std::uint32_t style, const std::string &hl) {
         if (to <= from) return;
         const std::string piece = l.text.substr(static_cast<size_t>(from), static_cast<size_t>(to - from));
-        const char *group = (style & mepml::kDirective)                   ? "Cyan"
+        // (A span the editor styled from the sheets carries its colour.)
+        const char *group = !hl.empty()                                   ? hl.c_str()
+                            : (style & mepml::kDirective)                 ? "Cyan"
                             : (style & (mepml::kCite | mepml::kLink))     ? "Blue"
                             : (style & mepml::kMath)                      ? "Purple"
                             : (style & (mepml::kVerbatim | mepml::kMono)) ? "Green"
@@ -44447,11 +44473,11 @@ void DrawRenderedLine(const mepml::RenderedLine &l, float x, float y, float scal
     };
     int at = 0;
     for (const mepml::RenderedSpan &sp : l.spans) {
-        run(at, sp.col_start, 0);
-        run(sp.col_start, sp.col_end, sp.style);
+        run(at, sp.col_start, 0, "");
+        run(sp.col_start, sp.col_end, sp.style, sp.hl);
         at = std::max(at, sp.col_end);
     }
-    run(at, static_cast<int>(l.text.size()), 0);
+    run(at, static_cast<int>(l.text.size()), 0, "");
 }
 
 void DrawItalicColumns(const std::string &text, float x, float y, gfx::Color color) {
@@ -45810,6 +45836,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // -- drawn as an inactive pane, which also reveals no markup under it --
     // unless its caret mode is on.
     const bool presenting = g_editor.IsMepmlPresentPane(pane.id, pane.buffer_id);
+    // The page's own paper (its slide's `background` in the style sheets),
+    // under everything, margins included.
+    gfx::Color page_bg = ResolveHlGroup("NormalBg");
+    if (presenting) {
+        const OrgCardColor &paper = g_editor.GetBuffer(pane.buffer_id).mepml_page_bg;
+        if (paper.set && !paper.hl.empty()) {
+            const gfx::Color c = ResolveHlGroup(paper.hl);
+            const float a = std::clamp(paper.alpha, 0.0f, 1.0f);
+            // (Blended here: the page is opaque whatever the sheet's fade.)
+            auto mix = [a](unsigned char over, unsigned char under) {
+                return static_cast<unsigned char>(std::lround(static_cast<float>(over) * a + static_cast<float>(under) * (1.0f - a)));
+            };
+            page_bg = gfx::Color{mix(c.r, page_bg.r), mix(c.g, page_bg.g), mix(c.b, page_bg.b), 255};
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h), page_bg);
+        }
+    }
     if (presenting) {
         const float mx = std::round(std::min(w * 0.05f, g_char_width * 6.0f));
         const float my = std::round(std::min(h * 0.04f, static_cast<float>(LineHeight())));
@@ -48875,8 +48917,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // and end on a rule row).
         gfx::Color wash{};
         bool round_top = false, round_bot = false;
+        // The rule's own colour when its table gives one (a mepml
+        // `table::rule`).
+        bool colored = false;
+        gfx::Color color{};
     };
     std::vector<OrgTableRule> org_table_rules;
+    auto color_table_rule = [&org_table_rules](const Editor::OrgTableGrid &t) {
+        if (!t.rule.set || org_table_rules.empty()) return;
+        org_table_rules.back().colored = true;
+        org_table_rules.back().color = t.rule.hl.empty() ? gfx::Color{0, 0, 0, 0} : gfx::Fade(ResolveHlGroup(t.rule.hl), t.rule.alpha);
+    };
     // The outermost `|` of a table row, concealed the way a block card
     // conceals its `#+begin_` line: the rounded outline drawn round the
     // table *is* that pipe, and a table showing both reads as
@@ -49061,7 +49112,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // An org headline's own extra slot (kOrgHeadingStyles)
                     // -- one of the four walkers that has to agree on it.
                     if (show_org_head_scale) {
-                        slots += Editor::HeadingExtraSlotsForLevel(Editor::HeadingLevelForRow(buf, r));
+                        slots += Editor::HeadingExtraSlotsForRow(buf, r);
                     }
                     slots += g_editor.RowTopPadSlots(buf, r);
                 }
@@ -49119,15 +49170,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         struct SlideSpan {
             int first, last, content_cols;
             bool slide;
+            gfx::Color wash;
         };
+        // A card's colour: the style sheet's for it (OrgBlockCard::look,
+        // set for a mepml block) or, with none, this painter's own.
+        auto card_color = [](const OrgCardColor &c, gfx::Color fallback) {
+            if (!c.set) return fallback;
+            return c.hl.empty() ? gfx::Color{0, 0, 0, 0} : gfx::Fade(ResolveHlGroup(c.hl), c.alpha);
+        };
+        const gfx::Color default_slide_wash = gfx::Fade(ResolveHlGroup("Cyan"), 0.06f);
         std::vector<SlideSpan> slide_spans;
         for (const OrgBlockCard &card : g_editor.OrgBlockCards(pane.buffer_id))
             if ((card.kind == "slide" || card.kind == "box") && card.end_row >= 0)
-                slide_spans.push_back({card.begin_row, card.end_row, card.content_cols, card.kind == "slide"});
+                slide_spans.push_back({card.begin_row, card.end_row, card.content_cols, card.kind == "slide",
+                                       card_color(card.look.wash, default_slide_wash)});
         const float slide_nest = std::max(3.0f, std::round(card_inset * 0.5f));
-        const gfx::Color slide_wash = gfx::Fade(ResolveHlGroup("Cyan"), 0.06f);
         for (const OrgBlockCard &card : g_editor.OrgBlockCards(pane.buffer_id)) {
             const bool is_slide = card.kind == "slide";
+            // The slide's paper: this card's own if it is one, else that of
+            // the slide it is on.
+            gfx::Color slide_wash = is_slide ? card_color(card.look.wash, default_slide_wash) : default_slide_wash;
             float nest = 0.0f, nest_right = 0.0f;
             if (!is_slide) {
                 int depth = 0;
@@ -49136,7 +49198,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     ++depth;
                     // (The cards on a slide paint its wash back under their
                     // opaque bands, up to its right edge.)
-                    if (sp.slide) nest_right = card_right_for(sp.content_cols);
+                    if (sp.slide) {
+                        nest_right = card_right_for(sp.content_cols);
+                        slide_wash = sp.wash;
+                    }
                 }
                 nest = slide_nest * static_cast<float>(depth);
             }
@@ -49195,9 +49260,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 box.conceal_header = true;
                 const float rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(box.rect.width, box.rect.height)));
                 gfx::DrawRectangleRounded(box.rect, rr, 6,
-                                          card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
-                                          : is_slide  ? slide_wash
-                                                      : gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+                                          card_color(card.look.wash, card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                                                     : is_slide  ? slide_wash
+                                                                                 : gfx::Fade(ResolveHlGroup("Comment"), 0.08f)));
                 org_card_folded_rows.insert(own_fold->start_row);
                 org_card_boxes.push_back(box);
                 continue;
@@ -49259,7 +49324,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // cursor is on those rows -- the raw `)` shows there.
             int wash_last = last_row;
             // (A proof keeps its `)` row: its tombstone is drawn there.)
-            if (card.kind == "box" && card.chip != "Proof" && card.end_row > card.begin_row) {
+            if (card.kind == "box" && !card.end_mark && card.end_row > card.begin_row) {
                 auto blank_row = [&](int r) {
                     return buf.lines[static_cast<size_t>(r)].find_first_not_of(" \t") == std::string::npos;
                 };
@@ -49338,13 +49403,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // theme's own AccentTint group is 82% accent -- right for an
             // active toolbar control, far too loud behind a page of code.)
             const float rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(box.rect.width, box.rect.height)));
-            const gfx::Color wash = card.bare     ? gfx::Fade(ResolveHlGroup(!card.tint.empty()       ? card.tint.c_str()
-                                                                             : card.kind == "abstract" ? "Cyan"
-                                                                                                       : "Purple"),
-                                                              card.kind == "box" ? 0.09f : 0.07f)
-                                    : card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
-                                    : is_slide    ? slide_wash
-                                                  : gfx::Fade(ResolveHlGroup("Comment"), 0.08f);
+            const gfx::Color wash =
+                card_color(card.look.wash, card.bare     ? gfx::Fade(ResolveHlGroup(card.kind == "abstract" ? "Cyan" : "Purple"),
+                                                                     card.kind == "box" ? 0.09f : 0.07f)
+                                           : card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                           : is_slide    ? slide_wash
+                                                         : gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
             gfx::DrawRectangleRounded(box.rect, rr, 6, wash);
             for (int r = card.meta_row; r <= wash_last; r++) org_card_row_wash[r].push_back(wash);
             // Every row the card paints over, so the decoration loop can
@@ -49705,7 +49769,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     };
     int visual_slot = 0;  // a closed fold collapses N buffer rows into 1 of these
     int row = pane.scroll_row;
+    // (A row set centred or flush right moves text_x for its own drawing.)
+    const float text_x_left = text_x;
     for (; row < buf.LineCount() && visual_slot < visible_lines; row++) {
+        text_x = text_x_left;
         // Headroom for a row whose text is drawn taller than a line
         // (mepml's scaled runs, Editor::RowTopPadSlots): the empty slots
         // come first, so the row's text -- and every run on it, large or
@@ -50170,8 +50237,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                               static_cast<float>(std::max(widest + 2, 24)) * g_char_width);
                 const gfx::Rectangle card{card_x, ly + 1.0f, card_w, block_h - 2.0f};
                 const float rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(card.width, card.height)));
-                gfx::DrawRectangleRounded(card, rr, 6, gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
-                gfx::DrawRectangleRoundedLinesEx(card, rr, 6, 1.0f, gfx::Fade(ResolveHlGroup("Border"), 0.7f));
+                // (Its paper and outline: the element's style, else the plain card's.)
+                auto vb_color = [](const OrgCardColor &c, gfx::Color fallback) {
+                    if (!c.set) return fallback;
+                    return c.hl.empty() ? gfx::Color{0, 0, 0, 0} : gfx::Fade(ResolveHlGroup(c.hl), c.alpha);
+                };
+                const gfx::Color vb_wash = vb_color(vb->wash, gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+                gfx::DrawRectangleRounded(card, rr, 6, vb_wash);
+                gfx::DrawRectangleRoundedLinesEx(card, rr, 6, 1.0f, vb_color(vb->border, gfx::Fade(ResolveHlGroup("Border"), 0.7f)));
                 // The line the cursor is on (Editor::VirtualLineStep): the
                 // cursor-line band, across the card.
                 const int sel_line = (is_active && pane.cursor.row == row) ? Editor::VirtualLineOf(pane, nlines) : -1;
@@ -50192,7 +50265,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                                                 static_cast<size_t>(sp.col_end - sp.col_start));
                         const float px = tx + static_cast<float>(ByteOffsetToColumn(l.text, sp.col_start)) * g_char_width;
                         const float pw = static_cast<float>(ByteOffsetToColumn(piece, static_cast<int>(piece.size()))) * g_char_width;
-                        const char *group = (sp.style & mepml::kHeading)
+                        const char *group = !sp.hl.empty() ? sp.hl.c_str()
+                                            : (sp.style & mepml::kHeading)
                                                 ? (sp.heading_level <= 1   ? "OrgHeadlineLevel1"
                                                    : sp.heading_level == 2 ? "OrgHeadlineLevel2"
                                                                            : "OrgHeadlineLevel3")
@@ -50202,15 +50276,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         const gfx::Color c = ResolveHlGroup(group);
                         if (i != sel_line) {
                             gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(yy), static_cast<int>(pw), line_height,
-                                               ResolveHlGroup("NormalBg"));
-                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(yy), static_cast<int>(pw), line_height,
-                                               gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+                                               page_bg);
+                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(yy), static_cast<int>(pw), line_height, vb_wash);
                         } else {
                             // The selected line's own stack: cursor line, card wash, selection tint.
                             gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(yy), static_cast<int>(pw), line_height,
                                                ResolveHlGroup(g_editor.ShowCursorLine() ? "CursorLine" : "NormalBg"));
-                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(yy), static_cast<int>(pw), line_height,
-                                               gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(yy), static_cast<int>(pw), line_height, vb_wash);
                             gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(yy), static_cast<int>(pw), line_height, sel_tint);
                         }
                         if (sp.style & mepml::kItalic) DrawItalicColumns(piece, px, yy, c);
@@ -50650,6 +50722,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             return false;
         };
 
+        // A mepml row of running text set centred or flush right
+        // (Buffer::mepml_row_align, its element's text-align): everything
+        // drawn on the row from here on -- text, spans, selection -- moves
+        // with it, by whole cells, within the text width. The caret's row
+        // stays where it is typed, and so does a soft-wrapped one.
+        if (!buf.mepml_row_align.empty() && row_wrap_slots == 1 && row != pane.cursor.row && !fold_here) {
+            if (auto al = buf.mepml_row_align.find(row); al != buf.mepml_row_align.end()) {
+                const size_t lead = draw_line.find_first_not_of(' ');
+                const size_t last = draw_line.find_last_not_of(' ');
+                if (lead != std::string::npos) {
+                    const int lead_cols = static_cast<int>(lead);
+                    const int end_cols = ByteOffsetToColumn(draw_line, static_cast<int>(last) + 1);
+                    const int avail_cols =
+                        std::min(g_editor.TextWidth(), static_cast<int>((w - (text_x - x) - static_cast<float>(kMarginX)) / g_char_width));
+                    const int room = avail_cols - end_cols;
+                    if (room > 0) text_x += static_cast<float>(al->second == 1 ? (room + lead_cols) / 2 - lead_cols : room) * g_char_width;
+                }
+            }
+        }
+
         if (block_selection && row >= block_top && row <= block_bottom) {
             int line_len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
             int cs = block_left;
@@ -50692,7 +50784,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             std::string num = (relative && !current_line) ? std::to_string(std::abs(row - pane.cursor.row))
                                                             : std::to_string(row + 1);
             float num_w = gfx::MeasureTextEx(g_font, num.c_str(), g_font_size, 0).x;
-            float num_x = (relative && current_line) ? (text_x - number_w) : (text_x - g_char_width - num_w);
+            float num_x = (relative && current_line) ? (text_x_left - number_w) : (text_x_left - g_char_width - num_w);
             gfx::DrawTextEx(g_font, num.c_str(), gfx::Vector2{num_x, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
         }
 
@@ -50775,8 +50867,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // too.
                 const bool round_top = row == tbl.start_row;
                 const bool round_bot = row == tbl.end_row;
+                // (The hue of the header and stripes: a mepml table's own
+                // `background`, at this row's strength.)
                 gfx::Color accent_wash = ResolveHlGroup("Accent");
-                const gfx::Color wash{accent_wash.r, accent_wash.g, accent_wash.b, wash_a};
+                float wash_strength = 1.0f;
+                if (tbl.look.wash.set) {
+                    accent_wash = tbl.look.wash.hl.empty() ? gfx::Color{0, 0, 0, 0} : ResolveHlGroup(tbl.look.wash.hl);
+                    wash_strength = tbl.look.wash.hl.empty() ? 0.0f : std::clamp(tbl.look.wash.alpha, 0.0f, 1.0f);
+                }
+                const gfx::Color wash{accent_wash.r, accent_wash.g, accent_wash.b,
+                                      static_cast<unsigned char>(std::lround(static_cast<float>(wash_a) * wash_strength))};
                 draw_org_table_band(gfx::Rectangle{tbl_x, band_y, tbl_w, band_h}, round_top, round_bot, true, true, wash);
                 // The box the rounded outline is stroked on, grown row by
                 // row; a table running off either edge of the viewport is
@@ -50811,7 +50911,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // row needs no conceal band of its own -- and lays one
                     // line across the table.
                     org_table_rules.push_back(
-                        {gfx::Rectangle{tbl_x, ly, tbl_w, tbl_h}, true, wash, round_top, round_bot});
+                        {gfx::Rectangle{tbl_x, ly, tbl_w, tbl_h}, true, wash, round_top, round_bot, false, {}});
+                    color_table_rule(tbl);
                 } else {
                     // The two outer pipes, concealed so the outline can be
                     // the table's edge -- but only on a row whose
@@ -50853,7 +50954,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         // height, so the per-row glyphs join into one
                         // continuous rule down the table.
                         float rx = text_x + (static_cast<float>(rc) + 0.5f) * g_char_width;
-                        org_table_rules.push_back({gfx::Rectangle{rx, band_y, 1.0f, band_h}, false});
+                        org_table_rules.push_back({gfx::Rectangle{rx, band_y, 1.0f, band_h}, false, {}, false, false, false, {}});
+                        color_table_rule(tbl);
                     }
                 }
             }
@@ -50909,7 +51011,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // cursor happens to be doing. Claimed here, before the decision
         // below about *how* to draw the row, so the two can never
         // disagree.
-        if (org_head_level > 0) visual_slot += Editor::HeadingExtraSlotsForLevel(org_head_level);
+        if (org_head_level > 0) visual_slot += Editor::HeadingExtraSlotsForRow(buf, row);
         float org_head_fs = g_font_size, org_head_cw = g_char_width;
         if (org_head_level > 0) {
             // Reveal-to-edit: a headline under the cursor or inside a
@@ -50928,8 +51030,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
         if (org_head_level > 0) {
-            constexpr int kStyleCount = static_cast<int>(sizeof(kOrgHeadingStyles) / sizeof(kOrgHeadingStyles[0]));
-            const OrgHeadingStyle &style = kOrgHeadingStyles[std::min(org_head_level, kStyleCount) - 1];
+            // (Org's by its depth; a mepml heading's is its style sheets'.)
+            const OrgHeadingStyle style = Editor::HeadingStyleForRow(buf, row);
             // Never taller than the slots the row actually claims, less
             // 2px so a descender can't clip into the row below.
             float scale = std::min(style.scale,
@@ -50968,7 +51070,47 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const char *level_hl = org_head_level == 1   ? "OrgHeadlineLevel1"
                                     : org_head_level == 2 ? "OrgHeadlineLevel2"
                                                           : "OrgHeadlineLevel3";
-            DrawLineFast(hline, text_x, ly, org_head_fs, ResolveHlGroup(level_hl), org_head_cw);
+            // A mepml heading's weight, slant and alignment are its style
+            // sheets' (Buffer::mepml_heading_look); org's are plain.
+            Buffer::MepmlHeadingLook head_look;
+            if (auto hit = buf.mepml_heading_look.find(row); hit != buf.mepml_heading_look.end()) head_look = hit->second;
+            float head_x = text_x;
+            if (head_look.align != 0) {
+                // (Of the text itself: the indent that stands for its depth is not centred.)
+                const size_t lead = hline.find_first_not_of(' ');
+                const float text_w = static_cast<float>(ByteOffsetToColumn(hline, static_cast<int>(hline.size()))) * org_head_cw;
+                const float lead_w = static_cast<float>(lead == std::string::npos ? 0 : lead) * org_head_cw;
+                const float room = w - (text_x - x) - static_cast<float>(kMarginX) - text_w;
+                // Centred: the text between the margins. Right: its end on the right one.
+                if (room > 0.0f) head_x += head_look.align == 1 ? std::floor((room + lead_w) * 0.5f) - lead_w : std::floor(room);
+            }
+            auto draw_head = [&](const std::string &text, float px, gfx::Color color) {
+                if (!head_look.bold && !head_look.italic) {
+                    DrawLineFast(text, px, ly, org_head_fs, color, org_head_cw);
+                    return;
+                }
+                // (DrawStyledRun sets a run on the body text's baseline; a
+                // headline starts at its row's top.)
+                const float head_scale = org_head_fs / g_font_size;
+                DrawStyledRun(text, px, ly - 0.78f * (g_font_size - org_head_fs), ByteOffsetToColumn(text, static_cast<int>(text.size())),
+                              head_scale, "", head_look.bold, head_look.italic, 0.0f, color);
+            };
+            draw_head(hline, head_x, ResolveHlGroup(level_hl));
+            // Its underline or strike-through (text-decoration), under or
+            // through the title's own text.
+            if (head_look.underline || head_look.strike) {
+                const size_t lead = hline.find_first_not_of(' ');
+                const float from = head_x + static_cast<float>(lead == std::string::npos ? 0 : lead) * org_head_cw;
+                const float to = head_x + static_cast<float>(ByteOffsetToColumn(hline, static_cast<int>(hline.size()))) * org_head_cw;
+                const gfx::Color line_c = ResolveHlGroup(head_look.line_hl.empty() ? level_hl : head_look.line_hl.c_str());
+                const float thick = std::max(1.0f, std::round(org_head_fs / 14.0f));
+                if (to > from && head_look.underline)
+                    gfx::DrawRectangle(static_cast<int>(from), static_cast<int>(ly + org_head_fs * 0.98f), static_cast<int>(to - from),
+                                       static_cast<int>(thick), line_c);
+                if (to > from && head_look.strike)
+                    gfx::DrawRectangle(static_cast<int>(from), static_cast<int>(ly + org_head_fs * 0.56f), static_cast<int>(to - from),
+                                       static_cast<int>(thick), line_c);
+            }
             // The row's own recolor decorations (the TODO keyword's red,
             // a `[#A]` cookie's yellow, `:tags:` cyan -- all from the org
             // grammar's query) redrawn over the scaled text at the scaled
@@ -50987,6 +51129,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             for (const Decoration *dp : row_decos) {
                 const Decoration &d = *dp;
                 if (d.whole_line || d.virt_overlay || d.hl_group.empty() || d.has_fg_color) continue;
+                // (A line under or through the title is drawn above, in
+                // its own colour: not a colour for the text.)
+                if (d.underline || d.strikethrough) continue;
                 if (d.col_end <= d.col_start) continue;
                 const int raw_len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
                 int a = DispCol(std::min(raw_len, d.col_start));
@@ -50994,9 +51139,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 a = std::min(static_cast<int>(hline.size()), a);
                 b = std::min(static_cast<int>(hline.size()), b);
                 if (b <= a) continue;
-                DrawLineFast(hline.substr(static_cast<size_t>(a), static_cast<size_t>(b - a)),
-                             text_x + static_cast<float>(a) * org_head_cw, ly, org_head_fs,
-                             ResolveHlGroup(d.hl_group), org_head_cw);
+                draw_head(hline.substr(static_cast<size_t>(a), static_cast<size_t>(b - a)), head_x + static_cast<float>(a) * org_head_cw,
+                          ResolveHlGroup(d.hl_group));
             }
         } else if (tbl_wrap != nullptr) {
             // An over-wide table renders as its wrapped layout and
@@ -51335,7 +51479,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             // visibly ghost together.
                             (void)baseline_y;
                             gfx::DrawRectangle(static_cast<int>(px0 - pad), static_cast<int>(py),
-                                          static_cast<int>(span_w + pad * 2), line_height, ResolveHlGroup("NormalBg"));
+                                          static_cast<int>(span_w + pad * 2), line_height, page_bg);
                             cover_card_wash(row, px0 - pad, py, span_w + pad * 2, static_cast<float>(line_height));
                             DrawItalicColumns(piece, px0, py, c);
                         });
@@ -51461,7 +51605,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                           first_piece = false;
                                           gfx::DrawRectangle(static_cast<int>(px0), static_cast<int>(py),
                                                              static_cast<int>(piece_w), line_height,
-                                                             ResolveHlGroup("NormalBg"));
+                                                             page_bg);
                                           cover_card_wash(row, px0, py, piece_w, static_cast<float>(line_height));
                                       });
                 }
@@ -51634,7 +51778,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             static_cast<float>(DispCol(span.col_end) - DispCol(span.col_start)) * g_char_width;
                         cover_w = std::max(span_w, draw_w + g_char_width * 2.0f);
                         gfx::DrawRectangle(static_cast<int>(span_x), static_cast<int>(span_y), static_cast<int>(cover_w),
-                                      line_height, ResolveHlGroup("NormalBg"));
+                                      line_height, page_bg);
                     }
                     const float draw_x = span_x + (cover_w - draw_w) / 2.0f;
                     // On the prose's baseline, rising into the room above
@@ -51765,8 +51909,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // them all (RecomputeQuickJumpMatches) and each pane paints only its
         // own matches, by pane_id.
         if (g_editor.IsQuickJumpActive() && !fold_here) {
-            gfx::DrawRectangle(static_cast<int>(text_x), static_cast<int>(row_block_y), static_cast<int>(x + w - text_x),
-                          row_block_h, gfx::Fade(ResolveHlGroup("NormalBg"), 0.6f));
+            gfx::DrawRectangle(static_cast<int>(text_x_left), static_cast<int>(row_block_y), static_cast<int>(x + w - text_x_left),
+                          row_block_h, gfx::Fade(page_bg, 0.6f));
             // The row as drawn, so repainting a match at full strength
             // over the dimming wash can't put concealed markup back on
             // screen; its columns are the drawn ones for the same reason.
@@ -51803,6 +51947,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
     }
+    text_x = text_x_left;
 
     // `row` here is the drawing loop's own variable, left at one past
     // whatever it actually covered (fold-collapsed ranges included) --
@@ -51877,7 +52022,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // An org headline's own extra slot (kOrgHeadingStyles) --
                 // the third of the four walkers that has to agree on it.
                 if (is_heading_buffer && show_org_head_scale) {
-                    slot += Editor::HeadingExtraSlotsForLevel(Editor::HeadingLevelForRow(buf, r));
+                    slot += Editor::HeadingExtraSlotsForRow(buf, r);
                 }
                 slot += g_editor.RowTopPadSlots(buf, r);
                 r += 1;
@@ -52200,7 +52345,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // first -- the pipe has to actually go -- then the band's own wash
     // back over it, landing on exactly the color the row already shows.
     for (const OrgTableConceal &tc : org_table_conceals) {
-        draw_org_table_band(tc.rect, tc.round_top, tc.round_bot, tc.inset_l, tc.inset_r, ResolveHlGroup("NormalBg"));
+        draw_org_table_band(tc.rect, tc.round_top, tc.round_bot, tc.inset_l, tc.inset_r, page_bg);
         draw_org_table_band(tc.rect, tc.round_top, tc.round_bot, tc.inset_l, tc.inset_r, tc.wash);
     }
 
@@ -52209,15 +52354,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // and a horizontal rule covers the `|---+---|` dashes it stands in
     // for rather than being drawn underneath them.
     if (!org_table_rules.empty()) {
-        const gfx::Color rule_c = ResolveHlGroup("Comment");
+        const gfx::Color plain_rule_c = ResolveHlGroup("Comment");
         for (const OrgTableRule &tr : org_table_rules) {
+            const gfx::Color rule_c = tr.colored ? tr.color : plain_rule_c;
             if (tr.horizontal) {
                 // The cover is opaque -- the dashes underneath have to go
                 // -- so the band's own wash goes back on over it, or the
                 // rule row would be the one strip of bare page in an
                 // otherwise washed table. Both are inset at the corners
                 // the outline rounds, exactly as the fill pass was.
-                draw_org_table_band(tr.rect, tr.round_top, tr.round_bot, true, true, ResolveHlGroup("NormalBg"));
+                draw_org_table_band(tr.rect, tr.round_top, tr.round_bot, true, true, page_bg);
                 draw_org_table_band(tr.rect, tr.round_top, tr.round_bot, true, true, tr.wash);
                 gfx::DrawRectangle(static_cast<int>(tr.rect.x),
                               static_cast<int>(tr.rect.y + tr.rect.height / 2.0f),
@@ -52238,7 +52384,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const OrgTableBox &box = entry.second;
         if (box.rect.width <= 0.0f || box.rect.height <= 0.0f) continue;
         const gfx::Color accent = ResolveHlGroup("Accent");
-        const gfx::Color border = box.active ? gfx::Fade(accent, 0.55f) : gfx::Fade(ResolveHlGroup("Border"), 0.7f);
+        gfx::Color border = box.active ? gfx::Fade(accent, 0.55f) : gfx::Fade(ResolveHlGroup("Border"), 0.7f);
+        // (A mepml table's outline is its style sheets'.)
+        const OrgCardColor &own_border = box.active ? entry.first->look.border_active : entry.first->look.border;
+        if (own_border.set) border = own_border.hl.empty() ? gfx::Color{0, 0, 0, 0} : gfx::Fade(ResolveHlGroup(own_border.hl), own_border.alpha);
         // roundness is a fraction of half the shorter side, so the fixed
         // pixel radius has to be converted -- and clamped, for a table
         // one row tall.
@@ -52269,13 +52418,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // landing on exactly the color the card body already shows.
         // A mepml slide is tinted in Cyan, the colour its markers take.
         const bool cb_slide = card.kind == "slide";
-        const gfx::Color card_wash = cb.is_src   ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
-                                     : cb_slide  ? cb.slide_wash
-                                                 : gfx::Fade(ResolveHlGroup("Comment"), 0.08f);
-        const gfx::Color header_wash = cb.is_src  ? gfx::Fade(ResolveHlGroup("Accent"), 0.20f)
-                                       : cb_slide ? gfx::Fade(ResolveHlGroup("Cyan"), 0.16f)
-                                                  : gfx::Fade(ResolveHlGroup("Comment"), 0.16f);
-        const gfx::Color opaque_bg = ResolveHlGroup("NormalBg");
+        // (Sheet colours where the card has them -- OrgBlockCard::look --
+        // except a bare card's bands, which were never its wash.)
+        auto card_color = [](const OrgCardColor &c, gfx::Color fallback) {
+            if (!c.set) return fallback;
+            return c.hl.empty() ? gfx::Color{0, 0, 0, 0} : gfx::Fade(ResolveHlGroup(c.hl), c.alpha);
+        };
+        const gfx::Color own_card_wash = cb.is_src   ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
+                                         : cb_slide  ? cb.slide_wash
+                                                     : gfx::Fade(ResolveHlGroup("Comment"), 0.08f);
+        const gfx::Color card_wash = card.bare ? own_card_wash : card_color(card.look.wash, own_card_wash);
+        const gfx::Color header_wash = card_color(card.look.band, cb.is_src  ? gfx::Fade(ResolveHlGroup("Accent"), 0.20f)
+                                                                  : cb_slide ? gfx::Fade(ResolveHlGroup("Cyan"), 0.16f)
+                                                                             : gfx::Fade(ResolveHlGroup("Comment"), 0.16f));
+        const gfx::Color opaque_bg = page_bg;
         const float card_rr = std::min(1.0f, 14.0f / std::max(1.0f, std::min(cb.rect.width, cb.rect.height)));
         // The band only spans as far right as the card does, but a header
         // line longer than the card is clipped by the pane (not the card),
@@ -52292,7 +52448,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const float to = x + w - 2.0f;
             if (to <= from) return;
             gfx::DrawRectangle(static_cast<int>(from), static_cast<int>(band.y), static_cast<int>(to - from),
-                          static_cast<int>(band.height), ResolveHlGroup("NormalBg"));
+                          static_cast<int>(band.height), page_bg);
             // Inside a slide: the slide's own paper, up to its edge.
             if (cb.slide_right > from) {
                 gfx::DrawRectangle(static_cast<int>(from), static_cast<int>(band.y), static_cast<int>(cb.slide_right - from),
@@ -52352,7 +52508,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const float min_w = std::max(20.0f, chip_h + 4.0f);
                 const gfx::Rectangle min_rect{right_limit - min_w, chip_y, min_w, chip_h};
                 if (min_rect.x >= cb.header.x + 9.0f + g_char_width * 3.0f) {
-                    const gfx::Color min_c = ResolveHlGroup("MutedFg");
+                    const gfx::Color min_c = card_color(card.look.button, ResolveHlGroup("MutedFg"));
                     const bool min_hover = PointInRect(gfx::GetMousePosition(), min_rect);
                     gfx::DrawRectangleRounded(min_rect, 0.5f, 6, gfx::Fade(min_c, min_hover ? 0.35f : 0.12f));
                     gfx::DrawRectangleRoundedLinesEx(min_rect, 0.5f, 6, 1.0f, gfx::Fade(min_c, 0.55f));
@@ -52420,7 +52576,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // outranks a control C-c C-c already covers.
                 if (play_rect.x >= cb.header.x + 9.0f + g_char_width * 3.0f) {
                     const bool play_ready = play == OrgBlockPlay::kReady;
-                    const gfx::Color play_c = play_ready ? accent : ResolveHlGroup("MutedFg");
+                    const gfx::Color play_c = play_ready ? card_color(card.look.button, accent) : ResolveHlGroup("MutedFg");
                     const bool play_hover = PointInRect(gfx::GetMousePosition(), play_rect);
                     gfx::DrawRectangleRounded(play_rect, 0.5f, 6, gfx::Fade(play_c, play_hover ? 0.35f : 0.12f));
                     gfx::DrawRectangleRoundedLinesEx(play_rect, 0.5f, 6, 1.0f,
@@ -52562,12 +52718,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (fits(kind_w)) {
                 const gfx::Rectangle chip{cx, chip_y, kind_w, chip_h};
                 gfx::DrawRectangleRounded(chip, 0.5f, 6,
-                                          cb.is_src            ? accent
-                                          : cb_slide           ? ResolveHlGroup("Cyan")
-                                          : !card.tint.empty() ? ResolveHlGroup(card.tint.c_str())
-                                                               : ResolveHlGroup("Border"));
+                                          card_color(card.look.chip, cb.is_src            ? accent
+                                                                     : cb_slide           ? ResolveHlGroup("Cyan")
+                                                                                          : ResolveHlGroup("Border")));
                 gfx::DrawTextEx(g_font, kind_text.c_str(), gfx::Vector2{cx + 7.0f, text_y}, g_font_size, 0,
-                           ResolveHlGroup("NormalBg"));
+                           card_color(card.look.chip_text, ResolveHlGroup("NormalBg")));
                 cx += kind_w + 8.0f;
                 // The title (#+NAME:/#+CAPTION:/:title), drawn twice one
                 // pixel apart for a bold that g_font has no real face for
@@ -52576,7 +52731,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (!card.title.empty() && !(cb_slide && !cb.folded)) {
                     const float title_w = gfx::MeasureTextEx(g_font, card.title.c_str(), g_font_size, 0).x;
                     if (fits(title_w + 8.0f)) {
-                        const gfx::Color title_col = ResolveHlGroup("Normal");
+                        const gfx::Color title_col = card_color(card.look.title, ResolveHlGroup("Normal"));
                         gfx::DrawTextEx(g_font, card.title.c_str(), gfx::Vector2{cx, text_y}, g_font_size, 0, title_col);
                         gfx::DrawTextEx(g_font, card.title.c_str(), gfx::Vector2{cx + 1.0f, text_y}, g_font_size, 0, title_col);
                         cx += title_w + 12.0f;
@@ -52602,14 +52757,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     const float opt_w = key_w + val_w + 12.0f;
                     if (!fits(opt_w)) break;
                     const gfx::Rectangle chip_rect{cx, chip_y, opt_w, chip_h};
-                    gfx::DrawRectangleRounded(chip_rect, 0.5f, 6, gfx::Fade(accent, 0.07f));
-                    gfx::DrawRectangleRoundedLinesEx(chip_rect, 0.5f, 6, 1.0f,
-                                                 gfx::Fade(cb.is_src ? accent : ResolveHlGroup("Border"), 0.55f));
+                    // (An option chip: its outline and its name in the
+                    // card's `::option` colour where a sheet gives one.)
+                    const gfx::Color option_c = card_color(card.look.option, cb.is_src ? accent : ResolveHlGroup("Border"));
+                    gfx::DrawRectangleRounded(chip_rect, 0.5f, 6, gfx::Fade(card.look.option.set ? option_c : accent, 0.07f));
+                    gfx::DrawRectangleRoundedLinesEx(chip_rect, 0.5f, 6, 1.0f, gfx::Fade(option_c, 0.55f));
                     gfx::DrawTextEx(g_font, key_text.c_str(), gfx::Vector2{cx + 6.0f, text_y}, g_font_size, 0,
-                               cb.is_src ? accent : ResolveHlGroup("MutedFg"));
+                               card_color(card.look.option, cb.is_src ? accent : ResolveHlGroup("MutedFg")));
                     if (!val_text.empty()) {
                         gfx::DrawTextEx(g_font, val_text.c_str(), gfx::Vector2{cx + 6.0f + key_w + g_char_width, text_y},
-                                   g_font_size, 0, ResolveHlGroup("Normal"));
+                                   g_font_size, 0, card_color(card.look.header_text, ResolveHlGroup("Normal")));
                     }
                     cx += opt_w + 6.0f;
                 }
@@ -52701,19 +52858,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
-        const char *bare_hl = !card.tint.empty() ? card.tint.c_str() : card.kind == "abstract" ? "Cyan" : "Purple";
+        const char *bare_hl = card.kind == "abstract" ? "Cyan" : "Purple";
         gfx::Color border = card.bare   ? gfx::Fade(ResolveHlGroup(bare_hl), cb.active ? 0.8f : card.kind == "box" ? 0.3f : 0.4f)
                             : cb.is_src ? (cb.active ? accent : gfx::Fade(accent, 0.55f))
                             : cb_slide  ? gfx::Fade(ResolveHlGroup("Cyan"), cb.active ? 0.85f : 0.5f)
                                         : gfx::Fade(ResolveHlGroup("Border"), cb.active ? 1.0f : 0.7f);
+        border = card_color(cb.active ? card.look.border_active : card.look.border, border);
         gfx::DrawRectangleRoundedLinesEx(cb.rect, card_rr, 6, cb.active ? 2.0f : 1.0f, border);
-        // A mepml box's accent: a rule down its left edge in its colour,
-        // as the exports draw it.
-        if (card.kind == "box" && cb.rect.height > 8.0f) {
+        // A rule down the card's left edge (a sheet's border-left-color: a
+        // mepml box's accent by default, as the exports draw it).
+        if (!card.look.stripe.hl.empty() && cb.rect.height > 8.0f) {
             // (Never over the text: a nested box has less room before it.)
             const float stripe_w = std::max(2.0f, std::min(std::round(g_char_width * 0.35f), std::floor(text_x - cb.rect.x - 3.0f)));
             gfx::DrawRectangleRounded(gfx::Rectangle{cb.rect.x + 1.0f, cb.rect.y + 1.0f, stripe_w, cb.rect.height - 2.0f}, 0.5f, 4,
-                                      ResolveHlGroup(bare_hl));
+                                      card_color(card.look.stripe, ResolveHlGroup(bare_hl)));
         }
         // End-of-line virtual text belonging to a row this card conceals
         // (org_card_eol_texts above): a diagnostic on the `#+begin_src`
@@ -52974,8 +53132,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // A slide whose maths is still rendering stays blank rather than show
     // its TeX source (Editor::MepmlPresentShowing).
     if (presenting && !g_editor.MepmlPresentShowing())
-        gfx::DrawRectangle(static_cast<int>(x) - 2, static_cast<int>(y) - 2, static_cast<int>(w) + 4, static_cast<int>(h) + 4,
-                           ResolveHlGroup("NormalBg"));
+        gfx::DrawRectangle(static_cast<int>(x) - 2, static_cast<int>(y) - 2, static_cast<int>(w) + 4, static_cast<int>(h) + 4, page_bg);
     // Hover tooltip (Phase 3 gap): recorded here but drawn later, once, by
     // the caller after the *entire* pane tree has finished -- text can be
     // much wider/taller (multi-line LSP docs) than a narrow split pane, so
@@ -55792,6 +55949,25 @@ void UpdateDrawFrame() {
         UDF_TIME("JobManager::PollAll", JobManager::Instance().PollAll());
         // mepml blocks whose program ended: their final screens become results.
         UDF_TIME("MepmlTerminalsTick", g_editor.MepmlTerminalsTick());
+        // Glyphs a mepml style sheet's generated text needs that no font
+        // tier has baked yet: into g_math_font, once each.
+        {
+            static unsigned long glyphs_seen = 0;
+            if (g_editor.MepmlGlyphGeneration() != glyphs_seen) {
+                glyphs_seen = g_editor.MepmlGlyphGeneration();
+                bool added = false;
+                // (Only what the face has: one it lacks keeps drawing as `?`.)
+                static gfx::tt::FontInfo face;
+                static const bool face_ok = gfx::tt::InitFont(&face, kJetBrainsMonoRegularTtf, static_cast<int>(kJetBrainsMonoRegularTtfLen));
+                for (int cp : g_editor.MepmlGlyphs()) {
+                    if (cp < 0x80 || IsIconCodepoint(cp) || IsSymbolCodepoint(cp) || IsMathCodepoint(cp)) continue;
+                    if (!face_ok || gfx::tt::FindGlyphIndex(&face, cp) == 0) continue;
+                    g_math_extra_codepoints.push_back(cp);
+                    added = true;
+                }
+                if (added) BakeMathFont();
+            }
+        }
         g_editor.MepmlPresentTick();
         UDF_TIME("TcpJsonRpc::PollAll", TcpJsonRpcManager::Instance().PollAll());
         UDF_TIME("agent::PollOnce", mep::agent::PollOnce(g_editor));

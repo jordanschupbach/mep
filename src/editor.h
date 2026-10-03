@@ -8,7 +8,10 @@
 #include "notebook_doc.h"
 #include "html_doc.h"
 #include "org_doc.h"
+#include <chrono>
+
 #include "mepml_doc.h"
+#include "mepml_style.h"
 #include "image_doc.h"
 #include "cad_constraint.h"
 #include "cad_doc.h"
@@ -454,6 +457,28 @@ struct PickerHlSpan {
     int col_start = 0;
     int col_end = 0;
     std::string hl_group;
+};
+
+// One colour of a block card as a style gives it: a highlight group (or a
+// literal "#rrggbb") at an opacity; no group is no colour at all (`none`).
+// Unset, the painter's own colour for the card stands.
+struct OrgCardColor {
+    bool set = false;
+    std::string hl;
+    float alpha = 1.0f;
+};
+// A card's colours when a style sheet sets them (a mepml block: its
+// element's computed style, Editor::MepmlBuildCards): the paper behind it,
+// its title band, its kind chip, its outline (and the outline while the
+// cursor is inside it), the rule down its left edge. Org's cards leave all
+// of it empty, and DrawPane paints them as it always has.
+struct OrgCardLook {
+    OrgCardColor wash, band, chip, border, border_active, stripe;
+    // In its title bar: the words on its kind chip, its title, and its
+    // option chips (their outline and their names).
+    OrgCardColor chip_text, title, option;
+    // ... its fold and run buttons, and the bar's plain text (an option's value).
+    OrgCardColor button, header_text;
 };
 
 // One buffer decoration (NVIM_PARITY_PLAN.md Part I Phase 4 --
@@ -1117,6 +1142,27 @@ struct Buffer {
     // Editor::HeadingLevelForRow by the same four slot walkers that scale
     // org headlines, so a mepml heading is drawn large the same way.
     std::unordered_map<int, int> mepml_heading_rows;
+    // The size each of those headings is drawn at, as a multiple of body
+    // text: its element's computed font-size (the style sheets'), read
+    // through Editor::HeadingStyleForRow.
+    std::unordered_map<int, float> mepml_heading_scale;
+    // ... and its weight, slant and alignment (the sheets' font-weight,
+    // font-style and text-align), for the scaled line DrawPane draws it as.
+    struct MepmlHeadingLook {
+        bool bold = false, italic = false;
+        int align = 0;  // 0 left, 1 centre, 2 right
+        bool underline = false, strike = false;
+        std::string line_hl;  // the decoration's colour, "" for the text's
+    };
+    std::unordered_map<int, MepmlHeadingLook> mepml_heading_look;
+    // Rows of running text set centred (1) or flush right (2): their
+    // block's text-align in the style sheets. DrawPane shifts such a row
+    // within the text width (not the caret's row, nor a soft-wrapped one).
+    std::unordered_map<int, int> mepml_row_align;
+    // A presented page's paper (Editor::MepmlPresentStart's view buffer):
+    // its slide's `background` in the style sheets, unset for none. DrawPane
+    // fills the pane with it under the page.
+    OrgCardColor mepml_page_bg;
     // mepml rows holding text drawn larger than body size (Decoration::
     // virt_scale): row -> the largest scale on it, plus a hash of the
     // row's text so an edit since the scan never keeps stale headroom.
@@ -1154,6 +1200,7 @@ struct Buffer {
     struct MepmlVirtualBlock {
         std::vector<mepml::RenderedLine> lines;
         size_t text_hash = 0;  // the directive row's text when built
+        OrgCardColor wash, border;  // the card behind them: the element's background and border-color
     };
     std::unordered_map<int, MepmlVirtualBlock> mepml_virtual_rows;
     // A folded mepml document header (a run of `//?` lines) reads as its
@@ -3417,6 +3464,7 @@ struct OrgBlockOption {
 // DrawPane (main.cpp) for the drawing half, Editor::OrgBlockCards for
 // the scan.
 struct OrgBlockCard {
+    OrgCardLook look;
     // First affiliated-keyword row (`#+NAME:`/`#+CAPTION:`/`#+HEADER:`/
     // `#+ATTR_*`) attached to this block, or begin_row when it has none.
     int meta_row = 0;
@@ -3448,10 +3496,9 @@ struct OrgBlockCard {
     // content, drawn over a plain wash (a mepml document header -- its
     // `//?` lines are rendered in place, see Editor::MepmlScan).
     bool bare = false;
-    // A bare card's colour, as a highlight group ("" for its kind's own):
-    // a mepml box (\definition ...) takes its kind's (mepml::BoxKind::hl),
-    // for its wash, its outline and the rule down its left edge.
-    std::string tint;
+    // A mepml box that ends with a mark (a proof's tombstone, or whatever
+    // a style sheet gives its `::end`): the row of its `)` stays, for it.
+    bool end_mark = false;
     // A mepml block whose program is running in a terminal inside its
     // results (Editor::MepmlTerminalStart): the bar shows a stop button.
     int term_run = -1;
@@ -7572,6 +7619,12 @@ public:
         // stops at them. Always empty for a table rendered as stored,
         // where the grid covers every row including the cursor's.
         std::vector<int> raw_rows;
+        // A mepml table's colours (its element's computed style): `wash`
+        // the colour its header and stripes are shades of, `border` and
+        // `border_active` its outline, `rule` its grid lines. Unset (org's
+        // tables): DrawPane's own.
+        OrgCardLook look;
+        OrgCardColor rule;
     };
     /**
      * @brief Scans a buffer for org tables and the geometry needed to draw a grid over each.
@@ -7596,6 +7649,17 @@ public:
     // counter, so no mutation path can leave it stale. `reads` are the
     // files an \import pulled in and their mtimes (-1: unreadable); any
     // change re-parses.
+    // How every element of a mepml document looks (docs/mepml-spec): the
+    // style the sheets compute for each node of the document's element
+    // tree, as the document is rendered (`rendered`) and where a line is
+    // shown as its source (`source`: the cursor's row, or concealment
+    // off). `inline_bg` is the background behind a node's text: its own,
+    // or that of the inline it is inside (a highlight's, through the bold
+    // it holds).
+    struct MepmlNodeStyles {
+        std::vector<mepml::style::Computed> rendered, source;
+        std::vector<mepml::style::Color> inline_bg;
+    };
     struct MepmlParseCache {
         bool valid = false;
         std::string file;
@@ -7604,6 +7668,18 @@ public:
         mepml::Document doc;
         bool spans_valid = false;  // `spans` is mepml::Highlight(doc), computed on first ask
         std::vector<mepml::Span> spans;
+        // With the spans: the element tree their `path`s name, and each
+        // block's node in it.
+        mepml::ElementPaths paths;
+        std::vector<int> block_nodes;
+        // The style of each node of `paths` (MepmlStylesCurrent), for the
+        // sheets of generation `styles_generation`; 0 = not computed.
+        MepmlNodeStyles styles;
+        unsigned long styles_generation = 0;
+        std::string styles_signature;  // the sheet files they were computed from (MepmlSheets)
+        // Styles of parts no span carries (a header line's `::key`), by
+        // node and part, computed on first ask (MepmlPartStyle).
+        std::map<std::pair<int, std::string>, mepml::style::Computed> part_styles;
         // Plain entry only: whether the text has an \import (or //? Import:).
         // Without one, expanding imports changes nothing, and the plain
         // parse answers for both flags -- one parse per edit, not two.
@@ -7612,6 +7688,20 @@ public:
     };
     mutable std::unordered_map<int, MepmlParseCache> mepml_parse_cache_[2];
     mutable unsigned long mepml_parse_generation_ = 0;
+    // Bumped to have every buffer's computed styles made again.
+    unsigned long mepml_sheet_generation_ = 1;
+    // Style sheet files as last read: MepmlSheets reads one again when its
+    // modification time changes (so saving a sheet restyles the documents
+    // that use it).
+    struct MepmlSheetFileEntry {
+        long long mtime = -2;
+        std::shared_ptr<const mepml::style::Sheet> sheet;
+    };
+    mutable std::unordered_map<std::string, MepmlSheetFileEntry> mepml_sheet_files_;
+    mutable std::set<int> mepml_glyphs_;
+    mutable unsigned long mepml_glyph_generation_ = 0;
+    std::shared_ptr<const mepml::style::Sheet> MepmlSheetFile(const std::string &path, std::string *signature) const;
+    std::chrono::steady_clock::time_point mepml_sheets_checked_{};
     MepmlParseCache &MepmlCacheEntry(bool with_imports) const;
     // What the last full MepmlScan of a buffer was made from, so a scan
     // that differs only in the cursor's row can re-emit just the rows that
@@ -7627,6 +7717,7 @@ public:
         bool own_diagnostics = false, conceal = false, images = false;
         int text_width = 0, pane_cols = 0, buffer_cols = 0;
         int cur_row = -1;
+        std::string sheet_signature;  // MepmlSheets' at the scan
         unsigned long table_math_gen = 0;  // Buffer::mepml_table_math_gen laid out for
         size_t deco_count = 0;  // the namespace's size after the scan: anything else touching it forces a full one
     };
@@ -7640,9 +7731,13 @@ public:
         std::string file;
         mepml::Document plain;
         std::vector<mepml::Span> plain_spans;
+        mepml::ElementPaths plain_paths;
+        std::vector<int> plain_block_nodes;
         bool has_imports = false;
         mepml::Document imports;
         std::vector<mepml::Span> imports_spans;
+        mepml::ElementPaths imports_paths;
+        std::vector<int> imports_block_nodes;
         std::vector<std::pair<std::string, long long>> reads;
     };
     struct MepmlAsyncParse {
@@ -9446,6 +9541,15 @@ public:
      */
     static int HeadingExtraSlotsForLevel(int level);
     /**
+     * @brief The size and display slots of the heading on `row`: org's by its depth (kOrgHeadingStyles), mepml's as its style sheets say.
+     * @return {1, 1} for a row that is not a heading.
+     */
+    static OrgHeadingStyle HeadingStyleForRow(const Buffer &buf, int row);
+    /**
+     * @brief The extra display slots the heading on `row` claims (HeadingStyleForRow's, less the row's own); 0 for any other row.
+     */
+    static int HeadingExtraSlotsForRow(const Buffer &buf, int row);
+    /**
      * @brief Returns the bytes of heading markup the render hides at the start of a row (org stars / mepml `>`s plus the following space), or 0.
      * @param buf The buffer.
      * @param row 0-based row.
@@ -9737,6 +9841,55 @@ public:
      * @return The spans; valid as long as MepmlParseCurrent's result is.
      */
     const std::vector<mepml::Span> &MepmlSpansCurrent(bool with_imports) const;
+    /**
+     * @brief The computed style of every element of the current mepml buffer (see MepmlNodeStyles), cached with its spans.
+     * @param with_imports As MepmlParseCurrent.
+     * @return The styles, indexed by Span::path / Span::source_path.
+     */
+    const MepmlNodeStyles &MepmlStylesCurrent(bool with_imports) const;
+    /**
+     * @brief Each block's node in the element tree (parallel to MepmlParseCurrent(with_imports).blocks; -1 for an imported block).
+     */
+    const std::vector<int> &MepmlBlockNodesCurrent(bool with_imports) const;
+    /**
+     * @brief What the current buffer is a piece of, when it is the presentation view's page: its slide (and whether it is the title page).
+     * @return False for any other buffer.
+     */
+    bool MepmlPresentContext(mepml::HighlightContext *out) const;
+    /**
+     * @brief Every non-ASCII character mepml style sheets' generated text (`content`) has used, for the renderer to have glyphs for.
+     */
+    const std::set<int> &MepmlGlyphs() const { return mepml_glyphs_; }
+    /** @brief Changes whenever MepmlGlyphs() gains a character. */
+    unsigned long MepmlGlyphGeneration() const { return mepml_glyph_generation_; }
+    /**
+     * @brief The computed style of `part` of the element at `node` of the current mepml buffer's tree (with its imports), as rendered.
+     */
+    const mepml::style::Computed &MepmlPartStyle(int node, const std::string &part) const;
+    /**
+     * @brief The computed style of the last of `chain`, each element a child of the one before it and the first a child of `node`.
+     */
+    const mepml::style::Computed &MepmlChainStyle(int node, const std::vector<mepml::Element> &chain) const;
+    /**
+     * @brief The computed style of the element at `node` itself while it is in `state` (":active": the cursor is in it).
+     */
+    mepml::style::Computed MepmlStateStyle(int node, const char *state) const;
+    /**
+     * @brief Gives generated lines (a caption, an alt text, a table of contents, a bibliography) the look the sheets compute for them.
+     * @param lines The lines; each span's `hl` and bold/italic are set.
+     * @param node The node of the block they belong to.
+     * @param under The element the text is in when it is not the block itself (a `caption`, an `alt-text`); nullptr otherwise.
+     * @param titled The first line is the block's `::title` ("Contents").
+     */
+    void MepmlStyleRendered(std::vector<mepml::RenderedLine> *lines, int node, const mepml::Element *under, bool titled) const;
+    /**
+     * @brief The style sheets that apply to the current mepml buffer, in cascade order.
+     */
+    std::vector<std::shared_ptr<const mepml::style::Sheet>> MepmlSheets(std::string *signature = nullptr) const;
+    /**
+     * @brief Whether a style sheet of the current mepml buffer changed on disk since its last scan (checked a few times a second).
+     */
+    bool MepmlStylesStale();
     /**
      * @brief Whether the current mepml buffer's parse is ready without parsing on this thread: small buffers
      * always are (they parse in place when asked); a large one is once a background parse of its current
@@ -13055,6 +13208,10 @@ private:
         int page = 0;
         std::vector<mepml::PresentationPage> pages;
         std::vector<std::string> source_lines;  // what `pages` were built from
+        // The document's style sheets (its `//? Style:` lines, resolved):
+        // the view's pages have no header of their own to name them.
+        std::vector<std::string> sheet_paths;
+        std::vector<std::string> inline_sheets;  // ... and its `\raw(style, ...)` blocks' texts
         std::vector<std::string> view_lines;    // what the view buffer should hold
         double next_source_check = 0.0;
         CursorPos source_cursor;

@@ -193,6 +193,8 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"zsh", {"bash", kHighlightsBash}},
         {"cs", {"c_sharp", kHighlightsCSharp}},
         {"css", {"css", kHighlightsCss}},
+        // mepml style sheets are CSS in syntax (docs/mepml-spec/style.md).
+        {"mepss", {"css", kHighlightsCss}},
         {"go", {"go", kHighlightsGo}},
         {"hs", {"haskell", kHighlightsHaskell}},
         {"html", {"html", kHighlightsHtml}},

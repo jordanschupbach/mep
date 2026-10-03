@@ -40,6 +40,10 @@ struct Fmt {
     bool b = false, i = false, u = false, s = false, sup = false, sub = false, small = false, big = false;
     bool mono = false, mark = false, ins = false, del = false;
     std::string color, font, size, link;
+    std::string cls;  // \class(name, ...): a style sheet's name for the run
+    // "ins" / "del": inserted or deleted text a style sheet recoloured
+    // (mep's writers say so in the run's style name: "MepSheet-ins-...").
+    std::string sheet_tag;
 };
 
 struct Seg {
@@ -229,7 +233,8 @@ std::string RenderPlainSegs(const std::vector<Seg> &segs, size_t from, size_t to
                     body = std::string(m.open) + body + m.close;
                 }
                 (void)any_word_marker;
-                if (!sg.f.size.empty() || !sg.f.font.empty() || !sg.f.color.empty()) body = ParenEsc(body);
+                if (!sg.f.size.empty() || !sg.f.font.empty() || !sg.f.color.empty() || !sg.f.cls.empty()) body = ParenEsc(body);
+                if (!sg.f.cls.empty()) body = "\\class(" + ArgEsc(sg.f.cls) + ", " + body + ")";
                 if (!sg.f.size.empty()) body = "\\fs(" + ArgEsc(sg.f.size) + ", " + body + ")";
                 if (!sg.f.font.empty()) body = "\\f(" + ArgEsc(sg.f.font) + ", " + body + ")";
                 if (!sg.f.color.empty()) body = "\\color(" + ArgEsc(sg.f.color) + ", " + body + ")";
@@ -270,7 +275,7 @@ void Coalesce(std::vector<Seg> &segs) {
     for (Seg &s : segs) {
         if (!out.empty() && s.kind == Seg::Text && out.back().kind == Seg::Text) {
             const Fmt &a = out.back().f, &b = s.f;
-            bool same = a.link == b.link && a.color == b.color && a.font == b.font && a.size == b.size;
+            bool same = a.link == b.link && a.color == b.color && a.font == b.font && a.size == b.size && a.cls == b.cls;
             for (const MarkerDef &m : kMarkerDefs) same = same && a.*m.flag == b.*m.flag;
             if (same) {
                 out.back().text += s.text;
@@ -430,7 +435,7 @@ struct Out {
             if (c == ')') --depth;
             safe += c == ',' && depth == 0 ? std::string("\\,") : std::string(1, c);
         }
-        Block("\\" + kind + "(" + ParenEsc(safe) + ",");
+        Block(BoxOpenerText(kind) + ParenEsc(safe) + ",");
     }
     void BoxClose() { Block(")"); }
     void Rule() { Block("---"); }
@@ -737,6 +742,12 @@ struct HtmlReader {
         else if (tag == "small") f.small = true;
         else if (tag == "big" || HasClass(n, "big")) f.big = true;
         if (HasClass(n, "mono")) f.mono = true;
+        // mep's own classes (\class(name, ...) is <span class="mep-name">).
+        if (tag == "span") {
+            std::istringstream classes(Attr(n, "class"));
+            for (std::string one; classes >> one;)
+                if (one.rfind("mep-", 0) == 0 && one != "mep-raw" && one != "mep-style" && IsBoxKindName(one.substr(4))) f.cls = one.substr(4);
+        }
         const std::string style = Attr(n, "style");
         if (!style.empty()) {
             std::istringstream ss(style);
@@ -968,7 +979,7 @@ struct HtmlReader {
                 out.Callout("NOTE", InlOf(c));
             } else if (t == "nav" && HasClass(c, "toc")) {
                 out.Block("\\toc");
-            } else if (t == "div" && FindBoxKind(Attr(c, "data-kind"))) {
+            } else if (t == "div" && IsBoxKindName(Attr(c, "data-kind")) && (FindBoxKind(Attr(c, "data-kind")) || HasClass(c, "mbox"))) {
                 // mep's own boxes (mepml::ToHtml): the title paragraph, then
                 // the content, read as blocks.
                 std::vector<Seg> title;
@@ -1336,6 +1347,11 @@ struct MdReader {
                             else if (name == "i" || name == "em") f.i = true;
                             else if (name == "code" || name == "kbd") f.mono = true;
                             else if (name == "span") {
+                                const size_t cl = attrs.find("class=\"mep-");
+                                if (cl != std::string::npos) {
+                                    const std::string cname = attrs.substr(cl + 11, attrs.find('"', cl + 11) - cl - 11);
+                                    if (IsBoxKindName(cname)) f.cls = cname;
+                                }
                                 const size_t st = attrs.find("style=\"");
                                 if (st != std::string::npos) {
                                     const std::string style = attrs.substr(st + 7, attrs.find('"', st + 7) - st - 7);
@@ -1834,7 +1850,7 @@ struct MdReader {
                     const size_t sp = rest.find(' ');
                     const std::string kind = rest.substr(0, sp);
                     const std::string title = sp == std::string::npos ? "" : Trim(rest.substr(sp));
-                    if (FindBoxKind(kind)) {
+                    if (IsBoxKindName(kind)) {
                         out.BoxOpen(kind, InlOf(title));
                         ++md_boxes;
                         if (i + 1 < lines.size() && StartsWith(Trim(lines[i + 1]), "**")) ++i;
@@ -2329,10 +2345,15 @@ struct OrgReader {
             }
             // mep's boxes (see OrgWriter): special blocks whose content is
             // read on as the document's own blocks.
-            if ((key.rfind("begin_", 0) == 0 && FindBoxKind(key.substr(6))) || (key.rfind("end_", 0) == 0 && FindBoxKind(key.substr(4)))) {
+            // (`box_axiom` is a kind of the document's own, `\boxed(axiom, ...)`.)
+            auto org_box = [](const std::string &name) {
+                if (FindBoxKind(name)) return name;
+                return name.rfind("box_", 0) == 0 && IsBoxKindName(name.substr(4)) ? name.substr(4) : std::string();
+            };
+            if ((key.rfind("begin_", 0) == 0 && !org_box(key.substr(6)).empty()) || (key.rfind("end_", 0) == 0 && !org_box(key.substr(4)).empty())) {
                 flush();
                 if (key[0] == 'b') {
-                    out.BoxOpen(key.substr(6), InlOf(value));
+                    out.BoxOpen(org_box(key.substr(6)), InlOf(value));
                     ++org_boxes;
                 } else if (org_boxes > 0) {
                     out.BoxClose();
@@ -2750,7 +2771,13 @@ void OfficeFmt(std::vector<Seg> &segs) {
             f.big = true;
             f.size.clear();
         }
-        if (f.color == "#2e7d32" && f.u) {
+        if (f.sheet_tag == "ins" && f.u) {
+            f.ins = true;
+            f.u = false;
+        } else if (f.sheet_tag == "del" && f.s) {
+            f.del = true;
+            f.s = false;
+        } else if (f.color == "#2e7d32" && f.u) {
             f.ins = true;
             f.u = false;
             f.color.clear();
@@ -3149,7 +3176,12 @@ struct DocxReader {
                         std::snprintf(buf, sizeof buf, "%g", sz / 2.0);
                         rf.size = buf;
                     }
-                    const std::string rs = Lower(Attr(pr.child("w:rStyle"), "w:val"));
+                    // mep's own class styles (\class(name, ...): "MepClass-name").
+                    const std::string raw_rs = Attr(pr.child("w:rStyle"), "w:val");
+                    if (raw_rs.rfind("MepClass-", 0) == 0 && IsBoxKindName(raw_rs.substr(9))) rf.cls = raw_rs.substr(9);
+                    if (raw_rs.rfind("MepSheet-ins", 0) == 0) rf.sheet_tag = "ins";
+                    else if (raw_rs.rfind("MepSheet-del", 0) == 0) rf.sheet_tag = "del";
+                    const std::string rs = Lower(raw_rs);
                     if (rs.find("verbatim") != std::string::npos || rs.find("code") != std::string::npos) rf.mono = true;
                     verbatim = rs == "verbatimchar";
                 }
@@ -3562,6 +3594,20 @@ struct OdtReader {
             // bold and colour are the heading's look, not the words'.
             for (const BoxKind &k : BoxKinds())
                 if (ts.display == Lower(std::string(k.label) + " box")) ts.f = {};
+            // mep's class styles (\class(name, ...): "MepClass_name"): the
+            // name is what comes back; its look is a style sheet's.
+            const std::string own_name = Attr(st, "style:name");
+            if (own_name.rfind("MepClass_", 0) == 0 && IsBoxKindName(own_name.substr(9))) {
+                ts.f = {};
+                ts.f.cls = own_name.substr(9);
+            }
+            // ... and the look a style sheet gave some text (OdtWriter's
+            // "MepSheet_..." styles): the sheet's, not the words'.
+            if (own_name.rfind("MepSheet", 0) == 0) {
+                ts.f = {};
+                if (own_name.rfind("MepSheet_ins", 0) == 0) ts.f.sheet_tag = "ins";
+                else if (own_name.rfind("MepSheet_del", 0) == 0) ts.f.sheet_tag = "del";
+            }
             const xml::xml_node pp = st.child("style:paragraph-properties");
             if (pp) {
                 const std::string al = Attr(pp, "fo:text-align");
@@ -3602,6 +3648,8 @@ struct OdtReader {
         if (!s.color.empty()) f.color = s.color;
         if (!s.size.empty()) f.size = s.size;
         if (!s.font.empty()) f.font = s.font;
+        if (!s.cls.empty()) f.cls = s.cls;
+        if (!s.sheet_tag.empty()) f.sheet_tag = s.sheet_tag;
         return f;
     }
 
@@ -3869,7 +3917,7 @@ namespace {
 
 bool SameFmt(const Fmt &a, const Fmt &b) {
     return a.b == b.b && a.i == b.i && a.u == b.u && a.s == b.s && a.sup == b.sup && a.sub == b.sub && a.small == b.small &&
-           a.big == b.big && a.mono == b.mono && a.mark == b.mark && a.ins == b.ins && a.del == b.del && a.color == b.color &&
+           a.big == b.big && a.mono == b.mono && a.mark == b.mark && a.ins == b.ins && a.del == b.del && a.cls == b.cls && a.sheet_tag == b.sheet_tag && a.color == b.color &&
            a.font == b.font && a.size == b.size && a.link == b.link;
 }
 
@@ -3995,7 +4043,9 @@ struct RtfReader {
                 if (t.empty()) return;
                 const std::string cs = CharStyle();
                 Seg::Kind kind = cs == "math" ? Seg::Math : cs == "verbatim char" ? Seg::Code : Seg::Text;
-                const Fmt f = kind == Seg::Text ? Current() : Fmt();
+                Fmt f = kind == Seg::Text ? Current() : Fmt();
+                // mep's class styles (\class(name, ...): "mep class name").
+                if (kind == Seg::Text && cs.rfind("mep class ", 0) == 0 && IsBoxKindName(cs.substr(10))) f.cls = cs.substr(10);
                 if (!para.empty() && para.back().kind == kind && (kind != Seg::Text || SameFmt(para.back().f, f))) {
                     para.back().text += t;
                 } else {

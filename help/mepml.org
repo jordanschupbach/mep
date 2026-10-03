@@ -347,6 +347,22 @@ own. Leave the title out with nothing before the comma, or with nothing at
 all for a box opened on a line of its own (=\proof(=); a box closed on its
 opening line without a comma is all text (=\example(Just text.)=).
 
+A box of a kind of your own is =\boxed(kind, Title,= ... =)=: the kind is
+any name (letters, digits and =-=), and everything after it reads as it
+does for the kinds above.
+
+#+begin_example
+\boxed(axiom, Choice,
+Every family of non-empty sets has a choice function.
+)
+#+end_example
+
+It is labelled with its kind ("Axiom"; =key-result= reads "Key result")
+and drawn like a plain box until a style sheet says otherwise --
+=box[kind=axiom] { --accent: #e07a00; }= for its colour,
+=box[kind=axiom]::label { content: "Axiom"; }= for its label (see Style
+sheets below).
+
 Boxes nest, each closing before the one around it, and on a slide they
 close before the slide does: a =)= line ends the innermost box first. A
 box left open is flagged and closed where its slide (or the document)
@@ -951,6 +967,150 @@ where the commands are expanded. The language server completes the
 commands you define (and export names inside =\when(= and =\raw(=), shows
 a command's template when you hover over a call, and flags calls of
 commands that are not defined and calls missing an argument.
+
+* Style sheets
+
+What a document /is/ and how it /looks/ are separate. mepml says the
+first -- this is a heading, that a definition -- and a style sheet says
+the second. mep's own look is a style sheet too
+(=assets/mepml/default.mepss=), so everything it draws can be changed
+from a file.
+
+#+begin_example
+//? Style: paper.mepss
+#+end_example
+
+names a sheet for the document, a path relative to the document. Several
+=Style:= lines apply in order, a file brought in with =//? Import:=
+contributes its sheets ahead of the document's own, and a sheet in
+=~/.config/mep/mepml.mepss= applies to every document. Later sheets win.
+Saving a sheet restyles the documents that use it at once.
+
+A sheet can also be written in the document, as a =\raw= block for the
+format =style= (which no export has, so the block is in none of them):
+
+#+begin_example
+\raw(style,
+box[kind=axiom] { --accent: #e07a00; }
+.term { color: #00a080; font-weight: bold; }
+)
+#+end_example
+
+It applies after the sheets the header names.
+
+A sheet is a list of rules in CSS's syntax:
+
+#+begin_example
+/* Definitions in green, under another name. */
+box[kind=definition]        { --accent: #2e8b57; }
+box[kind=definition]::label { content: "Def."; }
+
+heading[level=1]  { font-size: 1.8; color: theme(Blue, #0b5cad); }
+verbatim          { color: #d95f0e; font-weight: bold; }
+list-item::marker { content: "→"; }
+
+@media present { heading[level=1] { font-size: 2.4; } }
+#+end_example
+
+- A selector names an element (=heading=, =paragraph=, =bold=, =italic=,
+  =verbatim=, =link=, =math=, =list-item=, =table-cell=, =code=,
+  =results=, =box=, =callout=, =slide=, =abstract=, =meta= ...), narrows
+  it by attribute (=heading[level=2]=, =box[kind=proof]=,
+  =callout[kind=warning]=, =list-item[checked=true]=,
+  =meta[key=title]=), by what it is inside (=slide heading=,
+  =box > paragraph=), and picks a part of it with =::=: =::label= (a
+  box's "Definition", a callout's badge, "Slide 3"), =::title=,
+  =::marker= (a list's bullet), =::end= (a proof's tombstone),
+  =::markup= (the syntax characters on a line shown as source),
+  =::header= (a code block's title band), =::option= (its option chips),
+  =::button= (its run, stop and fold controls),
+  =::rule= (a table's grid lines). =:active= is the block the
+  cursor is in.
+- =.name= selects text given that name in the document,
+  =\class(name, text)=: a =\class(term, group)= is styled by
+  =.term { ... }=, in the editor and in the HTML and PDF exports. It has
+  no look of its own.
+- Properties: =color=, =background=, =font-weight=, =font-style=,
+  =text-decoration= (=underline=, =line-through=, =none=),
+  =text-decoration-color=, =font-size= (a multiple of the surrounding
+  text, or =14pt=), =font-family= (=serif=, =sans=, =mono=),
+  =vertical-align=, =text-align=, =content= (generated text; =%n= is the
+  element's number and =%k= its kind), =border-color= and
+  =border-left-color=.
+- In the editor =text-align= sets a heading and running text (a
+  paragraph, a list, a callout, the abstract) centred or flush right line
+  by line; the line the cursor is on stays where you type it.
+  =text-decoration= draws a rule under or through a heading too.
+- Generated text is a part's =content=: a list's marker, a box's label
+  and end mark, a callout's badge (=" %k "=), "Abstract", a slide's
+  "Slide %n", and the word before a caption's number
+  (=caption[of=figure]::label { content: "Fig. %n"; }=). The editor
+  draws any character its text face has; one it lacks shows as =?=.
+- Colours are =#rrggbb=, a colour name, =theme(Group, #fallback)= -- the
+  colour your editor theme gives =Group= (=Blue=, =Comment=, =Accent=
+  ...), and the fallback in an export -- or =fade(colour, 0.2)=. =none=
+  removes one. A custom property (=--accent: ...;=, read back with
+  =var(--accent)=) is inherited, which is how one line recolours a box's
+  label, rule and paper together.
+- =@media= limits rules to a renderer: =editor=, =source= (a line shown
+  as its source, like the cursor's), =present= (the presentation view),
+  and the export names =\when()= takes.
+
+An unknown property or a value a property cannot take drops that one
+declaration, never the sheet. In a =.mepss= file the language server
+underlines both, along with selectors that name an element or a part mepml
+has none of, and completes element names, =[attributes]= and their values,
+=::parts=, property names and each property's values (colour functions,
+theme groups, colour names) and =@media= tags; hover explains a property,
+a part or a function. =docs/mepml-spec/= is the full
+specification -- the elements, the language and what a renderer must do
+-- and =examples/mepml-styles/= has three complete sheets to start from
+(a quiet one, a loud one, and one for presenting a deck). =test.mepml=,
+the document that shows everything mepml can do, names =test.mepss=
+beside it.
+From a shell, =mep-mepml style FILE= prints the style every element of a
+document computes to, and =mep-mepml tree FILE= its structure as JSON.
+
+While presenting (=<leader>kp=) a page is its slide: =slide heading= and
+=slide box= select on it, the slide's =background= is the page's paper
+and its =color= the page's text. The title page is =slide[title]=, with
+the header's =meta[key=title]=, =meta[key=subtitle]= and
+=meta[key=author]= on it:
+
+#+begin_example
+@media present {
+  slide        { background: #0b1d33; color: #e6edf5; }
+  slide[title] { background: #12345a; }
+  slide[title] meta[key=title] { color: #ffd000; font-size: 2.4; }
+  slide heading[level=1]       { font-size: 2.2; }
+}
+#+end_example
+
+The exports take the same sheets, each as far as its format goes, over
+its own built-in look (so a document with no sheet exports exactly as
+before). Use =@media= to give paper its own colours -- =html=, =print=
+(PDF, Word, Writer, RTF), =slides=, or a single format's name:
+
+#+begin_example
+heading { color: #ffd000; }                    /* on the editor's dark page */
+@media html, print { heading { color: #8a5a2b; } }
+#+end_example
+
+- *HTML* (and the HTML slideshow): every rule that has something to
+  select on the page, written into it as CSS -- colours, weights, sizes,
+  faces, alignment, list markers, box and callout accents and labels.
+- *PDF and LaTeX* (and Beamer): colour, weight and slant of headings,
+  paragraphs and inline markup; a box's colours, label and end mark.
+- *Word and Writer*: the same colour, weight and slant, kept as named
+  character styles so the text reads back into mepml as it was written;
+  a class's look; a box's label and colours.
+- *PowerPoint and Impress*: colour, weight and slant of inline markup; a
+  box's label and colour.
+- *RTF*: a box's label and colours.
+- *Markdown, plain text*: a box's label.
+
+A =theme(Group)= colour needs its fallback (=theme(Blue, #0b5cad)=) to
+reach an export, which has no editor theme to ask.
 
 * Exporting and importing
 

@@ -4,9 +4,13 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "mepml_element.h"
+#include "mepml_style.h"
 
 // mepml: mep's own lightweight markup language for literate-programming
 // style documents (prose + math + executable code blocks + their results).
@@ -69,6 +73,8 @@ enum class InlineKind {
     Font,         // \f{family}{x};  `arg` is the family
     FontSize,     // \fs{pt}{x};     `arg` is the size in points
     Color,        // \color{c}{x};   `arg` is a name or #rrggbb
+    Class,        // \class(name, x): `arg` is the name a style sheet selects
+                  // it by (`.name`); no look of its own
     Footnote,     // \fn{x}; `number` is its 1-based document order
     Cite,         // \cite{key}   textual: Author (Year)
     CiteP,        // \citep{key}  parenthetical: (Author, Year)
@@ -276,6 +282,14 @@ struct UserCommand {
     std::string origin;  // "" for this document, else the imported file
 };
 
+// A style sheet the document names: `//? Style: file.mepss`
+// (docs/mepml-spec/style.md §3).
+struct StyleRef {
+    std::string path;  // as written
+    std::string base;  // the imported file that named it; "" for the document itself
+    int line = -1;     // the header line (the import's line, for an imported file's)
+};
+
 struct Document {
     std::string title;
     std::vector<std::pair<std::string, std::string>> meta;  // every //? Key: value, in order
@@ -284,6 +298,13 @@ struct Document {
     std::map<std::string, Citation> citations;
     std::vector<std::string> cite_order;  // keys in first-cited order
     std::map<std::string, UserCommand> commands;  // every \define, imports' too
+    // The sheets that style it, in cascade order: those its imports name
+    // first, then its own.
+    std::vector<StyleRef> styles;
+    // Those sheets read and parsed, after the user's own (LoadStyleSheets;
+    // ParseForExport fills it): what an export styles the document with,
+    // over mep's built-in look. Empty for a document parsed any other way.
+    std::vector<std::shared_ptr<const style::Sheet>> sheets;
     // What ParseForExport expanded the document for (empty: as written).
     // The HTML export writes a \raw for HTML as it is and wraps any other
     // (LaTeX, on its way through HTML to a .tex) for the next step.
@@ -339,22 +360,37 @@ const std::vector<std::string> &CalloutKeywords();
 
 // The kinds of titled box (BlockKind::BoxBegin): the command's name, the
 // label every rendering puts before the title ("Definition"), and its
-// colours -- `color` the accent (#rrggbb), `tint` the paper behind the
-// content, `hl` the editor's highlight group for the accent. A proof is
-// quieter than the rest and ends with a tombstone (∎).
+// colours in an export with no style sheet -- `color` the accent
+// (#rrggbb), `tint` the paper behind the content. (The editor's look is
+// the default sheet's: assets/mepml/default.mepss.) A proof is quieter
+// than the rest and ends with a tombstone (∎).
 struct BoxKind {
     const char *name;
     const char *label;
     const char *color;
     const char *tint;
-    const char *hl;
 };
 const std::vector<BoxKind> &BoxKinds();
 // The kind named `name` ("definition"), nullptr for anything else.
 const BoxKind *FindBoxKind(const std::string &name);
+// A box of any kind is written `\boxed(kind, Title,` ... `)`: the kind is a
+// name of the document's own (`axiom`, `key-result`), and how it looks --
+// its label, its colours -- is the style sheets' (`box[kind=axiom]`). The
+// kinds above are the ones with a command of their own (`\definition(`)
+// and a look in the default sheet.
+// Whether `name` can be a box's kind: a letter, then letters, digits, `-`.
+bool IsBoxKindName(const std::string &name);
+// The label a kind has before any sheet names it: a built-in kind's own
+// ("Definition"), any other's name with a capital ("Axiom").
+std::string BoxLabel(const std::string &kind);
+// The text that opens a box of `kind`, up to where its title starts:
+// `\definition(` or `\boxed(axiom, `.
+std::string BoxOpenerText(const std::string &kind);
 // "Definition: Title", "Definition" without one -- a box's heading as the
 // exports without a box of their own (Markdown, plain text ...) write it.
 std::string BoxHeading(const Block &b);
+// The same, its label the one `doc`'s style sheets give the kind.
+std::string BoxHeading(const Document &doc, const Block &b);
 
 Document Parse(const std::vector<std::string> &lines);
 // A line's heading depth by its own text (`>`..`>>>>>>` then a space), 0
@@ -468,9 +504,47 @@ struct Span {
     float font_size = 0.0f;    // \fs{...} points, 0 = unset
     std::string callout;       // kCallout keyword
     std::string target;        // kLink url, kCite key, import/image path
+    // What the span is, as a node of Highlight's ElementPaths (see
+    // docs/mepml-spec/structure.md): `path` as it is rendered -- a box's
+    // `\definition(` is the box's `::label` -- and `source_path` where a
+    // renderer shows the line's source instead (there it is `::markup`).
+    // How a span looks is the style computed for its node, not `style`:
+    // the flags say what the span is for layout and behaviour.
+    int path = -1, source_path = -1;
+    int number = 0;            // kSlide: the slide's number (a `%n` in its label)
+    bool block_end = false;    // kBox / kSlide: the `)` closing it, on a line of its own
 };
 
-std::vector<Span> Highlight(const Document &doc);
+// The spans of every block of this document (not of its imports). With
+// `paths`, the element tree the spans' `path`s index is built into it;
+// with `block_nodes`, each block's own node in it (parallel to doc.blocks,
+// -1 for an imported block; a slide's and a box's two markers share one).
+// `context` is for text that is a piece of a document rather than a whole
+// one -- a page of the presentation view.
+struct HighlightContext {
+    // The element the text is inside ("" for none): a page is its
+    // `slide[number=N]`, so `slide heading` selects on it as in the
+    // document.
+    Element container;
+    // The text is a presentation's title page (PresentationPages writes
+    // one from the header): its heading is the document's
+    // `meta[key=title]`, a paragraph that is one >big< run its
+    // `meta[key=subtitle]`, any other paragraph `meta[key=author]`.
+    bool title_page = false;
+};
+std::vector<Span> Highlight(const Document &doc, ElementPaths *paths = nullptr, std::vector<int> *block_nodes = nullptr,
+                            const HighlightContext *context = nullptr);
+// The document as its element tree (docs/mepml-spec/structure.md), in
+// JSON: every element `{"name", "attrs", "children"}` with its source
+// `lines`, text as `{"text"}`. What `mep-mepml tree FILE` prints, so a tool
+// can read mepml's structure without a parser of its own.
+std::string ElementTreeJson(const Document &doc);
+// Every element name a document's tree can hold (structure.md §1 and §2),
+// blocks first.
+const std::vector<std::string> &ElementNames();
+// Whether an element is a block (structure.md §1) rather than inline: an
+// inline's `background` is behind its text, through the inlines it holds.
+bool IsBlockElement(const std::string &name);
 
 // A results line (its `// ` prefix already stripped) that names a figure:
 // `\image(path)` (or `@image{path}`). Sets *path.
@@ -491,6 +565,11 @@ struct RenderedSpan {
     int col_start = 0, col_end = 0;  // byte offsets into RenderedLine::text
     std::uint32_t style = 0;         // kBold / kItalic / kHeading / kComment / kCite / kLink
     int heading_level = 0;           // with kHeading
+    // The span's colour once a renderer has styled it (the editor: its
+    // element's computed style, as a highlight group or "#rrggbb"), with
+    // kBold / kItalic in `style` set to match. Empty: not styled yet, and
+    // `style` alone says what the span is.
+    std::string hl;
 };
 struct RenderedLine {
     std::string text;
@@ -557,6 +636,80 @@ struct SlideHtml {
     std::string title, body;
 };
 std::vector<SlideHtml> SlideFragments(const Document &doc, const HtmlOptions &opts = HtmlOptions());
+
+// ---------------------------------------------------------------------------
+// Style sheets in exports (docs/mepml-spec/rendering.md §5). An export's
+// own look is built in; the sheets a document is exported with change it
+// where they say something the default sheet does not, as far as the
+// format can show it -- so a document with no sheet exports exactly as it
+// always has.
+
+// The user's sheet for every document: $XDG_CONFIG_HOME/mep/mepml.mepss
+// (~/.config/...), "" when neither variable is set.
+std::string UserStyleSheetPath();
+// Reads the user's sheet and the ones the document names (doc->styles,
+// resolved against `file`) into doc->sheets; a sheet that cannot be read
+// is skipped.
+void LoadStyleSheets(Document *doc, const std::string &file, const ReadFileFn &read);
+// The style sheets written in the document itself, in order (its imports'
+// too): each `\raw(style, rules ...)` block's text. They apply after the
+// sheets the header names. (`style` is a format no export has, so the
+// blocks themselves are in no export.)
+std::vector<std::string> InlineStyleSheets(const Document &doc);
+// The names `\class(name, ...)` gives text in the document, in the order
+// they first appear, each once.
+std::vector<std::string> ClassNames(const Document &doc);
+// A class as an export without CSS draws it: what the document's sheets
+// give `.name` -- a colour ("#rrggbb", "" for none), bold, italic.
+struct ClassLook {
+    std::string color;
+    bool bold = false, italic = false;
+};
+ClassLook ExportClassLook(const Document &doc, const std::string &name);
+// The media tags an export of `doc` has (style.md §4): its export tags,
+// with `screen` or `print` as the format is one or the other.
+std::vector<std::string> ExportMedia(const Document &doc);
+// A box kind as an export draws it: the label before its title, its accent
+// and the paper behind it (both "#rrggbb"), and what closes it ("" for
+// nothing). BoxKinds' own unless the document's sheets say otherwise.
+struct BoxLook {
+    std::string label, color, tint, end;
+};
+BoxLook ExportBoxLook(const Document &doc, const std::string &kind);
+// What the document's sheets change for runs of text, for an export that
+// draws from constants of its own (LaTeX through its HTML, Word, Writer,
+// RTF, the slide formats): the colour, weight and slant an element gets
+// from the sheets where they differ from mep's built-in look -- and only
+// what the element itself brings, not what it inherits from one already
+// changed. An exporter tells it where it is as it walks: ForBlock at each
+// block, Enter / Leave round each inline.
+class ExportTextStyler {
+  public:
+    struct Change {
+        std::string color;  // "RRGGBB", "" for no change
+        int bold = -1, italic = -1;  // 1 / 0 to set, -1 for no change
+        bool any() const { return !color.empty() || bold >= 0 || italic >= 0; }
+    };
+    explicit ExportTextStyler(const Document &doc);
+    ~ExportTextStyler();
+    ExportTextStyler(const ExportTextStyler &) = delete;
+    ExportTextStyler &operator=(const ExportTextStyler &) = delete;
+    // False without sheets: every call then answers "no change".
+    bool active() const;
+    Change ForBlock(const Block &b);
+    Change Enter(const Inline &x);
+    void Leave();
+
+  private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+// The document's sheets as CSS for the HTML ToHtml writes: each rule's
+// selector as the markup it selects there (`box[kind=proof]::label` is
+// `.mbox-proof .mbox-label`), its values as CSS's. Rules the page has
+// nothing for are left out. "" without sheets.
+std::string ExportSheetCss(const Document &doc);
 
 // ---------------------------------------------------------------------------
 // What the exports show of a code block, as org-babel's :exports says it:

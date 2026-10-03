@@ -338,6 +338,7 @@ struct MdWriter {
             case InlineKind::Font: return "<span style=\"font-family:" + x.arg + "\">" + in + "</span>";
             case InlineKind::FontSize: return "<span style=\"font-size:" + x.arg + "pt\">" + in + "</span>";
             case InlineKind::Color: return "<span style=\"color:" + x.arg + "\">" + in + "</span>";
+            case InlineKind::Class: return IsBoxKindName(x.arg) ? "<span class=\"mep-" + x.arg + "\">" + in + "</span>" : in;
             case InlineKind::Footnote:
                 footnotes.emplace_back(x.number, Unwrap(in));
                 return "[^" + std::to_string(x.number) + "]";
@@ -499,10 +500,9 @@ struct MdWriter {
                 case BlockKind::BoxBegin: {
                     // Markdown has no box: a bold heading, its content, and
                     // markers (holding the title) mep's importer reads back.
-                    const BoxKind *k = FindBoxKind(b.keyword);
                     const std::string title = b.caption_inlines.empty() ? "" : Unwrap(Inl(b.caption_inlines));
                     blocks.push_back("<!-- mepml:box " + b.keyword + (title.empty() ? "" : " " + title) + " -->\n**" +
-                                     (k ? k->label : b.keyword) + (title.empty() ? "" : ": " + title) + "**");
+                                     ExportBoxLook(doc, b.keyword).label + (title.empty() ? "" : ": " + title) + "**");
                     if (!b.inlines.empty()) blocks.push_back(Inl(b.inlines));
                     if (b.box_closed) blocks.push_back("<!-- /mepml:box -->");
                     break;
@@ -622,6 +622,7 @@ struct OrgWriter {
             case InlineKind::Font:
             case InlineKind::FontSize:
             case InlineKind::Color: return in;
+            case InlineKind::Class: return in;
         }
         return in;
     }
@@ -737,13 +738,16 @@ struct OrgWriter {
                 // Org's special blocks: #+begin_definition Title ... #+end_definition.
                 case BlockKind::BoxBegin: {
                     const std::string title = b.caption_inlines.empty() ? "" : SafeLines(Inl(b.caption_inlines));
-                    std::string o = "#+begin_" + b.keyword + (title.empty() ? "" : " " + title);
+                    // (A kind of the document's own, `\boxed(axiom, ...)`, is
+                    // `box_axiom`: told from Org's own blocks on the way back.)
+                    const std::string name = FindBoxKind(b.keyword) ? b.keyword : "box_" + b.keyword;
+                    std::string o = "#+begin_" + name + (title.empty() ? "" : " " + title);
                     if (!b.inlines.empty()) o += "\n" + SafeLines(Inl(b.inlines));
-                    if (b.box_closed) o += "\n#+end_" + b.keyword;
+                    if (b.box_closed) o += "\n#+end_" + name;
                     blocks.push_back(o);
                     break;
                 }
-                case BlockKind::BoxEnd: blocks.push_back("#+end_" + b.keyword); break;
+                case BlockKind::BoxEnd: blocks.push_back("#+end_" + (FindBoxKind(b.keyword) ? b.keyword : "box_" + b.keyword)); break;
                 case BlockKind::Meta:
                 case BlockKind::Import:
                 case BlockKind::Citation:
@@ -883,7 +887,7 @@ struct TextWriter {
                     break;
                 }
                 case BlockKind::BoxBegin:
-                    blocks.push_back(BoxHeading(b) + (b.inlines.empty() ? "" : ". " + Inl(b.inlines)));
+                    blocks.push_back(BoxHeading(doc, b) + (b.inlines.empty() ? "" : ". " + Inl(b.inlines)));
                     break;
                 case BlockKind::BoxEnd: break;
                 case BlockKind::Comment:
@@ -956,9 +960,48 @@ std::vector<std::pair<std::string, std::string>> OfficeProps(const Document &doc
 // RTF
 // ===========================================================================
 
+// What the document's style sheets change of a run, kept apart from the
+// run's own formatting: Word and Writer carry it as a character style
+// named for the change ("MepSheet-cAA0000-b1"), so the text looks as the
+// sheet says and reads back as it was written -- a reader ignores a
+// style's look, where bold set on the run itself would come back as *bold*.
+struct SheetLook {
+    std::string color;  // RRGGBB
+    int bold = -1, italic = -1;
+    // "ins" / "del": inserted or deleted text whose own colour (what a
+    // reader knows it by) gave way to the sheet's -- the style's name says
+    // what it was.
+    std::string tag;
+    bool any() const { return !color.empty() || bold >= 0 || italic >= 0; }
+    // +inserted+ and !deleted! text is written in a colour of its own; a
+    // sheet's colour for it replaces that one.
+    template <typename Fmt>
+    void TakeFor(const Inline &x, const ExportTextStyler::Change &ch, Fmt *f) {
+        Take(ch);
+        if (ch.color.empty() || (x.kind != InlineKind::Insert && x.kind != InlineKind::Delete)) return;
+        f->color.clear();
+        tag = x.kind == InlineKind::Insert ? "ins" : "del";
+    }
+    void Take(const ExportTextStyler::Change &ch) {
+        if (!ch.color.empty()) color = ch.color;
+        if (ch.bold >= 0) bold = ch.bold;
+        if (ch.italic >= 0) italic = ch.italic;
+    }
+    // `sep` is '-' in Word's style ids and '_' in ODF's names.
+    std::string Id(char sep) const {
+        std::string id = "MepSheet";
+        if (!tag.empty()) id += std::string(1, sep) + tag;
+        if (!color.empty()) id += std::string(1, sep) + "c" + color;
+        if (bold >= 0) id += std::string(1, sep) + (bold ? "b1" : "b0");
+        if (italic >= 0) id += std::string(1, sep) + (italic ? "i1" : "i0");
+        return id;
+    }
+};
+
 struct RtfWriter {
     const Document &doc;
     std::string base_dir;
+    std::vector<std::string> classes{};  // \class names met, in order: \cs40, \cs41 ...
     std::vector<std::string> fonts{"Times New Roman", "Helvetica", "Courier New"};
     std::vector<std::uint32_t> colors{0x000000, 0x1a5fb4, 0x2e7d32, 0xc62828, 0xfff3a3, 0x6b6b6b};
     enum { kBlack = 1, kBlue = 2, kGreen = 3, kRed = 4, kYellow = 5, kGray = 6 };
@@ -1000,6 +1043,9 @@ struct RtfWriter {
         return o;
     }
 
+    // (No style sheet's look on a run here: RTF keeps a look on the run
+    // itself, where it would read back as the author's own *bold*. Word and
+    // Writer carry it in a character style instead -- SheetLook.)
     std::string Inl(const std::vector<Inline> &ins) {
         std::string o;
         for (const Inline &x : ins) o += Node(x);
@@ -1030,6 +1076,15 @@ struct RtfWriter {
                 return "{\\fs" + std::to_string(half > 0 ? half : 24) + " " + in + "}";
             }
             case InlineKind::Color: return "{\\cf" + std::to_string(ColorIndex(x.arg)) + " " + in + "}";
+            // A character style named for the class (the stylesheet lists
+            // them). Only the name: RTF keeps a style's look on the run
+            // itself, where it would read back as the text's own.
+            case InlineKind::Class: {
+                if (!IsBoxKindName(x.arg)) return in;
+                auto it = std::find(classes.begin(), classes.end(), x.arg);
+                if (it == classes.end()) it = classes.insert(classes.end(), x.arg);
+                return "{\\cs" + std::to_string(40 + (it - classes.begin())) + " " + in + "}";
+            }
             case InlineKind::Footnote:
                 return "{\\super\\chftn}{\\footnote\\pard\\plain\\fs20 {\\super\\chftn} " + in + "}";
             case InlineKind::Cite:
@@ -1209,9 +1264,11 @@ struct RtfWriter {
                     // colour, on its paper (paragraph formatting only: the
                     // words read back as they were written).
                     const BoxKind *k = FindBoxKind(b.keyword);
-                    const std::string rule = std::to_string(ColorIndex(k ? k->color : "#2c7fb8"));
-                    const std::string tint = std::to_string(ColorIndex(k ? k->tint : "#eef5fb"));
-                    std::string heading = Esc(std::string(k ? k->label : b.keyword.c_str()));
+                    // (Its label and colours are the style sheets' where they say.)
+                    const BoxLook look = ExportBoxLook(doc, b.keyword);
+                    const std::string rule = std::to_string(ColorIndex(k ? look.color : "#2c7fb8"));
+                    const std::string tint = std::to_string(ColorIndex(k ? look.tint : "#eef5fb"));
+                    std::string heading = Esc(look.label);
                     if (!b.caption_inlines.empty()) heading += ": " + Inl(b.caption_inlines);
                     body += Para("\\s23\\keepn\\sb200\\li120\\brdrl\\brdrs\\brdrw40\\brsp100\\brdrcf" + rule + "\\cbpat" + tint, heading);
                     if (!b.inlines.empty()) body += Para("", Inl(b.inlines));
@@ -1248,7 +1305,9 @@ struct RtfWriter {
         for (int l = 1; l <= 6; ++l) out += "{\\s" + std::to_string(10 + l) + "\\sbasedon0 toc " + std::to_string(l) + ";}";
         out += "{\\s17\\sbasedon0 Bibliography;}{\\s18\\sbasedon0 Math Display;}{\\s19\\sbasedon0 TOC Heading;}{\\s20\\sbasedon0 List Paragraph;}"
                "{\\s21\\sbasedon0 Abstract;}{\\s22\\sbasedon0 Abstract Title;}{\\s23\\sbasedon0 Box Title;}"
-               "{\\*\\cs30 Verbatim Char;}{\\*\\cs31 Math;}}\n";  // (bare: some readers apply a character style's look to paragraphs)
+               "{\\*\\cs30 Verbatim Char;}{\\*\\cs31 Math;}";  // (bare: some readers apply a character style's look to paragraphs)
+        for (size_t i = 0; i < classes.size(); ++i) out += "{\\*\\cs" + std::to_string(40 + i) + " mep class " + classes[i] + ";}";
+        out += "}\n";
         if (!lists.empty()) {
             std::string table = "{\\*\\listtable", overrides = "{\\*\\listoverridetable";
             for (size_t i = 0; i < lists.size(); ++i) {
@@ -1308,6 +1367,7 @@ struct DocxRunFmt {
     int half_points = 0;
     std::string style;  // rStyle
     bool keep_spaces = false;  // code: indentation is meaning, not layout
+    SheetLook sheet;  // what the document's style sheets change of the run
 };
 
 struct DocxWriter {
@@ -1320,6 +1380,8 @@ struct DocxWriter {
     int next_rel = 10;
     int next_pic = 1;
     int code_n = 0, mark_n = 0;
+    ExportTextStyler styler{doc};
+    std::map<std::string, SheetLook> sheet_styles{};  // the "MepSheet-..." styles the body uses
 
     // A bookmark around nothing: a named point in the text.
     std::string Bookmark(const std::string &name) {
@@ -1334,7 +1396,13 @@ struct DocxWriter {
     std::string Run(const std::string &text, const DocxRunFmt &f) {
         if (text.empty()) return "";
         std::string pr;
-        if (!f.style.empty()) pr += "<w:rStyle w:val=\"" + f.style + "\"/>";
+        if (!f.style.empty()) {
+            pr += "<w:rStyle w:val=\"" + f.style + "\"/>";
+        } else if (f.sheet.any()) {
+            // (A run has one character style: a class's or a link's comes first.)
+            sheet_styles[f.sheet.Id('-')] = f.sheet;
+            pr += "<w:rStyle w:val=\"" + f.sheet.Id('-') + "\"/>";
+        }
         if (f.mono) pr += "<w:rFonts w:ascii=\"Courier New\" w:hAnsi=\"Courier New\" w:cs=\"Courier New\"/>";
         else if (!f.font.empty()) pr += "<w:rFonts w:ascii=\"" + XmlEsc(f.font) + "\" w:hAnsi=\"" + XmlEsc(f.font) + "\"/>";
         if (f.b) pr += "<w:b/>";
@@ -1362,7 +1430,20 @@ struct DocxWriter {
         for (const Inline &x : ins) o += Node(x, f);
         return o;
     }
+    // What the document's style sheets change of a run (ExportTextStyler):
+    // its colour, weight and slant.
+    static void ApplySheet(const ExportTextStyler::Change &ch, DocxRunFmt *f) { f->sheet.Take(ch); }
+    struct SheetScope {
+        ExportTextStyler &styler;
+        bool entered;
+        ~SheetScope() {
+            if (entered) styler.Leave();
+        }
+    };
     std::string Node(const Inline &x, DocxRunFmt f) {
+        const bool styled = styler.active() && x.kind != InlineKind::Text;
+        const ExportTextStyler::Change change = styled ? styler.Enter(x) : ExportTextStyler::Change();
+        const SheetScope scope{styler, styled};
         switch (x.kind) {
             case InlineKind::Text: return Run(x.text, f);
             case InlineKind::Bold: f.b = true; break;
@@ -1383,6 +1464,11 @@ struct DocxWriter {
                 return Run(x.text, f);
             case InlineKind::Font: f.font = x.arg; break;
             case InlineKind::FontSize: f.half_points = static_cast<int>(std::atof(x.arg.c_str()) * 2.0); break;
+            // A character style named for the class (Styles() defines one
+            // per class, in the look the document's sheets give it).
+            case InlineKind::Class:
+                if (IsBoxKindName(x.arg)) f.style = "MepClass-" + x.arg;
+                break;
             case InlineKind::Color: {
                 std::uint32_t rgb = 0;
                 if (ParseColor(x.arg, &rgb)) {
@@ -1421,6 +1507,7 @@ struct DocxWriter {
             case InlineKind::Raw: return x.text;  // WordprocessingML runs, as written
             case InlineKind::Command: return Run("\\" + x.arg + "(" + x.text + ")", f);
         }
+        f.sheet.TakeFor(x, change, &f);  // (after the kind's own look: a sheet's rule for it wins)
         return Inl(x.children, f);
     }
 
@@ -1480,6 +1567,9 @@ struct DocxWriter {
         for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
             const Block &b = doc.blocks[bi];
             if (export_hidden[bi]) continue;
+            // (The block's own text: what the document's sheets change of it.)
+            none = DocxRunFmt();
+            ApplySheet(styler.ForBlock(b), &none);
             bool show_code = true, show_results = true;
             if (b.kind == BlockKind::Code) CodeExports(doc, b, &show_code, &show_results);
             switch (b.kind) {
@@ -1606,7 +1696,7 @@ struct DocxWriter {
                     // bold, its colour, a rule down the left on its paper).
                     const BoxKind *k = FindBoxKind(b.keyword);
                     const std::string name = k ? k->name : "definition";
-                    std::string heading = Run(std::string(k ? k->label : b.keyword.c_str()) + (b.caption_inlines.empty() ? "" : ": "), none);
+                    std::string heading = Run(ExportBoxLook(doc, b.keyword).label + (b.caption_inlines.empty() ? "" : ": "), none);
                     if (!b.caption_inlines.empty()) heading += Inl(b.caption_inlines, none);
                     body += P(Style("Box" + std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])))) + name.substr(1)), heading);
                     if (!b.inlines.empty()) body += P("", Inl(b.inlines, none));
@@ -1629,7 +1719,7 @@ struct DocxWriter {
         return body;
     }
 
-    static std::string Styles() {
+    static std::string Styles(const Document &doc, const std::map<std::string, SheetLook> &sheet_styles) {
         std::string s =
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
             "<w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
@@ -1653,8 +1743,25 @@ struct DocxWriter {
              "<w:style w:type=\"paragraph\" w:styleId=\"Abstract\"><w:name w:val=\"Abstract\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:ind w:left=\"720\" w:right=\"720\"/></w:pPr><w:rPr><w:sz w:val=\"20\"/></w:rPr></w:style>";
         // mepml's boxes: a heading per kind ("Definition Box"), bold in its
         // colour, ruled down the left on its paper.
+        // What the document's style sheets change of the text: a character
+        // style for each change the body uses.
+        for (const auto &kv : sheet_styles) {
+            const SheetLook &look = kv.second;
+            s += "<w:style w:type=\"character\" w:customStyle=\"1\" w:styleId=\"" + kv.first + "\"><w:name w:val=\"" + kv.first + "\"/><w:rPr>" +
+                 (look.bold == 1 ? "<w:b/>" : look.bold == 0 ? "<w:b w:val=\"0\"/>" : "") +
+                 (look.italic == 1 ? "<w:i/>" : look.italic == 0 ? "<w:i w:val=\"0\"/>" : "") +
+                 (look.color.empty() ? "" : "<w:color w:val=\"" + look.color + "\"/>") + "</w:rPr></w:style>";
+        }
+        // \class(name, ...): a character style each.
+        for (const std::string &name : ClassNames(doc)) {
+            const ClassLook look = ExportClassLook(doc, name);
+            s += "<w:style w:type=\"character\" w:customStyle=\"1\" w:styleId=\"MepClass-" + name + "\"><w:name w:val=\"mep class " + name + "\"/><w:rPr>" +
+                 (look.bold ? "<w:b/>" : "") + (look.italic ? "<w:i/>" : "") +
+                 (look.color.empty() ? "" : "<w:color w:val=\"" + look.color.substr(1) + "\"/>") + "</w:rPr></w:style>";
+        }
         for (const BoxKind &k : BoxKinds()) {
-            std::string id = k.name, colour = k.color + 1, tint = k.tint + 1;
+            const BoxLook look = ExportBoxLook(doc, k.name);  // (the style sheets' colours, where they give any)
+            std::string id = k.name, colour = look.color.substr(1), tint = look.tint.substr(1);
             id[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(id[0])));
             s += "<w:style w:type=\"paragraph\" w:styleId=\"Box" + id + "\"><w:name w:val=\"" + k.label + " Box\"/><w:basedOn w:val=\"Normal\"/>"
                  "<w:pPr><w:keepNext/><w:pBdr><w:left w:val=\"single\" w:sz=\"24\" w:space=\"6\" w:color=\"" + colour + "\"/></w:pBdr>"
@@ -1708,6 +1815,7 @@ struct OdtFmt {
     bool b = false, i = false, u = false, strike = false, sup = false, sub = false, mono = false, mark = false;
     std::string color, font;
     double pt = 0.0;
+    SheetLook sheet;  // what the document's style sheets change of the run (not part of Key)
     std::string Key() const {
         return std::string(b ? "b" : "") + (i ? "i" : "") + (u ? "u" : "") + (strike ? "s" : "") + (sup ? "^" : "") +
                (sub ? "_" : "") + (mono ? "m" : "") + (mark ? "h" : "") + "|" + color + "|" + font + "|" + std::to_string(pt);
@@ -1721,6 +1829,8 @@ struct OdtWriter {
     std::string auto_styles;
     std::vector<zip::EntryToWrite> pictures;
     int note_n = 0, pic_n = 0, code_n = 0;
+    ExportTextStyler styler{doc};
+    std::map<std::string, SheetLook> sheet_styles{};  // the "MepSheet_..." styles the body uses
 
     std::string StyleFor(const OdtFmt &f) {
         const std::string key = f.Key();
@@ -1764,8 +1874,13 @@ struct OdtWriter {
                 t += "<text:s text:c=\"" + std::to_string(n) + "\"/>";
             } else t += XmlEsc(std::string(1, c));
         }
-        if (f.Key() == OdtFmt().Key()) return t;
-        return "<text:span text:style-name=\"" + StyleFor(f) + "\">" + t + "</text:span>";
+        if (f.Key() != OdtFmt().Key()) t = "<text:span text:style-name=\"" + StyleFor(f) + "\">" + t + "</text:span>";
+        // The sheets' look round the run's own, as a named style.
+        if (f.sheet.any()) {
+            sheet_styles[f.sheet.Id('_')] = f.sheet;
+            t = "<text:span text:style-name=\"" + f.sheet.Id('_') + "\">" + t + "</text:span>";
+        }
+        return t;
     }
 
     std::string Inl(const std::vector<Inline> &ins, const OdtFmt &f) {
@@ -1773,7 +1888,20 @@ struct OdtWriter {
         for (const Inline &x : ins) o += Node(x, f);
         return o;
     }
+    // What the document's style sheets change of a run (ExportTextStyler):
+    // its colour, weight and slant.
+    static void ApplySheet(const ExportTextStyler::Change &ch, OdtFmt *f) { f->sheet.Take(ch); }
+    struct SheetScope {
+        ExportTextStyler &styler;
+        bool entered;
+        ~SheetScope() {
+            if (entered) styler.Leave();
+        }
+    };
     std::string Node(const Inline &x, OdtFmt f) {
+        const bool styled = styler.active() && x.kind != InlineKind::Text;
+        const ExportTextStyler::Change change = styled ? styler.Enter(x) : ExportTextStyler::Change();
+        const SheetScope scope{styler, styled};
         switch (x.kind) {
             case InlineKind::Text: return Run(x.text, f);
             case InlineKind::Bold: f.b = true; break;
@@ -1791,6 +1919,11 @@ struct OdtWriter {
             case InlineKind::Verbatim: return "<text:span text:style-name=\"Source_20_Text\">" + Run(x.text, OdtFmt()) + "</text:span>";
             case InlineKind::Font: f.font = x.arg; break;
             case InlineKind::FontSize: f.pt = std::atof(x.arg.c_str()); break;
+            // A text style named for the class (OdtStyles defines one per
+            // class, in the look the document's sheets give it).
+            case InlineKind::Class:
+                if (!IsBoxKindName(x.arg)) break;
+                return "<text:span text:style-name=\"MepClass_" + x.arg + "\">" + Inl(x.children, f) + "</text:span>";
             case InlineKind::Color: {
                 std::uint32_t rgb = 0;
                 if (ParseColor(x.arg, &rgb)) {
@@ -1819,6 +1952,7 @@ struct OdtWriter {
             case InlineKind::Raw: return x.text;  // ODF inline XML, as written
             case InlineKind::Command: return Run("\\" + x.arg + "(" + x.text + ")", f);
         }
+        f.sheet.TakeFor(x, change, &f);  // (after the kind's own look: a sheet's rule for it wins)
         return Inl(x.children, f);
     }
 
@@ -1870,6 +2004,9 @@ struct OdtWriter {
         for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
             const Block &b = doc.blocks[bi];
             if (export_hidden[bi]) continue;
+            // (The block's own text: what the document's sheets change of it.)
+            none = OdtFmt();
+            ApplySheet(styler.ForBlock(b), &none);
             bool show_code = true, show_results = true;
             if (b.kind == BlockKind::Code) CodeExports(doc, b, &show_code, &show_results);
             switch (b.kind) {
@@ -2004,7 +2141,7 @@ struct OdtWriter {
                     // A heading paragraph in the box's own style (see the
                     // styles: bold, its colour, ruled down the left).
                     const BoxKind *k = FindBoxKind(b.keyword);
-                    std::string heading = Run(std::string(k ? k->label : b.keyword.c_str()) + (b.caption_inlines.empty() ? "" : ": "), none);
+                    std::string heading = Run(ExportBoxLook(doc, b.keyword).label + (b.caption_inlines.empty() ? "" : ": "), none);
                     if (!b.caption_inlines.empty()) heading += Inl(b.caption_inlines, none);
                     body += P("Box_20_" + std::string(k ? k->label : "Definition"), heading);
                     if (!b.inlines.empty()) body += P("", Inl(b.inlines, none));
@@ -2036,7 +2173,7 @@ const char *kOdtNs =
     "xmlns:meta=\"urn:oasis:names:tc:opendocument:xmlns:meta:1.0\" xmlns:svg=\"urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0\" "
     "office:version=\"1.3\"";
 
-std::string OdtStyles() {
+std::string OdtStyles(const Document &doc, const std::map<std::string, SheetLook> &sheet_styles) {
     std::string s = std::string("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-styles ") + kOdtNs +
                     "><office:font-face-decls><style:font-face style:name=\"Liberation Mono\" svg:font-family=\"'Liberation Mono'\" style:font-pitch=\"fixed\"/></office:font-face-decls><office:styles>"
                     "<style:default-style style:family=\"paragraph\"><style:paragraph-properties fo:margin-bottom=\"0.2cm\"/><style:text-properties fo:font-size=\"11pt\"/></style:default-style>"
@@ -2072,11 +2209,32 @@ std::string OdtStyles() {
          "<style:style style:name=\"Abstract\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:margin-left=\"1.25cm\" fo:margin-right=\"1.25cm\"/><style:text-properties fo:font-size=\"10pt\"/></style:style>";
     // mepml's boxes: a heading per kind, bold in its colour, ruled down
     // the left on its paper.
-    for (const BoxKind &k : BoxKinds())
+    // What the document's style sheets change of the text: a text style
+    // for each change the body uses.
+    for (const auto &kv : sheet_styles) {
+        const SheetLook &look = kv.second;
+        s += "<style:style style:name=\"" + kv.first + "\" style:family=\"text\"><style:text-properties" +
+             (look.bold >= 0 ? std::string(" fo:font-weight=\"") + (look.bold ? "bold" : "normal") + "\"" : "") +
+             (look.italic >= 0 ? std::string(" fo:font-style=\"") + (look.italic ? "italic" : "normal") + "\"" : "") +
+             (look.color.empty() ? "" : " fo:color=\"#" + look.color + "\"") + "/></style:style>";
+    }
+    // \class(name, ...): a text style each.
+    for (const std::string &name : ClassNames(doc)) {
+        const ClassLook look = ExportClassLook(doc, name);
+        s += "<style:style style:name=\"MepClass_" + name + "\" style:display-name=\"mep class " + name + "\" style:family=\"text\"><style:text-properties" +
+             (look.bold ? " fo:font-weight=\"bold\"" : "") + (look.italic ? " fo:font-style=\"italic\"" : "") +
+             (look.color.empty() ? "" : " fo:color=\"" + look.color + "\"") + "/></style:style>";
+    }
+    for (const BoxKind &k : BoxKinds()) {
+        // (The style keeps the kind's own name -- the importer reads boxes
+        // back by it -- whatever a sheet calls the kind; its colours are
+        // the sheets' where they give any.)
+        const BoxLook look = ExportBoxLook(doc, k.name);
         s += "<style:style style:name=\"Box_20_" + std::string(k.label) + "\" style:display-name=\"" + k.label +
              " Box\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:margin-top=\"0.35cm\" "
-             "fo:keep-with-next=\"always\" fo:border-left=\"0.1cm solid " + k.color + "\" fo:padding-left=\"0.25cm\" fo:background-color=\"" + k.tint +
-             "\"/><style:text-properties fo:font-weight=\"bold\" fo:color=\"" + k.color + "\"/></style:style>";
+             "fo:keep-with-next=\"always\" fo:border-left=\"0.1cm solid " + look.color + "\" fo:padding-left=\"0.25cm\" fo:background-color=\"" + look.tint +
+             "\"/><style:text-properties fo:font-weight=\"bold\" fo:color=\"" + look.color + "\"/></style:style>";
+    }
     s += "<text:list-style style:name=\"LBullet\">";
     for (int l = 1; l <= 10; ++l)
         s += "<text:list-level-style-bullet text:level=\"" + std::to_string(l) + "\" text:bullet-char=\"" + (l % 2 ? "•" : "◦") +
@@ -2161,7 +2319,7 @@ bool WriteOdt(const Document &doc, const std::string &path, const std::string &b
     std::vector<zip::EntryToWrite> entries = {{"mimetype", "application/vnd.oasis.opendocument.text", true},
                                               {"META-INF/manifest.xml", manifest, false},
                                               {"content.xml", content, false},
-                                              {"styles.xml", OdtStyles(), false},
+                                              {"styles.xml", OdtStyles(doc, w.sheet_styles), false},
                                               {"meta.xml", meta, false}};
     for (auto &p : w.pictures) entries.push_back(p);
     std::ofstream f(path, std::ios::binary);
@@ -2235,7 +2393,7 @@ bool WriteDocx(const Document &doc, const std::string &path, const std::string &
         {"docProps/custom.xml", custom, false},
         {"word/document.xml", document, false},
         {"word/_rels/document.xml.rels", doc_rels, false},
-        {"word/styles.xml", DocxWriter::Styles(), false},
+        {"word/styles.xml", DocxWriter::Styles(doc, w.sheet_styles), false},
         {"word/numbering.xml", w.Numbering(), false},
         {"word/footnotes.xml", footnotes, false},
         {"word/settings.xml",

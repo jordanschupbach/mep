@@ -42,6 +42,9 @@ struct Run {
     std::string link;
     std::string tex;  // inline maths: its TeX (`text` is its plain-text spelling)
     bool serif = false;  // maths set as text: in a serif, as maths is
+    // Set where a style sheet (or an inner element of its own colour or
+    // weight) has had its say: an outer element's change leaves it alone.
+    bool color_set = false, bold_set = false, italic_set = false;
 };
 
 enum class ParaKind { Body, Bullet, Number, Heading, Code, Result, Caption, Math, Note, Callout, Title, Subtitle, Byline };
@@ -160,9 +163,40 @@ struct Builder {
     const Document &doc;
     std::string base_dir;
     std::vector<std::vector<Run>> notes;  // this slide's footnotes, set below its content
+    ExportTextStyler styler{doc};
+
+    // What the document's style sheets change of an element's runs
+    // (out[from..]): its colour, weight and slant, where nothing inside it
+    // has already said its own.
+    void ApplySheet(const Inline &x, const ExportTextStyler::Change &ch, size_t from, std::vector<Run> &out) {
+        const bool own_color = x.kind == InlineKind::Color || x.kind == InlineKind::Insert || x.kind == InlineKind::Delete ||
+                               x.kind == InlineKind::Highlight || x.kind == InlineKind::Link;
+        for (size_t i = from; i < out.size(); ++i) {
+            Run &r = out[i];
+            if (!r.color_set && !ch.color.empty()) r.color = ch.color;
+            if (!ch.color.empty() || own_color) r.color_set = true;
+            if (!r.bold_set && ch.bold >= 0) r.bold = ch.bold == 1;
+            if (ch.bold >= 0 || x.kind == InlineKind::Bold) r.bold_set = true;
+            if (!r.italic_set && ch.italic >= 0) r.italic = ch.italic == 1;
+            if (ch.italic >= 0 || x.kind == InlineKind::Italic) r.italic_set = true;
+        }
+    }
 
     void Runs(const std::vector<Inline> &ins, Run style, std::vector<Run> &out) {
         for (const Inline &x : ins) {
+            if (styler.active() && x.kind != InlineKind::Text) {
+                const ExportTextStyler::Change ch = styler.Enter(x);
+                const size_t from = out.size();
+                Runs1(x, style, out);
+                styler.Leave();
+                ApplySheet(x, ch, from, out);
+            } else {
+                Runs1(x, style, out);
+            }
+        }
+    }
+    void Runs1(const Inline &x, Run style, std::vector<Run> &out) {
+        {
             Run s = style;
             switch (x.kind) {
                 case InlineKind::Text:
@@ -185,6 +219,7 @@ struct Builder {
                 case InlineKind::Small:
                 case InlineKind::Big:
                 case InlineKind::Font:
+                case InlineKind::Class:
                 case InlineKind::FontSize: Runs(x.children, s, out); break;
                 case InlineKind::Color: {
                     std::uint32_t rgb = 0;
@@ -381,8 +416,10 @@ struct Builder {
                 const BoxKind *k = FindBoxKind(b.keyword);
                 Run kind_run;
                 kind_run.bold = true;
-                kind_run.color = k ? std::string(k->color + 1) : "2C7FB8";
-                kind_run.text = std::string(k ? k->label : b.keyword.c_str()) + (b.caption_inlines.empty() ? "" : ": ");
+                // (Its label and colour are the style sheets' where they say.)
+                const BoxLook look = ExportBoxLook(doc, b.keyword);
+                kind_run.color = k ? look.color.substr(1) : "2C7FB8";
+                kind_run.text = look.label + (b.caption_inlines.empty() ? "" : ": ");
                 Para p{ParaKind::Body, {kind_run}};
                 Run title_style;
                 title_style.bold = true;

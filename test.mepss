@@ -1,0 +1,27 @@
+/* test.mepss -- the style sheet test.mepml names in its header
+ * (`//? Style: test.mepss`). The language is docs/mepml-spec/style.md;
+ * mep's own default look is assets/mepml/default.mepss, and every rule
+ * here overrides something in it.
+ */
+
+/* An element, narrowed by an attribute. theme(Group, #fallback) is the
+   editor theme's colour, and the fallback wherever there is no theme (an
+   export). */
+heading[level=3] { color: theme(Cyan, #1b7f86); font-style: italic; }
+
+/* A part of an element (::marker, ::label, ::title, ::end ...), and text
+   the renderer generates for it. */
+list-item::marker         { content: "▸"; }
+box[kind=proof]::end      { content: "∎"; }
+
+/* A custom property, inherited: one line recolours a remark's label, its
+   rule and (faded) its paper. */
+box[kind=remark] { --accent: theme(Purple, #6a51a3); }
+
+/* Rules for one renderer only: the presentation view, and paper. */
+@media present {
+  slide heading[level=1] { font-size: 1.8; }
+}
+@media html, print {
+  link { color: #0b5cad; }
+}

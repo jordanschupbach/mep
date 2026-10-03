@@ -99,6 +99,9 @@ std::vector<std::string> SplitLines(const std::string &text) {
 }
 
 /** @brief Builds the analysis options for a document URI (its directory anchors relative path checks). */
+// A mepml style sheet, by its name.
+bool IsSheet(const std::string &uri) { return uri.size() > 6 && uri.compare(uri.size() - 6, 6, ".mepss") == 0; }
+
 MepmlLspOptions OptionsFor(const std::string &uri) {
     MepmlLspOptions opts;
     const std::string path = UriToPath(uri);
@@ -215,6 +218,13 @@ public:
         if (!is_request) return;
 
         const Json &id = msg.get("id");
+        // A style sheet (.mepss): completion and hover of its own, and
+        // nothing a mepml document's structure is needed for.
+        if (IsSheet(params.get("textDocument").get("uri").as_string()) && method != "textDocument/completion" &&
+            method != "textDocument/hover" && method != "completionItem/resolve") {
+            Reply(id, Json());
+            return;
+        }
         if (method == "textDocument/completion") Reply(id, Completion(params));
         else if (method == "textDocument/hover") Reply(id, HoverAt(params));
         else if (method == "textDocument/documentSymbol") Reply(id, Symbols(params));
@@ -342,7 +352,7 @@ private:
     /** @brief Lints a document and pushes the result to the client. */
     void Publish(const std::string &uri) {
         Json arr = Json::Array();
-        for (const MepmlLspDiagnostic &d : MepmlLspDiagnostics(Doc(uri), OptionsFor(uri))) {
+        for (const MepmlLspDiagnostic &d : IsSheet(uri) ? MepssLspDiagnostics(Doc(uri)) : MepmlLspDiagnostics(Doc(uri), OptionsFor(uri))) {
             Json j = Json::Object();
             j["range"] = RangeOnLine(d.line, d.col_start, d.col_end);
             j["severity"] = static_cast<int>(d.severity);
@@ -370,7 +380,8 @@ private:
     Json Completion(const Json &params) const {
         const Request req = ReadRequest(params);
         Json arr = Json::Array();
-        const std::vector<MepmlLspCompletionItem> items = MepmlLspCompletions(Doc(req.uri), req.line, req.col, OptionsFor(req.uri));
+        const std::vector<MepmlLspCompletionItem> items = IsSheet(req.uri) ? MepssLspCompletions(Doc(req.uri), req.line, req.col)
+                                                                           : MepmlLspCompletions(Doc(req.uri), req.line, req.col, OptionsFor(req.uri));
         for (size_t i = 0; i < items.size(); i++) {
             const MepmlLspCompletionItem &it = items[i];
             Json j = Json::Object();
@@ -398,7 +409,8 @@ private:
     /** @brief Answers `textDocument/hover`. */
     Json HoverAt(const Json &params) const {
         const Request req = ReadRequest(params);
-        const MepmlLspHoverInfo info = MepmlLspHover(Doc(req.uri), req.line, req.col, OptionsFor(req.uri));
+        const MepmlLspHoverInfo info = IsSheet(req.uri) ? MepssLspHover(Doc(req.uri), req.line, req.col)
+                                                        : MepmlLspHover(Doc(req.uri), req.line, req.col, OptionsFor(req.uri));
         if (!info.found) return Json();
         Json contents = Json::Object();
         contents["kind"] = "plaintext";

@@ -1,5 +1,6 @@
 //? Title: A Test Document
 //? Import: opts.mepml
+//? Style: test.mepss
 
 \abstract(
 This document exercises *every* construct mepml has, from ~inline markup~ and
@@ -364,6 +365,30 @@ This paragraph was exported as \when(html, a web page) \otherwise(anything
 but a web page)\raw(tex, \footnote{typeset by \LaTeX}).
 
 \raw(tex, \clearpage)
+
+How all of this looks is not part of the document: the header's `Style:`
+line names a style sheet, `test.mepss` beside this file, whose rules
+restyle what mep's default sheet draws -- here the level-3 headings, the
+bullets and the colour of a remark. See `docs/mepml-spec/`.
+
+\remark(A sheet is CSS in syntax,
+`box[kind=remark] { --accent: theme(Purple, #6a51a3); }` is the rule that
+colours this box.
+)
+
+A sheet can be written here too, as a `raw` block for the format `style`
+(no export has it, so the block is in none of them). It gives a look to
+two things that have none of their own: a box of a kind of this document's
+own, and text with a class.
+
+\raw(style,
+box[kind=axiom] { --accent: theme(Orange, #b35900); }
+.term { color: theme(Green, #2f7d32); font-weight: bold; }
+)
+
+\boxed(axiom, Extensionality,
+Two sets with the same \class(term, elements) are the same set.
+)
 
 A bibtex-style entry works as well (so a .bib file can be @imported):
 

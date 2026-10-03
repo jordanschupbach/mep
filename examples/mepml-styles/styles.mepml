@@ -1,0 +1,58 @@
+//? Title: Styling a mepml document
+//? Subtitle: one document, three looks
+//? Style: paper.mepss
+
+\abstract(
+What a mepml document *is* and how it *looks* are two files. This one names a
+style sheet in its header; change that line to `contrast.mepss`, or delete it
+for mep's default look, and nothing else here changes.
+)
+
+> Text
+
+Some *bold*, ~italic~, _underlined_, `verbatim`, |mono|, =highlighted=,
+-struck-, +inserted+ and !deleted! text; a [link|https://example.org], a
+>big< word and a <small> one; and maths, $e^{i\pi} + 1 = 0$.
+
+>> Lists
+
+- a bullet
+  - a nested one
+- [ ] an open task
+- [x] a finished one
+1. numbered
+
+// NOTE: a note in the margin of the source
+// WARNING: and a warning
+
+> Boxes
+
+\definition(Group,
+A set with an associative operation, an identity and inverses.
+)
+
+\theorem(Lagrange,
+The order of a subgroup divides the order of the group.
+)
+
+\proof(
+Count cosets.
+)
+
+--------
+
+> Code
+
+```{python}
+print(sum(range(10)))
+```
+// result_begin:
+// 45
+// result_end
+
+| Sheet | Colours | Markers |
+| :---- | :------ | :-----: |
+| default | the editor theme's | • □ ✓ |
+| paper | its own, muted | – ○ ● |
+| contrast | its own, loud | * [ ] [x] |
+\caption(The three sheets in this directory)

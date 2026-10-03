@@ -1,0 +1,37 @@
+//? Title: A styled deck
+//? Subtitle: the same slides, a sheet's look
+//? Author: mep
+//? Type: presentation
+//? Style: deck.mepss
+
+// Press <leader>kp to present; edit deck.mepss beside this file and save
+// it to see a slide restyle while it is shown.
+
+\slide(
+> One slide, two files
+
+- The slide is *what is said*: a title, a list, a box.
+- The sheet is *how it looks*: `deck.mepss`.
+- [The specification|../../docs/mepml-spec/style.md] says how the two meet.
+)
+
+\slide(
+> A definition
+
+\definition(Style sheet,
+Rules that select the elements of a document and say how each is drawn.
+)
+
+Here $\text{look} = f(\text{structure}, \text{sheet})$, and nothing else.
+)
+
+\slide(
+> And a table
+
+| Medium | Tag |
+| :----- | :-- |
+| the editor | `editor` |
+| this view | `present` |
+| a web page | `html` |
+\caption(Where a rule applies)
+)

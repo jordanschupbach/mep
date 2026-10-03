@@ -106,6 +106,7 @@ module.exports = grammar({
     $._box_open, // a box's `(`
     $._box_break, // a line break inside a box's first paragraph
     $._box_end, // zero-width: the line closes the open box
+    $._cmd_class, // `\class` before (name, text)
     $._error_sentinel,
   ],
 
@@ -410,7 +411,8 @@ module.exports = grammar({
       alias($._paren_close, ')'),
       $._line_end,
     ),
-    box_kind: _ => choice('definition', 'theorem', 'lemma', 'proposition', 'corollary', 'fact', 'example', 'remark', 'proof'),
+    // (`boxed` is any kind of the document's own: `\\boxed(axiom, Title,`.)
+    box_kind: _ => choice('definition', 'theorem', 'lemma', 'proposition', 'corollary', 'fact', 'example', 'remark', 'proof', 'boxed'),
     box_close: $ => seq($._box_end, optional($._ws), ')', $._line_end),
 
     // \citation(key, field = value, ...) or @citation{key}{fields}
@@ -482,6 +484,7 @@ module.exports = grammar({
       $.font,
       $.font_size,
       $.color,
+      $.class,
       $.footnote,
       $.cite,
       $.citep,
@@ -517,6 +520,8 @@ module.exports = grammar({
     font: $ => seq(alias($._cmd_f, '\\f'), choice($._paren_arg_content, seq($._arg_group, $._content_group))),
     font_size: $ => seq(alias($._cmd_fs, '\\fs'), choice($._paren_arg_content, seq($._arg_group, $._content_group))),
     color: $ => seq(alias($._cmd_color, '\\color'), choice($._paren_arg_content, seq($._arg_group, $._content_group))),
+    // \class(name, text): text a style sheet selects by name (`.name`).
+    class: $ => seq(alias($._cmd_class, '\\class'), choice($._paren_arg_content, seq($._arg_group, $._content_group))),
     footnote: $ => seq(alias($._cmd_fn, '\\fn'), choice($._paren_content_group, $._content_group)),
     cite: $ => seq(alias($._cmd_cite, '\\cite'), choice($._paren_arg_group, $._arg_group)),
     citep: $ => seq(alias($._cmd_citep, '\\citep'), choice($._paren_arg_group, $._arg_group)),

@@ -177,6 +177,23 @@ void TestFiles() {
         "As \\cite(imp) says, see [the notes|notes.pdf].",
         "\\image(im",
     };
+    // Style sheets the header names: a missing one, a faulty one, a good one.
+    std::ofstream(dir / "good.mepss") << "bold { color: red; }\n";
+    std::ofstream(dir / "bad.mepss") << "bold { colr: red; }\nitalic { color: nope }\n";
+    {
+        const Lines styled = {"//? Style: good.mepss", "//? Style: gone.mepss", "//? Style: bad.mepss", "", "text"};
+        const std::vector<MepmlLspDiagnostic> sd = MepmlLspDiagnostics(styled, opts);
+        CHECK(!Has(sd, "style-missing", 0) && !Has(sd, "style-error", 0));
+        CHECK(Has(sd, "style-missing", 1));
+        CHECK(Has(sd, "style-error", 2));
+        int errors = 0;
+        for (const MepmlLspDiagnostic &d : sd)
+            if (d.code == "style-error") {
+                ++errors;
+                CHECK(d.col_start == 11 && d.message.find("bad.mepss:") == 0);
+            }
+        CHECK(errors == 2);
+    }
     const std::vector<MepmlLspDiagnostic> ds = MepmlLspDiagnostics(doc, opts);
     CHECK(!Has(ds, "image-missing", 1));
     CHECK(Has(ds, "image-missing", 2));
@@ -483,7 +500,62 @@ void TestCommands() {
     CHECK(unknown == 1 && missing == 1);
 }
 
+// A style sheet (.mepss): what is wrong in it, and what can be typed where.
+void TestStyleSheets() {
+    const Lines sheet = {
+        "heading[level=1] { color: theme(Blue, #123); font-wieght: bold; }",  // 0
+        "bold::marker, headin { color: red }",                                // 1
+        "box::lable { content: \"x\" }",                                        // 2
+        "@media present {",                                                   // 3
+        "  slide { background: nope; }",                                      // 4
+        "}",
+    };
+    const std::vector<MepmlLspDiagnostic> ds = MepssLspDiagnostics(sheet);
+    CHECK(Has(ds, "style-error", 0));     // font-wieght
+    CHECK(Has(ds, "unknown-element", 1)); // headin
+    CHECK(Has(ds, "unknown-part", 2));    // ::lable
+    CHECK(Has(ds, "style-error", 4));     // nope
+    for (const MepmlLspDiagnostic &d : ds)
+        if (d.code == "unknown-element") CHECK(d.message.find("heading") != std::string::npos && d.col_start == 14);
+    CHECK(MepssLspDiagnostics({"bold { color: red; }", "", "/* fine */"}).empty());
+
+    auto labels = [](const Lines &l, int line, int col) {
+        std::vector<std::string> out;
+        for (const MepmlLspCompletionItem &it : MepssLspCompletions(l, line, col)) out.push_back(it.label);
+        return out;
+    };
+    auto has = [](const std::vector<std::string> &v, const char *s) { return std::find(v.begin(), v.end(), s) != v.end(); };
+    // Elements in a selector; parts after `::`; attributes and their values.
+    CHECK(has(labels({"hea"}, 0, 3), "heading") && !has(labels({"hea"}, 0, 3), "bold"));
+    CHECK(has(labels({"box::"}, 0, 5), "label") && has(labels({"box::la"}, 0, 7), "label") && !has(labels({"box::la"}, 0, 7), "end"));
+    CHECK(has(labels({"heading["}, 0, 8), "level") && has(labels({"heading[level="}, 0, 14), "3"));
+    CHECK(has(labels({"box[kind="}, 0, 9), "definition") && has(labels({"callout[kind=w"}, 0, 14), "warning"));
+    CHECK(has(labels({"code:"}, 0, 5), "active"));
+    // Properties inside a rule, values after the colon.
+    CHECK(has(labels({"bold { "}, 0, 7), "font-weight") && has(labels({"bold { col"}, 0, 10), "color"));
+    CHECK(has(labels({"bold { font-weight: "}, 0, 20), "bold") && !has(labels({"bold { font-weight: "}, 0, 20), "italic"));
+    CHECK(has(labels({"bold { color: "}, 0, 14), "theme(") && has(labels({"bold { color: re"}, 0, 16), "red"));
+    CHECK(has(labels({"bold { color: theme("}, 0, 20), "Blue") && !has(labels({"bold { color: theme("}, 0, 20), "red"));
+    CHECK(has(labels({"bold {", "  color: red;", "  text-"}, 2, 7), "text-decoration"));
+    // The client replaces the letters at the cursor: after `font-`, only what follows it is inserted.
+    for (const MepmlLspCompletionItem &it : MepssLspCompletions({"bold { font-w"}, 0, 13))
+        if (it.label == "font-weight") CHECK(it.insert_text == "weight: " && it.replace_start == 12 && it.replace_end == 13);
+    // Media tags after @media, rules inside it.
+    CHECK(has(labels({"@me"}, 0, 3), "media") && has(labels({"@media pr"}, 0, 9), "present") && has(labels({"@media html, "}, 0, 13), "print"));
+    CHECK(has(labels({"@media present {", "  sli"}, 1, 5), "slide"));
+    CHECK(has(labels({"@media present {", "  slide { back"}, 1, 14), "background"));
+    // Nothing in a comment or a string.
+    CHECK(labels({"/* hea"}, 0, 6).empty() && labels({"a { content: \"hea"}, 0, 17).empty());
+
+    CHECK(MepssLspHover({"bold { font-weight: bold }"}, 0, 9).text.find("normal or bold") != std::string::npos);
+    CHECK(MepssLspHover({"box::label { }"}, 0, 6).text.find("Generated text") != std::string::npos);
+    CHECK(MepssLspHover({"a { color: theme(Blue) }"}, 0, 12).text.find("theme(Group") != std::string::npos);
+    CHECK(MepssLspHover({"heading { }"}, 0, 3).text.find("level") != std::string::npos);
+    CHECK(!MepssLspHover({"a { color: red }"}, 0, 12).found);
+}
+
 int main() {
+    TestStyleSheets();
     TestDiagnostics();
     TestCommands();
     TestFiles();

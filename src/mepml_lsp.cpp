@@ -4,6 +4,11 @@
 
 #include "mepml_lsp.h"
 
+#include <fstream>
+#include <sstream>
+
+#include "mepml_style.h"
+
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -501,6 +506,43 @@ std::vector<MepmlLspDiagnostic> MepmlLspDiagnostics(const std::vector<std::strin
                 }
             }
         });
+        // A style sheet the header names: that it is there, and what in it
+        // could not be understood (the sheet still applies without it).
+        if (files && b.kind == BlockKind::Meta && Lower(b.keyword) == "style" && !Trim(b.value).empty()) {
+            const std::string &text = lines[static_cast<size_t>(b.line_start)];
+            const size_t colon = text.find(':');
+            const size_t from = colon == std::string::npos ? std::string::npos : text.find_first_not_of(" \t", colon + 1);
+            const int cs = from == std::string::npos ? 0 : static_cast<int>(from), ce = Len(text);
+            const std::string path = Resolve(opts, Trim(b.value));
+            if (!FileExists(path)) {
+                add(b.line_start, cs, ce, MepmlLspSeverity::Warning, "style-missing", "style sheet " + Trim(b.value) + " does not exist");
+            } else {
+                std::ifstream f(path);
+                std::stringstream ss;
+                ss << f.rdbuf();
+                const mepml::style::Sheet sheet = mepml::style::Parse(ss.str(), path);
+                const size_t shown = std::min<size_t>(sheet.diagnostics.size(), 5);
+                for (size_t i = 0; i < shown; ++i)
+                    add(b.line_start, cs, ce, MepmlLspSeverity::Warning, "style-error",
+                        Trim(b.value) + ":" + std::to_string(sheet.diagnostics[i].line + 1) + ": " + sheet.diagnostics[i].message);
+                if (sheet.diagnostics.size() > shown)
+                    add(b.line_start, cs, ce, MepmlLspSeverity::Warning, "style-error",
+                        Trim(b.value) + ": and " + std::to_string(sheet.diagnostics.size() - shown) + " more");
+            }
+        }
+        // A sheet written in the document (`\raw(style, ...)`): what in it
+        // could not be understood, on its own lines.
+        if (b.kind == BlockKind::Raw && Lower(Trim(b.lang)) == "style") {
+            const mepml::style::Sheet sheet = mepml::style::Parse(b.code, "");
+            // (The text starts after `\raw(style,`: on that line, or the next.)
+            const std::string &first = lines[static_cast<size_t>(b.line_start)];
+            const size_t comma = first.find(',');
+            const bool own_line = comma == std::string::npos || first.find_first_not_of(" \t", comma + 1) == std::string::npos;
+            for (size_t i = 0; i < sheet.diagnostics.size() && i < 8; ++i) {
+                const int line = std::clamp(b.line_start + sheet.diagnostics[i].line + (own_line ? 1 : 0), b.line_start, b.line_end);
+                add(line, 0, Len(lines[static_cast<size_t>(line)]), MepmlLspSeverity::Warning, "style-error", sheet.diagnostics[i].message);
+            }
+        }
         // Files a block names.
         if (files && b.kind == BlockKind::Image && !b.value.empty() && !FileExists(Resolve(opts, b.value))) {
             const KeyRange r = DirectivePathRange(lines[static_cast<size_t>(b.line_start)], b.line_start);
@@ -618,6 +660,8 @@ const std::vector<Vocab> &CommandVocab() {
         {"fs", "\\fs(points, text)", "Text at a size in points (body text is 12)."},
         {"when", "\\when(formats, text)", "Text only in the exports named -- html, tex, pdf, beamer, slides, md, docx, office ... (spaces or | between them; !html for all but HTML; * for all). An \\otherwise(text) right after one or more \\when()s is used when none matched."},
         {"otherwise", "\\otherwise(text)", "After \\when(formats, ...): the text for every other export."},
+        {"class", "\\class(name, text)", "Text a style sheet selects by name: `.name { color: ...; }` in the document's sheet styles it, here and in the exports. It has no look of its own."},
+        {"boxed", "\\boxed(kind, Title,", "A box of a kind of your own (axiom, key-result ...), closed by a line holding just `)`. Its label and colours are the style sheet's: `box[kind=axiom]::label { content: \"Axiom\"; }`, `box[kind=axiom] { --accent: #e07a00; }`."},
         {"raw", "\\raw(formats, text)", "Text written as it is into the exports named -- HTML markup for html, LaTeX for tex/pdf/beamer, and so on -- and left out of the rest."},
     };
     return v;
@@ -633,6 +677,7 @@ const std::vector<Vocab> &MetaVocab() {
         {"Export", "//? Export: pdf", "The format the Run button (the pane header's play button, <leader>rr, gr) exports to and opens: html (the default), pdf, beamer (the slides as a Beamer PDF), docx, odt, rtf, md, org, tex, txt, pptx or odp."},
         {"Type", "//? Type: presentation", "What the document is: document (the default) or presentation. A presentation's html, tex and pdf exports are a slideshow and a Beamer deck of its \\slide blocks, after a title slide from the header; pptx and odp decks work either way."},
         {"Exports", "//? Exports: results", "What the exports show of every code block: code, results, both (the default) or none. A block's own exports= (or echo=) wins. The editor always shows everything."},
+        {"Style", "//? Style: file.mepss", "A style sheet for this document (docs/mepml-spec/style.md): rules such as `heading[level=1] { color: #0b5cad; }` that override mep's default look, here and in every export. Several Style lines apply in order."},
         {"Import", "//? Import: file.mepml", "Includes another mepml file: its options and other header keys are inherited (this file's own win) and its content is included here, in the order the header lists its imports."},
     };
     return v;
@@ -1754,3 +1799,334 @@ std::vector<MepmlLspCodeAction> MepmlLspCodeActions(const std::vector<std::strin
     }
     return out;
 }
+
+// ---------------------------------------------------------------------------
+// Style sheets (.mepss)
+
+namespace {
+
+bool SheetNameChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_'; }
+
+struct SheetVocab {
+    const char *name;
+    const char *doc;
+};
+
+const std::vector<SheetVocab> &SheetParts() {
+    static const std::vector<SheetVocab> v = {
+        {"markup", "An element's syntax characters, on a line shown as its source."},
+        {"label", "Generated text naming the element: a box's \"Definition\", a callout's badge, \"Slide 3\", a caption's \"Figure 1\"; a code block's language chip."},
+        {"title", "Its title: a box's, the \"Contents\" of a \\toc, a code block's caption in its title bar."},
+        {"marker", "A list item's bullet, number or checkbox."},
+        {"button", "A code block's title-bar controls: run, stop, fold."},
+        {"end", "What closes it: a proof's tombstone."},
+        {"key", "The Key of a `//? Key: value` header line."},
+        {"value", "The value of a header line."},
+        {"name", "An option's name, before its `=`."},
+        {"rule", "A table's grid lines."},
+        {"header", "The band a code block's, a result's or a slide's title sits in."},
+        {"option", "A code block's option chips."},
+    };
+    return v;
+}
+
+const std::vector<std::string> &SheetMediaTags() {
+    static const std::vector<std::string> v = [] {
+        std::vector<std::string> out = {"editor", "source", "present", "screen", "print"};
+        for (const std::string &t : mepml::KnownFormatTags())
+            if (t != "style" && std::find(out.begin(), out.end(), t) == out.end()) out.push_back(t);
+        return out;
+    }();
+    return v;
+}
+
+const std::vector<std::string> &SheetThemeGroups() {
+    static const std::vector<std::string> v = {"Normal", "NormalBg", "Comment", "MutedFg", "Accent", "Border", "Blue", "Cyan", "Green",
+                                               "Yellow", "Orange", "Red", "Purple", "OrgHeadlineLevel1", "OrgHeadlineLevel2",
+                                               "OrgHeadlineLevel3"};
+    return v;
+}
+
+// The attributes a selector can test on an element, and (after `=`) the
+// values each can have; "" for an attribute that is only present or not.
+std::vector<std::pair<std::string, std::vector<std::string>>> SheetAttrs(const std::string &element) {
+    std::vector<std::string> box_kinds, callouts;
+    for (const mepml::BoxKind &k : mepml::BoxKinds()) box_kinds.push_back(k.name);
+    for (const std::string &k : mepml::CalloutKeywords()) callouts.push_back(Lower(k));
+    if (element == "heading") return {{"level", {"1", "2", "3", "4", "5", "6"}}};
+    if (element == "box") return {{"kind", box_kinds}};
+    if (element == "callout") return {{"kind", callouts}};
+    if (element == "list-item") return {{"ordered", {}}, {"checked", {"true", "false"}}};
+    if (element == "table-cell") return {{"header", {}}};
+    if (element == "code") return {{"lang", {}}};
+    if (element == "results") return {{"format", {"text", "html", "markdown", "terminal", "gui"}}};
+    if (element == "meta") return {{"key", {"title", "subtitle", "author", "date", "option", "import", "style"}}, {"type", {"int", "double", "string"}}};
+    if (element == "slide") return {{"number", {}}, {"title", {}}};
+    if (element == "cite") return {{"missing", {}}, {"parenthetical", {}}};
+    if (element == "caption") return {{"of", {"figure", "table", "math", "code"}}};
+    if (element == "span") return {{"class", {}}};
+    if (element == "math") return {{"display", {}}};
+    if (element == "document") return {{"type", {"document", "presentation"}}};
+    return {};
+}
+
+// Where the cursor is in a sheet.
+struct SheetContext {
+    enum Kind { Selector, Media, Property, Value, None } kind = None;
+    std::string property;  // Value: the property being given one
+    std::string segment;   // the text of the selector / declaration so far
+};
+
+SheetContext SheetContextAt(const std::vector<std::string> &lines, int line, int col) {
+    std::string text;
+    for (int l = 0; l <= line && l < static_cast<int>(lines.size()); ++l) {
+        text += l == line ? lines[static_cast<size_t>(l)].substr(0, static_cast<size_t>(std::clamp(col, 0, Len(lines[static_cast<size_t>(l)])))) : lines[static_cast<size_t>(l)];
+        if (l != line) text += '\n';
+    }
+    SheetContext ctx;
+    // The innermost open block: a rule's, an @media's, or none.
+    std::vector<bool> open;  // true: a rule's declarations
+    size_t seg = 0;          // where the current selector / declaration starts
+    for (size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        if (c == '/' && i + 1 < text.size() && text[i + 1] == '*') {
+            const size_t end = text.find("*/", i + 2);
+            if (end == std::string::npos) return ctx;  // in a comment
+            i = end + 1;
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            size_t j = i + 1;
+            while (j < text.size() && text[j] != c && text[j] != '\n') j += text[j] == '\\' ? 2 : 1;
+            if (j >= text.size()) return ctx;  // in a string
+            i = j;
+            continue;
+        }
+        if (c == '{') {
+            const std::string prelude = Trim(text.substr(seg, i - seg));
+            open.push_back(prelude.empty() || prelude[0] != '@');
+            seg = i + 1;
+        } else if (c == '}') {
+            if (!open.empty()) open.pop_back();
+            seg = i + 1;
+        } else if (c == ';') {
+            seg = i + 1;
+        }
+    }
+    ctx.segment = text.substr(std::min(seg, text.size()));
+    const std::string trimmed = Trim(ctx.segment);
+    if (!open.empty() && open.back()) {
+        const size_t colon = ctx.segment.find(':');
+        if (colon == std::string::npos) {
+            ctx.kind = SheetContext::Property;
+        } else {
+            ctx.kind = SheetContext::Value;
+            ctx.property = Lower(Trim(ctx.segment.substr(0, colon)));
+        }
+    } else if (!trimmed.empty() && trimmed[0] == '@') {
+        ctx.kind = SheetContext::Media;
+    } else {
+        ctx.kind = SheetContext::Selector;
+    }
+    return ctx;
+}
+
+}  // namespace
+
+std::vector<MepmlLspDiagnostic> MepssLspDiagnostics(const std::vector<std::string> &lines) {
+    std::string text;
+    for (const std::string &l : lines) text += l + "\n";
+    const mepml::style::Sheet sheet = mepml::style::Parse(text, "");
+    std::vector<MepmlLspDiagnostic> out;
+    auto add = [&](int line, int cs, int ce, const std::string &code, const std::string &msg) {
+        if (line < 0 || line >= static_cast<int>(lines.size())) return;
+        MepmlLspDiagnostic d;
+        d.line = line;
+        d.col_start = std::clamp(cs, 0, Len(lines[static_cast<size_t>(line)]));
+        d.col_end = std::max(d.col_start, std::min(ce, Len(lines[static_cast<size_t>(line)])));
+        d.severity = MepmlLspSeverity::Warning;
+        d.code = code;
+        d.message = msg;
+        out.push_back(d);
+    };
+    for (const mepml::style::Diagnostic &d : sheet.diagnostics) {
+        // To the end of the declaration (or of the line).
+        const int len = d.line < static_cast<int>(lines.size()) ? Len(lines[static_cast<size_t>(d.line)]) : 0;
+        size_t end = d.line < static_cast<int>(lines.size()) ? lines[static_cast<size_t>(d.line)].find_first_of(";{}", static_cast<size_t>(std::min(d.col, len))) : std::string::npos;
+        add(d.line, d.col, end == std::string::npos ? len : static_cast<int>(end), "style-error", d.message);
+    }
+    // Selectors that can select nothing: an element or a part mepml has none of.
+    const std::vector<std::string> &elements = mepml::ElementNames();
+    for (const mepml::style::Rule &rule : sheet.rules) {
+        for (const mepml::style::Selector &sel : rule.selectors) {
+            std::string unknown, what;
+            for (const mepml::style::Compound &c : sel.compounds)
+                if (!c.name.empty() && std::find(elements.begin(), elements.end(), c.name) == elements.end()) unknown = c.name, what = "element";
+            if (unknown.empty() && !sel.part.empty() &&
+                std::none_of(SheetParts().begin(), SheetParts().end(), [&](const SheetVocab &v) { return sel.part == v.name; }))
+                unknown = sel.part, what = "part";
+            if (unknown.empty() || rule.line >= static_cast<int>(lines.size())) continue;
+            const std::string &l = lines[static_cast<size_t>(rule.line)];
+            const size_t at = l.find(unknown);
+            const std::vector<std::string> names = what == "element" ? elements : [] {
+                std::vector<std::string> p;
+                for (const SheetVocab &v : SheetParts()) p.push_back(v.name);
+                return p;
+            }();
+            const std::string near = Nearest(unknown, names);
+            add(rule.line, at == std::string::npos ? 0 : static_cast<int>(at), at == std::string::npos ? Len(l) : static_cast<int>(at + unknown.size()),
+                "unknown-" + what, "mepml has no " + what + " `" + unknown + "`" + (near.empty() ? "" : " (did you mean `" + near + "`?)"));
+        }
+    }
+    std::stable_sort(out.begin(), out.end(), [](const MepmlLspDiagnostic &a, const MepmlLspDiagnostic &b) {
+        return a.line != b.line ? a.line < b.line : a.col_start < b.col_start;
+    });
+    return out;
+}
+
+std::vector<MepmlLspCompletionItem> MepssLspCompletions(const std::vector<std::string> &lines, int line, int col) {
+    std::vector<MepmlLspCompletionItem> out;
+    if (line < 0 || line >= static_cast<int>(lines.size())) return out;
+    const std::string &text = lines[static_cast<size_t>(line)];
+    col = std::clamp(col, 0, Len(text));
+    // The name being typed (hyphens and all), and the part of it mep's
+    // client replaces: the letters, digits and underscores at its end.
+    int name_start = col;
+    while (name_start > 0 && SheetNameChar(text[static_cast<size_t>(name_start - 1)])) --name_start;
+    int word_start = col;
+    while (word_start > name_start && text[static_cast<size_t>(word_start - 1)] != '-') --word_start;
+    const std::string prefix = text.substr(static_cast<size_t>(name_start), static_cast<size_t>(col - name_start));
+    const size_t done = static_cast<size_t>(word_start - name_start);
+    auto offer = [&](const std::string &label, MepmlLspKind kind, const std::string &detail, const std::string &doc, const std::string &tail = "") {
+        if (label.size() < prefix.size() || label.compare(0, prefix.size(), prefix) != 0) return;
+        MepmlLspCompletionItem it;
+        it.label = label;
+        it.insert_text = label.substr(std::min(done, label.size())) + tail;
+        it.kind = kind;
+        it.detail = detail;
+        it.documentation = doc;
+        it.replace_start = word_start;
+        it.replace_end = col;
+        out.push_back(it);
+    };
+    const char before = name_start > 0 ? text[static_cast<size_t>(name_start - 1)] : '\0';
+    const char before2 = name_start > 1 ? text[static_cast<size_t>(name_start - 2)] : '\0';
+    const SheetContext ctx = SheetContextAt(lines, line, col);
+
+    if (ctx.kind == SheetContext::Property) {
+        for (const mepml::style::PropertyInfo &p : mepml::style::Properties()) offer(p.name, MepmlLspKind::Property, p.values, p.doc, ": ");
+        return out;
+    }
+    if (ctx.kind == SheetContext::Value) {
+        // Inside theme( ... : a group of the editor's colour scheme.
+        const size_t theme = ctx.segment.rfind("theme(");
+        if (theme != std::string::npos && ctx.segment.find_first_of(",)", theme) == std::string::npos) {
+            for (const std::string &g : SheetThemeGroups()) offer(g, MepmlLspKind::Color, "theme group", "");
+            return out;
+        }
+        const std::string &p = ctx.property;
+        const bool colour = p == "color" || p == "background" || p == "text-decoration-color" || p == "border-color" || p == "border-left-color" ||
+                            p.rfind("--", 0) == 0;
+        if (colour) {
+            offer("theme(", MepmlLspKind::Function, "theme(Group, #fallback)", "The colour the editor's theme gives Group; the fallback wherever there is no theme (an export).");
+            offer("fade(", MepmlLspKind::Function, "fade(colour, 0.2)", "The colour at that opacity over what is behind it.");
+            offer("var(", MepmlLspKind::Function, "var(--name)", "The value of a custom property.");
+            offer("none", MepmlLspKind::Value, "", "");
+            for (const std::string &c : mepml::ColorNames()) offer(c, MepmlLspKind::Color, "colour", "");
+        } else if (p == "font-weight") {
+            for (const char *v : {"normal", "bold"}) offer(v, MepmlLspKind::Value, "", "");
+        } else if (p == "font-style") {
+            for (const char *v : {"normal", "italic"}) offer(v, MepmlLspKind::Value, "", "");
+        } else if (p == "text-decoration") {
+            for (const char *v : {"none", "underline", "line-through", "no-underline", "no-line-through"}) offer(v, MepmlLspKind::Value, "", "");
+        } else if (p == "font-family") {
+            for (const char *v : {"serif", "sans", "mono", "body"}) offer(v, MepmlLspKind::Value, "", "");
+        } else if (p == "vertical-align") {
+            for (const char *v : {"baseline", "super", "sub"}) offer(v, MepmlLspKind::Value, "", "");
+        } else if (p == "text-align") {
+            for (const char *v : {"left", "center", "right"}) offer(v, MepmlLspKind::Value, "", "");
+        } else if (p == "content") {
+            offer("none", MepmlLspKind::Value, "", "The renderer's own text for the part.");
+        }
+        offer("inherit", MepmlLspKind::Keyword, "", "The parent's value.");
+        offer("initial", MepmlLspKind::Keyword, "", "The property's initial value.");
+        return out;
+    }
+    if (ctx.kind == SheetContext::Media) {
+        if (before == '@') offer("media", MepmlLspKind::Keyword, "@media tags { rules }", "Rules for some renderers only.", " ");
+        else
+            for (const std::string &t : SheetMediaTags()) offer(t, MepmlLspKind::Value, "medium", "");
+        return out;
+    }
+    if (ctx.kind != SheetContext::Selector) return out;
+    if (before == '@') {
+        offer("media", MepmlLspKind::Keyword, "@media tags { rules }", "Rules for some renderers only.", " ");
+    } else if (before == ':' && before2 == ':') {
+        for (const SheetVocab &v : SheetParts()) offer(v.name, MepmlLspKind::Field, "part", v.doc);
+    } else if (before == ':') {
+        offer("active", MepmlLspKind::Keyword, "state", "The block the cursor is in.");
+    } else if (before == '[' || before == '=') {
+        // The element the bracket belongs to: the name right before it.
+        int open = name_start - 1;
+        while (open >= 0 && text[static_cast<size_t>(open)] != '[') --open;
+        int e = open;
+        while (e > 0 && SheetNameChar(text[static_cast<size_t>(e - 1)])) --e;
+        const std::string element = open >= 0 ? text.substr(static_cast<size_t>(e), static_cast<size_t>(open - e)) : std::string();
+        const auto attrs = SheetAttrs(element);
+        if (before == '[') {
+            for (const auto &a : attrs) offer(a.first, MepmlLspKind::Property, "attribute of " + element, "", a.second.empty() ? "" : "=");
+        } else {
+            const std::string attr = Trim(text.substr(static_cast<size_t>(open + 1), static_cast<size_t>(name_start - 1 - (open + 1))));
+            for (const auto &a : attrs)
+                if (a.first == attr)
+                    for (const std::string &v : a.second) offer(v, MepmlLspKind::Value, attr, "");
+        }
+    } else {
+        for (const std::string &name : mepml::ElementNames()) offer(name, MepmlLspKind::Module, "element", "");
+    }
+    return out;
+}
+
+MepmlLspHoverInfo MepssLspHover(const std::vector<std::string> &lines, int line, int col) {
+    MepmlLspHoverInfo info;
+    if (line < 0 || line >= static_cast<int>(lines.size())) return info;
+    const std::string &text = lines[static_cast<size_t>(line)];
+    col = std::clamp(col, 0, Len(text));
+    int a = col, b = col;
+    while (a > 0 && SheetNameChar(text[static_cast<size_t>(a - 1)])) --a;
+    while (b < Len(text) && SheetNameChar(text[static_cast<size_t>(b)])) ++b;
+    if (b <= a) return info;
+    const std::string word = text.substr(static_cast<size_t>(a), static_cast<size_t>(b - a));
+    auto found = [&](const std::string &what) {
+        info.found = true;
+        info.text = what;
+        info.line = line;
+        info.col_start = a;
+        info.col_end = b;
+        return info;
+    };
+    const bool part = a >= 2 && text[static_cast<size_t>(a - 1)] == ':' && text[static_cast<size_t>(a - 2)] == ':';
+    if (part) {
+        for (const SheetVocab &v : SheetParts())
+            if (word == v.name) return found("::" + word + " -- " + v.doc);
+        return info;
+    }
+    const bool call = b < Len(text) && text[static_cast<size_t>(b)] == '(';
+    if (call && word == "theme") return found("theme(Group, #fallback): the colour the editor's theme gives Group, and the fallback wherever there is no theme (every export).");
+    if (call && word == "fade") return found("fade(colour, alpha): the colour at that opacity (0-1) over what is behind it.");
+    if (call && word == "var") return found("var(--name, fallback): the value of a custom property; custom properties are inherited.");
+    const SheetContext ctx = SheetContextAt(lines, line, b);
+    if (ctx.kind == SheetContext::Property || (ctx.kind == SheetContext::Value && ctx.property == Lower(word)))
+        for (const mepml::style::PropertyInfo &p : mepml::style::Properties())
+            if (Lower(word) == p.name) return found(std::string(p.name) + ": " + p.values + "\n" + p.doc + (p.inherited ? "\nInherited." : ""));
+    if (ctx.kind == SheetContext::Selector) {
+        const std::vector<std::string> &elements = mepml::ElementNames();
+        if (std::find(elements.begin(), elements.end(), word) != elements.end()) {
+            std::string attrs;
+            for (const auto &at : SheetAttrs(word)) attrs += (attrs.empty() ? "" : ", ") + at.first;
+            return found("The mepml element `" + word + "`" + (attrs.empty() ? "." : "; attributes: " + attrs + ".") + "\n(docs/mepml-spec/structure.md)");
+        }
+    }
+    return info;
+}
+

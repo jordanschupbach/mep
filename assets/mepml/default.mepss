@@ -1,0 +1,179 @@
+/* mep's default look for mepml documents.
+ *
+ * This file IS the default: nothing below is repeated in the editor's code.
+ * A user sheet (~/.config/mep/mepml.mepss) or a document's own
+ * (`//? Style: file.mepss`) overrides it rule by rule. The language is
+ * specified in docs/mepml-spec/style.md, the elements in structure.md.
+ *
+ * Colours are theme(Group, #fallback): the editor takes Group from its
+ * colour scheme, an export takes the fallback.
+ */
+
+/* --- Headings ---------------------------------------------------------- */
+
+/* A heading is drawn at its font-size, and given the lines it needs. */
+heading          { color: theme(OrgHeadlineLevel3, #1f2328); }
+heading[level=1] { color: theme(OrgHeadlineLevel1, #1f2328); font-size: 1.6; }
+heading[level=2] { color: theme(OrgHeadlineLevel2, #1f2328); font-size: 1.32; }
+heading[level=3] { font-size: 1.12; }
+
+/* --- The document header (`//? Key: value` lines) ----------------------- */
+
+meta[key=title]    { color: theme(OrgHeadlineLevel1, #1f2328); font-size: 2.2; font-weight: bold; }
+meta[key=subtitle] { color: theme(Comment, #59636e); font-size: 1.15; font-style: italic; }
+meta::key          { color: theme(Comment, #59636e); }
+meta[key=import]::value { color: theme(Blue, #0b5cad); }
+/* An option: its name, and its value coloured by what it is. */
+meta[key=option]::name  { color: theme(Cyan, #1b7f86); font-weight: bold; }
+meta[key=option]::value { color: theme(Purple, #6a51a3); }
+meta[key=option][type=string]::value { color: theme(Green, #2f7d32); }
+
+/* --- Inline markup ----------------------------------------------------- */
+
+bold        { font-weight: bold; }
+italic      { font-style: italic; }
+underline   { text-decoration: underline; }
+strike      { text-decoration: line-through; text-decoration-color: theme(Comment, #59636e); }
+insert      { color: theme(Green, #2f7d32); text-decoration: underline; }
+delete      { color: theme(Red, #c62828); text-decoration: line-through; text-decoration-color: theme(Red, #c62828); }
+superscript { color: theme(Purple, #6a51a3); font-size: 0.7; vertical-align: super; }
+subscript   { color: theme(Purple, #6a51a3); font-size: 0.7; vertical-align: sub; }
+small       { font-size: 0.8; }
+big         { font-size: 1.3; }
+mono        { color: theme(Cyan, #1b7f86); }
+verbatim    { color: theme(Green, #2f7d32); }
+highlight   { background: theme(Yellow, #fff3a3); }
+math        { color: theme(Purple, #6a51a3); }
+footnote    { color: theme(Comment, #59636e); }
+link        { color: theme(Blue, #0b5cad); text-decoration: underline; }
+cite        { color: theme(Blue, #0b5cad); }
+cite[missing] { color: theme(Red, #c62828); }
+comment     { color: theme(Comment, #59636e); }
+
+raw         { color: theme(Green, #2f7d32); }
+
+/* A link, an insertion and a deletion keep their own colour through
+   whatever markup they hold. */
+link *, insert *, delete * { color: inherit; }
+
+/* --- Blocks ------------------------------------------------------------ */
+
+math-block  { color: theme(Purple, #6a51a3); }
+citation    { color: theme(Cyan, #1b7f86); }
+/* A caption: "Figure 1:" then its text. An alt text: small and muted. */
+caption        { color: initial; font-style: italic; }  /* (not its block's: a formula's TeX is coloured) */
+caption::label { color: theme(Cyan, #1b7f86); font-weight: bold; font-style: normal; }
+caption[of=figure]::label { content: "Figure %n"; }
+caption[of=table]::label  { content: "Table %n"; }
+alt-text       { color: theme(Comment, #59636e); font-style: italic; font-size: 0.85; }
+/* The generated lists: their own title, then entries in the colours of
+   what they list (a heading's, a citation's). */
+toc::title, bibliography::title { color: theme(OrgHeadlineLevel2, #1f2328); font-weight: bold; }
+toc, bibliography { background: fade(theme(Comment, #59636e), 0.08); border-color: fade(theme(Border, #d1d9e0), 0.7); }
+rule        { color: theme(Comment, #59636e); content: "─"; }
+
+/* A table: `background` is the colour its header and stripes are shades
+   of, `border-color` its outline, `table::rule` its grid lines. */
+table              { background: theme(Accent, #0b5cad); border-color: fade(theme(Border, #d1d9e0), 0.7); }
+table:active       { border-color: fade(theme(Accent, #0b5cad), 0.55); }
+table-cell[header] { font-weight: bold; }
+table::rule        { color: theme(Comment, #59636e); }
+
+list-item::marker                { color: theme(Yellow, #9a6700); content: "•"; text-decoration: none; }
+list-item[ordered]::marker       { content: none; }
+list-item[checked=false]::marker { content: "□"; }
+list-item[checked=true]::marker  { content: "✓"; }
+list-item[checked=true] { text-decoration: line-through; text-decoration-color: theme(Comment, #59636e); }
+
+/* Callouts: `// NOTE: text`. One accent per family of keywords. */
+callout                   { --accent: theme(Blue, #0b5cad); color: var(--accent); }
+callout[kind=warning], callout[kind=caution]                    { --accent: theme(Yellow, #9a6700); }
+callout[kind=error], callout[kind=danger]                       { --accent: theme(Red, #c62828); }
+callout[kind=tip], callout[kind=hint], callout[kind=success]    { --accent: theme(Green, #2f7d32); }
+callout[kind=todo], callout[kind=fixme], callout[kind=important] { --accent: theme(Purple, #6a51a3); }
+callout[kind=question], callout[kind=example]                   { --accent: theme(Cyan, #1b7f86); }
+callout *                 { color: inherit; }
+callout::label            { content: " %k "; font-weight: bold; }
+
+abstract::label { content: "Abstract"; color: theme(OrgHeadlineLevel2, #1f2328); font-weight: bold; text-align: center; }
+
+slide::label { content: "Slide %n"; color: theme(Cyan, #1b7f86); font-weight: bold; }
+slide::end   { color: theme(Comment, #59636e); }
+
+/* Boxes: \definition(Title, ...) and its relatives. --accent is the
+   label's colour, the left rule's and (faded) the paper behind the box. */
+box                     { --accent: theme(Cyan, #1b7f86); }
+box[kind=definition]    { --accent: theme(Blue, #2c7fb8); }
+box[kind=theorem], box[kind=lemma], box[kind=proposition], box[kind=corollary] { --accent: theme(Purple, #6a51a3); }
+box[kind=fact]          { --accent: theme(Orange, #d95f0e); }
+box[kind=example]       { --accent: theme(Green, #2e8b57); }
+box[kind=remark]        { --accent: theme(Cyan, #1b7f86); }
+box[kind=proof]         { --accent: theme(Comment, #5f6b7a); }
+box::label              { color: var(--accent); font-weight: bold; }
+box::title              { font-weight: bold; }
+box::end                { color: var(--accent); }
+box[kind=definition]::label  { content: "Definition"; }
+box[kind=theorem]::label     { content: "Theorem"; }
+box[kind=lemma]::label       { content: "Lemma"; }
+box[kind=proposition]::label { content: "Proposition"; }
+box[kind=corollary]::label   { content: "Corollary"; }
+box[kind=fact]::label        { content: "Fact"; }
+box[kind=example]::label     { content: "Example"; }
+box[kind=remark]::label      { content: "Remark"; }
+box[kind=proof]::label       { content: "Proof"; }
+box[kind=proof]::end         { content: "∎"; }
+
+/* --- Cards ------------------------------------------------------------- */
+
+/* The paper behind a block, its outline (stronger while the cursor is in
+   the block: `:active`), and the title band and kind chip of the blocks
+   that have them (`::header`, `::label`). */
+header          { background: fade(theme(Purple, #6a51a3), 0.07); border-color: fade(theme(Purple, #6a51a3), 0.4); }
+header:active   { border-color: fade(theme(Purple, #6a51a3), 0.8); }
+abstract        { background: fade(theme(Cyan, #1b7f86), 0.07); border-color: fade(theme(Cyan, #1b7f86), 0.4); }
+abstract:active { border-color: fade(theme(Cyan, #1b7f86), 0.8); }
+box             { background: fade(var(--accent), 0.09); border-color: fade(var(--accent), 0.3); border-left-color: var(--accent); }
+box:active      { border-color: fade(var(--accent), 0.8); }
+slide           { background: fade(theme(Cyan, #1b7f86), 0.06); border-color: fade(theme(Cyan, #1b7f86), 0.5); }
+slide:active    { border-color: fade(theme(Cyan, #1b7f86), 0.85); }
+slide::header   { background: fade(theme(Cyan, #1b7f86), 0.16); }
+code            { background: fade(theme(Accent, #0b5cad), 0.10); border-color: fade(theme(Accent, #0b5cad), 0.55); }
+code:active     { border-color: theme(Accent, #0b5cad); }
+code::header    { background: fade(theme(Accent, #0b5cad), 0.20); }
+code::label     { background: theme(Accent, #0b5cad); }
+code::option    { color: theme(Accent, #0b5cad); }
+results         { background: fade(theme(Comment, #59636e), 0.08); border-color: fade(theme(Border, #d1d9e0), 0.7); }
+results:active  { border-color: theme(Border, #d1d9e0); }
+results::header { background: fade(theme(Comment, #59636e), 0.16); }
+results::label  { background: theme(Border, #d1d9e0); }
+
+/* --- The presentation view --------------------------------------------- */
+
+/* A presented page is its slide -- `slide heading`, `slide box` select on
+   it -- with no card round it: a slide's `background` here is the page's
+   paper. The title page is `slide[title]`, its lines the header's title,
+   subtitle and author (the date an `italic` in the author's). */
+@media present {
+  slide { background: none; border-color: none; }
+  slide[title] meta[key=title]    { font-size: 1.6; font-weight: normal; }
+  slide[title] meta[key=subtitle] { color: initial; font-size: 1; font-style: normal; }
+}
+
+/* --- Syntax characters ------------------------------------------------- */
+
+/* Shown on a line drawn as its source: muted, and plain whatever the
+   element they belong to. */
+*::markup { color: theme(Comment, #59636e); font-weight: normal; font-style: normal; text-decoration: none; }
+heading::markup, callout::markup, cite::markup { color: inherit; }
+callout *::markup { color: inherit; }
+abstract::markup, slide::markup, command::markup, raw::markup, define::markup,
+caption::markup, alt-text::markup,
+image::markup, import::markup, toc::markup, bibliography::markup { color: theme(Cyan, #1b7f86); }
+box::markup { color: var(--accent); }
+
+/* A line drawn as its source cannot show size: colour hints at it. */
+@media source {
+  alt-text       { color: theme(Cyan, #1b7f86); font-style: normal; }
+  small, small * { color: theme(Comment, #59636e); }
+  big, big *     { color: theme(Yellow, #9a6700); }
+}

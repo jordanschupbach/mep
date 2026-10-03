@@ -1,5 +1,9 @@
 #include "mepml_doc.h"
 
+#include <memory>
+#include <sstream>
+#include <unordered_map>
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -234,15 +238,15 @@ const std::vector<BoxKind> &BoxKinds() {
     // Definitions blue and facts orange, as decks set them; the theorem
     // family shares one purple; examples green; remarks teal; proofs grey.
     static const std::vector<BoxKind> k = {
-        {"definition", "Definition", "#2c7fb8", "#eef5fb", "Blue"},
-        {"theorem", "Theorem", "#6a51a3", "#f4f1fa", "Purple"},
-        {"lemma", "Lemma", "#6a51a3", "#f4f1fa", "Purple"},
-        {"proposition", "Proposition", "#6a51a3", "#f4f1fa", "Purple"},
-        {"corollary", "Corollary", "#6a51a3", "#f4f1fa", "Purple"},
-        {"fact", "Fact", "#d95f0e", "#fdf2e9", "Orange"},
-        {"example", "Example", "#2e8b57", "#edf7f1", "Green"},
-        {"remark", "Remark", "#1b7f86", "#ecf6f6", "Cyan"},
-        {"proof", "Proof", "#5f6b7a", "#ffffff", "Comment"},
+        {"definition", "Definition", "#2c7fb8", "#eef5fb"},
+        {"theorem", "Theorem", "#6a51a3", "#f4f1fa"},
+        {"lemma", "Lemma", "#6a51a3", "#f4f1fa"},
+        {"proposition", "Proposition", "#6a51a3", "#f4f1fa"},
+        {"corollary", "Corollary", "#6a51a3", "#f4f1fa"},
+        {"fact", "Fact", "#d95f0e", "#fdf2e9"},
+        {"example", "Example", "#2e8b57", "#edf7f1"},
+        {"remark", "Remark", "#1b7f86", "#ecf6f6"},
+        {"proof", "Proof", "#5f6b7a", "#ffffff"},
     };
     return k;
 }
@@ -253,9 +257,32 @@ const BoxKind *FindBoxKind(const std::string &name) {
     return nullptr;
 }
 
+bool IsBoxKindName(const std::string &name) {
+    if (name.empty() || !std::isalpha(static_cast<unsigned char>(name[0]))) return false;
+    for (char c : name)
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-') return false;
+    return true;
+}
+
+std::string BoxLabel(const std::string &kind) {
+    if (const BoxKind *k = FindBoxKind(kind)) return k->label;
+    std::string label = kind;
+    if (!label.empty()) label[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(label[0])));
+    for (char &c : label)
+        if (c == '-') c = ' ';
+    return label;
+}
+
+std::string BoxOpenerText(const std::string &kind) { return FindBoxKind(kind) ? "\\" + kind + "(" : "\\boxed(" + kind + ", "; }
+
+std::string BoxHeading(const Document &doc, const Block &b) {
+    std::string h = ExportBoxLook(doc, b.keyword).label;
+    const std::string title = InlinePlainText(b.caption_inlines);
+    return title.empty() ? h : h + ": " + title;
+}
+
 std::string BoxHeading(const Block &b) {
-    const BoxKind *k = FindBoxKind(b.keyword);
-    std::string h = k ? k->label : b.keyword;
+    std::string h = BoxLabel(b.keyword);
     const std::string title = InlinePlainText(b.caption_inlines);
     return title.empty() ? h : h + ": " + title;
 }
@@ -400,7 +427,8 @@ bool IsBuiltinCommandName(const std::string &name) {
     static const std::set<std::string> k = {"f",      "fs",      "color",        "fn",         "cite",
                                             "citep",  "alttext", "caption",      "image",      "import",
                                             "citation", "toc",   "bibliography", "printbibliography",
-                                            "abstract", "slide", "define",       "raw"};
+                                            "abstract", "slide", "define",       "raw",
+                                            "boxed",    "class"};
     return k.count(name) > 0 || FindBoxKind(name) != nullptr;
 }
 bool IsUserCommandName(const std::string &name) { return !name.empty() && !IsBuiltinCommandName(name); }
@@ -454,6 +482,7 @@ bool TryCommand(InlineCtx &ctx, int i, int e, Inline *node) {
     if (name == "f") kind = InlineKind::Font, ngroups = 2;
     else if (name == "fs") kind = InlineKind::FontSize, ngroups = 2;
     else if (name == "color") kind = InlineKind::Color, ngroups = 2;
+    else if (name == "class") kind = InlineKind::Class, ngroups = 2;
     else if (name == "fn") kind = InlineKind::Footnote, ngroups = 1;
     else if (name == "cite") kind = InlineKind::Cite, ngroups = 1;
     else if (name == "citep") kind = InlineKind::CiteP, ngroups = 1;
@@ -788,15 +817,38 @@ int SlideOpener(const std::string &line, char *close = nullptr) {
 }
 // `\definition(` (any BoxKinds name) at the start of a line: the column of
 // its `(`, with *kind the name; -1 for any other line.
-int BoxOpener(const std::string &line, std::string *kind = nullptr) {
+// `\boxed(kind, ` opens a box of any kind: *body is then where its title
+// starts, past the kind and its comma (just past the `(` for a kind with a
+// command of its own).
+int BoxOpener(const std::string &line, std::string *kind = nullptr, int *body = nullptr) {
     const int i = Indent(line);
     if (At(line, i) != '\\') return -1;
     int j = i + 1;
     while (IsAlpha(At(line, j))) ++j;
     if (At(line, j) != '(') return -1;
     const std::string name = Sub(line, i + 1, j);
+    if (name == "boxed") {
+        int k = j + 1;
+        while (At(line, k) == ' ') ++k;
+        int e = k;
+        while (std::isalnum(static_cast<unsigned char>(At(line, e))) || At(line, e) == '-') ++e;
+        const std::string named = Sub(line, k, e);
+        while (At(line, e) == ' ') ++e;
+        // `\boxed(kind,` or `\boxed(kind)`: anything else is not a box.
+        if (!IsBoxKindName(named) || (At(line, e) != ',' && At(line, e) != ')')) return -1;
+        if (kind) *kind = named;
+        // (Past the comma and the blanks after it: the opener is all of
+        // `\boxed(axiom, `.)
+        if (At(line, e) == ',') {
+            ++e;
+            while (At(line, e) == ' ') ++e;
+        }
+        if (body) *body = e;
+        return j;
+    }
     if (!FindBoxKind(name)) return -1;
     if (kind) *kind = name;
+    if (body) *body = j + 1;
     return j;
 }
 // A line that ends a slide opened with `close`: that bracket on its own,
@@ -1081,6 +1133,7 @@ struct Parser {
             }
             doc.meta.emplace_back(b.keyword, b.value);
             std::string key = Lower(b.keyword);
+            if (key == "style" && !b.value.empty()) doc.styles.push_back({b.value, "", k});
             if (key == "title") {
                 doc.title = b.value;
             } else if (key == "import") {
@@ -1726,6 +1779,7 @@ struct Parser {
             }
             char close = 0;
             std::string box_kind;
+            int box_body = 0;
             if (!open_boxes.empty() && IsSlideCloser(s, ')')) {
                 Block b = MakeBlock(BlockKind::BoxEnd, i, i);
                 b.keyword = doc.blocks[open_boxes.back()].keyword;
@@ -1743,8 +1797,8 @@ struct Parser {
             } else if (const int col = SlideOpener(s, &close); col >= 0) {
                 BoxesNeverClosed();
                 i = ParseSlideOpen(i, col, close);
-            } else if (const int box_paren = BoxOpener(s, &box_kind); box_paren >= 0) {
-                i = ParseBoxOpen(i, box_kind, box_paren);
+            } else if (const int box_paren = BoxOpener(s, &box_kind, &box_body); box_paren >= 0) {
+                i = ParseBoxOpen(i, box_kind, box_paren, box_body);
             } else if (IsMetaLine(s)) {
                 i = ParseMetaRun(i);
             } else if (IsComment(s)) {
@@ -1864,13 +1918,14 @@ struct Parser {
     }
 
     // `\definition(Title,` (any box kind): see BlockKind::BoxBegin.
-    int ParseBoxOpen(int i, const std::string &kind, int paren) {
+    // (`body` is where the title starts: past `\boxed(`'s kind.)
+    int ParseBoxOpen(int i, const std::string &kind, int paren, int body) {
         const std::string &s = L(i);
         // Where the group closes, if it does on this line.
         const int g = ReadGroup(s, paren, Len(s));
-        const std::vector<int> comma = ArgCommas(s, paren + 1, g < 0 ? Len(s) : g - 1, 1);
-        int title_to = comma.empty() ? (g < 0 ? Len(s) : paren + 1) : comma[0];
-        int lead_from = comma.empty() ? (g < 0 ? Len(s) : paren + 1) : comma[0] + 1;
+        const std::vector<int> comma = ArgCommas(s, body, g < 0 ? Len(s) : g - 1, 1);
+        int title_to = comma.empty() ? (g < 0 ? Len(s) : body) : comma[0];
+        int lead_from = comma.empty() ? (g < 0 ? Len(s) : body) : comma[0] + 1;
         int last = i;
         bool closed = g >= 0;
         if (closed) {
@@ -1916,8 +1971,8 @@ struct Parser {
             lead_from = std::min(lead_from, text_end);
         }
         // `\remark(text)`: no comma, closed on its line -- all text.
-        int title_from = paren + 1;
-        if (closed && comma.empty()) title_from = title_to = paren + 1, lead_from = paren + 1;
+        int title_from = body;
+        if (closed && comma.empty()) title_from = title_to = body, lead_from = body;
         while (title_from < title_to && IsSpace(b.text[static_cast<size_t>(title_from)])) ++title_from;
         while (title_to > title_from && IsSpace(b.text[static_cast<size_t>(title_to - 1)])) --title_to;
         b.caption = OneSpaced(Sub(b.text, title_from, title_to));
@@ -1927,7 +1982,7 @@ struct Parser {
         while (lead_to > lead_from && IsSpace(b.text[static_cast<size_t>(lead_to - 1)])) --lead_to;
         if (lead_to > lead_from) b.inlines = Inlines(b, lead_from, lead_to);
         if (b.caption.empty() && b.inlines.empty() && closed)
-            Diag(Diagnostic::Warning, i, Indent(s), Len(s), "empty \\" + kind);
+            Diag(Diagnostic::Warning, i, Indent(s), Len(s), "empty \\" + (FindBoxKind(kind) ? kind : "boxed"));
         const size_t at = doc.blocks.size();
         doc.blocks.push_back(std::move(b));
         if (!closed) open_boxes.push_back(at);
@@ -2275,6 +2330,7 @@ namespace {
 void Expand(const std::string &file, Document &doc, const ReadFileFn &read, std::vector<std::string> &stack,
             std::set<std::string> &included, bool top) {
     std::vector<Block> out;
+    size_t imported_styles = 0;  // sheets that imports named, ahead of this document's own
     for (Block &b : doc.blocks) {
         // `\import(path)` in the body, or `//? Import: path` in the header:
         // either way the file's blocks follow the line that names it, so
@@ -2356,9 +2412,16 @@ void Expand(const std::string &file, Document &doc, const ReadFileFn &read, std:
         // lines are not inherited -- they have already been expanded.
         std::set<std::string> own_keys;
         for (const auto &kv : doc.meta) own_keys.insert(Lower(kv.first));
+        // The sheets it names apply too, before this document's own (which
+        // then override them), each resolved against the file that named it.
+        for (StyleRef ref : p.doc.styles) {
+            if (ref.base.empty()) ref.base = path;
+            ref.line = b.line_start;
+            doc.styles.insert(doc.styles.begin() + static_cast<std::ptrdiff_t>(imported_styles++), std::move(ref));
+        }
         for (const auto &kv : p.doc.meta) {
             const std::string k = Lower(kv.first);
-            if (k == "import") continue;
+            if (k == "import" || k == "style") continue;
             if (k == "option") {
                 Option o;
                 if (!ParseAssignment(kv.second, &o) || doc.FindOption(o.name)) continue;
@@ -2398,7 +2461,9 @@ const std::vector<std::string> &KnownFormatTags() {
     static const std::vector<std::string> k = {"html",  "slides", "tex",  "latex", "pdf",  "beamer",     "md",
                                                "markdown", "org",  "txt",  "text",  "rtf",  "docx",       "word",
                                                "odt",   "office", "pptx", "powerpoint", "odp", "impress",
-                                               "present"};
+                                               "present",
+                                               // (not an export: `\raw(style, ...)` is a style sheet in the document)
+                                               "style"};
     return k;
 }
 
@@ -2698,7 +2763,8 @@ Document ParseForExport(const std::string &file, const std::vector<std::string> 
                         const std::vector<std::string> &tags) {
     // The commands come from the document as written, imports included;
     // then every file is expanded as it is read.
-    const std::map<std::string, UserCommand> commands = ParseWithImports(file, lines, read).commands;
+    const Document written = ParseWithImports(file, lines, read);
+    const std::map<std::string, UserCommand> &commands = written.commands;
     const ReadFileFn expanded = [&](const std::string &path, std::vector<std::string> *out) {
         if (!read(path, out)) return false;
         *out = ExpandCommands(*out, commands, tags);
@@ -2714,6 +2780,13 @@ Document ParseForExport(const std::string &file, const std::vector<std::string> 
     }
     doc.commands = commands;
     doc.export_tags = tags;
+    // The sheets the export is styled with (the files as they are, not
+    // expanded: a sheet has no commands).
+    LoadStyleSheets(&doc, file, read);
+    // ... and the ones written in the document (`\raw(style, ...)`, which
+    // the expansion above took out with every other export's \raw).
+    for (const std::string &text : InlineStyleSheets(written))
+        doc.sheets.push_back(std::make_shared<style::Sheet>(style::Parse(text, file)));
     return doc;
 }
 
@@ -2907,10 +2980,94 @@ std::string SuperNumber(int n) {
     return out;
 }
 
+std::string LowerAscii(std::string s) {
+    for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// The element an inline is (docs/mepml-spec/structure.md §2).
+Element ElementForInline(const Inline &x) {
+    switch (x.kind) {
+        case InlineKind::Text: return Element("text");
+        case InlineKind::Bold: return Element("bold");
+        case InlineKind::Italic: return Element("italic");
+        case InlineKind::Underline: return Element("underline");
+        case InlineKind::Superscript: return Element("superscript");
+        case InlineKind::Subscript: return Element("subscript");
+        case InlineKind::Small: return Element("small");
+        case InlineKind::Big: return Element("big");
+        case InlineKind::Mono: return Element("mono");
+        case InlineKind::Highlight: return Element("highlight");
+        case InlineKind::Strike: return Element("strike");
+        case InlineKind::Insert: return Element("insert");
+        case InlineKind::Delete: return Element("delete");
+        case InlineKind::Verbatim: return Element("verbatim");
+        case InlineKind::Link: return Element("link");
+        case InlineKind::Font: return Element("font", "family", x.arg);
+        case InlineKind::FontSize: return Element("font-size", "pt", x.arg);
+        case InlineKind::Color: return Element("color", "value", x.arg);
+        case InlineKind::Class: return Element("span", "class", x.arg);
+        case InlineKind::Footnote: return Element("footnote");
+        case InlineKind::Cite: return Element("cite");
+        case InlineKind::CiteP: return Element("cite", "parenthetical", "");
+        case InlineKind::Math: return x.arg == "display" ? Element("math", "display", "") : Element("math");
+        case InlineKind::Comment: return Element("comment");
+        case InlineKind::Raw: return Element("raw", "formats", x.arg);
+        case InlineKind::Command: return Element("command", "name", x.arg);
+    }
+    return Element("text");
+}
+
 struct Emitter {
     const Document &doc;
     const Block *b = nullptr;
     std::vector<Span> out;
+    explicit Emitter(const Document &d) : doc(d) {}
+    // The element tree as the spans see it: every span names its node.
+    ElementPaths *paths = nullptr;
+    int container = -1;  // the slide or box (or the document) the current block is in
+    int node = -1;       // the current block's element
+
+    int Child(int parent, const Element &e) { return paths->Intern(parent, e); }
+    // `part` of the element at `n` (a node of its own, under it). Asked
+    // for every inline, so remembered rather than interned each time.
+    std::unordered_map<std::uint64_t, int> memo;
+    int Part(int n, const char *part) {
+        if (n < 0) return n;
+        std::uint64_t h = 5381;
+        for (const char *c = part; *c; ++c) h = h * 33 + static_cast<unsigned char>(*c);
+        // (Bit 0 tells a part's key from an inline child's.)
+        const std::uint64_t key = (static_cast<std::uint64_t>(n) << 32) | ((h & 0x7fffffffu) << 1) | 1u;
+        auto it = memo.find(key);
+        if (it != memo.end()) return it->second;
+        const int id = paths->Intern(n, paths->nodes[static_cast<size_t>(n)].element.Part(part));
+        memo.emplace(key, id);
+        return id;
+    }
+    // The element of an inline with no attributes, under `parent`.
+    int InlineChild(int parent, const Inline &x, bool plain) {
+        if (!plain) return Child(parent, ElementForInline(x));
+        const std::uint64_t key = (static_cast<std::uint64_t>(static_cast<unsigned>(parent)) << 32) |
+                                  (static_cast<std::uint64_t>(static_cast<unsigned>(x.kind)) << 8);
+        auto it = memo.find(key);
+        if (it != memo.end()) return it->second;
+        const int id = Child(parent, ElementForInline(x));
+        memo.emplace(key, id);
+        return id;
+    }
+    // A span of the element at `n`.
+    static Span At_(int n) {
+        Span s;
+        s.path = s.source_path = n;
+        return s;
+    }
+    // A span that is `part` of `n` as rendered and its markup as source.
+    Span Shown(int n, const char *part) {
+        Span s;
+        s.path = Part(n, part);
+        s.source_path = Part(n, "markup");
+        return s;
+    }
 
     // One span per line crossed by [from, to) of the current block's text.
     void Range(int from, int to, const Span &proto) {
@@ -2954,12 +3111,23 @@ struct Emitter {
         st.style |= FlagFor(x.kind);
         st.markup = false;
         st.replace.clear();
+        if (x.kind == InlineKind::Cite || x.kind == InlineKind::CiteP) {
+            Element e = ElementForInline(x);
+            if (!doc.citations.count(x.text)) e.With("missing");
+            st.path = st.source_path = Child(base.path, e);
+        } else if (x.kind != InlineKind::Text) {
+            const bool plain = x.kind != InlineKind::Font && x.kind != InlineKind::FontSize && x.kind != InlineKind::Color && x.kind != InlineKind::Class &&
+                               x.kind != InlineKind::Raw && x.kind != InlineKind::Command && x.kind != InlineKind::Math;
+            st.path = st.source_path = InlineChild(base.path, x, plain);
+        }
         if (x.kind == InlineKind::Color) st.color = x.arg;
         if (x.kind == InlineKind::Font) st.font = x.arg;
         if (x.kind == InlineKind::FontSize) st.font_size = static_cast<float>(std::atof(x.arg.c_str()));
         if (x.kind == InlineKind::Link) st.target = x.arg;
         Span mk = st;
         mk.markup = true;
+        // (A citation is its label, rendered or not: no markup of its own.)
+        if (x.kind != InlineKind::Cite && x.kind != InlineKind::CiteP) mk.path = mk.source_path = Part(st.path, "markup");
 
         switch (x.kind) {
             case InlineKind::Text:
@@ -2979,10 +3147,12 @@ struct Emitter {
             case InlineKind::Footnote: {
                 Span open = mk;
                 open.replace = SuperNumber(x.number) + "(";
+                open.path = Part(st.path, "label");
                 Range(x.start, x.inner_start, open);
                 Inlines(x.children, st);
                 Span close = mk;
                 close.replace = ")";
+                close.path = open.path;
                 Range(x.inner_end, x.end, close);
                 return;
             }
@@ -3001,9 +3171,15 @@ struct Emitter {
                 Span d = base;
                 d.style |= kDirective;
                 d.target = x.kind == InlineKind::Command ? x.arg : "";
+                d.path = d.source_path = mk.path;
                 Range(x.start, x.inner_start, d);
-                if (x.kind == InlineKind::Raw) Range(x.inner_start, x.inner_end, st);
-                else Inlines(x.children, base);
+                if (x.kind == InlineKind::Raw) {
+                    Range(x.inner_start, x.inner_end, st);
+                } else {
+                    Span inner = base;
+                    inner.path = inner.source_path = st.path;
+                    Inlines(x.children, inner);
+                }
                 Range(x.inner_end, x.end, d);
                 return;
             }
@@ -3050,7 +3226,9 @@ struct Emitter {
         std::string s = LineText(line);
         int at = SigilAt(s);
         int brace = OpenerAt(s, at);
-        Span d;
+        // (The whole `\name(arg)` line is the element's markup: what it
+        // stands for -- a picture, a list of contents -- is drawn elsewhere.)
+        Span d = At_(Part(node, "markup"));
         d.style = kDirective;
         d.target = target;
         if (at < 0) return;
@@ -3072,17 +3250,22 @@ struct Emitter {
         const int at = SigilAt(s0);
         const int brace = OpenerAt(s0, at);
         if (at < 0 || brace < 0 || last < first || close_col < 0) return;
-        Span d;
+        std::string of = "code";
+        if (blk.kind == BlockKind::Image || !blk.result_images.empty()) of = "figure";
+        else if (blk.kind == BlockKind::Table) of = "table";
+        else if (blk.kind == BlockKind::MathBlock) of = "math";
+        const int attr = Child(node, caption ? Element("caption", "of", of) : Element("alt-text"));
+        Span d = At_(Part(attr, "markup"));
         d.style = kDirective;
         d.markup = true;
         d.replace = caption ? "Caption: " : "";
         Line(first, at, brace + 1, d);
         if (caption) {
-            Span cap;
+            Span cap = At_(attr);
             cap.style = kItalic;
             Inlines(blk.caption_inlines, cap);
         } else {
-            Span a;
+            Span a = At_(attr);
             a.style = kDirective;
             for (int line = first; line <= last; ++line) {
                 const int from = line == first ? brace + 1 : 0;
@@ -3106,22 +3289,24 @@ struct Emitter {
             cm.style |= kCallout;
             cm.callout = kw;
         }
+        cm.path = cm.source_path = Child(node, kw.empty() ? Element("comment") : Element("callout", "kind", LowerAscii(kw)));
         Line(line, static_cast<int>(c), static_cast<int>(s.size()), cm);
     }
 
     void Block_(const Block &blk) {
         b = &blk;
-        Span none;
+        const Span none = At_(node);
         switch (blk.kind) {
             case BlockKind::Paragraph:
                 Inlines(blk.inlines, none);
                 break;
             case BlockKind::Heading: {
-                Span h;
+                Span h = At_(node);
                 h.style = kHeading;
                 h.heading_level = blk.level;
                 Span mk = h;
                 mk.markup = true;
+                mk.path = mk.source_path = Part(node, "markup");
                 int c = blk.level;
                 while (c < static_cast<int>(blk.text.size()) && (blk.text[static_cast<size_t>(c)] == ' ')) ++c;
                 Line(blk.line_start, 0, c, mk);
@@ -3129,13 +3314,13 @@ struct Emitter {
                 break;
             }
             case BlockKind::Comment: {
-                Span c;
+                Span c = At_(node);
                 c.style = kComment;
                 Lines(blk.line_start, blk.line_end, c);
                 break;
             }
             case BlockKind::Callout: {
-                Span c;
+                Span c = At_(node);
                 c.style = kCallout;
                 c.callout = blk.keyword;
                 // "// NOTE:" badge on the first line, "//" on the rest.
@@ -3147,6 +3332,8 @@ struct Emitter {
                     while (end < static_cast<int>(s.size()) && s[static_cast<size_t>(end)] == ' ') ++end;
                     Span mk = c;
                     mk.markup = true;
+                    mk.source_path = Part(node, "markup");
+                    mk.path = line == blk.line_start ? Part(node, "label") : mk.source_path;
                     mk.replace = line == blk.line_start ? " " + blk.keyword + " " : "";
                     if (line != blk.line_start) mk.replace = std::string(1, ' ');
                     Line(line, p, end, mk);
@@ -3156,7 +3343,7 @@ struct Emitter {
             }
             case BlockKind::Meta: {
                 std::string s = LineText(blk.line_start);
-                Span m;
+                Span m = At_(node);
                 m.style = kMeta;
                 Line(blk.line_start, 0, static_cast<int>(s.size()), m);
                 break;
@@ -3175,7 +3362,7 @@ struct Emitter {
                 if (blk.kind == BlockKind::Image) {
                     Directive(blk.line_start, blk.value);
                 } else if (blk.kind == BlockKind::MathBlock) {
-                    Span m;
+                    Span m = At_(node);
                     m.style = kMath;
                     Lines(blk.line_start, body_end, m);
                 } else if (blk.kind == BlockKind::Table) {
@@ -3188,7 +3375,7 @@ struct Emitter {
                 break;
             }
             case BlockKind::Citation: {
-                Span d;
+                Span d = At_(node);
                 d.style = kDirective;
                 d.target = blk.value;
                 Lines(blk.line_start, blk.line_end, d);
@@ -3198,7 +3385,11 @@ struct Emitter {
                 for (const ListItem &it : blk.items) {
                     std::string s = LineText(it.line);
                     int off = blk.line_offsets[static_cast<size_t>(it.line - blk.line_start)];
-                    Span mk;
+                    Element item("list-item");
+                    if (it.ordered) item.With("ordered");
+                    if (it.checkbox >= 0) item.With("checked", it.checkbox ? "true" : "false");
+                    const int item_node = Child(node, item);
+                    Span mk = At_(Part(item_node, "marker"));
                     mk.style = kListMarker;
                     mk.markup = true;
                     int mend = it.content_start - off;
@@ -3212,14 +3403,14 @@ struct Emitter {
                         om.markup = false;
                         Line(it.line, it.indent, mend, om);
                     }
-                    Span content;
+                    Span content = At_(item_node);
                     if (it.checkbox == 1) content.style |= kStrike;
                     Inlines(it.content, content);
                 }
                 break;
             }
             case BlockKind::Rule: {
-                Span r;
+                Span r = At_(node);
                 r.style = kRule;
                 r.markup = true;
                 Lines(blk.line_start, blk.line_end, r);
@@ -3233,7 +3424,7 @@ struct Emitter {
                 // `\abstract(` reads as the section's label -- on a line of
                 // its own, or run in before the text that follows it -- and
                 // the closing `)` goes away.
-                Span mk;
+                Span mk = Shown(node, "label");
                 mk.style = kDirective | kAbstract;
                 mk.markup = true;
                 std::string s = LineText(blk.line_start);
@@ -3248,6 +3439,7 @@ struct Emitter {
                 if (g > 0) {
                     Span close = mk;
                     close.replace.clear();
+                    close.path = close.source_path;
                     Range(g - 1, g, close);
                     Block::Pos p = blk.OffsetToPos(g);
                     TrailingComment(p.line, p.col);
@@ -3265,7 +3457,7 @@ struct Emitter {
                 const int at = Indent(s);
                 const int open = static_cast<int>(s.find('(', static_cast<size_t>(at)));
                 const int g = open < 0 ? -1 : ReadGroup(blk.text, open, static_cast<int>(blk.text.size()));
-                Span d;
+                Span d = At_(Part(node, "markup"));
                 d.style = kDirective;
                 d.target = blk.keyword;
                 int body = open + 1;
@@ -3275,12 +3467,12 @@ struct Emitter {
                 }
                 Range(at, std::max(at, body), d);
                 if (blk.kind == BlockKind::Define) {
-                    Span c;
+                    Span c = At_(node);
                     c.style = kCode;
                     const int to = g < 0 ? static_cast<int>(blk.text.size()) : g - 1;
                     Range(body, to, c);
                 } else if (blk.kind == BlockKind::Raw) {
-                    Span v;
+                    Span v = At_(node);
                     v.style = kVerbatim;
                     Range(body, g < 0 ? static_cast<int>(blk.text.size()) : g - 1, v);
                 } else {
@@ -3298,7 +3490,7 @@ struct Emitter {
                 // `\definition(` reads as the box's label ("Definition: "),
                 // its title is bold, the comma after it goes (or reads ". "
                 // before text on the same line), and the closing `)` goes.
-                Span mk;
+                Span mk = Shown(node, "label");
                 mk.style = kDirective | kBox;
                 mk.markup = true;
                 mk.target = blk.keyword;
@@ -3306,39 +3498,45 @@ struct Emitter {
                 const int at = Indent(s);
                 // A proof ends with a tombstone where its `)` was.
                 if (blk.kind == BlockKind::BoxEnd) {
+                    mk.path = Part(node, "end");
+                    mk.block_end = true;
                     if (blk.keyword == "proof") mk.replace = "\u220E";
                     Line(blk.line_start, at, at + 1, mk);
                     TrailingComment(blk.line_start, at + 1);
                     break;
                 }
-                const int paren = BoxOpener(s);
+                int body = 0;
+                const int paren = BoxOpener(s, nullptr, &body);
                 if (paren < 0) break;
-                const BoxKind *kind = FindBoxKind(blk.keyword);
-                const std::string label = kind ? kind->label : blk.keyword;
+                const std::string label = BoxLabel(blk.keyword);
                 const int close = blk.box_closed ? (blk.line_start == blk.line_end
                                                         ? ReadGroup(blk.text, paren, static_cast<int>(s.size())) - 1
                                                         : static_cast<int>(blk.text.rfind(')')))
                                                  : -1;
                 const int body_end = close >= 0 ? close : static_cast<int>(s.size());
-                const std::vector<int> comma = ArgCommas(blk.text, paren + 1, body_end, 1);
+                const std::vector<int> comma = ArgCommas(blk.text, body, body_end, 1);
                 // Text after the title on the opening line itself.
                 const bool on_line =
                     !comma.empty() && !Trim(Sub(s, comma[0] + 1, close >= 0 && close < Len(s) ? close : Len(s))).empty();
                 const bool titled = !blk.caption_inlines.empty();
                 mk.replace = label + (titled ? ": " : !blk.inlines.empty() ? ". " : "");
-                Line(blk.line_start, at, paren + 1, mk);
-                Span title;
+                // (`\boxed(axiom, ` is all the opener: its kind is not text.)
+                Line(blk.line_start, at, std::min(body, body_end), mk);
+                Span title = At_(Part(node, "title"));
                 title.style = kBold | kBox;
                 title.target = blk.keyword;
                 Inlines(blk.caption_inlines, title);
                 if (!comma.empty()) {
+                    // (The full stop it becomes after a title is the label's:
+                    // "Definition: Title." reads as one heading.)
                     Span c = mk;
                     c.replace = titled && on_line ? (At(blk.text, comma[0] + 1) == ' ' ? "." : ". ") : "";
                     Range(comma[0], comma[0] + 1, c);
                 }
-                Inlines(blk.inlines, none);
+                Inlines(blk.inlines, At_(Child(node, Element("paragraph"))));
                 if (close >= 0) {
                     Span c = mk;
+                    c.path = Part(node, "end");
                     c.replace = blk.keyword == "proof" ? " \u220E" : "";
                     Range(close, close + 1, c);
                     const Block::Pos p = blk.OffsetToPos(close + 1);
@@ -3354,10 +3552,12 @@ struct Emitter {
                 const int at = Indent(s);
                 const int to = blk.kind == BlockKind::SlideBegin ? SlideOpener(s) : at + 1;
                 if (to < 0) break;
-                Span mk;
+                Span mk = Shown(node, blk.kind == BlockKind::SlideBegin ? "label" : "end");
                 mk.style = kDirective | kSlide;
                 mk.markup = true;
                 if (blk.kind == BlockKind::SlideBegin) mk.replace = "Slide " + std::to_string(blk.level);
+                mk.number = blk.level;
+                mk.block_end = blk.kind == BlockKind::SlideEnd;
                 Line(blk.line_start, at, to, mk);
                 TrailingComment(blk.line_start, to);
                 break;
@@ -3368,7 +3568,7 @@ struct Emitter {
     void TableSpans(const Block &blk, int body_end) {
         for (int line = blk.line_start; line <= body_end; ++line) {
             std::string s = LineText(line);
-            Span t;
+            Span t = At_(Part(node, "rule"));
             t.style = kTable | kTableRule;
             t.markup = true;
             if (line == blk.separator_line) {
@@ -3385,9 +3585,11 @@ struct Emitter {
         }
         size_t row_idx = 0;
         for (const auto &row : blk.rows) {
-            Span cell;
+            const bool header = static_cast<int>(row_idx) < blk.header_rows;
+            const int cell_node = Child(node, header ? Element("table-cell", "header", "") : Element("table-cell"));
+            Span cell = At_(cell_node);
             cell.style = kTable;
-            if (static_cast<int>(row_idx) < blk.header_rows) cell.style |= kBold;
+            if (header) cell.style |= kBold;
             for (const TableCell &c : row) {
                 if (c.image.empty()) {
                     Inlines(c.content, cell);
@@ -3395,7 +3597,7 @@ struct Emitter {
                 }
                 // A picture cell reads as one directive (the editor draws
                 // the image over it), not as inline markup in a path.
-                Span d;
+                Span d = At_(Part(Child(cell_node, Element("image")), "markup"));
                 d.style = kTable | kDirective;
                 d.target = c.image;
                 Range(c.start, c.end, d);
@@ -3405,22 +3607,25 @@ struct Emitter {
     }
 
     void CodeSpans(const Block &blk) {
-        Span m;
+        Span m = At_(Child(node, Element("meta", "key", "option")));
         m.style = kMeta;
         for (int line = blk.line_start; line < blk.code_line_start - 1; ++line) Lines(line, line, m);
-        Span fence;
+        Span fence = At_(Part(node, "markup"));
         fence.style = kCode | kDirective;
         Lines(blk.code_line_start - 1, blk.code_line_start - 1, fence);
-        Span body;
+        Span body = At_(node);
         body.style = kCode;
         if (blk.code_line_end >= blk.code_line_start) Lines(blk.code_line_start, blk.code_line_end, body);
         int close = blk.code_line_end + 1;
         if (close <= blk.line_end && close != blk.result_line_start) Lines(close, close, fence);
         if (blk.result_line_start >= 0) {
-            Span r;
+            // A block's results are a block of their own beside it.
+            const int results = Child(container, Element("results", "format", blk.result_format.empty() ? "text" : blk.result_format));
+            Span r = At_(results);
             r.style = kResult;
             Span rm = r;
             rm.style |= kComment;
+            rm.path = rm.source_path = Part(results, "markup");
             Lines(blk.result_line_start, blk.result_line_start, rm);
             // Markdown results are the document's own blocks, styled as such.
             for (int line = blk.result_line_start + 1; line < blk.result_line_end && blk.result_format != "markdown"; ++line) {
@@ -3432,7 +3637,8 @@ struct Emitter {
                 }
                 int end = static_cast<int>(p) + 2;
                 if (end < static_cast<int>(s.size()) && s[static_cast<size_t>(end)] == ' ') ++end;
-                Span pm = r;
+                Span pm = rm;
+                pm.style = r.style;
                 pm.markup = true;
                 Line(line, 0, end, pm);
                 // A figure the block produced: the editor draws the image
@@ -3445,17 +3651,326 @@ struct Emitter {
                 }
                 Line(line, end, static_cast<int>(s.size()), content);
             }
-            if (blk.result_line_end > blk.result_line_start) Lines(blk.result_line_end, blk.result_line_end, rm);
+            // (Markdown results end outside the block -- it owns only
+            // their opening marker -- so that line's text is not at hand:
+            // the marker itself is what there is to colour.)
+            if (blk.result_line_end > blk.line_end) Line(blk.result_line_end, 0, static_cast<int>(std::strlen("// result_end")), rm);
+            else if (blk.result_line_end > blk.result_line_start) Lines(blk.result_line_end, blk.result_line_end, rm);
         }
     }
 };
 
 }  // namespace
 
-std::vector<Span> Highlight(const Document &doc) {
-    Emitter em{doc, nullptr, {}};
+Element ElementForBlock(const Block &b) {
+    switch (b.kind) {
+        case BlockKind::Paragraph: return Element("paragraph");
+        case BlockKind::Heading: return Element("heading", "level", std::to_string(b.level));
+        case BlockKind::Comment: return Element("comment");
+        case BlockKind::Callout: return Element("callout", "kind", LowerAscii(b.keyword));
+        case BlockKind::Meta: {
+            Element e("meta", "key", LowerAscii(b.keyword));
+            // An option says what its value is: `Name=1`, `Name=1.5`, `Name="x"`.
+            Option o;
+            if (e.attrs[0].second == "option" && ParseAssignment(b.value, &o))
+                e.With("type", o.value.kind == ValueKind::Int ? "int" : o.value.kind == ValueKind::Double ? "double" : "string");
+            return e;
+        }
+        case BlockKind::Import: return Element("import");
+        case BlockKind::Citation: return Element("citation");
+        case BlockKind::MathBlock: return Element("math-block");
+        case BlockKind::Code: return Element("code", "lang", b.lang);
+        case BlockKind::Image: return Element("image");
+        case BlockKind::Table: return Element("table");
+        case BlockKind::List: return Element("list");
+        case BlockKind::Rule: return Element("rule");
+        case BlockKind::Bibliography: return Element("bibliography");
+        case BlockKind::TableOfContents: return Element("toc");
+        case BlockKind::Abstract: return Element("abstract");
+        case BlockKind::SlideBegin:
+        case BlockKind::SlideEnd: return Element("slide", "number", std::to_string(b.level));
+        case BlockKind::Define: return Element("define");
+        case BlockKind::Raw: return Element("raw", "formats", b.lang);
+        case BlockKind::Command: return Element("command", "name", b.keyword);
+        case BlockKind::BoxBegin:
+        case BlockKind::BoxEnd: return Element("box", "kind", b.keyword);
+    }
+    return Element("paragraph");
+}
+
+namespace {
+
+std::string JsonString(const std::string &s) {
+    std::string o = "\"";
+    for (char c : s) {
+        switch (c) {
+            case '"': o += "\\\""; break;
+            case '\\': o += "\\\\"; break;
+            case '\n': o += "\\n"; break;
+            case '\t': o += "\\t"; break;
+            case '\r': o += "\\r"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(static_cast<unsigned char>(c)));
+                    o += buf;
+                } else {
+                    o += c;
+                }
+        }
+    }
+    return o + "\"";
+}
+
+// `{"name": ..., "attrs": {...}` -- left open for the caller's own fields.
+std::string JsonOpen(const Element &e) {
+    std::string o = "{\"name\":" + JsonString(e.name);
+    if (!e.attrs.empty()) {
+        o += ",\"attrs\":{";
+        for (size_t i = 0; i < e.attrs.size(); ++i)
+            o += (i ? "," : "") + JsonString(e.attrs[i].first) + ":" + JsonString(e.attrs[i].second);
+        o += "}";
+    }
+    return o;
+}
+
+std::string JsonInlines(const Document &doc, const std::vector<Inline> &ins) {
+    std::string o = "[";
+    bool first = true;
+    for (const Inline &x : ins) {
+        o += first ? "" : ",";
+        first = false;
+        if (x.kind == InlineKind::Text) {
+            o += "{\"text\":" + JsonString(x.text) + "}";
+            continue;
+        }
+        Element e = ElementForInline(x);
+        if (x.kind == InlineKind::Cite || x.kind == InlineKind::CiteP) {
+            e.With("key", x.text);
+            if (!doc.citations.count(x.text)) e.With("missing");
+        }
+        if (x.kind == InlineKind::Link) e.With("href", x.arg);
+        if (x.kind == InlineKind::Footnote) e.With("number", std::to_string(x.number));
+        o += JsonOpen(e);
+        if (x.children.empty()) {
+            if (!x.text.empty() && x.kind != InlineKind::Cite && x.kind != InlineKind::CiteP) o += ",\"text\":" + JsonString(x.text);
+        } else {
+            o += ",\"children\":" + JsonInlines(doc, x.children);
+        }
+        if (!x.alt.empty()) o += ",\"alt\":" + JsonString(x.alt);
+        o += "}";
+    }
+    return o + "]";
+}
+
+}  // namespace
+
+std::string ElementTreeJson(const Document &doc) {
+    const std::vector<std::string> labels = BlockLabels(doc);
+    // One JSON array of children per open container: the document's, then
+    // a slide's, then each box's.
+    std::vector<std::string> open = {""};
+    std::vector<bool> is_box = {false};  // parallel to `open`
+    auto add = [&](const std::string &json) { open.back() += (open.back().empty() ? "" : ",") + json; };
+    auto close = [&] {
+        const std::string children = open.back();
+        open.pop_back();
+        is_box.pop_back();
+        open.back() += "\"children\":[" + children + "]}";
+    };
+    for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
+        const Block &b = doc.blocks[bi];
+        const Element e = ElementForBlock(b);
+        std::string head = JsonOpen(e) + ",\"lines\":[" + std::to_string(b.line_start) + "," + std::to_string(b.line_end) + "]";
+        if (!b.origin.empty()) head += ",\"origin\":" + JsonString(b.origin);
+        if (bi < labels.size() && !labels[bi].empty()) head += ",\"label\":" + JsonString(labels[bi]);
+        switch (b.kind) {
+            case BlockKind::SlideBegin:
+                while (open.size() > 1) close();
+                open.back() += (open.back().empty() ? "" : ",") + head + ",";
+                open.push_back("");
+                is_box.push_back(false);
+                continue;
+            case BlockKind::SlideEnd:
+                while (open.size() > 1) close();
+                continue;
+            case BlockKind::BoxBegin: {
+                std::string kids;
+                if (!b.inlines.empty()) kids = "{\"name\":\"paragraph\",\"children\":" + JsonInlines(doc, b.inlines) + "}";
+                if (!b.caption_inlines.empty()) head += ",\"title\":" + JsonInlines(doc, b.caption_inlines);
+                if (b.box_closed) {
+                    add(head + ",\"children\":[" + kids + "]}");
+                } else {
+                    open.back() += (open.back().empty() ? "" : ",") + head + ",";
+                    open.push_back(kids);
+                    is_box.push_back(true);
+                }
+                continue;
+            }
+            case BlockKind::BoxEnd:
+                // (Never the slide's own list: a stray `)` closes nothing.)
+                if (is_box.back())
+                    close();
+                continue;
+            default:
+                break;
+        }
+        std::string kids;
+        auto kid = [&](const std::string &json) { kids += (kids.empty() ? "" : ",") + json; };
+        switch (b.kind) {
+            case BlockKind::Paragraph:
+            case BlockKind::Heading:
+            case BlockKind::Callout:
+            case BlockKind::Abstract:
+            case BlockKind::Command:
+                kids = JsonInlines(doc, b.inlines);
+                kids = kids.substr(1, kids.size() - 2);
+                break;
+            case BlockKind::List:
+                for (const ListItem &it : b.items) {
+                    Element item("list-item");
+                    if (it.ordered) item.With("ordered").With("number", std::to_string(it.number));
+                    if (it.checkbox >= 0) item.With("checked", it.checkbox ? "true" : "false");
+                    item.With("indent", std::to_string(it.indent));
+                    kid(JsonOpen(item) + ",\"children\":" + JsonInlines(doc, it.content) + "}");
+                }
+                break;
+            case BlockKind::Table:
+                for (size_t r = 0; r < b.rows.size(); ++r) {
+                    for (size_t c = 0; c < b.rows[r].size(); ++c) {
+                        Element cell("table-cell");
+                        if (static_cast<int>(r) < b.header_rows) cell.With("header");
+                        const Align al = c < b.aligns.size() ? b.aligns[c] : Align::Default;
+                        if (al != Align::Default) cell.With("align", al == Align::Left ? "left" : al == Align::Center ? "center" : "right");
+                        cell.With("row", std::to_string(r)).With("column", std::to_string(c));
+                        std::string j = JsonOpen(cell);
+                        if (!b.rows[r][c].image.empty()) j += ",\"image\":" + JsonString(b.rows[r][c].image);
+                        kid(j + ",\"children\":" + JsonInlines(doc, b.rows[r][c].content) + "}");
+                    }
+                }
+                break;
+            case BlockKind::Code:
+            case BlockKind::MathBlock:
+            case BlockKind::Define:
+            case BlockKind::Raw:
+                head += ",\"text\":" + JsonString(b.code);
+                break;
+            case BlockKind::Meta:
+            case BlockKind::Import:
+            case BlockKind::Image:
+            case BlockKind::Citation:
+                head += ",\"text\":" + JsonString(b.value);
+                break;
+            default:
+                break;
+        }
+        if (b.kind == BlockKind::Code && !b.options.empty()) {
+            head += ",\"options\":{";
+            for (size_t i = 0; i < b.options.size(); ++i)
+                head += (i ? "," : "") + JsonString(b.options[i].name) + ":" + JsonString(b.options[i].value.s);
+            head += "}";
+        }
+        if (b.caption_line >= 0) {
+            std::string of = "code";
+            if (b.kind == BlockKind::Image || !b.result_images.empty()) of = "figure";
+            else if (b.kind == BlockKind::Table) of = "table";
+            else if (b.kind == BlockKind::MathBlock) of = "math";
+            kid(JsonOpen(Element("caption", "of", of)) + ",\"children\":" + JsonInlines(doc, b.caption_inlines) + "}");
+        }
+        if (b.alt_line >= 0) kid("{\"name\":\"alt-text\",\"text\":" + JsonString(b.alt) + "}");
+        add(head + (kids.empty() ? "" : ",\"children\":[" + kids + "]") + "}");
+        // A code block's results are a block of their own after it.
+        if (b.kind == BlockKind::Code && b.result_line_start >= 0) {
+            std::string text;
+            for (size_t i = 0; i < b.result_lines.size(); ++i) text += (i ? "\n" : "") + b.result_lines[i];
+            std::string r = JsonOpen(Element("results", "format", b.result_format.empty() ? "text" : b.result_format)) + ",\"lines\":[" +
+                            std::to_string(b.result_line_start) + "," + std::to_string(b.result_line_end) + "],\"text\":" +
+                            JsonString(text);
+            if (!b.result_images.empty()) {
+                r += ",\"images\":[";
+                for (size_t i = 0; i < b.result_images.size(); ++i) r += (i ? "," : "") + JsonString(b.result_images[i].second);
+                r += "]";
+            }
+            add(r + "}");
+        }
+    }
+    while (open.size() > 1) close();
+    return JsonOpen(Element("document", "type", IsPresentation(doc) ? "presentation" : "document")) + ",\"title\":" +
+           JsonString(doc.title) + ",\"children\":[" + open[0] + "]}";
+}
+
+const std::vector<std::string> &ElementNames() {
+    static const std::vector<std::string> k = {
+        // Blocks.
+        "document", "header", "meta", "heading", "paragraph", "comment", "callout", "abstract", "slide", "box", "list", "list-item",
+        "table", "table-cell", "code", "results", "math-block", "image", "caption", "alt-text", "rule", "toc", "bibliography",
+        "import", "citation", "define", "raw", "command",
+        // Inlines (comment, raw and command are both).
+        "bold", "italic", "underline", "superscript", "subscript", "small", "big", "mono", "highlight", "strike", "insert", "delete",
+        "verbatim", "link", "footnote", "cite", "math", "font", "font-size", "color", "span",
+    };
+    return k;
+}
+
+bool IsBlockElement(const std::string &name) {
+    static const std::set<std::string> k = {
+        "document", "header",   "meta",   "heading",    "paragraph", "comment",  "callout", "abstract",     "slide",  "box",
+        "list",     "list-item", "table",  "table-cell", "code",      "results",  "math-block", "image",     "caption", "alt-text",
+        "rule",     "toc",      "bibliography", "import", "citation",  "define",
+    };
+    return k.count(name) > 0;
+}
+
+std::vector<Span> Highlight(const Document &doc, ElementPaths *paths, std::vector<int> *block_nodes, const HighlightContext *context) {
+    ElementPaths local;
+    Emitter em(doc);
+    em.paths = paths ? paths : &local;
+    const int root = em.paths->Intern(-1, Element("document", "type", IsPresentation(doc) ? "presentation" : "document"));
+    // The slide and boxes open around the current block, innermost last.
+    std::vector<int> open;
+    int slide = -1;
+    // (A page of the presentation view is inside its slide throughout.)
+    const int outer = context && !context->container.name.empty() ? em.paths->Intern(root, context->container) : root;
+    auto block_element = [&](const Block &b) {
+        if (context && context->title_page) {
+            if (b.kind == BlockKind::Heading) return Element("meta", "key", "title");
+            if (b.kind == BlockKind::Paragraph)
+                return Element("meta", "key", b.inlines.size() == 1 && b.inlines[0].kind == InlineKind::Big ? "subtitle" : "author");
+        }
+        return ElementForBlock(b);
+    };
+    if (block_nodes) block_nodes->assign(doc.blocks.size(), -1);
     for (const Block &b : doc.blocks) {
         if (!b.origin.empty()) continue;
+        em.container = !open.empty() ? open.back() : slide >= 0 ? slide : outer;
+        switch (b.kind) {
+            case BlockKind::SlideBegin:
+                // (A slide left open ends where the next one starts.)
+                open.clear();
+                em.node = slide = em.paths->Intern(root, ElementForBlock(b));
+                break;
+            case BlockKind::SlideEnd:
+                open.clear();
+                em.node = slide >= 0 ? slide : em.paths->Intern(root, ElementForBlock(b));
+                slide = -1;
+                break;
+            case BlockKind::BoxBegin:
+                em.node = em.paths->Intern(em.container, ElementForBlock(b));
+                if (!b.box_closed) open.push_back(em.node);
+                break;
+            case BlockKind::BoxEnd:
+                if (!open.empty()) {
+                    em.node = open.back();
+                    open.pop_back();
+                } else {
+                    em.node = em.paths->Intern(em.container, ElementForBlock(b));
+                }
+                break;
+            default:
+                em.node = em.paths->Intern(em.container, block_element(b));
+                break;
+        }
+        if (block_nodes) (*block_nodes)[static_cast<size_t>(&b - doc.blocks.data())] = em.node;
         em.Block_(b);
     }
     std::stable_sort(em.out.begin(), em.out.end(), [](const Span &a, const Span &c) {
@@ -3539,6 +4054,560 @@ const std::vector<std::string> &ColorNames() {
 }  // namespace mepml
 
 // ---------------------------------------------------------------------------
+// Style sheets in exports
+
+namespace mepml {
+
+std::string UserStyleSheetPath() {
+    std::string config;
+    if (const char *xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) config = xdg;
+    else if (const char *home = std::getenv("HOME"); home && *home) config = std::string(home) + "/.config";
+    return config.empty() ? std::string() : config + "/mep/mepml.mepss";
+}
+
+void LoadStyleSheets(Document *doc, const std::string &file, const ReadFileFn &read) {
+    doc->sheets.clear();
+    auto load = [&](const std::string &path) {
+        std::vector<std::string> lines;
+        if (path.empty() || !read(path, &lines)) return;
+        std::string text;
+        for (const std::string &l : lines) text += l + "\n";
+        doc->sheets.push_back(std::make_shared<style::Sheet>(style::Parse(text, path)));
+    };
+    load(UserStyleSheetPath());
+    for (const StyleRef &ref : doc->styles) load(ResolvePath(ref.base.empty() ? file : ref.base, ref.path));
+}
+
+std::vector<std::string> InlineStyleSheets(const Document &doc) {
+    std::vector<std::string> out;
+    for (const Block &b : doc.blocks)
+        if (b.kind == BlockKind::Raw && Lower(Trim(b.lang)) == "style" && !Trim(b.code).empty()) out.push_back(b.code);
+    return out;
+}
+
+std::vector<std::string> ClassNames(const Document &doc) {
+    std::vector<std::string> out;
+    std::function<void(const std::vector<Inline> &)> walk = [&](const std::vector<Inline> &ins) {
+        for (const Inline &x : ins) {
+            if (x.kind == InlineKind::Class && IsBoxKindName(x.arg) && std::find(out.begin(), out.end(), x.arg) == out.end())
+                out.push_back(x.arg);
+            walk(x.children);
+        }
+    };
+    for (const Block &b : doc.blocks) {
+        walk(b.inlines);
+        walk(b.caption_inlines);
+        for (const ListItem &it : b.items) walk(it.content);
+        for (const auto &row : b.rows)
+            for (const TableCell &c : row) walk(c.content);
+    }
+    return out;
+}
+
+std::vector<std::string> ExportMedia(const Document &doc) {
+    std::vector<std::string> tags = doc.export_tags;
+    if (tags.empty()) tags.push_back("html");
+    auto has = [&](const char *t) { return std::find(tags.begin(), tags.end(), t) != tags.end(); };
+    if (has("html")) tags.push_back("screen");
+    else if (has("tex") || has("docx") || has("odt") || has("rtf")) tags.push_back("print");
+    return tags;
+}
+
+namespace {
+
+// The two cascades an export compares: mep's built-in look alone, and
+// with the sheets the document is exported with over it.
+struct ExportCascades {
+    style::Cascade base, full;
+    explicit ExportCascades(const Document &doc) {
+        static const std::shared_ptr<const style::Sheet> builtin(&style::DefaultSheet(), [](const style::Sheet *) {});
+        base.sheets = {builtin};
+        full.sheets = {builtin};
+        full.sheets.insert(full.sheets.end(), doc.sheets.begin(), doc.sheets.end());
+        base.media = full.media = ExportMedia(doc);
+    }
+    // The style of the last of `chain`, each element inside the one before.
+    static style::Computed Of(const style::Cascade &c, const std::vector<Element> &chain) {
+        style::Computed st;
+        std::vector<const Element *> path;
+        for (const Element &e : chain) {
+            path.push_back(&e);
+            st = c.Compute(path, st);
+        }
+        return st;
+    }
+};
+
+std::string HexOf(std::uint32_t rgb) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "#%06x", static_cast<unsigned>(rgb & 0xffffffu));
+    return buf;
+}
+
+// A sheet colour as an export writes it: a theme() colour is its fallback
+// (an export has no colour scheme), and one with neither is "".
+std::string ExportHex(const style::Color &c) {
+    if (c.kind == style::Color::Rgb || (c.kind == style::Color::Theme && c.has_fallback)) return HexOf(c.rgb);
+    return std::string();
+}
+
+// The same over white paper: a fade() blended, nothing at all white.
+std::string ExportHexOnPaper(const style::Color &c) {
+    if (ExportHex(c).empty()) return "#ffffff";
+    const float a = std::clamp(c.alpha, 0.0f, 1.0f);
+    std::uint32_t out = 0;
+    for (int shift = 16; shift >= 0; shift -= 8) {
+        const float v = static_cast<float>((c.rgb >> shift) & 0xffu);
+        out |= static_cast<std::uint32_t>(std::lround(v * a + 255.0f * (1.0f - a))) << shift;
+    }
+    return HexOf(out);
+}
+
+}  // namespace
+
+BoxLook ExportBoxLook(const Document &doc, const std::string &kind) {
+    const BoxKind *k = FindBoxKind(kind);
+    BoxLook look;
+    look.label = BoxLabel(kind);
+    look.color = k ? k->color : "#2c7fb8";
+    look.tint = k ? k->tint : "#eef5fb";
+    look.end = kind == "proof" ? "∎" : "";
+    if (doc.sheets.empty()) return look;
+    // Only what the sheets change: the rest stays exactly the built-in look.
+    const ExportCascades cs(doc);
+    const Element root("document"), box("box", "kind", kind);
+    const style::Computed fb = ExportCascades::Of(cs.full, {root, box}), bb = ExportCascades::Of(cs.base, {root, box});
+    const style::Computed fl = ExportCascades::Of(cs.full, {root, box, box.Part("label")}),
+                          bl = ExportCascades::Of(cs.base, {root, box, box.Part("label")});
+    const style::Computed fe = ExportCascades::Of(cs.full, {root, box, box.Part("end")}),
+                          be = ExportCascades::Of(cs.base, {root, box, box.Part("end")});
+    if (fl.has_content && fl.content != bl.content) look.label = style::ExpandContent(fl.content, "", kind, "");
+    if (fl.color != bl.color && !ExportHex(fl.color).empty()) look.color = ExportHex(fl.color);
+    if (fb.background != bb.background) look.tint = ExportHexOnPaper(fb.background);
+    if (fe.has_content != be.has_content || fe.content != be.content) look.end = fe.has_content ? fe.content : std::string();
+    return look;
+}
+
+ClassLook ExportClassLook(const Document &doc, const std::string &name) {
+    ClassLook look;
+    if (doc.sheets.empty()) return look;
+    const ExportCascades cs(doc);
+    const style::Computed st = ExportCascades::Of(cs.full, {Element("document"), Element("paragraph"), Element("span", "class", name)});
+    if (st.has_color) look.color = ExportHex(st.color);
+    look.bold = st.bold;
+    look.italic = st.italic;
+    return look;
+}
+
+struct ExportTextStyler::Impl {
+    ExportCascades cascades;
+    std::vector<Element> chain;
+    std::map<std::string, Change> known;
+    explicit Impl(const Document &doc) : cascades(doc) {}
+    Change Here() {
+        Change ch;
+        if (chain.size() < 2) return ch;
+        std::string key;
+        for (const Element &e : chain) {
+            key += e.name;
+            for (const auto &kv : e.attrs) key += "[" + kv.first + "=" + kv.second + "]";
+            key += ">";
+        }
+        auto it = known.find(key);
+        if (it != known.end()) return it->second;
+        const std::vector<Element> parent(chain.begin(), chain.end() - 1);
+        const style::Computed full = ExportCascades::Of(cascades.full, chain), base = ExportCascades::Of(cascades.base, chain);
+        const style::Computed up = ExportCascades::Of(cascades.full, parent);
+        const std::string fc = full.has_color ? ExportHex(full.color) : std::string();
+        const std::string bc = base.has_color ? ExportHex(base.color) : std::string();
+        const std::string uc = up.has_color ? ExportHex(up.color) : std::string();
+        if (fc != bc && fc != uc && !fc.empty()) ch.color = fc.substr(1);
+        if (full.bold != base.bold && full.bold != up.bold) ch.bold = full.bold ? 1 : 0;
+        if (full.italic != base.italic && full.italic != up.italic) ch.italic = full.italic ? 1 : 0;
+        known[key] = ch;
+        return ch;
+    }
+};
+
+ExportTextStyler::ExportTextStyler(const Document &doc) {
+    if (!doc.sheets.empty()) impl_ = std::make_unique<Impl>(doc);
+}
+ExportTextStyler::~ExportTextStyler() = default;
+bool ExportTextStyler::active() const { return impl_ != nullptr; }
+ExportTextStyler::Change ExportTextStyler::ForBlock(const Block &b) {
+    if (!impl_) return Change();
+    impl_->chain = {Element("document"), ElementForBlock(b)};
+    return impl_->Here();
+}
+ExportTextStyler::Change ExportTextStyler::Enter(const Inline &x) {
+    if (!impl_) return Change();
+    if (impl_->chain.empty()) impl_->chain = {Element("document"), Element("paragraph")};
+    impl_->chain.push_back(ElementForInline(x));
+    return impl_->Here();
+}
+void ExportTextStyler::Leave() {
+    if (impl_ && impl_->chain.size() > 2) impl_->chain.pop_back();
+}
+
+namespace {
+
+std::string CssTrim(const std::string &s) {
+    size_t a = 0, z = s.size();
+    while (a < z && (s[a] == ' ' || s[a] == '\t')) ++a;
+    while (z > a && (s[z - 1] == ' ' || s[z - 1] == '\t')) --z;
+    return s.substr(a, z - a);
+}
+
+// `name(` ... `)` spanning all of `text`: what is inside the parentheses.
+bool CssCall(const std::string &text, const char *name, std::string *inside) {
+    const std::string head = std::string(name) + "(";
+    if (text.size() <= head.size() || text.compare(0, head.size(), head) != 0 || text.back() != ')') return false;
+    int depth = 0;
+    for (size_t i = head.size() - 1; i < text.size(); ++i) {
+        if (text[i] == '(') ++depth;
+        else if (text[i] == ')' && --depth == 0 && i + 1 != text.size()) return false;
+    }
+    *inside = text.substr(head.size(), text.size() - head.size() - 1);
+    return true;
+}
+
+// The top-level comma of `text` (outside parentheses), npos for none.
+size_t CssComma(const std::string &text) {
+    int depth = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '(') ++depth;
+        else if (text[i] == ')') --depth;
+        else if (text[i] == ',' && depth == 0) return i;
+    }
+    return std::string::npos;
+}
+
+// A sheet's colour value as CSS: theme() is its fallback, fade() a
+// color-mix with nothing, var() itself. False for a colour CSS has no
+// way to say (a theme() without a fallback).
+bool CssColor(const std::string &value_in, std::string *out) {
+    const std::string value = CssTrim(value_in);
+    const std::string low = Lower(value);
+    std::string inside;
+    if (low == "none" || low == "transparent") {
+        *out = "transparent";
+        return true;
+    }
+    if (low == "inherit" || low == "initial") {
+        *out = low;
+        return true;
+    }
+    if (CssCall(value, "theme", &inside)) {
+        const size_t comma = CssComma(inside);
+        return comma != std::string::npos && CssColor(inside.substr(comma + 1), out);
+    }
+    if (CssCall(value, "fade", &inside)) {
+        const size_t comma = CssComma(inside);
+        std::string colour;
+        if (comma == std::string::npos || !CssColor(inside.substr(0, comma), &colour)) return false;
+        const double a = std::clamp(std::atof(CssTrim(inside.substr(comma + 1)).c_str()), 0.0, 1.0);
+        char pct[32];
+        std::snprintf(pct, sizeof(pct), "%g", a * 100.0);
+        *out = "color-mix(in srgb, " + colour + " " + pct + "%, transparent)";
+        return true;
+    }
+    if (CssCall(value, "var", &inside)) {
+        const size_t comma = CssComma(inside);
+        std::string fallback;
+        if (comma != std::string::npos && !CssColor(inside.substr(comma + 1), &fallback)) return false;
+        *out = "var(" + CssTrim(inside.substr(0, comma)) + (comma == std::string::npos ? "" : ", " + fallback) + ")";
+        return true;
+    }
+    style::Color c;
+    if (!style::ParseColorValue(value, &c) || c.kind != style::Color::Rgb) return false;
+    if (c.alpha == 1.0f) {
+        *out = HexOf(c.rgb);
+    } else {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "rgba(%u, %u, %u, %.3g)", static_cast<unsigned>((c.rgb >> 16) & 0xffu),
+                      static_cast<unsigned>((c.rgb >> 8) & 0xffu), static_cast<unsigned>(c.rgb & 0xffu), static_cast<double>(c.alpha));
+        *out = buf;
+    }
+    return true;
+}
+
+// What a sheet's selector selects in ToHtml's markup, as a CSS selector.
+// False when the page has nothing for it (a `::markup`, a `:state`, an
+// element the export leaves out).
+struct CssTarget {
+    std::string selector;
+    bool pseudo = false;   // ends in a pseudo-element (which can take `content`)
+    bool marker = false;   // ... a list marker's
+    bool box = false;      // the subject is a box (or a callout) itself
+    bool rule = false;     // ... a rule, drawn as a border
+};
+
+bool CssSelectorFor(const style::Selector &sel, CssTarget *out) {
+    std::string css;
+    for (size_t i = 0; i < sel.compounds.size(); ++i) {
+        const style::Compound &c = sel.compounds[i];
+        const bool subject = i + 1 == sel.compounds.size();
+        const std::string part = subject ? sel.part : std::string();
+        // The attributes of `c` this element understands, taken as it goes.
+        std::map<std::string, std::string> attrs;
+        for (const style::AttrSelector &a : c.attrs) {
+            if (!a.name.empty() && a.name[0] == ':') return false;  // a state: an export has none
+            if (attrs.count(a.name)) return false;
+            attrs[a.name] = a.has_value ? a.value : std::string("\x01");  // (\x01: present, any value)
+        }
+        auto take = [&](const char *name, std::string *value) {
+            auto it = attrs.find(name);
+            if (it == attrs.end()) return false;
+            *value = it->second;
+            attrs.erase(it);
+            return true;
+        };
+        auto name_ok = [](const std::string &v) {
+            return !v.empty() && std::all_of(v.begin(), v.end(), [](char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_'; });
+        };
+        std::string one, v, tail;
+        const std::string &n = c.name;
+        if (n.empty()) one = "*";
+        else if (n == "document") one = "body";
+        else if (n == "heading") {
+            // (A deck's slide titles are its slides' first headings, set as
+            // <h2 class="slide-title"> whatever their level: level 1's.)
+            if (take("level", &v)) {
+                if (v.size() != 1 || v[0] < '1' || v[0] > '6') return false;
+                // (The deck's title page has the document's title in an <h1>.)
+                one = v == "1" ? ":is(h1:not(.title), h2.slide-title):not(.title-slide > h1)" : "h" + v + ":not(.title):not(.slide-title)";
+            } else {
+                one = ":is(h1, h2, h3, h4, h5, h6):not(.title):not(.title-slide > h1)";
+            }
+        } else if (n == "paragraph") one = "p";
+        else if (n == "span") one = "span";
+        else if (n == "bold") one = "strong";
+        else if (n == "italic") one = "em";
+        else if (n == "underline") one = "u";
+        else if (n == "superscript") one = "sup:not(.fnref)";
+        else if (n == "subscript") one = "sub";
+        else if (n == "small") one = "small";
+        else if (n == "big") one = ".big";
+        else if (n == "mono") one = ".mono";
+        else if (n == "highlight") one = "mark";
+        else if (n == "strike") one = "s";
+        else if (n == "insert") one = "ins";
+        else if (n == "delete") one = "del";
+        else if (n == "verbatim") one = ":not(pre) > code";
+        else if (n == "link") one = "a:not(.cite)";
+        else if (n == "cite") one = take("missing", &v) ? ".cite-missing" : "a.cite";
+        else if (n == "footnote") one = ".footnotes li";
+        else if (n == "math") one = "mjx-container";
+        else if (n == "math-block") one = ".math-display";
+        else if (n == "callout") {
+            one = ".callout";
+            if (take("kind", &v)) {
+                if (!name_ok(v)) return false;
+                one = ".callout-" + v;
+            }
+            if (part == "label") tail = " .callout-title";
+            if (subject && part.empty()) out->box = true;  // (its accent is the page's `--c` too)
+        } else if (n == "abstract") {
+            one = ".abstract";
+            if (part == "label") tail = " .abstract-title";
+        } else if (n == "slide") {
+            one = "section.slide";
+            if (take("number", &v)) {
+                if (!name_ok(v)) return false;
+                one = "#slide-" + v;
+            }
+            if (take("title", &v)) one += ".title-slide";  // the title page
+            if (part == "title") tail = " .slide-title";
+        } else if (n == "box") {
+            one = ".mbox";
+            if (take("kind", &v)) {
+                if (!name_ok(v)) return false;
+                one = ".mbox-" + v;
+            }
+            if (part == "label") tail = " .mbox-label";
+            else if (part == "title") tail = " .mbox-name";
+            else if (part == "end") tail = "::after";
+            if (subject && part.empty()) out->box = true;
+        } else if (n == "list") one = ":is(ul, ol)";
+        else if (n == "list-item") {
+            // (A marker's rule is for bullets unless it says `[ordered]`: the
+            // default sheet leaves a numbered item its number.)
+            one = take("ordered", &v) ? "ol > li" : part == "marker" ? "ul > li" : "li";
+            if (take("checked", &v)) {
+                if (v == "true") one += ":has(> input:checked)";
+                else if (v == "false") one += ":has(> input:not(:checked))";
+                else if (v == "\x01") one += ":has(> input)";
+                else return false;
+            }
+            if (part == "marker") tail = "::marker";
+        } else if (n == "table") one = "table";
+        else if (n == "table-cell") one = take("header", &v) ? "th" : "td";
+        else if (n == "code") {
+            one = "figure.code pre:not(.results)";
+            if (take("lang", &v)) {
+                if (!name_ok(v)) return false;
+                one = "figure.code pre:has(> code.language-" + v + ")";
+            }
+            if (part == "label") {
+                one = "figure.code figcaption.lang";
+                tail = " ";  // (taken: the chip is its own element)
+            }
+        } else if (n == "results") one = ".results";
+        else if (n == "image") one = "img";
+        else if (n == "caption") one = ":is(.caption, figcaption:not(.lang))";
+        else if (n == "rule") {
+            one = "hr";
+            if (subject) out->rule = true;
+        }
+        else if (n == "toc") {
+            one = "nav.toc";
+            if (part == "title") tail = " h2";
+        } else if (n == "bibliography") {
+            one = "section.bibliography";
+            if (part == "title") tail = " h2";
+        } else if (n == "meta") {
+            if (!take("key", &v)) return false;
+            if (v == "title") one = ":is(h1.title, .title-slide > h1)";
+            else if (v == "subtitle") one = ".subtitle";
+            else if (v == "author") one = ".author";
+            else if (v == "date") one = ".date";
+            else return false;
+        } else {
+            return false;
+        }
+        // A class (`.name`, `\\class(name, ...)`): the page's `mep-name`.
+        if (take("class", &v)) {
+            if (!name_ok(v)) return false;
+            one = (one == "*" ? std::string() : one) + ".mep-" + v;
+        }
+        if (!attrs.empty()) return false;        // an attribute the markup does not carry
+        if (!part.empty() && tail.empty()) return false;  // a part the markup has no element for
+        if (tail == " ") tail.clear();
+        css += (i == 0 ? "" : c.child ? " > " : " ") + one + tail;
+        if (subject && !tail.empty() && tail[0] == ':') {
+            out->pseudo = true;
+            out->marker = tail == "::marker";
+        }
+    }
+    // Under :root, so a sheet's rule outranks the page's own for the same
+    // markup, as a later sheet does in the cascade.
+    out->selector = ":root " + css;
+    return true;
+}
+
+// One declaration of a sheet as CSS, "" for one CSS cannot say here.
+std::string CssDeclarationFor(const style::Declaration &d, const CssTarget &target) {
+    const std::string &p = d.property;
+    const std::string value = CssTrim(d.value), low = Lower(value);
+    const bool keyword = low == "inherit" || low == "initial";
+    std::string v;
+    if (p.rfind("--", 0) == 0) {
+        // A custom property: a colour where it is one, else as written if
+        // CSS reads it the same way. A box's accent is the page's `--c`.
+        if (!CssColor(value, &v)) {
+            if (value.find("theme(") != std::string::npos || value.find("fade(") != std::string::npos) return "";
+            v = value;
+        }
+        return p + ": " + v + ";" + (target.box && p == "--accent" ? " --c: " + v + ";" : "");
+    }
+    if (p == "color" || p == "background" || p == "text-decoration-color" || p == "border-color" || p == "border-left-color") {
+        if (!CssColor(value, &v)) return "";
+        if (p == "color" && v == "transparent") v = "inherit";  // (`none`: the text's own colour)
+        // An outline is the three sides the left rule is not; a rule's
+        // colour is its line's.
+        if (p == "border-color") return "border-top-color: " + v + "; border-right-color: " + v + "; border-bottom-color: " + v + ";";
+        if (p == "color" && target.rule) return "color: " + v + "; border-color: " + v + ";";
+        return p + ": " + v + ";";
+    }
+    if (p == "font-weight" || p == "font-style" || p == "text-align" || p == "vertical-align") return p + ": " + low + ";";
+    if (p == "text-decoration") {
+        if (keyword) return "text-decoration-line: " + low + ";";
+        std::string lines;
+        std::istringstream words(low);
+        for (std::string w; words >> w;) {
+            if (w == "none") return "text-decoration-line: none;";
+            if (w == "underline" || w == "line-through") lines += (lines.empty() ? "" : " ") + w;
+        }
+        return lines.empty() ? "" : "text-decoration-line: " + lines + ";";
+    }
+    if (p == "font-size") {
+        if (keyword) return "font-size: " + low + ";";
+        if (low.size() > 2 && (low.compare(low.size() - 2, 2, "pt") == 0 || low.compare(low.size() - 2, 2, "em") == 0))
+            return "font-size: " + low + ";";
+        return "font-size: " + low + "em;";
+    }
+    if (p == "font-family") {
+        if (keyword) return "font-family: " + low + ";";
+        std::string list;
+        std::string rest = value;
+        while (!rest.empty()) {
+            const size_t comma = CssComma(rest);
+            std::string name = CssTrim(rest.substr(0, comma));
+            rest = comma == std::string::npos ? std::string() : rest.substr(comma + 1);
+            if (name.empty()) continue;
+            const std::string ln = Lower(name);
+            if (ln == "serif") name = "serif";
+            else if (ln == "sans") name = "sans-serif";
+            else if (ln == "mono") name = "monospace";
+            else if (ln == "body") name = "inherit";
+            else if (name[0] != '"' && name[0] != '\'') name = "\"" + name + "\"";
+            list += (list.empty() ? "" : ", ") + name;
+        }
+        return list.empty() ? "" : "font-family: " + list + ";";
+    }
+    if (p == "content") {
+        // Only a pseudo-element takes generated text in CSS; a label that
+        // is an element of the page has its text written into the page.
+        if (!target.pseudo) return "";
+        if (low == "none") return target.marker ? "" : "content: none;";
+        style::Computed st;
+        style::Cascade one;
+        style::Sheet sheet = style::Parse("x { content: " + value + " }");
+        one.sheets.push_back(std::make_shared<style::Sheet>(std::move(sheet)));
+        const Element x("x");
+        st = one.Compute({&x}, st);
+        if (!st.has_content) return "";
+        std::string text = "\"";
+        for (char ch : st.content + (target.marker ? " " : "")) {
+            if (ch == '"' || ch == '\\') text += '\\';
+            text += ch;
+        }
+        return "content: " + text + "\";";
+    }
+    return "";
+}
+
+}  // namespace
+
+std::string ExportSheetCss(const Document &doc) {
+    if (doc.sheets.empty()) return "";
+    style::Cascade media;
+    media.media = ExportMedia(doc);
+    std::string css;
+    for (const auto &sheet : doc.sheets) {
+        if (!sheet) continue;
+        for (const style::Rule &rule : sheet->rules) {
+            if (!media.MediaApplies(rule.media)) continue;
+            // Each selector on its own: what one can take (`content`, a
+            // box's `--c`) another of the same rule may not.
+            for (const style::Selector &sel : rule.selectors) {
+                CssTarget target;
+                if (!CssSelectorFor(sel, &target)) continue;
+                std::string body;
+                for (const style::Declaration &d : rule.declarations) {
+                    const std::string one = CssDeclarationFor(d, target);
+                    if (!one.empty()) body += " " + one;
+                }
+                if (!body.empty()) css += target.selector + " {" + body + " }\n";
+            }
+        }
+    }
+    return css.empty() ? css : "/* From the document's style sheets. */\n" + css;
+}
+
+}  // namespace mepml
+
+// ---------------------------------------------------------------------------
 // HTML export
 
 namespace mepml {
@@ -3581,11 +4650,33 @@ std::string PlainText(const std::vector<Inline> &ins) {
 struct HtmlWriter {
     const Document &doc;
     const HtmlOptions &opts;
+    HtmlWriter(const Document &d, const HtmlOptions &o) : doc(d), opts(o) { StartStyles(); }
     std::string out;
     std::vector<std::pair<int, std::string>> footnotes;  // number, html
     std::map<std::string, int> cite_numbers;
     bool in_slide = false;  // a <section class="slide"> is open
     int open_boxes = 0;     // <div class="mbox">es open
+
+    // What the document's style sheets change for a run of text, for the
+    // export that reads this HTML's markup rather than its CSS -- LaTeX
+    // (doc_export.cpp): a `mep-style` span round the run says its colour,
+    // weight and slant where they differ from mep's built-in look. An
+    // HTML page needs none of it (ExportSheetCss).
+    std::unique_ptr<ExportTextStyler> cascades;
+    ExportTextStyler::Change block_change;  // ... for the block being written
+
+    void StartStyles() {
+        const bool latex = std::find(doc.export_tags.begin(), doc.export_tags.end(), "tex") != doc.export_tags.end();
+        if (latex && !doc.sheets.empty()) cascades = std::make_unique<ExportTextStyler>(doc);
+    }
+    std::string Styled(const std::string &html, const ExportTextStyler::Change &ch) {
+        if (!ch.any() || html.empty()) return html;
+        std::string o = "<span class=\"mep-style\"";
+        if (!ch.color.empty()) o += " data-color=\"" + ch.color + "\"";
+        if (ch.bold >= 0) o += std::string(" data-bold=\"") + (ch.bold ? "1" : "0") + "\"";
+        if (ch.italic >= 0) o += std::string(" data-italic=\"") + (ch.italic ? "1" : "0") + "\"";
+        return o + ">" + html + "</span>";
+    }
 
     // Closes the boxes left open, then the open slide's section.
     void EndSlide() {
@@ -3612,6 +4703,20 @@ struct HtmlWriter {
     }
 
     std::string Node(const Inline &x) {
+        if (!cascades || x.kind == InlineKind::Text || x.kind == InlineKind::Math || x.kind == InlineKind::Raw ||
+            x.kind == InlineKind::Comment || x.kind == InlineKind::Footnote)
+            return NodeHtml(x);
+        const ExportTextStyler::Change mine = cascades->Enter(x);
+        std::string html = NodeHtml(x);
+        cascades->Leave();
+        // (Inside the element's own tag, so the tag still means what it did.)
+        const size_t open = html.find('>'), close = html.rfind("</");
+        if (!html.empty() && html[0] == '<' && open != std::string::npos && close != std::string::npos && close > open)
+            html = html.substr(0, open + 1) + Styled(html.substr(open + 1, close - open - 1), mine) + html.substr(close);
+        return html;
+    }
+
+    std::string NodeHtml(const Inline &x) {
         switch (x.kind) {
             case InlineKind::Text: return Esc(x.text);
             case InlineKind::Bold: return Wrap("strong", x);
@@ -3632,6 +4737,10 @@ struct HtmlWriter {
                 return "<span style=\"font-family:" + Esc(x.arg) + "\">" + Inlines(x.children) + "</span>";
             case InlineKind::FontSize:
                 return "<span style=\"font-size:" + Esc(x.arg) + "pt\">" + Inlines(x.children) + "</span>";
+            // (A name a style sheet selects: `.name` is the page's `.mep-name`.)
+            case InlineKind::Class:
+                if (!IsBoxKindName(x.arg)) return Inlines(x.children);
+                return "<span class=\"mep-" + Esc(x.arg) + "\">" + Inlines(x.children) + "</span>";
             case InlineKind::Color: {
                 std::uint32_t rgb = 0;
                 std::string c = x.arg;
@@ -3697,10 +4806,11 @@ struct HtmlWriter {
     }
 
     void Block_(const Block &b, const std::string &label) {
+        if (cascades) block_change = cascades->ForBlock(b);
         switch (b.kind) {
             case BlockKind::Paragraph:
                 if (OnlyRaw(b.inlines)) out += Inlines(b.inlines) + "\n";
-                else out += "<p>" + Inlines(b.inlines) + "</p>\n";
+                else out += "<p>" + Styled(Inlines(b.inlines), block_change) + "</p>\n";
                 break;
             case BlockKind::Define: break;  // expanded away before an export
             case BlockKind::Raw: out += Raw(b.lang, b.code, "div") + "\n"; break;
@@ -3708,7 +4818,7 @@ struct HtmlWriter {
             case BlockKind::Heading: {
                 int lvl = std::min(6, b.level + 0);
                 std::string t = PlainText(b.inlines);
-                out += "<h" + std::to_string(lvl) + " id=\"" + Slug(t) + "\">" + Inlines(b.inlines) + "</h" +
+                out += "<h" + std::to_string(lvl) + " id=\"" + Slug(t) + "\">" + Styled(Inlines(b.inlines), block_change) + "</h" +
                        std::to_string(lvl) + ">\n";
                 break;
             }
@@ -3901,9 +5011,15 @@ struct HtmlWriter {
             case BlockKind::BoxBegin: {
                 // (ExportHtmlToLatex makes this a tcolorbox; data-kind lets
                 // an HTML import rebuild the box.)
-                out += "<div class=\"mbox mbox-" + Esc(b.keyword) + "\" data-kind=\"" + Esc(b.keyword) + "\">";
-                const BoxKind *kind = FindBoxKind(b.keyword);
-                out += "<p class=\"mbox-title\"><span class=\"mbox-label\">" + Esc(kind ? kind->label : b.keyword) + "</span>";
+                out += "<div class=\"mbox mbox-" + Esc(b.keyword) + "\" data-kind=\"" + Esc(b.keyword) + "\"";
+                if (cascades) {
+                    // (For LaTeX, which draws the box from these.)
+                    const BoxLook look = ExportBoxLook(doc, b.keyword);
+                    out += " data-color=\"" + look.color.substr(1) + "\" data-tint=\"" + look.tint.substr(1) + "\" data-end=\"" +
+                           Esc(look.end) + "\"";
+                }
+                out += ">";
+                out += "<p class=\"mbox-title\"><span class=\"mbox-label\">" + Esc(ExportBoxLook(doc, b.keyword).label) + "</span>";
                 if (!b.caption_inlines.empty()) out += " <span class=\"mbox-name\">" + Inlines(b.caption_inlines) + "</span>";
                 out += "</p>\n";
                 if (!b.inlines.empty()) out += "<p>" + Inlines(b.inlines) + "</p>\n";
@@ -4049,7 +5165,7 @@ mjx-container[display="true"] { max-width: 100%; overflow-x: auto; overflow-y: h
 }  // namespace
 
 std::string ToHtml(const Document &doc, const HtmlOptions &opts) {
-    HtmlWriter w{doc, opts, {}, {}, {}, false};
+    HtmlWriter w(doc, opts);
     const std::vector<std::string> labels = BlockLabels(doc);
     const std::vector<bool> export_hidden = ExportHidden(doc);
     for (size_t i = 0; i < doc.blocks.size(); ++i)
@@ -4066,7 +5182,7 @@ std::string ToHtml(const Document &doc, const HtmlOptions &opts) {
     if (!opts.standalone) return w.out;
     std::string title = doc.title.empty() ? "Untitled" : doc.title;
     std::string html = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + Esc(title) + "</title>\n";
-    html += "<style>" + std::string(kCss) + BoxCss() + "</style>\n";
+    html += "<style>" + std::string(kCss) + BoxCss() + ExportSheetCss(doc) + "</style>\n";
     html += "<script>MathJax = { tex: { inlineMath: [['\\\\(', '\\\\)']] } };</script>\n";
     html += "<script async src=\"https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js\"></script>\n";
     html += "</head>\n<body>\n";
@@ -4216,7 +5332,7 @@ const char *kSlidesJs = R"js(
 }  // namespace
 
 std::vector<SlideHtml> SlideFragments(const Document &doc, const HtmlOptions &opts) {
-    HtmlWriter w{doc, opts, {}, {}, {}, false};
+    HtmlWriter w(doc, opts);
     const std::vector<std::string> labels = BlockLabels(doc);
     const std::vector<bool> export_hidden = ExportHidden(doc);
     std::vector<SlideHtml> out;
@@ -4231,7 +5347,9 @@ std::vector<SlideHtml> SlideFragments(const Document &doc, const HtmlOptions &op
             if (b.kind == BlockKind::SlideBegin || b.kind == BlockKind::SlideEnd || export_hidden[i]) continue;
             // The slide's first heading is its title, drawn at the top.
             if (!titled && b.kind == BlockKind::Heading) {
-                f.title = w.Inlines(b.inlines);
+                // (Its colour and weight where LaTeX is to draw them: Styled.)
+                if (w.cascades) w.block_change = w.cascades->ForBlock(b);
+                f.title = w.Styled(w.Inlines(b.inlines), w.block_change);
                 titled = true;
                 continue;
             }
@@ -4273,7 +5391,7 @@ std::string ToSlidesHtml(const Document &doc, const HtmlOptions &opts) {
     if (!opts.standalone) return deck;
     const std::string page_title = doc.title.empty() ? "Slides" : doc.title;
     std::string html = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + Esc(page_title) + "</title>\n";
-    html += "<style>" + std::string(kCss) + BoxCss() + kSlidesCss + "</style>\n";
+    html += "<style>" + std::string(kCss) + BoxCss() + kSlidesCss + ExportSheetCss(doc) + "</style>\n";
     html += "<script>MathJax = { tex: { inlineMath: [['\\\\(', '\\\\)']] } };</script>\n";
     html += "<script async src=\"https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js\"></script>\n";
     html += "</head>\n<body>\n<main class=\"deck\">\n" + deck + "</main>\n<div class=\"progress\"></div>\n";
@@ -4348,7 +5466,7 @@ std::vector<RenderedLine> RenderToc(const Document &doc, int width) {
     std::vector<RenderedLine> out;
     RenderedLine title;
     title.text = "Contents";
-    title.spans.push_back({0, static_cast<int>(title.text.size()), kHeading | kBold, 2});
+    title.spans.push_back({0, static_cast<int>(title.text.size()), kHeading | kBold, 2, {}});
     out.push_back(title);
     bool any = false;
     for (const Block &b : doc.blocks) {
@@ -4362,14 +5480,14 @@ std::vector<RenderedLine> RenderToc(const Document &doc, int width) {
         if (Cols(name) > room) name = name.substr(0, ColByte(name, room - 3)) + "...";
         l.text = "  " + indent + name;
         const int from = static_cast<int>(2 + indent.size());
-        l.spans.push_back({from, static_cast<int>(l.text.size()), kHeading | kLink, b.level});
+        l.spans.push_back({from, static_cast<int>(l.text.size()), kHeading | kLink, b.level, {}});
         l.target_line = b.line_start;
         out.push_back(l);
     }
     if (!any) {
         RenderedLine l;
         l.text = "  (no headings yet)";
-        l.spans.push_back({0, static_cast<int>(l.text.size()), kComment, 0});
+        l.spans.push_back({0, static_cast<int>(l.text.size()), kComment, 0, {}});
         out.push_back(l);
     }
     return out;
@@ -4379,12 +5497,12 @@ std::vector<RenderedLine> RenderBibliography(const Document &doc, int width) {
     std::vector<RenderedLine> out;
     RenderedLine title;
     title.text = "References";
-    title.spans.push_back({0, static_cast<int>(title.text.size()), kHeading | kBold, 2});
+    title.spans.push_back({0, static_cast<int>(title.text.size()), kHeading | kBold, 2, {}});
     out.push_back(title);
     if (doc.cite_order.empty()) {
         RenderedLine l;
         l.text = "  (nothing cited yet)";
-        l.spans.push_back({0, static_cast<int>(l.text.size()), kComment, 0});
+        l.spans.push_back({0, static_cast<int>(l.text.size()), kComment, 0, {}});
         out.push_back(l);
         return out;
     }
@@ -4423,7 +5541,7 @@ std::vector<RenderedLine> RenderBibliography(const Document &doc, int width) {
         const std::string hang(static_cast<size_t>(Cols(num) + 2), ' ');
         RenderedLine line;
         line.text = "  " + num;
-        line.spans.push_back({2, static_cast<int>(line.text.size()), kCite, 0});
+        line.spans.push_back({2, static_cast<int>(line.text.size()), kCite, 0, {}});
         int line_cols = Cols(line.text);
         bool first_on_line = true;
         for (const Word &w : words) {
@@ -4454,7 +5572,7 @@ std::vector<RenderedLine> RenderBibliography(const Document &doc, int width) {
                 if (!line.spans.empty() && (line.spans.back().style & kItalic) && line.spans.back().col_end == from)
                     line.spans.back().col_end = to;
                 else
-                    line.spans.push_back({from, to, kItalic, 0});
+                    line.spans.push_back({from, to, kItalic, 0, {}});
             }
             first_on_line = false;
         }
@@ -4569,7 +5687,7 @@ std::vector<RenderedLine> FillWords(const std::vector<StyledWord> &words, int wi
             if (!line.spans.empty() && line.spans.back().style == p.style && line.spans.back().col_end == from)
                 line.spans.back().col_end = to;
             else
-                line.spans.push_back({from, to, p.style, 0});
+                line.spans.push_back({from, to, p.style, 0, {}});
         }
         cols += wc;
     }

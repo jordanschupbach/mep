@@ -90,6 +90,7 @@ enum TokenType {
     BOX_OPEN,
     BOX_BREAK,
     BOX_END,
+    CMD_CLASS,
     ERROR_SENTINEL,
 };
 
@@ -290,8 +291,9 @@ static bool is_backslash_directive(const char *name) {
 
 // The kinds of box, `\\definition(` ... (BoxKinds in mepml_doc.cpp).
 static bool is_box_kind(const char *name) {
+    // (`boxed` is any kind of the document's own: `\\boxed(axiom, Title,`.)
     static const char *const kNames[] = {"definition", "theorem", "lemma",  "proposition", "corollary",
-                                         "fact",       "example", "remark", "proof"};
+                                         "fact",       "example", "remark", "proof",       "boxed"};
     for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
         if (strcmp(name, kNames[i]) == 0) return true;
     return false;
@@ -303,7 +305,7 @@ static bool is_builtin_command(const char *name) {
     static const char *const kNames[] = {"f",        "fs",    "color",  "fn",           "cite",
                                          "citep",    "alttext", "caption", "image",       "import",
                                          "citation", "toc",   "bibliography", "printbibliography",
-                                         "abstract", "slide", "define", "raw"};
+                                         "abstract", "slide", "define", "raw",    "class"};
     for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
         if (strcmp(name, kNames[i]) == 0) return true;
     return is_box_kind(name);
@@ -463,7 +465,8 @@ static void box_line_done(Scanner *s) {
 // on this line (`\\remark(Title, text)`), or at a `)` ending a later line
 // of the paragraph its text starts (ParseBoxOpen in mepml_doc.cpp); *lead:
 // whether text follows its title on this line.
-static bool box_closes(TSLexer *lexer, int32_t slide_close, bool *lead) {
+// `skip` commas come before the title's own (`\\boxed(kind, Title,`: one).
+static bool box_closes(TSLexer *lexer, int32_t slide_close, bool *lead, int skip) {
     int depth = 0;
     bool comma = false;
     *lead = false;
@@ -478,6 +481,10 @@ static bool box_closes(TSLexer *lexer, int32_t slide_close, bool *lead) {
         if (c == '(') depth++;
         if (c == ')' && --depth == 0) return true;
         if (c == ',' && depth == 1 && !comma) {
+            if (skip > 0) {
+                skip--;
+                continue;
+            }
             comma = true;
             continue;
         }
@@ -814,6 +821,7 @@ static bool scan_command_named(Scanner *s, TSLexer *lexer, const bool *valid, co
     if (strcmp(name, "f") == 0) tok = CMD_F, groups = 2;
     else if (strcmp(name, "fs") == 0) tok = CMD_FS, groups = 2;
     else if (strcmp(name, "color") == 0) tok = CMD_COLOR, groups = 2;
+    else if (strcmp(name, "class") == 0) tok = CMD_CLASS, groups = 2;
     else if (strcmp(name, "fn") == 0) tok = CMD_FN, groups = 1;
     else if (strcmp(name, "cite") == 0) tok = CMD_CITE, groups = 1;
     else if (strcmp(name, "citep") == 0) tok = CMD_CITEP, groups = 1;
@@ -1527,7 +1535,7 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
             if (!directive && n < (int)sizeof name && is_box_kind(name) && la(lexer) == '(' && valid[BOX_START] &&
                 valid[BOX_LINE_START]) {
                 bool lead = false;
-                const bool closed = box_closes(lexer, s->slide, &lead);
+                const bool closed = box_closes(lexer, s->slide, &lead, strcmp(name, "boxed") == 0 ? 1 : 0);
                 if (!closed) s->boxes++;
                 s->box_lead = lead;
                 s->context = CTX_LINE;

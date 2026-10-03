@@ -3,6 +3,8 @@
 // DrawPane reads, folds, and splicing code-block results back into a
 // buffer. Everything here is a thin layer over mepml::Parse/Highlight --
 // the language's own rules live, and are tested, in mepml_doc.cpp.
+#include <chrono>
+#include <cstring>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -52,27 +54,10 @@ int ByteToColumn(const std::string &line, int byte) {
     return col;
 }
 
-const char *CalloutColor(const std::string &kw) {
-    if (kw == "WARNING" || kw == "CAUTION") return "Yellow";
-    if (kw == "ERROR" || kw == "DANGER") return "Red";
-    if (kw == "TIP" || kw == "HINT" || kw == "SUCCESS") return "Green";
-    if (kw == "TODO" || kw == "FIXME" || kw == "IMPORTANT") return "Purple";
-    if (kw == "QUESTION" || kw == "EXAMPLE") return "Cyan";
-    return "Blue";  // NOTE, INFO
-}
-
-const char *HeadingColor(int level) {
-    return level == 1 ? "OrgHeadlineLevel1" : level == 2 ? "OrgHeadlineLevel2" : "OrgHeadlineLevel3";
-}
-
 std::string Lowered(std::string s) {
     for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
-
-// A document header's title: its size relative to body text, unfolded
-// and folded alike.
-constexpr float kHeaderTitleScale = 2.2f;
 
 // A document header: a run of `//?` lines on consecutive rows (Title,
 // Option, Author, MACRO, ...). Each run is rendered as one card and folds
@@ -162,31 +147,6 @@ int Codepoints(const std::string &s) {
     return n;
 }
 
-// The size a span is drawn at relative to body text: >big< and <small>
-// are fixed steps, \fs{pt} is relative to a 12pt body. Clamped so a typo
-// can't make a row fill the pane.
-float SpanScale(const mepml::Span &s) {
-    float k = 1.0f;
-    if (s.style & mepml::kBig) k *= 1.3f;
-    if (s.style & mepml::kSmall) k *= 0.8f;
-    if (s.font_size > 0.0f) k *= s.font_size / 12.0f;
-    if (s.style & (mepml::kSuper | mepml::kSub)) k *= 0.7f;
-    return std::clamp(k, 0.5f, 3.0f);
-}
-
-// \f{family} -> one of the faces mep embeds (Decoration::virt_family).
-std::string SpanFamily(const std::string &font) {
-    if (font.empty()) return "";
-    std::string f;
-    for (char c : font) f += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    for (const char *mono : {"mono", "courier", "consol", "code", "menlo", "fixed"})
-        if (f.find(mono) != std::string::npos) return "mono";
-    if (f.find("sans") != std::string::npos) return "sans";
-    for (const char *serif : {"serif", "times", "georgia", "garamond", "palatino", "cambria", "book", "roman"})
-        if (f.find(serif) != std::string::npos) return "serif";
-    return "sans";  // Helvetica, Arial, Verdana, ...
-}
-
 // Columns DrawPane reserves for a run drawn at `scale` (Decoration::virt_scale).
 // The largest a scaled run is drawn inside a table cell (see MepmlScan).
 constexpr float kTableMaxScale = 1.25f;
@@ -198,14 +158,34 @@ int StyledCols(int codepoints, float scale) {
 // What a span occupies once concealed -- the same arithmetic DrawPane's
 // collapse does: hidden markup is 0, a replacement its own codepoints, a
 // scaled run StyledCols(). `max_scale` caps runs the way table cells do.
-int ConcealedWidth(const mepml::Span &sp, const std::string &line, float max_scale) {
+// `st` is the span's computed style (its size and face are the sheets').
+int ConcealedWidth(const mepml::Span &sp, const std::string &line, float max_scale, const mepml::style::Computed &st) {
     const int cp = Codepoints(line.substr(static_cast<size_t>(sp.col_start),
                                           static_cast<size_t>(sp.col_end - sp.col_start)));
     if (sp.markup) return Codepoints(sp.replace);
-    const float k = std::min(SpanScale(sp), max_scale);
-    if ((k != 1.0f || !SpanFamily(sp.font).empty()) && !(sp.style & (mepml::kMath | mepml::kComment)))
+    const float k = std::min(std::clamp(st.font_size, 0.5f, 3.0f), max_scale);
+    if ((k != 1.0f || !st.font_family.empty()) && !(sp.style & (mepml::kMath | mepml::kComment)))
         return StyledCols(cp, k);
     return cp;
+}
+
+// A sheet's colour as a highlight group's name: the theme group it names,
+// or the literal colour as "#rrggbb" (Editor::ResolveHighlight reads both).
+std::string StyleHl(const mepml::style::Color &c) {
+    if (c.kind == mepml::style::Color::Theme) return c.group;
+    if (c.kind != mepml::style::Color::Rgb) return std::string();
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "#%06x", static_cast<unsigned>(c.rgb & 0xffffffu));
+    return buf;
+}
+
+// A sheet's colour as a card's (OrgCardColor): set, even when it is `none`.
+OrgCardColor CardColorOf(const mepml::style::Color &c) {
+    OrgCardColor out;
+    out.set = true;
+    out.hl = StyleHl(c);
+    out.alpha = c.alpha;
+    return out;
 }
 
 std::string Repeat(const char *glyph, int n) {
@@ -236,6 +216,23 @@ int Editor::HeadingExtraSlotsForLevel(int level) {
     constexpr int kCount = static_cast<int>(sizeof(kOrgHeadingStyles) / sizeof(kOrgHeadingStyles[0]));
     return kOrgHeadingStyles[std::min(level, kCount) - 1].slots - 1;
 }
+
+OrgHeadingStyle Editor::HeadingStyleForRow(const Buffer &buf, int row) {
+    const int level = HeadingLevelForRow(buf, row);
+    if (level <= 0) return OrgHeadingStyle{1.0f, 1};
+    constexpr int kCount = static_cast<int>(sizeof(kOrgHeadingStyles) / sizeof(kOrgHeadingStyles[0]));
+    OrgHeadingStyle style = kOrgHeadingStyles[std::min(level, kCount) - 1];
+    // A mepml heading's size is its style's; a larger one takes a second
+    // slot (and a third ...) once it no longer fits the line's own.
+    auto it = buf.mepml_heading_scale.find(row);
+    if (it != buf.mepml_heading_scale.end()) {
+        style.scale = it->second;
+        style.slots = std::max(1, static_cast<int>(std::ceil(static_cast<double>(it->second) - 0.2)));
+    }
+    return style;
+}
+
+int Editor::HeadingExtraSlotsForRow(const Buffer &buf, int row) { return HeadingStyleForRow(buf, row).slots - 1; }
 
 int Editor::HeadingHideLenForRow(const Buffer &buf, int row) {
     if (row < 0 || row >= buf.LineCount()) return 0;
@@ -519,10 +516,229 @@ const mepml::Document &Editor::MepmlParseCurrent(bool with_imports) const { retu
 const std::vector<mepml::Span> &Editor::MepmlSpansCurrent(bool with_imports) const {
     MepmlParseCache &c = MepmlCacheEntry(with_imports);
     if (!c.spans_valid) {
-        c.spans = mepml::Highlight(c.doc);
+        c.paths = mepml::ElementPaths();
+        // A presented page is a piece of its document: inside its slide,
+        // and the title page's lines the header's title, subtitle, author.
+        mepml::HighlightContext context;
+        const bool page = MepmlPresentContext(&context);
+        c.spans = mepml::Highlight(c.doc, &c.paths, &c.block_nodes, page ? &context : nullptr);
         c.spans_valid = true;
+        c.styles_generation = 0;
     }
     return c.spans;
+}
+
+bool Editor::MepmlPresentContext(mepml::HighlightContext *out) const {
+    if (!present_.active || CurrentBufferId() != present_.view_buffer || present_.pages.empty()) return false;
+    const mepml::PresentationPage &page = present_.pages[static_cast<size_t>(std::clamp(present_.page, 0, static_cast<int>(present_.pages.size()) - 1))];
+    out->container = mepml::Element("slide", "number", std::to_string(page.number));
+    out->title_page = page.number == 0;
+    if (out->title_page) out->container.With("title");
+    return true;
+}
+
+const std::vector<int> &Editor::MepmlBlockNodesCurrent(bool with_imports) const {
+    MepmlSpansCurrent(with_imports);
+    return MepmlCacheEntry(with_imports).block_nodes;
+}
+
+std::shared_ptr<const mepml::style::Sheet> Editor::MepmlSheetFile(const std::string &path, std::string *signature) const {
+    const long long mtime = FileMtime(path);
+    *signature += path + "@" + std::to_string(mtime) + ";";
+    MepmlSheetFileEntry &e = mepml_sheet_files_[path];
+    if (e.sheet && e.mtime == mtime) return e.sheet;
+    e.mtime = mtime;
+    std::vector<std::string> lines;
+    // (Not `mtime < 0`: file times count from an epoch in the future.)
+    if (!ReadFileLines(path, &lines)) {
+        e.sheet = nullptr;
+        return nullptr;
+    }
+    std::string text;
+    for (const std::string &l : lines) text += l + "\n";
+    e.sheet = std::make_shared<mepml::style::Sheet>(mepml::style::Parse(text, path));
+    return e.sheet;
+}
+
+std::vector<std::shared_ptr<const mepml::style::Sheet>> Editor::MepmlSheets(std::string *signature) const {
+    // The built-in sheet is mep's default look (assets/mepml/default.mepss).
+    static const std::shared_ptr<const mepml::style::Sheet> builtin(&mepml::style::DefaultSheet(), [](const mepml::style::Sheet *) {});
+    std::vector<std::shared_ptr<const mepml::style::Sheet>> out = {builtin};
+    std::string sig;
+    // The user's own, for every document.
+    std::string config;
+    if (const char *xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) config = xdg;
+    else if (const char *home = std::getenv("HOME"); home && *home) config = std::string(home) + "/.config";
+    if (!config.empty())
+        if (auto user = MepmlSheetFile(config + "/mep/mepml.mepss", &sig)) out.push_back(std::move(user));
+    // Then the ones the document names (`//? Style:`), its imports' first.
+    // A presented slide is styled by the document it is a page of.
+    // Last, the sheets written in the document itself (`\raw(style, ...)`).
+    auto inline_sheet = [&](const std::string &text) {
+        const std::string key = "inline:" + std::to_string(std::hash<std::string>{}(text));
+        sig += key + ";";
+        MepmlSheetFileEntry &e = mepml_sheet_files_[key];
+        if (!e.sheet) e.sheet = std::make_shared<mepml::style::Sheet>(mepml::style::Parse(text, "document"));
+        out.push_back(e.sheet);
+    };
+    if (present_.active && CurrentBufferId() == present_.view_buffer) {
+        for (const std::string &path : present_.sheet_paths)
+            if (auto sheet = MepmlSheetFile(path, &sig)) out.push_back(std::move(sheet));
+        for (const std::string &text : present_.inline_sheets) inline_sheet(text);
+    } else if (IsMepmlBuffer()) {
+        const std::string file = MepmlCurrentFile();
+        const mepml::Document &doc = MepmlParseCurrent(true);
+        for (const mepml::StyleRef &ref : doc.styles)
+            if (auto sheet = MepmlSheetFile(mepml::ResolvePath(ref.base.empty() ? file : ref.base, ref.path), &sig))
+                out.push_back(std::move(sheet));
+        for (const std::string &text : mepml::InlineStyleSheets(doc)) inline_sheet(text);
+    }
+    if (signature) *signature = sig;
+    return out;
+}
+
+bool Editor::MepmlStylesStale() {
+    if (!IsMepmlBuffer()) return false;
+    auto it = mepml_scan_state_.find(CurrentBufferId());
+    if (it == mepml_scan_state_.end() || !it->second.valid) return false;
+    // A sheet saved since the last scan: looked for a few times a second,
+    // not every frame.
+    const auto now = std::chrono::steady_clock::now();
+    if (now - mepml_sheets_checked_ < std::chrono::milliseconds(300)) return false;
+    mepml_sheets_checked_ = now;
+    if (!MepmlParseReady()) return false;  // (never a parse on this thread just to look)
+    std::string sig;
+    MepmlSheets(&sig);
+    return sig != it->second.sheet_signature;
+}
+
+const Editor::MepmlNodeStyles &Editor::MepmlStylesCurrent(bool with_imports) const {
+    MepmlSpansCurrent(with_imports);
+    MepmlParseCache &c = MepmlCacheEntry(with_imports);
+    std::string signature;
+    std::vector<std::shared_ptr<const mepml::style::Sheet>> sheets = MepmlSheets(&signature);
+    if (c.styles_generation == mepml_sheet_generation_ && c.styles_signature == signature) return c.styles;
+    mepml::style::Cascade cascade;
+    cascade.sheets = std::move(sheets);
+    const bool presenting = present_.active && CurrentBufferId() == present_.view_buffer;
+    cascade.media = presenting ? std::vector<std::string>{"present", "slides", "screen"} : std::vector<std::string>{"editor", "screen"};
+    c.styles.rendered = cascade.ComputeAll(c.paths);
+    cascade.media.push_back("source");
+    c.styles.source = cascade.ComputeAll(c.paths);
+    // The background behind a node's text: its own, else the nearest
+    // inline ancestor's (a block's background is its box's, not its text's).
+    c.styles.inline_bg.assign(c.paths.nodes.size(), mepml::style::Color());
+    for (size_t n = 0; n < c.paths.nodes.size(); ++n) {
+        const mepml::ElementPaths::Node &node = c.paths.nodes[n];
+        if (mepml::IsBlockElement(node.element.name) && node.element.part.empty()) continue;
+        if (c.styles.rendered[n].background.kind != mepml::style::Color::None) c.styles.inline_bg[n] = c.styles.rendered[n].background;
+        else if (node.parent >= 0) c.styles.inline_bg[n] = c.styles.inline_bg[static_cast<size_t>(node.parent)];
+    }
+    c.styles_generation = mepml_sheet_generation_;
+    c.styles_signature = signature;
+    c.part_styles.clear();
+    // The characters the sheets' generated text uses, for the renderer to
+    // bake glyphs for (it has ASCII and a fixed set otherwise).
+    for (const std::vector<mepml::style::Computed> *set : {&c.styles.rendered, &c.styles.source}) {
+        for (const mepml::style::Computed &st : *set) {
+            if (!st.has_content) continue;
+            const std::string &t = st.content;
+            for (size_t i = 0; i < t.size();) {
+                const unsigned char b = static_cast<unsigned char>(t[i]);
+                const size_t len = b < 0x80 ? 1 : b < 0xE0 ? 2 : b < 0xF0 ? 3 : 4;
+                if (len > 1 && i + len <= t.size()) {
+                    int cp = b & (0xFF >> (len + 1));
+                    for (size_t k = 1; k < len; ++k) cp = (cp << 6) | (static_cast<unsigned char>(t[i + k]) & 0x3F);
+                    if (mepml_glyphs_.insert(cp).second) ++mepml_glyph_generation_;
+                }
+                i += len;
+            }
+        }
+    }
+    return c.styles;
+}
+
+const mepml::style::Computed &Editor::MepmlChainStyle(int node, const std::vector<mepml::Element> &chain) const {
+    const MepmlNodeStyles &styles = MepmlStylesCurrent(true);
+    MepmlParseCache &c = MepmlCacheEntry(true);
+    static const mepml::style::Computed kNone;
+    if (node < 0 || static_cast<size_t>(node) >= c.paths.nodes.size()) return kNone;
+    if (chain.empty()) return styles.rendered[static_cast<size_t>(node)];
+    std::string key;
+    for (const mepml::Element &e : chain) {
+        key += e.name + ":" + e.part;
+        for (const auto &kv : e.attrs) key += "[" + kv.first + "=" + kv.second + "]";
+        key += ">";
+    }
+    auto it = c.part_styles.find({node, key});
+    if (it != c.part_styles.end()) return it->second;
+    mepml::style::Cascade cascade;
+    cascade.sheets = MepmlSheets();
+    const bool presenting = present_.active && CurrentBufferId() == present_.view_buffer;
+    cascade.media = presenting ? std::vector<std::string>{"present", "slides", "screen"} : std::vector<std::string>{"editor", "screen"};
+    std::vector<const mepml::Element *> path = c.paths.Path(node);
+    mepml::style::Computed st = styles.rendered[static_cast<size_t>(node)];
+    for (const mepml::Element &e : chain) {
+        path.push_back(&e);
+        st = cascade.Compute(path, st);
+    }
+    return c.part_styles.emplace(std::make_pair(node, key), std::move(st)).first->second;
+}
+
+mepml::style::Computed Editor::MepmlStateStyle(int node, const char *state) const {
+    const MepmlNodeStyles &styles = MepmlStylesCurrent(true);
+    const MepmlParseCache &c = MepmlCacheEntry(true);
+    if (node < 0 || static_cast<size_t>(node) >= c.paths.nodes.size()) return mepml::style::Computed();
+    mepml::style::Cascade cascade;
+    cascade.sheets = MepmlSheets();
+    const bool presenting = present_.active && CurrentBufferId() == present_.view_buffer;
+    cascade.media = presenting ? std::vector<std::string>{"present", "slides", "screen"} : std::vector<std::string>{"editor", "screen"};
+    std::vector<const mepml::Element *> path = c.paths.Path(node);
+    mepml::Element in_state = c.paths.nodes[static_cast<size_t>(node)].element;
+    in_state.With(state);
+    path.back() = &in_state;
+    const int parent = c.paths.nodes[static_cast<size_t>(node)].parent;
+    static const mepml::style::Computed kRoot;
+    return cascade.Compute(path, parent >= 0 ? styles.rendered[static_cast<size_t>(parent)] : kRoot);
+}
+
+const mepml::style::Computed &Editor::MepmlPartStyle(int node, const std::string &part) const {
+    const MepmlParseCache &c = MepmlCacheEntry(true);
+    static const mepml::style::Computed kNone;
+    if (node < 0 || static_cast<size_t>(node) >= c.paths.nodes.size()) return kNone;
+    return MepmlChainStyle(node, {c.paths.nodes[static_cast<size_t>(node)].element.Part(part)});
+}
+
+void Editor::MepmlStyleRendered(std::vector<mepml::RenderedLine> *lines, int node, const mepml::Element *under, bool titled) const {
+    const MepmlParseCache &c = MepmlCacheEntry(true);
+    if (node < 0 || static_cast<size_t>(node) >= c.paths.nodes.size()) return;
+    const mepml::Element &own = c.paths.nodes[static_cast<size_t>(node)].element;
+    for (size_t li = 0; li < lines->size(); ++li) {
+        for (mepml::RenderedSpan &sp : (*lines)[li].spans) {
+            // What the span is, from what its flags say of it.
+            std::vector<mepml::Element> chain;
+            if (under) chain.push_back(*under);
+            if (titled && li == 0) {
+                chain.push_back(own.Part("title"));
+            } else if (sp.style & mepml::kHeading) {
+                chain.push_back(mepml::Element("heading", "level", std::to_string(sp.heading_level)));
+            } else if (under && (sp.style & mepml::kDirective)) {
+                chain.push_back(under->Part("label"));  // "Figure 1:"
+            } else {
+                if (sp.style & mepml::kComment) chain.push_back(mepml::Element("comment"));
+                if (sp.style & mepml::kBold) chain.push_back(mepml::Element("bold"));
+                if (sp.style & mepml::kItalic) chain.push_back(mepml::Element("italic"));
+                if (sp.style & mepml::kMono) chain.push_back(mepml::Element("mono"));
+                if (sp.style & mepml::kVerbatim) chain.push_back(mepml::Element("verbatim"));
+                if (sp.style & mepml::kMath) chain.push_back(mepml::Element("math"));
+                if (sp.style & mepml::kLink) chain.push_back(mepml::Element("link"));
+                if (sp.style & mepml::kCite) chain.push_back(mepml::Element("cite"));
+            }
+            const mepml::style::Computed &st = MepmlChainStyle(node, chain);
+            sp.hl = st.has_color ? StyleHl(st.color) : std::string("Normal");
+            sp.style = (sp.style & ~(mepml::kBold | mepml::kItalic)) | (st.bold ? mepml::kBold : 0u) | (st.italic ? mepml::kItalic : 0u);
+        }
+    }
 }
 
 namespace {
@@ -552,6 +768,9 @@ bool Editor::MepmlParseReady() {
         if (r.lines == buf.lines) {
             plain.doc = std::move(r.plain);
             plain.spans = std::move(r.plain_spans);
+            plain.paths = std::move(r.plain_paths);
+            plain.block_nodes = std::move(r.plain_block_nodes);
+            plain.styles_generation = 0;
             plain.spans_valid = true;
             plain.lines = r.lines;
             plain.valid = true;
@@ -561,6 +780,9 @@ bool Editor::MepmlParseReady() {
                 MepmlParseCache &imp = mepml_parse_cache_[1][id];
                 imp.doc = std::move(r.imports);
                 imp.spans = std::move(r.imports_spans);
+                imp.paths = std::move(r.imports_paths);
+                imp.block_nodes = std::move(r.imports_block_nodes);
+                imp.styles_generation = 0;
                 imp.spans_valid = true;
                 imp.lines = std::move(r.lines);
                 imp.file = r.file;
@@ -591,13 +813,13 @@ bool Editor::MepmlParseReady() {
                     break;
                 }
             }
-            r.plain_spans = mepml::Highlight(r.plain);
+            r.plain_spans = mepml::Highlight(r.plain, &r.plain_paths, &r.plain_block_nodes);
             if (r.has_imports) {
                 r.imports = mepml::ParseWithImports(file, r.lines, [&r](const std::string &path, std::vector<std::string> *out) {
                     r.reads.emplace_back(path, FileMtime(path));
                     return ReadFileLines(path, out);
                 });
-                r.imports_spans = mepml::Highlight(r.imports);
+                r.imports_spans = mepml::Highlight(r.imports, &r.imports_paths, &r.imports_block_nodes);
             }
             return r;
         });
@@ -669,12 +891,15 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     const int text_width = TextWidth();
     const int scan_pane_cols = CurPane().text_cols, scan_buffer_cols = TextColsForBuffer(CurrentBufferId());
     const bool images = OrgImagesVisible();
+    std::string sheet_signature;
+    if (entry) MepmlSheets(&sheet_signature);
     std::unordered_set<int> patch_rows, patch_tables;
     const bool same_inputs = entry && state.valid && state.doc == entry && state.generation == entry->generation &&
                              state.ns == ns && state.own_diagnostics == own_diagnostics && state.conceal == conceal &&
                              state.images == images && state.text_width == text_width &&
                              state.pane_cols == scan_pane_cols && state.buffer_cols == scan_buffer_cols &&
                              state.table_math_gen == buf.mepml_table_math_gen &&
+                             state.sheet_signature == sheet_signature &&
                              buf.decorations.count(ns) && buf.decorations[ns].size() == state.deco_count &&
                              !buf.mepml_raw;
     bool patch = same_inputs && state.cur_row != cur_row;
@@ -720,6 +945,10 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     if (!patch) {
         ClearNamespace(ns);
         buf.mepml_heading_rows.clear();
+        buf.mepml_heading_scale.clear();
+        buf.mepml_heading_look.clear();
+        buf.mepml_row_align.clear();
+        buf.mepml_page_bg = OrgCardColor();
         buf.mepml_row_scale.clear();
         buf.mepml_table_images.clear();
         buf.mepml_table_row_cols.clear();
@@ -740,6 +969,19 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     const mepml::Document &doc = MepmlParseCurrent(true);
     const int n = buf.LineCount();
     if (!patch) {
+    // A presented page's paper: its slide's `background`.
+    {
+        mepml::HighlightContext page;
+        if (MepmlPresentContext(&page)) {
+            MepmlSpansCurrent(true);  // (the tree the chain hangs from)
+            const mepml::style::Color &bg = MepmlChainStyle(0, {page.container}).background;
+            if (bg.kind != mepml::style::Color::None) {
+                buf.mepml_page_bg.set = true;
+                buf.mepml_page_bg.hl = StyleHl(bg);
+                buf.mepml_page_bg.alpha = bg.alpha;
+            }
+        }
+    }
     // Terminals running in this buffer's blocks: follow each to its block
     // (MepmlTermRun::fence_row), and give its results rows its screen.
     for (auto &kv : mepml_terms_) {
@@ -823,7 +1065,46 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     const std::vector<std::string> block_labels = mepml::BlockLabels(doc);
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty()) continue;
-        if (b.kind == mepml::BlockKind::Heading) buf.mepml_heading_rows[b.line_start] = b.level;
+        if (b.kind == mepml::BlockKind::Heading) {
+            buf.mepml_heading_rows[b.line_start] = b.level;
+            // Its size is its element's font-size.
+            const size_t bi = static_cast<size_t>(&b - doc.blocks.data());
+            const std::vector<int> &nodes = MepmlBlockNodesCurrent(true);
+            const MepmlNodeStyles &heading_styles = MepmlStylesCurrent(true);
+            const int node = bi < nodes.size() ? nodes[bi] : -1;
+            if (node >= 0 && static_cast<size_t>(node) < heading_styles.rendered.size()) {
+                const mepml::style::Computed &hs = heading_styles.rendered[static_cast<size_t>(node)];
+                buf.mepml_heading_scale[b.line_start] = std::clamp(hs.font_size, 0.5f, 3.0f);
+                Buffer::MepmlHeadingLook look;
+                look.bold = hs.bold;
+                look.italic = hs.italic;
+                look.align = hs.text_align == mepml::style::TextAlign::Center ? 1 : hs.text_align == mepml::style::TextAlign::Right ? 2 : 0;
+                look.underline = hs.underline;
+                look.strike = hs.strike;
+                if (hs.has_decoration_color) look.line_hl = StyleHl(hs.decoration_color);
+                else if (hs.has_color) look.line_hl = StyleHl(hs.color);
+                if (look.bold || look.italic || look.align || look.underline || look.strike) buf.mepml_heading_look[b.line_start] = look;
+            }
+        }
+        // Running text is set the way its element's text-align says.
+        if (b.kind == mepml::BlockKind::Paragraph || b.kind == mepml::BlockKind::Abstract || b.kind == mepml::BlockKind::Callout ||
+            b.kind == mepml::BlockKind::List) {
+            const size_t bi = static_cast<size_t>(&b - doc.blocks.data());
+            const std::vector<int> &nodes = MepmlBlockNodesCurrent(true);
+            const MepmlNodeStyles &text_styles = MepmlStylesCurrent(true);
+            const int node = bi < nodes.size() ? nodes[bi] : -1;
+            if (node >= 0 && static_cast<size_t>(node) < text_styles.rendered.size()) {
+                const mepml::style::TextAlign ta = text_styles.rendered[static_cast<size_t>(node)].text_align;
+                const int align = ta == mepml::style::TextAlign::Center ? 1 : ta == mepml::style::TextAlign::Right ? 2 : 0;
+                for (int r = b.line_start; align != 0 && r <= b.line_end && r < buf.LineCount(); ++r) {
+                    // (Not a line that only opens or closes the block: `\abstract(`, `)`.)
+                    const std::string &text = buf.lines[static_cast<size_t>(r)];
+                    const size_t last = text.find_last_not_of(" \t");
+                    if (last == std::string::npos || text[last] == '(' || text.find_first_not_of(" \t") == last) continue;
+                    buf.mepml_row_align[r] = align;
+                }
+            }
+        }
         // A caption and an alt text draw as their text wrapped to the text
         // width in place of their source rows (one line or several) --
         // centred under a figure (an \image, or a code block that drew one),
@@ -843,16 +1124,37 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                 r.slots = static_cast<int>(r.styled.size());
                 buf.mepml_html_rows[first] = std::move(r);
             };
+            // Their look is their elements' (`caption`, its `::label`,
+            // `alt-text`), as the sheets compute it under this block.
+            const size_t idx = static_cast<size_t>(&b - doc.blocks.data());
+            const std::vector<int> &owner_nodes = MepmlBlockNodesCurrent(true);
+            const int owner = idx < owner_nodes.size() ? owner_nodes[idx] : -1;
             if (b.caption_line >= 0) {
-                const size_t idx = static_cast<size_t>(&b - doc.blocks.data());
-                place(b.caption_line, b.caption_line_end,
-                      mepml::RenderCaption(doc, b, idx < block_labels.size() ? block_labels[idx] : std::string(), width, centred),
-                      1.0f);
+                std::string of = "code";
+                if (b.kind == mepml::BlockKind::Image || !b.result_images.empty()) of = "figure";
+                else if (b.kind == mepml::BlockKind::Table) of = "table";
+                else if (b.kind == mepml::BlockKind::MathBlock) of = "math";
+                const mepml::Element caption("caption", "of", of);
+                // "Figure 3": the number is the document's, the word round
+                // it the sheets' (`caption::label { content: "Fig. %n" }`).
+                std::string label = idx < block_labels.size() ? block_labels[idx] : std::string();
+                if (!label.empty() && owner >= 0) {
+                    const mepml::style::Computed &ls = MepmlChainStyle(owner, {caption, caption.Part("label")});
+                    const size_t digits = label.find_last_not_of("0123456789");
+                    if (ls.has_content && digits != std::string::npos && digits + 1 < label.size())
+                        label = mepml::style::ExpandContent(ls.content, label.substr(digits + 1), of, "");
+                }
+                std::vector<mepml::RenderedLine> lines = mepml::RenderCaption(doc, b, label, width, centred);
+                MepmlStyleRendered(&lines, owner, &caption, false);
+                place(b.caption_line, b.caption_line_end, std::move(lines), 1.0f);
             }
             if (b.alt_line >= 0 && !b.alt.empty()) {
-                constexpr float kAltScale = 0.85f;
-                place(b.alt_line, b.alt_line_end,
-                      mepml::RenderAltText(b.alt, static_cast<int>(static_cast<float>(width) / kAltScale), centred), kAltScale);
+                const mepml::Element alt("alt-text");
+                const float alt_scale = owner >= 0 ? std::clamp(MepmlChainStyle(owner, {alt}).font_size, 0.5f, 3.0f) : 0.85f;
+                std::vector<mepml::RenderedLine> lines =
+                    mepml::RenderAltText(b.alt, static_cast<int>(static_cast<float>(width) / alt_scale), centred);
+                MepmlStyleRendered(&lines, owner, &alt, false);
+                place(b.alt_line, b.alt_line_end, std::move(lines), alt_scale);
             }
         }
         // An imported file's path (`\import(path)` or a header `//? Import:
@@ -880,6 +1182,18 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             const int width = std::max(20, TextWidth());
             vb.lines = b.kind == mepml::BlockKind::TableOfContents ? mepml::RenderToc(doc, width)
                                                                    : mepml::RenderBibliography(doc, width);
+            {
+                const size_t vi = static_cast<size_t>(&b - doc.blocks.data());
+                const std::vector<int> &vnodes = MepmlBlockNodesCurrent(true);
+                const int vnode = vi < vnodes.size() ? vnodes[vi] : -1;
+                MepmlStyleRendered(&vb.lines, vnode, nullptr, true);
+                // The card behind the list: the element's background and outline.
+                const MepmlNodeStyles &all = MepmlStylesCurrent(true);
+                if (vnode >= 0 && static_cast<size_t>(vnode) < all.rendered.size()) {
+                    vb.wash = CardColorOf(all.rendered[static_cast<size_t>(vnode)].background);
+                    vb.border = CardColorOf(all.rendered[static_cast<size_t>(vnode)].border_color);
+                }
+            }
             vb.text_hash = std::hash<std::string>{}(buf.lines[static_cast<size_t>(b.line_start)]);
             // Folded (RecomputeMepmlFolds), it reads as its title and a count.
             Buffer::MepmlFoldSummary sum;
@@ -991,6 +1305,12 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         if ((!lead && s.col_start == first) || (!trail && s.col_end == last)) table_edge_markup.emplace(s.line, s.col_start);
     }
 
+    // How each span looks is the style the sheets compute for its element
+    // (docs/mepml-spec/rendering.md): nothing below decides a colour, a
+    // weight, a size or a generated word of its own.
+    const MepmlNodeStyles &styles = MepmlStylesCurrent(true);
+    const mepml::ElementPaths &paths = MepmlCacheEntry(true).paths;
+    static const mepml::style::Computed kNoStyle;
     for (const mepml::Span &s : spans) {
         if (s.line < 0 || s.line >= n || !in_scope(s.line)) continue;
         const std::string &line = buf.lines[static_cast<size_t>(s.line)];
@@ -1002,50 +1322,31 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         base.col_start = s.col_start;
         base.col_end = s.col_end;
 
-        // Colour first: the most specific construct wins.
-        std::string hl;
-        if (s.style & mepml::kHeading) hl = HeadingColor(s.heading_level);
-        if (s.style & mepml::kComment) hl = "Comment";
-        if (s.style & mepml::kMeta) hl = "Purple";
-        if (s.style & mepml::kDirective) hl = "Cyan";
-        if (s.style & mepml::kCode) hl = (s.style & mepml::kDirective) ? "Comment" : "";
-        if (s.style & mepml::kResult) hl = (s.style & mepml::kComment) ? "Comment" : "";
-        if (s.style & mepml::kTableRule) hl = "Comment";
-        if (s.style & (mepml::kSuper | mepml::kSub)) hl = "Purple";
-        if (s.style & mepml::kMono) hl = "Cyan";
-        if (s.style & mepml::kInsert) hl = "Green";
-        if (s.style & mepml::kDelete) hl = "Red";
-        if (s.style & mepml::kVerbatim) hl = "Green";
-        if (s.style & mepml::kMath) hl = "Purple";
-        if (s.style & mepml::kFootnote) hl = "Comment";
-        if (s.style & mepml::kLink) hl = "Blue";
-        if (s.style & mepml::kCite) hl = (s.style & mepml::kError) ? "Red" : "Blue";
-        if (s.style & mepml::kCallout) hl = CalloutColor(s.callout);
-        if (s.style & mepml::kRule) hl = "Comment";
-        if (s.style & mepml::kListMarker) hl = "Yellow";
-        // A box's label and markup in its kind's colour; its title keeps
-        // the text's own, in bold.
-        if (s.style & mepml::kBox) {
-            const mepml::BoxKind *kind = mepml::FindBoxKind(s.target);
-            hl = !s.markup ? "" : kind ? kind->hl : "Cyan";
-        }
+        // A line shown as its source (the cursor's, or every line with
+        // concealment off) is styled as source: its markup is `::markup`.
+        const bool source = !conceal || on_cursor;
+        const int node = source ? s.source_path : s.path;
+        const bool has_node = node >= 0 && static_cast<size_t>(node) < styles.rendered.size();
+        const mepml::style::Computed &st =
+            !has_node ? kNoStyle : source ? styles.source[static_cast<size_t>(node)] : styles.rendered[static_cast<size_t>(node)];
+        std::string hl = st.has_color ? StyleHl(st.color) : std::string();
+        // The author's own \color(): drawn as a literal colour, as it was
+        // before sheets (unless something inside it has a colour of its own).
+        std::uint32_t literal = 0;
+        const bool literal_color = !s.color.empty() && mepml::ParseColor(s.color, &literal) && st.has_color &&
+                                   st.color.kind == mepml::style::Color::Rgb && st.color.rgb == literal;
 
         // Inside a table the grid's band is one line tall, so a run is
         // capped at what fits a line rather than given headroom.
-        const float scale = table_rows.count(s.line) ? std::min(SpanScale(s), kTableMaxScale) : SpanScale(s);
-        const std::string family = SpanFamily(s.font);
+        const float full_scale = std::clamp(st.font_size, 0.5f, 3.0f);
+        const float scale = table_rows.count(s.line) ? std::min(full_scale, kTableMaxScale) : full_scale;
+        const std::string &family = st.font_family;
         const bool styled = !s.markup && (scale != 1.0f || !family.empty()) && !heading_row &&
                             !(s.style & (mepml::kCode | mepml::kResult | mepml::kMath | mepml::kComment));
         if (styled && scale > 1.0f && !table_rows.count(s.line)) {
             Buffer::MepmlRowScale &rs = buf.mepml_row_scale[s.line];
             rs.scale = std::max(rs.scale, scale);
             rs.text_hash = std::hash<std::string>{}(line);
-        }
-        // Raw (cursor row, concealment off): size can't be shown on the
-        // column grid, so it is hinted with colour instead.
-        if (!(styled && hide)) {
-            if (s.style & mepml::kSmall) hl = "Comment";
-            if (s.style & mepml::kBig) hl = "Yellow";
         }
         if ((s.style & mepml::kTableRule) && table_layout_rows.count(s.line)) continue;
         if (table_edge_markup.count({s.line, s.col_start})) continue;
@@ -1067,8 +1368,36 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                 Decoration d = base;
                 d.virt_overlay = true;
                 d.priority = 10;
+                // What stands in for the markup: the sheet's `content` for
+                // this part where it gives one, else what the document
+                // itself supplies (a citation's label, a footnote's number).
+                std::string replace = s.replace;
+                if (st.has_content) {
+                    const std::string text = mepml::style::ExpandContent(st.content, std::to_string(s.number),
+                                                                         (s.style & mepml::kCallout) ? s.callout : s.target, "");
+                    if (s.style & mepml::kListMarker) {
+                        // (The item's indent, the marker, a space.)
+                        const size_t indent = s.replace.find_first_not_of(' ');
+                        replace = std::string(indent == std::string::npos ? 0 : indent, ' ') + text + " ";
+                    } else if (s.style & mepml::kBox) {
+                        if (paths.nodes[static_cast<size_t>(node)].element.part == "label") {
+                            // The opener keeps what joins it to the title or the
+                            // text (": " / ". "); the full stop after a title is
+                            // the label's too, and stays as it is.
+                            const std::string own = mepml::BoxLabel(s.target);
+                            replace = s.replace.compare(0, own.size(), own) == 0 ? text + s.replace.substr(own.size()) : s.replace;
+                        } else {
+                            replace = (s.block_end ? "" : " ") + text;
+                        }
+                    } else if (s.style & mepml::kAbstract) {
+                        const bool run_in = s.replace.size() >= 2 && s.replace.compare(s.replace.size() - 2, 2, ". ") == 0;
+                        replace = text + (run_in ? ". " : "");
+                    } else if (!(s.style & mepml::kRule)) {
+                        replace = text;
+                    }
+                }
                 if ((s.style & mepml::kRule) && s.replace.empty()) {
-                    d.virt_text = Repeat("─", s.col_end - s.col_start);
+                    d.virt_text = Repeat(st.has_content && !st.content.empty() ? st.content.c_str() : "─", s.col_end - s.col_start);
                 } else if (s.style & mepml::kTableRule) {
                     // `|` -> `│`, and the |---| separator row drawn as a rule
                     // -- same width, so the columns never move.
@@ -1076,13 +1405,12 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                                                   static_cast<size_t>(s.col_end - s.col_start));
                     for (char c : raw) d.virt_text += c == '|' ? "│" : (c == '-' || c == ':' || c == '=') ? "─" : std::string(1, c);
                 } else {
-                    d.virt_text = s.replace;
-                    d.conceal = s.replace.empty();
+                    d.virt_text = replace;
+                    d.conceal = replace.empty();
                 }
                 d.virt_text_hl = hl.empty() ? "Comment" : hl;
-                d.bold = ((s.style & (mepml::kCallout | mepml::kCite)) != 0 && !s.replace.empty() &&
-                          (s.style & mepml::kCallout)) ||
-                         ((s.style & mepml::kBox) && !s.replace.empty());
+                d.bold = st.bold && !replace.empty();
+                d.italic = st.italic && !replace.empty();
                 // A slide's opener and closer: rules across the text,
                 // the opener's labelled "Slide N: title". A trailing
                 // comment keeps its place, so then the rule stops short.
@@ -1092,43 +1420,36 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                     const int pane_cols = TextColsForBuffer(CurrentBufferId());
                     const int width = (pane_cols > 0 ? std::min(TextWidth(), pane_cols - 1) : TextWidth()) - s.col_start;
                     std::string label;
-                    if (!s.replace.empty()) {
-                        label = "── " + s.replace;
-                        const int number = std::atoi(s.replace.c_str() + 6);  // "Slide N"
-                        auto t = slide_titles.find(number);
+                    if (!replace.empty()) {
+                        label = "── " + replace;
+                        auto t = slide_titles.find(s.number);
                         if (t != slide_titles.end() && !t->second.empty()) label += ": " + t->second;
                         label += " ";
                     }
                     d.virt_text = label + (alone ? Repeat("─", std::max(3, width - Codepoints(label))) : std::string());
                     d.conceal = false;
-                    d.bold = !label.empty();
-                    d.virt_text_hl = label.empty() ? "Comment" : "Cyan";
                     add(d);
                     continue;
                 }
-                // An abstract's label: bold, and centred when it has its
-                // line to itself (the way a paper sets it).
-                if ((s.style & mepml::kAbstract) && !s.replace.empty()) {
-                    d.bold = true;
-                    d.virt_text_hl = HeadingColor(2);
-                    if (s.replace == "Abstract" && line.find_first_not_of(" \t", static_cast<size_t>(s.col_end)) == std::string::npos)
-                        d.virt_text = std::string(static_cast<size_t>(std::max(0, (TextWidth() - Codepoints(s.replace)) / 2)), ' ') + s.replace;
-                }
-                // A proof's tombstone, where its `)` was: at the right edge.
-                if ((s.style & mepml::kBox) && s.replace == "\u220E") {
+                // An abstract's label: centred (text-align) when it has its
+                // line to itself, the way a paper sets it.
+                if ((s.style & mepml::kAbstract) && !replace.empty() && st.text_align == mepml::style::TextAlign::Center &&
+                    replace.find(". ") == std::string::npos &&
+                    line.find_first_not_of(" \t", static_cast<size_t>(s.col_end)) == std::string::npos)
+                    d.virt_text = std::string(static_cast<size_t>(std::max(0, (TextWidth() - Codepoints(replace)) / 2)), ' ') + replace;
+                // A box's end mark (a proof's tombstone), where its `)` was
+                // on a line of its own: at the right edge.
+                if ((s.style & mepml::kBox) && s.block_end && !replace.empty()) {
                     const int pane_cols = TextColsForBuffer(CurrentBufferId());
                     const int width = (pane_cols > 0 ? std::min(TextWidth(), pane_cols - 1) : TextWidth()) - s.col_start;
-                    d.virt_text = std::string(static_cast<size_t>(std::max(0, width - 2)), ' ') + s.replace;
-                    d.bold = false;
+                    d.virt_text = std::string(static_cast<size_t>(std::max(0, width - 1 - Codepoints(replace))), ' ') + replace;
                 }
                 add(d);
             } else {
                 Decoration d = base;
-                d.hl_group = (s.style & (mepml::kCallout | mepml::kHeading | mepml::kListMarker | mepml::kCite |
-                                         mepml::kDirective | mepml::kMeta))
-                                 ? hl
-                                 : "Comment";
-                if (d.hl_group.empty()) d.hl_group = "Comment";
+                d.hl_group = hl.empty() ? "Comment" : hl;
+                d.bold = st.bold;
+                d.italic = st.italic;
                 add(d);
             }
             continue;
@@ -1137,30 +1458,33 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         // Scaled / other-face text: the run is replaced by itself drawn at
         // its real size and face (Decoration::virt_scale/virt_family),
         // carrying every style it has, so nothing else is drawn over it.
+        const mepml::style::Color &bg = has_node ? styles.inline_bg[static_cast<size_t>(node)] : kNoStyle.background;
+        const std::string deco_hl = st.has_decoration_color ? StyleHl(st.decoration_color) : std::string();
         if (styled && hide) {
             Decoration d = base;
             d.virt_overlay = true;
             d.virt_text = line.substr(static_cast<size_t>(s.col_start), static_cast<size_t>(s.col_end - s.col_start));
             d.virt_scale = scale;
             d.virt_family = family;
-            d.virt_raise = (s.style & mepml::kSuper) ? 0.38f : (s.style & mepml::kSub) ? -0.2f : 0.0f;
+            d.virt_raise = st.vertical_align == mepml::style::VerticalAlign::Super ? 0.38f
+                           : st.vertical_align == mepml::style::VerticalAlign::Sub ? -0.2f
+                                                                                   : 0.0f;
             d.priority = 10;
-            d.bold = (s.style & mepml::kBold) != 0;
-            d.italic = (s.style & mepml::kItalic) != 0;
-            d.underline = (s.style & (mepml::kUnderline | mepml::kInsert | mepml::kLink)) != 0;
-            d.strikethrough = (s.style & (mepml::kStrike | mepml::kDelete)) != 0;
-            std::uint32_t crgb = 0;
-            if (!s.color.empty() && mepml::ParseColor(s.color, &crgb)) {
+            d.bold = st.bold;
+            d.italic = st.italic;
+            d.underline = st.underline;
+            d.strikethrough = st.strike;
+            if (literal_color) {
                 d.has_fg_color = true;
-                d.fg_color = ThemeColor{static_cast<unsigned char>((crgb >> 16) & 0xff),
-                                        static_cast<unsigned char>((crgb >> 8) & 0xff),
-                                        static_cast<unsigned char>(crgb & 0xff), 255};
+                d.fg_color = ThemeColor{static_cast<unsigned char>((literal >> 16) & 0xff),
+                                        static_cast<unsigned char>((literal >> 8) & 0xff),
+                                        static_cast<unsigned char>(literal & 0xff), 255};
             }
-            d.virt_text_hl = hl.empty() ? "Normal" : hl;
+            d.virt_text_hl = hl.empty() || literal_color ? "Normal" : hl;
             add(d);
-            if (s.style & mepml::kHighlight) {
+            if (bg.kind != mepml::style::Color::None) {
                 Decoration h = base;
-                h.hl_group = "Yellow";
+                h.hl_group = StyleHl(bg);
                 h.bg_fill = true;
                 h.priority = -5;
                 add(h);
@@ -1168,53 +1492,52 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             continue;
         }
 
-        // Content. A literal \color{} beats the theme colour.
-        std::uint32_t rgb = 0;
-        if (!s.color.empty() && mepml::ParseColor(s.color, &rgb)) {
+        // Content.
+        if (literal_color) {
             Decoration d = base;
             d.col_start = ByteToColumn(line, s.col_start);
             d.col_end = ByteToColumn(line, s.col_end);
             d.has_fg_color = true;
-            d.fg_color = ThemeColor{static_cast<unsigned char>((rgb >> 16) & 0xff),
-                                    static_cast<unsigned char>((rgb >> 8) & 0xff),
-                                    static_cast<unsigned char>(rgb & 0xff), 255};
+            d.fg_color = ThemeColor{static_cast<unsigned char>((literal >> 16) & 0xff),
+                                    static_cast<unsigned char>((literal >> 8) & 0xff),
+                                    static_cast<unsigned char>(literal & 0xff), 255};
             add(d);
+            hl.clear();
         } else if (!hl.empty()) {
             Decoration d = base;
             d.hl_group = hl;
             add(d);
         }
-        if (s.style & mepml::kHighlight) {
+        if (bg.kind != mepml::style::Color::None) {
             Decoration d = base;
-            d.hl_group = "Yellow";
+            d.hl_group = StyleHl(bg);
             d.bg_fill = true;
             d.priority = -5;  // under every other style on the span
             add(d);
         }
-        const bool bold = (s.style & mepml::kBold) || ((s.style & mepml::kTable) && (s.style & mepml::kBold));
         const std::string style_hl = hl.empty() ? "Normal" : hl;
-        if (bold) {
+        if (st.bold) {
             Decoration d = base;
             d.bold = true;
             d.hl_group = style_hl;
             add(d);
         }
-        if (s.style & mepml::kItalic) {
+        if (st.italic) {
             Decoration d = base;
             d.italic = true;
             d.hl_group = style_hl;
             add(d);
         }
-        if (s.style & (mepml::kUnderline | mepml::kInsert | mepml::kLink)) {
+        if (st.underline) {
             Decoration d = base;
             d.underline = true;
             d.hl_group = style_hl;
             add(d);
         }
-        if (s.style & (mepml::kStrike | mepml::kDelete)) {
+        if (st.strike) {
             Decoration d = base;
             d.strikethrough = true;
-            d.hl_group = (s.style & mepml::kDelete) ? "Red" : "Comment";
+            d.hl_group = deco_hl.empty() ? style_hl : deco_hl;
             add(d);
         }
     }
@@ -1236,15 +1559,22 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     }
 
     // Callouts get a coloured bar in the sign column on every line.
-    for (const mepml::Block &b : doc.blocks) {
+    const std::vector<int> &block_nodes = MepmlBlockNodesCurrent(true);
+    for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
+        const mepml::Block &b = doc.blocks[bi];
         if (!b.origin.empty() || b.kind != mepml::BlockKind::Callout) continue;
+        // The bar is the callout's own colour.
+        const int node = bi < block_nodes.size() ? block_nodes[bi] : -1;
+        std::string bar = "Blue";
+        if (node >= 0 && static_cast<size_t>(node) < styles.rendered.size() && styles.rendered[static_cast<size_t>(node)].has_color)
+            bar = StyleHl(styles.rendered[static_cast<size_t>(node)].color);
         for (int row = b.line_start; row <= b.line_end; ++row) {
             if (!in_scope(row)) continue;
             Decoration d;
             d.row = row;
             d.whole_line = true;
             d.sign_shape = "bar";
-            d.sign_hl = CalloutColor(b.keyword);
+            d.sign_hl = bar;
             add(d);
         }
     }
@@ -1264,8 +1594,24 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         std::string title;
         int options = 0;
         std::vector<std::string> others;
+        // Each line's look is its `meta` element's style: the title's and
+        // subtitle's size, weight and colour, the `::key` label, an
+        // option's `::name` and `::value`, any other line's `::value`.
+        auto meta_node = [&](const mepml::Block *e) {
+            const size_t bi = static_cast<size_t>(e - doc.blocks.data());
+            return bi < block_nodes.size() ? block_nodes[bi] : -1;
+        };
+        auto meta_style = [&](const mepml::Block *e) -> const mepml::style::Computed & {
+            const int node = meta_node(e);
+            return node >= 0 && static_cast<size_t>(node) < styles.rendered.size() ? styles.rendered[static_cast<size_t>(node)] : kNoStyle;
+        };
+        auto hl_of = [](const mepml::style::Computed &c, const char *fallback) {
+            return c.has_color ? StyleHl(c.color) : std::string(fallback);
+        };
+        float title_scale = 1.0f;
         for (const mepml::Block *e : run.entries) {
             const std::string k = Lowered(e->keyword);
+            if (k == "title") title_scale = std::clamp(meta_style(e).font_size, 0.5f, 3.0f);
             if (k == "title") title = e->value;
             else if (k == "option") ++options;
             else others.push_back(k == "subtitle" || k == "author" || k == "date" || k == "import" ? e->value : k);
@@ -1274,7 +1620,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         if (run.last > run.first) {
             Buffer::MepmlFoldSummary sum;
             sum.title = title.empty() ? run.entries[0]->keyword + ": " + run.entries[0]->value : title;
-            sum.title_scale = title.empty() ? 1.0f : kHeaderTitleScale;
+            sum.title_scale = title.empty() ? 1.0f : title_scale;
             if (options > 0) others.insert(others.begin(), std::to_string(options) + (options == 1 ? " option" : " options"));
             for (const std::string &o : others)
                 if (!o.empty()) sum.detail += "  \u2022 " + o;
@@ -1292,7 +1638,8 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             const int len = static_cast<int>(line.size());
             const std::string value = line.substr(static_cast<size_t>(mc.value_start));
             if (k == "title" || k == "subtitle") {
-                const float scale = k == "title" ? kHeaderTitleScale : 1.15f;
+                const mepml::style::Computed &ms = meta_style(e);
+                const float scale = std::clamp(ms.font_size, 0.5f, 3.0f);
                 // The padding a scaled row needs above it, whether or not
                 // the cursor is on it (so moving onto it doesn't jump).
                 if (scale > 1.0f && !value.empty()) {
@@ -1317,9 +1664,9 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                 v.virt_overlay = true;
                 v.virt_text = value;
                 v.virt_scale = scale;
-                v.bold = k == "title";
-                v.italic = k == "subtitle";
-                v.virt_text_hl = k == "title" ? HeadingColor(1) : "Comment";
+                v.bold = ms.bold;
+                v.italic = ms.italic;
+                v.virt_text_hl = hl_of(ms, "Normal");
                 v.priority = 10;
                 add(v);
                 continue;
@@ -1333,19 +1680,23 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             label.col_end = mc.value_start;
             label.virt_overlay = true;
             label.virt_text = e->keyword + std::string(static_cast<size_t>(label_w - Codepoints(e->keyword) + 2), ' ');
-            label.virt_text_hl = "Comment";
+            const mepml::style::Computed &key_style = MepmlPartStyle(meta_node(e), "key");
+            label.virt_text_hl = hl_of(key_style, "Comment");
+            label.bold = key_style.bold;
+            label.italic = key_style.italic;
             label.priority = 10;
             add(label);
             if (value.empty()) continue;
-            auto piece = [&](int from, int to, const std::string &text, const char *hl, bool bold) {
+            auto piece = [&](int from, int to, const std::string &text, const mepml::style::Computed &ps, const char *fallback) {
                 Decoration d;
                 d.row = row;
                 d.col_start = from;
                 d.col_end = to;
                 d.virt_overlay = true;
                 d.virt_text = text;
-                d.virt_text_hl = hl;
-                d.bold = bold;
+                d.virt_text_hl = hl_of(ps, fallback);
+                d.bold = ps.bold;
+                d.italic = ps.italic;
                 d.priority = 10;
                 add(d);
             };
@@ -1356,14 +1707,12 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                 size_t vs = eq + 1;
                 while (vs < value.size() && value[vs] == ' ') ++vs;
                 const std::string raw = value.substr(vs);
-                const mepml::Value parsed = mepml::Value::Parse(raw);
                 const int at = mc.value_start;
-                piece(at, at + static_cast<int>(eq), name, "Cyan", true);
-                piece(at + static_cast<int>(eq), at + static_cast<int>(vs), " = ", "Comment", false);
-                if (!raw.empty())
-                    piece(at + static_cast<int>(vs), len, raw, parsed.kind == mepml::ValueKind::String ? "Green" : "Purple", false);
+                piece(at, at + static_cast<int>(eq), name, MepmlPartStyle(meta_node(e), "name"), "Normal");
+                piece(at + static_cast<int>(eq), at + static_cast<int>(vs), " = ", MepmlPartStyle(meta_node(e), "markup"), "Comment");
+                if (!raw.empty()) piece(at + static_cast<int>(vs), len, raw, MepmlPartStyle(meta_node(e), "value"), "Normal");
             } else {
-                piece(mc.value_start, len, value, k == "import" ? "Blue" : "Normal", false);
+                piece(mc.value_start, len, value, MepmlPartStyle(meta_node(e), "value"), "Normal");
             }
         }
     }
@@ -1404,6 +1753,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     state.buffer_cols = scan_buffer_cols;
     state.cur_row = cur_row;
     state.table_math_gen = buf.mepml_table_math_gen;
+    state.sheet_signature = sheet_signature;
     state.deco_count = buf.decorations.count(ns) ? buf.decorations[ns].size() : 0;
 }
 
@@ -1621,6 +1971,7 @@ std::vector<OrgLiteralSpan> Editor::MepmlLiteralSpans() const {
 
 bool Editor::MepmlTablesStale() {
     if (!IsMepmlBuffer()) return false;
+    if (MepmlStylesStale()) return true;
     auto it = mepml_scan_state_.find(CurrentBufferId());
     return it != mepml_scan_state_.end() && it->second.valid && it->second.table_math_gen != Buf().mepml_table_math_gen;
 }
@@ -1646,8 +1997,11 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
     // What a span occupies once concealed -- the same arithmetic DrawPane's
     // collapse does: hidden markup is 0, a replacement its own codepoints,
     // a scaled run StyledCols().
+    const MepmlNodeStyles &node_styles = MepmlStylesCurrent(true);
+    static const mepml::style::Computed kPlain;
     auto span_width = [&](const mepml::Span &sp, const std::string &line) {
-        return ConcealedWidth(sp, line, kTableMaxScale);
+        const bool known = sp.path >= 0 && static_cast<size_t>(sp.path) < node_styles.rendered.size();
+        return ConcealedWidth(sp, line, kTableMaxScale, known ? node_styles.rendered[static_cast<size_t>(sp.path)] : kPlain);
     };
     // A row's cells, split exactly as the parser splits them, and which of
     // its outer pipes it has: a GitHub-flavoured Markdown row may leave
@@ -1825,6 +2179,23 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             }
             for (int row = g.start_row; row <= g.end_row; ++row)
                 if (!rows.count(row)) g.raw_rows.push_back(row);
+            // Its colours are the table element's: `background` the hue of
+            // its header and stripes, `border-color` (and `:active`'s) its
+            // outline, `table::rule`'s `color` its grid lines.
+            {
+                const size_t bi = static_cast<size_t>(&b - doc.blocks.data());
+                const std::vector<int> &nodes = MepmlBlockNodesCurrent(true);
+                const int node = bi < nodes.size() ? nodes[bi] : -1;
+                const MepmlNodeStyles &all = MepmlStylesCurrent(true);
+                if (node >= 0 && static_cast<size_t>(node) < all.rendered.size()) {
+                    const mepml::style::Computed &ts = all.rendered[static_cast<size_t>(node)];
+                    g.look.wash = CardColorOf(ts.background);
+                    g.look.border = CardColorOf(ts.border_color);
+                    g.look.border_active = CardColorOf(MepmlStateStyle(node, ":active").border_color);
+                    const mepml::style::Computed &rs = MepmlPartStyle(node, "rule");
+                    if (rs.has_color) g.rule = CardColorOf(rs.color);
+                }
+            }
             mepml_table_grids_[CurrentBufferId()].push_back(g);
             // Soft-wrap measures the laid-out rows by the grid they draw
             // across (Editor::WrapLenForRow); the cursor's raw row by its text.
@@ -2032,6 +2403,85 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
         const size_t z = l.find_last_not_of(" \t");
         return a == std::string::npos ? std::string() : l.substr(a, z - a + 1);
     };
+    // Each card's colours are its element's computed style (the sheets'
+    // `background`, `border-color`, `border-left-color`; its `::header`
+    // and `::label` parts for the title band and the kind chip; `:active`
+    // for the outline while the cursor is in it).
+    const MepmlNodeStyles &styles = MepmlStylesCurrent(true);
+    const mepml::ElementPaths &paths = MepmlCacheEntry(true).paths;
+    const std::vector<int> &block_nodes = MepmlBlockNodesCurrent(true);
+    mepml::style::Cascade cascade;
+    cascade.sheets = MepmlSheets();
+    cascade.media = present_.active && CurrentBufferId() == present_.view_buffer
+                        ? std::vector<std::string>{"present", "slides", "screen"}
+                        : std::vector<std::string>{"editor", "screen"};
+    auto card_color = [](const mepml::style::Color &c) {
+        OrgCardColor out;
+        out.set = true;
+        out.hl = StyleHl(c);
+        out.alpha = c.alpha;
+        return out;
+    };
+    // (One per distinct element: a document's code blocks share a handful.)
+    std::map<std::string, OrgCardLook> looks;
+    // The look of `element` under the node `parent` of the tree (-1: the
+    // document's root).
+    auto look_of = [&](int parent, const mepml::Element &element) {
+        std::string key = std::to_string(parent) + "|" + element.name;
+        for (const auto &kv : element.attrs) key += "|" + kv.first + "=" + kv.second;
+        auto it = looks.find(key);
+        if (it != looks.end()) return it->second;
+        std::vector<const mepml::Element *> path = paths.Path(parent);
+        static const mepml::style::Computed kRoot;
+        const mepml::style::Computed &from =
+            parent >= 0 && static_cast<size_t>(parent) < styles.rendered.size() ? styles.rendered[static_cast<size_t>(parent)] : kRoot;
+        path.push_back(&element);
+        const mepml::style::Computed own = cascade.Compute(path, from);
+        mepml::Element active = element;
+        active.With(":active");
+        path.back() = &active;
+        const mepml::style::Computed on = cascade.Compute(path, from);
+        path.back() = &element;
+        const mepml::Element header = element.Part("header"), label = element.Part("label");
+        path.push_back(&header);
+        const mepml::style::Computed band = cascade.Compute(path, own);
+        path.back() = &label;
+        const mepml::style::Computed chip = cascade.Compute(path, own);
+        OrgCardLook look;
+        look.wash = card_color(own.background);
+        look.border = card_color(own.border_color);
+        look.border_active = card_color(on.border_color);
+        look.stripe = card_color(own.border_left_color);
+        look.band = card_color(band.background);
+        // The chip is the label's background, or its text colour as a block.
+        look.chip = card_color(chip.background.kind != mepml::style::Color::None ? chip.background
+                               : chip.has_color                                  ? chip.color
+                                                                                 : mepml::style::Color());
+        // (With a background of its own, the label's colour is its words'.)
+        if (chip.background.kind != mepml::style::Color::None && chip.has_color) look.chip_text = card_color(chip.color);
+        const mepml::Element title = element.Part("title"), option = element.Part("option");
+        path.back() = &title;
+        const mepml::style::Computed title_style = cascade.Compute(path, own);
+        if (title_style.has_color) look.title = card_color(title_style.color);
+        path.back() = &option;
+        const mepml::style::Computed option_style = cascade.Compute(path, own);
+        if (option_style.has_color) look.option = card_color(option_style.color);
+        const mepml::Element button = element.Part("button");
+        path.back() = &button;
+        const mepml::style::Computed button_style = cascade.Compute(path, own);
+        // (Only a colour of the part's own: one inherited from the block is its text's.)
+        if (button_style.has_color && button_style.color != own.color) look.button = card_color(button_style.color);
+        if (band.has_color && band.color != own.color) look.header_text = card_color(band.color);
+        looks.emplace(std::move(key), look);
+        return look;
+    };
+    // The look of the block `b` (its own node of the tree).
+    auto look_of_block = [&](const mepml::Block &b) {
+        const size_t bi = static_cast<size_t>(&b - doc.blocks.data());
+        const int node = bi < block_nodes.size() ? block_nodes[bi] : -1;
+        if (node < 0 || static_cast<size_t>(node) >= paths.nodes.size()) return OrgCardLook();
+        return look_of(paths.nodes[static_cast<size_t>(node)].parent, paths.nodes[static_cast<size_t>(node)].element);
+    };
     // A slide: a card round everything on it, its `\slide(` line the
     // title bar ("Slide N" and the slide's title), its closing `)` the
     // floor. Pushed first, so its wash and outline go down under the cards
@@ -2044,10 +2494,16 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
         card.meta_row = card.begin_row = sl.line_start;
         card.end_row = sl.line_end;
         card.kind = "slide";
+        // (Its chip is the slide's `::label`: "Slide %n" unless a sheet says.)
         card.chip = "Slide " + std::to_string(sl.number);
+        if (sl.first_block < doc.blocks.size() && sl.first_block < block_nodes.size()) {
+            const mepml::style::Computed &label = MepmlPartStyle(block_nodes[sl.first_block], "label");
+            if (label.has_content) card.chip = mepml::style::ExpandContent(label.content, std::to_string(sl.number), "", sl.title);
+        }
         card.title = sl.title;
         card.content_cols = widest(sl.line_start, sl.line_end);
         card.fold_row = sl.line_start;
+        if (sl.first_block < doc.blocks.size()) card.look = look_of_block(doc.blocks[sl.first_block]);
         cards.push_back(std::move(card));
     }
     for (const HeaderRun &run : HeaderRuns(doc)) {
@@ -2056,6 +2512,8 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
         head.end_row = run.last;
         head.kind = "header";
         head.bare = true;
+        // (The header is the element its `//?` lines are in.)
+        head.look = look_of(paths.nodes.empty() ? -1 : 0, mepml::Element("header"));
         head.content_cols = widest(run.first, run.last);
         cards.push_back(std::move(head));
     }
@@ -2088,15 +2546,22 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
             } else {
                 continue;
             }
-            const mepml::BoxKind *kind = mepml::FindBoxKind(begin->keyword);
             OrgBlockCard card;
             card.meta_row = card.begin_row = first;
             card.end_row = last;
             card.kind = "box";
             card.bare = true;
-            card.tint = kind ? kind->hl : "Cyan";
+            card.look = look_of_block(*begin);
             // Folded, it collapses to a bar naming it.
-            card.chip = kind ? kind->label : begin->keyword;
+            card.chip = mepml::BoxLabel(begin->keyword);
+            {
+                const size_t bi = static_cast<size_t>(begin - doc.blocks.data());
+                const int node = bi < block_nodes.size() ? block_nodes[bi] : -1;
+                const mepml::style::Computed &label = MepmlPartStyle(node, "label");
+                if (label.has_content) card.chip = mepml::style::ExpandContent(label.content, "", begin->keyword, "");
+                // (A box with an end mark keeps the row of its `)` for it.)
+                card.end_mark = MepmlPartStyle(node, "end").has_content && !MepmlPartStyle(node, "end").content.empty();
+            }
             card.title = mepml::InlinePlainText(begin->caption_inlines);
             if (last > first) card.fold_row = first;
             // As wide as its text as drawn -- markup concealed, maths about as
@@ -2116,6 +2581,7 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
         card.end_row = b.line_end;
         card.kind = "abstract";
         card.bare = true;
+        card.look = look_of_block(b);
         card.content_cols = widest(b.line_start, b.line_end);
         cards.push_back(std::move(card));
     }
@@ -2147,6 +2613,13 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
                 run_id = kv.first;
         code.term_run = run_id;
         code.fold_row = b.line_start;  // RecomputeMepmlFolds folds the option lines too
+        code.look = look_of_block(b);
+        // (Read before the push below can move the cards.)
+        const size_t code_bi = static_cast<size_t>(&b - doc.blocks.data());
+        const int code_node = code_bi < block_nodes.size() ? block_nodes[code_bi] : -1;
+        const int results_parent = code_node >= 0 && static_cast<size_t>(code_node) < paths.nodes.size()
+                                       ? paths.nodes[static_cast<size_t>(code_node)].parent
+                                       : -1;
         cards.push_back(std::move(code));
         // Its results: a card of their own, the `// result_begin:` and
         // `// result_end` markers standing in as its header and floor.
@@ -2159,6 +2632,7 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
                        : b.result_format == "gui"      ? "gui"
                                                        : "output";
             out.is_src = false;
+            out.look = look_of(results_parent, mepml::Element("results", "format", b.result_format.empty() ? "text" : b.result_format));
             out.term_run = run_id;
             if (b.result_line_end > b.result_line_start) out.fold_row = b.result_line_start;
             // Rendered HTML is laid out to the text width; its source's
@@ -2794,6 +3268,9 @@ bool Editor::MepmlPresentStart(bool fullscreen, std::string *error) {
         return false;
     }
     MepmlPresentState st;
+    for (const mepml::StyleRef &ref : MepmlParseCurrent(true).styles)
+        st.sheet_paths.push_back(mepml::ResolvePath(ref.base.empty() ? MepmlCurrentFile() : ref.base, ref.path));
+    st.inline_sheets = mepml::InlineStyleSheets(MepmlParseCurrent(true));
     st.active = true;
     st.source_buffer = CurrentBufferId();
     st.pane_id = ActivePaneId();
@@ -2985,6 +3462,11 @@ void Editor::MepmlPresentRebuild() {
     std::vector<mepml::PresentationPage> pages =
         mepml::PresentationPages(file, src.lines, ReadFileLines, present_.wrap_cols);
     present_.source_lines = src.lines;
+    present_.sheet_paths.clear();
+    const mepml::Document written = mepml::ParseWithImports(file, src.lines, ReadFileLines);
+    for (const mepml::StyleRef &ref : written.styles)
+        present_.sheet_paths.push_back(mepml::ResolvePath(ref.base.empty() ? file : ref.base, ref.path));
+    present_.inline_sheets = mepml::InlineStyleSheets(written);
     if (pages.empty()) return;  // every slide gone mid-edit: keep what is shown
     // Stay on the same slide: by its number, else by position.
     const mepml::PresentationPage &was = present_.pages[static_cast<size_t>(present_.page)];

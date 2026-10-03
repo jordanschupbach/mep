@@ -1360,7 +1360,8 @@ int main() {
         CHECK(count[BlockKind::Image] == 2);
         CHECK(count[BlockKind::Table] == 4);  // two typed, one GFM, one printed by a block
         CHECK(count[BlockKind::MathBlock] == 3);
-        CHECK(count[BlockKind::BoxBegin] == 5 && count[BlockKind::BoxEnd] == 3);
+        CHECK(count[BlockKind::BoxBegin] == 7 && count[BlockKind::BoxEnd] == 5);  // (the last two: the style sheets' remark and axiom)
+        CHECK(d.styles.size() == 1 && d.styles[0].path == "test.mepss");
         CHECK(count[BlockKind::Citation] == 2);
         CHECK(count[BlockKind::Callout] >= 3);
         CHECK(count[BlockKind::List] >= 1);
@@ -1387,7 +1388,7 @@ int main() {
                              InlineKind::Highlight, InlineKind::Strike, InlineKind::Insert, InlineKind::Delete,
                              InlineKind::Verbatim, InlineKind::Link, InlineKind::Font, InlineKind::FontSize,
                              InlineKind::Color, InlineKind::Footnote, InlineKind::Cite, InlineKind::CiteP,
-                             InlineKind::Math, InlineKind::Comment, InlineKind::Raw, InlineKind::Command}) {
+                             InlineKind::Math, InlineKind::Comment, InlineKind::Raw, InlineKind::Command, InlineKind::Class}) {
             if (!kinds[k]) std::fprintf(stderr, "reference file lacks inline kind %d\n", static_cast<int>(k));
             CHECK(kinds[k] > 0);
         }

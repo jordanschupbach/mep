@@ -383,7 +383,30 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
     // the kind's colours, its label in small capitals before the title.
     if (tag == "div" && node->attrs.count("data-kind") && node->Class().rfind("mbox", 0) == 0) {
         const std::string kind = node->attrs.at("data-kind");
-        const std::string colour = mepml::FindBoxKind(kind) ? "mepbox" + kind : "mepboxdefinition";
+        std::string colour = mepml::FindBoxKind(kind) ? "mepbox" + kind : "mepboxdefinition";
+        // Colours of the document's own (its style sheets': mepml::ToHtml
+        // writes them on the box): defined here, where the box is.
+        auto hex6 = [](const std::string &v) {
+            return v.size() == 6 && std::all_of(v.begin(), v.end(), [](char ch) { return std::isxdigit(static_cast<unsigned char>(ch)); });
+        };
+        if (node->attrs.count("data-color") && node->attrs.count("data-tint") && hex6(node->attrs.at("data-color")) &&
+            hex6(node->attrs.at("data-tint"))) {
+            std::string c = node->attrs.at("data-color"), t = node->attrs.at("data-tint");
+            for (char &ch : c) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+            for (char &ch : t) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+            colour = "mepboxc" + c + "t" + t;
+            out += "\n\\definecolor{" + colour + "}{HTML}{" + c + "}\\definecolor{" + colour + "tint}{HTML}{" + t + "}";
+        }
+        // What closes it: a proof's tombstone, or the sheets' own mark.
+        std::string end_mark = kind == "proof" ? "\\hfill\\ensuremath{\\blacksquare}\n" : "";
+        if (node->attrs.count("data-end")) {
+            const std::string &e = node->attrs.at("data-end");
+            // (The two squares are maths symbols; anything else is text.)
+            end_mark = e.empty()                  ? std::string()
+                       : e == "\xE2\x88\x8E" ? "\\hfill\\ensuremath{\\blacksquare}\n"
+                       : e == "\xE2\x96\xA1" ? "\\hfill\\ensuremath{\\square}\n"
+                                              : "\\hfill " + LatexEscape(e) + "\n";
+        }
         std::string label, name, body;
         for (auto &c : node->children) {
             if (c->type == DomNodeType::Element && c->Class() == "mbox-title") {
@@ -399,7 +422,7 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         }
         out += "\n\\begin{mepbox}{" + colour + "}\n{\\sffamily\\bfseries\\footnotesize\\color{" + colour + "}\\MakeUppercase{" + label +
                "}}" + (name.empty() ? "" : "\\enspace\\textbf{" + name + "}") + "\\par\\smallskip\n" + body +
-               (kind == "proof" ? "\\hfill\\ensuremath{\\blacksquare}\n" : "") + "\\end{mepbox}\n";
+               end_mark + "\\end{mepbox}\n";
         return;
     }
     if (tag == "div" && node->Class() == "org-code-block") {
@@ -451,6 +474,25 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
     }
     if (tag == "code" || tag == "tt") {
         out += "\\texttt{" + LatexEscape(CollectRawText(node)) + "}";
+        return;
+    }
+    // What a mepml style sheet changes for a run of text (mepml::ToHtml
+    // marks it when the export is LaTeX's): its colour, weight and slant.
+    if (tag == "span" && node->Class() == "mep-style") {
+        std::string open = "{";
+        auto attr = [&](const char *name) { return node->attrs.count(name) ? node->attrs.at(name) : std::string(); };
+        std::string c = attr("data-color");
+        if (c.size() == 6 && std::all_of(c.begin(), c.end(), [](char ch) { return std::isxdigit(static_cast<unsigned char>(ch)); })) {
+            for (char &ch : c) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+            open += "\\color[HTML]{" + c + "}";
+        }
+        if (attr("data-bold") == "1") open += "\\bfseries";
+        else if (attr("data-bold") == "0") open += "\\mdseries";
+        if (attr("data-italic") == "1") open += "\\itshape";
+        else if (attr("data-italic") == "0") open += "\\upshape";
+        out += open + (open.size() > 1 ? " " : "");
+        for (auto &c2 : node->children) WalkLatexNode(c2.get(), ctx, out);
+        out += "}";
         return;
     }
     if (tag == "span" && node->Class().compare(0, 3, "hl-") == 0) {

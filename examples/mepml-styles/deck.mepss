@@ -1,0 +1,44 @@
+/* deck.mepss -- a look for presenting: a dark blue page, yellow titles.
+ *
+ *   //? Style: deck.mepss
+ *
+ * While presenting (<leader>kp, media `present`) a page is its slide: the
+ * slide's background is the page's paper and its colour the page's text.
+ * The title page is slide[title], with the header's title, subtitle and
+ * author on it. The second half gives the same deck its colours as an
+ * HTML slideshow or a Beamer PDF.
+ */
+
+@media present {
+  slide        { background: #10243a; color: #dfe8f2; }
+  slide[title] { background: #1b3a5c; }
+  slide[title] meta[key=title]    { color: #ffd000; font-size: 2.4; font-weight: bold; }
+  slide[title] meta[key=subtitle] { color: #9fc4e8; font-style: italic; }
+  slide[title] meta[key=author]   { color: #ffffff; }
+
+  slide heading[level=1] { color: #ffd000; font-size: 2.0; }
+  slide heading[level=2] { color: #9fc4e8; }
+  slide bold     { color: #ffffff; }
+  slide verbatim { color: #8faab0; }
+  slide link     { color: #7fc4ff; }
+  list-item::marker { content: "▸"; color: #ffd000; }
+}
+
+/* In the document as it is edited: the slides' cards in the same blue. */
+@media editor {
+  slide         { background: fade(#2a6fb0, 0.10); border-color: fade(#2a6fb0, 0.6); }
+  slide::header { background: fade(#2a6fb0, 0.30); }
+  slide::label  { content: "▸ %n"; color: #2a6fb0; }
+}
+
+/* Every medium: one accent for the boxes on a slide. */
+slide box        { --accent: #e0a800; }
+slide box::label { font-style: italic; }
+
+/* Exported: darker inks for a light page. */
+@media html, print {
+  heading[level=1] { color: #1b3a5c; }
+  bold     { color: #10243a; }
+  link     { color: #1f6fb5; }
+  slide box { --accent: #b07a00; }
+}

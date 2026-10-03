@@ -88,7 +88,7 @@
 (escape) @string.escape
 (link (link_text) @markup.link.label)
 (link (url) @markup.link.url)
-[(font) (font_size) (color) (footnote) (cite) (citep)] @function.macro
+[(font) (font_size) (color) (class) (footnote) (cite) (citep)] @function.macro
 (argument) @string.special
 (cite (argument) @markup.link)
 (citep (argument) @markup.link)

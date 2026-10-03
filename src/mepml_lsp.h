@@ -240,4 +240,21 @@ std::vector<MepmlLspCodeAction> MepmlLspCodeActions(const std::vector<std::strin
  */
 std::vector<MepmlLspTextEdit> MepmlLspFormat(const std::vector<std::string> &lines);
 
+// --- Style sheets (.mepss) ---------------------------------------------
+// The same server answers for a mepml style sheet (docs/mepml-spec/style.md):
+// `lines` is the sheet's text.
+
+/**
+ * @brief What is wrong in a sheet: what its parser could not use (an unknown property, a value a property does not take, a malformed selector), and selectors naming an element or a part mepml has none of.
+ */
+std::vector<MepmlLspDiagnostic> MepssLspDiagnostics(const std::vector<std::string> &lines);
+/**
+ * @brief Completion in a sheet: element names, `[attributes]` and their values, `::parts` and `:states` in a selector; property names and each property's values (colour functions, theme groups, colour names) in a rule; media tags after `@media`.
+ */
+std::vector<MepmlLspCompletionItem> MepssLspCompletions(const std::vector<std::string> &lines, int line, int col);
+/**
+ * @brief Explains the property, part or function under the cursor.
+ */
+MepmlLspHoverInfo MepssLspHover(const std::vector<std::string> &lines, int line, int col);
+
 #endif  // MEP_MEPML_LSP_H

@@ -4232,6 +4232,78 @@ OrgTableRow ParseOrgTableRowImpl(const std::string &line) {
  * @return The cell's width in display columns.
  */
 int OrgTableCellWidth(const std::string &cell) { return OrgTableDisplayWidth(cell); }
+
+// The cursor's row of a wrapped org table (Editor::OrgTableWrapScan),
+// laid out at the table's widths with its cells as stored -- markup and
+// all -- and where each byte of the stored line lands in that layout:
+// one entry per byte plus one past the end, `line` into `lines` and `col`
+// a display column. A cell's padding maps to the edge of its text, a `|`
+// to the grid rule it stands for.
+/**
+ * @brief Lays out the cursor's table row in a wrapped table and maps its stored bytes to the layout.
+ * @param line The row's stored text.
+ * @param widths The table's planned column widths.
+ * @param indent The display column the leading `|` sits at.
+ * @param lines Set to the line(s) the row draws as.
+ * @return The caret map, indexed by byte offset into `line`.
+ */
+std::vector<OrgTableWrapPos> OrgTableCursorRowLayout(const std::string &line, const std::vector<int> &widths, int indent,
+                                                     std::vector<OrgTableWrapLine> *lines) {
+    const OrgTableRow pr = ParseOrgTableRowImpl(line);
+    OrgTableCells cells;
+    cells.is_sep = pr.is_sep;
+    cells.links.resize(pr.cells.size());
+    for (size_t c = 0; c < pr.cells.size(); c++)
+        cells.cells.push_back(OrgTableCellDisplayText(pr.cells[c], false, &cells.links[c]));
+    std::vector<std::vector<OrgTableWrapPos>> cell_pos;
+    *lines = LayoutOrgTableRow(cells, widths, indent, &cell_pos);
+    std::vector<OrgTableWrapPos> map(line.size() + 1);
+    if (lines->empty()) return map;
+    // A layout position (a byte offset into its line) as a display column.
+    auto shown = [&](OrgTableWrapPos p) {
+        const std::string &t = (*lines)[static_cast<size_t>(p.line)].text;
+        return OrgTableWrapPos{p.line, OrgTableDisplayWidth(t.substr(0, std::min(t.size(), static_cast<size_t>(p.col))))};
+    };
+    std::vector<int> rule_cols{indent};
+    for (int w : widths) rule_cols.push_back(rule_cols.back() + w + 3);
+    const size_t lead = line.find('|');
+    if (lead == std::string::npos) return map;
+    for (size_t b = 0; b < lead; b++) map[b] = OrgTableWrapPos{0, OrgTableDisplayWidth(line.substr(0, b))};
+    if (pr.is_sep) {
+        const int last = OrgTableDisplayWidth((*lines)[0].text) - 1;
+        for (size_t b = lead; b <= line.size(); b++)
+            map[b] = OrgTableWrapPos{0, std::min(last, indent + OrgTableDisplayWidth(line.substr(lead, b - lead)))};
+        return map;
+    }
+    map[lead] = OrgTableWrapPos{0, rule_cols[0]};
+    size_t seg = lead + 1;
+    for (size_t c = 0;; c++) {
+        size_t bar = line.find('|', seg);
+        const size_t seg_end = bar == std::string::npos ? line.size() : bar;
+        size_t cs = seg, ce = seg_end;
+        while (cs < ce && (line[cs] == ' ' || line[cs] == '\t')) cs++;
+        while (ce > cs && (line[ce - 1] == ' ' || line[ce - 1] == '\t')) ce--;
+        // Up to and including the end of the line when no `|` closes
+        // this segment.
+        const size_t last = bar == std::string::npos ? line.size() : seg_end - 1;
+        for (size_t b = seg; b <= last && seg <= seg_end; b++) {
+            if (c >= cell_pos.size()) {
+                map[b] = OrgTableWrapPos{0, rule_cols.back() + 1};
+                continue;
+            }
+            const std::vector<OrgTableWrapPos> &pos = cell_pos[c];
+            const size_t k = b < cs ? 0 : std::min(b, ce) - cs;
+            map[b] = shown(pos[std::min(k, pos.size() - 1)]);
+        }
+        if (bar == std::string::npos) break;
+        map[bar] = OrgTableWrapPos{0, rule_cols[std::min(c + 1, rule_cols.size() - 1)]};
+        seg = bar + 1;
+        if (seg > line.size()) break;
+    }
+    // A line ending on its closing `|`: just past it.
+    if (!line.empty() && line.back() == '|') map[line.size()] = OrgTableWrapPos{0, map[line.size() - 1].col + 1};
+    return map;
+}
 }  // namespace
 
 void Editor::OrgTableAlign() {
@@ -4879,9 +4951,10 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // N slots" shape as the image/table cases above.
     if (wrap_cols > 0) {
         int len = WrapLenForRow(buf, row);
-        return std::max(1, (len + wrap_cols - 1) / wrap_cols) + trailing + heading_extra + RowTopPadSlots(buf, row);
+        const int sublines = std::max(1, (len + wrap_cols - 1) / wrap_cols);
+        return sublines + trailing + heading_extra + RowTopPadSlots(buf, row) + RowMathExtraSlots(buf, row, sublines, wrap_cols, pane.cursor.row);
     }
-    return 1 + trailing + heading_extra + RowTopPadSlots(buf, row);
+    return 1 + trailing + heading_extra + RowTopPadSlots(buf, row) + RowMathExtraSlots(buf, row, 1, wrap_cols, pane.cursor.row);
 }
 
 int Editor::PaneFigureSlots(const Pane &pane, const Buffer &buf, int row) const {
@@ -23888,10 +23961,23 @@ int Editor::LatexInlineDrawCols(const std::string &path) const {
     int w = 0, h = 0;
     ImagePixelSizeCached(path, &w, &h);
     if (w <= 0 || h <= 0 || render_char_width_ <= 0.0 || render_line_height_ <= 0.0) return -1;
-    // DrawPane's OrgLatexInlineScale / OrgLatexInlineCols, from the size.
-    const double scale = std::min(1.0, render_line_height_ * 0.95 / static_cast<double>(h));
-    return std::max(1, static_cast<int>(std::ceil(static_cast<double>(w) * scale / render_char_width_ - 0.05)));
+    // DrawPane's OrgLatexInlineCols, from the size (drawn 1:1).
+    return std::max(1, static_cast<int>(std::ceil(static_cast<double>(w) / render_char_width_ - 0.05)));
 }
+
+namespace {
+// Where an inline maths render's baseline is, in pixels from its top, as
+// its renderer wrote it beside the PNG (`<key>.base`: mep_org_latex_render
+// from TeX's own box, RenderMathFastPng from its layout); -1 for none.
+float LatexInlineBaselineOf(const std::string &png) {
+    std::string side = png;
+    if (side.size() > 4 && side.compare(side.size() - 4, 4, ".png") == 0) side.resize(side.size() - 4);
+    std::ifstream f(side + ".base");
+    float baseline = -1.0f;
+    if (!(f >> baseline)) return -1.0f;
+    return baseline;
+}
+}  // namespace
 
 void Editor::AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path, int first_row,
                                    int last_row) {
@@ -23910,14 +23996,20 @@ void Editor::AddOrgLatexInlineSpan(int row, int col_start, int col_end, const st
     }
     // A fragment registered again (a presentation's stand-in render
     // replaced by tectonic's) takes its old span's place.
+    Buffer::OrgLatexInlineSpan span{col_start, col_end, path, first_row < 0 ? row : first_row,
+                                    last_row < 0 ? row : last_row};
+    if (!path.empty()) {
+        ImagePixelSizeCached(path, &span.width, &span.height);
+        span.baseline = LatexInlineBaselineOf(path);
+    }
     std::vector<Buffer::OrgLatexInlineSpan> &spans = Buf().org_latex_inline[row];
     for (Buffer::OrgLatexInlineSpan &sp : spans) {
         if (sp.col_start == col_start && sp.col_end == col_end) {
-            sp = {col_start, col_end, path, first_row < 0 ? row : first_row, last_row < 0 ? row : last_row};
+            sp = std::move(span);
             return;
         }
     }
-    spans.push_back({col_start, col_end, path, first_row < 0 ? row : first_row, last_row < 0 ? row : last_row});
+    spans.push_back(std::move(span));
 }
 
 bool Editor::OrgLatexInlineRevealed(const Buffer::OrgLatexInlineSpan &span, int row, int cursor_row) const {
@@ -28091,64 +28183,175 @@ void Editor::IndentLines(int start_row, int end_row, int levels) {
     Buf().modified = true;
 }
 
+namespace {
+// The line-comment leaders gq keeps at the head of every line it wraps
+// (Vim's 'comments'), by file extension and longest first, so `///` is
+// kept whole rather than read as `//` plus a word starting with `/`.
+// Prose formats have none: a Markdown `# Heading` is not a comment.
+const std::vector<std::string> &FormatCommentLeaders(const std::string &filename) {
+    static const std::vector<std::string> kNone;
+    static const std::vector<std::string> kSlash = {"///", "//!", "//"};
+    static const std::vector<std::string> kHash = {"#"};
+    static const std::vector<std::string> kRoxygen = {"#'", "#"};
+    static const std::vector<std::string> kDash = {"---", "--"};
+    static const std::vector<std::string> kSemi = {";;;;", ";;;", ";;", ";"};
+    static const std::vector<std::string> kIni = {"#", ";"};
+    static const std::vector<std::string> kPercent = {"%%", "%"};
+    static const std::vector<std::string> kQuote = {"\""};
+    static const std::vector<std::string> kUnknown = {"//", "#"};
+    static const std::unordered_map<std::string, const std::vector<std::string> *> kByExt = {
+        {"c", &kSlash},     {"h", &kSlash},      {"cc", &kSlash},     {"cpp", &kSlash},    {"cxx", &kSlash},
+        {"hpp", &kSlash},   {"hh", &kSlash},     {"hxx", &kSlash},    {"java", &kSlash},   {"js", &kSlash},
+        {"jsx", &kSlash},   {"mjs", &kSlash},    {"cjs", &kSlash},    {"ts", &kSlash},     {"tsx", &kSlash},
+        {"rs", &kSlash},    {"go", &kSlash},     {"cs", &kSlash},     {"swift", &kSlash},  {"kt", &kSlash},
+        {"kts", &kSlash},   {"scala", &kSlash},  {"dart", &kSlash},   {"d", &kSlash},      {"zig", &kSlash},
+        {"proto", &kSlash}, {"glsl", &kSlash},   {"vert", &kSlash},   {"frag", &kSlash},   {"groovy", &kSlash},
+        {"mepml", &kSlash}, {"py", &kHash},      {"pyw", &kHash},     {"r", &kRoxygen},    {"sh", &kHash},
+        {"bash", &kHash},   {"zsh", &kHash},     {"fish", &kHash},    {"rb", &kHash},      {"pl", &kHash},
+        {"pm", &kHash},     {"jl", &kHash},      {"toml", &kHash},    {"yaml", &kHash},    {"yml", &kHash},
+        {"nix", &kHash},    {"cmake", &kHash},   {"mk", &kHash},      {"conf", &kHash},    {"cfg", &kHash},
+        {"tcl", &kHash},    {"ps1", &kHash},     {"ex", &kHash},      {"exs", &kHash},     {"awk", &kHash},
+        {"g", &kHash},      {"gap", &kHash},     {"org", &kHash},     {"lua", &kDash},     {"sql", &kDash},
+        {"hs", &kDash},     {"elm", &kDash},     {"ada", &kDash},     {"el", &kSemi},      {"lisp", &kSemi},
+        {"lsp", &kSemi},    {"cl", &kSemi},      {"scm", &kSemi},     {"ss", &kSemi},      {"rkt", &kSemi},
+        {"clj", &kSemi},    {"cljs", &kSemi},    {"edn", &kSemi},     {"asm", &kSemi},     {"ini", &kIni},
+        {"tex", &kPercent}, {"sty", &kPercent},  {"cls", &kPercent},  {"bib", &kPercent},  {"m", &kPercent},
+        {"erl", &kPercent}, {"hrl", &kPercent},  {"vim", &kQuote},    {"md", &kNone},      {"markdown", &kNone},
+        {"txt", &kNone},    {"html", &kNone},    {"htm", &kNone},     {"xml", &kNone},     {"rst", &kNone},
+    };
+    std::string ext = LspFiletype(filename);
+    for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    auto it = kByExt.find(ext);
+    return it != kByExt.end() ? *it->second : kUnknown;
+}
+
+// How a line opens, for gq: its indent, the comment leader after it (""
+// for none), and where its text starts. A leader counts only when
+// whitespace or the end of the line follows it, so `#include`, `#+TITLE:`,
+// a mepml `//?` header line and `--flag` stay text.
+struct FormatLineHead {
+    std::string indent, leader;
+    size_t text = 0;
+};
+FormatLineHead FormatHeadOf(const std::string &line, const std::vector<std::string> &leaders) {
+    FormatLineHead h;
+    size_t i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) i++;
+    h.indent = line.substr(0, i);
+    for (const std::string &l : leaders) {
+        if (line.compare(i, l.size(), l) != 0) continue;
+        const size_t after = i + l.size();
+        if (after < line.size() && line[after] != ' ' && line[after] != '\t') continue;
+        h.leader = l;
+        break;
+    }
+    h.text = i + h.leader.size();
+    return h;
+}
+
+// A line gq leaves exactly as it is and never joins to its neighbours: a
+// mepml `//?` header line or `>` heading, a Markdown `#` heading, an org
+// `*` headline or `#+KEYWORD:` line. Each is one line by its syntax, so
+// wrapping it, or pulling the prose under it up into it, would change what
+// it says.
+bool FormatStandaloneLine(const std::string &line, const std::string &ext) {
+    if (ext == "mepml") {
+        const size_t i = line.find_first_not_of(" \t");
+        return (i != std::string::npos && line.compare(i, 3, "//?") == 0) || mepml::LineHeadingLevel(line) > 0;
+    }
+    if (ext == "md" || ext == "markdown") {
+        size_t i = 0;
+        while (i < line.size() && i < 3 && line[i] == ' ') i++;  // up to three spaces of indent
+        size_t n = 0;
+        while (i + n < line.size() && line[i + n] == '#') n++;
+        return n >= 1 && n <= 6 && (i + n == line.size() || line[i + n] == ' ' || line[i + n] == '\t');
+    }
+    if (ext == "org") {
+        size_t n = 0;
+        while (n < line.size() && line[n] == '*') n++;
+        if (n > 0 && (n == line.size() || line[n] == ' ')) return true;
+        const size_t i = line.find_first_not_of(" \t");
+        return i != std::string::npos && line.compare(i, 2, "#+") == 0;
+    }
+    return false;
+}
+}  // namespace
+
 // gq: reflows [start_row, end_row] to wrap at text_width_ columns
-// (":set textwidth="/"tw=", default 80), one blank-line-delimited
-// paragraph at a time -- same simplified "no comment leader" paragraph
-// boundary (Buf().lines[row].empty()) that MoveParagraphForward/
-// ParagraphObjectRange already use. A paragraph that extends beyond
-// end_row is only rewrapped where it overlaps [start_row, end_row],
-// matching Vim's gq{motion} (not the whole paragraph the motion happens
-// to graze). Every wrapped line reuses the *first* line's leading
+// (":set textwidth="/"tw=", default 80), one paragraph at a time. A
+// paragraph is a run of lines with text that open the same way: plain
+// lines (whatever their indent), or comment lines sharing an indent and a
+// leader (FormatCommentLeaders) -- so a comment is wrapped as a comment,
+// every new line starting with the first line's indent, leader and the
+// space after it, and a comment never swallows the code next to it (nor
+// the reverse). A blank line, a comment line with nothing after its
+// leader, or a header or heading line (FormatStandaloneLine) separates
+// paragraphs and is left as it is. A paragraph that
+// extends beyond end_row is only rewrapped where it overlaps [start_row,
+// end_row], matching Vim's gq{motion} (not the whole paragraph the motion
+// happens to graze). Every wrapped line reuses the *first* line's leading
 // whitespace as its indent.
 void Editor::FormatLines(int start_row, int end_row) {
     const int kFormatWidth = std::max(1, text_width_);
     end_row = std::min(end_row, Buf().LineCount() - 1);
     if (start_row > end_row) return;
     PushUndo();
+    const std::vector<std::string> &leaders = FormatCommentLeaders(Buf().filename);
+    std::string ext = LspFiletype(Buf().filename);
+    for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    auto line_at = [&](int r) -> const std::string & { return Buf().lines[static_cast<size_t>(r)]; };
+    auto no_text = [](const std::string &line, const FormatLineHead &h) {
+        return line.find_first_not_of(" \t", h.text) == std::string::npos;
+    };
 
     int row = std::max(0, start_row);
     while (row <= end_row) {
-        if (Buf().lines[static_cast<size_t>(row)].empty()) {
+        const FormatLineHead head = FormatHeadOf(line_at(row), leaders);
+        if (no_text(line_at(row), head) || FormatStandaloneLine(line_at(row), ext)) {
             row++;
             continue;
         }
         int para_start = row;
         int para_end = row;
-        while (para_end + 1 <= end_row && !Buf().lines[static_cast<size_t>(para_end) + 1].empty()) para_end++;
-
-        const std::string &first_line = Buf().lines[static_cast<size_t>(para_start)];
-        size_t indent_len = 0;
-        while (indent_len < first_line.size() &&
-               (first_line[indent_len] == ' ' || first_line[indent_len] == '\t')) {
-            indent_len++;
+        while (para_end + 1 <= end_row) {
+            const std::string &next = line_at(para_end + 1);
+            const FormatLineHead h = FormatHeadOf(next, leaders);
+            if (no_text(next, h) || h.leader != head.leader || FormatStandaloneLine(next, ext)) break;
+            if (!head.leader.empty() && h.indent != head.indent) break;
+            para_end++;
         }
-        std::string indent = first_line.substr(0, indent_len);
+
+        // What every wrapped line starts with: the first line's indent,
+        // and its comment leader with the whitespace that follows it.
+        const std::string &first_line = line_at(para_start);
+        std::string prefix = head.indent;
+        if (!head.leader.empty()) {
+            const size_t text_at = first_line.find_first_not_of(" \t", head.text);
+            prefix = first_line.substr(0, text_at);
+        }
 
         std::vector<std::string> words;
         for (int r = para_start; r <= para_end; r++) {
-            std::istringstream iss(Buf().lines[static_cast<size_t>(r)]);
+            const std::string &l = line_at(r);
+            std::istringstream iss(l.substr(FormatHeadOf(l, leaders).text));
             std::string w;
             while (iss >> w) words.push_back(w);
         }
 
         std::vector<std::string> wrapped;
-        if (words.empty()) {
-            wrapped.push_back(indent);
-        } else {
-            std::string cur = indent;
-            bool cur_has_word = false;
-            for (const std::string &w : words) {
-                if (cur_has_word && cur.size() + 1 + w.size() > static_cast<size_t>(kFormatWidth)) {
-                    wrapped.push_back(cur);
-                    cur = indent + w;
-                } else {
-                    if (cur_has_word) cur += ' ';
-                    cur += w;
-                }
-                cur_has_word = true;
+        std::string cur = prefix;
+        bool cur_has_word = false;
+        for (const std::string &w : words) {
+            if (cur_has_word && cur.size() + 1 + w.size() > static_cast<size_t>(kFormatWidth)) {
+                wrapped.push_back(cur);
+                cur = prefix + w;
+            } else {
+                if (cur_has_word) cur += ' ';
+                cur += w;
             }
-            wrapped.push_back(cur);
+            cur_has_word = true;
         }
+        wrapped.push_back(cur);
 
         int old_count = para_end - para_start + 1;
         int new_count = static_cast<int>(wrapped.size());
@@ -31385,22 +31588,30 @@ void Editor::OrgTableWrapScan(bool force) {
             for (int cw : plan.col_widths) cols += cw + 3;
             const int width = cols + 1;  // the trailing `|`
             for (int r = row; r <= end; r++) {
-                // The row the cursor is on keeps its real columns: the
-                // layout renders the *stored* text narrower, and editing
-                // a cell against column boundaries that aren't the ones
-                // in the file would put the caret somewhere other than
-                // where the character it is editing is drawn. Only that
-                // one row steps aside -- the rest of the table stays
-                // wrapped, and because the plan above is computed from
-                // every row's stored cells (never from which row is
-                // stepping aside), those rows keep the exact same column
-                // widths as the cursor moves through the table instead of
-                // reflowing under it. A Visual selection does the same,
-                // per row, for a concrete reason of its own: the
-                // selection fill is drawn against the stored line's
-                // columns, so a covered row has to be showing them.
-                if (r == cursor_row) continue;
+                // A Visual selection steps a row aside to its stored
+                // text: the selection fill is drawn against the stored
+                // line's columns, so a covered row has to be showing them.
                 if (sel_lo >= 0 && r >= sel_lo && r <= sel_hi) continue;
+                const std::string &stored = buf.lines[static_cast<size_t>(r)];
+                if (r == cursor_row) {
+                    // The cursor's row shows its markup. Where its stored
+                    // text draws exactly as tall as its layout -- a table
+                    // only condensed for concealment, one line a row, whose
+                    // stored row fits the pane -- it simply steps aside to
+                    // that text, which the grid around it doesn't move for.
+                    // Otherwise stepping aside would change the row's
+                    // height and shift the table, so it stays in the
+                    // layout at the table's own widths, its raw cells
+                    // wrapped inside them, with a map for the caret.
+                    if (!plan.wrapped && stored_row_width(stored) <= budget) continue;
+                    Buffer::OrgTableWrapRow entry;
+                    entry.indent = indent;
+                    entry.width = width;
+                    entry.caret = OrgTableCursorRowLayout(stored, plan.col_widths, indent, &entry.lines);
+                    if (entry.lines.empty()) continue;
+                    buf.org_table_wrap_rows[r] = std::move(entry);
+                    continue;
+                }
                 Buffer::OrgTableWrapRow entry;
                 entry.lines = plan.rows[static_cast<size_t>(r - row)];
                 entry.indent = indent;

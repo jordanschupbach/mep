@@ -39,6 +39,7 @@ language.</p>
 <tr><td><code>&lt;leader&gt;kh</code></td><td>fold or unfold the document header (the <code>//?</code> lines)</td></tr>
 <tr><td><code>&lt;leader&gt;kl</code></td><td>follow the link under the cursor (clicking works too)</td></tr>
 <tr><td><code>&lt;leader&gt;km</code></td><td>toggle markup concealment</td></tr>
+<tr><td><code>&lt;leader&gt;kr</code></td><td>raw text or rendered (also the header's eye button)</td></tr>
 <tr><td><code>&lt;leader&gt;kp</code></td><td>present the slides, filling the editor</td></tr>
 <tr><td><code>&lt;leader&gt;kP</code></td><td>present the slides full screen</td></tr>
 <tr><td><code>:MepmlExecute</code></td><td>run the code block under the cursor</td></tr>
@@ -53,6 +54,7 @@ language.</p>
 <tr><td><code>:MepmlHeaderToggle</code></td><td>fold or unfold the document header</td></tr>
 <tr><td><code>:MepmlLinkFollow</code></td><td>follow the link under the cursor</td></tr>
 <tr><td><code>:MepmlRender</code></td><td>re-render the buffer now</td></tr>
+<tr><td><code>:MepmlRawToggle</code></td><td>toggle rendering (raw text / rendered document)</td></tr>
 <tr><td><code>:MepmlFoldsRecompute</code></td><td>rebuild folds (<code>za</code>, <code>zc</code> and <code>zo</code> do this themselves)</td></tr>
 <tr><td><code>:MepmlPresent</code> [mode]</td><td>present the slides: <code>fill</code> (the default), <code>full</code>, <code>stop</code></td></tr>
 </table>
@@ -65,7 +67,10 @@ put away while the other stays open (a running program's terminal or
 window hides with its results). The <code>-</code> button at the right of either
 card's title bar does the same with the mouse. A folded card keeps its title
 bar (language, options, play button, and a count of the hidden lines), and its
-<code>+</code> button unfolds it. A rendered <code>\toc</code> or <code>\bibliography</code> folds too:
+<code>+</code> button unfolds it. A document opens with the code its exports leave
+out already folded -- every block under <code>//? Exports: results</code> (or <code>none</code>),
+and any block with <code>exports=results</code>, <code>exports=none</code> or <code>echo=false</code> -- so it
+reads the way it exports, results showing. A rendered <code>\toc</code> or <code>\bibliography</code> folds too:
 <code>za</code> on it collapses the block to its title and a count (/Contents • 3
 headings/), and <code>za</code> again, <code>zR</code> or its <code>+</code> opens it. The Structure sidebar
 lists the headings.</p>

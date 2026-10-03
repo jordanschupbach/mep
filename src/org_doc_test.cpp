@@ -648,6 +648,38 @@ int main() {
         CHECK(!plan.rows[0].empty());
     }
 
+    {
+        // One row laid out on its own at fixed widths (the cursor's row
+        // of a wrapped table), with where each byte of a cell is drawn.
+        OrgTableCells row;
+        row.cells.push_back("k");
+        row.cells.push_back("alpha beta  gamma");
+        std::vector<int> widths;
+        widths.push_back(1);
+        widths.push_back(6);
+        std::vector<std::vector<OrgTableWrapPos>> pos;
+        std::vector<OrgTableWrapLine> lines = LayoutOrgTableRow(row, widths, 2, &pos);
+        CHECK(lines.size() == 3);
+        CHECK(lines[0].text == "  | k | alpha  |");
+        CHECK(lines[1].text == "  |   | beta   |");
+        CHECK(lines[2].text == "  |   | gamma  |");
+        CHECK(pos.size() == 2);
+        CHECK(pos[1].size() == row.cells[1].size() + 1);
+        CHECK(pos[0][0].line == 0 && pos[0][0].col == 4);
+        CHECK(pos[1][0].line == 0 && pos[1][0].col == 8);   // 'a'
+        CHECK(pos[1][6].line == 1 && pos[1][6].col == 8);   // 'b'
+        CHECK(pos[1][12].line == 2 && pos[1][12].col == 8); // 'g'
+        // A space the wrap broke on, and a collapsed run, sit just past
+        // the word before them.
+        CHECK(pos[1][5].line == 0 && pos[1][5].col == 13);
+        CHECK(pos[1][10].line == 1 && pos[1][10].col == 12);
+        CHECK(pos[1][11].line == 1 && pos[1][11].col == 12);
+        CHECK(pos[1][17].line == 2 && pos[1][17].col == 13);  // past the end
+        // The same lines PlanOrgTableWrap produces for that row.
+        std::vector<OrgTableCells> rows(1, row);
+        CHECK(PlanOrgTableWrap(rows, 16, 2).rows[0][1].text == lines[1].text);
+    }
+
     // --- Links in a table (OrgTableCellDisplayText + the planner's
     //     carry-through): the cell is measured, wrapped and drawn as the
     //     description it renders to, not as its markup.

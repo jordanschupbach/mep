@@ -33,6 +33,7 @@ language.
 | =<leader>kh=          | fold or unfold the document header (the =//?= lines)      |
 | =<leader>kl=          | follow the link under the cursor (clicking works too)     |
 | =<leader>km=          | toggle markup concealment                                 |
+| =<leader>kr=          | raw text or rendered (also the header's eye button)       |
 | =<leader>kp=          | present the slides, filling the editor                    |
 | =<leader>kP=          | present the slides full screen                            |
 | =:MepmlExecute=       | run the code block under the cursor                       |
@@ -47,6 +48,7 @@ language.
 | =:MepmlHeaderToggle=  | fold or unfold the document header                        |
 | =:MepmlLinkFollow=    | follow the link under the cursor                          |
 | =:MepmlRender=        | re-render the buffer now                                  |
+| =:MepmlRawToggle=     | toggle rendering (raw text / rendered document)           |
 | =:MepmlFoldsRecompute= | rebuild folds (=za=, =zc= and =zo= do this themselves)  |
 | =:MepmlPresent= [mode] | present the slides: =fill= (the default), =full=, =stop= |
 
@@ -59,7 +61,10 @@ put away while the other stays open (a running program's terminal or
 window hides with its results). The =-= button at the right of either
 card's title bar does the same with the mouse. A folded card keeps its title
 bar (language, options, play button, and a count of the hidden lines), and its
-=+= button unfolds it. A rendered =\toc= or =\bibliography= folds too:
+=+= button unfolds it. A document opens with the code its exports leave
+out already folded -- every block under =//? Exports: results= (or =none=),
+and any block with =exports=results=, =exports=none= or =echo=false= -- so it
+reads the way it exports, results showing. A rendered =\toc= or =\bibliography= folds too:
 =za= on it collapses the block to its title and a count (/Contents • 3
 headings/), and =za= again, =zR= or its =+= opens it. The Structure sidebar
 lists the headings.

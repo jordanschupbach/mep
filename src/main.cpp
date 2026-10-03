@@ -18397,8 +18397,12 @@ const char *kBuiltinOrgLatex =
     // pdftoppm-rasterize -> cache -> callback chain below -- a
     // substantial async job-orchestration-and-caching subsystem in its
     // own right, out of proportion to fold into this same pass.
+    // varwidth=\maxdimen, not bare varwidth: the bare option caps the page
+    // at \linewidth (345pt), and preview crops to that box, so a display
+    // wider than it lost its right-hand side. The page still shrinks to
+    // the content's natural width.
     "local MEP_ORG_LATEX_PREAMBLE = table.concat({\n"
-    "  '\\\\documentclass[11pt,preview,border=1pt,varwidth]{standalone}',\n"
+    "  '\\\\documentclass[11pt,preview,border=1pt,varwidth=\\\\maxdimen]{standalone}',\n"
     "  '\\\\usepackage{amsmath}',\n"
     "  '\\\\usepackage{amssymb}',\n"
     "  '\\\\begin{document}',\n"
@@ -18513,7 +18517,19 @@ const char *kBuiltinOrgLatex =
     "end\n"
     "function mep_org_latex_render(tex_body, on_done, row, alive, font_px, no_stand_in)\n"
     "  local dpi = math.floor(72 * (font_px or mep.font_size()) / 11 + 0.5)\n"
-    "  local key = mep_org_latex_hash(tex_body .. '|' .. dpi)\n"
+    // One inline formula ($..$, \(..\)) is drawn on the prose's baseline
+    // (Editor::InlineMathTopOffset), and a cropped PNG does not say where
+    // its baseline is: TeX measures the formula's box and logs it, and
+    // `<key>.base` beside the PNG records the baseline's pixel row.
+    "  local inline = (tex_body:match('^%$[^$]') and tex_body:match('[^$]%$$'))\n"
+    "    or (tex_body:match('^\\\\%(') and tex_body:match('\\\\%)$'))\n"
+    "  local doc_body = tex_body\n"
+    "  if inline then\n"
+    "    doc_body = '\\\\sbox0{' .. tex_body .. '}\\\\typeout{MEPBOX:\\\\the\\\\ht0:\\\\the\\\\dp0:}\\\\usebox0'\n"
+    "  end\n"
+    // The preamble is part of the key: a render cached under an older
+    // preamble (one that cropped wide displays) must not be served.
+    "  local key = mep_org_latex_hash(MEP_ORG_LATEX_PREAMBLE .. '|' .. doc_body .. '|' .. dpi)\n"
     "  local dir = mep_org_latex_cache_dir()\n"
     "  local png_path = dir .. '/' .. key .. '.png'\n"
     "  if mep_org_latex_failed[key] then\n"
@@ -18572,13 +18588,27 @@ const char *kBuiltinOrgLatex =
     "    finish(nil, 'could not write ' .. tex_path)\n"
     "    return\n"
     "  end\n"
-    "  f:write(MEP_ORG_LATEX_PREAMBLE .. '\\n' .. tex_body .. '\\n\\\\end{document}\\n')\n"
+    "  f:write(MEP_ORG_LATEX_PREAMBLE .. '\\n' .. doc_body .. '\\n\\\\end{document}\\n')\n"
     "  f:close()\n"
     "  local compile_err = {}\n"
-    "  mep.job_start({'tectonic', '-X', 'compile', tex_path, '--outfmt', 'pdf'}, {\n"
+    "  local cmd = {'tectonic', '-X', 'compile', tex_path, '--outfmt', 'pdf'}\n"
+    "  if inline then cmd[#cmd + 1] = '--keep-logs' end\n"
+    "  mep.job_start(cmd, {\n"
     "    on_stderr = function(line) compile_err[#compile_err + 1] = line end,\n"
     "    on_exit = function(code)\n"
     "      os.remove(tex_path)\n"
+    // The box's height in pt: with the standalone border's 1pt above it,
+    // where the baseline falls (pdftoppm renders from the page's top).
+    "      local box_ht\n"
+    "      if inline then\n"
+    "        local log_path = dir .. '/' .. key .. '.log'\n"
+    "        local lf = io.open(log_path, 'r')\n"
+    "        if lf then\n"
+    "          box_ht = tonumber((lf:read('a') or ''):match('MEPBOX:([%d.]+)pt:'))\n"
+    "          lf:close()\n"
+    "        end\n"
+    "        os.remove(log_path)\n"
+    "      end\n"
     "      if code ~= 0 or not mep_org_babel_file_exists(pdf_path) then\n"
     "        finish(nil, mep_org_latex_error_line(compile_err) or 'tectonic compile failed')\n"
     "        return\n"
@@ -18594,6 +18624,13 @@ const char *kBuiltinOrgLatex =
     "        on_exit = function(code2)\n"
     "          os.remove(pdf_path)\n"
     "          if code2 == 0 and mep_org_babel_file_exists(png_path) then\n"
+    "            if box_ht then\n"
+    "              local bf = io.open(dir .. '/' .. key .. '.base', 'w')\n"
+    "              if bf then\n"
+    "                bf:write(string.format('%.2f\\n', (box_ht + 1) * dpi / 72.27))\n"
+    "                bf:close()\n"
+    "              end\n"
+    "            end\n"
     "            finish(png_path)\n"
     "          else\n"
     "            finish(nil, mep_org_babel_first_error_line(raster_err) or 'pdftoppm failed')\n"
@@ -18665,8 +18702,8 @@ const char *kBuiltinOrgLatex =
     "end\n"
     "\n"
     "-- Same idea as mep_org_latex_register, but for one inline fragment rather\n"
-    "-- than a whole row -- no slot math (an inline fragment is always drawn to\n"
-    "-- fit within one line, see the C++ draw-time scaling, main.cpp).\n"
+    "-- than a whole row -- no slot math here: the C++ side makes room for one\n"
+    "-- taller than a line (Editor::InlineMathPadFor).\n"
     // `frag.parts` is one entry per row the fragment touches (see
     // OrgLatexScan, org_doc.h): all but the first exist only to be
     // concealed, since a fragment that wraps across a line break still
@@ -18850,6 +18887,9 @@ const char *kBuiltinPdfAnnot =
     // Normalize $$...$$ display math to \[...\], which the standalone/preview
     // LaTeX wrapper captures reliably (bare $$ display groups are dropped).
     "  tex = tex:gsub('%$%$(.-)%$%$', '\\\\[%1\\\\]')\n"
+    // A note is prose: wrap it at the width the page used to cap every
+    // render at, rather than letting it run out on one line.
+    "  tex = '\\\\begin{varwidth}{345pt}' .. tex .. '\\\\end{varwidth}'\n"
     "  mep_org_latex_render(tex, function(png, err)\n"
     "    mep.pdf_note_latex_done(key, png or '')\n"
     "  end)\n"
@@ -24749,6 +24789,18 @@ const char *kBuiltinMepml =
     "mep.leader_map('kp', 'mepml: present the slides (fill the editor)', function() mep.mepml_present_ui('fill') end)\n"
     "mep.leader_map('kP', 'mepml: present the slides full screen', function() mep.mepml_present_ui('full') end)\n"
     "mep.leader_map('kl', 'mepml: follow link', mep.mepml_link_follow)\n"
+    // Raw or rendered (Buffer::mepml_raw; also the pane header's eye
+    // button): the scan and the LaTeX scan both run again at once, so the
+    // switch shows on this frame rather than on the next edit.
+    "function mep.mepml_raw_toggle_ui()\n"
+    "  if not mep_mepml_is(mep.filename()) then mep.notify('Not a mepml buffer', 'warn') return end\n"
+    "  local raw = mep.mepml_raw_toggle()\n"
+    "  mep.notify('mepml rendering: ' .. (raw and 'off (plain text)' or 'on'))\n"
+    "  mep.mepml_render()\n"
+    "  if mep.org_latex_scan then mep.org_latex_scan() end\n"
+    "end\n"
+    "mep.command('MepmlRawToggle', mep.mepml_raw_toggle_ui)\n"
+    "mep.leader_map('kr', 'mepml: toggle rendering (raw text / rendered)', mep.mepml_raw_toggle_ui)\n"
     "mep.leader_map('km', 'mepml: toggle markup concealment', function()\n"
     "  local visible = mep.org_conceal_toggle()\n"
     "  mep.notify('Markup concealment: ' .. (visible and 'on' or 'off'))\n"
@@ -37146,7 +37198,17 @@ bool RenderMathFastPng(const std::string &body, float px, const std::string &pat
     if (png.empty()) return false;
     std::ofstream f(path, std::ios::binary);
     f.write(reinterpret_cast<const char *>(png.data()), static_cast<std::streamsize>(png.size()));
-    return static_cast<bool>(f);
+    if (!f) return false;
+    // Inline maths sits on the prose's baseline: say where it is, beside
+    // the PNG, the way mep_org_latex_render does (Editor's
+    // LatexInlineBaselineOf reads it).
+    if (!display) {
+        std::string side = path;
+        if (side.size() > 4 && side.compare(side.size() - 4, 4, ".png") == 0) side.resize(side.size() - 4);
+        std::ofstream base(side + ".base");
+        base << (static_cast<float>(pad) + m.baseline) << '\n';
+    }
+    return true;
 }
 
 // --- HTML-preview pane layout ---------------------------------------------
@@ -45883,10 +45945,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     const bool show_org_export_button = show_org_block_button;
     const std::string org_export_label = " " + Utf8FromCodepoint(0xf045) + " ";  // nf-fa-share_square_o
     const float org_export_w = show_org_export_button ? MeasureUiText(org_export_label, font_size) : 0.0f;
+    // Render toggle: leftmost, on a plain .mepml text pane (the same "no
+    // other session owns this buffer" gate as the org buttons). An eye
+    // while the document is rendered, a struck-through eye while it shows
+    // raw (Buffer::mepml_raw); a click flips it (mep.mepml_raw_toggle_ui,
+    // <leader>kr). Same font_size as the other content-acting buttons.
+    const bool show_mepml_render_button = !term_sess && !img_sess && !pdf_sess && !video_sess && !music_sess &&
+                                          !office_sess && !sheet_sess && !html_sess && !kanban_sess && !gantt_sess &&
+                                          LspFiletype(buf.filename) == "mepml";
+    const bool mepml_raw = show_mepml_render_button && g_editor.MepmlRaw(pane.buffer_id);
+    const std::string mepml_render_label = " " + Utf8FromCodepoint(mepml_raw ? 0xf070 : 0xf06e) + " ";  // nf-fa-eye(_slash)
+    const float mepml_render_w = show_mepml_render_button ? MeasureUiText(mepml_render_label, font_size) : 0.0f;
     const float vsplit_w = MeasureUiText(vsplit_label, control_font_size);
     const float hsplit_w = MeasureUiText(hsplit_label, control_font_size);
     const float close_w = MeasureUiText(close_label, control_font_size);
-    const float controls_w = org_export_w + org_block_w + run_w + vsplit_w + hsplit_w + close_w;
+    const float controls_w = mepml_render_w + org_export_w + org_block_w + run_w + vsplit_w + hsplit_w + close_w;
     const gfx::Vector2 header_mouse = gfx::GetMousePosition();
     // Draws the three controls over `bg` filling controls_rect (each
     // brightened while hovered) and registers their click regions.
@@ -45917,6 +45990,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (on_right_click && hovered && gfx::IsMouseButtonPressed(gfx::MouseButton::Right)) on_right_click(rect);
             bx += bw;
         };
+        if (show_mepml_render_button) {
+            // Focuses this pane, then flips its document between rendered
+            // and raw text.
+            button(
+                mepml_render_label, mepml_render_w, mepml_raw ? "Comment" : "Cyan",
+                mepml_raw ? "Show rendered document (<Space>kr)" : "Show raw text (<Space>kr)",
+                [pane_id] {
+                    g_editor.FocusPaneById(pane_id);
+                    g_editor.RunCommand("MepmlRawToggle");
+                },
+                nullptr, font_size, label_y);
+        }
         if (show_org_export_button) {
             // Same capture-bx-before-`button`-advances-it trick as the
             // insert-block button just below, for the same reason: this
@@ -48971,6 +49056,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         int len = Editor::WrapLenForRow(buf, r);
                         slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
                     }
+                    slots += g_editor.RowMathExtraSlots(buf, r, slots, wrap_cols, latex_cursor_row);  // inline maths' room
                     slots += nb_sess ? g_editor.NotebookTrailingSlots(pane.buffer_id, r) : 0;
                     // An org headline's own extra slot (kOrgHeadingStyles)
                     // -- one of the four walkers that has to agree on it.
@@ -49595,17 +49681,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // around the glyphs as if it were a font metric: a bare "$x$" (no
     // ascender, no descender, a ~0.5em-tall crop) was blown up to two
     // and a half times body size, while a "$\frac{a}{b}$" was shrunk to
-    // a third of it. Only the shrink survives, as a clamp: a fragment
-    // genuinely taller than the row it sits on has to come down to fit.
+    // a third of it. Nor is a fragment taller than its row shrunk to fit
+    // any more: it keeps its size and the rows around it make room
+    // (Editor::InlineMathPadFor).
     /**
-     * @brief Scale factor an inline math render is drawn at: 1:1, shrunk only when the render is taller than the row.
+     * @brief Scale factor an inline math render is drawn at: always 1:1.
      * @param tex The fragment's rendered texture.
      * @return The scale factor to draw it at.
      */
-    auto OrgLatexInlineScale = [&](const gfx::Texture2D &tex) {
-        if (tex.height <= 0) return 1.0f;
-        return std::min(1.0f, (static_cast<float>(line_height) * 0.95f) / static_cast<float>(tex.height));
-    };
+    auto OrgLatexInlineScale = [&](const gfx::Texture2D &) { return 1.0f; };
     /**
      * @brief Columns an inline math render claims on the drawn grid: just its own width, rounded up to whole columns.
      * @param tex The fragment's rendered texture.
@@ -49721,6 +49805,34 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
         int row_wrap_cols = row_wraps ? wrap_cols : 0;  // fed to WrapPos/ForEachWrapPiece below
+        // Inline maths taller than a line (Editor::InlineMathPadFor) is
+        // drawn at its own size, and every visual line of its row gets
+        // the same room above and below it: the wrapped lines sit
+        // `row_pitch` apart, the top room is the RowTopPadSlots headroom
+        // claimed above, and the rest is counted here -- the same sum
+        // as RowMathExtraSlots in the other walkers. A row drawn as
+        // something else (a table's wrapped layout, a fold's summary)
+        // has none; those that return early below never get here.
+        Editor::InlineMathPad row_math_pad;
+        if (!fold_here && tbl_wrap == nullptr && buf.org_latex_inline.count(row) != 0 &&
+            !(show_org_images && buf.org_image_rows.count(row) != 0) &&
+            g_editor.OrgLatexRenderForRow(buf, row, latex_cursor_row, org_plain) == nullptr &&
+            g_editor.MepmlVirtualBlockForRow(buf, row, latex_cursor_row) == nullptr) {
+            row_math_pad = g_editor.InlineMathPadFor(buf, row);
+        }
+        const int row_pitch = line_height * (1 + row_math_pad.top + row_math_pad.bottom);
+        // pane.cursor.row, not latex_reveal_cursor: the walkers count with
+        // it whether or not the pane is active.
+        const int row_math_extra =
+            (row_math_pad.top + row_math_pad.bottom) > 0
+                ? g_editor.RowMathExtraSlots(buf, row, row_wrap_slots, row_wrap_cols, pane.cursor.row)
+                : 0;
+        visual_slot += row_math_extra;
+        // From the first line's top to the end of the row, and from its top
+        // room down: what a band, a tint or a rule spans.
+        const int row_body_h = (row_wrap_slots + row_math_extra) * line_height;
+        const float row_block_y = ly - static_cast<float>(row_math_pad.top * line_height);
+        const int row_block_h = row_body_h + row_math_pad.top * line_height;
 
         // Jupyter notebook chrome (notebook_doc.h): a `# %%` marker row
         // draws as a cell header band with an "In [n]:"/"Markdown" label
@@ -49843,9 +49955,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (const Buffer::MepmlVirtualBlock *cvb = g_editor.MepmlVirtualBlockForRow(buf, row, latex_cursor_row))
                     tint_offset = Editor::VirtualLineOf(pane, static_cast<int>(cvb->lines.size())) * line_height;
             }
-            for (int s = 0; s < tint_slots; s++) {
-                gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + tint_offset + s * line_height, static_cast<int>(w),
-                              line_height, ResolveHlGroup("CursorLine"));
+            // A wrapped row is tinted whole, its maths room included.
+            if (tint_slots > 1) {
+                gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(row_block_y), static_cast<int>(w), row_block_h,
+                                   ResolveHlGroup("CursorLine"));
+            } else {
+                gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(row_block_y) + tint_offset, static_cast<int>(w),
+                                   row_pitch, ResolveHlGroup("CursorLine"));
             }
             row_bg_plain = false;
         }
@@ -49888,8 +50004,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const bool active_scope = is_active && pane.cursor.row > guide.open_row && pane.cursor.row < guide.close_row;
             const gfx::Color guide_color = ResolveHlGroup(active_scope ? "Accent" : "Border");
             const float guide_x = text_x + static_cast<float>(guide_col) * g_char_width + g_char_width * 0.5f;
-            gfx::DrawRectangle(static_cast<int>(guide_x), static_cast<int>(ly), 2,
-                               line_height * row_wrap_slots, gfx::Fade(guide_color, active_scope ? 0.9f : 0.55f));
+            gfx::DrawRectangle(static_cast<int>(guide_x), static_cast<int>(row_block_y), 2,
+                               row_block_h, gfx::Fade(guide_color, active_scope ? 0.9f : 0.55f));
         }
 
         // Notebook cell-header text (label + Run chip): drawn after the
@@ -50544,7 +50660,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // selected column range -- in drawn columns (DispCol), so a fill over a row with
             // concealed markup on it lands on the text as collapsed rather than on the columns
             // the raw markup would have occupied.
-            ForEachWrapPiece(DispCol(cs), DispCol(ce), row_wrap_cols, text_x, ly, line_height,
+            ForEachWrapPiece(DispCol(cs), DispCol(ce), row_wrap_cols, text_x, ly, row_pitch,
                               [&](float py, float x0, float x1, int, int) {
                                   gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
                                                 static_cast<int>(x1 - x0), line_height, fill);
@@ -50558,7 +50674,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // Draws the character/linewise-selection fill rectangle for each wrapped piece of
             // this row's selected column range, in drawn columns the same way the block fill
             // above does.
-            ForEachWrapPiece(DispCol(cs), DispCol(ce), row_wrap_cols, text_x, ly, line_height,
+            ForEachWrapPiece(DispCol(cs), DispCol(ce), row_wrap_cols, text_x, ly, row_pitch,
                               [&](float py, float x0, float x1, int, int) {
                                   gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
                                                 static_cast<int>(x1 - x0), line_height, fill);
@@ -50597,10 +50713,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (d.whole_line && !d.hl_group.empty()) {
                 gfx::Color c = ResolveHlGroup(d.hl_group);
                 gfx::Color tint{c.r, c.g, c.b, 40};
-                for (int s = 0; s < row_wrap_slots; s++) {
-                    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) + s * line_height, static_cast<int>(w),
-                                  line_height, tint);
-                }
+                gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(row_block_y), static_cast<int>(w), row_block_h, tint);
                 row_bg_plain = false;
             }
             if ((!d.sign.empty() || !d.sign_shape.empty()) && d.priority > sign_priority && !presenting) {
@@ -50641,9 +50754,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // A row with pictures in its cells (mepml) draws them in
                 // headroom above its text: the band and the column rules
                 // start at the top of it.
-                const float tbl_pad = is_mepml_buffer ? static_cast<float>(g_editor.RowTopPadSlots(buf, row) * line_height) : 0.0f;
+                // So does one whose inline maths makes room above it.
+                const float tbl_pad = static_cast<float>(g_editor.RowTopPadSlots(buf, row) * line_height);
                 const float band_y = ly - tbl_pad;
-                const float tbl_h = static_cast<float>(line_height * row_wrap_slots);
+                const float tbl_h = static_cast<float>(row_body_h);
                 const float band_h = tbl_h + tbl_pad;
                 const bool is_header = tbl.header_end_row >= 0 && row <= tbl.header_end_row;
                 const bool is_sep =
@@ -50781,7 +50895,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // g_buffer_drag_row_rects' own comment.
         if (g_editor.BufferHasDragResolver(pane.buffer_id)) {
             g_buffer_drag_row_rects.push_back(
-                {pane.buffer_id, row, gfx::Rectangle{x, ly, w, static_cast<float>(line_height * row_wrap_slots)}});
+                {pane.buffer_id, row, gfx::Rectangle{x, ly, w, static_cast<float>(row_body_h)}});
         }
         // Org headlines drawn at a size scaled to their depth
         // (kOrgHeadingStyles, editor.h): `* Top` largest, each level
@@ -50891,9 +51005,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // for it (their columns index the *stored* line, which no
             // longer maps onto what is drawn) -- the same bargain the
             // scaled-headline branch above makes. The grid wash/rules
-            // collected above still draw, so it reads as a table; the
-            // table the cursor is in is never wrapped, so the row being
-            // edited always shows its own characters.
+            // collected above still draw, so it reads as a table. The
+            // cursor's own row is laid out the same way with its markup
+            // showing (OrgTableWrapRow::caret places the caret in it).
             for (size_t tl = 0; tl < tbl_wrap->lines.size(); tl++) {
                 const OrgTableWrapLine &twl = tbl_wrap->lines[tl];
                 const float tly = ly + static_cast<float>(static_cast<int>(tl) * line_height);
@@ -50953,7 +51067,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // text collapsed past a wrap boundary has a trailing slot
                 // with nothing left to put on it.
                 if (piece_at >= wline.size()) break;
-                DrawLineFast(wline.substr(piece_at, static_cast<size_t>(row_wrap_cols)), text_x, ly + static_cast<float>(s * line_height), g_font_size,
+                DrawLineFast(wline.substr(piece_at, static_cast<size_t>(row_wrap_cols)), text_x, ly + static_cast<float>(s * row_pitch), g_font_size,
                              ResolveHlGroup("Normal"));
             }
         }
@@ -50996,12 +51110,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const int b = std::min(static_cast<int>(line.size()), d.col_end);
                 const gfx::Color tint = gfx::Fade(ResolveHlGroup(d.hl_group.empty() ? "Yellow" : d.hl_group), 0.28f);
                 if (b > a) {
-                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, line_height,
+                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, row_pitch,
                                      [&](float py, float x0, float x1, int, int) {
                                          gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
                                                             static_cast<int>(x1 - x0), line_height, tint);
                                      });
-                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, line_height,
+                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, row_pitch,
                                      [&](float py, float px, float, int pa, int pb) {
                                          std::string part = draw_line.substr(static_cast<size_t>(pa),
                                                                              static_cast<size_t>(pb - pa));
@@ -51059,7 +51173,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     int col_a = DispCol(d.has_fg_color ? d.col_start : a);
                     int col_b = DispCol(d.has_fg_color ? d.col_end : b);
                     // Draws this decoration span's recolored text for each wrapped piece of it.
-                    ForEachWrapPiece(col_a, col_b, row_wrap_cols, text_x, ly, line_height,
+                    ForEachWrapPiece(col_a, col_b, row_wrap_cols, text_x, ly, row_pitch,
                                       [&](float py, float px, float, int pa, int pb) {
                                           // Re-derive each wrap piece's own byte range from its column
                                           // bounds rather than assuming a fixed byte-per-column stride --
@@ -51133,7 +51247,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (b > a) {
                     gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Draws the underline rectangle for each wrapped piece of this span.
-                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, line_height,
+                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, row_pitch,
                                       [&](float py, float x0, float x1, int, int) {
                                           gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py + static_cast<float>(line_height) - 2),
                                                         static_cast<int>(x1 - x0), 1, c);
@@ -51150,7 +51264,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (b > a) {
                     gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Draws the strikethrough rectangle for each wrapped piece of this span.
-                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, line_height,
+                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, row_pitch,
                                       [&](float py, float x0, float x1, int, int) {
                                           gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py + static_cast<float>(line_height) / 2),
                                                         static_cast<int>(x1 - x0), 1, c);
@@ -51170,7 +51284,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (b > a) {
                     gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Draws each wrapped piece of this span twice, offset 1px right, to fake bold.
-                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, line_height,
+                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, row_pitch,
                                       [&](float py, float px, float, int pa, int pb) {
                                           std::string piece = draw_line.substr(static_cast<size_t>(pa), static_cast<size_t>(pb - pa));
                                           gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, c);
@@ -51206,7 +51320,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     float pad = static_cast<float>(line_height) * 0.25f;
                     // Covers then redraws each wrapped piece of this span sheared, to fake italics.
                     ForEachWrapPiece(
-                        DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, line_height, [&](float py, float px0, float px1, int pa, int pb) {
+                        DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, row_pitch, [&](float py, float px0, float px1, int pa, int pb) {
                             std::string piece = draw_line.substr(static_cast<size_t>(pa), static_cast<size_t>(pb - pa));
                             float span_w = px1 - px0;
                             float baseline_y = py + static_cast<float>(line_height);
@@ -51246,7 +51360,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                      !d.virt_text.empty();
             if (styled_virt && !ghost_covers_row(row)) {
                 const int cols = StyledRunCols(d.virt_text, d.virt_scale, d.virt_family, d.bold, d.italic);
-                const gfx::Vector2 vpos = WrapPos(DispCol(d.col_start), row_wrap_cols, text_x, ly, line_height);
+                const gfx::Vector2 vpos = WrapPos(DispCol(d.col_start), row_wrap_cols, text_x, ly, row_pitch);
                 const gfx::Color vc = d.has_fg_color ? gfx::Color{d.fg_color.r, d.fg_color.g, d.fg_color.b, d.fg_color.a}
                                                      : ResolveHlGroup(d.virt_text_hl.empty() ? "Normal" : d.virt_text_hl);
                 DrawStyledRun(d.virt_text, vpos.x, vpos.y, cols, d.virt_scale, d.virt_family, d.bold, d.italic,
@@ -51274,7 +51388,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // out where its raw text used to reach.
                 int vcol = DispCol(d.virt_text_eol ? static_cast<int>(buf.lines[static_cast<size_t>(row)].size()) + 1
                                                    : d.col_start);
-                gfx::Vector2 vpos = WrapPos(vcol, row_wrap_cols, text_x, ly, line_height);
+                gfx::Vector2 vpos = WrapPos(vcol, row_wrap_cols, text_x, ly, row_pitch);
                 float vx = vpos.x, vy = vpos.y;
                 gfx::Color vc = ResolveHlGroup(d.virt_text_hl);
                 float vw = gfx::MeasureTextEx(g_font, d.virt_text.c_str(), g_font_size, 0).x;
@@ -51337,7 +51451,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // raw grid).
                     const int cover_end = std::max(DispCol(d.col_end), vcol + vtext_cols);
                     bool first_piece = true;
-                    ForEachWrapPiece(vcol, cover_end, row_wrap_cols, text_x, ly, line_height,
+                    ForEachWrapPiece(vcol, cover_end, row_wrap_cols, text_x, ly, row_pitch,
                                       [&](float py, float px0, float px1, int, int) {
                                           // A proportional/icon glyph can measure wider than the
                                           // column count it was budgeted, so the piece holding the
@@ -51365,7 +51479,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // never split either way: it is an annotation hanging off
                 // the row's end, not text sitting on the column grid.
                 if (virt_straddles_wrap) {
-                    ForEachWrapPiece(vcol, vcol + vtext_cols, row_wrap_cols, text_x, ly, line_height,
+                    ForEachWrapPiece(vcol, vcol + vtext_cols, row_wrap_cols, text_x, ly, row_pitch,
                                       [&](float py, float px0, float, int pa, int pb) {
                                           size_t ba = ColumnToByteOffset(d.virt_text, pa - vcol);
                                           size_t bb = ColumnToByteOffset(d.virt_text, pb - vcol);
@@ -51395,7 +51509,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         }
                     };
                     if (virt_straddles_wrap) {
-                        ForEachWrapPiece(vcol, vcol + vtext_cols, row_wrap_cols, text_x, ly, line_height,
+                        ForEachWrapPiece(vcol, vcol + vtext_cols, row_wrap_cols, text_x, ly, row_pitch,
                                           [&](float py, float px0, float px1, int, int) { draw_virt_rules(py, px0, px1 - px0); });
                     } else {
                         draw_virt_rules(vy, vx, vw);
@@ -51405,7 +51519,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // Colorizer swatch (Phase 13): a small filled square in the
             // literal parsed color, drawn just before col_start.
             if (d.has_swatch) {
-                gfx::Vector2 spos = WrapPos(DispCol(d.col_start), row_wrap_cols, text_x, ly, line_height);
+                gfx::Vector2 spos = WrapPos(DispCol(d.col_start), row_wrap_cols, text_x, ly, row_pitch);
                 float sw = std::max(4.0f, g_char_width - 2);
                 gfx::DrawRectangle(static_cast<int>(spos.x), static_cast<int>(spos.y + (static_cast<float>(line_height) - sw) / 2.0f),
                               static_cast<int>(sw), static_cast<int>(sw),
@@ -51501,11 +51615,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // Drawn columns (DispCol): this span's own collapse,
                     // plus any markup concealed earlier on the row that
                     // has already slid it left.
-                    gfx::Vector2 span_pos = WrapPos(DispCol(span.col_start), row_wrap_cols, text_x, ly, line_height);
+                    gfx::Vector2 span_pos = WrapPos(DispCol(span.col_start), row_wrap_cols, text_x, ly, row_pitch);
                     const float span_x = span_pos.x, span_y = span_pos.y;
                     const float scale = OrgLatexInlineScale(*tex);
                     const float draw_w = static_cast<float>(tex->width) * scale;
-                    const float draw_h = static_cast<float>(tex->height) * scale;
                     const ConcealRun *collapsed = nullptr;
                     for (const ConcealRun &r : conceal_runs) {
                         if (r.col_start == span.col_start && r.col_end == span.col_end) {
@@ -51524,7 +51637,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                       line_height, ResolveHlGroup("NormalBg"));
                     }
                     const float draw_x = span_x + (cover_w - draw_w) / 2.0f;
-                    gfx::DrawTextureEx(*tex, gfx::Vector2{draw_x, span_y + (static_cast<float>(line_height) - draw_h) / 2.0f}, 0.0f, scale, gfx::White);
+                    // On the prose's baseline, rising into the room above
+                    // and below the line that Editor::InlineMathPadFor
+                    // made for it.
+                    gfx::DrawTextureEx(*tex, gfx::Vector2{draw_x, span_y + g_editor.InlineMathTopOffset(span)}, 0.0f, scale, gfx::White);
                 }
             }
         }
@@ -51622,7 +51738,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (is_active && g_editor.IsHintActive()) {
             for (const HintMatch &hm : g_editor.HintMatches()) {
                 if (hm.row != row) continue;
-                gfx::Vector2 hpos = WrapPos(DispCol(hm.col), row_wrap_cols, text_x, ly, line_height);
+                gfx::Vector2 hpos = WrapPos(DispCol(hm.col), row_wrap_cols, text_x, ly, row_pitch);
                 float hx = hpos.x, hy = hpos.y;
                 float label_w = gfx::MeasureTextEx(g_font, hm.label.c_str(), g_font_size, 0).x + 4;
                 gfx::DrawRectangle(static_cast<int>(hx), static_cast<int>(hy), static_cast<int>(label_w), line_height,
@@ -51649,8 +51765,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // them all (RecomputeQuickJumpMatches) and each pane paints only its
         // own matches, by pane_id.
         if (g_editor.IsQuickJumpActive() && !fold_here) {
-            gfx::DrawRectangle(static_cast<int>(text_x), static_cast<int>(ly), static_cast<int>(x + w - text_x),
-                          line_height * row_wrap_slots, gfx::Fade(ResolveHlGroup("NormalBg"), 0.6f));
+            gfx::DrawRectangle(static_cast<int>(text_x), static_cast<int>(row_block_y), static_cast<int>(x + w - text_x),
+                          row_block_h, gfx::Fade(ResolveHlGroup("NormalBg"), 0.6f));
             // The row as drawn, so repainting a match at full strength
             // over the dimming wash can't put concealed markup back on
             // screen; its columns are the drawn ones for the same reason.
@@ -51671,7 +51787,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     int cp_size = 0;
                     gfx::GetCodepointNext(&qj_line[i], &cp_size);
                     if (cp_size <= 0) cp_size = 1;
-                    gfx::Vector2 cpos = WrapPos(col, row_wrap_cols, text_x, ly, line_height);
+                    gfx::Vector2 cpos = WrapPos(col, row_wrap_cols, text_x, ly, row_pitch);
                     gfx::DrawRectangle(static_cast<int>(cpos.x), static_cast<int>(cpos.y), static_cast<int>(g_char_width) + 1,
                                   line_height, gfx::Fade(ResolveHlGroup("IncSearch"), 0.45f));
                     gfx::DrawTextEx(g_font, qj_line.substr(i, static_cast<size_t>(cp_size)).c_str(), cpos,
@@ -51679,7 +51795,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     col++;
                 }
                 if (hm.label.empty()) continue;
-                gfx::Vector2 lpos = WrapPos(col, row_wrap_cols, text_x, ly, line_height);
+                gfx::Vector2 lpos = WrapPos(col, row_wrap_cols, text_x, ly, row_pitch);
                 float label_w = gfx::MeasureTextEx(g_font, hm.label.c_str(), g_font_size, 0).x + 4;
                 gfx::DrawRectangle(static_cast<int>(lpos.x), static_cast<int>(lpos.y), static_cast<int>(label_w), line_height,
                               ResolveHlGroup("PickerSelected"));
@@ -51754,9 +51870,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 r += 1;
                 slot += static_cast<int>(tw_it->second.lines.size()) + nb_trailing;
             } else {
-                slot += (wrap_cols > 0)
-                            ? std::max(1, (Editor::WrapLenForRow(buf, r) + wrap_cols - 1) / wrap_cols)
-                            : 1;
+                const int sublines =
+                    (wrap_cols > 0) ? std::max(1, (Editor::WrapLenForRow(buf, r) + wrap_cols - 1) / wrap_cols) : 1;
+                slot += sublines + g_editor.RowMathExtraSlots(buf, r, sublines, wrap_cols, latex_cursor_row);  // + inline maths' room
                 slot += nb_trailing;
                 // An org headline's own extra slot (kOrgHeadingStyles) --
                 // the third of the four walkers that has to agree on it.
@@ -51821,9 +51937,40 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // UTF-8 character (e.g. an icon glyph) preceding it on the line.
         const std::string &cursor_line = buf.lines[static_cast<size_t>(pane.cursor.row)];
         int cursor_display_col = ByteOffsetToColumn(cursor_line, pane.cursor.col);
+        // Wrapped lines of a row with tall inline maths sit further apart
+        // (the draw loop's row_pitch).
         gfx::Vector2 cursor_pos = WrapPos(cursor_display_col, cursor_wrap_cols, text_x, content_y + static_cast<float>(cursor_slot * line_height),
-                                      line_height);
+                                      line_height * g_editor.RowLinePitchSlots(buf, pane.cursor.row));
         float cursor_x = cursor_pos.x, cursor_y = cursor_pos.y;
+        // The cursor's row of a wrapped org table is drawn as its layout
+        // (Buffer::OrgTableWrapRow::caret): the caret goes where its byte
+        // is drawn there, and that glyph is the one punched back through.
+        std::string cursor_tbl_glyph;
+        bool cursor_in_tbl_layout = false;
+        if (is_org_buffer && show_org_table_wrap && !cursor_on_image && !cursor_on_latex) {
+            auto tw_it = buf.org_table_wrap_rows.find(pane.cursor.row);
+            if (tw_it != buf.org_table_wrap_rows.end() && !tw_it->second.caret.empty() && !tw_it->second.lines.empty()) {
+                const std::vector<OrgTableWrapPos> &caret = tw_it->second.caret;
+                const OrgTableWrapPos p =
+                    caret[static_cast<size_t>(std::clamp(pane.cursor.col, 0, static_cast<int>(caret.size()) - 1))];
+                const int tl = std::clamp(p.line, 0, static_cast<int>(tw_it->second.lines.size()) - 1);
+                cursor_x = text_x + static_cast<float>(p.col) * g_char_width;
+                cursor_y = content_y + static_cast<float>((cursor_slot + tl) * line_height);
+                cursor_in_tbl_layout = true;
+                const std::string &tline = tw_it->second.lines[static_cast<size_t>(tl)].text;
+                int at = 0;
+                for (int c = 0; c < p.col && at < static_cast<int>(tline.size()); c++) {
+                    int len = 0;
+                    gfx::GetCodepointNext(&tline[static_cast<size_t>(at)], &len);
+                    at += std::max(1, len);
+                }
+                if (at < static_cast<int>(tline.size())) {
+                    int len = 0;
+                    gfx::GetCodepointNext(&tline[static_cast<size_t>(at)], &len);
+                    cursor_tbl_glyph = tline.substr(static_cast<size_t>(at), static_cast<size_t>(std::max(1, len)));
+                }
+            }
+        }
         // An image row's outline hugs the figure itself (which is
         // centered in the text column, not flush against it) rather than
         // the whole reserved band -- with the reserved height now equal
@@ -51914,7 +52061,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     }
                 }
             }
-            if (!cursor_in_concealed_latex && pane.cursor.col < static_cast<int>(line.size())) {
+            if (cursor_in_tbl_layout) {
+                if (!cursor_tbl_glyph.empty())
+                    DrawLineFast(cursor_tbl_glyph, cursor_x, cursor_y, g_font_size, ResolveHlGroup("NormalBg"));
+            } else if (!cursor_in_concealed_latex && pane.cursor.col < static_cast<int>(line.size())) {
                 // Decodes the whole codepoint at this byte offset (never
                 // just the one raw byte -- a multi-byte UTF-8 character,
                 // e.g. an icon glyph, would otherwise have only its lead
@@ -52015,7 +52165,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         bool p_on_latex = g_editor.OrgLatexRenderForRow(buf, participant.row, latex_cursor_row, org_plain) != nullptr;
         int p_wrap_cols = (!p_on_image && !p_on_latex) ? wrap_cols : 0;
         gfx::Vector2 p_pos = WrapPos(participant.col, p_wrap_cols, text_x, content_y + static_cast<float>(RowSlot(participant.row) * line_height),
-                                 line_height);
+                                 line_height * g_editor.RowLinePitchSlots(buf, participant.row));
         const float px = p_pos.x, py = p_pos.y;
         const gfx::Color color = ToRaylib(ParticipantColor(participant.id));
 

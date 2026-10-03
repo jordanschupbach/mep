@@ -256,13 +256,15 @@ int Editor::HeadingIndentColsForRow(const Buffer &buf, int row) {
 }
 
 int Editor::RowTopPadSlots(const Buffer &buf, int row) const {
-    if (!org_conceal_visible_) return 0;  // scaled runs are only drawn while concealing
     if (row < 0 || row >= buf.LineCount()) return 0;
-    const size_t hash = std::hash<std::string>{}(buf.lines[static_cast<size_t>(row)]);
-    float scale = 1.0f;
     bool folded = false;
     for (const Fold &f : buf.folds)
         if (f.closed && f.start_row == row) folded = true;
+    // A closed fold draws its summary line, not the row's maths.
+    const int math = folded ? 0 : InlineMathPadFor(buf, row).top;
+    if (!org_conceal_visible_) return math;  // scaled runs are only drawn while concealing
+    const size_t hash = std::hash<std::string>{}(buf.lines[static_cast<size_t>(row)]);
+    float scale = 1.0f;
     if (folded) {
         // A closed fold draws its summary line, not the row: only a folded
         // mepml header's summary has a large title (its own scale).
@@ -270,9 +272,9 @@ int Editor::RowTopPadSlots(const Buffer &buf, int row) const {
         if (sit == buf.mepml_fold_summaries.end() || sit->second.text_hash != hash) return 0;
         scale = sit->second.title_scale;
     } else {
-        if (const int pics = MepmlTableImageBoxes(buf, row, nullptr)) return pics;
+        if (const int pics = MepmlTableImageBoxes(buf, row, nullptr)) return std::max(pics, math);
         auto it = buf.mepml_row_scale.find(row);
-        if (it == buf.mepml_row_scale.end() || hash != it->second.text_hash) return 0;
+        if (it == buf.mepml_row_scale.end() || hash != it->second.text_hash) return math;
         if (org_images_visible_ && buf.org_image_rows.count(row)) return 0;
         scale = it->second.scale;
     }
@@ -284,8 +286,75 @@ int Editor::RowTopPadSlots(const Buffer &buf, int row) const {
     // A glyph's box starts above its ink, and every line has 6px of
     // leading: a >big< (1.3x) run's few pixels of overshoot fit in that.
     constexpr double kSlack = 6.0;
-    if (over <= kSlack) return 0;
-    return static_cast<int>(std::ceil((over - kSlack) / lh));
+    if (over <= kSlack) return math;
+    return std::max(math, static_cast<int>(std::ceil((over - kSlack) / lh)));
+}
+
+float Editor::InlineMathTopOffset(const Buffer::OrgLatexInlineSpan &span) const {
+    const double lh = render_line_height_;
+    if (span.baseline < 0.0f) return static_cast<float>((lh - static_cast<double>(span.height)) / 2.0);
+    // The prose's baseline: g_font is baked so its ascent-to-descent span
+    // is the font size (stbtt_ScaleForPixelHeight), and JetBrains Mono's
+    // ascent is 1020 of those 1320 units; the line's 6px of leading sit
+    // under the text (LineHeight).
+    constexpr double kTextAscentEm = 1020.0 / 1320.0;
+    const double text_baseline = kTextAscentEm * (lh - 6.0);
+    return static_cast<float>(text_baseline - static_cast<double>(span.baseline));
+}
+
+Editor::InlineMathPad Editor::InlineMathPadFor(const Buffer &buf, int row) const {
+    InlineMathPad pad;
+    if (!org_latex_visible_ || render_line_height_ <= 0.0) return pad;
+    auto it = buf.org_latex_inline.find(row);
+    if (it == buf.org_latex_inline.end()) return pad;
+    if (org_images_visible_ && buf.org_image_rows.count(row)) return pad;  // drawn as its picture
+    const double lh = render_line_height_;
+    double over_top = 0.0, over_bottom = 0.0;
+    for (const Buffer::OrgLatexInlineSpan &sp : it->second) {
+        if (sp.path.empty() || sp.height <= 0) continue;
+        const double top = static_cast<double>(InlineMathTopOffset(sp));
+        over_top = std::max(over_top, -top);
+        over_bottom = std::max(over_bottom, top + static_cast<double>(sp.height) - lh);
+    }
+    // A superscript or a small inline fraction pokes a few pixels past
+    // the line, into the leading and the neighbours' empty ascender and
+    // descender space: no reason to push whole lines apart for that.
+    const double slack = 0.25 * lh;
+    auto slots = [&](double over) { return over > slack ? static_cast<int>(std::ceil((over - slack) / lh)) : 0; };
+    pad.top = slots(over_top);
+    pad.bottom = slots(over_bottom);
+    return pad;
+}
+
+int Editor::RowMathExtraSlots(const Buffer &buf, int row, int sublines, int wrap_cols, int cursor_row) const {
+    const InlineMathPad pad = InlineMathPadFor(buf, row);
+    if (pad.top + pad.bottom == 0) return 0;
+    // Soft-wrap counts a row's lines by its raw length (WrapLenForRow),
+    // and inline maths' TeX is far longer than its render, so the last of
+    // them are often left empty. They draw nothing, so only the lines the
+    // row can still fill once its maths collapses get maths room: never
+    // fewer than the draw loop fills (the other concealed markup only
+    // shortens the row further), so nothing is drawn past what is counted.
+    int lines = std::max(1, sublines);
+    if (wrap_cols > 0 && lines > 1 && !buf.mepml_table_row_cols.count(row) && render_char_width_ > 0.0) {
+        int len = WrapLenForRow(buf, row);
+        for (const Buffer::OrgLatexInlineSpan &sp : buf.org_latex_inline.at(row)) {
+            if (sp.col_end <= sp.col_start || OrgLatexInlineRevealed(sp, row, cursor_row)) continue;
+            int drawn = 0;  // a fragment's continuation rows collapse to nothing
+            if (!sp.path.empty()) {
+                if (sp.width <= 0) continue;  // unreadable: its source stays
+                drawn = std::max(1, static_cast<int>(std::ceil(static_cast<double>(sp.width) / render_char_width_ - 0.05)));
+            }
+            len -= std::max(0, (sp.col_end - sp.col_start) - drawn);
+        }
+        lines = std::clamp((std::max(1, len) + wrap_cols - 1) / wrap_cols, 1, lines);
+    }
+    return (lines - 1) * (pad.top + pad.bottom) + pad.bottom;
+}
+
+int Editor::RowLinePitchSlots(const Buffer &buf, int row) const {
+    const InlineMathPad pad = InlineMathPadFor(buf, row);
+    return 1 + pad.top + pad.bottom;
 }
 
 int Editor::MepmlTableImageBoxes(const Buffer &buf, int row, std::vector<MepmlCellImageBox> *out) const {
@@ -351,6 +420,17 @@ const Buffer::MepmlFoldSummary *Editor::MepmlFoldSummaryForRow(const Buffer &buf
     if (row == cursor_row && !it->second.keep_under_cursor) return nullptr;
     if (std::hash<std::string>{}(buf.lines[static_cast<size_t>(row)]) != it->second.text_hash) return nullptr;
     return &it->second;
+}
+
+bool Editor::MepmlToggleRaw() {
+    Buffer &buf = Buf();
+    buf.mepml_raw = !buf.mepml_raw;
+    return buf.mepml_raw;
+}
+
+bool Editor::MepmlRaw(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    return buffers_[static_cast<size_t>(buffer_id)].mepml_raw;
 }
 
 int Editor::MepmlToggleHeaderFolds() {
@@ -528,6 +608,11 @@ bool Editor::MepmlParseReady() {
 
 void Editor::MepmlScan(int ns, bool own_diagnostics) {
     Buffer &buf = Buf();
+    // A document just opened: its folds are built now, rather than lazily
+    // by the first fold command, so the code its exports leave out starts
+    // out folded (Buffer::mepml_folds_seeded).
+    if (!buf.mepml_folds_seeded && !(present_.active && CurrentBufferId() == present_.view_buffer))
+        RecomputeMepmlFolds();
     int cur_row = 0, cur_col = 0;
     GetCursorForLua(&cur_row, &cur_col);
     const bool conceal = OrgConcealVisible();
@@ -590,7 +675,8 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                              state.images == images && state.text_width == text_width &&
                              state.pane_cols == scan_pane_cols && state.buffer_cols == scan_buffer_cols &&
                              state.table_math_gen == buf.mepml_table_math_gen &&
-                             buf.decorations.count(ns) && buf.decorations[ns].size() == state.deco_count;
+                             buf.decorations.count(ns) && buf.decorations[ns].size() == state.deco_count &&
+                             !buf.mepml_raw;
     bool patch = same_inputs && state.cur_row != cur_row;
     bool runs_here = false;
     for (const auto &kv : mepml_terms_)
@@ -646,6 +732,9 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         if (!IsMepmlBuffer()) return;
         ClearOrgImageRows();
         buf.org_link_spans.clear();
+        // Raw (Buffer::mepml_raw): everything above cleared, nothing put
+        // back -- the grammar's colours are all that is left.
+        if (buf.mepml_raw) return;
     }
 
     const mepml::Document &doc = MepmlParseCurrent(true);
@@ -1326,9 +1415,16 @@ void Editor::RecomputeMepmlFolds() {
     if (!IsMepmlBuffer()) return;
     const mepml::Document &doc = MepmlParseCurrent(false);
     const int n = Buf().LineCount();
-    auto add = [&](int start, int end) {
+    // The first build on a buffer starts the code the exports leave out
+    // folded (Buffer::mepml_folds_seeded) -- not the presentation's own
+    // page buffer, nor with folding off, nor around the cursor.
+    const bool seed = !Buf().mepml_folds_seeded && Buf().fold_enabled &&
+                      !(present_.active && CurrentBufferId() == present_.view_buffer);
+    Buf().mepml_folds_seeded = true;
+    const int cursor_row = CurPane().buffer_id == CurrentBufferId() ? CurPane().cursor.row : -1;
+    auto add = [&](int start, int end, bool seed_closed = false) {
         if (end < start) return;
-        bool closed = false;
+        bool closed = seed && seed_closed && !(cursor_row >= start && cursor_row <= end);
         for (const Fold &of : old_folds) {
             if (of.start_row == start) {
                 closed = of.closed;
@@ -1336,6 +1432,12 @@ void Editor::RecomputeMepmlFolds() {
             }
         }
         Buf().folds.push_back({start, end, closed, "mepml"});
+    };
+    // Whether a code block's code is left out of the exports.
+    auto code_hidden = [&](const mepml::Block &b) {
+        bool code = true, results = true;
+        mepml::CodeExports(doc, b, &code, &results);
+        return !code;
     };
     // Heading sections: to the line before the next heading of the same or
     // shallower depth, trailing blank lines excluded -- and never past the
@@ -1386,11 +1488,15 @@ void Editor::RecomputeMepmlFolds() {
         // A code block and its results fold separately: the code (its
         // option lines and fences), and the result_begin..result_end region.
         if (b.kind == mepml::BlockKind::Code && b.result_line_start >= 0) {
-            add(b.line_start, b.result_line_start - 1);
+            add(b.line_start, b.result_line_start - 1, code_hidden(b));
             add(b.result_line_start, b.result_line_end);
             continue;
         }
-        if (b.kind == mepml::BlockKind::Code || b.kind == mepml::BlockKind::Citation ||
+        if (b.kind == mepml::BlockKind::Code) {
+            add(b.line_start, b.line_end, code_hidden(b));
+            continue;
+        }
+        if (b.kind == mepml::BlockKind::Citation ||
             b.kind == mepml::BlockKind::MathBlock || b.kind == mepml::BlockKind::Comment ||
             b.kind == mepml::BlockKind::Table || b.kind == mepml::BlockKind::List ||
             b.kind == mepml::BlockKind::Abstract)
@@ -1490,7 +1596,10 @@ OrgLatexFragments MepmlLatexFragmentsOf(const mepml::Document &doc, const std::v
 }
 }  // namespace
 
-OrgLatexFragments Editor::MepmlLatexFragments() const { return MepmlLatexFragmentsOf(MepmlParseCurrent(false), Buf().lines); }
+OrgLatexFragments Editor::MepmlLatexFragments() const {
+    if (Buf().mepml_raw) return {};  // a raw document's maths stays source
+    return MepmlLatexFragmentsOf(MepmlParseCurrent(false), Buf().lines);
+}
 
 std::vector<OrgLiteralSpan> Editor::MepmlLiteralSpans() const {
     std::vector<OrgLiteralSpan> out;
@@ -1523,9 +1632,16 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
     Buffer &buf = Buf();
     const int n = buf.LineCount();
     const bool pictures = OrgImagesVisible();
+    // Every table row's spans -- the cursor's too: its columns are
+    // measured concealed like the rest, so the grid keeps its size when
+    // the cursor steps onto a row and only that row shows its source.
+    std::unordered_set<int> table_rows;
+    for (const mepml::Block &b : doc.blocks)
+        if (b.origin.empty() && b.kind == mepml::BlockKind::Table && (!only_tables || only_tables->count(b.line_start)))
+            for (int row = b.line_start; row <= b.line_end; ++row) table_rows.insert(row);
     std::unordered_map<int, std::vector<const mepml::Span *>> by_line;
     for (const mepml::Span &sp : spans)
-        if (rows.count(sp.line)) by_line[sp.line].push_back(&sp);
+        if (table_rows.count(sp.line)) by_line[sp.line].push_back(&sp);
 
     // What a span occupies once concealed -- the same arithmetic DrawPane's
     // collapse does: hidden markup is 0, a replacement its own codepoints,
@@ -1563,14 +1679,15 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
     struct MathRun {
         int col_start, col_end, cols;
     };
-    const int cursor_row = CurPane().cursor.row;
+    // Measured as if the cursor were elsewhere (its row's maths at their
+    // render's width too), so the grid doesn't shift as it moves.
     auto math_runs = [&](int row) {
         std::vector<MathRun> out;
         if (!OrgLatexVisible()) return out;
         auto it = buf.org_latex_inline.find(row);
         if (it == buf.org_latex_inline.end()) return out;
         for (const Buffer::OrgLatexInlineSpan &sp : it->second) {
-            if (sp.col_end <= sp.col_start || OrgLatexInlineRevealed(sp, row, cursor_row)) continue;
+            if (sp.col_end <= sp.col_start) continue;
             // A fragment's continuation row draws nothing (its render is
             // on the row it starts on).
             const int cols = sp.path.empty() ? 0 : LatexInlineDrawCols(sp.path);
@@ -1619,9 +1736,9 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
                     std::error_code ec;
                     if (std::filesystem::exists(resolved, ec)) c.image = std::move(resolved);
                 }
-                // Width measured from the concealed spans when the row is
-                // laid out, raw codepoints for the cursor's own row (drawn
-                // as typed), so its cells still count toward the columns.
+                // Width measured from the concealed spans -- on the
+                // cursor's row too, which draws as typed and may overrun
+                // its cell rather than widen the grid under it.
                 auto it = by_line.find(row);
                 if (!c.image.empty()) {
                     c.width = 0;

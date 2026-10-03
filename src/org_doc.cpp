@@ -1483,6 +1483,87 @@ std::string OrgTableCellDisplayText(const std::string &cell, bool conceal, std::
     return out;
 }
 
+std::vector<OrgTableWrapLine> LayoutOrgTableRow(const OrgTableCells &r, const std::vector<int> &widths, int indent,
+                                                std::vector<std::vector<OrgTableWrapPos>> *cell_pos) {
+    const size_t cols = widths.size();
+    const std::string lead(static_cast<size_t>(std::max(0, indent)), ' ');
+    std::vector<OrgTableWrapLine> out;
+    if (cell_pos) cell_pos->assign(cols, {});
+    if (r.is_sep) {
+        OrgTableWrapLine line;
+        line.text = lead + "|";
+        for (size_t c = 0; c < cols; c++) {
+            if (c > 0) line.text += "+";
+            line.text += std::string(static_cast<size_t>(widths[c] + 2), '-');
+        }
+        line.text += "|";
+        out.push_back(std::move(line));
+        return out;
+    }
+    static const std::vector<OrgTableCellLink> kNoCellLinks;
+    // Wrap every cell first: the row draws as however many lines its
+    // tallest cell needs, with the shorter cells blank underneath.
+    std::vector<std::vector<OrgCellLine>> cell_lines(cols);
+    size_t height = 1;
+    for (size_t c = 0; c < cols; c++) {
+        const std::string &txt = c < r.cells.size() ? r.cells[c] : std::string();
+        WrapCellTracked(txt, widths[c], &cell_lines[c]);
+        height = std::max(height, cell_lines[c].size());
+    }
+    // Where each cell's text starts in the assembled lines (the same on
+    // every line: every cell before it is padded to its width).
+    std::vector<int> cell_base(cols, 0);
+    for (size_t l = 0; l < height; l++) {
+        OrgTableWrapLine line;
+        line.text = lead + "|";
+        for (size_t c = 0; c < cols; c++) {
+            if (c > 0) line.text += "|";
+            line.text += " ";
+            // Where this cell's text starts in the assembled line,
+            // which is what a link span inside it has to be offset
+            // by to come out in the line's own columns.
+            const int base = static_cast<int>(line.text.size());
+            if (l == 0) cell_base[c] = base;
+            if (l < cell_lines[c].size()) {
+                const OrgCellLine &cl = cell_lines[c][l];
+                const std::vector<OrgTableCellLink> &cell_links = c < r.links.size() ? r.links[c] : kNoCellLinks;
+                for (const OrgTableCellLink &lk : cell_links) {
+                    AppendCellLinkSpans(cl, lk, base, &line.links);
+                }
+                line.text += OrgPadCols(cl.text, widths[c]);
+            } else {
+                line.text += OrgPadCols(std::string(), widths[c]);
+            }
+            line.text += " ";
+        }
+        line.text += "|";
+        MergeWrapLinks(&line.links);
+        out.push_back(std::move(line));
+    }
+    if (cell_pos) {
+        for (size_t c = 0; c < cols; c++) {
+            const std::string &txt = c < r.cells.size() ? r.cells[c] : std::string();
+            std::vector<OrgTableWrapPos> &pos = (*cell_pos)[c];
+            // A byte the wrap dropped (a space it broke on, or one of a
+            // collapsed run) sits just past the word before it.
+            OrgTableWrapPos at{0, cell_base[c]};
+            pos.assign(txt.size() + 1, at);
+            size_t next = 0;
+            for (size_t l = 0; l < cell_lines[c].size(); l++) {
+                for (const OrgCellChunk &ch : cell_lines[c][l].chunks) {
+                    for (size_t b = next; b < static_cast<size_t>(ch.src) && b < pos.size(); b++) pos[b] = at;
+                    for (int k = 0; k < ch.len && static_cast<size_t>(ch.src + k) < pos.size(); k++)
+                        pos[static_cast<size_t>(ch.src + k)] = OrgTableWrapPos{static_cast<int>(l), cell_base[c] + ch.out + k};
+                    at = OrgTableWrapPos{static_cast<int>(l), cell_base[c] + ch.out + ch.len};
+                    next = static_cast<size_t>(ch.src + ch.len);
+                }
+            }
+            for (size_t b = next; b < pos.size(); b++) pos[b] = at;
+        }
+    }
+    return out;
+}
+
 OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int budget, int indent) {
     OrgTableWrapPlan plan;
     size_t cols = 0;
@@ -1581,61 +1662,8 @@ OrgTableWrapPlan PlanOrgTableWrap(const std::vector<OrgTableCells> &rows, int bu
     for (int &wv : widths) wv = std::max(1, wv);
     plan.col_widths = widths;
 
-    const std::string lead(static_cast<size_t>(std::max(0, indent)), ' ');
     plan.rows.reserve(rows.size());
-    static const std::vector<OrgTableCellLink> kNoCellLinks;
-    for (const OrgTableCells &r : rows) {
-        std::vector<OrgTableWrapLine> out;
-        if (r.is_sep) {
-            OrgTableWrapLine line;
-            line.text = lead + "|";
-            for (size_t c = 0; c < cols; c++) {
-                if (c > 0) line.text += "+";
-                line.text += std::string(static_cast<size_t>(widths[c] + 2), '-');
-            }
-            line.text += "|";
-            out.push_back(std::move(line));
-            plan.rows.push_back(std::move(out));
-            continue;
-        }
-        // Wrap every cell first: the row draws as however many lines its
-        // tallest cell needs, with the shorter cells blank underneath.
-        std::vector<std::vector<OrgCellLine>> cell_lines(cols);
-        size_t height = 1;
-        for (size_t c = 0; c < cols; c++) {
-            const std::string &txt = c < r.cells.size() ? r.cells[c] : std::string();
-            WrapCellTracked(txt, widths[c], &cell_lines[c]);
-            height = std::max(height, cell_lines[c].size());
-        }
-        for (size_t l = 0; l < height; l++) {
-            OrgTableWrapLine line;
-            line.text = lead + "|";
-            for (size_t c = 0; c < cols; c++) {
-                if (c > 0) line.text += "|";
-                line.text += " ";
-                // Where this cell's text starts in the assembled line,
-                // which is what a link span inside it has to be offset
-                // by to come out in the line's own columns.
-                const int cell_base = static_cast<int>(line.text.size());
-                if (l < cell_lines[c].size()) {
-                    const OrgCellLine &cl = cell_lines[c][l];
-                    const std::vector<OrgTableCellLink> &cell_links =
-                        c < r.links.size() ? r.links[c] : kNoCellLinks;
-                    for (const OrgTableCellLink &lk : cell_links) {
-                        AppendCellLinkSpans(cl, lk, cell_base, &line.links);
-                    }
-                    line.text += OrgPadCols(cl.text, widths[c]);
-                } else {
-                    line.text += OrgPadCols(std::string(), widths[c]);
-                }
-                line.text += " ";
-            }
-            line.text += "|";
-            MergeWrapLinks(&line.links);
-            out.push_back(std::move(line));
-        }
-        plan.rows.push_back(std::move(out));
-    }
+    for (const OrgTableCells &r : rows) plan.rows.push_back(LayoutOrgTableRow(r, widths, indent));
     return plan;
 }
 

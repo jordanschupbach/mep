@@ -3195,6 +3195,30 @@ int l_mepml_header_toggle(lua_State *L) {
     return 1;
 }
 
+// mep.mepml_raw_toggle() -> bool / mep.mepml_raw() -> bool: the current
+// mepml buffer shown raw (its tree-sitter colours only) or rendered --
+// Buffer::mepml_raw. The toggle returns the new state, true = raw.
+/**
+ * @brief Implements mep.mepml_raw_toggle(): flips the current mepml buffer between raw and rendered.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new state, true = raw text).
+ */
+int l_mepml_raw_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->MepmlToggleRaw());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.mepml_raw(): whether the current buffer shows its mepml as raw text.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the state).
+ */
+int l_mepml_raw(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    lua_pushboolean(L, ed->MepmlRaw(ed->CurrentBufferId()));
+    return 1;
+}
+
 // mep.mepml_present(mode?) -> true | nil, err: presents the current mepml
 // document's slides (Editor::MepmlPresentStart), `mode` "fill" (the
 // default: the pane takes the editor area) or "full" (the window goes full
@@ -13184,6 +13208,8 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_export_html", l_mepml_export_html},
     {"mepml_export", l_mepml_export},
     {"mepml_header_toggle", l_mepml_header_toggle},
+    {"mepml_raw_toggle", l_mepml_raw_toggle},
+    {"mepml_raw", l_mepml_raw},
     {"mepml_present", l_mepml_present},
     {"mepml_present_stop", l_mepml_present_stop},
     {"mepml_present_goto", l_mepml_present_goto},

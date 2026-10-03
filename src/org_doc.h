@@ -593,6 +593,29 @@ struct OrgTableWrapPlan {
     std::vector<std::vector<OrgTableWrapLine>> rows;  // per input row, the line(s) it draws as
 };
 
+// Where one byte of a cell's text is drawn in its row's layout: the
+// layout line, and the byte offset into that line's text.
+struct OrgTableWrapPos {
+    int line = 0;
+    int col = 0;
+};
+
+// One row laid out at the given column widths -- PlanOrgTableWrap's own
+// per-row step, so a row laid out on its own (the cursor's, with its
+// markup showing) lines up with the rest of the plan. `cell_pos`, when
+// given, gets one vector per column of cell.size() + 1 positions: where
+// each byte of that cell's text (and the spot just past its end) is drawn.
+/**
+ * @brief Lays out one table row at fixed column widths.
+ * @param row the row's cells (or a rule)
+ * @param widths the content width of each column
+ * @param indent the display column the leading `|` sits at
+ * @param cell_pos optional; where each byte of each cell lands
+ * @return the line(s) the row draws as
+ */
+std::vector<OrgTableWrapLine> LayoutOrgTableRow(const OrgTableCells &row, const std::vector<int> &widths, int indent,
+                                                std::vector<std::vector<OrgTableWrapPos>> *cell_pos = nullptr);
+
 /**
  * @brief Measures a string in display columns (one per codepoint), not bytes.
  * @param s the text to measure

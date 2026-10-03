@@ -31,6 +31,13 @@ line: <code>dd</code>, <code>yy</code>, <code>cc</code>.</p>
 The doubled forms of the <code>g</code> operators are <code>guu</code>, <code>gUU</code> and <code>gqq</code> -- so
 <code>gqq</code> reflows the current paragraph. (Vim also accepts <code>gugu</code> and friends;
 mep does not.)</p>
+<p><code>gq</code> keeps comments as comments: a run of comment lines (<code>//</code>, <code>#</code>, <code>--</code>,
+<code>;</code>, <code>%</code> ..., whichever the file type uses) is wrapped on its own, and every
+line it makes starts with the same indent and comment leader. A comment
+line with nothing after its leader separates paragraphs, like a blank line.
+Headers and headings stay on their own line, untouched: a mepml <code>//?</code> header
+line or <code>&gt;</code> heading, a Markdown <code>#</code> heading, an org <code>*</code> headline or <code>#+KEYWORD:</code>
+line -- <code>gq</code> wraps the prose under them without pulling it up into them.</p>
 <h1>Text objects</h1>
 <p>Instead of a motion, an operator can take a text object: <code>i</code> for "inner" or
 <code>a</code> for "around", then what.</p>

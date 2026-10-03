@@ -183,6 +183,22 @@ int main() {
         CHECK(code.options.size() == 2 && code.options[0].name == "Option1" && code.options[1].value.s == "value3");
         CHECK(code.code == "echo \"Hello, world\"");
         CHECK(code.result_line_start == 15 && code.result_line_end == 17);
+    {
+        // A callout's body is one run across its lines: maths and emphasis
+        // wrapped onto a continuation line (as gq leaves them) still close,
+        // and the continuation lines' `//` is not part of what they hold.
+        const std::vector<std::string> wrapped = {
+            "// EXAMPLE: $a +",
+            "// b$ and *one",
+            "// two* end.",
+        };
+        Document cd = Parse(wrapped);
+        CHECK(cd.blocks.size() == 1 && cd.blocks[0].kind == BlockKind::Callout && cd.blocks[0].line_end == 2);
+        const Inline *math = FindKind(cd.blocks[0].inlines, InlineKind::Math);
+        CHECK(math != nullptr && math->text.find('a') != std::string::npos && math->text.find('b') != std::string::npos);
+        CHECK(math != nullptr && math->text.find("//") == std::string::npos);
+        CHECK(FindKind(cd.blocks[0].inlines, InlineKind::Bold) || FindKind(cd.blocks[0].inlines, InlineKind::Italic));
+    }
         CHECK(code.result_lines.size() == 1 && code.result_lines[0] == "Hello, world");
 
         int first = 0, last = 0;

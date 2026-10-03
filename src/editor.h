@@ -1071,6 +1071,19 @@ struct Buffer {
     // :MepSyntaxFold still builds folds, since that is the user asking for
     // them outright.
     bool fold_providers_suppressed = false;
+    // Set by the first Editor::RecomputeMepmlFolds on a mepml buffer: that
+    // one builds the folds of code blocks the exports leave out
+    // (`//? Exports: results`, `exports=results`/`none`) closed, so a
+    // document opens reading the way it exports. Every later rebuild
+    // keeps whatever the user has opened or closed since.
+    bool mepml_folds_seeded = false;
+    // The mepml render toggle (the pane header's eye button, <leader>kr,
+    // :MepmlRawToggle): the document shows as its own text, coloured by
+    // its tree-sitter grammar alone -- Editor::MepmlScan emits nothing and
+    // fills none of the registries (cards, tables, captions, \toc, heading
+    // sizes, results), and its maths is not rendered. Per buffer: every
+    // pane showing the document agrees.
+    bool mepml_raw = false;
 
     // Org inline-image rendering: row -> a resolved file path plus that
     // file's native pixel size, populated by Editor::OrgImageScan (and
@@ -1245,6 +1258,11 @@ struct Buffer {
         std::vector<OrgTableWrapLine> lines;
         int indent = 0;  // display column the rendered leading `|` sits at
         int width = 0;   // rendered columns from `indent` to the trailing `|`
+        // Set only on the cursor's own row, laid out with its markup
+        // showing: where each byte of the stored line (and the spot just
+        // past its end) is drawn -- `line` into `lines`, `col` a display
+        // column -- so the caret can sit in the layout.
+        std::vector<OrgTableWrapPos> caret;
     };
     std::unordered_map<int, OrgTableWrapRow> org_table_wrap_rows;
 
@@ -1260,7 +1278,9 @@ struct Buffer {
     // fragment sits in its line like a word rather than floating in a box
     // the length of its own source. The render is drawn 1:1 (the PNG's
     // DPI already matches the editor font, see DrawPane's
-    // OrgLatexInlineScale), shrunk only when it is taller than the row.
+    // OrgLatexInlineScale) on the prose's baseline, and one taller than
+    // the line -- a fraction, an \underbrace -- makes room for itself
+    // instead of being shrunk: Editor::InlineMathPadFor.
     // A span whose texture hasn't baked yet gets no run and keeps showing
     // its raw source, as does a table cell with no slack to give back
     // before its `|` (that one falls back to painting a background-color
@@ -1284,6 +1304,12 @@ struct Buffer {
         // row's raw TeX back (Editor::OrgLatexInlineRevealed).
         int first_row = -1;
         int last_row = -1;
+        // The render's size and where its baseline is (pixels from its
+        // top; -1 when its renderer left no `.base` beside it, and it is
+        // centred on the line instead), read once when it is registered:
+        // every slot walker asks for them, every frame.
+        int width = 0, height = 0;
+        float baseline = -1.0f;
     };
     std::unordered_map<int, std::vector<OrgLatexInlineSpan>> org_latex_inline;
     // mepml tables (Editor::MepmlTableLayout) size a cell holding inline
@@ -9440,6 +9466,46 @@ public:
      * @return Slots of headroom above the row's text; 0 for ordinary rows and closed-fold summaries.
      */
     int RowTopPadSlots(const Buffer &buf, int row) const;
+    // How far a row's inline maths reaches past its line, in whole slots:
+    // drawn 1:1 on the prose's baseline, a fraction or an \underbrace is
+    // taller than a line, and the rows around it move apart to make room
+    // rather than the formula being shrunk. `top` joins RowTopPadSlots;
+    // `bottom` is room under the row (RowMathExtraSlots).
+    struct InlineMathPad {
+        int top = 0, bottom = 0;
+    };
+    /**
+     * @brief The slots a row's inline maths overhangs its line by, above and below.
+     * @param buf The buffer.
+     * @param row 0-based row.
+     * @return The overhang in whole slots; zero for a row with no inline maths or none taller than a line.
+     */
+    InlineMathPad InlineMathPadFor(const Buffer &buf, int row) const;
+    /**
+     * @brief The slots a text row adds for its inline maths besides its top padding: the room under it, and,
+     * when it soft-wraps, the same room around every wrapped line (each is drawn RowLinePitchSlots apart).
+     * @param buf The buffer.
+     * @param row 0-based row.
+     * @param sublines The visual lines the row wraps onto.
+     * @param wrap_cols Columns per wrapped line (<=0: no soft-wrap).
+     * @param cursor_row The pane's cursor row (its maths may show as source, Editor::OrgLatexInlineRevealed).
+     * @return Extra slots to count for the row.
+     */
+    int RowMathExtraSlots(const Buffer &buf, int row, int sublines, int wrap_cols, int cursor_row) const;
+    /**
+     * @brief Slots from one wrapped line of a row to the next: 1, plus the row's inline-maths room above and below.
+     * @param buf The buffer.
+     * @param row 0-based row.
+     * @return The pitch in slots.
+     */
+    int RowLinePitchSlots(const Buffer &buf, int row) const;
+    /**
+     * @brief Where an inline maths render's top edge is drawn, in pixels below its line's top (negative when it
+     * rises above the line): its baseline on the prose's, or centred when its baseline is unknown.
+     * @param span The span.
+     * @return The offset in pixels.
+     */
+    float InlineMathTopOffset(const Buffer::OrgLatexInlineSpan &span) const;
     // Where one picture of a mepml table row is drawn, in pixels: `x` from
     // the text column's left edge, `y` from the top of the row's headroom.
     struct MepmlCellImageBox {
@@ -9703,6 +9769,17 @@ public:
      * @return 1 when the headers are now folded, 0 when unfolded, -1 when the buffer has no foldable header.
      */
     int MepmlToggleHeaderFolds();
+    /**
+     * @brief Flips the current mepml buffer between rendered and raw (tree-sitter coloured text only, Buffer::mepml_raw).
+     * @return The new state: true when the buffer now shows raw text.
+     */
+    bool MepmlToggleRaw();
+    /**
+     * @brief Whether a buffer shows its mepml as raw text (Buffer::mepml_raw); false for an unknown id.
+     * @param buffer_id The buffer.
+     * @return The flag.
+     */
+    bool MepmlRaw(int buffer_id) const;
     /**
      * @brief Replaces (or inserts) the results region of the code block whose opening fence is on `fence_row`, in any buffer.
      * @param buffer_id Target buffer.

@@ -1227,23 +1227,23 @@ struct Parser {
                 ++j;
             Block b = MakeBlock(BlockKind::Callout, i, j - 1);
             b.keyword = kw;
-            // Body: first line after "KEYWORD:", continuation lines after "//".
-            for (int k = i; k < j; ++k) {
-                int off = b.line_offsets[static_cast<size_t>(k - i)];
-                const std::string &s = L(k);
-                int c = static_cast<int>(s.find("//")) + 2;
-                if (k == i) c = static_cast<int>(s.find(':', static_cast<size_t>(c))) + 1;
-                std::vector<Inline> part = Inlines(b, off + c, off + Len(s));
-                if (k > i && !b.inlines.empty()) {
-                    Inline sp;
-                    sp.kind = InlineKind::Text;
-                    sp.text = " ";
-                    sp.start = sp.inner_start = off - 1;
-                    sp.end = sp.inner_end = off;
-                    b.inlines.push_back(sp);
-                }
-                for (Inline &x : part) b.inlines.push_back(std::move(x));
+            // Body: the first line after "KEYWORD:", the rest after "//",
+            // parsed as one run the way a paragraph's lines are -- so a
+            // formula or *emphasis* wrapped across lines (gq does that) is
+            // still one. The continuation lines' leaders are blanked to
+            // spaces for the parse, which keeps every offset where it is.
+            std::string body = b.text;
+            for (int k = i + 1; k < j; ++k) {
+                const size_t off = static_cast<size_t>(b.line_offsets[static_cast<size_t>(k - i)]);
+                const size_t lead = L(k).find("//") + 2;
+                for (size_t q = 0; q < lead; ++q) body[off + q] = ' ';
             }
+            const std::string &first = L(i);
+            const int from = static_cast<int>(first.find(':', first.find("//") + 2)) + 1;
+            int to = Len(body);
+            while (to > from && IsSpace(body[static_cast<size_t>(to - 1)])) --to;
+            InlineCtx ctx{body, &footnotes};
+            ParseRange(ctx, from, to, b.inlines);
             doc.blocks.push_back(std::move(b));
             return j;
         }

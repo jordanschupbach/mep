@@ -29,6 +29,14 @@ The doubled forms of the =g= operators are =guu=, =gUU= and =gqq= -- so
 =gqq= reflows the current paragraph. (Vim also accepts =gugu= and friends;
 mep does not.)
 
+=gq= keeps comments as comments: a run of comment lines (=//=, =#=, =--=,
+=;=, =%= ..., whichever the file type uses) is wrapped on its own, and every
+line it makes starts with the same indent and comment leader. A comment
+line with nothing after its leader separates paragraphs, like a blank line.
+Headers and headings stay on their own line, untouched: a mepml =//?= header
+line or =>= heading, a Markdown =#= heading, an org =*= headline or =#+KEYWORD:=
+line -- =gq= wraps the prose under them without pulling it up into them.
+
 * Text objects
 
 Instead of a motion, an operator can take a text object: =i= for "inner" or

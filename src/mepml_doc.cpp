@@ -236,7 +236,8 @@ const std::vector<std::string> &CalloutKeywords() {
 
 const std::vector<BoxKind> &BoxKinds() {
     // Definitions blue and facts orange, as decks set them; the theorem
-    // family shares one purple; examples green; remarks teal; proofs grey.
+    // family shares one purple; examples green; remarks teal; proofs grey;
+    // notes slate blue, tips green, warnings amber.
     static const std::vector<BoxKind> k = {
         {"definition", "Definition", "#2c7fb8", "#eef5fb"},
         {"theorem", "Theorem", "#6a51a3", "#f4f1fa"},
@@ -247,6 +248,11 @@ const std::vector<BoxKind> &BoxKinds() {
         {"example", "Example", "#2e8b57", "#edf7f1"},
         {"remark", "Remark", "#1b7f86", "#ecf6f6"},
         {"proof", "Proof", "#5f6b7a", "#ffffff"},
+        // What a callout comment (`// NOTE: ...`) was once used for: said
+        // to the reader, so a block of the document rather than a comment.
+        {"note", "Note", "#3b6ea5", "#eef3f9"},
+        {"tip", "Tip", "#2f7d32", "#eef6ee"},
+        {"warning", "Warning", "#b7791f", "#fdf6e7"},
     };
     return k;
 }
@@ -1889,7 +1895,8 @@ struct Parser {
         for (const Block &b : doc.blocks) {
             if (b.kind == BlockKind::SlideBegin) on_slide = true;
             else if (b.kind == BlockKind::SlideEnd) on_slide = false;
-            else if (!on_slide && b.kind != BlockKind::Meta && b.kind != BlockKind::Comment && b.kind != BlockKind::Import &&
+            else if (!on_slide && b.kind != BlockKind::Meta && b.kind != BlockKind::Comment && b.kind != BlockKind::Callout &&
+                     b.kind != BlockKind::Import &&
                      b.kind != BlockKind::Citation && b.kind != BlockKind::Define)
                 Diag(Diagnostic::Info, b.line_start, 0, Len(L(b.line_start)),
                      "not on any slide: a presentation's slide exports leave it out");
@@ -2190,6 +2197,18 @@ std::string MetaValue(const Document &doc, const std::string &key) {
     for (const auto &kv : doc.meta)
         if (Lower(kv.first) == k) v = Trim(kv.second);
     return v;
+}
+
+std::string DocumentLanguage(const Document &doc) {
+    std::string v = MetaValue(doc, "lang");
+    if (v.empty()) v = MetaValue(doc, "language");
+    std::string tag;
+    for (char c : v) {
+        if (c == '_') c = '-';
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '-') tag += c;
+        else break;
+    }
+    return tag;
 }
 
 bool IsPresentation(const Document &doc) {
@@ -4800,6 +4819,16 @@ struct HtmlWriter {
         return any;
     }
 
+    // A picture's alt attribute: its \alttext; none when the block has
+    // none (a reader then knows it is not described), and for an empty one
+    // -- `\alttext()`, a picture that only decorates -- alt="" and the
+    // role that keeps it out of what is read.
+    std::string ImgAlt(const Block &b) {
+        if (b.alt_line < 0 && b.alt.empty()) return "";
+        if (b.alt.empty()) return " alt=\"\" role=\"presentation\"";
+        return " alt=\"" + Esc(b.alt) + "\"";
+    }
+
     std::string Caption(const Block &b) {
         if (b.caption_inlines.empty()) return "";
         return Inlines(b.caption_inlines);
@@ -4823,15 +4852,10 @@ struct HtmlWriter {
                 break;
             }
             case BlockKind::Comment:
+            case BlockKind::Callout:  // (a comment: the author's own note, in no export)
             case BlockKind::Meta:
             case BlockKind::Import:
             case BlockKind::Citation: break;
-            case BlockKind::Callout: {
-                std::string kw = Lower(b.keyword);
-                out += "<div class=\"callout callout-" + kw + "\"><span class=\"callout-title\">" + Esc(b.keyword) +
-                       "</span> " + Inlines(b.inlines) + "</div>\n";
-                break;
-            }
             case BlockKind::MathBlock: {
                 std::string aria = b.alt.empty() ? "" : " role=\"math\" aria-label=\"" + Esc(b.alt) + "\"";
                 out += "<div class=\"math-display\"" + aria + ">\\[" + Esc(b.code) + "\\]";
@@ -4885,8 +4909,7 @@ struct HtmlWriter {
                 if (!b.result_images.empty() && show_results) {
                     // One figure for all of the block's plots, under one caption.
                     out += "<figure>";
-                    for (const auto &img : b.result_images)
-                        out += "<img src=\"" + Esc(img.second) + "\" alt=\"" + Esc(b.alt) + "\">";
+                    for (const auto &img : b.result_images) out += "<img src=\"" + Esc(img.second) + "\"" + ImgAlt(b) + ">";
                     if (!b.caption_inlines.empty())
                         out += "<figcaption>" + Esc(label) + ": " + Caption(b) + "</figcaption>";
                     out += "</figure>\n";
@@ -4896,7 +4919,7 @@ struct HtmlWriter {
                 break;
             }
             case BlockKind::Image: {
-                out += "<figure><img src=\"" + Esc(b.value) + "\" alt=\"" + Esc(b.alt) + "\">";
+                out += "<figure><img src=\"" + Esc(b.value) + "\"" + ImgAlt(b) + ">";
                 if (!b.caption_inlines.empty())
                     out += "<figcaption>" + Esc(label) + ": " + Caption(b) + "</figcaption>";
                 out += "</figure>\n";
@@ -4905,7 +4928,10 @@ struct HtmlWriter {
             case BlockKind::Table: {
                 // The wrapper scrolls a table wider than the text column
                 // instead of letting it spill past the margin.
-                out += "<div class=\"table-wrap\"><table>";
+                // (Its \alttext says what the table shows to a reader who
+                // cannot see it: the table's description.)
+                out += "<div class=\"table-wrap\"><table" +
+                       (b.alt.empty() ? std::string() : " aria-description=\"" + Esc(b.alt) + "\"") + ">";
                 if (!b.caption_inlines.empty())
                     out += "<caption>" + Esc(label) + ": " + Caption(b) + "</caption>";
                 for (size_t r = 0; r < b.rows.size(); ++r) {
@@ -4920,12 +4946,12 @@ struct HtmlWriter {
                                  : a == Align::Left  ? " style=\"text-align:left\""
                                                      : "";
                         }
-                        const char *tag = head ? "th" : "td";
+                        const char *tag = head ? "th scope=\"col\"" : "td";
                         const TableCell &cell = b.rows[r][c];
                         const std::string body = cell.image.empty()
                                                      ? Inlines(cell.content)
                                                      : "<img src=\"" + Esc(cell.image) + "\" alt=\"\">";
-                        out += std::string("<") + tag + al + ">" + body + "</" + tag + ">";
+                        out += std::string("<") + tag + al + ">" + body + (head ? "</th>" : "</td>");
                     }
                     out += "</tr>";
                 }
@@ -5164,6 +5190,14 @@ mjx-container[display="true"] { max-width: 100%; overflow-x: auto; overflow-y: h
 
 }  // namespace
 
+namespace {
+// ` lang="en-GB"` for the page's <html>, "" for a document that names no language.
+std::string HtmlLangAttr(const Document &doc) {
+    const std::string lang = DocumentLanguage(doc);
+    return lang.empty() ? "" : " lang=\"" + lang + "\"";
+}
+}  // namespace
+
 std::string ToHtml(const Document &doc, const HtmlOptions &opts) {
     HtmlWriter w(doc, opts);
     const std::vector<std::string> labels = BlockLabels(doc);
@@ -5181,7 +5215,7 @@ std::string ToHtml(const Document &doc, const HtmlOptions &opts) {
     }
     if (!opts.standalone) return w.out;
     std::string title = doc.title.empty() ? "Untitled" : doc.title;
-    std::string html = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + Esc(title) + "</title>\n";
+    std::string html = "<!DOCTYPE html>\n<html" + HtmlLangAttr(doc) + ">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + Esc(title) + "</title>\n";
     html += "<style>" + std::string(kCss) + BoxCss() + ExportSheetCss(doc) + "</style>\n";
     html += "<script>MathJax = { tex: { inlineMath: [['\\\\(', '\\\\)']] } };</script>\n";
     html += "<script async src=\"https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js\"></script>\n";
@@ -5390,7 +5424,7 @@ std::string ToSlidesHtml(const Document &doc, const HtmlOptions &opts) {
     }
     if (!opts.standalone) return deck;
     const std::string page_title = doc.title.empty() ? "Slides" : doc.title;
-    std::string html = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + Esc(page_title) + "</title>\n";
+    std::string html = "<!DOCTYPE html>\n<html" + HtmlLangAttr(doc) + ">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + Esc(page_title) + "</title>\n";
     html += "<style>" + std::string(kCss) + BoxCss() + kSlidesCss + ExportSheetCss(doc) + "</style>\n";
     html += "<script>MathJax = { tex: { inlineMath: [['\\\\(', '\\\\)']] } };</script>\n";
     html += "<script async src=\"https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js\"></script>\n";
@@ -5961,6 +5995,7 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
             }
         size_t code_seen = 0;
         std::map<int, std::vector<std::pair<std::pair<int, int>, std::string>>> cites;  // line -> [(col range), label]
+        std::map<int, std::string> alt_at;  // an alt text's first line -> its text
         auto drop_lines = [&](int a, int b) {
             for (int k = std::max(a, from); k <= std::min(b, to); ++k) drop[static_cast<size_t>(k - from)] = true;
         };
@@ -6015,8 +6050,16 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                 drop_lines(b.line_start, b.line_end);
                 continue;
             }
+            // Alt text is for a reader who cannot see the slide: it is in
+            // the exports' tags, not on the page an audience looks at.
+            // (What it says is kept beside the page, PresentationPage::alts.)
+            if (b.alt_line >= 0) {
+                drop_lines(b.alt_line, b.alt_line_end);
+                alt_at[b.alt_line] = b.alt;
+            }
             switch (b.kind) {
                 case BlockKind::Comment:
+                case BlockKind::Callout:
                 case BlockKind::Meta:
                 case BlockKind::Define:
                 case BlockKind::Raw:
@@ -6115,11 +6158,10 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                         out.push_back("```");
                     }
                     if (!out.empty()) insert_block[b.line_start] = shown;
-                    // Its caption and alt text follow whatever is left of it.
+                    // Its caption follows whatever is left of it.
                     if (!out.empty()) {
                         std::vector<std::pair<int, int>> attrs;
                         if (b.caption_line >= 0) attrs.emplace_back(b.caption_line, b.caption_line_end);
-                        if (b.alt_line >= 0) attrs.emplace_back(b.alt_line, b.alt_line_end);
                         std::sort(attrs.begin(), attrs.end());
                         for (const auto &a : attrs)
                             for (int k = a.first; k <= a.second; ++k) out.push_back(ex[static_cast<size_t>(k)]);
@@ -6198,6 +6240,13 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                     if (shown != insert_block.end()) page.blocks.push_back(sh);
                     emit("");
                 }
+            }
+            // An alt text describes what was just put on the page.
+            const auto alt = alt_at.find(k);
+            if (alt != alt_at.end()) {
+                int last = static_cast<int>(out.size()) - 1;
+                while (last >= 0 && Trim(out[static_cast<size_t>(last)]).empty()) --last;
+                if (last >= 0) page.alts.emplace_back(last, alt->second);
             }
             if (drop[static_cast<size_t>(k - from)]) continue;
             std::string line = ex[static_cast<size_t>(k)];

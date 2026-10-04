@@ -31,6 +31,17 @@ keys work.</p>
 <h1>Text</h1>
 <p>Text is extracted, not just rasterised, so search finds real words and you
 can copy from the document.</p>
+<h1>Accessibility</h1>
+<p>A <i>tagged</i> PDF says what each piece of a page is and carries the words that
+stand for what cannot be read as text. mep reads those tags:</p>
+<ul>
+<li>Rest the pointer on a figure, a formula or a table: its alternative text (or the table's summary) pops up beside it.</li>
+<li><code>:A11yRead</code> opens the document as a screen reader would read it -- headings, paragraphs across page breaks as one, figures as their alt text, tables cell by cell under their headers, page numbers left out. <code>Enter</code> on a line jumps to its page.</li>
+<li><code>:A11yTree</code> shows the structure tree; <code>:A11yCheck</code> lists what is missing (not tagged at all, no title, no language, a figure with no alt text ...).</li>
+<li><code>:A11ySpeak</code> reads it aloud when <code>espeak-ng</code> or <code>espeak</code> is installed.</li>
+</ul>
+<p>A PDF with no tags still reads -- as its text in page order -- and the
+check says so. PDFs exported from <a href="mepml.html">mepml</a> are tagged.</p>
 <h1>Encrypted files</h1>
 <p>A password-protected PDF is handled, including the common encryption
 revisions. An unsupported one says so rather than rendering blank.</p>

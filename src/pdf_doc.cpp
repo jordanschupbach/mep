@@ -1,9 +1,11 @@
 #include "pdf_doc.h"
 
+#include "a11y_pdf.h"
 #include "pdf_content.h"
 #include "pdf_document.h"
 #include "pdf_links.h"
 #include "pdf_outline.h"
+#include "pdf_struct.h"
 #include "pdf_text.h"
 #include "pdf_writer.h"
 #include "pdf_xref.h"
@@ -49,6 +51,16 @@ struct PdfDoc::Impl {
     // so the const SelectionQuads can populate it on demand).
     mutable int glyph_cache_page_ = -1;
     mutable std::vector<pdftext::GlyphBox> glyph_cache_;
+    // The structure tree and the accessibility document made from it, each
+    // read the first time it is asked for.
+    mutable std::unique_ptr<pdfstruct::Tree> struct_tree_;
+    mutable std::unique_ptr<a11y::Document> a11y_;
+    const pdfstruct::Tree &StructTree() const {
+        if (!struct_tree_)
+            struct_tree_ = std::make_unique<pdfstruct::Tree>(
+                pdfstruct::Read(file_data_.data(), file_data_.size(), document_.Xref(), document_));
+        return *struct_tree_;
+    }
 };
 
 PdfDoc::PdfDoc() = default;
@@ -385,6 +397,95 @@ std::vector<PdfAnnotRect> PdfDoc::QuadsToDeviceRects(int page_index, float px_pe
         r.y0 = static_cast<float>(std::min(ay, by));
         r.y1 = static_cast<float>(std::max(ay, by));
         out.push_back(r);
+    }
+    return out;
+}
+
+bool PdfDoc::IsTagged() const {
+    if (!impl_) return false;
+    const pdfstruct::Tree &tree = impl_->StructTree();
+    return tree.present && !tree.roots.empty();
+}
+
+const a11y::Document &PdfDoc::Accessibility() const {
+    static const a11y::Document kNone;
+    if (!impl_) return kNone;
+    if (!impl_->a11y_)
+        impl_->a11y_ = std::make_unique<a11y::Document>(
+            a11y::FromPdf(impl_->file_data_.data(), impl_->file_data_.size(), impl_->document_));
+    return *impl_->a11y_;
+}
+
+std::vector<PdfDescribedBox> PdfDoc::DescribedBoxes(int page_index, float px_per_pt) const {
+    std::vector<PdfDescribedBox> out;
+    if (!impl_) return out;
+    const pdfstruct::Tree &tree = impl_->StructTree();
+    const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
+    if (!page || !tree.present) return out;
+    // The elements with words for what they show, and the marked content
+    // of this page under each (its own, and its descendants').
+    struct Described {
+        size_t element;
+        std::vector<int> mcids;
+    };
+    std::vector<Described> described;
+    std::vector<std::pair<int, size_t>> walk;  // element, index into `described` it reports to (or npos)
+    const size_t npos = static_cast<size_t>(-1);
+    for (int r : tree.roots) walk.push_back({r, npos});
+    while (!walk.empty()) {
+        const auto [index, owner_in] = walk.back();
+        walk.pop_back();
+        const pdfstruct::Element &e = tree.elements[static_cast<size_t>(index)];
+        size_t owner = owner_in;
+        const bool words = (!e.alt.empty() && (e.role == "Figure" || e.role == "Formula")) || (e.role == "Table" && !e.summary.empty());
+        if (words && owner == npos) {
+            owner = described.size();
+            described.push_back({static_cast<size_t>(index), {}});
+        }
+        for (const pdfstruct::Kid &k : e.kids) {
+            if (k.kind == pdfstruct::Kid::Kind::Element) walk.push_back({k.element, owner});
+            else if (k.kind == pdfstruct::Kid::Kind::Content && owner != npos && k.page == page_index && k.mcid >= 0)
+                described[owner].mcids.push_back(k.mcid);
+        }
+    }
+    if (std::none_of(described.begin(), described.end(), [](const Described &d) { return !d.mcids.empty(); })) return out;
+
+    const std::string content = pdfrender::GetPageContent(impl_->file_data_.data(), impl_->file_data_.size(),
+                                                          impl_->document_.Xref(), *page);
+    if (content.empty()) return out;
+    pdfrender::Canvas canvas = pdfrender::Canvas::MakeWhite(1, 1);
+    std::vector<pdfrender::TextGlyph> glyphs;
+    std::vector<pdfrender::MarkedBox> marked;
+    pdfrender::ExtractContentStreamText(content, canvas, pdfrender::Mat2D{}, page->resources, impl_->file_data_.data(),
+                                        impl_->file_data_.size(), impl_->document_.Xref(), &glyphs, &marked);
+    const pdfrender::Mat2D m = pdfrender::PageToDeviceMatrix(page->effective_box[0], page->effective_box[1],
+                                                             page->effective_box[2], page->effective_box[3], page->rotate,
+                                                             static_cast<double>(px_per_pt));
+    for (const Described &d : described) {
+        if (d.mcids.empty()) continue;
+        bool any = false;
+        double l = 0, b = 0, r = 0, t = 0;
+        auto add = [&](int mcid, double left, double bottom, double right, double top) {
+            if (std::find(d.mcids.begin(), d.mcids.end(), mcid) == d.mcids.end()) return;
+            if (!any) l = left, b = bottom, r = right, t = top, any = true;
+            l = std::min(l, left), b = std::min(b, bottom), r = std::max(r, right), t = std::max(t, top);
+        };
+        for (const pdfrender::TextGlyph &g : glyphs)
+            if (g.mcid >= 0) add(g.mcid, g.left, g.bottom, g.right, g.top);
+        for (const pdfrender::MarkedBox &mb : marked) add(mb.mcid, mb.left, mb.bottom, mb.right, mb.top);
+        if (!any) continue;
+        const pdfstruct::Element &e = tree.elements[d.element];
+        double ax, ay, bx, by;
+        pdfrender::Transform(m, l, b, &ax, &ay);
+        pdfrender::Transform(m, r, t, &bx, &by);
+        PdfDescribedBox box;
+        box.x0 = static_cast<float>(std::min(ax, bx));
+        box.x1 = static_cast<float>(std::max(ax, bx));
+        box.y0 = static_cast<float>(std::min(ay, by));
+        box.y1 = static_cast<float>(std::max(ay, by));
+        box.kind = e.role;
+        box.text = e.role == "Table" ? e.summary : e.alt;
+        out.push_back(std::move(box));
     }
     return out;
 }

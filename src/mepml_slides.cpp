@@ -318,16 +318,6 @@ struct Builder {
         switch (b.kind) {
             case BlockKind::Paragraph: TextItem(items).push_back(Para{ParaKind::Body, Runs(b.inlines)}); break;
             case BlockKind::Heading: TextItem(items).push_back(Para{ParaKind::Heading, Runs(b.inlines)}); break;
-            case BlockKind::Callout: {
-                Para p{ParaKind::Callout, {}};
-                Run k;
-                k.bold = true;
-                k.text = b.keyword + ": ";
-                p.runs.push_back(k);
-                Runs(b.inlines, Run(), p.runs);
-                TextItem(items).push_back(p);
-                break;
-            }
             case BlockKind::List: {
                 std::vector<int> indents;
                 for (const ListItem &it : b.items) indents.push_back(it.indent);
@@ -442,6 +432,7 @@ struct Builder {
                 }
                 break;
             }
+            case BlockKind::Callout:  // (a comment: the author's own note)
             case BlockKind::Comment:
             case BlockKind::Meta:
             case BlockKind::Import:

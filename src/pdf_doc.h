@@ -1,6 +1,7 @@
 #ifndef MEP_PDF_DOC_H
 #define MEP_PDF_DOC_H
 
+#include "a11y_doc.h"
 #include "pdf_annots.h"
 #include "pdf_writer.h"
 
@@ -106,6 +107,16 @@ struct PdfAnnotDraw {
     int pending_index = -1;              // index into the `pending` list passed to AnnotDrawForPage (from_file==false), else -1
     int src_obj = 0, src_gen = 0;        // originating file object (from_file==true), for edit/delete; 0 for session annots
     int page = 0;                        // 0-based page this annotation is on (for edit/delete routing)
+};
+
+// Something on a page that a tagged PDF describes in words -- a figure and
+// its alternative text, a formula and how it is read, a table and what it
+// shows -- with its place on the page in device pixels for a given render
+// scale: what the viewer shows when the pointer rests on it.
+struct PdfDescribedBox {
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    std::string kind;  // "Figure", "Formula", "Table"
+    std::string text;  // its /Alt (a table's /Summary); never empty
 };
 
 class PdfDoc {
@@ -275,6 +286,31 @@ public:
                                                const std::vector<pdfannots::PdfAnnot> &pending,
                                                const std::vector<pdfannots::PdfAnnot> &edits,
                                                const std::vector<pdfwrite::AnnotDelete> &deletes) const;
+
+    // --- accessibility (a tagged PDF's structure, spec 14.7-14.8) ---
+
+    // Whether the document has a structure tree to read it by.
+    /**
+     * @brief Reports whether the document is a tagged PDF (has a structure tree with content).
+     */
+    bool IsTagged() const;
+
+    // The document as a screen reader meets it (a11y_doc.h): its structure
+    // tree with each element's text and alternative text; for a PDF that
+    // is not tagged, just its text in page order. Reads every page's
+    // content the first time (O(document size)) and is kept after that.
+    /**
+     * @brief Returns the document as its accessibility tree, built on first use and cached.
+     */
+    const a11y::Document &Accessibility() const;
+
+    // What page_index describes in words (see PdfDescribedBox), in device
+    // pixels at px_per_pt. Reads the structure tree once per document and
+    // this page's content per call; empty for a PDF that is not tagged.
+    /**
+     * @brief Returns the described figures/formulas/tables on one page, in device pixels.
+     */
+    std::vector<PdfDescribedBox> DescribedBoxes(int page_index, float px_per_pt) const;
 
     // --- text selection (click-drag highlighting) ---
 

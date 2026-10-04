@@ -85,7 +85,8 @@ list-item[checked=false]::marker { content: "□"; }
 list-item[checked=true]::marker  { content: "✓"; }
 list-item[checked=true] { text-decoration: line-through; text-decoration-color: theme(Comment, #59636e); }
 
-/* Callouts: `// NOTE: text`. One accent per family of keywords. */
+/* Callouts: `// NOTE: text` -- comments with a keyword, the author's own
+   notes (no export writes them). One accent per family of keywords. */
 callout                   { --accent: theme(Blue, #0b5cad); color: var(--accent); }
 callout[kind=warning], callout[kind=caution]                    { --accent: theme(Yellow, #9a6700); }
 callout[kind=error], callout[kind=danger]                       { --accent: theme(Red, #c62828); }
@@ -109,6 +110,9 @@ box[kind=fact]          { --accent: theme(Orange, #d95f0e); }
 box[kind=example]       { --accent: theme(Green, #2e8b57); }
 box[kind=remark]        { --accent: theme(Cyan, #1b7f86); }
 box[kind=proof]         { --accent: theme(Comment, #5f6b7a); }
+box[kind=note]          { --accent: theme(Blue, #3b6ea5); }
+box[kind=tip]           { --accent: theme(Green, #2f7d32); }
+box[kind=warning]       { --accent: theme(Yellow, #b7791f); }
 box::label              { color: var(--accent); font-weight: bold; }
 box::title              { font-weight: bold; }
 box::end                { color: var(--accent); }
@@ -121,6 +125,9 @@ box[kind=fact]::label        { content: "Fact"; }
 box[kind=example]::label     { content: "Example"; }
 box[kind=remark]::label      { content: "Remark"; }
 box[kind=proof]::label       { content: "Proof"; }
+box[kind=note]::label        { content: "Note"; }
+box[kind=tip]::label         { content: "Tip"; }
+box[kind=warning]::label     { content: "Warning"; }
 box[kind=proof]::end         { content: "∎"; }
 
 /* --- Cards ------------------------------------------------------------- */

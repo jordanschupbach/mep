@@ -1260,8 +1260,9 @@ struct Buffer {
         // >= 0 for a mepml code block's running terminal (Editor::MepmlTerminalStart):
         // the rows draw its live screen, and stay drawn under the cursor.
         int term_run = -1;
-        // Non-empty for a mepml caption or alt text (Editor::MepmlScan): the
-        // rows draw as these lines, one slot each, at styled_scale.
+        // Non-empty for a mepml caption (Editor::MepmlScan): the rows draw
+        // as these lines, one slot each, at styled_scale. (A mepml alt
+        // text's rows are a render of no slots at all: nothing to draw.)
         std::vector<mepml::RenderedLine> styled;
         float styled_scale = 1.0f;
     };
@@ -1371,6 +1372,27 @@ struct Buffer {
     // source (Editor::WrapLenForRow): a row whose markup and maths draw
     // narrower than they are written fits on one line.
     std::unordered_map<int, int> mepml_table_row_cols;
+    // Rows that are never soft-wrapped: the source rows of a mepml alt
+    // text (Editor::MepmlScan), which show -- only under the cursor -- on
+    // one line however long they are; DrawPane slides the row sideways to
+    // keep the caret in view. WrapLenForRow answers 1 for them.
+    std::unordered_set<int> mepml_single_line_rows;
+    // Each mepml block with an alt text (Editor::MepmlScan): while the
+    // cursor is on a row of the block, [first, last], DrawPane shows the
+    // text in a popup by it -- but not on the alt text's own source rows,
+    // [alt_first, alt_last] (-1: it has none here, a presented slide),
+    // where the cursor shows the source itself. An empty text is a
+    // decoration's (`\alttext()`). An inline formula's (col_first >= 0)
+    // shows while the cursor is in its source, from byte col_first of row
+    // `first` up to (not including) byte col_last of row `last` -- the
+    // formula and the \alttext() after it.
+    struct MepmlAltNote {
+        int first = -1, last = -1;
+        int alt_first = -1, alt_last = -1;
+        std::string text;
+        int col_first = -1, col_last = -1;
+    };
+    std::vector<MepmlAltNote> mepml_alt_notes;
     unsigned long mepml_table_math_gen = 0;
     // The math preview popup's render (DrawPane, main.cpp) for the
     // fragment the cursor is in. The scan defers that fragment's own
@@ -2551,6 +2573,10 @@ struct PdfSession {
         // unsaved, session-created annotation (drawn with a selection
         // outline; the rest are already in the file).
         std::vector<PdfAnnotDraw> annots;
+        // What a tagged PDF describes in words on this page (a figure's
+        // alternative text, a formula's, a table's summary), in device
+        // pixels like `links`: shown when the pointer rests on one.
+        std::vector<PdfDescribedBox> described;
     };
     std::unordered_map<int, PageRaster> rasters;
     int next_raster_generation = 1;
@@ -8280,6 +8306,18 @@ public:
      * @return The raw filename.
      */
     std::string BufferFilenameForLua(int buffer_id) const;
+    // A buffer's document as a screen reader meets it (a11y_doc.h): a PDF
+    // pane from its tags, a browser pane from its DOM, a mepml buffer from
+    // its text as it stands (imports read), any other from its file where
+    // there is a reader for that (docx, odt, rtf, md, org -- a11y_file.h).
+    /**
+     * @brief Builds the accessibility view of a buffer's document.
+     * @param buffer_id The buffer.
+     * @param out Receives the document.
+     * @param error Receives why not, when this returns false.
+     * @return False when the buffer holds nothing with an accessibility reader.
+     */
+    bool Accessibility(int buffer_id, a11y::Document *out, std::string *error) const;
     /**
      * @brief Sets a buffer's raw filename (display label and, for a plain text buffer, its `:w` target).
      * @param buffer_id The id of the buffer to rename.
@@ -10356,6 +10394,7 @@ public:
     // row's slots (UpdateScrollForPane, DrawPane's draw loop, RowSlot,
     // PaneRowSlots, the notebook prefix) goes through this, so they agree.
     static int WrapLenForRow(const Buffer &buf, int row) {
+        if (buf.mepml_single_line_rows.count(row) != 0) return 1;
         auto it = buf.mepml_table_row_cols.find(row);
         return it != buf.mepml_table_row_cols.end() ? it->second : static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
     }

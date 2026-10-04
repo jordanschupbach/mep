@@ -198,16 +198,6 @@ std::vector<std::string> ResultTextLines(const Block &b) {
     return b.result_format == "html" ? HtmlResultText(Join(b.result_lines, "\n")) : b.result_lines;
 }
 
-// Runs of spaces as one, trimmed (a callout's text joined from lines).
-std::string Squash(const std::string &s) {
-    std::string o;
-    for (char c : s) {
-        if (c == ' ' && (o.empty() || o.back() == ' ')) continue;
-        o += c;
-    }
-    return TrimStr(o);
-}
-
 // Soft line breaks inside a paragraph (the source's own wrapping) as
 // spaces, for formats where a newline would mean something else.
 std::string Unwrap(const std::string &s) {
@@ -288,6 +278,9 @@ std::string CitationsMepml(const Document &doc) {
     }
     return c;
 }
+
+// A figure whose \alttext is empty: it only decorates the page.
+bool Decorative(const Block &b) { return b.alt_line >= 0 && b.alt.empty(); }
 
 struct MdWriter {
     const Document &doc;
@@ -389,11 +382,6 @@ struct MdWriter {
             switch (b.kind) {
                 case BlockKind::Paragraph: blocks.push_back(Inl(b.inlines)); break;
                 case BlockKind::Heading: blocks.push_back(std::string(static_cast<size_t>(b.level), '#') + " " + Unwrap(Inl(b.inlines))); break;
-                case BlockKind::Callout: {
-                    std::string text = Squash(Unwrap(Inl(b.inlines)));
-                    blocks.push_back("> [!" + b.keyword + "]\n> " + text);
-                    break;
-                }
                 case BlockKind::MathBlock: blocks.push_back("$$\n" + b.code + "\n$$"); break;
                 case BlockKind::Code: {
                     std::string opts;
@@ -508,6 +496,7 @@ struct MdWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: blocks.push_back("<!-- /mepml:box -->"); break;
+                case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -648,6 +637,9 @@ struct OrgWriter {
             switch (b.kind) {
                 case BlockKind::Paragraph: blocks.push_back(SafeLines(Inl(b.inlines))); break;
                 case BlockKind::Heading: blocks.push_back(std::string(static_cast<size_t>(b.level), '*') + " " + Unwrap(Inl(b.inlines))); break;
+                // (A callout -- `// NOTE: ...` -- is a comment like any other:
+                // the author's, not the reader's.)
+                case BlockKind::Callout:
                 case BlockKind::Comment: {
                     std::vector<std::string> lines;
                     std::istringstream ss(b.text);
@@ -659,9 +651,6 @@ struct OrgWriter {
                     blocks.push_back(Join(lines, "\n"));
                     break;
                 }
-                case BlockKind::Callout:
-                    blocks.push_back("#+begin_" + LowerStr(b.keyword) + "\n" + Squash(Unwrap(Inl(b.inlines))) + "\n#+end_" + LowerStr(b.keyword));
-                    break;
                 case BlockKind::MathBlock: blocks.push_back(cap + "\\[\n" + b.code + "\n\\]"); break;
                 case BlockKind::Code: {
                     std::string args;
@@ -691,7 +680,10 @@ struct OrgWriter {
                     if (!out.empty()) blocks.push_back(out);
                     break;
                 }
-                case BlockKind::Image: blocks.push_back(cap + "[[file:" + b.value + "]]"); break;
+                // (#+ATTR_HTML's :alt is what Org's own HTML export reads a picture as.)
+                case BlockKind::Image:
+                    blocks.push_back(cap + (b.alt_line >= 0 ? "#+ATTR_HTML: :alt " + b.alt + "\n" : "") + "[[file:" + b.value + "]]");
+                    break;
                 case BlockKind::Table: {
                     std::vector<std::string> lines;
                     for (size_t r = 0; r < b.rows.size(); ++r) {
@@ -817,7 +809,6 @@ struct TextWriter {
                     blocks.push_back(t + "\n" + std::string(t.size(), b.level == 1 ? '=' : '-'));
                     break;
                 }
-                case BlockKind::Callout: blocks.push_back(b.keyword + ": " + Squash(Unwrap(Inl(b.inlines)))); break;
                 case BlockKind::MathBlock: blocks.push_back("    " + b.code + cap); break;
                 case BlockKind::Code: {
                     std::string out;
@@ -890,6 +881,7 @@ struct TextWriter {
                     blocks.push_back(BoxHeading(doc, b) + (b.inlines.empty() ? "" : ". " + Inl(b.inlines)));
                     break;
                 case BlockKind::BoxEnd: break;
+                case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -1109,7 +1101,8 @@ struct RtfWriter {
     std::vector<bool> lists{};  // \lsN (N = index + 1) -> numbered?
     static std::string Bookmark(const std::string &name) { return "{\\*\\bkmkstart " + name + "}{\\*\\bkmkend " + name + "}"; }
 
-    std::string Picture(const std::string &path, const std::string &alt = "") {
+    std::string Picture(const std::string &path, const std::string &alt = "", bool decorative = false) {
+        (void)decorative;  // (RTF has no way to say so)
         std::string bytes, ext;
         int w = 0, h = 0;
         if (!ReadBinary(ResolveRel(base_dir, path), &bytes) || !ImageSize(bytes, &w, &h, &ext) || w <= 0 || h <= 0) {
@@ -1159,9 +1152,6 @@ struct RtfWriter {
                                  Inl(b.inlines));
                     break;
                 }
-                case BlockKind::Callout:
-                    body += Para("\\s9\\li360\\ri360\\cf" + std::to_string(kGray), "{\\b " + Esc(b.keyword) + ": }" + Inl(b.inlines));
-                    break;
                 case BlockKind::MathBlock:
                     body += Para("\\s18\\qc", "{\\cs31\\i " + Esc(TrimStr(b.code)) + "}") + Caption(labels[bi], b.caption_inlines);
                     break;
@@ -1186,12 +1176,12 @@ struct RtfWriter {
                             std::string img;
                             if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += Para(style + gray, Esc(rl));
                         }
-                        for (const auto &im : b.result_images) body += Picture(im.second);
+                        for (const auto &im : b.result_images) body += Picture(im.second, b.alt, Decorative(b));
                     }
                     if (body.size() > before) body += Caption(labels[bi], b.caption_inlines);
                     break;
                 }
-                case BlockKind::Image: body += Picture(b.value, b.alt) + Caption(labels[bi], b.caption_inlines); break;
+                case BlockKind::Image: body += Picture(b.value, b.alt, Decorative(b)) + Caption(labels[bi], b.caption_inlines); break;
                 case BlockKind::Table: {
                     size_t cols = 0;
                     for (const auto &r : b.rows) cols = std::max(cols, r.size());
@@ -1275,6 +1265,7 @@ struct RtfWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: break;
+                case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -1516,7 +1507,7 @@ struct DocxWriter {
     }
     static std::string Style(const std::string &s) { return "<w:pStyle w:val=\"" + s + "\"/>"; }
 
-    std::string Picture(const std::string &path, const std::string &alt = "") {
+    std::string Picture(const std::string &path, const std::string &alt = "", bool decorative = false) {
         std::string bytes, ext;
         int w = 0, h = 0;
         // A picture that cannot be read is linked, not embedded: the
@@ -1544,8 +1535,14 @@ struct DocxWriter {
         const std::string pid = std::to_string(n);
         return P("<w:jc w:val=\"center\"/>",
                  "<w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent " + ext_xml +
-                     "/><wp:docPr id=\"" + pid + "\" name=\"Picture " + pid + "\" descr=\"" + XmlEsc(alt) +
-                     "\"/><a:graphic xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:nvPicPr><pic:cNvPr id=\"" +
+                     "/><wp:docPr id=\"" + pid + "\" name=\"Picture " + pid + "\" descr=\"" + XmlEsc(alt) + "\"" +
+                     // (Word's "mark as decorative": a picture a screen reader passes over.)
+                     (decorative ? "><a:extLst xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">"
+                                   "<a:ext uri=\"{C183D7F6-B498-43B3-948B-1728B52AA6E4}\">"
+                                   "<adec:decorative xmlns:adec=\"http://schemas.microsoft.com/office/drawing/2017/decorative\" val=\"1\"/>"
+                                   "</a:ext></a:extLst></wp:docPr>"
+                                 : "/>") +
+                     "<a:graphic xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:nvPicPr><pic:cNvPr id=\"" +
                      pid + "\" name=\"" + XmlEsc(name) + "\"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip " + (linked ? "r:link" : "r:embed") + "=\"" + id +
                      "\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext " + ext_xml +
                      "/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>");
@@ -1577,12 +1574,6 @@ struct DocxWriter {
                 case BlockKind::Heading:
                     body += P(Style("Heading" + std::to_string(std::min(6, std::max(1, b.level)))), Inl(b.inlines, none));
                     break;
-                case BlockKind::Callout: {
-                    DocxRunFmt k;
-                    k.b = true;
-                    body += P(Style("Quote"), Run(b.keyword + ": ", k) + Inl(b.inlines, none));
-                    break;
-                }
                 case BlockKind::MathBlock:
                     body += P("<w:jc w:val=\"center\"/>", "<m:oMathPara>" + OMath(TrimStr(b.code)) + "</m:oMathPara>") +
                             Caption(labels[bi], b.caption_inlines);
@@ -1611,18 +1602,21 @@ struct DocxWriter {
                             std::string img;
                             if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += P(Style("SourceCode"), rl.empty() ? std::string() : Run(rl, out));
                         }
-                        for (const auto &im : b.result_images) body += Picture(im.second);
+                        for (const auto &im : b.result_images) body += Picture(im.second, b.alt, Decorative(b));
                     }
                     if (body.size() > before) body += Caption(labels[bi], b.caption_inlines);
                     break;
                 }
-                case BlockKind::Image: body += Picture(b.value, b.alt) + Caption(labels[bi], b.caption_inlines); break;
+                case BlockKind::Image: body += Picture(b.value, b.alt, Decorative(b)) + Caption(labels[bi], b.caption_inlines); break;
                 case BlockKind::Table: {
                     size_t cols = 0;
                     for (const auto &r : b.rows) cols = std::max(cols, r.size());
                     if (cols == 0) break;
                     if (!b.caption_inlines.empty()) body += Caption(labels[bi], b.caption_inlines);
-                    body += "<w:tbl><w:tblPr><w:tblStyle w:val=\"TableGrid\"/><w:tblW w:w=\"0\" w:type=\"auto\"/></w:tblPr><w:tblGrid>";
+                    // (Its \alttext is Word's table description: what a
+                    // screen reader says the table shows.)
+                    body += "<w:tbl><w:tblPr><w:tblStyle w:val=\"TableGrid\"/><w:tblW w:w=\"0\" w:type=\"auto\"/>" +
+                            (b.alt.empty() ? std::string() : "<w:tblDescription w:val=\"" + XmlEsc(b.alt) + "\"/>") + "</w:tblPr><w:tblGrid>";
                     for (size_t c = 0; c < cols; ++c) body += "<w:gridCol w:w=\"" + std::to_string(9000 / cols) + "\"/>";
                     body += "</w:tblGrid>";
                     for (size_t r = 0; r < b.rows.size(); ++r) {
@@ -1703,6 +1697,7 @@ struct DocxWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: break;
+                case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -1723,7 +1718,10 @@ struct DocxWriter {
         std::string s =
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
             "<w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
-            "<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii=\"Calibri\" w:hAnsi=\"Calibri\"/><w:sz w:val=\"22\"/></w:rPr></w:rPrDefault>"
+            "<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii=\"Calibri\" w:hAnsi=\"Calibri\"/><w:sz w:val=\"22\"/>" +
+            // (The document's language: a screen reader's voice, the spelling checker's dictionary.)
+            (DocumentLanguage(doc).empty() ? std::string() : "<w:lang w:val=\"" + DocumentLanguage(doc) + "\"/>") +
+            "</w:rPr></w:rPrDefault>"
             "<w:pPrDefault><w:pPr><w:spacing w:after=\"160\" w:line=\"264\" w:lineRule=\"auto\"/></w:pPr></w:pPrDefault></w:docDefaults>"
             "<w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/></w:style>"
             "<w:style w:type=\"paragraph\" w:styleId=\"Title\"><w:name w:val=\"Title\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:jc w:val=\"center\"/><w:spacing w:after=\"320\"/></w:pPr><w:rPr><w:b/><w:sz w:val=\"48\"/></w:rPr></w:style>";
@@ -1960,7 +1958,7 @@ struct OdtWriter {
         return "<text:p" + (style.empty() ? std::string() : " text:style-name=\"" + style + "\"") + ">" + body + "</text:p>";
     }
 
-    std::string Picture(const std::string &path, const std::string &alt = "") {
+    std::string Picture(const std::string &path, const std::string &alt = "", bool decorative = false) {
         std::string bytes, ext;
         int w = 0, h = 0;
         // A picture that cannot be read is linked (ODF paths are relative
@@ -1984,7 +1982,7 @@ struct OdtWriter {
         char size[96];
         std::snprintf(size, sizeof size, "svg:width=\"%.2fcm\" svg:height=\"%.2fcm\"", wcm, hcm);
         return P("Figure", "<draw:frame draw:name=\"image" + std::to_string(pic_n) + "\" text:anchor-type=\"as-char\" " + size +
-                               "><draw:image xlink:href=\"" + XmlEsc(name) +
+                               (decorative ? " loext:decorative=\"true\"" : "") + "><draw:image xlink:href=\"" + XmlEsc(name) +
                                "\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>" +
                                (alt.empty() ? "" : "<svg:desc>" + XmlEsc(alt) + "</svg:desc>") + "</draw:frame>");
     }
@@ -2017,12 +2015,6 @@ struct OdtWriter {
                             std::to_string(lvl) + "\">" + Inl(b.inlines, none) + "</text:h>";
                     break;
                 }
-                case BlockKind::Callout: {
-                    OdtFmt k;
-                    k.b = true;
-                    body += P("Quotations", Run(b.keyword + ": ", k) + Inl(b.inlines, none));
-                    break;
-                }
                 case BlockKind::MathBlock:
                     body += P("Math_20_Display", "<text:span text:style-name=\"Math\">" + Run(TrimStr(b.code), none) + "</text:span>") +
                             Caption(labels[bi], b.caption_inlines);
@@ -2046,17 +2038,18 @@ struct OdtWriter {
                             std::string img;
                             if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += P("Preformatted_20_Text", Run(rl, out));
                         }
-                        for (const auto &im : b.result_images) body += Picture(im.second);
+                        for (const auto &im : b.result_images) body += Picture(im.second, b.alt, Decorative(b));
                     }
                     if (body.size() > before) body += Caption(labels[bi], b.caption_inlines);
                     break;
                 }
-                case BlockKind::Image: body += Picture(b.value, b.alt) + Caption(labels[bi], b.caption_inlines); break;
+                case BlockKind::Image: body += Picture(b.value, b.alt, Decorative(b)) + Caption(labels[bi], b.caption_inlines); break;
                 case BlockKind::Table: {
                     size_t cols = 0;
                     for (const auto &r : b.rows) cols = std::max(cols, r.size());
                     if (cols == 0) break;
                     body += "<table:table table:name=\"Table" + std::to_string(bi) + "\" table:style-name=\"Grid\">";
+                    if (!b.alt.empty()) body += "<table:desc>" + XmlEsc(b.alt) + "</table:desc>";
                     body += "<table:table-column table:number-columns-repeated=\"" + std::to_string(cols) + "\"/>";
                     for (size_t r = 0; r < b.rows.size(); ++r) {
                         const bool head = static_cast<int>(r) < b.header_rows;
@@ -2148,6 +2141,7 @@ struct OdtWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: break;
+                case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -2171,6 +2165,7 @@ const char *kOdtNs =
     "xmlns:draw=\"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0\" xmlns:fo=\"urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0\" "
     "xmlns:xlink=\"http://www.w3.org/1999/xlink\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" "
     "xmlns:meta=\"urn:oasis:names:tc:opendocument:xmlns:meta:1.0\" xmlns:svg=\"urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0\" "
+    "xmlns:loext=\"urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0\" "
     "office:version=\"1.3\"";
 
 std::string OdtStyles(const Document &doc, const std::map<std::string, SheetLook> &sheet_styles) {
@@ -2264,7 +2259,8 @@ std::string BeamerDeck(const Document &doc, const std::string &base_dir) {
     opts.standalone = false;
     std::vector<BeamerFrame> frames;
     for (const SlideHtml &f : SlideFragments(doc, opts)) frames.push_back({f.title, f.body});
-    return ExportHtmlSlidesToBeamer(frames, doc.title, MetaValue(doc, "subtitle"), MetaValue(doc, "author"), MetaValue(doc, "date"), base_dir);
+    return ExportHtmlSlidesToBeamer(frames, doc.title, MetaValue(doc, "subtitle"), MetaValue(doc, "author"), MetaValue(doc, "date"), base_dir,
+                                    DocumentLanguage(doc));
 }
 }  // namespace
 
@@ -2280,7 +2276,7 @@ std::string ToLatex(const Document &doc, const std::string &base_dir) {
     if (IsPresentation(doc)) return BeamerDeck(doc, base_dir);
     HtmlOptions opts;
     opts.standalone = false;
-    return ExportHtmlToLatex(ToHtml(doc, opts), doc.title, MetaValue(doc, "author"), base_dir);
+    return ExportHtmlToLatex(ToHtml(doc, opts), doc.title, MetaValue(doc, "author"), base_dir, DocumentLanguage(doc));
 }
 
 std::string ToHtmlFor(const Document &doc) { return IsPresentation(doc) ? ToSlidesHtml(doc) : ToHtml(doc); }
@@ -2299,6 +2295,7 @@ bool WriteOdt(const Document &doc, const std::string &path, const std::string &b
         if (LowerStr(kv.first) == "author") author = kv.second;
     const std::string meta = std::string("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<office:document-meta ") + kOdtNs +
                              "><office:meta><meta:generator>mep</meta:generator><dc:title>" + XmlEsc(doc.title) + "</dc:title>" +
+                             (DocumentLanguage(doc).empty() ? "" : "<dc:language>" + DocumentLanguage(doc) + "</dc:language>") +
                              (author.empty() ? "" : "<dc:creator>" + XmlEsc(author) + "</dc:creator>") + [&] {
                                  std::string u;
                                  for (const auto &kv : OfficeProps(doc))

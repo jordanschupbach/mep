@@ -76,7 +76,6 @@ Lines Signature(const Document &doc, const Keeps &k) {
         switch (b.kind) {
             case BlockKind::Paragraph: s = "P " + Plain(b.inlines); break;
             case BlockKind::Heading: s = "H" + std::to_string(b.level) + " " + Plain(b.inlines); break;
-            case BlockKind::Callout: s = "C " + b.keyword + " " + Plain(b.inlines); break;
             case BlockKind::MathBlock: s = "M " + Squash(b.code); break;
             case BlockKind::Code: {
                 // A block the exports leave out entirely has nothing to come back.
@@ -138,6 +137,7 @@ Lines Signature(const Document &doc, const Keeps &k) {
                 s = "A";
                 for (const std::vector<Inline> &para : AbstractParagraphs(b)) s += "\n" + Plain(para);
                 break;
+            case BlockKind::Callout:  // (a comment with a keyword: in no export)
             case BlockKind::Comment:
             case BlockKind::Meta:
             case BlockKind::Import:
@@ -177,6 +177,7 @@ int CountKind(const std::vector<Inline> &ins, InlineKind k) {
 int CountKind(const Document &doc, InlineKind k) {
     int n = 0;
     for (const Block &b : doc.blocks) {
+        if (b.kind == BlockKind::Callout) continue;  // (a comment: no export carries it)
         n += CountKind(b.inlines, k) + CountKind(b.caption_inlines, k);
         for (const auto &row : b.rows)
             for (const auto &cell : row) n += CountKind(cell.content, k);
@@ -454,8 +455,9 @@ void TestPresentation() {
 
     const std::string tex = ToLatex(doc, ".");
     CHECK(tex.find("{beamer}") != std::string::npos);
-    CHECK(tex.find("\\titlepage") != std::string::npos && tex.find("\\subtitle{Sub}") != std::string::npos);
-    CHECK(tex.find("\\begin{frame}[fragile]{Results}") != std::string::npos);
+    CHECK(tex.find("\\titlepage") != std::string::npos && tex.find("\\subtitle[{Sub}]{") != std::string::npos);
+    // (The frame's title is tagged as its heading.)
+    CHECK(tex.find("\\begin{frame}[fragile]{\\mepS") != std::string::npos && tex.find("{H1}Results\\mepEb{}}") != std::string::npos);
     CHECK(Count(tex, "\\begin{frame}") == 3);
     CHECK(tex.find("\\begin{tabular}") != std::string::npos && tex.find("longtable") == std::string::npos);
     CHECK(tex.find("Prose on no slide") == std::string::npos);

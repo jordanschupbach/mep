@@ -439,6 +439,25 @@ std::vector<MepmlLspDiagnostic> MepmlLspDiagnostics(const std::vector<std::strin
     const std::vector<Heading> heads = Headings(doc, lines);
     const bool files = opts.check_files && !opts.doc_path.empty();
 
+    // Accessibility: what a reader who cannot see the page is left without
+    // (mepml_a11y.h has the whole check; these are the two an author fixes
+    // on the spot). A figure with no \alttext says nothing to a screen
+    // reader -- `\alttext()` marks one that only decorates -- and a table
+    // with no header row reads as values of nothing.
+    for (const Block &b : doc.blocks) {
+        if (!b.origin.empty()) continue;
+        auto line_len = [&](int line) { return line >= 0 && line < static_cast<int>(lines.size()) ? Len(lines[static_cast<size_t>(line)]) : 0; };
+        if (b.kind == BlockKind::Image && b.alt_line < 0)
+            add(b.line_start, 0, line_len(b.line_start), MepmlLspSeverity::Hint, "a11y-figure-alt",
+                "figure has no \\alttext(...) for readers who cannot see it (\\alttext() if it only decorates)");
+        if (b.kind == BlockKind::Code && !b.result_images.empty() && b.alt_line < 0)
+            add(b.result_images.front().first, 0, line_len(b.result_images.front().first), MepmlLspSeverity::Hint, "a11y-figure-alt",
+                "the figure this block draws has no \\alttext(...) for readers who cannot see it");
+        if (b.kind == BlockKind::Table && b.header_rows == 0 && b.rows.size() > 1)
+            add(b.line_start, 0, line_len(b.line_start), MepmlLspSeverity::Hint, "a11y-table-header",
+                "table has no header row (a |---| line under its first row): a screen reader cannot say what its values are");
+    }
+
     // Headings that skip a level (> then >>>): the outline has a hole.
     int prev_level = 0;
     for (const Heading &h : heads) {
@@ -622,7 +641,7 @@ const std::vector<Vocab> &DirectiveVocab() {
     static const std::vector<Vocab> v = {
         {"image", "\\image(path)", "A figure: the picture at path (relative to this file). Follow it with \\caption() and \\alttext()."},
         {"caption", "\\caption(text)", "The caption of the image, table, code block or display maths right above. Numbered as Figure N / Table N."},
-        {"alttext", "\\alttext(text)", "A description of the figure or maths above, for readers who cannot see it."},
+        {"alttext", "\\alttext(text)", "What stands for the figure, maths or table above for readers who cannot see it: a screen reader reads it in a figure's place, as how a formula is said, as what a table shows. An empty one -- \\alttext() -- under a figure says it only decorates."},
         {"import", "\\import(path)", "Includes another mepml (or .bib) file here: its blocks, citations and options join this document."},
         {"citation", "\\citation(key, fields)", "A bibliography entry: \\citation(key, author = ..., title = {...}, year = ...). Cite it with \\cite(key)."},
         {"bibliography", "\\bibliography", "The reference list: every cited entry, numbered in the order first cited."},
@@ -644,6 +663,9 @@ const std::vector<Vocab> &DirectiveVocab() {
         MEPML_BOX("example", "Example", "green"),
         MEPML_BOX("remark", "Remark", "teal"),
         MEPML_BOX("proof", "Proof", "grey, ending with a tombstone"),
+        MEPML_BOX("note", "Note", "slate blue"),
+        MEPML_BOX("tip", "Tip", "green"),
+        MEPML_BOX("warning", "Warning", "amber"),
 #undef MEPML_BOX
         {"define", "\\define(name(params), template)", "A command of your own: \\name(a, b) becomes the template with #param (or #{param}, #1) replaced by the arguments -- the last parameter takes the rest of the call, commas and all. The template may choose by export with \\when(html, ...) \\otherwise(...) and write the export's own markup with \\raw(html, ...). Exports expand the calls; the editor shows them as written."},
     };
@@ -671,6 +693,7 @@ const std::vector<Vocab> &MetaVocab() {
     static const std::vector<Vocab> v = {
         {"Title", "//? Title: text", "The document's title: drawn large in the header and used by every export."},
         {"Subtitle", "//? Subtitle: text", "A line under the title."},
+        {"Lang", "//? Lang: en-GB", "The language the document is written in (a BCP 47 tag: en, en-GB, fr ...). Every export says so where it can -- a screen reader picks its voice by it."},
         {"Author", "//? Author: name", "The author, for the exports' metadata."},
         {"Date", "//? Date: text", "The date, for the exports' metadata."},
         {"Option", "//? Option: Name=value", "A document option: an integer, a decimal or a string (quote it to force a string)."},

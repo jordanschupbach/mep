@@ -338,6 +338,11 @@ std::vector<Slide> Slides(const Document &doc, int line_count);
 // A header value by key, compared without case (`//? author:` is
 // `Author`); the last one wins, "" when there is none.
 std::string MetaValue(const Document &doc, const std::string &key);
+// The language the document is written in, a BCP 47 tag ("en", "en-GB",
+// "fr"): its `//? Lang:` header (`Language:` too), "" when it names none.
+// Every export that has a place for it says so -- a screen reader picks its
+// voice by it.
+std::string DocumentLanguage(const Document &doc);
 // `//? Type: presentation` (or `slides`): the document is a slide deck.
 // Its HTML, LaTeX and PDF exports are then a slideshow and a Beamer deck,
 // holding only what is on its slides, after a title slide made from the
@@ -800,6 +805,10 @@ struct PresentationPage {
         int live_fence = -1;
     };
     std::vector<Shown> blocks;
+    // Each alt text of the slide: (the line of `lines` that ends what it
+    // describes, its text -- empty for a decoration's `\alttext()`). The
+    // \alttext() lines themselves are not on the page.
+    std::vector<std::pair<int, std::string>> alts;
 };
 std::vector<PresentationPage> PresentationPages(const std::string &file, const std::vector<std::string> &lines,
                                                 const ReadFileFn &read, int wrap_cols = 0);

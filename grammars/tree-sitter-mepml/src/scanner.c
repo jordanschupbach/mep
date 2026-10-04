@@ -293,7 +293,8 @@ static bool is_backslash_directive(const char *name) {
 static bool is_box_kind(const char *name) {
     // (`boxed` is any kind of the document's own: `\\boxed(axiom, Title,`.)
     static const char *const kNames[] = {"definition", "theorem", "lemma",  "proposition", "corollary",
-                                         "fact",       "example", "remark", "proof",       "boxed"};
+                                         "fact",       "example", "remark", "proof",       "note",
+                                         "tip",        "warning", "boxed"};
     for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
         if (strcmp(name, kNames[i]) == 0) return true;
     return false;

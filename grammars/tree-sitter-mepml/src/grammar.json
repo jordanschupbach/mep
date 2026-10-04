@@ -2831,6 +2831,18 @@
         },
         {
           "type": "STRING",
+          "value": "note"
+        },
+        {
+          "type": "STRING",
+          "value": "tip"
+        },
+        {
+          "type": "STRING",
+          "value": "warning"
+        },
+        {
+          "type": "STRING",
           "value": "boxed"
         }
       ]

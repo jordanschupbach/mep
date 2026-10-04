@@ -439,7 +439,7 @@ int main() {
 
         std::string html = ToHtml(d);
         CHECK(html.find("<figcaption>Figure 1: A <strong>caption</strong></figcaption>") != std::string::npos);
-        CHECK(html.find("<th style=\"text-align:left\">A</th>") != std::string::npos);
+        CHECK(html.find("<th scope=\"col\" style=\"text-align:left\">A</th>") != std::string::npos);
         CHECK(html.find("<code>x|y</code>") != std::string::npos);
         CHECK(html.find("aria-label=\"area\"") != std::string::npos);
         CHECK(html.find("id=\"cite-asdf1\"") != std::string::npos);
@@ -603,7 +603,7 @@ int main() {
                                     "@caption{Two}"});
         CHECK(two.blocks[0].result_images.size() == 2);
         const std::string html2 = ToHtml(two);
-        CHECK(html2.find("<figure><img src=\"a.png\" alt=\"\"><img src=\"b.png\" alt=\"\"><figcaption>") != std::string::npos);
+        CHECK(html2.find("<figure><img src=\"a.png\"><img src=\"b.png\"><figcaption>") != std::string::npos);
         size_t opened = 0, closed = 0;
         for (size_t at = 0; (at = html2.find("<figure", at)) != std::string::npos; ++at) ++opened;
         for (size_t at = 0; (at = html2.find("</figure>", at)) != std::string::npos; ++at) ++closed;
@@ -966,6 +966,20 @@ int main() {
                 for (const Diagnostic &dg : d.diagnostics)
                     std::fprintf(stderr, "page %d: line %d: %s\n", pg.number, dg.line, dg.message.c_str());
                 CHECK(d.diagnostics.empty());
+            }
+        }
+        // An alt text is not on the page; what it says is kept beside it,
+        // with the page line that ends what it describes.
+        {
+            const std::vector<PresentationPage> alt = PresentationPages(
+                "/d/x.mepml",
+                {"\\slide(", "> Fig", "\\image(a.png)", "\\caption(A plot)", "\\alttext(A line", "going up)", "", "$$", "x^2", "$$",
+                 "\\alttext()", ")"},
+                [](const std::string &, Lines *) { return false; });
+            CHECK(alt.size() == 1);
+            if (alt.size() == 1) {
+                CHECK((alt[0].lines == Lines{"> Fig", "\\image(a.png)", "\\caption(A plot)", "", "$$", "x^2", "$$"}));
+                CHECK((alt[0].alts == std::vector<std::pair<int, std::string>>{{2, "A line going up"}, {6, ""}}));
             }
         }
         // A document header saying Exports: code shows the code instead,
@@ -1357,10 +1371,10 @@ int main() {
         for (const Block &b : d.blocks) ++count[b.kind];
         CHECK(count[BlockKind::Heading] >= 4);
         CHECK(count[BlockKind::Code] >= 4);
-        CHECK(count[BlockKind::Image] == 2);
+        CHECK(count[BlockKind::Image] == 3);
         CHECK(count[BlockKind::Table] == 4);  // two typed, one GFM, one printed by a block
         CHECK(count[BlockKind::MathBlock] == 3);
-        CHECK(count[BlockKind::BoxBegin] == 7 && count[BlockKind::BoxEnd] == 5);  // (the last two: the style sheets' remark and axiom)
+        CHECK(count[BlockKind::BoxBegin] == 9 && count[BlockKind::BoxEnd] == 6);  // (the last two: the style sheets' remark and axiom)
         CHECK(d.styles.size() == 1 && d.styles[0].path == "test.mepss");
         CHECK(count[BlockKind::Citation] == 2);
         CHECK(count[BlockKind::Callout] >= 3);
@@ -1402,7 +1416,9 @@ int main() {
         std::string html = ToHtml(d);
         CHECK(html.find("<title>A Test Document</title>") != std::string::npos);
         CHECK(html.find("<sub>subscript</sub>") != std::string::npos);
-        CHECK(html.find("class=\"callout callout-note\"") != std::string::npos);
+        // A callout is a comment (no export writes it); a note for the reader is a box.
+        CHECK(html.find("class=\"callout") == std::string::npos && html.find("this doesnt need to be a mepml file") == std::string::npos);
+        CHECK(html.find("data-kind=\"note\"") != std::string::npos && html.find("data-kind=\"warning\"") != std::string::npos);
     }
 
     // --- Header imports: `//? Import: file` inherits the file's header and

@@ -30,6 +30,24 @@ Internal links jump within the document; external ones open in the browser.
 Text is extracted, not just rasterised, so search finds real words and you
 can copy from the document.
 
+* Accessibility
+
+A /tagged/ PDF says what each piece of a page is and carries the words that
+stand for what cannot be read as text. mep reads those tags:
+
+- Rest the pointer on a figure, a formula or a table: its alternative text
+  (or the table's summary) pops up beside it.
+- =:A11yRead= opens the document as a screen reader would read it --
+  headings, paragraphs across page breaks as one, figures as their alt
+  text, tables cell by cell under their headers, page numbers left out.
+  =Enter= on a line jumps to its page.
+- =:A11yTree= shows the structure tree; =:A11yCheck= lists what is missing
+  (not tagged at all, no title, no language, a figure with no alt text ...).
+- =:A11ySpeak= reads it aloud when =espeak-ng= or =espeak= is installed.
+
+A PDF with no tags still reads -- as its text in page order -- and the
+check says so. PDFs exported from [[file:mepml.html][mepml]] are tagged.
+
 * Encrypted files
 
 A password-protected PDF is handled, including the common encryption

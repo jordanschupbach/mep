@@ -23,6 +23,9 @@
 #include "gfx/platform.h"
 #include "lua_env.h"
 #include "job.h"
+#include "a11y_file.h"
+#include "a11y_html.h"
+#include "mepml_a11y.h"
 #include "mepml_doc.h"
 #include "png_codec.h"
 
@@ -955,6 +958,8 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         buf.mepml_virtual_rows.clear();
         buf.mepml_fold_summaries.clear();
         buf.mepml_html_rows.clear();
+        buf.mepml_single_line_rows.clear();
+        buf.mepml_alt_notes.clear();
         mepml_table_grids_.erase(CurrentBufferId());
         mepml_block_cards_.erase(CurrentBufferId());
         state.valid = false;
@@ -1148,13 +1153,21 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                 MepmlStyleRendered(&lines, owner, &caption, false);
                 place(b.caption_line, b.caption_line_end, std::move(lines), 1.0f);
             }
-            if (b.alt_line >= 0 && !b.alt.empty()) {
-                const mepml::Element alt("alt-text");
-                const float alt_scale = owner >= 0 ? std::clamp(MepmlChainStyle(owner, {alt}).font_size, 0.5f, 3.0f) : 0.85f;
-                std::vector<mepml::RenderedLine> lines =
-                    mepml::RenderAltText(b.alt, static_cast<int>(static_cast<float>(width) / alt_scale), centred);
-                MepmlStyleRendered(&lines, owner, &alt, false);
-                place(b.alt_line, b.alt_line_end, std::move(lines), alt_scale);
+            // An alt text is for a reader who cannot see the page, so it
+            // takes no room on it: its rows collapse to nothing, and while
+            // the cursor is on the block it describes it shows in a popup
+            // by the block (Buffer::mepml_alt_notes, drawn by DrawPane).
+            // On its own rows the cursor finds its source, like a
+            // caption's. An empty one (`\alttext()`: decoration) collapses
+            // the same way.
+            if (b.alt_line >= 0 && b.alt_line_end >= b.alt_line && b.alt_line_end < n) {
+                Buffer::OrgLatexRender gone;
+                gone.slots = 0;
+                gone.end_row = b.alt_line_end;
+                buf.mepml_html_rows[b.alt_line] = std::move(gone);
+                buf.mepml_alt_notes.push_back({b.line_start, b.line_end, b.alt_line, b.alt_line_end, b.alt});
+                // Its source, under the cursor, stays on one line too.
+                for (int row = b.alt_line; row <= b.alt_line_end; ++row) buf.mepml_single_line_rows.insert(row);
             }
         }
         // An imported file's path (`\import(path)` or a header `//? Import:
@@ -1273,6 +1286,44 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     for (const mepml::Block &b : doc.blocks)
         if (b.origin.empty() && b.kind == mepml::BlockKind::Citation)
             for (int row = b.line_start; row <= b.line_end; ++row) citation_rows.insert(row);
+    // Inline formulas' alt texts (`\(x\)\alttext(...)`), each over its own
+    // source.
+    if (!patch && conceal) {
+        std::function<void(const mepml::Block &, const std::vector<mepml::Inline> &)> walk =
+            [&](const mepml::Block &b, const std::vector<mepml::Inline> &ins) {
+                for (const mepml::Inline &x : ins) {
+                    if (x.kind == mepml::InlineKind::Math && !x.alt.empty()) {
+                        const mepml::Block::Pos p = b.OffsetToPos(x.start), q = b.OffsetToPos(x.end);
+                        if (p.line >= 0 && q.line >= p.line && q.line < n)
+                            buf.mepml_alt_notes.push_back({p.line, q.line, -1, -1, x.alt, p.col, q.col});
+                    }
+                    walk(b, x.children);
+                }
+            };
+        for (const mepml::Block &b : doc.blocks) {
+            if (!b.origin.empty()) continue;
+            walk(b, b.inlines);
+            walk(b, b.caption_inlines);
+            for (const mepml::ListItem &it : b.items) walk(b, it.content);
+            for (const auto &cells : b.rows)
+                for (const mepml::TableCell &c : cells) walk(b, c.content);
+        }
+    }
+    // A presented slide's alt texts: their lines are not on the page
+    // (PresentationPage::alts), so each is hung on the block that ends
+    // where what it describes does.
+    if (!patch && conceal && present_.active && CurrentBufferId() == present_.view_buffer && !present_.pages.empty()) {
+        const mepml::PresentationPage &page =
+            present_.pages[static_cast<size_t>(std::clamp(present_.page, 0, static_cast<int>(present_.pages.size()) - 1))];
+        for (const auto &alt : page.alts) {
+            const int row = alt.first + 1;  // (the view's lines start with a blank one)
+            for (const mepml::Block &b : doc.blocks) {
+                if (!b.origin.empty() || row < b.line_start || row > b.line_end) continue;
+                buf.mepml_alt_notes.push_back({b.line_start, b.line_end, -1, -1, alt.second});
+                break;
+            }
+        }
+    }
     // Slide titles (their first heading), for the "Slide N" rule.
     std::map<int, std::string> slide_titles;
     for (const mepml::Slide &sl : mepml::Slides(doc, n)) slide_titles[sl.number] = sl.title;
@@ -3885,4 +3936,32 @@ std::vector<std::pair<std::string, float>> Editor::MepmlPresentTakeWarm() {
         for (const OrgLatexInlineFragment &f : frags.inlines) add(f.body);
     }
     return out;
+}
+
+bool Editor::Accessibility(int buffer_id, a11y::Document *out, std::string *error) const {
+    auto fail = [&](const std::string &why) {
+        if (error) *error = why;
+        return false;
+    };
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return fail("no such buffer");
+    if (const PdfBufferState *pdf = PdfBufferFor(buffer_id)) {
+        if (!pdf->doc) return fail("the PDF is not loaded");
+        *out = pdf->doc->Accessibility();
+        return true;
+    }
+    if (const HtmlSession *html = GetHtml(buffer_id)) {
+        *out = a11y::FromHtmlDom(html->doc.root.get());
+        return true;
+    }
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    const std::string &file = buf.filename;
+    const size_t dot = file.find_last_of('.');
+    std::string ext = dot == std::string::npos ? "" : file.substr(dot + 1);
+    for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (ext == "mepml") {
+        *out = mepml::Accessibility(mepml::ParseWithImports(file, buf.lines, ReadFileLines));
+        return true;
+    }
+    if (file.empty() || GetTerminal(buffer_id)) return fail("nothing here to read: open a document (mepml, PDF, HTML, docx, odt, Markdown, Org)");
+    return a11y::FromFile(file, out, error);
 }

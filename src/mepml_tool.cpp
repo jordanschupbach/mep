@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "a11y_file.h"
 #include "mepml_convert.h"
 #include "mepml_style.h"
 
@@ -176,6 +177,9 @@ int Usage() {
                  "       mep-mepml tree FILE                      the document's element tree, as JSON\n"
                  "       mep-mepml style FILE [--media a,b] [--sheet S.mepss]...\n"
                  "                                                the style each element computes to\n"
+                 "       mep-mepml a11y FILE [read|tree|check]    the document as a screen reader meets it: how it\n"
+                 "                                                reads, its structure, or what such a reader is\n"
+                 "                                                missing (mepml pdf html docx odt rtf md org)\n"
                  "  export from .mepml to: html md org rtf docx odt tex pdf txt pptx odp\n"
                  "  (with //? Type: presentation, html/tex/pdf are a slideshow and a Beamer deck;\n"
                  "  --beamer makes tex/pdf the Beamer deck of the \\slide blocks whatever the Type)\n"
@@ -186,6 +190,25 @@ int Usage() {
 }  // namespace
 
 int main(int argc, char **argv) {
+    // `a11y FILE [read|tree|check]`: the document as a screen reader meets
+    // it -- how it reads, its structure, or what such a reader is missing
+    // (exit 1 when that includes an error). Any format with a reader:
+    // .mepml, .pdf, .html, .docx, .odt, .rtf, .md, .org.
+    if (argc >= 3 && std::string(argv[1]) == "a11y") {
+        const std::string what = argc >= 4 ? argv[3] : "read";
+        if (argc > 4 || (what != "read" && what != "tree" && what != "check")) return Usage();
+        a11y::Document doc;
+        std::string err;
+        if (!a11y::FromFile(argv[2], &doc, &err)) {
+            std::fprintf(stderr, "mep-mepml: %s\n", err.c_str());
+            return 1;
+        }
+        std::fputs(a11y::Report(doc, what).c_str(), stdout);
+        if (what != "check") return 0;
+        for (const a11y::Issue &i : a11y::Check(doc))
+            if (i.severity == a11y::Severity::Error) return 1;
+        return 0;
+    }
     if (argc >= 3 && (std::string(argv[1]) == "tree" || std::string(argv[1]) == "style")) {
         const int rc = Inspect(argc, argv);
         return rc == 2 ? Usage() : rc;

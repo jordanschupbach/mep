@@ -289,6 +289,10 @@ void Coalesce(std::vector<Seg> &segs) {
 
 // --- document writer --------------------------------------------------------
 
+// How the office readers hand on "this picture is marked as decoration"
+// in place of its (then empty) alternative text.
+const char *const kDecorativeAlt = "\x01" "decorative";
+
 struct Out {
     std::vector<std::string> meta;
     std::vector<std::string> blocks;
@@ -374,28 +378,31 @@ struct Out {
         if (last == kFigure || last == kTable || last == kCode) Attach("\\caption(" + ParenEsc(text) + ")");
         else Paragraph(segs);
     }
-    void Image(const std::string &src, const std::string &alt) {
+    // `decorative`: the picture is marked as saying nothing (alt="" with
+    // role="presentation"): `\alttext()`.
+    void Image(const std::string &src, const std::string &alt, bool decorative = false) {
         if (src.empty()) return;
         std::string o = "\\image(" + ParenEsc(src) + ")";
         if (!alt.empty()) o += "\n\\alttext(" + ParenEsc(alt) + ")";
+        else if (decorative) o += "\n\\alttext()";
         Block(o, kFigure);
     }
     void Callout(const std::string &kind, const std::vector<Seg> &segs) {
         std::vector<Seg> s = segs;
         Coalesce(s);
         std::string text = Trim(RenderSegs(s));
-        std::string k = Upper(kind);
-        const auto &kws = CalloutKeywords();
-        if (std::find(kws.begin(), kws.end(), k) == kws.end()) k = "NOTE";
-        std::string o;
-        bool first = true;
-        for (const std::string &l : SplitLines(text)) {
-            if (Trim(l).empty()) continue;
-            o += first ? "// " + k + ": " + Trim(l) : "\n// " + Trim(l);
-            first = false;
-        }
-        if (first) o = "// " + k + ":";
-        Block(o);
+        // Said to the reader, so a block of the document: the box of its
+        // kind (a mepml callout comment is the author's note to themselves,
+        // and is in no export). Kinds with no box of their own are the
+        // nearest that has one.
+        std::string k = Lower(kind);
+        if (k == "caution" || k == "danger" || k == "error" || k == "important" || k == "attention") k = "warning";
+        else if (k == "hint" || k == "success") k = "tip";
+        if (!FindBoxKind(k) || k == "proof") k = "note";
+        std::string o = "\\" + k + "(";
+        for (const std::string &l : SplitLines(text))
+            if (!Trim(l).empty()) o += "\n" + EscapeLineStart(Trim(l));
+        Block(o + "\n)");
     }
     void Math(const std::string &tex) { Block("$$\n" + Trim(tex) + "\n$$", kFigure); }
     // An abstract, one run of segments per paragraph.
@@ -858,6 +865,10 @@ struct HtmlReader {
             StripLabel(caption);
             out.Caption(caption);
         }
+        // What the table shows, for a reader who cannot see it.
+        std::string alt = Attr(n, "aria-description");
+        if (alt.empty()) alt = Attr(n, "summary");
+        if (!Trim(alt).empty() && !rows.empty()) out.Attach("\\alttext(" + ParenEsc(Trim(Collapse(alt))) + ")");
     }
 
     void Figure(const DomNode *n) {
@@ -898,7 +909,8 @@ struct HtmlReader {
         };
         find(n);
         if (img) {
-            out.Image(Attr(img, "src"), Attr(img, "alt"));
+            const std::string role = Attr(img, "role");
+            out.Image(Attr(img, "src"), Attr(img, "alt"), img->attrs.count("alt") && (role == "presentation" || role == "none"));
         } else {
             Blocks(n);
             return;
@@ -1130,6 +1142,12 @@ std::string FromHtml(const std::string &html) {
     bool has_title = false;
     for (const std::string &m : r.out.meta) has_title = has_title || StartsWith(m, "//? Title:");
     if (!has_title && !Trim(dom.title).empty()) r.out.meta.insert(r.out.meta.begin(), "//? Title: " + Trim(dom.title));
+    // The page's language (<html lang>), unless its own header names one.
+    bool has_lang = false;
+    for (const std::string &m : r.out.meta) has_lang = has_lang || StartsWith(Lower(m), "//? lang:") || StartsWith(Lower(m), "//? language:");
+    for (const auto &c : dom.root->children)
+        if (!has_lang && c->type == DomNodeType::Element && c->tag == "html" && !Trim(HtmlReader::Attr(c.get(), "lang")).empty())
+            r.out.meta.push_back("//? Lang: " + Trim(HtmlReader::Attr(c.get(), "lang")));
     for (const std::string &c : r.citations) r.out.blocks.push_back(c);
     return r.out.Str();
 }
@@ -1560,6 +1578,7 @@ struct MdReader {
                             val = val.substr(1, val.size() - 2);
                         if (key.empty()) continue;
                         if (Lower(key) == "title") out.meta.push_back("//? Title: " + val);
+                        else if (Lower(key) == "lang" || Lower(key) == "language") out.meta.push_back("//? Lang: " + val);
                         else if (Lower(key) == "author" || Lower(key) == "date")
                             out.meta.push_back("//? " + std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(key[0])))) + Lower(key.substr(1)) + ": " + val);
                         else out.meta.push_back("//? Option: " + key + "=" + (val.find_first_of(" ,") != std::string::npos ? "\"" + val + "\"" : val));
@@ -2027,6 +2046,8 @@ struct OrgReader {
     std::map<std::string, std::string> footnotes;
     Out out;
     std::vector<Seg> pending_caption;
+    std::string pending_alt;  // #+ATTR_HTML: :alt, for the picture that follows
+    bool have_alt = false;
     bool have_caption = false;
 
     static bool OrgPre(char c) { return c == 0 || IsSp(c) || std::strchr("-('\"{", c) != nullptr; }
@@ -2255,7 +2276,9 @@ struct OrgReader {
                 if (mid != std::string::npos) target = target.substr(0, mid);
                 if (StartsWith(target, "file:")) target = target.substr(5);
                 if (IsImagePath(target)) {
-                    out.Image(target, desc);
+                    out.Image(target, desc.empty() ? pending_alt : desc, desc.empty() && have_alt && pending_alt.empty());
+                    pending_alt.clear();
+                    have_alt = false;
                     TakeCaption();
                     return;
                 }
@@ -2299,6 +2322,25 @@ struct OrgReader {
                 flush();
                 pending_caption = InlOf(value);
                 have_caption = true;
+                continue;
+            }
+            if (key == "language" || key == "lang") {
+                flush();
+                out.meta.push_back("//? Lang: " + value);
+                continue;
+            }
+            // A picture's alternative text, as Org's HTML export takes it:
+            // `#+ATTR_HTML: :alt text` (up to the next :property).
+            if (key == "attr_html") {
+                flush();
+                const size_t at = value.find(":alt");
+                if (at != std::string::npos && (at + 4 == value.size() || value[at + 4] == ' ')) {
+                    std::string alt = value.substr(at + 4);
+                    const size_t next = alt.find(" :");
+                    if (next != std::string::npos) alt = alt.substr(0, next);
+                    pending_alt = Trim(alt);
+                    have_alt = true;
+                }
                 continue;
             }
             if (key == "toc") {
@@ -3038,13 +3080,17 @@ struct Assembler {
         }
         list.push_back(it);
     }
-    void Table(std::vector<std::vector<std::vector<Seg>>> rows, int header, const std::vector<Align> &aligns) {
+    void Table(std::vector<std::vector<std::vector<Seg>>> rows, int header, const std::vector<Align> &aligns,
+               const std::string &description = "") {
         Flush();
         for (auto &r : rows)
             for (auto &c : r) OfficeFmt(c);
         bool any_align = false;
         for (Align a : aligns) any_align = any_align || a != Align::Default;
         out.Table(rows, header, any_align ? aligns : std::vector<Align>());
+        // (What the table shows, where the file says: Word's table
+        // description, Writer's.)
+        if (!Trim(description).empty() && !rows.empty()) out.Attach("\\alttext(" + ParenEsc(Trim(description)) + ")");
         if (hold) {
             out.Caption(held_caption);
             hold = false;
@@ -3052,7 +3098,7 @@ struct Assembler {
     }
     void Image(const std::string &path, const std::string &alt) {
         Flush();
-        out.Image(path, alt);
+        out.Image(path, alt == kDecorativeAlt ? "" : alt, alt == kDecorativeAlt);
         if (hold) {
             out.Caption(held_caption);
             hold = false;
@@ -3287,14 +3333,17 @@ struct DocxReader {
     bool hr = false;
     std::pair<std::string, std::string> Image(const xml::xml_node &drawing) {
         std::string rid, alt;
+        bool decorative = false;
         std::function<void(const xml::xml_node &)> walk = [&](const xml::xml_node &n) {
             const std::string nm = n.name();
             if (nm == "a:blip") rid = Attr(n, "r:embed").empty() ? Attr(n, "r:link") : Attr(n, "r:embed");
             if (nm == "v:imagedata") rid = Attr(n, "r:id");
             if (nm == "wp:docPr") alt = Attr(n, "descr");
+            if (nm == "adec:decorative" && Attr(n, "val") == "1") decorative = true;
             for (const xml::xml_node &k : n.children()) walk(k);
         };
         walk(drawing);
+        if (decorative && alt.empty()) alt = kDecorativeAlt;
         auto it = rels.find(rid);
         if (it == rels.end()) return {"", ""};
         if (external.count(rid)) {
@@ -3434,7 +3483,7 @@ struct DocxReader {
                     }
                     rows.push_back(row);
                 }
-                as.Table(rows, header, aligns);
+                as.Table(rows, header, aligns, Attr(c.child("w:tblPr").child("w:tblDescription"), "w:val"));
             } else if (name == "w:sdt") {
                 const xml::xml_node content = c.child("w:sdtContent");
                 if (content) Body(content);
@@ -3756,6 +3805,7 @@ struct OdtReader {
                                                                        : href;
                     std::string alt = c.child("svg:desc").text().get();
                     if (alt.empty()) alt = c.child("svg:title").text().get();
+                    if (alt.empty() && Attr(c, "loext:decorative") == "true") alt = kDecorativeAlt;
                     pending_images.push_back({path, alt});
                 }
             } else if (nm == "text:soft-page-break" || nm == "text:bookmark-end") {
@@ -3871,7 +3921,7 @@ struct OdtReader {
                     }
                 };
                 rows_of(c, false);
-                as.Table(rows, header, aligns);
+                as.Table(rows, header, aligns, c.child("table:desc").text().get());
             } else if (nm == "text:section" || nm == "text:index-body") {
                 Body(c);
             } else if (nm == "text:table-of-content") {

@@ -512,6 +512,14 @@ add_library(mep_core STATIC
     src/pdf_links.cpp
     src/pdf_annots.cpp
     src/pdf_writer.cpp
+    # Accessibility: a PDF's structure tree, and any document as a screen
+    # reader meets it (src/a11y_doc.h).
+    src/pdf_struct.cpp
+    src/a11y_doc.cpp
+    src/a11y_pdf.cpp
+    src/a11y_html.cpp
+    src/a11y_file.cpp
+    src/mepml_a11y.cpp
     src/gfx/cff.cpp
     src/gfx/type1.cpp
     src/formula.cpp
@@ -566,6 +574,7 @@ add_library(mep_core STATIC
     src/maxima_format.cpp
     src/maxima_ast.cpp
     src/math_tex.cpp
+    src/math_speech.cpp
     src/math_markup.cpp
     src/workspace_git.cpp
     ${MEP_GFX_NATIVE_SOURCES}
@@ -1660,10 +1669,18 @@ set(MEPML_CONVERT_SOURCES
     src/mepml_doc.cpp src/mepml_style.cpp src/mepml_export.cpp src/mepml_slides.cpp src/mepml_import.cpp
     src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp
     src/office_doc.cpp src/office_odt.cpp src/doc_export.cpp src/zip_archive.cpp src/deflate.cpp src/xml_doc.cpp src/image_doc.cpp src/image_codec.cpp
-    src/png_codec.cpp src/jpeg_codec.cpp src/gif_codec.cpp src/bmp_codec.cpp src/math_tex.cpp src/math_markup.cpp src/office_math.cpp)
+    src/png_codec.cpp src/jpeg_codec.cpp src/gif_codec.cpp src/bmp_codec.cpp src/math_tex.cpp src/math_speech.cpp src/math_markup.cpp src/office_math.cpp)
+# Accessibility (src/a11y_doc.h): any document as a screen reader meets it
+# -- mepml from its parse, HTML from its DOM, a PDF from its structure tree
+# and the marked content of its pages (so the PDF text stack comes along).
+set(MEP_A11Y_SOURCES
+    src/a11y_doc.cpp src/a11y_pdf.cpp src/a11y_html.cpp src/a11y_file.cpp src/mepml_a11y.cpp src/pdf_struct.cpp
+    src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp
+    src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp)
 # `mep-mepml convert IN OUT`: every mepml conversion from the command line
-# (built by default and installed beside mep, like mep-org-lsp).
-add_executable(mep-mepml src/mepml_tool.cpp ${MEPML_CONVERT_SOURCES})
+# (built by default and installed beside mep, like mep-org-lsp);
+# `mep-mepml a11y FILE` reads a document the way a screen reader would.
+add_executable(mep-mepml src/mepml_tool.cpp ${MEPML_CONVERT_SOURCES} ${MEP_A11Y_SOURCES})
 target_include_directories(mep-mepml PRIVATE src "${CMAKE_BINARY_DIR}/generated")
 target_compile_options(mep-mepml PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-mepml PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -1676,6 +1693,16 @@ target_compile_options(mep-mepml-convert-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_
 target_link_options(mep-mepml-convert-test PRIVATE ${MEP_SANITIZE_FLAGS})
 target_sources(mep-mepml-convert-test PUBLIC FILE_SET CXX_MODULES FILES src/path_util.cppm)
 add_dependencies(tests mep-mepml-convert-test)
+# Accessibility: the model's reading / outline / checks, mepml and HTML into
+# it, the PDF structure-tree reader over synthetic tagged PDFs, and -- when
+# tectonic is on PATH -- a mepml document through its tagged PDF export and
+# back (src/a11y_test.cpp).
+add_executable(mep-a11y-test EXCLUDE_FROM_ALL src/a11y_test.cpp ${MEPML_CONVERT_SOURCES} ${MEP_A11Y_SOURCES})
+target_include_directories(mep-a11y-test PRIVATE src "${CMAKE_BINARY_DIR}/generated")
+target_compile_options(mep-a11y-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-a11y-test PRIVATE ${MEP_SANITIZE_FLAGS})
+target_sources(mep-a11y-test PUBLIC FILE_SET CXX_MODULES FILES src/path_util.cppm)
+add_dependencies(tests mep-a11y-test)
 # `just bench-mepml`: timed runs of every headless mepml path -- parser,
 # highlight spans, exporters, importers, language-server analyses and the
 # tree-sitter grammar -- over generated corpora (plans/MEPML_PERFORMANCE_PLAN.md).

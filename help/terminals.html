@@ -39,6 +39,11 @@ from. Hiding it from elsewhere leaves focus where it is.</p>
 <p>While a terminal pane is focused, <b>every</b> key goes to the shell -- including
 <code>Esc</code>, which is why leaving takes the two-key <code>Ctrl-\ Ctrl-n</code>. After that
 you are in Normal mode in a terminal buffer and the usual navigation works.</p>
+<p>What you browse there is a snapshot of the terminal's screen and scrollback
+as ordinary text, so everything Normal mode has works on it: motions, <code>/</code>
+and <code>?</code> searches, and selecting with <code>v</code>, <code>V</code> or <code>Ctrl-v</code> and yanking with
+<code>y</code> to paste elsewhere. <code>i</code> or <code>a</code> goes back to the live terminal; =Ctrl-\
+Ctrl-n= again takes a fresh snapshot.</p>
 <p><code>Ctrl-Shift-V</code> pastes the clipboard into the terminal.</p>
 <h1>What terminals inherit</h1>
 <p>Every <code>:terminal</code> mep opens starts in the active workspace's root, with:</p>

@@ -72,6 +72,24 @@ struct Canvas {
 struct TextGlyph {
     double left = 0, bottom = 0, right = 0, top = 0;
     std::string utf8_text;
+    // The marked-content sequence the glyph was shown in (spec 14.6): the
+    // /MCID of the innermost BDC...EMC around it that has one, -1 outside
+    // any -- what ties the glyph to its element of the document's
+    // structure tree (pdf_struct.h). `artifact` is set inside an /Artifact
+    // sequence: page furniture, no part of what the document says.
+    int mcid = -1;
+    bool artifact = false;
+    // What the sequence says the content reads as instead of its glyphs
+    // (/ActualText, spec 14.9.4); "" for none.
+    std::string actual_text;
+};
+
+// Something painted that is not text -- an image, a path -- inside a
+// marked-content sequence with an /MCID: its bounding box, in the same
+// space as TextGlyph's. A figure's place on the page.
+struct MarkedBox {
+    int mcid = -1;
+    double left = 0, bottom = 0, right = 0, top = 0;
 };
 
 // Diagnostic tally GetPageContent optionally fills in, so a caller can
@@ -122,6 +140,7 @@ void RenderContentStream(const std::string &content, Canvas &canvas, const Mat2D
 // px_per_pt to get device-pixel-space glyph positions instead.
 void ExtractContentStreamText(const std::string &content, Canvas &canvas, const Mat2D &initial_ctm,
                                const pdfobj::Object &resources, const unsigned char *doc_data, size_t doc_len,
-                               const pdfxref::XrefTable &table, std::vector<TextGlyph> *out_glyphs);
+                               const pdfxref::XrefTable &table, std::vector<TextGlyph> *out_glyphs,
+                               std::vector<MarkedBox> *out_marked = nullptr);
 
 }  // namespace pdfrender

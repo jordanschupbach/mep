@@ -36,8 +36,13 @@
  * @param base_dir Base directory used to resolve a local <img src="relative/path">.
  * @return The complete LaTeX document source; this always succeeds.
  */
+// The PDF made from it is a tagged one (see LatexTagger in the .cpp): its
+// structure, the text that stands for its figures and formulas (an <img>'s
+// alt, a formula's aria-label), its tables' header cells, its title and its
+// language -- `lang` (a BCP 47 tag, "en-GB"), or the page's own <html lang>
+// -- are there for a screen reader.
 std::string ExportHtmlToLatex(const std::string &html, const std::string &title, const std::string &author,
-                               const std::string &base_dir);
+                               const std::string &base_dir, const std::string &lang = "");
 
 // A Beamer deck (16:9) from HTML fragments, one frame each: a title frame
 // from `title`/`subtitle`/`author`/`date` (when any is set), then a frame per
@@ -50,7 +55,7 @@ struct BeamerFrame {
 };
 std::string ExportHtmlSlidesToBeamer(const std::vector<BeamerFrame> &frames, const std::string &title,
                                      const std::string &subtitle, const std::string &author, const std::string &date,
-                                     const std::string &base_dir);
+                                     const std::string &base_dir, const std::string &lang = "");
 
 // Same DOM walk, targeting a real .odt package -- built from scratch
 // (mimetype/META-INF/manifest.xml/meta.xml/styles.xml/content.xml, plus

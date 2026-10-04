@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 147 =<leader>= sequences registered at startup. Press
+All 148 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -75,6 +75,7 @@ the features live.
 | =<leader>km= | mepml: toggle markup concealment | [[file:mepml.html][mepml]] |
 | =<leader>ko= | mepml: export HTML and open | [[file:mepml.html][mepml]] |
 | =<leader>kp= | mepml: present the slides (fill the editor) | [[file:mepml.html][mepml]] |
+| =<leader>kr= | mepml: toggle rendering (raw text / rendered) | [[file:mepml.html][mepml]] |
 | =<leader>ks= | mepml: stop the running block | [[file:mepml.html][mepml]] |
 | =<leader>kt= | mepml: type into the running block | [[file:mepml.html][mepml]] |
 | =<leader>kx= | mepml: run code block at cursor | [[file:mepml.html][mepml]] |

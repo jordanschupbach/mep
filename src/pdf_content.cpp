@@ -942,6 +942,95 @@ struct Interpreter {
     // position. A real render call (RenderContentStream) simply never
     // sets this.
     std::vector<TextGlyph> *text_output = nullptr;
+    // With it, where the non-text content of each marked-content sequence
+    // is painted (see MarkedBox).
+    std::vector<MarkedBox> *marked_output = nullptr;
+
+    // The marked-content sequences open here (BMC/BDC ... EMC, spec
+    // 14.6), innermost last. Only kept while extracting.
+    struct Marked {
+        int mcid = -1;
+        bool artifact = false;
+        std::string actual_text;
+    };
+    std::vector<Marked> marked;
+
+    int CurrentMcid() const {
+        for (size_t i = marked.size(); i-- > 0;)
+            if (marked[i].mcid >= 0) return marked[i].mcid;
+        return -1;
+    }
+    bool InArtifact() const {
+        for (const Marked &m : marked)
+            if (m.artifact) return true;
+        return false;
+    }
+    // BMC / BDC: the tag, and for BDC its property list -- a dict, or a
+    // name looked up in the resources' /Properties.
+    void BeginMarked(const pdfobj::Object &resources) {
+        Marked m;
+        if (!text_output && !marked_output) return;
+        pdfobj::Object props;
+        std::string tag;
+        if (operands.size() >= 2) {
+            tag = operands[operands.size() - 2].AsString("");
+            props = operands.back();
+            if (!props.IsDict() && resources.IsDict()) {
+                if (const pdfobj::Object *table_entry = resources.Find("Properties")) {
+                    pdfobj::Object all = Deref(doc_data, doc_len, table, *table_entry);
+                    if (const pdfobj::Object *named = all.Find(props.AsString(""))) props = Deref(doc_data, doc_len, table, *named);
+                }
+            }
+        } else if (!operands.empty()) {
+            tag = operands.back().AsString("");
+        }
+        m.artifact = tag == "Artifact";
+        if (props.IsDict()) {
+            if (const pdfobj::Object *id = props.Find("MCID"))
+                if (id->IsNumber()) m.mcid = static_cast<int>(id->AsDouble());
+            if (const pdfobj::Object *actual = props.Find("ActualText"))
+                if (actual->IsString()) m.actual_text = pdfobj::TextStringToUtf8(actual->str_val);
+        }
+        marked.push_back(std::move(m));
+    }
+    void EndMarked() {
+        if (!marked.empty()) marked.pop_back();
+    }
+    // Something other than text was painted over these device points.
+    void NoteMarkedBox(double x0, double y0, double x1, double y1) {
+        if (!marked_output) return;
+        const int mcid = CurrentMcid();
+        if (mcid < 0) return;
+        MarkedBox b;
+        b.mcid = mcid;
+        b.left = std::min(x0, x1);
+        b.right = std::max(x0, x1);
+        b.bottom = std::min(y0, y1);
+        b.top = std::max(y0, y1);
+        marked_output->push_back(b);
+    }
+    void NoteMarkedPath() {
+        if (!marked_output || path.empty() || CurrentMcid() < 0) return;
+        bool any = false;
+        double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        for (const SubPath &sp : path)
+            for (const DPoint &pt : sp.points) {
+                if (!any) x0 = x1 = pt.x, y0 = y1 = pt.y, any = true;
+                x0 = std::min(x0, pt.x), x1 = std::max(x1, pt.x);
+                y0 = std::min(y0, pt.y), y1 = std::max(y1, pt.y);
+            }
+        if (any) NoteMarkedBox(x0, y0, x1, y1);
+    }
+    void NoteMarkedImage() {
+        if (!marked_output) return;
+        double xs[4], ys[4];
+        Transform(Top().ctm, 0, 0, &xs[0], &ys[0]);
+        Transform(Top().ctm, 1, 0, &xs[1], &ys[1]);
+        Transform(Top().ctm, 1, 1, &xs[2], &ys[2]);
+        Transform(Top().ctm, 0, 1, &xs[3], &ys[3]);
+        NoteMarkedBox(*std::min_element(xs, xs + 4), *std::min_element(ys, ys + 4), *std::max_element(xs, xs + 4),
+                      *std::max_element(ys, ys + 4));
+    }
 
     // The resources dict the current Run() executes against -- kept
     // here so ShowText can hand a Type 3 glyph procedure the page's (or
@@ -1036,6 +1125,13 @@ struct Interpreter {
                     tg.bottom = origin_y - static_cast<double>(scale_y) * 0.2;
                     tg.top = origin_y + static_cast<double>(scale_y) * 0.75;
                     tg.utf8_text = std::move(text);
+                    tg.mcid = CurrentMcid();
+                    tg.artifact = InArtifact();
+                    for (size_t mi = marked.size(); mi-- > 0;)
+                        if (!marked[mi].actual_text.empty()) {
+                            tg.actual_text = marked[mi].actual_text;
+                            break;
+                        }
                     text_output->push_back(std::move(tg));
                 }
             }
@@ -1135,6 +1231,7 @@ struct Interpreter {
     }
 
     void FinishPaint(bool do_fill, gfx::raster::FillRule fill_rule, bool do_stroke) {
+        if (do_fill || do_stroke) NoteMarkedPath();
         if (do_fill && !path.empty()) {
             auto coverage = RasterizeFill(path, canvas.width, canvas.height, fill_rule);
             CompositeCoverage(canvas, coverage, Top().clip, Top().fill_rgb, Top().fill_alpha);
@@ -1350,6 +1447,10 @@ struct Interpreter {
                 ApplyExtGState(operands.back().AsString(""), resources);
             } else if (op == "Do" && !operands.empty()) {
                 DoXObject(operands.back().AsString(""), resources);
+            } else if (op == "BMC" || op == "BDC") {
+                BeginMarked(resources);
+            } else if (op == "EMC") {
+                EndMarked();
             } else if (op == "BT") {
                 text_matrix = Mat2D{};
                 text_line_matrix = Mat2D{};
@@ -1473,6 +1574,7 @@ struct Interpreter {
                 DecodedImage img;
                 if (DecodeImageDict(dict, raw, resources, doc_data, doc_len, table, &img)) {
                     DrawImage(canvas, img, Top().ctm, Top().clip, Top().fill_rgb, Top().fill_alpha);
+            NoteMarkedImage();
                 }
 
                 pos = data_end;
@@ -1505,6 +1607,7 @@ void Interpreter::DoXObject(const std::string &name, const pdfobj::Object &resou
         DecodedImage img;
         if (DecodeImageDict(stream_dict, raw, resources, doc_data, doc_len, table, &img)) {
             DrawImage(canvas, img, Top().ctm, Top().clip, Top().fill_rgb, Top().fill_alpha);
+            NoteMarkedImage();
         }
         return;
     }
@@ -1548,6 +1651,8 @@ void Interpreter::DoXObject(const std::string &name, const pdfobj::Object &resou
     sub.gs.push_back(Top());
     sub.form_depth = form_depth;
     sub.text_output = text_output;  // propagate so text inside a Form XObject is extracted too
+    sub.marked_output = marked_output;
+    sub.marked = marked;  // a form drawn inside a marked-content sequence is that sequence's content
     sub.Run(decoded, form_resources);
     --form_depth;
 
@@ -1606,12 +1711,14 @@ void RenderContentStream(const std::string &content, Canvas &canvas, const Mat2D
 
 void ExtractContentStreamText(const std::string &content, Canvas &canvas, const Mat2D &initial_ctm,
                                const pdfobj::Object &resources, const unsigned char *doc_data, size_t doc_len,
-                               const pdfxref::XrefTable &table, std::vector<TextGlyph> *out_glyphs) {
+                               const pdfxref::XrefTable &table, std::vector<TextGlyph> *out_glyphs,
+                               std::vector<MarkedBox> *out_marked) {
     Interpreter interp{canvas, doc_data, doc_len, table};
     GState initial;
     initial.ctm = initial_ctm;
     interp.gs.push_back(initial);
     interp.text_output = out_glyphs;
+    interp.marked_output = out_marked;
     interp.Run(content, resources);
 }
 

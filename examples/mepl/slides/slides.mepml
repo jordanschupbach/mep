@@ -83,10 +83,17 @@ Run the block with C-c C-c. Its results are written under it, on the slide.
 )
 
 \slide(
-> Callouts
-// NOTE: A callout reads the same on a slide as it does anywhere else.
-// TIP: Fold a slide like any other block, or jump between slides from the
-// outline.
+> Notes and tips
+\note(
+A note reads the same on a slide as it does anywhere else.
+)
+
+\tip(
+Fold a slide like any other block, or jump between slides from the outline.
+)
+
+// TODO: a comment with a keyword is a callout: a note to yourself, drawn in
+// the editor and left out of the deck.
 )
 
 \slide{

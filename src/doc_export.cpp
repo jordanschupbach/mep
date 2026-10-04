@@ -1,6 +1,7 @@
 #include "doc_export.h"
 #include "html_doc.h"
 #include "image_doc.h"
+#include "math_speech.h"
 #include "mepml_doc.h"
 
 #include <algorithm>
@@ -227,6 +228,137 @@ const DomNode *FindChildTag(const DomNode *node, const std::string &tag) {
     return nullptr;
 }
 
+// `text` as a PDF text string for a \special: UTF-16BE in hex behind a
+// byte-order mark, so nothing in it can be read as TeX or as PDF syntax.
+std::string PdfHexText(const std::string &text) {
+    static const char *kHex = "0123456789ABCDEF";
+    std::string out = "<FEFF";
+    auto unit = [&](unsigned u) {
+        for (int shift = 12; shift >= 0; shift -= 4) out += kHex[(u >> shift) & 0xF];
+    };
+    for (size_t i = 0; i < text.size();) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        unsigned cp = c;
+        size_t n = 1;
+        if (c >= 0xF0) cp = c & 0x07u, n = 4;
+        else if (c >= 0xE0) cp = c & 0x0Fu, n = 3;
+        else if (c >= 0xC0) cp = c & 0x1Fu, n = 2;
+        if (i + n > text.size()) break;
+        for (size_t k = 1; k < n; ++k) cp = (cp << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3Fu);
+        i += n;
+        if (cp == '\n' || cp == '\r' || cp == '\t') cp = ' ';
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            unit(0xD800 + (cp >> 10));
+            unit(0xDC00 + (cp & 0x3FF));
+        } else {
+            unit(cp);
+        }
+    }
+    return out + ">";
+}
+
+// Tagged PDF (ISO 32000-1 §14.7-14.8): what makes the PDF readable by a
+// screen reader. The LaTeX this file writes says what every piece of the
+// page is -- a heading, a paragraph, a table cell, a figure and the text
+// that stands for it, a formula and how it is read -- through three
+// macros the preamble defines over xdvipdfmx's specials (kLatexTagging):
+//
+//   \mepS{id}{parent}{Type}{entries}  a structure element (`entries` its
+//                                     /Alt and the like), child of `parent`
+//   \mepM{id}{Type} ... \mepE{}       content of element `id` -- a
+//                                     marked-content sequence; TeX may
+//                                     break it over a page, where it is
+//                                     closed and opened again
+//   \mepMb{id}{Type} ... \mepEb{}     the same inside a box TeX never
+//                                     breaks (a table cell, a display)
+//
+// The ids are this walker's own, counted from 1 (0 is the Document), so
+// the macros need no state of their own about what is open. Compiled by
+// anything but XeTeX (tectonic's engine) they do nothing.
+struct LatexTagger {
+    bool on = false;
+    int next_id = 1;
+    struct Open {
+        int id;
+        std::string type;
+        bool implied;  // a paragraph nothing in the HTML asked for: loose text's
+    };
+    std::vector<Open> open;  // innermost last; the Document itself is not on it
+    bool mc = false;         // content of open.back() is being written
+    bool mc_boxed = false;
+    int boxed = 0;           // inside a box TeX never breaks over a page
+
+    // Whether an element of this type holds text itself (the rest hold
+    // only other elements: text straight inside one gets a paragraph).
+    static bool HoldsText(const std::string &t) {
+        static const char *kTypes[] = {"P", "H1", "H2", "H3", "H4", "H5", "H6", "LBody", "TD", "TH", "Caption",
+                                       "Lbl", "Link", "Formula", "Code", "Title", "Note", "Span"};
+        return std::any_of(std::begin(kTypes), std::end(kTypes), [&](const char *k) { return t == k; });
+    }
+    void CloseMc(std::string &out) {
+        if (!mc) return;
+        out += mc_boxed ? "\\mepEb{}" : "\\mepE{}";
+        mc = false;
+    }
+    // Opens an element under the innermost open one; End(out, depth) with
+    // what this returns closes it (and any implied paragraph inside it).
+    size_t Begin(std::string &out, const std::string &type, const std::string &entries = "", bool implied = false) {
+        if (!on) return 0;
+        CloseMc(out);
+        const size_t depth = open.size();
+        const int id = next_id++;
+        out += "\\mepS{" + std::to_string(id) + "}{" + std::to_string(open.empty() ? 0 : open.back().id) + "}{" + type + "}{" +
+               entries + "}";
+        open.push_back({id, type, implied});
+        return depth;
+    }
+    // Before a block of the page: the text before it is over.
+    void Block(std::string &out) {
+        if (!on) return;
+        CloseMc(out);
+        while (!open.empty() && open.back().implied) open.pop_back();
+    }
+    size_t BeginBlock(std::string &out, const std::string &type, const std::string &entries = "") {
+        Block(out);
+        return Begin(out, type, entries);
+    }
+    // An element inside a line of text (a link, a formula).
+    size_t BeginInline(std::string &out, const std::string &type, const std::string &entries = "") {
+        if (!on) return 0;
+        // (An implied paragraph stays open after the element: the text
+        // that follows it on the line is the paragraph's too.)
+        if (open.empty() || !HoldsText(open.back().type)) Begin(out, "P", "", true);
+        return Begin(out, type, entries);
+    }
+    void End(std::string &out, size_t depth) {
+        if (!on) return;
+        CloseMc(out);
+        if (open.size() > depth) open.resize(depth);
+    }
+    int Id() const { return open.empty() ? 0 : open.back().id; }
+    // Before text: it is content of the innermost element.
+    void Text(std::string &out) {
+        if (!on || mc) return;
+        if (open.empty() || !HoldsText(open.back().type)) Begin(out, "P", "", true);
+        mc_boxed = boxed > 0;
+        out += std::string(mc_boxed ? "\\mepMb{" : "\\mepM{") + std::to_string(open.back().id) + "}{" + open.back().type + "}";
+        mc = true;
+    }
+    // Content of the innermost element set in a box of its own (a
+    // picture, a display): Boxed(out) ... CloseMc(out).
+    void Boxed(std::string &out) {
+        if (!on || open.empty()) return;
+        CloseMc(out);
+        mc_boxed = true;
+        out += "\\mepMb{" + std::to_string(open.back().id) + "}{" + open.back().type + "}";
+        mc = true;
+    }
+    // Something drawn that says nothing (a rule, a decorative picture):
+    // set while no content is open, it is an artifact of the page.
+    std::string Artifact(const std::string &tex) const { return on ? "\\mepA{" + tex + "}" : tex; }
+};
+
 // Renders a mep_org_html_code_block-shaped <div class="org-code-block">
 // (main.cpp's kBuiltinOrgExport) as a bordered/headered tcolorbox
 // (mepcodebox, defined in this file's own LaTeX preamble below) around a
@@ -245,7 +377,7 @@ const DomNode *FindChildTag(const DomNode *node, const std::string &tag) {
  * @param div_node The <div class="org-code-block"> node to render.
  * @param out String the rendered LaTeX is appended to.
  */
-void RenderOrgCodeBlockLatex(const DomNode *div_node, std::string &out) {
+void RenderOrgCodeBlockLatex(const DomNode *div_node, LatexTagger &tg, std::string &out) {
     const DomNode *pre = FindChildTag(div_node, "pre");
     const DomNode *code = pre ? FindChildTag(pre, "code") : nullptr;
     if (!code) return;  // malformed/hand-written input -- degrade to nothing rather than guess
@@ -283,9 +415,12 @@ void RenderOrgCodeBlockLatex(const DomNode *div_node, std::string &out) {
     // color to match the box's dark background -- tcolorbox's own text
     // color inside the box is otherwise whatever ambient color surrounds
     // it (normally black, invisible against mepCodeBg).
-    out += "\n\\begin{mepcodebox}{" + LatexEscape(lang.empty() ? "text" : lang) +
-           "}\n\\color{mepCodeFg}\n\\begin{Verbatim}[commandchars=\\\\\\{\\}]\n" + body +
-           "\n\\end{Verbatim}\n\\end{mepcodebox}\n";
+    out += "\n";
+    const size_t el = tg.BeginBlock(out, "Code");
+    const std::string lines = tg.on ? "\\mepV{" + std::to_string(tg.Id()) + "}" : "";
+    tg.End(out, el);
+    out += "\\begin{mepcodebox}{" + LatexEscape(lang.empty() ? "text" : lang) + "}\n\\color{mepCodeFg}\n" + lines +
+           "\\begin{Verbatim}[commandchars=\\\\\\{\\}]\n" + body + "\n\\end{Verbatim}\n\\end{mepcodebox}\n";
 }
 
 struct LatexCtx {
@@ -294,7 +429,44 @@ struct LatexCtx {
     // tabulars rather than longtables, pictures sized to the frame,
     // callouts as blocks, and a figure's caption under it.
     bool beamer = false;
+    LatexTagger tag;
 };
+
+bool IsBlank(const std::string &s) {
+    return std::all_of(s.begin(), s.end(), [](char c) { return std::isspace(static_cast<unsigned char>(c)); });
+}
+
+// The text that stands for a formula: the aria-label of the element
+// mepml::ToHtml (or any page) wraps it in.
+std::string MathLabel(const DomNode *node) {
+    int hops = 0;
+    for (const DomNode *n = node; n && hops < 3; n = n->parent, ++hops) {
+        const auto role = n->attrs.find("role");
+        const auto label = n->attrs.find("aria-label");
+        if (label != n->attrs.end() && (n == node || (role != n->attrs.end() && role->second == "math"))) return label->second;
+    }
+    return "";
+}
+
+std::string AttrOr(const DomNode *node, const char *name, const std::string &fallback = "") {
+    const auto it = node->attrs.find(name);
+    return it == node->attrs.end() ? fallback : it->second;
+}
+
+// A page's own language: <html lang="...">.
+std::string HtmlLang(const DomNode *root) {
+    if (!root) return "";
+    for (auto &c : root->children)
+        if (c->type == DomNodeType::Element && c->tag == "html") return AttrOr(c.get(), "lang");
+    return "";
+}
+
+std::string TrimBlanks(std::string s) {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+    size_t i = 0;
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+    return s.substr(i);
+}
 
 /**
  * @brief Recursively walks one DOM node and its descendants, appending the equivalent LaTeX markup to `out`.
@@ -303,26 +475,42 @@ struct LatexCtx {
  * @param out String the rendered LaTeX is appended to.
  */
 void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
+    LatexTagger &tg = ctx.tag;
     if (node->type == DomNodeType::Text) {
+        // (Blanks between blocks are not text of any element.)
+        if (!IsBlank(node->text)) tg.Text(out);
         out += LatexEscape(node->text);
         return;
     }
     const std::string &tag = node->tag;
     if (tag == "script" || tag == "style" || tag == "head" || tag == "title") return;
+    // An element that is a block of the page ends the line of text before it.
+    {
+        static const char *kBlocks[] = {"p",  "div", "section", "figure", "figcaption", "table", "ul",      "ol",  "li",
+                                        "blockquote", "pre", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "nav", "caption",
+                                        "article", "header", "footer", "aside", "dl", "dt", "dd"};
+        if (std::any_of(std::begin(kBlocks), std::end(kBlocks), [&](const char *b) { return tag == b; })) tg.Block(out);
+    }
     // A mepml \raw(tex, ...) (mepml::ToHtml wraps a \raw that is not for
     // HTML in a mep-raw element): its text is LaTeX, written as it is.
     if ((tag == "span" || tag == "div") && node->Class() == "mep-raw") {
         const auto it = node->attrs.find("data-raw");
         const std::string raw = it == node->attrs.end() ? CollectRawText(node) : it->second;
+        if (tag == "span" && !IsBlank(raw)) tg.Text(out);
         out += tag == "div" ? "\n" + raw + "\n" : raw;
         return;
     }
 
     int level;
     if (ctx.beamer && IsHeadingTag(tag, level)) {
-        out += level <= 2 ? "\n\\par{\\large\\bfseries " : "\n\\par{\\bfseries ";
+        out += "\n\\par";
+        const size_t el = tg.BeginBlock(out, "H" + std::to_string(std::min(level + 1, 6)));
+        tg.Text(out);
+        out += level <= 2 ? "{\\large\\bfseries " : "{\\bfseries ";
         for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
-        out += "}\\par\\smallskip\n";
+        out += "}";
+        tg.End(out, el);
+        out += "\\par\\smallskip\n";
         return;
     }
     if (ctx.beamer) {
@@ -331,24 +519,37 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         if (tag == "figcaption" && cls == "lang") return;
         if (tag == "figcaption" || ((tag == "div" || tag == "p") && cls == "caption")) {
             out += "\n\\par{\\centering\\footnotesize\\color{mepCodeMuted}";
+            const size_t el = tg.BeginBlock(out, "Caption");
             for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
+            tg.End(out, el);
             out += "\\par}\n";
             return;
         }
         // mepml's callouts (`// NOTE: ...`): a titled block.
         if (tag == "div" && cls.compare(0, 8, "callout ") == 0) {
-            std::string title, text;
+            // (Its title is set in a box of the block's own.)
+            std::string open_el, title, text;
+            const size_t el = tg.BeginBlock(open_el, "Note");
             for (auto &c : node->children) {
-                if (c->type == DomNodeType::Element && c->Class() == "callout-title") WalkLatexNode(c.get(), ctx, title);
-                else WalkLatexNode(c.get(), ctx, text);
+                if (c->type != DomNodeType::Element || c->Class() != "callout-title") continue;
+                ++tg.boxed;
+                WalkLatexNode(c.get(), ctx, title);
+                tg.CloseMc(title);
+                --tg.boxed;
             }
-            out += "\n\\begin{block}{" + title + "}\n" + text + "\n\\end{block}\n";
+            for (auto &c : node->children)
+                if (c->type != DomNodeType::Element || c->Class() != "callout-title") WalkLatexNode(c.get(), ctx, text);
+            tg.End(text, el);
+            out += "\n" + open_el + "\\begin{block}{" + title + "}\n" + text + "\n\\end{block}\n";
             return;
         }
         if (tag == "pre") {
             std::string raw = CollectRawText(node);
             if (!raw.empty() && raw.front() == '\n') raw.erase(raw.begin());
             while (!raw.empty() && raw.back() == '\n') raw.pop_back();
+            const size_t el = tg.BeginBlock(out, "Code");
+            if (tg.on) out += "\\mepV{" + std::to_string(tg.Id()) + "}";
+            tg.End(out, el);
             out += "\n\\begin{Verbatim}[fontsize=\\footnotesize,frame=single,rulecolor=\\color{mepCodeBorder}" +
                    std::string(cls == "results" ? ",formatcom=\\color{mepCodeMuted}" : "") +
                    ",commandchars=\\\\\\{\\}]\n" + LatexEscapeVerbatim(raw) + "\n\\end{Verbatim}\n";
@@ -360,22 +561,63 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         // clamp h5/h6 both to subparagraph rather than erroring.
         static const char *kCmds[] = {"section", "section",       "subsection",    "subsubsection",
                                        "paragraph", "subparagraph", "subparagraph"};
-        out += "\n\\" + std::string(kCmds[std::min(level, 6)]) + "{";
-        for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
-        out += "}\n";
+        // Tagged, the heading's content starts at its number (\mepH leaves
+        // it for the number or the title to open, whichever is set
+        // first), and the contents line and the bookmark take the title
+        // as plain text.
+        const size_t el = tg.BeginBlock(out, "H" + std::to_string(std::clamp(level, 1, 6)));
+        std::string title;
+        if (tg.on) {
+            out += "\\mepH{" + std::to_string(tg.Id()) + "}{" + tg.open.back().type + "}";
+            title = "\\mepHs{}";
+            tg.mc = true;
+            tg.mc_boxed = false;
+        }
+        for (auto &c : node->children) WalkLatexNode(c.get(), ctx, title);
+        tg.End(title, el);
+        out += "\n\\" + std::string(kCmds[std::min(level, 6)]) +
+               (tg.on ? "[{" + LatexEscape(TrimBlanks(CollectRawText(node))) + "}]" : "") + "{" + title + "}\n";
         return;
     }
     if (tag == "math") {
         std::string latex = CollectRawText(node);
-        out += IsMathDisplay(node) ? ("\n\\[" + latex + "\\]\n") : ("$" + latex + "$");
+        // A formula is read as its \alttext; one without, as its TeX said
+        // aloud ("theta hat 1 equals a over b": math_speech.h).
+        const std::string label = MathLabel(node);
+        std::string spoken = label.empty() ? mathspeech::Speak(latex) : label;
+        if (spoken.empty()) spoken = TrimBlanks(latex);
+        const std::string entries = "/Alt " + PdfHexText(spoken);
+        if (IsMathDisplay(node)) {
+            const size_t el = tg.Begin(out, "Formula", entries);
+            out += "\n\\[";
+            tg.Boxed(out);
+            out += latex;
+            tg.End(out, el);
+            out += "\\]\n";
+        } else {
+            const size_t el = tg.BeginInline(out, "Formula", entries);
+            tg.Text(out);
+            out += "$" + latex + "$";
+            tg.End(out, el);
+        }
         return;
     }
     // A mepml @abstract (mepml::ToHtml): LaTeX's own abstract, whose
     // environment prints the "Abstract" heading itself.
     if ((tag == "section" || tag == "div") && node->Class() == "abstract") {
-        out += "\n\\begin{abstract}\n";
+        out += "\n";
+        const size_t el = tg.BeginBlock(out, "Sect");
+        if (tg.on) {
+            // (The environment sets its heading itself.)
+            const size_t head = tg.Begin(out, "H2");
+            const std::string id = std::to_string(tg.Id());
+            tg.End(out, head);
+            out += "\\renewcommand{\\abstractname}{\\mepM{" + id + "}{H2}Abstract\\mepE{}}";
+        }
+        out += "\\begin{abstract}\n";
         for (auto &c : node->children)
             if (c->Class() != "abstract-title") WalkLatexNode(c.get(), ctx, out);
+        tg.End(out, el);
         out += "\\end{abstract}\n";
         return;
     }
@@ -398,41 +640,57 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
             out += "\n\\definecolor{" + colour + "}{HTML}{" + c + "}\\definecolor{" + colour + "tint}{HTML}{" + t + "}";
         }
         // What closes it: a proof's tombstone, or the sheets' own mark.
-        std::string end_mark = kind == "proof" ? "\\hfill\\ensuremath{\\blacksquare}\n" : "";
+        // (It says nothing a reader needs: an artifact of the page.)
+        std::string end_mark = kind == "proof" ? "\\hfill" + tg.Artifact("\\ensuremath{\\blacksquare}") + "\n" : "";
         if (node->attrs.count("data-end")) {
             const std::string &e = node->attrs.at("data-end");
             // (The two squares are maths symbols; anything else is text.)
             end_mark = e.empty()                  ? std::string()
-                       : e == "\xE2\x88\x8E" ? "\\hfill\\ensuremath{\\blacksquare}\n"
-                       : e == "\xE2\x96\xA1" ? "\\hfill\\ensuremath{\\square}\n"
-                                              : "\\hfill " + LatexEscape(e) + "\n";
+                       : e == "\xE2\x88\x8E" ? "\\hfill" + tg.Artifact("\\ensuremath{\\blacksquare}") + "\n"
+                       : e == "\xE2\x96\xA1" ? "\\hfill" + tg.Artifact("\\ensuremath{\\square}") + "\n"
+                                              : "\\hfill " + tg.Artifact(LatexEscape(e)) + "\n";
         }
-        std::string label, name, body;
+        // The box is a section of the document; its label and title are
+        // one line of it, its first.
+        std::string open_el, head, label, name, name_end, body;
+        const size_t el = tg.BeginBlock(open_el, "Sect");
         for (auto &c : node->children) {
             if (c->type == DomNodeType::Element && c->Class() == "mbox-title") {
+                const size_t line = tg.Begin(head, "P");
+                tg.Text(head);
                 for (auto &t : c->children) {
                     if (t->type != DomNodeType::Element) continue;
                     if (t->Class() == "mbox-label") label = LatexEscape(CollectRawText(t.get()));
                     else if (t->Class() == "mbox-name")
                         for (auto &k : t->children) WalkLatexNode(k.get(), ctx, name);
                 }
+                tg.End(name_end, line);
             } else {
                 WalkLatexNode(c.get(), ctx, body);
             }
         }
-        out += "\n\\begin{mepbox}{" + colour + "}\n{\\sffamily\\bfseries\\footnotesize\\color{" + colour + "}\\MakeUppercase{" + label +
-               "}}" + (name.empty() ? "" : "\\enspace\\textbf{" + name + "}") + "\\par\\smallskip\n" + body +
-               end_mark + "\\end{mepbox}\n";
+        tg.End(body, el);
+        out += "\n" + open_el + "\\begin{mepbox}{" + colour + "}\n" + head + "{\\sffamily\\bfseries\\footnotesize\\color{" + colour +
+               "}\\MakeUppercase{" + label + "}}" + (name.empty() ? "" : "\\enspace\\textbf{" + name + "}") + name_end +
+               "\\par\\smallskip\n" + body + end_mark + "\\end{mepbox}\n";
         return;
     }
     if (tag == "div" && node->Class() == "org-code-block") {
-        RenderOrgCodeBlockLatex(node, out);
+        RenderOrgCodeBlockLatex(node, tg, out);
         return;
     }
     if (tag == "p") {
         out += "\n";
+        const size_t el = tg.BeginBlock(out, node->Class() == "caption" ? "Caption" : "P");
         for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
+        tg.End(out, el);
         out += "\n\n";
+        return;
+    }
+    if (tag == "figcaption" || tag == "caption" || (tag == "div" && node->Class() == "caption")) {
+        const size_t el = tg.BeginBlock(out, "Caption");
+        for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
+        tg.End(out, el);
         return;
     }
     if (tag == "br") {
@@ -441,44 +699,51 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
     }
     // A task list's box (mepml's `- [ ]` / `- [x]`).
     if (tag == "input" && node->attrs.count("type") && node->attrs.at("type") == "checkbox") {
+        tg.Text(out);
         out += node->attrs.count("checked") ? "$\\boxtimes$ " : "$\\square$ ";
         return;
     }
     if (tag == "hr") {
-        out += "\n\\par\\noindent\\rule{\\linewidth}{0.4pt}\\par\n";
+        out += "\n\\par\\noindent" + tg.Artifact("\\rule{\\linewidth}{0.4pt}") + "\\par\n";
         return;
     }
     if (tag == "b" || tag == "strong") {
+        tg.Text(out);
         out += "\\textbf{";
         for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
         out += "}";
         return;
     }
     if (tag == "i" || tag == "em") {
+        tg.Text(out);
         out += "\\textit{";
         for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
         out += "}";
         return;
     }
     if (tag == "u") {
+        tg.Text(out);
         out += "\\underline{";
         for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
         out += "}";
         return;
     }
     if (tag == "s" || tag == "strike" || tag == "del") {
+        tg.Text(out);
         out += "\\sout{";
         for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
         out += "}";
         return;
     }
     if (tag == "code" || tag == "tt") {
+        tg.Text(out);
         out += "\\texttt{" + LatexEscape(CollectRawText(node)) + "}";
         return;
     }
     // What a mepml style sheet changes for a run of text (mepml::ToHtml
     // marks it when the export is LaTeX's): its colour, weight and slant.
     if (tag == "span" && node->Class() == "mep-style") {
+        tg.Text(out);
         std::string open = "{";
         auto attr = [&](const char *name) { return node->attrs.count(name) ? node->attrs.at(name) : std::string(); };
         std::string c = attr("data-color");
@@ -505,6 +770,7 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         std::string color = node->Class().substr(3);
         if (color == "red" || color == "orange" || color == "yellow" || color == "green" ||
             color == "cyan" || color == "blue" || color == "purple") {
+            tg.Text(out);
             out += "\\textcolor{mephl" + color + "}{\\textbf{";
             for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
             out += "}}";
@@ -520,37 +786,76 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         if (node->Class() == "mermaid") {
             std::string src = LatexEscapeVerbatim(CollectRawText(node));
             if (!src.empty() && src.front() == '\n') src.erase(src.begin());
-            out += "\n\\begin{mepcodebox}{mermaid}\n\\color{mepCodeFg}\n\\begin{Verbatim}[commandchars=\\\\\\{\\}]\n" +
+            out += "\n";
+            const size_t el = tg.BeginBlock(out, "Code");
+            const std::string lines = tg.on ? "\\mepV{" + std::to_string(tg.Id()) + "}" : "";
+            tg.End(out, el);
+            out += "\\begin{mepcodebox}{mermaid}\n\\color{mepCodeFg}\n" + lines + "\\begin{Verbatim}[commandchars=\\\\\\{\\}]\n" +
                    src + "\n\\end{Verbatim}\n\\end{mepcodebox}\n";
             return;
         }
         std::string raw = CollectRawText(node);
         if (!raw.empty() && raw.front() == '\n') raw.erase(raw.begin());
+        if (tg.on) {
+            // (fancyvrb's Verbatim sets a line at a time, so each can be
+            // marked as the code's; LaTeX's own verbatim cannot.)
+            out += "\n";
+            const size_t el = tg.BeginBlock(out, "Code");
+            out += "\\mepV{" + std::to_string(tg.Id()) + "}";
+            tg.End(out, el);
+            out += "\\begin{Verbatim}\n" + raw + "\n\\end{Verbatim}\n";
+            return;
+        }
         out += "\n\\begin{verbatim}\n" + raw + "\n\\end{verbatim}\n";
         return;
     }
     if (tag == "blockquote") {
-        out += "\n\\begin{quote}\n";
+        out += "\n";
+        const size_t el = tg.BeginBlock(out, "BlockQuote");
+        out += "\\begin{quote}\n";
         for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
+        tg.End(out, el);
         out += "\n\\end{quote}\n";
         return;
     }
     if (tag == "ul" || tag == "ol") {
-        out += tag == "ul" ? "\n\\begin{itemize}\n" : "\n\\begin{enumerate}\n";
+        out += "\n";
+        const size_t el = tg.BeginBlock(
+            out, "L", tag == "ul" ? "/A << /O /List /ListNumbering /Disc >>" : "/A << /O /List /ListNumbering /Decimal >>");
+        // (\mepLfix: the labels this list sets are its items' /Lbl.)
+        out += std::string(tag == "ul" ? "\\begin{itemize}" : "\\begin{enumerate}") + (tg.on ? "\\mepLfix{}" : "") + "\n";
         for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
+        tg.End(out, el);
         out += tag == "ul" ? "\\end{itemize}\n" : "\\end{enumerate}\n";
         return;
     }
     if (tag == "li") {
+        const size_t el = tg.BeginBlock(out, "LI");
+        if (tg.on) {
+            const size_t lbl = tg.Begin(out, "Lbl");
+            out += "\\mepLbl{" + std::to_string(tg.Id()) + "}";
+            tg.End(out, lbl);
+        }
         out += "\\item ";
+        tg.Begin(out, "LBody");
         for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
+        tg.End(out, el);
         out += "\n";
         return;
     }
     if (tag == "a") {
         auto it = node->attrs.find("href");
+        // A link into the page itself has nowhere to go on paper: its text
+        // stays, and a footnote's way back (to "#fnref...") goes.
+        if (it != node->attrs.end() && !it->second.empty() && it->second[0] == '#') {
+            if (it->second.rfind("#fnref", 0) == 0) return;
+            for (auto &c : node->children) WalkLatexNode(c.get(), ctx, out);
+            return;
+        }
+        const size_t el = tg.BeginInline(out, "Link");
         std::string inner;
         for (auto &c : node->children) WalkLatexNode(c.get(), ctx, inner);
+        tg.End(inner, el);
         if (it == node->attrs.end() || it->second.empty()) {
             out += inner;
         } else {
@@ -567,12 +872,32 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         auto src_it = node->attrs.find("src");
         std::string resolved = src_it != node->attrs.end() ? ResolveLocalPath(src_it->second, ctx.base_dir) : "";
         std::ifstream probe(resolved, std::ios::binary);
-        if (!resolved.empty() && probe && ctx.beamer) {
-            out += "\n\\begin{center}\\includegraphics[width=\\linewidth,height=0.62\\textheight,keepaspectratio]{" + resolved +
-                   "}\\end{center}\n";
+        // A picture is a Figure read as its alt text; one whose alt text is
+        // empty (alt="", mepml's `\alttext()`) only decorates the page, and
+        // is no part of what is read.
+        const bool decorative = node->attrs.count("alt") && IsBlank(node->attrs.at("alt"));
+        auto picture = [&](const std::string &options) {
+            const std::string tex = "\\includegraphics[" + options + "]{" + resolved + "}";
+            if (decorative) return tg.Artifact(tex);
+            std::string o;
+            const std::string alt = AttrOr(node, "alt");
+            const size_t el = tg.Begin(o, "Figure", alt.empty() ? "" : "/Alt " + PdfHexText(alt));
+            tg.Boxed(o);
+            o += tex;
+            tg.End(o, el);
+            return o;
+        };
+        tg.CloseMc(out);
+        if (!resolved.empty() && probe && tg.boxed > 0) {
+            // (In a table's cell: no float, no display.)
+            out += picture("width=0.2\\linewidth,keepaspectratio");
+        } else if (!resolved.empty() && probe && ctx.beamer) {
+            out += "\n\\begin{center}" + picture("width=\\linewidth,height=0.62\\textheight,keepaspectratio") + "\\end{center}\n";
         } else if (!resolved.empty() && probe) {
-            out += "\n\\begin{figure}[h]\n\\centering\n\\includegraphics[width=0.9\\linewidth]{" + resolved +
-                   "}\n\\end{figure}\n";
+            // (Tagged, the figure stays where it is written -- [H] --: one
+            // that floated would be read out of place.)
+            out += std::string("\n\\begin{figure}[") + (tg.on ? "H" : "h") + "]\n\\centering\n" + picture("width=0.9\\linewidth") +
+                   "\n\\end{figure}\n";
         } else {
             out += "\n% [image not found: " + LatexEscape(src_it != node->attrs.end() ? src_it->second : "?") + "]\n";
         }
@@ -583,28 +908,50 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         CollectTableRows(node, rows);
         size_t max_cols = TableMaxCols(rows);
         if (max_cols == 0) return;
-        // A slide has no float for a table's <caption>: it goes above.
-        if (ctx.beamer)
-            if (const DomNode *cap = FindChildTag(node, "caption")) {
-                out += "\n\\par{\\centering\\footnotesize\\color{mepCodeMuted}";
-                for (auto &c : cap->children) WalkLatexNode(c.get(), ctx, out);
-                out += "\\par}\n";
-            }
-        out += ctx.beamer ? "\n\\begin{center}\\small\\begin{tabular}{|" : "\n\\begin{longtable}{|";
+        // What the table shows, for a reader who cannot see it (mepml's
+        // \alttext under a table): its /Summary.
+        std::string summary = AttrOr(node, "aria-description");
+        if (summary.empty()) summary = AttrOr(node, "summary");
+        out += "\n";
+        const size_t table_el =
+            tg.BeginBlock(out, "Table", summary.empty() ? "" : "/A << /O /Table /Summary " + PdfHexText(summary) + " >>");
+        // A table's <caption> goes above it.
+        if (const DomNode *cap = FindChildTag(node, "caption")) {
+            out += "\\par{\\centering\\footnotesize\\color{mepCodeMuted}";
+            const size_t el = tg.Begin(out, "Caption");
+            for (auto &c : cap->children) WalkLatexNode(c.get(), ctx, out);
+            tg.End(out, el);
+            out += "\\par}\n";
+        }
+        out += ctx.beamer ? "\\begin{center}\\small\\begin{tabular}{|" : "\\begin{longtable}{|";
         for (size_t i = 0; i < max_cols; i++) out += "l|";
         out += "}\n\\hline\n";
+        ++tg.boxed;
         for (const DomNode *r : rows) {
+            // A header cell heads its column in a row of them, its row otherwise.
+            const bool header_row = std::all_of(r->children.begin(), r->children.end(), [](const auto &c) { return c->tag != "td"; });
+            const size_t row_el = tg.Begin(out, "TR");
             bool first = true;
             for (const auto &c : r->children) {
                 if (c->tag != "td" && c->tag != "th") continue;
                 if (!first) out += " & ";
                 first = false;
-                if (c->tag == "th") out += "\\textbf{";
+                const bool th = c->tag == "th";
+                const size_t cell_el = tg.Begin(
+                    out, th ? "TH" : "TD", th ? std::string("/A << /O /Table /Scope /") + (header_row ? "Column" : "Row") + " >>" : "");
+                if (th) {
+                    if (!IsBlank(CollectRawText(c.get()))) tg.Text(out);
+                    out += "\\textbf{";
+                }
                 for (auto &gc : c->children) WalkLatexNode(gc.get(), ctx, out);
-                if (c->tag == "th") out += "}";
+                if (th) out += "}";
+                tg.End(out, cell_el);
             }
+            tg.End(out, row_el);
             out += " \\\\\n\\hline\n";
         }
+        --tg.boxed;
+        tg.End(out, table_el);
         out += ctx.beamer ? "\\end{tabular}\\end{center}\n" : "\\end{longtable}\n";
         return;
     }
@@ -617,11 +964,180 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
 }  // namespace
 
 namespace {
+// The tagging macros (see LatexTagger), over xdvipdfmx's pdf: specials.
+//
+// A structure element is two objects, itself and the array of its kids
+// (@mepseN, @mepkN). \mepS only queues things, so no special ever lands
+// between two paragraphs, where it would hide the space LaTeX means to put
+// there: the objects' definitions are written at the start of the next
+// page shipped out -- before anything on a page can name them, in
+// whatever order the page's boxes were set (Beamer sets a frame's title
+// after its body, and puts it above) -- and the element is added to its
+// parent's kids just before the next piece of content, so the kids are in
+// the order they are on the page.
+//
+// A marked-content sequence may not run over a page, but a paragraph may:
+// each \mepM leaves a mark saying what is open (\mepE one saying nothing
+// is), and \@makecol -- where LaTeX makes a page's column -- closes what
+// its last mark leaves open and opens it again at the top of the next. A
+// breakable tcolorbox splits its own text, so its parts do the same from
+// \splitbotmarks (the `meptagged` style).
+//
+// Everything on a page is either content of some element or an artifact
+// (a table's rules, a box's frame, a page number): each page opens an
+// /Artifact sequence at its start and closes it at its end, and a piece of
+// real content closes it before itself and opens it again after, so the
+// two never nest and nothing is left unmarked.
+//
+// MCIDs must count from 0 on every page, and TeX does not know the page
+// a piece of text lands on until it is shipped out: every sequence writes
+// its page to the .aux as it is shipped, the next run numbers from that,
+// and from that too comes the parent tree (which element each MCID of
+// each page belongs to), written on the last page.
+const char *kLatexTagging = R"tex(\makeatletter
+\newif\ifmep@tag \mep@tagfalse
+\ifdefined\XeTeXversion \mep@tagtrue \fi
+\newcount\mep@mc
+\newcount\mep@p
+\def\mep@pend{}
+\def\mep@defs{}
+\def\mep@open{}
+\def\mep@tcbopen{}
+\def\mep@dash{-}
+\def\mep@lastpg{0}
+\def\mep@hpend{}
+\def\mep@lblid{}
+\def\mep@mcpage#1#2{%
+  \expandafter\ifx\csname mep@n@#2\endcsname\relax
+    \expandafter\gdef\csname mep@n@#2\endcsname{0}\expandafter\gdef\csname mep@pg@#2\endcsname{}\fi
+  \expandafter\xdef\csname mep@l@#1\endcsname{\csname mep@n@#2\endcsname}%
+  \expandafter\xdef\csname mep@n@#2\endcsname{\the\numexpr\csname mep@n@#2\endcsname+1\relax}%
+  \expandafter\g@addto@macro\csname mep@pg@#2\endcsname{\mep@pt{#1}}%
+  \ifnum#2>\mep@lastpg\relax\xdef\mep@lastpg{#2}\fi}
+\AtBeginDocument{\global\let\mep@mcpage\@gobbletwo}
+\ifmep@tag
+\newmarks\mep@marks
+\def\mepS#1#2#3#4{\xdef\mep@defs{\mep@defs
+  \special{pdf:obj @mepk#1 []}%
+  \special{pdf:obj @mepse#1 << /Type /StructElem /S /#3 /P @mepse#2 /K @mepk#1 #4 >>}}%
+  \xdef\mep@pend{\mep@pend\special{pdf:put @mepk#2 @mepse#1}}}
+\def\mep@bdc#1#2{%
+  \mep@pend\gdef\mep@pend{}%
+  \global\advance\mep@mc\@ne
+  \expandafter\xdef\csname mep@o@\the\mep@mc\endcsname{#1}%
+  \edef\mep@id{\ifcsname mep@l@\the\mep@mc\endcsname\csname mep@l@\the\mep@mc\endcsname\else\the\mep@mc\fi}%
+  \special{pdf:code EMC /#2 <</MCID \mep@id>> BDC}%
+  \special{pdf:put @mepk#1 << /Type /MCR /Pg @thispage /MCID \mep@id >>}%
+  \if@filesw\edef\mep@w{\write\@auxout{\string\mep@mcpage{\the\mep@mc}{\noexpand\the\ReadonlyShipoutCounter}}}\mep@w\fi}
+\def\mep@emc{\special{pdf:code EMC /Artifact BMC}}
+\def\mepM#1#2{\leavevmode\mep@bdc{#1}{#2}\marks\mep@marks{{#1}{#2}}}
+\def\mepMb#1#2{\mep@bdc{#1}{#2}}
+\def\mepE{\mep@emc\marks\mep@marks{-}}
+\def\mepEb{\mep@emc}
+\def\mepA#1{#1}
+\def\mepH#1#2{\gdef\mep@hpend{\mepM{#1}{#2}}}
+\DeclareRobustCommand\mepHs{\mep@hpend\gdef\mep@hpend{}}
+\def\@seccntformat#1{\mepHs\csname the#1\endcsname\quad}
+\def\mepV#1{\def\FancyVerbFormatLine##1{\mepMb{#1}{Code}##1\mepEb}}
+\def\mepLbl#1{\gdef\mep@lblid{#1}}
+\def\mep@lbl#1{\ifx\mep@lblid\@empty#1\else\mepMb{\mep@lblid}{Lbl}\global\let\mep@lblid\@empty#1\mepEb\fi}
+\def\mepLfix{\let\mep@oml\makelabel\def\makelabel##1{\mep@oml{\mep@lbl{##1}}}}
+\def\mep@colopen{\ifx\mep@open\@empty\else\expandafter\mep@bdc\mep@open\fi}
+\def\mep@colclose{\edef\mep@bot{\botmarks\mep@marks}%
+  \ifx\mep@bot\mep@dash\global\let\mep@open\@empty\else\global\let\mep@open\mep@bot\fi
+  \ifx\mep@open\@empty\else\mep@emc\fi}
+\g@addto@macro\@makecol{\setbox\@outputbox\vbox to\@colht{\mep@colopen\unvbox\@outputbox\mep@colclose}}
+\def\mep@tcbfinish{\edef\mep@bot{\splitbotmarks\mep@marks}%
+  \ifx\mep@bot\@empty\else\ifx\mep@bot\mep@dash\global\let\mep@tcbopen\@empty\else\global\let\mep@tcbopen\mep@bot\fi\fi
+  \ifx\mep@tcbopen\@empty\else\mep@emc\fi}
+\def\mep@tcbstart{\ifx\mep@tcbopen\@empty\else\expandafter\mep@bdc\mep@tcbopen\fi}
+\def\mep@tcblast{\global\let\mep@tcbopen\@empty}
+\tcbset{meptagged/.style={extras first and middle={finish={\mep@tcbfinish}},
+  extras middle and last={overlay={\mep@tcbstart}},extras last={finish={\mep@tcblast}}}}
+\AddToHook{shipout/background}{\mep@defs\gdef\mep@defs{}%
+  \special{pdf:put @thispage << /StructParents \the\numexpr\ReadonlyShipoutCounter-1\relax\space /Tabs /S >>}%
+  \special{pdf:code /Artifact BMC}}
+\AddToHook{shipout/foreground}{\special{pdf:code EMC}}
+\def\mep@pt#1{ \ifcsname mep@o@#1\endcsname @mepse\csname mep@o@#1\endcsname\else null\fi}
+\def\mep@parents{%
+  \mep@p=\z@ \def\mep@nums{}%
+  \loop\ifnum\mep@p<\mep@lastpg\relax \advance\mep@p\@ne
+    \special{pdf:obj @meppt\the\mep@p\space [\ifcsname mep@pg@\the\mep@p\endcsname\csname mep@pg@\the\mep@p\endcsname\fi]}%
+    \edef\mep@nums{\mep@nums\space\the\numexpr\mep@p-1\relax\space @meppt\the\mep@p}%
+  \repeat
+  \special{pdf:put @meproot << /ParentTree << /Nums [\mep@nums] >> /ParentTreeNextKey \mep@lastpg >>}}
+\AddToHook{shipout/lastpage}{\mep@defs\gdef\mep@defs{}\mep@pend\gdef\mep@pend{}\mep@parents}
+\def\mepDoc#1#2{\xdef\mep@defs{\special{pdf:obj @mepk0 []}%
+    \special{pdf:obj @meproot << /Type /StructTreeRoot /RoleMap << /Title /P >> >>}%
+    \special{pdf:obj @mepse0 << /Type /StructElem /S /Document /P @meproot /K @mepk0 >>}%
+    \special{pdf:put @meproot << /K @mepse0 >>}%
+    \special{pdf:put @catalog << /StructTreeRoot @meproot /MarkInfo << /Marked true >> #1 >>}#2}}
+\else
+\def\mepS#1#2#3#4{}\def\mepM#1#2{}\def\mepMb#1#2{}\def\mepE{}\def\mepEb{}\def\mepA#1{#1}
+\def\mepH#1#2{}\def\mepHs{}\def\mepV#1{}\def\mepLbl#1{}\def\mepLfix{}\def\mepDoc#1#2{}
+\fi
+\makeatother
+)tex";
+
+// An article's page number, set where no content is open (so it is an
+// artifact like the rest of the page's furniture) rather than in the
+// middle of a paragraph that runs over the page.
+const char *kLatexTaggingArticle = R"tex(\makeatletter
+\ifmep@tag
+\def\ps@plain{\let\@mkboth\@gobbletwo\let\@oddhead\@empty\let\@evenhead\@empty
+  \def\@oddfoot{\mepA{\reset@font\hfil\thepage\hfil}}\let\@evenfoot\@oddfoot}
+\pagestyle{plain}
+\fi
+\makeatother
+)tex";
+
+// \mepDoc for a document in `lang` called `title`: its language and title
+// in the catalog and the document information, where a reader looks.
+std::string LatexTaggingDocument(const std::string &lang, const std::string &title) {
+    std::string tag;
+    for (char c : lang)
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '-') tag += c;
+    std::string catalog, info;
+    if (!tag.empty()) catalog += "/Lang (" + tag + ")";
+    if (!title.empty()) {
+        catalog += " /ViewerPreferences << /DisplayDocTitle true >>";
+        info = "\\special{pdf:docinfo << /Title " + PdfHexText(title) + " >>}";
+    }
+    // The same as XMP metadata, where newer readers (and PDF/UA) look.
+    auto xml = [](const std::string &text) {
+        std::string o;
+        for (char c : text) {
+            if (c == '&') o += "&amp;";
+            else if (c == '<') o += "&lt;";
+            else if (c == '>') o += "&gt;";
+            else o += c;
+        }
+        return o;
+    };
+    std::string xmp = "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
+                      "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">"
+                      "<rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\">";
+    if (!title.empty()) xmp += "<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">" + xml(title) + "</rdf:li></rdf:Alt></dc:title>";
+    if (!tag.empty()) xmp += "<dc:language><rdf:Bag><rdf:li>" + tag + "</rdf:li></rdf:Bag></dc:language>";
+    xmp += "</rdf:Description></rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>";
+    static const char *kHex = "0123456789ABCDEF";
+    std::string hex;
+    for (char c : xmp) {
+        hex += kHex[(static_cast<unsigned char>(c) >> 4) & 0xF];
+        hex += kHex[static_cast<unsigned char>(c) & 0xF];
+    }
+    info += "\\special{pdf:stream @mepxmp <" + hex + "> << /Type /Metadata /Subtype /XML >>}"
+            "\\special{pdf:put @catalog << /Metadata @mepxmp >>}";
+    return "\\mepDoc{" + catalog + "}{" + info + "}\n";
+}
+
 // The packages and definitions WalkLatexNode's output needs. Beamer
 // brings hyperref itself and sizes its own pages; longtable is article-only.
 void LatexPreamble(std::ostringstream &out, bool beamer) {
     if (beamer)
-        out << "\\documentclass[11pt,aspectratio=169]{beamer}\n"
+        // (usepdftitle=false: the PDF's own title is the plain one \mepDoc
+        // writes, not the tagged \title.)
+        out << "\\documentclass[11pt,aspectratio=169,usepdftitle=false]{beamer}\n"
             << "\\setbeamertemplate{navigation symbols}{}\n"
             << "\\setbeamertemplate{footline}[frame number]\n";
     else
@@ -710,17 +1226,19 @@ void LatexPreamble(std::ostringstream &out, bool beamer) {
         out << "\\definecolor{mepbox" << k.name << "}{HTML}{" << hex(k.color) << "}\n"
             << "\\definecolor{mepbox" << k.name << "tint}{HTML}{" << hex(k.tint) << "}\n";
     // (On a slide, room is short: smaller text and tighter spacing.)
-    out << "\\newtcolorbox{mepbox}[1]{enhanced, breakable, frame hidden, boxrule=0pt, arc=2pt, colback=#1tint, "
+    out << kLatexTagging;
+    out << "\\newtcolorbox{mepbox}[1]{enhanced, breakable, meptagged, frame hidden, boxrule=0pt, arc=2pt, colback=#1tint, "
            "borderline west={3pt}{0pt}{#1}, "
         << (beamer ? "fontupper=\\small, left=6pt, right=6pt, top=2pt, bottom=3pt, before skip=4pt, after skip=4pt}\n"
                    : "left=8pt, right=8pt, top=5pt, bottom=6pt, before skip=8pt, after skip=8pt}\n");
-    if (!beamer) out << "\\usepackage{longtable}\n\\usepackage[margin=1in]{geometry}\n\\usepackage{hyperref}\n";
+    if (!beamer) out << "\\usepackage{longtable}\n\\usepackage{float}\n\\usepackage[margin=1in]{geometry}\n\\usepackage{hyperref}\n";
+    if (!beamer) out << kLatexTaggingArticle;
 }
 
 }  // namespace
 
 std::string ExportHtmlToLatex(const std::string &html, const std::string &title, const std::string &author,
-                               const std::string &base_dir) {
+                               const std::string &base_dir, const std::string &lang) {
     HtmlDoc doc;
     // The LaTeX walker reads tags, attributes and text, never a computed style.
     ParseHtml(html, doc, /*full_document=*/true, /*compute_styles=*/false);
@@ -728,15 +1246,25 @@ std::string ExportHtmlToLatex(const std::string &html, const std::string &title,
 
     LatexCtx ctx;
     ctx.base_dir = base_dir;
+    ctx.tag.on = true;
+    // (\maketitle sets these first, whatever their numbers.)
+    const int title_id = ctx.tag.next_id++, author_id = ctx.tag.next_id++;
     std::string body;
     if (root) {
         for (auto &c : root->children) WalkLatexNode(c.get(), ctx, body);
     }
+    ctx.tag.Block(body);
 
     std::ostringstream out;
     LatexPreamble(out, false);
-    if (!title.empty()) out << "\\title{" << LatexEscape(title) << "}\n";
-    if (!author.empty()) out << "\\author{" << LatexEscape(author) << "}\n";
+    out << LatexTaggingDocument(lang.empty() ? HtmlLang(doc.root.get()) : lang, title);
+    auto tagged = [](int id, const char *type, const char *m, const char *e, const std::string &text) {
+        const std::string n = std::to_string(id);
+        return "\\mepS{" + n + "}{0}{" + type + "}{}\\" + m + "{" + n + "}{" + type + "}" + text + "\\" + e + "{}";
+    };
+    if (!title.empty()) out << "\\title{" << tagged(title_id, "Title", "mepM", "mepE", LatexEscape(title)) << "}\n";
+    // (The author is set in a tabular: a box.)
+    if (!author.empty()) out << "\\author{" << tagged(author_id, "P", "mepMb", "mepEb", LatexEscape(author)) << "}\n";
     out << "\\date{}\n\\begin{document}\n";
     if (!title.empty()) out << "\\maketitle\n";
     out << body << "\n\\end{document}\n";
@@ -745,10 +1273,11 @@ std::string ExportHtmlToLatex(const std::string &html, const std::string &title,
 
 std::string ExportHtmlSlidesToBeamer(const std::vector<BeamerFrame> &frames, const std::string &title,
                                      const std::string &subtitle, const std::string &author, const std::string &date,
-                                     const std::string &base_dir) {
+                                     const std::string &base_dir, const std::string &lang) {
     LatexCtx ctx;
     ctx.base_dir = base_dir;
     ctx.beamer = true;
+    ctx.tag.on = true;
     // A fragment's own content, walked as the article backend walks a page.
     auto walk = [&](const std::string &html) {
         HtmlDoc doc;
@@ -758,22 +1287,53 @@ std::string ExportHtmlSlidesToBeamer(const std::vector<BeamerFrame> &frames, con
             for (auto &c : root->children) WalkLatexNode(c.get(), ctx, out);
         return out;
     };
+    LatexTagger &tg = ctx.tag;
     std::ostringstream out;
     LatexPreamble(out, true);
-    if (!title.empty()) out << "\\title{" << LatexEscape(title) << "}\n";
-    if (!subtitle.empty()) out << "\\subtitle{" << LatexEscape(subtitle) << "}\n";
-    if (!author.empty()) out << "\\author{" << LatexEscape(author) << "}\n";
-    out << "\\date{" << LatexEscape(date) << "}\n\\begin{document}\n";
-    if (!title.empty() || !subtitle.empty() || !author.empty()) out << "\\begin{frame}\n\\titlepage\n\\end{frame}\n\n";
+    out << LatexTaggingDocument(lang, title);
+    // (Beamer's hyperref writes the PDF's title last: it is told the plain one.)
+    if (!title.empty()) out << "\\hypersetup{pdftitle={" << LatexEscape(title) << "}}\n";
+    // The title slide's lines, each set in a box of the title page: what
+    // is read is the text itself, and the short form ([...]) is what
+    // Beamer puts in the PDF's own title and author.
+    std::string cover;
+    const size_t cover_el = tg.BeginBlock(cover, "Sect");
+    auto line = [&](const char *type, const std::string &text) {
+        const std::string plain = LatexEscape(text);
+        if (!tg.on) return "{" + plain + "}";
+        std::string o;
+        const size_t el = tg.Begin(o, type);
+        tg.Boxed(o);
+        o += plain;
+        tg.End(o, el);
+        return "[{" + plain + "}]{" + o + "}";
+    };
+    if (!title.empty()) out << "\\title" << line("Title", title) << "\n";
+    if (!subtitle.empty()) out << "\\subtitle" << line("P", subtitle) << "\n";
+    if (!author.empty()) out << "\\author" << line("P", author) << "\n";
+    out << "\\date" << (date.empty() ? "{}" : line("P", date)) << "\n\\begin{document}\n";
+    tg.End(cover, cover_el);
+    if (!title.empty() || !subtitle.empty() || !author.empty()) out << cover << "\\begin{frame}\n\\titlepage\n\\end{frame}\n\n";
     for (const BeamerFrame &f : frames) {
         // fragile: a frame may hold verbatim code. The title is walked
         // like the body, so its inline markup and maths survive.
-        std::string t = walk(f.title_html);
+        // Each frame is a section of the deck, its title the heading
+        // (set in the frame's own title box).
+        std::string frame_el, t;
+        const size_t el = tg.BeginBlock(frame_el, "Sect");
+        const bool titled = !IsBlank(f.title_html);
+        const size_t head = titled ? tg.Begin(t, "H1") : 0;
+        ++tg.boxed;
+        t += walk(f.title_html);
+        --tg.boxed;
+        if (titled) tg.End(t, head);
         while (!t.empty() && (t.back() == '\n' || t.back() == ' ')) t.pop_back();
         while (!t.empty() && (t.front() == '\n' || t.front() == ' ')) t.erase(t.begin());
-        out << "\\begin{frame}[fragile]";
+        std::string body = walk(f.body_html);
+        tg.End(body, el);
+        out << frame_el << "\\begin{frame}[fragile]";
         if (!t.empty()) out << "{" << t << "}";
-        out << "\n" << walk(f.body_html) << "\n\\end{frame}\n\n";
+        out << "\n" << body << "\n\\end{frame}\n\n";
     }
     out << "\\end{document}\n";
     return out.str();

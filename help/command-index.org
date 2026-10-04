@@ -5,13 +5,17 @@
 
 * Every command
 
-All 358 ex commands mep defines: 116 built in and 243 registered from Lua.
+All 363 ex commands mep defines: 116 built in and 248 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
 
 | Command | Documented in |
 |---------+---------------|
+| =:A11yCheck= | [[file:mepml.html][mepml]] |
+| =:A11yRead= | [[file:mepml.html][mepml]] |
+| =:A11ySpeak= | [[file:mepml.html][mepml]] |
+| =:A11yTree= | [[file:mepml.html][mepml]] |
 | =:AgentSocket= | -- |
 | =:aiagents= | [[file:ai-agents.html][The AI Agents sidebar]] |
 | =:aiterm= | [[file:ai-terminal.html][Claude Code in a pane]] |
@@ -143,6 +147,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepmlImport= | [[file:mepml.html][mepml]] |
 | =:MepmlLinkFollow= | [[file:mepml.html][mepml]] |
 | =:MepmlPresent= | [[file:mepml.html][mepml]] |
+| =:MepmlRawToggle= | [[file:mepml.html][mepml]] |
 | =:MepmlRender= | [[file:mepml.html][mepml]] |
 | =:MepmlStop= | [[file:mepml.html][mepml]] |
 | =:MepmlTerminal= | [[file:mepml.html][mepml]] |

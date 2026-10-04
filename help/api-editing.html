@@ -17,11 +17,12 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (188)</h1>
+<h1>The bindings (192)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
 <tr><th>Function</th><th>Does</th></tr>
+<tr><td><code>mep.a11y</code></td><td>the accessibility view of a buffer's document</td></tr>
 <tr><td><code>mep.buffer_change_epoch</code></td><td>--</td></tr>
 <tr><td><code>mep.buffer_count</code></td><td>returns the number of currently open buffers</td></tr>
 <tr><td><code>mep.buffer_cursor_row</code></td><td>returns the cursor row of whichever pane in the active tab shows a given buffer</td></tr>
@@ -114,8 +115,11 @@ that it does nothing.</p>
 <tr><td><code>mep.mepml_present_info</code></td><td>the running presentation's state, or nil</td></tr>
 <tr><td><code>mep.mepml_present_stop</code></td><td>ends the running mepml presentation</td></tr>
 <tr><td><code>mep.mepml_present_warm</code></td><td>the presentation's formulas to render ahead of time, or nil</td></tr>
+<tr><td><code>mep.mepml_raw</code></td><td>whether the current buffer shows its mepml as raw text</td></tr>
+<tr><td><code>mep.mepml_raw_toggle</code></td><td>flips the current mepml buffer between raw and rendered</td></tr>
 <tr><td><code>mep.mepml_scan</code></td><td>re-parses the current mepml buffer and emits its decorations into `ns`</td></tr>
 <tr><td><code>mep.mepml_splice_results</code></td><td>--</td></tr>
+<tr><td><code>mep.mepml_tables_stale</code></td><td>whether a table's inline maths rendered at another width than it was laid out for</td></tr>
 <tr><td><code>mep.mepml_terminal_focus</code></td><td>sends the keyboard to the terminal of the block under the cursor</td></tr>
 <tr><td><code>mep.mepml_terminal_start</code></td><td>runs a block's program in a terminal inside its results</td></tr>
 <tr><td><code>mep.mepml_terminal_stop</code></td><td>stops the mepml block running under the cursor</td></tr>

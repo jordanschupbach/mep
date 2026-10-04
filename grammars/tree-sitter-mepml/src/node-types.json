@@ -4093,6 +4093,10 @@
     "named": false
   },
   {
+    "type": "note",
+    "named": false
+  },
+  {
     "type": "online",
     "named": false
   },
@@ -4185,6 +4189,10 @@
     "named": false
   },
   {
+    "type": "tip",
+    "named": false
+  },
+  {
     "type": "toc",
     "named": false
   },
@@ -4199,6 +4207,10 @@
   {
     "type": "verbatim",
     "named": true
+  },
+  {
+    "type": "warning",
+    "named": false
   },
   {
     "type": "{",

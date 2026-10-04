@@ -3343,6 +3343,76 @@ int l_mepml_present_warm(lua_State *L) {
     return 1;
 }
 
+// mep.a11y([buffer_id]) -> doc | nil, err: the buffer's document (default:
+// the current one) as a screen reader meets it -- Editor::Accessibility.
+// doc = {format, title, lang, tagged,
+//        read   = {{text, depth, page, row}...}   how it reads, line by line
+//        tree   = {{text, depth, page, row}...}   its structure
+//        issues = {{severity, code, message, page, row}...}}  what is missing
+// `page` and `row` are 1-based, 0 when the line has none.
+/**
+ * @brief Implements mep.a11y([buffer_id]): the accessibility view of a buffer's document.
+ * @param L Lua state; optional arg 1 is the buffer id.
+ * @return Number of values pushed (1: the table; 2 on failure: nil, message).
+ */
+int l_a11y(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int buffer_id = lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1));
+    a11y::Document doc;
+    std::string err;
+    if (!ed->Accessibility(buffer_id, &doc, &err)) {
+        lua_pushnil(L);
+        lua_pushstring(L, err.c_str());
+        return 2;
+    }
+    lua_newtable(L);
+    lua_pushstring(L, doc.format.c_str());
+    lua_setfield(L, -2, "format");
+    lua_pushlstring(L, doc.title.data(), doc.title.size());
+    lua_setfield(L, -2, "title");
+    lua_pushstring(L, doc.lang.c_str());
+    lua_setfield(L, -2, "lang");
+    lua_pushboolean(L, doc.tagged);
+    lua_setfield(L, -2, "tagged");
+    auto lines = [&](const char *name, const std::vector<a11y::Line> &ls) {
+        lua_newtable(L);
+        lua_Integer k = 1;
+        for (const a11y::Line &l : ls) {
+            lua_newtable(L);
+            lua_pushlstring(L, l.text.data(), l.text.size());
+            lua_setfield(L, -2, "text");
+            lua_pushinteger(L, l.depth);
+            lua_setfield(L, -2, "depth");
+            lua_pushinteger(L, l.page + 1);
+            lua_setfield(L, -2, "page");
+            lua_pushinteger(L, l.line + 1);
+            lua_setfield(L, -2, "row");
+            lua_rawseti(L, -2, k++);
+        }
+        lua_setfield(L, -2, name);
+    };
+    lines("read", a11y::Read(doc));
+    lines("tree", a11y::Outline(doc));
+    lua_newtable(L);
+    lua_Integer k = 1;
+    for (const a11y::Issue &i : a11y::Check(doc)) {
+        lua_newtable(L);
+        lua_pushstring(L, a11y::SeverityName(i.severity));
+        lua_setfield(L, -2, "severity");
+        lua_pushstring(L, i.code.c_str());
+        lua_setfield(L, -2, "code");
+        lua_pushlstring(L, i.message.data(), i.message.size());
+        lua_setfield(L, -2, "message");
+        lua_pushinteger(L, i.page + 1);
+        lua_setfield(L, -2, "page");
+        lua_pushinteger(L, i.line + 1);
+        lua_setfield(L, -2, "row");
+        lua_rawseti(L, -2, k++);
+    }
+    lua_setfield(L, -2, "issues");
+    return 1;
+}
+
 // mep.mepml_diagnostics() -> {{row=, col=, severity=, message=}, ...} (1-based).
 /**
  * @brief Implements mep.mepml_diagnostics(): the parser's diagnostics for the current mepml buffer.
@@ -13409,6 +13479,7 @@ const luaL_Reg kMepFuncs[] = {
     {"pdf_reload", l_pdf_reload},
     {"is_pdf_buffer", l_is_pdf_buffer},
     {"pdf_outline", l_pdf_outline},
+    {"a11y", l_a11y},
     {"pdf_goto_page", l_pdf_goto_page},
     {"pdf_fit_page", l_pdf_fit_page},
     {"pdf_current_page", l_pdf_current_page},

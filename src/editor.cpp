@@ -12051,6 +12051,7 @@ void Editor::EnsurePdfPagesRastered(int pane_id) {
             if (!sess.search_matches.empty()) pr.highlights = sess.doc->MatchRectsForPage(idx, sess.rendered_scale, sess.search_matches);
             pr.links = sess.doc->PageLinks(idx, sess.rendered_scale);
             pr.annots = sess.doc->AnnotDrawForPage(idx, sess.rendered_scale, sess.shared->pending_annots, sess.shared->annot_edits, sess.shared->annot_deletes);
+            pr.described = sess.doc->DescribedBoxes(idx, sess.rendered_scale);
             sess.rasters[idx] = std::move(pr);
         } else if (!res.ok && current) {
             // A failed render still takes a raster slot (an empty one, which

@@ -51,6 +51,10 @@ language.</p>
 <tr><td><code>:MepmlExportHtml</code></td><td>export to HTML</td></tr>
 <tr><td><code>:MepmlExportOpen</code></td><td>export to HTML and open it</td></tr>
 <tr><td><code>:MepmlCheck</code></td><td>list problems</td></tr>
+<tr><td><code>:A11yRead</code></td><td>how the document reads to a screen reader, in a pane</td></tr>
+<tr><td><code>:A11yTree</code></td><td>its structure as such a reader meets it</td></tr>
+<tr><td><code>:A11yCheck</code></td><td>what such a reader is missing (alt text, headers ...)</td></tr>
+<tr><td><code>:A11ySpeak</code> [stop]</td><td>read it aloud (needs <code>espeak-ng</code> or <code>espeak</code>)</td></tr>
 <tr><td><code>:MepmlHeaderToggle</code></td><td>fold or unfold the document header</td></tr>
 <tr><td><code>:MepmlLinkFollow</code></td><td>follow the link under the cursor</td></tr>
 <tr><td><code>:MepmlRender</code></td><td>re-render the buffer now</td></tr>
@@ -111,12 +115,16 @@ in every export and in the language server's checks.</p>
 <p>A <code>//</code> line is a comment. On a prose line, a <code>//</code> after a space starts a
 comment that runs to the end of that line.</p>
 <h1>Callouts</h1>
-<p>A comment that starts with a keyword and a colon is a callout, drawn as a
-coloured note and exported as one; the <code>//</code> lines right under it continue
-it.</p>
-<pre>// NOTE: this is shown to the reader,
-// and so is this line.
-// WARNING: so is this.</pre>
+<p>A comment that starts with a keyword and a colon is a callout, drawn in
+the editor as a coloured note; the <code>//</code> lines right under it continue it.
+It is still a comment -- a note to yourself while writing -- and like every
+comment it is left out of every export.</p>
+<pre>// TODO: check these numbers against the 2024 data,
+// and this line is part of the same note.
+// QUESTION: does this belong before the proof?</pre>
+<p>For something said to the <i>reader</i> -- a note, a tip, a warning, an example
+-- use a box: <code>\note(</code>, <code>\tip(</code>, <code>\warning(</code> and <code>\example(</code> (see
+Boxes, below).</p>
 <p>The keywords are <code>NOTE</code>, <code>INFO</code>, <code>TIP</code>, <code>HINT</code>, <code>SUCCESS</code>, <code>WARNING</code>,
 <code>CAUTION</code>, <code>ERROR</code>, <code>DANGER</code>, <code>IMPORTANT</code>, <code>TODO</code>, <code>FIXME</code>, <code>QUESTION</code> and
 <code>EXAMPLE</code>.</p>
@@ -278,6 +286,9 @@ boxes -- so a box holds whatever a slide can. The kinds are:</p>
 <tr><td><code>\example</code></td><td>Example</td><td>green</td></tr>
 <tr><td><code>\remark</code></td><td>Remark</td><td>teal</td></tr>
 <tr><td><code>\proof</code></td><td>Proof</td><td>grey, ending with a tombstone ∎</td></tr>
+<tr><td><code>\note</code></td><td>Note</td><td>slate blue</td></tr>
+<tr><td><code>\tip</code></td><td>Tip</td><td>green</td></tr>
+<tr><td><code>\warning</code></td><td>Warning</td><td>amber</td></tr>
 </table>
 <p>The title is everything before the first comma (escape a comma that
 belongs to it: =\,=), and may hold inline markup and maths. Text after
@@ -373,8 +384,9 @@ $$
 \[ \sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6} \]</pre>
 <p>Maths is typeset in the buffer with the same preview org uses
 (<code>&lt;leader&gt;otl</code> toggles it; it needs <code>tectonic</code> and <code>pdftoppm</code>). An
-<code>\alttext()</code> right after a formula describes it for screen readers in the
-export. A lone dollar amount such as <code>$5</code> is never maths.</p>
+<code>\alttext(...)</code> right after a formula says how it is read aloud: a screen
+reader speaks that instead of the symbols (see Accessibility, below). A lone
+dollar amount such as <code>$5</code> is never maths.</p>
 <h1>Code blocks and results</h1>
 <pre>//? Option: Option1=value1
 ```{bash, Option3="value3"}
@@ -609,10 +621,15 @@ run over several lines, with its parentheses wherever suits, up to the next
 blank line; the line breaks read as spaces. Images are drawn in the buffer.</p>
 <p>Figures (images, and code blocks that drew one) and tables are numbered:
 a caption reads "Figure 2: ..." or "Table 1: ..." in the editor and in
-the export alike. In the editor a caption, and the alt text in small muted
-italics below it, are wrapped to the text width (<code>:set textwidth</code>, 80 by
-default) and centred under a figure; the source comes back while the cursor
-is on it.</p>
+the export alike. In the editor a caption is wrapped to the text width
+(<code>:set textwidth</code>, 80 by default) and centred under a figure; its source
+comes back while the cursor is on it. An alt text is for readers who cannot
+see the page, so it takes no room on it: its lines are hidden, and while the
+cursor is on the block it describes it shows in a popup just under the
+block (an inline formula's while the cursor is in the formula) -- in the
+presentation view too (<code>n</code> puts a cursor on the slide). Move onto its own line to
+see and edit its source, which also stays on one line: a long one slides
+sideways to keep the cursor in view rather than wrapping.</p>
 <p>GitHub-flavoured Markdown tables work as they are. After a header row
 and a delimiter row with as many cells, the outer pipes are optional, and
 <code>\|</code> is a pipe inside a cell:</p>
@@ -635,6 +652,74 @@ columns leave (at most half of it each), and the row gets taller to fit
 the tallest picture. When the cursor is on that row, the pictures stay
 above its raw text. The export puts an <code>&lt;img&gt;</code> in the cell. A cell with
 anything else next to the image is plain text.</p>
+<h1>Accessibility</h1>
+<p>A document is also read by people who cannot see it -- through a screen
+reader, which speaks the text and has to be told what a picture shows, how
+a formula is said and which cells of a table are its headers. mepml has a
+place for each of these, and every export carries them:</p>
+<pre>//? Title: Growth of squares
+//? Lang: en-GB
+
+\image(./figures/plot.png)
+\caption(Squares of the first ten numbers)
+\alttext(A curve rising from 1 at x = 1 to 100 at x = 10)
+
+\image(./figures/ornament.png)
+\alttext()
+
+The area is \(x^2\)\alttext(x squared), and in general
+$$
+  \sum_{k=1}^{n} k = \frac{n(n+1)}{2}
+$$
+\alttext(The sum of k from 1 to n equals n times n plus 1, over 2)
+
+| Side | Area |
+| ---- | ---- |
+| 2    | 4    |
+| 3    | 9    |
+\caption(Areas)
+\alttext(The area of a square for sides 2 and 3)</pre>
+<table>
+<tr><th>Write</th><th>For</th></tr>
+<tr><td><code>//? Title:</code>, <code>//? Lang:</code></td><td>the document's title and language (<code>en</code>, <code>en-GB</code>, <code>fr</code> ...): what a screen reader announces, and the voice it reads in</td></tr>
+<tr><td><code>\alttext(text)</code> under a figure</td><td>the text read in the picture's place (an <code>\image</code>, or the plot a code block drew)</td></tr>
+<tr><td><code>\alttext()</code> under a figure</td><td>nothing to read: the picture only decorates, and is skipped</td></tr>
+<tr><td><code>\alttext(text)</code> on maths</td><td>how the formula is said aloud; without one mep says the TeX itself ("theta hat 1 equals a over b"), which is right for most formulas and worth overriding where it is not</td></tr>
+<tr><td><code>\alttext(text)</code> under a table</td><td>what the table shows, read before its cells</td></tr>
+<tr><td>a table's header row</td><td>(the row above its separator line) heads the columns: each cell is read under its header</td></tr>
+<tr><td><code>\caption(text)</code></td><td>read with what it captions</td></tr>
+</table>
+<p>What each export does with them:</p>
+<table>
+<tr><th>Export</th><th>Carries</th></tr>
+<tr><td>PDF (and Beamer)</td><td>a <b>tagged</b> PDF: the whole structure (headings, paragraphs, lists, tables with header cells, figures, formulas), alt text as <code>/Alt</code>, a table's as its <code>/Summary</code>, decoration and page numbers as artifacts, the title and language</td></tr>
+<tr><td>HTML</td><td><code>lang</code>, <code>alt</code> (<code>alt</code>""= + <code>role</code>"presentation"= for decoration), <code>role</code>"math"= + <code>aria-label</code>, <code>aria-description</code> on a table, <code>&lt;th scope</code>"col"&gt;=</td></tr>
+<tr><td>Word (<code>.docx</code>)</td><td>picture descriptions, "decorative" pictures, the table's description, repeated header rows, the language</td></tr>
+<tr><td>Writer (<code>.odt</code>)</td><td>the same, in ODF's own terms</td></tr>
+<tr><td>PowerPoint, Impress</td><td>picture descriptions</td></tr>
+<tr><td>Markdown, Org</td><td>a picture's alt text, the language</td></tr>
+</table>
+<p>Word and Writer have no place for a formula's alt text (they read the
+formula itself), nor Markdown and Org for a table's.</p>
+<p>To see what a screen reader will get -- of the document you are writing or
+of any export -- use these on a mepml buffer, a PDF, a web page or an
+office document:</p>
+<table>
+<tr><th>Command</th><th>Shows</th></tr>
+<tr><td><code>:A11yRead</code></td><td>how it reads, line by line: figures as their alt text, tables cell by cell under their headers, decoration left out</td></tr>
+<tr><td><code>:A11yTree</code></td><td>its structure: headings, lists, tables, figures and their alt text</td></tr>
+<tr><td><code>:A11yCheck</code></td><td>what is missing: a figure with no alt text, a table with no header row, no title, no language, a skipped heading level ...</td></tr>
+<tr><td><code>:A11ySpeak</code> [stop]</td><td>reads it aloud, when <code>espeak-ng</code> or <code>espeak</code> is installed</td></tr>
+</table>
+<p>Each opens in a pane beside the document; <code>Enter</code> on a line goes to what it
+is about. The language server marks a figure with no <code>\alttext</code> and a table
+with no header row as hints while you write, and from a shell
+<code>mep-mepml a11y FILE [read|tree|check]</code> prints the same for a <code>.mepml</code>,
+<code>.pdf</code>, <code>.html</code>, <code>.docx</code> or <code>.odt</code> file -- so an export can be compared
+with its source (<code>check</code> exits 1 when a figure has no alt text or a PDF is
+not tagged).</p>
+<p>A PDF made by anything but tectonic (XeTeX) from the exported <code>.tex</code> is the
+same document without the tags.</p>
 <h1>Lists</h1>
 <pre>- a bullet (also * or +)
   - indented to nest

@@ -26,10 +26,10 @@ content or nothing.
 | `heading` | `level` 1-6 | inlines | `> Title` ... `>>>>>> Title` |
 | `paragraph` | | inlines | prose |
 | `comment` | | — | `// text` |
-| `callout` | `kind` (lowercase keyword: `note`, `warning`, `todo` ...) | inlines | `// NOTE: text` |
+| `callout` | `kind` (lowercase keyword: `note`, `warning`, `todo` ...) | inlines | `// NOTE: text` -- a comment with a keyword: shown where the source is edited, written by no export |
 | `abstract` | | inlines | `\abstract( ... )` |
 | `slide` | `number`; `title` on a presentation's title page | blocks | `\slide(` ... `)` |
-| `box` | `kind`: `definition`, `theorem`, `lemma`, `proposition`, `corollary`, `fact`, `example`, `remark`, `proof`, or a name of the document's own | blocks | `\definition(Title,` ... `)`; `\boxed(kind, Title,` ... `)` |
+| `box` | `kind`: `definition`, `theorem`, `lemma`, `proposition`, `corollary`, `fact`, `example`, `remark`, `proof`, `note`, `tip`, `warning`, or a name of the document's own | blocks | `\definition(Title,` ... `)`; `\boxed(kind, Title,` ... `)` |
 | `list` | | `list-item` | `- item`, `1. item` |
 | `list-item` | `ordered`, `checked` = `true` \| `false` (task items only); † `number`, `indent` | inlines | |
 | `table` | | `table-cell` | pipe tables |
@@ -167,3 +167,40 @@ the number.
 export parses the document; an editor sees the document as written. Which
 `\name(` is a box, a slide or a user command is decided by the parser alone
 — a style sheet cannot add syntax.
+
+## 6. Accessibility
+
+What a document says to a reader who cannot see it is structure too, and
+every renderer and export carries it as far as its format can:
+
+- **Language.** `//? Lang: en-GB` (a BCP 47 tag; `Language:` too) names the
+  language the document is written in. With `//? Title:`, it is what a
+  screen reader announces first and picks its voice by.
+- **Alternative text.** An `alt-text` (`\alttext(...)`) stands for the
+  block it is written under:
+  - under an `image`, or a `code` block that drew a figure, it is read in
+    the picture's place;
+  - under a `math-block`, or right after inline `math`, it is how the
+    formula is said aloud (without one a renderer says the TeX itself,
+    command by command: `\hat{\theta}_1 = \frac{a}{b}` is "theta hat 1
+    equals a over b");
+  - under a `table`, it says what the table shows -- a description, read
+    before the cells, not instead of them.
+- **Decoration.** An empty `alt-text` (`\alttext()`) under an `image` says
+  the picture only decorates the page: it is left out of what is read. This
+  is different from no `alt-text` at all, which leaves the picture
+  undescribed.
+- **Header cells.** The rows of a `table` above its `|---|` line are its
+  `table-cell[header]`s: each heads its column, and a body cell is read
+  under it.
+- **Captions** (`caption`) are read with what they caption.
+
+A renderer must not show an `alt-text` to a reader as content of the page
+(mep's editor shows it in a popup while the cursor is on the block it
+describes, because the editor is where it is written); an export writes it where its format keeps such text -- an `alt`
+attribute, a structure element's `/Alt`, a picture's description.
+
+`mep-mepml a11y FILE [read|tree|check]` prints a document as a screen
+reader meets it, its structure, or what such a reader is missing -- for
+`.mepml` and for the exports (`.pdf`, `.html`, `.docx`, `.odt` ...), so the
+two can be compared.

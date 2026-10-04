@@ -24264,6 +24264,124 @@ const char *kBuiltinOrgSnippets =
     "  return false\n"
     "end)\n";
 
+// Accessibility commands (:A11yRead, :A11yTree, :A11yCheck, :A11ySpeak)
+// over mep.a11y -- see the chunk's own header.
+const char *kBuiltinA11y =
+    "-- Accessibility: any document mep shows -- a mepml buffer, a PDF, a web\n"
+    "-- page, a .docx / .odt / Markdown / Org file -- as a screen reader meets\n"
+    "-- it (mep.a11y, src/a11y_doc.h). :A11yRead opens how it reads, line by\n"
+    "-- line, in a pane beside it; :A11yTree its structure; :A11yCheck what such\n"
+    "-- a reader is missing. Enter on a line goes to what it is about (a page of\n"
+    "-- a PDF, a line of a text buffer). :A11ySpeak reads it aloud when a speech\n"
+    "-- program is installed.\n"
+    "local a11y_buf, a11y_src, a11y_rows = nil, nil, {}\n"
+    "local function a11y_jump()\n"
+    "  local row = mep.cursor()\n"
+    "  local it = a11y_rows[row]\n"
+    "  if not it or (it.page == 0 and it.row == 0) then\n"
+    "    mep.notify('Nothing in the document for this line', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if not (a11y_src and mep.pane_focus_buffer(a11y_src)) then\n"
+    "    mep.notify('The document is no longer open', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if it.page ~= 0 then mep.pdf_goto_page(a11y_src, it.page) else mep.set_cursor(it.row, 1) end\n"
+    "end\n"
+    "local function a11y_source()\n"
+    "  local cur = mep.current_buffer()\n"
+    "  if a11y_buf and cur == a11y_buf and a11y_src then return a11y_src end\n"
+    "  return cur\n"
+    "end\n"
+    "local function a11y_where(i)\n"
+    "  if i.page ~= 0 then return ' (page ' .. i.page .. ')' end\n"
+    "  if i.row ~= 0 then return ' (line ' .. i.row .. ')' end\n"
+    "  return ''\n"
+    "end\n"
+    "local function a11y_view(what)\n"
+    "  local src = a11y_source()\n"
+    "  local doc, err = mep.a11y(src)\n"
+    "  if not doc then\n"
+    "    mep.notify('Accessibility: ' .. (err or 'nothing to read'), 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local lines, rows = {}, {}\n"
+    "  local function add(text, item)\n"
+    "    lines[#lines + 1] = text\n"
+    "    rows[#lines] = item\n"
+    "  end\n"
+    "  if what == 'check' then\n"
+    "    local n = #doc.issues\n"
+    "    add('Accessibility check: ' .. (n == 0 and 'nothing is missing for a screen reader.' or (n .. (n == 1 and ' problem' or ' problems'))))\n"
+    "    for _, i in ipairs(doc.issues) do add('[' .. i.severity .. '] ' .. i.message .. a11y_where(i), i) end\n"
+    "  else\n"
+    "    for _, l in ipairs(what == 'tree' and doc.tree or doc.read) do add(string.rep('  ', l.depth) .. l.text, l) end\n"
+    "  end\n"
+    "  a11y_src, a11y_rows = src, rows\n"
+    "  if not a11y_buf then\n"
+    "    a11y_buf = mep.buffer_new()\n"
+    "    mep.buffer_set_on_enter(a11y_buf, a11y_jump)\n"
+    "  end\n"
+    "  mep.buffer_set_lines(a11y_buf, lines)\n"
+    "  if not mep.pane_focus_buffer(a11y_buf) then\n"
+    "    mep.cmd('vsplit')\n"
+    "    mep.nav_pane('right')\n"
+    "    mep.buffer_switch(a11y_buf)\n"
+    "    mep.pane_set_share(0.4)\n"
+    "  end\n"
+    "end\n"
+    "function mep.a11y_read() a11y_view('read') end\n"
+    "function mep.a11y_tree() a11y_view('tree') end\n"
+    "function mep.a11y_check() a11y_view('check') end\n"
+    "mep.command('A11yRead', mep.a11y_read)\n"
+    "mep.command('A11yTree', mep.a11y_tree)\n"
+    "mep.command('A11yCheck', mep.a11y_check)\n"
+    "\n"
+    "local a11y_speech = nil\n"
+    "function mep.a11y_speak(arg)\n"
+    "  if a11y_speech then\n"
+    "    mep.job_kill(a11y_speech)\n"
+    "    a11y_speech = nil\n"
+    "    if arg == 'stop' or arg == nil or arg == '' then\n"
+    "      mep.notify('Stopped reading')\n"
+    "      return\n"
+    "    end\n"
+    "  elseif arg == 'stop' then\n"
+    "    return\n"
+    "  end\n"
+    "  local exe = nil\n"
+    "  for _, e in ipairs({'espeak-ng', 'espeak'}) do\n"
+    "    if mep_org_babel_has_exe(e) then exe = e break end\n"
+    "  end\n"
+    "  if not exe then\n"
+    "    mep.notify('No speech program on PATH (espeak-ng or espeak): :A11yRead shows the same text', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local doc, err = mep.a11y(a11y_source())\n"
+    "  if not doc then\n"
+    "    mep.notify('Accessibility: ' .. (err or 'nothing to read'), 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local path = os.tmpname()\n"
+    "  local f = io.open(path, 'w')\n"
+    "  if not f then return end\n"
+    "  for _, l in ipairs(doc.read) do f:write(l.text, '\\n') end\n"
+    "  f:close()\n"
+    "  local argv = {exe}\n"
+    "  if doc.lang ~= '' then\n"
+    "    argv[#argv + 1] = '-v'\n"
+    "    argv[#argv + 1] = doc.lang:lower()\n"
+    "  end\n"
+    "  argv[#argv + 1] = '-f'\n"
+    "  argv[#argv + 1] = path\n"
+    "  mep.notify('Reading aloud (:A11ySpeak stop to stop)')\n"
+    "  a11y_speech = mep.job_start(argv, {on_exit = function()\n"
+    "    os.remove(path)\n"
+    "    a11y_speech = nil\n"
+    "  end})\n"
+    "end\n"
+    "mep.command('A11ySpeak', function(args) mep.a11y_speak(args) end)\n";
+
 // Org note markup: rainbow highlight macro + emphasis wraps, all under
 // the <leader>m 'markup' which-key group (Visual mode; the selection
 // survives the whichkey overlay, same as kBuiltinSpell's zf).
@@ -46591,7 +46709,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // background terminal pane always keeps showing its live grid
         // regardless of the active pane's mode -- you still want to see
         // it still running while browsing a different one.
-        bool show_live_grid = !is_active || g_editor.CurrentMode() != Mode::Normal;
+        //
+        // "That state" is not Normal alone: from the snapshot, `v` / `V` /
+        // Ctrl-V (a selection to yank), `/` and `?` (a search) and `:` all
+        // leave Normal while still working on the snapshot's lines. Switching
+        // back to the live grid for those hid the selection the moment it
+        // started.
+        // (Only those: an overlay opened over a live terminal -- a
+        // picker, a prompt -- keeps the live grid behind it.)
+        const Mode pane_mode = g_editor.CurrentMode();
+        const bool browsing_snapshot = pane_mode == Mode::Normal || pane_mode == Mode::Visual || pane_mode == Mode::VisualLine ||
+                                       pane_mode == Mode::VisualBlock || pane_mode == Mode::Command ||
+                                       pane_mode == Mode::SearchForward || pane_mode == Mode::SearchBackward;
+        bool show_live_grid = !is_active || !browsing_snapshot;
         if (show_live_grid) {
             // Publish this frame's grid geometry both onto the session (so
             // editor.cpp's wheel handler can map the mouse to a cell) and
@@ -47268,6 +47398,58 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
             if (sel && gfx::IsMouseButtonReleased(gfx::MouseButton::Left)) sel->selecting = false;
+        }
+
+        // What a tagged PDF says in words about the thing under the
+        // pointer -- a figure's alternative text, a formula's, a table's
+        // summary (PdfSession::PageRaster::described) -- in a popup beside
+        // it, wrapped to the pane. A note's own popup wins.
+        if (!have_note_popup) {
+            for (const DrawnPdfPage &dp : drawn_pdf_pages) {
+                auto raster = pdf_sess->rasters.find(dp.idx);
+                if (raster == pdf_sess->rasters.end()) continue;
+                const PdfDescribedBox *hit = nullptr;
+                for (const PdfDescribedBox &d : raster->second.described) {
+                    const float dx0 = dp.pos.x + d.x0 * pdf_sess->zoom, dy0 = dp.pos.y + d.y0 * pdf_sess->zoom;
+                    const float dx1 = dp.pos.x + d.x1 * pdf_sess->zoom, dy1 = dp.pos.y + d.y1 * pdf_sess->zoom;
+                    if (annot_mouse.x < dx0 || annot_mouse.x > dx1 || annot_mouse.y < dy0 || annot_mouse.y > dy1) continue;
+                    // (The smallest one under the pointer: a formula inside a described table, say.)
+                    if (!hit || (d.x1 - d.x0) * (d.y1 - d.y0) < (hit->x1 - hit->x0) * (hit->y1 - hit->y0)) hit = &d;
+                }
+                if (!hit || annot_mouse.y < content_y || annot_mouse.y > content_y + content_h) continue;
+                const float fs = std::max(14.0f, font_size), pad = 6.0f;
+                const float max_w = std::max(120.0f, std::min(static_cast<float>(w) - 24.0f, fs * 34.0f));
+                // Greedy word wrap, measured in the UI font.
+                std::vector<std::string> wrapped;
+                {
+                    std::istringstream words(hit->kind + ": " + hit->text);
+                    std::string word, line;
+                    while (words >> word) {
+                        const std::string trial = line.empty() ? word : line + " " + word;
+                        if (!line.empty() && DrawUiText(trial, gfx::Vector2{0, 0}, fs, gfx::Blank, /*measure_only=*/true) > max_w) {
+                            wrapped.push_back(line);
+                            line = word;
+                        } else {
+                            line = trial;
+                        }
+                    }
+                    if (!line.empty()) wrapped.push_back(line);
+                }
+                float bw = 0;
+                for (const std::string &l : wrapped)
+                    bw = std::max(bw, DrawUiText(l, gfx::Vector2{0, 0}, fs, gfx::Blank, /*measure_only=*/true));
+                bw += pad * 2;
+                const float line_h = fs + 3.0f, bh = line_h * static_cast<float>(wrapped.size()) + pad * 2;
+                const float bx = std::max(static_cast<float>(x) + 2, std::min(annot_mouse.x + 12, static_cast<float>(x + w) - bw - 2));
+                const float by = std::max(static_cast<float>(y) + 2, std::min(annot_mouse.y + 14, static_cast<float>(y + h) - bh - 2));
+                gfx::DrawRectangle(static_cast<int>(bx), static_cast<int>(by), static_cast<int>(bw), static_cast<int>(bh),
+                                   ResolveHlGroup("FloatBg"));
+                gfx::DrawRectangleLines(static_cast<int>(bx), static_cast<int>(by), static_cast<int>(bw), static_cast<int>(bh),
+                                        ResolveHlGroup("FloatBorder"));
+                for (size_t li = 0; li < wrapped.size(); ++li)
+                    DrawUiText(wrapped[li], gfx::Vector2{bx + pad, by + pad + line_h * static_cast<float>(li)}, fs, ResolveHlGroup("Normal"));
+                break;
+            }
         }
 
         // Sticky-note contents popup (drawn on top of the page stack, still
@@ -49771,8 +49953,28 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     int row = pane.scroll_row;
     // (A row set centred or flush right moves text_x for its own drawing.)
     const float text_x_left = text_x;
+    // (A row slid sideways -- see single_line_shift -- is clipped to the
+    // text area while it is drawn; the pane's own clip comes back after it.)
+    bool row_clipped = false;
+    float cursor_row_shift = 0.0f;
+    auto unclip_row = [&] {
+        if (!row_clipped) return;
+        gfx::EndScissorMode();
+        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w), static_cast<int>(content_h));
+        row_clipped = false;
+    };
     for (; row < buf.LineCount() && visual_slot < visible_lines; row++) {
+        unclip_row();
         text_x = text_x_left;
+        // Rows that take no slot at all (a mepml alt text while the cursor
+        // is off its block -- Buffer::OrgLatexRender::collapsed): not drawn,
+        // not numbered, no room. The slot walkers get the same 0 from
+        // Editor::PaneRowSlots.
+        if (const Buffer::OrgLatexRender *gone = g_editor.OrgLatexRenderForRow(buf, row, latex_cursor_row, org_plain);
+            gone != nullptr && gone->slots == 0) {
+            row = gone->end_row;
+            continue;
+        }
         // Headroom for a row whose text is drawn taller than a line
         // (mepml's scaled runs, Editor::RowTopPadSlots): the empty slots
         // come first, so the row's text -- and every run on it, large or
@@ -49864,7 +50066,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             bool is_org_image = show_org_images && buf.org_image_rows.count(row) != 0;
             bool is_org_latex =
                 !is_org_image && g_editor.OrgLatexRenderForRow(buf, row, latex_cursor_row, org_plain) != nullptr;
-            if (!is_org_image && !is_org_latex) {
+            // (A row held to one line -- a mepml alt text's source -- is
+            // drawn unwrapped, slid sideways to follow the caret: below.)
+            if (!is_org_image && !is_org_latex && buf.mepml_single_line_rows.count(row) == 0) {
                 row_wraps = true;
                 int len = Editor::WrapLenForRow(buf, row);
                 row_wrap_slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
@@ -50772,6 +50976,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                                 static_cast<int>(x1 - x0), line_height, fill);
                               });
         }
+        // A row held to one line (Buffer::mepml_single_line_rows) that is
+        // longer than the pane: slid left by whole cells so the caret stays
+        // in view, and clipped to the text area (until the next row) so it
+        // does not run under the line numbers.
+        float single_line_shift = 0.0f;
+        if (row == pane.cursor.row && !fold_here && buf.mepml_single_line_rows.count(row) != 0) {
+            const int avail_cols = static_cast<int>((x + w - static_cast<float>(kMarginX) - text_x_left) / g_char_width);
+            const int caret_col = ByteOffsetToColumn(buf.lines[static_cast<size_t>(row)], pane.cursor.col);
+            const int over = caret_col - std::max(1, avail_cols - 6);
+            if (over > 0) single_line_shift = static_cast<float>(over) * g_char_width;
+            cursor_row_shift = single_line_shift;
+            text_x -= single_line_shift;
+        }
         if (number_w > 0.0f) {
             // :set relativenumber: every row but the cursor's own shows
             // its distance from it instead of an absolute number: the
@@ -50786,6 +51003,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             float num_w = gfx::MeasureTextEx(g_font, num.c_str(), g_font_size, 0).x;
             float num_x = (relative && current_line) ? (text_x_left - number_w) : (text_x_left - g_char_width - num_w);
             gfx::DrawTextEx(g_font, num.c_str(), gfx::Vector2{num_x, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
+        }
+        if (single_line_shift > 0.0f) {
+            gfx::EndScissorMode();
+            gfx::BeginScissorMode(static_cast<int>(text_x_left), static_cast<int>(content_y),
+                                  static_cast<int>(x + w - text_x_left), static_cast<int>(content_h));
+            row_clipped = true;
         }
 
         // Decorations (Phase 4): whole-line tint first (background,
@@ -51947,6 +52170,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
     }
+    unclip_row();
     text_x = text_x_left;
 
     // `row` here is the drawing loop's own variable, left at one past
@@ -52074,6 +52298,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // below); pane.cursor.col picks out which of its visual sub-lines
         // the caret itself is drawn on.
         int cursor_wrap_cols = (!cursor_on_image && !cursor_on_latex) ? wrap_cols : 0;
+        if (buf.mepml_single_line_rows.count(pane.cursor.row) != 0) cursor_wrap_cols = 0;  // (held to one line)
         // pane.cursor.col is a byte offset (every cursor-mutation/motion
         // function in editor.cpp indexes a line that way), but WrapPos/
         // DrawLineFast lay a row out one column per *codepoint* -- convert
@@ -52084,7 +52309,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         int cursor_display_col = ByteOffsetToColumn(cursor_line, pane.cursor.col);
         // Wrapped lines of a row with tall inline maths sit further apart
         // (the draw loop's row_pitch).
-        gfx::Vector2 cursor_pos = WrapPos(cursor_display_col, cursor_wrap_cols, text_x, content_y + static_cast<float>(cursor_slot * line_height),
+        gfx::Vector2 cursor_pos = WrapPos(cursor_display_col, cursor_wrap_cols, text_x - cursor_row_shift, content_y + static_cast<float>(cursor_slot * line_height),
                                       line_height * g_editor.RowLinePitchSlots(buf, pane.cursor.row));
         float cursor_x = cursor_pos.x, cursor_y = cursor_pos.y;
         // The cursor's row of a wrapped org table is drawn as its layout
@@ -53112,6 +53337,60 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                     static_cast<int>(box_h), ResolveHlGroup("FloatBorder"));
             if (layout) DrawMathLayout(box_x + pad, box_y + pad, *layout, ResolveHlGroup("Normal"));
             else gfx::DrawTextureEx(*tex, gfx::Vector2{box_x + pad, box_y + pad}, 0.0f, scale, gfx::White);
+        }
+    }
+
+    // Alt text popup: a mepml alt text takes no room on the page
+    // (Editor::MepmlScan collapses its rows), so while the cursor is on the
+    // block it describes -- and not on the alt text's own source -- what it
+    // says floats just under the block; over the pane's last rows when the
+    // block runs past them. (The math preview above goes over its
+    // fragment, so the two do not meet.)
+    if (is_active && !org_plain && g_editor.OrgConcealVisible() && !buf.mepml_alt_notes.empty() &&
+        !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row && pane.cursor.row < row) {
+        const int cr = pane.cursor.row;
+        const Buffer::MepmlAltNote *note = nullptr;
+        for (const Buffer::MepmlAltNote &a : buf.mepml_alt_notes) {
+            if (cr < a.first || cr > a.last || (cr >= a.alt_first && cr <= a.alt_last)) continue;
+            // An inline formula's: only with the cursor in its source, and
+            // then rather than its block's.
+            const bool inline_note = a.col_first >= 0;
+            if (inline_note && ((cr == a.first && pane.cursor.col < a.col_first) || (cr == a.last && pane.cursor.col >= a.col_last)))
+                continue;
+            const bool note_inline = note && note->col_first >= 0;
+            if (!note || (inline_note && !note_inline) ||
+                (inline_note == note_inline && a.last - a.first < note->last - note->first))
+                note = &a;
+        }
+        if (note) {
+            const float pad = 6.0f;
+            const float room = std::max(40.0f, w - (text_x - x) - kMarginX) - pad * 2.0f;
+            const int cols = std::clamp(static_cast<int>(room / std::max(1.0f, g_char_width)), 8, 72);
+            const std::vector<mepml::RenderedLine> lines = mepml::RenderAltText(
+                note->text.empty() ? std::string("(decorative: not read out)") : "Alt text: " + note->text, cols, false);
+            int widest = 0;
+            for (const mepml::RenderedLine &l : lines) widest = std::max(widest, ByteOffsetToColumn(l.text, static_cast<int>(l.text.size())));
+            const float box_w = static_cast<float>(widest) * g_char_width + pad * 2.0f;
+            const float box_h = static_cast<float>(lines.size()) * static_cast<float>(line_height) + pad * 2.0f;
+            const float content_bottom = content_y + content_h;
+            const int last = std::min(note->last, buf.LineCount() - 1);
+            const float bottom_y =
+                content_y + static_cast<float>((RowSlot(last + 1) - g_editor.RowTopPadSlots(buf, last + 1)) * line_height);
+            float box_y = bottom_y + 2.0f;
+            if (box_y + box_h > content_bottom) box_y = std::max(content_y, content_bottom - box_h - 2.0f);
+            // (Under an inline formula where it starts, when it is on one row.)
+            const int anchor_col = note->col_first >= 0 && note->first == note->last && note->first < buf.LineCount()
+                                       ? ByteOffsetToColumn(buf.lines[static_cast<size_t>(note->first)], note->col_first)
+                                       : 0;
+            const float box_x =
+                std::max(x, std::min(text_x + static_cast<float>(anchor_col) * g_char_width - pad, x + w - kMarginX - box_w));
+            gfx::DrawRectangle(static_cast<int>(box_x), static_cast<int>(box_y), static_cast<int>(box_w),
+                               static_cast<int>(box_h), ResolveHlGroup("FloatBg"));
+            gfx::DrawRectangleLines(static_cast<int>(box_x), static_cast<int>(box_y), static_cast<int>(box_w),
+                                    static_cast<int>(box_h), ResolveHlGroup("FloatBorder"));
+            for (size_t i = 0; i < lines.size(); ++i)
+                DrawGridText(lines[i].text, box_x + pad, box_y + pad + static_cast<float>(i) * static_cast<float>(line_height),
+                             ResolveHlGroup("Normal"), false);
         }
     }
 
@@ -57085,6 +57364,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgSnippets);
     lua->DoString(kBuiltinOrgNotes);
     lua->DoString(kBuiltinMepml);
+    lua->DoString(kBuiltinA11y);
     lua->DoString(kBuiltinSnippetHelp);
     lua->DoString(kBuiltinActivityBar);
     lua->DoString(kBuiltinAi);

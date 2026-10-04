@@ -110,6 +110,13 @@ void SkipWhitespaceAndComments(const unsigned char *data, size_t len, size_t &po
 // in pdf_doc.h).
 bool ParseObject(const unsigned char *data, size_t len, size_t &pos, Object *out);
 
+// A text string (spec 7.9.2.2) -- a title, an /Alt, an /ActualText -- as
+// UTF-8: UTF-16BE behind a U+FEFF byte-order mark (surrogate pairs too),
+// UTF-8 behind its own mark (PDF 2.0), anything else PDFDocEncoding, read
+// here as Latin-1 (the two agree on what real files hold: ASCII and
+// accented Latin letters).
+std::string TextStringToUtf8(const std::string &raw);
+
 // Resolves an indirect object's /Length to a byte count. Returns false
 // if it can't (e.g. the reference target isn't parseable yet, or no
 // resolver was given) -- ParseIndirectObject then falls back to an

@@ -1,4 +1,5 @@
 //? Title: A Test Document
+//? Lang: en
 //? Import: opts.mepml
 //? Style: test.mepss
 
@@ -70,6 +71,10 @@ echo "Hello, world"
 
 \image(./filepath/img2.png) // NOTE: captions and alttext are optional
 
+// An empty alttext says the picture only decorates: a screen reader skips it.
+\image(./filepath/ornament.png)
+\alttext()
+
 >>> Heading Level 3
 
 | Col 1 | Col 2 |
@@ -78,6 +83,7 @@ echo "Hello, world"
 | item3 | item4 |
 | item5 | item6 |
 \caption(Here's my  caption here)
+\alttext(Three rows of two items each, under the headers Col 1 and Col 2)
 
 -------------------------------------------------------------------------------
 
@@ -316,8 +322,8 @@ Two slides in a row, this one untitled.
 
 Boxes: `\definition(Title,` on a line of its own, then the box's content --
 any blocks -- and a line holding just `)` to close it. `\theorem`, `\lemma`,
-`\proposition`, `\corollary`, `\fact`, `\example`, `\remark` and `\proof`
-work the same way, each in its own colour. The title is everything before
+`\proposition`, `\corollary`, `\fact`, `\example`, `\remark`, `\proof`,
+`\note`, `\tip` and `\warning` work the same way, each in its own colour. The title is everything before
 the first comma; text after it on the same line starts the box's first
 paragraph, and a box closed where its text ends needs no line of its own.
 
@@ -343,6 +349,14 @@ Expand the square; the cross term is $2\, \mathbf{a}^\top \mathbf{b} = 0$.
 )
 
 \example(No comma means no title: this box is all text.)
+
+\note(
+A note for the reader is a box. A comment with a keyword (a callout, like
+the NOTE and WARNING lines above) is a note to yourself: the editor draws
+it, and no export writes it.
+)
+
+\warning(Read before running, This block deletes its output directory.)
 
 User commands: `\define(name(params), template)` makes a command of your
 own, and `\name(args)` calls it -- the template with `#param` replaced by

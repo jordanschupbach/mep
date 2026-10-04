@@ -1,5 +1,6 @@
 #include "pdf_object.h"
 
+#include <cstdint>
 #include <cctype>
 #include <cstdlib>
 
@@ -486,6 +487,45 @@ bool ParseIndirectObject(const unsigned char *data, size_t len, size_t pos, Indi
     // "endobj" is expected next; not required for a successful parse
     // (tolerant of a missing/misplaced endobj, same reasoning as above).
     return true;
+}
+
+std::string TextStringToUtf8(const std::string &raw) {
+    auto byte = [&](size_t i) { return static_cast<uint32_t>(static_cast<unsigned char>(raw[i])); };
+    auto append = [](std::string &out, uint32_t cp) {
+        if (cp <= 0x7F) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp <= 0x7FF) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp <= 0xFFFF) {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    };
+    std::string out;
+    if (raw.size() >= 2 && byte(0) == 0xFE && byte(1) == 0xFF) {
+        for (size_t i = 2; i + 1 < raw.size(); i += 2) {
+            uint32_t cp = (byte(i) << 8) | byte(i + 1);
+            if (cp >= 0xD800 && cp <= 0xDBFF && i + 3 < raw.size()) {
+                const uint32_t lo = (byte(i + 2) << 8) | byte(i + 3);
+                if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                    i += 2;
+                }
+            }
+            append(out, cp);
+        }
+        return out;
+    }
+    if (raw.size() >= 3 && byte(0) == 0xEF && byte(1) == 0xBB && byte(2) == 0xBF) return raw.substr(3);
+    for (size_t i = 0; i < raw.size(); ++i) append(out, byte(i));
+    return out;
 }
 
 }  // namespace pdfobj

@@ -412,7 +412,7 @@ module.exports = grammar({
       $._line_end,
     ),
     // (`boxed` is any kind of the document's own: `\\boxed(axiom, Title,`.)
-    box_kind: _ => choice('definition', 'theorem', 'lemma', 'proposition', 'corollary', 'fact', 'example', 'remark', 'proof', 'boxed'),
+    box_kind: _ => choice('definition', 'theorem', 'lemma', 'proposition', 'corollary', 'fact', 'example', 'remark', 'proof', 'note', 'tip', 'warning', 'boxed'),
     box_close: $ => seq($._box_end, optional($._ws), ')', $._line_end),
 
     // \citation(key, field = value, ...) or @citation{key}{fields}

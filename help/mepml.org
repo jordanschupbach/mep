@@ -45,6 +45,10 @@ language.
 | =:MepmlExportHtml=    | export to HTML                                            |
 | =:MepmlExportOpen=    | export to HTML and open it                                |
 | =:MepmlCheck=         | list problems                                             |
+| =:A11yRead=           | how the document reads to a screen reader, in a pane      |
+| =:A11yTree=           | its structure as such a reader meets it                   |
+| =:A11yCheck=          | what such a reader is missing (alt text, headers ...)     |
+| =:A11ySpeak= [stop]   | read it aloud (needs =espeak-ng= or =espeak=)             |
 | =:MepmlHeaderToggle=  | fold or unfold the document header                        |
 | =:MepmlLinkFollow=    | follow the link under the cursor                          |
 | =:MepmlRender=        | re-render the buffer now                                  |
@@ -127,15 +131,20 @@ comment that runs to the end of that line.
 
 * Callouts
 
-A comment that starts with a keyword and a colon is a callout, drawn as a
-coloured note and exported as one; the =//= lines right under it continue
-it.
+A comment that starts with a keyword and a colon is a callout, drawn in
+the editor as a coloured note; the =//= lines right under it continue it.
+It is still a comment -- a note to yourself while writing -- and like every
+comment it is left out of every export.
 
 #+begin_example
-// NOTE: this is shown to the reader,
-// and so is this line.
-// WARNING: so is this.
+// TODO: check these numbers against the 2024 data,
+// and this line is part of the same note.
+// QUESTION: does this belong before the proof?
 #+end_example
+
+For something said to the /reader/ -- a note, a tip, a warning, an example
+-- use a box: =\note(=, =\tip(=, =\warning(= and =\example(= (see
+Boxes, below).
 
 The keywords are =NOTE=, =INFO=, =TIP=, =HINT=, =SUCCESS=, =WARNING=,
 =CAUTION=, =ERROR=, =DANGER=, =IMPORTANT=, =TODO=, =FIXME=, =QUESTION= and
@@ -337,6 +346,9 @@ boxes -- so a box holds whatever a slide can. The kinds are:
 | =\example=      | Example     | green                          |
 | =\remark=       | Remark      | teal                           |
 | =\proof=        | Proof       | grey, ending with a tombstone ∎ |
+| =\note=         | Note        | slate blue                     |
+| =\tip=          | Tip         | green                          |
+| =\warning=      | Warning     | amber                          |
 
 The title is everything before the first comma (escape a comma that
 belongs to it: =\,=), and may hold inline markup and maths. Text after
@@ -451,8 +463,9 @@ $$
 
 Maths is typeset in the buffer with the same preview org uses
 (=<leader>otl= toggles it; it needs =tectonic= and =pdftoppm=). An
-=\alttext()= right after a formula describes it for screen readers in the
-export. A lone dollar amount such as =$5= is never maths.
+=\alttext(...)= right after a formula says how it is read aloud: a screen
+reader speaks that instead of the symbols (see Accessibility, below). A lone
+dollar amount such as =$5= is never maths.
 
 * Code blocks and results
 
@@ -763,10 +776,15 @@ blank line; the line breaks read as spaces. Images are drawn in the buffer.
 
 Figures (images, and code blocks that drew one) and tables are numbered:
 a caption reads "Figure 2: ..." or "Table 1: ..." in the editor and in
-the export alike. In the editor a caption, and the alt text in small muted
-italics below it, are wrapped to the text width (=:set textwidth=, 80 by
-default) and centred under a figure; the source comes back while the cursor
-is on it.
+the export alike. In the editor a caption is wrapped to the text width
+(=:set textwidth=, 80 by default) and centred under a figure; its source
+comes back while the cursor is on it. An alt text is for readers who cannot
+see the page, so it takes no room on it: its lines are hidden, and while the
+cursor is on the block it describes it shows in a popup just under the
+block (an inline formula's while the cursor is in the formula) -- in the
+presentation view too (=n= puts a cursor on the slide). Move onto its own line to
+see and edit its source, which also stays on one line: a long one slides
+sideways to keep the cursor in view rather than wrapping.
 
 GitHub-flavoured Markdown tables work as they are. After a header row
 and a delimiter row with as many cells, the outer pipes are optional, and
@@ -800,6 +818,84 @@ columns leave (at most half of it each), and the row gets taller to fit
 the tallest picture. When the cursor is on that row, the pictures stay
 above its raw text. The export puts an =<img>= in the cell. A cell with
 anything else next to the image is plain text.
+
+* Accessibility
+
+A document is also read by people who cannot see it -- through a screen
+reader, which speaks the text and has to be told what a picture shows, how
+a formula is said and which cells of a table are its headers. mepml has a
+place for each of these, and every export carries them:
+
+#+begin_example
+//? Title: Growth of squares
+//? Lang: en-GB
+
+\image(./figures/plot.png)
+\caption(Squares of the first ten numbers)
+\alttext(A curve rising from 1 at x = 1 to 100 at x = 10)
+
+\image(./figures/ornament.png)
+\alttext()
+
+The area is \(x^2\)\alttext(x squared), and in general
+$$
+  \sum_{k=1}^{n} k = \frac{n(n+1)}{2}
+$$
+\alttext(The sum of k from 1 to n equals n times n plus 1, over 2)
+
+| Side | Area |
+| ---- | ---- |
+| 2    | 4    |
+| 3    | 9    |
+\caption(Areas)
+\alttext(The area of a square for sides 2 and 3)
+#+end_example
+
+| Write                         | For                                                              |
+|-------------------------------+------------------------------------------------------------------|
+| =//? Title:=, =//? Lang:=     | the document's title and language (=en=, =en-GB=, =fr= ...): what a screen reader announces, and the voice it reads in |
+| =\alttext(text)= under a figure | the text read in the picture's place (an =\image=, or the plot a code block drew) |
+| =\alttext()= under a figure   | nothing to read: the picture only decorates, and is skipped       |
+| =\alttext(text)= on maths     | how the formula is said aloud; without one mep says the TeX itself ("theta hat 1 equals a over b"), which is right for most formulas and worth overriding where it is not |
+| =\alttext(text)= under a table | what the table shows, read before its cells                      |
+| a table's header row          | (the row above its separator line) heads the columns: each cell is read under its header |
+| =\caption(text)=              | read with what it captions                                        |
+
+What each export does with them:
+
+| Export              | Carries                                                                |
+|---------------------+------------------------------------------------------------------------|
+| PDF (and Beamer)    | a *tagged* PDF: the whole structure (headings, paragraphs, lists, tables with header cells, figures, formulas), alt text as =/Alt=, a table's as its =/Summary=, decoration and page numbers as artifacts, the title and language |
+| HTML                | =lang=, =alt= (=alt=""= + =role="presentation"= for decoration), =role="math"= + =aria-label=, =aria-description= on a table, =<th scope="col">= |
+| Word (=.docx=)      | picture descriptions, "decorative" pictures, the table's description, repeated header rows, the language |
+| Writer (=.odt=)     | the same, in ODF's own terms                                           |
+| PowerPoint, Impress | picture descriptions                                                   |
+| Markdown, Org       | a picture's alt text, the language                                     |
+
+Word and Writer have no place for a formula's alt text (they read the
+formula itself), nor Markdown and Org for a table's.
+
+To see what a screen reader will get -- of the document you are writing or
+of any export -- use these on a mepml buffer, a PDF, a web page or an
+office document:
+
+| Command              | Shows                                                              |
+|----------------------+--------------------------------------------------------------------|
+| =:A11yRead=          | how it reads, line by line: figures as their alt text, tables cell by cell under their headers, decoration left out |
+| =:A11yTree=          | its structure: headings, lists, tables, figures and their alt text |
+| =:A11yCheck=         | what is missing: a figure with no alt text, a table with no header row, no title, no language, a skipped heading level ... |
+| =:A11ySpeak= [stop]  | reads it aloud, when =espeak-ng= or =espeak= is installed          |
+
+Each opens in a pane beside the document; =Enter= on a line goes to what it
+is about. The language server marks a figure with no =\alttext= and a table
+with no header row as hints while you write, and from a shell
+=mep-mepml a11y FILE [read|tree|check]= prints the same for a =.mepml=,
+=.pdf=, =.html=, =.docx= or =.odt= file -- so an export can be compared
+with its source (=check= exits 1 when a figure has no alt text or a PDF is
+not tagged).
+
+A PDF made by anything but tectonic (XeTeX) from the exported =.tex= is the
+same document without the tags.
 
 * Lists
 

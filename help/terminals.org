@@ -42,6 +42,12 @@ While a terminal pane is focused, *every* key goes to the shell -- including
 =Esc=, which is why leaving takes the two-key =Ctrl-\ Ctrl-n=. After that
 you are in Normal mode in a terminal buffer and the usual navigation works.
 
+What you browse there is a snapshot of the terminal's screen and scrollback
+as ordinary text, so everything Normal mode has works on it: motions, =/=
+and =?= searches, and selecting with =v=, =V= or =Ctrl-v= and yanking with
+=y= to paste elsewhere. =i= or =a= goes back to the live terminal; =Ctrl-\
+Ctrl-n= again takes a fresh snapshot.
+
 =Ctrl-Shift-V= pastes the clipboard into the terminal.
 
 * What terminals inherit

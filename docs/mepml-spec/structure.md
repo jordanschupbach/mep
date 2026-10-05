@@ -30,6 +30,8 @@ content or nothing.
 | `abstract` | | inlines | `\abstract( ... )` |
 | `slide` | `number`; `title` on a presentation's title page | blocks | `\slide(` ... `)` |
 | `box` | `kind`: `definition`, `theorem`, `lemma`, `proposition`, `corollary`, `fact`, `example`, `remark`, `proof`, `note`, `tip`, `warning`, or a name of the document's own | blocks | `\definition(Title,` ... `)`; `\boxed(kind, Title,` ... `)` |
+| `columns` | | `column` (and any block written between them) | `\columns(` ... `)` |
+| `column` | `width` (`40%`; absent for an equal share) | blocks | `\column(` ... `)`, `\column(40%,` ... `)` |
 | `list` | | `list-item` | `- item`, `1. item` |
 | `list-item` | `ordered`, `checked` = `true` \| `false` (task items only); † `number`, `indent` | inlines | |
 | `table` | | `table-cell` | pipe tables |
@@ -59,8 +61,11 @@ selectors: a sheet styles kinds of thing, not one list item or one link.
 the `meta` lines in it are selected on their own (`meta[key=title]`), not
 through it.
 
-`slide` and `box` are the only block containers a document author nests:
-`document > slide > box > paragraph` is a typical path. A `caption` and an
+`slide`, `box`, `columns` and `column` are the block containers a document
+author nests: `document > slide > box > paragraph` is a typical path, and
+`slide > columns > column > list` a list in a column. `columns` and
+`column` say what is beside what; a renderer that cannot set text side
+by side shows their content in order. A `caption` and an
 `alt-text` are children of the block they are written under.
 
 ## 2. Inline elements

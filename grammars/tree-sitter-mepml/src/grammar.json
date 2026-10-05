@@ -2844,6 +2844,14 @@
         {
           "type": "STRING",
           "value": "boxed"
+        },
+        {
+          "type": "STRING",
+          "value": "columns"
+        },
+        {
+          "type": "STRING",
+          "value": "column"
         }
       ]
     },

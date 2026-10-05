@@ -268,7 +268,8 @@ it shows.
 A slide reads the way an export does. A code block shows its results, not
 its code, unless the header or the block says otherwise (=exports=both=,
 =exports=code=, =echo=true= ...); a block that has not been run yet shows
-its code. Code shows without its options, figures without their
+its code. Results are on the slide as they are -- no title bar and no
+box round them, only code keeps its card. Code shows without its options, figures without their
 =// \image(...)= lines, and comments, result markers and =\define=s are
 left out. Your commands are expanded for the =present= export name, so
 =\when(present, ...)= can say something for this view only, and
@@ -312,6 +313,46 @@ Impress is typeset text (a text box cannot hold a formula), and so is
 every equation in a =pptx= opened by a program without Office equations,
 except that a deck exported from mep's editor (rather than by
 =mep-mepml=) shows its display equations there as pictures.
+
+* Columns
+
+#+begin_example
+\columns(
+\column(
+- *Describe*: how strongly are they associated?
+- *Predict*: what should we expect at a new value?
+)
+\column(
+\image(figs/scatter.png)
+\caption(Faster cars take longer to stop)
+)
+)
+#+end_example
+
+=\columns(= on a line of its own opens a row of columns, each =\column(=
+inside it is one column, and a line holding just =)= closes either -- the
+innermost first, as with boxes. A column holds whatever a slide can:
+lists, pictures, code blocks and their results, boxes, another =\columns(=.
+The columns share the width equally -- two split the page down the middle
+-- unless one names its own, as a percentage: =\column(40%,=. Columns
+that name none share what is left.
+
+The editor sets the columns side by side: each column's lines are drawn
+in its share of the text width, wrapped to it, with its pictures, code
+blocks, results and captions sized to it, and the markers hidden. Moving
+the cursor into the row shows it as written, one column under another,
+for editing; moving out sets it side by side again. The presentation view
+does the same, and fills each column's prose to its width. A column
+narrower than a dozen characters, a row holding anything but columns, and
+a row inside another row's column are shown one column after another.
+
+The PDF exports (the Beamer deck's =columns=, minipages in an article),
+the LaTeX they are made from and HTML (the slideshow too) set the columns
+side by side as well. The other formats (Markdown, Org, plain text, Word,
+LibreOffice, RTF) have one column of text: they write the columns' content
+one after another, in order. PowerPoint and Impress set a slide's one
+picture beside its text as they always have. A =\column(= outside
+=\columns(= is flagged, and so is a row or a column left open.
 
 * Boxes: definitions, theorems and their kin
 

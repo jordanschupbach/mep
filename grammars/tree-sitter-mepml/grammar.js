@@ -411,8 +411,10 @@ module.exports = grammar({
       alias($._paren_close, ')'),
       $._line_end,
     ),
-    // (`boxed` is any kind of the document's own: `\\boxed(axiom, Title,`.)
-    box_kind: _ => choice('definition', 'theorem', 'lemma', 'proposition', 'corollary', 'fact', 'example', 'remark', 'proof', 'note', 'tip', 'warning', 'boxed'),
+    // (`boxed` is any kind of the document's own: `\\boxed(axiom, Title,`.
+    // `columns` and `column` nest and close the same way: a row of columns
+    // and one column of it, `\\column(40%,` naming its width.)
+    box_kind: _ => choice('definition', 'theorem', 'lemma', 'proposition', 'corollary', 'fact', 'example', 'remark', 'proof', 'note', 'tip', 'warning', 'boxed', 'columns', 'column'),
     box_close: $ => seq($._box_end, optional($._ws), ')', $._line_end),
 
     // \citation(key, field = value, ...) or @citation{key}{fields}

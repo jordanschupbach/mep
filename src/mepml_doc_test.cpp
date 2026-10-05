@@ -848,6 +848,92 @@ int main() {
         CHECK(ex.size() == 3 && ex[0] == "\\definition(Reals $\\mathbb{R}$," && ex[1] == "In $\\mathbb{R}$." && ex[2] == ")");
     }
 
+    // --- Columns: \\columns( holding \\column( ... ) blocks, markers around
+    // ordinary blocks as a box's are.
+    {
+        const Lines src = {
+            "\\slide(",            // 0
+            "> Title",              // 1
+            "\\columns(",          // 2
+            "\\column(",           // 3
+            "- one",                // 4
+            "- two",                // 5
+            ")",                    // 6
+            "\\column(40%,  // w", // 7
+            "\\image(a.png)",      // 8
+            ")",                    // 9
+            ")",                    // 10
+            "After.",               // 11
+            ")",                    // 12
+        };
+        const Document d = Parse(src);
+        std::vector<BlockKind> kinds;
+        for (const Block &b : d.blocks) kinds.push_back(b.kind);
+        CHECK((kinds == std::vector<BlockKind>{BlockKind::SlideBegin, BlockKind::Heading, BlockKind::LayoutBegin, BlockKind::LayoutBegin,
+                                               BlockKind::List, BlockKind::LayoutEnd, BlockKind::LayoutBegin, BlockKind::Image,
+                                               BlockKind::LayoutEnd, BlockKind::LayoutEnd, BlockKind::Paragraph, BlockKind::SlideEnd}));
+        CHECK(d.blocks[2].keyword == "columns" && d.blocks[2].level == 1);
+        CHECK(d.blocks[3].keyword == "column" && d.blocks[3].level == 2 && ColumnPercent(d.blocks[3]) == 0);
+        CHECK(d.blocks[5].keyword == "column" && d.blocks[9].keyword == "columns");
+        CHECK(d.blocks[6].value == "40%" && ColumnPercent(d.blocks[6]) == 40);
+        for (const Diagnostic &dg : d.diagnostics) CHECK(dg.severity == Diagnostic::Info);
+
+        // The markers are markup with nothing in their place.
+        int markers = 0;
+        for (const Span &sp : Highlight(d))
+            if (sp.markup && sp.replace.empty() && (sp.target == "columns" || sp.target == "column")) ++markers;
+        CHECK(markers == 6);
+
+        // HTML: a flex row, a column naming its width, and all of it closed
+        // before what follows.
+        const std::vector<SlideHtml> frags = SlideFragments(d);
+        CHECK(frags.size() == 1);
+        const std::string &body = frags[0].body;
+        const size_t row = body.find("<div class=\"mcols\">\n<div class=\"mcol\">\n<ul>");
+        const size_t second = body.find("</div>\n<div class=\"mcol\" data-width=\"40\"");
+        const size_t after = body.find("</div>\n</div>\n<p>After.</p>");
+        CHECK(row != std::string::npos && second != std::string::npos && after != std::string::npos && row < second && second < after);
+        CHECK(ToHtml(d).find(".mcols { display: flex;") != std::string::npos);
+
+        // The element tree: columns > column > list.
+        const std::string tree = ElementTreeJson(d);
+        CHECK(tree.find("{\"name\":\"columns\",\"lines\":[2,2],\"children\":[{\"name\":\"column\",\"lines\":[3,3],\"children\":[{\"name\":\"list\"") != std::string::npos);
+        CHECK(tree.find("{\"name\":\"column\",\"attrs\":{\"width\":\"40%\"}") != std::string::npos);
+
+        // The presentation view keeps the markers (the editor sets the
+        // columns side by side from them) and fills what is in a column
+        // to the column's width.
+        const auto no_file = [](const std::string &, std::vector<std::string> *) { return false; };
+        const std::vector<PresentationPage> pages = PresentationPages("t.mepml", src, no_file);
+        CHECK(pages.size() == 1);
+        CHECK((pages[0].lines == Lines{"> Title", "\\columns(", "\\column(", "- one", "- two", ")", "\\column(40%,  // w",
+                                       "\\image(a.png)", ")", ")", "After."}));
+        CHECK((ColumnCols({0, 0}, 62) == std::vector<int>{30, 30}));
+        CHECK((ColumnCols({0, 40}, 62) == std::vector<int>{36, 24}));
+        CHECK((ColumnCols({25, 0, 0}, 64) == std::vector<int>{15, 22, 22}));
+        const Lines wide = {"\\slide(", "\\columns(", "\\column(", "one two three four five six seven eight", ")", "\\column(",
+                            "- nine ten eleven twelve thirteen fourteen", ")", ")", "one two three four five six seven eight", ")"};
+        const std::vector<PresentationPage> filled = PresentationPages("t.mepml", wide, no_file, 42);
+        CHECK(filled.size() == 1);
+        CHECK((filled[0].lines == Lines{"\\columns(", "\\column(", "one two three four", "five six seven eight", ")", "\\column(",
+                                        "- nine ten eleven", "  twelve thirteen", "  fourteen", ")", ")",
+                                        "one two three four five six seven eight"}));
+
+        // A column outside a row, a width that is not one, text on the
+        // opener, a row left open; the names are built in.
+        auto warns = [](const Lines &l, const char *what) {
+            for (const Diagnostic &dg : Parse(l).diagnostics)
+                if (dg.message.find(what) != std::string::npos) return true;
+            return false;
+        };
+        CHECK(warns({"\\column(", "x", ")"}, "outside \\columns"));
+        CHECK(warns({"\\columns(", "\\column(wide,", "x", ")", ")"}, "a column's width is a percentage"));
+        CHECK(warns({"\\columns(text", ")"}, "\\columns holds"));
+        CHECK(warns({"\\columns(", "\\column(", "x", ")"}, "\\columns is never closed"));
+        CHECK(Parse({"\\define(column(a), x)"}).commands.empty());
+        CHECK(Parse({"See \\columns(x) here."}).blocks[0].kind == BlockKind::Paragraph);
+    }
+
     // --- //? Type: presentation, and what its slide exports leave out.
     {
         Document d = Parse({"//? Type: Presentation", "", "Off the slides.", "", "// a comment is fine", "\\slide(", "> T", "On.", ")"});
@@ -947,19 +1033,23 @@ int main() {
             // Commands expanded (\otherwise: not html), citations rendered,
             // comments and code options gone, results only by default.
             CHECK(pages[1].number == 1 && pages[1].source_line == 7 && pages[1].source_end == 22 && pages[1].title == "First");
-            CHECK((pages[1].lines == Lines{"> First", "", "*Big.* Things grow as (Knuth, 1984).", "", "```", "[1] 42",
-                                           "```", "", "\\image(a.png)", "\\caption(A plot)"}));
+            // (An output's fences are drawn as empty rows -- it has no
+            // card -- so no blank line is beside them.)
+            CHECK((pages[1].lines == Lines{"> First", "", "*Big.* Things grow as (Knuth, 1984).", "```", "[1] 42",
+                                           "```", "\\image(a.png)", "\\caption(A plot)"}));
+            CHECK(pages[1].outputs == std::vector<int>{3});
             // exports=both keeps both; a block never run shows its code;
             // exports=none nothing; the bibliography is its entries.
             CHECK(pages[2].number == 2 && pages[2].source_line == 23 && pages[2].source_end == 39 && pages[2].title.empty());
-            const Lines want = {"```python", "print(1)", "```", "", "```", "1", "```", "", "```r", "never_run()", "```", "",
+            const Lines want = {"```python", "print(1)", "```", "```", "1", "```", "```r", "never_run()", "```", "",
                                 "1. Donald Knuth (1984). ~Literate Programming~."};
             CHECK(pages[2].lines == want);
+            CHECK(pages[2].outputs == std::vector<int>{3});
             // The code blocks each page shows, to run from it: the fence's
             // line on the page and in the document (results-only code has
             // none, nor does exports=none).
             CHECK(pages[1].code_blocks.empty());
-            CHECK((pages[2].code_blocks == std::vector<std::pair<int, int>>{{0, 24}, {8, 31}}));
+            CHECK((pages[2].code_blocks == std::vector<std::pair<int, int>>{{0, 24}, {6, 31}}));
             // Every page parses clean as mepml of its own.
             for (const PresentationPage &pg : pages) {
                 const Document d = Parse(pg.lines);
@@ -1036,9 +1126,10 @@ int main() {
                   pages[0].blocks[0].live_fence == -1);
             // Running: its window goes under the output fence. Never run: a
             // line saying how to start it.
-            CHECK((pages[1].lines == Lines{"```", "[running] r program", "```", "", "```", "(not running -- C-c C-c starts it)", "```"}));
+            CHECK((pages[1].lines == Lines{"```", "[running] r program", "```", "```", "(not running -- C-c C-c starts it)", "```"}));
+            CHECK((pages[1].outputs == std::vector<int>{0, 3}));
             CHECK(pages[1].blocks.size() == 2 && pages[1].blocks[0].live_fence == 0 && pages[1].blocks[0].source_fence == 11 &&
-                  pages[1].blocks[1].first == 4 && pages[1].blocks[1].last == 6 && pages[1].blocks[1].source_fence == 18);
+                  pages[1].blocks[1].first == 3 && pages[1].blocks[1].last == 5 && pages[1].blocks[1].source_fence == 18);
         }
     }
 

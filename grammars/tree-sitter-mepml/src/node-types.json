@@ -3933,6 +3933,14 @@
     "named": true
   },
   {
+    "type": "column",
+    "named": false
+  },
+  {
+    "type": "columns",
+    "named": false
+  },
+  {
     "type": "command_name",
     "named": true
   },

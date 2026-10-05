@@ -279,6 +279,35 @@ std::string BoxLabel(const std::string &kind) {
     return label;
 }
 
+int ColumnPercent(const Block &b) {
+    const std::string &v = b.value;
+    if (v.size() < 2 || v.back() != '%') return 0;
+    int n = 0;
+    for (size_t i = 0; i + 1 < v.size(); ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(v[i])) || n > 100) return 0;
+        n = n * 10 + (v[i] - '0');
+    }
+    return n >= 1 && n <= 100 ? n : 0;
+}
+
+std::vector<int> ColumnCols(const std::vector<int> &percents, int total_cols, int gap) {
+    const int n = static_cast<int>(percents.size());
+    if (n == 0) return {};
+    double named = 0;
+    int unnamed = 0;
+    for (int p : percents) {
+        named += p > 0 ? p : 0;
+        unnamed += p > 0 ? 0 : 1;
+    }
+    const double share = unnamed > 0 ? std::max(5.0, (100.0 - named) / unnamed) : 0.0;
+    double total = 0;
+    for (int p : percents) total += p > 0 ? p : share;
+    const int usable = std::max(n, total_cols - gap * (n - 1));
+    std::vector<int> out;
+    for (int p : percents) out.push_back(std::max(1, static_cast<int>(usable * (p > 0 ? p : share) / total)));
+    return out;
+}
+
 std::string BoxOpenerText(const std::string &kind) { return FindBoxKind(kind) ? "\\" + kind + "(" : "\\boxed(" + kind + ", "; }
 
 std::string BoxHeading(const Document &doc, const Block &b) {
@@ -434,7 +463,7 @@ bool IsBuiltinCommandName(const std::string &name) {
                                             "citep",  "alttext", "caption",      "image",      "import",
                                             "citation", "toc",   "bibliography", "printbibliography",
                                             "abstract", "slide", "define",       "raw",
-                                            "boxed",    "class"};
+                                            "boxed",    "class",    "columns",      "column"};
     return k.count(name) > 0 || FindBoxKind(name) != nullptr;
 }
 bool IsUserCommandName(const std::string &name) { return !name.empty() && !IsBuiltinCommandName(name); }
@@ -855,6 +884,19 @@ int BoxOpener(const std::string &line, std::string *kind = nullptr, int *body = 
     if (!FindBoxKind(name)) return -1;
     if (kind) *kind = name;
     if (body) *body = j + 1;
+    return j;
+}
+// `\columns(` or `\column(` at the start of a line: the column of its `(`,
+// with *kind the name; -1 for any other line.
+int LayoutOpener(const std::string &line, std::string *kind = nullptr) {
+    const int i = Indent(line);
+    if (At(line, i) != '\\') return -1;
+    int j = i + 1;
+    while (IsAlpha(At(line, j))) ++j;
+    if (At(line, j) != '(') return -1;
+    const std::string name = Sub(line, i + 1, j);
+    if (name != "columns" && name != "column") return -1;
+    if (kind) *kind = name;
     return j;
 }
 // A line that ends a slide opened with `close`: that bracket on its own,
@@ -1757,7 +1799,7 @@ struct Parser {
         if (t.empty()) return true;
         if (HeadingLevel(s) || IsFence(t) || IsComment(s) || IsRule(t) || TableStartAt(j) || IsListItem(s)) return true;
         if (t.rfind("$$", 0) == 0 || t.rfind("\\[", 0) == 0) return true;
-        if (SlideOpener(s) >= 0 || IsCloser(s) || BoxOpener(s) >= 0) return true;
+        if (SlideOpener(s) >= 0 || IsCloser(s) || BoxOpener(s) >= 0 || LayoutOpener(s) >= 0) return true;
         int paren = -1, last = -1, after = -1;
         const std::string cmd = LineCommand(s, &paren);
         if (cmd == "define" || (!cmd.empty() && CommandBlockAt(j, paren, &last, &after))) return true;
@@ -1786,8 +1828,10 @@ struct Parser {
             char close = 0;
             std::string box_kind;
             int box_body = 0;
+            std::string layout_kind;
             if (!open_boxes.empty() && IsSlideCloser(s, ')')) {
-                Block b = MakeBlock(BlockKind::BoxEnd, i, i);
+                const bool layout = doc.blocks[open_boxes.back()].kind == BlockKind::LayoutBegin;
+                Block b = MakeBlock(layout ? BlockKind::LayoutEnd : BlockKind::BoxEnd, i, i);
                 b.keyword = doc.blocks[open_boxes.back()].keyword;
                 b.level = static_cast<int>(open_boxes.size());
                 doc.blocks.push_back(std::move(b));
@@ -1805,6 +1849,8 @@ struct Parser {
                 i = ParseSlideOpen(i, col, close);
             } else if (const int box_paren = BoxOpener(s, &box_kind, &box_body); box_paren >= 0) {
                 i = ParseBoxOpen(i, box_kind, box_paren, box_body);
+            } else if (const int layout_paren = LayoutOpener(s, &layout_kind); layout_paren >= 0) {
+                i = ParseLayoutOpen(i, layout_kind, layout_paren);
             } else if (IsMetaLine(s)) {
                 i = ParseMetaRun(i);
             } else if (IsComment(s)) {
@@ -1994,6 +2040,36 @@ struct Parser {
         doc.blocks.push_back(std::move(b));
         if (!closed) open_boxes.push_back(at);
         return last + 1;
+    }
+
+    // `\columns(` / `\column(` (see BlockKind::LayoutBegin): open until a
+    // line holding just `)`, like a box. A column may name its width
+    // (`\column(40%,`); nothing else goes on either line.
+    int ParseLayoutOpen(int i, const std::string &kind, int paren) {
+        const std::string &s = L(i);
+        Block b = MakeBlock(BlockKind::LayoutBegin, i, i);
+        b.keyword = kind;
+        b.level = static_cast<int>(open_boxes.size()) + 1;
+        std::string rest = Trim(Sub(s, paren + 1, Len(s)));
+        if (const size_t c = rest.find("//"); c != std::string::npos) rest = Trim(rest.substr(0, c));
+        if (!rest.empty() && rest.back() == ',') rest = Trim(rest.substr(0, rest.size() - 1));
+        const bool in_columns = !open_boxes.empty() && doc.blocks[open_boxes.back()].kind == BlockKind::LayoutBegin &&
+                                doc.blocks[open_boxes.back()].keyword == "columns";
+        if (kind == "column") {
+            b.value = rest;
+            if (!rest.empty() && ColumnPercent(b) <= 0)
+                Diag(Diagnostic::Warning, i, paren + 1, Len(s),
+                     "a column's width is a percentage (\\column(40%,); its content goes on the lines after");
+            if (!in_columns) Diag(Diagnostic::Warning, i, Indent(s), Len(s), "\\column outside \\columns: it is not set beside anything");
+        } else {
+            if (!rest.empty())
+                Diag(Diagnostic::Warning, i, paren + 1, Len(s),
+                     "\\columns holds \\column( ... ) blocks, on the lines after its opener");
+            if (in_columns) Diag(Diagnostic::Warning, i, Indent(s), Len(s), "\\columns directly inside \\columns: put it in a \\column");
+        }
+        open_boxes.push_back(doc.blocks.size());
+        doc.blocks.push_back(std::move(b));
+        return i + 1;
     }
 
     // The slide open now (its closing bracket, 0 when none is), the line
@@ -2754,6 +2830,8 @@ std::vector<std::string> ExpandCommands(const std::vector<std::string> &lines,
             case BlockKind::SlideBegin:
             case BlockKind::SlideEnd:
             case BlockKind::BoxEnd:
+            case BlockKind::LayoutBegin:
+            case BlockKind::LayoutEnd:
             case BlockKind::Rule:
                 for (int k = b.line_start; k <= b.line_end; ++k) out.push_back(lines[static_cast<size_t>(k)]);
                 break;
@@ -3504,6 +3582,28 @@ struct Emitter {
                 }
                 break;
             }
+            case BlockKind::LayoutBegin:
+            case BlockKind::LayoutEnd: {
+                // `\columns(`, `\column(40%,` and their `)` are layout, not
+                // text: markup, with nothing in its place.
+                Span mk = At_(Part(node, "markup"));
+                mk.style = kDirective;
+                mk.markup = true;
+                mk.target = blk.keyword;
+                const std::string s = LineText(blk.line_start);
+                const int at = Indent(s);
+                int to = at + 1;
+                if (blk.kind == BlockKind::LayoutBegin) {
+                    const size_t c = s.find("//", static_cast<size_t>(at));
+                    to = c == std::string::npos ? Len(s) : static_cast<int>(c);
+                    while (to > at && IsSpace(s[static_cast<size_t>(to - 1)])) --to;
+                } else {
+                    mk.block_end = true;
+                }
+                Line(blk.line_start, at, to, mk);
+                TrailingComment(blk.line_start, to);
+                break;
+            }
             case BlockKind::BoxBegin:
             case BlockKind::BoxEnd: {
                 // `\definition(` reads as the box's label ("Definition: "),
@@ -3713,6 +3813,8 @@ Element ElementForBlock(const Block &b) {
         case BlockKind::Command: return Element("command", "name", b.keyword);
         case BlockKind::BoxBegin:
         case BlockKind::BoxEnd: return Element("box", "kind", b.keyword);
+        case BlockKind::LayoutBegin:
+        case BlockKind::LayoutEnd: return b.value.empty() ? Element(b.keyword) : Element(b.keyword, "width", b.value);
     }
     return Element("paragraph");
 }
@@ -3826,7 +3928,13 @@ std::string ElementTreeJson(const Document &doc) {
                 }
                 continue;
             }
+            case BlockKind::LayoutBegin:
+                open.back() += (open.back().empty() ? "" : ",") + head + ",";
+                open.push_back("");
+                is_box.push_back(true);
+                continue;
             case BlockKind::BoxEnd:
+            case BlockKind::LayoutEnd:
                 // (Never the slide's own list: a stray `)` closes nothing.)
                 if (is_box.back())
                     close();
@@ -3921,8 +4029,8 @@ std::string ElementTreeJson(const Document &doc) {
 const std::vector<std::string> &ElementNames() {
     static const std::vector<std::string> k = {
         // Blocks.
-        "document", "header", "meta", "heading", "paragraph", "comment", "callout", "abstract", "slide", "box", "list", "list-item",
-        "table", "table-cell", "code", "results", "math-block", "image", "caption", "alt-text", "rule", "toc", "bibliography",
+        "document", "header", "meta", "heading", "paragraph", "comment", "callout", "abstract", "slide", "box", "columns", "column",
+        "list", "list-item", "table", "table-cell", "code", "results", "math-block", "image", "caption", "alt-text", "rule", "toc", "bibliography",
         "import", "citation", "define", "raw", "command",
         // Inlines (comment, raw and command are both).
         "bold", "italic", "underline", "superscript", "subscript", "small", "big", "mono", "highlight", "strike", "insert", "delete",
@@ -3934,6 +4042,7 @@ const std::vector<std::string> &ElementNames() {
 bool IsBlockElement(const std::string &name) {
     static const std::set<std::string> k = {
         "document", "header",   "meta",   "heading",    "paragraph", "comment",  "callout", "abstract",     "slide",  "box",
+        "columns",  "column",
         "list",     "list-item", "table",  "table-cell", "code",      "results",  "math-block", "image",     "caption", "alt-text",
         "rule",     "toc",      "bibliography", "import", "citation",  "define",
     };
@@ -3974,10 +4083,12 @@ std::vector<Span> Highlight(const Document &doc, ElementPaths *paths, std::vecto
                 slide = -1;
                 break;
             case BlockKind::BoxBegin:
+            case BlockKind::LayoutBegin:
                 em.node = em.paths->Intern(em.container, ElementForBlock(b));
                 if (!b.box_closed) open.push_back(em.node);
                 break;
             case BlockKind::BoxEnd:
+            case BlockKind::LayoutEnd:
                 if (!open.empty()) {
                     em.node = open.back();
                     open.pop_back();
@@ -5053,7 +5164,22 @@ struct HtmlWriter {
                 else ++open_boxes;
                 break;
             }
+            case BlockKind::LayoutBegin: {
+                // (ExportHtmlToLatex makes these Beamer columns, or
+                // minipages in an article; data-width is a column's own.)
+                if (b.keyword == "columns") {
+                    out += "<div class=\"mcols\">\n";
+                } else if (const int pct = ColumnPercent(b)) {
+                    out += "<div class=\"mcol\" data-width=\"" + std::to_string(pct) + "\" style=\"flex: 0 0 calc(" +
+                           std::to_string(pct) + "% - 0.75em)\">\n";
+                } else {
+                    out += "<div class=\"mcol\">\n";
+                }
+                ++open_boxes;
+                break;
+            }
             case BlockKind::BoxEnd:
+            case BlockKind::LayoutEnd:
                 if (open_boxes > 0) {
                     out += "</div>\n";
                     --open_boxes;
@@ -5083,6 +5209,13 @@ std::string BoxCss() {
     for (const BoxKind &k : BoxKinds()) css += ".mbox-" + std::string(k.name) + " { --c: " + k.color + "; }\n";
     // The proof's own rule stays grey.
     css += ".mbox-proof { --c: var(--muted); }\n";
+    // Columns (\\columns): side by side, sharing the width equally unless
+    // a column names its own; one under another on a narrow screen.
+    css += ".mcols { display: flex; gap: 1.5em; align-items: flex-start; margin: .6em 0; }\n"
+           ".mcol { flex: 1 1 0; min-width: 0; }\n"
+           ".mcol > :first-child { margin-top: 0; }\n"
+           ".mcol img, .mcol svg { max-width: 100%; height: auto; }\n"
+           "@media screen and (max-width: 640px) { body:not(.slides) .mcols { display: block; } }\n";
     return css;
 }
 
@@ -5987,6 +6120,12 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
         // its program runs, which of them is its live output's fence.
         std::map<int, PresentationPage::Shown> insert_block;
         std::map<int, size_t> insert_live;
+        // Which inserted lines are the fences round a block's output: its
+        // opening one, and its closing one (for an html result, the bare
+        // fence of its hidden code -- none when the code shows -- and its
+        // closing marker).
+        const size_t no_line = static_cast<size_t>(-1);
+        std::map<int, std::pair<size_t, size_t>> insert_output;
         std::vector<int> source_fences;
         if (si < written.size())
             for (size_t i = written[si].first_block; i < written[si].last_block; ++i) {
@@ -5996,6 +6135,7 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
         size_t code_seen = 0;
         std::map<int, std::vector<std::pair<std::pair<int, int>, std::string>>> cites;  // line -> [(col range), label]
         std::map<int, std::string> alt_at;  // an alt text's first line -> its text
+        std::set<int> layout_lines;  // the lines that are a column marker
         auto drop_lines = [&](int a, int b) {
             for (int k = std::max(a, from); k <= std::min(b, to); ++k) drop[static_cast<size_t>(k - from)] = true;
         };
@@ -6043,6 +6183,41 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
             }
             return one;
         };
+        // What is in a column is filled to the column's width (a row of
+        // columns inside a column is not set side by side: its content has
+        // the width of the column around it).
+        std::map<size_t, int> column_wrap;  // block -> the columns it is filled to
+        if (wrap_cols > 0) {
+            for (size_t i = sl.first_block; i < sl.last_block; ++i) {
+                const Block &row = doc.blocks[i];
+                if (!row.origin.empty() || row.kind != BlockKind::LayoutBegin || row.keyword != "columns") continue;
+                // Its columns: the \column( blocks one level in, up to its `)`.
+                std::vector<int> percents;
+                std::vector<std::pair<size_t, size_t>> spans;  // each column's blocks [first, last)
+                size_t end = i + 1;
+                for (int depth = 1; end < sl.last_block && depth > 0; ++end) {
+                    const Block &c = doc.blocks[end];
+                    if (c.kind == BlockKind::BoxBegin && !c.box_closed) ++depth;
+                    if (c.kind == BlockKind::LayoutBegin) {
+                        if (depth == 1 && c.keyword == "column") {
+                            percents.push_back(ColumnPercent(c));
+                            spans.emplace_back(end + 1, end + 1);
+                        }
+                        ++depth;
+                    }
+                    if (c.kind == BlockKind::BoxEnd || c.kind == BlockKind::LayoutEnd) --depth;
+                    if (!spans.empty() && depth >= 1) spans.back().second = end + 1;
+                }
+                const std::vector<int> widths = ColumnCols(percents, wrap_cols);
+                for (size_t k = 0; k < spans.size(); ++k)
+                    for (size_t j = spans[k].first; j < spans[k].second; ++j) column_wrap[j] = widths[k];
+                i = end - 1;
+            }
+        }
+        auto wrap_for = [&](size_t i) {
+            const auto it = column_wrap.find(i);
+            return it == column_wrap.end() ? wrap_cols : it->second;
+        };
         for (size_t i = sl.first_block; i < sl.last_block; ++i) {
             const Block &b = doc.blocks[i];
             if (!b.origin.empty() || b.kind == BlockKind::SlideBegin || b.kind == BlockKind::SlideEnd) continue;
@@ -6064,6 +6239,10 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                 case BlockKind::Define:
                 case BlockKind::Raw:
                 case BlockKind::Citation: drop_lines(b.line_start, b.line_end); break;
+                // (The editor sets the columns side by side from their
+                // markers, which stay.)
+                case BlockKind::LayoutBegin:
+                case BlockKind::LayoutEnd: layout_lines.insert(b.line_start); break;
                 case BlockKind::TableOfContents: {
                     drop_lines(b.line_start, b.line_end);
                     std::vector<std::string> &out = insert[b.line_start];
@@ -6114,14 +6293,17 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                         // An html result is drawn as part of its block, so
                         // it keeps a fence (bare when the code is hidden).
                         if (code && source_fence >= 0) insert_fence[b.line_start][out.size()] = source_fence;
+                        if (html && results && has_results) insert_output[b.line_start].first = code ? no_line : out.size();
                         out.push_back("```" + (html && results && has_results ? "{" + b.lang + ", results=html}" : b.lang));
                         if (code)
                             for (int k = b.code_line_start; k <= b.code_line_end; ++k)
                                 out.push_back(ex[static_cast<size_t>(k)]);
                         out.push_back("```");
-                        if (html && results && has_results)
+                        if (html && results && has_results) {
                             for (int k = b.result_line_start; k <= b.result_line_end; ++k)
                                 out.push_back(ex[static_cast<size_t>(k)]);
+                            insert_output[b.line_start].second = out.size() - 1;
+                        }
                     }
                     auto separate = [&out] {
                         if (!out.empty()) out.push_back("");
@@ -6139,12 +6321,14 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                             // A program running in a window: the window is
                             // drawn under this fence (Editor::MepmlScan).
                             if (b.result_format == "gui") insert_live[b.line_start] = out.size();
+                            insert_output[b.line_start].first = out.size();
                             out.push_back("```");
                             for (std::string &t : text) {
                                 // A line of just ``` would end the fence early.
                                 if (Trim(t) == "```") t = " " + t;
                                 out.push_back(t);
                             }
+                            insert_output[b.line_start].second = out.size();
                             out.push_back("```");
                         }
                         if (!b.result_images.empty()) separate();
@@ -6153,6 +6337,7 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                     // A live block with nothing to show yet (never run):
                     // a line saying how to start it, so the slide has it.
                     if (shown.live && out.empty()) {
+                        insert_output[b.line_start] = {0, 2};
                         out.push_back("```");
                         out.push_back("(not running -- C-c C-c starts it)");
                         out.push_back("```");
@@ -6174,7 +6359,7 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                     if (wrap_cols > 0 && !MultiLineMath(b, b.inlines)) {
                         drop_lines(b.line_start, b.line_end);
                         std::vector<std::string> &out = insert[b.line_start];
-                        for (const std::string &l : FillProse(prose(b, 0, static_cast<int>(b.text.size()), b.inlines), wrap_cols))
+                        for (const std::string &l : FillProse(prose(b, 0, static_cast<int>(b.text.size()), b.inlines), wrap_for(i)))
                             out.push_back(l);
                     } else {
                         note_cites(b, b.inlines);
@@ -6188,7 +6373,7 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                             const int line_at = b.line_offsets[static_cast<size_t>(it.line - b.line_start)];
                             const std::string marker = Sub(b.text, line_at, it.content_start);
                             for (const std::string &l : FillProse(prose(b, it.content_start, it.content_end, it.content),
-                                                                  wrap_cols, marker, std::string(marker.size(), ' ')))
+                                                                  wrap_for(i), marker, std::string(marker.size(), ' ')))
                                 out.push_back(l);
                         }
                     } else {
@@ -6214,10 +6399,15 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
         }
 
         std::vector<std::string> out;
-        auto emit = [&](const std::string &line) {
+        // (A column marker's row is drawn empty: no blank line beside it.
+        // So is a fence of a block's output, which has no card.)
+        bool after_marker = false;
+        auto emit = [&](const std::string &line, bool marker = false) {
             const bool blank = Trim(line).empty();
-            if (blank && (out.empty() || Trim(out.back()).empty())) return;
+            if (blank && (out.empty() || after_marker || Trim(out.back()).empty())) return;
+            if (marker && !out.empty() && Trim(out.back()).empty()) out.pop_back();
             out.push_back(line);
+            after_marker = marker;
         };
         for (int k = from; k <= to; ++k) {
             auto ins = insert.find(k);
@@ -6228,13 +6418,21 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                     const auto fences = insert_fence.find(k);
                     const auto shown = insert_block.find(k);
                     const auto live = insert_live.find(k);
+                    const auto output = insert_output.find(k);
                     PresentationPage::Shown sh = shown != insert_block.end() ? shown->second : PresentationPage::Shown();
-                    sh.first = static_cast<int>(out.size());
+                    sh.first = -1;
                     for (size_t j = 0; j < ins->second.size(); ++j) {
+                        const bool opens = output != insert_output.end() && output->second.first == j;
+                        const bool closes = output != insert_output.end() && output->second.second == j;
+                        emit(ins->second[j], opens || closes);
+                        // (Where it landed: an output's fence takes the
+                        // place of a blank line before it.)
+                        const int at = static_cast<int>(out.size()) - 1;
+                        if (sh.first < 0) sh.first = at;
                         if (fences != insert_fence.end() && fences->second.count(j))
-                            page.code_blocks.emplace_back(static_cast<int>(out.size()), fences->second.at(j));
-                        if (live != insert_live.end() && live->second == j) sh.live_fence = static_cast<int>(out.size());
-                        emit(ins->second[j]);
+                            page.code_blocks.emplace_back(at, fences->second.at(j));
+                        if (live != insert_live.end() && live->second == j) sh.live_fence = at;
+                        if (opens) page.outputs.push_back(at);
                     }
                     sh.last = static_cast<int>(out.size()) - 1;
                     if (shown != insert_block.end()) page.blocks.push_back(sh);
@@ -6250,6 +6448,12 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
             }
             if (drop[static_cast<size_t>(k - from)]) continue;
             std::string line = ex[static_cast<size_t>(k)];
+            if (layout_lines.count(k)) {
+                while (!out.empty() && Trim(out.back()).empty()) out.pop_back();
+                out.push_back(line);
+                after_marker = true;
+                continue;
+            }
             auto c = cites.find(k);
             if (c != cites.end()) {
                 auto &rs = c->second;

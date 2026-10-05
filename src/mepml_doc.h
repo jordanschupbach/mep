@@ -157,6 +157,15 @@ enum class BlockKind {
     // is the box's depth on both, 1 for one not inside another.
     BoxBegin,
     BoxEnd,
+    // Columns: `\columns(` on a line of its own opens a row of columns and
+    // each `\column(` inside it one column -- both closed by a line holding
+    // just `)`, their content ordinary blocks, as in a box. The columns
+    // share the width equally unless one names its own (`\column(40%,`).
+    // LayoutBegin / LayoutEnd: `keyword` is "columns" or "column", `value`
+    // a column's width as written ("40%", "" for an equal share) and
+    // `level` the depth among the open boxes and columns.
+    LayoutBegin,
+    LayoutEnd,
 };
 
 enum class Align { Default, Left, Center, Right };
@@ -378,6 +387,14 @@ struct BoxKind {
 const std::vector<BoxKind> &BoxKinds();
 // The kind named `name` ("definition"), nullptr for anything else.
 const BoxKind *FindBoxKind(const std::string &name);
+// A column's width (`\column(40%,`) as a percentage of its row, 0 for a
+// column that takes an equal share of what the others leave.
+int ColumnPercent(const Block &b);
+// How wide each column of a row is where text is set in a grid of
+// `total_cols` columns (the editor, its presentation view), from their
+// ColumnPercent()s: `gap` columns between neighbours, a named width its
+// share of the rest, the others what is left in equal parts.
+std::vector<int> ColumnCols(const std::vector<int> &percents, int total_cols, int gap = 2);
 // A box of any kind is written `\boxed(kind, Title,` ... `)`: the kind is a
 // name of the document's own (`axiom`, `key-result`), and how it looks --
 // its label, its colours -- is the style sheets' (`box[kind=axiom]`). The
@@ -769,7 +786,8 @@ void ResultsReplaceRange(const Block &b, int *first, int *last);
 //   - code blocks as CodeExports says, with "results" the default when
 //     neither the header nor the block names one (a block with no results
 //     yet then shows its code, rather than nothing): the code as a bare
-//     ```lang fence without its options, text output as a plain fence,
+//     ```lang fence without its options, text output as a plain fence
+//     (PresentationPage::outputs),
 //     figures as \image() lines, Markdown output as the document's own
 //     text; option (`//?`) lines, comments and result markers dropped;
 //   - citations as their rendered labels, \bibliography as the list of
@@ -780,6 +798,9 @@ void ResultsReplaceRange(const Block &b, int *first, int *last);
 // (markup concealed, maths about as wide as it typesets), breaking only
 // between words and never inside maths, code, a link or a citation; so a
 // slide reads as prose at any size rather than as the source's lines.
+// A row of columns keeps its markers (`\columns(`, `\column(` and their
+// `)`), which the editor sets side by side; what is in a column is filled
+// to that column's width (ColumnCols of `wrap_cols`).
 // A page's lines never start or end with a blank line nor hold two in a row.
 struct PresentationPage {
     int number = 0;         // the \slide's number; 0 for the title page
@@ -805,6 +826,13 @@ struct PresentationPage {
         int live_fence = -1;
     };
     std::vector<Shown> blocks;
+    // Each fence of `lines` that opens a block's text output (the line it
+    // is on), or is the bare fence an html result hangs under when its
+    // code is hidden. The view draws what is in it as it is -- no title
+    // bar, no card -- and its two fence rows empty, so no blank line is
+    // beside them. (Nor has an html result a card: its markers are empty
+    // rows too.)
+    std::vector<int> outputs;
     // Each alt text of the slide: (the line of `lines` that ends what it
     // describes, its text -- empty for a decoration's `\alttext()`). The
     // \alttext() lines themselves are not on the page.

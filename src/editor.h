@@ -1159,6 +1159,39 @@ struct Buffer {
     // block's text-align in the style sheets. DrawPane shifts such a row
     // within the text width (not the caret's row, nor a soft-wrapped one).
     std::unordered_map<int, int> mepml_row_align;
+    // mepml's rows of columns (`\columns(` ... `)`, Editor::MepmlScan):
+    // each row's lines and its columns', a column from its `\column(` to
+    // its own `)`, with the width it names (a percentage, 0 for a share).
+    struct MepmlColumnsBlock {
+        struct Column {
+            int first_row = 0, last_row = 0, percent = 0;
+        };
+        int start_row = 0, end_row = 0;
+        std::vector<Column> columns;
+        // Its rows of running text (paragraphs, list items): measured for
+        // wrapping as they are drawn, their markup concealed.
+        std::vector<int> prose_rows;
+    };
+    std::vector<MepmlColumnsBlock> mepml_columns;
+    // Where the pane last laid out (Editor::MepmlColumnsPlace) draws the
+    // rows of the columns it sets side by side: the display columns a row
+    // starts at, right of the text's left edge, and how many it has.
+    // Rows of a block the cursor is in are not here: that block is shown
+    // as written, one column after another.
+    struct MepmlColumnPlace {
+        int x_cols = 0, w_cols = 0;
+        int block_start = 0, block_end = 0;
+        // The columns a row of running text is drawn across (its markup
+        // concealed, mepml::ProseColumns), which soft-wrap measures it by
+        // in a column (Editor::WrapLenForRow); -1 for any other row.
+        int drawn_cols = -1;
+    };
+    mutable std::unordered_map<int, MepmlColumnPlace> mepml_col_place;
+    // ... and the slots that layout moves a row by: back up to the top of
+    // its row of columns on each column's first line after the first, down
+    // to the foot of the tallest on the row's closing line. Added by
+    // Editor::RowTopPadSlots, so every slot walker agrees.
+    mutable std::unordered_map<int, int> mepml_col_pad;
     // A presented page's paper (Editor::MepmlPresentStart's view buffer):
     // its slide's `background` in the style sheets, unset for none. DrawPane
     // fills the pane with it under the page.
@@ -3522,6 +3555,10 @@ struct OrgBlockCard {
     // content, drawn over a plain wash (a mepml document header -- its
     // `//?` lines are rendered in place, see Editor::MepmlScan).
     bool bare = false;
+    // No card at all -- no title bar, wash or outline: its content is
+    // drawn as it is, its header and floor rows left empty (a block's
+    // output on a presented mepml slide, mepml::PresentationPage::outputs).
+    bool plain = false;
     // A mepml box that ends with a mark (a proof's tombstone, or whatever
     // a style sheet gives its `::end`): the row of its `)` stays, for it.
     bool end_mark = false;
@@ -3753,6 +3790,20 @@ public:
      * @return The number of visual slots the row claims.
      */
     int PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_cols) const;
+    /**
+     * @brief Counts the visual slots the rows [from, to) take in a pane, walked the way the draw loop walks them (a closed fold's and a rendering's further rows are not drawn).
+     * @param pane The pane the rows are rendered in.
+     * @param buf The buffer they belong to.
+     * @param from The first row.
+     * @param to One past the last.
+     * @param wrap_cols The pane's soft-wrap budget in characters; 0 disables wrap-aware counting.
+     * @return The slots between the two rows' tops (negative moves inside a row of mepml columns included).
+     */
+    int PaneSlotsBetween(const Pane &pane, const Buffer &buf, int from, int to, int wrap_cols) const {
+        int slots = 0;
+        for (int r = from; r < to; r = PaneNextDrawnRow(pane, buf, r)) slots += PaneRowSlots(pane, buf, r, wrap_cols);
+        return slots;
+    }
 
     /**
      * @brief Returns the editor's current mode.
@@ -9605,9 +9656,30 @@ public:
      * @brief Returns the empty slots drawn above a row whose text is taller than a line (mepml's scaled runs), so it can share a baseline with the rest of the row.
      * @param buf The buffer.
      * @param row 0-based row.
-     * @return Slots of headroom above the row's text; 0 for ordinary rows and closed-fold summaries.
+     * @return Slots of headroom above the row's text; 0 for ordinary rows and closed-fold summaries. A row of mepml columns moves its rows by slots here too (Buffer::mepml_col_pad), which may be negative: back up to the row's top for the next column.
      */
     int RowTopPadSlots(const Buffer &buf, int row) const;
+    // (The headroom alone, without a row of columns' moves: Buffer::mepml_col_pad.)
+    int RowHeadroomSlots(const Buffer &buf, int row) const;
+    /**
+     * @brief Lays out the buffer's rows of columns (mepml's \columns) for a pane: which are set side by side, where each of their rows is drawn and by how many slots (Buffer::mepml_col_place, mepml_col_pad).
+     * @param pane The pane about to be measured or drawn.
+     * @param buf The buffer it shows.
+     * @param wrap_cols The pane's soft-wrap budget in characters; 0 without wrapping.
+     */
+    void MepmlColumnsPlace(const Pane &pane, const Buffer &buf, int wrap_cols) const;
+    /**
+     * @brief The text columns a row has: its column's when it is in one set side by side, else `cols`.
+     * @param buf The buffer.
+     * @param row 0-based row.
+     * @param cols The pane's own width in columns.
+     * @return The columns the row's text, picture or wrapping has.
+     */
+    int MepmlRowCols(const Buffer &buf, int row, int cols) const {
+        if (buf.mepml_col_place.empty()) return cols;
+        const auto it = buf.mepml_col_place.find(row);
+        return it == buf.mepml_col_place.end() ? cols : std::min(cols, it->second.w_cols);
+    }
     // How far a row's inline maths reaches past its line, in whole slots:
     // drawn 1:1 on the prose's baseline, a fraction or an \underbrace is
     // taller than a line, and the rows around it move apart to make room
@@ -10395,6 +10467,10 @@ public:
     // PaneRowSlots, the notebook prefix) goes through this, so they agree.
     static int WrapLenForRow(const Buffer &buf, int row) {
         if (buf.mepml_single_line_rows.count(row) != 0) return 1;
+        if (!buf.mepml_col_place.empty()) {
+            const auto pl = buf.mepml_col_place.find(row);
+            if (pl != buf.mepml_col_place.end() && pl->second.drawn_cols >= 0) return pl->second.drawn_cols;
+        }
         auto it = buf.mepml_table_row_cols.find(row);
         return it != buf.mepml_table_row_cols.end() ? it->second : static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
     }

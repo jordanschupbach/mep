@@ -255,7 +255,83 @@ int Editor::HeadingIndentColsForRow(const Buffer &buf, int row) {
     return 0;
 }
 
+void Editor::MepmlColumnsPlace(const Pane &pane, const Buffer &buf, int wrap_cols) const {
+    buf.mepml_col_place.clear();
+    buf.mepml_col_pad.clear();
+    // (As written -- raw, plain, or with concealment off -- the source is
+    // shown line under line.)
+    if (buf.mepml_columns.empty() || buf.mepml_raw || PaneOrgPlain(pane) || !org_conceal_visible_) return;
+    constexpr int kGap = 2, kNarrowest = 12;
+    const int total = pane.text_cols - 1;
+    const int line_count = buf.LineCount();
+    auto starts = [&](int row, const char *what) {
+        const std::string &l = buf.lines[static_cast<size_t>(row)];
+        const size_t at = l.find_first_not_of(" \t");
+        return at != std::string::npos && l.compare(at, std::strlen(what), what) == 0;
+    };
+    for (const Buffer::MepmlColumnsBlock &blk : buf.mepml_columns) {
+        // The block as it was scanned (an edit since may have moved it).
+        if (blk.start_row < 0 || blk.end_row >= line_count || !starts(blk.start_row, "\\columns(") || !starts(blk.end_row, ")"))
+            continue;
+        // The cursor in it: shown as written, one column after another.
+        if (pane.cursor.row >= blk.start_row && pane.cursor.row <= blk.end_row) continue;
+        // (A closed fold is one line where it is: fine inside one column,
+        // not across the lines the layout hangs on.)
+        bool sound = true;
+        for (const Fold &f : buf.folds) {
+            if (!f.closed || f.start_row > blk.end_row || f.end_row < blk.start_row) continue;
+            bool inside = false;
+            for (const Buffer::MepmlColumnsBlock::Column &c : blk.columns)
+                inside = inside || (f.start_row > c.first_row && f.end_row < c.last_row);
+            sound = sound && inside;
+        }
+        std::vector<int> percents;
+        int next = blk.start_row + 1;
+        for (const Buffer::MepmlColumnsBlock::Column &c : blk.columns) {
+            if (c.first_row != next || c.last_row < c.first_row || c.last_row >= blk.end_row || !starts(c.first_row, "\\column(") ||
+                !starts(c.last_row, ")"))
+                sound = false;
+            next = c.last_row + 1;
+            percents.push_back(c.percent);
+        }
+        if (!sound || next != blk.end_row) continue;
+        const std::vector<int> widths = mepml::ColumnCols(percents, total, kGap);
+        if (*std::min_element(widths.begin(), widths.end()) < kNarrowest) continue;
+        int x = 0;
+        for (size_t k = 0; k < blk.columns.size(); ++k) {
+            for (int r = blk.columns[k].first_row; r <= blk.columns[k].last_row; ++r)
+                buf.mepml_col_place[r] = Buffer::MepmlColumnPlace{x, widths[k], blk.start_row, blk.end_row, -1};
+            x += widths[k] + kGap;
+        }
+        for (int r : blk.prose_rows) {
+            const auto pl = buf.mepml_col_place.find(r);
+            if (pl != buf.mepml_col_place.end()) pl->second.drawn_cols = mepml::ProseColumns(buf.lines[static_cast<size_t>(r)]);
+        }
+        // Each column's height, walked the way every slot walker walks.
+        // (All of them before any move is set: a move is part of what a
+        // row measures.)
+        std::vector<int> heights;
+        for (const Buffer::MepmlColumnsBlock::Column &c : blk.columns) {
+            int h = 0;
+            for (int r = c.first_row; r <= c.last_row; r = PaneNextDrawnRow(pane, buf, r)) h += PaneRowSlots(pane, buf, r, wrap_cols);
+            heights.push_back(h);
+        }
+        for (size_t k = 0; k + 1 < heights.size(); ++k) buf.mepml_col_pad[blk.columns[k + 1].first_row] = -heights[k];
+        const int tallest = *std::max_element(heights.begin(), heights.end());
+        if (tallest != heights.back()) buf.mepml_col_pad[blk.end_row] = tallest - heights.back();
+        // (The closing line is part of the row of columns, at full width:
+        // a view whose top is there still draws the columns above it.)
+        buf.mepml_col_place[blk.end_row] = Buffer::MepmlColumnPlace{0, total, blk.start_row, blk.end_row, -1};
+    }
+}
+
 int Editor::RowTopPadSlots(const Buffer &buf, int row) const {
+    if (buf.mepml_col_pad.empty()) return RowHeadroomSlots(buf, row);
+    const auto pad = buf.mepml_col_pad.find(row);
+    return RowHeadroomSlots(buf, row) + (pad == buf.mepml_col_pad.end() ? 0 : pad->second);
+}
+
+int Editor::RowHeadroomSlots(const Buffer &buf, int row) const {
     if (row < 0 || row >= buf.LineCount()) return 0;
     bool folded = false;
     for (const Fold &f : buf.folds)
@@ -972,6 +1048,69 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     }
 
     const mepml::Document &doc = MepmlParseCurrent(true);
+    // Rows of columns (\columns): each one's lines and its columns', for
+    // MepmlColumnsPlace. One inside another's column is not set side by
+    // side itself, and neither is one holding anything but columns.
+    if (!patch) {
+        buf.mepml_columns.clear();
+        buf.mepml_col_place.clear();
+        buf.mepml_col_pad.clear();
+        Buffer::MepmlColumnsBlock cur;
+        int depth = 0;  // the containers open inside (and counting) the row: 0 outside one
+        bool sound = true;
+        for (const mepml::Block &b : doc.blocks) {
+            if (!b.origin.empty()) continue;
+            const bool opens = (b.kind == mepml::BlockKind::BoxBegin && !b.box_closed) || b.kind == mepml::BlockKind::LayoutBegin;
+            const bool closes = b.kind == mepml::BlockKind::BoxEnd || b.kind == mepml::BlockKind::LayoutEnd;
+            if (b.kind == mepml::BlockKind::SlideBegin || b.kind == mepml::BlockKind::SlideEnd) {
+                depth = 0;  // (a row left open ends with its slide: not laid out)
+                continue;
+            }
+            if (depth == 0) {
+                if (b.kind == mepml::BlockKind::LayoutBegin && b.keyword == "columns") {
+                    cur = Buffer::MepmlColumnsBlock();
+                    cur.start_row = b.line_start;
+                    depth = 1;
+                    sound = true;
+                }
+                continue;
+            }
+            if (depth == 1 && !closes) {
+                if (b.kind == mepml::BlockKind::LayoutBegin && b.keyword == "column") {
+                    Buffer::MepmlColumnsBlock::Column c;
+                    c.first_row = b.line_start;
+                    c.percent = mepml::ColumnPercent(b);
+                    cur.columns.push_back(c);
+                } else {
+                    sound = false;
+                }
+            }
+            if (depth >= 2 && (b.kind == mepml::BlockKind::Paragraph || b.kind == mepml::BlockKind::List))
+                for (int r = b.line_start; r <= b.line_end; ++r) cur.prose_rows.push_back(r);
+            if (opens) ++depth;
+            if (closes) {
+                --depth;
+                if (depth == 1 && !cur.columns.empty()) cur.columns.back().last_row = b.line_end;
+                if (depth == 0) {
+                    cur.end_row = b.line_end;
+                    if (sound && cur.columns.size() >= 2) buf.mepml_columns.push_back(cur);
+                }
+            }
+        }
+    }
+    // The text columns a row has where it is in such a column (a caption
+    // is wrapped and centred in its column's width), else `cols`.
+    auto column_cols = [&](int row, int cols) {
+        for (const Buffer::MepmlColumnsBlock &blk : buf.mepml_columns) {
+            if (row <= blk.start_row || row >= blk.end_row) continue;
+            std::vector<int> percents;
+            for (const Buffer::MepmlColumnsBlock::Column &c : blk.columns) percents.push_back(c.percent);
+            const std::vector<int> widths = mepml::ColumnCols(percents, std::max(1, CurPane().text_cols - 1));
+            for (size_t k = 0; k < blk.columns.size(); ++k)
+                if (row >= blk.columns[k].first_row && row <= blk.columns[k].last_row) return std::min(cols, widths[k]);
+        }
+        return cols;
+    };
     const int n = buf.LineCount();
     if (!patch) {
     // A presented page's paper: its slide's `background`.
@@ -1120,6 +1259,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                                  (b.kind == mepml::BlockKind::Code && !b.result_images.empty());
             int width = TextWidth();
             if (CurPane().text_cols > 8) width = std::min(width, CurPane().text_cols - 1);
+            width = column_cols(b.caption_line >= 0 ? b.caption_line : b.alt_line, width);
             auto place = [&](int first, int last, std::vector<mepml::RenderedLine> lines, float scale) {
                 if (lines.empty() || first < 0 || last < first || last >= n) return;
                 Buffer::OrgLatexRender r;
@@ -1865,14 +2005,15 @@ void Editor::RecomputeMepmlFolds() {
     }
     for (const HeaderRun &run : HeaderRuns(doc)) add(run.first, run.last);
     for (const mepml::Slide &sl : slides) add(sl.line_start, sl.line_end);
-    // Boxes (\definition ...): from the opening line to the closing `)`.
+    // Boxes (\definition ...) and columns: from the opening line to the
+    // closing `)`.
     {
         std::vector<const mepml::Block *> open;
         for (const mepml::Block &b : doc.blocks) {
             if (!b.origin.empty()) continue;
             if (b.kind == mepml::BlockKind::BoxBegin && b.box_closed) add(b.line_start, b.line_end);
-            else if (b.kind == mepml::BlockKind::BoxBegin) open.push_back(&b);
-            else if (b.kind == mepml::BlockKind::BoxEnd && !open.empty()) {
+            else if (b.kind == mepml::BlockKind::BoxBegin || b.kind == mepml::BlockKind::LayoutBegin) open.push_back(&b);
+            else if ((b.kind == mepml::BlockKind::BoxEnd || b.kind == mepml::BlockKind::LayoutEnd) && !open.empty()) {
                 add(open.back()->line_start, b.line_end);
                 open.pop_back();
             }
@@ -2475,6 +2616,14 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
     };
     // (One per distinct element: a document's code blocks share a handful.)
     std::map<std::string, OrgCardLook> looks;
+    // A presented slide's output fences (the view's first row is the
+    // cursor's blank): what is in them is drawn with no card round it.
+    std::set<int> plain_fences;
+    if (present_.active && CurrentBufferId() == present_.view_buffer && !present_.pages.empty()) {
+        const mepml::PresentationPage &page =
+            present_.pages[static_cast<size_t>(std::clamp(present_.page, 0, static_cast<int>(present_.pages.size()) - 1))];
+        for (int line : page.outputs) plain_fences.insert(line + 1);
+    }
     // The look of `element` under the node `parent` of the tree (-1: the
     // document's root).
     auto look_of = [&](int parent, const mepml::Element &element) {
@@ -2664,6 +2813,7 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
                 run_id = kv.first;
         code.term_run = run_id;
         code.fold_row = b.line_start;  // RecomputeMepmlFolds folds the option lines too
+        code.plain = plain_fences.count(code.begin_row) != 0;
         code.look = look_of_block(b);
         // (Read before the push below can move the cards.)
         const size_t code_bi = static_cast<size_t>(&b - doc.blocks.data());
@@ -2685,6 +2835,8 @@ void Editor::MepmlBuildCards(const mepml::Document &doc) {
             out.is_src = false;
             out.look = look_of(results_parent, mepml::Element("results", "format", b.result_format.empty() ? "text" : b.result_format));
             out.term_run = run_id;
+            // (A presented slide shows a block's results as they are.)
+            out.plain = present_.active && CurrentBufferId() == present_.view_buffer;
             if (b.result_line_end > b.result_line_start) out.fold_row = b.result_line_start;
             // Rendered HTML is laid out to the text width; its source's
             // long lines must not widen the card.

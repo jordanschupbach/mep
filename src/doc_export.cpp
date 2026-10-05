@@ -429,6 +429,9 @@ struct LatexCtx {
     // tabulars rather than longtables, pictures sized to the frame,
     // callouts as blocks, and a figure's caption under it.
     bool beamer = false;
+    // How many mepml columns (\columns) the walk is inside: a picture there
+    // is set in its column, not floated.
+    int columns = 0;
     LatexTagger tag;
 };
 
@@ -619,6 +622,49 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
             if (c->Class() != "abstract-title") WalkLatexNode(c.get(), ctx, out);
         tg.End(out, el);
         out += "\\end{abstract}\n";
+        return;
+    }
+    // mepml's columns (\columns / \column, mepml::ToHtml): Beamer's own on a
+    // slide, minipages side by side in an article. A column is as wide as
+    // it says (data-width, a percentage); the rest share what is left.
+    if (tag == "div" && node->Class() == "mcols") {
+        std::vector<const DomNode *> cols;
+        std::vector<double> widths;
+        double named = 0;
+        int unnamed = 0;
+        for (auto &c : node->children) {
+            if (c->type != DomNodeType::Element || c->Class() != "mcol") {
+                // (Anything written between the columns comes before them.)
+                WalkLatexNode(c.get(), ctx, out);
+                continue;
+            }
+            const double w = c->attrs.count("data-width") ? std::atof(c->attrs.at("data-width").c_str()) : 0.0;
+            cols.push_back(c.get());
+            widths.push_back(w);
+            named += w;
+            unnamed += w > 0 ? 0 : 1;
+        }
+        if (cols.empty()) return;
+        const double share = unnamed > 0 ? std::max(5.0, (100.0 - named) / unnamed) : 0.0;
+        double total = 0;
+        for (double &w : widths) {
+            if (w <= 0) w = share;
+            total += w;
+        }
+        // (A gap of 4% of the line between neighbours.)
+        const double usable = 1.0 - 0.04 * static_cast<double>(cols.size() - 1);
+        out += ctx.beamer ? "\n\\begin{columns}[T,onlytextwidth]\n" : "\n\\par\\medskip\\noindent\n";
+        ++ctx.columns;
+        for (size_t i = 0; i < cols.size(); ++i) {
+            char frac[32];
+            std::snprintf(frac, sizeof(frac), "%.3f", widths[i] / total * usable);
+            out += ctx.beamer ? "\\begin{column}{" + std::string(frac) + "\\textwidth}\n"
+                              : "\\begin{minipage}[t]{" + std::string(frac) + "\\linewidth}\n";
+            for (auto &c : cols[i]->children) WalkLatexNode(c.get(), ctx, out);
+            out += ctx.beamer ? "\n\\end{column}\n" : i + 1 < cols.size() ? "\n\\end{minipage}\\hfill\n" : "\n\\end{minipage}\\par\\medskip\n";
+        }
+        --ctx.columns;
+        if (ctx.beamer) out += "\\end{columns}\n";
         return;
     }
     // A mepml box (\definition and its kin, mepml::ToHtml): a tcolorbox in
@@ -893,6 +939,9 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
             out += picture("width=0.2\\linewidth,keepaspectratio");
         } else if (!resolved.empty() && probe && ctx.beamer) {
             out += "\n\\begin{center}" + picture("width=\\linewidth,height=0.62\\textheight,keepaspectratio") + "\\end{center}\n";
+        } else if (!resolved.empty() && probe && ctx.columns > 0) {
+            // (No float in a column's minipage.)
+            out += "\n\\begin{center}" + picture("width=\\linewidth,keepaspectratio") + "\\end{center}\n";
         } else if (!resolved.empty() && probe) {
             // (Tagged, the figure stays where it is written -- [H] --: one
             // that floated would be read out of place.)

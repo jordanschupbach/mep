@@ -648,6 +648,8 @@ const std::vector<Vocab> &DirectiveVocab() {
         {"toc", "\\toc", "The table of contents: every heading of this document, indented by depth."},
         {"abstract", "\\abstract(text)", "The document's abstract: prose over any number of lines, a blank line between paragraphs. Exports as each format's own abstract."},
         {"slide", "\\slide( ... )", "A slide: \\slide( on a line of its own, then the slide's content -- headings, lists, code, pictures, any blocks -- and a line holding just ) to end it. Its first heading is its title."},
+        {"columns", "\\columns( ... )", "Columns side by side: \\columns( on a line of its own, then one \\column( ... ) per column, and a line holding just ) to end the row. The editor, its presentation view, the PDF and HTML exports (slides and documents) and LaTeX set them beside each other; the other formats write one after another."},
+        {"column", "\\column( ... )", "One column of a \\columns( row: \\column( on a line of its own, its content -- lists, pictures, code, any blocks -- and a line holding just ) to end it. Columns share the width equally; \\column(40%, gives one its own."},
 #define MEPML_BOX(name, Label, colour)                                                                                       \
     {name, "\\" name "(Title, ...)",                                                                                         \
      "A " name ", drawn as a titled box (" colour "): \\" name "(Title, on a line of its own, then its content -- prose, "  \
@@ -1178,6 +1180,8 @@ MepmlLspHoverInfo MepmlLspHover(const std::vector<std::string> &lines, int line,
             else t += "\n\nNot closed: end it with a line holding just )";
             return found(ind, Len(l), t + "\n\n" + VocabDoc(DirectiveVocab(), begin->keyword));
         }
+        case BlockKind::LayoutBegin:
+        case BlockKind::LayoutEnd: return found(ind, Len(l), VocabDoc(DirectiveVocab(), b->keyword));
         case BlockKind::SlideBegin:
         case BlockKind::SlideEnd: {
             std::string t = "Slide " + std::to_string(b->level);
@@ -1574,11 +1578,11 @@ std::vector<MepmlLspFold> MepmlLspFolds(const std::vector<std::string> &lines) {
     if (run_start >= 0) add(run_start, run_end, "");
     for (const mepml::Slide &sl : mepml::Slides(doc, n)) add(sl.line_start, sl.line_end, "");
     {
-        std::vector<const Block *> open;  // boxes
+        std::vector<const Block *> open;  // boxes and columns
         for (const Block &b : doc.blocks) {
             if (b.kind == BlockKind::BoxBegin && b.box_closed) add(b.line_start, b.line_end, "");
-            else if (b.kind == BlockKind::BoxBegin) open.push_back(&b);
-            else if (b.kind == BlockKind::BoxEnd && !open.empty()) {
+            else if (b.kind == BlockKind::BoxBegin || b.kind == BlockKind::LayoutBegin) open.push_back(&b);
+            else if ((b.kind == BlockKind::BoxEnd || b.kind == BlockKind::LayoutEnd) && !open.empty()) {
                 add(open.back()->line_start, b.line_end, "");
                 open.pop_back();
             }
@@ -1885,6 +1889,7 @@ std::vector<std::pair<std::string, std::vector<std::string>>> SheetAttrs(const s
     if (element == "results") return {{"format", {"text", "html", "markdown", "terminal", "gui"}}};
     if (element == "meta") return {{"key", {"title", "subtitle", "author", "date", "option", "import", "style"}}, {"type", {"int", "double", "string"}}};
     if (element == "slide") return {{"number", {}}, {"title", {}}};
+    if (element == "column") return {{"width", {}}};
     if (element == "cite") return {{"missing", {}}, {"parenthetical", {}}};
     if (element == "caption") return {{"of", {"figure", "table", "math", "code"}}};
     if (element == "span") return {{"class", {}}};

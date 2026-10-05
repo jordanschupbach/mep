@@ -496,6 +496,10 @@ struct MdWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: blocks.push_back("<!-- /mepml:box -->"); break;
+                // (Columns are a slide's and a page's layout: here their
+                // content is written one column after another.)
+                case BlockKind::LayoutBegin:
+                case BlockKind::LayoutEnd: break;
                 case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
                 case BlockKind::Meta:
@@ -740,6 +744,10 @@ struct OrgWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: blocks.push_back("#+end_" + (FindBoxKind(b.keyword) ? b.keyword : "box_" + b.keyword)); break;
+                // (Columns are a slide's and a page's layout: here their
+                // content is written one column after another.)
+                case BlockKind::LayoutBegin:
+                case BlockKind::LayoutEnd: break;
                 case BlockKind::Meta:
                 case BlockKind::Import:
                 case BlockKind::Citation:
@@ -881,6 +889,10 @@ struct TextWriter {
                     blocks.push_back(BoxHeading(doc, b) + (b.inlines.empty() ? "" : ". " + Inl(b.inlines)));
                     break;
                 case BlockKind::BoxEnd: break;
+                // (Columns are a slide's and a page's layout: here their
+                // content is written one column after another.)
+                case BlockKind::LayoutBegin:
+                case BlockKind::LayoutEnd: break;
                 case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
                 case BlockKind::Meta:
@@ -1265,6 +1277,10 @@ struct RtfWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: break;
+                // (Columns are a slide's and a page's layout: here their
+                // content is written one column after another.)
+                case BlockKind::LayoutBegin:
+                case BlockKind::LayoutEnd: break;
                 case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
                 case BlockKind::Meta:
@@ -1697,6 +1713,10 @@ struct DocxWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: break;
+                // (Columns are a slide's and a page's layout: here their
+                // content is written one column after another.)
+                case BlockKind::LayoutBegin:
+                case BlockKind::LayoutEnd: break;
                 case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
                 case BlockKind::Meta:
@@ -2141,6 +2161,10 @@ struct OdtWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: break;
+                // (Columns are a slide's and a page's layout: here their
+                // content is written one column after another.)
+                case BlockKind::LayoutBegin:
+                case BlockKind::LayoutEnd: break;
                 case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
                 case BlockKind::Meta:

@@ -48896,7 +48896,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // Pane::text_cols: the same column budget, but reported whether or not
     // wrap is on (Lua's own hard-wrapping readers want the width either way).
     g_editor.SetPaneTextCols(pane.id, std::max(1, static_cast<int>((x + w - text_x - kMarginX) / g_char_width)));
+    // mepml's rows of columns (\columns), laid out for this pane before
+    // anything measures a row: which are set side by side, and where
+    // (Buffer::mepml_col_place / mepml_col_pad).
+    g_editor.MepmlColumnsPlace(pane, buf, wrap_cols);
     g_editor.UpdateScrollForPane(pane.id, visible_lines, wrap_cols);
+    // A view whose top row is inside a row of columns set side by side
+    // starts drawing at that row's first line, above the pane: the other
+    // columns' rows beside the top one are on screen too. Every walker
+    // below starts from here rather than from pane.scroll_row.
+    int draw_first_row = pane.scroll_row, draw_first_slot = 0;
+    if (!buf.mepml_col_place.empty()) {
+        const auto pl = buf.mepml_col_place.find(pane.scroll_row);
+        if (pl != buf.mepml_col_place.end() && pl->second.block_start < pane.scroll_row) {
+            draw_first_row = pl->second.block_start;
+            draw_first_slot = -g_editor.PaneSlotsBetween(pane, buf, draw_first_row, pane.scroll_row, wrap_cols);
+        }
+    }
+    // Whether a row is in such a column (drawn even when the column
+    // before it ran past the foot of the pane).
+    auto in_placed_column = [&](int r) { return !buf.mepml_col_place.empty() && buf.mepml_col_place.count(r) != 0; };
 
     gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                       static_cast<int>(content_h));
@@ -49256,12 +49275,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // card's edges land on the rows they actually belong to.
         std::unordered_map<int, int> slot_start, slot_count;
         {
-            int vslot = 0;
-            for (int r = pane.scroll_row; r < buf.LineCount() && vslot < visible_lines;) {
+            int vslot = draw_first_slot;
+            for (int r = draw_first_row; r < buf.LineCount() && (vslot < visible_lines || in_placed_column(r));) {
                 const Fold *f = nullptr;
                 for (const Fold &fold : buf.folds) {
                     if (fold.closed && fold.start_row == r && (!f || fold.end_row > f->end_row)) f = &fold;
                 }
+                // (A row in a column set beside others has the column's width.)
+                const int row_cols = g_editor.MepmlRowCols(buf, r, pane.text_cols);
+                const int row_wrap = wrap_cols > 0 ? g_editor.MepmlRowCols(buf, r, wrap_cols) : 0;
                 slot_start[r] = vslot;
                 auto img_it = buf.org_image_rows.find(r);
                 const Buffer::OrgLatexRender *latex = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row, org_plain);
@@ -49272,7 +49294,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     next = f->end_row + 1;
                     slots += g_editor.RowTopPadSlots(buf, r);  // a folded mepml header's large title
                 } else if (show_org_images && img_it != buf.org_image_rows.end()) {
-                    slots = g_editor.OrgImageLayoutForRow(img_it->second, pane.text_cols).slots;
+                    slots = g_editor.OrgImageLayoutForRow(img_it->second, row_cols).slots;
                 } else if (latex != nullptr) {
                     slots = latex->slots;
                     next = latex->end_row + 1;
@@ -49285,11 +49307,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // layout's lines -- see Buffer::org_table_wrap_rows.
                     slots = static_cast<int>(tw_it->second.lines.size());
                 } else {
-                    if (wrap_cols > 0) {
+                    if (row_wrap > 0) {
                         int len = Editor::WrapLenForRow(buf, r);
-                        slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
+                        slots = std::max(1, (len + row_wrap - 1) / row_wrap);
                     }
-                    slots += g_editor.RowMathExtraSlots(buf, r, slots, wrap_cols, latex_cursor_row);  // inline maths' room
+                    slots += g_editor.RowMathExtraSlots(buf, r, slots, row_wrap, latex_cursor_row);  // inline maths' room
                     slots += nb_sess ? g_editor.NotebookTrailingSlots(pane.buffer_id, r) : 0;
                     // An org headline's own extra slot (kOrgHeadingStyles)
                     // -- one of the four walkers that has to agree on it.
@@ -49345,6 +49367,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // nothing is hidden by stopping here.
             return std::min(card_limit_right, want);
         };
+        // A card in a column set beside others (mepml's \columns,
+        // Buffer::mepml_col_place) is as wide as its column, where the
+        // column is.
+        auto card_in_column = [&](int first_row, gfx::Rectangle *rect) {
+            if (buf.mepml_col_place.empty()) return;
+            const auto pl = buf.mepml_col_place.find(first_row);
+            if (pl == buf.mepml_col_place.end() || pl->second.block_end == first_row) return;
+            const float shift = static_cast<float>(pl->second.x_cols) * g_char_width;
+            const float right =
+                std::min(card_limit_right, text_x + shift + static_cast<float>(pl->second.w_cols) * g_char_width + card_inset);
+            rect->x = card_left + shift;
+            rect->width = right - rect->x;
+        };
         // A mepml slide's card holds the cards of the blocks on it, and a
         // box's (\definition ...) those of the blocks in it: those are inset
         // from its edges, one step per container round them, so no two
@@ -49390,7 +49425,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // An unterminated block (still being typed) runs to the end of
             // the buffer rather than not drawing at all.
             const int last_row = card.end_row >= 0 ? card.end_row : buf.LineCount() - 1;
-            if (last_row < pane.scroll_row) continue;
+            if (last_row < draw_first_row) continue;
             // A closed fold anywhere across the block collapses rows this
             // geometry assumes are on screen -- and its summary line is
             // the one thing the user asked to see in their place. An org
@@ -49434,6 +49469,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 box.slide_wash = slide_wash;
                 box.rect = gfx::Rectangle{card_left + nest, top, card_right_for(card.content_cols) - card_left - 2.0f * nest,
                                           bottom - top};
+                card_in_column(own_fold->start_row, &box.rect);
                 // No raw line to reveal under the cursor (it would only be
                 // the fold's summary): the bar stays, and a brighter
                 // outline says the cursor is on it.
@@ -49495,7 +49531,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // viewport (the card continues past the top edge, drawn
                 // from just off-screen so the scissor clips its corner
                 // away) or the whole block is below it.
-                if (card.meta_row < pane.scroll_row) top = content_y - static_cast<float>(line_height);
+                if (card.meta_row < draw_first_row) top = content_y - static_cast<float>(line_height);
                 else continue;
             }
             float bottom = 0.0f;
@@ -49556,6 +49592,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             box.is_src = card.is_src;
             const float card_right = card_right_for(card.content_cols);
             box.rect = gfx::Rectangle{card_left + nest, top, card_right - card_left - 2.0f * nest, bottom - top};
+            card_in_column(card.meta_row, &box.rect);
             box.slide_right = nest_right;
             box.slide_wash = slide_wash;
             box.active = is_active && pane.cursor.row >= card.meta_row && pane.cursor.row <= last_row;
@@ -49591,8 +49628,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                            : card.is_src ? gfx::Fade(ResolveHlGroup("Accent"), 0.10f)
                                            : is_slide    ? slide_wash
                                                          : gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
-            gfx::DrawRectangleRounded(box.rect, rr, 6, wash);
-            for (int r = card.meta_row; r <= wash_last; r++) org_card_row_wash[r].push_back(wash);
+            // (A plain card has no paper of its own: only its fence rows
+            // are covered, by the post-pass.)
+            if (!card.plain) {
+                gfx::DrawRectangleRounded(box.rect, rr, 6, wash);
+                for (int r = card.meta_row; r <= wash_last; r++) org_card_row_wash[r].push_back(wash);
+            }
             // Every row the card paints over, so the decoration loop can
             // hand that row's end-of-line virtual text to the post-pass
             // rather than drawing it where the bar is about to land. A
@@ -49642,7 +49683,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // per step (wraps, headroom and images spend more), so it never gets
     // past `deco_row_end`. Two slots of slack cover a partly scrolled
     // first row.
-    int deco_row_end = pane.scroll_row;
+    int deco_row_end = draw_first_row;
     {
         std::unordered_map<int, int> closed_fold_end;
         for (const Fold &f : buf.folds) {
@@ -49662,6 +49703,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 deco_row_end++;
             }
         }
+        // (Columns set side by side spend their rows' slots beside each
+        // other: as many rows again fit under them.)
+        for (const Buffer::MepmlColumnsBlock &blk : buf.mepml_columns)
+            if (blk.start_row < deco_row_end && blk.end_row >= draw_first_row && in_placed_column(blk.start_row + 1))
+                deco_row_end = std::min(line_count, std::max(deco_row_end, blk.end_row + 1) + (blk.end_row - blk.start_row));
     }
     std::unordered_map<int, std::vector<const Decoration *>> decos_by_row;
     for (const auto &ns_decos : buf.decorations) {
@@ -49677,7 +49723,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // bold / italic / underline decoration carries neither and
             // survives, which is what keeps syntax highlighting on.
             if (org_plain && (d.virt_overlay || d.conceal)) continue;
-            if (d.row >= pane.scroll_row && d.row < deco_row_end) decos_by_row[d.row].push_back(&d);
+            if (d.row >= draw_first_row && d.row < deco_row_end) decos_by_row[d.row].push_back(&d);
         }
     }
     // Decorations from different namespaces land in the same per-row
@@ -49949,10 +49995,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const float draw_w = static_cast<float>(tex.width) * OrgLatexInlineScale(tex);
         return std::max(1, static_cast<int>(std::ceil(draw_w / g_char_width - 0.05f)));
     };
-    int visual_slot = 0;  // a closed fold collapses N buffer rows into 1 of these
-    int row = pane.scroll_row;
+    int visual_slot = draw_first_slot;  // a closed fold collapses N buffer rows into 1 of these
+    int row = draw_first_row;
     // (A row set centred or flush right moves text_x for its own drawing.)
-    const float text_x_left = text_x;
+    // A row in a column set beside others (mepml's \columns,
+    // Buffer::mepml_col_place) is drawn in its column: the text's left
+    // edge, the pane's right one and the wrap width are the column's for
+    // that row -- the pane's own are kept here.
+    const float pane_text_x_left = text_x, pane_w = w;
+    const int pane_wrap_cols = wrap_cols;
+    float text_x_left = text_x;
+    int row_text_cols = pane.text_cols;
+    bool row_in_column = false;
     // (A row slid sideways -- see single_line_shift -- is clipped to the
     // text area while it is drawn; the pane's own clip comes back after it.)
     bool row_clipped = false;
@@ -49960,11 +50014,25 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     auto unclip_row = [&] {
         if (!row_clipped) return;
         gfx::EndScissorMode();
-        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w), static_cast<int>(content_h));
+        gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(pane_w), static_cast<int>(content_h));
         row_clipped = false;
     };
-    for (; row < buf.LineCount() && visual_slot < visible_lines; row++) {
+    for (; row < buf.LineCount() && (visual_slot < visible_lines || in_placed_column(row)); row++) {
         unclip_row();
+        text_x_left = pane_text_x_left;
+        w = pane_w;
+        wrap_cols = pane_wrap_cols;
+        row_text_cols = pane.text_cols;
+        row_in_column = false;
+        if (!buf.mepml_col_place.empty()) {
+            if (const auto pl = buf.mepml_col_place.find(row); pl != buf.mepml_col_place.end()) {
+                row_in_column = pl->second.x_cols > 0;
+                text_x_left += static_cast<float>(pl->second.x_cols) * g_char_width;
+                w = std::min(pane_w, (text_x_left - x) + static_cast<float>(pl->second.w_cols) * g_char_width + static_cast<float>(kMarginX));
+                if (wrap_cols > 0) wrap_cols = std::min(wrap_cols, pl->second.w_cols);
+                row_text_cols = std::min(row_text_cols, pl->second.w_cols);
+            }
+        }
         text_x = text_x_left;
         // Rows that take no slot at all (a mepml alt text while the cursor
         // is off its block -- Buffer::OrgLatexRender::collapsed): not drawn,
@@ -50399,7 +50467,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             auto img_it = buf.org_image_rows.find(row);
             if (img_it != buf.org_image_rows.end()) {
                 const Buffer::OrgImageRender &img = img_it->second;
-                const OrgImageLayout lay = g_editor.OrgImageLayoutForRow(img, pane.text_cols);
+                const OrgImageLayout lay = g_editor.OrgImageLayoutForRow(img, row_text_cols);
                 const gfx::Texture2D *tex = GetOrLoadOrgInlineImageTexture(img.path);
                 if (tex) {
                     // The registry's recorded size is what `lay` was
@@ -50989,7 +51057,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             cursor_row_shift = single_line_shift;
             text_x -= single_line_shift;
         }
-        if (number_w > 0.0f) {
+        if (number_w > 0.0f && !row_in_column) {  // (no number in the middle of the pane)
             // :set relativenumber: every row but the cursor's own shows
             // its distance from it instead of an absolute number: the
             // cursor line itself still shows its real absolute number
@@ -52171,7 +52239,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
     }
     unclip_row();
-    text_x = text_x_left;
+    text_x = text_x_left = pane_text_x_left;
+    w = pane_w;
+    wrap_cols = pane_wrap_cols;
 
     // `row` here is the drawing loop's own variable, left at one past
     // whatever it actually covered (fold-collapsed ranges included) --
@@ -52205,8 +52275,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
      * @return The visual slot index (relative to pane.scroll_row) that `target_row` renders on.
      */
     auto RowSlot = [&](int target_row) {
-        int slot = 0;
-        for (int r = pane.scroll_row; r < target_row;) {
+        int slot = draw_first_slot;
+        for (int r = draw_first_row; r < target_row;) {
+            // (A row in a column set beside others has the column's width.)
+            const int row_cols = g_editor.MepmlRowCols(buf, r, pane.text_cols);
+            const int row_wrap = wrap_cols > 0 ? g_editor.MepmlRowCols(buf, r, wrap_cols) : 0;
             const Fold *f = nullptr;
             for (const Fold &fold : buf.folds) {
                 if (fold.closed && fold.start_row == r) f = &fold;
@@ -52223,7 +52296,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 r = f->end_row + 1;
             } else if (show_org_images && img_it != buf.org_image_rows.end()) {
                 r += 1;
-                slot += g_editor.OrgImageLayoutForRow(img_it->second, pane.text_cols).slots + nb_trailing;
+                slot += g_editor.OrgImageLayoutForRow(img_it->second, row_cols).slots + nb_trailing;
             } else if (latex != nullptr) {
                 r = latex->end_row + 1;  // skip the fragment's remaining raw source rows outright
                 slot += latex->slots + nb_trailing;
@@ -52240,8 +52313,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 slot += static_cast<int>(tw_it->second.lines.size()) + nb_trailing;
             } else {
                 const int sublines =
-                    (wrap_cols > 0) ? std::max(1, (Editor::WrapLenForRow(buf, r) + wrap_cols - 1) / wrap_cols) : 1;
-                slot += sublines + g_editor.RowMathExtraSlots(buf, r, sublines, wrap_cols, latex_cursor_row);  // + inline maths' room
+                    (row_wrap > 0) ? std::max(1, (Editor::WrapLenForRow(buf, r) + row_wrap - 1) / row_wrap) : 1;
+                slot += sublines + g_editor.RowMathExtraSlots(buf, r, sublines, row_wrap, latex_cursor_row);  // + inline maths' room
                 slot += nb_trailing;
                 // An org headline's own extra slot (kOrgHeadingStyles) --
                 // the third of the four walkers that has to agree on it.
@@ -52693,6 +52766,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // bar in a pane-wide card, and that is exactly where the button
         // sits (it draws later, so it would simply paint over it).
         float play_left = 0.0f;
+        // A plain card (a presented slide's output) is its content alone:
+        // its fence rows are painted out and nothing is drawn round it.
+        if (card.plain) {
+            // (Under the wash of whatever it is in -- a box, say, whose
+            // edge clear_overflow would paint out: a fence is never wider
+            // than its card.)
+            auto blank_band = [&](const gfx::Rectangle &band, int row) {
+                gfx::DrawRectangle(static_cast<int>(band.x), static_cast<int>(band.y), static_cast<int>(band.width),
+                                   static_cast<int>(band.height), opaque_bg);
+                cover_card_wash(row, band.x, band.y, band.width, band.height);
+            };
+            if (cb.conceal_header) blank_band(cb.header, card.begin_row);
+            if (cb.conceal_footer) blank_band(cb.footer, card.end_row);
+            continue;
+        }
         if (cb.conceal_header) {
             clear_overflow(cb.header);
             gfx::DrawRectangle(static_cast<int>(cb.header.x), static_cast<int>(cb.header.y),

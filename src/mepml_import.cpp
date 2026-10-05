@@ -1008,6 +1008,26 @@ struct HtmlReader {
                 skip_node = outer;
                 Flush();
                 out.BoxClose();
+            } else if (t == "div" && HasClass(c, "mcols")) {
+                // mep's own columns (mepml::ToHtml): each column's content,
+                // read as blocks.
+                Flush();
+                out.Block("\\columns(");
+                for (const auto &k : c->children) {
+                    if (k->type != DomNodeType::Element) continue;
+                    if (!HasClass(k.get(), "mcol")) {
+                        Blocks(k.get());
+                        Flush();
+                        continue;
+                    }
+                    const std::string width = Attr(k.get(), "data-width");
+                    const bool pct = !width.empty() && std::all_of(width.begin(), width.end(), [](char ch) { return std::isdigit(static_cast<unsigned char>(ch)); });
+                    out.Block(pct ? "\\column(" + width + "%," : "\\column(");
+                    Blocks(k.get());
+                    Flush();
+                    out.Block(")");
+                }
+                out.Block(")");
             } else if ((t == "section" || t == "div") && HasClass(c, "abstract")) {
                 // mep's own and pandoc's: a title element, then paragraphs.
                 std::vector<std::vector<Seg>> paras;

@@ -133,6 +133,9 @@ Lines Signature(const Document &doc, const Keeps &k) {
                 if (!k.boxes) continue;
                 s = "E";
                 break;
+            // (Layout: most formats have none, and write the content in order.)
+            case BlockKind::LayoutBegin:
+            case BlockKind::LayoutEnd: continue;
             case BlockKind::Abstract:
                 s = "A";
                 for (const std::vector<Inline> &para : AbstractParagraphs(b)) s += "\n" + Plain(para);

@@ -442,6 +442,8 @@ struct Builder {
             case BlockKind::SlideBegin:
             case BlockKind::SlideEnd:
             case BlockKind::BoxEnd:
+            case BlockKind::LayoutBegin:  // (a picture beside text is set in two columns anyway: Layout)
+            case BlockKind::LayoutEnd:
             case BlockKind::Define:
             case BlockKind::Raw: break;  // see Runs: no markup of its own
             case BlockKind::Command: {

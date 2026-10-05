@@ -4904,6 +4904,10 @@ void Editor::HandleInput() {
 // an org headline's own extra slot.
 int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_cols) const {
     if (row < 0 || row >= static_cast<int>(buf.lines.size())) return 1;
+    // A row in a column set beside others (mepml's \columns) has the
+    // column's width to wrap in and to size its picture by.
+    const int text_cols = MepmlRowCols(buf, row, pane.text_cols);
+    if (wrap_cols > 0) wrap_cols = MepmlRowCols(buf, row, wrap_cols);
     // A closed fold collapses its whole range into one drawn line, and
     // that line is the summary -- not the row's own text, image, formula
     // or wrapped table -- so nothing below applies to it.
@@ -4941,7 +4945,7 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     if (org_images_visible_ && !plain) {
         auto img_it = buf.org_image_rows.find(row);
         if (img_it != buf.org_image_rows.end()) {
-            return OrgImageLayoutForRow(img_it->second, pane.text_cols).slots + trailing;
+            return OrgImageLayoutForRow(img_it->second, text_cols).slots + trailing;
         }
     }
     if (const Buffer::OrgLatexRender *latex = OrgLatexRenderForRow(buf, row, pane.cursor.row, plain)) {
@@ -4987,7 +4991,7 @@ int Editor::PaneFigureSlots(const Pane &pane, const Buffer &buf, int row) const 
     for (const Fold &f : buf.folds) {
         if (f.closed && f.start_row <= row && f.end_row >= row) return 0;
     }
-    return OrgImageLayoutForRow(it->second, pane.text_cols).slots;
+    return OrgImageLayoutForRow(it->second, MepmlRowCols(buf, row, pane.text_cols)).slots;
 }
 
 int Editor::PaneNextDrawnRow(const Pane &pane, const Buffer &buf, int row) const {

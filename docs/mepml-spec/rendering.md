@@ -48,6 +48,11 @@ A renderer showing one slide at a time (mep's presentation view, media
 slide's `background` is the page's paper, edge to edge, rather than a box
 round its content. A page's text takes the slide's `color` by inheritance.
 
+A code block's results are on the page as they are: text output in the
+code face, an HTML result laid out, a figure as its picture -- none with
+a title bar or a box of its own. (The code, where the slide shows it,
+keeps its card.)
+
 ## 4. Presentational markup
 
 `\color(c, x)`, `\f(family, x)` and `\fs(pt, x)` are the author's own

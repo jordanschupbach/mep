@@ -305,6 +305,10 @@ struct Builder {
                 case BlockKind::BoxEnd:
                     if (!heads.empty() && heads.back().tag == "box") close();
                     break;
+                // (Columns are read in order, left to right: no element of
+                // their own.)
+                case BlockKind::LayoutBegin:
+                case BlockKind::LayoutEnd: break;
                 case BlockKind::Bibliography: {
                     if (doc.cite_order.empty()) break;
                     Node s = Leaf(Role::Section, "bibliography", b);

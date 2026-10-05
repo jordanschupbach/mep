@@ -114,6 +114,9 @@ bool Expected(const mepml::Block &b, Expect *e) {
         case BlockKind::Command: e->type = "command_block"; return true;
         case BlockKind::BoxBegin: e->type = "box_open"; return true;
         case BlockKind::BoxEnd: e->type = "box_close"; return true;
+        // (Columns are boxes to the grammar: they nest and close alike.)
+        case BlockKind::LayoutBegin: e->type = "box_open"; return true;
+        case BlockKind::LayoutEnd: e->type = "box_close"; return true;
     }
     return false;
 }

@@ -319,10 +319,13 @@ const std::unordered_map<std::string, FaceCommand> &FaceTable() {
 
 // The matrix-like environments, each with the delimiters it fences its grid
 // in and whether its cells are left-aligned (`cases`, `aligned`) rather
-// than centered (`pmatrix`).
+// than centered (`pmatrix`). The amsmath alignment environments go further
+// and alternate their columns right, left, right, left ... so each `&`
+// pair meets at its relation and a trailing column sits flush right.
 struct MatrixEnv {
     int open_cp, close_cp;  // 0 = no delimiter on that side
     bool left_align;
+    bool pair_align = false;
 };
 
 /**
@@ -335,9 +338,9 @@ const std::unordered_map<std::string, MatrixEnv> &EnvTable() {
         {"pmatrix", {'(', ')', false}},     {"bmatrix", {'[', ']', false}},
         {"Bmatrix", {'{', '}', false}},     {"vmatrix", {'|', '|', false}},
         {"Vmatrix", {0x2016, 0x2016, false}}, {"cases", {'{', 0, true}},
-        {"array", {0, 0, true}},            {"aligned", {0, 0, true}},
-        {"align", {0, 0, true}},            {"align*", {0, 0, true}},
-        {"alignedat", {0, 0, true}},        {"split", {0, 0, true}},
+        {"array", {0, 0, true}},            {"aligned", {0, 0, true, true}},
+        {"align", {0, 0, true, true}},      {"align*", {0, 0, true, true}},
+        {"alignedat", {0, 0, true, true}},  {"split", {0, 0, true, true}},
         {"gather", {0, 0, false}},          {"gathered", {0, 0, false}},
         {"eqnarray", {0, 0, true}},         {"eqnarray*", {0, 0, true}},
     };
@@ -634,11 +637,12 @@ struct MathParser {
      */
     MathNode ParseEnvironment(const std::string &env) {
         const auto spec = EnvTable().find(env);
-        const MatrixEnv info = spec != EnvTable().end() ? spec->second : MatrixEnv{0, 0, false};
+        const MatrixEnv info = spec != EnvTable().end() ? spec->second : MatrixEnv{0, 0, false, false};
         MathNode m;
         m.kind = MathKind::Matrix;
         m.cls = MathClass::Inner;
         m.cells_left_align = info.left_align;
+        m.cells_pair_align = info.pair_align;
         // `array`'s column-spec argument (`{ccc}`) is a layout hint this
         // engine has no use for -- consume it so it doesn't parse as maths.
         if (env == "array" || env == "alignedat") ParseBracedName();

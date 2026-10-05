@@ -37029,7 +37029,12 @@ MathLayoutResult LayoutMathAtom(const MathNode &n, float base_size, MathStyle st
                 for (size_t c = 0; c < col_w.size(); c++) {
                     const size_t k = rr * static_cast<size_t>(cols) + c;
                     if (k < cells.size()) {
-                        const float cell_x = n.cells_left_align ? x : x + (col_w[c] - cells[k].width) / 2.0f;
+                        float cell_x = x + (col_w[c] - cells[k].width) / 2.0f;
+                        if (n.cells_pair_align) {
+                            cell_x = c % 2 == 0 ? x + col_w[c] - cells[k].width : x;
+                        } else if (n.cells_left_align) {
+                            cell_x = x;
+                        }
                         MathAppendShifted(&r, cells[k], cell_x, y + row_base[rr] - cells[k].baseline);
                     }
                     x += col_w[c] + col_gap;

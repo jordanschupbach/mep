@@ -313,6 +313,10 @@ int main() {
         CHECK(mat.children[0].cols == 2);
         CHECK(mat.children[0].cells.size() == 4);
         CHECK(Flatten(mat) == "([a,b;c,d])");
+        // amsmath's alignment environments alternate right/left columns, so
+        // a third column (a right-hand comment) is flush right; `cases` is not.
+        const MathNode aligned_row = ParseTexMath("\\begin{aligned} a &= b & \\text{why} \\\\ c &= d \\end{aligned}");
+        CHECK(OnlyTerm(aligned_row).cells_pair_align && OnlyTerm(aligned_row).cols == 3);
         // A ragged `cases` still lays out, padded to the widest row.
         const MathNode cases_row = ParseTexMath("\\begin{cases} 1 & x > 0 \\\\ 0 \\end{cases}");
         const MathNode cases = OnlyTerm(cases_row);

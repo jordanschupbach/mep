@@ -239,8 +239,16 @@ struct MathMlWriter {
                 return Scripts("<mover accent=\"true\">" + base + mark + "</mover>", n);
             }
             case MathKind::Matrix: {
-                std::string o = std::string("<mtable") + (n.cells_left_align ? " columnalign=\"left\"" : "") + ">";
                 const size_t cols = static_cast<size_t>(std::max(1, n.cols));
+                std::string o = "<mtable";
+                if (n.cells_pair_align) {
+                    o += " columnalign=\"";
+                    for (size_t c = 0; c < cols; ++c) o += std::string(c > 0 ? " " : "") + (c % 2 == 0 ? "right" : "left");
+                    o += "\"";
+                } else if (n.cells_left_align) {
+                    o += " columnalign=\"left\"";
+                }
+                o += ">";
                 for (size_t r = 0; r * cols < n.cells.size(); ++r) {
                     o += "<mtr>";
                     for (size_t c = 0; c < cols && r * cols + c < n.cells.size(); ++c) o += "<mtd>" + Group({n.cells[r * cols + c]}) + "</mtd>";
@@ -463,7 +471,8 @@ struct StarMathWriter {
                 std::string o = "{matrix{";
                 for (size_t k = 0; k < n.cells.size(); ++k) {
                     if (k > 0) o += k % cols == 0 ? " ## " : " # ";
-                    o += (n.cells_left_align ? "alignl " : "") + Group({n.cells[k]});
+                    const bool right = n.cells_pair_align && (k % cols) % 2 == 0;
+                    o += (right ? "alignr " : n.cells_left_align ? "alignl " : "") + Group({n.cells[k]});
                 }
                 return Scripts(o + "}}", n);
             }
@@ -636,9 +645,16 @@ struct OmmlWriter {
             case MathKind::Matrix: {
                 const size_t cols = static_cast<size_t>(std::max(1, n.cols));
                 std::string o = "<m:m>";
-                if (n.cells_left_align)
+                if (n.cells_pair_align) {
+                    o += "<m:mPr><m:mcs>";
+                    for (size_t c = 0; c < cols; ++c)
+                        o += std::string("<m:mc><m:mcPr><m:count m:val=\"1\"/><m:mcJc m:val=\"") + (c % 2 == 0 ? "right" : "left") +
+                             "\"/></m:mcPr></m:mc>";
+                    o += "</m:mcs></m:mPr>";
+                } else if (n.cells_left_align) {
                     o += "<m:mPr><m:mcs><m:mc><m:mcPr><m:count m:val=\"" + std::to_string(cols) +
                          "\"/><m:mcJc m:val=\"left\"/></m:mcPr></m:mc></m:mcs></m:mPr>";
+                }
                 for (size_t r = 0; r * cols < n.cells.size(); ++r) {
                     o += "<m:mr>";
                     for (size_t c = 0; c < cols && r * cols + c < n.cells.size(); ++c) o += Arg("e", {n.cells[r * cols + c]});

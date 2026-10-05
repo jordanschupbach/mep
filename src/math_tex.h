@@ -88,6 +88,7 @@ struct MathNode {
     std::vector<MathNode> cells;    // Matrix: the entries, row-major
     int cols = 0;                   // Matrix: entries per row
     bool cells_left_align = false;  // Matrix: `cases`/`aligned` rather than `pmatrix`
+    bool cells_pair_align = false;  // Matrix: amsmath's `aligned` columns, alternately right and left
 
     std::vector<MathNode> children;  // see MathKind for each kind's meaning
     std::vector<MathNode> sup;       // trailing ^{...} attached to *this* node, 0 or 1 element (itself Row-kind)

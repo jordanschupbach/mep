@@ -348,6 +348,9 @@ int Editor::RowHeadroomSlots(const Buffer &buf, int row) const {
         if (sit == buf.mepml_fold_summaries.end() || sit->second.text_hash != hash) return 0;
         scale = sit->second.title_scale;
     } else {
+        // A table row drawn as its wrapped layout has its formulas' room
+        // in the layout's own lines: only its pictures are above it.
+        if (TableWrapRowFor(buf, row)) return MepmlTableImageBoxes(buf, row, nullptr);
         if (const int pics = MepmlTableImageBoxes(buf, row, nullptr)) return std::max(pics, math);
         auto it = buf.mepml_row_scale.find(row);
         if (it == buf.mepml_row_scale.end() || hash != it->second.text_hash) return math;
@@ -405,27 +408,66 @@ Editor::InlineMathPad Editor::InlineMathPadFor(const Buffer &buf, int row) const
 int Editor::RowMathExtraSlots(const Buffer &buf, int row, int sublines, int wrap_cols, int cursor_row) const {
     const InlineMathPad pad = InlineMathPadFor(buf, row);
     if (pad.top + pad.bottom == 0) return 0;
-    // Soft-wrap counts a row's lines by its raw length (WrapLenForRow),
-    // and inline maths' TeX is far longer than its render, so the last of
-    // them are often left empty. They draw nothing, so only the lines the
-    // row can still fill once its maths collapses get maths room: never
-    // fewer than the draw loop fills (the other concealed markup only
-    // shortens the row further), so nothing is drawn past what is counted.
-    int lines = std::max(1, sublines);
-    if (wrap_cols > 0 && lines > 1 && !buf.mepml_table_row_cols.count(row) && render_char_width_ > 0.0) {
-        int len = WrapLenForRow(buf, row);
-        for (const Buffer::OrgLatexInlineSpan &sp : buf.org_latex_inline.at(row)) {
+    // (`sublines` are the lines the row draws on: WrapLenForRow measures
+    // it with its maths collapsed.)
+    (void)wrap_cols;
+    (void)cursor_row;
+    const int lines = std::max(1, sublines);
+    return (lines - 1) * (pad.top + pad.bottom) + pad.bottom;
+}
+
+int Editor::WrapLenForRow(const Buffer &buf, int row, int cursor_row) const {
+    if (buf.mepml_single_line_rows.count(row) != 0) return 1;
+    if (!buf.mepml_col_place.empty()) {
+        const auto pl = buf.mepml_col_place.find(row);
+        if (pl != buf.mepml_col_place.end() && pl->second.drawn_cols >= 0) return pl->second.drawn_cols;
+    }
+    const auto tbl = buf.mepml_table_row_cols.find(row);
+    if (tbl != buf.mepml_table_row_cols.end()) return tbl->second;
+    const std::string &line = buf.lines[static_cast<size_t>(row)];
+    const int raw = static_cast<int>(line.size());
+    if (row == cursor_row) return raw;
+    // DrawPane's collapse (its `conceal_runs`), from the same registries.
+    std::vector<std::array<int, 3>> runs;
+    if (org_conceal_visible_) {
+        const auto it = buf.mepml_row_conceal.find(row);
+        if (it != buf.mepml_row_conceal.end()) runs = it->second;
+    }
+    const auto maths = org_latex_visible_ ? buf.org_latex_inline.find(row) : buf.org_latex_inline.end();
+    if (maths != buf.org_latex_inline.end() && render_char_width_ > 0.0) {
+        // An org table row hands a cell's slack back before its `|`: the
+        // row is as long as it was.
+        const size_t first_glyph = line.find_first_not_of(" \t");
+        if (first_glyph != std::string::npos && line[first_glyph] == '|' && LspFiletype(buf.filename) != "mepml") return raw;
+        std::ptrdiff_t marked = static_cast<std::ptrdiff_t>(runs.size());  // the markup's runs: the first `marked`
+        for (const Buffer::OrgLatexInlineSpan &sp : maths->second) {
             if (sp.col_end <= sp.col_start || OrgLatexInlineRevealed(sp, row, cursor_row)) continue;
             int drawn = 0;  // a fragment's continuation rows collapse to nothing
             if (!sp.path.empty()) {
                 if (sp.width <= 0) continue;  // unreadable: its source stays
                 drawn = std::max(1, static_cast<int>(std::ceil(static_cast<double>(sp.width) / render_char_width_ - 0.05)));
             }
-            len -= std::max(0, (sp.col_end - sp.col_start) - drawn);
+            // A formula owns its whole source span: the markup concealed
+            // inside it (its delimiters, an \alttext()) goes with it.
+            const auto inside = std::remove_if(runs.begin(), runs.begin() + marked, [&](const std::array<int, 3> &r) {
+                return r[0] < sp.col_end && r[1] > sp.col_start;
+            });
+            const std::ptrdiff_t kept = inside - runs.begin();
+            runs.erase(inside, runs.begin() + marked);
+            marked = kept;
+            runs.push_back({sp.col_start, sp.col_end, drawn});
         }
-        lines = std::clamp((std::max(1, len) + wrap_cols - 1) / wrap_cols, 1, lines);
     }
-    return (lines - 1) * (pad.top + pad.bottom) + pad.bottom;
+    // (A headline is drawn at its own size, with nothing collapsed.)
+    if (runs.empty() || HeadingLevelForRow(buf, row) > 0) return raw;
+    std::sort(runs.begin(), runs.end());
+    int len = raw, end = 0;
+    for (const std::array<int, 3> &r : runs) {
+        if (r[0] < end || r[1] > raw) continue;  // only the first of an overlapping pair counts
+        end = r[1];
+        len -= (r[1] - r[0]) - r[2];
+    }
+    return std::max(1, len);
 }
 
 int Editor::RowLinePitchSlots(const Buffer &buf, int row) const {
@@ -507,6 +549,11 @@ bool Editor::MepmlToggleRaw() {
 bool Editor::MepmlRaw(int buffer_id) const {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
     return buffers_[static_cast<size_t>(buffer_id)].mepml_raw;
+}
+
+bool Editor::MepmlIsPresentation(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    return buffers_[static_cast<size_t>(buffer_id)].mepml_presentation;
 }
 
 int Editor::MepmlToggleHeaderFolds() {
@@ -1031,6 +1078,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         buf.mepml_row_scale.clear();
         buf.mepml_table_images.clear();
         buf.mepml_table_row_cols.clear();
+        if (IsMepmlBuffer()) buf.org_table_wrap_rows.clear();  // (its tables laid out wrapped: MepmlTableLayout)
         buf.mepml_virtual_rows.clear();
         buf.mepml_fold_summaries.clear();
         buf.mepml_html_rows.clear();
@@ -1048,6 +1096,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     }
 
     const mepml::Document &doc = MepmlParseCurrent(true);
+    buf.mepml_presentation = mepml::IsPresentation(doc);
     // Rows of columns (\columns): each one's lines and its columns', for
     // MepmlColumnsPlace. One inside another's column is not set side by
     // side itself, and neither is one holding anything but columns.
@@ -1744,7 +1793,10 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                     grids.end());
         for (const mepml::Block &b : doc.blocks)
             if (b.origin.empty() && b.kind == mepml::BlockKind::Table && patch_tables.count(b.line_start))
-                for (int r = b.line_start; r <= b.line_end; ++r) buf.mepml_table_images.erase(r);
+                for (int r = b.line_start; r <= b.line_end; ++r) {
+                    buf.mepml_table_images.erase(r);
+                    buf.org_table_wrap_rows.erase(r);
+                }
         MepmlTableLayout(doc, spans, table_layout_rows, table_edge_markup, ns, &patch_tables);
         MepmlFitCards();
     }
@@ -1930,6 +1982,33 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             m.virt_text_eol = true;
             AddDecoration(ns, std::move(m));
         }
+    }
+
+    // What each row conceals (Buffer::mepml_row_conceal), as DrawPane will
+    // collapse it: the overlays that stand a span down to its replacement.
+    {
+        if (!patch) buf.mepml_row_conceal.clear();
+        for (int r : patch_rows) buf.mepml_row_conceal.erase(r);
+        std::unordered_set<int> unmeasured;
+        const auto found = buf.decorations.find(ns);
+        if (found != buf.decorations.end()) {
+            for (const Decoration &d : found->second) {
+                if (!in_scope(d.row)) continue;
+                if (d.whole_line || !d.virt_overlay || (d.virt_text.empty() && !d.conceal) || d.virt_text_eol) continue;
+                if (d.col_end <= d.col_start) continue;
+                if (!d.virt_family.empty()) {
+                    unmeasured.insert(d.row);
+                    continue;
+                }
+                int cp = 0;
+                for (char c : d.virt_text) cp += (static_cast<unsigned char>(c) & 0xC0) != 0x80;
+                if (d.virt_scale != 1.0f) cp = std::max(1, static_cast<int>(std::ceil(static_cast<float>(cp) * d.virt_scale - 1e-3f)));
+                buf.mepml_row_conceal[d.row].push_back({d.col_start, d.col_end, cp});
+            }
+        }
+        for (int r : unmeasured) buf.mepml_row_conceal.erase(r);
+        for (auto &kv : buf.mepml_row_conceal)
+            if (in_scope(kv.first)) std::sort(kv.second.begin(), kv.second.end());
     }
 
     state.valid = true;
@@ -2165,7 +2244,19 @@ bool Editor::MepmlTablesStale() {
     if (!IsMepmlBuffer()) return false;
     if (MepmlStylesStale()) return true;
     auto it = mepml_scan_state_.find(CurrentBufferId());
-    return it != mepml_scan_state_.end() && it->second.valid && it->second.table_math_gen != Buf().mepml_table_math_gen;
+    if (it == mepml_scan_state_.end() || !it->second.valid) return false;
+    if (it->second.table_math_gen != Buf().mepml_table_math_gen) return true;
+    // The pane has other columns than the tables were laid out for: one
+    // wrapped to the old width, or one that no longer fits the new.
+    const int cols = CurPane().text_cols;
+    if (cols == it->second.pane_cols || !org_table_wrap_visible_) return false;
+    for (const auto &kv : Buf().org_table_wrap_rows)
+        if (kv.second.hashed) return true;
+    auto grids = mepml_table_grids_.find(CurrentBufferId());
+    if (grids != mepml_table_grids_.end())
+        for (const OrgTableGrid &g : grids->second)
+            if (g.indent + g.width > cols) return true;
+    return false;
 }
 
 void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepml::Span> &spans,
@@ -2224,6 +2315,7 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
     // that lands later at another width lays the table out again.
     struct MathRun {
         int col_start, col_end, cols;
+        const Buffer::OrgLatexInlineSpan *span;
     };
     // Measured as if the cursor were elsewhere (its row's maths at their
     // render's width too), so the grid doesn't shift as it moves.
@@ -2237,9 +2329,26 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             // A fragment's continuation row draws nothing (its render is
             // on the row it starts on).
             const int cols = sp.path.empty() ? 0 : LatexInlineDrawCols(sp.path);
-            if (cols >= 0) out.push_back({sp.col_start, sp.col_end, cols});
+            if (cols >= 0) out.push_back({sp.col_start, sp.col_end, cols, &sp});
         }
         return out;
+    };
+    // What the scan drew in place of each concealed markup on a table row
+    // (its overlays' text, by (row, col_start)), for a table laid out
+    // wrapped below -- gathered once, and only when there is one.
+    std::map<std::pair<int, int>, std::string> shown_markup;
+    bool shown_markup_built = false;
+    auto shown_for = [&](const mepml::Span &sp) -> const std::string * {
+        if (!shown_markup_built) {
+            shown_markup_built = true;
+            auto ds = buf.decorations.find(ns);
+            if (ds != buf.decorations.end())
+                for (const Decoration &d : ds->second)
+                    if (d.virt_overlay && d.col_end > d.col_start && table_rows.count(d.row))
+                        shown_markup[{d.row, d.col_start}] = d.virt_text;
+        }
+        auto it = shown_markup.find({sp.line, sp.col_start});
+        return it == shown_markup.end() ? nullptr : &it->second;
     };
 
     for (const mepml::Block &b : doc.blocks) {
@@ -2263,6 +2372,7 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
         std::map<int, std::vector<Cell>> cells;
         std::map<int, RowShape> shapes;
         std::vector<int> widths;
+        std::vector<int> unbreakable;  // each column's widest formula: no narrower than that
         for (int row = b.line_start; row <= body_end && row < n; ++row) {
             const std::string &line = buf.lines[static_cast<size_t>(row)];
             const RowShape &shape = shapes[row] = shape_of(line);
@@ -2297,8 +2407,12 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
                     };
                     for (const mepml::Span *sp : it->second)
                         if (sp->col_start >= c.cs && sp->col_end <= c.ce && !in_math(*sp)) c.width += span_width(*sp, line);
-                    for (const MathRun &m : maths)
-                        if (m.col_start >= c.cs && m.col_end <= c.ce) c.width += m.cols;
+                    for (const MathRun &m : maths) {
+                        if (m.col_start < c.cs || m.col_end > c.ce) continue;
+                        c.width += m.cols;
+                        if (unbreakable.size() <= k) unbreakable.resize(k + 1, 0);
+                        unbreakable[k] = std::max(unbreakable[k], m.cols);
+                    }
                     // Every fragment in the row, rendered or not yet.
                     for (const mepml::Span *sp : it->second) {
                         if (!(sp->style & mepml::kMath) || sp->markup) continue;
@@ -2349,6 +2463,90 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
                     if (picture_col[k]) widths[k] = std::max(widths[k], share);
             }
         }
+        // A table wider than the pane has columns: left to soft-wrap, a row
+        // broke wherever the pane ended and went on from the left edge,
+        // through the first column. Its columns are re-budgeted to fit
+        // instead (the widest give way first, PlanOrgTableWrap's split) and
+        // every cell wraps inside its own -- on the cursor's row too, which
+        // shows its source in the same columns.
+        const int table_indent = [&] {
+            const RowShape &s0 = shapes[b.line_start];
+            return s0.cells.empty() ? 0 : Codepoints(buf.lines[static_cast<size_t>(b.line_start)].substr(0, static_cast<size_t>(s0.first)));
+        }();
+        bool wrapped = false;
+        if (org_table_wrap_visible_ && wrap_ && !buf.no_wrap) {
+            // (A column short of the pane's, so the outline's right edge is in view.)
+            int budget = CurPane().text_cols - 1;
+            // (In a column set beside others, that column's.)
+            for (const Buffer::MepmlColumnsBlock &blk : buf.mepml_columns) {
+                if (b.line_start <= blk.start_row || b.line_start >= blk.end_row) continue;
+                std::vector<int> percents;
+                for (const Buffer::MepmlColumnsBlock::Column &c : blk.columns) percents.push_back(c.percent);
+                const std::vector<int> cols = mepml::ColumnCols(percents, std::max(1, CurPane().text_cols - 1));
+                for (size_t k = 0; k < blk.columns.size() && k < cols.size(); ++k)
+                    if (b.line_start >= blk.columns[k].first_row && b.line_start <= blk.columns[k].last_row)
+                        budget = std::min(budget, cols[k]);
+            }
+            int total = table_indent + 1;
+            for (int w : widths) total += w + 3;
+            if (budget >= 8 && total > budget) {
+                // The columns' widths in the budget, those with a `floor`
+                // held at it and the rest sharing what they leave.
+                auto plan_cols = [&](const std::vector<int> &floor) {
+                    std::vector<int> out = widths;
+                    OrgTableCells natural;
+                    std::vector<size_t> free_cols;
+                    int rest = budget;
+                    for (size_t k = 0; k < widths.size(); ++k) {
+                        if (floor[k] > 0) {
+                            out[k] = floor[k];
+                            rest -= floor[k] + 3;
+                        } else {
+                            natural.cells.emplace_back(static_cast<size_t>(std::max(0, widths[k])), 'x');
+                            free_cols.push_back(k);
+                        }
+                    }
+                    if (!free_cols.empty()) {
+                        const OrgTableWrapPlan plan = PlanOrgTableWrap({natural}, rest, table_indent);
+                        for (size_t i = 0; i < free_cols.size() && i < plan.col_widths.size(); ++i)
+                            out[free_cols[i]] = std::min(widths[free_cols[i]], plan.col_widths[i]);
+                    }
+                    return out;
+                };
+                auto fits = [&](const std::vector<int> &cols) {
+                    int sum = table_indent + 1;
+                    for (int w : cols) sum += w + 3;
+                    return sum <= budget;
+                };
+                std::vector<int> floor(widths.size(), 0);
+                const std::vector<int> plain = plan_cols(floor);
+                // A formula is not broken across lines: its column is no
+                // narrower than it, while the others can make up for that
+                // (where they cannot, it is drawn smaller, to its column).
+                std::vector<int> planned = plain;
+                for (size_t pass = 0; pass < widths.size(); ++pass) {
+                    bool grew = false;
+                    for (size_t k = 0; k < widths.size() && k < unbreakable.size(); ++k) {
+                        if (floor[k] > 0 || unbreakable[k] <= planned[k]) continue;
+                        floor[k] = std::min(unbreakable[k], widths[k]);
+                        grew = true;
+                    }
+                    if (!grew) break;
+                    planned = plan_cols(floor);
+                }
+                if (!fits(planned)) planned = plain;
+                if (fits(planned) && planned != widths) {
+                    wrapped = true;
+                    widths = planned;
+                }
+            }
+        }
+        // (A row of the wrapped table that is drawn from that layout.)
+        auto wraps = [&](int row) {
+            if (!wrapped || row == b.separator_line) return false;
+            auto it = shapes.find(row);
+            return it != shapes.end() && !it->second.cells.empty();
+        };
         // The grid DrawPane's org table pass draws (outline, header wash,
         // zebra stripes, rules), in the display columns the layout below
         // puts every pipe at.
@@ -2356,8 +2554,7 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             OrgTableGrid g;
             g.start_row = b.line_start;
             g.end_row = std::min(body_end, n - 1);
-            const RowShape &s0 = shapes[b.line_start];
-            g.indent = s0.cells.empty() ? 0 : Codepoints(buf.lines[static_cast<size_t>(b.line_start)].substr(0, static_cast<size_t>(s0.first)));
+            g.indent = table_indent;
             int col = g.indent;
             g.rule_cols.push_back(col);
             for (int w : widths) {
@@ -2370,7 +2567,7 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
                 g.header_end_row = b.separator_line - 1;
             }
             for (int row = g.start_row; row <= g.end_row; ++row)
-                if (!rows.count(row)) g.raw_rows.push_back(row);
+                if (!rows.count(row) && !wraps(row)) g.raw_rows.push_back(row);
             // Its colours are the table element's: `background` the hue of
             // its header and stripes, `border-color` (and `:active`'s) its
             // outline, `table::rule`'s `color` its grid lines.
@@ -2392,7 +2589,7 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             // Soft-wrap measures the laid-out rows by the grid they draw
             // across (Editor::WrapLenForRow); the cursor's raw row by its text.
             for (int row = g.start_row; row <= g.end_row; ++row) {
-                if (rows.count(row)) buf.mepml_table_row_cols[row] = g.indent + g.width;
+                if (rows.count(row) && !wraps(row)) buf.mepml_table_row_cols[row] = g.indent + g.width;
                 else buf.mepml_table_row_cols.erase(row);
             }
             // Each picture in its cell's content box (after the `| `).
@@ -2420,7 +2617,266 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
             return k < b.aligns.size() ? b.aligns[k] : mepml::Align::Default;
         };
 
+        // One row of a table laid out wrapped: each cell's text as it is
+        // drawn (`concealed`: markup stood down to what the scan shows in
+        // its place, a formula to its render; otherwise the source as
+        // typed), wrapped to its column, the cells side by side. The row's
+        // decorations are not redone for it: OrgTableWrapRun says which
+        // bytes of the row each drawn run is, and DrawPane colours the
+        // layout from them.
+        auto wrap_row = [&](int row, bool concealed) {
+            const std::string &line = buf.lines[static_cast<size_t>(row)];
+            const RowShape &shape = shapes[row];
+            const std::vector<Cell> &cs = cells[row];
+            const size_t ncols = widths.size();
+            // Stands in a cell's text for one column of a formula's render
+            // while it is wrapped (not a space: the columns stay together),
+            // and is drawn blank.
+            constexpr char kMathBlank = '\x01';
+            struct Piece {
+                int sa, sb;  // bytes of the row
+                int da, db;  // bytes of the cell's drawn text
+                bool verbatim;
+                const Buffer::OrgLatexInlineSpan *math;
+            };
+            // A word as the wrap placed it: from byte `d` of the drawn
+            // text, at byte `out` of its line.
+            struct Chunk {
+                int d, len, line, out;
+            };
+            struct CellLayout {
+                std::vector<Piece> pieces;
+                std::vector<std::string> lines;
+                std::vector<Chunk> chunks;
+            };
+            std::vector<CellLayout> lay(ncols);
+            const std::vector<MathRun> maths = concealed ? math_runs(row) : std::vector<MathRun>();
+            size_t height = 1;
+            for (size_t k = 0; k < ncols && k < cs.size(); ++k) {
+                const Cell &c = cs[k];
+                CellLayout &cell = lay[k];
+                std::string drawn;
+                auto put = [&](int sa, int sb, const std::string &text, bool verbatim, const Buffer::OrgLatexInlineSpan *math) {
+                    if (sb <= sa) return;
+                    cell.pieces.push_back({sa, sb, static_cast<int>(drawn.size()), static_cast<int>(drawn.size() + text.size()), verbatim, math});
+                    drawn += text;
+                };
+                // (A picture cell's `\image(...)` is hidden: its picture is drawn above the row.)
+                if (!(concealed && !c.image.empty())) {
+                    struct Item {
+                        int a, b;
+                        std::string text;
+                        const Buffer::OrgLatexInlineSpan *math;
+                    };
+                    std::vector<Item> items;
+                    if (concealed) {
+                        // A formula: the columns its render is drawn over,
+                        // kept together as one word.
+                        for (const MathRun &m : maths) {
+                            if (m.col_start < c.cs || m.col_end > c.ce) continue;
+                            std::string blank;
+                            blank.assign(static_cast<size_t>(std::clamp(m.cols, 0, std::max(1, widths[k]))), kMathBlank);
+                            items.push_back({m.col_start, m.col_end, blank, m.span});
+                        }
+                        if (auto it = by_line.find(row); it != by_line.end()) {
+                            for (const mepml::Span *sp : it->second) {
+                                if (!sp->markup || sp->col_start < c.cs || sp->col_end > c.ce) continue;
+                                bool in_math = false;
+                                for (const MathRun &m : maths)
+                                    if (sp->col_start >= m.col_start && sp->col_end <= m.col_end) in_math = true;
+                                if (in_math) continue;
+                                if (const std::string *shown = shown_for(*sp)) items.push_back({sp->col_start, sp->col_end, *shown, nullptr});
+                                else if (edge_markup.count({row, sp->col_start})) items.push_back({sp->col_start, sp->col_end, sp->replace, nullptr});
+                            }
+                        }
+                        std::stable_sort(items.begin(), items.end(), [](const Item &x, const Item &y) { return x.a < y.a; });
+                    }
+                    int pos = c.cs;
+                    for (const Item &it : items) {
+                        if (it.a < pos) continue;
+                        put(pos, it.a, line.substr(static_cast<size_t>(pos), static_cast<size_t>(it.a - pos)), true, nullptr);
+                        put(it.a, it.b, it.text, false, it.math);
+                        pos = it.b;
+                    }
+                    put(pos, c.ce, line.substr(static_cast<size_t>(pos), static_cast<size_t>(std::max(0, c.ce - pos))), true, nullptr);
+                }
+                cell.lines = OrgTableWrapCell(drawn, widths[k]);
+                // Where each word went: the wrap drops the spaces it breaks
+                // on and keeps the words in order.
+                size_t p = 0;
+                for (size_t li = 0; li < cell.lines.size(); ++li) {
+                    const std::string &t = cell.lines[li];
+                    for (size_t q = 0; q < t.size();) {
+                        if (t[q] == ' ') {
+                            ++q;
+                            continue;
+                        }
+                        size_t r = t.find(' ', q);
+                        if (r == std::string::npos) r = t.size();
+                        while (p < drawn.size() && (drawn[p] == ' ' || drawn[p] == '\t')) ++p;
+                        cell.chunks.push_back({static_cast<int>(p), static_cast<int>(r - q), static_cast<int>(li), static_cast<int>(q)});
+                        p += r - q;
+                        q = r;
+                    }
+                }
+                for (std::string &t : cell.lines) std::replace(t.begin(), t.end(), kMathBlank, ' ');
+                height = std::max(height, cell.lines.size());
+            }
+            // A formula taller than a line is drawn at its size: the line
+            // it is on gets empty lines above and below for it, the room
+            // Editor::InlineMathPadFor makes around an unwrapped row.
+            std::vector<int> pad_top(height, 0), pad_bottom(height, 0);
+            const double lh = render_line_height_;
+            if (lh > 0.0) {
+                for (const CellLayout &cell : lay) {
+                    for (const Piece &pc : cell.pieces) {
+                        if (!pc.math || pc.math->path.empty() || pc.math->height <= 0) continue;
+                        // (Drawn to its columns: smaller, where they are fewer than it is wide.)
+                        Buffer::OrgLatexInlineSpan as = *pc.math;
+                        const double room = static_cast<double>(pc.db - pc.da) * render_char_width_;
+                        if (as.width > 0 && room > 0.0 && room < static_cast<double>(as.width)) {
+                            const double k = room / static_cast<double>(as.width);
+                            as.height = static_cast<int>(std::ceil(static_cast<double>(as.height) * k));
+                            if (as.baseline >= 0.0f) as.baseline = static_cast<float>(static_cast<double>(as.baseline) * k);
+                        }
+                        for (const Chunk &ch : cell.chunks) {
+                            if (ch.d + ch.len <= pc.da || ch.d >= pc.db) continue;
+                            const double top = static_cast<double>(InlineMathTopOffset(as));
+                            const double slack = 0.25 * lh;
+                            auto slots = [&](double over) { return over > slack ? static_cast<int>(std::ceil((over - slack) / lh)) : 0; };
+                            const size_t l = static_cast<size_t>(ch.line);
+                            pad_top[l] = std::max(pad_top[l], slots(-top));
+                            pad_bottom[l] = std::max(pad_bottom[l], slots(top + static_cast<double>(as.height) - lh));
+                            break;
+                        }
+                    }
+                }
+            }
+            std::vector<int> at(height, 0);  // the drawn line each of the row's lines is
+            int total = 0;
+            for (size_t l = 0; l < height; ++l) {
+                total += pad_top[l];
+                at[l] = total;
+                total += 1 + pad_bottom[l];
+            }
+            Buffer::OrgTableWrapRow entry;
+            entry.lines.resize(static_cast<size_t>(total));
+            entry.indent = table_indent;
+            entry.width = 1;
+            std::vector<int> rule_cols{table_indent};
+            for (int w : widths) {
+                entry.width += w + 3;
+                rule_cols.push_back(rule_cols.back() + w + 3);
+            }
+            entry.hashed = true;
+            entry.text_hash = std::hash<std::string>{}(line);
+            // (Blank where the pipes are: the grid pass draws the rules.)
+            std::vector<std::vector<int>> cell_at(ncols, std::vector<int>(height, 0));  // the byte each cell's text starts at
+            for (size_t l = 0; l < height; ++l) {
+                std::string text(static_cast<size_t>(table_indent), ' ');
+                for (size_t k = 0; k < ncols; ++k) {
+                    text += "  ";
+                    static const std::string kEmpty;
+                    const std::string &cell_text = l < lay[k].lines.size() ? lay[k].lines[l] : kEmpty;
+                    const int pad = std::max(0, widths[k] - Codepoints(cell_text));
+                    const mepml::Align al = align_of(k);
+                    const int before = al == mepml::Align::Right ? pad : al == mepml::Align::Center ? pad / 2 : 0;
+                    text.append(static_cast<size_t>(before), ' ');
+                    cell_at[k][l] = static_cast<int>(text.size());
+                    text += cell_text;
+                    text.append(static_cast<size_t>(pad - before + 1), ' ');
+                }
+                entry.lines[static_cast<size_t>(at[l])].text = std::move(text);
+            }
+            std::vector<std::pair<size_t, size_t>> cell_runs(ncols, {0, 0});  // each cell's runs, [first, last)
+            for (size_t k = 0; k < ncols; ++k) {
+                cell_runs[k].first = entry.runs.size();
+                for (const Piece &pc : lay[k].pieces) {
+                    bool first_of_piece = true;
+                    for (const Chunk &ch : lay[k].chunks) {
+                        const int lo = std::max(pc.da, ch.d), hi = std::min(pc.db, ch.d + ch.len);
+                        if (hi <= lo) continue;
+                        OrgTableWrapRun r;
+                        r.line = at[static_cast<size_t>(ch.line)];
+                        r.col_start = cell_at[k][static_cast<size_t>(ch.line)] + ch.out + (lo - ch.d);
+                        r.col_end = r.col_start + (hi - lo);
+                        r.verbatim = pc.verbatim;
+                        r.src_start = pc.verbatim ? pc.sa + (lo - pc.da) : pc.sa;
+                        r.src_end = pc.verbatim ? pc.sa + (hi - pc.da) : pc.sb;
+                        if (pc.math) {
+                            r.math = pc.math->path;
+                            r.math_height = pc.math->height;
+                            r.math_baseline = pc.math->baseline;
+                        }
+                        // Words of one piece side by side are one run, the
+                        // space between them with it.
+                        if (!first_of_piece && !entry.runs.empty()) {
+                            OrgTableWrapRun &prev = entry.runs.back();
+                            if (prev.line == r.line && prev.col_end + 1 == r.col_start && (!pc.verbatim || prev.src_end + 1 == r.src_start)) {
+                                prev.col_end = r.col_end;
+                                prev.src_end = r.src_end;
+                                continue;
+                            }
+                        }
+                        first_of_piece = false;
+                        entry.runs.push_back(std::move(r));
+                    }
+                }
+                cell_runs[k].second = entry.runs.size();
+            }
+            // Where each byte of the row is drawn: in its run; a byte that
+            // is not drawn (padding, concealed markup, a space the wrap
+            // broke on) just past what is before it; a pipe on its rule.
+            auto shown_at = [&](int ln, int byte) {
+                const std::string &t = entry.lines[static_cast<size_t>(ln)].text;
+                return OrgTableWrapPos{ln, Codepoints(t.substr(0, std::min(t.size(), static_cast<size_t>(std::max(0, byte)))))};
+            };
+            entry.caret.assign(line.size() + 1, OrgTableWrapPos{at[0], table_indent});
+            for (int bb = 0; bb < shape.first && bb < static_cast<int>(line.size()); ++bb)
+                entry.caret[static_cast<size_t>(bb)] = OrgTableWrapPos{at[0], std::min(table_indent, Codepoints(line.substr(0, static_cast<size_t>(bb))))};
+            OrgTableWrapPos here{at[0], table_indent};
+            for (size_t k = 0; k < cs.size() && k < ncols; ++k) {
+                const Cell &c = cs[k];
+                if (c.ws_start > 0 && line[static_cast<size_t>(c.ws_start - 1)] == '|')
+                    entry.caret[static_cast<size_t>(c.ws_start - 1)] = OrgTableWrapPos{at[0], rule_cols[k]};
+                here = OrgTableWrapPos{at[0], rule_cols[k] + 2};
+                size_t ri = cell_runs[k].first;
+                const size_t rend = cell_runs[k].second;
+                if (ri < rend) here = shown_at(entry.runs[ri].line, entry.runs[ri].col_start);
+                auto pass = [&](int upto) {
+                    while (ri < rend && entry.runs[ri].src_end <= upto) {
+                        here = shown_at(entry.runs[ri].line, entry.runs[ri].col_end);
+                        ++ri;
+                    }
+                };
+                for (int bb = c.ws_start; bb < c.ws_end && bb < static_cast<int>(line.size()); ++bb) {
+                    pass(bb);
+                    if (ri < rend && entry.runs[ri].src_start <= bb) {
+                        const OrgTableWrapRun &r = entry.runs[ri];
+                        entry.caret[static_cast<size_t>(bb)] = shown_at(r.line, r.verbatim ? r.col_start + (bb - r.src_start) : r.col_start);
+                    } else {
+                        entry.caret[static_cast<size_t>(bb)] = here;
+                    }
+                }
+                pass(static_cast<int>(line.size()) + 1);
+            }
+            // The closing pipe, and past the end of the row.
+            const int last = shape.cells.back().second;
+            if (shape.trail) {
+                entry.caret[static_cast<size_t>(last)] = OrgTableWrapPos{at[0], rule_cols.back()};
+                for (size_t bb = static_cast<size_t>(last) + 1; bb <= line.size(); ++bb)
+                    entry.caret[bb] = OrgTableWrapPos{at[0], rule_cols.back() + 1};
+            } else {
+                for (size_t bb = static_cast<size_t>(last); bb <= line.size(); ++bb) entry.caret[bb] = here;
+            }
+            buf.org_table_wrap_rows[row] = std::move(entry);
+        };
+
         for (int row = b.line_start; row <= body_end && row < n; ++row) {
+            if (wraps(row)) {
+                wrap_row(row, rows.count(row) > 0);
+                continue;
+            }
             if (!rows.count(row)) continue;
             const std::string &line = buf.lines[static_cast<size_t>(row)];
             const RowShape &shape = shapes[row];
@@ -3515,7 +3971,7 @@ bool Editor::MepmlPresentStart(bool fullscreen, std::string *error) {
     SyncModeToActivePaneBuffer();
     mode_ = Mode::Normal;
     MepmlPresentAutoStart();
-    status_message_ = "Presenting: h/l (or C-n/C-p, arrows) change slide, n for normal mode, C-c C-c runs code, f " +
+    status_message_ = "Presenting: h/l (or C-n/C-p, arrows) change slide, +/- text size, j/k scroll, n for normal mode, C-c C-c runs code, f " +
                       std::string(fullscreen ? "to leave full screen" : "for full screen") + ", q to stop";
     return true;
 }
@@ -3547,7 +4003,9 @@ void Editor::MepmlPresentShowPage(bool keep_cursor) {
         } else {
             CurPane().cursor = present_.caret ? CursorPos{std::min(kPresentParkRow + 1, vb.LineCount() - 1), 0}
                                               : CursorPos{kPresentParkRow, 0};
-            CurPane().scroll_row = 0;
+            // The same slide again keeps its place (MepmlPresentScroll);
+            // another starts at its top.
+            if (present_.caret || !keep_cursor) SetPaneScrollTop(CurPane(), 0, 0);
         }
         // Render now rather than from next frame's hooks: formulas already
         // in the cache are then on the slide in the very frame it appears.
@@ -3649,11 +4107,53 @@ void Editor::MepmlPresentSetCaret(bool on) {
         const Buffer &vb = buffers_[static_cast<size_t>(present_.view_buffer)];
         CurPane().cursor = on ? CursorPos{std::min(kPresentParkRow + 1, vb.LineCount() - 1), 0}
                               : CursorPos{kPresentParkRow, 0};
-        if (!on) CurPane().scroll_row = 0;
+        if (!on) SetPaneScrollTop(CurPane(), 0, 0);
     }
     mode_ = Mode::Normal;
     status_message_ = on ? "Normal mode on the slide: move and yank as usual, C-c C-c runs the block under the cursor, P to present"
                          : "";
+}
+
+bool Editor::MepmlPresentScroll(int slots) {
+    if (!present_.active || present_.caret || ActivePaneId() != present_.pane_id ||
+        CurPane().buffer_id != present_.view_buffer)
+        return false;
+    Pane &pane = CurPane();
+    MepmlPresentPlaceScroll(pane, buffers_[static_cast<size_t>(present_.view_buffer)], pane.wrap_cols, slots);
+    return true;
+}
+
+void Editor::MepmlPresentPlaceScroll(Pane &pane, const Buffer &buf, int wrap_cols, int move) {
+    // Where each drawn row sits on the slide, in visual lines from its
+    // top, counted the way the draw loop walks (a formula's further source
+    // rows are drawn by its first one). Not simply one row after another:
+    // a \column( row steps back up to its block's top (a negative
+    // RowTopPadSlots), so rows side by side share the same lines.
+    struct Placed {
+        int row, top, slots;
+    };
+    std::vector<Placed> rows;
+    int at = 0, total = 0, top = -1;
+    for (int r = 0; r < buf.LineCount(); r = PaneNextDrawnRow(pane, buf, r)) {
+        const int slots = PaneRowSlots(pane, buf, r, wrap_cols);
+        if (r <= pane.scroll_row) top = at + (r == pane.scroll_row ? pane.scroll_sub : slots);
+        if (slots > 0) rows.push_back({r, at, slots});
+        at += slots;
+        total = std::max(total, at);
+    }
+    // The slide's last line goes no higher than the pane's.
+    const int visible = std::max(1, pane.visible_lines);
+    const int want = std::clamp(top + move, 0, std::max(0, total - visible));
+    // The first row over that line is the view's top one (in a set of
+    // columns: the leftmost that reaches so far down).
+    for (const Placed &p : rows) {
+        if (want < p.top || want >= p.top + p.slots) continue;
+        if (pane.scroll_row != p.row || pane.scroll_sub != want - p.top) SetPaneScrollTop(pane, p.row, want - p.top);
+        break;
+    }
+    present_.scroll_top = want;
+    present_.scroll_visible = visible;
+    present_.scroll_total = total;
 }
 
 void Editor::MepmlPresentRebuild() {
@@ -3754,11 +4254,11 @@ void Editor::MepmlPresentTick() {
         status_message_ = "The slides are read-only here: edit the source (q leaves the presentation)";
     }
     // Without caret mode nothing moves the cursor off its blank row (a
-    // click, the wheel, a drag): it would reveal the source under it.
+    // click, a drag): it would reveal the source under it. (The view is
+    // moved by MepmlPresentScroll alone.)
     if (here && !present_.caret && CurPane().buffer_id == present_.view_buffer &&
-        (CurPane().cursor.row != kPresentParkRow || CurPane().cursor.col != 0 || CurPane().scroll_row != 0)) {
+        (CurPane().cursor.row != kPresentParkRow || CurPane().cursor.col != 0)) {
         CurPane().cursor = {kPresentParkRow, 0};
-        CurPane().scroll_row = 0;
         if (mode_ == Mode::Visual || mode_ == Mode::VisualLine || mode_ == Mode::VisualBlock) mode_ = Mode::Normal;
     }
     // Full screen: the text sized to the screen, again whenever it changes
@@ -3863,13 +4363,17 @@ bool Editor::HandleMepmlPresentInput() {
     }
     // Ctrl combinations come off the key queue, as Normal mode reads them
     // (a key-down poll misses them on a slow frame): Ctrl-n / Ctrl-p step
-    // through the slides, and C-c C-c runs every code block the slide shows.
+    // through the slides, Ctrl-d / Ctrl-u move half a screen down / up a
+    // slide taller than it, and C-c C-c runs every code block the slide shows.
     if (ctrl && !alt) {
         int ctrl_step = 0;
         bool ours = false;
+        const int half = std::max(1, CurPane().visible_lines / 2);
         for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
             if (key == gfx::Key::N) ctrl_step = 1, ours = true;
             else if (key == gfx::Key::P) ctrl_step = -1, ours = true;
+            else if (key == gfx::Key::D) MepmlPresentScroll(half), ours = true;
+            else if (key == gfx::Key::U) MepmlPresentScroll(-half), ours = true;
             else if (key == gfx::Key::C) {
                 ours = true;
                 if (pending_ctrl_c_ && (now_ - pending_ctrl_c_time_) < kCtrlCChordTimeoutSec) {
@@ -3905,6 +4409,9 @@ bool Editor::HandleMepmlPresentInput() {
         switch (ch) {
             case ' ': case 'l': step = 1; break;
             case 'h': step = -1; break;
+            // j / k: down / up a slide taller than the screen (larger text).
+            case 'j': MepmlPresentScroll(1); break;
+            case 'k': MepmlPresentScroll(-1); break;
             // n: normal mode -- the cursor on the slide, at its first
             // character, and vim's keys (P comes back).
             case 'n':
@@ -4004,10 +4511,10 @@ void Editor::MepmlPresentStartFences(const std::vector<int> &fences) {
 
 void Editor::MepmlPresentAutoStart() {
     if (!present_.active || present_.pages.empty()) return;
-    // A web page or app on the slide is the slide's: it runs (live, under
-    // the mouse) as soon as the slide is shown, rather than as its last
-    // picture. It keeps running while other slides show; the
-    // presentation's end stops it.
+    // A web page, app or program on the slide is the slide's: it runs
+    // (live, under the mouse) as soon as the slide is shown, rather than as
+    // its last picture or output. It keeps running while other slides
+    // show; the presentation's end stops it.
     std::vector<int> start;
     for (const mepml::PresentationPage::Shown &sh : present_.pages[static_cast<size_t>(present_.page)].blocks) {
         if (!sh.live || sh.source_fence < 0 || MepmlPresentRunningAt(sh.source_fence) >= 0) continue;

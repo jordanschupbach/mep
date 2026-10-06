@@ -14963,6 +14963,8 @@ const char *kBuiltinOrgLinks =
     "function mep.org_table_wrap_toggle_ui()\n"
     "  local visible = mep.org_table_wrap_toggle()\n"
     "  mep.notify('Org table wrapping: ' .. (visible and 'on' or 'off'))\n"
+    // (A mepml table wider than the pane is wrapped by its own scan.)
+    "  if mep.mepml_render and mep_lsp_filetype(mep.filename()) == 'mepml' then mep.mepml_render() end\n"
     "end\n"
     "mep.command('MepOrgTableWrapToggle', mep.org_table_wrap_toggle_ui)\n"
     "mep.leader_map('otw', 'Org: toggle wrapped table rendering', mep.org_table_wrap_toggle_ui)\n"
@@ -18837,7 +18839,7 @@ const char *kBuiltinOrgLatex =
     "    if not (cur and cur >= first and cur <= last) then return false end\n"
     "    if not previewed then\n"
     "      previewed = true\n"
-    "      mep_org_latex_preview(first, last, col, body)\n"
+    "      if mep.org_latex_popup_visible() then mep_org_latex_preview(first, last, col, body) end\n"
     "    end\n"
     "    local d = mep_org_latex_deferred\n"
     "    if d then first, last = math.min(first, d.first), math.max(last, d.last) end\n"
@@ -18869,6 +18871,20 @@ const char *kBuiltinOrgLatex =
     "end\n"
     "mep.command('MepOrgLatexToggle', mep.org_latex_toggle_ui)\n"
     "mep.leader_map('otl', 'Toggle LaTeX/math preview (org/tex)', mep.org_latex_toggle_ui)\n"
+    // The popup over the formula being typed (Editor::OrgLatexPopupVisible):
+    // off, the pending render is dropped too, and the scan asks for none.
+    "function mep.org_latex_popup_toggle_ui()\n"
+    "  local visible = mep.org_latex_popup_toggle()\n"
+    "  mep.notify('Math preview popup: ' .. (visible and 'on' or 'off'))\n"
+    "  if not visible then\n"
+    "    mep_org_latex_preview_wait = nil\n"
+    "    mep_org_latex_preview_at = nil\n"
+    "    mep.buf_clear_latex_preview()\n"
+    "  end\n"
+    "  mep.org_latex_scan()\n"
+    "end\n"
+    "mep.command('MepOrgLatexPopupToggle', mep.org_latex_popup_toggle_ui)\n"
+    "mep.leader_map('otp', 'Toggle math preview popup while typing', mep.org_latex_popup_toggle_ui)\n"
     "\n"
     "mep.on_buffer_changed(function()\n"
     "  if not mep_latex_preview_ft(mep.filename()) then return end\n"
@@ -24943,6 +24959,8 @@ const char *kBuiltinMepml =
     "end\n"
     "mep.command('MepmlRawToggle', mep.mepml_raw_toggle_ui)\n"
     "mep.leader_map('kr', 'mepml: toggle rendering (raw text / rendered)', mep.mepml_raw_toggle_ui)\n"
+    "mep.leader_map('kf', 'mepml: toggle math preview popup while typing',\n"
+    "  function() mep.org_latex_popup_toggle_ui() end)\n"
     "mep.leader_map('km', 'mepml: toggle markup concealment', function()\n"
     "  local visible = mep.org_conceal_toggle()\n"
     "  mep.notify('Markup concealment: ' .. (visible and 'on' or 'off'))\n"
@@ -46121,10 +46139,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     const bool mepml_raw = show_mepml_render_button && g_editor.MepmlRaw(pane.buffer_id);
     const std::string mepml_render_label = " " + Utf8FromCodepoint(mepml_raw ? 0xf070 : 0xf06e) + " ";  // nf-fa-eye(_slash)
     const float mepml_render_w = show_mepml_render_button ? MeasureUiText(mepml_render_label, font_size) : 0.0f;
+    // Present button: left of the eye, on a mepml document that is a
+    // slide deck (`//? Type: presentation`, Buffer::mepml_presentation).
+    // A click starts the presentation view filling the editor
+    // (<leader>kp); a right click, full screen (<leader>kP).
+    const bool show_mepml_present_button = show_mepml_render_button && g_editor.MepmlIsPresentation(pane.buffer_id);
+    const std::string mepml_present_label = " " + Utf8FromCodepoint(0xf108) + " ";  // nf-fa-desktop
+    const float mepml_present_w = show_mepml_present_button ? MeasureUiText(mepml_present_label, font_size) : 0.0f;
     const float vsplit_w = MeasureUiText(vsplit_label, control_font_size);
     const float hsplit_w = MeasureUiText(hsplit_label, control_font_size);
     const float close_w = MeasureUiText(close_label, control_font_size);
-    const float controls_w = mepml_render_w + org_export_w + org_block_w + run_w + vsplit_w + hsplit_w + close_w;
+    const float controls_w = mepml_present_w + mepml_render_w + org_export_w + org_block_w + run_w + vsplit_w + hsplit_w + close_w;
     const gfx::Vector2 header_mouse = gfx::GetMousePosition();
     // Draws the three controls over `bg` filling controls_rect (each
     // brightened while hovered) and registers their click regions.
@@ -46155,6 +46180,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (on_right_click && hovered && gfx::IsMouseButtonPressed(gfx::MouseButton::Right)) on_right_click(rect);
             bx += bw;
         };
+        if (show_mepml_present_button) {
+            button(
+                mepml_present_label, mepml_present_w, "Orange",
+                "Present the slides (<Space>kp; right click or <Space>kP: full screen)",
+                [pane_id] {
+                    g_editor.FocusPaneById(pane_id);
+                    g_editor.RunCommand("MepmlPresent");
+                },
+                [pane_id](gfx::Rectangle) {
+                    g_editor.FocusPaneById(pane_id);
+                    g_editor.RunCommand("MepmlPresent full");
+                },
+                font_size, label_y);
+        }
         if (show_mepml_render_button) {
             // Focuses this pane, then flips its document between rendered
             // and raw text.
@@ -48973,7 +49012,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         for (int r = 0; r < nb_rows; r++) {
             int slots = 1;
             if (wrap_cols > 0) {
-                int len = Editor::WrapLenForRow(buf, r);
+                int len = g_editor.WrapLenForRow(buf, r, pane.cursor.row);
                 slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
             }
             slots += g_editor.NotebookTrailingSlots(pane.buffer_id, r);
@@ -49292,7 +49331,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 slot_start[r] = vslot;
                 auto img_it = buf.org_image_rows.find(r);
                 const Buffer::OrgLatexRender *latex = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row, org_plain);
-                auto tw_it = buf.org_table_wrap_rows.find(r);
+                const Buffer::OrgTableWrapRow *tw = show_org_table_wrap ? g_editor.TableWrapRowFor(buf, r) : nullptr;
                 int slots = 1;
                 int next = r + 1;
                 if (f) {
@@ -49306,14 +49345,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 } else if (const Buffer::MepmlVirtualBlock *vb =
                                g_editor.MepmlVirtualBlockForRow(buf, r, latex_cursor_row)) {
                     slots = static_cast<int>(vb->lines.size());
-                } else if (show_org_table_wrap && tw_it != buf.org_table_wrap_rows.end() &&
-                           !tw_it->second.lines.empty()) {
+                } else if (tw != nullptr) {
                     // An over-wide table's row draws as its wrapped
                     // layout's lines -- see Buffer::org_table_wrap_rows.
-                    slots = static_cast<int>(tw_it->second.lines.size());
+                    slots = static_cast<int>(tw->lines.size()) + g_editor.RowTopPadSlots(buf, r);
                 } else {
                     if (row_wrap > 0) {
-                        int len = Editor::WrapLenForRow(buf, r);
+                        int len = g_editor.WrapLenForRow(buf, r, pane.cursor.row);
                         slots = std::max(1, (len + row_wrap - 1) / row_wrap);
                     }
                     slots += g_editor.RowMathExtraSlots(buf, r, slots, row_wrap, latex_cursor_row);  // inline maths' room
@@ -50016,6 +50054,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // text area while it is drawn; the pane's own clip comes back after it.)
     bool row_clipped = false;
     float cursor_row_shift = 0.0f;
+    // The inline formula the mouse is over (a row of it, and where it
+    // starts on that row), for the alt text popup below.
+    const gfx::Vector2 alt_mouse = gfx::GetMousePosition();
+    int alt_hover_row = -1, alt_hover_col = -1;
     auto unclip_row = [&] {
         if (!row_clipped) return;
         gfx::EndScissorMode();
@@ -50116,10 +50158,31 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // so it claims its slots below and is excluded from soft-wrap the
         // same way an image/LaTeX row is.
         const Buffer::OrgTableWrapRow *tbl_wrap = nullptr;
-        if (!fold_here && is_org_buffer && show_org_table_wrap) {
-            auto tw_it = buf.org_table_wrap_rows.find(row);
-            if (tw_it != buf.org_table_wrap_rows.end() && !tw_it->second.lines.empty()) tbl_wrap = &tw_it->second;
+        // (A mepml table wider than the pane is one too: Editor::MepmlTableLayout.)
+        if (!fold_here && (is_org_buffer || is_mepml_buffer) && show_org_table_wrap) {
+            tbl_wrap = g_editor.TableWrapRowFor(buf, row);
         }
+        // A mepml row's layout says which bytes of the row each of its
+        // runs is (OrgTableWrapRun): the piece(s) of the layout that the
+        // row's bytes [a, b) are drawn as, each as (run, first byte, end
+        // byte) of the run's line. A run drawn in place of its bytes is
+        // handed over whole.
+        auto TblWrapPieces = [&](int a, int b, const std::function<void(const OrgTableWrapRun &, int, int)> &fn) {
+            if (tbl_wrap == nullptr) return;
+            for (const OrgTableWrapRun &r : tbl_wrap->runs) {
+                if (r.src_end <= a || r.src_start >= b || r.line < 0 || r.line >= static_cast<int>(tbl_wrap->lines.size())) continue;
+                int c0 = r.col_start, c1 = r.col_end;
+                if (r.verbatim) {
+                    c0 = r.col_start + (std::max(a, r.src_start) - r.src_start);
+                    c1 = r.col_start + (std::min(b, r.src_end) - r.src_start);
+                }
+                const int len = static_cast<int>(tbl_wrap->lines[static_cast<size_t>(r.line)].text.size());
+                c0 = std::clamp(c0, 0, len);
+                c1 = std::clamp(c1, c0, len);
+                if (c1 > c0) fn(r, c0, c1);
+            }
+        };
+        const bool tbl_wrap_runs = tbl_wrap != nullptr && !tbl_wrap->runs.empty();
 
         // :set wrap (row_wrap_cols>0) -- how many extra visual slots this
         // row's own raw text needs, mirroring row_slots in
@@ -50143,7 +50206,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // drawn unwrapped, slid sideways to follow the caret: below.)
             if (!is_org_image && !is_org_latex && buf.mepml_single_line_rows.count(row) == 0) {
                 row_wraps = true;
-                int len = Editor::WrapLenForRow(buf, row);
+                int len = g_editor.WrapLenForRow(buf, row, pane.cursor.row);
                 row_wrap_slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
                 visual_slot += row_wrap_slots - 1;  // visual_slot++ above already accounted for 1
             }
@@ -51019,7 +51082,36 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
 
-        if (block_selection && row >= block_top && row <= block_bottom) {
+        if (tbl_wrap_runs && ((block_selection && row >= block_top && row <= block_bottom) ||
+                              (!block_selection && has_selection && row >= sel_start.row && row <= sel_end.row))) {
+            // A mepml table row drawn as its wrapped layout: the fill goes
+            // where the selected bytes are drawn in it, a whole row's
+            // across the table.
+            const int line_len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
+            int cs = 0, ce = line_len + 1;
+            if (block_selection) {
+                cs = block_left;
+                ce = (block_right < 0) ? line_len + 1 : block_right + 1;
+            } else {
+                if (!linewise_selection && row == sel_start.row) cs = sel_start.col;
+                if (!linewise_selection && row == sel_end.row) ce = sel_end.col + 1;
+            }
+            const gfx::Color sel_color = ResolveHlGroup("Visual");
+            const gfx::Color fill{sel_color.r, sel_color.g, sel_color.b, 160};
+            if (cs <= 0 && ce > line_len) {
+                gfx::DrawRectangle(static_cast<int>(text_x + static_cast<float>(tbl_wrap->indent) * g_char_width), static_cast<int>(ly),
+                                   static_cast<int>(static_cast<float>(tbl_wrap->width) * g_char_width),
+                                   line_height * static_cast<int>(tbl_wrap->lines.size()), fill);
+            } else {
+                TblWrapPieces(cs, ce, [&](const OrgTableWrapRun &r, int c0, int c1) {
+                    const std::string &t = tbl_wrap->lines[static_cast<size_t>(r.line)].text;
+                    const int col0 = ByteOffsetToColumn(t, c0), col1 = ByteOffsetToColumn(t, c1);
+                    gfx::DrawRectangle(static_cast<int>(text_x + static_cast<float>(col0) * g_char_width),
+                                       static_cast<int>(ly + static_cast<float>(r.line * line_height)),
+                                       static_cast<int>(static_cast<float>(col1 - col0) * g_char_width), line_height, fill);
+                });
+            }
+        } else if (block_selection && row >= block_top && row <= block_bottom) {
             int line_len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
             int cs = block_left;
             int ce = (block_right < 0) ? line_len + 1 : block_right + 1;
@@ -51448,10 +51540,40 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // collected above still draw, so it reads as a table. The
             // cursor's own row is laid out the same way with its markup
             // showing (OrgTableWrapRow::caret places the caret in it).
+            // (A mepml row's italics are drawn by its decorations below,
+            // in their own face: left out of the upright text here, which
+            // would show through them.)
+            std::vector<std::vector<std::pair<int, int>>> italic_cols(tbl_wrap_runs ? tbl_wrap->lines.size() : 0);
+            if (tbl_wrap_runs && !plain_row) {
+                for (const Decoration *dp : row_decos) {
+                    const Decoration &d = *dp;
+                    if (!d.italic || d.whole_line || d.virt_text_eol || d.bg_fill || d.col_end <= d.col_start) continue;
+                    if (d.virt_overlay && d.virt_text.empty()) continue;
+                    TblWrapPieces(d.col_start, d.col_end, [&](const OrgTableWrapRun &r, int c0, int c1) {
+                        if (r.math.empty()) italic_cols[static_cast<size_t>(r.line)].emplace_back(c0, c1);
+                    });
+                }
+            }
             for (size_t tl = 0; tl < tbl_wrap->lines.size(); tl++) {
                 const OrgTableWrapLine &twl = tbl_wrap->lines[tl];
                 const float tly = ly + static_cast<float>(static_cast<int>(tl) * line_height);
-                DrawLineFast(twl.text, text_x, tly, g_font_size, ResolveHlGroup("Normal"));
+                if (tl < italic_cols.size() && !italic_cols[tl].empty()) {
+                    std::sort(italic_cols[tl].begin(), italic_cols[tl].end());
+                    int at = 0;
+                    auto upright = [&](int from, int to) {
+                        if (to <= from) return;
+                        DrawLineFast(twl.text.substr(static_cast<size_t>(from), static_cast<size_t>(to - from)),
+                                     text_x + static_cast<float>(ByteOffsetToColumn(twl.text, from)) * g_char_width, tly, g_font_size,
+                                     ResolveHlGroup("Normal"));
+                    };
+                    for (const std::pair<int, int> &it : italic_cols[tl]) {
+                        upright(at, it.first);
+                        at = std::max(at, it.second);
+                    }
+                    upright(at, static_cast<int>(twl.text.size()));
+                } else {
+                    DrawLineFast(twl.text, text_x, tly, g_font_size, ResolveHlGroup("Normal"));
+                }
                 // The links the layout carried through the wrap
                 // (OrgTableWrapLine, org_doc.h): the row's own link
                 // decorations index its stored text and are skipped with
@@ -51493,6 +51615,102 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             g_editor.FocusPaneById(click_pane);
                             g_editor.OrgFollowLinkTargetOn(click_row, click_target);
                         });
+                }
+            }
+            // A mepml row: its own decorations -- the sheets' colours and
+            // weights, the grammar's, a search match -- index the stored
+            // row, and are put on the layout through its runs. A scaled
+            // run is drawn at the body's size here: a wrapped cell's lines
+            // are one line apart.
+            if (tbl_wrap_runs) {
+                const std::string &src_line = buf.lines[static_cast<size_t>(row)];
+                for (const Decoration *dp : row_decos) {
+                    const Decoration &d = *dp;
+                    if (d.whole_line || d.virt_text_eol || d.col_end <= d.col_start) continue;
+                    if (plain_row && d.hl_group != "IncSearch") continue;
+                    // Concealed markup: nothing of it is drawn. Its
+                    // replacement is a run of its own, in the overlay's face.
+                    if (d.virt_overlay && d.virt_text.empty()) continue;
+                    int a = d.col_start, b = d.col_end;
+                    if (d.has_fg_color && !d.virt_overlay) {  // (columns, not bytes: Decoration::has_fg_color)
+                        a = static_cast<int>(ColumnToByteOffset(src_line, d.col_start));
+                        b = static_cast<int>(ColumnToByteOffset(src_line, d.col_end));
+                    }
+                    const std::string &group = d.virt_overlay ? d.virt_text_hl : d.hl_group;
+                    const bool faced = d.bold || d.italic || d.underline || d.strikethrough;
+                    if (group.empty() && !d.has_fg_color && !faced) continue;
+                    const gfx::Color c = d.has_fg_color ? gfx::Color{d.fg_color.r, d.fg_color.g, d.fg_color.b, d.fg_color.a}
+                                                        : ResolveHlGroup(group.empty() ? "Normal" : group);
+                    TblWrapPieces(a, b, [&](const OrgTableWrapRun &r, int c0, int c1) {
+                        if (!r.math.empty()) return;
+                        const std::string &t = tbl_wrap->lines[static_cast<size_t>(r.line)].text;
+                        const std::string piece = t.substr(static_cast<size_t>(c0), static_cast<size_t>(c1 - c0));
+                        const int col0 = ByteOffsetToColumn(t, c0), col1 = ByteOffsetToColumn(t, c1);
+                        const float px = text_x + static_cast<float>(col0) * g_char_width;
+                        const float py = ly + static_cast<float>(r.line * line_height);
+                        const float pw = static_cast<float>(col1 - col0) * g_char_width;
+                        if (d.bg_fill) {
+                            // (A marker-pen tint under the text, redrawn over it.)
+                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(py), static_cast<int>(pw), line_height,
+                                               gfx::Fade(ResolveHlGroup(d.hl_group.empty() ? "Yellow" : d.hl_group), 0.28f));
+                            DrawGridText(piece, px, py, ResolveHlGroup("Normal"), false);
+                            return;
+                        }
+                        if (d.underline)
+                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(py + static_cast<float>(line_height) - 2),
+                                               static_cast<int>(pw), 1, c);
+                        if (d.strikethrough)
+                            gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(py + static_cast<float>(line_height) / 2),
+                                               static_cast<int>(pw), 1, c);
+                        if (d.italic) {
+                            // (Nothing upright is under it: see italic_cols.)
+                            DrawItalicColumns(piece, px, py, c);
+                        } else if (!d.underline && !d.strikethrough) {
+                            DrawGridText(piece, px, py, c, d.bold);
+                        } else if (d.bold) {
+                            DrawGridText(piece, px, py, c, true);
+                        }
+                    });
+                }
+                // Its formulas, each over the blank columns kept for it.
+                if (show_org_latex) {
+                    int drawn_src = -1;
+                    for (const OrgTableWrapRun &r : tbl_wrap->runs) {
+                        if (r.math.empty() || r.src_start == drawn_src) continue;
+                        drawn_src = r.src_start;
+                        const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(r.math);
+                        if (!tex || r.line < 0 || r.line >= static_cast<int>(tbl_wrap->lines.size())) continue;
+                        const std::string &t = tbl_wrap->lines[static_cast<size_t>(r.line)].text;
+                        const int col0 = ByteOffsetToColumn(t, std::min(r.col_start, static_cast<int>(t.size())));
+                        const int col1 = ByteOffsetToColumn(t, std::min(r.col_end, static_cast<int>(t.size())));
+                        // 1:1, as everywhere -- smaller only where its column
+                        // has fewer columns than it is wide.
+                        const float room = static_cast<float>(col1 - col0) * g_char_width;
+                        const float scale = tex->width > 0 && room < static_cast<float>(tex->width) ? room / static_cast<float>(tex->width) : 1.0f;
+                        Buffer::OrgLatexInlineSpan as;
+                        as.height = static_cast<int>(std::ceil(static_cast<float>(r.math_height) * scale));
+                        as.baseline = r.math_baseline < 0.0f ? -1.0f : r.math_baseline * scale;
+                        const float mx = text_x + static_cast<float>(col0) * g_char_width + (room - static_cast<float>(tex->width) * scale) / 2.0f;
+                        const float my = ly + static_cast<float>(r.line * line_height) + g_editor.InlineMathTopOffset(as);
+                        gfx::DrawTextureEx(*tex, gfx::Vector2{mx, my}, 0.0f, scale, gfx::White);
+                    }
+                }
+                // Its links, where they are drawn.
+                if (const std::vector<Buffer::OrgLinkSpan> *link_spans = g_editor.OrgLinkSpansForRow(pane.buffer_id, row)) {
+                    for (const Buffer::OrgLinkSpan &lsp : *link_spans) {
+                        const int click_row = row, click_col = lsp.col_start, click_pane = pane.id;
+                        TblWrapPieces(lsp.col_start, lsp.col_end, [&](const OrgTableWrapRun &r, int c0, int c1) {
+                            const std::string &t = tbl_wrap->lines[static_cast<size_t>(r.line)].text;
+                            const int col0 = ByteOffsetToColumn(t, c0), col1 = ByteOffsetToColumn(t, c1);
+                            RegisterClickRegionOnTop(
+                                gfx::Rectangle{text_x + static_cast<float>(col0) * g_char_width, ly + static_cast<float>(r.line * line_height),
+                                               static_cast<float>(col1 - col0) * g_char_width, static_cast<float>(line_height)},
+                                [click_pane, click_row, click_col] {
+                                    g_editor.FocusPaneById(click_pane);
+                                    g_editor.OrgFollowLinkAt(click_row, click_col);
+                                });
+                        });
+                    }
                 }
             }
         } else if (row_wrap_cols <= 0) {
@@ -52045,7 +52263,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // center the render on it. The rectangle then has to span at
         // least the original [col_start, col_end), since anything short
         // of col_end is raw markup that would otherwise show through.
-        if (show_org_latex) {
+        // (A mepml row drawn as its wrapped layout has drawn its own, above.)
+        if (show_org_latex && !tbl_wrap_runs) {
             auto inline_it = buf.org_latex_inline.find(row);
             if (inline_it != buf.org_latex_inline.end()) {
                 for (const Buffer::OrgLatexInlineSpan &span : inline_it->second) {
@@ -52082,6 +52301,24 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // made for it.
                     gfx::DrawTextureEx(*tex, gfx::Vector2{draw_x, span_y + g_editor.InlineMathTopOffset(span)}, 0.0f, scale, gfx::White);
                 }
+            }
+        }
+        // Is the mouse over an inline formula with an alt text (as drawn:
+        // a render, or its source while the cursor is on the row)?
+        if (!fold_here && !tbl_wrap_runs && alt_mouse.y >= row_block_y && alt_mouse.y < row_block_y + static_cast<float>(row_block_h)) {
+            for (const Buffer::MepmlAltNote &a : buf.mepml_alt_notes) {
+                if (a.col_first < 0 || row < a.first || row > a.last) continue;
+                const int raw_len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
+                const int cs = row == a.first ? std::min(raw_len, a.col_first) : 0;
+                const int ce = row == a.last ? std::min(raw_len, a.col_last) : raw_len;
+                if (ce <= cs) continue;
+                const float pad_top = static_cast<float>(row_math_pad.top * line_height);
+                const float piece_h = static_cast<float>((1 + row_math_pad.top + row_math_pad.bottom) * line_height);
+                ForEachWrapPiece(DispCol(cs), std::max(DispCol(cs) + 1, DispCol(ce)), row_wrap_cols, text_x, ly, row_pitch,
+                                 [&](float py, float px0, float px1, int, int) {
+                                     if (PointInRect(alt_mouse, gfx::Rectangle{px0, py - pad_top, px1 - px0, piece_h}))
+                                         alt_hover_row = row, alt_hover_col = cs;
+                                 });
             }
         }
         if (!sign_shape.empty() && !sign_badge) {
@@ -52291,7 +52528,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             auto img_it = buf.org_image_rows.find(r);
             const Buffer::OrgLatexRender *latex = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row, org_plain);
-            auto tw_it = buf.org_table_wrap_rows.find(r);
+            const Buffer::OrgTableWrapRow *tw = show_org_table_wrap ? g_editor.TableWrapRowFor(buf, r) : nullptr;
             // A notebook code cell's output block hangs under row r (see
             // the draw loop's notebook branch); it counts with that row.
             const int nb_trailing = nb_sess ? g_editor.NotebookTrailingSlots(pane.buffer_id, r) : 0;
@@ -52309,16 +52546,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // A mepml \toc/\bibliography row: one slot per generated line.
                 r += 1;
                 slot += static_cast<int>(vb->lines.size()) + nb_trailing;
-            } else if (show_org_table_wrap && tw_it != buf.org_table_wrap_rows.end() &&
-                       !tw_it->second.lines.empty()) {
+            } else if (tw != nullptr) {
                 // An over-wide org table's row draws as its wrapped
                 // layout's lines (Buffer::org_table_wrap_rows) -- the
                 // fourth of the four walkers that has to agree on it.
+                slot += static_cast<int>(tw->lines.size()) + nb_trailing + g_editor.RowTopPadSlots(buf, r);
                 r += 1;
-                slot += static_cast<int>(tw_it->second.lines.size()) + nb_trailing;
             } else {
                 const int sublines =
-                    (row_wrap > 0) ? std::max(1, (Editor::WrapLenForRow(buf, r) + row_wrap - 1) / row_wrap) : 1;
+                    (row_wrap > 0) ? std::max(1, (g_editor.WrapLenForRow(buf, r, pane.cursor.row) + row_wrap - 1) / row_wrap) : 1;
                 slot += sublines + g_editor.RowMathExtraSlots(buf, r, sublines, row_wrap, latex_cursor_row);  // + inline maths' room
                 slot += nb_trailing;
                 // An org headline's own extra slot (kOrgHeadingStyles) --
@@ -52395,17 +52631,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // is drawn there, and that glyph is the one punched back through.
         std::string cursor_tbl_glyph;
         bool cursor_in_tbl_layout = false;
-        if (is_org_buffer && show_org_table_wrap && !cursor_on_image && !cursor_on_latex) {
-            auto tw_it = buf.org_table_wrap_rows.find(pane.cursor.row);
-            if (tw_it != buf.org_table_wrap_rows.end() && !tw_it->second.caret.empty() && !tw_it->second.lines.empty()) {
-                const std::vector<OrgTableWrapPos> &caret = tw_it->second.caret;
+        if ((is_org_buffer || is_mepml_buffer) && show_org_table_wrap && !cursor_on_image && !cursor_on_latex) {
+            const Buffer::OrgTableWrapRow *cursor_tw = g_editor.TableWrapRowFor(buf, pane.cursor.row);
+            if (cursor_tw != nullptr && !cursor_tw->caret.empty()) {
+                const std::vector<OrgTableWrapPos> &caret = cursor_tw->caret;
                 const OrgTableWrapPos p =
                     caret[static_cast<size_t>(std::clamp(pane.cursor.col, 0, static_cast<int>(caret.size()) - 1))];
-                const int tl = std::clamp(p.line, 0, static_cast<int>(tw_it->second.lines.size()) - 1);
+                const int tl = std::clamp(p.line, 0, static_cast<int>(cursor_tw->lines.size()) - 1);
                 cursor_x = text_x + static_cast<float>(p.col) * g_char_width;
                 cursor_y = content_y + static_cast<float>((cursor_slot + tl) * line_height);
                 cursor_in_tbl_layout = true;
-                const std::string &tline = tw_it->second.lines[static_cast<size_t>(tl)].text;
+                const std::string &tline = cursor_tw->lines[static_cast<size_t>(tl)].text;
                 int at = 0;
                 for (int c = 0; c < p.col && at < static_cast<int>(tline.size()); c++) {
                     int len = 0;
@@ -53314,7 +53550,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // (Buffer::org_latex_preview, rendered by kBuiltinOrgLatex's
     // mep_org_latex_preview), keeping the last render that compiled.
     // Drawn last (inside the pane's scissor) so it sits over the text.
-    if (is_active && show_org_latex && g_editor.OrgPlainCursorLineVisible() &&
+    if (is_active && show_org_latex && g_editor.OrgPlainCursorLineVisible() && g_editor.OrgLatexPopupVisible() &&
         !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row && pane.cursor.row < row) {
         const int cr = pane.cursor.row;
         std::string preview_path;
@@ -53434,22 +53670,40 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
 
     // Alt text popup: a mepml alt text takes no room on the page
-    // (Editor::MepmlScan collapses its rows), so while the cursor is on the
-    // block it describes -- and not on the alt text's own source -- what it
-    // says floats just under the block; over the pane's last rows when the
-    // block runs past them. (The math preview above goes over its
-    // fragment, so the two do not meet.)
-    if (is_active && !org_plain && g_editor.OrgConcealVisible() && !buf.mepml_alt_notes.empty() &&
-        !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row && pane.cursor.row < row) {
-        const int cr = pane.cursor.row;
+    // (Editor::MepmlScan collapses its rows), so while the mouse is over the
+    // block it describes what it says floats just under the block; over the
+    // pane's last rows when the block runs past them. An inline formula's
+    // shows with the mouse over the formula, and then rather than
+    // its block's. (The text cursor does not bring it up: moving through
+    // the text would flash one popup after another.)
+    if (!org_plain && g_editor.OrgConcealVisible() && !buf.mepml_alt_notes.empty() &&
+        !IsCommandLineMode(g_editor.CurrentMode()) &&
+        PointInRect(alt_mouse, gfx::Rectangle{x, content_y, w, content_h})) {
         const Buffer::MepmlAltNote *note = nullptr;
         for (const Buffer::MepmlAltNote &a : buf.mepml_alt_notes) {
-            if (cr < a.first || cr > a.last || (cr >= a.alt_first && cr <= a.alt_last)) continue;
-            // An inline formula's: only with the cursor in its source, and
-            // then rather than its block's.
             const bool inline_note = a.col_first >= 0;
-            if (inline_note && ((cr == a.first && pane.cursor.col < a.col_first) || (cr == a.last && pane.cursor.col >= a.col_last)))
-                continue;
+            if (inline_note) {
+                if (alt_hover_row < a.first || alt_hover_row > a.last ||
+                    (alt_hover_row == a.first && alt_hover_col < a.col_first) ||
+                    (alt_hover_row == a.last && alt_hover_col >= a.col_last))
+                    continue;
+            } else {
+                // The block's rows on screen, as wide as the text area (its
+                // column's, in a set of columns).
+                if (a.last < draw_first_row || a.first >= row) continue;
+                const int first = std::max(a.first, draw_first_row), last = std::min(a.last, buf.LineCount() - 1);
+                const float top_y =
+                    content_y + static_cast<float>((RowSlot(first) - g_editor.RowTopPadSlots(buf, first)) * line_height);
+                const float bottom_y =
+                    content_y + static_cast<float>((RowSlot(last + 1) - g_editor.RowTopPadSlots(buf, last + 1)) * line_height);
+                float left = x, right = x + w;
+                if (const auto pl = buf.mepml_col_place.find(a.first); pl != buf.mepml_col_place.end()) {
+                    left = text_x + static_cast<float>(pl->second.x_cols) * g_char_width;
+                    right = std::min(right, left + static_cast<float>(pl->second.w_cols) * g_char_width);
+                    if (pl->second.x_cols == 0) left = x;
+                }
+                if (alt_mouse.y < top_y || alt_mouse.y >= bottom_y || alt_mouse.x < left || alt_mouse.x >= right) continue;
+            }
             const bool note_inline = note && note->col_first >= 0;
             if (!note || (inline_note && !note_inline) ||
                 (inline_note == note_inline && a.last - a.first < note->last - note->first))
@@ -53505,6 +53759,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // its TeX source (Editor::MepmlPresentShowing).
     if (presenting && !g_editor.MepmlPresentShowing())
         gfx::DrawRectangle(static_cast<int>(x) - 2, static_cast<int>(y) - 2, static_cast<int>(w) + 4, static_cast<int>(h) + 4, page_bg);
+    // A slide taller than the pane (text made larger): where the view is
+    // on it, as a bar in the right margin.
+    if (int top = 0, visible = 0, total = 0;
+        presenting && g_editor.MepmlPresentShowing() && g_editor.MepmlPresentOverflow(&top, &visible, &total)) {
+        const float bar_h = std::max(12.0f, h * static_cast<float>(visible) / static_cast<float>(total));
+        const float bar_y = y + (h - bar_h) * static_cast<float>(top) / static_cast<float>(total - visible);
+        gfx::Color c = ResolveHlGroup("Comment");
+        c.a = 140;
+        gfx::DrawRectangle(static_cast<int>(x + w) + 6, static_cast<int>(bar_y), 3, static_cast<int>(bar_h), c);
+    }
     // Hover tooltip (Phase 3 gap): recorded here but drawn later, once, by
     // the caller after the *entire* pane tree has finished -- text can be
     // much wider/taller (multi-line LSP docs) than a narrow split pane, so

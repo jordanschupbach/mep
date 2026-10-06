@@ -4960,17 +4960,18 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // -- the same "one row, N slots" shape as the two above, and
     // like them it replaces the row's own text, so soft-wrap
     // below must not also measure it.
-    if (org_table_wrap_visible_ && org_buffer && !plain) {
-        auto it = buf.org_table_wrap_rows.find(row);
-        if (it != buf.org_table_wrap_rows.end() && !it->second.lines.empty()) {
-            return static_cast<int>(it->second.lines.size()) + trailing;
+    if (org_buffer && !plain) {
+        if (const Buffer::OrgTableWrapRow *tw = TableWrapRowFor(buf, row)) {
+            // (Plus the headroom of a mepml row's pictures, and its place
+            // in a row of columns.)
+            return static_cast<int>(tw->lines.size()) + trailing + RowTopPadSlots(buf, row);
         }
     }
     // Soft-wrap (:set wrap, wrap_cols>0): a row's *raw* text length
     // determines how many visual slots it claims, same "one row ->
     // N slots" shape as the image/table cases above.
     if (wrap_cols > 0) {
-        int len = WrapLenForRow(buf, row);
+        int len = WrapLenForRow(buf, row, pane.cursor.row);
         const int sublines = std::max(1, (len + wrap_cols - 1) / wrap_cols);
         return sublines + trailing + heading_extra + RowTopPadSlots(buf, row) + RowMathExtraSlots(buf, row, sublines, wrap_cols, pane.cursor.row);
     }
@@ -5195,6 +5196,13 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
     pane.scroll_sub =
         std::clamp(pane.scroll_sub, 0, std::max(0, PaneRowSlots(pane, buf, pane.scroll_row, wrap_cols) - 1));
     pane.scroll_sub_row = pane.scroll_row;
+
+    // A presented mepml slide has no cursor to follow (it is parked on the
+    // blank first row): the view stays where j/k and the wheel put it.
+    if (present_.active && !present_.caret && IsMepmlPresentPane(pane.id, pane.buffer_id)) {
+        MepmlPresentPlaceScroll(pane, buf, wrap_cols, 0);
+        return;
+    }
 
     // How far the cursor's own row moved since the last call -- feeds the
     // smoothing cap below. A pane that's never run this before (-1) is
@@ -5554,6 +5562,8 @@ void Editor::WheelScrollTextBuffer(float dx, float dy) {
     Pane &p = CurPane();
     if (dy != 0.0f) {
         int steps = WheelSteps(wheel_accum_text_row_, -dy, kWheelLinesPerNotch);
+        // A presented slide has no cursor to move: the wheel moves the view.
+        if (steps != 0 && MepmlPresentScroll(steps)) steps = 0;
         if (steps != 0) {
             int dir = steps > 0 ? 1 : -1;
             for (int i = 0; i < std::abs(steps); i++) {
@@ -31460,6 +31470,8 @@ bool Editor::ToggleOrgTableWrap() {
     // ToggleOrgLatex clears org_latex_rows.
     if (!org_table_wrap_visible_) Buf().org_table_wrap_rows.clear();
     else OrgTableWrapScan(true);
+    // A mepml buffer's tables are laid out by its scan, which runs again.
+    for (auto &kv : mepml_scan_state_) kv.second.valid = false;
     return org_table_wrap_visible_;
 }
 
@@ -31470,7 +31482,8 @@ void Editor::OrgTableWrapScan(bool force) {
         return;
     }
     if (LspFiletype(buf.filename) != "org") {
-        buf.org_table_wrap_rows.clear();
+        // (A mepml buffer's are its own scan's: Editor::MepmlTableLayout.)
+        if (LspFiletype(buf.filename) != "mepml") buf.org_table_wrap_rows.clear();
         return;
     }
     const int n = buf.LineCount();

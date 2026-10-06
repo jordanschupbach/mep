@@ -396,7 +396,7 @@ struct Out {
         // and is in no export). Kinds with no box of their own are the
         // nearest that has one.
         std::string k = Lower(kind);
-        if (k == "caution" || k == "danger" || k == "error" || k == "important" || k == "attention") k = "warning";
+        if (k == "caution" || k == "danger" || k == "error" || k == "attention") k = "warning";
         else if (k == "hint" || k == "success") k = "tip";
         if (!FindBoxKind(k) || k == "proof") k = "note";
         std::string o = "\\" + k + "(";

@@ -29,7 +29,7 @@ content or nothing.
 | `callout` | `kind` (lowercase keyword: `note`, `warning`, `todo` ...) | inlines | `// NOTE: text` -- a comment with a keyword: shown where the source is edited, written by no export |
 | `abstract` | | inlines | `\abstract( ... )` |
 | `slide` | `number`; `title` on a presentation's title page | blocks | `\slide(` ... `)` |
-| `box` | `kind`: `definition`, `theorem`, `lemma`, `proposition`, `corollary`, `fact`, `example`, `remark`, `proof`, `note`, `tip`, `warning`, or a name of the document's own | blocks | `\definition(Title,` ... `)`; `\boxed(kind, Title,` ... `)` |
+| `box` | `kind`: `definition`, `theorem`, `lemma`, `proposition`, `corollary`, `fact`, `example`, `remark`, `proof`, `note`, `tip`, `warning`, `important`, or a name of the document's own | blocks | `\definition(Title,` ... `)`; `\boxed(kind, Title,` ... `)` |
 | `columns` | | `column` (and any block written between them) | `\columns(` ... `)` |
 | `column` | `width` (`40%`; absent for an equal share) | blocks | `\column(` ... `)`, `\column(40%,` ... `)` |
 | `list` | | `list-item` | `- item`, `1. item` |

@@ -34,7 +34,8 @@ language.
 | =<leader>kl=          | follow the link under the cursor (clicking works too)     |
 | =<leader>km=          | toggle markup concealment                                 |
 | =<leader>kr=          | raw text or rendered (also the header's eye button)       |
-| =<leader>kp=          | present the slides, filling the editor                    |
+| =<leader>kf=          | toggle the math preview popup shown while typing a formula |
+| =<leader>kp=          | present the slides, filling the editor (also the header's screen button, on a presentation) |
 | =<leader>kP=          | present the slides full screen                            |
 | =:MepmlExecute=       | run the code block under the cursor                       |
 | =:MepmlExecuteAll=    | run every code block                                      |
@@ -142,8 +143,9 @@ comment it is left out of every export.
 // QUESTION: does this belong before the proof?
 #+end_example
 
-For something said to the /reader/ -- a note, a tip, a warning, an example
--- use a box: =\note(=, =\tip(=, =\warning(= and =\example(= (see
+For something said to the /reader/ -- a note, a tip, a warning, the one
+thing not to miss, an example -- use a box: =\note(=, =\tip(=,
+=\warning(=, =\important(= and =\example(= (see
 Boxes, below).
 
 The keywords are =NOTE=, =INFO=, =TIP=, =HINT=, =SUCCESS=, =WARNING=,
@@ -260,10 +262,15 @@ can also be made from an ordinary document that has slides.
 =<leader>kp= (=:MepmlPresent=) shows the deck one slide at a time in the
 editor itself, starting at the slide the cursor is on: the pane takes the
 whole editor area, the slide's text is set as prose, and the cursor is
-hidden until you ask for it (=n=, normal mode). =<leader>kP= (=:MepmlPresent full=) takes the window full screen
+hidden until you ask for it (=n=, normal mode). A document of
+=Type: presentation= also has a screen button for this in its pane header
+(right click: full screen). =<leader>kP= (=:MepmlPresent full=) takes the window full screen
 too, hides everything else and sets the text large enough to read across
 a room; a slide too full for the screen gets smaller text so that all of
-it shows.
+it shows. Text you make larger yourself (=+=) stays that size: a slide that
+then runs off the bottom scrolls with =j= / =k=, =C-d= / =C-u= or the
+wheel, a bar in the right margin shows where you are on it, and every
+slide you turn to starts at its top.
 
 A slide reads the way an export does. A code block shows its results, not
 its code, unless the header or the block says otherwise (=exports=both=,
@@ -286,6 +293,7 @@ their labels.
 | =C-c C-c=                             | run the code block under the cursor; with no cursor, every one on the slide (a web page or app it shows too, even with its code hidden; =C-c C-c= again stops one that runs) |
 | =f=                                   | switch between filling the editor and full screen |
 | =+=, =-=, =0=                          | larger, smaller, back to the starting size    |
+| =j= / =k=, the wheel, =C-d= / =C-u=   | down / up a slide taller than the screen (a line, half a screen) |
 | =r=                                   | rebuild the slides from the document          |
 | =:=                                   | a command line                                |
 | =q=, =Esc=                            | stop, back in the document at the slide shown |
@@ -297,7 +305,10 @@ mode again.
 A code block runs as the document's own block -- with the options the
 slide leaves out -- and its results go into the document, so the slide
 shows them as soon as they are in. Only a block whose code the slide
-shows can be run from it.
+shows can be run from it -- except a program: an =exec= block (or
+=results=terminal=, =results=exec=), like a web page or app, starts by
+itself when its slide is shown, code hidden or not, and is stopped when
+the presentation ends.
 
 The slides follow the document: an edit made elsewhere, or a block that
 finishes running, shows on the slide within half a second. The slides
@@ -390,6 +401,7 @@ boxes -- so a box holds whatever a slide can. The kinds are:
 | =\note=         | Note        | slate blue                     |
 | =\tip=          | Tip         | green                          |
 | =\warning=      | Warning     | amber                          |
+| =\important=    | Important   | red                            |
 
 The title is everything before the first comma (escape a comma that
 belongs to it: =\,=), and may hold inline markup and maths. Text after
@@ -503,7 +515,10 @@ $$
 #+end_example
 
 Maths is typeset in the buffer with the same preview org uses
-(=<leader>otl= toggles it; it needs =tectonic= and =pdftoppm=). An
+(=<leader>otl= toggles it; it needs =tectonic= and =pdftoppm=). While
+the cursor is in a formula its source shows, and what it typesets to
+floats in a popup beside it as you type; =<leader>kf= (or =<leader>otp=,
+=:MepOrgLatexPopupToggle=) turns that popup off and on. An
 =\alttext(...)= right after a formula says how it is read aloud: a screen
 reader speaks that instead of the symbols (see Accessibility, below). A lone
 dollar amount such as =$5= is never maths.
@@ -821,9 +836,9 @@ the export alike. In the editor a caption is wrapped to the text width
 (=:set textwidth=, 80 by default) and centred under a figure; its source
 comes back while the cursor is on it. An alt text is for readers who cannot
 see the page, so it takes no room on it: its lines are hidden, and while the
-cursor is on the block it describes it shows in a popup just under the
-block (an inline formula's while the cursor is in the formula) -- in the
-presentation view too (=n= puts a cursor on the slide). Move onto its own line to
+mouse is over the block it describes it shows in a popup just under the
+block (an inline formula's while the mouse is over the formula) -- in the
+presentation view too. Move the cursor onto its own line to
 see and edit its source, which also stays on one line: a long one slides
 sideways to keep the cursor in view rather than wrapping.
 
@@ -846,6 +861,12 @@ The pipes don't need to line up in the file, because mep lines the columns
 up when drawing, without changing the text. Colons in the separator row
 align a column left (=:--=), right (=--:=) or centre (=:-:=). The table
 under the cursor shows its raw text.
+
+A table wider than the window is fitted to it: the widest columns give
+way first and their cells wrap onto further lines, each inside its own
+column, the cursor's row included (it shows its source in the same
+columns). Nothing in the file changes. =<leader>otw= turns this off and
+on, as it does for org tables.
 
 A cell holding only an image puts that picture in the table:
 

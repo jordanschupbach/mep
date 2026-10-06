@@ -1109,6 +1109,9 @@ struct Buffer {
     // sizes, results), and its maths is not rendered. Per buffer: every
     // pane showing the document agrees.
     bool mepml_raw = false;
+    // The document is a slide deck (`//? Type: presentation`, as of the
+    // last Editor::MepmlScan): its pane header offers a present button.
+    bool mepml_presentation = false;
 
     // Org inline-image rendering: row -> a resolved file path plus that
     // file's native pixel size, populated by Editor::OrgImageScan (and
@@ -1344,6 +1347,15 @@ struct Buffer {
         // past its end) is drawn -- `line` into `lines`, `col` a display
         // column -- so the caret can sit in the layout.
         std::vector<OrgTableWrapPos> caret;
+        // A mepml table's row (Editor::MepmlTableLayout wraps a table
+        // wider than the pane the same way): what each run of the layout
+        // stands for in the stored row, so its decorations still colour
+        // it, and a `caret` map on every row. Its scan can be a frame or
+        // more behind an edit, so the entry is for the text hashed here
+        // and no other (Editor::TableWrapRowFor).
+        std::vector<OrgTableWrapRun> runs;
+        bool hashed = false;
+        size_t text_hash = 0;
     };
     std::unordered_map<int, OrgTableWrapRow> org_table_wrap_rows;
 
@@ -1405,18 +1417,26 @@ struct Buffer {
     // source (Editor::WrapLenForRow): a row whose markup and maths draw
     // narrower than they are written fits on one line.
     std::unordered_map<int, int> mepml_table_row_cols;
+    // The spans Editor::MepmlScan conceals on each row, as DrawPane
+    // collapses them: {col_start, col_end, columns drawn instead}, in
+    // column order. Soft-wrap measures a row by what is left
+    // (Editor::WrapLenForRow) rather than by its source, whose markup and
+    // TeX wrapped onto lines the drawn text never reached -- blank lines
+    // through every box. A row holding a run in a face of its own (only
+    // the renderer can measure one) has no entry and is measured raw.
+    std::unordered_map<int, std::vector<std::array<int, 3>>> mepml_row_conceal;
     // Rows that are never soft-wrapped: the source rows of a mepml alt
     // text (Editor::MepmlScan), which show -- only under the cursor -- on
     // one line however long they are; DrawPane slides the row sideways to
     // keep the caret in view. WrapLenForRow answers 1 for them.
     std::unordered_set<int> mepml_single_line_rows;
     // Each mepml block with an alt text (Editor::MepmlScan): while the
-    // cursor is on a row of the block, [first, last], DrawPane shows the
-    // text in a popup by it -- but not on the alt text's own source rows,
-    // [alt_first, alt_last] (-1: it has none here, a presented slide),
-    // where the cursor shows the source itself. An empty text is a
-    // decoration's (`\alttext()`). An inline formula's (col_first >= 0)
-    // shows while the cursor is in its source, from byte col_first of row
+    // mouse is over the block's rows, [first, last], DrawPane shows the
+    // text in a popup by it. [alt_first, alt_last] are the alt text's own
+    // source rows (-1: it has none here, a presented slide), where the
+    // cursor shows the source itself. An empty text is a decoration's
+    // (`\alttext()`). An inline formula's (col_first >= 0) shows while the
+    // mouse is over its render; its source runs from byte col_first of row
     // `first` up to (not including) byte col_last of row `last` -- the
     // formula and the \alttext() after it.
     struct MepmlAltNote {
@@ -3977,6 +3997,20 @@ public:
      * @return True if plain-cursor-line rendering is on.
      */
     bool OrgPlainCursorLineVisible() const { return org_plain_cursor_line_; }
+    // <leader>otp / mep.org_latex_popup_toggle -- whether the formula the
+    // cursor is in (its source revealed, to type in) also shows typeset
+    // in a popup by it (DrawPane's math preview popup). Off: the source
+    // alone, and nothing is rendered until the cursor leaves the formula.
+    /**
+     * @brief Returns whether the formula being edited is previewed in a popup.
+     * @return True if the math preview popup is on.
+     */
+    bool OrgLatexPopupVisible() const { return org_latex_popup_; }
+    /**
+     * @brief Toggles the math preview popup.
+     * @return The new state.
+     */
+    bool ToggleOrgLatexPopup() { return org_latex_popup_ = !org_latex_popup_; }
     // <leader>otw / mep.org_table_wrap_toggle -- whether an org table
     // renders from a layout fitted to the screen
     // (Buffer::org_table_wrap_rows) instead of from its own text: a
@@ -3992,6 +4026,21 @@ public:
      * @return True if laid-out table rendering is on.
      */
     bool OrgTableWrapVisible() const { return org_table_wrap_visible_; }
+    /**
+     * @brief The wrapped layout a table row draws as (Buffer::org_table_wrap_rows), if it has one.
+     * @param buf The buffer.
+     * @param row 0-based row.
+     * @return The layout, or null: none, the toggle off, or (mepml) the row edited since it was laid out.
+     */
+    const Buffer::OrgTableWrapRow *TableWrapRowFor(const Buffer &buf, int row) const {
+        if (!org_table_wrap_visible_ || buf.org_table_wrap_rows.empty()) return nullptr;
+        const auto it = buf.org_table_wrap_rows.find(row);
+        if (it == buf.org_table_wrap_rows.end() || it->second.lines.empty()) return nullptr;
+        if (it->second.hashed && (row < 0 || row >= buf.LineCount() ||
+                                  std::hash<std::string>{}(buf.lines[static_cast<size_t>(row)]) != it->second.text_hash))
+            return nullptr;
+        return &it->second;
+    }
     // Active pane/buffer -- what most of the UI (statusline, blinking
     // cursor, Visual highlight) cares about.
     /**
@@ -9847,6 +9896,23 @@ public:
      */
     void MepmlPresentSetCaret(bool on);
     /**
+     * @brief Moves a presented slide's view by `slots` visual lines (negative = back up), for a
+     * slide taller than the pane (text made larger with +); no further than its last line at the
+     * bottom.
+     * @return True when the view is the presentation's to scroll (no caret mode).
+     */
+    bool MepmlPresentScroll(int slots);
+    /**
+     * @brief How much of the presented slide the pane shows, in visual lines (as of the last frame).
+     * @return True when the slide is taller than the pane.
+     */
+    bool MepmlPresentOverflow(int *top, int *visible, int *total) const {
+        if (top) *top = present_.scroll_top;
+        if (visible) *visible = present_.scroll_visible;
+        if (total) *total = present_.scroll_total;
+        return present_.active && !present_.caret && present_.scroll_total > present_.scroll_visible;
+    }
+    /**
      * @brief Re-reads the source buffer (and its imports) into pages, keeping the slide shown.
      */
     void MepmlPresentRebuild();
@@ -10043,6 +10109,12 @@ public:
      * @return The flag.
      */
     bool MepmlRaw(int buffer_id) const;
+    /**
+     * @brief Whether a buffer's mepml document is a presentation (Buffer::mepml_presentation); false for an unknown id.
+     * @param buffer_id The buffer.
+     * @return The flag.
+     */
+    bool MepmlIsPresentation(int buffer_id) const;
     /**
      * @brief Replaces (or inserts) the results region of the code block whose opening fence is on `fence_row`, in any buffer.
      * @param buffer_id Target buffer.
@@ -10462,18 +10534,20 @@ public:
     // image cannot be read.
     int LatexInlineDrawCols(const std::string &path) const;
     // The length soft-wrap measures a row by: a laid-out mepml table row's
-    // drawn width, any other row's raw length. Every walker that counts a
-    // row's slots (UpdateScrollForPane, DrawPane's draw loop, RowSlot,
-    // PaneRowSlots, the notebook prefix) goes through this, so they agree.
-    static int WrapLenForRow(const Buffer &buf, int row) {
-        if (buf.mepml_single_line_rows.count(row) != 0) return 1;
-        if (!buf.mepml_col_place.empty()) {
-            const auto pl = buf.mepml_col_place.find(row);
-            if (pl != buf.mepml_col_place.end() && pl->second.drawn_cols >= 0) return pl->second.drawn_cols;
-        }
-        auto it = buf.mepml_table_row_cols.find(row);
-        return it != buf.mepml_table_row_cols.end() ? it->second : static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
-    }
+    // drawn width; any other row's length as DrawPane draws it, with its
+    // inline maths at their renders' widths and (mepml) its concealed
+    // markup collapsed -- its raw length when it is the cursor's, which
+    // shows its source. Every walker that counts a row's slots
+    // (UpdateScrollForPane, DrawPane's draw loop, RowSlot, PaneRowSlots,
+    // the notebook prefix) goes through this, so they agree.
+    /**
+     * @brief The length soft-wrap measures a row by.
+     * @param buf The buffer.
+     * @param row 0-based row.
+     * @param cursor_row The pane's cursor row (shown as source), -1 for none.
+     * @return The row's length in columns.
+     */
+    int WrapLenForRow(const Buffer &buf, int row, int cursor_row) const;
     // Whether a mepml table's inline maths rendered at another width than
     // the table was laid out for: mepml_render must run again.
     bool MepmlTablesStale();
@@ -13357,6 +13431,9 @@ private:
         double reveal_deadline = 0.0;
         int timed_out_page = -1;  // a page shown anyway (a formula that fails to compile)
         bool fit_checked = false;  // full screen: this page was measured and fits
+        // Where the view is on a slide taller than the pane, in visual
+        // lines (MepmlPresentPlaceScroll, once a frame).
+        int scroll_top = 0, scroll_visible = 0, scroll_total = 0;
         std::vector<int> need_rows;                   // display formulas' first rows (org_latex_rows keys)
         std::vector<std::pair<int, int>> need_inline;  // inline formulas' (row, col_start)
     };
@@ -13366,6 +13443,9 @@ private:
     void MepmlPresentKey(int ch);  // f, r, q, + = - 0: the presentation's own keys
     void MepmlPresentUpdateReveal();
     void MepmlPresentApplyFullscreen(bool on);
+    // Without a cursor the view's place is the presentation's own
+    // (UpdateScrollForPane, instead of following the cursor).
+    void MepmlPresentPlaceScroll(Pane &pane, const Buffer &buf, int wrap_cols, int move);
     int next_mepml_term_ = 1;
     // GUI runs (MepmlGuiStart). The backend is declared first so that it
     // outlives every run's window.
@@ -14111,6 +14191,8 @@ private:
     // own comment. On by default -- the raw text of the row being edited
     // is what an editor should show.
     bool org_plain_cursor_line_ = true;
+    // The math preview popup (<leader>otp): see OrgLatexPopupVisible().
+    bool org_latex_popup_ = true;
     // Scratch for OrgBlockCards() -- reused across calls (one scan per
     // pane per frame) instead of returning a fresh vector each time.
     std::vector<OrgBlockCard> org_block_cards_;

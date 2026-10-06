@@ -3533,6 +3533,29 @@ int l_org_plain_cursor_line_visible(lua_State *L) {
     return 1;
 }
 
+// mep.org_latex_popup_toggle()/mep.org_latex_popup_visible(): the math
+// preview popup over the formula being edited (<leader>otp) -- see
+// Editor::OrgLatexPopupVisible.
+/**
+ * @brief Implements mep.org_latex_popup_toggle(): toggles the math preview popup.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new state).
+ */
+int l_org_latex_popup_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleOrgLatexPopup());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.org_latex_popup_visible(): reports whether the formula being edited is previewed in a popup.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the current state).
+ */
+int l_org_latex_popup_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->OrgLatexPopupVisible());
+    return 1;
+}
+
 // mep.org_table_wrap_toggle()/mep.org_table_wrap_scan(): wrapped
 // rendering of a table too wide for `:set textwidth` (<leader>otw) --
 // see Editor::OrgTableWrapVisible/OrgTableWrapScan. The scan rides the
@@ -13297,6 +13320,8 @@ const luaL_Reg kMepFuncs[] = {
     {"org_plain_toggle", l_org_plain_toggle},
     {"org_plain_visible", l_org_plain_visible},
     {"org_plain_cursor_line_visible", l_org_plain_cursor_line_visible},
+    {"org_latex_popup_toggle", l_org_latex_popup_toggle},
+    {"org_latex_popup_visible", l_org_latex_popup_visible},
     {"org_table_wrap_scan", l_org_table_wrap_scan},
     {"org_table_wrap_toggle", l_org_table_wrap_toggle},
     {"buf_add_latex_inline", l_buf_add_latex_inline},

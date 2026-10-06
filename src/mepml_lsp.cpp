@@ -668,6 +668,7 @@ const std::vector<Vocab> &DirectiveVocab() {
         MEPML_BOX("note", "Note", "slate blue"),
         MEPML_BOX("tip", "Tip", "green"),
         MEPML_BOX("warning", "Warning", "amber"),
+        MEPML_BOX("important", "Important", "red"),
 #undef MEPML_BOX
         {"define", "\\define(name(params), template)", "A command of your own: \\name(a, b) becomes the template with #param (or #{param}, #1) replaced by the arguments -- the last parameter takes the rest of the call, commas and all. The template may choose by export with \\when(html, ...) \\otherwise(...) and write the export's own markup with \\raw(html, ...). Exports expand the calls; the editor shows them as written."},
     };

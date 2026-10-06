@@ -294,7 +294,7 @@ static bool is_box_kind(const char *name) {
     // (`boxed` is any kind of the document's own: `\\boxed(axiom, Title,`.)
     static const char *const kNames[] = {"definition", "theorem", "lemma",  "proposition", "corollary",
                                          "fact",       "example", "remark", "proof",       "note",
-                                         "tip",        "warning", "boxed",
+                                         "tip",        "warning", "important", "boxed",
                                          // (Columns nest and close as boxes do.)
                                          "columns",    "column"};
     for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)

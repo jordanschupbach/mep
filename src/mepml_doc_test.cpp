@@ -842,6 +842,18 @@ int main() {
         const std::vector<SlideHtml> frags = SlideFragments(sd);
         CHECK(frags.size() == 1 && frags[0].body.find("</div>\n<div class=\"mbox mbox-fact\"") != std::string::npos);
 
+        // \important: the one thing not to miss, a box like the others in
+        // a red of its own (around display maths, as a deck sets a result).
+        const Document imp = Parse({"\\important(Gradient,", "$$", "\\nabla f = 0", "$$", ")", "\\important(One line.)"});
+        std::vector<BlockKind> ik;
+        for (const Block &b : imp.blocks) ik.push_back(b.kind);
+        CHECK((ik == std::vector<BlockKind>{BlockKind::BoxBegin, BlockKind::MathBlock, BlockKind::BoxEnd, BlockKind::BoxBegin}));
+        CHECK(imp.blocks[0].keyword == "important" && imp.diagnostics.empty() && BoxLabel("important") == "Important");
+        const std::string imp_html = ToHtml(imp);
+        CHECK(imp_html.find("<div class=\"mbox mbox-important\" data-kind=\"important\"><p class=\"mbox-title\"><span class=\"mbox-label\">Important</span> "
+                            "<span class=\"mbox-name\">Gradient</span></p>") != std::string::npos);
+        CHECK(imp_html.find(".mbox-important { --c: #c62828; }") != std::string::npos);
+
         // Commands expand in a box's title and text; its lines stay.
         const Lines with_cmd = {"\\define(R, $\\mathbb{R}$)", "\\definition(Reals \\R(),", "In \\R().", ")"};
         const std::vector<std::string> ex = ExpandCommands(with_cmd, Parse(with_cmd).commands, {"html"});
@@ -1024,6 +1036,17 @@ int main() {
             "\\bibliography",                         // 38
             ")",                                      // 39
         };
+        {
+            // A box's title line and its closing `)` are its own edges: no
+            // blank line is set between them and what the box holds.
+            const Lines boxed = {"\\slide(", "Before.", "\\definition(Term,", "", "What it means.", "", ")", "After.", ")"};
+            const std::vector<PresentationPage> bp = PresentationPages("/d/main.mepml", boxed, read);
+            CHECK(!bp.empty());
+            if (!bp.empty()) {
+                const Lines want = {"Before.", "\\definition(Term,", "What it means.", ")", "After."};
+                CHECK(bp.back().lines == want);
+            }
+        }
         const std::vector<PresentationPage> pages = PresentationPages("/d/main.mepml", src, read);
         CHECK(pages.size() == 3);
         if (pages.size() == 3) {
@@ -1130,6 +1153,36 @@ int main() {
             CHECK((pages[1].outputs == std::vector<int>{0, 3}));
             CHECK(pages[1].blocks.size() == 2 && pages[1].blocks[0].live_fence == 0 && pages[1].blocks[0].source_fence == 11 &&
                   pages[1].blocks[1].first == 3 && pages[1].blocks[1].last == 5 && pages[1].blocks[1].source_fence == 18);
+        }
+    }
+    // A program in a terminal is live too (the slide starts it); a block
+    // that just computes its results is not.
+    {
+        const Lines src = {
+            "//? Type: presentation",       // 0
+            "\\slide(",                     // 1
+            "```{exec}",                    // 2
+            "xeyes",                        // 3
+            "```",                          // 4
+            "```{sh, results=terminal}",    // 5
+            "top",                          // 6
+            "```",                          // 7
+            "```{c, results=exec}",         // 8
+            "int main() { return 0; }",     // 9
+            "```",                          // 10
+            "```{r}",                       // 11
+            "1 + 1",                        // 12
+            "```",                          // 13
+            ")",                            // 14
+        };
+        const std::vector<PresentationPage> pages =
+            PresentationPages("/d/x.mepml", src, [](const std::string &, Lines *) { return false; });
+        CHECK(pages.size() == 1 && pages[0].blocks.size() == 4);
+        if (pages.size() == 1 && pages[0].blocks.size() == 4) {
+            CHECK(pages[0].blocks[0].live && pages[0].blocks[0].source_fence == 2);
+            CHECK(pages[0].blocks[1].live && pages[0].blocks[1].source_fence == 5);
+            CHECK(pages[0].blocks[2].live && pages[0].blocks[2].source_fence == 8);
+            CHECK(!pages[0].blocks[3].live);
         }
     }
 

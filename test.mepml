@@ -323,7 +323,7 @@ Two slides in a row, this one untitled.
 Boxes: `\definition(Title,` on a line of its own, then the box's content --
 any blocks -- and a line holding just `)` to close it. `\theorem`, `\lemma`,
 `\proposition`, `\corollary`, `\fact`, `\example`, `\remark`, `\proof`,
-`\note`, `\tip` and `\warning` work the same way, each in its own colour. The title is everything before
+`\note`, `\tip`, `\warning` and `\important` work the same way, each in its own colour. The title is everything before
 the first comma; text after it on the same line starts the box's first
 paragraph, and a box closed where its text ends needs no line of its own.
 

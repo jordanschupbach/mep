@@ -40,7 +40,8 @@ language.</p>
 <tr><td><code>&lt;leader&gt;kl</code></td><td>follow the link under the cursor (clicking works too)</td></tr>
 <tr><td><code>&lt;leader&gt;km</code></td><td>toggle markup concealment</td></tr>
 <tr><td><code>&lt;leader&gt;kr</code></td><td>raw text or rendered (also the header's eye button)</td></tr>
-<tr><td><code>&lt;leader&gt;kp</code></td><td>present the slides, filling the editor</td></tr>
+<tr><td><code>&lt;leader&gt;kf</code></td><td>toggle the math preview popup shown while typing a formula</td></tr>
+<tr><td><code>&lt;leader&gt;kp</code></td><td>present the slides, filling the editor (also the header's screen button, on a presentation)</td></tr>
 <tr><td><code>&lt;leader&gt;kP</code></td><td>present the slides full screen</td></tr>
 <tr><td><code>:MepmlExecute</code></td><td>run the code block under the cursor</td></tr>
 <tr><td><code>:MepmlExecuteAll</code></td><td>run every code block</td></tr>
@@ -122,8 +123,9 @@ comment it is left out of every export.</p>
 <pre>// TODO: check these numbers against the 2024 data,
 // and this line is part of the same note.
 // QUESTION: does this belong before the proof?</pre>
-<p>For something said to the <i>reader</i> -- a note, a tip, a warning, an example
--- use a box: <code>\note(</code>, <code>\tip(</code>, <code>\warning(</code> and <code>\example(</code> (see
+<p>For something said to the <i>reader</i> -- a note, a tip, a warning, the one
+thing not to miss, an example -- use a box: <code>\note(</code>, <code>\tip(</code>,
+<code>\warning(</code>, <code>\important(</code> and <code>\example(</code> (see
 Boxes, below).</p>
 <p>The keywords are <code>NOTE</code>, <code>INFO</code>, <code>TIP</code>, <code>HINT</code>, <code>SUCCESS</code>, <code>WARNING</code>,
 <code>CAUTION</code>, <code>ERROR</code>, <code>DANGER</code>, <code>IMPORTANT</code>, <code>TODO</code>, <code>FIXME</code>, <code>QUESTION</code> and
@@ -211,10 +213,15 @@ can also be made from an ordinary document that has slides.
 <p><code>&lt;leader&gt;kp</code> (<code>:MepmlPresent</code>) shows the deck one slide at a time in the
 editor itself, starting at the slide the cursor is on: the pane takes the
 whole editor area, the slide's text is set as prose, and the cursor is
-hidden until you ask for it (<code>n</code>, normal mode). <code>&lt;leader&gt;kP</code> (<code>:MepmlPresent full</code>) takes the window full screen
+hidden until you ask for it (<code>n</code>, normal mode). A document of
+<code>Type: presentation</code> also has a screen button for this in its pane header
+(right click: full screen). <code>&lt;leader&gt;kP</code> (<code>:MepmlPresent full</code>) takes the window full screen
 too, hides everything else and sets the text large enough to read across
 a room; a slide too full for the screen gets smaller text so that all of
-it shows.</p>
+it shows. Text you make larger yourself (<code>+</code>) stays that size: a slide that
+then runs off the bottom scrolls with <code>j</code> / <code>k</code>, <code>C-d</code> / <code>C-u</code> or the
+wheel, a bar in the right margin shows where you are on it, and every
+slide you turn to starts at its top.</p>
 <p>A slide reads the way an export does. A code block shows its results, not
 its code, unless the header or the block says otherwise (<code>exports=both</code>,
 <code>exports=code</code>, <code>echo=true</code> ...); a block that has not been run yet shows
@@ -235,6 +242,7 @@ their labels.</p>
 <tr><td><code>C-c C-c</code></td><td>run the code block under the cursor; with no cursor, every one on the slide (a web page or app it shows too, even with its code hidden; <code>C-c C-c</code> again stops one that runs)</td></tr>
 <tr><td><code>f</code></td><td>switch between filling the editor and full screen</td></tr>
 <tr><td><code>+</code>, <code>-</code>, <code>0</code></td><td>larger, smaller, back to the starting size</td></tr>
+<tr><td><code>j</code> / <code>k</code>, the wheel, <code>C-d</code> / <code>C-u</code></td><td>down / up a slide taller than the screen (a line, half a screen)</td></tr>
 <tr><td><code>r</code></td><td>rebuild the slides from the document</td></tr>
 <tr><td><code>:</code></td><td>a command line</td></tr>
 <tr><td><code>q</code>, <code>Esc</code></td><td>stop, back in the document at the slide shown</td></tr>
@@ -245,7 +253,10 @@ mode again.</p>
 <p>A code block runs as the document's own block -- with the options the
 slide leaves out -- and its results go into the document, so the slide
 shows them as soon as they are in. Only a block whose code the slide
-shows can be run from it.</p>
+shows can be run from it -- except a program: an <code>exec</code> block (or
+<code>results=terminal</code>, <code>results=exec</code>), like a web page or app, starts by
+itself when its slide is shown, code hidden or not, and is stopped when
+the presentation ends.</p>
 <p>The slides follow the document: an edit made elsewhere, or a block that
 finishes running, shows on the slide within half a second. The slides
 themselves are not for editing (an edit in normal mode is undone, and <code>:w</code>
@@ -323,6 +334,7 @@ boxes -- so a box holds whatever a slide can. The kinds are:</p>
 <tr><td><code>\note</code></td><td>Note</td><td>slate blue</td></tr>
 <tr><td><code>\tip</code></td><td>Tip</td><td>green</td></tr>
 <tr><td><code>\warning</code></td><td>Warning</td><td>amber</td></tr>
+<tr><td><code>\important</code></td><td>Important</td><td>red</td></tr>
 </table>
 <p>The title is everything before the first comma (escape a comma that
 belongs to it: =\,=), and may hold inline markup and maths. Text after
@@ -417,7 +429,10 @@ $$
 \alttext(The Gaussian integral)
 \[ \sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6} \]</pre>
 <p>Maths is typeset in the buffer with the same preview org uses
-(<code>&lt;leader&gt;otl</code> toggles it; it needs <code>tectonic</code> and <code>pdftoppm</code>). An
+(<code>&lt;leader&gt;otl</code> toggles it; it needs <code>tectonic</code> and <code>pdftoppm</code>). While
+the cursor is in a formula its source shows, and what it typesets to
+floats in a popup beside it as you type; <code>&lt;leader&gt;kf</code> (or <code>&lt;leader&gt;otp</code>,
+<code>:MepOrgLatexPopupToggle</code>) turns that popup off and on. An
 <code>\alttext(...)</code> right after a formula says how it is read aloud: a screen
 reader speaks that instead of the symbols (see Accessibility, below). A lone
 dollar amount such as <code>$5</code> is never maths.</p>
@@ -659,9 +674,9 @@ the export alike. In the editor a caption is wrapped to the text width
 (<code>:set textwidth</code>, 80 by default) and centred under a figure; its source
 comes back while the cursor is on it. An alt text is for readers who cannot
 see the page, so it takes no room on it: its lines are hidden, and while the
-cursor is on the block it describes it shows in a popup just under the
-block (an inline formula's while the cursor is in the formula) -- in the
-presentation view too (<code>n</code> puts a cursor on the slide). Move onto its own line to
+mouse is over the block it describes it shows in a popup just under the
+block (an inline formula's while the mouse is over the formula) -- in the
+presentation view too. Move the cursor onto its own line to
 see and edit its source, which also stays on one line: a long one slides
 sideways to keep the cursor in view rather than wrapping.</p>
 <p>GitHub-flavoured Markdown tables work as they are. After a header row
@@ -678,6 +693,11 @@ The pipes don't need to line up in the file, because mep lines the columns
 up when drawing, without changing the text. Colons in the separator row
 align a column left (<code>:--</code>), right (<code>--:</code>) or centre (<code>:-:</code>). The table
 under the cursor shows its raw text.</p>
+<p>A table wider than the window is fitted to it: the widest columns give
+way first and their cells wrap onto further lines, each inside its own
+column, the cursor's row included (it shows its source in the same
+columns). Nothing in the file changes. <code>&lt;leader&gt;otw</code> turns this off and
+on, as it does for org tables.</p>
 <p>A cell holding only an image puts that picture in the table:</p>
 <pre>| \image(./figs/setosa.jpg) | \image(./figs/versicolor.jpg) |
 | ~Iris setosa~             | ~Iris versicolor~             |</pre>

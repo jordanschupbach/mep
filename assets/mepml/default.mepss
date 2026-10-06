@@ -113,6 +113,7 @@ box[kind=proof]         { --accent: theme(Comment, #5f6b7a); }
 box[kind=note]          { --accent: theme(Blue, #3b6ea5); }
 box[kind=tip]           { --accent: theme(Green, #2f7d32); }
 box[kind=warning]       { --accent: theme(Yellow, #b7791f); }
+box[kind=important]     { --accent: theme(Red, #c62828); }
 box::label              { color: var(--accent); font-weight: bold; }
 box::title              { font-weight: bold; }
 box::end                { color: var(--accent); }
@@ -128,6 +129,7 @@ box[kind=proof]::label       { content: "Proof"; }
 box[kind=note]::label        { content: "Note"; }
 box[kind=tip]::label         { content: "Tip"; }
 box[kind=warning]::label     { content: "Warning"; }
+box[kind=important]::label   { content: "Important"; }
 box[kind=proof]::end         { content: "∎"; }
 
 /* --- Cards ------------------------------------------------------------- */

@@ -600,6 +600,27 @@ struct OrgTableWrapPos {
     int col = 0;
 };
 
+// One run of a laid-out row as drawn, and the bytes of the stored row it
+// stands for -- what lets a renderer put the row's own decorations (its
+// colours, a selection, the caret) on a layout whose columns are nothing
+// like the stored line's. A `verbatim` run is those bytes themselves, one
+// for one; any other is drawn *instead* of them (a concealed markup's
+// replacement, a formula's render), whole. mepml's tables carry these
+// (Editor::MepmlTableLayout); org's rows, which carry their links on the
+// line itself, have none.
+struct OrgTableWrapRun {
+    int src_start = 0, src_end = 0;  // bytes of the stored row
+    int line = 0;                    // index into the row's lines
+    int col_start = 0, col_end = 0;  // bytes of that line's text
+    bool verbatim = true;
+    // A formula's render, drawn over the blank columns reserved for it:
+    // its picture, and that picture's height and baseline (pixels from
+    // its top, -1 for none) -- Buffer::OrgLatexInlineSpan's own.
+    std::string math;
+    int math_height = 0;
+    float math_baseline = -1.0f;
+};
+
 // One row laid out at the given column widths -- PlanOrgTableWrap's own
 // per-row step, so a row laid out on its own (the cursor's, with its
 // markup showing) lines up with the rest of the plan. `cell_pos`, when

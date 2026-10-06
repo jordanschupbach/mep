@@ -816,8 +816,9 @@ struct PresentationPage {
     // `lines` it takes (code, output, figures and caption), its fence in
     // the document as written, whether its code shows, whether it is a
     // live one -- its output a program that runs on (results=web, an
-    // exec-gui window) -- and, while that program runs, the line of the
-    // output fence its window is drawn under (-1 otherwise).
+    // exec-gui window, an exec block's terminal) -- and, while that program
+    // runs with a window of its own, the line of the output fence its
+    // window is drawn under (-1 otherwise).
     struct Shown {
         int first = -1, last = -1;
         int source_fence = -1;

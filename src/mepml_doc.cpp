@@ -237,7 +237,8 @@ const std::vector<std::string> &CalloutKeywords() {
 const std::vector<BoxKind> &BoxKinds() {
     // Definitions blue and facts orange, as decks set them; the theorem
     // family shares one purple; examples green; remarks teal; proofs grey;
-    // notes slate blue, tips green, warnings amber.
+    // notes slate blue, tips green, warnings amber, and the one thing not to
+    // miss red.
     static const std::vector<BoxKind> k = {
         {"definition", "Definition", "#2c7fb8", "#eef5fb"},
         {"theorem", "Theorem", "#6a51a3", "#f4f1fa"},
@@ -253,6 +254,7 @@ const std::vector<BoxKind> &BoxKinds() {
         {"note", "Note", "#3b6ea5", "#eef3f9"},
         {"tip", "Tip", "#2f7d32", "#eef6ee"},
         {"warning", "Warning", "#b7791f", "#fdf6e7"},
+        {"important", "Important", "#c62828", "#fdeeee"},
     };
     return k;
 }
@@ -6136,6 +6138,9 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
         std::map<int, std::vector<std::pair<std::pair<int, int>, std::string>>> cites;  // line -> [(col range), label]
         std::map<int, std::string> alt_at;  // an alt text's first line -> its text
         std::set<int> layout_lines;  // the lines that are a column marker
+        // A box's title line and its closing `)`: the box's own top and
+        // bottom edge, with no blank line between them and what it holds.
+        std::set<int> box_open_lines, box_close_lines;
         auto drop_lines = [&](int a, int b) {
             for (int k = std::max(a, from); k <= std::min(b, to); ++k) drop[static_cast<size_t>(k - from)] = true;
         };
@@ -6243,6 +6248,12 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                 // markers, which stay.)
                 case BlockKind::LayoutBegin:
                 case BlockKind::LayoutEnd: layout_lines.insert(b.line_start); break;
+                case BlockKind::BoxBegin:
+                    // (Text after the title's comma runs on as a paragraph,
+                    // and is followed like one.)
+                    if (!b.box_closed && b.inlines.empty()) box_open_lines.insert(b.line_end);
+                    break;
+                case BlockKind::BoxEnd: box_close_lines.insert(b.line_start); break;
                 case BlockKind::TableOfContents: {
                     drop_lines(b.line_start, b.line_end);
                     std::vector<std::string> &out = insert[b.line_start];
@@ -6287,8 +6298,11 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                     PresentationPage::Shown shown;
                     shown.source_fence = source_fence;
                     shown.code = code;
+                    // (A program in a terminal too: an exec block, or
+                    // results=terminal / results=exec.)
                     shown.live = res_kind == "web" || res_kind == "app" || res_kind == "exec-gui" || lang_l == "exec-gui" ||
-                                 lang_l == "gui";
+                                 lang_l == "gui" || lang_l == "exec" || lang_l == "executable" || res_kind == "terminal" ||
+                                 res_kind == "exec";
                     if (code || (html && results && has_results)) {
                         // An html result is drawn as part of its block, so
                         // it keeps a fence (bare when the code is hidden).
@@ -6464,7 +6478,8 @@ std::vector<PresentationPage> PresentationPages(const std::string &file, const s
                                  PlainProse(r.second));
                 }
             }
-            emit(line);
+            emit(line, box_close_lines.count(k) != 0);
+            if (box_open_lines.count(k) != 0) after_marker = true;
         }
         while (!out.empty() && Trim(out.back()).empty()) out.pop_back();
         page.lines = std::move(out);

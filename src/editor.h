@@ -23,6 +23,7 @@
 #include "model3d_doc.h"
 #include "mov_container.h"
 #include "youtube_player.h"
+#include "folds.h"
 #include "vterm.h"
 #include "spell.h"
 #include "gfx/types.h"
@@ -624,15 +625,8 @@ struct Decoration {
     float virt_raise = 0.0f;
 };
 
-// A fold range (NVIM_PARITY_PLAN.md Part I Phase 5). `provider` is a free-
-// form tag (e.g. "manual", "org", "markdown", "treesitter") so a provider
-// can find-and-replace just its own folds without disturbing another's.
-struct Fold {
-    int start_row = 0;
-    int end_row = 0;  // inclusive
-    bool closed = true;
-    std::string provider = "manual";
-};
+// `struct Fold` and NormalizeFoldList live in folds.h (included above) --
+// split out so the fold invariants can be unit-tested without a window.
 
 // A generic reusable side/dock panel (NVIM_PARITY_PLAN.md Part I Phase 7):
 // sections of clickable/hoverable widgets. Scoped down from the plan's
@@ -1122,6 +1116,19 @@ struct Buffer {
     // The document is a slide deck (`//? Type: presentation`, as of the
     // last Editor::MepmlScan): its pane header offers a present button.
     bool mepml_presentation = false;
+    // Line count the fold list was last normalized against
+    // (Editor::NormalizeFolds). Plenty of buffer mutations never route
+    // through ShiftFoldsForLineEdit -- undo/redo swap the whole line
+    // vector, :e! re-reads the file, mep.buf_set_lines replaces it from
+    // Lua, a collaborator's edit lands in a buffer that isn't active --
+    // and each of those leaves ranges pointing past the end of the file.
+    // A fold whose end_row is beyond EOF is the one that reads as "the
+    // fold broke": DrawPane jumps the row cursor straight to end_row, so
+    // every line after the fold's start simply stops being drawn. Rather
+    // than chase every mutation site, every frame compares this against
+    // the live line count (Editor::NormalizeFoldsIfStale) and re-clamps
+    // when they differ -- O(folds) only on the frame after a change.
+    int folds_normalized_line_count = -1;
 
     // Org inline-image rendering: row -> a resolved file path plus that
     // file's native pixel size, populated by Editor::OrgImageScan (and
@@ -9623,6 +9630,41 @@ public:
      * @param provider Tag identifying what created the fold, for later bulk-clearing via ClearFoldsFromProvider.
      */
     void CreateFold(int start_row, int end_row, bool closed, const std::string &provider = "manual");
+    /**
+     * @brief Restores the fold list to the invariants every fold consumer assumes.
+     * @param buf The buffer whose fold list to repair.
+     *
+     * Three of them, and a fold set violating any one reads to the user
+     * as "the fold broke and I can't open it":
+     *
+     * 1. Every range lies inside the file. A stale end_row past EOF makes
+     *    DrawPane skip the whole rest of the buffer (it jumps the row
+     *    cursor to end_row, which then fails the loop bound), so the text
+     *    below the fold is simply gone with no summary row to click.
+     * 2. No two folds share a range. `zf` over the same lines twice used
+     *    to stack two identical folds, and since za/zo open exactly one
+     *    level per press, the second one kept the rows hidden -- the fold
+     *    looked like it refused to open.
+     * 3. Folds nest, never cross. DrawPane only collapses a fold at its
+     *    *start* row and then skips to its end, so given [10,50] and
+     *    [20,60] it draws the first, jumps to 51, and never reaches row
+     *    20 -- yet IsRowHiddenByFold still calls rows 51-60 hidden. The
+     *    result is rows that render as ordinary text but refuse the
+     *    cursor, belonging to a fold with no summary line anywhere to
+     *    open it from. A crossing pair is merged by widening the earlier
+     *    fold to cover the later one, which nests them without losing
+     *    either range (clipping the inner one instead can erase a fold
+     *    the user made by hand).
+     */
+    static void NormalizeFolds(Buffer &buf);
+    /**
+     * @brief Normalizes `buf`'s folds only if the line count changed since the last pass.
+     * @param buf The buffer to check.
+     *
+     * The cheap per-frame guard over the mutation paths that don't call
+     * ShiftFoldsForLineEdit -- see Buffer::folds_normalized_line_count.
+     */
+    static void NormalizeFoldsIfStale(Buffer &buf);
     // Removes every fold tagged with `provider` (a provider recomputing
     // its folds calls this before re-adding, mirroring the decoration
     // namespace clear-and-replace pattern).
@@ -13468,8 +13510,9 @@ private:
     // `args`: empty runs an interactive shell ($SHELL, falling back to
     // /bin/sh); non-empty is run as a single command line via `shell -c
     // args` (so `:terminal htop` works the same way a real shell's own
-    // command-line-in-one-string does). Opens a horizontal split below the
-    // current pane with a fresh buffer standing in for the terminal
+    // command-line-in-one-string does). Takes over the active pane (no
+    // split -- see OpenTerminalInPlace, which this is a thin wrapper
+    // around) with a fresh buffer standing in for the terminal
     // (see TerminalSession -- its actual content is the VTerm grid, not
     // that buffer's text) and enters Mode::Terminal immediately, keys
     // forwarding live to the child.
@@ -13758,6 +13801,47 @@ private:
      * @param root The workspace root saved paths are relative to.
      */
     void RestoreWorkspaceFolds(const Json &wj, const std::string &root);
+    // Every fold a session file had for this project, keyed by resolved
+    // absolute path -- read once by RestoreWorkspaceFolds and kept for
+    // the whole session, because a file's folds have to survive two
+    // things the open-buffer-only restore could not:
+    //
+    // - Being opened *later*. Restore runs once at startup, so a file
+    //   reached afterwards (the tree, :e, the picker, a second pane)
+    //   found no folds at all -- which for the common `mep` -> dashboard
+    //   -> open-a-file flow meant folds never came back, full stop.
+    //   FindOrCreateBuffer consults this map for every file it opens.
+    // - Not being opened at all. WorkspaceFoldsJson walks live buffers,
+    //   so the next quit used to overwrite the session file with only
+    //   what happened to be open -- silently discarding the folds of
+    //   every other file in the project. Entries here are written back
+    //   out alongside the live ones.
+    struct SavedFolds {
+        // Which workspace's entry to write it back under, by root rather
+        // than by name: names repeat across projects ("main" in every
+        // one), and the map outlives a project switch, so matching by
+        // name would file one project's saved folds into another
+        // project's session file. Roots are what the session file stores
+        // for each workspace, so this round-trips exactly.
+        std::string workspace_root;
+        std::vector<Fold> folds;
+    };
+    std::unordered_map<std::string, SavedFolds> saved_folds_;
+    /**
+     * @brief Applies any session-saved folds for a freshly opened buffer's path.
+     * @param buf The buffer, with its lines already read (ranges are validated against them).
+     */
+    void ApplySavedFolds(Buffer &buf);
+    /**
+     * @brief Brings saved_folds_ up to date with what this project's open buffers actually hold.
+     * @param project The project whose workspaces scope the buffers being walked.
+     *
+     * Run just before a save, so the map stays the session's live record
+     * rather than a frozen copy of what the file said at startup. Without
+     * it, zE or zd would be undone by the next :bd + :e -- the deleted
+     * folds would come straight back out of the startup snapshot.
+     */
+    void RefreshSavedFoldsFromBuffers(const Project &project);
     uint64_t LayoutFingerprint() const;
     uint64_t last_layout_fingerprint_ = 0;
     double layout_dirty_since_ = -1.0;

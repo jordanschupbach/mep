@@ -2033,6 +2033,17 @@ target_compile_options(mep-youtube-player-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP
 target_link_options(mep-youtube-player-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-youtube-player-test)
 
+# NVIM_PARITY_PLAN.md Part I Phase 5: folds.h's NormalizeFoldList -- the
+# fold-set invariants (ranges inside the file, no duplicate ranges, nesting
+# never crossing) whose violation is what "the fold broke and I can't open
+# it" actually is. Header-only and std-only, so this links nothing at all:
+# the same windowless model as mep-html-doc-test above.
+add_executable(mep-fold-test EXCLUDE_FROM_ALL src/fold_test.cpp)
+target_include_directories(mep-fold-test PRIVATE src)
+target_compile_options(mep-fold-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fold-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fold-test)
+
 # WORKSPACES_PLAN.md Phase 12: pure-helper test (worktree dir derivation,
 # porcelain parsing, name validation, session JSON round trip). Links only
 # workspace_git.cpp, same windowless model as mep-html-doc-test above.

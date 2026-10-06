@@ -146,11 +146,23 @@ int main(int argc, char **argv) {
         return nullptr;
     };
 
+    // `:split` is what moves pane focus here: `:terminal` takes over the
+    // pane it was run in rather than splitting it (editor.cpp's
+    // OpenTerminal), so it is no longer a pane-focus change on its own.
+    // The split is also what gives the `:close` below a pane to close --
+    // E444 on a tab's last window otherwise, and no mode change back.
+    std::vector<Json> split_events;
+    // Builds {cmd: "split"} inline as this call's params. Request id 31
+    // rather than a renumbering of every id from here down -- ids only
+    // have to be unique per connection, not consecutive.
+    Call(fd, 31, "command.run", [] { Json p = Json::Object(); p["cmd"] = "split"; return p; }(), &read_buf, &split_events);
+    DrainEvents(fd, &read_buf, &split_events);
+    CHECK_CTX(has_event(split_events, "event.paneFocusChanged"), "opening a :split should push a pane focus change");
+
     std::vector<Json> term_events;
     // Builds {cmd: "terminal"} inline as this call's params.
     Call(fd, 12, "command.run", [] { Json p = Json::Object(); p["cmd"] = "terminal"; return p; }(), &read_buf, &term_events);
     DrainEvents(fd, &read_buf, &term_events);
-    CHECK_CTX(has_event(term_events, "event.paneFocusChanged"), "opening :terminal should push a pane focus change");
     const Json *mode_ev = find_event(term_events, "event.modeChanged");
     CHECK_CTX(mode_ev != nullptr, "opening :terminal should push a mode change to TERMINAL");
     CHECK_CTX(mode_ev->get("params").get("mode").as_string() == "TERMINAL", "mode=[" + mode_ev->get("params").get("mode").as_string() + "]");

@@ -8,16 +8,23 @@
 All on the =z= prefix, as in Vim. A fold at the cursor means one whose
 range covers the cursor's row; where a nest of them does, /one level/
 opens from the outside in and closes from the inside out, so repeated
-presses walk through the nest a level at a time.
+presses walk through the nest a level at a time. =za= follows the same
+rule: on a closed fold it opens the outermost closed one -- the fold you
+are actually looking at -- and otherwise closes the innermost open one.
+
+The recursive forms (=zA=, =zO=, =zC=) act on the whole nest the cursor's
+fold belongs to: the folds around it *and* the ones inside it. From a
+closed fold's summary line that matters, since everything nested within
+it begins below the row the cursor is on.
 
 | Key  | Does                                                |
 |------+-----------------------------------------------------|
 | =za= | toggle the fold at the cursor                       |
-| =zA= | toggle it and everything nested in it               |
+| =zA= | toggle that fold and the whole nest it belongs to   |
 | =zo= | open one level at the cursor                        |
-| =zO= | open every fold at the cursor                       |
+| =zO= | open the whole nest at the cursor                   |
 | =zc= | close one level at the cursor                       |
-| =zC= | close every fold at the cursor                      |
+| =zC= | close the whole nest at the cursor                  |
 | =zv= | open just enough to see the line the cursor is on   |
 | =zR= | open every fold in the buffer                       |
 | =zM= | close every fold                                    |
@@ -54,6 +61,15 @@ it folds whole lines either way -- and needs at least two of them, as
 does =zF=. A fold either of them makes is yours, not a provider's: none
 of the recomputes below clear it, and it follows the text as you edit
 around it.
+
+Folds nest, and never cross. Folding the same lines twice gives you one
+fold rather than two stacked copies, and folding a range that *partly*
+overlaps an existing fold widens that fold to cover both rather than
+leaving two ranges that each hide part of the other -- a pair like that
+has no summary line to open the second one from, so it reads as a fold
+that will not open. The same tidy-up re-fits every fold to the file
+after a change that replaced its lines outright (an undo, a =:e!=, a
+reload), so a range can never point past the end of the buffer.
 
 =zd= and =zD= remove the fold itself, not just its collapsed state. One
 that a provider owns can be rebuilt by that provider's next recompute --
@@ -112,7 +128,10 @@ move through an outline.
 * Folds across sessions
 
 Folds are saved in the project session file, next to the layout, tabs and
-cursor positions, and come back when the project is reopened.
+cursor positions, and come back when the project is reopened. The save is
+the same debounced one the layout gets -- half a second after you fold
+something, not only on the way out -- so a session that ends in a crash
+or a =kill= still has them.
 
 | Kind                                   | Saved as                     |
 |----------------------------------------+------------------------------|
@@ -134,6 +153,14 @@ Two things to know:
   layout; a bare =mep file.txt= restores no layout at all, by design --
   but it still finds that file folded the way you left it, because a
   fold belongs to the buffer rather than to the pane.
+- They come back whenever the file is opened, not just at startup. A
+  file reached later in the session -- from the file tree, =:e=, the
+  picker, a new split -- finds its folds waiting the moment its buffer
+  is created.
+- A file you never opened keeps its folds. The session file is rewritten
+  with what was saved for it last time rather than only what happened to
+  be on screen, so working on one file for an afternoon does not quietly
+  unfold every other one.
 - A saved range that no longer fits the file (it was edited elsewhere in
   between, or shrank) is dropped rather than applied to the wrong lines.
 

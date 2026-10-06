@@ -456,8 +456,10 @@ height.
 
 * Terminals
 
-Terminal: =:terminal= (or =:term=) opens a shell in a horizontal split
-*below* the current pane.  Its grid keeps one terminal-cell of left padding.
+Terminal: =:terminal= (or =:term=) opens a shell *in* the pane it was run
+from, taking that pane over rather than splitting it -- =:split= (or
+=:vsplit=) first for a shell beside a file.  Its grid keeps one
+terminal-cell of left padding.
 
 * The AI terminal
 

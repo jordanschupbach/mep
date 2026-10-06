@@ -5017,12 +5017,16 @@ int Editor::PanePrevDrawnRow(const Pane &pane, const Buffer &buf, int row) const
     // A row hidden inside a closed fold is never drawn; the fold's own
     // start row (its summary line) is what the view sits on instead.
     // Checked against this pane's buffer rather than through
-    // IsRowHiddenByFold, which only ever answers for the active one.
-    for (const Fold &f : buf.folds) {
-        if (f.closed && prev > f.start_row && prev <= f.end_row) {
-            prev = f.start_row;
-            break;
+    // IsRowHiddenByFold, which only ever answers for the active one --
+    // and for the outermost such fold, since an inner one's start row is
+    // no more drawn than the row being rewound from.
+    {
+        int outermost_start = -1;
+        for (const Fold &f : buf.folds) {
+            if (!f.closed || prev <= f.start_row || prev > f.end_row) continue;
+            if (outermost_start < 0 || f.start_row < outermost_start) outermost_start = f.start_row;
         }
+        if (outermost_start >= 0) prev = outermost_start;
     }
     // Landing inside a rendered LaTeX fragment's (or mepml html result's)
     // source range means landing on a row DrawPane skips outright, so
@@ -5171,7 +5175,14 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
     visible_lines = std::max(1, visible_lines);
     pane.visible_lines = visible_lines;
     if (pane.buffer_id < 0 || pane.buffer_id >= static_cast<int>(buffers_.size())) return;
-    const Buffer &buf = buffers_[static_cast<size_t>(pane.buffer_id)];
+    Buffer &buf = buffers_[static_cast<size_t>(pane.buffer_id)];
+    // Last stop before this pane is drawn, and the one place every buffer
+    // on screen passes through each frame -- so a fold list left stale by
+    // a mutation that never told the folds about it (undo, :e!, a Lua or
+    // collaborator edit) is repaired here rather than reaching DrawPane,
+    // which would skip from a fold's start row to an end_row past EOF and
+    // draw nothing below it. Costs a single int compare when nothing moved.
+    NormalizeFoldsIfStale(buf);
 
     // Remembered for the key-handling path (ScrollFigureStep and the
     // wheel), which counts the same visual slots this pass does but has
@@ -5196,6 +5207,27 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
             pane.scroll_row = start;
             pane.scroll_sub = 0;
             pane.scroll_sub_row = start;
+        }
+    }
+    // Same thing for a view left starting inside a *closed fold's* hidden
+    // interior, by any of the commands that move scroll_row on their own
+    // (Ctrl-D/Ctrl-U, zz/zt/zb, a search, a restored session's saved
+    // scroll). DrawPane's row loop begins at scroll_row and only collapses
+    // a fold when it reaches the fold's own start row, so a view starting
+    // past that row drew the hidden lines as ordinary text -- with no
+    // summary line and no gutter marker anywhere on screen, and a cursor
+    // that refused to land on any of them. The outermost such fold's start
+    // row is the row those lines actually display on.
+    {
+        const Fold *outermost = nullptr;
+        for (const Fold &f : buf.folds) {
+            if (!f.closed || pane.scroll_row <= f.start_row || pane.scroll_row > f.end_row) continue;
+            if (outermost == nullptr || f.start_row < outermost->start_row) outermost = &f;
+        }
+        if (outermost != nullptr) {
+            pane.scroll_row = outermost->start_row;
+            pane.scroll_sub = 0;
+            pane.scroll_sub_row = pane.scroll_row;
         }
     }
     pane.scroll_sub =
@@ -5336,11 +5368,17 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
         // definite target (its own row at the top) instead of stalling.
         while (row > 0) {
             int candidate = row - 1;
-            for (const Fold &f : buf.folds) {
-                if (f.closed && candidate > f.start_row && candidate <= f.end_row) {
-                    candidate = f.start_row;
-                    break;
+            // The *outermost* closed fold over the candidate, not the
+            // first one the vector happens to list: a nested fold's own
+            // start row is itself hidden, so rewinding to it would still
+            // leave this walk measuring a row that is never drawn.
+            {
+                int outermost_start = -1;
+                for (const Fold &f : buf.folds) {
+                    if (!f.closed || candidate <= f.start_row || candidate > f.end_row) continue;
+                    if (outermost_start < 0 || f.start_row < outermost_start) outermost_start = f.start_row;
                 }
+                if (outermost_start >= 0) candidate = outermost_start;
             }
             // Same containment jump-back as the Fold loop just above, for
             // a multi-line LaTeX fragment's own raw-row span -- row_slots
@@ -6626,13 +6664,23 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
      * @return The buffer's id.
      */
     auto store = [&]() {
+        int id;
         if (reuse >= 0) {
             buf.workspace_id = buffers_[static_cast<size_t>(reuse)].workspace_id;
             buffers_[static_cast<size_t>(reuse)] = std::move(buf);
-            return reuse;
+            id = reuse;
+        } else {
+            buffers_.push_back(std::move(buf));
+            id = static_cast<int>(buffers_.size()) - 1;
         }
-        buffers_.push_back(std::move(buf));
-        return static_cast<int>(buffers_.size()) - 1;
+        // The session's saved folds for this path, if it has any. Every
+        // route that opens a text file lands here, which is what makes a
+        // file opened mid-session (the tree, :e, the picker, a split)
+        // come back folded -- the startup-only restore could only ever
+        // reach the files that were already open at startup, i.e. none at
+        // all for the usual `mep` -> dashboard -> pick a file flow.
+        ApplySavedFolds(buffers_[static_cast<size_t>(id)]);
+        return id;
     };
 
 #if defined(__EMSCRIPTEN__)
@@ -6830,11 +6878,11 @@ void Editor::SplitTabRight(int buffer_id, float share) {
 // --- Terminal panes (`:terminal`/`:term`, Part VI Phase 27+) -------------
 
 void Editor::OpenTerminal(const std::string &args) {
-    // A terminal is normally an auxiliary pane for the buffer the user is
-    // working in, so keep that buffer where it is and put the focused new
-    // terminal below it.  Ordinary :split retains its Vim-compatible
-    // above-first default.
-    SplitCurrentPane(SplitDir::Horizontal, "", false);
+    // `:terminal` takes over the pane it was run in rather than splitting
+    // it: the user asking for a shell here means here, and the pane they
+    // wanted it beside is a :split away (as is the always-split
+    // per-tab terminal on <leader><CR>).  The buffer the pane was showing
+    // stays open in the buffer list either way.
     OpenTerminalInPlace(args);
 }
 
@@ -18869,8 +18917,12 @@ Json Editor::SplitStateJson(const Workspace &ws, const SplitNode &node) const {
 // those would bloat the session file for nothing.
 Json Editor::WorkspaceFoldsJson(const Workspace &ws) const {
     Json out = Json::Array();
+    // Resolved paths this pass has already written from a live buffer --
+    // the open file is the current truth, so the carry-over loop below
+    // must not also emit the (older) saved entry for it.
+    std::unordered_set<std::string> written;
     for (const Buffer &buf : buffers_) {
-        if (buf.deleted || buf.filename.empty() || buf.folds.empty()) continue;
+        if (buf.deleted || buf.filename.empty()) continue;
         // A file opened from the command line -- or through anything else
         // that runs before a workspace is active -- keeps workspace_id
         // -1, the same "not scoped to one workspace" marker the scratch
@@ -18881,6 +18933,12 @@ Json Editor::WorkspaceFoldsJson(const Workspace &ws) const {
         const bool scoped_here = buf.workspace_id == ws.id;
         const bool unscoped = buf.workspace_id < 0 && ws.primary;
         if (!scoped_here && !unscoped) continue;
+        // Claimed before the "anything to write?" checks below, not
+        // after: a file opened this session speaks for itself either way,
+        // and if the answer is "nothing", that is a zE or a zd the
+        // carry-over loop must respect rather than undo.
+        written.insert(BufferAbsolutePath(buf));
+        if (buf.folds.empty()) continue;
         Json ranges = Json::Array();
         for (const Fold &f : buf.folds) {
             if (f.provider != "manual" && !f.closed) continue;
@@ -18894,6 +18952,31 @@ Json Editor::WorkspaceFoldsJson(const Workspace &ws) const {
         if (ranges.items().empty()) continue;
         Json entry = Json::Object();
         entry["buffer"] = RelativeToRoot(buf.filename, ws.root);
+        entry["ranges"] = std::move(ranges);
+        out.push_back(std::move(entry));
+    }
+    // Carried over from the session file this run read: a file whose
+    // folds were saved last time but that nobody opened this time has no
+    // buffer to walk, and writing only the walked ones would quietly
+    // throw its folds away on the next quit. Only the entries that came
+    // in under *this* workspace, so a path saved under two of them stays
+    // where it was rather than being duplicated into both.
+    for (const auto &[path, saved] : saved_folds_) {
+        if (saved.workspace_root != ws.root || saved.folds.empty()) continue;
+        if (written.count(path) != 0) continue;
+        Json ranges = Json::Array();
+        for (const Fold &f : saved.folds) {
+            if (f.provider != "manual" && !f.closed) continue;
+            Json r = Json::Object();
+            r["start"] = f.start_row;
+            r["end"] = f.end_row;
+            r["closed"] = f.closed;
+            r["provider"] = f.provider;
+            ranges.push_back(std::move(r));
+        }
+        if (ranges.items().empty()) continue;
+        Json entry = Json::Object();
+        entry["buffer"] = RelativeToRoot(path, ws.root);
         entry["ranges"] = std::move(ranges);
         out.push_back(std::move(entry));
     }
@@ -18942,6 +19025,7 @@ bool Editor::SaveWorkspaceState(int project_id) {
     if (!project) return false;
     const std::string path = WorkspaceStateFile(*project);
     if (path.empty()) return false;
+    RefreshSavedFoldsFromBuffers(*project);
     mkdir(std::filesystem::path(path).parent_path().string().c_str(), 0755);
     return WriteJsonFile(path, WorkspaceStateJson(*project));
 #endif
@@ -19284,7 +19368,34 @@ void Editor::RestoreWorkspaceFolds(const Json &wj, const std::string &root) {
         const std::string saved = entry.get("buffer").as_string("");
         const std::string path = AbsoluteFromRoot(saved, root);
         if (path.empty()) continue;
-        Buffer *buf = nullptr;
+        // Remembered whether or not the file is open right now: it may be
+        // opened later in this session (the tree, :e, a second pane), and
+        // even if it never is, the next save has to write these folds back
+        // out instead of dropping the file from the session file for not
+        // having been looked at. See Editor::saved_folds_.
+        SavedFolds &saved_entry = saved_folds_[path];
+        saved_entry.workspace_root = root;
+        for (const Json &r : entry.get("ranges").items()) {
+            if (!r.is_object()) continue;
+            const int start = r.get("start").as_int(-1);
+            const int end = r.get("end").as_int(-1);
+            if (start < 0 || end <= start) continue;
+            Fold f;
+            f.start_row = start;
+            f.end_row = end;
+            f.closed = r.get("closed").as_bool(true);
+            f.provider = r.get("provider").as_string("manual");
+            // Two panes on one file walk the same buffer twice, and the
+            // same path can appear under more than one workspace.
+            bool dup = false;
+            for (const Fold &have : saved_entry.folds) {
+                if (have.start_row == f.start_row && have.end_row == f.end_row && have.provider == f.provider) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) saved_entry.folds.push_back(f);
+        }
         for (Buffer &candidate : buffers_) {
             if (candidate.deleted || candidate.filename.empty()) continue;
             // Buffer::filename is absolute when the file was opened
@@ -19292,38 +19403,67 @@ void Editor::RestoreWorkspaceFolds(const Json &wj, const std::string &root) {
             // line, so compare resolved paths: matching the relative name
             // directly would let one workspace's saved "notes.txt" land on
             // another workspace's open notes.txt.
-            if (BufferAbsolutePath(candidate) == path) buf = &candidate;
+            if (BufferAbsolutePath(candidate) == path) ApplySavedFolds(candidate);
         }
-        // The file may not have come back at all (deleted, or its pane
-        // dropped) -- there is nothing to hang a fold on, so skip it.
-        if (buf == nullptr) continue;
-        for (const Json &r : entry.get("ranges").items()) {
-            if (!r.is_object()) continue;
-            const int start = r.get("start").as_int(-1);
-            const int end = r.get("end").as_int(-1);
-            const bool closed = r.get("closed").as_bool(true);
-            const std::string provider = r.get("provider").as_string("manual");
-            // The same validity rule CreateFold applies, against the file
-            // as it is *now*: it may well have been edited between the
-            // save and this restore, and a range running off the end of a
-            // file that has since shrunk would hide rows that no longer
-            // exist.
-            if (start < 0 || end <= start || end >= buf->LineCount()) continue;
-            Fold *existing = nullptr;
-            for (Fold &f : buf->folds) {
-                if (f.start_row == start && f.end_row == end && f.provider == provider) existing = &f;
-            }
-            // A provider may already have rebuilt this very fold while the
-            // file was loading (the latex scan does), and two panes on one
-            // file walk the same buffer twice -- so carry the saved
-            // collapsed state onto what is there rather than stacking a
-            // duplicate fold on top of it.
-            if (existing != nullptr) {
-                existing->closed = closed;
-                continue;
-            }
-            buf->folds.push_back({start, end, closed, provider});
+    }
+}
+
+void Editor::ApplySavedFolds(Buffer &buf) {
+    if (saved_folds_.empty() || buf.filename.empty()) return;
+    auto it = saved_folds_.find(BufferAbsolutePath(buf));
+    if (it == saved_folds_.end()) return;
+    for (const Fold &f : it->second.folds) {
+        // The same validity rule CreateFold applies, against the file as
+        // it is *now*: it may well have been edited between the save and
+        // this restore, and a range running off the end of a file that has
+        // since shrunk would hide rows that no longer exist.
+        if (f.start_row < 0 || f.end_row <= f.start_row || f.end_row >= buf.LineCount()) continue;
+        Fold *existing = nullptr;
+        for (Fold &have : buf.folds) {
+            if (have.start_row == f.start_row && have.end_row == f.end_row && have.provider == f.provider)
+                existing = &have;
         }
+        // A provider may already have rebuilt this very fold while the
+        // file was loading (the latex scan does) -- so carry the saved
+        // collapsed state onto what is there rather than stacking a
+        // duplicate fold on top of it.
+        if (existing != nullptr) {
+            existing->closed = f.closed;
+            continue;
+        }
+        buf.folds.push_back(f);
+    }
+    NormalizeFolds(buf);
+}
+
+void Editor::RefreshSavedFoldsFromBuffers(const Project &project) {
+    for (const Buffer &buf : buffers_) {
+        if (buf.deleted || buf.filename.empty()) continue;
+        // The same scoping WorkspaceFoldsJson applies: an exact workspace
+        // match, else the primary workspace for a buffer that was opened
+        // before any workspace was active (workspace_id -1).
+        const Workspace *ws = nullptr;
+        for (const Workspace &w : project.workspaces) {
+            if (w.id == buf.workspace_id) ws = &w;
+        }
+        if (ws == nullptr && buf.workspace_id < 0) {
+            for (const Workspace &w : project.workspaces) {
+                if (w.primary) ws = &w;
+            }
+        }
+        if (ws == nullptr) continue;
+        const std::string path = BufferAbsolutePath(buf);
+        if (path.empty()) continue;
+        // No folds left means exactly that -- a zE or a zd, which the
+        // carry-over must not quietly undo the next time this file is
+        // opened.
+        if (buf.folds.empty()) {
+            saved_folds_.erase(path);
+            continue;
+        }
+        SavedFolds &entry = saved_folds_[path];
+        entry.workspace_root = ws->root;
+        entry.folds = buf.folds;
     }
 }
 
@@ -19379,6 +19519,18 @@ bool Editor::RestoreWorkspaceState(int project_id, bool keep_primary_tabs, bool 
     if (doc.get("version").as_int(0) != kWorkspaceStateVersion) {
         Notify("Ignoring workspace session file with unknown version", NotifyLevel::Warn);
         return false;
+    }
+    // Index every saved fold up front, before a single layout is rebuilt.
+    // The per-workspace calls below still run (and are idempotent), but
+    // they only reach a workspace whose saved shape validated -- so on
+    // their own they leave the folds of a workspace that fell back to the
+    // default layout unread, which the next save would then write out as
+    // "this file has no folds". Filling Editor::saved_folds_ here instead
+    // also means a file opened later in the session finds its folds
+    // waiting, however it is opened.
+    for (const Json &wj : doc.get("workspaces").items()) {
+        if (!wj.is_object()) continue;
+        RestoreWorkspaceFolds(wj, wj.get("root").as_string(""));
     }
     // The workspace list (name/root/branch) *and*, for each workspace whose
     // saved shape validates, its tabs/panes/files/cursors/terminals
@@ -19503,7 +19655,20 @@ uint64_t Editor::LayoutFingerprint() const {
             }
         }
     }
-    for (const Buffer &b : buffers_) mix(std::hash<std::string>{}(b.filename));
+    for (const Buffer &b : buffers_) {
+        mix(std::hash<std::string>{}(b.filename));
+        // Folds are part of what the session file holds, so a fold made,
+        // deleted, opened or closed has to be a reason to write it -- it
+        // was not, and the only save that ever recorded one was the
+        // unconditional one on quit, which a crash or a kill never
+        // reaches. Only the two fields the save itself selects on (plus
+        // the count), so this stays a handful of mixes per buffer.
+        mix(b.folds.size());
+        for (const Fold &f : b.folds) {
+            mix(static_cast<size_t>(f.start_row) * 131u + static_cast<size_t>(f.end_row));
+            mix(f.closed ? 1u : 0u);
+        }
+    }
     return h;
 }
 
@@ -21576,6 +21741,10 @@ bool Editor::DispatchNormalKey(int cp) {
         // would resurrect exactly what's being deleted), nor for the
         // commands that create or disable them.
         if (std::strchr("aAoOcCvmrRMjk", c) != nullptr) RecomputeLazyFoldProviders();
+        // Whatever the command is about to read, it reads a repaired list
+        // -- including the folds CreateFold deferred (its own comment) and
+        // anything an edit since the last frame left pointing off the end.
+        NormalizeFoldsIfStale(Buf());
         switch (c) {
             case 'z':
             case 't':
@@ -24471,12 +24640,25 @@ void Editor::ToggleFoldAtCursor() { ToggleFoldAtRow(CurPane().cursor.row); }
 // statuscolumn's fold indicator) -- the latter needs to toggle the fold at
 // whatever row was clicked without first moving the cursor there.
 void Editor::ToggleFoldAtRow(int row) {
-    Fold *innermost = nullptr;
-    for (Fold &f : Buf().folds) {
-        if (row < f.start_row || row > f.end_row) continue;
-        if (!innermost || (f.end_row - f.start_row) < (innermost->end_row - innermost->start_row)) innermost = &f;
+    // A gutter click reaches here without going through the z-prefix
+    // dispatch, so the staleness check it does is repeated here.
+    NormalizeFoldsIfStale(Buf());
+    // Vim's za, which is state-aware rather than "flip the innermost fold
+    // covering this row". The difference matters as soon as folds nest:
+    // with a closed fold covering the row, the innermost one is *inside*
+    // it and therefore not on screen at all, so flipping that one changed
+    // nothing visible and za looked broken -- press it twice and the
+    // hidden fold just toggled back. What the user is looking at is the
+    // outermost closed fold, so that is what opens; and when nothing
+    // covering the row is closed, the innermost open one is what closes.
+    // Both cases are exactly zo/zc's own one-level rule, so defer to it.
+    for (const Fold &f : Buf().folds) {
+        if (f.closed && row >= f.start_row && row <= f.end_row) {
+            OpenFoldsAtRow(row, /*recursive=*/false);
+            return;
+        }
     }
-    if (innermost) innermost->closed = !innermost->closed;
+    CloseFoldsAtRow(row, /*recursive=*/false);
 }
 
 void Editor::ToggleFoldStartingAt(int row) {
@@ -24484,6 +24666,7 @@ void Editor::ToggleFoldStartingAt(int row) {
     // watcher, so they may not exist yet (or may predate an edit).
     if (IsOrgBuffer()) RecomputeOrgFolds();
     if (IsMepmlBuffer()) RecomputeMepmlFolds();
+    NormalizeFoldsIfStale(Buf());
     Fold *widest = nullptr;
     for (Fold &f : Buf().folds)
         if (f.start_row == row && (!widest || f.end_row > widest->end_row)) widest = &f;
@@ -24495,7 +24678,36 @@ void Editor::CreateFold(int start_row, int end_row, bool closed, const std::stri
     start_row = std::max(0, start_row);
     end_row = std::min(end_row, Buf().LineCount() - 1);
     if (start_row >= end_row) return;  // a fold covering <2 lines isn't meaningful
+    // Folding the same lines twice is one fold, not two. Stacking a
+    // duplicate was the quietest way to make a fold look stuck: za/zo
+    // open exactly one level per press, so the copy underneath kept the
+    // rows hidden and the key read as having done nothing.
+    for (Fold &f : Buf().folds) {
+        if (f.start_row != start_row || f.end_row != end_row) continue;
+        f.closed = f.closed || closed;
+        if (provider == "manual") f.provider = "manual";
+        return;
+    }
     Buf().folds.push_back({start_row, end_row, closed, provider});
+    // Defer the full repair (crossings, in particular) to the next
+    // frame's NormalizeFoldsIfStale rather than paying its O(n^2) here:
+    // a provider rebuilding a few hundred ranges calls this in a loop,
+    // and normalizing per range would make that quadratic in the loop
+    // too. -1 can never equal a line count, so it always re-runs.
+    Buf().folds_normalized_line_count = -1;
+}
+
+// The repair itself is NormalizeFoldList (folds.h, where the three
+// invariants are spelled out and unit-tested); this is the buffer-shaped
+// wrapper that also stamps what line count the pass ran against.
+void Editor::NormalizeFolds(Buffer &buf) {
+    buf.folds_normalized_line_count = buf.LineCount();
+    NormalizeFoldList(buf.folds, buf.LineCount());
+}
+
+void Editor::NormalizeFoldsIfStale(Buffer &buf) {
+    if (buf.folds_normalized_line_count == buf.LineCount()) return;
+    NormalizeFolds(buf);
 }
 
 void Editor::ClearFoldsFromProvider(const std::string &provider) {
@@ -24520,22 +24732,56 @@ std::vector<Fold *> FoldsContainingRow(std::vector<Fold> &folds, int row) {
 }
 }  // namespace
 
+namespace {
+// The span the recursive forms (zO/zC/zA) act over: the outermost fold
+// containing `row`, which is the whole nest that fold's summary line
+// stands for. Vim's "recursively" means that entire nest -- the folds
+// *around* the cursor and the ones nested *inside* them alike -- not just
+// the ones whose range happens to cover the cursor's own row. On a closed
+// fold's summary line those are not the same set at all: every fold
+// inside it starts below that row, so acting only on what contains the
+// row would leave the whole interior untouched and zO would open one
+// level while claiming to open all of them.
+bool NestSpanAtRow(std::vector<Fold> &folds, int row, int *span_start, int *span_end) {
+    const std::vector<Fold *> hits = FoldsContainingRow(folds, row);
+    if (hits.empty()) return false;
+    *span_start = hits.front()->start_row;  // widest first
+    *span_end = hits.front()->end_row;
+    return true;
+}
+}  // namespace
+
 void Editor::OpenFoldsAtRow(int row, bool recursive) {
-    std::vector<Fold *> hits = FoldsContainingRow(Buf().folds, row);
-    for (Fold *f : hits) {  // widest first
-        if (!f->closed) continue;
-        f->closed = false;
-        if (!recursive) return;  // zo: one level per press, outermost first
+    if (!recursive) {
+        for (Fold *f : FoldsContainingRow(Buf().folds, row)) {  // widest first
+            if (!f->closed) continue;
+            f->closed = false;  // zo: one level per press, outermost first
+            return;
+        }
+        return;
+    }
+    int span_start = 0, span_end = 0;
+    if (!NestSpanAtRow(Buf().folds, row, &span_start, &span_end)) return;
+    for (Fold &f : Buf().folds) {
+        if (f.start_row >= span_start && f.end_row <= span_end) f.closed = false;
     }
 }
 
 void Editor::CloseFoldsAtRow(int row, bool recursive) {
     SetFoldsEnabled(true);  // vim: anything that closes a fold turns folding back on
-    std::vector<Fold *> hits = FoldsContainingRow(Buf().folds, row);
-    for (auto it = hits.rbegin(); it != hits.rend(); ++it) {  // innermost first
-        if ((*it)->closed) continue;
-        (*it)->closed = true;
-        if (!recursive) return;  // zc: one level per press, innermost first
+    if (!recursive) {
+        const std::vector<Fold *> hits = FoldsContainingRow(Buf().folds, row);
+        for (auto it = hits.rbegin(); it != hits.rend(); ++it) {  // innermost first
+            if ((*it)->closed) continue;
+            (*it)->closed = true;  // zc: one level per press, innermost first
+            return;
+        }
+        return;
+    }
+    int span_start = 0, span_end = 0;
+    if (!NestSpanAtRow(Buf().folds, row, &span_start, &span_end)) return;
+    for (Fold &f : Buf().folds) {
+        if (f.start_row >= span_start && f.end_row <= span_end) f.closed = true;
     }
 }
 
@@ -24637,6 +24883,7 @@ void Editor::RecomputeLazyFoldProviders() {
     if (!Buf().fold_enabled) {
         for (Fold &f : Buf().folds) f.closed = false;
     }
+    NormalizeFoldsIfStale(Buf());
 }
 
 void Editor::UpdateFolds() {
@@ -24894,13 +25141,21 @@ void Editor::SetOrgLatexPreview(int first_row, int last_row, int col, const std:
 void Editor::ClearOrgLatexPreview() { Buf().org_latex_preview = Buffer::OrgLatexPreview{}; }
 
 bool Editor::IsRowHiddenByFold(int row, int *fold_start_row) const {
+    // The *outermost* closed fold hiding the row, not whichever one the
+    // fold vector happens to list first. With nesting they differ, and
+    // only the outermost one's start row is actually on screen -- an
+    // inner fold's own start row is itself hidden, so reporting that as
+    // "where this row displays" hands every caller (the cursor snap, the
+    // visible-row step, ClampCursor) a row that is no more visible than
+    // the one they asked about.
+    const Fold *outermost = nullptr;
     for (const Fold &f : Buf().folds) {
-        if (f.closed && row > f.start_row && row <= f.end_row) {
-            if (fold_start_row) *fold_start_row = f.start_row;
-            return true;
-        }
+        if (!f.closed || row <= f.start_row || row > f.end_row) continue;
+        if (outermost == nullptr || f.start_row < outermost->start_row) outermost = &f;
     }
-    return false;
+    if (outermost == nullptr) return false;
+    if (fold_start_row) *fold_start_row = outermost->start_row;
+    return true;
 }
 
 // Sitting on a closed fold's start row and stepping down used to move one
@@ -28736,10 +28991,10 @@ void Editor::ShiftFoldsForLineEdit(int at_row, int count) {
         f.end_row = shift_row(f.end_row);
     }
     // A fold collapsed to <2 lines by a deletion isn't meaningful anymore
-    // (same rule CreateFold applies when one is first created).
-    auto &folds = Buf().folds;
-    folds.erase(std::remove_if(folds.begin(), folds.end(), [](const Fold &f) { return f.start_row >= f.end_row; }),
-                folds.end());
+    // (same rule CreateFold applies when one is first created), and a
+    // deletion that lands across two overlapping ranges can leave them
+    // crossing -- both of which NormalizeFolds settles.
+    NormalizeFolds(Buf());
 }
 
 // Shifts the active buffer's decorations to follow the same line insert/delete
@@ -29546,6 +29801,11 @@ void Editor::Undo() {
     Buf().lines = Buf().undo_stack.back();
     Buf().undo_stack.pop_back();
     Buf().modified = true;
+    // The line vector is swapped wholesale here, so nothing told the
+    // folds about it -- and ClampCursor below is already fold-aware.
+    // Ahead of it, not after, or it clamps against ranges that may still
+    // run past the end of the file this undo restored.
+    NormalizeFoldsIfStale(Buf());
     ClampCursor();
     // Let the user know when this undo lands them on the oldest change.
     status_message_ = Buf().undo_stack.empty() ? "Reached oldest version of the file" : "";
@@ -29560,6 +29820,7 @@ void Editor::Redo() {
     Buf().lines = Buf().redo_stack.back();
     Buf().redo_stack.pop_back();
     Buf().modified = true;
+    NormalizeFoldsIfStale(Buf());  // see Undo
     ClampCursor();
     // Let the user know when this redo lands them on the most recent change.
     status_message_ = Buf().redo_stack.empty() ? "Reached newest version of the file" : "";

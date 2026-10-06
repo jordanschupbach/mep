@@ -16,15 +16,21 @@
 <p>All on the <code>z</code> prefix, as in Vim. A fold at the cursor means one whose
 range covers the cursor's row; where a nest of them does, <i>one level</i>
 opens from the outside in and closes from the inside out, so repeated
-presses walk through the nest a level at a time.</p>
+presses walk through the nest a level at a time. <code>za</code> follows the same
+rule: on a closed fold it opens the outermost closed one -- the fold you
+are actually looking at -- and otherwise closes the innermost open one.</p>
+<p>The recursive forms (<code>zA</code>, <code>zO</code>, <code>zC</code>) act on the whole nest the cursor's
+fold belongs to: the folds around it <b>and</b> the ones inside it. From a
+closed fold's summary line that matters, since everything nested within
+it begins below the row the cursor is on.</p>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
 <tr><td><code>za</code></td><td>toggle the fold at the cursor</td></tr>
-<tr><td><code>zA</code></td><td>toggle it and everything nested in it</td></tr>
+<tr><td><code>zA</code></td><td>toggle that fold and the whole nest it belongs to</td></tr>
 <tr><td><code>zo</code></td><td>open one level at the cursor</td></tr>
-<tr><td><code>zO</code></td><td>open every fold at the cursor</td></tr>
+<tr><td><code>zO</code></td><td>open the whole nest at the cursor</td></tr>
 <tr><td><code>zc</code></td><td>close one level at the cursor</td></tr>
-<tr><td><code>zC</code></td><td>close every fold at the cursor</td></tr>
+<tr><td><code>zC</code></td><td>close the whole nest at the cursor</td></tr>
 <tr><td><code>zv</code></td><td>open just enough to see the line the cursor is on</td></tr>
 <tr><td><code>zR</code></td><td>open every fold in the buffer</td></tr>
 <tr><td><code>zM</code></td><td>close every fold</td></tr>
@@ -57,6 +63,14 @@ it folds whole lines either way -- and needs at least two of them, as
 does <code>zF</code>. A fold either of them makes is yours, not a provider's: none
 of the recomputes below clear it, and it follows the text as you edit
 around it.</p>
+<p>Folds nest, and never cross. Folding the same lines twice gives you one
+fold rather than two stacked copies, and folding a range that <b>partly</b>
+overlaps an existing fold widens that fold to cover both rather than
+leaving two ranges that each hide part of the other -- a pair like that
+has no summary line to open the second one from, so it reads as a fold
+that will not open. The same tidy-up re-fits every fold to the file
+after a change that replaced its lines outright (an undo, a <code>:e!</code>, a
+reload), so a range can never point past the end of the buffer.</p>
 <p><code>zd</code> and <code>zD</code> remove the fold itself, not just its collapsed state. One
 that a provider owns can be rebuilt by that provider's next recompute --
 the same caveat vim's own <code>zd</code> carries outside <code>foldmethod=manual</code>. <code>zE</code>
@@ -103,7 +117,10 @@ current without costing anything while you type.</p>
 move through an outline.</p>
 <h1>Folds across sessions</h1>
 <p>Folds are saved in the project session file, next to the layout, tabs and
-cursor positions, and come back when the project is reopened.</p>
+cursor positions, and come back when the project is reopened. The save is
+the same debounced one the layout gets -- half a second after you fold
+something, not only on the way out -- so a session that ends in a crash
+or a <code>kill</code> still has them.</p>
 <table>
 <tr><th>Kind</th><th>Saved as</th></tr>
 <tr><td>a fold you made (<code>zf</code> / <code>zF</code>)</td><td>the fold itself</td></tr>
@@ -119,6 +136,8 @@ saved whole.</p>
 <p>Two things to know:</p>
 <ul>
 <li>Folds come back whether or not a layout does. Opening a project (from the dashboard, or <code>mep --project &lt;path&gt;</code>) restores its whole saved layout; a bare <code>mep file.txt</code> restores no layout at all, by design -- but it still finds that file folded the way you left it, because a fold belongs to the buffer rather than to the pane.</li>
+<li>They come back whenever the file is opened, not just at startup. A file reached later in the session -- from the file tree, <code>:e</code>, the picker, a new split -- finds its folds waiting the moment its buffer is created.</li>
+<li>A file you never opened keeps its folds. The session file is rewritten with what was saved for it last time rather than only what happened to be on screen, so working on one file for an afternoon does not quietly unfold every other one.</li>
 <li>A saved range that no longer fits the file (it was edited elsewhere in between, or shrank) is dropped rather than applied to the wrong lines.</li>
 </ul>
 <h1>From Lua</h1>

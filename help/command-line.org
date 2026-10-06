@@ -49,7 +49,7 @@ hidden in another workspace is lost silently.
 | =:normal {keys}= | run =keys= as literal Normal-mode input               |
 | =:lua {code}=    | run Lua                                               |
 | =:source {file}= | run a Lua file                                        |
-| =:terminal=      | open a shell in a split below                         |
+| =:terminal=      | open a shell in the current pane                      |
 
 =:normal= is the natural partner for =:g=: =:g/TODO/normal A -- done= appends
 to every matching line. =:norm= is the short form.

@@ -4162,13 +4162,25 @@ const char *kBuiltinFileTree =
     "  mep.open(images[1])\n"
     "  mep_tree_image_apply_nav()\n"
     "end\n"
+    // Collected into a fresh table and swapped in on exit rather than
+    // cleared up front: the scan is a job, and an empty ignore set in the
+    // meantime unhides every ignored entry for as long as git takes to
+    // answer -- a flash of build/ and .direnv/ on each root change, and
+    // pure churn for the fs poll below.
+    // git names an ignored *directory* with a trailing slash ("!! build/")
+    // while BuildFileTreeRows matches relpaths without one, so strip it --
+    // left on, no ignored directory ever matched and the filter only ever
+    // hid individually-ignored files.
     "local function mep_tree_refresh_ignored()\n"
-    "  mep_tree_ignored = {}\n"
+    "  local found = {}\n"
     "  mep.job_start({'git', '-C', mep_tree_root, 'status', '--ignored', '--porcelain'}, {\n"
     "    on_stdout = function(line)\n"
-    "      if line:sub(1,3) == '!! ' then mep_tree_ignored[line:sub(4)] = true end\n"
+    "      if line:sub(1,3) == '!! ' then found[(line:sub(4):gsub('/+$', ''))] = true end\n"
     "    end,\n"
-    "    on_exit = function() mep.tree_refresh() end,\n"
+    "    on_exit = function()\n"
+    "      mep_tree_ignored = found\n"
+    "      mep.tree_refresh()\n"
+    "    end,\n"
     "  })\n"
     "end\n"
     // Each row renders as `<indent><icon>  <name>`. Two spaces, not one,
@@ -4435,8 +4447,25 @@ const char *kBuiltinFileTree =
     "    mep.pick_pane_open(row.path)\n"
     "  end\n"
     "end\n"
+    // The row the cursor sits on, by path, and putting it back after a
+    // re-render: every row below an added or removed entry shifts, so a
+    // cursor left at its old index quietly comes to rest on a different
+    // file. Only meaningful while the tree pane is the focused one --
+    // mep.cursor/mep.set_cursor are the *current* pane's.
+    "local function mep_tree_cursor_path()\n"
+    "  if mep_tree_help_open or mep.current_buffer() ~= mep_tree_buf then return nil end\n"
+    "  local row = mep_tree_rows and mep_tree_rows[mep.cursor()]\n"
+    "  return row and row.path\n"
+    "end\n"
+    "local function mep_tree_restore_cursor(path)\n"
+    "  if not path or mep_tree_help_open then return end\n"
+    "  for i, row in ipairs(mep_tree_rows or {}) do\n"
+    "    if row.path == path then mep.set_cursor(i, 1) return end\n"
+    "  end\n"
+    "end\n"
     "function mep.tree_refresh()\n"
     "  if not mep_tree_root then return end\n"
+    "  local keep = mep_tree_cursor_path()\n"
     "  mep_tree_rows = mep_tree_build(mep_tree_root, mep_tree_expanded, mep_tree_ignored)\n"
     "  if not mep_tree_buf then\n"
     "    mep_tree_buf = mep_tree_new_buffer()\n"
@@ -4470,6 +4499,7 @@ const char *kBuiltinFileTree =
     // over the help view -- closing the help renders the fresh rows.
     "  if not mep_tree_help_open then mep_tree_render(mep_tree_buf, mep_tree_rows) end\n"
     "  mep_tree_set_footer()\n"
+    "  mep_tree_restore_cursor(keep)\n"
     "end\n"
     "function mep.tree_open(dir)\n"
     "  mep_tree_help_open = false\n"
@@ -4497,6 +4527,56 @@ const char *kBuiltinFileTree =
     "function mep.tree_buffer_id()\n"
     "  return mep_tree_buf\n"
     "end\n"
+    // ---- auto-refresh -----------------------------------------------
+    // The tree's own a/r/d/c keys refresh it themselves, but nothing else
+    // that touches the filesystem does -- `:w` to a new path, a terminal,
+    // a git checkout, an agent, another editor -- and the tree simply kept
+    // showing rows for files that were gone (or missing ones that had just
+    // appeared) until someone pressed `R`. There is no fs-watch primitive
+    // here, so this polls instead, off the same frame hook the git gutter
+    // uses: re-walk what the tree actually displays (only *expanded*
+    // directories are walked, and ignored ones aren't entered at all --
+    // BuildFileTreeRowsRecursive) at most once every MEP_TREE_POLL_SECONDS,
+    // and only while the tree is on screen. The rebuilt rows are rendered
+    // only when they really differ: a re-render repaints the pane and
+    // rewrites every decoration, so doing it per poll would be a steady
+    // cost for nothing in the (overwhelmingly common) case where nothing
+    // changed.
+    "mep.tree_auto_refresh = true\n"
+    "local MEP_TREE_POLL_SECONDS = 1.0\n"
+    // A rescan is a `git status --ignored` job, so it gets its own, longer
+    // floor: a change means whatever just appeared may be git-ignored, and
+    // the ignore set only refreshes on open/root-change/`R` otherwise --
+    // without this a build's output would show up in the tree and stay.
+    "local MEP_TREE_IGNORE_RESCAN_SECONDS = 3.0\n"
+    "local mep_tree_polled_at = 0\n"
+    "local mep_tree_ignore_scanned_at = 0\n"
+    "local function mep_tree_rows_differ(a, b)\n"
+    "  if #a ~= #b then return true end\n"
+    "  for i = 1, #a do\n"
+    "    if a[i].path ~= b[i].path or a[i].is_dir ~= b[i].is_dir then return true end\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    "mep.on_frame(function()\n"
+    "  if not mep.tree_auto_refresh or not mep_tree_root or not mep_tree_buf then return end\n"
+    // The help view owns the buffer's text while it's up; mep.tree_refresh
+    // makes the same exception.
+    "  if mep_tree_help_open or not mep.buffer_on_screen(mep_tree_buf) then return end\n"
+    "  local now = mep.now()\n"
+    "  if now - mep_tree_polled_at < MEP_TREE_POLL_SECONDS then return end\n"
+    "  mep_tree_polled_at = now\n"
+    "  local rows = mep_tree_build(mep_tree_root, mep_tree_expanded, mep_tree_ignored)\n"
+    "  if not mep_tree_rows_differ(rows, mep_tree_rows or {}) then return end\n"
+    "  local keep = mep_tree_cursor_path()\n"
+    "  mep_tree_rows = rows\n"
+    "  mep_tree_render(mep_tree_buf, rows)\n"
+    "  mep_tree_restore_cursor(keep)\n"
+    "  if now - mep_tree_ignore_scanned_at >= MEP_TREE_IGNORE_RESCAN_SECONDS then\n"
+    "    mep_tree_ignore_scanned_at = now\n"
+    "    mep_tree_refresh_ignored()\n"
+    "  end\n"
+    "end)\n"
     "mep.command('MepFileTree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('ff', 'Toggle file tree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('fh', 'Toggle hidden files in tree', function()\n"
@@ -52974,9 +53054,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // (A row in a column set beside others has the column's width.)
             const int row_cols = g_editor.MepmlRowCols(buf, r, pane.text_cols);
             const int row_wrap = wrap_cols > 0 ? g_editor.MepmlRowCols(buf, r, wrap_cols) : 0;
+            // The *widest* closed fold starting here, matching what the
+            // draw loop and the slot walk above both pick -- taking
+            // whichever the vector listed last instead put this walk's
+            // idea of where a row sits out of step with where it was
+            // actually drawn whenever two closed folds shared a start row.
             const Fold *f = nullptr;
             for (const Fold &fold : buf.folds) {
-                if (fold.closed && fold.start_row == r) f = &fold;
+                if (fold.closed && fold.start_row == r && (!f || fold.end_row > f->end_row)) f = &fold;
             }
             auto img_it = buf.org_image_rows.find(r);
             const Buffer::OrgLatexRender *latex = g_editor.OrgLatexRenderForRow(buf, r, latex_cursor_row, org_plain);

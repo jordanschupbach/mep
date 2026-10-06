@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (192)</h1>
+<h1>The bindings (196)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -214,6 +214,10 @@ that it does nothing.</p>
 <tr><td><code>mep.visual_range</code></td><td>returns the current Visual selection's normalized 1-indexed endpoints and kind, or nil if none</td></tr>
 <tr><td><code>mep.visual_selection</code></td><td>returns the currently selected text without altering the selection or any register</td></tr>
 <tr><td><code>mep.vsplit_right</code></td><td>opens path in a new vertical split to the right of the focused pane</td></tr>
+<tr><td><code>mep.youtube_play</code></td><td>likewise, then plays that video</td></tr>
+<tr><td><code>mep.youtube_search</code></td><td>opens the player in the current pane (if it</td></tr>
+<tr><td><code>mep.youtube_state</code></td><td>table or nil: {query, results  {{id, title,</td></tr>
+<tr><td><code>mep.youtube_toggle</code></td><td>the tab-bar button's action (:MepYoutube,</td></tr>
 </table>
 <h1>See also</h1>
 <ul>

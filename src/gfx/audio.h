@@ -22,4 +22,14 @@ inline bool IsSoundPlaying(Sound sound) { return GetBackends().audio->IsSoundPla
 inline void SetSoundVolume(Sound sound, float volume) { GetBackends().audio->SetSoundVolume(sound, volume); }
 inline double GetSoundTimePlayed(Sound sound) { return GetBackends().audio->GetSoundTimePlayed(sound); }
 
+inline AudioStream OpenAudioStream(int channels, int rate) { return GetBackends().audio->OpenAudioStream(channels, rate); }
+inline void CloseAudioStream(AudioStream stream) { GetBackends().audio->CloseAudioStream(stream); }
+inline void PushAudioStream(AudioStream stream, const int16_t *samples, size_t count) {
+    GetBackends().audio->PushAudioStream(stream, samples, count);
+}
+inline size_t AudioStreamQueuedFrames(AudioStream stream) { return GetBackends().audio->AudioStreamQueuedFrames(stream); }
+inline double AudioStreamPlayedSeconds(AudioStream stream) { return GetBackends().audio->AudioStreamPlayedSeconds(stream); }
+inline void SetAudioStreamPaused(AudioStream stream, bool paused) { GetBackends().audio->SetAudioStreamPaused(stream, paused); }
+inline void SetAudioStreamVolume(AudioStream stream, float volume) { GetBackends().audio->SetAudioStreamVolume(stream, volume); }
+
 }  // namespace gfx

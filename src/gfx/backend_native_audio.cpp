@@ -131,6 +131,102 @@ void StopAndJoin(SoundState *s) {
     s->stop_requested = false;
 }
 
+// A push-fed stream (IAudioBackend::OpenAudioStream): the main thread
+// appends decoded PCM16 as it arrives from a decoder pipe, the playback
+// thread drains it in 1024-frame chunks. Starvation (queue empty -- the
+// network hiccuped, or the decoder is still seeking) writes silence so
+// the device stays open and the next real chunk plays without a
+// reopen; that silence is tracked separately so the played-seconds
+// clock (which a video track syncs to) only counts real audio.
+struct StreamState {
+    int channels = 0;
+    int rate = 0;
+
+    std::mutex queue_mutex;
+    std::vector<int16_t> queue;  // interleaved PCM16, consumed from `read_pos`
+    size_t read_pos = 0;
+
+    std::thread thread;
+    std::atomic<bool> stop_requested{false};
+    std::atomic<bool> paused{false};
+    std::atomic<float> volume{1.0f};
+    std::atomic<size_t> frames_written{0};        // everything handed to snd_pcm_writei
+    std::atomic<size_t> silence_written{0};       // the starvation subset of frames_written
+    std::atomic<long> device_delay_frames{0};     // snd_pcm_delay after the last write
+    std::atomic<bool> device_failed{false};
+    double last_clock = 0.0;  // AudioStreamPlayedSeconds' monotonic floor (main thread only)
+};
+
+void StreamThreadMain(StreamState *s) {
+    snd_pcm_t *pcm = nullptr;
+    if (snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
+        s->device_failed = true;
+        return;
+    }
+    if (snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED, static_cast<unsigned int>(s->channels),
+                            static_cast<unsigned int>(s->rate), 1 /*allow resample*/, 200000 /*same 200ms class as SoundState*/) < 0) {
+        snd_pcm_close(pcm);
+        s->device_failed = true;
+        return;
+    }
+    const snd_pcm_uframes_t kChunkFrames = 1024;
+    const size_t ch = static_cast<size_t>(s->channels);
+    std::vector<int16_t> chunk(kChunkFrames * ch);
+    while (!s->stop_requested.load()) {
+        if (s->paused.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        size_t frames_this_write = 0;
+        bool silence = false;
+        {
+            std::lock_guard<std::mutex> lock(s->queue_mutex);
+            size_t avail_samples = s->queue.size() - s->read_pos;
+            size_t avail_frames = avail_samples / ch;
+            frames_this_write = std::min<size_t>(kChunkFrames, avail_frames);
+            if (frames_this_write > 0) {
+                const float vol = s->volume.load();
+                const int16_t *src = s->queue.data() + s->read_pos;
+                size_t n = frames_this_write * ch;
+                for (size_t i = 0; i < n; i++) {
+                    float v = static_cast<float>(src[i]) * vol;
+                    v = std::clamp(v, -32768.0f, 32767.0f);
+                    chunk[i] = static_cast<int16_t>(v);
+                }
+                s->read_pos += n;
+                // Compact once the consumed prefix dominates, so the queue
+                // never grows past roughly twice what's buffered.
+                if (s->read_pos > (1u << 20) && s->read_pos * 2 > s->queue.size()) {
+                    s->queue.erase(s->queue.begin(), s->queue.begin() + static_cast<std::ptrdiff_t>(s->read_pos));
+                    s->read_pos = 0;
+                }
+            }
+        }
+        if (frames_this_write == 0) {
+            // Starved: a short run of silence keeps the device fed without
+            // delaying the next real chunk by more than its own length.
+            frames_this_write = 256;
+            std::fill(chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(frames_this_write * ch), int16_t{0});
+            silence = true;
+        }
+        snd_pcm_sframes_t written = snd_pcm_writei(pcm, chunk.data(), static_cast<snd_pcm_uframes_t>(frames_this_write));
+        if (written < 0) {
+            written = snd_pcm_recover(pcm, static_cast<int>(written), 1);
+            if (written < 0) {
+                s->device_failed = true;
+                break;
+            }
+            continue;
+        }
+        s->frames_written.fetch_add(static_cast<size_t>(written));
+        if (silence) s->silence_written.fetch_add(static_cast<size_t>(written));
+        snd_pcm_sframes_t delay = 0;
+        if (snd_pcm_delay(pcm, &delay) == 0 && delay >= 0) s->device_delay_frames = static_cast<long>(delay);
+    }
+    snd_pcm_drop(pcm);
+    snd_pcm_close(pcm);
+}
+
 }  // namespace
 
 struct NativeAudioBackend::Impl {
@@ -260,6 +356,63 @@ double NativeAudioBackend::GetSoundTimePlayed(gfx::Sound sound) {
     return static_cast<double>(s->frame_pos.load()) / static_cast<double>(s->rate);
 }
 
+gfx::AudioStream NativeAudioBackend::OpenAudioStream(int channels, int rate) {
+    gfx::AudioStream out{};
+    if (!impl_->ready || channels <= 0 || rate <= 0) return out;
+    auto *s = new StreamState();
+    s->channels = channels;
+    s->rate = rate;
+    s->queue.reserve(static_cast<size_t>(rate * channels) * 2);
+    s->thread = std::thread(StreamThreadMain, s);
+    out.backend_handle = s;
+    return out;
+}
+
+void NativeAudioBackend::CloseAudioStream(gfx::AudioStream stream) {
+    if (stream.backend_handle == nullptr) return;
+    auto *s = static_cast<StreamState *>(stream.backend_handle);
+    s->stop_requested = true;
+    if (s->thread.joinable()) s->thread.join();
+    delete s;
+}
+
+void NativeAudioBackend::PushAudioStream(gfx::AudioStream stream, const int16_t *samples, size_t count) {
+    if (stream.backend_handle == nullptr || samples == nullptr || count == 0) return;
+    auto *s = static_cast<StreamState *>(stream.backend_handle);
+    std::lock_guard<std::mutex> lock(s->queue_mutex);
+    s->queue.insert(s->queue.end(), samples, samples + count);
+}
+
+size_t NativeAudioBackend::AudioStreamQueuedFrames(gfx::AudioStream stream) {
+    if (stream.backend_handle == nullptr) return 0;
+    auto *s = static_cast<StreamState *>(stream.backend_handle);
+    std::lock_guard<std::mutex> lock(s->queue_mutex);
+    return (s->queue.size() - s->read_pos) / static_cast<size_t>(s->channels);
+}
+
+double NativeAudioBackend::AudioStreamPlayedSeconds(gfx::AudioStream stream) {
+    if (stream.backend_handle == nullptr) return 0.0;
+    auto *s = static_cast<StreamState *>(stream.backend_handle);
+    if (s->device_failed.load()) return s->last_clock;
+    double written = static_cast<double>(s->frames_written.load());
+    double silence = static_cast<double>(s->silence_written.load());
+    double delay = static_cast<double>(s->device_delay_frames.load());
+    double heard = written - delay - silence;
+    double secs = std::max(0.0, heard) / static_cast<double>(s->rate);
+    if (secs > s->last_clock) s->last_clock = secs;
+    return s->last_clock;
+}
+
+void NativeAudioBackend::SetAudioStreamPaused(gfx::AudioStream stream, bool paused) {
+    if (stream.backend_handle == nullptr) return;
+    static_cast<StreamState *>(stream.backend_handle)->paused = paused;
+}
+
+void NativeAudioBackend::SetAudioStreamVolume(gfx::AudioStream stream, float volume) {
+    if (stream.backend_handle == nullptr) return;
+    static_cast<StreamState *>(stream.backend_handle)->volume = std::clamp(volume, 0.0f, 2.0f);
+}
+
 #else  // !MEP_AUDIO_ALSA -- Windows/macOS/Emscripten: graceful no-op, see this file's own top comment.
 
 struct NativeAudioBackend::Impl {};
@@ -277,6 +430,13 @@ void NativeAudioBackend::ResumeSound(gfx::Sound) {}
 bool NativeAudioBackend::IsSoundPlaying(gfx::Sound) { return false; }
 void NativeAudioBackend::SetSoundVolume(gfx::Sound, float) {}
 double NativeAudioBackend::GetSoundTimePlayed(gfx::Sound) { return 0.0; }
+gfx::AudioStream NativeAudioBackend::OpenAudioStream(int, int) { return gfx::AudioStream{}; }
+void NativeAudioBackend::CloseAudioStream(gfx::AudioStream) {}
+void NativeAudioBackend::PushAudioStream(gfx::AudioStream, const int16_t *, size_t) {}
+size_t NativeAudioBackend::AudioStreamQueuedFrames(gfx::AudioStream) { return 0; }
+double NativeAudioBackend::AudioStreamPlayedSeconds(gfx::AudioStream) { return 0.0; }
+void NativeAudioBackend::SetAudioStreamPaused(gfx::AudioStream, bool) {}
+void NativeAudioBackend::SetAudioStreamVolume(gfx::AudioStream, float) {}
 
 #endif  // MEP_AUDIO_ALSA
 

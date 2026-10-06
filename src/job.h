@@ -177,6 +177,11 @@ public:
      * @return The raw stdout byte chunks received since the last drain.
      */
     std::vector<std::string> DrainRaw();
+    // True while raw stdout chunks are queued that DrainRaw() has not yet
+    // handed out. JobManager::PollAll holds a finished job's exit report
+    // back while this is true and the consumer is refusing chunks
+    // (should_poll_raw false), so the tail of its output is not lost.
+    bool HasPendingRaw();
 
 private:
     pid_t pid_ = -1;

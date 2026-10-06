@@ -235,6 +235,14 @@ struct Sound {
     unsigned int frameCount = 0;
 };
 
+// A push-fed PCM16 playback stream (the YouTube player's audio track:
+// samples arrive from a decoder pipe over time, so they can't be handed
+// over as one finished buffer the way Sound takes them). See
+// IAudioBackend::OpenAudioStream.
+struct AudioStream {
+    void *backend_handle = nullptr;
+};
+
 // -- Input: keys/buttons/cursor -----------------------------------------
 //
 // Deliberately its own enum, not raylib's KeyboardKey values reused --

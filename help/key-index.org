@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 148 =<leader>= sequences registered at startup. Press
+All 151 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -69,6 +69,7 @@ the features live.
 | =<leader>ka= | mepml: run all code blocks | [[file:mepml.html][mepml]] |
 | =<leader>kc= | mepml: list problems | [[file:mepml.html][mepml]] |
 | =<leader>ke= | mepml: export as... | [[file:mepml.html][mepml]] |
+| =<leader>kf= | mepml: toggle math preview popup while typing | [[file:mepml.html][mepml]] |
 | =<leader>kh= | mepml: fold/unfold the document header | [[file:mepml.html][mepml]] |
 | =<leader>ki= | mepml: import a document | [[file:mepml.html][mepml]] |
 | =<leader>kl= | mepml: follow link | [[file:mepml.html][mepml]] |
@@ -125,9 +126,10 @@ the features live.
 | =<leader>oti= | Org: toggle inline images | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otl= | Toggle LaTeX/math preview (org/tex) | [[file:mepml.html][mepml]] |
 | =<leader>otm= | Org: toggle markup concealment | [[file:org-basics.html][Org files in mep]] |
+| =<leader>otp= | Toggle math preview popup while typing | [[file:mepml.html][mepml]] |
 | =<leader>otr= | Org: toggle plain text (no inline rendering) | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>ots= | Org: toggle src-block LSP status | [[file:org-visuals.html][Images, LaTeX and tables]] |
-| =<leader>otw= | Org: toggle wrapped table rendering | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =<leader>otw= | Org: toggle wrapped table rendering | [[file:mepml.html][mepml]] |
 | =<leader>pc= | Clear project (default layout) | [[file:projects.html][Projects]] |
 | =<leader>pf= | Find files | [[file:pickers.html][Pickers]] |
 | =<leader>po= | Projects | [[file:projects.html][Projects]] |
@@ -153,6 +155,7 @@ the features live.
 | =<leader>wn= | New workspace | [[file:workspaces.html][Workspaces]] |
 | =<leader>wr= | Rename workspace | [[file:workspaces.html][Workspaces]] |
 | =<leader>ww= | Workspaces | [[file:pickers.html][Pickers]] |
+| =<leader>yt= | Toggle YouTube player (keeps playing when hidden) | [[file:youtube.html][YouTube player]] |
 | =<leader>yy= | Snippets picker | [[file:org-notes.html][Note-taking: snippets and highlights]] |
 | =<leader>zd= | Spell: remove duplicate words | [[file:org-notes.html][Note-taking: snippets and highlights]] |
 | =<leader>zf= | Spell: fix | [[file:spell.html][Spell checking]] |

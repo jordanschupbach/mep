@@ -50,6 +50,7 @@ extern "C" {
 #include "lualib.h"
 }
 
+#include "gfx/audio.h"
 #include "gfx/platform.h"
 
 #include "json.h"
@@ -1820,6 +1821,120 @@ int l_job_kill(lua_State *L) {
  * @param L Lua state; arg 1 is the job id.
  * @return Number of values pushed (1: true if the job is still running).
  */
+// --- YouTube player (Mode::Youtube) -----------------------------------------
+// mep.youtube_toggle(): the tab-bar button's action (:MepYoutube,
+// <leader>yt): hides an on-screen player (playback continues), else shows
+// it in a split beside the current pane.
+int l_youtube_toggle(lua_State *L) {
+    GetEditor(L)->ToggleYoutube();
+    return 0;
+}
+// mep.youtube_search(query): opens the player in the current pane (if it
+// isn't already showing) and runs a search.
+int l_youtube_search(lua_State *L) {
+    const char *q = luaL_checkstring(L, 1);
+    GetEditor(L)->OpenYoutubeInPlace(q);
+    return 0;
+}
+// mep.youtube_play(url_or_id): likewise, then plays that video.
+int l_youtube_play(lua_State *L) {
+    const char *u = luaL_checkstring(L, 1);
+    GetEditor(L)->OpenYoutubeInPlace(yt::CanonicalVideoUrl(u));
+    return 0;
+}
+// mep.youtube_state() -> table or nil: {query, results = {{id, title,
+// channel, duration}}, selected (1-based), playing, paused, buffering,
+// position, duration, title, url, volume, muted, status} for the
+// workspace's player pane -- for scripts and agent-side verification.
+int l_youtube_state(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    int id = ed->YoutubeBufferId();
+    YoutubeSession *s = id >= 0 ? ed->GetYoutubeMutable(id) : nullptr;
+    if (!s) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushinteger(L, id);
+    lua_setfield(L, -2, "buffer_id");
+    // false while hidden by mep.youtube_toggle (playback carries on).
+    lua_pushboolean(L, ed->IsBufferOnScreen(id));
+    lua_setfield(L, -2, "visible");
+    lua_pushstring(L, s->query.c_str());
+    lua_setfield(L, -2, "query");
+    lua_newtable(L);
+    for (size_t i = 0; i < s->results.size(); i++) {
+        const yt::SearchResult &r = s->results[i];
+        lua_newtable(L);
+        lua_pushstring(L, r.id.c_str());
+        lua_setfield(L, -2, "id");
+        lua_pushstring(L, r.url.c_str());
+        lua_setfield(L, -2, "url");
+        lua_pushstring(L, r.title.c_str());
+        lua_setfield(L, -2, "title");
+        lua_pushstring(L, r.channel.c_str());
+        lua_setfield(L, -2, "channel");
+        lua_pushnumber(L, r.duration_sec);
+        lua_setfield(L, -2, "duration");
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    lua_setfield(L, -2, "results");
+    lua_pushinteger(L, s->selected + 1);
+    lua_setfield(L, -2, "selected");
+    lua_pushboolean(L, s->searching);
+    lua_setfield(L, -2, "searching");
+    lua_pushboolean(L, s->playing);
+    lua_setfield(L, -2, "playing");
+    lua_pushboolean(L, s->paused);
+    lua_setfield(L, -2, "paused");
+    lua_pushboolean(L, s->buffering);
+    lua_setfield(L, -2, "buffering");
+    lua_pushboolean(L, s->resolving);
+    lua_setfield(L, -2, "resolving");
+    lua_pushnumber(L, s->position_sec);
+    lua_setfield(L, -2, "position");
+    lua_pushnumber(L, ed->YoutubeDuration(*s));
+    lua_setfield(L, -2, "duration");
+    lua_pushstring(L, s->now_title.c_str());
+    lua_setfield(L, -2, "title");
+    lua_pushstring(L, s->now_url.c_str());
+    lua_setfield(L, -2, "url");
+    lua_pushnumber(L, static_cast<double>(s->volume));
+    lua_setfield(L, -2, "volume");
+    lua_pushboolean(L, s->muted);
+    lua_setfield(L, -2, "muted");
+    // Pipeline internals, for diagnosing a stall from the agent socket:
+    // which decoder is still running, what each buffer holds, and the
+    // audio stream's own clock (what paces the video).
+    lua_pushboolean(L, s->audio_open);
+    lua_setfield(L, -2, "audio_open");
+    lua_pushnumber(L, s->audio_open ? gfx::AudioStreamPlayedSeconds(s->audio) : 0.0);
+    lua_setfield(L, -2, "audio_played");
+    lua_pushinteger(L, s->audio_open ? static_cast<lua_Integer>(gfx::AudioStreamQueuedFrames(s->audio)) : 0);
+    lua_setfield(L, -2, "audio_queued_frames");
+    lua_pushinteger(L, static_cast<lua_Integer>(s->audio_pending.size()));
+    lua_setfield(L, -2, "audio_pending_bytes");
+    lua_pushinteger(L, static_cast<lua_Integer>(s->frames.Ready()));
+    lua_setfield(L, -2, "video_frames_ready");
+    lua_pushinteger(L, static_cast<lua_Integer>(s->frames_consumed));
+    lua_setfield(L, -2, "video_frames_consumed");
+    lua_pushboolean(L, s->video_eof);
+    lua_setfield(L, -2, "video_eof");
+    lua_pushboolean(L, s->audio_eof);
+    lua_setfield(L, -2, "audio_eof");
+    lua_pushboolean(L, s->ended);
+    lua_setfield(L, -2, "ended");
+    lua_pushnumber(L, s->start_sec);
+    lua_setfield(L, -2, "start");
+    lua_pushstring(L, s->status.c_str());
+    lua_setfield(L, -2, "status");
+    lua_pushinteger(L, s->frame_serial);
+    lua_setfield(L, -2, "frame_serial");
+    lua_pushboolean(L, s->audio_open);
+    lua_setfield(L, -2, "audio_open");
+    return 1;
+}
+
 int l_job_is_running(lua_State *L) {
     int id = static_cast<int>(luaL_checkinteger(L, 1));
     lua_pushboolean(L, JobManager::Instance().IsRunning(id));
@@ -13117,6 +13232,10 @@ const luaL_Reg kMepFuncs[] = {
     {"job_close_stdin", l_job_close_stdin},
     {"job_kill", l_job_kill},
     {"job_is_running", l_job_is_running},
+    {"youtube_toggle", l_youtube_toggle},
+    {"youtube_search", l_youtube_search},
+    {"youtube_play", l_youtube_play},
+    {"youtube_state", l_youtube_state},
     {"ui_input", l_ui_input},
     {"ui_confirm", l_ui_confirm},
     {"ui_select", l_ui_select},

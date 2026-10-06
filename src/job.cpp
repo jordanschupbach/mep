@@ -256,6 +256,11 @@ std::vector<std::string> Job::DrainRaw() {
     return out;
 }
 
+bool Job::HasPendingRaw() {
+    std::lock_guard<std::mutex> lk(mu_);
+    return !pending_raw_.empty();
+}
+
 #if MEP_JOB_POSIX
 namespace {
 /**
@@ -489,7 +494,18 @@ void JobManager::PollAll() {
         }
         if (kProf) { t_lines = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - l0).count(); }
         auto e0 = std::chrono::steady_clock::now();
-        if (job->Finished() && !jobs_[i].exit_reported) {
+        // A finished job whose raw-stdout consumer is applying backpressure
+        // (should_poll_raw returned false above) may still hold chunks the
+        // consumer has not taken: reporting the exit now would erase the
+        // entry (below) with that tail unread, so the consumer sees EOF
+        // early. Keep the entry until it has drained everything -- finished_
+        // is only set once both pipes hit EOF (ReaderLoop), so "finished and
+        // nothing pending" really is "everything delivered". (The YouTube
+        // audio decoder hit this on every short video and at the end of
+        // every long one: ffmpeg finished while the player still held two
+        // seconds of PCM in its queue, and the rest of the track vanished.)
+        const bool raw_tail_pending = on_stdout_raw && job->HasPendingRaw();
+        if (job->Finished() && !jobs_[i].exit_reported && !raw_tail_pending) {
             jobs_[i].exit_reported = true;
             mep::NoteActivity();
             auto on_exit = jobs_[i].callbacks.on_exit;

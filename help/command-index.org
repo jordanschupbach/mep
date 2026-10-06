@@ -5,7 +5,7 @@
 
 * Every command
 
-All 363 ex commands mep defines: 116 built in and 248 registered from Lua.
+All 367 ex commands mep defines: 119 built in and 249 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -203,6 +203,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepOrgInsertBlock= | [[file:org-babel.html][Executing code blocks]] |
 | =:MepOrgInsertHeading= | [[file:org-basics.html][Org files in mep]] |
 | =:MepOrgInsertTodoHeading= | [[file:org-basics.html][Org files in mep]] |
+| =:MepOrgLatexPopupToggle= | [[file:mepml.html][mepml]] |
 | =:MepOrgLatexScan= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgLatexToggle= | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =:MepOrgLinkFollow= | [[file:org-links.html][Links, footnotes and citations]] |
@@ -283,6 +284,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepTodoMark= | -- |
 | =:MepTodoScan= | -- |
 | =:MepWorkspaces= | -- |
+| =:MepYoutube= | [[file:youtube.html][YouTube player]] |
 | =:MepZen= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
 | =:Model3DNew= | [[file:model3d.html][The 3D modeler]] |
 | =:music= | -- |
@@ -375,6 +377,8 @@ bindings instead. A dash means no page covers that command yet.
 | =:x= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:xa= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:xall= | -- |
+| =:youtube= | [[file:youtube.html][YouTube player]] |
+| =:yt= | [[file:ai-terminal.html][Claude Code in a pane]] |
 
 * See also
 

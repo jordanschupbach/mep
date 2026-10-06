@@ -545,6 +545,7 @@ add_library(mep_core STATIC
     src/gif_codec.cpp
     src/image_codec.cpp
     src/mov_container.cpp
+    src/youtube_player.cpp
     src/office_doc.cpp
     src/office_odt.cpp
     src/doc_export.cpp
@@ -2022,6 +2023,15 @@ target_include_directories(mep-mov-container-test PRIVATE src)
 target_compile_options(mep-mov-container-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-mov-container-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-mov-container-test)
+
+# In-pane YouTube player (Mode::Youtube): youtube_player.h's pure helpers
+# -- yt-dlp JSON parsing, argv construction, the raw-frame assembler --
+# with no network or display, same shape as mep-mov-container-test above.
+add_executable(mep-youtube-player-test EXCLUDE_FROM_ALL src/youtube_player_test.cpp src/youtube_player.cpp)
+target_include_directories(mep-youtube-player-test PRIVATE src)
+target_compile_options(mep-youtube-player-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-youtube-player-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-youtube-player-test)
 
 # WORKSPACES_PLAN.md Phase 12: pure-helper test (worktree dir derivation,
 # porcelain parsing, name validation, session JSON round trip). Links only

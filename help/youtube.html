@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube player</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Documents and media">
+<meta name="help-order" content="84">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>YouTube player</h1>
+<h1>What it is</h1>
+<p>A pane that searches YouTube, lists what it finds and plays the video you
+pick -- picture and sound, drawn by mep itself, beside whatever you are
+editing. Nothing is embedded: <code>yt-dlp</code> resolves the video to its stream
+URLs and <code>ffmpeg</code> decodes them into raw frames and samples over a pipe, and
+the pane paints those. Both tools must be on <code>PATH</code>; the pane says so if
+one is missing.</p>
+<h1>Opening it</h1>
+<ul>
+<li><code>&lt;leader&gt;yt</code> toggles the player: the first press opens it in a vertical split next to the current pane, the next hides it again (so does <code>i</code> inside the pane). Hiding does not stop anything -- the video plays on unseen, sound and all, and the press after that brings the same pane back mid-video. The YouTube icon at the right end of the tab bar does the same thing on a click; it is lit while the player is on screen, and its tooltip says when one is playing in the background.</li>
+<li><code>:youtube</code> (or <code>:yt</code>) opens the player in the current pane. Give it a search: <code>:youtube lofi hip hop</code>. Give it a watch URL, a <code>youtu.be</code> link or a bare 11-character video id and it plays that directly.</li>
+<li><code>:MepYoutube</code> is the command behind the toggle, for a keybinding of your own. From Lua: <code>mep.youtube_toggle()</code>, <code>mep.youtube_search(query)</code>, <code>mep.youtube_play(url)</code> and <code>mep.youtube_state()</code> (whose <code>visible</code> field is false while the player is hidden).</li>
+</ul>
+<p>There is one player per workspace; opening it again brings the existing
+one back instead of starting a second. To actually stop playback, press
+<code>x</code> (stop, keep the pane) or <code>q</code> (close the pane and stop) in the pane,
+or <code>:bd</code> its buffer.</p>
+<h1>Keys in the pane</h1>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>/</code> or <code>s</code></td><td>search (a URL typed here plays instead of searching)</td></tr>
+<tr><td><code>o</code></td><td>open a watch URL or video id</td></tr>
+<tr><td><code>j</code> / <code>k</code></td><td>move through the results (<code>g</code> / <code>G</code> top / bottom)</td></tr>
+<tr><td><code>Enter</code></td><td>play the selected result; on the one already playing, pause / resume</td></tr>
+<tr><td><code>Space</code></td><td>pause / resume -- unless Space is your leader key (the default), when it opens the leader menu instead and <code>Enter</code> is the pause</td></tr>
+<tr><td><code>i</code></td><td>hide the pane and keep playing (<code>&lt;leader&gt;yt</code> brings it back)</td></tr>
+<tr><td><code>h</code> / <code>l</code></td><td>seek 10 seconds back / forward (<code>H</code> / <code>L</code>: a minute)</td></tr>
+<tr><td><code>0</code> ... <code>9</code></td><td>jump to 0%, 10%, ... 90% of the video</td></tr>
+<tr><td><code>n</code> / <code>p</code></td><td>next / previous result (the list plays on by itself at the end of a video)</td></tr>
+<tr><td><code>+</code> / <code>-</code></td><td>volume</td></tr>
+<tr><td><code>m</code></td><td>mute</td></tr>
+<tr><td><code>x</code></td><td>stop</td></tr>
+<tr><td><code>r</code></td><td>hide or show the result list (the video takes the whole pane)</td></tr>
+<tr><td><code>q</code></td><td>close the pane and stop (<code>&lt;leader&gt;yt</code> hides it but keeps playing)</td></tr>
+</table>
+<p><code>:</code> and the leader key work as everywhere else, so <code>&lt;leader&gt;yt</code> hides the
+player from inside it too. The mouse does the same things: click a result
+to play it, the picture to pause, the progress bar to seek, the speaker to
+mute, and drag the volume slider.</p>
+<h1>How playback works</h1>
+<p>The audio track is streamed to the sound device and the video track is
+timed against it: a frame is shown when the sound has reached its
+timestamp, so picture and sound stay together, and dropped when the
+picture falls behind. Without a sound device (or for a video with no
+audio) the wall clock drives the picture instead.</p>
+<p>Seeking restarts the decoders at the new position, so it takes a moment --
+the pane says <i>Buffering...</i> while it waits for the first frame. Quality
+is capped at 480p, which is what fits a pane and keeps the decoder cheap.</p>
+<h1>When it does not work</h1>
+<ul>
+<li><i>yt-dlp and ffmpeg must be installed</i>: the tools are looked up on <code>PATH</code> when the pane opens.</li>
+<li>A 403 or a blank search usually means <code>yt-dlp</code> is out of date; YouTube changes often and <code>yt-dlp</code> follows. Update it and try again.</li>
+<li>The player asks <code>yt-dlp</code> for the <code>android</code> client's stream URLs, which <code>ffmpeg</code> can fetch directly; other clients hand out URLs that only <code>yt-dlp</code> itself may fetch.</li>
+</ul>
+</body>
+</html>

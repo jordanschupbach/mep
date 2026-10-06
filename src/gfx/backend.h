@@ -147,6 +147,26 @@ public:
     // Seconds of audio played so far (playback cursor / sample rate), used by
     // the music pane's elapsed/total readout. 0 if the sound isn't valid.
     virtual double GetSoundTimePlayed(Sound sound) = 0;
+
+    // --- Streaming playback (push model) -----------------------------------
+    // Opens a device for interleaved PCM16 at `channels` x `rate` and starts
+    // a playback thread that drains whatever PushAudioStream has queued,
+    // emitting silence while starved (so the device never closes). A null
+    // handle means no device. Closing stops the thread and frees the queue.
+    virtual AudioStream OpenAudioStream(int channels, int rate) = 0;
+    virtual void CloseAudioStream(AudioStream stream) = 0;
+    // Appends `count` int16 samples (frames * channels) to the queue.
+    virtual void PushAudioStream(AudioStream stream, const int16_t *samples, size_t count) = 0;
+    // Frames queued but not yet handed to the device -- the feeder uses it
+    // to keep roughly a second buffered without growing without bound.
+    virtual size_t AudioStreamQueuedFrames(AudioStream stream) = 0;
+    // Seconds of *real* (non-silence) audio the listener has heard so far:
+    // frames written minus the device's own output delay minus starvation
+    // silence. This is the clock a video track syncs to. Monotonic.
+    virtual double AudioStreamPlayedSeconds(AudioStream stream) = 0;
+    // While paused the thread writes nothing (the clock stands still).
+    virtual void SetAudioStreamPaused(AudioStream stream, bool paused) = 0;
+    virtual void SetAudioStreamVolume(AudioStream stream, float volume) = 0;
 };
 
 class ITextBackend {

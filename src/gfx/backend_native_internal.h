@@ -47,6 +47,13 @@ public:
     bool IsSoundPlaying(Sound sound) override;
     void SetSoundVolume(Sound sound, float volume) override;
     double GetSoundTimePlayed(Sound sound) override;
+    AudioStream OpenAudioStream(int channels, int rate) override;
+    void CloseAudioStream(AudioStream stream) override;
+    void PushAudioStream(AudioStream stream, const int16_t *samples, size_t count) override;
+    size_t AudioStreamQueuedFrames(AudioStream stream) override;
+    double AudioStreamPlayedSeconds(AudioStream stream) override;
+    void SetAudioStreamPaused(AudioStream stream, bool paused) override;
+    void SetAudioStreamVolume(AudioStream stream, float volume) override;
 
 private:
     struct Impl;

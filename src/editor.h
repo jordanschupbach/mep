@@ -22,6 +22,7 @@
 #include "cad_sketch.h"
 #include "model3d_doc.h"
 #include "mov_container.h"
+#include "youtube_player.h"
 #include "vterm.h"
 #include "spell.h"
 #include "gfx/types.h"
@@ -233,6 +234,15 @@ enum class Mode {
     // or plays, Backspace/h goes up, Space play/pause, n/p next/prev, +/-
     // volume. See Editor::HandleMusicInput.
     Music,
+    // A focused YouTube-player pane (a YoutubeSession buffer -- see below,
+    // opened by the :youtube command or the tab bar's YouTube button).
+    // Searches via yt-dlp, decodes the chosen video with ffmpeg into raw
+    // frames/PCM over JobManager pipes and draws them itself (no browser,
+    // no embedded window). Same "':'/leader forwarded, own keys otherwise"
+    // shape as Mode::Music: / or s search, o open a URL, j/k pick a
+    // result, Enter play, Space pause, h/l seek, n/p next/prev result,
+    // +/- volume, m mute, 0-9 jump, q close. See Editor::HandleYoutubeInput.
+    Youtube,
     // A focused pane showing a sidebar's content as an ordinary tabbable
     // buffer (mep.sidebar_open_pane, sidebar_pane_buffers_ below) rather
     // than docked to a screen edge (Mode::Sidebar) -- e.g. the R language
@@ -2838,6 +2848,79 @@ struct MusicSession {
     int playlist_index = -1;
 };
 
+// One YouTube-player pane's state, keyed by buffer id like MusicSession.
+// Three asynchronous stages, all JobManager jobs whose callbacks run on
+// the main thread: a search (`yt-dlp ytsearchN: --flat-playlist -j`, one
+// result per stdout line), a resolve (`yt-dlp -j URL` -> yt::StreamInfo),
+// and two decoders (`ffmpeg` -> raw RGBA frames on one pipe, PCM16 on
+// another). Video is paced by the audio stream's played-seconds clock
+// (gfx::AudioStreamPlayedSeconds), falling back to wall time when there
+// is no audio device or track. `generation` bumps on every stop/start so
+// a callback from a killed job can recognise itself as stale.
+struct YoutubeSession {
+    int buffer_id = 0;
+
+    // --- Search ---
+    std::string query;
+    std::vector<yt::SearchResult> results;
+    int selected = 0;
+    float scroll = 0.0f;  // pixel offset into the result list (clamped by DrawYoutubePane)
+    bool searching = false;
+    int search_job = 0;
+    std::string search_error;
+
+    // Thumbnails (mqdefault JPEG per result, fetched one at a time with
+    // curl and decoded with jpeg::Decode). `thumb_generation` bumps per
+    // search so main.cpp drops the textures of a previous result set.
+    struct Thumb {
+        std::vector<unsigned char> rgba;
+        int w = 0, h = 0;
+        bool failed = false;
+    };
+    std::unordered_map<int, Thumb> thumbs;
+    int thumb_generation = 0;
+    int thumb_job = 0;
+    int thumb_index = -1;
+    std::string thumb_bytes;
+
+    // --- Now playing ---
+    yt::StreamInfo info;
+    bool info_valid = false;
+    std::string now_url;  // watch URL of the current video
+    std::string now_title;
+    int now_result = -1;  // index into `results`, -1 when opened by URL
+    bool resolving = false;
+    int resolve_job = 0;
+    std::string resolve_out, resolve_err;
+    std::string status;  // transient readout: "Resolving...", an error, ...
+    int generation = 0;
+
+    // --- Decoders ---
+    int video_job = 0, audio_job = 0;
+    bool video_eof = false, audio_eof = false;
+    yt::FrameAssembler frames;
+    std::vector<uint8_t> frame_rgba;  // the frame on screen (frame_w x frame_h RGBA)
+    int frame_w = 0, frame_h = 0;
+    int frame_serial = 0;  // bumps whenever frame_rgba changes (main.cpp re-uploads on change)
+    long frames_consumed = 0;  // frames popped since start_sec: next frame's pts = start_sec + n/fps
+    std::string audio_pending;  // decoded PCM16 bytes not yet pushed to the device
+    gfx::AudioStream audio{};
+    bool audio_open = false;
+    int audio_rate = 48000, audio_channels = 2;
+    double start_sec = 0.0;  // the -ss both decoders were started at
+    // Wall-clock fallback (no audio): media time = start_sec + wall_elapsed.
+    double wall_started_at = 0.0;
+    double wall_elapsed = 0.0;
+    bool playing = false;   // a video is loaded and its decoders are running (or finished)
+    bool paused = false;
+    bool buffering = false;
+    bool ended = false;
+    float volume = 0.8f;
+    bool muted = false;
+    double position_sec = 0.0;  // last computed media time (readout + seek base)
+    bool show_results = true;   // 'r' hides the result list (theater)
+};
+
 // One HTML-preview pane's state, keyed by buffer id the same way Image/
 // PdfSession are (see their comments) -- an html buffer's Buffer::lines
 // also stays a dummy single empty line, real content lives here as an
@@ -4132,6 +4215,13 @@ public:
      * @return True if some pane in the active tab is currently displaying that buffer.
      */
     bool IsBufferOnScreen(int buffer_id) const;
+    // Takes `buffer_id` off the active tab's screen without deleting it
+    // (the buffer stays switchable back in, and anything it owns -- a
+    // terminal's PTY, a YouTube pane's decoders -- keeps running): every
+    // pane showing it moves to its next buffer tab; a pane with no other
+    // tab closes, except the tab's last pane, which swaps in another
+    // buffer instead. Returns true if some pane was showing it.
+    bool HideBufferInActiveTab(int buffer_id);
     // Moves focus to whichever pane in the active tab's split layout is
     // topmost, then (among ties) leftmost -- PaneRect's y0 then x0. The
     // file tree's on_click calls this before mep.open so a click always
@@ -5918,6 +6008,58 @@ public:
     // Called each frame the pane is drawn: if a track finished on its own,
     // auto-advance to the next song in the playlist (stopping at album end).
     void MusicPollPlayback(int buffer_id);
+
+    // --- YouTube-player panes (the :youtube command / tab-bar button).
+    // Mirrors the Music block above for the buffer-identity plumbing;
+    // see YoutubeSession for the async pipeline. ---
+    bool IsYoutubeBuffer(int buffer_id) const;
+    YoutubeSession *GetYoutubeMutable(int buffer_id);
+    // Id of the (single) YouTube buffer in the active workspace, or -1.
+    int YoutubeBufferId() const;
+    // Opens the player in the current pane (reusing the workspace's
+    // existing player buffer if there is one). `arg` is optional: a
+    // watch URL / video id plays it, anything else is searched.
+    void OpenYoutubeInPlace(const std::string &arg);
+    // The tab-bar button / :MepYoutube / <leader>yt: hides the player if
+    // one is on screen -- playback carries on unseen (YoutubePollOffscreen
+    // keeps feeding it) -- else brings it (back) up in a vertical split
+    // beside the current pane. Stopping is `q`/`x` in the pane or :bd.
+    void ToggleYoutube();
+    void HandleYoutubeInput();
+    void YoutubeSearch(YoutubeSession &sess, const std::string &query);
+    void YoutubePlayUrl(YoutubeSession &sess, const std::string &url, int result_index);
+    void YoutubePlayResult(YoutubeSession &sess, int index);
+    void YoutubeNext(YoutubeSession &sess);
+    void YoutubePrev(YoutubeSession &sess);
+    void YoutubeTogglePause(YoutubeSession &sess);
+    void YoutubeSeekTo(YoutubeSession &sess, double sec);
+    void YoutubeSeekBy(YoutubeSession &sess, double delta);
+    void YoutubeSetVolume(YoutubeSession &sess, float volume);
+    void YoutubeToggleMute(YoutubeSession &sess);
+    // Kills the decoders (and the resolve, if any), closes the audio
+    // stream, keeps the result list.
+    void YoutubeStop(YoutubeSession &sess);
+    void YoutubePromptSearch(YoutubeSession &sess);
+    void YoutubePromptOpen(YoutubeSession &sess);
+    // Once per frame from DrawYoutubePane: feeds the audio device, picks
+    // the video frame that is due by the clock, detects end-of-stream
+    // (auto-advancing through the result list).
+    void YoutubePoll(int buffer_id);
+    // Once per frame from the main loop: YoutubePoll for every player that
+    // no pane in the active tab is drawing (hidden by ToggleYoutube, or
+    // left in another tab), so a video keeps playing while out of sight.
+    void YoutubePollOffscreen();
+    // Duration of the loaded video in seconds (0 if unknown/live).
+    double YoutubeDuration(const YoutubeSession &sess) const;
+
+private:
+    void YoutubeStartDecoders(YoutubeSession &sess, double start_sec);
+    void YoutubeStartResolve(YoutubeSession &sess);
+    void YoutubeFetchNextThumb(YoutubeSession &sess);
+    double YoutubeClock(YoutubeSession &sess);
+    void YoutubeTeardown(YoutubeSession &sess);
+
+public:
     // True if `name`'s extension is a format DecodeAudioFile can play.
     static bool IsMusicFile(const std::string &name);
 
@@ -13506,6 +13648,7 @@ private:
     // maps above these ARE torn down (the loaded gfx::Sound is unloaded) when
     // the buffer closes, see the erase site in CloseBuffer/DeleteBuffer.
     std::unordered_map<int, MusicSession> music_sessions_;
+    std::unordered_map<int, YoutubeSession> youtube_sessions_;
     // Keyed by buffer_id -- one entry per open HTML-preview pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, HtmlSession> htmldocs_;

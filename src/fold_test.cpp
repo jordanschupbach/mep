@@ -1,7 +1,11 @@
-// mep-fold-test: windowless unit tests for folds.h's NormalizeFoldList --
-// the three invariants that stand between a fold set and the two symptoms
+// mep-fold-test: windowless unit tests for folds.h -- NormalizeFoldList's
+// three invariants (what stands between a fold set and the two symptoms
 // this file exists to keep fixed: a fold that refuses to open, and a fold
-// whose collapse swallows the whole rest of the buffer.
+// whose collapse swallows the whole rest of the buffer), the shift that
+// keeps a fold on its own text across an edit, and line_edit.h's two
+// shared helpers underneath both -- shared, because Editor's mark
+// shifters are built on the same two and drifted in exactly the same
+// ways before they were.
 //
 // Links nothing but folds.h (header-only, std-only), so it runs anywhere:
 // no raylib, no display, no editor. CHECK(), never assert(): the Release
@@ -9,6 +13,7 @@
 // this bug).
 
 #include "folds.h"
+#include "line_edit.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -251,6 +256,105 @@ int main() {
         std::vector<Fold> folds;
         NormalizeFoldList(folds, 100);
         CHECK(folds.empty());
+    }
+
+    // --- ShiftFoldList: a fold rides the text it was made over -------------
+    // Lines inserted above a fold push the whole range down; lines
+    // inserted inside it extend end_row and leave start_row put.
+    {
+        std::vector<Fold> folds = {F(20, 30)};
+        ShiftFoldList(folds, 9, 4, 104);  // 4 lines inserted at row 9
+        CHECK(Has(folds, 24, 34));
+        folds = {F(20, 30)};
+        ShiftFoldList(folds, 25, 4, 104);  // 4 lines inserted inside it
+        CHECK(Has(folds, 20, 34));
+        folds = {F(20, 30)};
+        ShiftFoldList(folds, 40, 4, 104);  // below it: nothing moves
+        CHECK(Has(folds, 20, 30));
+    }
+    // Deletions, including one that eats a boundary: a row inside the
+    // deleted run collapses to the row the deletion started at.
+    {
+        std::vector<Fold> folds = {F(20, 30)};
+        ShiftFoldList(folds, 9, -4, 96);
+        CHECK(Has(folds, 16, 26));
+        folds = {F(20, 30)};
+        ShiftFoldList(folds, 25, -20, 80);  // swallows end_row and then some
+        CHECK(Has(folds, 20, 25));
+        folds = {F(20, 30)};
+        ShiftFoldList(folds, 18, -20, 80);  // swallows the whole fold
+        CHECK(folds.empty());
+    }
+
+    // --- ShiftFoldListForTextSwap: undo and redo ---------------------------
+    // The reported bug, in miniature. Deleting four lines shifts the folds
+    // up (above); undoing has to put them back, and nothing but the two
+    // line vectors is available to work that out from.
+    {
+        std::vector<std::string> full;
+        for (int i = 1; i <= 60; i++) full.push_back("line " + std::to_string(i));
+        std::vector<std::string> cut = full;
+        cut.erase(cut.begin() + 9, cut.begin() + 13);  // :10,13d
+
+        std::vector<Fold> folds = {F(20, 30)};
+        ShiftFoldList(folds, 9, -4, static_cast<int>(cut.size()));
+        CHECK(Has(folds, 16, 26));  // the delete, as the editor already handled it
+        ShiftFoldListForTextSwap(folds, cut, full);
+        CHECK(Has(folds, 20, 30));  // the undo puts it back exactly
+        ShiftFoldListForTextSwap(folds, full, cut);
+        CHECK(Has(folds, 16, 26));  // and the redo takes it away again
+    }
+    // A swap that changes no line count moves nothing, however different
+    // the text is -- an in-place edit never moved a row.
+    {
+        std::vector<std::string> a = {"one", "two", "three", "four"};
+        std::vector<std::string> b = {"ONE", "TWO", "THREE", "FOUR"};
+        std::vector<Fold> folds = {F(1, 3)};
+        ShiftFoldListForTextSwap(folds, a, b);
+        CHECK(Has(folds, 1, 3));
+    }
+    // A change entirely *below* a fold leaves it alone: the first
+    // disagreement is past the fold, so the shift starts past it too.
+    {
+        std::vector<std::string> a, b;
+        for (int i = 0; i < 40; i++) { a.push_back("l" + std::to_string(i)); b.push_back("l" + std::to_string(i)); }
+        b.insert(b.begin() + 35, 3, "new");
+        std::vector<Fold> folds = {F(5, 15)};
+        ShiftFoldListForTextSwap(folds, a, b);
+        CHECK(Has(folds, 5, 15));
+    }
+
+    // --- line_edit.h: the rule marks and folds share --------------------
+    // One row, one edit. A row at or below an insertion point moves down
+    // by it; one above does not move at all.
+    {
+        CHECK(ShiftRowForLineEdit(20, 9, 4, 104) == 24);
+        CHECK(ShiftRowForLineEdit(9, 9, 4, 104) == 13);
+        CHECK(ShiftRowForLineEdit(8, 9, 4, 104) == 8);
+    }
+    // A deletion: below the run, move up by it; strictly inside it,
+    // collapse to the deletion point -- the text that row named is gone,
+    // and where it was is the nearest honest answer. Above it, stay.
+    {
+        CHECK(ShiftRowForLineEdit(20, 9, -4, 96) == 16);
+        CHECK(ShiftRowForLineEdit(11, 9, -4, 96) == 9);   // inside the deleted run
+        CHECK(ShiftRowForLineEdit(13, 9, -4, 96) == 9);   // first surviving row
+        CHECK(ShiftRowForLineEdit(8, 9, -4, 96) == 8);
+    }
+    // Never out of the buffer, whichever way the edit went.
+    {
+        CHECK(ShiftRowForLineEdit(95, 0, 4, 10) == 9);
+        CHECK(ShiftRowForLineEdit(5, 0, -90, 1) == 0);
+    }
+    // FirstDifferingRow: where an undo's edit actually starts.
+    {
+        std::vector<std::string> a = {"x", "y", "z"};
+        CHECK(FirstDifferingRow(a, a) == 3);                                   // identical
+        CHECK(FirstDifferingRow(a, {"x", "y"}) == 2);                          // one is a prefix
+        CHECK(FirstDifferingRow(a, {"x", "Q", "z"}) == 1);                     // differs in the middle
+        CHECK(FirstDifferingRow(a, {"Q", "y", "z"}) == 0);                     // differs at the top
+        CHECK(FirstDifferingRow(a, {}) == 0);                                  // emptied
+        CHECK(FirstDifferingRow({}, a) == 0);
     }
 
     std::printf("mep-fold-test: all checks passed\n");

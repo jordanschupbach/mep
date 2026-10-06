@@ -50,6 +50,16 @@ system clipboard directly, independent of the registers.</p>
 <code>a</code>, and <code>y'a</code> yanks the lines between.</p>
 <p>"Big jump" means a mark jump, <code>gg</code> or <code>G</code>, or a search -- the movements
 where you are likely to want to get back.</p>
+<p>A mark names a piece of <i>text</i>, not a line number, and follows it through
+every edit -- including the ones that replace the buffer wholesale. Undo
+and redo put a mark back where the text went back to, <code>:m</code> and <code>:t</code> carry
+it along, and so do the commands that rewrite a region (an Org subtree
+move, a TODO cycle) and anything a script or an agent splices in. <code>``</code>
+follows the same rule. A mark whose own line is deleted lands on the
+deletion point rather than going stale.</p>
+<p>The jumplist below is the exception: its entries are positions at the
+moment they were recorded, and an edit above one leaves it pointing that
+many lines off.</p>
 <h1>The jumplist</h1>
 <p><code>Ctrl-O</code> goes back through the positions you jumped from, <code>Ctrl-I</code> forward
 again. Searches, <code>gg=/=G</code> and mark jumps all record an entry.</p>

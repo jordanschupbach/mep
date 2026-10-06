@@ -62,6 +62,15 @@ does =zF=. A fold either of them makes is yours, not a provider's: none
 of the recomputes below clear it, and it follows the text as you edit
 around it.
 
+A fold follows its text through every edit, including the ones that
+replace the buffer wholesale: undo and redo put a fold back exactly where
+the text went back to, =:m= and =:t= carry it along, and so do the
+commands that rewrite a region (an Org subtree move, a TODO cycle, a
+property drawer) and anything a script or an agent splices in. Before
+that was true, deleting four lines and undoing it left every fold below
+the deletion four rows above its own text, and the drift compounded with
+each further undo.
+
 Folds nest, and never cross. Folding the same lines twice gives you one
 fold rather than two stacked copies, and folding a range that *partly*
 overlaps an existing fold widens that fold to cover both rather than

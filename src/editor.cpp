@@ -18951,7 +18951,17 @@ Json Editor::WorkspaceFoldsJson(const Workspace &ws) const {
         }
         if (ranges.items().empty()) continue;
         Json entry = Json::Object();
-        entry["buffer"] = RelativeToRoot(buf.filename, ws.root);
+        // The *resolved* path made relative, not Buffer::filename as it
+        // stands: a file opened from the command line keeps the relative
+        // name it was typed with ("main.py"), which RelativeToRoot passes
+        // through untouched and the restore then resolves against the
+        // workspace root -- a different directory entirely from the one
+        // it was opened in. That asymmetry wrote `mep main.py`'s folds
+        // under a path that does not exist, where nothing could ever read
+        // them back and the carry-over below kept rewriting them, so the
+        // file ended up with two "main.py" entries whose ranges had
+        // drifted apart.
+        entry["buffer"] = RelativeToRoot(BufferAbsolutePath(buf), ws.root);
         entry["ranges"] = std::move(ranges);
         out.push_back(std::move(entry));
     }
@@ -19437,6 +19447,17 @@ void Editor::ApplySavedFolds(Buffer &buf) {
 }
 
 void Editor::RefreshSavedFoldsFromBuffers(const Project &project) {
+    // Entries for files that are no longer there. Without this the
+    // carry-over writes a vanished path back into the session file on
+    // every save, forever -- and a ghost like that is how a file ends up
+    // with two entries under one name (see WorkspaceFoldsJson's own note
+    // on the relative-filename asymmetry that created them), whose two
+    // sets of ranges then both land on whatever buffer does resolve to
+    // that path.
+    for (auto it = saved_folds_.begin(); it != saved_folds_.end();) {
+        std::error_code ec;
+        it = std::filesystem::exists(it->first, ec) ? std::next(it) : saved_folds_.erase(it);
+    }
     for (const Buffer &buf : buffers_) {
         if (buf.deleted || buf.filename.empty()) continue;
         // The same scoping WorkspaceFoldsJson applies: an exact workspace
@@ -28933,68 +28954,55 @@ bool Editor::ResolveMark(char cmd, char mark, CursorPos *target, bool *linewise)
 // edits that insert/delete whole lines -- called right after the
 // Buf().lines.insert/erase that does the actual shifting, so LineCount()
 // already reflects the new state. See the declaration in editor.h for the
-// at_row/count sign convention.
-void Editor::ShiftMarksForLineEdit(int at_row, int count) {
-    if (count == 0 || Buf().marks.empty()) return;
-    int n = Buf().LineCount();
-    for (auto &kv : Buf().marks) {
-        CursorPos &pos = kv.second;
-        if (count > 0) {
-            if (pos.row >= at_row) pos.row += count;
-        } else {
-            int removed = -count;
-            if (pos.row >= at_row + removed) {
-                pos.row += count;  // count already negative
-            } else if (pos.row >= at_row) {
-                // Mark pointed inside the deleted range: clamp to the
-                // deletion point rather than drop it or let it go stale.
-                pos.row = at_row;
-            }
-        }
-        pos.row = std::max(0, std::min(pos.row, n - 1));
+// at_row/count sign convention. The rule itself (including what happens
+// to a mark that pointed inside a deleted run: it collapses to the
+// deletion point rather than going stale or vanishing) is
+// ShiftRowForLineEdit in line_edit.h, shared with the fold shifter below
+// and unit-tested there.
+void Editor::ShiftMarksForLineEdit(int at_row, int count) { ShiftMarksForLineEdit(Buf(), at_row, count); }
+
+void Editor::ShiftMarksForLineEdit(Buffer &buf, int at_row, int count) {
+    if (count == 0) return;
+    const int n = buf.LineCount();
+    for (auto &kv : buf.marks) {
+        kv.second.row = ShiftRowForLineEdit(kv.second.row, at_row, count, n);
+    }
+    // ``/'' -- the single-slot "back to where I jumped from" position
+    // (Buffer::last_jump_from). ResolveMark answers for it out of the
+    // same function it answers for a-z out of, so it drifts the same way
+    // and is worth exactly as much once it has.
+    if (buf.has_last_jump) {
+        buf.last_jump_from.row = ShiftRowForLineEdit(buf.last_jump_from.row, at_row, count, n);
     }
 }
 
-// Same shifting rule as ShiftMarksForLineEdit, applied independently to
-// each fold's start_row and end_row so the range as a whole grows/shrinks
-// correctly when the edit lands inside it rather than before it -- e.g.
-// inserting a line inside an open `#+begin_src` block extends end_row
-// without moving start_row, while inserting before the block shifts both.
-// Keeps org src-block/headline fold ranges (and any other provider's)
-// accurate between edits instead of only at the next z-fold command's
-// RecomputeOrgFolds(), which previously left StepVisibleRow/ClampCursor
-// checking stale ranges and made j/k seem to stick at a block boundary
-// until a second press caught up.
-void Editor::ShiftFoldsForLineEdit(int at_row, int count) {
-    if (count == 0 || Buf().folds.empty()) return;
-    int n = Buf().LineCount();
-    /**
-     * @brief Shifts a fold boundary row to account for lines inserted or removed at `at_row`.
-     * @param row The fold boundary row to shift.
-     * @return The adjusted row, clamped to the current valid line range.
-     */
-    auto shift_row = [&](int row) {
-        if (count > 0) {
-            if (row >= at_row) row += count;
-        } else {
-            int removed = -count;
-            if (row >= at_row + removed) {
-                row += count;  // count already negative
-            } else if (row >= at_row) {
-                row = at_row;
-            }
-        }
-        return std::max(0, std::min(row, n - 1));
-    };
-    for (Fold &f : Buf().folds) {
-        f.start_row = shift_row(f.start_row);
-        f.end_row = shift_row(f.end_row);
-    }
-    // A fold collapsed to <2 lines by a deletion isn't meaningful anymore
-    // (same rule CreateFold applies when one is first created), and a
-    // deletion that lands across two overlapping ranges can leave them
-    // crossing -- both of which NormalizeFolds settles.
-    NormalizeFolds(Buf());
+void Editor::ShiftMarksForTextSwap(Buffer &buf, const std::vector<std::string> &before) {
+    if (buf.marks.empty() && !buf.has_last_jump) return;
+    const int delta = static_cast<int>(buf.lines.size()) - static_cast<int>(before.size());
+    if (delta == 0) return;  // same line count: no row moved, whatever the text now says
+    ShiftMarksForLineEdit(buf, FirstDifferingRow(before, buf.lines), delta);
+}
+
+// The active buffer's folds, for the Buf()-implicit edit paths. The rule
+// itself is ShiftFoldList/ShiftFoldListForTextSwap (folds.h, where it is
+// spelled out and unit-tested); these three are the buffer-shaped
+// wrappers, and each refreshes the stamp NormalizeFolds keeps because
+// the shift normalizes as its last step.
+//
+// Shifting is what keeps a fold on the text it was made over between the
+// provider recomputes -- without it, an edit above a fold leaves it
+// pointing at the wrong rows until the next z-command rebuild, which for
+// a hand-made fold never comes at all.
+void Editor::ShiftFoldsForLineEdit(int at_row, int count) { ShiftFoldsForLineEdit(Buf(), at_row, count); }
+
+void Editor::ShiftFoldsForLineEdit(Buffer &buf, int at_row, int count) {
+    ShiftFoldList(buf.folds, at_row, count, buf.LineCount());
+    buf.folds_normalized_line_count = buf.LineCount();
+}
+
+void Editor::ShiftFoldsForTextSwap(Buffer &buf, const std::vector<std::string> &before) {
+    ShiftFoldListForTextSwap(buf.folds, before, buf.lines);
+    buf.folds_normalized_line_count = buf.LineCount();
 }
 
 // Shifts the active buffer's decorations to follow the same line insert/delete
@@ -29802,9 +29810,12 @@ void Editor::Undo() {
     Buf().undo_stack.pop_back();
     Buf().modified = true;
     // The line vector is swapped wholesale here, so nothing told the
-    // folds about it -- and ClampCursor below is already fold-aware.
-    // Ahead of it, not after, or it clamps against ranges that may still
-    // run past the end of the file this undo restored.
+    // folds about it: recover the edit from the difference between the
+    // two versions and move them by it. Ahead of ClampCursor (which is
+    // fold-aware), or it clamps against ranges that still describe the
+    // text this undo just replaced.
+    ShiftFoldsForTextSwap(Buf(), Buf().redo_stack.back());
+    ShiftMarksForTextSwap(Buf(), Buf().redo_stack.back());
     NormalizeFoldsIfStale(Buf());
     ClampCursor();
     // Let the user know when this undo lands them on the oldest change.
@@ -29820,7 +29831,9 @@ void Editor::Redo() {
     Buf().lines = Buf().redo_stack.back();
     Buf().redo_stack.pop_back();
     Buf().modified = true;
-    NormalizeFoldsIfStale(Buf());  // see Undo
+    ShiftFoldsForTextSwap(Buf(), Buf().undo_stack.back());  // see Undo
+    ShiftMarksForTextSwap(Buf(), Buf().undo_stack.back());
+    NormalizeFoldsIfStale(Buf());
     ClampCursor();
     // Let the user know when this redo lands them on the most recent change.
     status_message_ = Buf().redo_stack.empty() ? "Reached newest version of the file" : "";
@@ -30016,10 +30029,18 @@ void Editor::ExMoveOrCopy(int start_row, int end_row, int dest_row, bool is_copy
     int insert_after = dest_row;
     if (!is_copy) {
         Buf().lines.erase(Buf().lines.begin() + start_row, Buf().lines.begin() + end_row + 1);
+        // One shift per mutation, in the order the mutations happen: a
+        // move is a delete and an insert at two different rows, and
+        // collapsing them into one net count would move every fold
+        // between the two by the wrong amount.
+        ShiftFoldsForLineEdit(start_row, -static_cast<int>(chunk.size()));
+        ShiftMarksForLineEdit(start_row, -static_cast<int>(chunk.size()));
         if (dest_row >= start_row) insert_after -= static_cast<int>(chunk.size());
     }
     int insert_at = std::max(0, std::min(insert_after + 1, static_cast<int>(Buf().lines.size())));
     Buf().lines.insert(Buf().lines.begin() + insert_at, chunk.begin(), chunk.end());
+    ShiftFoldsForLineEdit(insert_at, static_cast<int>(chunk.size()));
+    ShiftMarksForLineEdit(insert_at, static_cast<int>(chunk.size()));
     CurPane().cursor = {insert_at + static_cast<int>(chunk.size()) - 1, 0};
     Buf().modified = true;
     ClampCursor();
@@ -33221,6 +33242,16 @@ void Editor::ReplaceLinesForLua(int start_row, int end_row, const std::vector<st
     buf.lines.erase(buf.lines.begin() + start_row, buf.lines.begin() + end_row);
     buf.lines.insert(buf.lines.begin() + start_row, lines.begin(), lines.end());
     if (buf.lines.empty()) buf.lines.emplace_back("");
+    // Same two-step shift as ReplaceLinesAt. This is the primitive the
+    // whole org-mode command family is built on (logbook entries,
+    // property drawers, subtree promote/demote/move, TODO cycling), so
+    // without it any of those that changes the line count leaves every
+    // fold below it offset -- in exactly the files most likely to be
+    // folded in the first place.
+    ShiftFoldsForLineEdit(buf, start_row, -(end_row - start_row));
+    ShiftMarksForLineEdit(buf, start_row, -(end_row - start_row));
+    ShiftFoldsForLineEdit(buf, start_row, static_cast<int>(lines.size()));
+    ShiftMarksForLineEdit(buf, start_row, static_cast<int>(lines.size()));
     buf.modified = true;
     ClampCursor();
 }
@@ -33273,19 +33304,26 @@ void Editor::ReplaceLinesAt(int buffer_id, int start_row, int end_row, const std
     buf.lines.erase(buf.lines.begin() + start_row, buf.lines.begin() + end_row);
     buf.lines.insert(buf.lines.begin() + start_row, lines.begin(), lines.end());
     if (buf.lines.empty()) buf.lines.emplace_back("");
+    // The replaced run and the replacement rarely have the same length,
+    // and every fold below the difference moves by it. One shift per
+    // mutation, in order, for the same reason ExMoveOrCopy does it that
+    // way: a fold *between* the two rows moves by the delete alone.
+    ShiftFoldsForLineEdit(buf, start_row, -(end_row - start_row));
+    ShiftMarksForLineEdit(buf, start_row, -(end_row - start_row));
+    ShiftFoldsForLineEdit(buf, start_row, static_cast<int>(lines.size()));
+    ShiftMarksForLineEdit(buf, start_row, static_cast<int>(lines.size()));
     buf.modified = true;
 }
 
 // Splices `text` in as raw bytes at an explicit buffer_id/position --
 // see this method's declaration in editor.h for why it doesn't reuse
 // InsertChar/InsertNewline (their ASCII-only/byte-wise handling silently
-// drops non-ASCII text). Mark/fold shifting (ShiftMarksForLineEdit/
-// ShiftFoldsForLineEdit) is deliberately skipped here -- both are Buf()-
-// implicit (operate on the active buffer only), and generalizing them is
-// out of scope for v1; a remote participant inserting/deleting lines in
-// a buffer that isn't currently active can leave that buffer's own
-// marks/folds stale, same accepted limitation as ClampPositionInBuffer's
-// own fold-unaware clamping.
+// drops non-ASCII text). Both marks and folds follow the splice: the
+// buffer-scoped ShiftMarksForLineEdit/ShiftFoldsForLineEdit overloads
+// exist for exactly these by-id editing paths, so a remote participant
+// inserting lines in a buffer that isn't currently active no longer
+// leaves that buffer's own bookkeeping behind. ClampPositionInBuffer's
+// fold-unaware clamping is still the one documented gap here.
 CursorPos Editor::InsertTextAt(int buffer_id, CursorPos at, const std::string &text) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return at;
     Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
@@ -33314,6 +33352,8 @@ CursorPos Editor::InsertTextAt(int buffer_id, CursorPos at, const std::string &t
             buf.lines.insert(buf.lines.begin() + start.row + static_cast<int>(i), segments[i]);
         }
         buf.lines.insert(buf.lines.begin() + start.row + static_cast<int>(segments.size()) - 1, segments.back() + tail);
+        ShiftFoldsForLineEdit(buf, start.row + 1, static_cast<int>(segments.size()) - 1);
+        ShiftMarksForLineEdit(buf, start.row + 1, static_cast<int>(segments.size()) - 1);
         result = {start.row + static_cast<int>(segments.size()) - 1, static_cast<int>(segments.back().size())};
     }
     buf.modified = true;

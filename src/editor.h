@@ -12872,6 +12872,33 @@ private:
     // Phase 5's noted stretch goal: marks otherwise just sit at their
     // original {row, col} snapshot and drift out from under the text).
     void ShiftMarksForLineEdit(int at_row, int count);
+    /**
+     * @brief Shifts a named buffer's marks for a line insert/delete, rather than the active one's.
+     * @param buf The buffer whose marks to move.
+     * @param at_row The row lines were inserted at / removed from.
+     * @param count Lines inserted (positive) or removed (negative).
+     *
+     * The by-id editing paths need this for the same reason the folds do
+     * (see the ShiftFoldsForLineEdit overload below): ReplaceLinesAt,
+     * ReplaceLinesForLua -- which every Org command is built on -- and
+     * InsertTextAt all change the line count without going through
+     * Buf().
+     */
+    void ShiftMarksForLineEdit(Buffer &buf, int at_row, int count);
+    /**
+     * @brief Shifts a buffer's marks after its whole line vector was swapped for another.
+     * @param buf The buffer, with `lines` already holding the new text.
+     * @param before The line vector that was just replaced.
+     *
+     * Undo and redo, recovered the same way ShiftFoldsForTextSwap does
+     * it: the first row the two versions disagree on, and the line-count
+     * difference as the edit there. Without it, deleting lines and
+     * undoing left every mark below the deletion that many rows above
+     * its own text -- so `a jumped somewhere the user never set it,
+     * and so did every jump, change-list and visual-reselect position
+     * built on the same marks.
+     */
+    void ShiftMarksForTextSwap(Buffer &buf, const std::vector<std::string> &before);
 
     // Same idea as ShiftMarksForLineEdit, but for Buf().folds' row ranges
     // (org src-block/headline folds included). Without this, a fold's
@@ -12880,6 +12907,40 @@ private:
     // the wrong rows, which made j/k appear to stick or need a second
     // press right at a now-misaligned block boundary.
     void ShiftFoldsForLineEdit(int at_row, int count);
+    /**
+     * @brief Shifts a named buffer's folds for a line insert/delete, rather than the active one's.
+     * @param buf The buffer whose folds to move.
+     * @param at_row The row lines were inserted at / removed from.
+     * @param count Lines inserted (positive) or removed (negative).
+     *
+     * Every path that edits a buffer by id rather than through Buf()
+     * needs this: ReplaceLinesAt/ReplaceLinesForLua (which the whole
+     * org-mode family of commands is built on -- logbook entries,
+     * property drawers, subtree promotion, TODO cycling -- plus Lua's
+     * mep.set_lines and mepml's result blocks), and InsertTextAt. None
+     * of them shifted folds, so any one of them that changed the line
+     * count left every fold below it pointing that many rows off the
+     * text it was made for.
+     */
+    void ShiftFoldsForLineEdit(Buffer &buf, int at_row, int count);
+    /**
+     * @brief Shifts a buffer's folds after its whole line vector was swapped for another.
+     * @param buf The buffer, with `lines` already holding the new text.
+     * @param before The line vector that was just replaced.
+     *
+     * Undo and redo don't present as an (at_row, count) edit -- they
+     * replace the text outright -- so the shift is recovered by finding
+     * the first row the two versions disagree on and treating the line-
+     * count difference as an insert/delete there. For the contiguous
+     * insert or delete an undo almost always is, that is exactly the
+     * edit that was undone, run backwards.
+     *
+     * This is the "folds became offset" bug: deleting four lines shifted
+     * the folds up correctly, and undoing it put the four lines back
+     * without putting the folds back, so every fold below the deletion
+     * sat four rows above its own text from then on.
+     */
+    void ShiftFoldsForTextSwap(Buffer &buf, const std::vector<std::string> &before);
 
     // Same idea as ShiftMarksForLineEdit/ShiftFoldsForLineEdit, but for the
     // current buffer's decorations (every namespace: syntax highlighting,

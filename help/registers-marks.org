@@ -53,6 +53,18 @@ Marks work as operator targets too, so =d`a= deletes from the cursor to mark
 "Big jump" means a mark jump, =gg= or =G=, or a search -- the movements
 where you are likely to want to get back.
 
+A mark names a piece of /text/, not a line number, and follows it through
+every edit -- including the ones that replace the buffer wholesale. Undo
+and redo put a mark back where the text went back to, =:m= and =:t= carry
+it along, and so do the commands that rewrite a region (an Org subtree
+move, a TODO cycle) and anything a script or an agent splices in. =``=
+follows the same rule. A mark whose own line is deleted lands on the
+deletion point rather than going stale.
+
+The jumplist below is the exception: its entries are positions at the
+moment they were recorded, and an edit above one leaves it pointing that
+many lines off.
+
 * The jumplist
 
 =Ctrl-O= goes back through the positions you jumped from, =Ctrl-I= forward

@@ -8,6 +8,8 @@
 // described on NormalizeFoldList, and those are worth covering without a
 // GL context and a real window in the way.
 
+#include "line_edit.h"
+
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -116,6 +118,63 @@ inline void NormalizeFoldList(std::vector<Fold> &folds, int line_count) {
         unique.push_back(f);
     }
     folds.swap(unique);
+}
+
+/**
+ * @brief Moves every fold boundary to account for lines inserted or removed at `at_row`.
+ * @param folds The list to shift, in place.
+ * @param at_row The row lines were inserted at / removed from.
+ * @param count Lines inserted (positive) or removed (negative).
+ * @param line_count The buffer's line count *after* the edit.
+ *
+ * Applied independently to start_row and end_row, so a range grows or
+ * shrinks correctly when the edit lands inside it rather than before it
+ * -- inserting a line inside an open block extends end_row without
+ * moving start_row, while inserting above the block moves both. A
+ * boundary strictly inside a deleted run collapses to `at_row`.
+ */
+inline void ShiftFoldList(std::vector<Fold> &folds, int at_row, int count, int line_count) {
+    if (count == 0 || folds.empty()) return;
+    for (Fold &f : folds) {
+        f.start_row = ShiftRowForLineEdit(f.start_row, at_row, count, line_count);
+        f.end_row = ShiftRowForLineEdit(f.end_row, at_row, count, line_count);
+    }
+    // A fold collapsed to <2 lines by a deletion isn't meaningful anymore
+    // (the same rule CreateFold applies when one is first made), and a
+    // deletion landing across two overlapping ranges can leave them
+    // crossing -- both of which NormalizeFoldList settles.
+    NormalizeFoldList(folds, line_count);
+}
+
+/**
+ * @brief Shifts folds after a buffer's whole line vector was swapped for another.
+ * @param folds The list to shift, in place.
+ * @param before The line vector that was replaced.
+ * @param after The line vector now in the buffer.
+ *
+ * Undo and redo don't present as an (at_row, count) edit -- they replace
+ * the text outright -- so the shift is recovered by finding the first row
+ * the two versions disagree on and treating the line-count difference as
+ * an insert or delete there. For the contiguous insert or delete an undo
+ * almost always is, that is exactly the edit that was undone, run
+ * backwards.
+ *
+ * This is the "folds became offset" bug: deleting four lines shifted the
+ * folds up correctly, and undoing it put the four lines back without
+ * putting the folds back, so every fold below the deletion sat four rows
+ * above its own text from then on -- and the drift compounded with each
+ * further undo until the fold set was worth nothing but deleting.
+ */
+inline void ShiftFoldListForTextSwap(std::vector<Fold> &folds, const std::vector<std::string> &before,
+                                     const std::vector<std::string> &after) {
+    if (folds.empty()) return;
+    const int delta = static_cast<int>(after.size()) - static_cast<int>(before.size());
+    if (delta == 0) return;  // same line count: no row moved, whatever the text now says
+    // Everything above the first disagreement is untouched, so no fold
+    // boundary above it moves -- which is the whole point: an undo that
+    // restores four deleted lines must push the folds below them back
+    // down by four and leave the ones above exactly where they are.
+    ShiftFoldList(folds, FirstDifferingRow(before, after), delta, static_cast<int>(after.size()));
 }
 
 #endif  // MEP_FOLDS_H

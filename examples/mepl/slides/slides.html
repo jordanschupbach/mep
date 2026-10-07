@@ -73,6 +73,7 @@ mjx-container[display="true"] { max-width: 100%; overflow-x: auto; overflow-y: h
 .footnotes ol { padding-left: 1.4em; }
 .abstract { margin: 0 auto 2.5em; max-width: 38rem; font-size: .95em; padding: 1em 1.4em; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 .abstract p:last-child { margin-bottom: 0; }
+.mep-raw { display: none; }
 .slide { margin: 1.5em 0; padding: .4em 1.4em 1em; border: 1px solid var(--rule); border-radius: 6px; }
 .slide > :first-child { margin-top: .6em; }
 .abstract-title { font: 600 .8em system-ui, sans-serif; text-align: center; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 .6em; color: var(--muted); }
@@ -95,6 +96,34 @@ mjx-container[display="true"] { max-width: 100%; overflow-x: auto; overflow-y: h
   .table-wrap, pre, .math-display { overflow: visible; }
   pre { white-space: pre-wrap; }
 }
+.mbox { --c: #2c7fb8; border-left: 4px solid var(--c); background: color-mix(in srgb, var(--c) 8%, var(--bg)); border-radius: 4px; padding: .6em 1.1em .7em; margin: 1.2em 0; }
+.mbox > :last-child { margin-bottom: 0; }
+.mbox .mbox { margin: .8em 0; }
+.mbox-title { margin: 0 0 .4em; line-height: 1.35; }
+.mbox-label { font: 700 .74em system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; letter-spacing: .08em; text-transform: uppercase; color: var(--c); }
+.mbox-name { font-weight: 600; margin-left: .3em; }
+.mbox-proof { background: none; border-left-color: var(--rule); }
+.mbox-proof::after { content: "\220E"; display: block; text-align: right; line-height: 1; margin-top: .2em; }
+@media print { .mbox { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+.mbox-definition { --c: #2c7fb8; }
+.mbox-theorem { --c: #6a51a3; }
+.mbox-lemma { --c: #6a51a3; }
+.mbox-proposition { --c: #6a51a3; }
+.mbox-corollary { --c: #6a51a3; }
+.mbox-fact { --c: #d95f0e; }
+.mbox-example { --c: #2e8b57; }
+.mbox-remark { --c: #1b7f86; }
+.mbox-proof { --c: #5f6b7a; }
+.mbox-note { --c: #3b6ea5; }
+.mbox-tip { --c: #2f7d32; }
+.mbox-warning { --c: #b7791f; }
+.mbox-important { --c: #c62828; }
+.mbox-proof { --c: var(--muted); }
+.mcols { display: flex; gap: 1.5em; align-items: flex-start; margin: .6em 0; }
+.mcol { flex: 1 1 0; min-width: 0; }
+.mcol > :first-child { margin-top: 0; }
+.mcol img, .mcol svg { max-width: 100%; height: auto; }
+@media screen and (max-width: 640px) { body:not(.slides) .mcols { display: block; } }
 
 html, body { height: 100%; }
 body { max-width: none; margin: 0; padding: 0; overflow: hidden; background: #1b1d22; font-size: 26px; line-height: 1.4; }
@@ -102,11 +131,18 @@ body { max-width: none; margin: 0; padding: 0; overflow: hidden; background: #1b
 .slide { position: absolute; inset: 0; margin: 0; padding: 44px 64px 40px; border: 0; border-radius: 0; background: var(--bg);
   display: none; flex-direction: column; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,.45); }
 .slide.current { display: flex; }
+.slide.measuring { display: flex; visibility: hidden; }
 .slide > :first-child { margin-top: 0; }
 .slide-title { font-size: 1.6em; margin: 0 0 .55em; padding-bottom: .2em; border-bottom: 3px solid var(--link); flex: none; }
 .slide-body { flex: 1; min-height: 0; transform-origin: top left; }
 .slide-body > :first-child { margin-top: 0; }
 .slide-body h1, .slide-body h2, .slide-body h3, .slide-body h4 { margin: .6em 0 .3em; border: 0; font-size: 1.1em; }
+.slide-body p, .slide-body ul, .slide-body ol, .slide-body pre, .slide-body blockquote { margin-bottom: .45em; }
+.slide-body li { margin: .1em 0; }
+.slide-body .math-display { margin: .45em 0; }
+.slide-body .mbox { margin: .5em 0; padding: .45em .9em .5em; }
+.slide-body .mbox-title { margin-bottom: .25em; }
+.slide-body .math-display > mjx-container[display="true"] { margin: 0; }
 .slide-body figure { margin: .6em 0; }
 .slide-body figure img, .slide-body > p > img { max-height: 480px; width: auto; }
 .slide-body .table-wrap { width: auto; margin: .6em 0; }
@@ -158,21 +194,27 @@ scatter:</p>
 <p>Inline maths works too: \(\Lambda = |W| / |W + B|\).</p>
 </div><div class="slide-number">5</div></section>
 <section class="slide" id="slide-6"><h2 class="slide-title">A table</h2><div class="slide-body">
-<div class="table-wrap"><table><caption>Table 1: Mean petal size by species, in cm</caption><tr><th style="text-align:left">Species</th><th style="text-align:right">Petal length</th><th style="text-align:right">Petal width</th></tr><tr><td style="text-align:left">setosa</td><td style="text-align:right">1.46</td><td style="text-align:right">0.25</td></tr><tr><td style="text-align:left">versicolor</td><td style="text-align:right">4.26</td><td style="text-align:right">1.33</td></tr><tr><td style="text-align:left">virginica</td><td style="text-align:right">5.55</td><td style="text-align:right">2.03</td></tr></table></div>
+<div class="table-wrap"><table><caption>Table 1: Mean petal size by species, in cm</caption><tr><th scope="col" style="text-align:left">Species</th><th scope="col" style="text-align:right">Petal length</th><th scope="col" style="text-align:right">Petal width</th></tr><tr><td style="text-align:left">setosa</td><td style="text-align:right">1.46</td><td style="text-align:right">0.25</td></tr><tr><td style="text-align:left">versicolor</td><td style="text-align:right">4.26</td><td style="text-align:right">1.33</td></tr><tr><td style="text-align:left">virginica</td><td style="text-align:right">5.55</td><td style="text-align:right">2.03</td></tr></table></div>
 </div><div class="slide-number">6</div></section>
 <section class="slide" id="slide-7"><h2 class="slide-title">A figure</h2><div class="slide-body">
 <figure><img src="../iris_r/figs/pairs.png" alt="A scatter-plot matrix of sepal and petal length and width, coloured by species"><figcaption>Figure 1: Every pair of the four iris measurements</figcaption></figure>
 </div><div class="slide-number">7</div></section>
 <section class="slide" id="slide-8"><h2 class="slide-title">Code and its results</h2><div class="slide-body">
-<figure class="code"><figcaption class="lang">python</figcaption><pre><code class="language-python">xs = [1, 2, 3, 4, 5]
+<figure class="code"><figcaption class="lang">python</figcaption><pre><code class="language-python">print(&quot;Hello world&quot;)
+xs = [1, 2, 3, 4, 5]
 print(&quot;mean:&quot;, sum(xs) / len(xs))
-print(&quot;squares:&quot;, [x * x for x in xs])</code></pre><pre class="results">mean: 3.0
+print(&quot;squares:&quot;, [x * x for x in xs])</code></pre><pre class="results">Hello world
+mean: 3.0
 squares: [1, 4, 9, 16, 25]</pre></figure>
 <p>Run the block with C-c C-c. Its results are written under it, on the slide.</p>
 </div><div class="slide-number">8</div></section>
-<section class="slide" id="slide-9"><h2 class="slide-title">Callouts</h2><div class="slide-body">
-<div class="callout callout-note"><span class="callout-title">NOTE</span>  A callout reads the same on a slide as it does anywhere else.</div>
-<div class="callout callout-tip"><span class="callout-title">TIP</span>  Fold a slide like any other block, or jump between slides from the  outline.</div>
+<section class="slide" id="slide-9"><h2 class="slide-title">Notes and tips</h2><div class="slide-body">
+<div class="mbox mbox-note" data-kind="note"><p class="mbox-title"><span class="mbox-label">Note</span></p>
+<p>A note reads the same on a slide as it does anywhere else.</p>
+</div>
+<div class="mbox mbox-tip" data-kind="tip"><p class="mbox-title"><span class="mbox-label">Tip</span></p>
+<p>Fold a slide like any other block, or jump between slides from the outline.</p>
+</div>
 </div><div class="slide-number">9</div></section>
 <section class="slide" id="slide-10"><h2 class="slide-title">Other spellings</h2><div class="slide-body">
 <p>This slide opens with <code>\slide{</code> and closes with <code>}</code>.</p>
@@ -190,9 +232,14 @@ squares: [1, 4, 9, 16, 25]</pre></figure>
   var prev = document.querySelector('.nav .prev'), next = document.querySelector('.nav .next');
   var count = document.querySelector('.nav .count');
   var cur = 0;
+  // A slide that is not the one showing has no layout (display: none), so
+  // it is shown, unseen, for as long as it takes to measure it -- or only
+  // the slide on screen at load time would ever be fitted.
   function fitBody(s) {
     var b = s.querySelector('.slide-body');
     if (!b) return;
+    var hidden = !s.classList.contains('current');
+    if (hidden) s.classList.toggle('measuring', true);
     b.style.transform = ''; b.style.width = '';
     var avail = b.clientHeight, need = b.scrollHeight;
     if (need > avail + 1 && avail > 0) {
@@ -200,6 +247,7 @@ squares: [1, 4, 9, 16, 25]</pre></figure>
       b.style.transform = 'scale(' + k + ')';
       b.style.width = (100 / k) + '%';
     }
+    if (hidden) s.classList.toggle('measuring', false);
   }
   function fit() {
     var k = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
@@ -214,6 +262,8 @@ squares: [1, 4, 9, 16, 25]</pre></figure>
     if (next) next.disabled = cur === slides.length - 1;
     if (count) count.textContent = (cur + 1) + ' / ' + slides.length;
     if (history.replaceState) history.replaceState(null, '', '#' + (cur + 1));
+    // (Fitting is a nicety: a viewer that cannot measure must still step.)
+    try { fitBody(slides[cur]); } catch (err) {}
   }
   document.addEventListener('keydown', function (e) {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
@@ -245,8 +295,12 @@ squares: [1, 4, 9, 16, 25]</pre></figure>
   });
   window.addEventListener('resize', fit);
   window.addEventListener('load', fit);
-  window.addEventListener('beforeprint', function () { slides.forEach(function (s) { var b = s.querySelector('.slide-body'); if (b) { b.style.transform = ''; b.style.width = ''; } }); });
-  window.addEventListener('afterprint', fit);
+  // (A printed slide is the same 1280x720 as a shown one, so the fit
+  // made for the screen is the fit for the page.)
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+  Array.prototype.forEach.call(document.querySelectorAll('.slide-body img'), function (im) {
+    if (!im.complete) im.addEventListener('load', function () { fitBody(im.closest('.slide')); });
+  });
   if (window.MathJax && MathJax.startup && MathJax.startup.promise) MathJax.startup.promise.then(fit);
   else window.MathJax = Object.assign(window.MathJax || {}, {startup: {pageReady: function () { return MathJax.startup.defaultPageReady().then(fit); }}});
   fit();

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>  // std::atoi -- previously only reached via the (Linux-only) PCH
 
 namespace a11y {
 

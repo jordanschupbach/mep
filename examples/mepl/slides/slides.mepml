@@ -70,11 +70,13 @@ Inline maths works too: $\Lambda = |W| / |W + B|$.
 \slide(
 > Code and its results
 ```python
+print("Hello world")
 xs = [1, 2, 3, 4, 5]
 print("mean:", sum(xs) / len(xs))
 print("squares:", [x * x for x in xs])
 ```
 // result_begin:
+// Hello world
 // mean: 3.0
 // squares: [1, 4, 9, 16, 25]
 // result_end

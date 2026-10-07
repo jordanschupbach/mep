@@ -83,6 +83,9 @@
 #include <emscripten/emscripten.h>
 #else
 #include <unistd.h>  // _exit, for the fast quit at the end of main()
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>  // _NSGetExecutablePath, for DashboardAssetPath
+#endif
 #endif
 
 // True in a -DCMAKE_BUILD_TYPE=Sanitize build (CMakeLists.txt's
@@ -55052,12 +55055,19 @@ void DrawTabBar(int y) {
 // is deliberately not consulted: it may be any project and need not carry
 // mep's own assets.
 std::string DashboardAssetPath(const char *filename) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
     std::array<char, 4096> exe_path{};
+    std::string exe;
+#if defined(__linux__)
     ssize_t len = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
-    if (len > 0) {
-        std::filesystem::path installed = std::filesystem::path(std::string(exe_path.data(), static_cast<size_t>(len)))
-                                              .parent_path().parent_path() / "share/mep/assets" / filename;
+    if (len > 0) exe.assign(exe_path.data(), static_cast<size_t>(len));
+#else
+    uint32_t exe_size = static_cast<uint32_t>(exe_path.size());
+    if (_NSGetExecutablePath(exe_path.data(), &exe_size) == 0) exe = exe_path.data();
+#endif
+    if (!exe.empty()) {
+        std::filesystem::path installed =
+            std::filesystem::path(exe).parent_path().parent_path() / "share/mep/assets" / filename;
         std::error_code ec;
         if (std::filesystem::is_regular_file(installed, ec)) return installed.string();
     }

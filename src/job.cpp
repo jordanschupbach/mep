@@ -10,7 +10,11 @@
 #define MEP_JOB_POSIX 1
 #include <fcntl.h>  // O_CLOEXEC, for RequestStop's self-pipe
 #include <poll.h>
+#if defined(__APPLE__)
+#include <util.h>  // forkpty lives here on macOS (BSD), not in <pty.h>
+#else
 #include <pty.h>
+#endif
 #include <signal.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
@@ -47,7 +51,20 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
     // O_CLOEXEC: this is mep's own wakeup channel, and a child holding its
     // write end open past exec would be one more fd in a terminal's
     // environment for no reason.
+#if defined(__linux__)
     if (pipe2(stop_fds_, O_CLOEXEC) != 0) stop_fds_[0] = stop_fds_[1] = -1;  // the 200ms poll timeout still bounds the stop
+#else
+    // macOS has no pipe2: pipe + FD_CLOEXEC after the fact. The gap
+    // between the two calls only matters for a concurrent fork, and every
+    // Job spawn happens on the thread constructing the Job -- the window
+    // is the same one every other fcntl-after-open in this file accepts.
+    if (pipe(stop_fds_) != 0) {
+        stop_fds_[0] = stop_fds_[1] = -1;  // the 200ms poll timeout still bounds the stop
+    } else {
+        fcntl(stop_fds_[0], F_SETFD, FD_CLOEXEC);
+        fcntl(stop_fds_[1], F_SETFD, FD_CLOEXEC);
+    }
+#endif
     if (use_pty_) {
         int master_fd = -1;
         pid_t pid = forkpty(&master_fd, nullptr, nullptr, nullptr);

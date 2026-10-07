@@ -48,7 +48,23 @@ servers and Tree-sitter grammars — already on =PATH=.
 
 ** Platforms
 
-Native mep targets *Linux/X11*. There is also a WebAssembly build
+Native mep targets *Linux/X11* and *macOS* (Cocoa/NSOpenGL). On macOS
+you need Homebrew's =cmake=, =ninja=, =just=, =llvm= (Apple's toolchain
+ships no =clang-scan-deps=, which CMake needs for this project's C++20
+modules) and =openssl@3=:
+
+#+begin_src sh :eval no
+brew install cmake ninja just llvm openssl@3
+just run
+#+end_src
+
+The justfile picks the Homebrew LLVM toolchain and the Ninja generator
+automatically on macOS. Not yet ported there: audio (ALSA; silent
+no-op), embedding other programs' windows (X11 reparenting), the
+agent API's synthetic mouse/keyboard input (XTest), and Retina
+rendering (the GL surface is 1x and upscaled for now).
+
+There is also a WebAssembly build
 (=just build-web=) that runs in a browser, and =just run-wasm= opens it
 in a desktop window via Deno + webview; the wasm build has no host
 filesystem, so file I/O there goes through a small local bridge

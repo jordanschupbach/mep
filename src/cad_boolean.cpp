@@ -7,6 +7,7 @@
 #include <limits>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>  // std::getenv -- previously only reached via the (Linux-only) PCH
 #include <map>
 #include <set>
 #include <tuple>

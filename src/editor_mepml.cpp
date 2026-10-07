@@ -3850,9 +3850,9 @@ void Editor::MepmlGuisTick() {
         }
         run.app->Tick(now_, waiting == 1);
         if (run.app->TakeFocusGained()) {
-            // A web page clicked into: it has the keyboard now.
+            // A web page (or, on macOS, any program) clicked into: it has the keyboard now.
             mepml_gui_focus_ = it->first;
-            status_message_ = "The page has the keyboard: Ctrl-\\ or a click outside it comes back";
+            status_message_ = "The program has the keyboard: Ctrl-\\ or a click outside its window comes back";
         }
         if (mepml_gui_focus_ == it->first) {
             bool lost = run.app->TakeFocusLost() || !run.app->Focused();

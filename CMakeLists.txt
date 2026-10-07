@@ -1,4 +1,46 @@
 cmake_minimum_required(VERSION 3.28)
+
+# macOS: pin the deployment target to the host's own OS version, BEFORE
+# project() (where CMake would otherwise initialize it from the
+# MACOSX_DEPLOYMENT_TARGET environment variable). The Nix devShell
+# exports that variable (14.0, for its own toolchain's benefit), and a
+# mep build inherits it with fatal results: Homebrew Clang emits
+# Objective-C class-message-send stubs for backend_native_macos.mm at
+# *every* deployment target (verified -- there is no codegen flag to
+# suppress them, unlike the instance-send stubs), and ld only accepts
+# those relocations when the link targets the current OS ("objc class
+# message stub ... is not supported. Use ld, not ld_classic"). Pinning
+# to `sw_vers -productVersion` makes every environment agree. A caller's
+# explicit -DCMAKE_OSX_DEPLOYMENT_TARGET still wins (it is already in
+# the cache here, and CACHE set without FORCE never overwrites).
+# NOT guarded by CMAKE_HOST_APPLE: that variable is only set by
+# project() itself, which is exactly too late here. /usr/bin/sw_vers
+# existing is the macOS test that works this early.
+if(EXISTS "/usr/bin/sw_vers")
+    execute_process(
+        COMMAND /usr/bin/sw_vers -productVersion
+        OUTPUT_VARIABLE MEP_HOST_MACOS_VERSION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(MEP_HOST_MACOS_VERSION)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "${MEP_HOST_MACOS_VERSION}"
+            CACHE STRING "Minimum macOS version (pinned to the build host's own -- see comment above)")
+    endif()
+    # Same story for the SDK: the Nix devShell also exports SDKROOT
+    # (pointing at nixpkgs' apple-sdk, macOS 14.x), which CMake would
+    # otherwise adopt as CMAKE_OSX_SYSROOT -- and ld judges the
+    # message-send stubs by the SDK/platform version too, so a 14.x SDK
+    # re-breaks the link even with the deployment target pinned above.
+    # Pin the system Command Line Tools SDK, which is what the Homebrew
+    # Clang toolchain (justfile) builds against outside the shell anyway.
+    # An explicit -DCMAKE_OSX_SYSROOT still wins, as above.
+    if(EXISTS "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk")
+        set(CMAKE_OSX_SYSROOT "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+            CACHE PATH "macOS SDK (pinned to the system CLT SDK -- see comment above)")
+    endif()
+endif()
+
 project(mep LANGUAGES C CXX)
 
 include(GNUInstallDirs)
@@ -28,8 +70,13 @@ endif()
 # `#include <...> search starts here` block) -- applied globally via
 # add_compile_options rather than per-recipe since every target's C++
 # module scanning needs it, not just one lint tool's own invocation.
-# A no-op when the compiler isn't Clang (GCC needs none of this).
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+# A no-op when the compiler isn't Clang (GCC needs none of this), and
+# Linux-only: on macOS `gcc` is Apple Clang, whose libc++ headers belong
+# to a different toolchain than the Homebrew LLVM this project builds
+# with there (see the APPLE branch of the gfx backend selection below) --
+# injecting them would mix two libc++ header versions, and macOS Clang's
+# own clang-scan-deps finds its headers fine without any of this.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT APPLE)
     execute_process(
         COMMAND gcc -E -v -xc++ /dev/null
         ERROR_VARIABLE MEP_GCC_VERBOSE_OUTPUT
@@ -60,6 +107,49 @@ endif()
 # gfx-native smoke tests) with identical flags -- ccache turns every one
 # of those repeat compiles, across the *same* build directory and across
 # a from-scratch `rm -rf build && rebuild`, into a cache hit.
+# macOS: no precompiled headers. The PCH and the C++20-module BMIs
+# interact badly under the Homebrew Clang used there (a BMI compiled
+# against one target's PCH, imported into a TU holding a different
+# target's PCH, fails with "'std::basic_string_view' from module '' is
+# not present in definition of 'std::string_view' provided earlier" --
+# mep_core's and mep's PCHs are built from the same header list but
+# under different flags, so they are different serialized ASTs). With no
+# PCH anywhere, every TU and every BMI parses libc++ textually and
+# Clang merges the declarations fine. Costs clean-build time on macOS
+# only; Linux keeps the PCH.
+if(APPLE)
+    set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
+    # js_engine.cpp's generator coroutines use the POSIX ucontext
+    # routines; macOS's <ucontext.h> hard-errors unless _XOPEN_SOURCE is
+    # defined (they're deprecated-but-present there). _DARWIN_C_SOURCE
+    # keeps the BSD extensions visible that _XOPEN_SOURCE would
+    # otherwise hide from the rest of the file's headers.
+    # -Wno-deprecated-declarations: with _XOPEN_SOURCE defined the
+    # routines exist but still carry Apple's deprecation attribute, which
+    # -Werror would otherwise turn fatal.
+    set_source_files_properties(src/js_engine.cpp PROPERTIES
+        COMPILE_DEFINITIONS "_XOPEN_SOURCE=600;_DARWIN_C_SOURCE"
+        COMPILE_OPTIONS "-Wno-deprecated-declarations")
+    # Link with the real system linker, by concrete absolute path. The
+    # Nix devShell both shadows `ld` on PATH and exports DEVELOPER_DIR
+    # into the nix store -- and /usr/bin/ld is only a shim that resolves
+    # through DEVELOPER_DIR, so even `--ld-path=/usr/bin/ld` still landed
+    # on nixpkgs' older ld64 there (bisected live: the identical link
+    # command succeeds with DEVELOPER_DIR unset and fails with it set).
+    # That older ld rejects the Objective-C message-send stubs modern
+    # Clang emits for backend_native_macos.mm ("objc class message stub
+    # ... is not supported. Use ld, not ld_classic"), and the class-send
+    # stubs have no codegen flag to turn them off (unlike the
+    # instance-send ones; verified against Homebrew Clang 23). The CLT's
+    # own ld binary is immune to both PATH and DEVELOPER_DIR; outside the
+    # shell it is what /usr/bin/ld resolves to anyway.
+    if(EXISTS "/Library/Developer/CommandLineTools/usr/bin/ld")
+        add_link_options("--ld-path=/Library/Developer/CommandLineTools/usr/bin/ld")
+    elseif(EXISTS "/usr/bin/ld")
+        add_link_options("--ld-path=/usr/bin/ld")
+    endif()
+endif()
+
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
     set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
@@ -389,6 +479,16 @@ set(MEP_GFX_NATIVE_SOURCES
 )
 if(EMSCRIPTEN)
     list(APPEND MEP_GFX_NATIVE_SOURCES src/gfx/backend_native_emscripten_glfw.cpp)
+elseif(APPLE)
+    # The Cocoa/NSOpenGL implementor (Objective-C++) -- the macOS
+    # counterpart of backend_native.cpp's X11/GLX layer. OpenGL::GL here
+    # is the OpenGL.framework (deprecated by Apple but fully functional,
+    # GL 4.1 core -- a superset of the 3.3 core the renderers use).
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 20)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    list(APPEND MEP_GFX_NATIVE_SOURCES src/gfx/backend_native_macos.mm)
+    find_package(OpenGL REQUIRED)
 else()
     list(APPEND MEP_GFX_NATIVE_SOURCES src/gfx/backend_native.cpp)
     find_package(OpenGL REQUIRED)
@@ -653,15 +753,30 @@ add_library(mep_audiodec STATIC src/audio_decoders.cpp)
 target_include_directories(mep_audiodec PUBLIC src)
 target_link_libraries(mep_core PUBLIC lua tree_sitter mep_audiodec ${TS_GRAMMAR_LIBS})
 if(NOT EMSCRIPTEN)
-    # X11::X11: gfx/backend_native.cpp's own X11/GLX window/input/context
-    # implementation (GLFW_REMOVAL_PLAN.md) -- GLX itself is part of
-    # libGL/OpenGL::GL (Mesa exports both from the same shared object), so
-    # no separate GLX find_package/target is needed.
-    target_link_libraries(mep_core PUBLIC OpenGL::GL X11::X11)
+    if(APPLE)
+        # Cocoa: gfx/backend_native_macos.mm's windowing/input layer.
+        target_link_libraries(mep_core PUBLIC OpenGL::GL "-framework Cocoa")
+    else()
+        # X11::X11: gfx/backend_native.cpp's own X11/GLX window/input/context
+        # implementation (GLFW_REMOVAL_PLAN.md) -- GLX itself is part of
+        # libGL/OpenGL::GL (Mesa exports both from the same shared object), so
+        # no separate GLX find_package/target is needed.
+        target_link_libraries(mep_core PUBLIC OpenGL::GL X11::X11)
+    endif()
 endif()
 if(NOT EMSCRIPTEN AND NOT WIN32 AND NOT APPLE)
     # gui_embed.h's X11 implementor, same condition as the gfx backend's.
     target_compile_definitions(mep_core PRIVATE MEP_GUI_EMBED_X11=1)
+endif()
+if(APPLE)
+    # gui_embed.h's macOS implementor (Objective-C++, ARC -- the one .mm
+    # that holds Cocoa objects in C++ members): Accessibility and
+    # CGWindowList from ApplicationServices, pictures from ScreenCaptureKit
+    # (weak: its screenshot API is macOS 14+, checked at run time).
+    target_sources(mep_core PRIVATE src/gui_embed_macos.mm)
+    set_source_files_properties(src/gui_embed_macos.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_compile_definitions(mep_core PRIVATE MEP_GUI_EMBED_MACOS=1)
+    target_link_libraries(mep_core PUBLIC "-framework ApplicationServices" "-weak_framework ScreenCaptureKit")
 endif()
 if(NOT EMSCRIPTEN AND NOT WIN32)
     # cad_predicates.cpp's exact arithmetic assumes every floating-point
@@ -725,7 +840,11 @@ function(mep_add_gfx_native_smoke name main_src)
         target_link_options(${name} PRIVATE "-sUSE_GLFW=3" "-sUSE_WEBGL2=1" "-sFULL_ES3=1" "-sALLOW_MEMORY_GROWTH=1")
     else()
         target_link_options(${name} PRIVATE ${MEP_SANITIZE_FLAGS})
-        target_link_libraries(${name} PRIVATE OpenGL::GL X11::X11)
+        if(APPLE)
+            target_link_libraries(${name} PRIVATE OpenGL::GL "-framework Cocoa" Threads::Threads)
+        else()
+            target_link_libraries(${name} PRIVATE OpenGL::GL X11::X11)
+        endif()
         if(NOT WIN32 AND NOT APPLE)
             target_link_libraries(${name} PRIVATE Threads::Threads m ALSA::ALSA)
         endif()
@@ -2109,7 +2228,11 @@ if(NOT EMSCRIPTEN)
     # mep_add_gfx_native_smoke's targets above.
     target_sources(mep-model3d-doc-test PUBLIC FILE_SET CXX_MODULES FILES src/gfx/model_read_util.cppm)
     target_include_directories(mep-model3d-doc-test PRIVATE src)
-    target_link_libraries(mep-model3d-doc-test PRIVATE OpenGL::GL X11::X11)
+    if(APPLE)
+        target_link_libraries(mep-model3d-doc-test PRIVATE OpenGL::GL "-framework Cocoa" Threads::Threads)
+    else()
+        target_link_libraries(mep-model3d-doc-test PRIVATE OpenGL::GL X11::X11)
+    endif()
     if(NOT WIN32 AND NOT APPLE)
         target_link_libraries(mep-model3d-doc-test PRIVATE Threads::Threads m ALSA::ALSA)
     endif()
@@ -2122,6 +2245,20 @@ endif()
 # deliberate native-only dependency permitted for secure transport support;
 # the framing, session protocol, and relay remain mep's own C++ code.
 if(NOT EMSCRIPTEN)
+    # Homebrew's openssl@3 is keg-only (not in any default search prefix),
+    # so FindOpenSSL can't see it without a hint. Only consulted when the
+    # caller hasn't already pointed OPENSSL_ROOT_DIR somewhere.
+    if(APPLE AND NOT DEFINED OPENSSL_ROOT_DIR AND NOT DEFINED ENV{OPENSSL_ROOT_DIR})
+        execute_process(
+            COMMAND brew --prefix openssl@3
+            OUTPUT_VARIABLE MEP_BREW_OPENSSL_PREFIX
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(MEP_BREW_OPENSSL_PREFIX AND EXISTS "${MEP_BREW_OPENSSL_PREFIX}")
+            set(OPENSSL_ROOT_DIR "${MEP_BREW_OPENSSL_PREFIX}")
+        endif()
+    endif()
     find_package(OpenSSL REQUIRED)
     target_sources(mep PRIVATE src/collab_crdt.cpp src/collab_session.cpp src/collab_websocket.cpp)
     target_link_libraries(mep PRIVATE OpenSSL::SSL OpenSSL::Crypto)
@@ -2292,7 +2429,16 @@ if(NOT EMSCRIPTEN)
         # subsystem's SHA-1, since that's folded into the generated file too.
         add_executable(mep-amalgam EXCLUDE_FROM_ALL "${MEP_AMALGAM_SRC}")
         target_include_directories(mep-amalgam PRIVATE src)
-        target_link_libraries(mep-amalgam PRIVATE OpenGL::GL X11::X11 lua tree_sitter ${TS_GRAMMAR_LIBS} OpenSSL::SSL OpenSSL::Crypto)
+        if(APPLE)
+            # Note: the amalgamated source embeds the X11 backend_native.cpp
+            # (tools/amalgamate.py globs src/*.cpp, not the .mm), so this
+            # target isn't actually buildable on macOS -- linked against the
+            # mac frameworks anyway so configuring doesn't trip over the
+            # Linux-only X11::X11 target. It's EXCLUDE_FROM_ALL either way.
+            target_link_libraries(mep-amalgam PRIVATE OpenGL::GL "-framework Cocoa" lua tree_sitter ${TS_GRAMMAR_LIBS} OpenSSL::SSL OpenSSL::Crypto)
+        else()
+            target_link_libraries(mep-amalgam PRIVATE OpenGL::GL X11::X11 lua tree_sitter ${TS_GRAMMAR_LIBS} OpenSSL::SSL OpenSSL::Crypto)
+        endif()
         if(NOT WIN32)
             target_link_libraries(mep-amalgam PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
         endif()

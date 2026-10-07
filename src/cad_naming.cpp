@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>  // std::back_inserter -- previously only reached via the (Linux-only) PCH
 
 namespace cad {
 namespace {

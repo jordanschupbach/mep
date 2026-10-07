@@ -29,6 +29,7 @@
 //     names the exact conditions under which it dares speak, below.
 
 #include <algorithm>
+#include <cmath>  // std::abs -- previously only reached via the (Linux-only) PCH
 #include <map>
 #include <set>
 #include <string>

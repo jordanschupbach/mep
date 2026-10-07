@@ -3,6 +3,15 @@ native_build_dir := "build/native"
 native_build_dev_dir := "build/native-dev"
 ts_grammar_dir := ".ts-grammars/lib"
 
+# macOS: Apple's toolchain ships no clang-scan-deps, so CMake can't do
+# this project's C++20-module dependency scanning with AppleClang --
+# Homebrew LLVM (`brew install llvm`) is the compiler there, and Ninja
+# (required by CMake for C++ modules; the Linux Nix devShell already
+# exports CMAKE_GENERATOR=Ninja) is passed explicitly. Empty on Linux,
+# where the devShell provides everything.
+llvm_prefix := if os() == "macos" { `command -v brew >/dev/null && brew --prefix llvm || echo /opt/homebrew/opt/llvm` } else { "" }
+native_cmake_flags := if os() == "macos" { "-G Ninja -DCMAKE_C_COMPILER=" + llvm_prefix + "/bin/clang -DCMAKE_CXX_COMPILER=" + llvm_prefix + "/bin/clang++ -DCMAKE_OBJCXX_COMPILER=" + llvm_prefix + "/bin/clang++" } else { "" }
+
 # Build the native (X11) binary and launch it directly (default).
 default: run
 
@@ -13,7 +22,7 @@ build-web:
 
 # Configure and build a native desktop binary.
 build-native:
-    cmake -S . -B {{native_build_dir}} -DCMAKE_BUILD_TYPE=Release
+    cmake -S . -B {{native_build_dir}} -DCMAKE_BUILD_TYPE=Release {{native_cmake_flags}}
     cmake --build {{native_build_dir}} -j
 
 # Same as build-native, but -O0 (CMake's stock Debug flags) in a
@@ -31,7 +40,7 @@ build-native:
 # itself (build-native, unaffected by this recipe) stays the one built
 # and tested at full -O3 throughout this repo (`just test`/`just run`).
 build-native-dev:
-    cmake -S . -B {{native_build_dev_dir}} -DCMAKE_BUILD_TYPE=Debug
+    cmake -S . -B {{native_build_dev_dir}} -DCMAKE_BUILD_TYPE=Debug {{native_cmake_flags}}
     cmake --build {{native_build_dev_dir}} -j
 
 # Opt-in unity/jumbo build of mep_core (BUILD_PERFORMANCE_PLAN.md Round 2
@@ -43,7 +52,7 @@ build-native-dev:
 # build-native/build-native-dev -- neither of *those* pay this cost, and
 # `just test`/day-to-day iteration keep using them unchanged.
 build-native-unity:
-    cmake -S . -B build/native-unity -DCMAKE_BUILD_TYPE=Release -DMEP_UNITY_BUILD=ON
+    cmake -S . -B build/native-unity -DCMAKE_BUILD_TYPE=Release -DMEP_UNITY_BUILD=ON {{native_cmake_flags}}
     cmake --build build/native-unity -j
 
 # Build every test/smoke/benchmark binary (BUILD_PERFORMANCE_PLAN.md

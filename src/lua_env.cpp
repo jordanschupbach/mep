@@ -41,6 +41,8 @@
 #include <filesystem>
 #if defined(__linux__)
 #include <unistd.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>  // _NSGetExecutablePath, the readlink(/proc/self/exe) equivalent
 #endif
 #endif
 
@@ -6573,6 +6575,25 @@ int l_workspace_root(lua_State *L) {
     return 1;
 }
 
+#if !defined(__EMSCRIPTEN__) && (defined(__linux__) || defined(__APPLE__))
+// The running executable's own path -- /proc/self/exe on Linux,
+// _NSGetExecutablePath on macOS -- or empty if the platform couldn't say.
+// Resolved from the process itself rather than the CWD for the reasons
+// documented at both call sites below (the CWD follows the active
+// workspace).
+std::string SelfExecutablePath() {
+    std::array<char, 4096> exe_path{};
+#if defined(__linux__)
+    ssize_t len = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
+    if (len > 0) return std::string(exe_path.data(), static_cast<size_t>(len));
+#else
+    uint32_t exe_size = static_cast<uint32_t>(exe_path.size());
+    if (_NSGetExecutablePath(exe_path.data(), &exe_size) == 0) return std::string(exe_path.data());
+#endif
+    return std::string();
+}
+#endif
+
 // mep.bundled_help_root(): the installed rendered help directory. Project-local
 // help/ remains supported by kBuiltinHelp, but normal projects should not
 // make the built-in Help command appear to do nothing just because they do
@@ -6584,15 +6605,14 @@ int l_bundled_help_root(lua_State *L) {
         return std::filesystem::is_regular_file(path / "intro.html", ec);
     };
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
     // A packaged native binary lives in <prefix>/bin; its data is installed
-    // in <prefix>/share/mep/help. Resolve /proc rather than relying on the
-    // process CWD, which follows the active workspace.
-    std::array<char, 4096> exe_path{};
-    ssize_t len = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
-    if (len > 0) {
-        std::filesystem::path installed = std::filesystem::path(std::string(exe_path.data(), static_cast<size_t>(len)))
-                                              .parent_path().parent_path() / "share/mep/help";
+    // in <prefix>/share/mep/help. Resolve the executable's own path rather
+    // than relying on the process CWD, which follows the active workspace.
+    std::string exe = SelfExecutablePath();
+    if (!exe.empty()) {
+        std::filesystem::path installed =
+            std::filesystem::path(exe).parent_path().parent_path() / "share/mep/help";
         if (is_help_root(installed)) {
             lua_pushstring(L, installed.string().c_str());
             return 1;
@@ -6630,13 +6650,11 @@ int l_bundled_help_root(lua_State *L) {
  */
 int l_bundled_tool(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
-#if !defined(__EMSCRIPTEN__) && defined(__linux__)
-    std::array<char, 4096> exe_path{};
-    ssize_t len = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
-    if (len > 0) {
+#if !defined(__EMSCRIPTEN__) && (defined(__linux__) || defined(__APPLE__))
+    std::string exe = SelfExecutablePath();
+    if (!exe.empty()) {
         std::error_code ec;
-        std::filesystem::path sibling =
-            std::filesystem::path(std::string(exe_path.data(), static_cast<size_t>(len))).parent_path() / name;
+        std::filesystem::path sibling = std::filesystem::path(exe).parent_path() / name;
         if (std::filesystem::is_regular_file(sibling, ec) && !ec) {
             lua_pushstring(L, sibling.string().c_str());
             return 1;

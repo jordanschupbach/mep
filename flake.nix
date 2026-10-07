@@ -312,12 +312,22 @@
         };
       in
       {
+        # mepPackage is Linux-only (its pdfium pin is the linux-x64 asset
+        # and its buildInputs are the X11/ALSA stack -- see pdfiumSrc's
+        # own comment): building these outputs on Darwin fails. They stay
+        # declared on every system anyway -- deliberately NOT gated with
+        # optionalAttrs, because making the output attr *names* depend on
+        # the system forces flake-utils' transposition to evaluate every
+        # system's nixpkgs just to list attrs, and this nixpkgs revision
+        # throws outright for x86_64-darwin (support dropped), which then
+        # breaks evaluating any other system's outputs too. On macOS use
+        # the devShell + the justfile's Homebrew LLVM toolchain instead
+        # (see README.org's Platforms section).
         packages.default = mepPackage;
         apps.default = flake-utils.lib.mkApp { drv = mepPackage; };
 
         devShells.default = (pkgs.mkShell.override { stdenv = mepStdenv; }) {
           packages = [
-            pkgs.xeyes
             pkgs.cmake
             pkgs.ninja
             # BUILD_PERFORMANCE_PLAN.md -- CMakeLists.txt auto-detects
@@ -325,11 +335,6 @@
             # be on PATH here for that to take effect. `ccache -s` shows
             # hit-rate stats; `ccache -C` clears the cache.
             pkgs.ccache
-            # BUILD_PERFORMANCE_PLAN.md Round 2 -- CMakeLists.txt
-            # auto-detects both (mold preferred, lld independently
-            # selectable via -DMEP_LINKER=lld); just need to be on PATH.
-            pkgs.mold
-            pkgs.lld
             # BUILD_PERFORMANCE_PLAN.md Round 2 Phase B -- clang (for a
             # one-off -ftime-trace profiling build; the project's own
             # default compiler stays gcc, see CMakeLists.txt) and
@@ -344,24 +349,7 @@
             pkgs.deno
             pkgs.just
             pkgs.pkg-config
-            # Native (non-wasm) gfx:: backend build deps (X11/GLX/OpenGL,
-            # see gfx/backend_native.cpp / GLFW_REMOVAL_PLAN.md), for
-            # `just build-native` -- see mepPackage's own buildInputs
-            # above for why this list is shorter than it used to be
-            # (libxrandr/libxinerama/libxcursor/glfw dropped; libxi kept,
-            # a real transitive dependency of libxtst).
-            pkgs.libGL
-            pkgs.libx11
-            pkgs.libxi
-            pkgs.libxtst
             pkgs.openssl
-            # In-house ALSA audio backend (gfx/backend_native_audio.cpp,
-            # see MINIAUDIO_REMOVAL_PLAN.md) -- PulseAudio/PipeWire users
-            # are covered transparently via their ALSA compatibility shim.
-            pkgs.alsa-lib
-            # Runtime dep of webview_deno, used by the launcher to open a
-            # native window around the wasm build.
-            pkgs.webkitgtk_6_0
 
             # LaTeX/math-mode inline preview (<leader>otl, mep.org_latex_toggle_ui
             # in src/main.cpp's kBuiltinOrgLatex): tectonic compiles a fragment's
@@ -396,8 +384,11 @@
             # (src/notebook_doc.cpp's kernel captures every open figure as
             # PNG at the end of a cell; examples/notebook_example.ipynb
             # has a cell that draws one) and the Python language UI's plot
-            # pane (kBuiltinLanguageUiPython).
-            (pkgs.python3.withPackages (ps: [ ps.numpy ps.debugpy ps.matplotlib ])) # Python
+            # pane (kBuiltinLanguageUiPython). tkinter is a separate
+            # nixpkgs package (python3 alone has no _tkinter): a
+            # results=exec-gui Python block opening a Tk window (test.mepml,
+            # help/mepml.org) imports it.
+            (pkgs.python3.withPackages (ps: [ ps.numpy ps.debugpy ps.matplotlib ps.tkinter ])) # Python
             pkgs.nodejs # JavaScript
             pkgs.ruby
             # perl.withPackages, not bare pkgs.perl -- Perl::LanguageServer
@@ -485,14 +476,6 @@
             pkgs.kotlin
             pkgs.ghc
             pkgs.ocaml
-            # Built with gcc14Stdenv, not the default gcc15: upstream dmd's
-            # own C header importer can't parse gcc 15's system headers,
-            # which now use the C23 `nullptr` keyword (stddef.h) -- a real
-            # nixpkgs-unstable/dmd incompatibility, not specific to this
-            # flake (same override mep.nvim/flake.nix uses, for the same
-            # reason). Drop this once nixpkgs' dmd derivation itself
-            # accounts for gcc 15 headers.
-            (pkgs.dmd.override { stdenv = pkgs.gcc14Stdenv; })
             # Maxima is the `maxima` babel backend's own interpreter; gnuplot
             # is what its plotting front ends (plot2d/plot3d, and the draw
             # package's draw2d/draw3d) shell out to, so a `:results graphics
@@ -587,17 +570,67 @@
             #   julia -e 'using Pkg; Pkg.add("LanguageServer")'
             # mep.lsp_servers.julials's own invocation is verified
             # correct once that's done.
+          ]
+          # Linux-only shell dependencies. Everything above is available
+          # on Darwin too (verified against this flake's locked nixpkgs
+          # for aarch64-darwin); this block is what used to break `nix
+          # develop`/direnv there outright.
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.xeyes
+            # BUILD_PERFORMANCE_PLAN.md Round 2 -- CMakeLists.txt
+            # auto-detects both (mold preferred, lld independently
+            # selectable via -DMEP_LINKER=lld); just need to be on PATH.
+            # That whole linker-selection block is Linux-gated in
+            # CMakeLists.txt, so neither is any use on Darwin.
+            pkgs.mold
+            pkgs.lld
+            # Native (non-wasm) gfx:: backend build deps (X11/GLX/OpenGL,
+            # see gfx/backend_native.cpp / GLFW_REMOVAL_PLAN.md), for
+            # `just build-native` -- see mepPackage's own buildInputs
+            # above for why this list is shorter than it used to be
+            # (libxrandr/libxinerama/libxcursor/glfw dropped; libxi kept,
+            # a real transitive dependency of libxtst). On Darwin the
+            # backend is Cocoa/NSOpenGL (gfx/backend_native_macos.mm):
+            # system frameworks, nothing to list here.
+            pkgs.libGL
+            pkgs.libx11
+            pkgs.libxi
+            pkgs.libxtst
+            # In-house ALSA audio backend (gfx/backend_native_audio.cpp,
+            # see MINIAUDIO_REMOVAL_PLAN.md) -- PulseAudio/PipeWire users
+            # are covered transparently via their ALSA compatibility shim.
+            # Linux-only in nixpkgs (audio is a documented no-op in the
+            # macOS port anyway).
+            pkgs.alsa-lib
+            # Runtime dep of webview_deno, used by the launcher to open a
+            # native window around the wasm build. Linux-only in nixpkgs.
+            pkgs.webkitgtk_6_0
+            # Built with gcc14Stdenv, not the default gcc15: upstream dmd's
+            # own C header importer can't parse gcc 15's system headers,
+            # which now use the C23 `nullptr` keyword (stddef.h) -- a real
+            # nixpkgs-unstable/dmd incompatibility, not specific to this
+            # flake (same override mep.nvim/flake.nix uses, for the same
+            # reason). Drop this once nixpkgs' dmd derivation itself
+            # accounts for gcc 15 headers. dmd (and hence the `d` babel
+            # backend) is unavailable on aarch64-darwin, so it lives in
+            # this Linux block.
+            (pkgs.dmd.override { stdenv = pkgs.gcc14Stdenv; })
           ];
 
           # MEP_WEBVIEW_LD_LIBRARY_PATH: scoped to a separate variable
           # (rather than exported globally as LD_LIBRARY_PATH) so it
           # doesn't shadow libraries for cmake/gcc/emcc; the `run` recipe
           # in the justfile applies it only to the deno launcher process.
+          # Linux-only: it interpolates the webkitgtk runtime closure,
+          # which doesn't exist on Darwin -- and the optionalString guard
+          # is what keeps that closure from ever being evaluated there
+          # (Nix is lazy; forcing it would fail the whole shell).
           # MEP_TS_PARSER_PATH: read directly by mep itself at runtime
           # (src/treesitter.cpp) to dlopen additional Treesitter grammars
           # -- see the tsGrammars comment above.
-          shellHook = ''
+          shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             export MEP_WEBVIEW_LD_LIBRARY_PATH="${webviewLibraryPath}"
+          '' + ''
             export MEP_TS_PARSER_PATH="${tsGrammars}"
             # BUILD_PERFORMANCE_PLAN.md: CMake reads this env var as its
             # default generator whenever a caller (the justfile's plain

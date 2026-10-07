@@ -25,8 +25,12 @@
 //   - X11 (gui_embed_x11.cpp): reparents the program's top-level window
 //     into mep's own X window. Works under XWayland too, as long as mep
 //     itself runs there (its gfx backend is X11/GLX).
+//   - macOS (gui_embed_macos.mm): no reparenting there -- the program's
+//     window stays its own, moved and sized over the block through the
+//     Accessibility API and kept just above mep's window. Needs the
+//     Accessibility permission (and Screen Recording for its pictures).
 //   - Unsupported (gui_embed.cpp): every other build/session; says why.
-// Adding a platform (native Wayland, macOS, Windows) means writing one
+// Adding a platform (native Wayland, Windows) means writing one
 // more Backend/EmbeddedWindow pair and teaching CreateBackend to pick it;
 // EmbeddedApp and everything above it stay as they are. (Native Wayland
 // has no reparenting: its backend will be a small nested compositor that
@@ -106,6 +110,10 @@ public:
     // Environment a child needs so it opens its window where this backend
     // can adopt it (DISPLAY, and toolkit hints like GDK_BACKEND=x11).
     virtual std::vector<std::pair<std::string, std::string>> ChildEnv() const = 0;
+    // True when this windowing system cannot put a shield over a program
+    // (macOS): the pointer always reaches it, so a click into it takes the
+    // keyboard, as SetPointerThrough(true) arranges elsewhere.
+    virtual bool PointerThroughOnly() const { return false; }
     // Called at spawn time: remembers which windows already exist, so a
     // window that cannot be traced to a process can still be recognised
     // as new.
@@ -144,8 +152,17 @@ std::unique_ptr<Backend> CreateUnsupportedBackend(std::string why);
 std::unique_ptr<Backend> CreateX11Backend(void *native_window_handle, std::string *why);
 #endif
 
+#if defined(MEP_GUI_EMBED_MACOS)
 /**
- * @brief The process and every descendant of it (Linux: from /proc), the process first.
+ * @brief The macOS backend (gui_embed_macos.mm), or null when mep has no Cocoa window.
+ * @param native_window_handle A gfx::NativeWindowHandle* for mep's own window.
+ * @param why Set to the reason when null is returned.
+ */
+std::unique_ptr<Backend> CreateMacOSBackend(void *native_window_handle, std::string *why);
+#endif
+
+/**
+ * @brief The process and every descendant of it (Linux: from /proc; macOS: libproc), the process first.
  * @param pid The root process.
  */
 std::vector<int> ProcessTree(int pid);

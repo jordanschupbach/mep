@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstdlib>  // std::atoi -- previously only reached via the (Linux-only) PCH
 
 // --- Ranges -----------------------------------------------------------
 

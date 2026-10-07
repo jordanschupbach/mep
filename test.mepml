@@ -251,14 +251,66 @@ int main(void) {
 // result_end
 
 An exec-gui block runs a program with a window of its own, and shows that
-window inside the results (on X11): Enter or a click hands it the keyboard,
-Ctrl-\ takes it back, and when it closes its last picture is kept:
+window inside the results: Enter or a click hands it the keyboard, Ctrl-\
+takes it back, and when it closes its last picture is kept. This one is
+xeyes, written in tkinter -- the pupils follow the mouse pointer:
 
-```{exec-gui, rows=12}
-xeyes
+```{python, results=exec-gui, rows=12}
+import math
+import tkinter as tk
+
+root = tk.Tk()
+root.title("xeyes")
+canvas = tk.Canvas(root, bg="white", highlightthickness=0)
+canvas.pack(fill="both", expand=True)
+
+eyes = []  # (centre x, centre y, half width, half height, pupil item)
+
+
+def layout(event=None):
+    """Draw two eyes side by side, filling the window."""
+    global eyes
+    canvas.delete("all")
+    eyes = []
+    w, h = canvas.winfo_width(), canvas.winfo_height()
+    rx, ry = w * 0.23, h * 0.45  # an eye's half width and half height
+    line = max(3, min(w, h) * 0.04)
+    for cx in (w * 0.27, w * 0.73):
+        cy = h / 2
+        canvas.create_oval(cx - rx, cy - ry, cx + rx, cy + ry,
+                           fill="white", outline="black", width=line)
+        pupil = canvas.create_oval(0, 0, 0, 0, fill="black", outline="black")
+        eyes.append((cx, cy, rx, ry, pupil))
+    look()
+
+
+def look(event=None):
+    """Point each pupil at the mouse, keeping it inside its eye."""
+    px, py = root.winfo_pointerxy()
+    ox, oy = canvas.winfo_rootx(), canvas.winfo_rooty()
+    for cx, cy, rx, ry, pupil in eyes:
+        pr = min(rx, ry) * 0.3  # pupil radius
+        # Pupil centre moves inside an ellipse smaller than the eye by the
+        # pupil's radius and the eye's outline.
+        ax, ay = max(1.0, rx - pr * 1.6), max(1.0, ry - pr * 1.6)
+        dx, dy = px - ox - cx, py - oy - cy
+        d = math.hypot(dx / ax, dy / ay)
+        if d > 1:
+            dx, dy = dx / d, dy / d
+        x, y = cx + dx, cy + dy
+        canvas.coords(pupil, x - pr, y - pr, x + pr, y + pr)
+
+
+def watch():
+    look()
+    root.after(40, watch)
+
+
+canvas.bind("<Configure>", layout)
+watch()
+root.mainloop()
 ```
-// result_begin: gui
-// [running] inkscape
+// result_begin:
 // result_end
 
 ```{python, results=exec-gui, rows=10}

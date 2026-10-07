@@ -593,6 +593,15 @@ root.mainloop()
 the pane's edges, and is hidden while its block is off screen or another
 buffer is shown. <code>rows</code> sets its height (20 rows by default) and <code>cols</code> its
 width (the text width by default).</p>
+<p>On macOS the program's window is its own still (nothing can be drawn inside
+another program's window there): mep moves and sizes it over the block,
+keeps it just above its own window, and shrinks it to what is on screen
+where the pane's edge would cut it off. This needs the Accessibility
+permission -- System Settings &gt; Privacy &amp; Security &gt; Accessibility, for mep
+or for the terminal it was started from -- which macOS asks for the first
+time a block runs; and the Screen Recording permission for the picture of
+the window kept when the program ends (asked for once, too; without it the
+results keep no picture).</p>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
 <tr><td><code>Enter</code> (or a click)</td><td>send the keyboard and mouse to the program</td></tr>

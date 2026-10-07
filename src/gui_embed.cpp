@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cstdlib>
 #include <dirent.h>
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -63,10 +66,14 @@ std::unique_ptr<Backend> CreateBackend(void *native_window_handle) {
     std::string why;
     if (std::unique_ptr<Backend> x11 = CreateX11Backend(native_window_handle, &why)) return x11;
     return CreateUnsupportedBackend(why);
+#elif defined(MEP_GUI_EMBED_MACOS)
+    std::string why;
+    if (std::unique_ptr<Backend> mac = CreateMacOSBackend(native_window_handle, &why)) return mac;
+    return CreateUnsupportedBackend(why);
 #elif defined(__EMSCRIPTEN__)
     return CreateUnsupportedBackend("a browser tab cannot hold another program's window");
 #else
-    return CreateUnsupportedBackend("embedding a program's window is not implemented on this platform yet (only X11 is)");
+    return CreateUnsupportedBackend("embedding a program's window is not implemented on this platform yet (only X11 and macOS are)");
 #endif
 }
 
@@ -98,6 +105,27 @@ std::vector<int> ProcessTree(int pid) {
         auto range = children.equal_range(out[k]);
         for (auto it = range.first; it != range.second; ++it)
             if (std::find(out.begin(), out.end(), it->second) == out.end()) out.push_back(it->second);
+    }
+#elif defined(__APPLE__)
+    // parent -> children, from the kernel's process table (sysctl; libproc's
+    // proc_listchildpids is not used: what it returns, a count or a byte
+    // size, differs between macOS versions).
+    std::multimap<int, int> children;
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+    size_t len = 0;
+    if (sysctl(mib, 4, nullptr, &len, nullptr, 0) == 0 && len > 0) {
+        std::vector<char> buf(len + 64 * sizeof(kinfo_proc));  // room for processes started meanwhile
+        len = buf.size();
+        if (sysctl(mib, 4, buf.data(), &len, nullptr, 0) == 0) {
+            const auto *procs = reinterpret_cast<const kinfo_proc *>(buf.data());
+            for (size_t k = 0; k < len / sizeof(kinfo_proc); ++k)
+                children.emplace(static_cast<int>(procs[k].kp_eproc.e_ppid), static_cast<int>(procs[k].kp_proc.p_pid));
+        }
+    }
+    for (size_t k = 0; k < out.size(); ++k) {
+        auto range = children.equal_range(out[k]);
+        for (auto it = range.first; it != range.second; ++it)
+            if (it->second > 0 && std::find(out.begin(), out.end(), it->second) == out.end()) out.push_back(it->second);
     }
 #endif
     return out;
@@ -197,7 +225,7 @@ void EmbeddedApp::Tick(double now, bool allow_unowned) {
             focused_ = false;
             focus_lost_ = true;
         }
-    } else if (pointer_through_ && shown_ && window_->HasFocus()) {
+    } else if ((pointer_through_ || backend_.PointerThroughOnly()) && shown_ && window_->HasFocus()) {
         // Clicked into (the pointer reaches it directly): it has taken the
         // keyboard, so it is focused -- Ctrl-\ or a click outside gives it back.
         window_->Focus(true);

@@ -28,14 +28,23 @@
  * @param at_row The row lines were inserted at / removed from.
  * @param count Lines inserted (positive) or removed (negative).
  * @param line_count The buffer's line count *after* the edit; the result is clamped into it.
+ * @param inclusive_end True when `row` is a range's own last row (a fold's
+ *        end_row), false for a plain position or a range's start.
  * @return Where that row now is.
  *
  * A row strictly inside a deleted run collapses to `at_row` -- the text
  * it named is gone, and the deletion point is the nearest thing to where
  * it was. Call this *after* the insert/erase, so `line_count` is the new
  * count.
+ *
+ * `inclusive_end` is what keeps a *range* from growing when a deletion
+ * eats its tail. `at_row` now holds the first line that came *after* the
+ * deleted run, which is outside the range -- so a range's last row has to
+ * stop one earlier. Collapsing both ends of a fold to `at_row` alike is
+ * what silently pulled the line below a deletion into the fold, every
+ * time a delete overlapped a fold's end.
  */
-inline int ShiftRowForLineEdit(int row, int at_row, int count, int line_count) {
+inline int ShiftRowForLineEdit(int row, int at_row, int count, int line_count, bool inclusive_end = false) {
     if (count > 0) {
         if (row >= at_row) row += count;
     } else {
@@ -43,7 +52,7 @@ inline int ShiftRowForLineEdit(int row, int at_row, int count, int line_count) {
         if (row >= at_row + removed) {
             row += count;  // count already negative
         } else if (row >= at_row) {
-            row = at_row;
+            row = inclusive_end ? at_row - 1 : at_row;
         }
     }
     return std::max(0, std::min(row, line_count - 1));

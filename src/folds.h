@@ -131,18 +131,30 @@ inline void NormalizeFoldList(std::vector<Fold> &folds, int line_count) {
  * shrinks correctly when the edit lands inside it rather than before it
  * -- inserting a line inside an open block extends end_row without
  * moving start_row, while inserting above the block moves both. A
- * boundary strictly inside a deleted run collapses to `at_row`.
+ * start_row strictly inside a deleted run collapses to `at_row`; an
+ * end_row stops at `at_row - 1`, since `at_row` itself is the first line
+ * *after* the deleted run and so outside the fold.
  */
 inline void ShiftFoldList(std::vector<Fold> &folds, int at_row, int count, int line_count) {
     if (count == 0 || folds.empty()) return;
     for (Fold &f : folds) {
         f.start_row = ShiftRowForLineEdit(f.start_row, at_row, count, line_count);
-        f.end_row = ShiftRowForLineEdit(f.end_row, at_row, count, line_count);
+        // The fold's own last row, so a deletion eating its tail shrinks it
+        // to what survived instead of annexing the line below -- see
+        // ShiftRowForLineEdit's `inclusive_end`.
+        f.end_row = ShiftRowForLineEdit(f.end_row, at_row, count, line_count, /*inclusive_end=*/true);
     }
-    // A fold collapsed to <2 lines by a deletion isn't meaningful anymore
-    // (the same rule CreateFold applies when one is first made), and a
-    // deletion landing across two overlapping ranges can leave them
-    // crossing -- both of which NormalizeFoldList settles.
+    // A deletion that ate a fold's tail can leave end_row *below*
+    // start_row, which is this shift's way of saying "there is nothing of
+    // this fold left". Drop those here rather than letting them reach
+    // NormalizeFoldList, whose first repair step swaps an inverted range
+    // the right way round -- turning a fold that should be gone into a
+    // plausible-looking two-line one over text it never covered.
+    folds.erase(std::remove_if(folds.begin(), folds.end(), [](const Fold &f) { return f.start_row >= f.end_row; }),
+                folds.end());
+    // A deletion landing across two overlapping ranges can also leave them
+    // crossing, which NormalizeFoldList settles (along with re-clamping
+    // and the <2-line rule).
     NormalizeFoldList(folds, line_count);
 }
 

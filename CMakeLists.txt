@@ -2044,6 +2044,30 @@ target_compile_options(mep-fold-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_
 target_link_options(mep-fold-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-fold-test)
 
+# Folding regression test: drives a real Editor (windowless -- the
+# constructor only bootstraps a project and a theme, and nothing on the
+# fold path touches the renderer) through `:normal` keystrokes and the
+# public fold API, covering the drift/duplication/restore bugs folding has
+# been reported for. Links mep_core, so it sees Editor itself rather than a
+# re-extracted copy of the logic.
+if(NOT EMSCRIPTEN)
+    add_executable(mep-editor-fold-test EXCLUDE_FROM_ALL src/editor_fold_test.cpp
+        src/collab_crdt.cpp src/collab_session.cpp src/collab_websocket.cpp)
+    target_link_libraries(mep-editor-fold-test PRIVATE mep_core)
+    target_include_directories(mep-editor-fold-test PRIVATE src)
+    target_compile_options(mep-editor-fold-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-editor-fold-test PRIVATE ${MEP_SANITIZE_FLAGS})
+    # Same PCH as `mep` itself: collab_session.cpp imports the mep.diff
+    # module, and compiling it without the precompiled header mixes a
+    # textual <algorithm> with the module's own BMI copy of it.
+    target_precompile_headers(mep-editor-fold-test PRIVATE ${MEP_PCH_HEADERS})
+    target_link_libraries(mep-editor-fold-test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    if(NOT WIN32)
+        target_link_libraries(mep-editor-fold-test PRIVATE Threads::Threads)
+    endif()
+    add_dependencies(tests mep-editor-fold-test)
+endif()
+
 # WORKSPACES_PLAN.md Phase 12: pure-helper test (worktree dir derivation,
 # porcelain parsing, name validation, session JSON round trip). Links only
 # workspace_git.cpp, same windowless model as mep-html-doc-test above.

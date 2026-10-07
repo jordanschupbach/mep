@@ -24905,6 +24905,15 @@ void Editor::CreateFold(int start_row, int end_row, bool closed, const std::stri
         if (provider == "manual") f.provider = "manual";
         return;
     }
+    // Carry over what this provider had collapsed at this start row before
+    // its last clear, so a rebuild doesn't reopen the user's folds (see
+    // Buffer::fold_closed_rows_by_provider). Never *forces* a fold shut:
+    // only a provider recreating one it had itself handed over as closed
+    // gets the state back, and never while 'nofoldenable' is in force.
+    if (!closed && Buf().fold_enabled) {
+        auto it = Buf().fold_closed_rows_by_provider.find(provider);
+        if (it != Buf().fold_closed_rows_by_provider.end() && it->second.count(start_row) != 0) closed = true;
+    }
     Buf().folds.push_back({start_row, end_row, closed, provider});
     // Defer the full repair (crossings, in particular) to the next
     // frame's NormalizeFoldsIfStale rather than paying its O(n^2) here:
@@ -24929,6 +24938,15 @@ void Editor::NormalizeFoldsIfStale(Buffer &buf) {
 
 void Editor::ClearFoldsFromProvider(const std::string &provider) {
     auto &folds = Buf().folds;
+    // Remember which of this provider's folds were collapsed before they
+    // go, so the rebuild that follows can put them back that way --
+    // replacing (not merging into) any earlier record, so a fold the user
+    // has since opened is genuinely forgotten rather than resurrected.
+    std::unordered_set<int> closed_rows;
+    for (const Fold &f : folds) {
+        if (f.provider == provider && f.closed) closed_rows.insert(f.start_row);
+    }
+    Buf().fold_closed_rows_by_provider[provider] = std::move(closed_rows);
     // Matches folds whose provider tag equals the one being cleared.
     folds.erase(std::remove_if(folds.begin(), folds.end(), [&](const Fold &f) { return f.provider == provider; }),
                 folds.end());
@@ -29990,7 +30008,7 @@ void Editor::PasteBefore(int count, char reg_name) {
 // --- Undo/redo ---------------------------------------------------------
 
 void Editor::PushUndo() {
-    Buf().undo_stack.push_back(Buf().lines);
+    Buf().undo_stack.push_back({Buf().lines, Buf().folds});
     if (Buf().undo_stack.size() > kMaxUndo) Buf().undo_stack.erase(Buf().undo_stack.begin());
     Buf().redo_stack.clear();
     change_epoch_++;
@@ -30001,8 +30019,11 @@ void Editor::Undo() {
         status_message_ = "Already at oldest version of the file";
         return;
     }
-    Buf().redo_stack.push_back(Buf().lines);
-    Buf().lines = Buf().undo_stack.back();
+    Buf().redo_stack.push_back({Buf().lines, Buf().folds});
+    Buf().lines = Buf().undo_stack.back().lines;
+    // Exact, not reconstructed -- see Buffer::UndoState for why a diff
+    // cannot recover a fold boundary the undone deletion had destroyed.
+    Buf().folds = Buf().undo_stack.back().folds;
     Buf().undo_stack.pop_back();
     Buf().modified = true;
     // The line vector is swapped wholesale here, so nothing told the
@@ -30010,8 +30031,7 @@ void Editor::Undo() {
     // two versions and move them by it. Ahead of ClampCursor (which is
     // fold-aware), or it clamps against ranges that still describe the
     // text this undo just replaced.
-    ShiftFoldsForTextSwap(Buf(), Buf().redo_stack.back());
-    ShiftMarksForTextSwap(Buf(), Buf().redo_stack.back());
+    ShiftMarksForTextSwap(Buf(), Buf().redo_stack.back().lines);
     NormalizeFoldsIfStale(Buf());
     ClampCursor();
     // Let the user know when this undo lands them on the oldest change.
@@ -30023,12 +30043,12 @@ void Editor::Redo() {
         status_message_ = "Already at newest version of the file";
         return;
     }
-    Buf().undo_stack.push_back(Buf().lines);
-    Buf().lines = Buf().redo_stack.back();
+    Buf().undo_stack.push_back({Buf().lines, Buf().folds});
+    Buf().lines = Buf().redo_stack.back().lines;
+    Buf().folds = Buf().redo_stack.back().folds;  // see Undo
     Buf().redo_stack.pop_back();
     Buf().modified = true;
-    ShiftFoldsForTextSwap(Buf(), Buf().undo_stack.back());  // see Undo
-    ShiftMarksForTextSwap(Buf(), Buf().undo_stack.back());
+    ShiftMarksForTextSwap(Buf(), Buf().undo_stack.back().lines);  // see Undo
     NormalizeFoldsIfStale(Buf());
     ClampCursor();
     // Let the user know when this redo lands them on the most recent change.
@@ -33472,7 +33492,7 @@ void Editor::SetBufferLinesForLua(int buffer_id, const std::vector<std::string> 
 void Editor::PushUndoForBuffer(int buffer_id) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
     Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
-    buf.undo_stack.push_back(buf.lines);
+    buf.undo_stack.push_back({buf.lines, buf.folds});
     if (buf.undo_stack.size() > kMaxUndo) buf.undo_stack.erase(buf.undo_stack.begin());
     buf.redo_stack.clear();
     change_epoch_++;
@@ -34536,8 +34556,17 @@ void Editor::ReloadCurrentBuffer(bool force) {
     }
     std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     PushUndo();
+    std::vector<std::string> before = std::move(Buf().lines);
     Buf().lines = SplitIntoLines(content);
     Buf().modified = false;
+    // Same whole-vector swap undo/redo make, and the same fix: the file on
+    // disk may have grown or shrunk above these folds since they were
+    // made, and without this they keep their old row numbers and end up
+    // covering lines the user never chose. Ahead of ClampCursor, which is
+    // fold-aware.
+    ShiftFoldsForTextSwap(Buf(), before);
+    ShiftMarksForTextSwap(Buf(), before);
+    NormalizeFoldsIfStale(Buf());
     ClampCursor();
     status_message_ = "\"" + Buf().filename + "\" " + std::to_string(Buf().LineCount()) + "L reloaded";
 }

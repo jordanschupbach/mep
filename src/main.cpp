@@ -51485,21 +51485,44 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             row = fold_here->end_row;
             continue;
         }
-        // Open (unclosed) fold starting here: no summary line to replace
-        // the row's own text with, but still worth a gutter marker so
-        // there's something to click to close it (matches vim's
-        // foldcolumn '-' convention for an open fold's start row).
-        if (is_active) {
+        // An open fold's extent in the gutter's one marker column. Only
+        // its start row used to be marked, which left no way at all to see
+        // where a fold ended -- you closed it to find out, and the
+        // collapsed summary was the first indication of how much it had
+        // been covering. Now the whole span is drawn, vim's foldcolumn
+        // convention extended with an explicit end:
+        //
+        //   -  the fold starts here (clickable: closes it)
+        //   |  a row inside it
+        //   _  its last row
+        //
+        // Deliberately ASCII, like kFoldEllipsis above: the box-drawing
+        // glyphs this would otherwise want (U+2502/U+2514) are in none of
+        // the embedded faces, and g_font draws a codepoint it lacks as a
+        // literal '?'. One column means nested folds share it, so the
+        // most specific marker wins -- a start row beats an end row (it
+        // is also the clickable one), and an end row beats a plain
+        // interior. Drawn for every pane; only the active pane gets the
+        // click region, since ToggleFoldAtRow acts on the active buffer.
+        {
+            bool starts_here = false, ends_here = false, inside = false;
             for (const Fold &f : buf.folds) {
-                if (!f.closed && f.start_row == row) {
-                    gfx::DrawTextEx(g_font, "-", gfx::Vector2{text_x - g_char_width, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
-                    int marker_row = row;
-                    // Toggles (closes) the fold starting at this row.
-                    RegisterClickRegion(
-                        gfx::Rectangle{text_x - g_char_width, ly, g_char_width, static_cast<float>(line_height)},
-                        [marker_row] { g_editor.ToggleFoldAtRow(marker_row); });
-                    break;
-                }
+                if (f.closed || row < f.start_row || row > f.end_row) continue;
+                if (f.start_row == row) starts_here = true;
+                else if (f.end_row == row) ends_here = true;
+                else inside = true;
+            }
+            const char *marker = starts_here ? "-" : ends_here ? "_" : inside ? "|" : nullptr;
+            if (marker != nullptr) {
+                gfx::DrawTextEx(g_font, marker, gfx::Vector2{text_x - g_char_width, ly}, g_font_size, 0,
+                                ResolveHlGroup("LineNr"));
+            }
+            if (starts_here && is_active) {
+                int marker_row = row;
+                // Toggles (closes) the fold starting at this row.
+                RegisterClickRegion(
+                    gfx::Rectangle{text_x - g_char_width, ly, g_char_width, static_cast<float>(line_height)},
+                    [marker_row] { g_editor.ToggleFoldAtRow(marker_row); });
             }
         }
 

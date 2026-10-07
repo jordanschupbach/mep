@@ -272,15 +272,21 @@ int main() {
         ShiftFoldList(folds, 40, 4, 104);  // below it: nothing moves
         CHECK(Has(folds, 20, 30));
     }
-    // Deletions, including one that eats a boundary: a row inside the
-    // deleted run collapses to the row the deletion started at.
+    // Deletions, including one that eats a boundary: a start_row inside
+    // the deleted run collapses to the row the deletion started at, while
+    // an end_row stops one row earlier -- `at_row` itself is the first
+    // line that came *after* the deleted run, so it was never inside the
+    // fold. Collapsing both ends alike grew the fold by one line every
+    // time a delete overlapped its tail, which is the "the fold swallowed
+    // a line I never selected" half of the reported breakage.
     {
         std::vector<Fold> folds = {F(20, 30)};
         ShiftFoldList(folds, 9, -4, 96);
         CHECK(Has(folds, 16, 26));
         folds = {F(20, 30)};
         ShiftFoldList(folds, 25, -20, 80);  // swallows end_row and then some
-        CHECK(Has(folds, 20, 25));
+        // Rows 25..44 are gone; 20..24 is all that is left of the fold.
+        CHECK(Has(folds, 20, 24));
         folds = {F(20, 30)};
         ShiftFoldList(folds, 18, -20, 80);  // swallows the whole fold
         CHECK(folds.empty());

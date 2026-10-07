@@ -1052,8 +1052,24 @@ struct Buffer {
     // Empty when unknown, in which case the workspace root / cwd is used.
     std::string base_dir;
 
-    std::vector<std::vector<std::string>> undo_stack;
-    std::vector<std::vector<std::string>> redo_stack;
+    // One point in the buffer's edit history: the text, and the folds that
+    // were in force over exactly that text.
+    //
+    // The folds ride along rather than being recovered afterwards because
+    // a deletion destroys information no later diff can reconstruct. Delete
+    // a run that straddles a fold's start and the fold legitimately shrinks
+    // to the rows that survived -- its original start row is simply gone.
+    // ShiftFoldsForTextSwap (folds.h's ShiftFoldListForTextSwap) does a good
+    // job on every whole-vector swap that has nothing better to go on, but
+    // undo *does* have something better: the exact fold set from before the
+    // edit. Restoring it is how `u` puts a fold back on `class Gamma` rather
+    // than three rows into its body.
+    struct UndoState {
+        std::vector<std::string> lines;
+        std::vector<Fold> folds;
+    };
+    std::vector<UndoState> undo_stack;
+    std::vector<UndoState> redo_stack;
 
     // Marks (m{a-z}) are per-buffer in Vim, not global -- `a jumps to
     // nothing if it was set in a different buffer. Row is clamped (not
@@ -1129,6 +1145,19 @@ struct Buffer {
     // the live line count (Editor::NormalizeFoldsIfStale) and re-clamps
     // when they differ -- O(folds) only on the frame after a change.
     int folds_normalized_line_count = -1;
+    // What each provider had collapsed when it last cleared its own folds,
+    // keyed by provider tag and holding the start rows that were closed.
+    // Providers all work clear-then-recreate (ClearFoldsFromProvider
+    // followed by a run of CreateFold calls), and recreate every range in
+    // its default state -- so without this, any provider rebuild reopened
+    // everything the user had collapsed. The org/mepml/marker providers
+    // each hand-rolled their own version of this; the Treesitter provider
+    // behind every code filetype's folds (mep.syntax_fold) did not, which
+    // is why closed Python folds sprang open again as the file was edited.
+    // Honoured by CreateFold, so every provider gets it for free -- and
+    // Editor::WorkspaceFoldsJson's "a provider's recompute preserves the
+    // collapsed state by start row" rule finally holds for all of them.
+    std::unordered_map<std::string, std::unordered_set<int>> fold_closed_rows_by_provider;
 
     // Org inline-image rendering: row -> a resolved file path plus that
     // file's native pixel size, populated by Editor::OrgImageScan (and

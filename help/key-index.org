@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 151 =<leader>= sequences registered at startup. Press
+All 153 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -65,6 +65,7 @@ the features live.
 | =<leader>hs= | Help: symbol under the cursor (gh) | [[file:language-ui.html][Language UI modes]] |
 | =<leader>jv= | Runner: variable inspector | [[file:runners.html][The command runner]] |
 | =<leader>jw= | Runner: workspaces | [[file:runners.html][The command runner]] |
+| =<leader>kA= | mepml: toggle alt text popup on hover | [[file:mepml.html][mepml]] |
 | =<leader>kP= | mepml: present the slides full screen | [[file:mepml.html][mepml]] |
 | =<leader>ka= | mepml: run all code blocks | [[file:mepml.html][mepml]] |
 | =<leader>kc= | mepml: list problems | [[file:mepml.html][mepml]] |
@@ -120,6 +121,7 @@ the features live.
 | =<leader>orr= | Org-roam: find note | [[file:org-roam.html][Org-roam]] |
 | =<leader>ors= | Org-roam: sync notes | [[file:org-roam.html][Org-roam]] |
 | =<leader>os= | Org: block settings | [[file:org-babel.html][Executing code blocks]] |
+| =<leader>ota= | Toggle alt text popup on hover | [[file:mepml.html][mepml]] |
 | =<leader>otb= | Org: toggle block cards | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otc= | Org: toggle plain (undecorated) cursor line | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>oth= | Org: toggle scaled heading sizes | [[file:org-basics.html][Org files in mep]] |

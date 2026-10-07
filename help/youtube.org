@@ -37,16 +37,25 @@ or =:bd= its buffer.
 
 * Keys in the pane
 
+=?= in the pane shows this same list as a sheet over the video -- the
+=?: help= line along the pane's bottom edge is the reminder that it is
+there, exactly like a sidebar's. =Esc= (or a click) puts it away.
+
 | Key              | Does                                                 |
 |------------------+------------------------------------------------------|
+| =?=              | show the key sheet over the player (=Esc= closes it) |
 | =/= or =s=       | search (a URL typed here plays instead of searching) |
 | =o=              | open a watch URL or video id                         |
 | =j= / =k=        | move through the results (=g= / =G= top / bottom)    |
 | =Enter=          | play the selected result; on the one already playing, pause / resume |
-| =Space=          | pause / resume -- unless Space is your leader key (the default), when it opens the leader menu instead and =Enter= is the pause |
+| =C-Space=        | pause / resume -- works whatever your leader key is  |
+| =Space=          | pause / resume -- unless Space is your leader key (the default), when it opens the leader menu instead and =C-Space= / =Enter= are the pause |
 | =i=              | hide the pane and keep playing (=<leader>yt= brings it back) |
-| =h= / =l=        | seek 10 seconds back / forward (=H= / =L=: a minute) |
+| =h= / =l=        | volume down / up                                     |
+| =H= / =L=        | seek 10 seconds back / forward                       |
+| =Left= / =Right= | seek 10 seconds back / forward (with =Shift=: a minute) |
 | =0= ... =9=      | jump to 0%, 10%, ... 90% of the video                |
+| =C-h= / =C-l=    | previous / next result (=C-p= / =C-n= do the same)   |
 | =n= / =p=        | next / previous result (the list plays on by itself at the end of a video) |
 | =+= / =-=        | volume                                               |
 | =m=              | mute                                                 |
@@ -58,6 +67,23 @@ or =:bd= its buffer.
 player from inside it too. The mouse does the same things: click a result
 to play it, the picture to pause, the progress bar to seek, the speaker to
 mute, and drag the volume slider.
+
+* The status bar pill
+
+Whenever a track is loaded, a pill joins the chips at the right end of the
+status bar, left of =direnv=: a play/pause icon, the elapsed/total readout,
+and the title scrolling past in a fixed window so a long one is readable
+without the pill growing to fit it. It is red while the track is running
+and gray while it is paused or finished, clicking it pauses or resumes,
+and it is there whether the player pane is on screen or hidden -- which is
+how a player left playing in the background says what it is playing. It
+disappears when nothing is loaded.
+
+Changing track -- =n=/=p=, the transport's prev/next buttons, or the list
+playing on by itself at the end of a video -- also sends a /Now playing:/
+notification with the title and channel, so a background player announces
+itself without the pane being open. =<leader>nn= (the notifications pane)
+has them all.
 
 * How playback works
 

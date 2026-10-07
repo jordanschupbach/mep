@@ -44,13 +44,34 @@ algorithm -- a deliberate simplification.
 | Key                | Does                                              |
 |--------------------+---------------------------------------------------|
 | =mod1+Ctrl+h j k l= | move this pane's active buffer tab into the neighbouring pane |
+| =mod1+Ctrl+Shift+h j k l= | swap this whole pane with the neighbouring one |
 | =mod1+m=           | maximize this pane, or restore the previous layout |
 
 Moving the last buffer tab out of a pane closes that pane.
 
+Swapping exchanges the two panes' places in the layout -- each takes over
+the other's slot and size -- and focus stays on the pane that moved, so the
+cursor travels with it and the same chord can be pressed again to keep
+walking that pane across the layout. =mod1+Ctrl+Shift+j= sends the pane you
+are in below the one that was under it.
+
 =mod1+m= shrinks every other pane to the minimum the resize keys stop at.
 Pressing it again restores the layout from before; pressing it in a
 *different* pane while one is maximized maximizes that one instead.
+
+* Buffer tabs within a pane
+
+| Key                  | Does                                            |
+|----------------------+-------------------------------------------------|
+| =mod1+Tab=           | next buffer tab in this pane                    |
+| =mod1+Shift+Tab=     | previous buffer tab                             |
+| =mod1+Ctrl+Tab=      | move this buffer one place along the pane's tab bar |
+| =mod1+Ctrl+Shift+Tab= | move it one place back                         |
+
+The Ctrl pair reorders the tab strip rather than stepping through it: the
+buffer you are in stays the one you are in, it just changes place (wrapping
+around at either end), which is the same "move the thing I'm looking at"
+relationship =mod1+Ctrl+h j k l= has to =mod1+h j k l=.
 
 * Inside a sidebar
 
@@ -84,12 +105,14 @@ mep.map_mod1('S-l', mep.some_function)   -- mod1+Shift+l
 mep.map_mod1('C-j', mep.other_function)  -- mod1+Ctrl+j
 #+end_src
 
-A bare letter is =mod1+letter=; =S-= and =C-= prefixes add Shift and Ctrl.
-=Tab=, =S-Tab=, =CR= and =S-CR= are also accepted.
+A bare letter is =mod1+letter=; =S-=, =C-= and =C-S-= prefixes add Shift,
+Ctrl, and both. =Tab= takes the same prefixes, and =CR= / =S-CR= are also
+accepted.
 
 The functions behind the defaults are callable directly:
 =mep.nav_pane(dir)=, =mep.resize_pane(dir, step)=,
-=mep.pane_move_buffer(dir)=, =mep.pane_close_buffer()= and
+=mep.pane_move_buffer(dir)=, =mep.swap_pane(dir)=,
+=mep.pane_reorder_buffer(delta)=, =mep.pane_close_buffer()= and
 =mep.pane_maximize_toggle()=.
 
 * See also

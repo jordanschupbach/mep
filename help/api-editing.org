@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (196)
+* The bindings (199)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -93,6 +93,8 @@ that it does nothing.
 | =mep.menubar_tap_toggle_set= | enables/disables the bare mod1 (Alt) tap that toggles the menu bar |
 | =mep.menubar_toggle= | shows/hides the top menu bar, the same thing tapping mod1 does |
 | =mep.menubar_visible= | returns whether the top menu bar is currently shown |
+| =mep.mepml_alt_popup_toggle= | toggles the mepml alt text popup |
+| =mep.mepml_alt_popup_visible= | reports whether a hovered mepml block shows its alt text in a popup |
 | =mep.mepml_block_at= | describes the mepml code block at a 1-based row |
 | =mep.mepml_code_blocks= | lists the current mepml buffer's code-block bodies |
 | =mep.mepml_diagnostics= | the parser's diagnostics for the current mepml buffer |
@@ -169,6 +171,7 @@ that it does nothing.
 | =mep.statusbar_set_visible= | shows or hides the status line outright |
 | =mep.statusbar_toggle= | shows/hides the status line at the foot of the window |
 | =mep.statusbar_visible= | returns whether the status line is shown (zen mode aside) |
+| =mep.swap_pane= | swaps the focused pane with its neighbor in that direction, focus travelling with the pane that moved |
 | =mep.tabbar_set_visible= | shows or hides the tab bar outright |
 | =mep.tabbar_toggle= | shows/hides the tab bar at the top of the window |
 | =mep.tabbar_visible= | returns whether the tab bar is shown (zen mode aside) |

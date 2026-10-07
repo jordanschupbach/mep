@@ -35,6 +35,7 @@ language.
 | =<leader>km=          | toggle markup concealment                                 |
 | =<leader>kr=          | raw text or rendered (also the header's eye button)       |
 | =<leader>kf=          | toggle the math preview popup shown while typing a formula |
+| =<leader>kA=          | toggle the alt text popup shown on hover (off by default) |
 | =<leader>kp=          | present the slides, filling the editor (also the header's screen button, on a presentation) |
 | =<leader>kP=          | present the slides full screen                            |
 | =:MepmlExecute=       | run the code block under the cursor                       |
@@ -53,6 +54,7 @@ language.
 | =:MepmlHeaderToggle=  | fold or unfold the document header                        |
 | =:MepmlLinkFollow=    | follow the link under the cursor                          |
 | =:MepmlRender=        | re-render the buffer now                                  |
+| =:MepmlAltPopupToggle= | toggle the alt text popup shown on hover                 |
 | =:MepmlRawToggle=     | toggle rendering (raw text / rendered document)           |
 | =:MepmlFoldsRecompute= | rebuild folds (=za=, =zc= and =zo= do this themselves)  |
 | =:MepmlPresent= [mode] | present the slides: =fill= (the default), =full=, =stop= |
@@ -798,7 +800,12 @@ the page; =Enter= on the block (or the page taking it, for a text field)
 hands it the keyboard, and =Ctrl-\= or a click outside takes it back. Stopping keeps a picture of the page as the block's results (at
 =file==, else beside the document), and that picture is what the slides,
 PDF and Office exports show until it runs again; an HTML export embeds an
-=html= block's page itself, live. =rows== sets its height. The page is
+=html= block's page itself, live. =rows== sets its height. The picture is
+of the whole page, which mep can only read while the page is on screen: a
+tall =rows== that the pane cuts off is photographed as the part that
+showed, so scroll such a block fully into view once before exporting.
+Scrolling away afterwards cannot spoil it -- a cut-off photograph never
+replaces a whole one. The page is
 written beside the document, so the paths it names (a script, a picture)
 are the document's. The browser is the first of =chromium=,
 =chromium-browser=, =google-chrome= or =brave-browser= on =PATH= (or
@@ -835,12 +842,18 @@ a caption reads "Figure 2: ..." or "Table 1: ..." in the editor and in
 the export alike. In the editor a caption is wrapped to the text width
 (=:set textwidth=, 80 by default) and centred under a figure; its source
 comes back while the cursor is on it. An alt text is for readers who cannot
-see the page, so it takes no room on it: its lines are hidden, and while the
-mouse is over the block it describes it shows in a popup just under the
-block (an inline formula's while the mouse is over the formula) -- in the
-presentation view too. Move the cursor onto its own line to
-see and edit its source, which also stays on one line: a long one slides
-sideways to keep the cursor in view rather than wrapping.
+see the page, so it takes no room on it: its lines are hidden. Move the
+cursor onto its own line to see and edit its source, which also stays on
+one line: a long one slides sideways to keep the cursor in view rather
+than wrapping.
+
+=<leader>ota= (=<leader>kA=, =:MepmlAltPopupToggle=) turns on a popup
+that shows an alt text while the mouse is over the block it describes --
+an inline formula's while the mouse is over the formula -- in the
+rendered view and in the presentation view alike. It starts *off*: the
+text is written for a reader who cannot see the page, so by default it
+stays off the page rather than floating over the document wherever the
+mouse rests. Turn it on to proofread what the exports will say.
 
 GitHub-flavoured Markdown tables work as they are. After a header row
 and a delimiter row with as many cells, the outer pipes are optional, and

@@ -3636,6 +3636,29 @@ void GuiSnapshotPaths(const mepml::Block &b, const std::filesystem::path &doc_fi
     const std::filesystem::path p(*ref);
     *path = (p.is_absolute() ? p : doc_file.parent_path() / p).lexically_normal().string();
 }
+
+// The height of the PNG at `path`, 0 when there is no readable one: its
+// IHDR, which the signature puts at a fixed offset -- the picture itself
+// does not have to be decoded to compare how much of a window two of them
+// hold.
+int PngHeightOf(const std::string &path) {
+    std::ifstream f(path, std::ios::binary);
+    unsigned char head[24];
+    if (!f.read(reinterpret_cast<char *>(head), sizeof head)) return 0;
+    static const unsigned char kSig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+    if (std::memcmp(head, kSig, sizeof kSig) != 0 || std::memcmp(head + 12, "IHDR", 4) != 0) return 0;
+    const unsigned long h = (static_cast<unsigned long>(head[20]) << 24) | (static_cast<unsigned long>(head[21]) << 16) |
+                            (static_cast<unsigned long>(head[22]) << 8) | static_cast<unsigned long>(head[23]);
+    return h > 0x7fffffffUL ? 0 : static_cast<int>(h);
+}
+
+// Whether the picture already at `path` shows more of the window than
+// `snap` does, so saving `snap` over it would lose the better one. Only a
+// clipped snapshot -- a piece of a window the pane's edge cut off -- can
+// lose this way; a whole one is always what the document should carry.
+bool KeepPictureOnDisk(const mep::gui_embed::Snapshot &snap, const std::string &path) {
+    return snap.clipped && PngHeightOf(path) > snap.height;
+}
 }  // namespace
 
 mepml::Document Editor::MepmlParseForExport(const std::vector<std::string> &tags) const {
@@ -3655,6 +3678,14 @@ mepml::Document Editor::MepmlParseForExport(const std::vector<std::string> &tags
             if (run.buffer_id != CurrentBufferId() || !run.app || BlockForRun(doc, run.code, run.fence_row) != &*b) continue;
             const mep::gui_embed::Snapshot &snap = run.app->LastSnapshot();
             if (snap.Empty() || run.snapshot_path.empty()) break;
+            // Only a piece of the window ever showed (it sits past the
+            // pane's edge): a picture already on disk that holds more of
+            // it beats the sliver this would save.
+            if (KeepPictureOnDisk(snap, run.snapshot_path)) {
+                ref = run.snapshot_ref;
+                path = run.snapshot_path;
+                break;
+            }
             const std::string png = png::Encode(snap.width, snap.height, 4, snap.rgba.data(), snap.width * 4);
             std::ofstream f(run.snapshot_path, std::ios::binary);
             if (!png.empty() && f.write(png.data(), static_cast<std::streamsize>(png.size()))) {
@@ -3852,12 +3883,18 @@ void Editor::MepmlGuisTick() {
         std::vector<std::string> lines;
         const mep::gui_embed::Snapshot &snap = run.app->LastSnapshot();
         if (!snap.Empty() && !run.snapshot_path.empty()) {
-            const std::string png = png::Encode(snap.width, snap.height, 4, snap.rgba.data(), snap.width * 4);
-            std::ofstream f(run.snapshot_path, std::ios::binary);
-            if (!png.empty() && f.write(png.data(), static_cast<std::streamsize>(png.size()))) {
-                f.close();
-                InvalidateOrgInlineImageTexture(run.snapshot_path);
+            // Only a piece of the window ever showed: keep the picture
+            // already on disk when it holds more of the window than this.
+            if (KeepPictureOnDisk(snap, run.snapshot_path)) {
                 lines.push_back("\\image(" + run.snapshot_ref + ")");
+            } else {
+                const std::string png = png::Encode(snap.width, snap.height, 4, snap.rgba.data(), snap.width * 4);
+                std::ofstream f(run.snapshot_path, std::ios::binary);
+                if (!png.empty() && f.write(png.data(), static_cast<std::streamsize>(png.size()))) {
+                    f.close();
+                    InvalidateOrgInlineImageTexture(run.snapshot_path);
+                    lines.push_back("\\image(" + run.snapshot_ref + ")");
+                }
             }
         }
         const std::vector<std::string> &out = run.app->Stdout();

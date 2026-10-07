@@ -8,6 +8,7 @@
 
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
 #define MEP_JOB_POSIX 1
+#include <fcntl.h>  // O_CLOEXEC, for RequestStop's self-pipe
 #include <poll.h>
 #include <pty.h>
 #include <signal.h>
@@ -43,6 +44,10 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
         finished_ = true;
         return;
     }
+    // O_CLOEXEC: this is mep's own wakeup channel, and a child holding its
+    // write end open past exec would be one more fd in a terminal's
+    // environment for no reason.
+    if (pipe2(stop_fds_, O_CLOEXEC) != 0) stop_fds_[0] = stop_fds_[1] = -1;  // the 200ms poll timeout still bounds the stop
     if (use_pty_) {
         int master_fd = -1;
         pid_t pid = forkpty(&master_fd, nullptr, nullptr, nullptr);
@@ -172,8 +177,17 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
 Job::~Job() {
 #if MEP_JOB_POSIX
     if (!finished_.load()) Kill();
+    // Before the join: nothing can consume this job's output any more, so
+    // the reader thread has no reason to keep waiting for an EOF it may
+    // never see (backlogged raw output, a PTY slave held open by a process
+    // that escaped the process group) -- see Job::RequestStop in job.h.
+    RequestStop();
     if (reader_thread_.joinable()) reader_thread_.join();
     if (stdin_fd_ >= 0) close(stdin_fd_);
+    for (int &fd : stop_fds_) {
+        if (fd >= 0) close(fd);
+        fd = -1;
+    }
 #endif
 }
 
@@ -181,7 +195,19 @@ void Job::Kill() {
 #if MEP_JOB_POSIX
     if (pid_ > 0 && !finished_.load()) {
         killed_ = true;
-        kill(-pid_, SIGTERM);
+        // A PTY job is a terminal session, and SIGHUP -- the hangup a real
+        // terminal emulator delivers when its window closes -- is the
+        // signal an interactive shell actually acts on: bash and zsh
+        // deliberately ignore SIGTERM as job-control shells (measured on
+        // this machine's login shell: SIGHUP gone in 5ms, SIGTERM still
+        // running 3s later). Without the hangup, one :terminal pane left
+        // open made every quit sit through ShutdownAll's entire grace
+        // period and die only to the SIGKILL at the end of it -- half a
+        // second added to :qa for a shell sitting at its prompt. SIGTERM
+        // still follows, for a non-shell child that ignores hangups but
+        // would exit on a terminate.
+        if (use_pty_) SignalChild(SIGHUP);
+        SignalChild(SIGTERM);
     }
 #endif
 }
@@ -196,7 +222,31 @@ void Job::KillHard() {
 #if MEP_JOB_POSIX
     if (pid_ > 0 && !finished_.load()) {
         killed_ = true;
-        kill(-pid_, SIGKILL);
+        SignalChild(SIGKILL);
+    }
+#endif
+}
+
+void Job::SignalChild(int sig) {
+#if MEP_JOB_POSIX
+    if (pid_ <= 0) return;
+    kill(pid_, sig);
+    kill(-pid_, sig);
+#else
+    (void)sig;
+#endif
+}
+
+void Job::RequestStop() {
+    stopping_ = true;
+#if MEP_JOB_POSIX
+    // Unblocks a reader parked in poll() right now; the flag above is what
+    // it then acts on, so a failed/short write costs only the wait for
+    // that poll's own timeout.
+    if (stop_fds_[1] >= 0) {
+        const char byte = 0;
+        ssize_t written = write(stop_fds_[1], &byte, 1);
+        (void)written;
     }
 #endif
 }
@@ -248,11 +298,24 @@ std::vector<JobLine> Job::DrainLines() {
     return out;
 }
 
-std::vector<std::string> Job::DrainRaw() {
+std::vector<std::string> Job::DrainRaw(size_t max_bytes, size_t max_newlines) {
     std::lock_guard<std::mutex> lk(mu_);
-    std::vector<std::string> out(pending_raw_.begin(), pending_raw_.end());
-    pending_raw_.clear();
-    pending_raw_bytes_ = 0;
+    std::vector<std::string> out;
+    size_t bytes = 0, newlines = 0;
+    while (!pending_raw_.empty() && bytes < max_bytes && newlines < max_newlines) {
+        std::string &chunk = pending_raw_.front();
+        bytes += chunk.size();
+        // Only counted when a ceiling actually applies: for the unlimited
+        // default (every consumer but a terminal) this loop is the old
+        // "take everything", and scanning the bytes for newlines would be
+        // pure waste.
+        if (max_newlines != std::numeric_limits<size_t>::max()) {
+            newlines += static_cast<size_t>(std::count(chunk.begin(), chunk.end(), '\n'));
+        }
+        pending_raw_bytes_ -= chunk.size();
+        out.push_back(std::move(chunk));
+        pending_raw_.pop_front();
+    }
     return out;
 }
 
@@ -297,6 +360,12 @@ void Job::ReaderLoop() {
     char buf[4096];
 
     while (out_open || err_open) {
+        // Asked to stop (job being destroyed / mep shutting down): leave
+        // the fds to ~Job rather than waiting for an EOF that the
+        // backpressure branch below, or a PTY slave still open somewhere,
+        // may never let this loop observe. Checked before the poll so the
+        // worst case is one 200ms timeout, not forever.
+        if (stopping_.load()) break;
         // Backpressure (see pending_raw_bytes_'s own comment, job.h): while
         // raw-mode output is backlogged past the cap, simply don't ask
         // poll() about stdout_fd_ this round -- the child's own write()s
@@ -311,7 +380,7 @@ void Job::ReaderLoop() {
             std::lock_guard<std::mutex> lk(mu_);
             out_backlogged = pending_raw_bytes_ >= kMaxPendingRawBytes;
         }
-        struct pollfd fds[2];
+        struct pollfd fds[3];
         int nfds = 0;
         int out_idx = -1, err_idx = -1;
         if (out_open && !out_backlogged) {
@@ -322,8 +391,14 @@ void Job::ReaderLoop() {
             fds[nfds] = {stderr_fd_, POLLIN, 0};
             err_idx = nfds++;
         }
+        // RequestStop's self-pipe: watched so a stop lands at once rather
+        // than at the end of this poll's timeout (which, with stdout left
+        // out of the set by the backpressure branch above, is all this
+        // loop would otherwise be waiting on).
+        if (stop_fds_[0] >= 0) fds[nfds++] = {stop_fds_[0], POLLIN, 0};
         int rc = poll(fds, static_cast<nfds_t>(nfds), 200);  // 200ms so a kill mid-read isn't stuck forever
         if (rc < 0) break;
+        if (stopping_.load()) break;
         if (rc > 0) mep::WakeMainLoop();  // output (or its end) for the main loop to pick up
 
         if (out_open && out_idx >= 0 && (fds[out_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
@@ -359,7 +434,34 @@ void Job::ReaderLoop() {
     }
 
     int status = 0;
-    waitpid(pid_, &status, 0);
+    if (stopping_.load()) {
+        // Stopped early, so the child may well still be alive -- a
+        // blocking waitpid here would just move the hang this bail-out
+        // exists to prevent from poll() to waitpid(). Reap it if it goes
+        // promptly (the usual case: ShutdownAll has already SIGTERMed and
+        // SIGKILLed it), escalate to SIGKILL ourselves if it hasn't, and
+        // give up after that rather than hold up mep's exit -- an
+        // unreaped child is inherited by init, which reaps it.
+        // The 700ms escalation deliberately sits *after* ShutdownAll's own
+        // 500ms grace-then-SIGKILL, so quitting mep keeps giving children
+        // exactly the grace period that sets; it is here for the
+        // standalone ~Job case (a terminal pane closed one at a time),
+        // where nothing else escalates a SIGTERM the child ignores.
+        const auto start = std::chrono::steady_clock::now();
+        bool escalated = false;
+        for (;;) {
+            if (waitpid(pid_, &status, WNOHANG) != 0) break;  // reaped, or already gone
+            const auto waited = std::chrono::steady_clock::now() - start;
+            if (waited >= std::chrono::milliseconds(1200)) return;
+            if (!escalated && waited >= std::chrono::milliseconds(700)) {
+                escalated = true;
+                KillHard();
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    } else {
+        waitpid(pid_, &status, 0);
+    }
     exit_code_ = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     finished_ = true;
     mep::WakeMainLoop();
@@ -473,7 +575,12 @@ void JobManager::PollAll() {
         if (on_stdout_raw) {
             auto should_poll_raw = jobs_[i].callbacks.should_poll_raw;
             if (!should_poll_raw || should_poll_raw()) {
-                for (const std::string &chunk : job->DrainRaw()) {
+                // 0 means "no ceiling" (see Callbacks' own comment).
+                const size_t max_bytes = jobs_[i].callbacks.max_raw_bytes_per_poll;
+                const size_t max_newlines = jobs_[i].callbacks.max_raw_newlines_per_poll;
+                for (const std::string &chunk :
+                     job->DrainRaw(max_bytes ? max_bytes : std::numeric_limits<size_t>::max(),
+                                   max_newlines ? max_newlines : std::numeric_limits<size_t>::max())) {
                     mep::NoteActivity();
                     on_stdout_raw(chunk);
                 }
@@ -530,7 +637,13 @@ void JobManager::PollAll() {
 void JobManager::ShutdownAll(int grace_ms) {
 #if MEP_JOB_POSIX
     for (const auto &e : jobs_) {
-        if (e.job && !e.job->Finished()) e.job->Kill();
+        if (!e.job) continue;
+        if (!e.job->Finished()) e.job->Kill();
+        // Up front rather than leaving it to each ~Job below: every
+        // reader thread then unwinds concurrently with the grace period
+        // instead of costing a poll timeout each, in series, once
+        // jobs_.clear() starts destroying them.
+        e.job->RequestStop();
     }
     /**
      * @brief Checks whether any registered job still has a live child process.

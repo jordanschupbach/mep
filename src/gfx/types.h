@@ -264,7 +264,7 @@ enum class Key {
     Backslash, Backspace, Delete, Down, End, Enter, Equal, Escape,
     Home, Insert, KpEnter, Left, LeftAlt, LeftBracket, LeftControl,
     LeftShift, LeftSuper, Minus, PageDown, PageUp, Right, RightAlt,
-    RightBracket, RightControl, RightShift, RightSuper, Tab, Up,
+    RightBracket, RightControl, RightShift, RightSuper, Space, Tab, Up,
 };
 
 inline Key operator++(Key &k, int) {

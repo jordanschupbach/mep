@@ -2926,6 +2926,10 @@ struct YoutubeSession {
     bool muted = false;
     double position_sec = 0.0;  // last computed media time (readout + seek base)
     bool show_results = true;   // 'r' hides the result list (theater)
+    // '?' shows the pane's own key-binding sheet over the video area (the
+    // footer line along the bottom edge advertises it, the same way a
+    // sidebar's does -- DrawYoutubePane). Escape/q/? close it again.
+    bool show_help = false;
 };
 
 // One HTML-preview pane's state, keyed by buffer id the same way Image/
@@ -3791,6 +3795,21 @@ public:
      * @brief Destroys the Editor. Defined out-of-line so members like TerminalSession's unique_ptr<VTerm> can be destroyed with complete types visible.
      */
     ~Editor();
+
+    /**
+     * @brief Stops every media pane this editor owns -- each music pane's
+     * ALSA playback thread and each YouTube session's decoder jobs plus its
+     * audio stream. Idempotent.
+     *
+     * main() calls this on the way out instead of leaving it to ~Editor:
+     * g_editor is a global, so its destructor runs during static
+     * destruction, by which point JobManager's own function-local-static
+     * singleton (which YoutubeTeardown has to reach to kill the ffmpeg
+     * jobs) may already be gone. Quitting with a video playing also has no
+     * business keeping the sound going while mep saves its state and reaps
+     * its children.
+     */
+    void ShutdownMedia();
     // Exactly one Editor exists for the process's whole lifetime (main.cpp's
     // g_editor global) and it owns a huge amount of non-trivially-copyable
     // state (buffers, panes, terminal sessions, the CollabSession
@@ -4101,6 +4120,29 @@ public:
      * @return The new state.
      */
     bool ToggleOrgLatexPopup() { return org_latex_popup_ = !org_latex_popup_; }
+    // <leader>ota / mep.mepml_alt_popup_toggle -- whether hovering a
+    // mepml block (or an inline formula) that carries an `\alttext()`
+    // shows that text in a popup by it, in the rendered view and in a
+    // presented slide alike (DrawPane's alt text popup).
+    //
+    // Off by default, unlike the rest of the rendering toggles: an alt
+    // text is written for a screen reader, not for the person reading
+    // the page, so popping it up wherever the mouse happens to rest is
+    // noise over the document and -- mid-presentation, where the mouse
+    // is parked over the slide -- a box over the slide itself. Turn it
+    // on to proofread what the exports will say. The alt text's own
+    // source rows still reveal under the cursor while editing, which is
+    // the editing path this toggle does not touch.
+    /**
+     * @brief Returns whether a mepml alt text shows in a popup while the mouse is over the block it describes.
+     * @return True if the alt text popup is on.
+     */
+    bool MepmlAltPopupVisible() const { return mepml_alt_popup_; }
+    /**
+     * @brief Toggles the mepml alt text popup.
+     * @return The new state.
+     */
+    bool ToggleMepmlAltPopup() { return mepml_alt_popup_ = !mepml_alt_popup_; }
     // <leader>otw / mep.org_table_wrap_toggle -- whether an org table
     // renders from a layout fitted to the screen
     // (Buffer::org_table_wrap_rows) instead of from its own text: a
@@ -6020,6 +6062,16 @@ public:
     // Mirrors the Music block above for the buffer-identity plumbing;
     // see YoutubeSession for the async pipeline. ---
     bool IsYoutubeBuffer(int buffer_id) const;
+    // The name a buffer that is not a document goes by in the chrome --
+    // "YT" for the player's own buffer -- or "" for one that has no such
+    // name and keeps its ordinary filename / [Scratch] / [No Name] label.
+    // The player's buffer holds no text and is never saved, so without
+    // this the status line and the pane's tab strip both call it
+    // "[No Name]"; answering it in one place is what keeps those two (and
+    // the pane-drag label) from disagreeing. The terminal's own richer
+    // "[Terminal] <live title>" label (BufferLabelForLua, DrawPane's
+    // header) predates this and stays where it is.
+    std::string SpecialBufferName(int buffer_id) const;
     YoutubeSession *GetYoutubeMutable(int buffer_id);
     // Id of the (single) YouTube buffer in the active workspace, or -1.
     int YoutubeBufferId() const;
@@ -6038,6 +6090,12 @@ public:
     void YoutubePlayResult(YoutubeSession &sess, int index);
     void YoutubeNext(YoutubeSession &sess);
     void YoutubePrev(YoutubeSession &sess);
+    // Toast for the track that just took over -- the auto-advance at the
+    // end of a video, and n/p. The player is routinely hidden and playing
+    // in the background (ToggleYoutube), where the status-bar now-playing
+    // pill says *what* is on but nothing announces a change of its own.
+    void YoutubeNotifyTrack(const YoutubeSession &sess);
+    void YoutubeStepTo(YoutubeSession &sess, int index);
     void YoutubeTogglePause(YoutubeSession &sess);
     void YoutubeSeekTo(YoutubeSession &sess, double sec);
     void YoutubeSeekBy(YoutubeSession &sess, double delta);
@@ -8713,14 +8771,15 @@ public:
     std::vector<MappingDescription> AllMappingDescriptions() const;
     // Binds a single letter key under the mod1 modifier (see SetMod1) to a
     // Lua callback, globally across all modes. `key` is a bare letter
-    // ("h") for mod1+letter, or "S-"/"C-" prefixed ("S-h", "C-h") for
-    // mod1+Shift+letter / mod1+Ctrl+letter (whichever of Shift/Ctrl isn't
-    // already mod1 itself). Overrides any prior mapping for that exact
+    // ("h") for mod1+letter, or "S-"/"C-"/"C-S-" prefixed ("S-h", "C-h",
+    // "C-S-h") for mod1+Shift+letter / mod1+Ctrl+letter / mod1+Ctrl+Shift+
+    // letter (whichever of Shift/Ctrl isn't already mod1 itself). "Tab"
+    // takes the same prefixes. Overrides any prior mapping for that exact
     // key, including the startup defaults (mod1+v/s/h/j/k/l/S-h/j/k/l/
-    // C-h/j/k/l/d).
+    // C-h/j/k/l/C-S-h/j/k/l/d/Tab/S-Tab/C-Tab/C-S-Tab).
     /**
      * @brief Binds a single letter key under the mod1 modifier to a Lua callback, globally across all modes, overriding any prior mapping for that exact key.
-     * @param key A bare letter for mod1+letter, or "S-"/"C-" prefixed for mod1+Shift+letter / mod1+Ctrl+letter.
+     * @param key A bare letter for mod1+letter, or "S-"/"C-"/"C-S-" prefixed for mod1+Shift+letter / mod1+Ctrl+letter / mod1+Ctrl+Shift+letter.
      * @param lua_ref The Lua registry reference to invoke when the key is pressed.
      * @param repeat Whether holding the key should keep re-firing it at the OS key-repeat rate (see HandleMod1Shortcuts) -- off by
      * default since most mod1 actions (split, close buffer, popout toggle, ...) aren't safe to repeat; resize_pane's S-h/j/k/l
@@ -9022,16 +9081,22 @@ public:
      */
     float PaneBorderPairTotal(SplitNode *node, int child_index);
 
-    // `args`: same contract as OpenTerminal (empty = interactive shell,
-    // non-empty = `shell -c args`), but attaches the terminal to the
-    // currently active pane in place instead of splitting -- for callers
-    // that already arranged the pane layout themselves (e.g. the built-in
-    // project_open's terminal-below-the-readme split, which needs the new
-    // pane on the *bottom* rather than SplitCurrentPane's above/left
-    // default). Exposed to Lua as mep.terminal_here().
+    // `args`: empty runs an interactive shell (the passwd db's login
+    // shell, falling back to $SHELL then /bin/sh); non-empty is run as a
+    // single command line via `shell -c args` (so `:terminal htop` works
+    // the same way a real shell's own command-line-in-one-string does).
+    // Attaches the terminal to the currently active pane -- a fresh buffer
+    // stands in for it (see TerminalSession: the real content is the VTerm
+    // grid, not that buffer's text) -- and enters Mode::Terminal
+    // immediately, keys forwarding live to the child. Never splits: this
+    // is what `:terminal`/`:term` runs, and callers wanting a terminal
+    // beside something arrange the layout themselves first (e.g. the
+    // built-in project_open's terminal-below-the-readme split, which needs
+    // the new pane on the *bottom* rather than SplitCurrentPane's
+    // above/left default). Exposed to Lua as mep.terminal_here().
     /**
-     * @brief Attaches a terminal to the currently active pane in place, instead of splitting.
-     * @param args Same contract as OpenTerminal: empty for an interactive shell, non-empty to run `shell -c args`.
+     * @brief Attaches a terminal to the currently active pane in place, without splitting.
+     * @param args Empty for an interactive shell, non-empty to run `shell -c args`.
      */
     void OpenTerminalInPlace(const std::string &args);
     // The argv form OpenTerminalInPlace itself builds on: runs `argv`
@@ -11712,6 +11777,14 @@ public:
     void PaneOpenBufferIdInTab(int buffer_id);
     void PaneNextBufferTab();
     void PanePrevBufferTab();
+    // Reorders the focused pane's own tab strip: moves the ACTIVE buffer
+    // tab `delta` places along it (wrapping at both ends) and leaves that
+    // same buffer active, so mod1+Ctrl+Tab / mod1+Ctrl+Shift+Tab are to
+    // PaneNextBufferTab/PanePrevBufferTab what mod1+Ctrl+hjkl is to
+    // mod1+hjkl -- move the thing I'm looking at, don't move me.
+    // Distinct from PaneMoveBufferTabToNeighbor, which moves the buffer
+    // out to a different *pane*. Exposed to Lua as mep.pane_reorder_buffer.
+    void MovePaneBufferTab(int delta);
     // Click-to-switch (same reasoning as GoToTab): jumps directly to buffer
     // tab `index` in the current pane, unlike PaneNextBufferTab/
     // PanePrevBufferTab's relative stepping -- DrawPane's own per-pane
@@ -11746,6 +11819,17 @@ public:
     // branch is the analogue for mod1+Shift+hjkl. Left/right (and anything
     // on a top/bottom dock) is a no-op there.
     void PaneMoveBufferTabToNeighbor(const std::string &direction);
+    // Swaps the focused pane with its nearest neighbor in `direction`
+    // (the same neighbor search mod1+hjkl navigates by): the two exchange
+    // places in the layout, each taking over the other's slot and size,
+    // and focus stays on the pane that moved -- so mod1+Ctrl+Shift+j
+    // sends the pane you are in below the one that was under it, cursor
+    // and all, and pressing it again keeps going. A no-op when there is
+    // no pane that way, or while a sidebar (not a pane) has focus.
+    // Exposed to Lua as mep.swap_pane. Compare PaneMoveBufferTabToNeighbor
+    // (mod1+Ctrl+hjkl), which moves one BUFFER into an existing pane and
+    // leaves the panes themselves where they are.
+    void SwapPaneDirection(const std::string &direction);
     std::vector<int> CurrentPaneBufferTabs() const { return CurPane().buffer_tabs; }
     int CurrentPaneBufferTabIndex() const { return CurPane().buffer_tab_index; }
 
@@ -13568,16 +13652,6 @@ private:
     // (kBuiltinRunButton, main.cpp) so its output preview opens to the
     // right of the org buffer instead of shoving it rightward.
     void SplitCurrentPane(SplitDir dir, const std::string &file_arg, bool new_pane_first = true);
-    // `args`: empty runs an interactive shell ($SHELL, falling back to
-    // /bin/sh); non-empty is run as a single command line via `shell -c
-    // args` (so `:terminal htop` works the same way a real shell's own
-    // command-line-in-one-string does). Takes over the active pane (no
-    // split -- see OpenTerminalInPlace, which this is a thin wrapper
-    // around) with a fresh buffer standing in for the terminal
-    // (see TerminalSession -- its actual content is the VTerm grid, not
-    // that buffer's text) and enters Mode::Terminal immediately, keys
-    // forwarding live to the child.
-    void OpenTerminal(const std::string &args);
     void ClosePane();
     void CyclePane(int delta);
     void TabNext();
@@ -14481,6 +14555,9 @@ private:
     bool org_plain_cursor_line_ = true;
     // The math preview popup (<leader>otp): see OrgLatexPopupVisible().
     bool org_latex_popup_ = true;
+    // The mepml alt text popup (<leader>ota): see MepmlAltPopupVisible()
+    // for why this is the one rendering toggle that starts off.
+    bool mepml_alt_popup_ = false;
     // Scratch for OrgBlockCards() -- reused across calls (one scan per
     // pane per frame) instead of returning a fresh vector each time.
     std::vector<OrgBlockCard> org_block_cards_;

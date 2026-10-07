@@ -2300,3 +2300,18 @@
 {"timestamp": "2026-09-30T19:06:32Z", "commit": "0fc10b7", "binary": "mepml_editor_bench", "scenario": "patho_longline_5k/frame_idle", "n": 3, "ms": 6.358, "ops_per_sec": 471.8464926077383, "p95": 6.9646, "max": 7.4859}
 {"timestamp": "2026-09-30T19:06:32Z", "commit": "0fc10b7", "binary": "mepml_editor_bench", "scenario": "patho_longline_5k/frame_cursor_down", "n": 3, "ms": 3.9363, "ops_per_sec": 762.1370322383965, "p95": 4.229, "max": 7.0875}
 {"timestamp": "2026-09-30T19:06:32Z", "commit": "0fc10b7", "binary": "mepml_editor_bench", "scenario": "patho_longline_5k/frame_typing", "n": 3, "ms": 6.8177, "ops_per_sec": 440.0310955307508, "p95": 10.4631, "max": 22.0313}
+{"timestamp":"2026-10-06T18:57:58Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_scroll_flood_yes","n":4194304,"ms":58020.4,"ops_per_sec":72290.2}
+{"timestamp":"2026-10-06T18:57:59Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_scroll_flood_full_lines","n":4194468,"ms":1169.22,"ops_per_sec":3.58742e+06}
+{"timestamp":"2026-10-06T18:58:02Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_scroll_log_lines","n":4194314,"ms":2652.34,"ops_per_sec":1.58136e+06}
+{"timestamp":"2026-10-06T18:58:02Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_tui_repaint_no_scroll","n":4197055,"ms":105.81,"ops_per_sec":3.9666e+07}
+{"timestamp":"2026-10-06T18:58:02Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_plain_wrapped_text","n":4194320,"ms":640.695,"ops_per_sec":6.54652e+06}
+{"timestamp":"2026-10-06T18:59:43Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_scroll_flood_yes","n":4194304,"ms":2052.26,"ops_per_sec":2.04375e+06}
+{"timestamp":"2026-10-06T18:59:43Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_scroll_flood_full_lines","n":4194468,"ms":160.798,"ops_per_sec":2.60853e+07}
+{"timestamp":"2026-10-06T18:59:43Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_scroll_log_lines","n":4194314,"ms":205.867,"ops_per_sec":2.0374e+07}
+{"timestamp":"2026-10-06T18:59:43Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_tui_repaint_no_scroll","n":4197055,"ms":103.447,"ops_per_sec":4.05719e+07}
+{"timestamp":"2026-10-06T18:59:44Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_plain_wrapped_text","n":4194320,"ms":129.787,"ops_per_sec":3.2317e+07}
+{"timestamp":"2026-10-06T19:06:47Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_scroll_flood_yes","n":4194304,"ms":2105.9,"ops_per_sec":1.99169e+06}
+{"timestamp":"2026-10-06T19:06:47Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_scroll_flood_full_lines","n":4194468,"ms":165.142,"ops_per_sec":2.53992e+07}
+{"timestamp":"2026-10-06T19:06:47Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_scroll_log_lines","n":4194314,"ms":210.787,"ops_per_sec":1.98984e+07}
+{"timestamp":"2026-10-06T19:06:47Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_tui_repaint_no_scroll","n":4197055,"ms":106.062,"ops_per_sec":3.95719e+07}
+{"timestamp":"2026-10-06T19:06:47Z","commit":"23fafcc","binary":"vterm_bench","scenario":"vterm_plain_wrapped_text","n":4194320,"ms":131.413,"ops_per_sec":3.19171e+07}

@@ -30,16 +30,24 @@ one back instead of starting a second. To actually stop playback, press
 <code>x</code> (stop, keep the pane) or <code>q</code> (close the pane and stop) in the pane,
 or <code>:bd</code> its buffer.</p>
 <h1>Keys in the pane</h1>
+<p><code>?</code> in the pane shows this same list as a sheet over the video -- the
+<code>?: help</code> line along the pane's bottom edge is the reminder that it is
+there, exactly like a sidebar's. <code>Esc</code> (or a click) puts it away.</p>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>?</code></td><td>show the key sheet over the player (<code>Esc</code> closes it)</td></tr>
 <tr><td><code>/</code> or <code>s</code></td><td>search (a URL typed here plays instead of searching)</td></tr>
 <tr><td><code>o</code></td><td>open a watch URL or video id</td></tr>
 <tr><td><code>j</code> / <code>k</code></td><td>move through the results (<code>g</code> / <code>G</code> top / bottom)</td></tr>
 <tr><td><code>Enter</code></td><td>play the selected result; on the one already playing, pause / resume</td></tr>
-<tr><td><code>Space</code></td><td>pause / resume -- unless Space is your leader key (the default), when it opens the leader menu instead and <code>Enter</code> is the pause</td></tr>
+<tr><td><code>C-Space</code></td><td>pause / resume -- works whatever your leader key is</td></tr>
+<tr><td><code>Space</code></td><td>pause / resume -- unless Space is your leader key (the default), when it opens the leader menu instead and <code>C-Space</code> / <code>Enter</code> are the pause</td></tr>
 <tr><td><code>i</code></td><td>hide the pane and keep playing (<code>&lt;leader&gt;yt</code> brings it back)</td></tr>
-<tr><td><code>h</code> / <code>l</code></td><td>seek 10 seconds back / forward (<code>H</code> / <code>L</code>: a minute)</td></tr>
+<tr><td><code>h</code> / <code>l</code></td><td>volume down / up</td></tr>
+<tr><td><code>H</code> / <code>L</code></td><td>seek 10 seconds back / forward</td></tr>
+<tr><td><code>Left</code> / <code>Right</code></td><td>seek 10 seconds back / forward (with <code>Shift</code>: a minute)</td></tr>
 <tr><td><code>0</code> ... <code>9</code></td><td>jump to 0%, 10%, ... 90% of the video</td></tr>
+<tr><td><code>C-h</code> / <code>C-l</code></td><td>previous / next result (<code>C-p</code> / <code>C-n</code> do the same)</td></tr>
 <tr><td><code>n</code> / <code>p</code></td><td>next / previous result (the list plays on by itself at the end of a video)</td></tr>
 <tr><td><code>+</code> / <code>-</code></td><td>volume</td></tr>
 <tr><td><code>m</code></td><td>mute</td></tr>
@@ -51,6 +59,20 @@ or <code>:bd</code> its buffer.</p>
 player from inside it too. The mouse does the same things: click a result
 to play it, the picture to pause, the progress bar to seek, the speaker to
 mute, and drag the volume slider.</p>
+<h1>The status bar pill</h1>
+<p>Whenever a track is loaded, a pill joins the chips at the right end of the
+status bar, left of <code>direnv</code>: a play/pause icon, the elapsed/total readout,
+and the title scrolling past in a fixed window so a long one is readable
+without the pill growing to fit it. It is red while the track is running
+and gray while it is paused or finished, clicking it pauses or resumes,
+and it is there whether the player pane is on screen or hidden -- which is
+how a player left playing in the background says what it is playing. It
+disappears when nothing is loaded.</p>
+<p>Changing track -- <code>n=/=p</code>, the transport's prev/next buttons, or the list
+playing on by itself at the end of a video -- also sends a <i>Now playing:</i>
+notification with the title and channel, so a background player announces
+itself without the pane being open. <code>&lt;leader&gt;nn</code> (the notifications pane)
+has them all.</p>
 <h1>How playback works</h1>
 <p>The audio track is streamed to the sound device and the video track is
 timed against it: a frame is shown when the sound has reached its

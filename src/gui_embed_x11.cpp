@@ -465,6 +465,7 @@ public:
         const int vw = std::min(a.width, container_rect_.w - inner_rect_.x) - vx;
         const int vh = std::min(a.height, container_rect_.h - inner_rect_.y) - vy;
         if (vw <= 0 || vh <= 0) return s;
+        s.clipped = vw < a.width || vh < a.height;
         a.width = vw;
         a.height = vh;
         g_last_error = 0;

@@ -35,8 +35,12 @@ play videos without leaving mep, picture and sound drawn by mep itself.
 - `DrawYoutubePane` (main.cpp): video (letterboxed, one reused texture
   updated in place), transport bar (prev/play/next, mute + volume slider,
   elapsed/total, title, click-to-seek progress), result list (thumbnail,
-  title, channel / views, duration badge), empty-state hints. The tab bar
-  has a YouTube button next to the activity buttons (`:MepYoutube`).
+  title, channel / views, duration badge), empty-state hints, a `?: help`
+  footer line along the bottom edge and the key sheet that line advertises
+  (`YoutubeSession::show_help`, the `kYoutubeHelpRows` table beside
+  `DrawYoutubePane`; `HandleYoutubeInput` swallows the pane's keys while it
+  is up). The tab bar has a YouTube button next to the activity buttons
+  (`:MepYoutube`).
 - Commands: `:youtube [query|url|id]`, `:yt`, `:MepYoutube` (toggle, also
   `<leader>yt` and the tab-bar button). The toggle *hides* an on-screen
   player (`Editor::HideBufferInActiveTab`, buffer and session kept) and
@@ -61,8 +65,12 @@ play videos without leaving mep, picture and sound drawn by mep itself.
 - On Xvfb the CPU is Mesa's llvmpipe software rasterizer (12 threads at
   ~30% each while anything animates), not the player; mep's own main thread
   sits around 50% there at full frame rate, ffmpeg at 10-15% for 360p.
-- `ui.key_press` sends unshifted keysyms, so `H`/`L` (minute seeks) can't be
-  exercised over the agent socket; `h`/`l` reach the handler fine.
+- `ui.key_press` sends unshifted keysyms, so a shifted binding (`H`/`L`,
+  the 10-second seeks) can't be exercised with it; `ui.type_text` holds
+  Shift around the character and does reach them. A Ctrl chord
+  (`Ctrl+Space` pause, `Ctrl+h`/`Ctrl+l` prev/next) is `ui.key_down
+  Control_L` + `ui.key_press` + `ui.key_up`, and works -- those read the
+  physical keys, since no char event fires under Ctrl.
 - A raw-stdout job that finished while its consumer's `should_poll_raw`
   was false used to be erased by `JobManager::PollAll` with its tail
   unread: the audio ffmpeg for a 19 s video exits in under a second, the

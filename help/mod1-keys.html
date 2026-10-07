@@ -41,12 +41,30 @@ algorithm -- a deliberate simplification.</p>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
 <tr><td><code>mod1+Ctrl+h j k l</code></td><td>move this pane's active buffer tab into the neighbouring pane</td></tr>
+<tr><td><code>mod1+Ctrl+Shift+h j k l</code></td><td>swap this whole pane with the neighbouring one</td></tr>
 <tr><td><code>mod1+m</code></td><td>maximize this pane, or restore the previous layout</td></tr>
 </table>
 <p>Moving the last buffer tab out of a pane closes that pane.</p>
+<p>Swapping exchanges the two panes' places in the layout -- each takes over
+the other's slot and size -- and focus stays on the pane that moved, so the
+cursor travels with it and the same chord can be pressed again to keep
+walking that pane across the layout. <code>mod1+Ctrl+Shift+j</code> sends the pane you
+are in below the one that was under it.</p>
 <p><code>mod1+m</code> shrinks every other pane to the minimum the resize keys stop at.
 Pressing it again restores the layout from before; pressing it in a
 <b>different</b> pane while one is maximized maximizes that one instead.</p>
+<h1>Buffer tabs within a pane</h1>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>mod1+Tab</code></td><td>next buffer tab in this pane</td></tr>
+<tr><td><code>mod1+Shift+Tab</code></td><td>previous buffer tab</td></tr>
+<tr><td><code>mod1+Ctrl+Tab</code></td><td>move this buffer one place along the pane's tab bar</td></tr>
+<tr><td><code>mod1+Ctrl+Shift+Tab</code></td><td>move it one place back</td></tr>
+</table>
+<p>The Ctrl pair reorders the tab strip rather than stepping through it: the
+buffer you are in stays the one you are in, it just changes place (wrapping
+around at either end), which is the same "move the thing I'm looking at"
+relationship <code>mod1+Ctrl+h j k l</code> has to <code>mod1+h j k l</code>.</p>
 <h1>Inside a sidebar</h1>
 <p>The same keys mean something related when a sidebar is focused:</p>
 <table>
@@ -70,11 +88,13 @@ them can be replaced or removed from <code>init.lua</code>:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.<span class="tok-blue">map_mod1</span>(<span class="tok-green">'h'</span>, <span class="tok-purple">function</span>() mep.nav_pane(<span class="tok-green">'left'</span>) <span class="tok-purple">end</span>)
 mep.map_mod1(<span class="tok-green">'S-l'</span>, mep.some_function)   <span class="tok-comment">-- mod1+Shift+l</span>
 mep.<span class="tok-blue">map_mod1</span>(<span class="tok-green">'C-j'</span>, mep.other_function)  <span class="tok-comment">-- mod1+Ctrl+j</span></code></pre></div>
-<p>A bare letter is <code>mod1+letter</code>; <code>S-</code> and <code>C-</code> prefixes add Shift and Ctrl.
-<code>Tab</code>, <code>S-Tab</code>, <code>CR</code> and <code>S-CR</code> are also accepted.</p>
+<p>A bare letter is <code>mod1+letter</code>; <code>S-</code>, <code>C-</code> and <code>C-S-</code> prefixes add Shift,
+Ctrl, and both. <code>Tab</code> takes the same prefixes, and <code>CR</code> / <code>S-CR</code> are also
+accepted.</p>
 <p>The functions behind the defaults are callable directly:
 <code>mep.nav_pane(dir)</code>, <code>mep.resize_pane(dir, step)</code>,
-<code>mep.pane_move_buffer(dir)</code>, <code>mep.pane_close_buffer()</code> and
+<code>mep.pane_move_buffer(dir)</code>, <code>mep.swap_pane(dir)</code>,
+<code>mep.pane_reorder_buffer(delta)</code>, <code>mep.pane_close_buffer()</code> and
 <code>mep.pane_maximize_toggle()</code>.</p>
 <h1>See also</h1>
 <ul>

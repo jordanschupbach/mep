@@ -3671,6 +3671,29 @@ int l_org_latex_popup_visible(lua_State *L) {
     return 1;
 }
 
+// mep.mepml_alt_popup_toggle()/mep.mepml_alt_popup_visible(): the alt
+// text popup over a hovered mepml block (<leader>ota) -- see
+// Editor::MepmlAltPopupVisible, which starts off.
+/**
+ * @brief Implements mep.mepml_alt_popup_toggle(): toggles the mepml alt text popup.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new state).
+ */
+int l_mepml_alt_popup_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleMepmlAltPopup());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.mepml_alt_popup_visible(): reports whether a hovered mepml block shows its alt text in a popup.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the current state).
+ */
+int l_mepml_alt_popup_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->MepmlAltPopupVisible());
+    return 1;
+}
+
 // mep.org_table_wrap_toggle()/mep.org_table_wrap_scan(): wrapped
 // rendering of a table too wide for `:set textwidth` (<leader>otw) --
 // see Editor::OrgTableWrapVisible/OrgTableWrapScan. The scan rides the
@@ -6185,6 +6208,25 @@ int l_pane_close_buffer(lua_State *L) {
 int l_pane_move_buffer(lua_State *L) {
     const char *dir = luaL_checkstring(L, 1);
     GetEditor(L)->PaneMoveBufferTabToNeighbor(dir);
+    return 0;
+}
+/**
+ * @brief Implements mep.pane_reorder_buffer(delta): moves the focused pane's active buffer tab `delta` places along that pane's own tab strip (wrapping), leaving it the active tab.
+ * @param L Lua state; arg 1 is the signed number of places (1 = one to the right).
+ * @return Number of values pushed (0).
+ */
+int l_pane_reorder_buffer(lua_State *L) {
+    GetEditor(L)->MovePaneBufferTab(static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+/**
+ * @brief Implements mep.swap_pane(dir): swaps the focused pane with its neighbor in that direction, focus travelling with the pane that moved.
+ * @param L Lua state; arg 1 is the direction string ("left"/"down"/"up"/"right").
+ * @return Number of values pushed (0).
+ */
+int l_swap_pane(lua_State *L) {
+    const char *dir = luaL_checkstring(L, 1);
+    GetEditor(L)->SwapPaneDirection(dir);
     return 0;
 }
 /**
@@ -13441,6 +13483,8 @@ const luaL_Reg kMepFuncs[] = {
     {"org_plain_cursor_line_visible", l_org_plain_cursor_line_visible},
     {"org_latex_popup_toggle", l_org_latex_popup_toggle},
     {"org_latex_popup_visible", l_org_latex_popup_visible},
+    {"mepml_alt_popup_toggle", l_mepml_alt_popup_toggle},
+    {"mepml_alt_popup_visible", l_mepml_alt_popup_visible},
     {"org_table_wrap_scan", l_org_table_wrap_scan},
     {"org_table_wrap_toggle", l_org_table_wrap_toggle},
     {"buf_add_latex_inline", l_buf_add_latex_inline},
@@ -13663,6 +13707,8 @@ const luaL_Reg kMepFuncs[] = {
     {"pane_prev_buffer", l_pane_prev_buffer},
     {"pane_close_buffer", l_pane_close_buffer},
     {"pane_move_buffer", l_pane_move_buffer},
+    {"pane_reorder_buffer", l_pane_reorder_buffer},
+    {"swap_pane", l_swap_pane},
     {"layout", l_layout},
     {"cad_new", l_cad_new},
     {"cad_open", l_cad_open},

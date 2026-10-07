@@ -271,6 +271,180 @@ int main() {
         CHECK(t.QueriesOscDefaultColors());
     }
 
+    // --- Scrolling, scrollback and the row map ----------------------------
+    //
+    // vterm.cpp stores the screen as one vector per row behind a
+    // logical-row -> stored-row map, so scrolling rotates that map and
+    // moves whole rows into scrollback instead of copying every cell up a
+    // line (the flood-lag fix; src/vterm_bench.cpp measures it). These
+    // checks are about that indirection staying honest: the right text on
+    // the right line, no two logical rows sharing one stored row, and
+    // history that survives margins, the alt screen and a resize.
+    {
+        /** @brief The visible text of one row, trailing blanks trimmed. */
+        auto row_text = [](const VTerm &t, int row) {
+            std::string out;
+            for (int c = 0; c < t.Cols(); c++) out += t.At(row, c).ch;
+            while (!out.empty() && out.back() == ' ') out.pop_back();
+            return out;
+        };
+        /** @brief The text of one scrollback line, trailing blanks trimmed. */
+        auto scrollback_text = [](const VTerm &t, int row) {
+            std::string out;
+            for (int c = 0; c < t.Cols(); c++) out += t.ScrollbackAt(row, c).ch;
+            while (!out.empty() && out.back() == ' ') out.pop_back();
+            return out;
+        };
+        /** @brief Feeds lines `first`..`last`, newline-separated, with none after the last. */
+        auto feed_lines = [](VTerm &t, int first, int last) {
+            std::string out;
+            for (int i = first; i <= last; i++) {
+                if (i > first) out += "\r\n";
+                out += "L" + std::to_string(i);
+            }
+            t.Feed(out);
+        };
+
+        // More lines than rows: the screen holds the last of them, and
+        // everything that scrolled off is in scrollback, in order.
+        {
+            VTerm t(5, 20);
+            feed_lines(t, 1, 12);
+            CHECK(row_text(t, 0) == "L8");
+            CHECK(row_text(t, 4) == "L12");
+            CHECK(t.ScrollbackLines() == 7);
+            CHECK(scrollback_text(t, 0) == "L1");
+            CHECK(scrollback_text(t, 6) == "L7");
+        }
+
+        // Each logical row is its own storage: writing one row must not
+        // show up in another, however many times the map has rotated.
+        {
+            VTerm t(5, 20);
+            feed_lines(t, 1, 37);
+            t.Feed("\x1b[H");  // home
+            // No newline after the last row: that one would scroll the
+            // screen, which is not what this check is about.
+            for (int r = 0; r < 5; r++) t.Feed("row" + std::to_string(r) + (r < 4 ? "\r\n" : ""));
+            for (int r = 0; r < 5; r++) CHECK(row_text(t, r) == "row" + std::to_string(r));
+        }
+
+        // Past the scrollback cap: the oldest lines are dropped, the rest
+        // keep their order, and the storage recycled from the far end of
+        // the history comes back blank rather than carrying old text.
+        {
+            VTerm t(5, 20);
+            feed_lines(t, 1, 5200);
+            const int kept = t.ScrollbackLines();
+            CHECK(kept == 5000);
+            // The last five lines are on screen, so scrollback holds
+            // L1..L5195 -- capped to its newest 5000, L196..L5195.
+            CHECK(scrollback_text(t, 0) == "L196");
+            CHECK(scrollback_text(t, kept - 1) == "L5195");
+            CHECK(row_text(t, 0) == "L5196");
+            CHECK(row_text(t, 4) == "L5200");
+            // Scrolling again now recycles the storage of the oldest
+            // history line into the bottom of the screen: it has to come
+            // back blank, not carrying the text it held as history.
+            t.Feed("\r\n");
+            CHECK(row_text(t, 4).empty());
+            CHECK(row_text(t, 3) == "L5200");
+        }
+
+        // Recycled history lines are as wide as the screen is *now*: a
+        // pane widened after its history filled up must not end up with
+        // short rows (a write past the end of one would be out of
+        // bounds, not merely wrong).
+        {
+            VTerm t(5, 20);
+            feed_lines(t, 1, 5200);  // history at the cap, every line 20 wide
+            t.Resize(5, 40);
+            feed_lines(t, 6000, 6010);  // recycles those 20-wide lines into a 40-wide screen
+            CHECK(row_text(t, 4) == "L6010");
+            const std::string wide(40, 'z');
+            t.Feed("\r\n" + wide);
+            CHECK(row_text(t, 4) == wide);
+        }
+
+        // A scroll region (DECSTBM) moves only its own rows, and pushes
+        // nothing into scrollback -- history is for lines leaving the top
+        // of the *screen*, not the top of a margin.
+        {
+            VTerm t(5, 20);
+            feed_lines(t, 1, 5);
+            CHECK(t.ScrollbackLines() == 0);
+            t.Feed("\x1b[2;4r");  // rows 2..4 (1-based) are the region
+            t.Feed("\x1b[4;1H");  // bottom row of the region
+            t.Feed("\r\n");        // scrolls the region up by one
+            CHECK(row_text(t, 0) == "L1");  // above the region: untouched
+            CHECK(row_text(t, 1) == "L3");
+            CHECK(row_text(t, 2) == "L4");
+            CHECK(row_text(t, 3).empty());  // vacated bottom of the region
+            CHECK(row_text(t, 4) == "L5");  // below the region: untouched
+            CHECK(t.ScrollbackLines() == 0);
+        }
+
+        // Reverse index at the top of the screen scrolls down: rows move
+        // the other way and the top line comes back blank.
+        {
+            VTerm t(4, 20);
+            feed_lines(t, 1, 3);
+            t.Feed("\x1b[H\x1bM");  // home, then RI
+            CHECK(row_text(t, 0).empty());
+            CHECK(row_text(t, 1) == "L1");
+            CHECK(row_text(t, 2) == "L2");
+            CHECK(row_text(t, 3) == "L3");
+        }
+
+        // Insert/delete line (CSI L / CSI M) go through the same rotation.
+        {
+            VTerm t(4, 20);
+            feed_lines(t, 1, 4);
+            t.Feed("\x1b[2;1H\x1b[L");  // insert a blank line at row 2
+            CHECK(row_text(t, 0) == "L1");
+            CHECK(row_text(t, 1).empty());
+            CHECK(row_text(t, 2) == "L2");
+            CHECK(row_text(t, 3) == "L3");  // L4 fell off the bottom
+            t.Feed("\x1b[2;1H\x1b[M");  // delete it again
+            CHECK(row_text(t, 0) == "L1");
+            CHECK(row_text(t, 1) == "L2");
+            CHECK(row_text(t, 2) == "L3");
+            CHECK(row_text(t, 3).empty());
+        }
+
+        // A resize reads the screen in logical order, so content survives
+        // a rotated map.
+        {
+            VTerm t(4, 20);
+            feed_lines(t, 1, 9);
+            CHECK(row_text(t, 0) == "L6");
+            t.Resize(6, 20);
+            CHECK(row_text(t, 0) == "L6");
+            CHECK(row_text(t, 1) == "L7");
+            CHECK(row_text(t, 2) == "L8");
+            CHECK(row_text(t, 3) == "L9");
+            CHECK(row_text(t, 4).empty());
+        }
+
+        // The alt screen scrolls independently and keeps the primary
+        // screen (and its history) intact.
+        {
+            VTerm t(4, 20);
+            feed_lines(t, 1, 6);
+            const int history = t.ScrollbackLines();
+            CHECK(history == 2);
+            t.Feed("\x1b[?1049h");  // enter alt screen
+            CHECK(row_text(t, 0).empty());
+            feed_lines(t, 100, 108);
+            CHECK(row_text(t, 3) == "L108");
+            CHECK(t.ScrollbackLines() == history);  // alt scrolling writes no history
+            t.Feed("\x1b[?1049l");                  // back to the primary screen
+            CHECK(row_text(t, 0) == "L3");
+            CHECK(row_text(t, 3) == "L6");
+            CHECK(t.ScrollbackLines() == history);
+        }
+    }
+
     std::printf("vterm_test: all checks passed\n");
     return 0;
 }

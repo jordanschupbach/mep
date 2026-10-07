@@ -137,6 +137,7 @@ gfx::Key UnmapKey(KeySym sym) {
         case XK_Control_R: return gfx::Key::RightControl;
         case XK_Shift_R: return gfx::Key::RightShift;
         case XK_Super_R: return gfx::Key::RightSuper;
+        case XK_space: return gfx::Key::Space;
         case XK_Tab: return gfx::Key::Tab;
         case XK_Up: return gfx::Key::Up;
         default: return gfx::Key::None;

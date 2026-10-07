@@ -204,8 +204,9 @@ void EmbeddedApp::Tick(double now, bool allow_unowned) {
         focused_ = true;
         focus_gained_ = true;
     }
-    // (What was on screen: a window clipped by the pane's edge leaves the
-    // part that showed.)
+    // (What was on screen -- a window clipped by the pane's edge captures
+    // as the part that showed, which TakeSnapshot keeps only while it has
+    // nothing whole.)
     if (shown_ && (last_snapshot_ < 0 || now - last_snapshot_ >= kSnapshotEverySec)) {
         TakeSnapshot();
         last_snapshot_ = now;
@@ -215,7 +216,12 @@ void EmbeddedApp::Tick(double now, bool allow_unowned) {
 void EmbeddedApp::TakeSnapshot() {
     if (!window_) return;
     Snapshot s = window_->Capture();
-    if (!s.Empty()) snapshot_ = std::move(s);
+    // A window the pane's edge cuts off captures as a piece of itself. That
+    // piece may be all there is to show, but it must not replace a whole
+    // picture already taken: an export saves whatever is kept here, and a
+    // scroll just before it would otherwise leave a sliver of the window.
+    const bool worse = s.clipped && !snapshot_.Empty() && !snapshot_.clipped;
+    if (!s.Empty() && !worse) snapshot_ = std::move(s);
     const std::string t = window_->Title();
     if (!t.empty()) title_ = t;
 }

@@ -50,6 +50,10 @@ struct Rect {
 // An RGBA picture of a window (row-major, 4 bytes per pixel).
 struct Snapshot {
     int width = 0, height = 0;
+    // True when the pane's edge cut the window off, so this is a piece of
+    // its picture and not the whole of it. Enough to show while nothing
+    // better has been seen; never what an export should save.
+    bool clipped = false;
     std::vector<unsigned char> rgba;
     bool Empty() const { return width <= 0 || height <= 0 || rgba.empty(); }
 };
@@ -83,8 +87,9 @@ public:
     // Asks it to close the way its window manager's close button would.
     // False when it does not take such requests (the caller signals it).
     virtual bool RequestClose() = 0;
-    // The pixels of the part of it on screen (all of it, unless clipped),
-    // or an empty picture when they cannot be read.
+    // The pixels of the part of it on screen (all of it, unless clipped --
+    // Snapshot::clipped says which), or an empty picture when they cannot
+    // be read.
     virtual Snapshot Capture() = 0;
     // Its title, "" if it has none.
     virtual std::string Title() = 0;

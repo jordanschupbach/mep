@@ -44,6 +44,10 @@ struct WindowLog {
     bool takes_close = true;
     int close_requests = 0;
     int captures = 0;
+    // What the next Capture() hands back: a whole window by default, a
+    // piece of one (the pane's edge cut it off) when `capture_clipped`.
+    bool capture_clipped = false;
+    int capture_height = 1;
 };
 
 class FakeWindow final : public EmbeddedWindow {
@@ -78,8 +82,9 @@ public:
         ++log_->captures;
         Snapshot s;
         s.width = 2;
-        s.height = 1;
-        s.rgba = {255, 0, 0, 255, 0, 255, 0, 255};
+        s.height = log_->capture_height;
+        s.clipped = log_->capture_clipped;
+        s.rgba.assign(static_cast<size_t>(s.width) * static_cast<size_t>(s.height) * 4, 255);
         return s;
     }
     std::string Title() override { return "fake"; }
@@ -242,6 +247,83 @@ void TestExitStatus() {
     CHECK(app.GetState() == EmbeddedApp::State::Exited && app.ExitCode() == 3 && app.Stops() == 0);
 }
 
+// A window taller than the pane captures as the part that showed. That
+// piece must not replace a whole picture already taken: an export saves
+// whatever LastSnapshot holds, and a scroll just before it would otherwise
+// leave a sliver of the window in the document.
+void TestClippedSnapshotKeepsWholePicture() {
+    FakeBackend be;
+    be.window_ready = true;
+    EmbeddedApp app(be);
+    std::string error;
+    CHECK(app.Start({"/bin/sh", "-c", "exec sleep 30"}, ".", &error));
+    double now = 0.0;
+    RunUntil(app, now, [&] { return app.GetState() == EmbeddedApp::State::Shown; });
+
+    // Fully on screen: the whole window, 40 rows of it.
+    be.log->capture_clipped = false;
+    be.log->capture_height = 40;
+    app.Place(Rect{0, 0, 2, 40}, Rect{0, 0, 800, 600});
+    app.EndFrame();
+    now += 5.0;
+    app.Tick(now, false);
+    CHECK(app.LastSnapshot().height == 40 && !app.LastSnapshot().clipped);
+
+    // Scrolled so only its top shows: the sliver does not take its place.
+    be.log->capture_clipped = true;
+    be.log->capture_height = 3;
+    app.Place(Rect{0, 0, 2, 40}, Rect{0, 0, 800, 3});
+    app.EndFrame();
+    now += 5.0;
+    app.Tick(now, false);
+    CHECK(app.LastSnapshot().height == 40 && !app.LastSnapshot().clipped);
+
+    // A fresh whole picture still does.
+    be.log->capture_clipped = false;
+    be.log->capture_height = 41;
+    app.Place(Rect{0, 0, 2, 41}, Rect{0, 0, 800, 600});
+    app.EndFrame();
+    now += 5.0;
+    app.Tick(now, false);
+    CHECK(app.LastSnapshot().height == 41);
+
+    app.Stop();
+    app.Stop();
+    RunUntil(app, now, [&] { return app.GetState() == EmbeddedApp::State::Exited; });
+}
+
+// A window that never fit keeps the best piece seen: something to show
+// beats nothing.
+void TestClippedSnapshotWhenNothingWholeSeen() {
+    FakeBackend be;
+    be.window_ready = true;
+    EmbeddedApp app(be);
+    std::string error;
+    CHECK(app.Start({"/bin/sh", "-c", "exec sleep 30"}, ".", &error));
+    double now = 0.0;
+    RunUntil(app, now, [&] { return app.GetState() == EmbeddedApp::State::Shown; });
+
+    be.log->capture_clipped = true;
+    be.log->capture_height = 3;
+    app.Place(Rect{0, 0, 2, 40}, Rect{0, 0, 800, 3});
+    app.EndFrame();
+    now += 5.0;
+    app.Tick(now, false);
+    CHECK(app.LastSnapshot().height == 3 && app.LastSnapshot().clipped);
+
+    // More of it showed: that is the better piece.
+    be.log->capture_height = 20;
+    app.Place(Rect{0, 0, 2, 40}, Rect{0, 0, 800, 20});
+    app.EndFrame();
+    now += 5.0;
+    app.Tick(now, false);
+    CHECK(app.LastSnapshot().height == 20 && app.LastSnapshot().clipped);
+
+    app.Stop();
+    app.Stop();
+    RunUntil(app, now, [&] { return app.GetState() == EmbeddedApp::State::Exited; });
+}
+
 void TestProcessTree() {
     // A shell with a child: both are in the tree, the shell first.
     const int id = JobManager::Instance().Spawn({"/bin/sh", "-c", "sleep 30 & wait"}, ".", {});
@@ -264,6 +346,8 @@ int main() {
     TestLifecycle();
     TestWindowClosesFirst();
     TestExitStatus();
+    TestClippedSnapshotKeepsWholePicture();
+    TestClippedSnapshotWhenNothingWholeSeen();
     TestProcessTree();
     JobManager::Instance().ShutdownAll(200);
     if (g_failures) {

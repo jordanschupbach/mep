@@ -2048,6 +2048,16 @@ add_dependencies(tests mep-fold-test)
 # porcelain parsing, name validation, session JSON round trip). Links only
 # workspace_git.cpp, same windowless model as mep-html-doc-test above.
 if(NOT EMSCRIPTEN)
+    # Job teardown: every shape of child that used to leave a Job's
+    # destructor blocked (see src/job_test.cpp's header). Windowless, so it
+    # runs with the rest of `just test` rather than in test-gui.
+    add_executable(mep-job-test EXCLUDE_FROM_ALL src/job_test.cpp src/job.cpp)
+    target_include_directories(mep-job-test PRIVATE src)
+    target_compile_options(mep-job-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-job-test PRIVATE ${MEP_SANITIZE_FLAGS})
+    target_link_libraries(mep-job-test PRIVATE Threads::Threads)
+    add_dependencies(tests mep-job-test)
+
     add_executable(mep-workspace-test EXCLUDE_FROM_ALL src/workspace_test.cpp src/workspace_git.cpp)
     target_include_directories(mep-workspace-test PRIVATE src)
     target_compile_options(mep-workspace-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
@@ -2114,6 +2124,15 @@ if(NOT EMSCRIPTEN)
     target_compile_options(mep-crdt-bench PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-crdt-bench PRIVATE ${MEP_SANITIZE_FLAGS})
     add_dependencies(tests mep-crdt-bench)
+    # How fast a :terminal pane swallows child output (src/vterm_bench.cpp
+    # -- the scrolling path is what a chatty child spends mep's main
+    # thread on).
+    add_executable(mep-vterm-bench EXCLUDE_FROM_ALL src/vterm_bench.cpp src/vterm.cpp)
+    target_include_directories(mep-vterm-bench PRIVATE src)
+    target_compile_options(mep-vterm-bench PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-vterm-bench PRIVATE ${MEP_SANITIZE_FLAGS})
+    add_dependencies(tests mep-vterm-bench)
+
     add_executable(mep-buffer-bench EXCLUDE_FROM_ALL src/text_buffer_bench.cpp)
     target_include_directories(mep-buffer-bench PRIVATE src)
     target_compile_options(mep-buffer-bench PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
@@ -2191,6 +2210,16 @@ if(NOT EMSCRIPTEN)
         target_link_options(mep-viewer-live-test PRIVATE ${MEP_SANITIZE_FLAGS})
         target_link_libraries(mep-viewer-live-test PRIVATE Threads::Threads)
         add_dependencies(tests mep-viewer-live-test)
+
+        # :qa! really ends the process -- the shutdown-hang regression
+        # test (see the file's own header). Same shape and requirement as
+        # the live tests above: `./mep-quit-live-test ./mep`.
+        add_executable(mep-quit-live-test EXCLUDE_FROM_ALL src/quit_live_test.cpp)
+        target_include_directories(mep-quit-live-test PRIVATE src)
+        target_compile_options(mep-quit-live-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+        target_link_options(mep-quit-live-test PRIVATE ${MEP_SANITIZE_FLAGS})
+        target_link_libraries(mep-quit-live-test PRIVATE Threads::Threads)
+        add_dependencies(tests mep-quit-live-test)
 
 add_executable(mep-cad-live-test EXCLUDE_FROM_ALL src/cad_live_test.cpp)
         target_include_directories(mep-cad-live-test PRIVATE src)

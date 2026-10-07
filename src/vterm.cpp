@@ -150,9 +150,19 @@ int VTermCharWidth(uint32_t cp) {
 }
 
 VTerm::VTerm(int rows, int cols) : rows_(std::max(1, rows)), cols_(std::max(1, cols)) {
-    primary_.assign(static_cast<size_t>(rows_) * static_cast<size_t>(cols_), VTermCell{});
-    alt_.assign(static_cast<size_t>(rows_) * static_cast<size_t>(cols_), VTermCell{});
+    primary_rows_.assign(static_cast<size_t>(rows_), std::vector<VTermCell>(static_cast<size_t>(cols_), VTermCell{}));
+    alt_rows_ = primary_rows_;
+    primary_map_.resize(static_cast<size_t>(rows_));
+    for (size_t i = 0; i < primary_map_.size(); i++) primary_map_[i] = i;
+    alt_map_ = primary_map_;
     bottom_margin_ = rows_ - 1;
+}
+
+void VTerm::BlankAllRows() {
+    for (std::vector<VTermCell> &row : primary_rows_) BlankRow(row);
+    for (std::vector<VTermCell> &row : alt_rows_) BlankRow(row);
+    for (size_t i = 0; i < primary_map_.size(); i++) primary_map_[i] = i;
+    for (size_t i = 0; i < alt_map_.size(); i++) alt_map_[i] = i;
 }
 
 std::string VTerm::Feed(const std::string &data) {
@@ -173,22 +183,28 @@ void VTerm::Resize(int rows, int cols) {
     // Primary screen preserves as much existing content as fits,
     // top-left anchored; the alt screen is just reallocated blank (see
     // header comment -- a full-screen program redraws on SIGWINCH anyway).
-    std::vector<VTermCell> new_primary(static_cast<size_t>(rows) * static_cast<size_t>(cols), VTermCell{});
+    // Read through the old row map (the screen's logical order), write
+    // out in the new one's identity order.
+    std::vector<std::vector<VTermCell>> new_primary(static_cast<size_t>(rows),
+                                                    std::vector<VTermCell>(static_cast<size_t>(cols), VTermCell{}));
     for (int r = 0; r < std::min(rows, rows_); r++) {
+        const std::vector<VTermCell> &old_row = primary_rows_[primary_map_[static_cast<size_t>(r)]];
         for (int c = 0; c < std::min(cols, cols_); c++) {
-            new_primary[static_cast<size_t>(r) * static_cast<size_t>(cols) + static_cast<size_t>(c)] =
-                primary_[static_cast<size_t>(r) * static_cast<size_t>(cols_) + static_cast<size_t>(c)];
+            new_primary[static_cast<size_t>(r)][static_cast<size_t>(c)] = old_row[static_cast<size_t>(c)];
         }
     }
     // A wide pair cut at the new right edge leaves a lead with no room
     // for its continuation -- blank it rather than let it draw into the
     // (now nonexistent) next column.
     for (int r = 0; r < rows; r++) {
-        VTermCell &last = new_primary[static_cast<size_t>(r) * static_cast<size_t>(cols) + static_cast<size_t>(cols - 1)];
+        VTermCell &last = new_primary[static_cast<size_t>(r)][static_cast<size_t>(cols - 1)];
         if (last.width == 2) last = VTermCell{};
     }
-    primary_ = std::move(new_primary);
-    alt_.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols), VTermCell{});
+    primary_rows_ = std::move(new_primary);
+    alt_rows_.assign(static_cast<size_t>(rows), std::vector<VTermCell>(static_cast<size_t>(cols), VTermCell{}));
+    primary_map_.resize(static_cast<size_t>(rows));
+    for (size_t i = 0; i < primary_map_.size(); i++) primary_map_[i] = i;
+    alt_map_ = primary_map_;
     rows_ = rows;
     cols_ = cols;
     top_margin_ = 0;
@@ -201,7 +217,7 @@ void VTerm::Resize(int rows, int cols) {
 const VTermCell &VTerm::At(int row, int col) const {
     static const VTermCell kBlank{};
     if (row < 0 || row >= rows_ || col < 0 || col >= cols_) return kBlank;
-    return Grid()[static_cast<size_t>(row) * static_cast<size_t>(cols_) + static_cast<size_t>(col)];
+    return Row(row)[static_cast<size_t>(col)];
 }
 
 const VTermCell &VTerm::ScrollbackAt(int row, int col) const {
@@ -745,8 +761,7 @@ void VTerm::ExecuteEscFinal(unsigned char c) {
             pending_wrap_ = false;
             break;
         case 'c':  // RIS -- full reset
-            for (VTermCell &cell : primary_) cell = VTermCell{};
-            for (VTermCell &cell : alt_) cell = VTermCell{};
+            BlankAllRows();
             alt_active_ = false;
             app_cursor_keys_ = false;
             mouse_tracking_ = VTermMouseTracking::Off;
@@ -799,32 +814,41 @@ void VTerm::ScrollRegionUp(int n, bool push_scrollback) {
     if (n <= 0) return;
     int region_h = bottom_margin_ - top_margin_ + 1;
     n = std::min(n, region_h);
-    if (push_scrollback && top_margin_ == 0 && !alt_active_) {
-        for (int i = 0; i < n; i++) {
-            std::vector<VTermCell> line(Grid().begin() + static_cast<ptrdiff_t>(i) * cols_,
-                                         Grid().begin() + static_cast<ptrdiff_t>(i + 1) * cols_);
-            scrollback_.push_back(std::move(line));
-            if (scrollback_.size() > kMaxScrollback) scrollback_.pop_front();
+    const bool to_scrollback = push_scrollback && top_margin_ == 0 && !alt_active_;
+    // Each row leaving the top of the region: its cells go to scrollback
+    // (by moving the row's storage, not copying it), and the row that
+    // comes back in at the bottom reuses the storage of the scrollback
+    // line that just fell off the far end -- so a screenful of scrolling
+    // allocates nothing once the history is full.
+    for (int i = 0; i < n; i++) {
+        std::vector<VTermCell> &row = Row(top_margin_ + i);
+        if (to_scrollback) {
+            std::vector<VTermCell> recycled;
+            if (scrollback_.size() >= kMaxScrollback) {
+                recycled = std::move(scrollback_.front());
+                scrollback_.pop_front();
+            }
+            scrollback_.push_back(std::move(row));
+            row = std::move(recycled);
         }
+        BlankRow(row);  // also re-sizes a recycled line the screen has since grown past
     }
-    for (int r = top_margin_; r <= bottom_margin_ - n; r++) {
-        for (int c = 0; c < cols_; c++) CellAt(r, c) = CellAt(r + n, c);
-    }
-    for (int r = bottom_margin_ - n + 1; r <= bottom_margin_; r++) {
-        for (int c = 0; c < cols_; c++) CellAt(r, c) = VTermCell{};
-    }
+    // The cells themselves stay where they are: scrolling the region is
+    // just its rows changing which logical row they answer to.
+    std::vector<size_t> &map = RowMap();
+    std::rotate(map.begin() + top_margin_, map.begin() + top_margin_ + n, map.begin() + bottom_margin_ + 1);
 }
 
 void VTerm::ScrollRegionDown(int n) {
     if (n <= 0) return;
     int region_h = bottom_margin_ - top_margin_ + 1;
     n = std::min(n, region_h);
-    for (int r = bottom_margin_; r >= top_margin_ + n; r--) {
-        for (int c = 0; c < cols_; c++) CellAt(r, c) = CellAt(r - n, c);
-    }
-    for (int r = top_margin_; r < top_margin_ + n; r++) {
-        for (int c = 0; c < cols_; c++) CellAt(r, c) = VTermCell{};
-    }
+    // Mirror of ScrollRegionUp, without the scrollback half: rows pushed
+    // off the bottom of a region are simply lost (no terminal keeps
+    // history below the screen).
+    for (int i = 0; i < n; i++) BlankRow(Row(bottom_margin_ - i));
+    std::vector<size_t> &map = RowMap();
+    std::rotate(map.begin() + top_margin_, map.begin() + bottom_margin_ + 1 - n, map.begin() + bottom_margin_ + 1);
 }
 
 void VTerm::EraseInDisplay(int mode) {
@@ -891,7 +915,8 @@ void VTerm::EraseChars(int n) {
 void VTerm::EnterAltScreen() {
     if (alt_active_) return;
     alt_active_ = true;
-    for (VTermCell &cell : alt_) cell = VTermCell{};
+    for (std::vector<VTermCell> &row : alt_rows_) BlankRow(row);
+    for (size_t i = 0; i < alt_map_.size(); i++) alt_map_[i] = i;
     cursor_row_ = 0;
     cursor_col_ = 0;
     pending_wrap_ = false;

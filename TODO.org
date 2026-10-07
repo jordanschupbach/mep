@@ -1,5 +1,68 @@
-* TODO have ability to create folds
-* TODO Get browser working 
+* TODO todo management
+* TODO fix test sidebar for mep
+* TODO Create basic music player
+* TODO Fix bindings in yt player
+* TODO Add mail client
+* TODO Add TODO management to mepml docs
+* TODO Add
+
+* TODO lua formatter
+
+I'd like an inhouse version of a formatter for lua. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO java formatter
+
+I'd like an inhouse version of a formatter for java. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO c formatter
+
+I'd like an inhouse version of a formatter for c. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).
+
+* TODO octave lsp engine
+I'd like an inhouse LSP engine for octave. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+* TODO java lsp engine
+I'd like an inhouse LSP engine for Java. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
+
+
+* TODO link formatting
+Change links in org mode to be rendered to have an underline underneath it. 
+
+* TODO add themes
+investigate what themes there and which ones appear to be missing and then
+implement them. The more the better.
+
+* TODO fix exiting sidebar bug (specifically when exiting todo editor)
+  :LOGBOOK:
+  CLOCK: [2026-09-19 Sat 09:43]--[2026-09-19 Sat 09:46] =>  0:03
+  CLOCK: [2026-09-19 Sat 09:43]--[2026-09-19 Sat 09:43] =>  0:00
+  :END:
+  
+* TODO fix buffer sidebar
+    The buffer sidebar has some behavior, where, if I click on a buffer, it opens
+    that buffer within the current pane (which is the buffer sidebar). Instead,
+    I'd like that behavior on double click, except opening to a buffer to its
+    right (i.e not inside the buffer sidebar buffer). Then, I'd also like
+    click-hold and drag capabilities to drag and drop those buffers into panes
+    visible in the windows. We have this capability for the filetree, so maybe we
+    can reuse some of that logic there. Can you implement these?
+
+* TODO Add a 'gd' binding for 'go debug' to start a debugging session for the current file
+  in the language's debugger. This should be language specific, and should use
+  the language's debugger (e.g. for R, it should use R's built-in debugger to
+  start a debugging session for the current file). Can you implement this? In
+  python it should use pdb, and in C/C++ it should use gdb or lldb. Can you
+  implement these?
+
+* TODO Add C++ language mode
+I'd like a C++ language mode that has a terminal for running the current file's
+executable, a compiler explorer like sidebar, and a hex exploration like sidebar. Can you implement these?
+
+* DONE have ability to create folds
+* DONE Get browser working 
 * DONE deleting a tab is just deleting four spaces, not a tab
 
 One Backspace press in a line's leading whitespace now eats the whole soft
@@ -90,21 +153,12 @@ There's a bug in org table formatting, where, links dont get properly formatted.
     `PlanOrgTableWrap`/`OrgTableCellDisplayText` cases in
     org_doc_test.cpp, including the link-free table that must not move.
 
-* TODO org table render
+* DONE org table render
 
 I'd like org tables to render better. Should have slightly different backgrounds
 one row after the other. I'd also like there to be a rounded border, similar to
 the style that org code blocks have.
 
-* TODO lua formatter
-
-I'd like an inhouse version of a formatter for lua. Can you implement one? I'd
-like it to run without previously exisiting linters (i.e. entirely inhouse).
-
-* TODO java formatter
-
-I'd like an inhouse version of a formatter for java. Can you implement one? I'd
-like it to run without previously exisiting linters (i.e. entirely inhouse).
 
 * DONE c++ formatter
 
@@ -164,10 +218,6 @@ like it to run without previously exisiting linters (i.e. entirely inhouse).
     than a rewrite. The only refusals left in that corpus are two bison `.cc`
     m4 skeletons, which are not C++.
 
-* TODO c formatter
-
-I'd like an inhouse version of a formatter for c. Can you implement one? I'd
-like it to run without previously exisiting linters (i.e. entirely inhouse).
 
 * DONE python formatter
 
@@ -327,11 +377,6 @@ code block (separated by a horizontal line (from the code part of the block).
     c/cpp compile-database rewrite, and those two languages happen to have
     name == extension.
 
-* TODO octave lsp engine
-I'd like an inhouse LSP engine for octave. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
-
-* TODO java lsp engine
-I'd like an inhouse LSP engine for Java. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
 
 * DONE c++ lsp engine
 I'd like an inhouse LSP engine for C++. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)
@@ -658,8 +703,6 @@ able to insert a code block (e.g. R, python, C/C++, etc.) into the org mode buff
     way the Run button's Setup menu and a notebook cell's kernel dropdown
     already were. Documented in help/org-babel.org.
 
-* TODO link formatting
-Change links in org mode to be rendered to have an underline underneath it. 
 
 * DONE org play
 Add a play button to org mode code blocks that will run the code block in the appropriate language mode.
@@ -761,13 +804,8 @@ Add a settings button to orgmode code blocks that will allow the user to set the
     quote block. Documented in help/org-babel.org ("Setting them from a
     popup") and help/org-visuals.org ("The settings button").
 
-* TODO add themes
-investigate what themes there and which ones appear to be missing and then
-implement them. The more the better.
 
-* TODO todo management
-
-* TODO language modes
+* DONE language modes
   We've added 'ui modes' for languages before (I think just R so far). I'd like
   <leader>rr to run the current document in language modes (and there to be a ui
   mode with a terminal associated to it for running the code in). I'd like to
@@ -778,17 +816,6 @@ implement them. The more the better.
   the code in and ideally a figure sidebar for matplotlib/seaborn like figures
   to show up in (e.g. that appear when running .show() methods). Can you
   implement these?
-
-* TODO fix buffer sidebar
-  The buffer sidebar has some behavior, where, if I click on a buffer, it opens
-  that buffer within the current pane (which is the buffer sidebar). Instead,
-  I'd like that behavior on double click, except opening to a buffer to its
-  right (i.e not inside the buffer sidebar buffer). Then, I'd also like
-  click-hold and drag capabilities to drag and drop those buffers into panes
-  visible in the windows. We have this capability for the filetree, so maybe we
-  can reuse some of that logic there. Can you implement these?
-
-* TODO fix exiting sidebar bug (specifically when exiting todo editor)
 
 * DONE Add a 'gr' binding for 'go run' to run the current file in the language's
   interpreter or compiler. This should be language specific, and should use the
@@ -806,12 +833,6 @@ implement them. The more the better.
     socket (:normal gr on a .py file wrote the buffer, opened the tab terminal
     and actually ran the script), with gg/G/bare-r left unaffected.
 
-* TODO Add a 'gd' binding for 'go debug' to start a debugging session for the current file
-  in the language's debugger. This should be language specific, and should use
-  the language's debugger (e.g. for R, it should use R's built-in debugger to
-  start a debugging session for the current file). Can you implement this? In
-  python it should use pdb, and in C/C++ it should use gdb or lldb. Can you
-  implement these?
 
 * DONE Add a 'gt' binding for 'go test' to run the tests for the current file in the
   language's testing framework. This should be language specific, and should use
@@ -885,10 +906,6 @@ implement them. The more the better.
     "attempt to index a nil value" on every diagnostic and none ever reached
     an org buffer. It is a bare global now, like mep_lsp_server_capabilities
     beside it, and diagnostics render inside code blocks.
-
-* TODO Add C++ language mode
-I'd like a C++ language mode that has a terminal for running the current file's
-executable, a compiler explorer like sidebar, and a hex exploration like sidebar. Can you implement these?
 
 
 * DONE gf binding :ARCHIVE:
@@ -1035,11 +1052,6 @@ executable, a compiler explorer like sidebar, and a hex exploration like sidebar
 * DONE git sidebar binding :ARCHIVE:
   I'd like in the status tab in the git sidebar, for pressing P to push.
   Can you implement this?
-* TODO fix exiting sidebar bug (specifically when exiting todo editor)
-  :LOGBOOK:
-  CLOCK: [2026-09-19 Sat 09:43]--[2026-09-19 Sat 09:46] =>  0:03
-  CLOCK: [2026-09-19 Sat 09:43]--[2026-09-19 Sat 09:43] =>  0:00
-  :END:
 * DONE add jupyter notebook mode :ARCHIVE:
   I'd like the ability to edit jupiter notebook files, much like the interface
   of standard web-based jupyter interface. CAn you add these capabilities? Add a

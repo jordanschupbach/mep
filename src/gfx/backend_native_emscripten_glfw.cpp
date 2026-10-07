@@ -69,6 +69,7 @@ int MapKey(gfx::Key key) {
         case gfx::Key::RightControl: return GLFW_KEY_RIGHT_CONTROL;
         case gfx::Key::RightShift: return GLFW_KEY_RIGHT_SHIFT;
         case gfx::Key::RightSuper: return GLFW_KEY_RIGHT_SUPER;
+        case gfx::Key::Space: return GLFW_KEY_SPACE;
         case gfx::Key::Tab: return GLFW_KEY_TAB;
         case gfx::Key::Up: return GLFW_KEY_UP;
         default: return GLFW_KEY_UNKNOWN;
@@ -109,6 +110,7 @@ gfx::Key UnmapKey(int glfw_key) {
         case GLFW_KEY_RIGHT_CONTROL: return gfx::Key::RightControl;
         case GLFW_KEY_RIGHT_SHIFT: return gfx::Key::RightShift;
         case GLFW_KEY_RIGHT_SUPER: return gfx::Key::RightSuper;
+        case GLFW_KEY_SPACE: return gfx::Key::Space;
         case GLFW_KEY_TAB: return gfx::Key::Tab;
         case GLFW_KEY_UP: return gfx::Key::Up;
         default: return gfx::Key::None;

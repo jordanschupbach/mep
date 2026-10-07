@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (196)</h1>
+<h1>The bindings (199)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -97,6 +97,8 @@ that it does nothing.</p>
 <tr><td><code>mep.menubar_tap_toggle_set</code></td><td>enables/disables the bare mod1 (Alt) tap that toggles the menu bar</td></tr>
 <tr><td><code>mep.menubar_toggle</code></td><td>shows/hides the top menu bar, the same thing tapping mod1 does</td></tr>
 <tr><td><code>mep.menubar_visible</code></td><td>returns whether the top menu bar is currently shown</td></tr>
+<tr><td><code>mep.mepml_alt_popup_toggle</code></td><td>toggles the mepml alt text popup</td></tr>
+<tr><td><code>mep.mepml_alt_popup_visible</code></td><td>reports whether a hovered mepml block shows its alt text in a popup</td></tr>
 <tr><td><code>mep.mepml_block_at</code></td><td>describes the mepml code block at a 1-based row</td></tr>
 <tr><td><code>mep.mepml_code_blocks</code></td><td>lists the current mepml buffer's code-block bodies</td></tr>
 <tr><td><code>mep.mepml_diagnostics</code></td><td>the parser's diagnostics for the current mepml buffer</td></tr>
@@ -173,6 +175,7 @@ that it does nothing.</p>
 <tr><td><code>mep.statusbar_set_visible</code></td><td>shows or hides the status line outright</td></tr>
 <tr><td><code>mep.statusbar_toggle</code></td><td>shows/hides the status line at the foot of the window</td></tr>
 <tr><td><code>mep.statusbar_visible</code></td><td>returns whether the status line is shown (zen mode aside)</td></tr>
+<tr><td><code>mep.swap_pane</code></td><td>swaps the focused pane with its neighbor in that direction, focus travelling with the pane that moved</td></tr>
 <tr><td><code>mep.tabbar_set_visible</code></td><td>shows or hides the tab bar outright</td></tr>
 <tr><td><code>mep.tabbar_toggle</code></td><td>shows/hides the tab bar at the top of the window</td></tr>
 <tr><td><code>mep.tabbar_visible</code></td><td>returns whether the tab bar is shown (zen mode aside)</td></tr>

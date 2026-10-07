@@ -41,6 +41,7 @@ language.</p>
 <tr><td><code>&lt;leader&gt;km</code></td><td>toggle markup concealment</td></tr>
 <tr><td><code>&lt;leader&gt;kr</code></td><td>raw text or rendered (also the header's eye button)</td></tr>
 <tr><td><code>&lt;leader&gt;kf</code></td><td>toggle the math preview popup shown while typing a formula</td></tr>
+<tr><td><code>&lt;leader&gt;kA</code></td><td>toggle the alt text popup shown on hover (off by default)</td></tr>
 <tr><td><code>&lt;leader&gt;kp</code></td><td>present the slides, filling the editor (also the header's screen button, on a presentation)</td></tr>
 <tr><td><code>&lt;leader&gt;kP</code></td><td>present the slides full screen</td></tr>
 <tr><td><code>:MepmlExecute</code></td><td>run the code block under the cursor</td></tr>
@@ -59,6 +60,7 @@ language.</p>
 <tr><td><code>:MepmlHeaderToggle</code></td><td>fold or unfold the document header</td></tr>
 <tr><td><code>:MepmlLinkFollow</code></td><td>follow the link under the cursor</td></tr>
 <tr><td><code>:MepmlRender</code></td><td>re-render the buffer now</td></tr>
+<tr><td><code>:MepmlAltPopupToggle</code></td><td>toggle the alt text popup shown on hover</td></tr>
 <tr><td><code>:MepmlRawToggle</code></td><td>toggle rendering (raw text / rendered document)</td></tr>
 <tr><td><code>:MepmlFoldsRecompute</code></td><td>rebuild folds (<code>za</code>, <code>zc</code> and <code>zo</code> do this themselves)</td></tr>
 <tr><td><code>:MepmlPresent</code> [mode]</td><td>present the slides: <code>fill</code> (the default), <code>full</code>, <code>stop</code></td></tr>
@@ -642,7 +644,12 @@ the page; <code>Enter</code> on the block (or the page taking it, for a text fie
 hands it the keyboard, and <code>Ctrl-\</code> or a click outside takes it back. Stopping keeps a picture of the page as the block's results (at
 <code>file=</code>, else beside the document), and that picture is what the slides,
 PDF and Office exports show until it runs again; an HTML export embeds an
-<code>html</code> block's page itself, live. <code>rows=</code> sets its height. The page is
+<code>html</code> block's page itself, live. <code>rows=</code> sets its height. The picture is
+of the whole page, which mep can only read while the page is on screen: a
+tall <code>rows=</code> that the pane cuts off is photographed as the part that
+showed, so scroll such a block fully into view once before exporting.
+Scrolling away afterwards cannot spoil it -- a cut-off photograph never
+replaces a whole one. The page is
 written beside the document, so the paths it names (a script, a picture)
 are the document's. The browser is the first of <code>chromium</code>,
 <code>chromium-browser</code>, <code>google-chrome</code> or <code>brave-browser</code> on <code>PATH</code> (or
@@ -673,12 +680,17 @@ a caption reads "Figure 2: ..." or "Table 1: ..." in the editor and in
 the export alike. In the editor a caption is wrapped to the text width
 (<code>:set textwidth</code>, 80 by default) and centred under a figure; its source
 comes back while the cursor is on it. An alt text is for readers who cannot
-see the page, so it takes no room on it: its lines are hidden, and while the
-mouse is over the block it describes it shows in a popup just under the
-block (an inline formula's while the mouse is over the formula) -- in the
-presentation view too. Move the cursor onto its own line to
-see and edit its source, which also stays on one line: a long one slides
-sideways to keep the cursor in view rather than wrapping.</p>
+see the page, so it takes no room on it: its lines are hidden. Move the
+cursor onto its own line to see and edit its source, which also stays on
+one line: a long one slides sideways to keep the cursor in view rather
+than wrapping.</p>
+<p><code>&lt;leader&gt;ota</code> (<code>&lt;leader&gt;kA</code>, <code>:MepmlAltPopupToggle</code>) turns on a popup
+that shows an alt text while the mouse is over the block it describes --
+an inline formula's while the mouse is over the formula -- in the
+rendered view and in the presentation view alike. It starts <b>off</b>: the
+text is written for a reader who cannot see the page, so by default it
+stays off the page rather than floating over the document wherever the
+mouse rests. Turn it on to proofread what the exports will say.</p>
 <p>GitHub-flavoured Markdown tables work as they are. After a header row
 and a delimiter row with as many cells, the outer pipes are optional, and
 <code>\|</code> is a pipe inside a cell:</p>

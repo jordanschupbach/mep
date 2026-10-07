@@ -81,6 +81,21 @@
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
+#else
+#include <unistd.h>  // _exit, for the fast quit at the end of main()
+#endif
+
+// True in a -DCMAKE_BUILD_TYPE=Sanitize build (CMakeLists.txt's
+// MEP_SANITIZE_FLAGS). ASan/LSan/TSan print what they found from an exit
+// handler, so the fast process exit at the end of main() -- which exists
+// precisely to skip the exit sequence -- has to stay out of the way of a
+// build whose whole point is that report.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define MEP_SANITIZER_BUILD 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || __has_feature(memory_sanitizer)
+#define MEP_SANITIZER_BUILD 1
+#endif
 #endif
 
 // These are generated/subsetted font data headers (raw glyph byte arrays,
@@ -1570,10 +1585,12 @@ std::vector<HtmlClickRect> g_html_click_rects;
 // for its own final "draw the hint overlay last" check, and C++ has no
 // forward-declaration story for a plain global the way it does for a
 // function via DrawHintOverlay's own forward declaration just above
-// DrawEditor). `anchor` is where a target's label badge draws (its own
-// top-left corner); `action` is what running its label in full does.
+// DrawEditor). `rect` is the thing being hinted, in screen space -- the
+// whole rect rather than one corner, because the label badge is placed
+// *within* it (HintBadgeRect); `action` is what running its label in
+// full does.
 struct HintTarget {
-    gfx::Vector2 anchor;
+    gfx::Rectangle rect;
     std::string label;
     std::function<void()> action;
 };
@@ -3456,6 +3473,14 @@ const char *kDefaultMod1Bindings =
     "mep.map_mod1('C-j', function() mep.pane_move_buffer('down') end)\n"
     "mep.map_mod1('C-k', function() mep.pane_move_buffer('up') end)\n"
     "mep.map_mod1('C-l', function() mep.pane_move_buffer('right') end)\n"
+    // Ctrl+Shift on the same four keys swaps the whole pane with its
+    // neighbor that way (the panes exchange slots) rather than handing one
+    // buffer over, and focus rides along with the pane that moved -- so
+    // the chord can be pressed repeatedly to walk a pane across a layout.
+    "mep.map_mod1('C-S-h', function() mep.swap_pane('left') end)\n"
+    "mep.map_mod1('C-S-j', function() mep.swap_pane('down') end)\n"
+    "mep.map_mod1('C-S-k', function() mep.swap_pane('up') end)\n"
+    "mep.map_mod1('C-S-l', function() mep.swap_pane('right') end)\n"
     "mep.map_mod1('d', function() mep.pane_close_buffer() end)\n"
     // mod1+m: with a sidebar focused, pop it out into a large centered
     // float with a preview column (Editor::ToggleSidebarPopout); otherwise
@@ -3476,7 +3501,15 @@ const char *kDefaultMod1Bindings =
     "mep.map_mod1('n', function() mep.pane_next_buffer() end)\n"
     "mep.map_mod1('p', function() mep.pane_prev_buffer() end)\n"
     "mep.map_mod1('Tab', function() mep.pane_next_buffer() end)\n"
-    "mep.map_mod1('S-Tab', function() mep.pane_prev_buffer() end)\n";
+    "mep.map_mod1('S-Tab', function() mep.pane_prev_buffer() end)\n"
+    // Ctrl+Tab is the "move" counterpart of the two above: it reorders the
+    // pane's tab strip, carrying the buffer you are in one place along it
+    // (wrapping at the ends) instead of switching to a different one.
+    // Ctrl+Alt+Tab reaches this because HandleTabShortcuts deliberately
+    // leaves that combination to mod1 (its own Ctrl+Tab tab-cycling
+    // requires Alt *not* be held).
+    "mep.map_mod1('C-Tab', function() mep.pane_reorder_buffer(1) end)\n"
+    "mep.map_mod1('C-S-Tab', function() mep.pane_reorder_buffer(-1) end)\n";
 
 // Debounced buffer-changed/buffer-saved consumer helpers, built on top of
 // mep.on_frame + mep.buffer_change_epoch()/buffer_save_epoch() (new C++
@@ -18970,6 +19003,16 @@ const char *kBuiltinOrgLatex =
     "end\n"
     "mep.command('MepOrgLatexPopupToggle', mep.org_latex_popup_toggle_ui)\n"
     "mep.leader_map('otp', 'Toggle math preview popup while typing', mep.org_latex_popup_toggle_ui)\n"
+    // The alt text popup over a hovered mepml block
+    // (Editor::MepmlAltPopupVisible): off by default, since an alt text is
+    // written for the exports' screen-reader path rather than to be read
+    // off the page or the slide.
+    "function mep.mepml_alt_popup_toggle_ui()\n"
+    "  local visible = mep.mepml_alt_popup_toggle()\n"
+    "  mep.notify('Alt text popup: ' .. (visible and 'on' or 'off'))\n"
+    "end\n"
+    "mep.command('MepmlAltPopupToggle', mep.mepml_alt_popup_toggle_ui)\n"
+    "mep.leader_map('ota', 'Toggle alt text popup on hover', mep.mepml_alt_popup_toggle_ui)\n"
     "\n"
     "mep.on_buffer_changed(function()\n"
     "  if not mep_latex_preview_ft(mep.filename()) then return end\n"
@@ -25046,6 +25089,8 @@ const char *kBuiltinMepml =
     "mep.leader_map('kr', 'mepml: toggle rendering (raw text / rendered)', mep.mepml_raw_toggle_ui)\n"
     "mep.leader_map('kf', 'mepml: toggle math preview popup while typing',\n"
     "  function() mep.org_latex_popup_toggle_ui() end)\n"
+    "mep.leader_map('kA', 'mepml: toggle alt text popup on hover',\n"
+    "  function() mep.mepml_alt_popup_toggle_ui() end)\n"
     "mep.leader_map('km', 'mepml: toggle markup concealment', function()\n"
     "  local visible = mep.org_conceal_toggle()\n"
     "  mep.notify('Markup concealment: ' .. (visible and 'on' or 'off'))\n"
@@ -36385,6 +36430,14 @@ struct YoutubeThumbTexture {
 };
 std::unordered_map<long long, YoutubeThumbTexture> g_youtube_thumb_textures;
 
+// Status-bar now-playing pill (DrawFrame's status line): the title is far
+// wider than a chip, so it scrolls through a fixed window. The marquee is
+// phased off a start time rather than a per-frame offset so it is
+// frame-rate independent and restarts at the title's first character
+// whenever the track changes.
+std::string g_youtube_chip_title;
+double g_youtube_chip_title_since = 0.0;
+
 // Chrome text is drawn from an ASCII-only atlas (see DrawUiText), so a
 // title's non-ASCII runs (accents, CJK, emoji) collapse to one '?' rather
 // than vanishing and leaving the words jammed together.
@@ -36482,6 +36535,45 @@ bool GetYoutubeThumbTexture(int buffer_id, const YoutubeSession &sess, int index
     return tt.tex.id != 0;
 }
 
+// The YouTube pane's own key sheet (its '?' key -- the footer line along
+// the pane's bottom edge advertises it, the same way a sidebar's footer
+// advertises its own '?'). An empty `key` is a section heading, not a
+// binding. Kept beside the drawing code rather than in editor.cpp because
+// this is purely what gets painted; HandleYoutubeInput owns the keys
+// themselves and the two have to be edited together.
+struct YoutubeHelpRow {
+    const char *key;
+    const char *what;
+};
+const YoutubeHelpRow kYoutubeHelpRows[] = {
+    {"", "Playback"},
+    {"Ctrl+Space", "play / pause"},
+    {"Enter", "play the selection (pause the playing one)"},
+    {"x", "stop"},
+    {"", "Volume"},
+    {"h / l", "volume down / up"},
+    {"+ / -", "volume up / down"},
+    {"m", "mute"},
+    {"", "Seek"},
+    {"H / L", "back / forward 10 seconds"},
+    {"Left / Right", "back / forward 10 seconds"},
+    {"S-Left / S-Right", "back / forward a minute"},
+    {"0 ... 9", "jump to 0% ... 90%"},
+    {"", "Results"},
+    {"Ctrl+h / Ctrl+p", "previous result"},
+    {"Ctrl+l / Ctrl+n", "next result"},
+    {"n / p", "next / previous result"},
+    {"j / k", "move the selection"},
+    {"g / G", "first / last result"},
+    {"r", "hide / show the result list"},
+    {"", "Pane"},
+    {"/ or s", "search YouTube"},
+    {"o", "open a watch URL or video id"},
+    {"i", "hide the player, keep it playing"},
+    {"q", "close the player"},
+    {"?", "this sheet (Esc closes it)"},
+};
+
 /**
  * @brief Draws one YouTube-player pane: the decoded video (letterboxed) over a transport bar
  * (prev / play-pause / next, a click-to-seek progress bar, elapsed/total, a volume slider and the
@@ -36509,19 +36601,24 @@ void DrawYoutubePane(const Pane &pane, YoutubeSession &sess, float x, float y, f
     const gfx::Vector2 mouse = gfx::GetMousePosition();
     const float pad = std::round(font_size * 0.7f);
     const float bar_h = std::round(font_size * 3.0f);
+    // The "?: help" line along the very bottom edge (DrawSidebarFooter's
+    // own idiom), under the transport bar -- so `chrome_h`, not bar_h, is
+    // what the video/list have to stay clear of.
+    const float footer_h = std::round(small + 7.0f);
+    const float chrome_h = bar_h + footer_h;
 
     // --- Geometry: video (if any) on top, transport bar at the bottom, results between.
     const bool has_player = sess.playing || sess.info_valid || !sess.frame_rgba.empty() || sess.resolving;
     float video_h = 0.0f;
     if (has_player) {
         if (!sess.show_results) {
-            video_h = std::max(0.0f, h - bar_h);
+            video_h = std::max(0.0f, h - chrome_h);
         } else {
-            video_h = std::clamp(w * 9.0f / 16.0f, std::round(font_size * 6.0f), std::round((h - bar_h) * 0.6f));
-            video_h = std::max(0.0f, std::min(video_h, h - bar_h));
+            video_h = std::clamp(w * 9.0f / 16.0f, std::round(font_size * 6.0f), std::round((h - chrome_h) * 0.6f));
+            video_h = std::max(0.0f, std::min(video_h, h - chrome_h));
         }
     }
-    const float bar_y = y + h - bar_h;
+    const float bar_y = y + h - chrome_h;
     const float list_y = y + video_h;
     const float list_h = std::max(0.0f, bar_y - list_y);
 
@@ -36681,9 +36778,9 @@ void DrawYoutubePane(const Pane &pane, YoutubeSession &sess, float x, float y, f
                 DrawUiText(logo, gfx::Vector2{x + (w - lw) / 2.0f, cy0 - ls}, ls, red);
                 // One hint per line, each short enough for a narrow split;
                 // stop at the bottom edge rather than running under the bar.
-                const char *hints[] = {"/  search      o  open URL", "Enter  play      Space  pause",
-                                       "h / l  seek 10s      n / p  next / prev", "+ / -  volume      m  mute",
-                                       "r  hide list      q  close"};
+                const char *hints[] = {"/  search      o  open URL", "Enter  play      C-Space  pause",
+                                       "h / l  volume      H / L  seek 10s", "C-h / C-l  prev / next      m  mute",
+                                       "r  hide list      q  close      ?  help"};
                 float hy = cy0 + 10.0f;
                 for (const char *hint : hints) {
                     if (hy + small > rows_y + rows_h) break;
@@ -36784,6 +36881,86 @@ void DrawYoutubePane(const Pane &pane, YoutubeSession &sess, float x, float y, f
                                     g_editor.YoutubeSeekTo(*s, dur * static_cast<double>(t));
                                 });
         }
+    }
+
+    // --- Footer: the one-line "?: help" hint along the bottom edge ---
+    // Same shape (rule above, dimmed text, Yellow while the sheet is up)
+    // and same purpose as a sidebar's own footer, so the player advertises
+    // its keys the way the rest of mep's panels do.
+    {
+        const float fy = y + h - footer_h;
+        gfx::DrawRectangle(static_cast<int>(x) + 2, static_cast<int>(fy), static_cast<int>(w) - 4, 1, gfx::Fade(fg, 0.12f));
+        const std::string hint = sess.show_help ? "Esc: back to the player" : "?: help";
+        DrawUiText(hint, gfx::Vector2{x + pad, fy + 3.0f}, small, sess.show_help ? ResolveHlGroup("Yellow") : muted);
+    }
+
+    // --- Key sheet ('?') ---
+    // Over the whole pane rather than in a corner: it is a modal readout
+    // (HandleYoutubeInput swallows the pane's keys while it is up), and the
+    // table only fits a narrow split at all by taking the width.
+    if (sess.show_help) {
+        const size_t row_count = sizeof(kYoutubeHelpRows) / sizeof(kYoutubeHelpRows[0]);
+        const float hrow = std::round(small + 5.0f);
+        float key_w = 0.0f, what_w = 0.0f;
+        for (const YoutubeHelpRow &r : kYoutubeHelpRows) {
+            if (r.key[0] != '\0') key_w = std::max(key_w, MeasureUiText(r.key, small));
+            what_w = std::max(what_w, MeasureUiText(r.what, small));
+        }
+        const float key_gap = std::round(font_size * 0.8f);
+        const float col_w = key_w + key_gap + what_w;
+        const float col_gap = std::round(font_size * 1.6f);
+        const float box_pad = std::round(font_size * 0.9f);
+        const float title = font_size + 10.0f;
+        // One column, or two side by side when a single one would run off
+        // the pane's bottom edge and there is width for the pair.
+        size_t split = row_count;
+        float box_w = col_w + 2.0f * box_pad;
+        float box_h = title + static_cast<float>(row_count) * hrow + 2.0f * box_pad;
+        if (box_h > h - 12.0f && w >= 2.0f * col_w + col_gap + 2.0f * box_pad + 12.0f) {
+            split = (row_count + 1) / 2;
+            box_w = 2.0f * col_w + col_gap + 2.0f * box_pad;
+            box_h = title + static_cast<float>(split) * hrow + 2.0f * box_pad;
+        }
+        box_w = std::min(box_w, w - 8.0f);
+        box_h = std::min(box_h, h - 8.0f);
+        const float bx = std::round(x + (w - box_w) / 2.0f);
+        const float by = std::round(y + (h - box_h) / 2.0f);
+        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
+                           gfx::Fade(gfx::Black, 0.5f));
+        const gfx::Rectangle box{bx, by, box_w, box_h};
+        gfx::DrawRectangleRounded(box, 0.04f, 8, gfx::Fade(bg, 0.97f));
+        gfx::DrawRectangleRoundedLines(box, 0.04f, 8, gfx::Fade(fg, 0.25f));
+        // Clipped to the box so a pane too short for even the two-column
+        // form drops rows off the bottom instead of painting outside it.
+        gfx::BeginScissorMode(static_cast<int>(bx), static_cast<int>(by), static_cast<int>(box_w), static_cast<int>(box_h));
+        {
+            std::string logo = Utf8FromCodepoint(0xf167);  // nf-fa-youtube
+            DrawUiText(logo, gfx::Vector2{bx + box_pad, by + box_pad}, font_size, red);
+            DrawUiText("Player keys", gfx::Vector2{bx + box_pad + MeasureUiText(logo, font_size) + 8.0f, by + box_pad}, font_size,
+                       fg);
+        }
+        for (size_t i = 0; i < row_count; i++) {
+            const YoutubeHelpRow &r = kYoutubeHelpRows[i];
+            const bool second = i >= split;
+            const float cx = bx + box_pad + (second ? col_w + col_gap : 0.0f);
+            const float ry2 = by + box_pad + title + static_cast<float>(second ? i - split : i) * hrow;
+            if (r.key[0] == '\0') {
+                // Section heading: the accent, in the key column's place.
+                DrawUiText(r.what, gfx::Vector2{cx, ry2}, small, accent);
+                continue;
+            }
+            DrawUiText(r.key, gfx::Vector2{cx, ry2}, small, fg);
+            DrawUiText(r.what, gfx::Vector2{cx + key_w + key_gap, ry2}, small, muted);
+        }
+        gfx::EndScissorMode();
+        // A click anywhere in the pane puts the sheet away. On top of the
+        // regions registered above (the picture's play/pause, the result
+        // rows, the transport), which would otherwise win the hit test --
+        // see RegisterClickRegionOnTop.
+        RegisterClickRegionOnTop(gfx::Rectangle{x, y, w, h}, [buffer_id, pane_id = pane.id] {
+            g_editor.FocusPaneById(pane_id);
+            if (YoutubeSession *s = g_editor.GetYoutubeMutable(buffer_id)) s->show_help = false;
+        });
     }
 
     // Focus fallback for whatever the regions above don't cover (registered
@@ -46815,8 +46992,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         for (int i = 0; i < n; i++) {
             float next_x = (i == n - 1) ? x + w : x + w * static_cast<float>(i + 1) / static_cast<float>(n);
             float seg_w = next_x - seg_x;
-            const Buffer &tb = g_editor.GetBuffer(pane.buffer_tabs[static_cast<size_t>(i)]);
-            std::string name = tb.scratch ? "[Scratch]" : (tb.filename.empty() ? "[No Name]" : Basename(tb.filename));
+            const int tab_buffer_id = pane.buffer_tabs[static_cast<size_t>(i)];
+            const Buffer &tb = g_editor.GetBuffer(tab_buffer_id);
+            std::string special = g_editor.SpecialBufferName(tab_buffer_id);
+            std::string name = !special.empty() ? special
+                               : tb.scratch    ? "[Scratch]"
+                                               : (tb.filename.empty() ? "[No Name]" : Basename(tb.filename));
             if (tb.modified) name += " [+]";
             bool tab_active = (i == pane.buffer_tab_index);
             gfx::Color seg_bg =
@@ -47926,14 +48107,26 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             return page_h;
         };
+        // The stack runs forward as far as the pane actually shows, not a
+        // fixed one page: a deck of short 16:9 slides fits several at once,
+        // and stopping at page + 1 left the rest of the pane blank even
+        // though Editor::EnsurePdfPagesRastered had those pages rendered
+        // and the scroll-rebase math had them positioned there. Only one
+        // page is ever drawn above the anchor -- RebasePdfScroll keeps
+        // scroll_y within the anchor's own height, so the anchor's top edge
+        // never falls more than one page-plus-gap below the pane's top.
+        const int pdf_page_count = pdf_sess->doc->PageCount();
+        auto page_px_h = [&](int idx) {
+            return static_cast<float>(pdf_sess->doc->PageHeightPt(idx) *
+                                      static_cast<double>(pdf_sess->rendered_scale) *
+                                      static_cast<double>(pdf_sess->zoom));
+        };
         float anchor_h = draw_page(pdf_sess->page, anchor_y);
-        if (pdf_sess->page > 0) {
-            float prev_h = static_cast<float>(pdf_sess->doc->PageHeightPt(pdf_sess->page - 1) *
-                                              static_cast<double>(pdf_sess->rendered_scale) *
-                                              static_cast<double>(pdf_sess->zoom));
-            draw_page(pdf_sess->page - 1, anchor_y - kPdfPageGapPx - prev_h);
-        }
-        draw_page(pdf_sess->page + 1, anchor_y + anchor_h + kPdfPageGapPx);
+        if (pdf_sess->page > 0)
+            draw_page(pdf_sess->page - 1, anchor_y - kPdfPageGapPx - page_px_h(pdf_sess->page - 1));
+        float stack_y = anchor_y + anchor_h + kPdfPageGapPx;
+        for (int idx = pdf_sess->page + 1; idx < pdf_page_count && stack_y < content_y + content_h; ++idx)
+            stack_y += draw_page(idx, stack_y) + kPdfPageGapPx;
 
         // Click-drag text selection: map the cursor to a drawn page + its
         // device-pixel offset (at rendered_scale, zoom-invariant) and drive
@@ -52836,8 +53029,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
         // Is the mouse over an inline formula with an alt text (as drawn:
-        // a render, or its source while the cursor is on the row)?
-        if (!fold_here && !tbl_wrap_runs && alt_mouse.y >= row_block_y && alt_mouse.y < row_block_y + static_cast<float>(row_block_h)) {
+        // a render, or its source while the cursor is on the row)? Only
+        // asked while the popup that uses it is on (<leader>ota).
+        if (!fold_here && !tbl_wrap_runs && g_editor.MepmlAltPopupVisible() && alt_mouse.y >= row_block_y &&
+            alt_mouse.y < row_block_y + static_cast<float>(row_block_h)) {
             for (const Buffer::MepmlAltNote &a : buf.mepml_alt_notes) {
                 if (a.col_first < 0 || row < a.first || row > a.last) continue;
                 const int raw_len = static_cast<int>(buf.lines[static_cast<size_t>(row)].size());
@@ -54213,7 +54408,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // shows with the mouse over the formula, and then rather than
     // its block's. (The text cursor does not bring it up: moving through
     // the text would flash one popup after another.)
-    if (!org_plain && g_editor.OrgConcealVisible() && !buf.mepml_alt_notes.empty() &&
+    //
+    // Off unless <leader>ota turned it on (Editor::MepmlAltPopupVisible):
+    // the text is written for the exports' screen-reader path, so by
+    // default neither the rendered page nor a presented slide pops it up.
+    if (!org_plain && g_editor.MepmlAltPopupVisible() && g_editor.OrgConcealVisible() && !buf.mepml_alt_notes.empty() &&
         !IsCommandLineMode(g_editor.CurrentMode()) &&
         PointInRect(alt_mouse, gfx::Rectangle{x, content_y, w, content_h})) {
         const Buffer::MepmlAltNote *note = nullptr;
@@ -55246,6 +55445,88 @@ void DrawEditor() {
             });
             chip_left = chip_rect.x - 12.0f;
         }
+        // YouTube now-playing pill (src/youtube_player.*): docked left of
+        // Direnv, and only while a player session actually has a track --
+        // unlike its neighbours this one has nothing to say when idle, and
+        // the tab bar's YouTube button is already the always-there entry
+        // point. It is what the player reports through now that hiding it
+        // no longer parks a sentence in the message line: a play/pause
+        // icon (clicking the pill toggles, same as the Pomodoro chip's
+        // click), the full title scrolling through a fixed window, and an
+        // elapsed/total readout. The window keeps the pill chip-sized no
+        // matter how long the title is, and the scroll is what makes the
+        // whole title readable anyway.
+        if (const int yt_chip_buffer = g_editor.YoutubeBufferId(); yt_chip_buffer >= 0) {
+            YoutubeSession *yt = g_editor.GetYoutubeMutable(yt_chip_buffer);
+            // `playing` covers resolving/buffering/paused as well; `ended`
+            // keeps the pill up on the track that just finished with its
+            // final time. A resolve that *failed* is neither (YoutubeStop
+            // cleared `ended`, the error path cleared `playing`), so a dead
+            // URL drops out of the bar instead of sitting there at --:--.
+            if (yt && !yt->now_title.empty() && (yt->playing || yt->ended)) {
+                const bool running = yt->playing && !yt->paused;
+                const std::string icon = Utf8FromCodepoint(running ? 0xf04c : 0xf04b);  // nf-fa-pause / nf-fa-play
+                const std::string title = YoutubeUiText(yt->now_title);
+                const double dur = g_editor.YoutubeDuration(*yt);
+                const double pos = yt->playing ? yt->position_sec : 0.0;
+                // Exactly the transport bar's own readout, "--:--" while a
+                // resolve is still in flight and all: a hidden player's pill
+                // and a visible player's transport should never disagree.
+                const std::string times = yt::FormatDuration(pos) + " / " +
+                                          (dur > 0.0 ? yt::FormatDuration(dur) : std::string("live"));
+
+                const float icon_w = MeasureUiText(icon, status_font_size);
+                const float times_w = MeasureUiText(times, status_font_size);
+                const float title_w = MeasureUiText(title, status_font_size);
+                // Kept near the Todo chip's own title allowance so the pill
+                // stays in the same size class as the rest of the row. The
+                // readout goes *before* the title -- the same order as the
+                // player pane's transport bar, and it puts the marquee's
+                // hard clip at the pill's own edge rather than mid-chip
+                // against the numbers.
+                const float window_w = std::min(title_w, 120.0f);
+                const float chip_w = 7.0f + icon_w + 8.0f + times_w + 14.0f + window_w + 7.0f;
+                gfx::Rectangle chip_rect{chip_left - chip_w, static_cast<float>(status_y + 2), chip_w,
+                                    static_cast<float>(status_bar_height - 4)};
+                gfx::DrawRectangleRounded(chip_rect, 0.3f, 4, ResolveHlGroup(running ? "YoutubePlaying" : "YoutubePaused"));
+                const gfx::Color chip_fg = ResolveHlGroup("StatusLineFg");
+                const float text_y = static_cast<float>(status_y + 3);
+                DrawUiText(icon, gfx::Vector2{chip_rect.x + 7.0f, text_y}, status_font_size, chip_fg);
+                DrawUiText(times, gfx::Vector2{chip_rect.x + 7.0f + icon_w + 8.0f, text_y}, status_font_size, chip_fg);
+
+                // Marquee: hold with the title's start at the window edge,
+                // then scroll one full title-plus-gap span and wrap, with a
+                // second copy trailing the first so the window is never
+                // partly blank mid-pass.
+                const float title_x = chip_rect.x + 7.0f + icon_w + 8.0f + times_w + 14.0f;
+                const float kGap = 36.0f;    // blank run between the end and the restart
+                const double kSpeed = 36.0;  // pixels per second
+                const double kHold = 1.5;    // seconds parked at the start of each pass
+                if (g_youtube_chip_title != title) {
+                    g_youtube_chip_title = title;
+                    g_youtube_chip_title_since = gfx::GetTime();
+                }
+                float offset = 0.0f;
+                if (title_w > window_w + 0.5f) {
+                    const double span = static_cast<double>(title_w + kGap);
+                    const double cycle = kHold + span / kSpeed;
+                    double phase = std::fmod(gfx::GetTime() - g_youtube_chip_title_since, cycle);
+                    if (phase < 0.0) phase += cycle;
+                    if (phase > kHold) offset = static_cast<float>((phase - kHold) * kSpeed);
+                }
+                gfx::BeginScissorMode(static_cast<int>(std::floor(title_x)), status_y + 2,
+                                      static_cast<int>(std::ceil(window_w)), status_bar_height - 4);
+                DrawUiText(title, gfx::Vector2{title_x - offset, text_y}, status_font_size, chip_fg);
+                if (offset > 0.0f)
+                    DrawUiText(title, gfx::Vector2{title_x - offset + title_w + kGap, text_y}, status_font_size, chip_fg);
+                gfx::EndScissorMode();
+
+                RegisterClickRegion(chip_rect, [yt_chip_buffer] {
+                    if (YoutubeSession *s = g_editor.GetYoutubeMutable(yt_chip_buffer)) g_editor.YoutubeTogglePause(*s);
+                });
+                chip_left = chip_rect.x - 12.0f;
+            }
+        }
         std::vector<std::pair<std::string, std::string>> widgets;
         bool has_widgets = g_editor.Lua() && g_editor.Lua()->CallRefForWidgets(g_editor.StatuslineRef(), &widgets);
         if (has_widgets) {
@@ -55261,7 +55542,10 @@ void DrawEditor() {
                 g_editor.PendingCount() > 0 ? std::to_string(g_editor.PendingCount()) + "  " : "";
             std::string register_indicator =
                 g_editor.PendingRegister() != 0 ? std::string("\"") + g_editor.PendingRegister() + "  " : "";
-            std::string buf_label = buf.scratch ? "[Scratch]" : (buf.filename.empty() ? "[No Name]" : buf.filename);
+            std::string buf_special = g_editor.SpecialBufferName(g_editor.CurrentBufferId());
+            std::string buf_label = !buf_special.empty() ? buf_special
+                                    : buf.scratch        ? "[Scratch]"
+                                                         : (buf.filename.empty() ? "[No Name]" : buf.filename);
             // Mode chip: a filled, mode-colored badge (ModeNormal/Insert/...,
             // editor.cpp) in place of the old plain "-- NORMAL --" text, same
             // filled-chip idiom as the active-todo/collab-peer chips just
@@ -55694,25 +55978,48 @@ void DispatchHtmlLinkClicks() {
 /**
  * @brief Builds the (unlabeled) hint target for one collected PDF/HTML link rect.
  * @param link The link rect DrawPane collected this frame.
- * @return A HintTarget anchored at the link's top-left whose action follows the link.
+ * @return A HintTarget over the link's own rect whose action follows the link.
  */
 HintTarget HintTargetForLink(const LinkHintRect &link) {
-    gfx::Vector2 anchor{link.rect.x, link.rect.y};
     int pane_id = link.pane_id, buffer_id = link.buffer_id;
     if (link.is_pdf) {
         int target_page = link.target_page;
         std::string uri = link.uri;
-        return {anchor, "", [pane_id, target_page, uri] {
+        return {link.rect, "", [pane_id, target_page, uri] {
                     g_editor.FocusPaneById(pane_id);
                     if (target_page >= 0) g_editor.GotoPdfPagePane(pane_id, target_page);
                     else if (!uri.empty()) g_editor.RunCommand("lua mep.open_url([[" + uri + "]])");
                 }};
     }
     std::string href = link.uri;
-    return {anchor, "", [pane_id, buffer_id, href] {
+    return {link.rect, "", [pane_id, buffer_id, href] {
                 g_editor.FocusPaneById(pane_id);
                 NavigateHtmlLink(buffer_id, href);
             }};
+}
+
+// Where one target's label badge goes. Not the target's top-left corner,
+// which is exactly the part of a button that identifies it (its icon, the
+// first word of its label) and so the worst place to cover: the badge is
+// centered horizontally on the target and sits low in it -- its own center
+// on the point three quarters of the way down -- leaving the top of the
+// thing being hinted readable while the label is still unmistakably
+// inside it. Clamped to the screen so a badge on a target at an edge
+// (a full-height pane, the rightmost tab-bar icon) stays wholly visible.
+/**
+ * @brief Screen rect of `t`'s label badge: centered on the target horizontally, three quarters
+ * of the way down it vertically, clamped to the window.
+ * @param t The hint target to place a badge for.
+ * @return The badge's screen rect.
+ */
+gfx::Rectangle HintBadgeRect(const HintTarget &t) {
+    const float w = gfx::MeasureTextEx(g_font, t.label.c_str(), g_font_size, 0).x + 4.0f;
+    const float h = g_font_size + 2.0f;
+    float x = t.rect.x + t.rect.width / 2.0f - w / 2.0f;
+    float y = t.rect.y + t.rect.height * 0.75f - h / 2.0f;
+    x = std::clamp(x, 0.0f, std::max(0.0f, static_cast<float>(gfx::GetScreenWidth()) - w));
+    y = std::clamp(y, 0.0f, std::max(0.0f, static_cast<float>(gfx::GetScreenHeight()) - h));
+    return gfx::Rectangle{x, y, w, h};
 }
 
 /**
@@ -55747,9 +56054,10 @@ void CollectHintTargets() {
         float dd_x = g_menu_starts[static_cast<size_t>(g_open_menu)];
         float dd_y = static_cast<float>(MenuBarHeight());
         float item_h = static_cast<float>(MenuItemHeight());
+        float dd_w = DropdownWidth(menu);
         for (size_t i = 0; i < menu.items.size(); i++) {
             std::function<void()> action = menu.items[i].action;
-            targets.push_back({gfx::Vector2{dd_x, dd_y + static_cast<float>(i) * item_h}, "",
+            targets.push_back({gfx::Rectangle{dd_x, dd_y + static_cast<float>(i) * item_h, dd_w, item_h}, "",
                                 [action] {
                                     action();
                                     g_open_menu = -1;
@@ -55760,9 +56068,10 @@ void CollectHintTargets() {
         // Window/Help while it's hidden would label pane content with
         // triggers that aren't there, and firing one would open a
         // dropdown hanging off a bar nobody can see.
-        for (size_t i = 0; i < g_menus.size() && i < g_menu_starts.size(); i++) {
+        for (size_t i = 0; i < g_menus.size() && i < g_menu_starts.size() && i < g_menu_widths.size(); i++) {
             int idx = static_cast<int>(i);
-            targets.push_back({gfx::Vector2{g_menu_starts[i], 0.0f}, "", [idx] { g_open_menu = idx; }});
+            targets.push_back({gfx::Rectangle{g_menu_starts[i], 0.0f, g_menu_widths[i], static_cast<float>(MenuBarHeight())},
+                                "", [idx] { g_open_menu = idx; }});
         }
     }
 
@@ -55775,7 +56084,7 @@ void CollectHintTargets() {
     // relevant widget that's a button" at once.
     for (const ClickRegion &region : g_click_regions) {
         std::function<void()> action = region.action;
-        targets.push_back({gfx::Vector2{region.rect.x, region.rect.y}, "", [action] { action(); }});
+        targets.push_back({region.rect, "", [action] { action(); }});
     }
 
     // Sidebar rows: activating one is exactly what Enter/a double-click
@@ -55784,7 +56093,7 @@ void CollectHintTargets() {
     // the row's own on_click sees a consistent cursor position.
     for (const SidebarRowRect &row : g_sidebar_row_rects) {
         int sidebar_id = row.sidebar_id, line_index = row.line_index;
-        targets.push_back({gfx::Vector2{row.rect.x, row.rect.y}, "", [sidebar_id, line_index] {
+        targets.push_back({row.rect, "", [sidebar_id, line_index] {
                                 g_editor.FocusSidebarRow(sidebar_id, line_index);
                                 g_editor.ActivateSidebarLine(sidebar_id, line_index);
                             }});
@@ -55796,14 +56105,13 @@ void CollectHintTargets() {
     // distinct from a specific row's own hint above.
     for (const SidebarPanelRect &panel : g_sidebar_panel_rects) {
         int sidebar_id = panel.sidebar_id;
-        targets.push_back({gfx::Vector2{panel.rect.x, panel.rect.y}, "",
-                            [sidebar_id] { g_editor.OpenSidebar(sidebar_id, true); }});
+        targets.push_back({panel.rect, "", [sidebar_id] { g_editor.OpenSidebar(sidebar_id, true); }});
     }
 
     // Pane-focus targets, top-left of each pane (explicit user request).
     for (const PaneScreenRect &pr : g_pane_screen_rects) {
         int pane_id = pr.pane_id;
-        targets.push_back({gfx::Vector2{pr.rect.x, pr.rect.y}, "", [pane_id] { g_editor.FocusPaneById(pane_id); }});
+        targets.push_back({pr.rect, "", [pane_id] { g_editor.FocusPaneById(pane_id); }});
     }
 
     // Hyperlinks visible in a PDF/HTML pane.
@@ -55846,7 +56154,7 @@ void CollectLinkHintTargets(int pane_id) {
             const SidebarInstance *sidebar = g_editor.FindSidebar(row.sidebar_id);
             if (!sidebar || sidebar->title != "Help") continue;
             int sidebar_id = row.sidebar_id, line_index = row.line_index;
-            targets.push_back({gfx::Vector2{row.rect.x, row.rect.y}, "", [sidebar_id, line_index] {
+            targets.push_back({row.rect, "", [sidebar_id, line_index] {
                                    g_editor.FocusSidebarRow(sidebar_id, line_index);
                                    g_editor.ActivateSidebarLine(sidebar_id, line_index);
                                }});
@@ -55861,8 +56169,8 @@ void CollectLinkHintTargets(int pane_id) {
     // it. DrawPane's html branch collects links out of an unordered_map
     // keyed by DOM node, so their arrival order here is effectively random.
     std::stable_sort(targets.begin(), targets.end(), [](const HintTarget &a, const HintTarget &b) {
-        if (a.anchor.y != b.anchor.y) return a.anchor.y < b.anchor.y;
-        return a.anchor.x < b.anchor.x;
+        if (a.rect.y != b.rect.y) return a.rect.y < b.rect.y;
+        return a.rect.x < b.rect.x;
     });
     AssignHintLabels(targets);
     g_hint_targets = std::move(targets);
@@ -55962,10 +56270,10 @@ void DrawHintOverlay() {
     constexpr gfx::Color kHintFg{0, 0, 0, 255};        // black, for contrast against kHintBg
     for (const HintTarget &t : g_hint_targets) {
         if (t.label.size() < g_hint_typed.size() || t.label.compare(0, g_hint_typed.size(), g_hint_typed) != 0) continue;
-        float label_w = gfx::MeasureTextEx(g_font, t.label.c_str(), g_font_size, 0).x + 4.0f;
-        gfx::DrawRectangle(static_cast<int>(t.anchor.x), static_cast<int>(t.anchor.y), static_cast<int>(label_w),
-                      static_cast<int>(g_font_size + 2.0f), kHintBg);
-        gfx::DrawTextEx(g_font, t.label.c_str(), gfx::Vector2{t.anchor.x + 2.0f, t.anchor.y}, g_font_size, 0, kHintFg);
+        gfx::Rectangle badge = HintBadgeRect(t);
+        gfx::DrawRectangle(static_cast<int>(badge.x), static_cast<int>(badge.y), static_cast<int>(badge.width),
+                      static_cast<int>(badge.height), kHintBg);
+        gfx::DrawTextEx(g_font, t.label.c_str(), gfx::Vector2{badge.x + 2.0f, badge.y}, g_font_size, 0, kHintFg);
     }
 }
 
@@ -57042,7 +57350,10 @@ void DrawPaneDragOverlay() {
         label = Basename(g_pane_drag.dragged_path);
     } else {
         const Buffer &db = g_editor.GetBuffer(g_pane_drag.dragged_buffer_id);
-        label = db.scratch ? "[Scratch]" : (db.filename.empty() ? "[No Name]" : Basename(db.filename));
+        std::string special = g_editor.SpecialBufferName(g_pane_drag.dragged_buffer_id);
+        label = !special.empty() ? special
+                : db.scratch     ? "[Scratch]"
+                                 : (db.filename.empty() ? "[No Name]" : Basename(db.filename));
     }
     gfx::Vector2 mp = gfx::GetMousePosition();
     float fs = MenuFontSize();
@@ -57647,9 +57958,10 @@ void RegisterUiAutomationMethods() {
         Json targets = Json::Array();
         for (const HintTarget &t : g_hint_targets) {
             Json entry = Json::Object();
+            gfx::Rectangle badge = HintBadgeRect(t);
             entry["label"] = t.label;
-            entry["x"] = static_cast<double>(t.anchor.x);
-            entry["y"] = static_cast<double>(t.anchor.y);
+            entry["x"] = static_cast<double>(badge.x);
+            entry["y"] = static_cast<double>(badge.y);
             targets.push_back(std::move(entry));
         }
         result["targets"] = std::move(targets);
@@ -58481,6 +58793,12 @@ int main(int argc, char **argv) {
     // session save above: a window resized in the last half-second before
     // quitting should still reopen at that size.
     if (g_window_state_persist) WriteWindowState(MepDataDir(), g_window_state);
+    // Media panes before the jobs they ride on: this stops each music
+    // pane's playback thread and each YouTube session's audio stream (and
+    // SIGKILLs its ffmpeg decoders) while JobManager and the audio backend
+    // are both still alive, rather than leaving it to ~Editor at static-
+    // destruction time, when JobManager::Instance() may already be gone.
+    g_editor.ShutdownMedia();
     JobManager::Instance().ShutdownAll();
     TcpJsonRpcManager::Instance().ShutdownAll();
     mep::agent::Stop();
@@ -58488,5 +58806,35 @@ int main(int argc, char **argv) {
 
     gfx::UnloadFont(g_font);
     gfx::CloseWindow();
+
+    // End the process here rather than returning into exit()'s teardown.
+    //
+    // Everything of mep's that a later run depends on has already
+    // happened above, explicitly and in order: the session and window
+    // state are written, every child is signalled and reaped, every
+    // socket and reader thread is shut down, and the window is off the
+    // screen. What `return 0` does next is run the C++ static destructors
+    // -- pure memory release, in a process that is about to stop existing
+    // (the one of ours that mattered, stopping the media panes, is called
+    // above instead, and the LuaEnv is already a deliberate
+    // process-lifetime leak) -- and then hand control to _dl_fini, where
+    // every shared library mep links takes itself apart. That last part
+    // is both outside mep's control and, measured here, capable of
+    // dominating the cost of quitting: with a terminal that had been
+    // flooding output, this process went on burning CPU for 9.6 more
+    // seconds on an NVIDIA driver (and up to 17 under llvmpipe) after the
+    // last line of mep's own code had run -- which looks exactly like the
+    // "mep is still there after :qa" that the explicit teardown above
+    // exists to prevent. The kernel reclaims the address space, the fds
+    // and the driver's view of the process when it dies, so skipping that
+    // work has no observable effect.
+    //
+    // stdio's buffers are the one thing the normal path flushes that this
+    // skips, hence the fflush: mep.log and any partial line printed to
+    // stdout/stderr should still land.
+#if !defined(__EMSCRIPTEN__) && !defined(MEP_SANITIZER_BUILD)
+    std::fflush(nullptr);
+    _exit(0);
+#endif
     return 0;
 }

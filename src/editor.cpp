@@ -1261,6 +1261,12 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     // todo arguably is) otherwise.
     g["DirenvActive"] = Mix(p.green, p.bg, 0.3f);
     g["DirenvInactive"] = Mix(p.fg, p.bg, 0.5f);
+    // YouTube now-playing pill (main.cpp's DrawFrame status line, docked
+    // left of Direnv): red while a track is running -- the same Red the
+    // player pane's own progress bar fills with -- and the idle gray
+    // above once it is paused or finished.
+    g["YoutubePlaying"] = Mix(p.red, p.bg, 0.3f);
+    g["YoutubePaused"] = Mix(p.fg, p.bg, 0.5f);
     // Status bar's mode chip (main.cpp's DrawFrame status line): a filled
     // badge colored by editing mode, toned toward the background the same
     // way as the Todo chip above so StatusLineFg text stays legible on top.
@@ -4731,14 +4737,21 @@ Project *Editor::FindProject(int id) {
     return nullptr;
 }
 
-Editor::~Editor() {
+void Editor::ShutdownMedia() {
     // Stop any music-pane audio (an ALSA playback thread per loaded Sound) so
     // quitting doesn't leave a track playing during teardown.
     for (auto &kv : music_sessions_) {
-        if (kv.second.sound_loaded) gfx::UnloadSound(kv.second.sound);
+        if (kv.second.sound_loaded) {
+            gfx::UnloadSound(kv.second.sound);
+            kv.second.sound_loaded = false;
+        }
     }
+    // Idempotent in itself (it clears the job ids and audio_open it acts
+    // on), so the ~Editor call below is a no-op after main's own.
     for (auto &kv : youtube_sessions_) YoutubeTeardown(kv.second);
 }
+
+Editor::~Editor() { ShutdownMedia(); }
 
 void Editor::HandleInput() {
     TickCollaboration();
@@ -6877,15 +6890,6 @@ void Editor::SplitTabRight(int buffer_id, float share) {
 
 // --- Terminal panes (`:terminal`/`:term`, Part VI Phase 27+) -------------
 
-void Editor::OpenTerminal(const std::string &args) {
-    // `:terminal` takes over the pane it was run in rather than splitting
-    // it: the user asking for a shell here means here, and the pane they
-    // wanted it beside is a :split away (as is the always-split
-    // per-tab terminal on <leader><CR>).  The buffer the pane was showing
-    // stays open in the buffer list either way.
-    OpenTerminalInPlace(args);
-}
-
 void Editor::OpenTerminalInPlace(const std::string &args) {
     std::string shell;
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
@@ -7013,9 +7017,19 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
     // Left undrained, the job's own kMaxPendingRawBytes backpressure
     // (job.h) simply pauses the child once its buffered output fills,
     // same as a slow consumer of any other terminal's output; the
-    // backlog gets caught up in one go the moment this buffer is back
-    // on screen.
+    // backlog is then caught up over the frames after this buffer is
+    // back on screen, a bounded bite at a time (the ceilings below).
     cb.should_poll_raw = [this, buffer_id]() { return IsBufferOnScreen(buffer_id); };
+    // How much of a visible terminal's output one frame is allowed to
+    // parse (JobManager::Callbacks' own comment has the reasoning; these
+    // are the numbers). src/vterm_bench.cpp measures VTerm::Feed at
+    // roughly 30ns a byte and a microsecond a newline on a pane this
+    // size, so both ceilings come to about 3-4ms of main thread per
+    // frame -- enough for ~180k lines or 7MB a second at 60fps, which no
+    // real program's output exceeds, and a hard bound when one does
+    // (`yes`, which otherwise handed a single frame seconds of work).
+    cb.max_raw_bytes_per_poll = 128u * 1024u;
+    cb.max_raw_newlines_per_poll = 3000;
     /**
      * @brief Marks this terminal session as exited and records its exit code, once the child process terminates.
      * @param code The child process's exit code.
@@ -12189,8 +12203,40 @@ void Editor::EnsurePdfPagesRastered(int pane_id) {
             sess.rasters[idx] = PdfSession::PageRaster{};
         }
     }
+    // How many pages past the anchor the viewport actually shows. A fixed
+    // +-2 window was enough while pages were tall (a letter-size page at a
+    // readable zoom overflows the pane on its own), but a deck of short
+    // 16:9 slides fits several at a time: everything past the anchor's
+    // immediate neighbour stayed unrendered, and DrawPane drew it as blank
+    // space below the current slide even though the scroll math had those
+    // pages positioned there. Measured in the same screen pixels the
+    // scroll-rebase math uses, starting from the top edge of page + 1.
+    // Capped so a pathologically zoomed-out view can't queue the whole
+    // document (rendered_scale follows the zoom, so each raster shrinks as
+    // more fit on screen -- the cap is belt and braces).
+    constexpr int kMaxPagesAhead = 12;
+    int ahead = 0;
+    {
+        const float vh = static_cast<float>(sess.viewport_h);
+        float top = PdfPageScreenHeightPx(sess, sess.page) + kPdfPageGapPx - sess.scroll_y;
+        while (top < vh && sess.page + ahead + 1 < page_count && ahead < kMaxPagesAhead) {
+            ++ahead;
+            top += PdfPageScreenHeightPx(sess, sess.page + ahead) + kPdfPageGapPx;
+        }
+        ahead = std::max(ahead, 2);  // the old lookahead, so held j/k still finds the next page ready
+    }
     if (!sess.render_job.valid()) {
-        const int order[5] = {sess.page, sess.page + 1, sess.page - 1, sess.page + 2, sess.page - 2};
+        // Anchor first, then the page either side (what a single j/k step
+        // needs), then the rest of the visible run forward and the second
+        // page back -- identical to the old {page, +1, -1, +2, -2} when
+        // only one page is on screen.
+        std::vector<int> order;
+        order.reserve(static_cast<size_t>(ahead) + 3);
+        order.push_back(sess.page);
+        order.push_back(sess.page + 1);
+        order.push_back(sess.page - 1);
+        for (int d = 2; d <= ahead; ++d) order.push_back(sess.page + d);
+        order.push_back(sess.page - 2);
         for (int idx : order) {
             if (idx < 0 || idx >= page_count) continue;
             if (sess.rasters.find(idx) != sess.rasters.end()) continue;
@@ -12222,7 +12268,7 @@ void Editor::EnsurePdfPagesRastered(int pane_id) {
     // document length, same reasoning as the old +-1 bound just traded a
     // little higher for instant short back-jumps.
     const int keep_lo = std::max(0, sess.page - 3);
-    const int keep_hi = std::min(page_count - 1, sess.page + 3);
+    const int keep_hi = std::min(page_count - 1, sess.page + std::max(3, ahead + 1));
     for (auto rit = sess.rasters.begin(); rit != sess.rasters.end();) {
         if (rit->first < keep_lo || rit->first > keep_hi) rit = sess.rasters.erase(rit);
         else ++rit;
@@ -13056,6 +13102,11 @@ constexpr double kYoutubeAudioPendingSec = 2.0;  // stop draining the decoder pi
 
 bool Editor::IsYoutubeBuffer(int buffer_id) const { return youtube_sessions_.find(buffer_id) != youtube_sessions_.end(); }
 
+std::string Editor::SpecialBufferName(int buffer_id) const {
+    if (IsYoutubeBuffer(buffer_id)) return "YT";
+    return "";
+}
+
 YoutubeSession *Editor::GetYoutubeMutable(int buffer_id) {
     auto it = youtube_sessions_.find(buffer_id);
     return it == youtube_sessions_.end() ? nullptr : &it->second;
@@ -13095,6 +13146,16 @@ void Editor::OpenYoutubeInPlace(const std::string &arg) {
             youtube_sessions_[buffer_id].status = "yt-dlp and ffmpeg must be installed";
         }
     }
+    // Same tab-strip bookkeeping as LoadFile's own in-place open (see its
+    // comment there): point the pane's ACTIVE tab at the player, with the
+    // old buffer_id still in place so the strip is seeded against what the
+    // pane really shows. Without it the strip kept naming the buffer the
+    // player replaced, and EnsureBufferTabSeeded would later collapse the
+    // whole strip down to one tab, dropping this pane's sibling tabs.
+    EnsureBufferTabSeeded(CurPane());
+    if (!CurPane().buffer_tabs.empty()) {
+        CurPane().buffer_tabs[static_cast<size_t>(CurPane().buffer_tab_index)] = buffer_id;
+    }
     CurPane().buffer_id = buffer_id;
     CurPane().cursor = {0, 0};
     CurPane().scroll_row = 0;
@@ -13118,8 +13179,11 @@ void Editor::ToggleYoutube() {
         // next toggle brings the same buffer back. `q`/`x`/:bd stop it.
         HideBufferInActiveTab(id);
         if (YoutubeSession *s = GetYoutubeMutable(id); s && s->playing && !s->paused && !s->ended) {
-            status_message_ = "YouTube player hidden, still playing" + (s->now_title.empty() ? std::string() : ": " + s->now_title) +
-                              " (<leader>yt / :MepYoutube brings it back)";
+            // A toast, not a standing status_message_: the status bar's
+            // now-playing pill (main.cpp's DrawFrame status line) is what
+            // keeps saying a hidden player is still going, so this only
+            // has to point at the way back.
+            Notify("YouTube player hidden, still playing (<leader>yt brings it back)", NotifyLevel::Info);
         }
         SyncModeToActivePaneBuffer();
         return;
@@ -13309,14 +13373,36 @@ void Editor::YoutubePlayResult(YoutubeSession &sess, int index) {
     YoutubePlayUrl(sess, sess.results[static_cast<size_t>(index)].url, index);
 }
 
+void Editor::YoutubeNotifyTrack(const YoutubeSession &sess) {
+    if (sess.now_title.empty()) return;
+    // The resolve that would fill sess.info is still in flight at this
+    // point, so the channel can only come from the result row this track
+    // was picked from (absent for a URL opened directly).
+    std::string channel;
+    if (sess.now_result >= 0 && sess.now_result < static_cast<int>(sess.results.size()))
+        channel = sess.results[static_cast<size_t>(sess.now_result)].channel;
+    std::string msg = "Now playing: " + sess.now_title;
+    if (!channel.empty()) msg += " -- " + channel;
+    Notify(msg, NotifyLevel::Info);
+}
+
 void Editor::YoutubeNext(YoutubeSession &sess) {
     int base = sess.now_result >= 0 ? sess.now_result : sess.selected - 1;
-    YoutubePlayResult(sess, base + 1);
+    YoutubeStepTo(sess, base + 1);
 }
 
 void Editor::YoutubePrev(YoutubeSession &sess) {
     int base = sess.now_result >= 0 ? sess.now_result : sess.selected + 1;
-    YoutubePlayResult(sess, base - 1);
+    YoutubeStepTo(sess, base - 1);
+}
+
+// n/p and the transport's prev/next buttons: YoutubePlayResult plus the
+// toast, but only when `index` is a result that exists -- a notification
+// for a no-op step would just repeat the track already playing.
+void Editor::YoutubeStepTo(YoutubeSession &sess, int index) {
+    if (index < 0 || index >= static_cast<int>(sess.results.size())) return;
+    YoutubePlayResult(sess, index);
+    YoutubeNotifyTrack(sess);
 }
 
 void Editor::YoutubeStartResolve(YoutubeSession &sess) {
@@ -13542,6 +13628,7 @@ void Editor::YoutubePoll(int buffer_id) {
             sess.buffering = false;
             if (sess.now_result >= 0 && sess.now_result + 1 < static_cast<int>(sess.results.size())) {
                 YoutubePlayResult(sess, sess.now_result + 1);  // playlist-style auto-advance
+                YoutubeNotifyTrack(sess);
             } else {
                 YoutubeTeardown(sess);
                 sess.playing = false;
@@ -13657,6 +13744,34 @@ void Editor::HandleYoutubeInput() {
         if (n == 0) return;
         sess->selected = std::clamp(sess->selected + delta, 0, n - 1);
     };
+    const bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    const bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+
+    // The key sheet ('?') swallows the pane's keys while it is up: Escape,
+    // q or another ? puts it away, everything else is ignored rather than
+    // acted on behind it (so a stray 'q' closes the sheet, not the player).
+    if (sess->show_help) {
+        bool close = gfx::IsKeyPressed(gfx::Key::Escape) || gfx::IsKeyPressed(gfx::Key::Enter);
+        int cp_help = gfx::GetCharPressed();
+        while (cp_help > 0) {
+            if (cp_help == '?' || cp_help == 'q' || cp_help == ' ') close = true;
+            cp_help = gfx::GetCharPressed();
+        }
+        if (close) sess->show_help = false;
+        return;
+    }
+
+    // Ctrl chords. No char event fires while Ctrl is held (see the X11
+    // backend's own comment on suppressing those), so these read the
+    // physical keys instead of the char queue the loop below drains:
+    //   Ctrl+Space      play / pause, reachable whatever the leader key is
+    //   Ctrl+h/l, p/n   previous / next result
+    if (ctrl) {
+        if (gfx::IsKeyPressed(gfx::Key::Space)) YoutubeTogglePause(*sess);
+        if (held(gfx::Key::H) || held(gfx::Key::P)) YoutubePrev(*sess);
+        if (held(gfx::Key::L) || held(gfx::Key::N)) YoutubeNext(*sess);
+        return;  // nothing below is a Ctrl chord
+    }
 
     if (held(gfx::Key::Up)) move(-1);
     if (held(gfx::Key::Down)) move(1);
@@ -13671,8 +13786,10 @@ void Editor::HandleYoutubeInput() {
             YoutubePlayResult(*sess, sess->selected);
         }
     }
-    if (held(gfx::Key::Left)) YoutubeSeekBy(*sess, -10.0);
-    if (held(gfx::Key::Right)) YoutubeSeekBy(*sess, 10.0);
+    // Shift makes an arrow the coarse (one-minute) seek, which is what
+    // H/L used to be before h/l became the volume keys.
+    if (held(gfx::Key::Left)) YoutubeSeekBy(*sess, shift ? -60.0 : -10.0);
+    if (held(gfx::Key::Right)) YoutubeSeekBy(*sess, shift ? 60.0 : 10.0);
     if (held(gfx::Key::PageUp)) move(-10);
     if (held(gfx::Key::PageDown)) move(10);
     if (gfx::IsKeyPressed(gfx::Key::Home)) sess->selected = 0;
@@ -13715,13 +13832,19 @@ void Editor::HandleYoutubeInput() {
         } else if (cp == 'G') {
             if (!sess->results.empty()) sess->selected = static_cast<int>(sess->results.size()) - 1;
         } else if (cp == 'h') {
-            YoutubeSeekBy(*sess, -10.0);
+            // h/l are the volume keys (the pane has no horizontal
+            // navigation of its own to spend them on); seeking moved one
+            // key up to H/L, and the arrows do both steps.
+            YoutubeSetVolume(*sess, sess->volume - 0.05f);
         } else if (cp == 'l') {
-            YoutubeSeekBy(*sess, 10.0);
+            YoutubeSetVolume(*sess, sess->volume + 0.05f);
         } else if (cp == 'H') {
-            YoutubeSeekBy(*sess, -60.0);
+            YoutubeSeekBy(*sess, -10.0);
         } else if (cp == 'L') {
-            YoutubeSeekBy(*sess, 60.0);
+            YoutubeSeekBy(*sess, 10.0);
+        } else if (cp == '?') {
+            sess->show_help = true;
+            return;  // the sheet owns the rest of this frame's keys
         } else if (cp >= '0' && cp <= '9') {
             double dur = YoutubeDuration(*sess);
             if (dur > 0.0) YoutubeSeekTo(*sess, dur * static_cast<double>(cp - '0') / 10.0);
@@ -14023,18 +14146,34 @@ void Editor::RebasePdfScroll(PdfSession &sess) {
         }
     }
     if (sess.page == 0 && sess.scroll_y < 0) sess.scroll_y = 0;
-    if (sess.page == page_count - 1) {
-        // Stop at the end of the document: the furthest the last page may
-        // scroll is with its bottom pulled up to half a viewport above the
-        // viewport's bottom edge -- so the user sees the page's end with a
-        // half-screen of breathing room after it, then nothing. The old
+    {
+        // Stop at the end of the document: the furthest the view may scroll
+        // is with the LAST page's bottom pulled up to half a viewport above
+        // the viewport's bottom edge -- so the user sees the end with a
+        // half-screen of breathing room after it, then nothing. (An earlier
         // clamp used bare `cur_h`, which let scroll_y reach a full page
-        // height and scroll the entire last page off the top into an empty
-        // viewport. A page shorter than that half-screen tail can't scroll
-        // past its own top at all (max_scroll floors at 0).
-        float cur_h = page_screen_h(sess.page);
-        float end_gap = static_cast<float>(sess.viewport_h) * 0.5f;
-        float max_scroll = std::max(0.0f, cur_h + end_gap - static_cast<float>(sess.viewport_h));
+        // height and scroll the whole last page off the top into an empty
+        // viewport.)
+        //
+        // Measured from the anchor page's top through every page after it,
+        // not from the anchor alone: a deck of short 16:9 slides shows
+        // several at a time, so the last page's bottom can already be on
+        // screen while the anchor is still pages behind it. Clamping only
+        // once the anchor *became* the last page made that case jump -- the
+        // stack of slides you were reading snapped to the last slide alone,
+        // pinned at the pane's top with the rest blank. With one tall page
+        // on screen the sum is just that page's height, exactly the shape
+        // this clamp had before. The loop stops as soon as the tail is long
+        // enough that no clamp can apply, so it walks the visible pages,
+        // not the document.
+        const float end_gap = static_cast<float>(sess.viewport_h) * 0.5f;
+        const float need = static_cast<float>(sess.viewport_h) + sess.scroll_y - end_gap;
+        float tail = 0.0f;
+        for (int idx = sess.page; idx < page_count && tail < need; ++idx) {
+            if (idx > sess.page) tail += kPdfPageGapPx;
+            tail += page_screen_h(idx);
+        }
+        const float max_scroll = std::max(0.0f, tail + end_gap - static_cast<float>(sess.viewport_h));
         if (sess.scroll_y > max_scroll) sess.scroll_y = max_scroll;
     }
 }
@@ -17620,6 +17759,29 @@ void Editor::PanePrevBufferTab() {
     SyncModeToActivePaneBuffer();
 }
 
+// mod1+Ctrl+Tab / mod1+Ctrl+Shift+Tab: the "move" counterpart of
+// PaneNextBufferTab/PanePrevBufferTab's "navigate" -- the same buffer
+// stays active (you keep editing it, cursor and all), it just changes
+// place in the pane's own tab strip. Wraps at both ends, like the
+// stepping pair it mirrors.
+void Editor::MovePaneBufferTab(int delta) {
+    Pane &p = CurPane();
+    EnsureBufferTabSeeded(p);
+    const int n = static_cast<int>(p.buffer_tabs.size());
+    if (n <= 1 || delta == 0) return;
+    const int from = p.buffer_tab_index;
+    const int to = ((from + delta) % n + n) % n;
+    if (to == from) return;
+    const int moved = p.buffer_tabs[static_cast<size_t>(from)];
+    p.buffer_tabs.erase(p.buffer_tabs.begin() + from);
+    // Erase-then-insert so a wrap lands where it reads: stepping forward
+    // off the last tab makes it the first, and back off the first makes it
+    // the last (`to` indexes the already-shortened vector in both cases).
+    p.buffer_tabs.insert(p.buffer_tabs.begin() + to, moved);
+    p.buffer_tab_index = to;
+    p.buffer_id = moved;
+}
+
 void Editor::GoToPaneBufferTab(int index) {
     Pane &p = CurPane();
     EnsureBufferTabSeeded(p);
@@ -17774,6 +17936,28 @@ void Editor::BufferDeleteById(int target, bool force) {
     ClampCursor();
     SyncModeToActivePaneBuffer();
     status_message_ = "Buffer " + std::to_string(target) + " deleted";
+}
+
+void Editor::SwapPaneDirection(const std::string &direction) {
+    // A focused sidebar is not a node in the split tree, so there is
+    // nothing to swap it with here; reordering a dock's stack is
+    // mod1+Ctrl+j/k's job (PaneMoveBufferTabToNeighbor's own Mode::Sidebar
+    // branch), not this one's.
+    if (mode_ == Mode::Sidebar) return;
+    Tab &tab = ActiveTab();
+    const int neighbor_id = FindNeighborPaneId(tab.active_pane_id, direction);
+    if (neighbor_id < 0 || neighbor_id == tab.active_pane_id) return;
+    SplitNode *here = FindNode(tab.root.get(), tab.active_pane_id);
+    SplitNode *there = FindNode(tab.root.get(), neighbor_id);
+    if (!here || !there || here == there) return;
+    // The whole Pane moves, pane id included: the layout tree keeps its
+    // shape and every split's sizes, the two panes just exchange slots.
+    // That is also what carries focus along -- tab.active_pane_id still
+    // names the pane the user was in, which now sits where the neighbor
+    // was, so the cursor travels with the content rather than staying put
+    // in the position it left behind. Pressing the same chord again
+    // therefore keeps walking the same pane further that way.
+    std::swap(here->pane, there->pane);
 }
 
 void Editor::PaneMoveBufferTabToNeighbor(const std::string &direction) {
@@ -20586,13 +20770,22 @@ void Editor::RegisterBracketNextMapping(const std::string &key, int lua_ref) { b
 bool Editor::HandleMod1Shortcuts() {
     if (!IsMod1Down() || mod1_mappings_.empty()) return false;
     // A held Ctrl/Shift alongside mod1 (e.g. mod1+Shift+h for resize,
-    // mod1+Ctrl+h for move) looks up the "C-"/"S-" prefixed key instead of
-    // the bare one -- see RegisterMod1Mapping. Only checked when mod1
-    // itself isn't that same key, since e.g. mod1=Shift already implies
-    // Shift is down for every mod1 combo.
+    // mod1+Ctrl+h for move, mod1+Ctrl+Shift+h for the directional pane
+    // swap) looks up the "C-"/"S-"/"C-S-" prefixed key instead of the bare
+    // one -- see RegisterMod1Mapping. Only checked when mod1 itself isn't
+    // that same key, since e.g. mod1=Shift already implies Shift is down
+    // for every mod1 combo.
     bool extra_ctrl =
         mod1_ != ModKey::Control && (gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl));
     bool extra_shift = mod1_ != ModKey::Shift && (gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift));
+    // The one spelling of that prefix, so the letter scan and the Tab
+    // branch below can't drift apart on how a two-modifier combo is named.
+    auto mod1_key_name = [extra_ctrl, extra_shift](const std::string &base) {
+        if (extra_ctrl && extra_shift) return "C-S-" + base;
+        if (extra_ctrl) return "C-" + base;
+        if (extra_shift) return "S-" + base;
+        return base;
+    };
     // mod1+d is globally bound to pane_close_buffer (see kDefaultMod1Bindings
     // in main.cpp), but while a sidebar is focused (file tree, git status,
     // etc.) that mapping would silently close whatever buffer sits behind
@@ -20647,7 +20840,7 @@ bool Editor::HandleMod1Shortcuts() {
         bool repeated = !pressed && gfx::IsKeyPressedRepeat(key);
         if (!pressed && !repeated) continue;
         std::string base(1, static_cast<char>('a' + (key - gfx::Key::A)));
-        std::string k = extra_ctrl ? ("C-" + base) : extra_shift ? ("S-" + base) : base;
+        std::string k = mod1_key_name(base);
         auto it = mod1_mappings_.find(k);
         if (it == mod1_mappings_.end() || !lua_) continue;
         if (repeated && !it->second.repeat) continue;
@@ -20662,7 +20855,7 @@ bool Editor::HandleMod1Shortcuts() {
     // Tab isn't a letter key so it falls outside the A-Z scan above; handled
     // separately for mod1+Tab / mod1+Shift+Tab (pane buffer-tab cycling).
     if (gfx::IsKeyPressed(gfx::Key::Tab)) {
-        std::string k = extra_shift ? "S-Tab" : "Tab";
+        std::string k = mod1_key_name("Tab");
         auto it = mod1_mappings_.find(k);
         if (it != mod1_mappings_.end() && lua_) {
             lua_->CallRef(it->second.lua_ref);
@@ -20688,6 +20881,9 @@ bool Editor::HandleMod1Shortcuts() {
             }
             return true;
         }
+        // Shift-only on purpose: nothing registers a "C-CR", and a
+        // mod1+Ctrl+Enter that stopped reaching the plain "CR" binding
+        // (the terminal-send default) would be a regression, not a fix.
         std::string k = extra_shift ? "S-CR" : "CR";
         auto it = mod1_mappings_.find(k);
         if (it != mod1_mappings_.end() && lua_) {
@@ -30241,7 +30437,11 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
     } else if (name == "vsplit" || name == "vs") {
         SplitCurrentPane(SplitDir::Vertical, args);
     } else if (name == "terminal" || name == "term") {
-        OpenTerminal(args);
+        // In the current pane, not a split below it: :split/:vsplit are
+        // right there for a reader who wants the terminal beside what they
+        // were editing, and making the terminal itself split means anyone
+        // who wanted it in place had no way to say so.
+        OpenTerminalInPlace(args);
     } else if (name == "music") {
         OpenMusicInPlace(args);
         SyncModeToActivePaneBuffer();

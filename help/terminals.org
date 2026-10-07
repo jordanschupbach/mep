@@ -5,9 +5,9 @@
 
 * Three kinds
 
-*A plain terminal.* =:terminal= (=:term=) opens a shell in the pane you ran
-it from, replacing what that pane was showing. =:split= (or =:vsplit=)
-first if you want it alongside a file instead.
+*A plain terminal.* =:terminal= (=:term=) opens a shell in the current
+pane. Split first (=:split=, =:vsplit=) if you want it beside what you were
+editing.
 
 *The per-tab terminal.* =<leader><CR>= toggles one shell per tab along the
 bottom, spanning the tab's full width. This is the one you want most of the

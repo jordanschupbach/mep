@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <deque>
+#include <limits>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -136,6 +137,29 @@ public:
     void KillHard();
 
     /**
+     * @brief Tells the reader thread to stop reading and return promptly,
+     * rather than waiting for EOF on both fds.
+     *
+     * ReaderLoop's normal exit condition -- stdout and stderr both at EOF
+     * -- is not something a caller tearing the job down can count on
+     * reaching. Two cases hang it forever, and both ended with mep's
+     * window still on screen but frozen after :qa (the main loop had
+     * exited; ~Job's join() never returned):
+     *   - raw-mode backpressure: once kMaxPendingRawBytes is queued and
+     *     nothing is draining it any more (the main loop is gone), the
+     *     loop stops polling stdout by design and so can never observe
+     *     its EOF -- it just spins on the poll timeout for good.
+     *   - a PTY whose slave is still open in some process that escaped
+     *     the killed process group (anything that called setsid), so the
+     *     master never reports EOF however dead the direct child is.
+     * Called by ~Job (nobody can consume the output of a job being
+     * destroyed anyway) and up front by JobManager::ShutdownAll, so every
+     * job's reader unwinds concurrently with the kill grace period
+     * instead of one 200ms poll timeout per job in series.
+     */
+    void RequestStop();
+
+    /**
      * @brief Updates the PTY's window size (TIOCSWINSZ) so full-screen terminal
      * programs (a shell running $EDITOR, a pager, ...) wrap/paginate to
      * match the hosting pane. No-op if this isn't a PTY job.
@@ -174,9 +198,20 @@ public:
      * stderr is unaffected -- still line-split, still read via DrainLines
      * (JobLine::is_stderr) -- no consumer of raw stdout has needed raw
      * stderr too.
-     * @return The raw stdout byte chunks received since the last drain.
+     *
+     * Takes two optional ceilings, because a consumer that does real work
+     * per byte cannot afford "however much the child wrote since the last
+     * frame" in one go (see Callbacks::max_raw_bytes_per_poll). Draining
+     * stops once either is reached, at a chunk boundary -- whole chunks
+     * are never split, so one chunk's worth of overshoot is possible --
+     * and what is left stays queued for the next call, under the same
+     * kMaxPendingRawBytes backpressure as before.
+     * @param max_bytes Stop once this many bytes have been taken; no limit by default.
+     * @param max_newlines Stop once the taken chunks hold this many newlines; no limit by default.
+     * @return The raw stdout byte chunks taken, oldest first.
      */
-    std::vector<std::string> DrainRaw();
+    std::vector<std::string> DrainRaw(size_t max_bytes = std::numeric_limits<size_t>::max(),
+                                      size_t max_newlines = std::numeric_limits<size_t>::max());
     // True while raw stdout chunks are queued that DrainRaw() has not yet
     // handed out. JobManager::PollAll holds a finished job's exit report
     // back while this is true and the consumer is refusing chunks
@@ -210,15 +245,43 @@ private:
     static constexpr size_t kMaxPendingRawBytes = 8 * 1024 * 1024;
     std::atomic<bool> finished_{false};
     std::atomic<bool> killed_{false};
+    // RequestStop(): ReaderLoop checks this once per iteration and bails
+    // out instead of waiting for an EOF that may never come. See
+    // RequestStop's own comment above for the two ways that happens.
+    std::atomic<bool> stopping_{false};
+    // Self-pipe RequestStop() writes a byte to, so the reader leaves its
+    // poll() the moment it is asked to stop instead of on that poll's
+    // 200ms timeout. Without it, tearing down a terminal whose output was
+    // backlogged (the reader is parked on the timeout, with stdout
+    // deliberately out of the poll set) cost up to a fifth of a second of
+    // the main thread -- per job, and on the way out of :qa. Closed by
+    // ~Job, after the reader is joined.
+    int stop_fds_[2] = {-1, -1};
     bool spawn_failed_ = false;
     int exit_code_ = -1;
+
+    /**
+     * @brief Sends `sig` to the child itself and, separately, to its process group.
+     *
+     * The group alone is not enough right after a spawn: the child puts
+     * itself in its own process group (setpgid, or setsid inside forkpty)
+     * only once it is running, so a signal sent before that addresses a
+     * group that does not exist yet and reaches nobody at all -- measured
+     * as a job killed in its first milliseconds surviving its own SIGTERM
+     * and only dying to the escalation. Signalling the pid closes that
+     * window; signalling the group is what reaches whatever the child has
+     * since started itself.
+     * @param sig The signal to deliver.
+     */
+    void SignalChild(int sig);
 
     /**
      * @brief Background-thread loop that polls the child's stdout/stderr fds,
      * splits stdout into lines (or queues raw chunks in raw_stdout_ mode) and
      * stderr into lines, pushing each onto the thread-safe pending queues,
-     * until both fds are closed; then waits for the child to exit and
-     * records its exit code, marking the job finished.
+     * until both fds are closed (or RequestStop() asks it to stop early);
+     * then waits for the child to exit and records its exit code, marking
+     * the job finished.
      */
     void ReaderLoop();
 };
@@ -254,6 +317,27 @@ public:
         // of input handling, even though none of it is visible (see
         // Editor::IsBufferOnScreen and its use in TerminalSpawn).
         std::function<bool()> should_poll_raw;
+        // Per-frame ceilings on how much queued raw stdout PollAll hands
+        // to on_stdout_raw, for a consumer whose work per byte is heavy
+        // enough that "everything the child wrote since the last frame"
+        // is too much for one frame. 0 (the default) means no limit.
+        //
+        // A terminal sets both, because VTerm::Feed costs about 30ns per
+        // byte but about a microsecond per *newline* -- each one scrolls
+        // the grid and pushes a line into scrollback -- so cost follows
+        // line count, not volume, and a program spraying short lines
+        // (`yes`, a build log, an animated spinner) could hand a single
+        // frame megabytes of them: measured at 4.6 seconds inside one
+        // Feed() call, during which mep answered nothing. With a ceiling,
+        // the rest simply stays queued for the following frames and the
+        // child feels the same PTY backpressure a real terminal emulator
+        // applies to a producer faster than its consumer.
+        //
+        // Every other raw consumer wants no limit: the YouTube decoder's
+        // video frames are megabytes each and are useless split across
+        // frames, and an LSP reply should be parsed the moment it lands.
+        size_t max_raw_bytes_per_poll = 0;
+        size_t max_raw_newlines_per_poll = 0;
     };
 
     /**

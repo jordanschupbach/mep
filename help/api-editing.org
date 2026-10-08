@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (201)
+* The bindings (206)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -75,6 +75,8 @@ that it does nothing.
 | =mep.current_pane_id= | returns the active pane's id |
 | =mep.current_tab_id= | returns the active tab's stable id |
 | =mep.cursor= | returns the current cursor position |
+| =mep.doc_view= | -- |
+| =mep.doc_view_toggle= | -- |
 | =mep.filename= | -- |
 | =mep.fold_clear_provider= | removes every fold previously created under a given provider name |
 | =mep.fold_create= | creates a fold over a line range |
@@ -97,9 +99,11 @@ that it does nothing.
 | =mep.mepml_alt_popup_visible= | reports whether a hovered mepml block shows its alt text in a popup |
 | =mep.mepml_block_at= | describes the mepml code block at a 1-based row |
 | =mep.mepml_code_blocks= | lists the current mepml buffer's code-block bodies |
+| =mep.mepml_convert_text= | converts a document between text formats through mepml |
 | =mep.mepml_diagnostics= | the parser's diagnostics for the current mepml buffer |
 | =mep.mepml_export= | writes the current mepml buffer in the format named by the path's extension |
 | =mep.mepml_export_html= | writes the current mepml buffer as standalone HTML |
+| =mep.mepml_export_path= | the path an export of the current mepml buffer to `ext` is written to, inside the document's build directory (`build` beside it, or its `//? Build:`... |
 | =mep.mepml_folds= | rebuilds the current mepml buffer's heading/block folds |
 | =mep.mepml_gui_start= | shows a block's program window inside its results |
 | =mep.mepml_header_toggle= | folds or unfolds the current mepml buffer's document headers |
@@ -107,6 +111,7 @@ that it does nothing.
 | =mep.mepml_link_at= | the target of the mepml link at a 1-based position |
 | =mep.mepml_outline= | lists the current mepml buffer's headings |
 | =mep.mepml_parse_ready= | whether the current mepml buffer's parse is ready |
+| =mep.mepml_post_script= | the current mepml buffer's `//? Post:` command as a shell script (MEP_SOURCE, MEP_BUILD and MEP_OUT exported in front) and the directory to run it... |
 | =mep.mepml_present= | starts presenting the current mepml document's slides |
 | =mep.mepml_present_caret= | a cursor in the presented slide, or none |
 | =mep.mepml_present_goto= | shows page n of the running presentation |

@@ -776,6 +776,7 @@ add_library(mep_core STATIC
     src/youtube_player.cpp
     src/office_doc.cpp
     src/office_odt.cpp
+    src/office_rtf.cpp
     src/doc_export.cpp
     src/sheet_doc.cpp
     src/sheet_xlsx.cpp
@@ -2047,6 +2048,19 @@ add_dependencies(tests mep-cpp-format-test)
 # percent-format text view and cell re-matching, output display/slot
 # math, and the kernel wire protocol. Same CHECK()-based shape as
 # mep-org-doc-test.
+# The office editor's RTF loader and saver (src/office_rtf.cpp): a
+# Word-shaped RTF into the paragraph/span model and back. office_doc.cpp
+# for the model's helpers and image sniffing, image_doc for a picture's
+# size; neither needs a window.
+add_executable(mep-office-rtf-test EXCLUDE_FROM_ALL src/office_rtf_test.cpp src/office_rtf.cpp src/office_doc.cpp
+    src/image_doc.cpp src/image_codec.cpp src/png_codec.cpp src/jpeg_codec.cpp src/gif_codec.cpp src/bmp_codec.cpp
+    src/zip_archive.cpp src/deflate.cpp src/xml_doc.cpp)
+target_include_directories(mep-office-rtf-test PRIVATE src)
+target_compile_options(mep-office-rtf-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-office-rtf-test PRIVATE ${MEP_SANITIZE_FLAGS})
+target_sources(mep-office-rtf-test PUBLIC FILE_SET CXX_MODULES FILES src/path_util.cppm)
+add_dependencies(tests mep-office-rtf-test)
+
 add_executable(mep-notebook-doc-test EXCLUDE_FROM_ALL src/notebook_doc_test.cpp src/notebook_doc.cpp)
 target_include_directories(mep-notebook-doc-test PRIVATE src)
 target_compile_options(mep-notebook-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})

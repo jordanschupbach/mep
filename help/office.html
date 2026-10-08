@@ -13,11 +13,24 @@
 <body>
 <h1>Word processor documents</h1>
 <h1>Opening</h1>
-<p>A <code>.docx</code> or <code>.odt</code> file opens as a laid-out page -- headings, paragraphs,
-lists, tables and images -- rather than as XML or as a plain-text dump.</p>
+<p>A <code>.docx</code>, <code>.odt</code> or <code>.rtf</code> file opens as a laid-out page -- headings,
+paragraphs, lists, tables and images -- rather than as XML, RTF control
+words or a plain-text dump.</p>
 <p><code>mep.office_reload()</code> re-reads the file from disk.</p>
 <h1>Editing</h1>
-<p>The document is editable, and <code>:w</code> writes it back in its original format.</p>
+<p>The document is editable, and <code>:w</code> writes it back in its original format.
+A <code>.docx</code> or <code>.odt</code> keeps every part of the file the editor does not model
+(page setup, headers and footers); an <code>.rtf</code> is written fresh from what is
+on the page -- headings, runs with their look, lists, tables and PNG/JPEG
+pictures -- so a header or footnote the file came with does not survive a
+save.
+<code>u</code> undoes an edit and <code>Ctrl-Y</code> redoes one (the toolbar has both too).</p>
+<h1>Theming</h1>
+<p>Like other rendered documents, the page is drawn in your theme's colours by
+default -- white paper in a dark editor is jarring. The header reads
+<code>[theme, Ctrl-R]</code>; <code>Ctrl-R</code> shows the document as it prints, white paper
+and black text, with the runs' own colours either way. <code>mep.office_theme()</code>
+reads or sets the same switch.</p>
 <h1>Producing one</h1>
 <p>From an Org file, <code>&lt;leader&gt;oeo</code> (<code>:MepOrgExportOdt</code>) writes an <code>.odt</code>
 directly -- no external converter involved. See <a href="org-export.html">Exporting</a>.</p>

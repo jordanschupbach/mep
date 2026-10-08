@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 154 =<leader>= sequences registered at startup. Press
+All 156 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -29,8 +29,8 @@ the features live.
 | =<leader>bf= | Open in browser | -- |
 | =<leader>bh= | Host (serve) this directory and browse it | [[file:local-server.html][Serving a directory]] |
 | =<leader>bo= | Browse | [[file:browser.html][The browser pane]] |
-| =<leader>bv= | browse: toggle HTML file between page and source | [[file:mepml.html][mepml]] |
 | =<leader>bs= | Scratch buffer | [[file:files.html][Files and buffers]] |
+| =<leader>bv= | browse: toggle HTML file between page and source | [[file:mepml.html][mepml]] |
 | =<leader>ca= | LSP: code action | [[file:lsp.html][Language servers]] |
 | =<leader>db= | Debug: toggle breakpoint | [[file:debugging.html][Debugging]] |
 | =<leader>dc= | Debug: clear breakpoints in file | [[file:debugging.html][Debugging]] |
@@ -43,7 +43,7 @@ the features live.
 | =<leader>du= | Debug: toggle UI | [[file:debugging.html][Debugging]] |
 | =<leader>dv= | Debug: evaluate under cursor | [[file:debugging.html][Debugging]] |
 | =<leader>ff= | Toggle file tree | [[file:file-tree.html][The file tree]] |
-| =<leader>fh= | Toggle hidden files in tree | [[file:file-tree.html][The file tree]] |
+| =<leader>fh= | Toggle hidden and git-ignored files in tree | [[file:file-tree.html][The file tree]] |
 | =<leader>fo= | Open file (native dialog) | [[file:file-tree.html][The file tree]] |
 | =<leader>fr= | Refresh file tree | [[file:file-tree.html][The file tree]] |
 | =<leader>gG= | Toggle git sidebar | [[file:git-panel.html][The git panel]] |
@@ -130,10 +130,10 @@ the features live.
 | =<leader>oti= | Org: toggle inline images | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otl= | Toggle LaTeX/math preview (org/tex) | [[file:mepml.html][mepml]] |
 | =<leader>otm= | Org: toggle markup concealment | [[file:org-basics.html][Org files in mep]] |
-| =<leader>otv= | Org: toggle view mode (rendered on every line) | [[file:org-basics.html][Org files in mep]] |
 | =<leader>otp= | Toggle math preview popup while typing | [[file:mepml.html][mepml]] |
 | =<leader>otr= | Org: toggle plain text (no inline rendering) | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>ots= | Org: toggle src-block LSP status | [[file:org-visuals.html][Images, LaTeX and tables]] |
+| =<leader>otv= | Org: toggle view mode (rendered on every line) | [[file:mepml.html][mepml]] |
 | =<leader>otw= | Org: toggle wrapped table rendering | [[file:mepml.html][mepml]] |
 | =<leader>pc= | Clear project (default layout) | [[file:projects.html][Projects]] |
 | =<leader>pf= | Find files | [[file:pickers.html][Pickers]] |

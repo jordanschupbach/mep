@@ -3148,6 +3148,15 @@ struct OfficeSession {
     float zoom = 1.0f;
     float base_font_pt = 15.0f;
 
+    // Theme colours (Ctrl-R in HandleOfficeNormalInput, as in the PDF,
+    // image, HTML and slide viewers; on by default): the page drawn as the
+    // editor's -- its paper the theme's OfficePage, its text the theme's
+    // Normal. Off, the page is the document as it prints: white paper,
+    // black text (the runs' own colours and highlights apply either way).
+    // Drawing only (DrawPane's office branch, main.cpp); the file keeps
+    // its own look. Read or set from Lua as mep.office_theme.
+    bool theme_colors = true;
+
     // Table-cell navigation (Editor::EnterOfficeTable/ExitOfficeTable/
     // MoveOfficeTableCell): -1 means "not currently inside a table",
     // otherwise an index into doc.tables. Deliberately separate from
@@ -6451,6 +6460,7 @@ public:
      * @return A const pointer to the OfficeSession, or nullptr if none exists.
      */
     const OfficeSession *GetOffice(int buffer_id) const;
+    OfficeSession *GetOfficeMutable(int buffer_id);
     // Pure geometry setter (mirrors ResizePdfViewport): records
     // viewport_w/h only, no scroll-follow logic -- unlike the plain text
     // buffer, deciding whether cursor_para is currently visible needs

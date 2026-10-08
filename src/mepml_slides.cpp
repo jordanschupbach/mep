@@ -233,7 +233,7 @@ struct Builder {
                     out.push_back(s);
                     break;
                 case InlineKind::Link:
-                    s.link = x.arg;
+                    s.link = LinkTarget(x.arg);
                     if (s.color.empty()) s.color = "0B5CAD";
                     s.underline = true;
                     if (x.children.empty()) {

@@ -15,7 +15,7 @@ ordinary pane, so splits, tabs, workspaces and the theme all apply.
 | =.md=                               | rendered markdown     | [[file:markdown.html][Markdown]] |
 | =.html=, =.xml=, =.svg=             | a rendered page       | [[file:browser.html][The browser pane]] |
 | =.pdf=                              | the PDF viewer        | [[file:pdf.html][PDF]] |
-| =.docx=, =.odt=                     | a word processor view | [[file:office.html][Word processor documents]] |
+| =.docx=, =.odt=, =.rtf=             | a word processor view | [[file:office.html][Word processor documents]] |
 | =.xlsx=, =.ods=, =.csv=             | a spreadsheet         | [[file:sheets.html][Spreadsheets]] |
 | =.pptx=, =.odp=                     | a slide editor        | [[file:presentations.html][Presentations]] |
 | =.ipynb=                            | a notebook            | [[file:notebooks.html][Jupyter notebooks]] |

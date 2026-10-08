@@ -6833,7 +6833,7 @@ void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg, bool ne
     // there lands the file in the *new* pane, not the original one.
     const bool special = !file_arg.empty() &&
                          (IsImagePath(file_arg) || IsPdfPath(file_arg) || IsDocxPath(file_arg) || IsOdtPath(file_arg) ||
-                          IsHtmlPath(file_arg) || IsCsvPath(file_arg) || IsXlsxPath(file_arg) || IsOdsPath(file_arg));
+                          IsRtfPath(file_arg) || IsHtmlPath(file_arg) || IsCsvPath(file_arg) || IsXlsxPath(file_arg) || IsOdsPath(file_arg));
 
     int new_buffer_id = active->pane.buffer_id;
     if (!file_arg.empty() && !special) {
@@ -14716,6 +14716,11 @@ const OfficeSession *Editor::GetOffice(int buffer_id) const {
     return it == officedocs_.end() ? nullptr : &it->second;
 }
 
+OfficeSession *Editor::GetOfficeMutable(int buffer_id) {
+    auto it = officedocs_.find(buffer_id);
+    return it == officedocs_.end() ? nullptr : &it->second;
+}
+
 void Editor::ResizeOfficeViewport(int buffer_id, int w, int h) {
     auto it = officedocs_.find(buffer_id);
     if (it == officedocs_.end()) return;
@@ -14820,6 +14825,8 @@ void Editor::OpenOfficeInPlace(const std::string &path, const unsigned char *byt
             ok = LoadDocxFromMemory(bytes, len, doc, error);
         } else if (IsOdtPath(path)) {
             ok = LoadOdtFromMemory(bytes, len, doc, error);
+        } else if (IsRtfPath(path)) {
+            ok = LoadRtfFromMemory(bytes, len, doc, error);
         } else {
             error = "unsupported office document format";
         }
@@ -14852,6 +14859,8 @@ void Editor::ReloadOfficeBuffer(int buffer_id, const std::string &path, const un
         ok = LoadDocxFromMemory(bytes, len, doc, error);
     } else if (IsOdtPath(path)) {
         ok = LoadOdtFromMemory(bytes, len, doc, error);
+    } else if (IsRtfPath(path)) {
+        ok = LoadRtfFromMemory(bytes, len, doc, error);
     } else {
         error = "unsupported office document format";
     }
@@ -15093,7 +15102,14 @@ void Editor::HandleOfficeNormalInput() {
         cp = gfx::GetCharPressed();
     }
     bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
-    if (gfx::IsKeyPressed(gfx::Key::R) && ctrl) {
+    // Ctrl-R is the theme toggle, the key every other rendered document
+    // (PDF, image, HTML, slides) uses for it -- so redo is on Ctrl-Y, as in
+    // the slide editor (and the toolbar's redo button).
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::R)) {
+        sess->theme_colors = !sess->theme_colors;
+        status_message_ = sess->theme_colors ? "Document: theme colours" : "Document: paper (the document's own colours)";
+    }
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::Y)) {
         RedoOffice();
     }
     if (ctrl && (held(gfx::Key::D) || held(gfx::Key::U))) {
@@ -34941,6 +34957,9 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
             ok = SaveDocxToMemory(sess.doc, sess.original_bytes, out_bytes, err);
         } else if (sess.doc.source_format == "odt") {
             ok = SaveOdtToMemory(sess.doc, sess.original_bytes, out_bytes, err);
+        } else if (sess.doc.source_format == "rtf") {
+            // (Written fresh: RTF has no container to copy parts through.)
+            ok = SaveRtfToMemory(sess.doc, out_bytes, err);
         } else {
             err = "unknown office document format";
         }
@@ -35418,7 +35437,7 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
         SyncModeToActivePaneBuffer();
         return;
     }
-    if (IsDocxPath(path) || IsOdtPath(path)) {
+    if (IsDocxPath(path) || IsOdtPath(path) || IsRtfPath(path)) {
 #if defined(__EMSCRIPTEN__)
         char *result = mep_js_read_file_binary(path.c_str());
         std::string res(result);

@@ -4949,7 +4949,7 @@ struct HtmlWriter {
             case InlineKind::Insert: return Wrap("ins", x);
             case InlineKind::Delete: return Wrap("del", x);
             case InlineKind::Verbatim: return "<code>" + Esc(x.text) + "</code>";
-            case InlineKind::Link: return "<a href=\"" + Esc(x.arg) + "\">" + Inlines(x.children) + "</a>";
+            case InlineKind::Link: return "<a href=\"" + Esc(LinkTarget(x.arg)) + "\">" + Inlines(x.children) + "</a>";
             case InlineKind::Font:
                 return "<span style=\"font-family:" + Esc(x.arg) + "\">" + Inlines(x.children) + "</span>";
             case InlineKind::FontSize:
@@ -5978,6 +5978,20 @@ std::vector<RenderedLine> RenderAltText(const std::string &alt, int width, bool 
 
 namespace mepml {
 std::string HeadingSlug(const std::string &title) { return Slug(title); }
+
+std::string LinkTarget(const std::string &arg) {
+    if (arg.rfind("file:", 0) != 0) return arg;
+    std::string path = arg.substr(5);
+    // `file:///abs` and `file://localhost/abs` are real URIs: the browser-
+    // readable `file:///abs` form keeps them openable from any page.
+    if (path.rfind("//", 0) == 0) {
+        path = path.substr(2);
+        const size_t slash = path.find('/');
+        if (slash != std::string::npos && slash > 0) path = path.substr(slash);
+        return "file://" + path;
+    }
+    return path;
+}
 }  // namespace mepml
 
 // ---------------------------------------------------------------------------

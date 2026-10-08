@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (186)</h1>
+<h1>The bindings (188)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -44,6 +44,7 @@ that it does nothing.</p>
 <tr><td><code>mep.html_reload</code></td><td>re-reads local file `path` and</td></tr>
 <tr><td><code>mep.html_settle</code></td><td>runs the focused html pane's page (timers, promises, animation frames) until it goes idle or the budget is spent</td></tr>
 <tr><td><code>mep.html_title</code></td><td>the focused html pane's document title (what a page's script last set)</td></tr>
+<tr><td><code>mep.html_view_toggle</code></td><td>flips the current HTML buffer between rendered and source views</td></tr>
 <tr><td><code>mep.image_get_theme</code></td><td>gets an image buffer's current theme-colors state</td></tr>
 <tr><td><code>mep.image_set_nav</code></td><td>sets or clears an image buffer's "&lt;"/"&gt;" nav-header click callbacks</td></tr>
 <tr><td><code>mep.image_set_return</code></td><td>sets or clears an image buffer's Shift+I callback</td></tr>
@@ -124,6 +125,7 @@ that it does nothing.</p>
 <tr><td><code>mep.notebook_set_python</code></td><td>sets the interpreter notebook kernels launch with (default "python3")</td></tr>
 <tr><td><code>mep.notebook_status</code></td><td>{status, python, cells, running, queued} for the current notebook, or nil</td></tr>
 <tr><td><code>mep.office_reload</code></td><td>re-reads local file `path` (docx or odt) and</td></tr>
+<tr><td><code>mep.office_theme</code></td><td>on: theme colours (Ctrl-R) set, or read</td></tr>
 <tr><td><code>mep.org_agenda_expand_glob</code></td><td>expands a glob pattern into matching agenda file paths</td></tr>
 <tr><td><code>mep.org_agenda_scan_lines</code></td><td>scans a set of lines for org agenda entries (headlines with TODO/scheduling info)</td></tr>
 <tr><td><code>mep.org_apply_block_switches</code></td><td>applies `-n`/`+n`/`-r`/`-k` to a block body</td></tr>

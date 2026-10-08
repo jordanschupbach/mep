@@ -315,6 +315,12 @@ bool IsDocxPath(const std::string &path);
  * @return True if the path ends in ".odt" (case-insensitive).
  */
 bool IsOdtPath(const std::string &path);
+/**
+ * @brief Checks whether a path's lowercased extension is "rtf".
+ * @param path The file path to check.
+ * @return True if the path ends in ".rtf" (case-insensitive).
+ */
+bool IsRtfPath(const std::string &path);
 
 // Sniffs `bytes` (a DocImage's raw encoded content) by magic-number prefix
 // to get a lowercase extension ("png"/"jpeg"/"gif"/"bmp") -- ImageDoc::
@@ -477,5 +483,41 @@ bool LoadOdtFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, s
  */
 bool SaveOdtToMemory(const OfficeDoc &doc, const std::vector<unsigned char> &original_bytes,
                      std::vector<unsigned char> &out, std::string &error);
+
+// Parses an .rtf from memory into `out` (src/office_rtf.cpp): paragraphs
+// with their runs' bold/italic/underline/strike/super/subscript, font
+// family (by the font table's names), size, colour and highlight; headings
+// from the style sheet's "heading N" names or \outlinelevel; alignment;
+// bullet and numbered paragraphs from their \pntext/\listtext marker;
+// tables (plain cell text, as DocTable holds it); PNG/JPEG pictures.
+// Headers, footers, footnotes and fields' instructions are skipped (a
+// hyperlink's text stays). Returns false only when the bytes are not RTF
+// at all (no `{\rtf` header).
+/**
+ * @brief Parses an .rtf file's bytes in memory into an OfficeDoc.
+ * @param bytes Pointer to the .rtf file's raw bytes.
+ * @param len Length of `bytes` in bytes.
+ * @param out Receives the parsed paragraphs/tables/images and source_format="rtf" on success.
+ * @param error Receives a message on failure.
+ * @return True on success; false only if the bytes are not an RTF document (`error` set).
+ */
+bool LoadRtfFromMemory(const unsigned char *bytes, size_t len, OfficeDoc &out, std::string &error);
+
+// Writes `doc` as a complete RTF file: a font table (sans, serif, mono),
+// the colours the runs use, a style sheet with the six heading styles (so
+// the headings read back as headings), then every paragraph with its
+// runs, lists as \pn + \pntext, tables as \trowd rows and pictures as
+// \pngblip/\jpegblip. RTF has no container to copy untouched parts
+// from, so unlike SaveDocxToMemory nothing of the opened file survives
+// but what the model holds. Pictures in an encoding RTF has no blip for
+// (GIF, BMP) are left out.
+/**
+ * @brief Serializes an OfficeDoc as a complete RTF document.
+ * @param doc The document model to serialize.
+ * @param out Receives the RTF text's bytes on success.
+ * @param error Receives a message on failure.
+ * @return True on success; false on failure (`error` set).
+ */
+bool SaveRtfToMemory(const OfficeDoc &doc, std::vector<unsigned char> &out, std::string &error);
 
 #endif

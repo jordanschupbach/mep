@@ -25,7 +25,7 @@ It is a pane rather than a sidebar, so the usual pane keys work on it.
 | =-=       | move the root up one directory                  |
 | =C=       | make the directory under the cursor the root    |
 | =R=       | refresh                                         |
-| =H=       | show or hide hidden files                       |
+| =H=       | show or hide hidden and git-ignored files       |
 | =I=       | open the directory in the image viewer          |
 | =q=       | close the tree                                  |
 
@@ -51,6 +51,9 @@ under the cursor stays under the cursor when rows above it shift.
 
 Files and directories git ignores are left out of the tree, and that list is
 re-read shortly after a change, so build output does not drift into view.
+Showing hidden files (=H= or =<leader>fh=) brings them back along with the
+dotfiles, dimmed so they still read as ignored; everything inside an ignored
+directory is dimmed the same way.
 
 =R= (or =<leader>fr=) still refreshes immediately. Setting
 =mep.tree_auto_refresh = false= in your config turns the polling off, leaving
@@ -67,7 +70,7 @@ that way and opens it in the new half.
 
 | Command / key   | Does                                        |
 |-----------------+---------------------------------------------|
-| =<leader>fh=    | toggle hidden files                         |
+| =<leader>fh=    | toggle hidden and git-ignored files         |
 | =<leader>fr=    | refresh the tree                            |
 | =<leader>fo=    | open a file through the native dialog        |
 | =<leader>ff=    | also the "find files" picker, when no tree is focused |

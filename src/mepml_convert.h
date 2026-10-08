@@ -3,6 +3,7 @@
 
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "mepml_doc.h"
@@ -109,6 +110,38 @@ void SetMathPictureRenderer(MathPictureRenderer renderer);
 bool ExportFile(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error,
                 const ExportOptions &opts = {});
 
+// --- Where an export goes, and what runs after it ---------------------------
+// Exports are built into a directory, `build` beside the document unless
+// the header says otherwise: `//? Build: out` (relative to the document;
+// `.` is the document's own directory). After an export the document's
+// `//? Post:` command, if it has one, runs in the document's directory
+// through the shell with MEP_SOURCE (the .mepml), MEP_BUILD (the build
+// directory) and MEP_OUT (the file(s) just written, space-separated) in
+// its environment -- `//? Post: cp ./build/README.org .` copies a build
+// back beside the source. Relative paths inside an export (pictures in
+// Org, Markdown and HTML) are written as the document names them, so a
+// Post command that copies the export beside the document keeps them
+// resolving.
+std::string BuildDir(const Document &doc);     // the header's value, "build" without one
+std::string PostCommand(const Document &doc);  // the header's value, "" without one
+// `<document dir>/<build dir>/<stem>.<ext>` for `source` (a .mepml path;
+// "" is an untitled buffer, exported under `untitled` in the working
+// directory's build dir). An absolute Build: is used as it is.
+std::string ExportPath(const Document &doc, const std::string &source, const std::string &ext);
+// Creates `path`'s directory (and every missing parent) so the export can
+// be written; false, with `*error`, when that fails.
+bool EnsureExportDir(const std::string &path, std::string *error);
+// The Post command's environment for an export of `source` that wrote
+// `outs`: MEP_SOURCE, MEP_BUILD, MEP_OUT (see above). Absolute paths.
+std::vector<std::pair<std::string, std::string>> PostEnvironment(const Document &doc, const std::string &source,
+                                                                 const std::vector<std::string> &outs);
+// The Post command as a Bourne-shell script with that environment
+// exported in front, for `sh -c`; "" when the document has no Post.
+std::string PostShellScript(const Document &doc, const std::string &source, const std::vector<std::string> &outs);
+// Runs the Post command (if any) in the document's directory, blocking;
+// true when there is none or it exited 0, else false with `*error`.
+bool RunPostCommand(const Document &doc, const std::string &source, const std::vector<std::string> &outs, std::string *error);
+
 // --- Import -------------------------------------------------------------
 std::string FromMarkdown(const std::string &md);
 std::string FromOrg(const std::string &org);
@@ -131,6 +164,11 @@ std::string EscapeInline(const std::string &text);
 // One line of prose that must not be read as a block: a leading `>`, `//`,
 // `- `, `|`, `@`, ``` ... is escaped too.
 std::string EscapeLineStart(const std::string &line);
+// Org's own block names (src, example, quote, verse, center, comment,
+// export, abstract): `#+begin_example` is Org's literal example block, never
+// mep's example box. A box whose kind is one of these is written
+// `#+begin_box_<kind>` by the Org export and read back from it.
+bool IsOrgBlockName(const std::string &name);
 
 }  // namespace mepml
 

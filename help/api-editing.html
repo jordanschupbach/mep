@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (201)</h1>
+<h1>The bindings (206)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -79,6 +79,8 @@ that it does nothing.</p>
 <tr><td><code>mep.current_pane_id</code></td><td>returns the active pane's id</td></tr>
 <tr><td><code>mep.current_tab_id</code></td><td>returns the active tab's stable id</td></tr>
 <tr><td><code>mep.cursor</code></td><td>returns the current cursor position</td></tr>
+<tr><td><code>mep.doc_view</code></td><td>--</td></tr>
+<tr><td><code>mep.doc_view_toggle</code></td><td>--</td></tr>
 <tr><td><code>mep.filename</code></td><td>--</td></tr>
 <tr><td><code>mep.fold_clear_provider</code></td><td>removes every fold previously created under a given provider name</td></tr>
 <tr><td><code>mep.fold_create</code></td><td>creates a fold over a line range</td></tr>
@@ -101,9 +103,11 @@ that it does nothing.</p>
 <tr><td><code>mep.mepml_alt_popup_visible</code></td><td>reports whether a hovered mepml block shows its alt text in a popup</td></tr>
 <tr><td><code>mep.mepml_block_at</code></td><td>describes the mepml code block at a 1-based row</td></tr>
 <tr><td><code>mep.mepml_code_blocks</code></td><td>lists the current mepml buffer's code-block bodies</td></tr>
+<tr><td><code>mep.mepml_convert_text</code></td><td>converts a document between text formats through mepml</td></tr>
 <tr><td><code>mep.mepml_diagnostics</code></td><td>the parser's diagnostics for the current mepml buffer</td></tr>
 <tr><td><code>mep.mepml_export</code></td><td>writes the current mepml buffer in the format named by the path's extension</td></tr>
 <tr><td><code>mep.mepml_export_html</code></td><td>writes the current mepml buffer as standalone HTML</td></tr>
+<tr><td><code>mep.mepml_export_path</code></td><td>the path an export of the current mepml buffer to `ext` is written to, inside the document's build directory (`build` beside it, or its `//? Build:`...</td></tr>
 <tr><td><code>mep.mepml_folds</code></td><td>rebuilds the current mepml buffer's heading/block folds</td></tr>
 <tr><td><code>mep.mepml_gui_start</code></td><td>shows a block's program window inside its results</td></tr>
 <tr><td><code>mep.mepml_header_toggle</code></td><td>folds or unfolds the current mepml buffer's document headers</td></tr>
@@ -111,6 +115,7 @@ that it does nothing.</p>
 <tr><td><code>mep.mepml_link_at</code></td><td>the target of the mepml link at a 1-based position</td></tr>
 <tr><td><code>mep.mepml_outline</code></td><td>lists the current mepml buffer's headings</td></tr>
 <tr><td><code>mep.mepml_parse_ready</code></td><td>whether the current mepml buffer's parse is ready</td></tr>
+<tr><td><code>mep.mepml_post_script</code></td><td>the current mepml buffer's `//? Post:` command as a shell script (MEP_SOURCE, MEP_BUILD and MEP_OUT exported in front) and the directory to run it...</td></tr>
 <tr><td><code>mep.mepml_present</code></td><td>starts presenting the current mepml document's slides</td></tr>
 <tr><td><code>mep.mepml_present_caret</code></td><td>a cursor in the presented slide, or none</td></tr>
 <tr><td><code>mep.mepml_present_goto</code></td><td>shows page n of the running presentation</td></tr>

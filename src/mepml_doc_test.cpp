@@ -266,7 +266,13 @@ int main() {
             bool link = false;
             for (const Inline &x : linked.blocks[0].rows[1][1].content) link = link || (x.kind == InlineKind::Link && x.arg == "file:docs/web.org");
             CHECK(link);
+            // The exports a reader opens beside the document get the plain
+            // path: `file:` is Org's spelling, not a browser's.
+            CHECK(ToHtml(linked).find("<a href=\"docs/web.org\">more</a>") != std::string::npos);
         }
+        CHECK(LinkTarget("file:docs/web.org") == "docs/web.org" && LinkTarget("file:docs/web.org#top") == "docs/web.org#top");
+        CHECK(LinkTarget("file:///tmp/a.org") == "file:///tmp/a.org" && LinkTarget("file://localhost/tmp/a.org") == "file:///tmp/a.org");
+        CHECK(LinkTarget("https://x.org/file:y") == "https://x.org/file:y" && LinkTarget("#top") == "#top" && LinkTarget("docs/a.md") == "docs/a.md");
     }
 
     // --- results=markdown: output written raw and read as the document's own.

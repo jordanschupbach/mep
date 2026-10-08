@@ -1,6 +1,7 @@
 // mep-mepml: mepml's converter as a command-line tool.
 //
 //   mep-mepml convert [--beamer] [--no-notice] IN OUT
+//   mep-mepml build [--beamer] [--no-notice] IN.mepml [FORMAT...]
 //
 // Formats come from the file extensions. From .mepml to anything mep can
 // export (html md org rtf docx odt tex pdf txt); from anything it can
@@ -10,6 +11,14 @@
 // saying it was generated from that file and is not the one to edit
 // (mepml_convert.h, ExportOptions); --no-notice leaves it out, as does
 // `//? Notice: no` in the document.
+//
+// `build` is what the editor's export does: each FORMAT (the header's
+// `//? Export:`, else html, when none is given) is written into the
+// document's build directory (`build` beside it, or its `//? Build:`),
+// and then the document's `//? Post:` command runs once, in the
+// document's directory, with MEP_SOURCE, MEP_BUILD and MEP_OUT set
+// (mepml_convert.h, PostEnvironment).
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -177,6 +186,10 @@ int Inspect(int argc, char **argv) {
 int Usage() {
     std::fprintf(stderr,
                  "usage: mep-mepml convert [--beamer] [--no-notice] IN OUT\n"
+                 "       mep-mepml build [--beamer] [--no-notice] IN.mepml [FORMAT...]\n"
+                 "                                                export into the document's build directory\n"
+                 "                                                (//? Build:, `build` by default) in each FORMAT\n"
+                 "                                                (//? Export:, else html), then run its //? Post:\n"
                  "       mep-mepml tree FILE                      the document's element tree, as JSON\n"
                  "       mep-mepml style FILE [--media a,b] [--sheet S.mepss]...\n"
                  "                                                the style each element computes to\n"
@@ -191,42 +204,8 @@ int Usage() {
     return 2;
 }
 
-}  // namespace
-
-int main(int argc, char **argv) {
-    // `a11y FILE [read|tree|check]`: the document as a screen reader meets
-    // it -- how it reads, its structure, or what such a reader is missing
-    // (exit 1 when that includes an error). Any format with a reader:
-    // .mepml, .pdf, .html, .docx, .odt, .rtf, .md, .org.
-    if (argc >= 3 && std::string(argv[1]) == "a11y") {
-        const std::string what = argc >= 4 ? argv[3] : "read";
-        if (argc > 4 || (what != "read" && what != "tree" && what != "check")) return Usage();
-        a11y::Document doc;
-        std::string err;
-        if (!a11y::FromFile(argv[2], &doc, &err)) {
-            std::fprintf(stderr, "mep-mepml: %s\n", err.c_str());
-            return 1;
-        }
-        std::fputs(a11y::Report(doc, what).c_str(), stdout);
-        if (what != "check") return 0;
-        for (const a11y::Issue &i : a11y::Check(doc))
-            if (i.severity == a11y::Severity::Error) return 1;
-        return 0;
-    }
-    if (argc >= 3 && (std::string(argv[1]) == "tree" || std::string(argv[1]) == "style")) {
-        const int rc = Inspect(argc, argv);
-        return rc == 2 ? Usage() : rc;
-    }
-    bool beamer = false;
-    mepml::ExportOptions opts;
-    int i = 2;
-    for (; i < argc && argv[i][0] == '-'; ++i) {
-        if (std::string(argv[i]) == "--beamer") beamer = true;
-        else if (std::string(argv[i]) == "--no-notice") opts.notice = false;
-        else return Usage();
-    }
-    if (argc != i + 2 || std::string(argv[1]) != "convert") return Usage();
-    const std::string in = argv[argc - 2], out = argv[argc - 1];
+// `in` to `out`, formats by extension (see the file's head). Exit status.
+int Convert(const std::string &in, const std::string &out, bool beamer, mepml::ExportOptions opts) {
     const mepml::Format fin = mepml::FormatFromPath(in), fout = mepml::FormatFromPath(out);
     std::error_code ec;
     const std::string in_abs = std::filesystem::absolute(in, ec).string();
@@ -308,4 +287,98 @@ int main(int argc, char **argv) {
         return 1;
     }
     return 0;
+}
+
+// `build IN [FORMAT...]`: every format into the build directory, then the
+// Post command once.
+int Build(const std::string &in, std::vector<std::string> formats, bool beamer, const mepml::ExportOptions &opts) {
+    if (mepml::FormatFromPath(in) != mepml::Format::Mepml) {
+        std::fprintf(stderr, "mep-mepml: build takes a .mepml, not %s\n", in.c_str());
+        return 2;
+    }
+    std::vector<std::string> lines;
+    if (!ReadLines(in, &lines)) {
+        std::fprintf(stderr, "mep-mepml: cannot read %s\n", in.c_str());
+        return 1;
+    }
+    std::error_code ec;
+    const std::string in_abs = std::filesystem::absolute(in, ec).string();
+    const mepml::Document doc = mepml::ParseForExport(
+        in_abs, lines, [](const std::string &p, std::vector<std::string> *l) { return ReadLines(p, l); }, {});
+    if (formats.empty()) {
+        std::string f = mepml::MetaValue(doc, "export");
+        if (!f.empty() && f[0] == '.') f.erase(0, 1);
+        formats.push_back(f.empty() ? "html" : f);
+    }
+    std::vector<std::string> outs;
+    for (std::string f : formats) {
+        for (char &c : f) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (!f.empty() && f[0] == '.') f.erase(0, 1);
+        if (f == "markdown") f = "md";
+        else if (f == "latex") f = "tex";
+        else if (f == "text") f = "txt";
+        else if (f == "powerpoint") f = "pptx";
+        else if (f == "impress") f = "odp";
+        const bool deck = f == "beamer";
+        if (deck) f = "pdf";
+        const std::string out = mepml::ExportPath(doc, in, f);
+        std::string err;
+        if (!mepml::EnsureExportDir(out, &err)) {
+            std::fprintf(stderr, "mep-mepml: %s\n", err.c_str());
+            return 1;
+        }
+        const int rc = Convert(in, out, beamer || deck, opts);
+        if (rc != 0) return rc;
+        std::printf("  %s -> %s\n", in.c_str(), out.c_str());
+        outs.push_back(out);
+    }
+    std::string err;
+    if (!mepml::RunPostCommand(doc, in, outs, &err)) {
+        std::fprintf(stderr, "mep-mepml: %s\n", err.c_str());
+        return 1;
+    }
+    return 0;
+}
+
+}  // namespace
+
+int main(int argc, char **argv) {
+    // `a11y FILE [read|tree|check]`: the document as a screen reader meets
+    // it -- how it reads, its structure, or what such a reader is missing
+    // (exit 1 when that includes an error). Any format with a reader:
+    // .mepml, .pdf, .html, .docx, .odt, .rtf, .md, .org.
+    if (argc >= 3 && std::string(argv[1]) == "a11y") {
+        const std::string what = argc >= 4 ? argv[3] : "read";
+        if (argc > 4 || (what != "read" && what != "tree" && what != "check")) return Usage();
+        a11y::Document doc;
+        std::string err;
+        if (!a11y::FromFile(argv[2], &doc, &err)) {
+            std::fprintf(stderr, "mep-mepml: %s\n", err.c_str());
+            return 1;
+        }
+        std::fputs(a11y::Report(doc, what).c_str(), stdout);
+        if (what != "check") return 0;
+        for (const a11y::Issue &i : a11y::Check(doc))
+            if (i.severity == a11y::Severity::Error) return 1;
+        return 0;
+    }
+    if (argc >= 3 && (std::string(argv[1]) == "tree" || std::string(argv[1]) == "style")) {
+        const int rc = Inspect(argc, argv);
+        return rc == 2 ? Usage() : rc;
+    }
+    bool beamer = false;
+    mepml::ExportOptions opts;
+    int i = 2;
+    for (; i < argc && argv[i][0] == '-'; ++i) {
+        if (std::string(argv[i]) == "--beamer") beamer = true;
+        else if (std::string(argv[i]) == "--no-notice") opts.notice = false;
+        else return Usage();
+    }
+    if (argc < 2) return Usage();
+    if (std::string(argv[1]) == "build") {
+        if (i >= argc) return Usage();
+        return Build(argv[i], std::vector<std::string>(argv + i + 1, argv + argc), beamer, opts);
+    }
+    if (argc != i + 2 || std::string(argv[1]) != "convert") return Usage();
+    return Convert(argv[argc - 2], argv[argc - 1], beamer, opts);
 }

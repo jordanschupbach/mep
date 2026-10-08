@@ -11,9 +11,11 @@ reports/
 tmp_assets/
 .cache/
 *.pdf
+# `just readme` builds README.mepml's exports into build/ and copies only
+# README.org back out (the file GitHub renders; it would show a README.md
+# in its place). The .md and .html stay in build/, but a stray copy of
+# either beside the source is not to be committed.
 README.html
-# Exported from README.mepml too (`just readme`); not committed, since GitHub
-# would show it in place of README.org.
 README.md
 .scratch/
 

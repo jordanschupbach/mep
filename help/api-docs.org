@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (186)
+* The bindings (188)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -40,6 +40,7 @@ that it does nothing.
 | =mep.html_reload= | re-reads local file `path` and |
 | =mep.html_settle= | runs the focused html pane's page (timers, promises, animation frames) until it goes idle or the budget is spent |
 | =mep.html_title= | the focused html pane's document title (what a page's script last set) |
+| =mep.html_view_toggle= | flips the current HTML buffer between rendered and source views |
 | =mep.image_get_theme= | gets an image buffer's current theme-colors state |
 | =mep.image_set_nav= | sets or clears an image buffer's "<"/">" nav-header click callbacks |
 | =mep.image_set_return= | sets or clears an image buffer's Shift+I callback |
@@ -120,6 +121,7 @@ that it does nothing.
 | =mep.notebook_set_python= | sets the interpreter notebook kernels launch with (default "python3") |
 | =mep.notebook_status= | {status, python, cells, running, queued} for the current notebook, or nil |
 | =mep.office_reload= | re-reads local file `path` (docx or odt) and |
+| =mep.office_theme= | on: theme colours (Ctrl-R) set, or read |
 | =mep.org_agenda_expand_glob= | expands a glob pattern into matching agenda file paths |
 | =mep.org_agenda_scan_lines= | scans a set of lines for org agenda entries (headlines with TODO/scheduling info) |
 | =mep.org_apply_block_switches= | applies `-n`/`+n`/`-r`/`-k` to a block body |

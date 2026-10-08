@@ -257,7 +257,7 @@ just test               # windowless unit tests
 just test-gui           # the tests that drive a real window
 just bench              # performance suite, results in bench_results/
 just lint               # clang-tidy + cppcheck + include-what-you-use
-just readme             # regenerate README.org from README.mepml
+just readme             # build README.mepml's exports, refresh README.org
 #+end_src
 
 Tests and benchmarks are ~EXCLUDE_FROM_ALL~, so an ordinary build
@@ -269,6 +269,22 @@ produces only ~mep~, ~mep-mcp~, ~mep-collabd~, ~mep-org-lsp~,
 This README is written in mepml, mep's own document format: ~README.mepml~
 is the source, and ~just readme~ exports it to the ~README.org~ GitHub
 shows. Edit the ~.mepml~, not the ~.org~.
+
+Like every mepml document, it is built into a directory rather than beside
+its source: ~just readme~ (which is ~mep-mepml build README.mepml org md
+html~) writes ~build/README.org~, ~build/README.md~ and ~build/README.html~,
+and the document's own post-build command then copies the ~.org~ back to
+the top of the repository:
+
+#+begin_src mepml :eval no
+//? Post: cp ./build/README.org .
+#+end_src
+
+~//? Build: dir~ picks another directory (~.~ is the document's own), and
+~//? Post:~ runs any shell command after an export -- from the editor
+(the play button, ~<leader>ke~, ~:MepmlExport~) and from the command line
+alike -- with ~MEP_SOURCE~, ~MEP_BUILD~ and ~MEP_OUT~ in its environment.
+See [[file:help/mepml.org][Exporting and importing]] in the mepml guide.
 
 * License
 

@@ -219,17 +219,18 @@ help: build-native
     done
 
 # README.org, README.md and README.html are exported from README.mepml (the
-# file to edit): each text export starts with a comment saying so. GitHub
-# renders the .org (it would prefer a README.md, so that one is not
-# committed -- see .gitignore). All three render in mep from the one
-# default style sheet the .mepml does (assets/mepml/default.mepss):
-# :OrgViewToggle / :MarkdownViewToggle / :HtmlViewToggle show each as the
-# document, :MepmlViewToggle the source of truth.
+# file to edit): each text export starts with a comment saying so. Like
+# every mepml document's exports they are built into build/ (the
+# document's `//? Build:` directory, `build` by default), and the
+# document's `//? Post:` command then copies build/README.org back beside
+# the source, since that is the file GitHub renders (it would prefer a
+# README.md, which is why that one stays in build/ -- see .gitignore).
+# All three render in mep from the one default style sheet the .mepml
+# does (assets/mepml/default.mepss): :OrgViewToggle / :MarkdownViewToggle
+# / :HtmlViewToggle show each as the document, :MepmlViewToggle the
+# source of truth.
 readme: build-native
-    ./{{native_build_dir}}/mep-mepml convert README.mepml README.org
-    ./{{native_build_dir}}/mep-mepml convert README.mepml README.md
-    ./{{native_build_dir}}/mep-mepml convert README.mepml README.html
-    @echo "  README.mepml -> README.org, README.md, README.html"
+    ./{{native_build_dir}}/mep-mepml build README.mepml org md html
 
 # Check the built-in help workspace: that every help/*.html is exactly what
 # its .org source exports today (re-exported and compared, not an mtime
@@ -269,7 +270,7 @@ test: build-native
     # otherwise mean this check never ran at all.
     echo "== check_help"
     python3 scripts/check_help.py {{native_build_dir}}/mep --strict
-    targets=(mep-job-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-workspace-test mep-fold-test mep-editor-fold-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
+    targets=(mep-job-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-office-rtf-test mep-workspace-test mep-fold-test mep-editor-fold-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do
         if [ -x "{{native_build_dir}}/$t" ]; then

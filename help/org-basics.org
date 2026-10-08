@@ -54,7 +54,7 @@ rendering is a function of the document alone -- the same view mode mepml
 has (=<leader>kv= works here too). What an org file renders as comes from
 the same default style sheet as a mepml document (=assets/mepml/default.mepss=):
 =*bold*= is mepml's =bold=, a headline =heading[level=N]=, a bullet
-=list-item::marker=, a =#+begin_src= block =code[lang=...]=, a table
+=list-item::marker=, a =#+begin_src= block ~code[lang=...]~, a table
 =table= -- so a mepml document and its Org export look alike, and a sheet
 in =~/.config/mep/mepml.mepss= restyles both.
 

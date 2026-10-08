@@ -2209,7 +2209,17 @@ struct OrgReader {
                     continue;
                 }
             }
-            if (std::strchr("*/_+=~", c) && OrgPre(i > b ? s[i - 1] : 0) && i + 1 < e && !IsSp(s[i + 1]) && s[i + 1] != c) {
+            // Org's emphasis rule (org-emphasis-regexp-components): the
+            // body's first character is anything but whitespace, so
+            // `==verbatim==` is the verbatim `=verbatim=` -- what this
+            // repo's own help writes to show the markers. Narrower than
+            // Org by one step: the doubled marker must be followed by text
+            // (`a == b and c == d` stays prose, where Org makes `= b and
+            // c =` verbatim). `**` and `//` are left alone: `a ** b` and
+            // `http://x` are not emphasis.
+            const bool doubled_ok = (c == '=' || c == '~') && i + 2 < e && !IsSp(s[i + 2]) && s[i + 2] != c;
+            if (std::strchr("*/_+=~", c) && OrgPre(i > b ? s[i - 1] : 0) && i + 1 < e && !IsSp(s[i + 1]) &&
+                (s[i + 1] != c || doubled_ok)) {
                 size_t close = std::string::npos;
                 for (size_t j = i + 1; j < e; ++j) {
                     if (s[j] == c && !IsSp(s[j - 1]) && j > i + 1 && OrgPost(j + 1 < e ? s[j + 1] : 0)) {
@@ -2413,10 +2423,13 @@ struct OrgReader {
                 if (FindBoxKind(name)) return name;
                 return name.rfind("box_", 0) == 0 && IsBoxKindName(name.substr(4)) ? name.substr(4) : std::string();
             };
-            if ((key.rfind("begin_", 0) == 0 && !org_box(key.substr(6)).empty()) || (key.rfind("end_", 0) == 0 && !org_box(key.substr(4)).empty())) {
+            // (Org's own blocks first: `#+begin_example` is a literal
+            // example, not the example box -- that one is `box_example`.)
+            const std::string block_name = key.rfind("begin_", 0) == 0 ? key.substr(6) : key.rfind("end_", 0) == 0 ? key.substr(4) : "";
+            if (!block_name.empty() && !IsOrgBlockName(block_name) && !org_box(block_name).empty()) {
                 flush();
                 if (key[0] == 'b') {
-                    out.BoxOpen(org_box(key.substr(6)), InlOf(value));
+                    out.BoxOpen(org_box(block_name), InlOf(value));
                     ++org_boxes;
                 } else if (org_boxes > 0) {
                     out.BoxClose();
@@ -2671,6 +2684,13 @@ struct OrgReader {
 };
 
 }  // namespace
+
+bool IsOrgBlockName(const std::string &name) {
+    static const char *const kNames[] = {"src", "example", "quote", "verse", "center", "comment", "export", "abstract"};
+    for (const char *n : kNames)
+        if (name == n) return true;
+    return false;
+}
 
 std::string FromOrg(const std::string &org) {
     OrgReader r;

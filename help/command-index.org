@@ -5,7 +5,7 @@
 
 * Every command
 
-All 369 ex commands mep defines: 119 built in and 251 registered from Lua.
+All 373 ex commands mep defines: 119 built in and 255 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -48,15 +48,18 @@ bindings instead. A dash means no page covers that command yet.
 | =:CopilotLogout= | [[file:copilot.html][GitHub Copilot]] |
 | =:CopilotPanel= | [[file:copilot.html][GitHub Copilot]] |
 | =:CopilotStatus= | [[file:copilot.html][GitHub Copilot]] |
+| =:DocViewToggle= | [[file:mepml.html][mepml]] |
 | =:e= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:e!= | [[file:files.html][Files and buffers]] |
 | =:edit= | [[file:ai-commands.html][Ask the model]] |
 | =:edit!= | -- |
 | =:Gantt= | -- |
 | =:help= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:HtmlViewToggle= | [[file:mepml.html][mepml]] |
 | =:Kanban= | -- |
 | =:Learn= | [[file:architecture.html][How mep is put together]] |
 | =:lua= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:MarkdownViewToggle= | [[file:mepml.html][mepml]] |
 | =:Menu= | [[file:highlight-groups.html][Highlight groups]] |
 | =:MepActivityBar= | -- |
 | =:MepActivityTestPanel= | [[file:tests.html][Tests]] |
@@ -153,10 +156,6 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepmlStop= | [[file:mepml.html][mepml]] |
 | =:MepmlTerminal= | [[file:mepml.html][mepml]] |
 | =:MepmlViewToggle= | [[file:mepml.html][mepml]] |
-| =:DocViewToggle= | [[file:mepml.html][mepml]] |
-| =:OrgViewToggle= | [[file:org-basics.html][Org files in mep]] |
-| =:MarkdownViewToggle= | [[file:mepml.html][mepml]] |
-| =:HtmlViewToggle= | [[file:mepml.html][mepml]] |
 | =:MepNextSheet= | [[file:sheets.html][Spreadsheets]] |
 | =:MepNotifyClear= | [[file:notifications.html][Notifications]] |
 | =:MepNotifyDismiss= | [[file:notifications.html][Notifications]] |
@@ -300,6 +299,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:normal!= | -- |
 | =:NotebookNew= | [[file:notebooks.html][Jupyter notebooks]] |
 | =:Org= | [[file:architecture.html][How mep is put together]] |
+| =:OrgViewToggle= | [[file:mepml.html][mepml]] |
 | =:PresBackground= | [[file:presentations.html][Presentations]] |
 | =:PresExport= | [[file:presentations.html][Presentations]] |
 | =:PresImage= | [[file:presentations.html][Presentations]] |

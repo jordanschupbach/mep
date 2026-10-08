@@ -30,7 +30,7 @@ Nerd Font icon per file type.</p>
 <tr><td><code>-</code></td><td>move the root up one directory</td></tr>
 <tr><td><code>C</code></td><td>make the directory under the cursor the root</td></tr>
 <tr><td><code>R</code></td><td>refresh</td></tr>
-<tr><td><code>H</code></td><td>show or hide hidden files</td></tr>
+<tr><td><code>H</code></td><td>show or hide hidden and git-ignored files</td></tr>
 <tr><td><code>I</code></td><td>open the directory in the image viewer</td></tr>
 <tr><td><code>q</code></td><td>close the tree</td></tr>
 </table>
@@ -51,7 +51,10 @@ path, a terminal, a <code>git checkout</code>, an agent, another editor -- appea
 disappears on its own. Only expanded directories are walked, and the row
 under the cursor stays under the cursor when rows above it shift.</p>
 <p>Files and directories git ignores are left out of the tree, and that list is
-re-read shortly after a change, so build output does not drift into view.</p>
+re-read shortly after a change, so build output does not drift into view.
+Showing hidden files (<code>H</code> or <code>&lt;leader&gt;fh</code>) brings them back along with the
+dotfiles, dimmed so they still read as ignored; everything inside an ignored
+directory is dimmed the same way.</p>
 <p><code>R</code> (or <code>&lt;leader&gt;fr</code>) still refreshes immediately. Setting
 <code>mep.tree_auto_refresh = false</code> in your config turns the polling off, leaving
 the tree to refresh only on those keys and on its own <code>a</code> / <code>r</code> / <code>d</code> / <code>c</code>
@@ -63,7 +66,7 @@ that way and opens it in the new half.</p>
 <h1>Related commands</h1>
 <table>
 <tr><th>Command / key</th><th>Does</th></tr>
-<tr><td><code>&lt;leader&gt;fh</code></td><td>toggle hidden files</td></tr>
+<tr><td><code>&lt;leader&gt;fh</code></td><td>toggle hidden and git-ignored files</td></tr>
 <tr><td><code>&lt;leader&gt;fr</code></td><td>refresh the tree</td></tr>
 <tr><td><code>&lt;leader&gt;fo</code></td><td>open a file through the native dialog</td></tr>
 <tr><td><code>&lt;leader&gt;ff</code></td><td>also the "find files" picker, when no tree is focused</td></tr>

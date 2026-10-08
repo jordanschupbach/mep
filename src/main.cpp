@@ -4222,6 +4222,27 @@ const char *kBuiltinFileTree =
     "    end,\n"
     "  })\n"
     "end\n"
+    // Flags each row git ignores (row.ignored = true) so the renderer can
+    // dim it. git only names the top of an ignored subtree ("!! build/"),
+    // never the files inside it, so a row is also ignored when any
+    // ancestor row is: rows arrive depth-first, so the nearest ignored
+    // ancestor's depth is enough to carry that down. Relative paths are
+    // taken off the normalized root, since that is how git reported them.
+    "local function mep_tree_mark_ignored(root, rows, ignored)\n"
+    "  if next(ignored) == nil then return end\n"
+    "  local prefix = mep_tree_normalize(root)\n"
+    "  if prefix:sub(-1) ~= '/' then prefix = prefix .. '/' end\n"
+    "  local ignored_depth = nil\n"
+    "  for _, row in ipairs(rows) do\n"
+    "    if ignored_depth and row.depth <= ignored_depth then ignored_depth = nil end\n"
+    "    local full = mep_tree_normalize(row.path)\n"
+    "    local rel = full:sub(1, #prefix) == prefix and full:sub(#prefix + 1) or full\n"
+    "    if ignored_depth or ignored[rel] then\n"
+    "      row.ignored = true\n"
+    "      if not ignored_depth then ignored_depth = row.depth end\n"
+    "    end\n"
+    "  end\n"
+    "end\n"
     // Each row renders as `<indent><icon>  <name>`. Two spaces, not one,
     // between the icon and the name: nerd-font icon glyphs commonly render a
     // little wider than the monospace column their one codepoint occupies, so
@@ -4234,12 +4255,22 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  return indent .. mep.icon_for_file(row.name) .. '  ' .. row.name\n"
     "end\n"
+    // Showing hidden files (H / <leader>fh) also shows what git ignores:
+    // build/, .direnv/, *.o and the like are "hidden" in the same spirit
+    // as dotfiles, and when you ask to see one you nearly always want the
+    // other. So the ignore list is only handed to the walk while hidden
+    // files are off; while they are on, every ignored entry comes back and
+    // mep_tree_render dims it instead (mep_tree_mark_ignored).
     "local function mep_tree_build(root, expanded, ignored)\n"
     "  local expanded_list = {}\n"
     "  for k, v in pairs(expanded) do if v then expanded_list[#expanded_list + 1] = k end end\n"
     "  local ignored_list = {}\n"
-    "  for k, v in pairs(ignored) do if v then ignored_list[#ignored_list + 1] = k end end\n"
-    "  return mep.tree_build_rows(root, expanded_list, mep_tree_show_hidden, ignored_list)\n"
+    "  if not mep_tree_show_hidden then\n"
+    "    for k, v in pairs(ignored) do if v then ignored_list[#ignored_list + 1] = k end end\n"
+    "  end\n"
+    "  local rows = mep.tree_build_rows(root, expanded_list, mep_tree_show_hidden, ignored_list)\n"
+    "  if mep_tree_show_hidden then mep_tree_mark_ignored(root, rows, ignored) end\n"
+    "  return rows\n"
     "end\n"
     "local function mep_tree_render(buf, rows)\n"
     "  if not mep_tree_ns then mep_tree_ns = mep.ns_create('mep_tree') end\n"
@@ -4249,7 +4280,7 @@ const char *kBuiltinFileTree =
     "  mep.buffer_set_lines(buf, lines)\n"
     "  mep.buffer_ns_clear(buf, mep_tree_ns)\n"
     "  for i, row in ipairs(rows) do\n"
-    "    local hl = row.is_dir and 'Blue' or mep.hl_for_file(row.name)\n"
+    "    local hl = row.ignored and 'Comment' or (row.is_dir and 'Blue' or mep.hl_for_file(row.name))\n"
     "    mep.buffer_deco_add(buf, mep_tree_ns, {row = i, col_start = 1, col_end = #lines[i] + 1, hl_group = hl})\n"
     "  end\n"
     "end\n"
@@ -4363,7 +4394,7 @@ const char *kBuiltinFileTree =
     "  {'a', 'add (end with / for a directory)'}, {'r', 'rename'}, {'d', 'delete'}, {'c', 'copy'},\n"
     "  {'Y', 'copy the path'}, {'o', 'open with the OS'},\n"
     "  {'-', 'root up one directory'}, {'C', 'make the directory the root'}, {'R', 'refresh'},\n"
-    "  {'H', 'show / hide hidden files'}, {'I', 'image viewer for the directory'}, {'q', 'close the tree'},\n"
+    "  {'H', 'show / hide hidden and git-ignored files'}, {'I', 'image viewer for the directory'}, {'q', 'close the tree'},\n"
     "}\n"
     "local MEP_TREE_NAV_KEYS = {\n"
     "  {'j / k', 'move down / up'}, {'gg / G', 'first / last row'}, {'/', 'search'}, {'?', 'show / hide this help'},\n"
@@ -4618,7 +4649,7 @@ const char *kBuiltinFileTree =
     "end)\n"
     "mep.command('MepFileTree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('ff', 'Toggle file tree', function() mep.tree_toggle() end)\n"
-    "mep.leader_map('fh', 'Toggle hidden files in tree', function()\n"
+    "mep.leader_map('fh', 'Toggle hidden and git-ignored files in tree', function()\n"
     "  mep_tree_show_hidden = not mep_tree_show_hidden\n"
     "  mep_tree_after_fs_change()\n"
     "end)\n"
@@ -19843,6 +19874,19 @@ const char *kBuiltinOrgExport =
     "  if not row then mep.notify('Not on a headline', 'warn') return nil end\n"
     "  local macros = mep_org_collect_macros(mep.get_line, mep.line_count())\n"
     "  local base_level, marks, out = mep.org_headline_level(row), mep.org_export_marks[format], {}\n"
+    // Markdown: the subtree's own Org text, its headlines lifted so the
+    // subtree's own becomes level 1, through the same converter the whole-
+    // document export uses (mep.org_export_markdown above).
+    "  if format == 'markdown' then\n"
+    "    for i = row, mep_org_subtree_end(row) - 1 do\n"
+    "      local line = mep_org_expand_macro_line(mep.get_line(i), macros)\n"
+    "      if mep_org_parse_headline(line) then line = line:sub(base_level) end\n"
+    "      out[#out + 1] = line\n"
+    "    end\n"
+    "    local text, err = mep.mepml_convert_text(table.concat(out, '\\n') .. '\\n', 'org', 'md', mep_org_doc_base() .. '.org')\n"
+    "    if not text then mep.notify('Org export: ' .. tostring(err), 'error') end\n"
+    "    return text\n"
+    "  end\n"
     "  for i = row, mep_org_subtree_end(row) - 1 do\n"
     "    local line = mep_org_expand_macro_line(mep.get_line(i), macros)\n"
     "    local h = mep_org_parse_headline(line)\n"
@@ -20142,9 +20186,21 @@ const char *kBuiltinOrgExport =
     "    if on_done then on_done(out) end\n"
     "  end)\n"
     "end\n"
+    // Markdown goes through mepml's converter (mep.mepml_convert_text:
+    // mepml_import.cpp's Org reader, mepml_export.cpp's Markdown writer) --
+    // the same conversion `mep-mepml convert notes.org notes.md` does.
+    // mep.org_export's own markdown backend is a line-by-line rewrite that
+    // left tables with Org's `|---+---|` rules (not a table to GFM),
+    // example blocks as indented prose, `[[file:x][d]]` links pointing at
+    // `file:x`, pictures as links and the title nowhere; the converter
+    // writes real fences, GFM tables, front matter, footnotes and images.
+    // The code blocks have still been run and includes/macros resolved
+    // (mep_org_export_prepare) before the text gets here.
     "function mep.org_export_markdown(on_done)\n"
     "  mep_org_export_prepare(function(lines)\n"
-    "    local out = mep_org_export_to_file(mep.org_export('markdown', lines), 'md')\n"
+    "    local text, err = mep.mepml_convert_text(table.concat(lines, '\\n') .. '\\n', 'org', 'md', mep_org_doc_base() .. '.org')\n"
+    "    if not text then mep.notify('Org export: ' .. tostring(err), 'error') return end\n"
+    "    local out = mep_org_export_to_file(text, 'md')\n"
     "    if on_done then on_done(out) end\n"
     "  end)\n"
     "end\n"
@@ -20353,7 +20409,10 @@ const char *kBuiltinOrgExport =
     // separate follow-up, not required for the whole-buffer export the
     // user actually asked for.
     "mep.command('MepOrgExportSubtreeHtml', function() mep_org_export_to_file(mep.org_export_subtree('html'), 'html') end)\n"
-    "mep.command('MepOrgExportSubtreeMarkdown', function() mep_org_export_to_file(mep.org_export_subtree('markdown'), 'md') end)\n"
+    "mep.command('MepOrgExportSubtreeMarkdown', function()\n"
+    "  local text = mep.org_export_subtree('markdown')\n"
+    "  if text then mep_org_export_to_file(text, 'md') end\n"
+    "end)\n"
     "mep.leader_map('oeh', 'Org: export to HTML', mep.org_export_html)\n"
     // oep exports AND opens/refreshes the in-mep PDF preview;
     // :MepOrgExportPdf stays the export-only variant.
@@ -24931,14 +24990,31 @@ const char *kBuiltinMepml =
     "end\n"
     "mep.command('MepmlExecuteAll', mep.mepml_execute_all)\n"
     "\n"
-    "local function mep_mepml_html_path()\n"
-    "  local f = mep.filename() or 'untitled.mepml'\n"
-    "  return (f:gsub('%.mepml$', '')) .. '.html'\n"
+    // Exports go into the document's build directory (`build` beside it,
+    // or its `//? Build:`; mepml_convert.h's ExportPath decides, so the
+    // editor and `mep-mepml build` agree), and the document's `//? Post:`
+    // command runs after each one -- in the document's directory, in the
+    // background, with MEP_SOURCE, MEP_BUILD and MEP_OUT in its
+    // environment -- before the export is reported done. `then` is called
+    // either way; a failing Post is a warning, the export already exists.\n"
+    "local function mep_mepml_post(out, after)\n"
+    "  local script, dir = mep.mepml_post_script(out)\n"
+    "  if not script then if after then after() end return end\n"
+    "  local errs = {}\n"
+    "  local id = mep.job_start({'sh', '-c', script}, {\n"
+    "    cwd = dir,\n"
+    "    on_stderr = function(line) errs[#errs + 1] = line end,\n"
+    "    on_exit = function(code)\n"
+    "      if code ~= 0 then mep.notify('mepml Post: exited with ' .. tostring(code) .. (errs[1] and (': ' .. errs[1]) or ''), 'warn') end\n"
+    "      if after then after() end\n"
+    "    end,\n"
+    "  })\n"
+    "  if not id or id < 0 then mep.notify('mepml Post: could not start sh', 'warn') if after then after() end end\n"
     "end\n"
     "function mep.mepml_export_html_ui()\n"
-    "  local out = mep_mepml_html_path()\n"
+    "  local out = mep.mepml_export_path('html')\n"
     "  local ok, err = mep.mepml_export_html(out)\n"
-    "  if ok then mep.notify('Exported ' .. out) else mep.notify('mepml export failed: ' .. tostring(err), 'error') end\n"
+    "  if ok then mep.notify('Exported ' .. out) mep_mepml_post(out) else mep.notify('mepml export failed: ' .. tostring(err), 'error') end\n"
     "  return ok and out or nil\n"
     "end\n"
     "mep.command('MepmlExportHtml', mep.mepml_export_html_ui)\n"
@@ -24958,57 +25034,103 @@ const char *kBuiltinMepml =
     "  {'org', 'Org'}, {'tex', 'LaTeX'}, {'txt', 'Plain text'},\n"
     "  {'pptx', 'PowerPoint slides (.pptx)'}, {'odp', 'Impress slides (.odp)'},\n"
     "}\n"
-    "local function mep_mepml_out(ext)\n"
-    "  local f = mep.filename() or 'untitled.mepml'\n"
-    "  return (f:gsub('%.mepml$', '')) .. '.' .. ext\n"
-    "end\n"
-    "-- mep.mepml_export_as(fmt [, on_done [, on_fail]]): exports the buffer beside\n"
-    "-- its file (name.fmt); on_done(path) on success, on_fail(err) otherwise.\n"
-    "function mep.mepml_export_as(fmt, on_done, on_fail)\n"
+    "local function mep_mepml_out(ext) return mep.mepml_export_path(ext) end\n"
+    "-- mep.mepml_export_as(fmt [, on_done [, on_fail [, quiet]]]): exports the\n"
+    "-- buffer into its build directory (build/name.fmt, or //? Build:) and runs\n"
+    "-- its //? Post: command; on_done(path) on success, on_fail(err) otherwise.\n"
+    "-- 'all' is every format in turn (mep.mepml_export_all). `quiet` skips the\n"
+    "-- per-file 'Exported ...' / 'failed' toasts, for a caller reporting its own.\n"
+    "function mep.mepml_export_as(fmt, on_done, on_fail, quiet)\n"
     "  fmt = (fmt or ''):lower():gsub('^%.', '')\n"
     "  if fmt == 'markdown' then fmt = 'md' elseif fmt == 'latex' then fmt = 'tex' elseif fmt == 'text' then fmt = 'txt'\n"
     "  elseif fmt == 'powerpoint' then fmt = 'pptx' elseif fmt == 'impress' then fmt = 'odp' end\n"
+    "  if fmt == 'all' or fmt == '*' then return mep.mepml_export_all(on_done, on_fail) end\n"
     "  local known = false\n"
     "  for _, f in ipairs(mep_mepml_formats) do known = known or f[1] == fmt end\n"
     "  if not known then\n"
-    "    mep.notify('mepml: no export to \"' .. fmt .. '\" (html pdf beamer docx odt rtf md org tex txt pptx odp)', 'error')\n"
+    "    mep.notify('mepml: no export to \"' .. fmt .. '\" (html pdf beamer docx odt rtf md org tex txt pptx odp all)', 'error')\n"
     "    if on_fail then on_fail('unknown format ' .. fmt) end\n"
     "    return\n"
     "  end\n"
     "  local beamer = fmt == 'beamer'\n"
     "  local out = mep_mepml_out(beamer and 'pdf' or fmt)\n"
     "  local function done(ok, err)\n"
-    "    if ok then mep.notify('Exported ' .. out) else mep.notify('mepml export failed: ' .. tostring(err), 'error') end\n"
-    "    if ok and on_done then on_done(out) end\n"
+    "    if ok and not quiet then mep.notify('Exported ' .. out) end\n"
+    "    if not ok and not quiet then mep.notify('mepml export failed: ' .. tostring(err), 'error') end\n"
+    "    if ok then mep_mepml_post(out, function() if on_done then on_done(out) end end) end\n"
     "    if not ok and on_fail then on_fail(err) end\n"
     "  end\n"
     "  if fmt ~= 'pdf' and not beamer then return done(mep.mepml_export(out)) end\n"
     "  if not mep_org_babel_has_exe('tectonic') then return done(nil, \"tectonic not found on PATH (see flake.nix's devShell)\") end\n"
     "  -- The .tex goes beside the document (its pictures resolve from there)\n"
-    "  -- under a name of its own, and the PDF takes the document's name.\n"
+    "  -- under a name of its own; tectonic writes into the build directory,\n"
+    "  -- where the PDF then takes the document's name.\n"
     "  local dir = mep_mepml_dir(mep.filename())\n"
-    "  local stem = out:match('([^/]+)%.pdf$')\n"
+    "  local outdir, stem = out:match('^(.*)/([^/]+)%.pdf$')\n"
+    "  if not outdir then outdir, stem = '.', out:match('([^/]+)%.pdf$') end\n"
     "  local tex = dir .. '/.' .. stem .. '.mepml-export.tex'\n"
     "  local ok, err = mep.mepml_export(tex, beamer and 'beamer' or '', 'pdf')\n"
     "  if not ok then return done(nil, err) end\n"
     "  mep.notify('Compiling ' .. out .. ' ...')\n"
     "  local errs = {}\n"
-    "  mep.job_start({'tectonic', '-X', 'compile', tex, '--outdir', dir}, {\n"
+    "  mep.job_start({'tectonic', '-X', 'compile', tex, '--outdir', outdir}, {\n"
     "    cwd = dir,\n"
     "    on_stderr = function(line) errs[#errs + 1] = line end,\n"
     "    on_exit = function(code)\n"
     "      os.remove(tex)\n"
-    "      local built = tex:gsub('%.tex$', '.pdf')\n"
+    "      local built = outdir .. '/.' .. stem .. '.mepml-export.pdf'\n"
     "      if code == 0 and os.rename(built, out) then done(true)\n"
     "      else os.remove(built) done(nil, mep_org_babel_first_error_line(errs) or 'tectonic failed') end\n"
     "    end,\n"
     "  })\n"
     "end\n"
+    "-- mep.mepml_export_all([on_done [, on_fail]]): every format in\n"
+    "-- mep_mepml_formats but beamer, one after another -- not all at once,\n"
+    "-- since the PDF export's hidden .tex sits beside the document and each\n"
+    "-- export runs its //? Post: command. beamer is left out because its deck\n"
+    "-- takes the same build/name.pdf the document's own PDF does, and the two\n"
+    "-- would overwrite each other. A slide format the document has no \\slide\n"
+    "-- for (pptx, odp) is skipped, not failed. One toast at the end: the\n"
+    "-- count and what was skipped, or an error naming what failed (without\n"
+    "-- tectonic, pdf fails and the rest still land). on_done(paths) when\n"
+    "-- nothing failed, on_fail(summary) otherwise.\n"
+    "function mep.mepml_export_all(on_done, on_fail)\n"
+    "  local formats = {}\n"
+    "  for _, f in ipairs(mep_mepml_formats) do if f[1] ~= 'beamer' then formats[#formats + 1] = f end end\n"
+    "  local paths, failed, skipped = {}, {}, {}\n"
+    "  local function step(i)\n"
+    "    local f = formats[i]\n"
+    "    if not f then\n"
+    "      local dir = mep_mepml_out('html'):match('^(.*)/[^/]*$') or '.'\n"
+    "      local note = #skipped > 0 and (' (skipped ' .. table.concat(skipped, ', ') .. ': no \\\\slide blocks)') or ''\n"
+    "      if #failed == 0 then\n"
+    "        mep.notify('Exported ' .. #paths .. ' formats to ' .. dir .. note)\n"
+    "        if on_done then on_done(paths) end\n"
+    "      else\n"
+    "        local summary = 'Exported ' .. #paths .. ' of ' .. #formats .. ' formats; failed: ' .. table.concat(failed, ', ') .. note\n"
+    "        mep.notify(summary, 'error')\n"
+    "        if on_fail then on_fail(summary) end\n"
+    "      end\n"
+    "      return\n"
+    "    end\n"
+    "    mep.notify('Exporting ' .. f[2] .. ' (' .. i .. '/' .. #formats .. ') ...')\n"
+    "    mep.mepml_export_as(f[1], function(path) paths[#paths + 1] = path step(i + 1) end,\n"
+    "      function(err)\n"
+    "        if tostring(err):find('no \\\\slide', 1, true) then skipped[#skipped + 1] = f[1]\n"
+    "        else failed[#failed + 1] = f[1] .. ' (' .. tostring(err) .. ')' end\n"
+    "        step(i + 1)\n"
+    "      end, true)\n"
+    "  end\n"
+    "  step(1)\n"
+    "end\n"
+    "-- The export menu is the fuzzy picker: type 'docx' or 'word' to narrow,\n"
+    "-- Enter to export. 'All formats' runs mep.mepml_export_all.\n"
     "function mep.mepml_export_ui()\n"
-    "  local labels = {}\n"
-    "  for i, f in ipairs(mep_mepml_formats) do labels[i] = f[2] end\n"
-    "  mep.ui_select(labels, 'Export mepml as', function(i)\n"
-    "    if i then mep.mepml_export_as(mep_mepml_formats[i][1]) end\n"
+    "  local items = {}\n"
+    "  for i, f in ipairs(mep_mepml_formats) do items[i] = {display = f[2] .. '  [' .. f[1] .. ']', data = f[1]} end\n"
+    "  items[#items + 1] = {display = 'All formats  [all]', data = 'all'}\n"
+    "  mep.picker_open('Export mepml as', items, function(fmt)\n"
+    "    if fmt then mep.mepml_export_as(fmt) end\n"
     "  end)\n"
     "end\n"
     "mep.command('MepmlExport', function(args)\n"
@@ -28839,7 +28961,7 @@ const char *kBuiltinRunButton =
     "      mep.html_reload(path)\n"
     "    elseif ext == 'pdf' then\n"
     "      mep.pdf_reload(path)\n"
-    "    elseif ext == 'odt' or ext == 'docx' then\n"
+    "    elseif ext == 'odt' or ext == 'docx' or ext == 'rtf' then\n"
     "      mep.office_reload(path)\n"
     "    else\n"
     "      mep.cmd('e!')\n"
@@ -31893,7 +32015,7 @@ const char *kBuiltinHelp =
     // extension; anything unknown falls through to intro.
     "MEP_HELP_FOR_FILETYPE = {\n"
     "  org = 'org-basics', md = 'markdown', markdown = 'markdown',\n"
-    "  ipynb = 'notebooks', pdf = 'pdf', docx = 'office', odt = 'office',\n"
+    "  ipynb = 'notebooks', pdf = 'pdf', docx = 'office', odt = 'office', rtf = 'office',\n"
     "  xlsx = 'sheets', ods = 'sheets', csv = 'sheets',\n"
     "  pptx = 'presentations', odp = 'presentations',\n"
     "  png = 'images', jpg = 'images', jpeg = 'images', bmp = 'images', gif = 'images',\n"
@@ -47356,6 +47478,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // Just the filename -- no more "(para X/Y) Z%" (the Docs-style
             // status line below now carries page/word-count/zoom instead).
             std::string label = (buf.filename.empty() ? "Untitled Document" : buf.filename) + (buf.modified ? " [+]" : "");
+            // The same hint the PDF, image and HTML headers carry.
+            label += office_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [paper, Ctrl-R]";
             gfx::Vector2 ts = gfx::MeasureTextEx(g_font, label.c_str(), font_size, 0);
             gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + std::max(6.0f, (w - ts.x) / 2.0f), label_y}, font_size, 0,
                        ResolveHlGroup("Normal"));
@@ -48852,7 +48976,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const float page_top = content_y + ruler_h + canvas_pad * 0.4f;
         const float page_h = std::max(40.0f, content_h - ruler_h - canvas_pad * 0.85f);
         const gfx::Color canvas = ResolveHlGroup("NormalBg");
-        const gfx::Color paper = ResolveHlGroup("OfficePage");
+        // OfficeSession::theme_colors (Ctrl-R): the theme's page, or the
+        // document's own white paper (its text black, below).
+        const gfx::Color paper = office_sess->theme_colors ? ResolveHlGroup("OfficePage") : gfx::White;
         gfx::DrawRectangle(static_cast<int>(ocx), static_cast<int>(content_y), static_cast<int>(ocw), static_cast<int>(content_h), canvas);
         {
             float pad = std::max(24.0f, page_w * 0.09f);
@@ -49138,7 +49264,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
         gfx::BeginScissorMode(static_cast<int>(page_x), static_cast<int>(page_top), static_cast<int>(page_w),
                           static_cast<int>(page_h));
-        gfx::Color text_color = ResolveHlGroup("Normal");
+        gfx::Color text_color = office_sess->theme_colors ? ResolveHlGroup("Normal") : gfx::Black;
         gfx::Color sel_color = ResolveHlGroup("AccentTint");
         bool office_visual = is_active && g_editor.CurrentMode() == Mode::OfficeVisual && office_sess->has_selection;
         int sel_pa = 0, sel_ca = 0, sel_pb = 0, sel_cb = 0;

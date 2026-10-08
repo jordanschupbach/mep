@@ -38,6 +38,10 @@ std::string LowerStr(std::string s) {
     for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
+
+// `//? Build:` and `//? Post:` say how the .mepml is built, not what the
+// document is: the exports leave them out (mepml_convert.h, BuildDir).
+bool IsBuildKey(const std::string &lower_key) { return lower_key == "build" || lower_key == "post"; }
 }  // namespace
 
 Format FormatFromName(const std::string &name_in) {
@@ -335,7 +339,7 @@ struct MdWriter {
             case InlineKind::Insert: return "<ins>" + in + "</ins>";
             case InlineKind::Delete: return "<del>" + in + "</del>";
             case InlineKind::Verbatim: return Ticks(x.text);
-            case InlineKind::Link: return "[" + in + "](" + x.arg + ")";
+            case InlineKind::Link: return "[" + in + "](" + LinkTarget(x.arg) + ")";
             case InlineKind::Font: return "<span style=\"font-family:" + x.arg + "\">" + in + "</span>";
             case InlineKind::FontSize: return "<span style=\"font-size:" + x.arg + "pt\">" + in + "</span>";
             case InlineKind::Color: return "<span style=\"color:" + x.arg + "\">" + in + "</span>";
@@ -360,7 +364,7 @@ struct MdWriter {
             std::string fm;
             for (const auto &kv : doc.meta) {
                 // An export has its imports' content inlined already.
-                if (kv.first.empty() || LowerStr(kv.first) == "import") continue;
+                if (kv.first.empty() || LowerStr(kv.first) == "import" || IsBuildKey(LowerStr(kv.first))) continue;
                 std::string key = LowerStr(kv.first);
                 std::string v = kv.second;
                 if (key == "option") {
@@ -588,6 +592,11 @@ std::string SafeLines(const std::string &text) {
     return out;
 }
 
+// The Org special block a box is written as: its kind, unless that is one
+// of Org's own block names (`example`) or no kind of mepml's (`axiom`) --
+// those are `box_<kind>`, which the Org import reads back.
+std::string OrgBoxName(const std::string &kind) { return FindBoxKind(kind) && !IsOrgBlockName(kind) ? kind : "box_" + kind; }
+
 struct OrgWriter {
     const Document &doc;
     std::vector<std::pair<int, std::string>> footnotes;
@@ -667,7 +676,7 @@ struct OrgWriter {
         std::vector<std::string> blocks;
         std::vector<std::string> head;
         for (const auto &kv : doc.meta) {
-            if (kv.first.empty() || LowerStr(kv.first) == "import") continue;  // inlined already
+            if (kv.first.empty() || LowerStr(kv.first) == "import" || IsBuildKey(LowerStr(kv.first))) continue;  // inlined already
             std::string key = kv.first;
             for (char &c : key) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             head.push_back("#+" + key + ": " + kv.second);
@@ -803,15 +812,17 @@ struct OrgWriter {
                 case BlockKind::BoxBegin: {
                     const std::string title = b.caption_inlines.empty() ? "" : SafeLines(Inl(b.caption_inlines));
                     // (A kind of the document's own, `\boxed(axiom, ...)`, is
-                    // `box_axiom`: told from Org's own blocks on the way back.)
-                    const std::string name = FindBoxKind(b.keyword) ? b.keyword : "box_" + b.keyword;
+                    // `box_axiom`: told from Org's own blocks on the way back.
+                    // So is the example box: `#+begin_example` is Org's
+                    // literal example block.)
+                    const std::string name = OrgBoxName(b.keyword);
                     std::string o = "#+begin_" + name + (title.empty() ? "" : " " + title);
                     if (!b.inlines.empty()) o += "\n" + SafeLines(Inl(b.inlines));
                     if (b.box_closed) o += "\n#+end_" + name;
                     blocks.push_back(o);
                     break;
                 }
-                case BlockKind::BoxEnd: blocks.push_back("#+end_" + (FindBoxKind(b.keyword) ? b.keyword : "box_" + b.keyword)); break;
+                case BlockKind::BoxEnd: blocks.push_back("#+end_" + OrgBoxName(b.keyword)); break;
                 // (Columns are a slide's and a page's layout: here their
                 // content is written one column after another.)
                 case BlockKind::LayoutBegin:
@@ -858,8 +869,8 @@ struct TextWriter {
             } else if (x.kind == InlineKind::Cite || x.kind == InlineKind::CiteP) {
                 o += CiteLabel(doc, x.text, x.kind == InlineKind::CiteP);
             } else if (x.kind == InlineKind::Link) {
-                const std::string t = Inl(x.children);
-                o += t == x.arg ? t : t + " <" + x.arg + ">";
+                const std::string t = Inl(x.children), target = LinkTarget(x.arg);
+                o += t == target ? t : t + " <" + target + ">";
             } else if (x.kind != InlineKind::Comment) {
                 o += Inl(x.children);
             }
@@ -1002,7 +1013,7 @@ std::vector<std::pair<std::string, std::string>> OfficeProps(const Document &doc
     std::vector<std::pair<std::string, std::string>> p;
     int n = 0;
     for (const auto &kv : doc.meta)  // (an import's content is inlined in the package already)
-        if (LowerStr(kv.first) != "title" && LowerStr(kv.first) != "import")
+        if (LowerStr(kv.first) != "title" && LowerStr(kv.first) != "import" && !IsBuildKey(LowerStr(kv.first)))
             p.push_back({"mepml.meta." + std::to_string(++n), kv.first + ": " + kv.second});
     n = 0;
     const std::vector<bool> export_hidden = ExportHidden(doc);
@@ -1141,7 +1152,7 @@ struct RtfWriter {
             case InlineKind::Delete: return "{\\strike\\cf" + std::to_string(kRed) + " " + in + "}";
             case InlineKind::Verbatim: return "{\\cs30\\f2 " + Esc(x.text) + "}";
             case InlineKind::Link:
-                return "{\\field{\\*\\fldinst{HYPERLINK \"" + Esc(x.arg) + "\"}}{\\fldrslt{\\ul\\cf" + std::to_string(kBlue) + " " + in + "}}}";
+                return "{\\field{\\*\\fldinst{HYPERLINK \"" + Esc(LinkTarget(x.arg)) + "\"}}{\\fldrslt{\\ul\\cf" + std::to_string(kBlue) + " " + in + "}}}";
             case InlineKind::Font: return "{\\f" + std::to_string(FontIndex(x.arg)) + " " + in + "}";
             case InlineKind::FontSize: {
                 const int half = static_cast<int>(std::atof(x.arg.c_str()) * 2.0);
@@ -1557,7 +1568,7 @@ struct DocxWriter {
                 const std::string id = "rId" + std::to_string(next_rel++);
                 rels.push_back("<Relationship Id=\"" + id +
                                "\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"" +
-                               XmlEsc(x.arg) + "\" TargetMode=\"External\"/>");
+                               XmlEsc(LinkTarget(x.arg)) + "\" TargetMode=\"External\"/>");
                 f.style = "Hyperlink";
                 return "<w:hyperlink r:id=\"" + id + "\">" + Inl(x.children, f) + "</w:hyperlink>";
             }
@@ -2037,7 +2048,7 @@ struct OdtWriter {
                 break;
             }
             case InlineKind::Link:
-                return "<text:a xlink:type=\"simple\" xlink:href=\"" + XmlEsc(x.arg) + "\">" + Inl(x.children, f) + "</text:a>";
+                return "<text:a xlink:type=\"simple\" xlink:href=\"" + XmlEsc(LinkTarget(x.arg)) + "\">" + Inl(x.children, f) + "</text:a>";
             case InlineKind::Footnote: {
                 const std::string n = std::to_string(++note_n);
                 return "<text:note text:id=\"ftn" + n + "\" text:note-class=\"footnote\"><text:note-citation>" + n +
@@ -2560,6 +2571,110 @@ bool DocumentWantsNotice(const Document &doc) {
 }
 
 }  // namespace
+
+// ===========================================================================
+// The build directory and the Post command
+// ===========================================================================
+
+namespace {
+
+std::string ShellQuoted(const std::string &s) {
+    std::string o = "'";
+    for (char c : s) o += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return o + "'";
+}
+
+// The document's directory, absolute; the working directory for an
+// untitled buffer.
+std::filesystem::path DocumentDir(const std::string &source) {
+    std::error_code ec;
+    if (source.empty()) return std::filesystem::current_path(ec);
+    return std::filesystem::absolute(source, ec).parent_path();
+}
+
+std::filesystem::path BuildPath(const Document &doc, const std::string &source) {
+    const std::filesystem::path build = BuildDir(doc);
+    return build.is_absolute() ? build : DocumentDir(source) / build;
+}
+
+}  // namespace
+
+std::string BuildDir(const Document &doc) {
+    std::string v = TrimStr(MetaValue(doc, "build"));
+    if (v.empty()) v = "build";
+    while (v.size() > 1 && v.back() == '/') v.pop_back();
+    return v;
+}
+
+std::string PostCommand(const Document &doc) { return TrimStr(MetaValue(doc, "post")); }
+
+std::string ExportPath(const Document &doc, const std::string &source, const std::string &ext) {
+    std::string stem = source.empty() ? std::string("untitled") : std::filesystem::path(source).stem().string();
+    if (stem.empty()) stem = "untitled";
+    std::string e = ext;
+    if (!e.empty() && e[0] == '.') e.erase(0, 1);
+    return (BuildPath(doc, source) / (stem + "." + e)).lexically_normal().string();
+}
+
+bool EnsureExportDir(const std::string &path, std::string *error) {
+    std::error_code ec;
+    const std::filesystem::path dir = std::filesystem::path(path).parent_path();
+    if (dir.empty()) return true;
+    std::filesystem::create_directories(dir, ec);
+    if (std::filesystem::is_directory(dir, ec)) return true;
+    if (error) *error = "cannot create " + dir.string() + (ec ? ": " + ec.message() : "");
+    return false;
+}
+
+std::vector<std::pair<std::string, std::string>> PostEnvironment(const Document &doc, const std::string &source,
+                                                                 const std::vector<std::string> &outs) {
+    std::error_code ec;
+    std::string out;
+    for (const std::string &o : outs) out += (out.empty() ? "" : " ") + std::filesystem::absolute(o, ec).lexically_normal().string();
+    return {
+        {"MEP_SOURCE", source.empty() ? "" : std::filesystem::absolute(source, ec).lexically_normal().string()},
+        {"MEP_BUILD", BuildPath(doc, source).lexically_normal().string()},
+        {"MEP_OUT", out},
+    };
+}
+
+std::string PostShellScript(const Document &doc, const std::string &source, const std::vector<std::string> &outs) {
+    const std::string cmd = PostCommand(doc);
+    if (cmd.empty()) return "";
+    std::string script;
+    for (const auto &kv : PostEnvironment(doc, source, outs)) script += kv.first + "=" + ShellQuoted(kv.second) + "; export " + kv.first + "; ";
+    return script + cmd;
+}
+
+bool RunPostCommand(const Document &doc, const std::string &source, const std::vector<std::string> &outs, std::string *error) {
+    const std::string cmd = PostCommand(doc);
+    if (cmd.empty()) return true;
+    std::error_code ec;
+    const std::filesystem::path here = std::filesystem::current_path(ec);
+    std::filesystem::current_path(DocumentDir(source), ec);
+    if (ec) {
+        if (error) *error = "Post: cannot enter " + DocumentDir(source).string();
+        return false;
+    }
+    // The environment is set in the process (the child inherits it), so
+    // the command runs the same under sh and under cmd.exe.
+    for (const auto &kv : PostEnvironment(doc, source, outs)) {
+#if defined(_WIN32)
+        _putenv_s(kv.first.c_str(), kv.second.c_str());
+#else
+        setenv(kv.first.c_str(), kv.second.c_str(), 1);
+#endif
+    }
+    int rc = std::system(cmd.c_str());
+#if !defined(_WIN32)
+    // system() hands back wait()'s status word: the exit code is in the high byte.
+    if (rc != -1 && (rc & 0x7f) == 0) rc = (rc >> 8) & 0xff;
+#endif
+    if (!here.empty()) std::filesystem::current_path(here, ec);
+    if (rc == 0) return true;
+    if (error) *error = "Post: `" + cmd + "` exited with " + std::to_string(rc);
+    return false;
+}
 
 std::string WithGeneratedNotice(Format f, const Document &doc, const ExportOptions &opts, const std::string &text) {
     if (!opts.notice || !DocumentWantsNotice(doc)) return text;

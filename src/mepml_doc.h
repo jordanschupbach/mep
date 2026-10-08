@@ -636,6 +636,13 @@ const std::vector<std::string> &ColorNames();
 // and digits folded to one '-'.
 std::string HeadingSlug(const std::string &title);
 
+// A link's target as an export writes it. mepml follows Org in letting a
+// link name another file as `file:docs/web.org`; exports whose readers do
+// not know that scheme (HTML, Markdown, DOCX, ...) get the plain relative
+// path, `docs/web.org`, which resolves beside the exported file. Any
+// `#anchor` is kept. Other targets are returned as written.
+std::string LinkTarget(const std::string &arg);
+
 // ---------------------------------------------------------------------------
 // Export.
 

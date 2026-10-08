@@ -16,6 +16,13 @@
 
 Each writes its file next to the =.org= source; =<leader>oep= also opens (or
 refreshes) the PDF in a viewer pane, where =:MepOrgExportPdf= only exports.
+Markdown goes through mepml's converter (the same conversion =mep-mepml
+convert notes.org notes.md= does, see [[file:mepml.html][mepml]]): headings,
+GFM tables, fenced code and example blocks, lists, links, pictures,
+footnotes and the title all come out as Markdown that renders -- after the
+document's code blocks have run and its includes and macros been resolved,
+as for every other format. =mep.mepml_convert_text(text, 'org', 'md')= is
+the same conversion from Lua.
 =:MepOrgExportSubtreeHtml= and =:MepOrgExportSubtreeMarkdown= export just
 the subtree under the cursor.
 

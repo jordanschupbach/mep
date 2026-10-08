@@ -30,7 +30,7 @@ each has the same view mode: an Org file (=:OrgViewToggle=,
 =<leader>otv=) and a Markdown file (=:MarkdownViewToggle=) are rendered
 from it with their constructs read as mepml's elements -- =*bold*= and
 =**bold**= are =bold=, a =#+begin_src= block and a fenced block are
-=code[lang=...]=, a bullet is =list-item::marker= -- and an HTML file's
+~code[lang=...]~, a bullet is =list-item::marker= -- and an HTML file's
 page carries it as CSS (=:HtmlViewToggle=, =<leader>bv=, switches the
 file between its rendered page and its source). =<leader>kv= and the
 pane header's book button toggle whichever of these the buffer is
@@ -50,7 +50,7 @@ restyles all of them.
 | =<leader>ks=          | the same                                                  |
 | =<leader>kt=          | type into the running block's terminal                    |
 | =<leader>ka=          | run every code block, top to bottom                       |
-| =<leader>ke=          | export as... (pick a format: HTML, PDF, Word, ...)        |
+| =<leader>ke=          | export as... (fuzzy-pick a format, or All formats)        |
 | =<leader>ko=          | export to HTML and open it                                |
 | =<leader>ki=          | import a document (HTML, Markdown, Word, ...) as mepml    |
 | =C-c C-e h=           | export to HTML                                            |
@@ -69,7 +69,7 @@ restyles all of them.
 | =:MepmlExecuteAll=    | run every code block                                      |
 | =:MepmlStop=          | stop the running block under the cursor                   |
 | =:MepmlTerminal=      | type into the running block's terminal                    |
-| =:MepmlExport= [fmt]  | export as =fmt= (html pdf docx odt rtf md org tex txt)    |
+| =:MepmlExport= [fmt]  | export as =fmt= (html pdf docx odt rtf md org tex txt all) |
 | =:MepmlImport= [file] | import =file= as mepml and open it                        |
 | =:MepmlExportHtml=    | export to HTML                                            |
 | =:MepmlExportOpen=    | export to HTML and open it                                |
@@ -222,7 +222,7 @@ The editor draws it as a card, with =\abstract(= shown as a centred
 line) and the closing parenthesis hidden. It folds like a code block. Each export
 writes its own format's abstract: LaTeX's =abstract= environment, Org's
 =#+begin_abstract=, Word's and LibreOffice's /Abstract/ styles, and a
-=<section class="abstract">= in HTML. Imports read these back, and pandoc's
+~<section class="abstract">~ in HTML. Imports read these back, and pandoc's
 abstracts as well.
 
 * Slides
@@ -254,7 +254,7 @@ code blocks and results on the slide set inside it. A slide still missing
 its closer is drawn as a rule labelled /Slide N: title/ instead. A slide
 folds as one block, collapsing to its title bar, and appears in the
 outline. In an ordinary document, the HTML export puts each slide in a
-=<section class="slide">=, and the other document exports keep a slide's
+~<section class="slide">~, and the other document exports keep a slide's
 content as ordinary blocks, without the slide boundaries.
 
 ** Presentations
@@ -1344,10 +1344,51 @@ is a different key, choosing which parts of each code block the exports
 show. =beamer= is the =\slide= blocks as a Beamer PDF whatever the
 document's =Type=, and a slide-deck PDF opens sized to show a whole slide.
 
-=<leader>ke= (or =:MepmlExport=) exports the document beside its file,
-=notes.mepml= becoming =notes.docx= and so on. Imports are expanded,
-commands are expanded for the format (see Commands of your own), and
-pictures are embedded where the format can hold them.
+=<leader>ke= (or =:MepmlExport=) exports the document into its build
+directory, =notes.mepml= becoming =build/notes.docx= and so on. It opens
+the fuzzy picker over the formats, so typing =docx= or =word= narrows to
+Word; =:MepmlExport docx= skips the picker. The picker's last entry,
+=All formats= (=:MepmlExport all=), writes every format one after another
+and reports once at the end: slide formats a document without =\slide=
+blocks cannot make (=pptx=, =odp=) are skipped, and anything that failed
+is named -- without =tectonic= on =PATH=, =pdf= fails and the rest still
+land. =beamer= is left out of All, since its deck takes the same
+=build/notes.pdf= as the document's own PDF; export it on its own. Imports
+are expanded, commands are expanded for the format (see Commands of your
+own), and pictures are embedded where the format can hold them.
+
+** The build directory and what runs after
+
+Every export lands in a directory beside the document -- =build= unless
+the header names another -- rather than next to the =.mepml= itself, so
+a document's exports never crowd its source. After an export, a command
+the header names runs in the document's directory:
+
+#+begin_example
+//? Build: out
+//? Post: cp ./out/README.org .
+#+end_example
+
+=Build:= is relative to the document (=.= is the document's own
+directory; an absolute path is used as it is). =Post:= is any shell
+command, run through =sh -c= in the background once the export is
+written, with three variables in its environment:
+
+| Variable       | Holds                                                            |
+|----------------+------------------------------------------------------------------|
+| =MEP_SOURCE=   | the =.mepml= that was exported (absolute)                         |
+| =MEP_BUILD=    | its build directory (absolute)                                   |
+| =MEP_OUT=      | the file just written -- every file, space-separated, from the command line |
+
+A Post command that fails is a warning: the export is already there.
+Neither line is part of the document, and the exports leave them out.
+
+The paths an export names -- pictures in Org, Markdown and HTML -- are
+written as the document writes them, relative to the document, which is
+why a =Post:= that copies the export back beside the source (as mep's own
+=README.mepml= does with its =README.org=) keeps them resolving. A
+document whose HTML must stand on its own in =build/= can say =//? Build:
+.= instead, or keep its pictures under the build directory.
 
 An export is a copy, and the =.mepml= is the file to edit. The text
 exports say so in a comment at the top -- =# ...= in Org, =<!-- ... -->=
@@ -1414,7 +1455,16 @@ The same converters are a command-line tool:
 #+begin_src sh
 mep-mepml convert notes.mepml notes.docx   # any format to any format,
 mep-mepml convert report.docx report.mepml # by way of mepml
+mep-mepml build notes.mepml                # what the editor's export does: the
+                                           # //? Export: format (html by default)
+                                           # into the build directory, then Post:
+mep-mepml build notes.mepml org md html    # several formats, Post: once after all
 #+end_src
+
+=convert= writes exactly the file it is given and runs nothing after;
+=build= is the editor's export with the document's =Build:= and =Post:=
+honoured, so a =just= recipe or a Makefile builds a document the way the
+play button does.
 
 and Lua functions: =mep.mepml_export(path)= writes the current buffer in
 the format =path= names, =mep.mepml_export_as(fmt)= also does PDF, and

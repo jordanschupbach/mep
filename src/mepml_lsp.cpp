@@ -705,6 +705,9 @@ const std::vector<Vocab> &MetaVocab() {
         {"Exports", "//? Exports: results", "What the exports show of every code block: code, results, both (the default) or none. A block's own exports= (or echo=) wins. The editor always shows everything."},
         {"Style", "//? Style: file.mepss", "A style sheet for this document (docs/mepml-spec/style.md): rules such as `heading[level=1] { color: #0b5cad; }` that override mep's default look, here and in every export. Several Style lines apply in order."},
         {"Import", "//? Import: file.mepml", "Includes another mepml file: its options and other header keys are inherited (this file's own win) and its content is included here, in the order the header lists its imports."},
+        {"Build", "//? Build: build", "The directory the exports are written into, relative to the document (`.` is the document's own directory; `build` when there is no Build line). The editor's exports and `mep-mepml build` both use it."},
+        {"Post", "//? Post: cp ./build/README.org .", "A shell command run after every export, in the document's directory, with MEP_SOURCE (the .mepml), MEP_BUILD (the build directory) and MEP_OUT (the file just written; all of them for `mep-mepml build`) in its environment."},
+        {"Notice", "//? Notice: no", "Turns off the comment at the top of the text exports (Org, Markdown, HTML, LaTeX) saying the file was generated from this document and is not the one to edit."},
     };
     return v;
 }

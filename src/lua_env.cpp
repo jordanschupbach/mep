@@ -3213,10 +3213,11 @@ int l_mepml_export_html(lua_State *L) {
         ed->MepmlParseForExport(mepml::ExportTags(mepml::Format::Html, ed->MepmlParseCurrent(false)));
     const std::string html = mepml::WithGeneratedNotice(mepml::Format::Html, doc, MepmlExportOptions(ed),
                                                         mepml::ToHtmlFor(doc));  // a presentation is a slideshow
-    std::ofstream f(path, std::ios::binary);
+    std::string err;
+    std::ofstream f(mepml::EnsureExportDir(path, &err) ? path : std::string(), std::ios::binary);
     if (!f) {
         lua_pushnil(L);
-        lua_pushstring(L, ("cannot write " + path).c_str());
+        lua_pushstring(L, (err.empty() ? "cannot write " + path : err).c_str());
         return 2;
     }
     f << html;
@@ -3260,6 +3261,8 @@ int l_mepml_export(lua_State *L) {
     std::string err;
     if (beamer && format != mepml::Format::Latex) {
         err = "a Beamer export is written as .tex, not " + path;
+    } else if (!mepml::EnsureExportDir(path, &err)) {
+        // (the build directory: `err` says why it could not be made)
     } else if (beamer) {
         Editor *ed = GetEditor(L);
         const std::string file = ed->MepmlCurrentFile();
@@ -3294,6 +3297,52 @@ int l_mepml_export(lua_State *L) {
     return 2;
 }
 
+// mep.mepml_export_path(ext) -> path: where an export of the current
+// buffer to `ext` (html, pdf, docx ...) goes: `<stem>.<ext>` in the
+// document's build directory -- `build` beside it, or what its
+// `//? Build:` header names (mepml_convert.h, ExportPath). An untitled
+// buffer exports as `untitled.<ext>` under the working directory's.
+/**
+ * @brief Implements mep.mepml_export_path(ext): the path an export of the current mepml buffer to `ext` is written to, inside the document's build directory (`build` beside it, or its `//? Build:` header's).
+ * @param L Lua state; arg 1 is the extension (html, pdf, docx ...).
+ * @return Number of values pushed (1: the path).
+ */
+int l_mepml_export_path(lua_State *L) {
+    const std::string ext = luaL_checkstring(L, 1);
+    Editor *ed = GetEditor(L);
+    lua_pushstring(L, mepml::ExportPath(ed->MepmlParseCurrent(true), ed->MepmlCurrentFile(), ext).c_str());
+    return 1;
+}
+
+// mep.mepml_post_script(out...) -> script, dir | nil: the current buffer's
+// `//? Post:` command as a Bourne-shell script for `sh -c`, with
+// MEP_SOURCE, MEP_BUILD and MEP_OUT (the exports `out...`, absolute)
+// exported in front, and the directory to run it in (the document's);
+// nil when the document has no Post line.
+/**
+ * @brief Implements mep.mepml_post_script(out...): the current mepml buffer's `//? Post:` command as a shell script (MEP_SOURCE, MEP_BUILD and MEP_OUT exported in front) and the directory to run it in; nil without one.
+ * @param L Lua state; args are the export paths just written.
+ * @return Number of values pushed (2: script, directory; 1: nil when the document has no Post).
+ */
+int l_mepml_post_script(lua_State *L) {
+    std::vector<std::string> outs;
+    for (int i = 1; i <= lua_gettop(L); ++i)
+        if (lua_isstring(L, i)) outs.push_back(lua_tostring(L, i));
+    Editor *ed = GetEditor(L);
+    const std::string file = ed->MepmlCurrentFile();
+    const std::string script = mepml::PostShellScript(ed->MepmlParseCurrent(true), file, outs);
+    if (script.empty()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    std::error_code ec;
+    const std::string dir = file.empty() ? std::filesystem::current_path(ec).string()
+                                         : std::filesystem::path(file).parent_path().string();
+    lua_pushstring(L, script.c_str());
+    lua_pushstring(L, dir.c_str());
+    return 2;
+}
+
 // mep.mepml_import(in_path, out_path) -> out_path | nil, err: converts an
 // html/md/org/rtf/docx/odt/txt file to mepml and writes it to out_path
 // (pictures inside DOCX/ODT/RTF go to a "<stem>_media" directory beside
@@ -3317,6 +3366,80 @@ int l_mepml_import(lua_State *L) {
             return 1;
         }
         err = "cannot write " + out;
+    }
+    lua_pushnil(L);
+    lua_pushstring(L, err.c_str());
+    return 2;
+}
+
+// mep.mepml_convert_text(text, from, to [, path]) -> text | nil, err:
+// converts `text`, a document in the format `from` (mepml, md, org, html,
+// rtf), to the text format `to` (md, org, html, txt, tex) by way of mepml:
+// the same conversion `mep-mepml convert` and mep.mepml_import do, in
+// memory. `path`, the document's file, resolves what it imports and the
+// base of its pictures (the current buffer's file when omitted). The
+// result carries no generated-file notice: it is not an export of a
+// .mepml. The Org export commands' Markdown backend (<leader>oem).
+/**
+ * @brief Implements mep.mepml_convert_text(text, from, to [, path]): converts a document between text formats through mepml.
+ * @param L Lua state; arg 1 is the document text, arg 2 its format, arg 3 the format wanted, arg 4 its file path.
+ * @return Number of values pushed (1 on success: the converted text; 2 on failure: nil, message).
+ */
+int l_mepml_convert_text(lua_State *L) {
+    const std::string text = luaL_checkstring(L, 1);
+    const mepml::Format from = mepml::FormatFromName(luaL_checkstring(L, 2));
+    const mepml::Format to = mepml::FormatFromName(luaL_checkstring(L, 3));
+    Editor *ed = GetEditor(L);
+    const std::string path = lua_isstring(L, 4) ? lua_tostring(L, 4) : ed->MepmlCurrentFile();
+    const std::string base = path.empty() ? std::string(".") : std::filesystem::path(path).parent_path().string();
+    std::string err;
+    std::string source;
+    switch (from) {
+        case mepml::Format::Mepml: source = text; break;
+        case mepml::Format::Markdown: source = mepml::FromMarkdown(text); break;
+        case mepml::Format::Org: source = mepml::FromOrg(text); break;
+        case mepml::Format::Html: source = mepml::FromHtml(text); break;
+        case mepml::Format::Rtf: source = mepml::FromRtf(text); break;
+        default: err = "cannot read " + std::string(lua_tostring(L, 2)) + " text (mepml, md, org, html, rtf)";
+    }
+    if (err.empty()) {
+        auto split = [](const std::string &t) {
+            std::vector<std::string> lines;
+            size_t pos = 0;
+            while (pos < t.size()) {
+                size_t nl = t.find('\n', pos);
+                if (nl == std::string::npos) nl = t.size();
+                std::string l = t.substr(pos, nl - pos);
+                if (!l.empty() && l.back() == '\r') l.pop_back();
+                lines.push_back(l);
+                pos = nl + 1;
+            }
+            return lines;
+        };
+        const std::vector<std::string> lines = split(source);
+        auto read = [&split](const std::string &p, std::vector<std::string> *out) {
+            std::ifstream f(p, std::ios::binary);
+            if (!f) return false;
+            std::string all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            *out = split(all);
+            return true;
+        };
+        const std::vector<std::string> tags = mepml::ExportTags(to, mepml::Parse(lines));
+        const mepml::Document doc = mepml::ParseForExport(path, lines, read, tags);
+        std::string out;
+        switch (to) {
+            case mepml::Format::Mepml: out = source; break;
+            case mepml::Format::Markdown: out = mepml::ToMarkdown(doc); break;
+            case mepml::Format::Org: out = mepml::ToOrg(doc); break;
+            case mepml::Format::Html: out = mepml::ToHtmlFor(doc); break;
+            case mepml::Format::Text: out = mepml::ToPlainText(doc); break;
+            case mepml::Format::Latex: out = mepml::ToLatex(doc, base); break;
+            default: err = "cannot write " + std::string(lua_tostring(L, 3)) + " text (mepml, md, org, html, txt, tex)";
+        }
+        if (err.empty()) {
+            lua_pushlstring(L, out.data(), out.size());
+            return 1;
+        }
     }
     lua_pushnil(L);
     lua_pushstring(L, err.c_str());
@@ -10785,6 +10908,17 @@ int l_pdf_current_page(lua_State *L) {
     return 1;
 }
 
+// mep.office_theme([on]) -> on: theme colours (Ctrl-R) set, or read.
+// On, the current pane's document is drawn as the editor's page; off, as
+// its own white paper.
+int l_office_theme(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    OfficeSession *s = ed->GetOfficeMutable(ed->CurrentBufferId());
+    if (!s) return luaL_error(L, "not an office document buffer (open a .docx, .odt or .rtf)");
+    if (!lua_isnoneornil(L, 1)) s->theme_colors = lua_toboolean(L, 1) != 0;
+    lua_pushboolean(L, s->theme_colors);
+    return 1;
+}
 // mep.office_reload(path): re-reads local file `path` (docx or odt) and
 // re-decodes it INTO the current pane's existing OfficeSession in place
 // (Editor::ReloadOfficeBuffer) -- same role mep.html_reload/mep.pdf_reload
@@ -13547,6 +13681,8 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_terminal_focus", l_mepml_terminal_focus},
     {"mepml_export_html", l_mepml_export_html},
     {"mepml_export", l_mepml_export},
+    {"mepml_export_path", l_mepml_export_path},
+    {"mepml_post_script", l_mepml_post_script},
     {"mepml_header_toggle", l_mepml_header_toggle},
     {"mepml_raw_toggle", l_mepml_raw_toggle},
     {"mepml_raw", l_mepml_raw},
@@ -13564,6 +13700,7 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_present_warm", l_mepml_present_warm},
     {"math_render_fast", l_math_render_fast},
     {"mepml_import", l_mepml_import},
+    {"mepml_convert_text", l_mepml_convert_text},
     {"mepml_diagnostics", l_mepml_diagnostics},
     {"org_table_auto_align", l_org_table_auto_align},
     {"org_conceal_toggle", l_org_conceal_toggle},
@@ -13764,6 +13901,7 @@ const luaL_Reg kMepFuncs[] = {
     {"pdf_fit_page", l_pdf_fit_page},
     {"pdf_current_page", l_pdf_current_page},
     {"office_reload", l_office_reload},
+    {"office_theme", l_office_theme},
     {"doc_export_html_to_latex", l_doc_export_html_to_latex},
     {"doc_export_html_to_odt", l_doc_export_html_to_odt},
     {"set_completion_source", l_set_completion_source},

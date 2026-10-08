@@ -33,9 +33,17 @@ jobs.
 | =<leader>pp=   | *Loaded projects* | the projects currently open in mep    |
 
 *Projects* (=:MepProjects=, and the =p= action on the [[file:dashboard.html][start screen]]) is a
-bookmark list: pick one to open it. It ends with =+ Add current directory=
-and =- Remove a project...= for managing the list, and =:MepProjectAdd= adds
-the current directory without opening the picker.
+bookmark list: pick one to open it. It ends with =+ Add current directory=,
+=+ Add project by path...= and =- Remove a project...= for managing the list,
+and =:MepProjectAdd= adds the current directory without opening the picker.
+
+=+ Add project by path...= (also =:MepProjectAddPath=) opens a picker whose
+prompt is the path itself, starting at the current directory. As you type it
+lists the matching subfolders; =Tab= completes like a shell (the highlighted
+folder, or the longest common prefix of the matches), =C-w= goes up a folder
+and =C-u= clears. =Enter= on the first row adds the typed folder; =Enter= on a
+subfolder steps into it. A leading =~= is your home directory, and a relative
+path is taken from the current directory.
 
 *Loaded projects* (=:MepProjectsOpen=) switches between what is already
 open, showing each project's workspace count, whether it is a git

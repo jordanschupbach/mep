@@ -36,9 +36,16 @@ jobs.</p>
 <tr><td><code>&lt;leader&gt;pp</code></td><td><b>Loaded projects</b></td><td>the projects currently open in mep</td></tr>
 </table>
 <p><b>Projects</b> (<code>:MepProjects</code>, and the <code>p</code> action on the <a href="dashboard.html">start screen</a>) is a
-bookmark list: pick one to open it. It ends with <code>+ Add current directory</code>
-and <code>- Remove a project...</code> for managing the list, and <code>:MepProjectAdd</code> adds
-the current directory without opening the picker.</p>
+bookmark list: pick one to open it. It ends with <code>+ Add current directory</code>,
+<code>+ Add project by path...</code> and <code>- Remove a project...</code> for managing the list,
+and <code>:MepProjectAdd</code> adds the current directory without opening the picker.</p>
+<p><code>+ Add project by path...</code> (also <code>:MepProjectAddPath</code>) opens a picker whose
+prompt is the path itself, starting at the current directory. As you type it
+lists the matching subfolders; <code>Tab</code> completes like a shell (the highlighted
+folder, or the longest common prefix of the matches), <code>C-w</code> goes up a folder
+and <code>C-u</code> clears. <code>Enter</code> on the first row adds the typed folder; <code>Enter</code> on a
+subfolder steps into it. A leading <code>~</code> is your home directory, and a relative
+path is taken from the current directory.</p>
 <p><b>Loaded projects</b> (<code>:MepProjectsOpen</code>) switches between what is already
 open, showing each project's workspace count, whether it is a git
 repository, and its root. It ends with <code>+ Open a project...</code> and

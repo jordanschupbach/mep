@@ -11584,6 +11584,18 @@ public:
         int max_idx = static_cast<int>(PickerFilteredResults().size()) - 1;
         picker_selected_ = std::max(0, std::min(idx, max_idx));
     }
+    // mep.picker_set_query: replaces the open picker's query text (e.g. the
+    // add-project-by-path picker's Tab completion) and resets the highlight
+    // to the top row. Does not fire on_query_change -- the caller already
+    // knows the new query and refreshes its own items.
+    /**
+     * @brief Replaces the open picker's query text and resets the selection to the first row.
+     * @param query The new query text.
+     */
+    void SetPickerQuery(const std::string &query) {
+        picker_query_ = query;
+        picker_selected_ = 0;
+    }
     // Items scoring < 0 (no match) are dropped, the rest sorted by score
     // desc. Cached until the query or the item list changes -- it's asked
     // for several times a frame, and scoring a large list (Find Files) every

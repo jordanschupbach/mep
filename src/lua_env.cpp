@@ -6007,6 +6007,20 @@ int l_picker_set_selected(lua_State *L) {
     return 0;
 }
 
+// mep.picker_set_query(text): replace the open picker's query (and reset the
+// highlight to the top row) without firing on_query_change -- the caller
+// refreshes its own items. mep.projects_add_path's Tab completion is the
+// first caller.
+/**
+ * @brief Implements mep.picker_set_query(text): replaces the open picker's query text.
+ * @param L Lua state; arg 1 is the new query string.
+ * @return Number of values pushed (0).
+ */
+int l_picker_set_query(lua_State *L) {
+    GetEditor(L)->SetPickerQuery(luaL_checkstring(L, 1));
+    return 0;
+}
+
 // mep.picker_set_preview(text [, spans]): sets the text shown in the
 // picker's preview column (NVIM_PARITY_PLAN.md Phase 8 gap, closed) --
 // see Editor::SetPickerPreview's own comment. Pass "" to hide the column
@@ -13865,6 +13879,7 @@ const luaL_Reg kMepFuncs[] = {
     {"picker_open", l_picker_open},
     {"picker_set_items", l_picker_set_items},
     {"picker_set_selected", l_picker_set_selected},
+    {"picker_set_query", l_picker_set_query},
     {"picker_set_preview", l_picker_set_preview},
     {"picker_close", l_picker_close},
     {"picker_set_hint", l_picker_set_hint},

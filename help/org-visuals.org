@@ -184,6 +184,10 @@ state: a perfectly healthy server reporting errors reads red, not green.
 This is *on by default*. Like every other concealed row, put the cursor
 on =#+end_src= and the raw text comes back in place of the status.
 
+A mepml document's code blocks get the same line, on the row of their
+closing =```= fence, with the same toggle and the same states -- their
+blocks reach the same per-block language servers.
+
 Servers attach lazily -- the first time an LSP feature actually runs
 inside the block (hover with =K=, completion, =gd=), not merely on the
 cursor entering it -- which is why an untouched block reads =idle=.

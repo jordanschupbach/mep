@@ -156,6 +156,9 @@ argument on the <code>#+begin_src</code> line (org's own lint, shown beside the 
 state: a perfectly healthy server reporting errors reads red, not green.</p>
 <p>This is <b>on by default</b>. Like every other concealed row, put the cursor
 on <code>#+end_src</code> and the raw text comes back in place of the status.</p>
+<p>A mepml document's code blocks get the same line, on the row of their
+closing <code>```</code> fence, with the same toggle and the same states -- their
+blocks reach the same per-block language servers.</p>
 <p>Servers attach lazily -- the first time an LSP feature actually runs
 inside the block (hover with <code>K</code>, completion, <code>gd</code>), not merely on the
 cursor entering it -- which is why an untouched block reads <code>idle</code>.</p>

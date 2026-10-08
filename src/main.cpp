@@ -18583,13 +18583,21 @@ const char *kBuiltinOrgPolyglot =
     "  end\n"
     "  return st\n"
     "end\n"
+    // A mepml ``` block gets the same line: its card is an is_src card
+    // whose begin_row is the opening fence (MepmlBuildCards), exactly the
+    // row mep_polyglot_mepml_blocks reports as start_row, and its closing
+    // fence is concealed as the card's floor the way `#+end_src` is.
+    "local function mep_org_lsp_status_doc()\n"
+    "  local ft = mep_lsp_filetype(mep.filename() or '')\n"
+    "  return ft == 'org' or ft == 'mepml'\n"
+    "end\n"
     "function mep.org_lsp_status_scan()\n"
     "  mep.buf_clear_org_lsp_status()\n"
     "  if not mep.org_lsp_status_visible() then return end\n"
-    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
+    "  if not mep_org_lsp_status_doc() then return end\n"
     "  local org_abspath = mep_lsp_abspath(mep.filename())\n"
     "  local diags = mep_lsp_diagnostics[org_abspath] or {}\n"
-    "  for _, blk in ipairs(mep_org_src_blocks_all()) do\n"
+    "  for _, blk in ipairs(mep_polyglot_blocks_all()) do\n"
     "    mep.buf_set_org_lsp_status(blk.start_row, mep_org_lsp_status_for_block(blk, org_abspath, diags))\n"
     "  end\n"
     "end\n"
@@ -18616,7 +18624,10 @@ const char *kBuiltinOrgPolyglot =
     "local mep_org_lsp_status_last_at = 0\n"
     "mep.on_frame(function()\n"
     "  if not mep.org_lsp_status_visible() then return end\n"
-    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return end\n"
+    "  if not mep_org_lsp_status_doc() then return end\n"
+    // A large mepml buffer's parse runs in the background; asking for its
+    // blocks before it lands would parse on this thread every frame.
+    "  if not mep.mepml_parse_ready() then return end\n"
     "  local sig = mep.filename() .. '|' .. tostring(mep.buffer_change_epoch()) ..\n"
     "    '|' .. tostring(mep_polyglot_epoch)\n"
     "  local now = mep.now()\n"

@@ -165,6 +165,25 @@ struct PythonLspHoverInfo {
  */
 PythonLspHoverInfo PythonLspHover(const std::vector<std::string> &lines, int line, int col);
 
+/**
+ * @brief Names the imported object under a cursor by its absolute dotted path, for introspection.
+ *
+ * Follows the name (or attribute chain) back through this file's own
+ * imports: with `import numpy as np`, `np.linalg.norm` is
+ * "numpy.linalg.norm"; with `from matplotlib import pyplot as plt`,
+ * `plt.plot` is "matplotlib.pyplot.plot". This is how hover reaches past
+ * the baked-in stdlib table -- the server hands the path to a real
+ * interpreter -- so nothing here touches the filesystem or guesses: a
+ * chain rooted in anything other than an import binding (a local, a
+ * call result, a relative import) yields "".
+ *
+ * @param lines the document's text, one entry per line
+ * @param line 0-based cursor line
+ * @param col 0-based cursor byte column
+ * @return the dotted path, or "" when the cursor is not on an imported name
+ */
+std::string PythonLspQualifiedName(const std::vector<std::string> &lines, int line, int col);
+
 // --- Document symbols -------------------------------------------------
 
 struct PythonLspSymbol {

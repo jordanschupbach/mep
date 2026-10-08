@@ -1383,12 +1383,21 @@ written, with three variables in its environment:
 A Post command that fails is a warning: the export is already there.
 Neither line is part of the document, and the exports leave them out.
 
-The paths an export names -- pictures in Org, Markdown and HTML -- are
-written as the document writes them, relative to the document, which is
-why a =Post:= that copies the export back beside the source (as mep's own
-=README.mepml= does with its =README.org=) keeps them resolving. A
-document whose HTML must stand on its own in =build/= can say =//? Build:
-.= instead, or keep its pictures under the build directory.
+The pictures an Org, Markdown or HTML export names -- =\image= blocks,
+the figures a code block produced, picture cells -- are written as the
+document writes them, relative to the document, and each one is copied
+into the build directory at that same path: =build/README.md= names the
+README's =assets/logo.png= and finds it at =build/assets/logo.png=, and
+a =Post:= that copies the export back beside the source (as mep's own
+=README.mepml= does with its =README.org=) keeps it resolving there too.
+Only pictures inside the document's directory travel this way; one that
+climbs out (=../shared/plot.png=) is left where it is, and the HTML
+export names it from where the page is written (=../../shared/plot.png=
+from =build/=), as it does its =file:= links: =build/README.html= links
+=help/mepml.org= as =../help/mepml.org=. URLs, anchors and absolute paths
+are kept as written. A page that is to be copied elsewhere together
+with its pictures can say =//? Build: .= so that it is exported beside
+its source.
 
 An export is a copy, and the =.mepml= is the file to edit. The text
 exports say so in a comment at the top -- =# ...= in Org, =<!-- ... -->=
@@ -1461,7 +1470,8 @@ mep-mepml build notes.mepml                # what the editor's export does: the
 mep-mepml build notes.mepml org md html    # several formats, Post: once after all
 #+end_src
 
-=convert= writes exactly the file it is given and runs nothing after;
+=convert= writes the file it is given (and copies the pictures it names
+beside it, as above) and runs nothing after;
 =build= is the editor's export with the document's =Build:= and =Post:=
 honoured, so a =just= recipe or a Makefile builds a document the way the
 play button does.

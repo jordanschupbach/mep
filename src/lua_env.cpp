@@ -32,6 +32,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <optional>
 #include <system_error>
 #include <unordered_map>
 #include <thread>
@@ -684,10 +685,12 @@ int l_stt_set_recording(lua_State *L) {
 
 // mep.notify(msg [, level]): level is "debug"/"info"(default)/"warn"/
 // "error". Single choke point for the whole app's messages (Phase 6) --
-// feeds a toast + persistent history entry, and still updates the status
-// line the way this always has.
+// feeds a persistent history entry (badged on the tab bar's Notifications
+// button until viewed), still updates the status line the way this always
+// has, and pops a toast only at or above mep.notify_toast_level's
+// threshold (warn by default).
 /**
- * @brief Implements mep.notify(msg [, level]): shows a toast and records a persistent history entry/status line message.
+ * @brief Implements mep.notify(msg [, level]): records a notification in the history (badging the Notifications button) and the status line; warn/error (see mep.notify_toast_level) also pop a toast.
  * @param L Lua state; arg 1 is the message text, optional arg 2 is the level ("debug"/"info"/"warn"/"error", default "info").
  * @return Number of values pushed (0).
  */
@@ -703,6 +706,55 @@ int l_notify(lua_State *L) {
     }
     GetEditor(L)->Notify(std::string(s, len), level);
     return 0;
+}
+
+// mep.notify_toast_level([level]): the lowest level that still pops a
+// toast -- "debug"/"info"/"warn"(default)/"error", or "none" to keep every
+// message in the history + status line only. Returns the level in force
+// (after applying the argument, if one was given), so a bare call reads it.
+/**
+ * @brief Implements mep.notify_toast_level([level]): sets (when given "debug"/"info"/"warn"/"error"/"none") and returns the lowest notification level that pops a toast; lower levels only reach the history and status line.
+ * @param L Lua state; optional arg 1 is the new threshold name.
+ * @return Number of values pushed (1): the threshold name now in force.
+ */
+int l_notify_toast_level(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    if (lua_gettop(L) >= 1 && !lua_isnil(L, 1)) {
+        std::string lvl = luaL_checkstring(L, 1);
+        if (lvl == "none" || lvl == "off") ed->SetNotifyToastMinLevel(std::nullopt);
+        else if (lvl == "error") ed->SetNotifyToastMinLevel(Editor::NotifyLevel::Error);
+        else if (lvl == "warn") ed->SetNotifyToastMinLevel(Editor::NotifyLevel::Warn);
+        else if (lvl == "info") ed->SetNotifyToastMinLevel(Editor::NotifyLevel::Info);
+        else if (lvl == "debug") ed->SetNotifyToastMinLevel(Editor::NotifyLevel::Debug);
+        else return luaL_error(L, "mep.notify_toast_level: expected debug/info/warn/error/none, got '%s'", lvl.c_str());
+    }
+    std::optional<Editor::NotifyLevel> cur = ed->NotifyToastMinLevel();
+    const char *name = !cur                                      ? "none"
+                       : *cur == Editor::NotifyLevel::Error ? "error"
+                       : *cur == Editor::NotifyLevel::Warn  ? "warn"
+                       : *cur == Editor::NotifyLevel::Info  ? "info"
+                                                            : "debug";
+    lua_pushstring(L, name);
+    return 1;
+}
+
+// mep.notify_unread(): how many info-or-higher notifications arrived since
+// the Notifications panel was last viewed -- the number behind the badge
+// on the tab bar's bell -- plus the highest level among them.
+/**
+ * @brief Implements mep.notify_unread(): returns the count of notifications not yet viewed in the Notifications panel and the highest level among them ("debug" when none).
+ * @param L Lua state.
+ * @return Number of values pushed (2): the unread count and the highest unread level name.
+ */
+int l_notify_unread(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    lua_pushinteger(L, ed->UnreadNotifyCount());
+    Editor::NotifyLevel top = ed->UnreadNotifyMaxLevel();
+    lua_pushstring(L, top == Editor::NotifyLevel::Error  ? "error"
+                      : top == Editor::NotifyLevel::Warn ? "warn"
+                      : top == Editor::NotifyLevel::Info ? "info"
+                                                         : "debug");
+    return 2;
 }
 
 /**
@@ -2051,6 +2103,51 @@ int l_float_preview(lua_State *L) {
     return 0;
 }
 
+// mep.float_preview_title() -> the title of the float_preview box showing
+// right now, or nil when none is -- what a toggle binding checks to decide
+// between closing its own box and opening it.
+/**
+ * @brief Implements mep.float_preview_title(): returns the open float_preview box's title, or nil when none is showing.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the title string, or nil).
+ */
+int l_float_preview_title(lua_State *L) {
+    const Editor *ed = GetEditor(L);
+    if (!ed->IsPreviewOpen()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushstring(L, ed->PreviewTitle().c_str());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.float_preview_close(): dismisses the open float_preview box, if any.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_float_preview_close(lua_State *L) {
+    GetEditor(L)->ClosePreview();
+    return 0;
+}
+
+// mep.float_preview_leader_closed() -> title of the float_preview box the
+// leader sequence now firing just dismissed (pressing <leader> over a box
+// closes it and starts the sequence -- Editor::HandlePreviewInput), or nil.
+// A toggle binding returns early when this names its own box, so typing
+// its sequence over the box closes it instead of closing and reopening.
+/**
+ * @brief Implements mep.float_preview_leader_closed(): returns the title of the float_preview box the current leader sequence dismissed on its way in, or nil.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the title string, or nil).
+ */
+int l_float_preview_leader_closed(lua_State *L) {
+    const std::string &title = GetEditor(L)->PreviewClosedByLeader();
+    if (title.empty()) lua_pushnil(L);
+    else lua_pushstring(L, title.c_str());
+    return 1;
+}
+
 // mep.buffer_delete(id, force?): drops buffer `id` (:bdelete's
 // Editor::BufferDeleteById -- panes showing it fall back to another
 // buffer). `force` (default false) discards unsaved changes. Used by the
@@ -3211,8 +3308,10 @@ int l_mepml_export_html(lua_State *L) {
     Editor *ed = GetEditor(L);
     const mepml::Document doc =
         ed->MepmlParseForExport(mepml::ExportTags(mepml::Format::Html, ed->MepmlParseCurrent(false)));
+    const std::string file = ed->MepmlCurrentFile();
+    const std::string base = file.empty() ? std::string(".") : std::filesystem::path(file).parent_path().string();
     const std::string html = mepml::WithGeneratedNotice(mepml::Format::Html, doc, MepmlExportOptions(ed),
-                                                        mepml::ToHtmlFor(doc));  // a presentation is a slideshow
+                                                        mepml::ToHtmlFor(doc, path, base));  // a presentation is a slideshow
     std::string err;
     std::ofstream f(mepml::EnsureExportDir(path, &err) ? path : std::string(), std::ios::binary);
     if (!f) {
@@ -13502,6 +13601,9 @@ const luaL_Reg kMepFuncs[] = {
     {"ui_confirm", l_ui_confirm},
     {"ui_select", l_ui_select},
     {"float_preview", l_float_preview},
+    {"float_preview_title", l_float_preview_title},
+    {"float_preview_close", l_float_preview_close},
+    {"float_preview_leader_closed", l_float_preview_leader_closed},
     {"float_open", l_float_open},
     {"float_close", l_float_close},
     {"float_is_open", l_float_is_open},
@@ -13750,6 +13852,8 @@ const luaL_Reg kMepFuncs[] = {
     {"pane_maximize_toggle", l_pane_maximize_toggle},
     {"notify_sidebar_id", l_notify_sidebar_id},
     {"notify_refresh_pane", l_notify_refresh_pane},
+    {"notify_toast_level", l_notify_toast_level},
+    {"notify_unread", l_notify_unread},
     {"sidebar_popout_open", l_sidebar_popout_open},
     {"sidebar_popout_close", l_sidebar_popout_close},
     {"sidebar_is_popout", l_sidebar_is_popout},

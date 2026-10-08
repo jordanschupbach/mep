@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cmath>
 #include <cerrno>
+#include <filesystem>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -4869,6 +4870,41 @@ struct HtmlWriter {
     const HtmlOptions &opts;
     HtmlWriter(const Document &d, const HtmlOptions &o) : doc(d), opts(o) { StartStyles(); }
     std::string out;
+
+    // A `file:` link's path as the page should name it. The document
+    // writes it relative to itself (opts.base_dir); an export written
+    // elsewhere (opts.out_dir, the build directory) gets the path from
+    // there instead, so build/README.html names ../help/mepml.org.
+    // Absolute paths, URLs and anchors are kept, and so is everything
+    // when either directory is unknown. Any #fragment or ?query stays.
+    std::string Href(const std::string &p) const {
+        if (p.empty() || opts.base_dir.empty() || opts.out_dir.empty()) return p;
+        if (p[0] == '#' || p.find("://") != std::string::npos || p.rfind("data:", 0) == 0 || p.rfind("mailto:", 0) == 0) return p;
+        const size_t cut = p.find_first_of("#?");
+        const std::string path = p.substr(0, cut), tail = cut == std::string::npos ? std::string() : p.substr(cut);
+        if (std::filesystem::path(path).is_absolute()) return p;
+        std::error_code ec;
+        const std::filesystem::path from = std::filesystem::absolute(opts.out_dir, ec).lexically_normal();
+        const std::filesystem::path to = (std::filesystem::absolute(opts.base_dir, ec) / path).lexically_normal();
+        if (ec) return p;
+        const std::filesystem::path rel = to.lexically_relative(from);
+        return rel.empty() ? p : rel.generic_string() + tail;
+    }
+    // A picture's path. One the document names relative to itself, inside
+    // its own directory (assets/logo.png), is kept as written: the export
+    // copies the picture into its build directory at that same path
+    // (mepml_convert.h, CopyPictures), so the page finds it where it is
+    // written and still after a Post command copies the page beside the
+    // source. Anything else -- a path that climbs out of the document's
+    // directory, an absolute one, a URL -- goes through Href.
+    std::string Src(const std::string &p) const {
+        if (p.empty() || p[0] == '/' || p.find("://") != std::string::npos || p.rfind("data:", 0) == 0) return Href(p);
+        const std::filesystem::path fp(p);
+        if (fp.is_absolute()) return Href(p);
+        const std::string n = fp.lexically_normal().generic_string();
+        if (n.empty() || n == "." || n == ".." || n.rfind("../", 0) == 0) return Href(p);
+        return p;
+    }
     std::vector<std::pair<int, std::string>> footnotes;  // number, html
     std::map<std::string, int> cite_numbers;
     bool in_slide = false;  // a <section class="slide"> is open
@@ -4949,7 +4985,13 @@ struct HtmlWriter {
             case InlineKind::Insert: return Wrap("ins", x);
             case InlineKind::Delete: return Wrap("del", x);
             case InlineKind::Verbatim: return "<code>" + Esc(x.text) + "</code>";
-            case InlineKind::Link: return "<a href=\"" + Esc(LinkTarget(x.arg)) + "\">" + Inlines(x.children) + "</a>";
+            case InlineKind::Link: {
+                // A `file:` link names a path beside the document: from
+                // where the page is written (Href; a file:// URI is kept).
+                std::string target = LinkTarget(x.arg);
+                if (x.arg.rfind("file:", 0) == 0) target = Href(target);
+                return "<a href=\"" + Esc(target) + "\">" + Inlines(x.children) + "</a>";
+            }
             case InlineKind::Font:
                 return "<span style=\"font-family:" + Esc(x.arg) + "\">" + Inlines(x.children) + "</span>";
             case InlineKind::FontSize:
@@ -5107,7 +5149,7 @@ struct HtmlWriter {
                 if (!b.result_images.empty() && show_results) {
                     // One figure for all of the block's plots, under one caption.
                     out += "<figure>";
-                    for (const auto &img : b.result_images) out += "<img src=\"" + Esc(img.second) + "\"" + ImgAlt(b) + ">";
+                    for (const auto &img : b.result_images) out += "<img src=\"" + Esc(Src(img.second)) + "\"" + ImgAlt(b) + ">";
                     if (!b.caption_inlines.empty())
                         out += "<figcaption>" + Esc(label) + ": " + Caption(b) + "</figcaption>";
                     out += "</figure>\n";
@@ -5117,7 +5159,7 @@ struct HtmlWriter {
                 break;
             }
             case BlockKind::Image: {
-                out += "<figure><img src=\"" + Esc(b.value) + "\"" + ImgAlt(b) + ">";
+                out += "<figure><img src=\"" + Esc(Src(b.value)) + "\"" + ImgAlt(b) + ">";
                 if (!b.caption_inlines.empty())
                     out += "<figcaption>" + Esc(label) + ": " + Caption(b) + "</figcaption>";
                 out += "</figure>\n";
@@ -5148,7 +5190,7 @@ struct HtmlWriter {
                         const TableCell &cell = b.rows[r][c];
                         const std::string body = cell.image.empty()
                                                      ? Inlines(cell.content)
-                                                     : "<img src=\"" + Esc(cell.image) + "\" alt=\"\">";
+                                                     : "<img src=\"" + Esc(Src(cell.image)) + "\" alt=\"\">";
                         out += std::string("<") + tag + al + ">" + body + (head ? "</th>" : "</td>");
                     }
                     out += "</tr>";

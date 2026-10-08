@@ -9,8 +9,9 @@
 runs it in this tab's terminal.
 
 It saves the buffer first when it is modified -- a test run against a stale
-copy on disk is worse than useless -- and reports the command it chose as a
-toast, which is the only feedback when the terminal is off screen.
+copy on disk is worse than useless -- and reports the command it chose on
+the status line (and in the Notifications history), which is the only
+feedback when the terminal is off screen.
 
 | Filetype        | Runs                             |
 |-----------------+----------------------------------|

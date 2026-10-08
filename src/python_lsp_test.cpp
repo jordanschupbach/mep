@@ -604,6 +604,36 @@ void TestHover() {
     CHECK(!PythonLspHover({"import mystery", "mystery.thing"}, 1, 10).found);
 }
 
+void TestQualifiedName() {
+    const Lines doc = {
+        "import numpy as np",                       // 0
+        "import matplotlib.pyplot",                 // 1
+        "from scipy import stats as st",            // 2
+        "from .local import helper",                // 3
+        "x = np.linalg.norm(v)",                    // 4
+        "matplotlib.pyplot.plot(x)",                // 5
+        "st.norm",                                  // 6
+        "helper()",                                 // 7
+        "y = 1",                                    // 8
+        "y.real",                                   // 9
+        "np.zeros(3).shape",                        // 10
+        "s = 'np.array'",                           // 11
+    };
+    CHECK(PythonLspQualifiedName(doc, 4, 5) == std::string("numpy"));
+    CHECK(PythonLspQualifiedName(doc, 4, 9) == std::string("numpy.linalg"));
+    CHECK(PythonLspQualifiedName(doc, 4, 15) == std::string("numpy.linalg.norm"));
+    CHECK(PythonLspQualifiedName(doc, 5, 20) == std::string("matplotlib.pyplot.plot"));
+    CHECK(PythonLspQualifiedName(doc, 5, 2) == std::string("matplotlib"));
+    CHECK(PythonLspQualifiedName(doc, 6, 4) == std::string("scipy.stats.norm"));
+    CHECK(PythonLspQualifiedName(doc, 0, 8) == std::string("numpy"));
+    // Relative imports, locals, call results and string text name nothing.
+    CHECK(PythonLspQualifiedName(doc, 7, 2) == std::string());
+    CHECK(PythonLspQualifiedName(doc, 9, 3) == std::string());
+    CHECK(PythonLspQualifiedName(doc, 10, 14) == std::string());
+    CHECK(PythonLspQualifiedName(doc, 11, 8) == std::string());
+    CHECK(PythonLspQualifiedName({}, 0, 0) == std::string());
+}
+
 // --- Symbols and folding ----------------------------------------------
 
 void TestSymbols() {
@@ -1114,6 +1144,7 @@ int main() {
     TestEmptyAndOddDocuments();
     TestCompletion();
     TestHover();
+    TestQualifiedName();
     TestSymbols();
     TestFolding();
     TestDefinition();

@@ -42,14 +42,25 @@ in a real <a href="terminals.html">terminal</a> instead.</p>
 You send lines, selections or buffers; you do not type into it.</p>
 <h1>Send-to-terminal</h1>
 <table>
-<tr><th>Command</th><th>Sends</th></tr>
-<tr><td><code>:MepTermSendLine</code></td><td>the current line</td></tr>
-<tr><td><code>:MepTermSendRegister</code></td><td>a register</td></tr>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:MepTermSendLine</code></td><td>send the current line</td></tr>
+<tr><td><code>:MepTermSendConfigure</code></td><td>choose the target terminal (<code>&lt;leader&gt;rc</code>)</td></tr>
+<tr><td><code>:MepTermSendRegister</code></td><td>the same, taking the buffer id as an argument</td></tr>
 <tr><td><code>:MepTermJump</code></td><td>jump to the target terminal</td></tr>
 </table>
 <p>The first send from a buffer asks which terminal to target, pre-filled with
 the first one in the active tab. Each buffer remembers its own target, so
 several source files can drive several terminals at once.</p>
+<h1>Choosing the terminal</h1>
+<p><code>&lt;leader&gt;rc</code> (run: configure) asks for the buffer id of the terminal the
+current buffer should send to. The prompt is pre-filled with the target
+already in force, or the first terminal in the tab, and lists every
+terminal in the tab by id and title so the number is in front of you. Use
+it to pick a terminal before the first send, or to move a buffer's sends to
+a different one later. <code>:MepTermSendRegister 7</code> does the same without the
+prompt.</p>
+<p>To find any other buffer's id, <code>&lt;leader&gt;bi</code> shows the
+<a href="files.html">buffer info</a> box, which ends with every open buffer and its id.</p>
 <p>"Terminal" here means a real <code>:terminal</code>. The Run/REPL pane above is a plain
 buffer mep renders into, not a terminal, so it is not a valid target.</p>
 <h1>See also</h1>

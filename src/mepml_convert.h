@@ -84,8 +84,12 @@ std::string ToLatex(const Document &doc, const std::string &base_dir);
 // The Beamer deck whatever the document's Type: a title frame from the
 // header, then a frame per \slide. "" with *error when there is no slide.
 std::string ToBeamer(const Document &doc, const std::string &base_dir, std::string *error);
-// ToHtml, or for a presentation ToSlidesHtml.
+// ToHtml, or for a presentation ToSlidesHtml. The second form is for a
+// page written to a file: `path` and `base_dir` (the document's
+// directory) let it name the document's pictures and file links from
+// where it is written (HtmlOptions::out_dir).
 std::string ToHtmlFor(const Document &doc);
+std::string ToHtmlFor(const Document &doc, const std::string &path, const std::string &base_dir);
 // Binary packages, written to `path`; false with *error on failure.
 bool WriteDocx(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error);
 bool WriteOdt(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error);
@@ -118,10 +122,12 @@ bool ExportFile(const Document &doc, const std::string &path, const std::string 
 // through the shell with MEP_SOURCE (the .mepml), MEP_BUILD (the build
 // directory) and MEP_OUT (the file(s) just written, space-separated) in
 // its environment -- `//? Post: cp ./build/README.org .` copies a build
-// back beside the source. Relative paths inside an export (pictures in
-// Org, Markdown and HTML) are written as the document names them, so a
-// Post command that copies the export beside the document keeps them
-// resolving.
+// back beside the source. The pictures an export names by a relative
+// path (in Org, Markdown and HTML) are written as the document names
+// them, and ExportFile copies each one into the build directory at that
+// same path (CopyPictures), so build/README.md finds build/assets/logo.png
+// where it is written and README.md finds assets/logo.png once a Post
+// command has copied it back beside the source.
 std::string BuildDir(const Document &doc);     // the header's value, "build" without one
 std::string PostCommand(const Document &doc);  // the header's value, "" without one
 // `<document dir>/<build dir>/<stem>.<ext>` for `source` (a .mepml path;
@@ -131,6 +137,19 @@ std::string ExportPath(const Document &doc, const std::string &source, const std
 // Creates `path`'s directory (and every missing parent) so the export can
 // be written; false, with `*error`, when that fails.
 bool EnsureExportDir(const std::string &path, std::string *error);
+// The pictures `doc` names by a relative path that stays inside its own
+// directory -- \image blocks, the figures a code block produced, picture
+// cells -- as written, each once, in document order. URLs, absolute paths
+// and paths that climb out (`../x.png`) are left out: they are not copied,
+// and the HTML export names them from where it is written instead.
+std::vector<std::string> DocumentPictures(const Document &doc);
+// Copies each of those from base_dir (the document's directory) into
+// out_dir at the same relative path, making directories as needed, so an
+// export written into out_dir finds them. Nothing is done when the two
+// are the same directory; a picture that does not exist is skipped (the
+// export still names it); an existing copy is overwritten only when the
+// source is newer. False, with `*error`, when a copy fails.
+bool CopyPictures(const Document &doc, const std::string &base_dir, const std::string &out_dir, std::string *error);
 // The Post command's environment for an export of `source` that wrote
 // `outs`: MEP_SOURCE, MEP_BUILD, MEP_OUT (see above). Absolute paths.
 std::vector<std::pair<std::string, std::string>> PostEnvironment(const Document &doc, const std::string &source,

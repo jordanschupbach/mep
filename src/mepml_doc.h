@@ -648,7 +648,16 @@ std::string LinkTarget(const std::string &arg);
 
 struct HtmlOptions {
     bool standalone = true;  // wrap in <html> with styles and MathJax
-    std::string base_dir;    // image paths are made relative to this
+    // Where the document's relative paths start from -- its own directory
+    // -- and where the HTML is written. With both set, a `file:` link's
+    // path is rewritten to resolve from out_dir (build/README.html links
+    // ../help/mepml.org), and so is a picture's that leaves the document's
+    // directory (../x.png) or is absolute; a picture inside it keeps its
+    // path (assets/logo.png), since the export copies it into out_dir at
+    // that path (mepml_convert.h, CopyPictures). With either empty every
+    // path is kept as the document writes it (the editor's own views).
+    std::string base_dir;
+    std::string out_dir;
 };
 std::string ToHtml(const Document &doc, const HtmlOptions &opts = HtmlOptions());
 // A presentation as a self-contained HTML slideshow: a title slide and one

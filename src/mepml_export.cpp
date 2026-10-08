@@ -2414,6 +2414,14 @@ std::string ToLatex(const Document &doc, const std::string &base_dir) {
 
 std::string ToHtmlFor(const Document &doc) { return IsPresentation(doc) ? ToSlidesHtml(doc) : ToHtml(doc); }
 
+std::string ToHtmlFor(const Document &doc, const std::string &path, const std::string &base_dir) {
+    HtmlOptions opts;
+    opts.base_dir = base_dir;
+    const std::string dir = std::filesystem::path(path).parent_path().string();
+    opts.out_dir = dir.empty() ? std::string(".") : dir;
+    return IsPresentation(doc) ? ToSlidesHtml(doc, opts) : ToHtml(doc, opts);
+}
+
 bool WriteOdt(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error) {
     OdtWriter w{doc, base_dir, {}, {}, {}, 0, 0};
     const std::string body = w.Body();
@@ -2740,7 +2748,7 @@ bool ExportFile(const Document &doc, const std::string &path, const std::string 
         case Format::Odt: return WriteOdt(doc, path, base_dir, error);
         case Format::Pptx: return WritePptx(doc, path, base_dir, error);
         case Format::Odp: return WriteOdp(doc, path, base_dir, error);
-        case Format::Html: text = ToHtmlFor(doc); break;
+        case Format::Html: text = ToHtmlFor(doc, path, base_dir); break;
         case Format::Markdown: text = ToMarkdown(doc); break;
         case Format::Org: text = ToOrg(doc); break;
         case Format::Rtf: text = ToRtf(doc, base_dir); break;
@@ -2751,13 +2759,82 @@ bool ExportFile(const Document &doc, const std::string &path, const std::string 
             return false;
     }
     text = WithGeneratedNotice(f, doc, opts, text);
-    std::ofstream o(path, std::ios::binary);
-    if (!o) {
-        if (error) *error = "cannot write " + path;
-        return false;
+    {
+        std::ofstream o(path, std::ios::binary);
+        if (!o || !(o << text)) {
+            if (error) *error = "cannot write " + path;
+            return false;
+        }
     }
-    o << text;
-    return static_cast<bool>(o);
+    // The exports that name their pictures by path, read where they are
+    // written: the pictures go along (mepml_convert.h, CopyPictures).
+    if (f == Format::Html || f == Format::Markdown || f == Format::Org) {
+        const std::string dir = std::filesystem::path(path).parent_path().string();
+        return CopyPictures(doc, base_dir, dir.empty() ? std::string(".") : dir, error);
+    }
+    return true;
+}
+
+// ===========================================================================
+// The pictures an export names, and their copies in the build directory
+// ===========================================================================
+
+namespace {
+
+// Relative, and staying inside the document's directory once `.` and
+// `..` segments are resolved: the paths CopyPictures can mirror.
+bool InTreePicture(const std::string &p) {
+    if (p.empty() || p.find("://") != std::string::npos || p.rfind("data:", 0) == 0) return false;
+    const std::filesystem::path fp(p);
+    if (fp.is_absolute() || p[0] == '/') return false;
+    const std::string n = fp.lexically_normal().generic_string();
+    return !n.empty() && n != "." && n.rfind("../", 0) != 0 && n != "..";
+}
+
+}  // namespace
+
+std::vector<std::string> DocumentPictures(const Document &doc) {
+    std::vector<std::string> out;
+    auto add = [&](const std::string &p) {
+        if (!InTreePicture(p)) return;
+        if (std::find(out.begin(), out.end(), p) == out.end()) out.push_back(p);
+    };
+    for (const Block &b : doc.blocks) {
+        if (b.kind == BlockKind::Image) add(b.value);
+        if (b.kind == BlockKind::Code && b.result_format.empty())
+            for (const auto &im : b.result_images) add(im.second);
+        for (const auto &row : b.rows)
+            for (const TableCell &cell : row)
+                if (!cell.image.empty()) add(cell.image);
+    }
+    return out;
+}
+
+bool CopyPictures(const Document &doc, const std::string &base_dir, const std::string &out_dir, std::string *error) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path from_dir = fs::absolute(base_dir.empty() ? std::string(".") : base_dir, ec).lexically_normal();
+    const fs::path to_dir = fs::absolute(out_dir.empty() ? std::string(".") : out_dir, ec).lexically_normal();
+    if (ec) return true;  // (no working directory to speak of: nothing to mirror)
+    if (fs::equivalent(from_dir, to_dir, ec) || from_dir == to_dir) return true;
+    for (const std::string &p : DocumentPictures(doc)) {
+        const fs::path rel = fs::path(p).lexically_normal();
+        const fs::path src = from_dir / rel, dst = to_dir / rel;
+        if (!fs::is_regular_file(src, ec)) continue;
+        if (fs::equivalent(src, dst, ec)) continue;
+        if (fs::is_regular_file(dst, ec)) {
+            const auto s = fs::last_write_time(src, ec), d = fs::last_write_time(dst, ec);
+            if (!ec && !(s > d)) continue;
+        }
+        ec.clear();
+        fs::create_directories(dst.parent_path(), ec);
+        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            if (error) *error = "cannot copy " + p + " to " + dst.string() + ": " + ec.message();
+            return false;
+        }
+    }
+    return true;
 }
 
 }  // namespace mepml

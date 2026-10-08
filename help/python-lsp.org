@@ -128,6 +128,23 @@ the first line of its docstring, a class and its bases, a parameter and
 its annotation, a variable and what it was assigned. Over a builtin, a
 keyword or a standard-library member it answers from the built-in table.
 
+Over anything else that traces back to an import -- =np.array=,
+=plt.plot=, =norm= after =from numpy.linalg import norm= -- it asks a real
+Python interpreter: it imports the module, walks to the object and shows
+its signature and full docstring (scroll it in the hover popup). The
+first hover on a name costs one short subprocess; after that it is cached
+for the session. This does run the imported module's top-level code, the
+same code running the file would, and only when you press =K=. With no
+interpreter, or the package not installed, hover answers as before.
+
+The interpreter is the first of: =pythonPath= in the server's
+=init_options=, =$MEP_PYTHON=, the active =$VIRTUAL_ENV=, the nearest
+=.venv= or =venv= directory above the file, then =python3= on =PATH=:
+
+#+begin_src lua
+mep.lsp_servers.python_ls.init_options = {pythonPath = '/path/to/venv/bin/python'}
+#+end_src
+
 =<leader>lk= (signature help) shows the signature of the call the cursor
 is inside, with the parameter you are on highlighted -- including while
 you are typing a string argument, and with =self= dropped from a method
@@ -166,7 +183,7 @@ colour table and how to change it.
 
 - *No type checking.* See the opening section.
 - *One file is the whole world.* An imported name is known to exist and
-  nothing more. Attribute completion on an object from another module
+  nothing more, except to hover (see above). Attribute completion on an object from another module
   falls back to "attribute names this file already mentions".
 - *No project-wide rename or references.* Both stop at the file's edge,
   which is why a rename that cannot see the other users is refused

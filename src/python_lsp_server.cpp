@@ -30,7 +30,9 @@
 //     every diagnostic on such a line in the wrong column.
 
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <map>
@@ -42,6 +44,10 @@
 #include <fcntl.h>
 #include <io.h>
 #else
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -143,6 +149,227 @@ Json RangeLines(int start_line, int end_line, int end_col) {
     return r;
 }
 
+// --- Interpreter introspection ----------------------------------------
+//
+// The baked-in vocabulary covers the standard library and nothing else,
+// so hover on `np.array` or `plt.plot` would otherwise say nothing. When
+// the name under the cursor traces back to an import
+// (PythonLspQualifiedName), and that import is not one the table already
+// covers, the server asks a real interpreter: import the module, walk to
+// the object, print its signature and docstring. That does run the
+// imported module's top-level code -- the same code running the file
+// would -- and only on an explicit hover request, never while typing.
+// It is a fallback, not a dependency: with no interpreter found, or the
+// module not installed, hover answers exactly as it did before.
+//
+// Which interpreter: `pythonPath` from initializationOptions or the
+// `python` settings section, else $MEP_PYTHON, else the active
+// $VIRTUAL_ENV, else the nearest `.venv`/`venv` above the document, else
+// `python3`/`python` from PATH -- so a project venv's numpy is the one
+// documented, not whatever the system happens to have.
+
+// Prints "<header>\n\n<docstring>" for the dotted path in argv[1], or
+// exits non-zero when it cannot be imported. stdout is swapped for
+// stderr while importing so a chatty module cannot corrupt the answer.
+const char *const kIntrospectScript = R"PY(
+import sys, os, importlib, inspect
+os.environ.setdefault('MPLBACKEND', 'Agg')
+out = sys.stdout
+sys.stdout = sys.stderr
+q = sys.argv[1]
+parts = q.split('.')
+try:
+    obj = importlib.import_module(parts[0])
+    for i in range(1, len(parts)):
+        try:
+            obj = getattr(obj, parts[i])
+        except AttributeError:
+            obj = importlib.import_module('.'.join(parts[:i + 1]))
+except BaseException:
+    sys.exit(1)
+try:
+    sig = str(inspect.signature(obj))
+except BaseException:
+    sig = ''
+if inspect.ismodule(obj):
+    head = 'module ' + obj.__name__
+elif inspect.isclass(obj):
+    head = 'class ' + q + sig
+elif callable(obj):
+    head = 'def ' + q + sig if sig else q
+else:
+    r = repr(obj)
+    head = q + ': ' + type(obj).__name__ + (' = ' + r if len(r) <= 80 else '')
+own = inspect.ismodule(obj) or inspect.isclass(obj) or callable(obj) or \
+    getattr(obj, '__doc__', None) != getattr(type(obj), '__doc__', None)
+doc = (inspect.getdoc(obj) or '') if own else ''
+lines = doc.splitlines()
+if len(lines) > 200:
+    lines = lines[:200] + ['...']
+text = head + ('\n\n' + '\n'.join(lines) if lines else '')
+src = getattr(inspect.getmodule(obj), '__name__', '')
+if src and not inspect.ismodule(obj) and src != q.rsplit('.', 1)[0]:
+    text += '\n\nDefined in ' + src
+out.buffer.write(text.encode('utf-8', 'replace'))
+)PY";
+
+// A cold `import matplotlib.pyplot` can take a few seconds (font cache);
+// anything slower is treated as a hang and killed.
+constexpr int kIntrospectTimeoutMs = 10000;
+
+/** @brief Reports whether a path names an existing regular file. */
+bool IsFile(const std::filesystem::path &p) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(p, ec) && !ec;
+}
+
+/** @brief A virtual environment's interpreter, or "" when the directory is not one. */
+std::string VenvPython(const std::filesystem::path &venv) {
+#if defined(_WIN32)
+    const std::filesystem::path py = venv / "Scripts" / "python.exe";
+#else
+    const std::filesystem::path py = venv / "bin" / "python";
+#endif
+    return IsFile(py) ? py.string() : std::string();
+}
+
+/** @brief Picks the interpreter to introspect with (see the section comment for the order). */
+std::string FindPython(const std::string &configured, const std::string &doc_dir) {
+    if (!configured.empty()) return configured;
+    if (const char *env = std::getenv("MEP_PYTHON"); env != nullptr && env[0] != '\0') return env;
+    if (const char *venv = std::getenv("VIRTUAL_ENV"); venv != nullptr && venv[0] != '\0') {
+        const std::string py = VenvPython(venv);
+        if (!py.empty()) return py;
+    }
+    if (!doc_dir.empty()) {
+        std::filesystem::path dir(doc_dir);
+        for (int depth = 0; depth < 32 && !dir.empty(); depth++) {
+            for (const char *name : {".venv", "venv"}) {
+                const std::string py = VenvPython(dir / name);
+                if (!py.empty()) return py;
+            }
+            const std::filesystem::path parent = dir.parent_path();
+            if (parent == dir) break;
+            dir = parent;
+        }
+    }
+#if defined(_WIN32)
+    return "python";
+#else
+    return "python3";
+#endif
+}
+
+#if defined(_WIN32)
+/** @brief Base64-encodes bytes, so the script survives cmd.exe quoting intact. */
+std::string Base64(const std::string &in) {
+    static const char *const kAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        const unsigned v = (static_cast<unsigned char>(in[i]) << 16) | (static_cast<unsigned char>(in[i + 1]) << 8) |
+                           static_cast<unsigned char>(in[i + 2]);
+        out += kAlphabet[(v >> 18) & 63];
+        out += kAlphabet[(v >> 12) & 63];
+        out += kAlphabet[(v >> 6) & 63];
+        out += kAlphabet[v & 63];
+    }
+    if (i < in.size()) {
+        unsigned v = static_cast<unsigned char>(in[i]) << 16;
+        if (i + 1 < in.size()) v |= static_cast<unsigned char>(in[i + 1]) << 8;
+        out += kAlphabet[(v >> 18) & 63];
+        out += kAlphabet[(v >> 12) & 63];
+        out += i + 1 < in.size() ? kAlphabet[(v >> 6) & 63] : '=';
+        out += '=';
+    }
+    return out;
+}
+#endif
+
+/**
+ * @brief Runs the introspection script for one dotted path.
+ * @param python the interpreter to run
+ * @param cwd the document's directory, so sibling modules import ("" leaves the cwd alone)
+ * @param qualified a dotted identifier path (PythonLspQualifiedName output, so never shell-special)
+ * @return the hover text, or "" on any failure (not installed, import error, timeout)
+ */
+std::string Introspect(const std::string &python, const std::string &cwd, const std::string &qualified) {
+#if defined(_WIN32)
+    // No timeout on this path: _popen offers none. The script is passed
+    // base64-encoded so no quoting rule can mangle it.
+    std::string cmd = "cd /d \"" + cwd + "\" && \"" + python +
+                      "\" -c \"import base64;exec(base64.b64decode('" + Base64(kIntrospectScript) + "'))\" " +
+                      qualified + " 2>NUL";
+    if (cwd.empty()) cmd = cmd.substr(cmd.find("&& ") + 3);
+    FILE *pipe = _popen(cmd.c_str(), "rb");
+    if (pipe == nullptr) return std::string();
+    std::string out;
+    char buf[4096];
+    size_t got = 0;
+    while ((got = fread(buf, 1, sizeof(buf), pipe)) > 0) out.append(buf, got);
+    return _pclose(pipe) == 0 ? out : std::string();
+#else
+    int fds[2];
+    if (pipe(fds) != 0) return std::string();
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return std::string();
+    }
+    if (pid == 0) {
+        // Own process group, so a timeout can kill anything the import
+        // itself spawned along with the interpreter.
+        setpgid(0, 0);
+        const int null_fd = open("/dev/null", O_RDWR);
+        if (null_fd >= 0) {
+            dup2(null_fd, STDIN_FILENO);
+            dup2(null_fd, STDERR_FILENO);
+        }
+        dup2(fds[1], STDOUT_FILENO);
+        close(fds[0]);
+        close(fds[1]);
+        if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
+        execlp(python.c_str(), python.c_str(), "-c", kIntrospectScript, qualified.c_str(), static_cast<char *>(nullptr));
+        _exit(127);
+    }
+    close(fds[1]);
+    std::string out;
+    bool timed_out = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kIntrospectTimeoutMs);
+    for (;;) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline -
+                                                                                std::chrono::steady_clock::now());
+        if (left.count() <= 0) {
+            timed_out = true;
+            break;
+        }
+        pollfd pfd{fds[0], POLLIN, 0};
+        const int ready = poll(&pfd, 1, static_cast<int>(left.count()));
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready <= 0) {
+            timed_out = ready == 0;
+            break;
+        }
+        char buf[4096];
+        const ssize_t got = read(fds[0], buf, sizeof(buf));
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) break;
+        out.append(buf, static_cast<size_t>(got));
+    }
+    close(fds[0]);
+    if (timed_out) kill(-pid, SIGKILL);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    if (timed_out || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return std::string();
+    return out;
+#endif
+}
+
+/** @brief The top-level package of a dotted path ("numpy" for "numpy.linalg.norm"). */
+std::string RootModule(const std::string &qualified) { return qualified.substr(0, qualified.find('.')); }
+
 // --- Server -----------------------------------------------------------
 
 class PythonLanguageServer {
@@ -162,6 +389,9 @@ public:
             if (init.is_object() && init.contains("maxLineLength")) {
                 max_line_length_ = init.get("maxLineLength").as_int();
             }
+            if (init.is_object() && init.contains("pythonPath")) {
+                python_path_ = init.get("pythonPath").as_string();
+            }
             Reply(msg.get("id"), Capabilities());
             return;
         }
@@ -180,6 +410,10 @@ public:
             if (settings.is_object() && settings.contains("maxLineLength")) {
                 max_line_length_ = settings.get("maxLineLength").as_int();
                 for (const auto &doc : docs_) Publish(doc.first);
+            }
+            if (settings.is_object() && settings.contains("pythonPath")) {
+                python_path_ = settings.get("pythonPath").as_string();
+                introspect_cache_.clear();
             }
             return;
         }
@@ -253,6 +487,8 @@ public:
 
 private:
     std::map<std::string, std::vector<std::string>> docs_;
+    std::string python_path_;  // initializationOptions / settings `pythonPath`, "" to search
+    mutable std::map<std::string, std::string> introspect_cache_;  // see IntrospectHover
     bool running_ = true;
     bool shutting_down_ = false;
     int exit_code_ = 1;
@@ -457,10 +693,37 @@ private:
         return list;
     }
 
+    /**
+     * @brief Replaces a hover the built-in tables cannot answer with what an interpreter says about the name.
+     *
+     * Only for a name that traces back to an import of a module the
+     * stdlib table does not cover (os.path keeps its instant, offline
+     * answer); results, failures included, are cached per interpreter
+     * and path, so each name costs at most one subprocess per session.
+     */
+    void IntrospectHover(const Request &req, PythonLspHoverInfo *info) const {
+        const std::vector<std::string> &lines = Doc(req.uri);
+        const std::string qualified = PythonLspQualifiedName(lines, req.line, req.col);
+        if (qualified.empty() || PythonLspModuleMembers(RootModule(qualified)) != nullptr) return;
+        const PythonLspOptions opts = OptionsFor(req.uri);
+        const std::string python = FindPython(python_path_, opts.doc_dir);
+        const std::string key = python + '\n' + opts.doc_dir + '\n' + qualified;
+        auto it = introspect_cache_.find(key);
+        if (it == introspect_cache_.end()) {
+            it = introspect_cache_.emplace(key, Introspect(python, opts.doc_dir, qualified)).first;
+        }
+        if (it->second.empty()) return;
+        // A failed built-in hover still carries the range of the name it
+        // looked at (it only fails after finding one), so that stays.
+        info->found = true;
+        info->text = it->second;
+    }
+
     /** @brief Answers `textDocument/hover`. */
     Json HoverAt(const Json &params) const {
         const Request req = ReadRequest(params);
-        const PythonLspHoverInfo info = PythonLspHover(Doc(req.uri), req.line, req.col);
+        PythonLspHoverInfo info = PythonLspHover(Doc(req.uri), req.line, req.col);
+        IntrospectHover(req, &info);
         if (!info.found) return Json();
         Json contents = Json::Object();
         contents["kind"] = "plaintext";

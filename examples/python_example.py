@@ -20,4 +20,23 @@ plt.hist(y, bins=40)
 plt.show()
 
 help(np.linspace)
-mep_view(x)
+# mep_view(x)
+
+class MyClass:
+    def __init__(self, args):
+        print(f"Hello, {args}")
+	    
+mobj = MyClass("Jordan")	    
+
+x = np.random.normal(0.0, 1.0, size=100)
+plt.hist(x, bins=30, density=True)
+plt.xlabel("x")
+plt.ylabel("count")
+plt.show()
+
+plt.scatter(x, y, s=10, alpha=0.7)
+plt.xlabel("x")
+plt.ylabel("y")
+plt.show()
+
+

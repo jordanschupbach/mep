@@ -12,22 +12,39 @@
 </head>
 <body>
 <h1>Notifications</h1>
-<h1>Toasts</h1>
-<p>Most things mep wants to tell you arrive as a toast in the corner: a git
-push finishing, a formatter failing, a language server attaching. Toasts
-dismiss themselves after a few seconds, the more serious ones sticking
-around longer.</p>
+<h1>Where messages go</h1>
+<p>Everything mep wants to tell you -- a git push finishing, a formatter
+failing, a language server attaching -- is a notification with a severity:
+<code>error</code>, <code>warn</code>, <code>info</code> or <code>debug</code>. Every one of them is recorded in the
+history and shown briefly on the status line. What differs by severity is
+how loudly it announces itself.</p>
+<p>Only <code>warn</code> and <code>error</code> pop a toast in the corner, since those are the ones
+worth interrupting you for. Toasts dismiss themselves after a few seconds,
+the more serious ones sticking around longer.</p>
 <table>
-<tr><th>Level</th><th>Dismisses after</th></tr>
-<tr><td>error</td><td>8 seconds</td></tr>
-<tr><td>warn</td><td>6 seconds</td></tr>
-<tr><td>info</td><td>4 seconds</td></tr>
-<tr><td>debug</td><td>3 seconds</td></tr>
+<tr><th>Level</th><th>Toast</th><th>Dismisses after</th></tr>
+<tr><td>error</td><td>yes</td><td>8 seconds</td></tr>
+<tr><td>warn</td><td>yes</td><td>6 seconds</td></tr>
+<tr><td>info</td><td>no</td><td>--</td></tr>
+<tr><td>debug</td><td>no</td><td>--</td></tr>
 </table>
+<p>Quieter messages (<code>info</code>) go straight to the history instead, and a dot
+appears on the Notifications bell in the tab bar until you open the panel.
+The dot takes the color of the most severe unread message: red for an
+error, yellow for a warning, blue when it is only information. Hovering the
+bell tells you how many are waiting; opening the panel (or having it open
+when a message arrives) marks them read. <code>debug</code> messages never badge.</p>
+<p>To change which levels pop a toast, set the threshold from your config:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.notify_toast_level(<span class="tok-green">'error'</span>)  <span class="tok-comment">-- only errors interrupt</span>
+mep.notify_toast_level(<span class="tok-green">'info'</span>)   <span class="tok-comment">-- the old behaviour: everything pops up</span>
+mep.notify_toast_level(<span class="tok-green">'none'</span>)   <span class="tok-comment">-- never pop a toast; the badge does the work</span></code></pre></div>
+<p>Called with no argument it returns the level currently in force.</p>
 <h1>When you missed one</h1>
 <p>That is what the history panel is for. <code>&lt;leader&gt;nn</code> (<code>:MepNotifyPanel</code>, or
-the Notifications button in the tab bar) lists everything that has been
-raised this session, including toasts that have already faded.</p>
+the Notifications bell in the tab bar) lists everything that has been
+raised this session -- the quiet <code>info</code> messages that never popped up, and
+toasts that have already faded. The panel refreshes itself while it is
+open, so you can leave it in a pane and watch messages land.</p>
 <table>
 <tr><th>Command</th><th>Does</th></tr>
 <tr><td><code>:MepNotifyPanel</code></td><td>open the history panel</td></tr>
@@ -40,13 +57,14 @@ what you are reading; it leaves the history intact.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.notify(<span class="tok-green">'Build finished'</span>)
 mep.notify(<span class="tok-green">'No formatter for this filetype'</span>, <span class="tok-green">'warn'</span>)
 mep.notify(<span class="tok-green">'Could not reach the server'</span>, <span class="tok-green">'error'</span>)</code></pre></div>
-<p>Lua's own <code>print()</code> is routed through <code>mep.notify</code> as well, so a <code>print</code> in
-your config or in a <code>:lua</code> one-liner shows up as a toast rather than
+<p>Lua's own <code>print()</code> shows its output on the status line as well, so a
+<code>print</code> in your config or in a <code>:lua</code> one-liner is visible rather than
 vanishing into a terminal mep does not have.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">:lua <span class="tok-blue">print</span>(mep.line_count())</code></pre></div>
-<p>That makes <code>print</code> a perfectly good debugging tool here -- and it means a
-chatty <code>print</code> in a frame hook will bury you in toasts, so keep those out of
-<code>mep.on_frame</code>.</p>
+<p>That makes <code>print</code> a perfectly good debugging tool here. If you want
+something louder, <code>mep.notify(msg, 'warn')</code> pops a toast; and
+<code>mep.notify_unread()</code> returns the count and highest level behind the bell's
+badge, should a status-line segment want to show it.</p>
 <h1>See also</h1>
 <ul>
 <li><a href="status-line.html">The status line</a> -- where one-off command messages appear instead.</li>

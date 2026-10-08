@@ -69,6 +69,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
@@ -4710,9 +4711,10 @@ const char *kBuiltinFileTree =
     "mep.command('MepOpenFile', mep.open_file_dialog)\n"
     "mep.leader_map('fo', 'Open file (native dialog)', mep.open_file_dialog)\n"
     // Shared by mep.project_open below and mep.projects()'s picker preview
-    // pane further down: first of README.org/README.md/README.txt/README
-    // present as a file (not a dir) in `dir` wins, so README.org is
-    // preferred over README.md etc. by that fixed priority order -- moved
+    // pane further down: first of README.mepml/README.org/README.md/
+    // README.txt/README present as a file (not a dir) in `dir` wins, so
+    // README.mepml is preferred over README.org, which is preferred over
+    // README.md etc. by that fixed priority order -- moved
     // to C++ (Editor::ProjectReadmePath), exposed as
     // mep.project_readme_path (lua_env.cpp); nil if none match.
     // The legacy "fresh project" startup layout: the file tree full-height
@@ -9183,9 +9185,14 @@ const char *kBuiltinLanguageUiPython =
     // same on every Python version (3.13+'s new _pyrepl-based interactive
     // prompt no longer reliably str()s a custom sys.ps1 object, the classic
     // trick for "run something before each prompt", and -i can't be told to
-    // stay on the old REPL from inside the script). readline/rlcompleter
-    // give it history and tab completion; what's lost is only the newer
-    // REPL's colored prompt/multi-line editing.
+    // stay on the old REPL from inside the script). On 3.13+ the script
+    // drives _pyrepl's own run_multiline_interactive_console with an
+    // InteractiveColoredConsole subclass (same runcode() hook), so the
+    // console keeps the stock REPL's colored prompt, syntax highlighting
+    // (3.14+), colored tracebacks and multi-line editing; History then reads
+    // _pyrepl.readline's history. Older Pythons, PYTHON_BASIC_REPL, or a
+    // _pyrepl that can't start fall back to the plain InteractiveConsole
+    // with readline/rlcompleter for history and tab completion.
     //   - Objects/Modules: every name in the console's own namespace, one
     //     line each ("name <type> shape-or-len-or-repr"), modules listed
     //     separately; clicking an Objects row sends mep_view(name) so the
@@ -9395,9 +9402,35 @@ const char *kBuiltinLanguageUiPython =
     "sys.ps1 = '>>> '\n"
     "sys.ps2 = '... '\n"
     "_mep_refresh()\n"
-    "_MepConsole(locals=_MEP_NS).interact(\n"
-    "    banner='Python ' + sys.version.split()[0] + ' -- mep language UI: plots go to the Plot tab (plt.show(), or just plot), help(x) to the Help tab, mep_view(x) to the Data tab; mep_run(path) sources a file.',\n"
-    "    exitmsg='')\n"
+    "_MEP_BANNER = 'Python ' + sys.version.split()[0] + ' -- mep language UI: plots go to the Plot tab (plt.show(), or just plot), help(x) to the Help tab, mep_view(x) to the Data tab; mep_run(path) sources a file.'\n"
+    "\n"
+    "def _mep_pyrepl_interact():\n"
+    "    if sys.version_info < (3, 13) or os.environ.get('PYTHON_BASIC_REPL'):\n"
+    "        return False\n"
+    "    try:\n"
+    "        from _pyrepl.main import CAN_USE_PYREPL\n"
+    "        if not CAN_USE_PYREPL:\n"
+    "            return False\n"
+    "        from _pyrepl.console import InteractiveColoredConsole\n"
+    "        from _pyrepl import simple_interact\n"
+    "        import _pyrepl.readline as pyrl\n"
+    "    except Exception:\n"
+    "        return False\n"
+    "    class _MepColoredConsole(InteractiveColoredConsole):\n"
+    "        def runcode(self, code_obj):\n"
+    "            try:\n"
+    "                return super().runcode(code_obj)\n"
+    "            finally:\n"
+    "                _mep_refresh()\n"
+    "    global readline\n"
+    "    readline = pyrl\n"
+    "    simple_interact.REPL_COMMANDS['help'] = builtins.help\n"
+    "    print(_MEP_BANNER)\n"
+    "    simple_interact.run_multiline_interactive_console(_MepColoredConsole(_MEP_NS, filename='<stdin>'))\n"
+    "    return True\n"
+    "\n"
+    "if not _mep_pyrepl_interact():\n"
+    "    _MepConsole(locals=_MEP_NS).interact(banner=_MEP_BANNER, exitmsg='')\n"
     "]==]\n"
     // The matplotlib backend module (see the header comment). Only ever
     // imported by matplotlib itself, and only once something actually
@@ -10715,7 +10748,45 @@ const char *kBuiltinSnippets =
     "    ['for'] = {'for ${1:item} in ${2:iterable}:', '\\t${0}'},\n"
     "    with = {'with open(${1:path}) as ${2:f}:', '\\t${0}'},\n"
     "    lambda = {'lambda ${1:args}: ${0}'},\n"
+    "    print = {'print(${1})${0}'},\n"
     "    ifmain = {'if ${1:condition}:', '\\t${0}'},\n"
+    // Scientific-Python set: numpy imports/array construction and
+    // matplotlib's everyday plots. Triggers share `np`/`plt` prefixes so
+    // typing either one lists the whole family in the completion popup.
+    // Bodies that need indentation use four spaces (PEP 8 -- the engine
+    // splices lines verbatim, it does not convert tabs), and all of them
+    // assume the `npimp`/`pltimp` aliases (`import numpy as np`,
+    // `import matplotlib.pyplot as plt`). The figure snippets (pltline
+    // through pltgrid) are complete runnable scripts -- imports, example
+    // data, plot, labels, show -- so they work expanded into an empty file.
+    "    npimp = {'import numpy as np'},\n"
+    "    pltimp = {'import matplotlib.pyplot as plt'},\n"
+    "    sciimp = {'import numpy as np', 'import matplotlib.pyplot as plt', '', '${0}'},\n"
+    "    nparr = {'${1:a} = np.array([${2:1, 2, 3}])'},\n"
+    "    nparr2 = {'${1:a} = np.array([', '    [${2:1, 2, 3}],', '    [${3:4, 5, 6}],', '])'},\n"
+    "    npzeros = {'${1:a} = np.zeros((${2:3, 3}))'},\n"
+    "    npones = {'${1:a} = np.ones((${2:3, 3}))'},\n"
+    "    npfull = {'${1:a} = np.full((${2:3, 3}), ${3:0.0})'},\n"
+    "    npeye = {'${1:a} = np.eye(${2:3})'},\n"
+    "    nparange = {'${1:x} = np.arange(${2:0}, ${3:10}, ${4:1})'},\n"
+    "    nplinspace = {'${1:x} = np.linspace(${2:0.0}, ${3:1.0}, ${4:100})'},\n"
+    "    npmesh = {'${1:X}, ${2:Y} = np.meshgrid(${3:x}, ${4:y})'},\n"
+    "    nprng = {'np.random.seed(${1:0})'},\n"
+    "    npnormal = {'${1:x} = np.random.normal(${2:0.0}, ${3:1.0}, size=${4:100})'},\n"
+    "    npuniform = {'${1:x} = np.random.uniform(${2:0.0}, ${3:1.0}, size=${4:100})'},\n"
+    "    npload = {'${1:data} = np.loadtxt(${2:\"data.csv\"}, delimiter=${3:\",\"}${4:, skiprows=1})'},\n"
+    "    npsave = {'np.savetxt(${1:\"out.csv\"}, ${2:data}, delimiter=\",\")'},\n"
+    "    pltline = {'import numpy as np', 'import matplotlib.pyplot as plt', '', 'x = np.linspace(${1:0.0}, ${2:2 * np.pi}, ${3:200})', 'y = ${4:np.sin(x)}', '', 'plt.plot(x, y, label=${5:\"sin(x)\"})', 'plt.xlabel(${6:\"x\"})', 'plt.ylabel(${7:\"y\"})', 'plt.title(${8:\"Line plot\"})', 'plt.legend()', 'plt.show()'},\n"
+    "    pltscatter = {'import numpy as np', 'import matplotlib.pyplot as plt', '', 'np.random.seed(${1:0})', 'x = np.random.normal(0.0, 1.0, size=${2:200})', 'y = ${3:2.0 * x + np.random.normal(0.0, 0.5, size=x.size)}', '', 'plt.scatter(x, y, s=${4:10}, alpha=${5:0.7})', 'plt.xlabel(${6:\"x\"})', 'plt.ylabel(${7:\"y\"})', 'plt.title(${8:\"Scatter plot\"})', 'plt.show()'},\n"
+    "    plthist = {'import numpy as np', 'import matplotlib.pyplot as plt', '', 'np.random.seed(${1:0})', 'x = np.random.normal(${2:0.0}, ${3:1.0}, size=${4:1000})', '', 'plt.hist(x, bins=${5:30}, edgecolor=\"white\")', 'plt.xlabel(${6:\"x\"})', 'plt.ylabel(${7:\"count\"})', 'plt.title(${8:\"Histogram\"})', 'plt.show()'},\n"
+    "    pltbar = {'import numpy as np', 'import matplotlib.pyplot as plt', '', 'labels = [${1:\"A\", \"B\", \"C\", \"D\"}]', 'values = [${2:4, 7, 3, 5}]', '', 'plt.bar(labels, values)', 'plt.xlabel(${3:\"category\"})', 'plt.ylabel(${4:\"value\"})', 'plt.title(${5:\"Bar chart\"})', 'plt.show()'},\n"
+    "    pltimshow = {'import numpy as np', 'import matplotlib.pyplot as plt', '', 'np.random.seed(${1:0})', 'img = np.random.uniform(0.0, 1.0, size=(${2:32, 32}))', '', 'plt.imshow(img, cmap=${3:\"viridis\"}, origin=\"lower\")', 'plt.colorbar(label=${4:\"value\"})', 'plt.title(${5:\"Image\"})', 'plt.show()'},\n"
+    "    pltcontour = {'import numpy as np', 'import matplotlib.pyplot as plt', '', 'x = np.linspace(${1:-3.0}, ${2:3.0}, ${3:200})', 'y = np.linspace(${4:-3.0}, ${5:3.0}, ${6:200})', 'X, Y = np.meshgrid(x, y)', 'Z = ${7:np.exp(-(X**2 + Y**2))}', '', 'plt.contourf(X, Y, Z, levels=${8:20}, cmap=${9:\"viridis\"})', 'plt.colorbar(label=${10:\"z\"})', 'plt.xlabel(\"x\")', 'plt.ylabel(\"y\")', 'plt.title(${11:\"Filled contour\"})', 'plt.show()'},\n"
+    "    pltfig = {'import numpy as np', 'import matplotlib.pyplot as plt', '', 'x = np.linspace(${1:0.0}, ${2:2 * np.pi}, ${3:200})', 'y = ${4:np.sin(x)}', '', 'fig, ax = plt.subplots(figsize=(${5:8, 5}))', 'ax.${6:plot}(x, y)', 'ax.set_xlabel(${7:\"x\"})', 'ax.set_ylabel(${8:\"y\"})', 'ax.set_title(${9:\"Figure\"})', 'plt.show()'},\n"
+    "    pltgrid = {'import numpy as np', 'import matplotlib.pyplot as plt', '', 'x = np.linspace(${1:0.0}, ${2:2 * np.pi}, ${3:200})', '', 'fig, axes = plt.subplots(${4:2}, ${5:2}, figsize=(${6:10, 8}))', 'for i, ax in enumerate(axes.ravel()):', '    ax.${7:plot}(x, ${8:np.sin(x + i)})', '    ax.set_title(f\"panel {i}\")', 'fig.tight_layout()', 'plt.show()'},\n"
+    "    pltlabels = {'plt.xlabel(${1:\"x\"})', 'plt.ylabel(${2:\"y\"})', 'plt.title(${3:\"\"})', 'plt.legend()'},\n"
+    "    pltsave = {'plt.savefig(${1:\"figure.png\"}, dpi=${2:150}, bbox_inches=\"tight\")'},\n"
+    "    pltshow = {'plt.show()'},\n"
     "  },\n"
     "  rs = {\n"
     "    fn = {'fn ${1:name}(${2:args}) -> ${3:()} {', '\\t${0}', '}'},\n"
@@ -14191,7 +14262,39 @@ const char *kBuiltinTermSend =
     "    mep.termsend_unregister(source)\n"
     "    mep_termsend_ensure(source, function() end)\n"
     "  end\n"
-    "end)\n";
+    "end)\n"
+    // <leader>rc ("run: configure"): pick, or change, the terminal buffer
+    // the current buffer's mod1+CR sends to -- the same ui_input prompt the
+    // first send raises, but reachable on purpose, pre-filled with the
+    // target already in force (else the first terminal in this tab), and
+    // listing every terminal in the tab by id and title so the number to
+    // type is right there (<leader>bi shows the rest of the buffers).
+    "function mep.termsend_configure()\n"
+    "  local source = mep.current_buffer()\n"
+    "  local current = mep.termsend_target(source)\n"
+    "  local candidates = mep.termsend_candidates()\n"
+    "  local default = current and tostring(current) or (candidates[1] and tostring(candidates[1]) or '')\n"
+    "  local hints = {}\n"
+    "  for _, id in ipairs(candidates) do\n"
+    "    local info = mep.terminal_info(id)\n"
+    "    hints[#hints + 1] = tostring(id) .. ((info and info.title and info.title ~= '') and (' ' .. info.title) or '')\n"
+    "  end\n"
+    "  local title = 'Send to terminal buffer id'\n"
+    "  if current then title = title .. ' (now ' .. current .. ')' end\n"
+    "  if #hints > 0 then title = title .. ' -- here: ' .. table.concat(hints, ', ')\n"
+    "  else title = title .. ' -- no terminal in this tab (<leader>bi lists buffers)' end\n"
+    "  mep.ui_input(title, default, function(input)\n"
+    "    if not input or input == '' then return end\n"
+    "    local id = tonumber(input)\n"
+    "    if not id then mep.notify('\"' .. input .. '\" is not a buffer id', 'error') return end\n"
+    "    id = math.floor(id)\n"
+    "    if mep.termsend_register(source, id) then\n"
+    "      mep.notify('Buffer ' .. source .. ' now sends to terminal buffer ' .. id)\n"
+    "    end\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepTermSendConfigure', mep.termsend_configure)\n"
+    "mep.leader_map('rc', 'Configure send-to-terminal target', mep.termsend_configure)\n";
 
 // Markdown rendering (Phase 28), **scoped down**: heading colors + sign-
 // column level glyph, checkbox toggle, fenced-code-block shading + Phase
@@ -32584,6 +32687,96 @@ const char *kBuiltinPickerSources =
     // <leader>bs: the session's scratch buffer (:MepScratch -- reuses the
     // existing one if it's already open, else creates it).
     "mep.leader_map('bs', 'Scratch buffer', function() mep.cmd('MepScratch') end)\n"
+    // <leader>bi / :MepBufferInfo: the less-common facts about the current
+    // buffer in one float_preview box -- its id first (what <leader>rc's
+    // prompt and :MepTermSendRegister want), path, filetype, size, cursor,
+    // workspace, terminal state, send-to-terminal wiring in both directions,
+    // LSP client -- followed by every open buffer with its id and flags,
+    // since "which number is that terminal" is the question this answers.
+    // A toggle: the sequence typed over its own box closes it (the leader
+    // key dismisses a preview and starts the sequence, so
+    // mep.float_preview_leader_closed names the box just closed).
+    "local MEP_BUFFER_INFO_TITLE = 'Buffer info'\n"
+    "function mep.buffer_info_text(id)\n"
+    "  id = id or mep.current_buffer()\n"
+    "  local current = mep.current_buffer()\n"
+    "  local is_cur = id == current\n"
+    "  local path = is_cur and mep.filename() or mep.buffer_filename(id)\n"
+    "  local is_term = mep.is_terminal_buffer(id)\n"
+    "  local lines = {}\n"
+    "  local function add(k, v) lines[#lines + 1] = string.format('%-12s %s', k, tostring(v)) end\n"
+    "  local label = (path and path ~= '') and (path:match('[^/\\\\]+$') or path) or (is_term and '[Terminal]' or '[No Name]')\n"
+    "  if not path or path == '' then\n"
+    "    for _, b in ipairs(mep.buffer_list(true)) do\n"
+    "      if tonumber(b.data) == id and b.display and b.display ~= '' then label = b.display end\n"
+    "    end\n"
+    "  end\n"
+    "  add('Buffer id', id)\n"
+    "  add('Name', label)\n"
+    "  if path and path ~= '' then\n"
+    "    add('Path', path)\n"
+    "    local ft = mep_lsp_filetype and mep_lsp_filetype(path) or nil\n"
+    "    add('Filetype', ft or '-')\n"
+    "  end\n"
+    "  if is_cur then\n"
+    "    local row, col = mep.cursor()\n"
+    "    add('Lines', mep.line_count())\n"
+    "    add('Cursor', 'line ' .. row .. ', col ' .. col)\n"
+    "  end\n"
+    "  add('Modified', mep.buffer_modified(id) and 'yes' or 'no')\n"
+    "  add('On screen', mep.buffer_on_screen(id) and 'yes' or 'no')\n"
+    "  local ws = mep.buffer_workspace(id)\n"
+    "  if ws then\n"
+    "    local name = tostring(ws)\n"
+    "    for _, w in ipairs(mep.workspace_list()) do if w.id == ws then name = w.name .. ' (' .. (w.branch or '') .. ')' end end\n"
+    "    add('Workspace', name)\n"
+    "  else\n"
+    "    add('Workspace', 'unscoped')\n"
+    "  end\n"
+    "  if is_term then\n"
+    "    local info = mep.terminal_info(id)\n"
+    "    add('Terminal', (info and info.title ~= '' and info.title or '(no title)') ..\n"
+    "      ((info and info.exited) and (' [exited: ' .. tostring(info.exit_code) .. ']') or ' [running]'))\n"
+    "  end\n"
+    "  local target = mep.termsend_target(id)\n"
+    "  if target then\n"
+    "    local tinfo = mep.terminal_info(target)\n"
+    "    add('Sends to', 'terminal buffer ' .. target .. ((tinfo and tinfo.title ~= '') and (' (' .. tinfo.title .. ')') or ''))\n"
+    "  else\n"
+    "    add('Sends to', 'not set (<leader>rc to choose a terminal)')\n"
+    "  end\n"
+    "  local sources = {}\n"
+    "  for _, b in ipairs(mep.buffer_list(true)) do\n"
+    "    local src = tonumber(b.data)\n"
+    "    if src and src ~= id and mep.termsend_target(src) == id then sources[#sources + 1] = tostring(src) end\n"
+    "  end\n"
+    "  if #sources > 0 then add('Receives', 'sends from buffer ' .. table.concat(sources, ', ')) end\n"
+    "  if path and path ~= '' and mep.lsp_client_for then\n"
+    "    local client = mep.lsp_client_for(path)\n"
+    "    if client then add('LSP', 'client ' .. tostring(client) .. (mep.lsp_is_running(client) and ' (running)' or ' (stopped)')) end\n"
+    "  end\n"
+    "  lines[#lines + 1] = ''\n"
+    "  lines[#lines + 1] = 'Open buffers   (* current, # on screen, ! modified)'\n"
+    "  local shown, total = 0, 0\n"
+    "  for _, b in ipairs(mep.buffer_list(true)) do\n"
+    "    local bid = tonumber(b.data)\n"
+    "    total = total + 1\n"
+    "    if shown < 30 and bid then\n"
+    "      local flags = (bid == current and '*' or ' ') .. (mep.buffer_on_screen(bid) and '#' or ' ') .. (mep.buffer_modified(bid) and '!' or ' ')\n"
+    "      lines[#lines + 1] = string.format('  %4d %s  %s', bid, flags, b.display)\n"
+    "      shown = shown + 1\n"
+    "    end\n"
+    "  end\n"
+    "  if total > shown then lines[#lines + 1] = string.format('  ... %d more (<leader>bb lists them all)', total - shown) end\n"
+    "  return table.concat(lines, '\\n')\n"
+    "end\n"
+    "function mep.buffer_info_toggle()\n"
+    "  if mep.float_preview_title() == MEP_BUFFER_INFO_TITLE then mep.float_preview_close() return end\n"
+    "  if mep.float_preview_leader_closed() == MEP_BUFFER_INFO_TITLE then return end\n"
+    "  mep.float_preview(MEP_BUFFER_INFO_TITLE, mep.buffer_info_text())\n"
+    "end\n"
+    "mep.command('MepBufferInfo', mep.buffer_info_toggle)\n"
+    "mep.leader_map('bi', 'Buffer info (id, path, send target, ...)', mep.buffer_info_toggle)\n"
     // WORKSPACES_PLAN.md Phase 2/9: the `:wslist` / <leader>ww picker over
     // the active project's workspaces (name, branch, root; '*' marks the
     // active one), plus the Ctrl-Shift-T / <leader>wn "new workspace" name
@@ -33188,7 +33381,12 @@ FloatFrame DrawFloatFrame(int w, int h, const std::string &title, int top_y = -1
  * the typed text with '*' characters when the prompt was opened as masked/password input.
  */
 void DrawPromptOverlay() {
-    int box_w = std::min(gfx::GetScreenWidth() - 80, 560);
+    // 560 wide unless the title needs more (mep.termsend_configure's
+    // "terminals here: ..." list), up to the same screen margin every
+    // float keeps -- a title the box can't fit used to run off its edge.
+    const float title_w = gfx::MeasureTextEx(g_font, g_editor.PromptTitle().c_str(), MenuFontSize(), 0).x;
+    int box_w = std::max(560, static_cast<int>(title_w) + 40);
+    box_w = std::min(gfx::GetScreenWidth() - 80, box_w);
     FloatFrame f = DrawFloatFrame(box_w, static_cast<int>(g_font_size) + 60, g_editor.PromptTitle());
     const std::string &real = g_editor.PromptInput();
     // Masked prompts (mep.ui_input's opts.masked/opts.password, e.g. the
@@ -55054,6 +55252,24 @@ void DrawTabBar(int y) {
         }
         std::string tooltip = button.tooltip;
         if (button.binding) tooltip += " (" + std::string(button.binding) + ")";
+        // Unread badge on the bell: Info-and-up notifications no longer pop
+        // a toast (Editor::Notify's NotifyToastMinLevel), so a dot in the
+        // button's corner is how they announce themselves. Its color is the
+        // most severe unread level (Error red, Warn yellow, Info blue),
+        // ringed in the bar's background so it reads over the glyph. It
+        // clears when the panel is opened (Editor::MarkNotificationsRead).
+        if (std::string_view(button.title) == "Notifications") {
+            const int unread = g_editor.UnreadNotifyCount();
+            if (unread > 0) {
+                const Editor::NotifyLevel top = g_editor.UnreadNotifyMaxLevel();
+                const char *dot_hl = top == Editor::NotifyLevel::Error ? "Red" : top == Editor::NotifyLevel::Warn ? "Yellow" : "Blue";
+                const float r = std::max(2.5f, button_size * 0.16f);
+                const gfx::Vector2 c{rect.x + rect.width - r - 1.0f, rect.y + r + 1.0f};
+                gfx::DrawCircleV(c, r + 1.5f, ResolveHlGroup("TabBar"));
+                gfx::DrawCircleV(c, r, ResolveHlGroup(dot_hl));
+                tooltip += " -- " + std::to_string(unread) + " unread";
+            }
+        }
         if (open) tooltip += " (click to close)";
         tooltip_if_hovered(rect, tooltip);
         RegisterClickRegion(rect, [title = button.title, command = button.command] {

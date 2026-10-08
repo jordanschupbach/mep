@@ -24746,11 +24746,30 @@ void Editor::HandleSelectInput() {
 // nothing to decide: any key (Escape included, but not special-cased)
 // or a click just acknowledges and closes it.
 void Editor::HandlePreviewInput() {
-    bool dismiss = false;
+    bool dismiss = false, leader = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) dismiss = true;
-    for (int cp = gfx::GetCharPressed(); cp != 0; cp = gfx::GetCharPressed()) dismiss = true;
+    for (int cp = gfx::GetCharPressed(); cp != 0; cp = gfx::GetCharPressed()) {
+        dismiss = true;
+        if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) leader = true;
+    }
     if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) dismiss = true;
-    if (dismiss) RestoreFromOverlay();
+    if (!dismiss) return;
+    // The leader key doesn't just close the box, it starts the leader
+    // sequence it begins -- so <leader>xx typed over a preview runs xx
+    // rather than feeding `x` `x` to Normal mode after the box is gone,
+    // and a binding that opened the box can see (PreviewClosedByLeader)
+    // that it's being asked to toggle off, not on.
+    if (leader) {
+        preview_closed_by_leader_ = preview_title_;
+        RestoreFromOverlay();
+        TriggerWhichKey();
+        return;
+    }
+    RestoreFromOverlay();
+}
+
+void Editor::ClosePreview() {
+    if (mode_ == Mode::Preview) RestoreFromOverlay();
 }
 
 void Editor::CloseOrgBlockSettings() {
@@ -26732,6 +26751,7 @@ std::string IconForFilename(const std::string &name) {
         {"Makefile", 0xe779},        {"makefile", 0xe779},        {"CMakeLists.txt", 0xf15b},
         {"Dockerfile", 0xf0868},     {".gitignore", 0xe702},      {".gitmodules", 0xe702},
         {"README.md", 0xf48a},       {"README.org", 0xe633},      {"README", 0xf48a},
+        {"README.mepml", 0xe633},
         {"LICENSE", 0xe60a},         {".env", 0xf462},            {".editorconfig", 0xe652},
     };
     auto by_name = kByName.find(name);
@@ -26768,6 +26788,7 @@ std::string HlGroupForFilename(const std::string &name) {
         {"Makefile", "Red"},        {"makefile", "Red"},        {"CMakeLists.txt", "Red"},
         {"Dockerfile", "Red"},      {".gitignore", "Orange"},   {".gitmodules", "Orange"},
         {"README.md", "Cyan"},      {"README.org", "Cyan"},     {"README", "Cyan"},
+        {"README.mepml", "Cyan"},
         {"LICENSE", "MutedFg"},     {".env", "Yellow"},         {".editorconfig", "MutedFg"},
     };
     auto by_name = kByName.find(name);
@@ -27381,6 +27402,7 @@ void Editor::HandleWhichKeyInput() {
     int cp = 0;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Escape) {
+            preview_closed_by_leader_.clear();
             RestoreFromOverlay();
             return;
         }
@@ -27395,18 +27417,22 @@ void Editor::HandleWhichKeyInput() {
 
     // Exact match: fire it and leave, regardless of any longer sequences
     // that also start with this prefix (mirrors real whichkey -- a leaf
-    // fires the moment its full sequence is typed).
+    // fires the moment its full sequence is typed). The binding runs with
+    // PreviewClosedByLeader still set (HandlePreviewInput's leader path)
+    // and it's cleared right after -- it describes this sequence only.
     for (const WhichKeyBinding &b : whichkey_bindings_) {
         if (b.sequence == whichkey_prefix_) {
             int ref = b.lua_ref;
             RestoreFromOverlay();
             if (lua_) lua_->CallRef(ref);
+            preview_closed_by_leader_.clear();
             return;
         }
     }
     // No binding starts with this prefix: nothing to descend into, cancel.
     if (WhichKeyMatches().empty()) {
         status_message_ = "No such group: " + WhichKeySequenceDisplay(whichkey_prefix_);
+        preview_closed_by_leader_.clear();
         RestoreFromOverlay();
     }
 }
@@ -32721,7 +32747,7 @@ std::vector<Editor::FileTreeRow> Editor::BuildFileTreeRows(const std::string &ro
 }
 
 std::string Editor::ProjectReadmePath(const std::string &dir) const {
-    static const char *const kNames[] = {"README.org", "README.md", "README.txt", "README"};
+    static const char *const kNames[] = {"README.mepml", "README.org", "README.md", "README.txt", "README"};
     std::vector<DirEntry> entries = ListDirectory(dir);
     for (const char *name : kNames) {
         for (const DirEntry &e : entries) {
@@ -34549,45 +34575,11 @@ double NotifyTimeoutSeconds(Editor::NotifyLevel level) {
 }
 }  // namespace
 
-void Editor::Notify(const std::string &msg, NotifyLevel level) {
-    status_message_ = msg;  // existing lightweight status-bar sink, unchanged
-
-    NotifyEntry entry;
-    entry.id = next_notify_id_++;
-    entry.message = msg;
-    entry.level = level;
-    entry.created_at = last_notify_now_;
-    entry.expires_at = last_notify_now_ + NotifyTimeoutSeconds(level);
-
-    toasts_.push_back(entry);
-    if (static_cast<int>(toasts_.size()) > kMaxVisibleToasts) {
-        toasts_.erase(toasts_.begin());  // oldest evicted immediately, not queued
-    }
-
-    notify_history_.insert(notify_history_.begin(), entry);  // newest-first
-    if (notify_history_.size() > kMaxNotifyHistory) notify_history_.pop_back();
-}
-
-void Editor::PruneExpiredToasts(double now) {
-    last_notify_now_ = now;
-    toasts_.erase(std::remove_if(toasts_.begin(), toasts_.end(),
-                                  [now](const NotifyEntry &e) { return e.expires_at > 0 && now >= e.expires_at; }),
-                   toasts_.end());
-}
-
-void Editor::DismissToast(int id) {
-    toasts_.erase(std::remove_if(toasts_.begin(), toasts_.end(), [id](const NotifyEntry &e) { return e.id == id; }),
-                   toasts_.end());
-}
-
-void Editor::DismissAllToasts() { toasts_.clear(); }
-
-void Editor::ClearNotifyHistory() { notify_history_.clear(); }
-
 // Ensures notify_sidebar_id_ exists and rebuilds its sections from
 // notify_history_, without touching its docked open/closed state --
-// shared by ToggleNotifyHistoryPanel's own docking branch and
-// NotifyOpenPane below, so neither has to duplicate the row-building.
+// shared by ToggleNotifyHistoryPanel's own docking branch, RefreshNotifyPane
+// and PruneExpiredToasts' live refresh, so none has to duplicate the
+// row-building.
 namespace {
 void RefreshNotifySidebarSections(Editor &ed, int sidebar_id, const std::vector<Editor::NotifyEntry> &history) {
     SidebarSection sec;
@@ -34606,6 +34598,86 @@ void RefreshNotifySidebarSections(Editor &ed, int sidebar_id, const std::vector<
 }
 }  // namespace
 
+void Editor::Notify(const std::string &msg, NotifyLevel level) {
+    status_message_ = msg;  // existing lightweight status-bar sink, unchanged
+
+    NotifyEntry entry;
+    entry.id = next_notify_id_++;
+    entry.message = msg;
+    entry.level = level;
+    entry.created_at = last_notify_now_;
+    entry.expires_at = last_notify_now_ + NotifyTimeoutSeconds(level);
+
+    // Only the levels worth interrupting for pop a toast (Warn and Error by
+    // default); Info/Debug go straight to the history, which the tab bar's
+    // Notifications button badges until it's viewed.
+    if (notify_toast_min_level_ && level >= *notify_toast_min_level_) {
+        toasts_.push_back(entry);
+        if (static_cast<int>(toasts_.size()) > kMaxVisibleToasts) {
+            toasts_.erase(toasts_.begin());  // oldest evicted immediately, not queued
+        }
+    }
+
+    notify_history_.insert(notify_history_.begin(), entry);  // newest-first
+    if (notify_history_.size() > kMaxNotifyHistory) notify_history_.pop_back();
+    notify_pane_dirty_ = true;
+}
+
+int Editor::UnreadNotifyCount() const {
+    int n = 0;
+    for (const NotifyEntry &e : notify_history_) {  // newest-first: stop at the first seen id
+        if (e.id <= notify_seen_id_) break;
+        if (e.level >= NotifyLevel::Info) n++;  // debug chatter never badges
+    }
+    return n;
+}
+
+Editor::NotifyLevel Editor::UnreadNotifyMaxLevel() const {
+    NotifyLevel top = NotifyLevel::Debug;
+    for (const NotifyEntry &e : notify_history_) {
+        if (e.id <= notify_seen_id_) break;
+        if (e.level > top) top = e.level;
+    }
+    return top;
+}
+
+void Editor::MarkNotificationsRead() { notify_seen_id_ = next_notify_id_ - 1; }
+
+bool Editor::IsNotifyPanelVisible() const {
+    if (notify_sidebar_id_ == 0) return false;
+    if (IsSidebarOpen(notify_sidebar_id_)) return true;
+    for (const auto &kv : sidebar_pane_buffers_) {
+        if (kv.second == notify_sidebar_id_ && IsBufferOnScreen(kv.first)) return true;
+    }
+    return false;
+}
+
+void Editor::PruneExpiredToasts(double now) {
+    last_notify_now_ = now;
+    toasts_.erase(std::remove_if(toasts_.begin(), toasts_.end(),
+                                  [now](const NotifyEntry &e) { return e.expires_at > 0 && now >= e.expires_at; }),
+                   toasts_.end());
+    if (notify_pane_dirty_) {
+        notify_pane_dirty_ = false;
+        if (IsNotifyPanelVisible()) {
+            RefreshNotifySidebarSections(*this, notify_sidebar_id_, notify_history_);
+            MarkNotificationsRead();
+        }
+    }
+}
+
+void Editor::DismissToast(int id) {
+    toasts_.erase(std::remove_if(toasts_.begin(), toasts_.end(), [id](const NotifyEntry &e) { return e.id == id; }),
+                   toasts_.end());
+}
+
+void Editor::DismissAllToasts() { toasts_.clear(); }
+
+void Editor::ClearNotifyHistory() {
+    notify_history_.clear();
+    MarkNotificationsRead();
+}
+
 void Editor::ToggleNotifyHistoryPanel() {
     if (notify_sidebar_id_ == 0) notify_sidebar_id_ = CreateSidebar("Notifications", "right", 44);
     if (IsSidebarOpen(notify_sidebar_id_)) {
@@ -34613,6 +34685,7 @@ void Editor::ToggleNotifyHistoryPanel() {
         return;
     }
     RefreshNotifySidebarSections(*this, notify_sidebar_id_, notify_history_);
+    MarkNotificationsRead();
     OpenSidebar(notify_sidebar_id_, true);
 }
 
@@ -34624,6 +34697,7 @@ int Editor::NotifySidebarId() {
 void Editor::RefreshNotifyPane() {
     int id = NotifySidebarId();
     RefreshNotifySidebarSections(*this, id, notify_history_);
+    MarkNotificationsRead();
     // <leader>nn (kBuiltinActivityBar's mep.notify_open_pane) always ends
     // undocked-and-paned (unlike ToggleNotifyHistoryPanel, which this
     // deliberately doesn't call) -- close any currently-docked view first

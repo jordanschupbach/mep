@@ -43,6 +43,7 @@ you had forgotten about in another tab.</p>
 <tr><td><code>:bprevious</code> <code>:bp</code></td><td>previous buffer</td></tr>
 <tr><td><code>:bdelete</code> <code>:bd</code> <code>:bd!</code></td><td>close a buffer</td></tr>
 <tr><td><code>&lt;leader&gt;bb</code></td><td>the buffer picker</td></tr>
+<tr><td><code>&lt;leader&gt;bi</code></td><td>buffer info popup</td></tr>
 <tr><td><code>:ls</code></td><td>list buffers</td></tr>
 </table>
 <p>These cycle through the <b>current workspace's</b> buffers, not everything open
@@ -55,6 +56,19 @@ picker and <code>:bnext</code> all show that workspace's buffers.</p>
 buffers everywhere, and <code>:qa</code> refuses if anything anywhere is unsaved. The
 listing is scoped so it stays useful; the safety net is global so nothing
 hidden is ever lost.</p>
+<h1>Buffer info</h1>
+<p><code>&lt;leader&gt;bi</code> (<code>:MepBufferInfo</code>) toggles a popup with the less common facts
+about the current buffer: its <b>buffer id</b> first, then its path, filetype,
+line count and cursor, whether it is modified or on screen, its workspace,
+and -- for a terminal -- the running program and exit state. It also shows
+the send-to-terminal wiring in both directions: which terminal this buffer
+sends to (<code>&lt;leader&gt;rc</code> sets it, see <a href="repl.html">send-to-terminal</a>) and which
+buffers send into it, plus the LSP client attached to it.</p>
+<p>Below that it lists every open buffer with its id, so the number a prompt
+asks for is always one keystroke away. A <code>*</code> marks the current buffer, <code>#</code>
+one shown in a pane, <code>!</code> one with unsaved changes.</p>
+<p>The box closes on any key; <code>&lt;leader&gt;bi</code> over it closes it too, and any other
+<code>&lt;leader&gt;</code> sequence typed over it closes it and runs as usual.</p>
 <h1>Scratch buffers</h1>
 <p><code>&lt;leader&gt;bs</code> (<code>:MepScratch</code>) opens a scratch buffer: a real, editable buffer
 with no file behind it, for notes and experiments. It is not one of the

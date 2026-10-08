@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (84)
+* The bindings (89)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -25,6 +25,9 @@ that it does nothing.
 | =mep.float_is_open= | reports whether a floating editable pane is open |
 | =mep.float_open= | opens a file in a floating editable pane |
 | =mep.float_preview= | shows read-only text in a centered floating box, dismissed by any keypress or click |
+| =mep.float_preview_close= | dismisses the open float_preview box, if any |
+| =mep.float_preview_leader_closed= | returns the title of the float_preview box the current leader sequence dismissed on its way in, or nil |
+| =mep.float_preview_title= | returns the open float_preview box's title, or nil when none is showing |
 | =mep.focus_top_left_pane= | moves focus to the topmost, then leftmost, pane in the active tab's split layout |
 | =mep.font_size= | returns the current editor pixel font size |
 | =mep.hint_jump= | (Phase 13) |
@@ -36,9 +39,11 @@ that it does nothing.
 | =mep.icon_for_file= | a short ASCII glyph (Phase 10) |
 | =mep.layout= | applies a named pane auto-layout |
 | =mep.nav_pane= | moves focus to the neighboring pane in the given direction, if any |
-| =mep.notify= | shows a toast and records a persistent history entry/status line message |
+| =mep.notify= | records a notification in the history (badging the Notifications button) and the status line; warn/error (see mep.notify_toast_level) also pop a toast |
 | =mep.notify_refresh_pane= | ensures the Notifications sidebar exists, refreshes its content, and closes any currently-docked view |
 | =mep.notify_sidebar_id= | returns the Notifications SidebarInstance id, creating it if needed |
+| =mep.notify_toast_level= | sets (when given "debug"/"info"/"warn"/"error"/"none") and returns the lowest notification level that pops a toast; lower levels only reach the... |
+| =mep.notify_unread= | returns the count of notifications not yet viewed in the Notifications panel and the highest level among them ("debug" when none) |
 | =mep.ns_clear= | removes every decoration previously added under a namespace id |
 | =mep.ns_create= | looks up (or creates) a stable decoration namespace id for a given name |
 | =mep.ns_decorations= | the current buffer's decorations in `ns`, one descriptive string each |

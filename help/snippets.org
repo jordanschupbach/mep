@@ -45,6 +45,46 @@ that tabstop stale. Expand, fill in, then move on.
 
 Curated sets for =c=, =cpp=, =go=, =lua=, =py=, =rs=, =nix= and =envrc=.
 
+The =py= set includes =print=, which expands to =print()= with the cursor
+between the parentheses.
+
+* Python: numpy and matplotlib
+
+The =py= set also carries a scientific-Python family. Every trigger starts
+with =np= or =plt=, so typing either prefix lists the whole family in the
+completion popup. The bodies assume the usual aliases, which =npimp=,
+=pltimp= and =sciimp= insert.
+
+| Trigger       | Inserts                                            |
+|---------------+----------------------------------------------------|
+| =npimp=       | =import numpy as np=                               |
+| =pltimp=      | =import matplotlib.pyplot as plt=                  |
+| =sciimp=      | both imports                                       |
+| =nparr=       | a 1-D =np.array=                                   |
+| =nparr2=      | a 2-D =np.array=, one row per line                 |
+| =npzeros= =npones= =npfull= =npeye= | the matching constructor     |
+| =nparange= =nplinspace= | a range of values                        |
+| =npmesh=      | =np.meshgrid=                                      |
+| =nprng=       | =np.random.seed(seed)=                             |
+| =npnormal= =npuniform= | =np.random.normal= / =np.random.uniform= samples |
+| =npload= =npsave= | =np.loadtxt= / =np.savetxt=                    |
+| =pltline=     | =plt.plot= with axis labels and =plt.show()=       |
+| =pltscatter=  | a scatter plot, likewise                           |
+| =plthist=     | a histogram, likewise                              |
+| =pltbar=      | a bar chart                                        |
+| =pltimshow=   | an image with a colour bar                         |
+| =pltcontour=  | a filled contour with a colour bar                 |
+| =pltfig=      | the =fig, ax = plt.subplots()= form, one axis      |
+| =pltgrid=     | a grid of axes, looping over =axes.ravel()=        |
+| =pltlabels=   | xlabel, ylabel, title, legend                      |
+| =pltsave=     | =plt.savefig= at 150 dpi                           |
+| =pltshow=     | =plt.show()=                                       |
+
+Each plot snippet (=pltline= through =pltgrid=) is a complete, runnable
+script: the imports, some example data, the plot call, labels and
+=plt.show()=. Expand one into an empty file and run it as is, or tab
+through the tabstops to swap in your own data and labels.
+
 * Adding your own
 
 #+begin_src lua

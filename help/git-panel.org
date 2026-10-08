@@ -44,7 +44,9 @@ view you are in.
 | =R=     | re-read and refresh                            |
 | =?=     | list the keys for the current view             |
 
-Every action reports its result as a toast and refreshes the view.
+Every action reports its result as a notification (on the status line and
+in the Notifications history; failures also pop a toast) and refreshes the
+view.
 
 * Status
 

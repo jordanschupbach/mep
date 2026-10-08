@@ -31,9 +31,9 @@ The wasm build has no host filesystem, so it loads no =init.lua=.
 | =:lua <code>=      | run one line of Lua         |
 | =:source <file>=   | run a Lua file              |
 
-=print()= is routed through =mep.notify=, so =:lua print(mep.line_count())=
-shows a toast -- a perfectly good way to poke at the API before committing
-anything to a file.
+=print()= writes to the status line, so =:lua print(mep.line_count())=
+shows its result at the bottom of the window -- a perfectly good way to
+poke at the API before committing anything to a file.
 
 * Options
 

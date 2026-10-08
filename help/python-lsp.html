@@ -108,6 +108,18 @@ f-string's <code>{...}</code>, which is code and is treated as such.</p>
 the first line of its docstring, a class and its bases, a parameter and
 its annotation, a variable and what it was assigned. Over a builtin, a
 keyword or a standard-library member it answers from the built-in table.</p>
+<p>Over anything else that traces back to an import -- <code>np.array</code>,
+<code>plt.plot</code>, <code>norm</code> after <code>from numpy.linalg import norm</code> -- it asks a real
+Python interpreter: it imports the module, walks to the object and shows
+its signature and full docstring (scroll it in the hover popup). The
+first hover on a name costs one short subprocess; after that it is cached
+for the session. This does run the imported module's top-level code, the
+same code running the file would, and only when you press <code>K</code>. With no
+interpreter, or the package not installed, hover answers as before.</p>
+<p>The interpreter is the first of: <code>pythonPath</code> in the server's
+<code>init_options</code>, <code>$MEP_PYTHON</code>, the active <code>$VIRTUAL_ENV</code>, the nearest
+<code>.venv</code> or <code>venv</code> directory above the file, then <code>python3</code> on <code>PATH</code>:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.python_ls.init_options = {pythonPath = <span class="tok-green">'/path/to/venv/bin/python'</span>}</code></pre></div>
 <p><code>&lt;leader&gt;lk</code> (signature help) shows the signature of the call the cursor
 is inside, with the parameter you are on highlighted -- including while
 you are typing a string argument, and with <code>self</code> dropped from a method
@@ -138,7 +150,7 @@ colour table and how to change it.</p>
 <h1>What it does not do</h1>
 <ul>
 <li><b>No type checking.</b> See the opening section.</li>
-<li><b>One file is the whole world.</b> An imported name is known to exist and nothing more. Attribute completion on an object from another module falls back to "attribute names this file already mentions".</li>
+<li><b>One file is the whole world.</b> An imported name is known to exist and nothing more, except to hover (see above). Attribute completion on an object from another module falls back to "attribute names this file already mentions".</li>
 <li><b>No project-wide rename or references.</b> Both stop at the file's edge, which is why a rename that cannot see the other users is refused rather than half-done.</li>
 <li><b>No formatting.</b> <code>mep.lsp_format</code> falls through to the configured formatter for Python; the server does not claim the capability.</li>
 </ul>

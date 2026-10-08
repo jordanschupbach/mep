@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 156 =<leader>= sequences registered at startup. Press
+All 158 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -28,6 +28,7 @@ the features live.
 | =<leader>bb= | Buffers | [[file:files.html][Files and buffers]] |
 | =<leader>bf= | Open in browser | -- |
 | =<leader>bh= | Host (serve) this directory and browse it | [[file:local-server.html][Serving a directory]] |
+| =<leader>bi= | Buffer info (id, path, send target, ...) | [[file:files.html][Files and buffers]] |
 | =<leader>bo= | Browse | [[file:browser.html][The browser pane]] |
 | =<leader>bs= | Scratch buffer | [[file:files.html][Files and buffers]] |
 | =<leader>bv= | browse: toggle HTML file between page and source | [[file:mepml.html][mepml]] |
@@ -140,6 +141,7 @@ the features live.
 | =<leader>po= | Projects | [[file:projects.html][Projects]] |
 | =<leader>pp= | Loaded projects | [[file:pickers.html][Pickers]] |
 | =<leader>pr= | Live grep | [[file:pickers.html][Pickers]] |
+| =<leader>rc= | Configure send-to-terminal target | [[file:files.html][Files and buffers]] |
 | =<leader>rj= | Jump to/from Run/REPL pane | [[file:repl.html][REPL and send-to-terminal]] |
 | =<leader>rn= | LSP: rename | [[file:c-lsp.html][The C language server]] |
 | =<leader>rr= | Run button: run/compile current file | [[file:mepml.html][mepml]] |

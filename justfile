@@ -242,6 +242,99 @@ readme: build-native
 help-check *ARGS: build-native
     python3 scripts/check_help.py {{native_build_dir}}/mep {{ARGS}}
 
+# Bump the devShell's datamunge input (and so its language bindings) to the
+# latest commit on github:jordanschupbach/datamunge (main). Takes effect on the
+# next `nix develop` (or direnv reload).
+update-shell:
+    nix flake update datamunge
+
+# Build the Release binaries and install them natively under PREFIX
+# (default ~/.local: no sudo, and ~/.local/bin is the usual user PATH
+# entry). Installs mep, its LSP/mepml helper binaries, and the help pages
+# and assets to PREFIX/share/mep, which the binary finds relative to its
+# own path (l_bundled_help_root / DashboardAssetPath). Re-running replaces
+# the previous install: every file the last install recorded in its
+# install_manifest.txt is removed first, so pages dropped from help/ don't
+# linger, and binaries are unlinked rather than overwritten in place --
+# on macOS rewriting a signed Mach-O in place gets the next launch
+# SIGKILLed by the kernel's stale code-signature cache.
+#
+# Build and install mep natively (default prefix ~/.local), replacing any previous install.
+[unix]
+install prefix=(env("HOME") / ".local"): build-native
+    #!/usr/bin/env bash
+    set -euo pipefail
+    manifest="{{native_build_dir}}/install_manifest.txt"
+    if [ -f "$manifest" ]; then
+        while IFS= read -r f; do
+            case "$f" in "{{prefix}}"/*) rm -f "$f" ;; esac
+        done < "$manifest"
+    fi
+    cmake --install {{native_build_dir}} --prefix "{{prefix}}"
+    echo "Installed mep to {{prefix}}/bin/mep"
+    case ":$PATH:" in *":{{prefix}}/bin:"*) ;; *) echo "note: {{prefix}}/bin is not on your PATH" ;; esac
+    if [ "$(uname)" = Darwin ]; then just install-app "{{prefix}}"; fi
+
+# macOS: put a mep.app launcher in ~/Applications so Spotlight/Launchpad
+# find it. The bundle holds no copy of mep -- its executable is a script
+# that execs PREFIX/bin/mep, so the binary still resolves its help pages
+# and helper LSPs relative to its real path. It goes through a login shell
+# because apps started from Finder get launchd's bare PATH (no ~/.local/bin
+# or Homebrew), which terminals, runners and external LSPs depend on.
+#
+# Install the mep.app Spotlight launcher for the binary under PREFIX.
+[macos]
+install-app prefix=(env("HOME") / ".local") dest=(env("HOME") / "Applications"):
+    #!/usr/bin/env bash
+    set -euo pipefail
+    app="{{dest}}/mep.app"
+    rm -rf "$app"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+    printf '%s\n' '#!/bin/sh' \
+        'exec "${SHELL:-/bin/zsh}" -lc '"'"'exec "$0" "$@"'"'"' "{{prefix}}/bin/mep" "$@"' \
+        > "$app/Contents/MacOS/mep"
+    chmod +x "$app/Contents/MacOS/mep"
+    tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+    iconset="$tmp/mep.iconset"; mkdir "$iconset"
+    sips -s format png --padToHeightWidth 800 800 assets/mep-light.png --out "$tmp/square.png" >/dev/null
+    for sz in 16 32 128 256 512; do
+        sips -z $sz $sz "$tmp/square.png" --out "$iconset/icon_${sz}x${sz}.png" >/dev/null
+        sips -z $((sz*2)) $((sz*2)) "$tmp/square.png" --out "$iconset/icon_${sz}x${sz}@2x.png" >/dev/null
+    done
+    iconutil -c icns "$iconset" -o "$app/Contents/Resources/mep.icns"
+    cat > "$app/Contents/Info.plist" <<'PLIST'
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+      <key>CFBundleName</key><string>mep</string>
+      <key>CFBundleDisplayName</key><string>mep</string>
+      <key>CFBundleExecutable</key><string>mep</string>
+      <key>CFBundleIdentifier</key><string>com.mep.editor</string>
+      <key>CFBundleIconFile</key><string>mep</string>
+      <key>CFBundlePackageType</key><string>APPL</string>
+      <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+      <key>CFBundleShortVersionString</key><string>0.1.0</string>
+      <key>CFBundleVersion</key><string>0.1.0</string>
+      <key>NSHighResolutionCapable</key><true/>
+    </dict>
+    </plist>
+    PLIST
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" || true
+    mdimport "$app" 2>/dev/null || true
+    echo "Installed $app"
+
+# Remove everything the last `just install` put down.
+[unix]
+uninstall:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    manifest="{{native_build_dir}}/install_manifest.txt"
+    [ -f "$manifest" ] || { echo "nothing to uninstall (no $manifest)"; exit 0; }
+    xargs rm -fv < "$manifest"
+    rm -f "$manifest"
+    if [ "$(uname)" = Darwin ]; then rm -rfv "$HOME/Applications/mep.app"; fi
+
 # Remove all build output.
 [unix]
 clean:

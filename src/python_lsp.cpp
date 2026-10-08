@@ -2285,6 +2285,61 @@ PythonLspHoverInfo PythonLspHover(const std::vector<std::string> &lines, int lin
 
 namespace {
 
+/** @brief The absolute dotted path an import binding stands for ("" for any other binding). */
+std::string QualifiedNameOfBinding(const Binding &b) {
+    if (b.kind == BindKind::Import) {
+        // `import a.b as c` binds c to a.b; a bare `import a.b` binds a
+        // to a itself, which is exactly the bound name.
+        const bool aliased = b.node != nullptr && !b.node->str_value.empty();
+        return aliased ? b.import_module : b.name;
+    }
+    if (b.kind == BindKind::ImportFrom) {
+        // A relative import names a module only relative to a package
+        // this server would have to locate first; leave it alone.
+        if (b.import_module.empty() || b.import_module[0] == '.' || b.import_symbol.empty()) return std::string();
+        return b.import_module + "." + b.import_symbol;
+    }
+    return std::string();
+}
+
+/** @brief The dotted path of a Name/Attribute chain rooted in an import binding, else "". */
+std::string QualifiedNameOfExpr(const Analyzer &analyzer, const PyNode *expr, int scope, int depth = 0) {
+    if (expr == nullptr || depth > 32) return std::string();
+    if (expr->kind == PyNodeKind::Name) {
+        const int index = analyzer.ResolveFrom(scope, expr->name);
+        if (index < 0) return std::string();
+        return QualifiedNameOfBinding(analyzer.bindings()[static_cast<size_t>(index)]);
+    }
+    if (expr->kind == PyNodeKind::Attribute && !expr->kids.empty()) {
+        const std::string owner = QualifiedNameOfExpr(analyzer, expr->kids[0].get(), scope, depth + 1);
+        return owner.empty() ? std::string() : owner + "." + expr->name;
+    }
+    return std::string();
+}
+
+}  // namespace
+
+std::string PythonLspQualifiedName(const std::vector<std::string> &lines, int line, int col) {
+    PythonLspOptions opts;
+    opts.check_files = false;
+    const Analyzer analyzer(lines, opts);
+    const PyPos pos{line, col};
+    if (InTextLiteral(analyzer, pos)) return std::string();
+    NameHit hit;
+    FindNameAt(analyzer.parse().module.get(), pos, &hit);
+    if (!hit.found) return std::string();
+    const int scope = analyzer.ScopeAt(hit.pos);
+    if (hit.is_attribute) {
+        const std::string owner = QualifiedNameOfExpr(analyzer, hit.owner, scope);
+        return owner.empty() ? std::string() : owner + "." + hit.name;
+    }
+    const int index = analyzer.ResolveFrom(scope, hit.name);
+    if (index < 0) return std::string();
+    return QualifiedNameOfBinding(analyzer.bindings()[static_cast<size_t>(index)]);
+}
+
+namespace {
+
 // --- Import resolution ------------------------------------------------
 
 /** @brief Resolves a module path to a file next to the document, following relative-import dots. */

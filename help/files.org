@@ -40,6 +40,7 @@ you had forgotten about in another tab.
 | =:bprevious= =:bp=          | previous buffer               |
 | =:bdelete= =:bd= =:bd!=     | close a buffer                |
 | =<leader>bb=                | the buffer picker             |
+| =<leader>bi=                | buffer info popup             |
 | =:ls=                       | list buffers                  |
 
 These cycle through the *current workspace's* buffers, not everything open
@@ -55,6 +56,23 @@ The guards are deliberately *not* scoped that way: =:wa= writes modified
 buffers everywhere, and =:qa= refuses if anything anywhere is unsaved. The
 listing is scoped so it stays useful; the safety net is global so nothing
 hidden is ever lost.
+
+* Buffer info
+
+=<leader>bi= (=:MepBufferInfo=) toggles a popup with the less common facts
+about the current buffer: its *buffer id* first, then its path, filetype,
+line count and cursor, whether it is modified or on screen, its workspace,
+and -- for a terminal -- the running program and exit state. It also shows
+the send-to-terminal wiring in both directions: which terminal this buffer
+sends to (=<leader>rc= sets it, see [[file:repl.html][send-to-terminal]]) and which
+buffers send into it, plus the LSP client attached to it.
+
+Below that it lists every open buffer with its id, so the number a prompt
+asks for is always one keystroke away. A =*= marks the current buffer, =#=
+one shown in a pane, =!= one with unsaved changes.
+
+The box closes on any key; =<leader>bi= over it closes it too, and any other
+=<leader>= sequence typed over it closes it and runs as usual.
 
 * Scratch buffers
 

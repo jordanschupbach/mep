@@ -33,6 +33,7 @@
 #include <ctime>
 #include <deque>
 #include <functional>
+#include <optional>
 #include <future>
 #include <iterator>
 #include <map>
@@ -4392,10 +4393,14 @@ public:
 
     // --- Notifications (NVIM_PARITY_PLAN.md Part I Phase 6) ---
     // Single choke point every internal message should eventually funnel
-    // through (mirrors mep.nvim hooking vim.notify once): pushes a toast
-    // (auto-dismissed after a per-level timeout) and a persistent history
-    // entry, and also updates the status line so existing lightweight
-    // inline messages ("3 substitutions on 2 lines") keep showing there.
+    // through (mirrors mep.nvim hooking vim.notify once): records a
+    // persistent history entry and updates the status line so existing
+    // lightweight inline messages ("3 substitutions on 2 lines") keep
+    // showing there. Only entries at or above NotifyToastMinLevel() (Warn
+    // by default) also pop a toast (auto-dismissed after a per-level
+    // timeout); the rest stay quiet and are surfaced by the unread badge on
+    // the tab bar's Notifications button (UnreadNotifyCount) until the
+    // history panel is viewed.
     enum class NotifyLevel { Debug = 0, Info = 1, Warn = 2, Error = 3 };
     struct NotifyEntry {
         int id = 0;
@@ -4410,11 +4415,39 @@ public:
      * @param level The severity level, which controls toast duration and styling.
      */
     void Notify(const std::string &msg, NotifyLevel level = NotifyLevel::Info);
+    /**
+     * @brief Sets the lowest level that still pops a toast; std::nullopt means no level ever does.
+     * @param level The threshold (Warn by default), or std::nullopt to route everything to the history only.
+     */
+    void SetNotifyToastMinLevel(std::optional<NotifyLevel> level) { notify_toast_min_level_ = level; }
+    /**
+     * @brief Returns the lowest level that pops a toast, or std::nullopt when toasts are off.
+     */
+    std::optional<NotifyLevel> NotifyToastMinLevel() const { return notify_toast_min_level_; }
+    /**
+     * @brief Returns how many Info-or-higher entries arrived since the history panel was last viewed.
+     */
+    int UnreadNotifyCount() const;
+    /**
+     * @brief Returns the highest level among the unread entries (Debug when there are none).
+     */
+    NotifyLevel UnreadNotifyMaxLevel() const;
+    /**
+     * @brief Marks every history entry as read, clearing the unread badge.
+     */
+    void MarkNotificationsRead();
+    /**
+     * @brief Returns whether the Notifications panel is on screen, docked or hosted in a pane.
+     */
+    bool IsNotifyPanelVisible() const;
     // Called once per frame with the current wall-clock time (main.cpp's
     // GetTime()) to expire timed-out toasts -- editor.h/.cpp stay
-    // raylib-free, so "now" is threaded in rather than queried here.
+    // raylib-free, so "now" is threaded in rather than queried here. Also
+    // re-renders the Notifications panel (and marks everything read) when
+    // an entry arrived while the panel is on screen, so it never shows a
+    // stale list or badges something the user is already looking at.
     /**
-     * @brief Expires toasts whose timeout has elapsed as of the given time.
+     * @brief Expires toasts whose timeout has elapsed as of the given time and refreshes a visible Notifications panel.
      * @param now The current wall-clock time in seconds.
      */
     void PruneExpiredToasts(double now);
@@ -7657,11 +7690,11 @@ public:
     std::vector<FileTreeRow> BuildFileTreeRows(const std::string &root,
                                                 const std::vector<std::string> &expanded_paths, bool show_hidden,
                                                 const std::vector<std::string> &ignored_relpaths) const;
-    // First of README.md/README.org/README.txt/README present as a file
-    // (not a dir) directly in `dir` -- empty string if none match.
-    // mep_project_readme_path's own port (kBuiltinFileTree).
+    // First of README.mepml/README.org/README.md/README.txt/README present
+    // as a file (not a dir) directly in `dir` -- empty string if none
+    // match. mep_project_readme_path's own port (kBuiltinFileTree).
     /**
-     * @brief Finds the first README.md/README.org/README.txt/README file directly inside `dir`.
+     * @brief Finds the first README.mepml/README.org/README.md/README.txt/README file directly inside `dir`.
      * @param dir The directory to search (non-recursively).
      * @return The matching file's path, or an empty string if none match.
      */
@@ -9584,6 +9617,24 @@ public:
      * @return The preview title.
      */
     const std::string &PreviewTitle() const { return preview_title_; }
+    /**
+     * @brief Returns whether a float_preview box is currently showing (mode is Preview).
+     */
+    bool IsPreviewOpen() const { return mode_ == Mode::Preview; }
+    /**
+     * @brief Dismisses the float_preview box if one is showing; a no-op otherwise.
+     */
+    void ClosePreview();
+    // The leader key pressed over a preview box closes it AND starts the
+    // which-key sequence (HandlePreviewInput), remembering the closed box's
+    // title here until that sequence fires or is cancelled -- so a toggle
+    // binding (<leader>bi, kBuiltinBuffers' mep.buffer_info_toggle) can tell
+    // "the user is closing me" from "open me" instead of reopening the box
+    // the same keystrokes just dismissed.
+    /**
+     * @brief Returns the title of the preview box the in-progress leader sequence dismissed, or "" if none.
+     */
+    const std::string &PreviewClosedByLeader() const { return preview_closed_by_leader_; }
     /**
      * @brief Returns the active preview overlay's text.
      * @return The preview text.
@@ -14513,6 +14564,18 @@ private:
     // raylib's clock directly.
     double last_notify_now_ = 0.0;
     int notify_sidebar_id_ = 0;
+    // Lowest level that still pops a toast (SetNotifyToastMinLevel / Lua's
+    // mep.notify_toast_level); nullopt = toasts off entirely.
+    std::optional<NotifyLevel> notify_toast_min_level_ = NotifyLevel::Warn;
+    // Newest entry id the user has seen in the history panel -- entries
+    // with a greater id are "unread" (UnreadNotifyCount) and badge the tab
+    // bar's Notifications button.
+    int notify_seen_id_ = 0;
+    std::string preview_closed_by_leader_;  // see PreviewClosedByLeader
+    // Set by Notify(); PruneExpiredToasts re-renders the panel's sections
+    // next frame when it's visible, rather than Notify() doing so inline
+    // (it's called from everywhere, including mid-draw hooks).
+    bool notify_pane_dirty_ = false;
     static constexpr size_t kMaxNotifyHistory = 200;
     static constexpr int kMaxVisibleToasts = 5;
 

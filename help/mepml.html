@@ -1076,12 +1076,21 @@ written, with three variables in its environment:</p>
 </table>
 <p>A Post command that fails is a warning: the export is already there.
 Neither line is part of the document, and the exports leave them out.</p>
-<p>The paths an export names -- pictures in Org, Markdown and HTML -- are
-written as the document writes them, relative to the document, which is
-why a <code>Post:</code> that copies the export back beside the source (as mep's own
-<code>README.mepml</code> does with its <code>README.org</code>) keeps them resolving. A
-document whose HTML must stand on its own in <code>build/</code> can say =//? Build:
-.= instead, or keep its pictures under the build directory.</p>
+<p>The pictures an Org, Markdown or HTML export names -- <code>\image</code> blocks,
+the figures a code block produced, picture cells -- are written as the
+document writes them, relative to the document, and each one is copied
+into the build directory at that same path: <code>build/README.md</code> names the
+README's <code>assets/logo.png</code> and finds it at <code>build/assets/logo.png</code>, and
+a <code>Post:</code> that copies the export back beside the source (as mep's own
+<code>README.mepml</code> does with its <code>README.org</code>) keeps it resolving there too.
+Only pictures inside the document's directory travel this way; one that
+climbs out (<code>../shared/plot.png</code>) is left where it is, and the HTML
+export names it from where the page is written (<code>../../shared/plot.png</code>
+from <code>build/</code>), as it does its <code>file:</code> links: <code>build/README.html</code> links
+<code>help/mepml.org</code> as <code>../help/mepml.org</code>. URLs, anchors and absolute paths
+are kept as written. A page that is to be copied elsewhere together
+with its pictures can say <code>//? Build: .</code> so that it is exported beside
+its source.</p>
 <p>An export is a copy, and the <code>.mepml</code> is the file to edit. The text
 exports say so in a comment at the top -- <code># ...</code> in Org, <code>&lt;!-- ... --&gt;</code>
 in Markdown (after its front matter) and HTML (after the doctype),
@@ -1136,7 +1145,8 @@ become TeX.</p>
                                            <span class="tok-comment"># //? Export: format (html by default)</span>
                                            <span class="tok-comment"># into the build directory, then Post:</span>
 <span class="tok-blue">mep-mepml</span> build notes.mepml org md html    <span class="tok-comment"># several formats, Post: once after all</span></code></pre></div>
-<p><code>convert</code> writes exactly the file it is given and runs nothing after;
+<p><code>convert</code> writes the file it is given (and copies the pictures it names
+beside it, as above) and runs nothing after;
 <code>build</code> is the editor's export with the document's <code>Build:</code> and <code>Post:</code>
 honoured, so a <code>just</code> recipe or a Makefile builds a document the way the
 play button does.</p>

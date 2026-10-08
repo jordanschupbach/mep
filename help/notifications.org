@@ -3,25 +3,49 @@
 #+HTML_HEAD: <meta name="help-order" content="50">
 #+HTML_HEAD: <link rel="stylesheet" href="help.css">
 
-* Toasts
+* Where messages go
 
-Most things mep wants to tell you arrive as a toast in the corner: a git
-push finishing, a formatter failing, a language server attaching. Toasts
-dismiss themselves after a few seconds, the more serious ones sticking
-around longer.
+Everything mep wants to tell you -- a git push finishing, a formatter
+failing, a language server attaching -- is a notification with a severity:
+=error=, =warn=, =info= or =debug=. Every one of them is recorded in the
+history and shown briefly on the status line. What differs by severity is
+how loudly it announces itself.
 
-| Level | Dismisses after |
-|-------+-----------------|
-| error | 8 seconds       |
-| warn  | 6 seconds       |
-| info  | 4 seconds       |
-| debug | 3 seconds       |
+Only =warn= and =error= pop a toast in the corner, since those are the ones
+worth interrupting you for. Toasts dismiss themselves after a few seconds,
+the more serious ones sticking around longer.
+
+| Level | Toast | Dismisses after |
+|-------+-------+-----------------|
+| error | yes   | 8 seconds       |
+| warn  | yes   | 6 seconds       |
+| info  | no    | --              |
+| debug | no    | --              |
+
+Quieter messages (=info=) go straight to the history instead, and a dot
+appears on the Notifications bell in the tab bar until you open the panel.
+The dot takes the color of the most severe unread message: red for an
+error, yellow for a warning, blue when it is only information. Hovering the
+bell tells you how many are waiting; opening the panel (or having it open
+when a message arrives) marks them read. =debug= messages never badge.
+
+To change which levels pop a toast, set the threshold from your config:
+
+#+begin_src lua
+mep.notify_toast_level('error')  -- only errors interrupt
+mep.notify_toast_level('info')   -- the old behaviour: everything pops up
+mep.notify_toast_level('none')   -- never pop a toast; the badge does the work
+#+end_src
+
+Called with no argument it returns the level currently in force.
 
 * When you missed one
 
 That is what the history panel is for. =<leader>nn= (=:MepNotifyPanel=, or
-the Notifications button in the tab bar) lists everything that has been
-raised this session, including toasts that have already faded.
+the Notifications bell in the tab bar) lists everything that has been
+raised this session -- the quiet =info= messages that never popped up, and
+toasts that have already faded. The panel refreshes itself while it is
+open, so you can leave it in a pane and watch messages land.
 
 | Command             | Does                                |
 |---------------------+-------------------------------------|
@@ -40,17 +64,18 @@ mep.notify('No formatter for this filetype', 'warn')
 mep.notify('Could not reach the server', 'error')
 #+end_src
 
-Lua's own =print()= is routed through =mep.notify= as well, so a =print= in
-your config or in a =:lua= one-liner shows up as a toast rather than
+Lua's own =print()= shows its output on the status line as well, so a
+=print= in your config or in a =:lua= one-liner is visible rather than
 vanishing into a terminal mep does not have.
 
 #+begin_src lua
 :lua print(mep.line_count())
 #+end_src
 
-That makes =print= a perfectly good debugging tool here -- and it means a
-chatty =print= in a frame hook will bury you in toasts, so keep those out of
-=mep.on_frame=.
+That makes =print= a perfectly good debugging tool here. If you want
+something louder, =mep.notify(msg, 'warn')= pops a toast; and
+=mep.notify_unread()= returns the count and highest level behind the bell's
+badge, should a status-line segment want to show it.
 
 * See also
 

@@ -42,6 +42,42 @@ correctly. Editing heavily <b>before</b> jumping to a later tabstop can leave
 that tabstop stale. Expand, fill in, then move on.</p>
 <h1>What ships</h1>
 <p>Curated sets for <code>c</code>, <code>cpp</code>, <code>go</code>, <code>lua</code>, <code>py</code>, <code>rs</code>, <code>nix</code> and <code>envrc</code>.</p>
+<p>The <code>py</code> set includes <code>print</code>, which expands to <code>print()</code> with the cursor
+between the parentheses.</p>
+<h1>Python: numpy and matplotlib</h1>
+<p>The <code>py</code> set also carries a scientific-Python family. Every trigger starts
+with <code>np</code> or <code>plt</code>, so typing either prefix lists the whole family in the
+completion popup. The bodies assume the usual aliases, which <code>npimp</code>,
+<code>pltimp</code> and <code>sciimp</code> insert.</p>
+<table>
+<tr><th>Trigger</th><th>Inserts</th></tr>
+<tr><td><code>npimp</code></td><td><code>import numpy as np</code></td></tr>
+<tr><td><code>pltimp</code></td><td><code>import matplotlib.pyplot as plt</code></td></tr>
+<tr><td><code>sciimp</code></td><td>both imports</td></tr>
+<tr><td><code>nparr</code></td><td>a 1-D <code>np.array</code></td></tr>
+<tr><td><code>nparr2</code></td><td>a 2-D <code>np.array</code>, one row per line</td></tr>
+<tr><td><code>npzeros</code> <code>npones</code> <code>npfull</code> <code>npeye</code></td><td>the matching constructor</td></tr>
+<tr><td><code>nparange</code> <code>nplinspace</code></td><td>a range of values</td></tr>
+<tr><td><code>npmesh</code></td><td><code>np.meshgrid</code></td></tr>
+<tr><td><code>nprng</code></td><td><code>np.random.seed(seed)</code></td></tr>
+<tr><td><code>npnormal</code> <code>npuniform</code></td><td><code>np.random.normal</code> / <code>np.random.uniform</code> samples</td></tr>
+<tr><td><code>npload</code> <code>npsave</code></td><td><code>np.loadtxt</code> / <code>np.savetxt</code></td></tr>
+<tr><td><code>pltline</code></td><td><code>plt.plot</code> with axis labels and <code>plt.show()</code></td></tr>
+<tr><td><code>pltscatter</code></td><td>a scatter plot, likewise</td></tr>
+<tr><td><code>plthist</code></td><td>a histogram, likewise</td></tr>
+<tr><td><code>pltbar</code></td><td>a bar chart</td></tr>
+<tr><td><code>pltimshow</code></td><td>an image with a colour bar</td></tr>
+<tr><td><code>pltcontour</code></td><td>a filled contour with a colour bar</td></tr>
+<tr><td><code>pltfig</code></td><td>the <code>fig, ax = plt.subplots()</code> form, one axis</td></tr>
+<tr><td><code>pltgrid</code></td><td>a grid of axes, looping over <code>axes.ravel()</code></td></tr>
+<tr><td><code>pltlabels</code></td><td>xlabel, ylabel, title, legend</td></tr>
+<tr><td><code>pltsave</code></td><td><code>plt.savefig</code> at 150 dpi</td></tr>
+<tr><td><code>pltshow</code></td><td><code>plt.show()</code></td></tr>
+</table>
+<p>Each plot snippet (<code>pltline</code> through <code>pltgrid</code>) is a complete, runnable
+script: the imports, some example data, the plot call, labels and
+<code>plt.show()</code>. Expand one into an empty file and run it as is, or tab
+through the tabstops to swap in your own data and labels.</p>
 <h1>Adding your own</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.snippets.py = mep.snippets.py <span class="tok-purple">or</span> {}
 mep.snippets.py[<span class="tok-green">'main'</span>] = {

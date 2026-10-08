@@ -615,6 +615,40 @@ int main() {
         CHECK(html.find("<meta name=\"viewport\"") != std::string::npos);
         // Light by default, whatever the reader's system theme.
         CHECK(html.find("prefers-color-scheme") == std::string::npos && html.find("color-scheme: light") != std::string::npos);
+        // Written into a build directory (HtmlOptions::out_dir), the page
+        // names the document's file: links from there, and a picture that
+        // leaves the document's directory; a picture inside it keeps its
+        // path, which the export mirrors into the build directory. URLs,
+        // anchors and absolute paths are kept, as is everything when the
+        // directories are unknown (the editor's own views).
+        {
+            const Document r = Parse({"\\image(assets/logo.png)", "", "See [docs|file:docs/web.org#intro], [home|https://x.y/a.png],",
+                                      "[abs|file:/tmp/a.md], [uri|file:///tmp/b.md], [top|#intro], [bare|docs/web.org].",
+                                      "", "| @image{t.png} | x |", "", "\\image(../shared/up.png)", "", "\\image(./assets/../dot.png)"});
+            HtmlOptions o;
+            o.standalone = false;
+            o.base_dir = "/proj";
+            o.out_dir = "/proj/build";
+            const std::string page = ToHtml(r, o);
+            CHECK(page.find("<img src=\"assets/logo.png\"") != std::string::npos);
+            CHECK(page.find("href=\"../docs/web.org#intro\"") != std::string::npos);
+            CHECK(page.find("href=\"https://x.y/a.png\"") != std::string::npos);
+            CHECK(page.find("href=\"/tmp/a.md\"") != std::string::npos);
+            CHECK(page.find("href=\"file:///tmp/b.md\"") != std::string::npos);
+            CHECK(page.find("href=\"#intro\"") != std::string::npos);
+            CHECK(page.find("href=\"docs/web.org\"") != std::string::npos);
+            CHECK(page.find("<img src=\"t.png\" alt=\"\">") != std::string::npos);
+            CHECK(page.find("<img src=\"../../shared/up.png\"") != std::string::npos);
+            CHECK(page.find("<img src=\"./assets/../dot.png\"") != std::string::npos);
+            o.out_dir = "/proj/out/html";
+            CHECK(ToHtml(r, o).find("<img src=\"assets/logo.png\"") != std::string::npos);
+            CHECK(ToHtml(r, o).find("<img src=\"../../../shared/up.png\"") != std::string::npos);
+            o.out_dir = "/proj";
+            CHECK(ToHtml(r, o).find("<img src=\"assets/logo.png\"") != std::string::npos);
+            CHECK(ToHtml(r, o).find("<img src=\"../shared/up.png\"") != std::string::npos);
+            CHECK(ToHtml(r).find("<img src=\"assets/logo.png\"") != std::string::npos);
+            CHECK(ToHtml(r).find("href=\"docs/web.org#intro\"") != std::string::npos);
+        }
         // Several plots from one block: one figure, every figure closed.
         const Document two = Parse({"```r", "x", "```", "// result_begin:", "// @image{a.png}", "// @image{b.png}", "// result_end",
                                     "@caption{Two}"});

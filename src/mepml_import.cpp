@@ -1150,7 +1150,8 @@ std::vector<std::string> HtmlResultSources(const std::string &html) {
 
 }  // namespace
 
-std::string FromHtml(const std::string &html) {
+std::string FromHtml(const std::string &html_in) {
+    const std::string html = StripGeneratedNotice(html_in);
     HtmlDoc dom;
     // The reader walks tags, attributes and text; the CSS cascade was most of the import.
     ParseHtml(html, dom, /*full_document=*/true, /*compute_styles=*/false);
@@ -2053,7 +2054,7 @@ struct MdReader {
 
 std::string FromMarkdown(const std::string &md) {
     MdReader r;
-    return r.Read(md);
+    return r.Read(StripGeneratedNotice(md));
 }
 
 // ===========================================================================
@@ -2673,7 +2674,7 @@ struct OrgReader {
 
 std::string FromOrg(const std::string &org) {
     OrgReader r;
-    return r.Read(org);
+    return r.Read(StripGeneratedNotice(org));
 }
 
 // ===========================================================================

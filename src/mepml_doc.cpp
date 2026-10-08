@@ -3010,7 +3010,19 @@ std::vector<bool> ExportHidden(const Document &doc) {
 // Tables
 
 std::vector<std::pair<int, int>> TableCells(const std::string &s) {
-    std::vector<int> pipes;
+    // A `|` inside `verbatim`, or inside a bracket pair that closes on the
+    // line -- a link's `[text|url]` -- is the cell's own.
+    std::vector<int> pipes, open;
+    std::vector<std::pair<int, int>> brackets;
+    for (int c = 0; c < Len(s); ++c) {
+        const char ch = s[static_cast<size_t>(c)];
+        if (ch == '\\') ++c;
+        else if (ch == '[') open.push_back(c);
+        else if (ch == ']' && !open.empty()) {
+            brackets.emplace_back(open.back(), c);
+            open.pop_back();
+        }
+    }
     bool tick = false;
     for (int c = 0; c < Len(s); ++c) {
         char ch = s[static_cast<size_t>(c)];
@@ -3019,7 +3031,10 @@ std::vector<std::pair<int, int>> TableCells(const std::string &s) {
             continue;
         }
         if (ch == '`') tick = !tick;
-        if (ch == '|' && !tick) pipes.push_back(c);
+        if (ch != '|' || tick) continue;
+        bool linked = false;
+        for (const auto &b : brackets) linked = linked || (b.first < c && c < b.second);
+        if (!linked) pipes.push_back(c);
     }
     std::vector<std::pair<int, int>> cells;
     if (pipes.empty()) return cells;
@@ -3696,12 +3711,14 @@ struct Emitter {
                 Line(line, 0, static_cast<int>(s.size()), t);
                 continue;
             }
-            for (size_t c = 0; c < s.size(); ++c) {
-                if (s[c] == '\\') {
-                    ++c;
-                    continue;
-                }
-                if (s[c] == '|') Line(line, static_cast<int>(c), static_cast<int>(c) + 1, t);
+            // The pipes between (and around) the cells; one inside a cell --
+            // a link's `[text|url]` -- is the cell's own text.
+            const std::vector<std::pair<int, int>> cells = TableCells(s);
+            for (size_t k = 0; k < cells.size(); ++k) {
+                if (k == 0 && cells[k].first > 0 && s[static_cast<size_t>(cells[k].first - 1)] == '|')
+                    Line(line, cells[k].first - 1, cells[k].first, t);
+                if (cells[k].second < static_cast<int>(s.size()) && s[static_cast<size_t>(cells[k].second)] == '|')
+                    Line(line, cells[k].second, cells[k].second + 1, t);
             }
         }
         size_t row_idx = 0;

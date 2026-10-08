@@ -1,0 +1,274 @@
+\image(assets/logo.png)
+
+> mep
+
+~An editor where everything is in place.~
+
+mep is a modal, Vim-style code editor for Linux, written from the ground
+up in C\+\+20 with embedded Lua. There is no UI toolkit, no browser engine
+and no PDF library underneath it: the window, the renderer, the font
+rasterizer, the regex engine, the terminal emulator and the readers for
+every format it opens are all in this repository.
+
+That buys the thing the name is about — one place to work. A C\+\+ file, a
+shell, a PDF, a Jupyter notebook, a 3D scene and a live web page are all
+just panes in the same window, driven by the same keys, scripted through
+the same Lua API.
+
+\image(assets/screenshot.png)
+
+> Install
+
+>> Nix (no clone needed)
+
+```{sh, eval="no"}
+nix run github:jordanschupbach/mep              # run it
+nix profile install github:jordanschupbach/mep  # install it
+```
+
+>> From source
+
+You need CMake ≥ 3.28, a C\+\+20 compiler, and — on the system — OpenGL,
+X11 (with `Xtst` and `Xi`), ALSA and OpenSSL. The configure step fetches
+Lua 5.4, so it needs network access the first time.
+
+```{sh, eval="no"}
+git clone https://github.com/jordanschupbach/mep
+cd mep
+cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Release
+cmake --build build/native -j
+sudo cmake --install build/native      # optional; installs `mep`
+```
+
+Inside the repo, [just|https://github.com/casey/just] wraps the same thing: `just run` builds and
+launches, `just build-native` only builds, `just clean` removes
+`build/`. `nix develop` (or `direnv allow`) drops you in a shell with the
+whole toolchain — compiler, cmake, just, deno, emscripten, language
+servers and Tree-sitter grammars — already on `PATH`.
+
+>> Platforms
+
+Native mep targets *Linux/X11*, *macOS* (Cocoa/NSOpenGL) and *Windows*
+(Win32/WGL). On macOS
+you need Homebrew's `cmake`, `ninja`, `just`, `llvm` (Apple's toolchain
+ships no `clang-scan-deps`, which CMake needs for this project's C\+\+20
+modules) and `openssl@3`:
+
+```{sh, eval="no"}
+brew install cmake ninja just llvm openssl@3
+just run
+```
+
+The justfile picks the Homebrew LLVM toolchain and the Ninja generator
+automatically on macOS. Not yet ported there: audio (ALSA; silent
+no-op), embedding other programs' windows (X11 reparenting), the
+agent API's synthetic mouse/keyboard input (XTest), and Retina
+rendering (the GL surface is 1x and upscaled for now).
+
+>>> Windows
+
+Needs Visual Studio 2022 (or the standalone Build Tools) with the
+"Desktop development with C\+\+" workload, and CMake ≥ 3.28. Ninja is
+required rather than the Visual Studio generator — this project's C\+\+20
+modules need a generator that does module dependency scanning — and one
+ships inside the VS install, so there is usually nothing extra to get.
+
+From a repository checkout, with `just` (`winget install Casey.Just`):
+
+```bat
+just run
+```
+
+or without it:
+
+```bat
+scripts\windows-build.bat
+.\build\win\mep.exe
+```
+
+`just run` is the same two steps: the `build-native` and `run` recipes
+have `[windows]` variants that build into `build\win` through the batch
+script and launch `build\win\mep.exe`, and the justfile sets
+`windows-shell` to `cmd.exe` since just's default `sh` does not exist
+here. Only those recipes (plus `clean`) are ported — `just test`,
+`bench`, `help` and the `lint` family are still bash, and need WSL or
+Git Bash.
+
+That script finds the VS install with `vswhere`, runs `vcvars64.bat` to
+put `cl.exe` and the SDK on `PATH`, puts the bundled Ninja on `PATH` if
+there is no system one, then configures and builds into `build\win`. To
+drive CMake yourself, run `vcvars64.bat` first and then the ordinary
+`cmake -S . -B build/win -G Ninja` — nothing about the configuration is
+specific to the script. (`vcvars64.bat` itself prints a stray
+`"vswhere.exe" is not recognized` on some installs; it is harmless
+noise from inside Microsoft's own script, not a failure.)
+
+Editing, every document type, the renderer, Tree-sitter highlighting,
+Lua scripting and the mouse/keyboard input path all work. Not yet
+ported, and *compiled out* rather than failing at runtime:
+
+- *Everything that spawns a child process.* The `:terminal` pane, LSP
+  servers, `:!` commands, the Jupyter/notebook kernels and the YouTube
+  pane's `yt-dlp`/`ffmpeg` all go through `job.cpp`, which is
+  `fork`/`forkpty` on POSIX. Windows has no `fork`; the equivalent is
+  `CreateProcess` plus ConPTY (`CreatePseudoConsole`) for the terminal.
+  This is the single largest remaining piece.
+- *Sockets.* The agent RPC API, the HTTP client/server, the LSP
+  transport and the collaboration relay are all behind the same
+  `!defined(_WIN32)` guard the wasm build already used. Winsock is close
+  enough to BSD sockets that this is mostly mechanical.
+- *Audio* — a silent no-op, as on macOS. WASAPI is the Windows
+  counterpart of the Linux ALSA backend.
+- *Generators and `async`/`await` in the embedded JS engine*, which run
+  each body on its own stack via `ucontext`. Windows fibers map onto
+  that directly; see `js_engine.cpp`'s note.
+- *Embedding other programs' windows* (`exec-gui` blocks) and the agent
+  API's synthetic input — X11-specific, the same gap macOS has.
+- *Collaboration* needs OpenSSL for the WebSocket handshake. If CMake
+  does not find one the build substitutes a stub and says so; `:collab`
+  then reports a connection failure. Point `-DOPENSSL_ROOT_DIR` at an
+  install (vcpkg's works) to enable it.
+
+One known rough edge: the window does not redraw while a resize is being
+dragged, because Windows runs its own modal message loop for the
+duration and mep's frame loop does not get to run. The contents snap
+back on release.
+
+There is also a WebAssembly build
+(`just build-web`) that runs in a browser, and `just run-wasm` opens it
+in a desktop window via Deno + webview; the wasm build has no host
+filesystem, so file I/O there goes through a small local bridge
+([details|file:docs/architecture.org]).
+
+> Getting started
+
+```{sh, eval="no"}
+mep                 # opens the dashboard on the current directory
+mep path/to/file    # opens a file
+```
+
+- The leader key is `Space`. Press it and wait: a which-key popup lists
+  every group and binding. `<leader>hk` searches all of them.
+- `<leader>hh` (or `:MepHelp`) opens the built-in help.
+- `<leader>ff` file tree, `<leader>/` find in buffer, `<leader>pr`
+  project-wide grep, `<leader>bb` buffer picker, `<leader><CR>` a
+  terminal for this tab.
+- Vim's own `:` commands mostly work as you'd expect — `:w`, `:e`,
+  `:split`, `:%s/pat/repl/g`, `:g/pat/d`.
+
+The full reference is [docs/keybindings.org|file:docs/keybindings.org].
+
+> What's in the box
+
+\image(assets/gallery.png)
+
+*Editing.* Normal / Insert / Replace / Visual (charwise, linewise,
+blockwise) / Command-line modes. Counted motions and operators, text
+objects, registers (the unnamed register *is* the system clipboard),
+marks, the jump list, `.`\-repeat, macros, per-buffer undo. Regex search
+and `:s`/`:g`, with backreferences. A flash.nvim-style quick jump (`s`)
+that labels matches across every visible pane. Tree-sitter highlighting,
+with \~49 further languages a |just fetch-grammars| away.
+
+*Windows.* Splits and tabs with directional navigation (`Ctrl-W hjkl`,
+`mod1+hjkl`), per-pane buffer tabs, pane zoom and maximize. Projects
+contain workspaces (backed by git worktrees) contain tabs contain panes,
+and each project's layout is saved and restored.
+
+*IDE.* LSP — completion, hover, definition, references, implementation,
+rename, code actions, diagnostics, formatting. DAP debugging. Snippets,
+spell check, a task runner that finds your `just`/`make`/`ninja`/`cmake`
+setup. GitHub Copilot inline completions ([setup|file:docs/copilot.org]).
+
+*Git.* Gutter signs against any base ref, hunk preview, staging and
+navigation, and a five-view panel: status, log, graph, branches, stash.
+
+*Sidebars.* File tree, symbols, structure outline, git, todo, tests,
+notifications and AI agents — dockable to either edge, stacked and
+resizable, and each one pops out into a large preview float with
+`mod1+m`.
+
+*Beyond text.* Every one of these opens as a pane, from mep's own code:
+
+| Open this | And you get |
+| --- | --- |
+| `.pdf` | a PDF viewer with real text extraction, outlines and links |
+| `.html` (or `:Browse <url>`) | a browser pane with mep's own HTML/CSS/JS engine; `:Serve` hosts a directory ([more|file:docs/web.org]) |
+| `.png`, `.jpg`, … | an image viewer, and `e` enters a layer-based editor with procedural fills ([more|file:IMAGE_EDITOR.md]) |
+| `.obj`, `.gltf`, `.glb`, `.iqm`, `.vox`, `.m3d` | a 3D modeler: mesh editing, materials, lights, animation, rendering (`.blend` too, via a local Blender) |
+| `.ipynb` | a Jupyter notebook with per-cell kernels, run without `jupyter_client` ([more|file:docs/notebooks.org]) |
+| `.org` | agenda, babel, roam, capture, clock, drill, LaTeX and image preview, export, plus `:Gantt` and `:Kanban` views |
+| `.docx`, `.odt`, `.xlsx`, `.ods`, `.csv` | office documents and spreadsheets, with formulas |
+| `.mov` | a video player |
+| `:terminal` | a real terminal emulator |
+
+*Collaboration and agents.* CRDT-based shared editing over a
+self-hosted relay ([docs|file:docs/collaboration.org]). An agent-control socket, and a `mep-mcp`
+MCP server on top of it, let an AI agent drive the editor directly —
+buffers, panes, workspaces, the image editor and the 3D modeler — while
+you watch ([API|file:MEP_AGENT_API.md]).
+
+*Learning games.* An org file doubles as a flashcard deck, and 24 game
+modes deal sessions from it ([docs|file:docs/learn-games.org]).
+
+> Configuration
+
+mep reads `$XDG_CONFIG_HOME/mep/init.lua` (or `~/.config/mep/init.lua`)
+at startup. It is ordinary Lua against the same `mep.*` API the editor's
+own built-in configuration uses.
+
+```{lua, eval="no"}
+-- One of 62 built-in themes; :MepTheme picks one interactively.
+mep.cmd('colorscheme gruvbox-dark')
+
+-- A command and a leader binding of your own.
+mep.command('Hello', function() mep.notify('hello from init.lua') end)
+mep.leader_map('xh', 'Say hello', function() mep.cmd('Hello') end)
+
+-- Rebind the mod1 modifier, and turn Copilot off.
+mep.set_mod1('super')
+mep.copilot_enabled = false
+```
+
+`:lua <code>` evaluates a line, `:source <file>` loads a script. The
+whole surface is in [docs/lua-api.org|file:docs/lua-api.org].
+
+> Documentation
+
+| [Keybindings and commands|file:docs/keybindings.org] | every key and `:` command |
+| [Lua API|file:docs/lua-api.org] | the `mep.*` table |
+| [Architecture|file:docs/architecture.org] | the source tree, for contributors |
+| [Notebooks|file:docs/notebooks.org] | Jupyter cells and kernels |
+| [Browser pane|file:docs/web.org] | the web engine, `:Serve`, the capability ladder |
+| [Copilot|file:docs/copilot.org] | setup, commands, what gets sent |
+| [Collaboration|file:docs/collaboration.org] | shared editing and running your own relay |
+| [Learning games|file:docs/learn-games.org] | the deck format and the games |
+| [Agent API|file:MEP_AGENT_API.md] | driving mep from a script or an AI agent |
+| [Image editor|file:IMAGE_EDITOR.md] | tools and hotkeys |
+
+> Development
+
+```{sh, eval="no"}
+just run                # build and launch
+just build-native-dev   # -O0 build in build/native-dev, for fast iteration
+just test               # windowless unit tests
+just test-gui           # the tests that drive a real window
+just bench              # performance suite, results in bench_results/
+just lint               # clang-tidy + cppcheck + include-what-you-use
+just readme             # regenerate README.org from README.mepml
+```
+
+Tests and benchmarks are `EXCLUDE_FROM_ALL`, so an ordinary build
+produces only `mep`, `mep-mcp`, `mep-collabd`, `mep-org-lsp`,
+`mep-r-lsp`, `mep-python-lsp`, `mep-cpp-lsp`, `mep-c-lsp` and
+`mep-maxima-lsp`. Start at
+[docs/architecture.org|file:docs/architecture.org] for the layout of the source tree.
+
+This README is written in mepml, mep's own document format: `README.mepml`
+is the source, and `just readme` exports it to the `README.org` GitHub
+shows. Edit the `.mepml`, not the `.org`.
+
+> License
+
+MIT. See [LICENSE|file:LICENSE]; bundled third-party licenses are in
+`third_party_licenses/`.

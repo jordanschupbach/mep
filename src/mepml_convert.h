@@ -52,6 +52,26 @@ bool CanImport(Format f);
 std::vector<std::string> ExportTags(Format f, const Document &doc, bool beamer = false);
 
 // --- Export -------------------------------------------------------------
+// An export is a copy: the .mepml is the file to edit. The text exports say
+// so in a comment at the top -- `# ...` in Org, `<!-- ... -->` in Markdown
+// (after its front matter) and HTML (after the doctype), `% ...` in LaTeX --
+// unless the options turn the notice off or the document does (`//? Notice:
+// no`). Plain text and RTF have no comment to put it in, and the office
+// packages carry their source in their document properties already.
+struct ExportOptions {
+    bool notice = true;
+    std::string source;  // the .mepml's name, for the notice ("README.mepml"); "" names none
+};
+// `text`, an export to `f`, with the notice in front where the format has a
+// place for it and the options and the document allow one.
+std::string WithGeneratedNotice(Format f, const Document &doc, const ExportOptions &opts, const std::string &text);
+// Whether `line` is such a notice in any of those formats (comment markers
+// included), and `text` without one: the importers drop it, so a document
+// exported and read back is the document, not one with a comment about
+// itself.
+bool IsGeneratedNotice(const std::string &line);
+std::string StripGeneratedNotice(const std::string &text);
+
 std::string ToMarkdown(const Document &doc);
 std::string ToOrg(const Document &doc);
 std::string ToPlainText(const Document &doc);
@@ -84,8 +104,10 @@ struct MathPicture {
 };
 using MathPictureRenderer = std::function<bool(const std::string &tex, bool display, double pt, MathPicture *out)>;
 void SetMathPictureRenderer(MathPictureRenderer renderer);
-// Any exportable format except PDF, chosen by `path`'s extension.
-bool ExportFile(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error);
+// Any exportable format except PDF, chosen by `path`'s extension, with
+// the generated-file notice `opts` asks for.
+bool ExportFile(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error,
+                const ExportOptions &opts = {});
 
 // --- Import -------------------------------------------------------------
 std::string FromMarkdown(const std::string &md);

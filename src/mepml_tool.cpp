@@ -1,12 +1,15 @@
 // mep-mepml: mepml's converter as a command-line tool.
 //
-//   mep-mepml convert IN OUT
+//   mep-mepml convert [--beamer] [--no-notice] IN OUT
 //
 // Formats come from the file extensions. From .mepml to anything mep can
 // export (html md org rtf docx odt tex pdf txt); from anything it can
 // import (html md org rtf docx odt txt) to .mepml; and between any two of
 // those by way of mepml. PDF is the LaTeX export compiled by tectonic,
-// which must be on PATH.
+// which must be on PATH. An export of a .mepml starts with a comment
+// saying it was generated from that file and is not the one to edit
+// (mepml_convert.h, ExportOptions); --no-notice leaves it out, as does
+// `//? Notice: no` in the document.
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -173,7 +176,7 @@ int Inspect(int argc, char **argv) {
 
 int Usage() {
     std::fprintf(stderr,
-                 "usage: mep-mepml convert [--beamer] IN OUT\n"
+                 "usage: mep-mepml convert [--beamer] [--no-notice] IN OUT\n"
                  "       mep-mepml tree FILE                      the document's element tree, as JSON\n"
                  "       mep-mepml style FILE [--media a,b] [--sheet S.mepss]...\n"
                  "                                                the style each element computes to\n"
@@ -182,7 +185,8 @@ int Usage() {
                  "                                                missing (mepml pdf html docx odt rtf md org)\n"
                  "  export from .mepml to: html md org rtf docx odt tex pdf txt pptx odp\n"
                  "  (with //? Type: presentation, html/tex/pdf are a slideshow and a Beamer deck;\n"
-                 "  --beamer makes tex/pdf the Beamer deck of the \\slide blocks whatever the Type)\n"
+                 "  --beamer makes tex/pdf the Beamer deck of the \\slide blocks whatever the Type;\n"
+                 "  --no-notice leaves out the comment at the top saying the file is generated)\n"
                  "  import to .mepml from: html md org rtf docx odt txt\n");
     return 2;
 }
@@ -213,13 +217,24 @@ int main(int argc, char **argv) {
         const int rc = Inspect(argc, argv);
         return rc == 2 ? Usage() : rc;
     }
-    const bool beamer = argc == 5 && std::string(argv[2]) == "--beamer";
-    if (argc != 4 + (beamer ? 1 : 0) || std::string(argv[1]) != "convert") return Usage();
+    bool beamer = false;
+    mepml::ExportOptions opts;
+    int i = 2;
+    for (; i < argc && argv[i][0] == '-'; ++i) {
+        if (std::string(argv[i]) == "--beamer") beamer = true;
+        else if (std::string(argv[i]) == "--no-notice") opts.notice = false;
+        else return Usage();
+    }
+    if (argc != i + 2 || std::string(argv[1]) != "convert") return Usage();
     const std::string in = argv[argc - 2], out = argv[argc - 1];
     const mepml::Format fin = mepml::FormatFromPath(in), fout = mepml::FormatFromPath(out);
     std::error_code ec;
     const std::string in_abs = std::filesystem::absolute(in, ec).string();
     const std::string base_dir = std::filesystem::path(in_abs).parent_path().string();
+    // The notice names the .mepml the export came from; a conversion between
+    // two other formats only passed through mepml, and gets none.
+    if (fin == mepml::Format::Mepml) opts.source = std::filesystem::path(in).filename().string();
+    else opts.notice = false;
 
     // Everything goes through a mepml document.
     std::vector<std::string> lines;
@@ -260,6 +275,7 @@ int main(int argc, char **argv) {
             std::fprintf(stderr, "mep-mepml: %s\n", err.c_str());
             return 1;
         }
+        latex = mepml::WithGeneratedNotice(mepml::Format::Latex, doc, opts, latex);
     } else if (beamer) {
         std::fprintf(stderr, "mep-mepml: --beamer writes .tex or .pdf, not %s\n", out.c_str());
         return 2;
@@ -287,7 +303,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (!mepml::CanExport(fout)) return Usage();
-    if (!mepml::ExportFile(doc, out, base_dir, &err)) {
+    if (!mepml::ExportFile(doc, out, base_dir, &err, opts)) {
         std::fprintf(stderr, "mep-mepml: %s\n", err.c_str());
         return 1;
     }

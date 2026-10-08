@@ -3192,6 +3192,15 @@ int l_mepml_link_at(lua_State *L) {
 
 // mep.mepml_export_html(path) -> true | nil, err: exports the current
 // buffer (imports expanded) as a standalone HTML page.
+// The export options for the buffer's document: the generated-file notice
+// names the .mepml it came from.
+mepml::ExportOptions MepmlExportOptions(Editor *ed) {
+    mepml::ExportOptions opts;
+    const std::string file = ed->MepmlCurrentFile();
+    if (!file.empty()) opts.source = std::filesystem::path(file).filename().string();
+    return opts;
+}
+
 /**
  * @brief Implements mep.mepml_export_html(path): writes the current mepml buffer as standalone HTML.
  * @param L Lua state; arg 1 is the output path.
@@ -3202,35 +3211,46 @@ int l_mepml_export_html(lua_State *L) {
     Editor *ed = GetEditor(L);
     const mepml::Document doc =
         ed->MepmlParseForExport(mepml::ExportTags(mepml::Format::Html, ed->MepmlParseCurrent(false)));
+    const std::string html = mepml::WithGeneratedNotice(mepml::Format::Html, doc, MepmlExportOptions(ed),
+                                                        mepml::ToHtmlFor(doc));  // a presentation is a slideshow
     std::ofstream f(path, std::ios::binary);
     if (!f) {
         lua_pushnil(L);
         lua_pushstring(L, ("cannot write " + path).c_str());
         return 2;
     }
-    f << mepml::ToHtmlFor(doc);  // a presentation is a slideshow
+    f << html;
     lua_pushboolean(L, 1);
     return 1;
 }
 
-// mep.mepml_export(path [, 'beamer']) -> true | nil, err: exports the current buffer
-// (imports expanded) to the format `path`'s extension names -- html, md,
-// org, rtf, docx, odt, tex, txt, pptx or odp (mepml_convert.h); a
-// presentation's html and tex are its slideshow and Beamer deck. Images resolve
-// against the buffer's own directory. PDF is the .tex compiled by the
-// caller (kBuiltinMepml runs tectonic without blocking the editor). With
-// 'beamer', `path` is a .tex and gets the Beamer deck whatever the Type; a
-// further 'pdf' says the .tex is on its way to a PDF (so \when(pdf, ...)
-// matches).
+// mep.mepml_export(path [, 'beamer'] [, 'pdf'] [, 'no-notice']) -> true | nil, err:
+// exports the current buffer (imports expanded) to the format `path`'s
+// extension names -- html, md, org, rtf, docx, odt, tex, txt, pptx or odp
+// (mepml_convert.h); a presentation's html and tex are its slideshow and
+// Beamer deck. Images resolve against the buffer's own directory. PDF is
+// the .tex compiled by the caller (kBuiltinMepml runs tectonic without
+// blocking the editor). With 'beamer', `path` is a .tex and gets the
+// Beamer deck whatever the Type; a further 'pdf' says the .tex is on its
+// way to a PDF (so \when(pdf, ...) matches). The text exports start with a
+// comment saying the file was generated from the .mepml and is not the one
+// to edit; 'no-notice' leaves it out, as does `//? Notice: no` in the
+// document.
 /**
- * @brief Implements mep.mepml_export(path [, 'beamer']): writes the current mepml buffer in the format named by the path's extension.
+ * @brief Implements mep.mepml_export(path [, 'beamer'] [, 'pdf'] [, 'no-notice']): writes the current mepml buffer in the format named by the path's extension.
  * @param L Lua state; arg 1 is the output path.
  * @return Number of values pushed (1 on success: true; 2 on failure: nil, message).
  */
 int l_mepml_export(lua_State *L) {
     const std::string path = luaL_checkstring(L, 1);
-    const bool beamer = lua_isstring(L, 2) && std::string(lua_tostring(L, 2)) == "beamer";
-    const bool pdf = lua_isstring(L, 3) && std::string(lua_tostring(L, 3)) == "pdf";
+    bool beamer = false, pdf = false, notice = true;
+    for (int i = 2; i <= lua_gettop(L); ++i) {
+        if (!lua_isstring(L, i)) continue;
+        const std::string flag = lua_tostring(L, i);
+        if (flag == "beamer") beamer = true;
+        else if (flag == "pdf") pdf = true;
+        else if (flag == "no-notice") notice = false;
+    }
     const mepml::Format format = mepml::FormatFromPath(path);
     // What the export is, for \when / \raw.
     auto tags = [&](Editor *e) {
@@ -3244,10 +3264,13 @@ int l_mepml_export(lua_State *L) {
         Editor *ed = GetEditor(L);
         const std::string file = ed->MepmlCurrentFile();
         const std::string base = file.empty() ? std::string(".") : std::filesystem::path(file).parent_path().string();
-        const std::string tex = mepml::ToBeamer(ed->MepmlParseForExport(tags(ed)), base, &err);
+        mepml::ExportOptions opts = MepmlExportOptions(ed);
+        opts.notice = notice;
+        const mepml::Document doc = ed->MepmlParseForExport(tags(ed));
+        const std::string tex = mepml::ToBeamer(doc, base, &err);
         if (!tex.empty()) {
             std::ofstream out(path, std::ios::binary);
-            if (out << tex) {
+            if (out << mepml::WithGeneratedNotice(mepml::Format::Latex, doc, opts, tex)) {
                 lua_pushboolean(L, 1);
                 return 1;
             }
@@ -3259,7 +3282,9 @@ int l_mepml_export(lua_State *L) {
         Editor *ed = GetEditor(L);
         const std::string file = ed->MepmlCurrentFile();
         const std::string base = file.empty() ? std::string(".") : std::filesystem::path(file).parent_path().string();
-        if (mepml::ExportFile(ed->MepmlParseForExport(tags(ed)), path, base, &err)) {
+        mepml::ExportOptions opts = MepmlExportOptions(ed);
+        opts.notice = notice;
+        if (mepml::ExportFile(ed->MepmlParseForExport(tags(ed)), path, base, &err, opts)) {
             lua_pushboolean(L, 1);
             return 1;
         }

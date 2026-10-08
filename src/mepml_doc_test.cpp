@@ -256,6 +256,17 @@ int main() {
         CHECK(TableCells("a | b").size() == 2 && TableCells("| a | b |").size() == 2);
         CHECK(TableCells("| a | b").size() == 2 && TableCells("a | `x|y` | c \\| d").size() == 3);
         CHECK(TableCells("no pipe").empty() && TableCells("|").empty());
+        // A link's own `|` is the cell's, not a separator; an unclosed `[` is nothing special.
+        CHECK(TableCells("| a | see [the docs|docs/web.org] | c |").size() == 3);
+        CHECK(TableCells("| a [ | b |").size() == 2);
+        {
+            const Document linked = Parse({"| Open | And get |", "| --- | --- |", "| `.html` | a browser ([more|file:docs/web.org]) |"});
+            CHECK(linked.blocks.size() == 1 && linked.blocks[0].kind == BlockKind::Table && linked.blocks[0].rows.size() == 2);
+            CHECK(linked.blocks[0].rows[1].size() == 2);
+            bool link = false;
+            for (const Inline &x : linked.blocks[0].rows[1][1].content) link = link || (x.kind == InlineKind::Link && x.arg == "file:docs/web.org");
+            CHECK(link);
+        }
     }
 
     // --- results=markdown: output written raw and read as the document's own.

@@ -218,6 +218,12 @@ help: build-native
         echo "  $src -> $out"
     done
 
+# README.org is exported from README.mepml (the file to edit): the Org
+# export starts with a comment saying so. GitHub renders the .org.
+readme: build-native
+    ./{{native_build_dir}}/mep-mepml convert README.mepml README.org
+    @echo "  README.mepml -> README.org"
+
 # Check the built-in help workspace: that every help/*.html is exactly what
 # its .org source exports today (re-exported and compared, not an mtime
 # check -- git does not preserve mtimes), that every page declares the title

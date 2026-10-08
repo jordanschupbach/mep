@@ -207,6 +207,13 @@ std::string Unwrap(const std::string &s) {
     return o;
 }
 
+// Code points, which is what a monospace column of this text is wide.
+size_t Utf8Width(const std::string &s) {
+    size_t n = 0;
+    for (char c : s) n += (static_cast<unsigned char>(c) & 0xc0) != 0x80;
+    return n;
+}
+
 bool ReadBinary(const std::string &path, std::string *out) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
@@ -572,14 +579,20 @@ struct OrgWriter {
         return o + Text(text);
     }
     // Org has no escape character; the documented way to keep a marker
-    // literal is a zero-width space in front of it, where it could open.
+    // literal is a zero-width space in front of it, where it could open --
+    // and only where a closing marker follows, so a lone `~49` stays as
+    // it is.
     static std::string Text(const std::string &t) {
         std::string o;
         for (size_t i = 0; i < t.size(); ++i) {
             const char c = t[i];
             const bool could_open = std::strchr("*/_=~+", c) && (i == 0 || std::strchr(" \t\n-({'\"", t[i - 1])) && i + 1 < t.size() &&
                                     t[i + 1] != ' ' && t[i + 1] != '\n';
-            if (could_open) o += "\u200b";
+            bool could_close = false;
+            for (size_t k = i + 2; could_open && !could_close && k < t.size(); ++k)
+                could_close = t[k] == c && !std::strchr(" \t\n", t[k - 1]) &&
+                              (k + 1 == t.size() || std::strchr(" \t\n-.,;:!?')}\"[", t[k + 1]));
+            if (could_open && could_close) o += "\u200b";
             o += c;
         }
         return o;
@@ -596,7 +609,9 @@ struct OrgWriter {
             case InlineKind::Strike:
             case InlineKind::Delete: return "+" + in + "+";
             case InlineKind::Mono: return "=" + InlinePlainText(x.children) + "=";
-            case InlineKind::Verbatim: return "~" + x.text + "~";
+            // Org cannot escape inside ~code~, so text with a tilde of its
+            // own (`~/.config`) goes in =verbatim= instead.
+            case InlineKind::Verbatim: return x.text.find('~') == std::string::npos ? "~" + x.text + "~" : "=" + x.text + "=";
             case InlineKind::Link: return "[[" + x.arg + "][" + in + "]]";
             case InlineKind::Footnote:
                 footnotes.emplace_back(x.number, Unwrap(in));
@@ -689,14 +704,27 @@ struct OrgWriter {
                     blocks.push_back(cap + (b.alt_line >= 0 ? "#+ATTR_HTML: :alt " + b.alt + "\n" : "") + "[[file:" + b.value + "]]");
                     break;
                 case BlockKind::Table: {
+                    // Columns are padded to their widest cell, the way
+                    // org-mode aligns a table itself.
+                    std::vector<std::vector<std::string>> cells;
+                    std::vector<size_t> width;
+                    for (const auto &row : b.rows) {
+                        cells.emplace_back();
+                        for (size_t c = 0; c < row.size(); ++c) {
+                            cells.back().push_back(Unwrap(Inl(row[c].content)));
+                            if (width.size() <= c) width.push_back(0);
+                            width[c] = std::max(width[c], Utf8Width(cells.back().back()));
+                        }
+                    }
                     std::vector<std::string> lines;
-                    for (size_t r = 0; r < b.rows.size(); ++r) {
+                    for (size_t r = 0; r < cells.size(); ++r) {
                         std::string o = "|";
-                        for (const TableCell &c : b.rows[r]) o += " " + Unwrap(Inl(c.content)) + " |";
+                        for (size_t c = 0; c < cells[r].size(); ++c)
+                            o += " " + cells[r][c] + std::string(width[c] - Utf8Width(cells[r][c]), ' ') + " |";
                         lines.push_back(o);
                         if (static_cast<int>(r) + 1 == b.header_rows) {
                             std::string sep = "|";
-                            for (size_t c = 0; c < b.rows[r].size(); ++c) sep += std::string(c ? "+" : "") + "---";
+                            for (size_t c = 0; c < cells[r].size(); ++c) sep += std::string(c ? "+" : "") + std::string(width[c] + 2, '-');
                             lines.push_back(sep + "|");
                         }
                     }
@@ -708,7 +736,19 @@ struct OrgWriter {
                     for (const ListItem &it : b.items) {
                         std::string m = it.ordered ? std::to_string(it.number) + ". " : "- ";
                         if (it.checkbox >= 0) m += it.checkbox ? "[X] " : "[ ] ";
-                        lines.push_back(std::string(static_cast<size_t>(it.indent), ' ') + m + Unwrap(Inl(it.content)));
+                        // An item keeps the source's line breaks; its
+                        // continuation lines sit under its text, as Org
+                        // wants them.
+                        const std::string lead = std::string(static_cast<size_t>(it.indent), ' ');
+                        std::istringstream ss(SafeLines(Inl(it.content)));
+                        std::string l;
+                        bool first = true;
+                        while (std::getline(ss, l)) {
+                            const std::string t = TrimStr(l);
+                            if (first) lines.push_back(lead + m + t);
+                            else if (!t.empty()) lines.push_back(lead + std::string(m.size(), ' ') + t);
+                            first = false;
+                        }
                     }
                     blocks.push_back(Join(lines, "\n"));
                     break;
@@ -2433,7 +2473,93 @@ bool WriteDocx(const Document &doc, const std::string &path, const std::string &
     return static_cast<bool>(f);
 }
 
-bool ExportFile(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error) {
+// ===========================================================================
+// The generated-file notice
+// ===========================================================================
+
+namespace {
+
+// The sentence every format's notice carries, so IsGeneratedNotice can tell
+// one from any other comment.
+const char *const kNoticeHead = "Generated from ";
+const char *const kNoticeTail = " by mep's mepml export. Do not edit this file: edit ";
+
+std::string NoticeSentence(const ExportOptions &opts) {
+    const bool named = !opts.source.empty();
+    return std::string(kNoticeHead) + (named ? opts.source : "a mepml document") + kNoticeTail + (named ? opts.source : "the .mepml source") +
+           " and export it again.";
+}
+
+// `//? Notice: no` (off, false, 0) in the document's header turns the
+// notice off for every export of it.
+bool DocumentWantsNotice(const Document &doc) {
+    for (const auto &kv : doc.meta) {
+        if (LowerStr(kv.first) != "notice") continue;
+        const std::string v = LowerStr(TrimStr(kv.second));
+        return !(v == "no" || v == "off" || v == "false" || v == "0" || v == "none");
+    }
+    return true;
+}
+
+}  // namespace
+
+std::string WithGeneratedNotice(Format f, const Document &doc, const ExportOptions &opts, const std::string &text) {
+    if (!opts.notice || !DocumentWantsNotice(doc)) return text;
+    const std::string sentence = NoticeSentence(opts);
+    switch (f) {
+        case Format::Org: return "# " + sentence + "\n\n" + text;
+        case Format::Latex: return "% " + sentence + "\n" + text;
+        case Format::Markdown: {
+            // After the front matter, which must stay the first thing in the file.
+            const std::string comment = "<!-- " + sentence + " -->\n\n";
+            if (text.rfind("---\n", 0) == 0) {
+                const size_t end = text.find("\n---\n", 3);
+                if (end != std::string::npos) return text.substr(0, end + 5) + "\n" + comment + text.substr(end + 5);
+            }
+            return comment + text;
+        }
+        case Format::Html: {
+            // After the doctype, which must stay the first thing in the file.
+            const std::string comment = "<!-- " + sentence + " -->\n";
+            if (LowerStr(text.substr(0, 9)) == "<!doctype") {
+                const size_t nl = text.find('\n');
+                if (nl != std::string::npos) return text.substr(0, nl + 1) + comment + text.substr(nl + 1);
+            }
+            return comment + text;
+        }
+        // No comment to put it in (text, RTF), or a package (DOCX, ODT, PPTX,
+        // ODP) whose document properties name the source already.
+        default: return text;
+    }
+}
+
+bool IsGeneratedNotice(const std::string &line) {
+    std::string t = TrimStr(line);
+    if (t.rfind("<!--", 0) == 0 && t.size() >= 7 && t.compare(t.size() - 3, 3, "-->") == 0) t = TrimStr(t.substr(4, t.size() - 7));
+    else if (t.rfind("# ", 0) == 0 || t.rfind("% ", 0) == 0) t = t.substr(2);
+    else return false;
+    return t.rfind(kNoticeHead, 0) == 0 && t.find(kNoticeTail) != std::string::npos;
+}
+
+std::string StripGeneratedNotice(const std::string &text) {
+    // The notice is within the first lines of a file: the top, or just
+    // after a doctype or a front matter block.
+    size_t pos = 0;
+    for (int n = 0; n < 40 && pos < text.size(); ++n) {
+        size_t nl = text.find('\n', pos);
+        const size_t end = nl == std::string::npos ? text.size() : nl + 1;
+        if (IsGeneratedNotice(text.substr(pos, end - pos))) {
+            size_t cut = end;
+            if (text.compare(cut, 1, "\n") == 0) ++cut;  // and the blank line under it
+            return text.substr(0, pos) + text.substr(cut);
+        }
+        pos = end;
+    }
+    return text;
+}
+
+bool ExportFile(const Document &doc, const std::string &path, const std::string &base_dir, std::string *error,
+                const ExportOptions &opts) {
     const Format f = FormatFromPath(path);
     std::string text;
     switch (f) {
@@ -2451,6 +2577,7 @@ bool ExportFile(const Document &doc, const std::string &path, const std::string 
             if (error) *error = "cannot export to " + path + " (PDF goes through LaTeX; see mep-mepml)";
             return false;
     }
+    text = WithGeneratedNotice(f, doc, opts, text);
     std::ofstream o(path, std::ios::binary);
     if (!o) {
         if (error) *error = "cannot write " + path;

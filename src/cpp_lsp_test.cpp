@@ -23,6 +23,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -1008,6 +1010,57 @@ void TestRealisticFileIsQuiet() {
     CHECK(Silent(lines));
 }
 
+// --- A library's header on an include path --------------------------
+
+/** @brief Writes `lines` to `path`, one per line. */
+void WriteLines(const std::filesystem::path &path, const Lines &lines) {
+    std::ofstream out(path);
+    for (const std::string &line : lines) out << line << '\n';
+}
+
+/** @brief Reports whether a completion list offers `label`. */
+bool Offers(const std::vector<CppLspCompletionItem> &items, const std::string &label) {
+    for (const CppLspCompletionItem &item : items) {
+        if (item.label == label) return true;
+    }
+    return false;
+}
+
+void TestIncludedLibraryHeaders() {
+    // A library installed elsewhere, included the way libraries are --
+    // angled, under its own directory -- with its API in a namespace.
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / "mep-cpp-lsp-test-include";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "inc" / "lib");
+    std::filesystem::create_directories(root / "src");
+    WriteLines(root / "inc" / "lib" / "lib.hpp",
+               {"namespace lib {", "/// Says hello.", "void hello();", "namespace detail { int depth(); }",
+                "class Frame { public: int rows() const; };", "}"});
+    const Lines lines = {"#include <lib/lib.hpp>", "int main() {", "  lib::", "  return 0;", "}"};
+    CppLspOptions opts;
+    opts.doc_dir = (root / "src").string();
+    opts.file_name = "main.cpp";
+    opts.check_files = true;
+    // Without the include path the header is not found, so nothing is known.
+    CHECK(!Offers(CppLspCompletions(lines, 2, 7, opts), "hello"));
+    // With it: the namespace's members after `lib::`, nested namespaces
+    // and classes included, and hover knows where a name came from.
+    opts.include_dirs = {(root / "inc").string()};
+    const std::vector<CppLspCompletionItem> items = CppLspCompletions(lines, 2, 7, opts);
+    CHECK(Offers(items, "hello"));
+    CHECK(Offers(items, "detail"));
+    CHECK(Offers(items, "Frame"));
+    const Lines complete = {"#include <lib/lib.hpp>", "int main() {", "  lib::hello();", "  return 0;", "}"};
+    const CppLspHoverInfo info = CppLspHover(complete, 2, 8, opts);
+    CHECK(info.found);
+    CHECK(info.text.find("lib::hello") != std::string::npos);
+    // An angled include is never resolved next to the file itself.
+    WriteLines(root / "src" / "local.hpp", {"void local_fn();"});
+    const Lines local = {"#include <local.hpp>", "void f() { loc }"};
+    CHECK(!Offers(CppLspCompletions(local, 1, 14, opts), "local_fn"));
+    std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main() {
@@ -1031,6 +1084,7 @@ int main() {
     TestVocabulary();
     TestRobustnessAndOddDocuments();
     TestRealisticFileIsQuiet();
+    TestIncludedLibraryHeaders();
     std::printf("mep-cpp-lsp-test: all checks passed\n");
     return 0;
 }

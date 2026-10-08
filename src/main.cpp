@@ -7201,10 +7201,12 @@ const char *kBuiltinLsp =
     "    mep.lsp_on_notification(id, 'textDocument/publishDiagnostics', function(params)\n"
     "      local uri = params.uri or ''\n"
     "      local f = uri:gsub('^file://', '')\n"
-    // An org file's diagnostics are merged with the polyglot bridge's
-    // (see mep_org_diag_set); every other filetype has a single producer
-    // and assigns directly, exactly as before.
-    "      if mep_lsp_filetype(f) == 'org' then\n"
+    // An org or mepml file's diagnostics are merged with the polyglot
+    // bridge's (see mep_org_diag_set) -- both carry code blocks it
+    // analyses; every other filetype has a single producer and assigns
+    // directly, exactly as before.
+    "      local ft = mep_lsp_filetype(f)\n"
+    "      if ft == 'org' or ft == 'mepml' then\n"
     "        mep_org_diag_set(f, 'org', params.diagnostics or {})\n"
     "        return\n"
     "      end\n"
@@ -17981,6 +17983,41 @@ const char *kBuiltinOrgPolyglot =
     "  end\n"
     "  return blocks\n"
     "end\n"
+    // A mepml document's code blocks, in the shape mep_org_src_block_at
+    // gives an org one: start_row/end_row are the fence rows around the
+    // body, and args_str is the block's options as babel header
+    // arguments -- exactly the string mepml's own runner hands babel
+    // (mep_mepml_run_block), so a block's `flags="$(pkg-config ...)"`
+    // reaches the language server as it reaches the compiler. A block
+    // with no body or no language has nothing to analyse.
+    "local function mep_polyglot_mepml_blocks()\n"
+    "  local blocks = {}\n"
+    "  for _, b in ipairs(mep.mepml_code_blocks()) do\n"
+    "    if b.lang ~= '' then\n"
+    "      local args = {}\n"
+    "      local full = mep.mepml_block_at(b.first)\n"
+    "      for _, o in ipairs(full and full.option_list or {}) do args[#args + 1] = ':' .. o.name .. ' ' .. o.value end\n"
+    "      blocks[#blocks + 1] = {lang = b.lang, start_row = b.first - 1, end_row = b.last + 1, args_str = table.concat(args, ' ')}\n"
+    "    end\n"
+    "  end\n"
+    "  return blocks\n"
+    "end\n"
+    // The bridge serves org `#+begin_src` blocks and mepml ``` blocks
+    // alike; these two are the only places that tell them apart.
+    "local function mep_polyglot_is_mepml()\n"
+    "  return mep_lsp_filetype(mep.filename() or '') == 'mepml'\n"
+    "end\n"
+    "local function mep_polyglot_blocks_all()\n"
+    "  if mep_polyglot_is_mepml() then return mep_polyglot_mepml_blocks() end\n"
+    "  return mep_org_src_blocks_all()\n"
+    "end\n"
+    "local function mep_polyglot_block_at(row)\n"
+    "  if not mep_polyglot_is_mepml() then return mep_org_src_block_at(row) end\n"
+    "  for _, blk in ipairs(mep_polyglot_mepml_blocks()) do\n"
+    "    if row >= blk.start_row and row <= blk.end_row then return blk end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
     // How many lines lang_def.wrap_main(includes, body) prepends/appends
     // around `body` verbatim -- found generically (works for any
     // wrap_main implementation without parsing its source) by wrapping a
@@ -18005,7 +18042,7 @@ const char *kBuiltinOrgPolyglot =
     "local function mep_polyglot_shared_content(lang)\n"
     "  local lines = {}\n"
     "  for i = 1, mep.line_count() do lines[i] = '' end\n"
-    "  for _, blk in ipairs(mep_org_src_blocks_all()) do\n"
+    "  for _, blk in ipairs(mep_polyglot_blocks_all()) do\n"
     "    if blk.lang == lang then\n"
     "      for i = blk.start_row + 1, blk.end_row - 1 do lines[i] = mep.get_line(i) end\n"
     "    end\n"
@@ -18038,7 +18075,7 @@ const char *kBuiltinOrgPolyglot =
     // start_row/end_row -- a shared shadow's own fields are only ever
     // set once, at creation, but any block of that language could have
     // moved since.
-    "    for _, blk in ipairs(mep_org_src_blocks_all()) do\n"
+    "    for _, blk in ipairs(mep_polyglot_blocks_all()) do\n"
     "      if blk.lang == shadow.lang and shadow_line > blk.start_row and shadow_line < blk.end_row then\n"
     "        return shadow_line\n"
     "      end\n"
@@ -18102,6 +18139,34 @@ const char *kBuiltinOrgPolyglot =
     "  if shadow.compile_argv == argv_key then return end\n"
     "  local restart = shadow.compile_argv ~= nil\n"
     "  shadow.compile_argv = argv_key\n"
+    // The same flags as settings, for a server that reads no compilation
+    // database: mep's own cpp_ls (the default for c++) takes its -I and
+    // -D lists as `includeDirs`/`defines` init options and nothing else,
+    // so without these a library's headers -- `#include <lib/lib.hpp>`
+    // behind `$(pkg-config --cflags lib)` -- are invisible to it. A
+    // relative -I is the block's run directory's, as it is the compiler's.
+    "  local include_dirs, defines = {}, {}\n"
+    "  local i = 1\n"
+    "  while i <= #argv do\n"
+    "    local a = argv[i]\n"
+    "    local flag, rest = a:match('^(%-I)(.*)$')\n"
+    "    if not flag then flag, rest = a:match('^(%-isystem)(.*)$') end\n"
+    "    if not flag then flag, rest = a:match('^(%-iquote)(.*)$') end\n"
+    "    if flag then\n"
+    "      if rest == '' then i = i + 1 rest = argv[i] end\n"
+    "      if rest and rest ~= '' then\n"
+    "        if rest:sub(1, 1) ~= '/' and shadow.run_dir then rest = shadow.run_dir .. '/' .. rest end\n"
+    "        include_dirs[#include_dirs + 1] = rest\n"
+    "      end\n"
+    "    else\n"
+    "      local def = a:match('^%-D(.*)$')\n"
+    "      if def == '' then i = i + 1 def = argv[i] end\n"
+    "      if def and def ~= '' then defines[#defines + 1] = def end\n"
+    "    end\n"
+    "    i = i + 1\n"
+    "  end\n"
+    "  shadow.init_options = (#include_dirs > 0 or #defines > 0) and\n"
+    "    {includeDirs = #include_dirs > 0 and include_dirs or nil, defines = #defines > 0 and defines or nil} or nil\n"
     "  local args_json = {}\n"
     "  for _, a in ipairs(argv) do\n"
     "    args_json[#args_json + 1] = '\"' .. a:gsub('\\\\', '\\\\\\\\'):gsub('\"', '\\\\\"') .. '\"'\n"
@@ -18144,9 +18209,28 @@ const char *kBuiltinOrgPolyglot =
     "  shadow.client = id\n"
     "  mep_polyglot_epoch = mep_polyglot_epoch + 1\n"
     "  shadow.version = 1\n"
+    // The server's own init_options (as a real file's client gets them),
+    // with the block's -I/-D lists (mep_polyglot_write_compile_db) added
+    // after any the user configured.
+    "  local init = nil\n"
+    "  if server.init_options or shadow.init_options then\n"
+    "    init = {}\n"
+    "    for k, v in pairs(server.init_options or {}) do init[k] = v end\n"
+    "    for k, v in pairs(shadow.init_options or {}) do\n"
+    "      if type(v) == 'table' and type(init[k]) == 'table' then\n"
+    "        local both = {}\n"
+    "        for _, x in ipairs(init[k]) do both[#both + 1] = x end\n"
+    "        for _, x in ipairs(v) do both[#both + 1] = x end\n"
+    "        init[k] = both\n"
+    "      else\n"
+    "        init[k] = v\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
     "  mep.lsp_request(id, 'initialize', {\n"
     "    processId = mep.platform() == 'wasm' and mep.json_null or nil,\n"
     "    rootUri = mep_lsp_uri(shadow.dir),\n"
+    "    initializationOptions = init,\n"
     "    capabilities = {\n"
     "      textDocument = {\n"
     "        hover = {contentFormat = {'plaintext'}},\n"
@@ -18291,8 +18375,9 @@ const char *kBuiltinOrgPolyglot =
     "            position = {line = row - blk.start_row - 1, character = col - 1}}\n"
     "  end\n"
     "  if not mep.org_polyglot_enabled then return nil end\n"
-    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then return nil end\n"
-    "  local blk = mep_org_src_block_at(row)\n"
+    "  local doc_ft = mep_lsp_filetype(mep.filename())\n"
+    "  if doc_ft ~= 'org' and doc_ft ~= 'mepml' then return nil end\n"
+    "  local blk = mep_polyglot_block_at(row)\n"
     "  if not blk or not blk.lang or blk.lang == '' then return nil end\n"
     "  local lang_def = mep.org_babel_langs[blk.lang]\n"
     "  if not lang_def then return nil end\n"
@@ -18384,7 +18469,7 @@ const char *kBuiltinOrgPolyglot =
     "function mep_polyglot_resync()\n"
     "  local org_file = mep.filename()\n"
     "  local notebook = mep_lsp_filetype(org_file) == 'ipynb'\n"
-    "  if not notebook and mep_lsp_filetype(org_file) ~= 'org' then return end\n"
+    "  if not notebook and mep_lsp_filetype(org_file) ~= 'org' and mep_lsp_filetype(org_file) ~= 'mepml' then return end\n"
     "  local org_abspath = mep_lsp_abspath(org_file)\n"
     "  for _, key in ipairs(mep_polyglot_shadows_by_file[org_abspath] or {}) do\n"
     "    local shadow = mep_polyglot_shadows[key]\n"
@@ -18409,7 +18494,7 @@ const char *kBuiltinOrgPolyglot =
     "    if shadow and lang_def then\n"
     "      local content\n"
     "      if shadow.per_block then\n"
-    "        local blk = mep_org_src_block_at(shadow.start_row + 1)\n"
+    "        local blk = mep_polyglot_block_at(shadow.start_row + 1)\n"
     "        if blk and blk.lang == shadow.lang then\n"
     "          content, shadow.prefix_len = mep_polyglot_per_block_content(blk, lang_def)\n"
     "          shadow.end_row = blk.end_row\n"

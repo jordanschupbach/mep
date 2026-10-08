@@ -397,8 +397,7 @@ private:
         // from the qualified names rather than re-walked.
         const size_t at = entry.qualified.rfind("::");
         const std::string qualifier = at == std::string::npos ? "" : entry.qualified.substr(0, at);
-        const auto owner = external_scopes_.find(qualifier);
-        symbol.scope = owner == external_scopes_.end() ? 0 : owner->second;
+        symbol.scope = ExternalScopeFor(qualifier, path);
         const bool opens_scope = entry.kind == CppSymbolKind::Class || entry.kind == CppSymbolKind::Struct ||
                                  entry.kind == CppSymbolKind::Union || entry.kind == CppSymbolKind::Enum;
         const int parent_scope = symbol.scope;
@@ -413,6 +412,46 @@ private:
         index_.scopes[static_cast<size_t>(class_scope)].owner = created;
         index_.symbols[static_cast<size_t>(created)].child_scope = class_scope;
         external_scopes_[entry.qualified] = class_scope;
+    }
+
+    /**
+     * @brief The scope a header's qualifier names, creating the namespaces along it that do not exist yet.
+     * @param qualifier the part of a qualified name before its last `::` ("" for the file scope)
+     * @param path the header the name came from, recorded on any namespace symbol this creates
+     * @return the scope index
+     *
+     * CollectHeaderSymbols flattens a header's namespaces into qualified
+     * names; without a real scope behind each one, `ns::` had nothing to
+     * offer and `ns::f` resolved to nothing, so a library's whole API
+     * (all of it under its namespace) was invisible. A qualifier that is
+     * not a class or enum seen earlier is a namespace, and shares the
+     * scope of a same-named namespace from another header or, later, the
+     * document itself (WalkDeclarations finds it with FindNamespaceScope).
+     */
+    int ExternalScopeFor(const std::string &qualifier, const std::string &path) {
+        if (qualifier.empty()) return 0;
+        const auto known = external_scopes_.find(qualifier);
+        if (known != external_scopes_.end()) return known->second;
+        const size_t at = qualifier.rfind("::");
+        const int parent = ExternalScopeFor(at == std::string::npos ? "" : qualifier.substr(0, at), path);
+        const std::string name = at == std::string::npos ? qualifier : qualifier.substr(at + 2);
+        int scope = FindNamespaceScope(parent, name);
+        if (scope < 0) {
+            scope = NewScope(CppScope::Kind::Namespace, parent, name, nullptr);
+            CppSymbol symbol;
+            symbol.name = name;
+            symbol.qualified = qualifier;
+            symbol.kind = CppSymbolKind::Namespace;
+            symbol.scope = parent;
+            symbol.child_scope = scope;
+            symbol.detail = "namespace " + qualifier;
+            symbol.external = true;
+            symbol.file = path;
+            const int created = AddSymbol(std::move(symbol));
+            index_.scopes[static_cast<size_t>(scope)].owner = created;
+        }
+        external_scopes_[qualifier] = scope;
+        return scope;
     }
 
     /** @brief Parses a header (or returns the cached result) and extracts its top-level declarations. */

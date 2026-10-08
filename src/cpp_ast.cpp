@@ -1378,7 +1378,21 @@ void CppPreprocess(const std::vector<CppToken> &raw, const std::vector<std::stri
                 inc.angled = d.angled;
                 inc.path_col = d.body.empty() ? d.start.col : d.body.front().start.col;
                 inc.path_end = d.end.col;
-                if (opts.resolve_includes && !d.angled && !d.header.empty()) {
+                if (opts.resolve_includes && d.angled && !d.header.empty()) {
+                    // An angled include is searched for on the -I paths
+                    // alone (never next to the file, as a compiler does):
+                    // `#include <lib/lib.hpp>` is how a library installed
+                    // anywhere but next to the code is included, and the
+                    // includeDirs setting is the only way to say where.
+                    for (const std::string &root : opts.include_dirs) {
+                        std::error_code ec;
+                        const std::filesystem::path candidate = std::filesystem::path(root) / d.header;
+                        if (std::filesystem::is_regular_file(candidate, ec)) {
+                            inc.resolved = candidate.lexically_normal().string();
+                            break;
+                        }
+                    }
+                } else if (opts.resolve_includes && !d.header.empty()) {
                     std::vector<std::string> roots;
                     if (!opts.doc_dir.empty()) roots.push_back(opts.doc_dir);
                     for (const std::string &dir : opts.include_dirs) roots.push_back(dir);

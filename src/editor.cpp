@@ -23727,6 +23727,32 @@ void Editor::DispatchVisualKey(int cp) {
         EnterNormal();
         return;
     }
+    if (pending_g_ && c == 'c') {
+        // gc: comment/uncomment the selected lines (commentary.vim's own
+        // mapping). Linewise regardless of how the selection was made,
+        // like gq just below -- a comment marker only means anything at a
+        // line's start, so a charwise selection grazing two lines still
+        // toggles both whole lines. Lands next to gq/gu rather than in the
+        // Lua g-mapping table below for the same reason they do: it's a
+        // built-in operator, and mep.map_g_visual's own table is consulted
+        // after these.
+        pending_g_ = false;
+        TakeRawCount();
+        CursorPos s, e;
+        VisualRange(s, e);
+        ToggleCommentLines(s.row, e.row);
+        // Vim drops the selection after gc and leaves the cursor on the
+        // first line it touched (not wherever inside the block it was).
+        // EnterNormal() first, *then* move: it snapshots the selection
+        // being left for `gv`, so moving the cursor ahead of it would
+        // collapse that memory to the single line landed on -- and
+        // gv-then-gc (toggle the same block straight back) is the obvious
+        // next keystroke here.
+        EnterNormal();
+        CurPane().cursor = FirstNonBlank(std::min(s.row, Buf().LineCount() - 1));
+        ClampCursor();
+        return;
+    }
     if (pending_g_ && c == 'q') {
         // gq always reformats whole lines (like >/< above), regardless of
         // whether the selection is charwise or linewise -- matching Vim,
@@ -29743,6 +29769,125 @@ void Editor::ApplyCaseChange(CursorPos start, CursorPos end, bool linewise, char
         for (int i = 0; i < b; i++) last[static_cast<size_t>(i)] = transform(last[static_cast<size_t>(i)]);
     }
     Buf().modified = true;
+}
+
+namespace {
+
+// The delimiters Visual-mode `gc` wraps a line in (ToggleCommentLines),
+// looked up by the buffer's own file extension (LspFiletype). Grouped by
+// comment syntax rather than listed one extension per row -- one entry
+// per marker, its extensions space-separated. `suffix` is empty for the
+// ordinary line-comment languages and non-empty only where the language
+// has no line comment at all and a single-line block comment is the only
+// way to say it (CSS, HTML/XML, Maxima). An extension that isn't here
+// gets no guess: `gc` says so and leaves the text alone, rather than
+// inserting a marker the language would choke on.
+struct CommentSyntax {
+    const char *prefix;
+    const char *suffix;
+    const char *extensions;
+};
+const CommentSyntax kCommentSyntaxes[] = {
+    {"//", "",
+     "c h cpp cc cxx hpp hh hxx ino cs java js mjs cjs jsx ts tsx go rs swift kt kts scala dart zig "
+     "d php proto glsl vert frag wgsl scss less mepml"},
+    {"#", "",
+     "py pyi sh bash zsh fish ksh rb pl pm r jl nix yaml yml toml cmake mk tf hcl ex exs cr awk tcl "
+     "ps1 conf gitignore dockerfile org"},
+    {"--", "", "lua hs sql elm adb ads vhd vhdl"},
+    {";", "", "el lisp cl clj cljs scm rkt ss ini asm s"},
+    {"\"", "", "vim"},
+    {"%", "", "tex sty cls bib erl hrl"},
+    {"!", "", "f for f90 f95 f03"},
+    {"/*", "*/", "css mac dem mc max"},
+    {"<!--", "-->", "html htm xhtml xml svg vue"},
+};
+
+/**
+ * @brief Looks up a filetype's line-comment delimiters for Visual-mode `gc`.
+ * @param ft The buffer's extension-derived filetype, already lowercased.
+ * @param prefix Receives the marker inserted at the start of a commented line.
+ * @param suffix Receives the closing marker, or "" for a line-comment language.
+ * @return True if `ft` has a known comment syntax; false (outputs untouched) otherwise.
+ */
+bool CommentSyntaxForFiletype(const std::string &ft, std::string *prefix, std::string *suffix) {
+    if (ft.empty()) return false;
+    for (const CommentSyntax &syntax : kCommentSyntaxes) {
+        std::istringstream exts(syntax.extensions);
+        std::string ext;
+        while (exts >> ext) {
+            if (ext != ft) continue;
+            *prefix = syntax.prefix;
+            *suffix = syntax.suffix;
+            return true;
+        }
+    }
+    return false;
+}
+}  // namespace
+
+// gc: see the declaration in editor.h for the contract.
+void Editor::ToggleCommentLines(int start_row, int end_row) {
+    std::string prefix, suffix;
+    const std::string ft = ToLowerAscii(LspFiletype(Buf().filename));
+    if (!CommentSyntaxForFiletype(ft, &prefix, &suffix)) {
+        SetStatusMessage(ft.empty() ? "No comment marker known for this buffer"
+                                    : "No comment marker known for ." + ft + " files");
+        return;
+    }
+    start_row = std::max(0, start_row);
+    end_row = std::min(end_row, Buf().LineCount() - 1);
+    if (start_row > end_row) return;
+
+    // One pass to decide the direction, a second to carry it out -- the
+    // whole range toggles together (vim-commentary's own rule: uncomment
+    // only when there is nothing left in the range to comment), so a
+    // selection with one stray uncommented line still comments cleanly
+    // rather than inverting line by line. Blank lines are neither
+    // inspected nor touched: a blank separator inside a block stays
+    // blank, and the marker column below ignores it rather than being
+    // dragged to column 0 by it.
+    std::vector<int> rows;
+    size_t marker_col = std::string::npos;
+    bool all_commented = true;
+    for (int r = start_row; r <= end_row; r++) {
+        const std::string &line = Buf().lines[static_cast<size_t>(r)];
+        size_t indent = line.find_first_not_of(" \t");
+        if (indent == std::string::npos) continue;
+        rows.push_back(r);
+        marker_col = std::min(marker_col, indent);
+        if (line.compare(indent, prefix.size(), prefix) != 0) all_commented = false;
+    }
+    if (rows.empty()) return;  // nothing but blank lines selected
+
+    PushUndo();
+    for (int r : rows) {
+        std::string &line = Buf().lines[static_cast<size_t>(r)];
+        if (all_commented) {
+            size_t indent = line.find_first_not_of(" \t");
+            line.erase(indent, prefix.size());
+            // Takes back the single space `gc` itself inserts, and only
+            // that one -- deeper padding is the author's own alignment.
+            if (indent < line.size() && line[indent] == ' ') line.erase(indent, 1);
+            size_t last = line.find_last_not_of(" \t");
+            if (!suffix.empty() && last != std::string::npos && last + 1 >= suffix.size() &&
+                line.compare(last + 1 - suffix.size(), suffix.size(), suffix) == 0) {
+                size_t cut = last + 1 - suffix.size();
+                if (cut > 0 && line[cut - 1] == ' ') cut--;
+                line.erase(cut);  // last is the final non-blank char, so this takes the suffix and any trailing blanks
+            }
+        } else {
+            // Every added marker lands on the range's *smallest* indent so
+            // the block keeps its internal shape (Vim and commentary.vim
+            // both do this; commenting at each line's own indent instead
+            // would leave a staircase of markers).
+            line.insert(marker_col, prefix + " ");
+            if (!suffix.empty()) line += " " + suffix;
+        }
+    }
+    Buf().modified = true;
+    SetStatusMessage((all_commented ? "Uncommented " : "Commented ") + std::to_string(rows.size()) +
+                     (rows.size() == 1 ? " line" : " lines"));
 }
 
 void Editor::IndentLines(int start_row, int end_row, int levels) {

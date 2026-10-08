@@ -5,9 +5,11 @@
 
 * Three kinds
 
-*A plain terminal.* =:terminal= (=:term=) opens a shell in the current
-pane. Split first (=:split=, =:vsplit=) if you want it beside what you were
-editing.
+*A plain terminal.* =:terminal= (=:term=) turns the current window into a
+shell -- it does not split, so on a single-pane tab the shell fills the whole
+window. The buffer that was showing stays in the buffer list, so =:bnext=
+brings it back. Split first with =:split= or =:vsplit= if you want the
+terminal beside the code.
 
 *The per-tab terminal.* =<leader><CR>= toggles one shell per tab along the
 bottom, spanning the tab's full width. This is the one you want most of the

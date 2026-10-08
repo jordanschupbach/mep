@@ -27,6 +27,19 @@ and =gU= change its case, =gq= reflows it, =~= toggles case.
 =>= and =<= indent, and they *keep the selection active* -- press =>= three
 times to indent three steps, matching Vim.
 
+=gc= comments the selected lines out, and comments them back *in* when every
+non-blank line in the selection is already commented -- one key for both
+directions, like commentary.vim's. The marker comes from the file's
+extension: =//=, =#=, =--=, =;=, =%= and the rest, with =/* */= or =<!-- -->=
+for the languages that have no line comment at all. A filetype mep has no
+marker for says so in the status line and leaves the text alone.
+
+Blank lines are skipped, and every marker lines up on the shallowest indent
+in the selection, so an indented block keeps its shape instead of growing a
+staircase of markers. =gc= always works on whole lines, even from a
+character-wise selection, and it is Visual mode only -- there is no
+Normal-mode =gcc= or =gc{motion}=.
+
 * Moving the other end
 
 =o= swaps the cursor to the opposite end of the selection. Useful when you

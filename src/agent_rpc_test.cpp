@@ -146,22 +146,22 @@ int main(int argc, char **argv) {
         return nullptr;
     };
 
-    // `:split` is what moves pane focus here: `:terminal` takes over the
-    // pane it was run in rather than splitting it (editor.cpp's
-    // OpenTerminal), so it is no longer a pane-focus change on its own.
-    // The split is also what gives the `:close` below a pane to close --
-    // E444 on a tab's last window otherwise, and no mode change back.
+    // `:terminal` takes over the pane it is run in rather than splitting
+    // (OpenTerminalInPlace, editor.cpp), so it moves focus to no new pane and
+    // leaves nothing behind for `:close` to fall back to -- on a
+    // single-pane tab that would be E444 with the mode still TERMINAL.
+    // The split is what exercises event.paneFocusChanged, and it also
+    // gives the terminal a sibling so closing it lands back in Normal
+    // mode in the original buffer.
     std::vector<Json> split_events;
-    // Builds {cmd: "split"} inline as this call's params. Request id 31
-    // rather than a renumbering of every id from here down -- ids only
-    // have to be unique per connection, not consecutive.
-    Call(fd, 31, "command.run", [] { Json p = Json::Object(); p["cmd"] = "split"; return p; }(), &read_buf, &split_events);
+    // Builds {cmd: "split"} inline as this call's params.
+    Call(fd, 12, "command.run", [] { Json p = Json::Object(); p["cmd"] = "split"; return p; }(), &read_buf, &split_events);
     DrainEvents(fd, &read_buf, &split_events);
-    CHECK_CTX(has_event(split_events, "event.paneFocusChanged"), "opening a :split should push a pane focus change");
+    CHECK_CTX(has_event(split_events, "event.paneFocusChanged"), "opening a split should push a pane focus change");
 
     std::vector<Json> term_events;
     // Builds {cmd: "terminal"} inline as this call's params.
-    Call(fd, 12, "command.run", [] { Json p = Json::Object(); p["cmd"] = "terminal"; return p; }(), &read_buf, &term_events);
+    Call(fd, 13, "command.run", [] { Json p = Json::Object(); p["cmd"] = "terminal"; return p; }(), &read_buf, &term_events);
     DrainEvents(fd, &read_buf, &term_events);
     const Json *mode_ev = find_event(term_events, "event.modeChanged");
     CHECK_CTX(mode_ev != nullptr, "opening :terminal should push a mode change to TERMINAL");
@@ -169,7 +169,7 @@ int main(int argc, char **argv) {
 
     std::vector<Json> close_events;
     // Builds {cmd: "close"} inline as this call's params.
-    Call(fd, 13, "command.run", [] { Json p = Json::Object(); p["cmd"] = "close"; return p; }(), &read_buf, &close_events);
+    Call(fd, 14, "command.run", [] { Json p = Json::Object(); p["cmd"] = "close"; return p; }(), &read_buf, &close_events);
     DrainEvents(fd, &read_buf, &close_events);
     const Json *back_to_normal = find_event(close_events, "event.modeChanged");
     CHECK_CTX(back_to_normal != nullptr && back_to_normal->get("params").get("mode").as_string() == "NORMAL",
@@ -177,7 +177,7 @@ int main(int argc, char **argv) {
 
     std::vector<Json> notify_events;
     // Builds {cmd: "lua mep.notify(...)"} inline as this call's params.
-    Call(fd, 14, "command.run",
+    Call(fd, 15, "command.run",
          [] { Json p = Json::Object(); p["cmd"] = "lua mep.notify('m3 test notification', 'warn')"; return p; }(), &read_buf, &notify_events);
     DrainEvents(fd, &read_buf, &notify_events);
     const Json *notif = find_event(notify_events, "event.notification");
@@ -198,7 +198,7 @@ int main(int argc, char **argv) {
     // steps left the cursor/mode in.
     std::vector<Json> actor_events;
     // Builds {text: "watcher-test"} inline as this call's params.
-    Call(fd, 15, "buffer.insertText", [] { Json p = Json::Object(); p["text"] = "watcher-test"; return p; }(), &read_buf, &actor_events);
+    Call(fd, 16, "buffer.insertText", [] { Json p = Json::Object(); p["text"] = "watcher-test"; return p; }(), &read_buf, &actor_events);
     std::vector<Json> watcher_events;
     std::string watcher_buf;
     DrainEvents(watcher_fd, &watcher_buf, &watcher_events);
@@ -215,13 +215,13 @@ int main(int argc, char **argv) {
     std::string read_buf2;
 
     // Builds {name: "Agent A"} inline as this call's params.
-    Json ident_a = Call(fd, 16, "session.identify", [] { Json p = Json::Object(); p["name"] = "Agent A"; return p; }(), &read_buf);
+    Json ident_a = Call(fd, 17, "session.identify", [] { Json p = Json::Object(); p["name"] = "Agent A"; return p; }(), &read_buf);
     CHECK(ident_a.get("result").get("participant_id").as_string() != "");
     // Builds {name: "Agent B"} inline as this call's params.
     Json ident_b = Call(fd2, 16, "session.identify", [] { Json p = Json::Object(); p["name"] = "Agent B"; return p; }(), &read_buf2);
     CHECK(ident_b.get("result").get("participant_id").as_string() != ident_a.get("result").get("participant_id").as_string());
 
-    const Json real_pane_before = Call(fd, 17, "pane.get", Json::Object(), &read_buf);
+    const Json real_pane_before = Call(fd, 18, "pane.get", Json::Object(), &read_buf);
     const int real_row_before = real_pane_before.get("result").get("cursor").get("row").as_int();
     const int real_col_before = real_pane_before.get("result").get("cursor").get("col").as_int();
 
@@ -229,31 +229,31 @@ int main(int argc, char **argv) {
     set_a["buffer_id"] = 0;
     set_a["row"] = 0;
     set_a["col"] = 0;
-    Call(fd, 18, "cursor.set", set_a, &read_buf);
+    Call(fd, 19, "cursor.set", set_a, &read_buf);
     // Builds {text: "AAAA"} inline as this call's params.
-    Call(fd, 19, "buffer.insertText", [] { Json p = Json::Object(); p["text"] = "AAAA"; return p; }(), &read_buf);
+    Call(fd, 20, "buffer.insertText", [] { Json p = Json::Object(); p["text"] = "AAAA"; return p; }(), &read_buf);
     Call(fd2, 17, "cursor.set", set_a, &read_buf2);  // same target position, independent connection
     // Builds {text: "BBBB"} inline as this call's params.
     Call(fd2, 18, "buffer.insertText", [] { Json p = Json::Object(); p["text"] = "BBBB"; return p; }(), &read_buf2);
 
-    const Json cursor_a = Call(fd, 20, "cursor.get", Json::Object(), &read_buf);
+    const Json cursor_a = Call(fd, 21, "cursor.get", Json::Object(), &read_buf);
     const Json cursor_b = Call(fd2, 19, "cursor.get", Json::Object(), &read_buf2);
     CHECK_CTX(cursor_a.get("result").get("col").as_int() == 4, "Agent A's own cursor should have advanced by its own 4-char insert");
     CHECK_CTX(cursor_b.get("result").get("col").as_int() == 4, "Agent B's own cursor should have advanced by its own 4-char insert, independent of A");
 
-    const Json real_pane_after = Call(fd, 21, "pane.get", Json::Object(), &read_buf);
+    const Json real_pane_after = Call(fd, 22, "pane.get", Json::Object(), &read_buf);
     CHECK_CTX(real_pane_after.get("result").get("cursor").get("row").as_int() == real_row_before &&
                   real_pane_after.get("result").get("cursor").get("col").as_int() == real_col_before,
               "two agents editing buffer 0 should not have moved the real active pane's own cursor at all");
 
-    const Json created = Call(fd, 22, "buffer.create", Json::Object(), &read_buf);
+    const Json created = Call(fd, 23, "buffer.create", Json::Object(), &read_buf);
     const int new_buffer_id = created.get("result").get("buffer_id").as_int();
     Json switch_params = Json::Object();
     switch_params["buffer_id"] = new_buffer_id;
-    Call(fd, 23, "buffer.switch", switch_params, &read_buf);
-    const Json cursor_after_switch = Call(fd, 24, "cursor.get", Json::Object(), &read_buf);
+    Call(fd, 24, "buffer.switch", switch_params, &read_buf);
+    const Json cursor_after_switch = Call(fd, 25, "cursor.get", Json::Object(), &read_buf);
     CHECK(cursor_after_switch.get("result").get("buffer_id").as_int() == new_buffer_id);
-    const Json real_pane_after_switch = Call(fd, 25, "pane.get", Json::Object(), &read_buf);
+    const Json real_pane_after_switch = Call(fd, 26, "pane.get", Json::Object(), &read_buf);
     CHECK_CTX(real_pane_after_switch.get("result").get("buffer_id").as_int() != new_buffer_id,
               "buffer.switch should redirect only the calling connection's own cursor, not the real active pane's buffer");
 
@@ -372,7 +372,7 @@ int main(int argc, char **argv) {
             CHECK(std::fwrite(tall.data(), 1, tall.size(), f) == tall.size());
             std::fclose(f);
         }
-        Json open_tall = Call(fd, 27, "file.open", [&] { Json p = Json::Object(); p["path"] = tall_path; return p; }(), &read_buf);
+        Json open_tall = Call(fd, 28, "file.open", [&] { Json p = Json::Object(); p["path"] = tall_path; return p; }(), &read_buf);
         CHECK_CTX(open_tall.contains("result"), "file.open=[" + open_tall.dump() + "]");
 
         // Well past the point where a 212992-byte (Linux default) send
@@ -385,7 +385,7 @@ int main(int argc, char **argv) {
         for (int i = 0; i < kMoves; i++) {
             const std::string cmd = "normal " + std::to_string(i % 2 == 0 ? 10 : 150) + "G";
             const auto t0 = std::chrono::steady_clock::now();
-            Json moved = Call(fd, 28, "command.run", [&] { Json p = Json::Object(); p["cmd"] = cmd; return p; }(), &read_buf);
+            Json moved = Call(fd, 29, "command.run", [&] { Json p = Json::Object(); p["cmd"] = cmd; return p; }(), &read_buf);
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             CHECK(moved.contains("result"));
             worst_ms = std::max(worst_ms, ms);
@@ -400,11 +400,11 @@ int main(int argc, char **argv) {
         // time -- shedding load toward the stalled peer must not affect
         // anyone else -- and still works after the stalled one goes away.
         std::vector<Json> after_events;
-        Call(fd, 29, "command.run", [] { Json p = Json::Object(); p["cmd"] = "normal 100G"; return p; }(), &read_buf, &after_events);
+        Call(fd, 30, "command.run", [] { Json p = Json::Object(); p["cmd"] = "normal 100G"; return p; }(), &read_buf, &after_events);
         DrainEvents(fd, &read_buf, &after_events, 200);
         CHECK_CTX(has_event(after_events, "event.cursorMoved"), "healthy connection should still receive events while another client is stalled");
         close(stalled_fd);
-        Json still_alive = Call(fd, 30, "session.info", Json::Object(), &read_buf);
+        Json still_alive = Call(fd, 31, "session.info", Json::Object(), &read_buf);
         CHECK(still_alive.contains("result"));
         std::filesystem::remove(tall_path, ec);
     }
@@ -529,7 +529,7 @@ int main(int argc, char **argv) {
 
     Json quit_params = Json::Object();
     quit_params["cmd"] = "qa!";
-    Json quit_resp = Call(fd, 26, "command.run", quit_params, &read_buf);
+    Json quit_resp = Call(fd, 27, "command.run", quit_params, &read_buf);
     CHECK(quit_resp.contains("result"));
     close(fd);
 

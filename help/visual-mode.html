@@ -30,6 +30,17 @@ the inside of a parenthesised group.</p>
 and <code>gU</code> change its case, <code>gq</code> reflows it, <code>~</code> toggles case.</p>
 <p><code>&gt;</code> and <code>&lt;</code> indent, and they <b>keep the selection active</b> -- press <code>&gt;</code> three
 times to indent three steps, matching Vim.</p>
+<p><code>gc</code> comments the selected lines out, and comments them back <b>in</b> when every
+non-blank line in the selection is already commented -- one key for both
+directions, like commentary.vim's. The marker comes from the file's
+extension: <code>//</code>, <code>#</code>, <code>--</code>, <code>;</code>, <code>%</code> and the rest, with <code>/* */</code> or <code>&lt;!-- --&gt;</code>
+for the languages that have no line comment at all. A filetype mep has no
+marker for says so in the status line and leaves the text alone.</p>
+<p>Blank lines are skipped, and every marker lines up on the shallowest indent
+in the selection, so an indented block keeps its shape instead of growing a
+staircase of markers. <code>gc</code> always works on whole lines, even from a
+character-wise selection, and it is Visual mode only -- there is no
+Normal-mode <code>gcc</code> or <code>gc{motion}</code>.</p>
 <h1>Moving the other end</h1>
 <p><code>o</code> swaps the cursor to the opposite end of the selection. Useful when you
 have selected too much in one direction and want to adjust the other end

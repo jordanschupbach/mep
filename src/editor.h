@@ -13502,6 +13502,17 @@ private:
     // end_row] by |levels| shiftwidths (a fixed 4 spaces -- no
     // 'shiftwidth'/'expandtab'/tabstop configuration).
     void IndentLines(int start_row, int end_row, int levels);
+    // gc (Visual mode): comments out lines [start_row, end_row], or
+    // uncomments them when every non-blank line in the range is already
+    // commented -- commentary.vim's own toggle, applied to the whole
+    // range at once rather than line by line. The marker comes from the
+    // buffer's file extension (a fixed table in editor.cpp, covering
+    // line-comment languages plus the few whose only single-line form is
+    // a block comment); a filetype with no known marker is left untouched
+    // with a status message saying so. Blank lines are skipped, and the
+    // added markers all line up on the range's smallest indent so the
+    // block keeps its shape.
+    void ToggleCommentLines(int start_row, int end_row);
     // gq: reflows [start_row, end_row] to wrap at text_width_ columns
     // (":set textwidth="/"tw=", default 80), one blank-line-delimited
     // paragraph at a time, reusing each paragraph's first line's indent

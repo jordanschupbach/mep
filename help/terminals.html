@@ -13,9 +13,11 @@
 <body>
 <h1>Terminals</h1>
 <h1>Three kinds</h1>
-<p><b>A plain terminal.</b> <code>:terminal</code> (<code>:term</code>) opens a shell in the current
-pane. Split first (<code>:split</code>, <code>:vsplit</code>) if you want it beside what you were
-editing.</p>
+<p><b>A plain terminal.</b> <code>:terminal</code> (<code>:term</code>) turns the current window into a
+shell -- it does not split, so on a single-pane tab the shell fills the whole
+window. The buffer that was showing stays in the buffer list, so <code>:bnext</code>
+brings it back. Split first with <code>:split</code> or <code>:vsplit</code> if you want the
+terminal beside the code.</p>
 <p><b>The per-tab terminal.</b> <code>&lt;leader&gt;&lt;CR&gt;</code> toggles one shell per tab along the
 bottom, spanning the tab's full width. This is the one you want most of the
 time.</p>

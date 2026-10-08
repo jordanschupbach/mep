@@ -3,6 +3,21 @@ native_build_dir := "build/native"
 native_build_dev_dir := "build/native-dev"
 ts_grammar_dir := ".ts-grammars/lib"
 
+# Windows builds into their own directory with their own toolchain
+# (MSVC + Ninja, set up by scripts\windows-build.bat), so they never
+# share build/native with a WSL/MSYS build of the same checkout.
+windows_build_dir := 'build\win'
+
+# just's default shell on every platform is `sh`, which a plain Windows
+# box does not have -- without this, every recipe below dies with
+# "could not find the shell `sh`: program not found" before running a
+# single command. cmd.exe is what is always there (the two bash.exe on a
+# typical machine are WSL's, which builds in a different filesystem
+# entirely, and Git's, which is optional), and it is also the shell
+# vcvars64.bat needs anyway. Unix is unaffected: this setting applies
+# only when just itself is running on Windows.
+set windows-shell := ["cmd.exe", "/c"]
+
 # macOS: Apple's toolchain ships no clang-scan-deps, so CMake can't do
 # this project's C++20-module dependency scanning with AppleClang --
 # Homebrew LLVM (`brew install llvm`) is the compiler there, and Ninja
@@ -21,9 +36,21 @@ build-web:
     cmake --build {{web_build_dir}} -j
 
 # Configure and build a native desktop binary.
+[unix]
 build-native:
     cmake -S . -B {{native_build_dir}} -DCMAKE_BUILD_TYPE=Release {{native_cmake_flags}}
     cmake --build {{native_build_dir}} -j
+
+# Same, on Windows. All of the toolchain setup lives in the batch script
+# (see its own header): there is no equivalent of a Nix devShell or a
+# Homebrew prefix here -- cl.exe, the Windows SDK and the bundled Ninja
+# only exist on $PATH after vcvars64.bat has run, and vcvars64.bat only
+# works in cmd. Nothing about the CMake invocation itself is special, so
+# running the ordinary `cmake -S . -B build/win -G Ninja` from a
+# developer prompt by hand stays equivalent.
+[windows]
+build-native:
+    scripts\windows-build.bat {{windows_build_dir}} Release
 
 # Same as build-native, but -O0 (CMake's stock Debug flags) in a
 # separate build/native-dev directory that never collides with
@@ -83,6 +110,7 @@ fetch-grammars *ARGS:
 # whatever a Nix devShell may have already exported there, so `just
 # fetch-grammars` and the flake.nix/devShell path both just add more
 # languages rather than competing over the same variable.
+[unix]
 run: build-native
     #!/usr/bin/env bash
     set -euo pipefail
@@ -95,6 +123,18 @@ run: build-native
     # same reasoning as MEP_TS_PARSER_PATH above needing a resolved path.
     export MEP_BROWSER_LAUNCHER="$(realpath launcher/browser.ts)"
     exec ./{{native_build_dir}}/mep
+
+# Build and launch the native (Win32/WGL) binary. Neither environment
+# variable the unix recipe above exports has anything to set it from
+# here: $MEP_BROWSER_LAUNCHER drives a child process, and every
+# child-process path (job.cpp) is compiled out on Windows (README.org's
+# own port status), while $MEP_TS_PARSER_PATH points at what `just
+# fetch-grammars` builds -- a bash script needing the tree-sitter CLI,
+# not yet ported either. The grammars compiled into the binary are
+# unaffected, so highlighting for mep's own languages works regardless.
+[windows]
+run: build-native
+    {{windows_build_dir}}\mep.exe
 
 # Build the wasm target and open it in a native window via deno + webview.
 run-wasm: build-web
@@ -189,8 +229,13 @@ help-check *ARGS: build-native
     python3 scripts/check_help.py {{native_build_dir}}/mep {{ARGS}}
 
 # Remove all build output.
+[unix]
 clean:
     rm -rf build
+
+[windows]
+clean:
+    if exist build rmdir /s /q build
 
 # Build and run every *-test binary that needs no display: the pure
 # DOM/CSS, workspace-helper and collab tests. Exits non-zero on the first

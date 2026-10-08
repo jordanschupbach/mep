@@ -73,19 +73,35 @@ required rather than the Visual Studio generator — this project's C++20
 modules need a generator that does module dependency scanning — and one
 ships inside the VS install, so there is usually nothing extra to get.
 
-From a repository checkout:
+From a repository checkout, with =just= (=winget install Casey.Just=):
+
+#+begin_src bat
+just run
+#+end_src
+
+or without it:
 
 #+begin_src bat
 scripts\windows-build.bat
 .\build\win\mep.exe
 #+end_src
 
+=just run= is the same two steps: the =build-native= and =run= recipes
+have =[windows]= variants that build into =build\win= through the batch
+script and launch =build\win\mep.exe=, and the justfile sets
+=windows-shell= to =cmd.exe= since just's default =sh= does not exist
+here. Only those recipes (plus =clean=) are ported — =just test=,
+=bench=, =help= and the =lint= family are still bash, and need WSL or
+Git Bash.
+
 That script finds the VS install with =vswhere=, runs =vcvars64.bat= to
 put =cl.exe= and the SDK on =PATH=, puts the bundled Ninja on =PATH= if
 there is no system one, then configures and builds into =build\win=. To
 drive CMake yourself, run =vcvars64.bat= first and then the ordinary
 =cmake -S . -B build/win -G Ninja= — nothing about the configuration is
-specific to the script.
+specific to the script. (=vcvars64.bat= itself prints a stray
+="vswhere.exe" is not recognized= on some installs; it is harmless
+noise from inside Microsoft's own script, not a failure.)
 
 Editing, every document type, the renderer, Tree-sitter highlighting,
 Lua scripting and the mouse/keyboard input path all work. Not yet

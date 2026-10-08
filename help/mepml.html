@@ -31,6 +31,18 @@ caret is drawn as an outline round its line, since the rendered columns
 are no longer the file's. <code>&lt;leader&gt;kv</code> again returns to editing. Raw
 text (<code>&lt;leader&gt;kr</code>) still wins while it is on; entering view mode turns
 it off.</p>
+<p>The same default sheet draws every document format mep renders, and
+each has the same view mode: an Org file (<code>:OrgViewToggle</code>,
+<code>&lt;leader&gt;otv</code>) and a Markdown file (<code>:MarkdownViewToggle</code>) are rendered
+from it with their constructs read as mepml's elements -- <code>*bold*</code> and
+<code>**bold**</code> are <code>bold</code>, a <code>#+begin_src</code> block and a fenced block are
+<code>code[lang</code>...]=, a bullet is <code>list-item::marker</code> -- and an HTML file's
+page carries it as CSS (<code>:HtmlViewToggle</code>, <code>&lt;leader&gt;bv</code>, switches the
+file between its rendered page and its source). <code>&lt;leader&gt;kv</code> and the
+pane header's book button toggle whichever of these the buffer is
+(<code>:DocViewToggle</code>). So a document's Org, Markdown and HTML exports open
+in mep looking like the document, and <code>~/.config/mep/mepml.mepss</code>
+restyles all of them.</p>
 <h1>Keys and commands</h1>
 <table>
 <tr><th>Key / command</th><th>Does</th></tr>
@@ -51,7 +63,8 @@ it off.</p>
 <tr><td><code>&lt;leader&gt;kl</code></td><td>follow the link under the cursor (clicking works too)</td></tr>
 <tr><td><code>&lt;leader&gt;km</code></td><td>toggle markup concealment</td></tr>
 <tr><td><code>&lt;leader&gt;kr</code></td><td>raw text or rendered (also the header's eye button)</td></tr>
-<tr><td><code>&lt;leader&gt;kv</code></td><td>view mode: rendered on every line, the cursor's too (also the header's book button)</td></tr>
+<tr><td><code>&lt;leader&gt;kv</code></td><td>view mode: rendered on every line, the cursor's too (also the header's book button; an org or markdown buffer too)</td></tr>
+<tr><td><code>&lt;leader&gt;bv</code></td><td>an HTML file: its rendered page or its source text</td></tr>
 <tr><td><code>&lt;leader&gt;kf</code></td><td>toggle the math preview popup shown while typing a formula</td></tr>
 <tr><td><code>&lt;leader&gt;kA</code></td><td>toggle the alt text popup shown on hover (off by default)</td></tr>
 <tr><td><code>&lt;leader&gt;kp</code></td><td>present the slides, filling the editor (also the header's screen button, on a presentation)</td></tr>
@@ -75,6 +88,10 @@ it off.</p>
 <tr><td><code>:MepmlAltPopupToggle</code></td><td>toggle the alt text popup shown on hover</td></tr>
 <tr><td><code>:MepmlRawToggle</code></td><td>toggle rendering (raw text / rendered document)</td></tr>
 <tr><td><code>:MepmlViewToggle</code></td><td>toggle view mode (rendered on every line, the cursor's too)</td></tr>
+<tr><td><code>:DocViewToggle</code></td><td>the same for whatever document the buffer is: mepml, org, markdown or html</td></tr>
+<tr><td><code>:OrgViewToggle</code></td><td>an org file's view mode, rendered from the same default sheet</td></tr>
+<tr><td><code>:MarkdownViewToggle</code></td><td>a markdown file's view mode, rendered from the same default sheet</td></tr>
+<tr><td><code>:HtmlViewToggle</code></td><td>an HTML file: its rendered page or its source text</td></tr>
 <tr><td><code>:MepmlFoldsRecompute</code></td><td>rebuild folds (<code>za</code>, <code>zc</code> and <code>zo</code> do this themselves)</td></tr>
 <tr><td><code>:MepmlPresent</code> [mode]</td><td>present the slides: <code>fill</code> (the default), <code>full</code>, <code>stop</code></td></tr>
 </table>

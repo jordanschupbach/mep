@@ -2066,6 +2066,39 @@ const std::vector<OrgBlockCard> &Editor::OrgBlockCards(int buffer_id) {
         return org_block_cards_;
     }
     const int n = buf.LineCount();
+    // A Markdown document's fenced code blocks are its cards: ``` or ~~~
+    // to the matching closer, the info string's first word its language
+    // (an `output` fence -- a block's results, as mep's Markdown export
+    // writes them -- is a results card). Their colours are the sheet's
+    // `code` / `results`, as a mepml block's are.
+    if (IsMarkdownFiletype(LspFiletype(buf.filename))) {
+        for (int row = 0; row < n; row++) {
+            std::string fence, info;
+            if (!MdFenceOpenLine(buf.lines[static_cast<size_t>(row)], &fence, &info)) continue;
+            OrgBlockCard card;
+            card.begin_row = row;
+            card.meta_row = row;
+            card.lang = MdFenceLang(info);
+            const bool results = card.lang == "output";
+            card.is_src = !results;
+            card.kind = results ? "results" : "src";
+            if (results) card.lang.clear();
+            for (int r = row + 1; r < n; r++) {
+                if (!MdFenceCloseLine(buf.lines[static_cast<size_t>(r)], fence)) continue;
+                card.end_row = r;
+                break;
+            }
+            const int measure_end = card.end_row >= 0 ? card.end_row : n - 1;
+            for (int r = card.meta_row; r <= measure_end && r < n; r++)
+                card.content_cols = std::max(card.content_cols, DisplayColumnsOf(buf.lines[static_cast<size_t>(r)]));
+            mepml::Element element(results ? "results" : "code");
+            if (!card.lang.empty()) element.With("lang", card.lang);
+            card.look = DocCardLook(element, "md");
+            org_block_cards_.push_back(card);
+            if (card.end_row >= 0) row = card.end_row;
+        }
+        return org_block_cards_;
+    }
     for (int row = 0; row < n; row++) {
         bool is_begin = false;
         std::string word, rest;
@@ -2146,6 +2179,29 @@ const std::vector<OrgBlockCard> &Editor::OrgBlockCards(int buffer_id) {
         const int measure_end = card.end_row >= 0 ? card.end_row : n - 1;
         for (int r = card.meta_row; r <= measure_end && r < n; r++) {
             card.content_cols = std::max(card.content_cols, DisplayColumnsOf(buf.lines[static_cast<size_t>(r)]));
+        }
+        // A source block's colours are the sheet's for `code[lang=...]`,
+        // as a mepml code block's are. A box's block (`#+begin_definition
+        // Group` -- what mep's Org export writes `\definition(Group,` as;
+        // `#+begin_box_axiom` for a kind of the document's own) is a box
+        // card: `box[kind=...]`'s colours, labelled by its `::label`, titled
+        // by the rest of its line. The other blocks (quote, example,
+        // export ...) keep the painter's muted card.
+        const std::string box_kind = mepml::FindBoxKind(word) ? word : word.rfind("box_", 0) == 0 ? word.substr(4) : std::string();
+        if (card.is_src) {
+            mepml::Element element("code");
+            if (!card.lang.empty()) element.With("lang", card.lang);
+            card.look = DocCardLook(element, "org");
+        } else if (!box_kind.empty()) {
+            const mepml::Element box("box", "kind", box_kind);
+            card.look = DocCardLook(box, "org");
+            card.kind = "box";
+            const mepml::style::Computed &label = DocSheetStyle({box, box.Part("label")}, "org");
+            card.chip = label.has_content ? mepml::style::ExpandContent(label.content, "", box_kind, "") : mepml::BoxLabel(box_kind);
+            if (card.title.empty()) {
+                const size_t a = rest.find_first_not_of(" \t"), z = rest.find_last_not_of(" \t");
+                if (a != std::string::npos) card.title = rest.substr(a, z - a + 1);
+            }
         }
         org_block_cards_.push_back(card);
     }
@@ -3305,8 +3361,39 @@ std::string ExtractOrgImageLinkTarget(const std::string &inner) {
 
 void Editor::OrgImageScan() {
     ClearOrgImageRows();
-    if (LspFiletype(CurrentBuffer().filename) != "org") return;
+    const std::string ft = LspFiletype(CurrentBuffer().filename);
+    if (ft != "org" && !IsMarkdownFiletype(ft)) return;
     const int n = Buf().LineCount();
+    // A Markdown image on a line of its own -- `![alt](path)`, what mep's
+    // Markdown export writes a mepml `\image(path)` as -- is drawn as the
+    // picture, like an org `[[file:path]]` (the same registry, the same
+    // existence check below).
+    if (IsMarkdownFiletype(ft)) {
+        std::string fence;
+        for (int i = 0; i < n; i++) {
+            const std::string &line = Buf().lines[static_cast<size_t>(i)];
+            if (!fence.empty()) {
+                if (MdFenceCloseLine(line, fence)) fence.clear();
+                continue;
+            }
+            std::string info;
+            if (MdFenceOpenLine(line, &fence, &info)) continue;
+            const size_t a = line.find_first_not_of(" \t");
+            if (a == std::string::npos || line.compare(a, 2, "![") != 0) continue;
+            const size_t mid = line.find("](", a + 2);
+            if (mid == std::string::npos) continue;
+            const size_t close = line.find(')', mid + 2);
+            if (close == std::string::npos || line.find_first_not_of(" \t", close + 1) != std::string::npos) continue;
+            std::string path = line.substr(mid + 2, close - mid - 2);
+            const size_t space = path.find(' ');  // `![alt](path "title")`
+            if (space != std::string::npos) path = path.substr(0, space);
+            if (!IsOrgImageExtension(path)) continue;
+            const std::string resolved = OrgResolvePath(path);
+            std::error_code ec;
+            if (std::filesystem::exists(resolved, ec)) SetOrgImageRow(i, resolved);
+        }
+        return;
+    }
     for (int i = 1; i <= n; i++) {
         const std::string &line = Buf().lines[static_cast<size_t>(i - 1)];
         size_t pos = 0;
@@ -4212,7 +4299,9 @@ OrgTableRow ParseOrgTableRowImpl(const std::string &line) {
     size_t i = SkipWs(line, 0);
     if (i >= line.size() || line[i] != '|') return result;
     result.is_row = true;
-    if (i + 1 < line.size() && line[i + 1] == '-') {
+    // `|---+---|` (Org), and `|-----|` / `|:----|` (a Markdown table's
+    // delimiter row as mep's Markdown export writes it).
+    if (i + 1 < line.size() && (line[i + 1] == '-' || (line[i + 1] == ':' && i + 2 < line.size() && line[i + 2] == '-'))) {
         result.is_sep = true;
         return result;
     }
@@ -11660,6 +11749,24 @@ void Editor::ConvertTextBufferToHtml(int buffer_id) {
     buffers_[static_cast<size_t>(buffer_id)].lines.clear();
     // See ConvertHtmlBufferToText's own comment on this bump.
     change_epoch_++;
+}
+
+int Editor::HtmlToggleView() {
+    // :HtmlViewToggle (<leader>bv): the same pair Ctrl-E / Ctrl-V drive
+    // from the keyboard, as a command -- the HTML counterpart of
+    // :MepmlViewToggle, :OrgViewToggle and :MarkdownViewToggle, so every
+    // document format has one switch between its source and its rendering.
+    const int buffer_id = CurPane().buffer_id;
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return -1;
+    if (!IsHtmlPath(buffers_[static_cast<size_t>(buffer_id)].filename)) return -1;
+    const bool rendered = IsHtmlBuffer(buffer_id);
+    if (rendered) ConvertHtmlBufferToText(buffer_id);
+    else ConvertTextBufferToHtml(buffer_id);
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    status_message_.clear();
+    SyncModeToActivePaneBuffer();
+    return rendered ? 0 : 1;
 }
 
 void Editor::HandleHtmlInput() {
@@ -31271,9 +31378,233 @@ void Editor::SyntaxHighlightFallback(int ns, const std::vector<std::string> &key
     }
 }
 
+namespace {
+
+// What a sheet's computed style says about a run of text, on one
+// decoration: its colour (a theme group's name or "#rrggbb"), weight,
+// slant and lines. The Org and Markdown scans draw from the same default
+// sheet mepml does (Editor::DocSheetStyle), so a `*bold*` in any of the
+// three looks the same.
+void StyleDecoration(Decoration *d, const mepml::style::Computed &st) {
+    if (st.has_color) d->hl_group = DocStyleHl(st.color);
+    d->bold = st.bold;
+    d->italic = st.italic;
+    d->underline = st.underline;
+    d->strikethrough = st.strike;
+}
+
+// The styled run of a concealed span: one overlay carrying the text
+// between the markers and every style the sheet gives it (DrawPane draws
+// an overlay's own text bold / italic / struck the way it would buffer
+// text).
+void AddStyledOverlay(Editor *ed, int ns, int row, int col_start, int col_end, const std::string &text,
+                      const mepml::style::Computed &st) {
+    Decoration d;
+    d.row = row;
+    d.col_start = col_start;
+    d.col_end = col_end;
+    d.virt_text = text;
+    d.virt_overlay = true;
+    d.priority = 10;
+    StyleDecoration(&d, st);
+    d.virt_text_hl = d.hl_group;
+    d.hl_group.clear();
+    ed->AddDecoration(ns, d);
+}
+
+// A span shown as its source: its text styled in place (one decoration per
+// style, as Editor::MepmlScan emits them -- a decoration carrying
+// `underline` recolours only the line, not the text), and its markers
+// coloured as `::markup`.
+void AddStyledSource(Editor *ed, int ns, int row, int inner_start, int inner_end, const mepml::style::Computed &st,
+                     const std::vector<std::pair<int, int>> &markers, const mepml::style::Computed &markup) {
+    const std::string hl = st.has_color ? DocStyleHl(st.color) : std::string();
+    auto one = [&](auto set) {
+        Decoration d;
+        d.row = row;
+        d.col_start = inner_start;
+        d.col_end = inner_end;
+        d.hl_group = hl.empty() ? "Normal" : hl;
+        set(&d);
+        d.priority = 10;
+        ed->AddDecoration(ns, d);
+    };
+    // (Always a colour: with none of the sheet's, the text's own, over
+    // whatever the filetype's grammar coloured the construct -- a
+    // Markdown `**bold**` is Yellow to its tree-sitter query, plain to
+    // the sheet.)
+    one([](Decoration *) {});
+    if (st.bold) one([](Decoration *d) { d->bold = true; });
+    if (st.italic) one([](Decoration *d) { d->italic = true; });
+    if (st.underline) one([](Decoration *d) { d->underline = true; });
+    if (st.strike) one([](Decoration *d) { d->strikethrough = true; });
+    for (const auto &m : markers) {
+        if (m.second <= m.first) continue;
+        Decoration d;
+        d.row = row;
+        d.col_start = m.first;
+        d.col_end = m.second;
+        d.hl_group = markup.has_color ? DocStyleHl(markup.color) : "Comment";
+        d.priority = 10;
+        ed->AddDecoration(ns, d);
+    }
+}
+
+// A line's list marker: `- `, `+ `, `* ` (`star_bullets`: at the margin
+// too; Org's `*` there is a headline), `1. ` or `1) `, each optionally
+// followed by a checkbox `[ ]`, `[X]`, `[x]` or `[-]`.
+struct DocListMarker {
+    int indent = 0;       // columns before the marker
+    int end = 0;          // the column after the marker (and checkbox) and its blank
+    bool ordered = false;
+    int checked = -1;     // -1 none, 0 unchecked (or in progress), 1 checked
+};
+
+bool ParseDocListMarker(const std::string &line, bool star_bullets, DocListMarker *out) {
+    size_t i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    if (i >= line.size()) return false;
+    DocListMarker m;
+    m.indent = static_cast<int>(i);
+    const char c = line[i];
+    if (c == '-' || c == '+' || (c == '*' && (star_bullets || i > 0))) {
+        ++i;
+    } else if (std::isdigit(static_cast<unsigned char>(c))) {
+        size_t d = i;
+        while (d < line.size() && std::isdigit(static_cast<unsigned char>(line[d]))) ++d;
+        if (d >= line.size() || (line[d] != '.' && line[d] != ')') || d - i > 9) return false;
+        i = d + 1;
+        m.ordered = true;
+    } else {
+        return false;
+    }
+    if (i >= line.size() || line[i] != ' ') return false;
+    while (i < line.size() && line[i] == ' ') ++i;
+    // A marker and nothing after it is a line being typed, not an item.
+    if (i >= line.size()) return false;
+    if (i + 2 < line.size() && line[i] == '[' && line[i + 2] == ']' && (line[i + 3] == ' ' || i + 3 == line.size()) &&
+        std::strchr(" Xx-", line[i + 1]) != nullptr) {
+        m.checked = (line[i + 1] == 'X' || line[i + 1] == 'x') ? 1 : 0;
+        i += 3;
+        while (i < line.size() && line[i] == ' ') ++i;
+    }
+    m.end = static_cast<int>(i);
+    *out = m;
+    return true;
+}
+
+// Repeats a glyph `n` times (a rule's `content` across the line).
+std::string RepeatGlyph(const std::string &glyph, int n) {
+    std::string out;
+    for (int i = 0; i < n; ++i) out += glyph;
+    return out;
+}
+
+}  // namespace
+
+// The marker of a list item, drawn as the sheet says (`list-item::marker`:
+// its `content` in its `color`): shared by the Org and Markdown scans.
+// A marker whose content is `none` (the default sheet's numbered items)
+// keeps its text, coloured; a checked item's text is struck through when
+// `list-item[checked=true]` asks for it.
+void Editor::DocListMarkerDecorations(int ns, int row, const std::string &line, const DocListMarkerArgs &a) {
+    DocListMarker m;
+    if (!ParseDocListMarker(line, a.star_bullets, &m)) return;
+    mepml::Element item("list-item");
+    if (m.ordered) item.With("ordered");
+    if (m.checked >= 0) item.With("checked", m.checked ? "true" : "false");
+    const mepml::style::Computed &ms = DocSheetStyle({mepml::Element("list"), item, item.Part("marker")}, a.media);
+    const std::string hl = ms.has_color ? DocStyleHl(ms.color) : std::string();
+    if (a.conceal && ms.has_content && !ms.content.empty()) {
+        Decoration d;
+        d.row = row;
+        d.col_start = 0;
+        d.col_end = m.end;
+        d.virt_text = std::string(static_cast<size_t>(m.indent), ' ') + ms.content + " ";
+        d.virt_text_hl = hl.empty() ? "Normal" : hl;
+        d.virt_overlay = true;
+        d.bold = ms.bold;
+        d.italic = ms.italic;
+        d.priority = 10;
+        AddDecoration(ns, d);
+    } else if (!hl.empty()) {
+        Decoration d;
+        d.row = row;
+        d.col_start = m.indent;
+        d.col_end = m.end;
+        d.hl_group = hl;
+        d.priority = 10;
+        AddDecoration(ns, d);
+    }
+    if (m.checked >= 0) {
+        const mepml::style::Computed &is = DocSheetStyle({mepml::Element("list"), item}, a.media);
+        if (is.strike && m.end < static_cast<int>(line.size())) {
+            Decoration d;
+            d.row = row;
+            d.col_start = m.end;
+            d.col_end = static_cast<int>(line.size());
+            d.strikethrough = true;
+            d.hl_group = is.has_decoration_color ? DocStyleHl(is.decoration_color) : is.has_color ? DocStyleHl(is.color) : "Normal";
+            d.priority = 10;
+            AddDecoration(ns, d);
+        }
+    }
+}
+
+// A horizontal rule (`-----` in Org, `---` / `***` / `___` in Markdown):
+// drawn as the sheet's `rule` content, repeated over the markup's own
+// width, in its colour -- or, shown as source, coloured only.
+void Editor::DocRuleDecorations(int ns, int row, int col_start, int col_end, bool conceal, const std::string &media) {
+    const mepml::style::Computed &rs = DocSheetStyle({mepml::Element("rule")}, media);
+    Decoration d;
+    d.row = row;
+    d.col_start = col_start;
+    d.col_end = col_end;
+    const std::string hl = rs.has_color ? DocStyleHl(rs.color) : "Comment";
+    if (conceal) {
+        // Across the text width (never wider than the pane), as mepml draws
+        // its rule and as a rule on paper runs across the page.
+        const int pane_cols = TextColsForBuffer(CurrentBufferId());
+        const int width = std::max(col_end - col_start, (pane_cols > 0 ? std::min(TextWidth(), pane_cols - 1) : TextWidth()) - col_start);
+        d.virt_text = RepeatGlyph(rs.has_content && !rs.content.empty() ? rs.content : "─", width);
+        d.virt_text_hl = hl;
+        d.virt_overlay = true;
+    } else {
+        d.hl_group = hl;
+    }
+    d.priority = 10;
+    AddDecoration(ns, d);
+}
+
+// A heading's size, weight, slant, alignment, lines and colour, as the
+// sheet gives `heading[level=N]`: recorded for the walkers and DrawPane the
+// way Editor::MepmlScan records a mepml heading's (Buffer::mepml_heading_scale,
+// mepml_heading_look), so an Org or Markdown heading is drawn alike.
+void Editor::DocHeadingStyle(Buffer &buf, int row, int level, const std::string &media) {
+    const mepml::style::Computed &hs = DocSheetStyle({mepml::Element("heading", "level", std::to_string(level))}, media);
+    buf.mepml_heading_scale[row] = std::clamp(hs.font_size, 0.5f, 3.0f);
+    Buffer::MepmlHeadingLook look;
+    look.bold = hs.bold;
+    look.italic = hs.italic;
+    look.align = hs.text_align == mepml::style::TextAlign::Center ? 1 : hs.text_align == mepml::style::TextAlign::Right ? 2 : 0;
+    look.underline = hs.underline;
+    look.strike = hs.strike;
+    if (hs.has_decoration_color) look.line_hl = DocStyleHl(hs.decoration_color);
+    else if (hs.has_color) look.line_hl = DocStyleHl(hs.color);
+    if (hs.has_color) look.color_hl = DocStyleHl(hs.color);
+    if (look.bold || look.italic || look.align || look.underline || look.strike || !look.color_hl.empty())
+        buf.mepml_heading_look[row] = look;
+}
+
 void Editor::OrgHighlightEmphasis(int ns) {
-    static const std::unordered_map<char, char> kMarkerKind = {
-        {'*', 'b'}, {'/', 'i'}, {'_', 'u'}, {'+', 's'}, {'=', 'v'}, {'~', 'c'},
+    if (LspFiletype(Buf().filename) != "org") return;
+    // Org's markers, as mepml's elements: `*bold*`, `/italic/`,
+    // `_underline_`, `+strike+`; `=verbatim=` is what mep's Org export
+    // writes `|mono|` as and `~code~` what it writes `` `verbatim` `` as,
+    // so each is drawn as that element -- one default sheet, one look for
+    // a document and its export.
+    static const std::unordered_map<char, const char *> kMarkerElement = {
+        {'*', "bold"}, {'/', "italic"}, {'_', "underline"}, {'+', "strike"}, {'=', "mono"}, {'~', "verbatim"},
     };
     /**
      * @brief Fetches the character at `idx` in `s`, or the NUL character if `idx` is out of bounds.
@@ -31285,39 +31616,91 @@ void Editor::OrgHighlightEmphasis(int ns) {
         return (idx >= 0 && idx < static_cast<int>(s.size())) ? s[static_cast<size_t>(idx)] : '\0';
     };
 
+    Buffer &buf = Buf();
     // The cursor's own row keeps its markers visible even while
     // concealment is on -- the same reveal-to-edit rule Editor::MdConceal
     // and OrgLinkScan follow, so `*bold*` is always editable as the six
-    // characters it really is by putting the cursor on its line.
+    // characters it really is by putting the cursor on its line. In view
+    // mode (Buffer::mepml_view, :OrgViewToggle) no row is the cursor's:
+    // the document renders as itself alone.
     int cur_row = 0, cur_col = 0;
     GetCursorForLua(&cur_row, &cur_col);
-    bool in_block = false;
-    const int n = Buf().LineCount();
+    if (buf.mepml_view) cur_row = -1;
+    const bool conceal_on = org_conceal_visible_ || buf.mepml_view;
+    const std::string media = "org";
+    const mepml::Element paragraph("paragraph");
+    // Headings: their size and look are the sheet's (Buffer::mepml_heading_scale,
+    // mepml_heading_look, read back through Editor::HeadingStyleForRow and
+    // DrawPane). Rebuilt here, with the rest of the document's rendering.
+    buf.mepml_heading_scale.clear();
+    buf.mepml_heading_look.clear();
+    bool in_block = false, in_box = false;
+    const int n = buf.LineCount();
     for (int row = 0; row < n; row++) {
-        const std::string &line = Buf().lines[static_cast<size_t>(row)];
+        const std::string &line = buf.lines[static_cast<size_t>(row)];
         if (in_block) {
             if (MatchesOrgBlockMarker(line, "end_")) in_block = false;
             continue;
         }
-        if (MatchesOrgBlockMarker(line, "begin_")) {
-            in_block = true;
-            continue;
+        {
+            bool is_begin = false;
+            std::string word, rest;
+            if (ParseOrgBlockMarker(line, &is_begin, &word, &rest)) {
+                // A box's block (`#+begin_definition`, `#+begin_box_axiom`)
+                // holds prose, scanned like any other; every other block's
+                // interior is literal.
+                const bool box = mepml::FindBoxKind(word) || word.rfind("box_", 0) == 0;
+                if (is_begin && !box) in_block = true;
+                if (box) in_box = is_begin;
+                continue;
+            }
+        }
+        if (in_box) {
+            // (In the text's own colour: the org grammar paints a special
+            // block's lines as a block, a mepml box's text is prose.)
+            Decoration plain;
+            plain.row = row;
+            plain.col_start = 0;
+            plain.col_end = static_cast<int>(line.size());
+            plain.hl_group = "Normal";
+            plain.priority = 5;
+            if (plain.col_end > 0) AddDecoration(ns, plain);
         }
         // A headline's own leading stars are its structure, not emphasis
         // -- and DrawPane may be drawing this whole row at a scaled size
-        // (kOrgHeadingStyles), where a column-anchored overlay would land
-        // in the wrong place anyway. The marker rules below already reject
-        // the stars themselves (a space always follows them); this skips
-        // concealing a headline's *title* markup too, so the two renderers
-        // never both claim the same row.
-        const bool is_headline = OrgHeadlineLevelOf(line) > 0;
-        const bool conceal_row = org_conceal_visible_ && row != cur_row && !is_headline;
+        // (Editor::HeadingStyleForRow), where a column-anchored overlay
+        // would land in the wrong place anyway. The marker rules below
+        // already reject the stars themselves (a space always follows
+        // them); this skips concealing a headline's *title* markup too,
+        // so the two renderers never both claim the same row.
+        const int headline = OrgHeadlineLevelOf(line);
+        const bool is_headline = headline > 0;
+        if (is_headline) DocHeadingStyle(buf, row, headline, media);
+        const bool conceal_row = conceal_on && row != cur_row && !is_headline;
+        // A rule (`-----`), and a list item's marker.
+        {
+            size_t i = 0;
+            while (i < line.size() && line[i] == ' ') ++i;
+            size_t dashes = i;
+            while (dashes < line.size() && line[dashes] == '-') ++dashes;
+            if (dashes - i >= 5 && line.find_first_not_of(" \t", dashes) == std::string::npos) {
+                DocRuleDecorations(ns, row, static_cast<int>(i), static_cast<int>(dashes), conceal_row, media);
+                continue;
+            }
+        }
+        if (!is_headline) {
+            DocListMarkerArgs args;
+            args.conceal = conceal_row;
+            args.star_bullets = false;
+            args.media = media;
+            DocListMarkerDecorations(ns, row, line, args);
+        }
         int i = 0;
         const int len = static_cast<int>(line.size());
         while (i < len) {
             char ch = line[static_cast<size_t>(i)];
-            auto it = kMarkerKind.find(ch);
-            if (it == kMarkerKind.end()) {
+            auto it = kMarkerElement.find(ch);
+            if (it == kMarkerElement.end()) {
                 i++;
                 continue;
             }
@@ -31352,37 +31735,29 @@ void Editor::OrgHighlightEmphasis(int ns) {
                 i++;
                 continue;
             }
-            Decoration d;
-            d.row = row;
-            d.col_start = i;
-            d.col_end = found_end + 1;
-            switch (it->second) {
-                case 'b': d.bold = true; break;
-                case 'i': d.italic = true; break;
-                case 'u': d.underline = true; break;
-                case 's': d.strikethrough = true; d.hl_group = "Comment"; break;
-                case 'v': d.hl_group = "Green"; break;
-                case 'c': d.hl_group = "Cyan"; break;
-                default: break;
-            }
+            const mepml::Element element(it->second);
+            const mepml::style::Computed &st = DocSheetStyle({paragraph, element}, media);
+            // (Byte offsets, as every decoration's columns are -- DrawPane's own
+            // convention, see its DispCol.)
+            const int c0 = i, c1 = found_end;
             if (conceal_row) {
                 // Hide the two markers by drawing the text *between* them
                 // over the whole `*bold*` span (the virt_overlay
-                // primitive, same as Editor::MdConceal). The style flags
-                // set above still apply: DrawPane draws a virt_overlay's
-                // own replacement text bold/italic/struck the same way it
-                // would the buffer text it stands in for -- without that,
-                // concealing the markers would also throw away the very
-                // styling they asked for.
-                d.virt_text = line.substr(static_cast<size_t>(i) + 1, static_cast<size_t>(found_end - i - 1));
-                d.virt_text_hl = d.hl_group;
-                d.virt_overlay = true;
-                d.priority = 10;
+                // primitive, same as Editor::MdConceal), styled as the
+                // sheet says.
+                AddStyledOverlay(this, ns, row, c0, c1 + 1,
+                                 line.substr(static_cast<size_t>(i) + 1, static_cast<size_t>(found_end - i - 1)), st);
+            } else {
+                // Shown as source: the text styled in place, the markers
+                // muted (`*::markup`, under the `source` medium).
+                const mepml::style::Computed &markup = DocSheetStyle({paragraph, element, element.Part("markup")}, media + ",source");
+                AddStyledSource(this, ns, row, c0 + 1, c1, st, {{c0, c0 + 1}, {c1, c1 + 1}}, markup);
             }
-            AddDecoration(ns, d);
             i = found_end + 1;
         }
     }
+    doc_conceal_namespaces_[0] = ns;
+    DocConcealRunsRebuild();
 }
 
 void Editor::MdToggleCheckbox() {
@@ -31645,122 +32020,390 @@ void Editor::MdTableInsertCol() {
 }
 
 namespace {
-struct MdConcealSpan {
-    int col_start = 0;
-    int col_end = 0;
-    std::string text;
-    std::string hl;
+
+// One inline construct of a Markdown line, as mepml's element: `**x**` is
+// `bold`, `` `x` `` `verbatim`, `[x](url)` `link`, `<u>x</u>` `underline`
+// ... -- what mep's Markdown export writes each mepml inline as, read
+// back, so the document and its export are drawn from one sheet.
+struct MdInlineSpan {
+    int start = 0, end = 0;              // the whole construct
+    int inner_start = 0, inner_end = 0;  // its text
+    std::string element;
+    bool tag = false;  // an HTML tag pair: its markers hide, its text stays in place (nesting inside is scanned too)
 };
 
-// Plain-literal-find-based scanner (no Lua patterns involved in the
-// original either) for **bold**/__bold__, *italic*/_italic_ (with the
-// same mid-identifier-'_'/'*' exclusion OrgHighlightEmphasis's is_word
-// check uses), and [text](url)/[text][ref] links -- mep_md_conceal_spans'
-// own C++ port.
-/**
- * @brief Scans a line for markdown emphasis (bold via ** or __, italic via * or _) and link spans to conceal.
- * @param line The line of text to scan.
- * @return The list of spans found, each with its column range, the text to reveal in place of the markup, and a highlight group.
- */
-std::vector<MdConcealSpan> ScanMdConcealSpans(const std::string &line) {
-    std::vector<MdConcealSpan> spans;
+// A single-pass scanner (not two independent regexes, specifically so
+// `**bold**` can't also be misparsed as `*bold*` wrapped in stray `*`s):
+// code spans, `**`/`__` bold, `*`/`_` italic (with the same
+// mid-identifier exclusion OrgHighlightEmphasis uses), `~~` strike,
+// `[text](url)` / `[text][ref]` links, and the inline HTML the Markdown
+// export falls back to for what Markdown has no syntax for.
+std::vector<MdInlineSpan> ScanMdInlineSpans(const std::string &line) {
+    std::vector<MdInlineSpan> spans;
     const int n = static_cast<int>(line.size());
-    /**
-     * @brief Fetches the character at `idx` in `line`, or the NUL character if `idx` is out of bounds.
-     * @param idx The index to read.
-     * @return The character at `idx`, or '\0' if `idx` is out of range.
-     */
     auto at = [&](int idx) -> char { return (idx >= 0 && idx < n) ? line[static_cast<size_t>(idx)] : '\0'; };
-    /**
-     * @brief Checks whether a character is a non-NUL alphanumeric "word" character.
-     * @param c The character to test.
-     * @return True if `c` is alphanumeric.
-     */
-    auto is_word = [](char c) { return c != '\0' && std::isalnum(static_cast<unsigned char>(c)); };
+    auto is_word = [](char c) { return c != '\0' && (std::isalnum(static_cast<unsigned char>(c)) || c == '_'); };
+    static const std::unordered_map<std::string, const char *> kTags = {
+        {"u", "underline"}, {"sup", "superscript"}, {"sub", "subscript"}, {"mark", "highlight"}, {"ins", "insert"},
+        {"del", "delete"},  {"code", "mono"},       {"kbd", "mono"},      {"small", "small"},    {"big", "big"},
+        {"s", "strike"},    {"strike", "strike"},   {"em", "italic"},     {"i", "italic"},       {"strong", "bold"},
+        {"b", "bold"},
+    };
     int i = 0;
     while (i < n) {
-        char c0 = line[static_cast<size_t>(i)];
-        char c1 = at(i + 1);
-        if ((c0 == '*' && c1 == '*') || (c0 == '_' && c1 == '_')) {
-            std::string two{c0, c1};
-            size_t close = line.find(two, static_cast<size_t>(i) + 2);
-            if (close != std::string::npos) {
-                spans.push_back({i, static_cast<int>(close) + 2,
-                                  line.substr(static_cast<size_t>(i) + 2, close - static_cast<size_t>(i) - 2), "Yellow"});
+        const char c0 = line[static_cast<size_t>(i)];
+        const char c1 = at(i + 1);
+        if (c0 == '\\' && i + 1 < n) {  // an escaped character is text
+            i += 2;
+            continue;
+        }
+        if (c0 == '`') {
+            int k = 0;
+            while (at(i + k) == '`') ++k;
+            // The next run of exactly k backticks closes it.
+            int j = i + k, close = -1;
+            while (j < n) {
+                if (line[static_cast<size_t>(j)] != '`') {
+                    ++j;
+                    continue;
+                }
+                int m = 0;
+                while (at(j + m) == '`') ++m;
+                if (m == k) {
+                    close = j;
+                    break;
+                }
+                j += m;
+            }
+            if (close < 0) {
+                i += k;
+                continue;
+            }
+            spans.push_back({i, close + k, i + k, close, "verbatim", false});
+            i = close + k;
+            continue;
+        }
+        if ((c0 == '*' && c1 == '*') || (c0 == '_' && c1 == '_') || (c0 == '~' && c1 == '~')) {
+            const std::string two{c0, c1};
+            const size_t close = line.find(two, static_cast<size_t>(i) + 2);
+            if (close != std::string::npos && static_cast<int>(close) > i + 2 && !(c0 == '_' && is_word(at(static_cast<int>(close) + 2)))) {
+                spans.push_back({i, static_cast<int>(close) + 2, i + 2, static_cast<int>(close), c0 == '~' ? "strike" : "bold", false});
                 i = static_cast<int>(close) + 2;
             } else {
-                i++;
+                i += 2;
             }
-        } else if (c0 == '*' || c0 == '_') {
-            char before = at(i - 1);
+            continue;
+        }
+        if (c0 == '*' || c0 == '_') {
+            const char before = at(i - 1);
             long close = -1;
-            if (!is_word(before)) {
-                size_t s = line.find(c0, static_cast<size_t>(i) + 1);
+            if (!is_word(before) && c1 != ' ' && c1 != '\0') {
+                size_t s = static_cast<size_t>(i) + 1;
+                while ((s = line.find(c0, s)) != std::string::npos) {
+                    if (line[s - 1] != ' ' && !(c0 == '_' && is_word(at(static_cast<int>(s) + 1))) &&
+                        !(c0 == '*' && at(static_cast<int>(s) + 1) == '*'))
+                        break;
+                    ++s;
+                }
                 if (s != std::string::npos) close = static_cast<long>(s);
             }
-            if (close >= 0 && close > i + 1 && !is_word(at(static_cast<int>(close) + 1))) {
-                spans.push_back({i, static_cast<int>(close) + 1,
-                                  line.substr(static_cast<size_t>(i) + 1, static_cast<size_t>(close) - static_cast<size_t>(i) - 1), "Cyan"});
+            if (close >= 0 && close > i + 1) {
+                spans.push_back({i, static_cast<int>(close) + 1, i + 1, static_cast<int>(close), "italic", false});
                 i = static_cast<int>(close) + 1;
             } else {
                 i++;
             }
-        } else if (c0 == '[') {
-            size_t closeb = line.find(']', static_cast<size_t>(i) + 1);
-            char after = closeb != std::string::npos ? at(static_cast<int>(closeb) + 1) : '\0';
-            if (closeb != std::string::npos && after == '(') {
-                size_t closep = line.find(')', closeb + 2);
-                if (closep != std::string::npos) {
-                    spans.push_back({i, static_cast<int>(closep) + 1,
-                                      line.substr(static_cast<size_t>(i) + 1, closeb - static_cast<size_t>(i) - 1), "Blue"});
-                    i = static_cast<int>(closep) + 1;
-                } else {
-                    i++;
-                }
-            } else if (closeb != std::string::npos && after == '[') {
-                size_t closer2 = line.find(']', closeb + 2);
-                if (closer2 != std::string::npos) {
-                    spans.push_back({i, static_cast<int>(closer2) + 1,
-                                      line.substr(static_cast<size_t>(i) + 1, closeb - static_cast<size_t>(i) - 1), "Blue"});
-                    i = static_cast<int>(closer2) + 1;
-                } else {
-                    i++;
-                }
-            } else {
-                i++;
-            }
-        } else {
-            i++;
+            continue;
         }
+        if (c0 == '!' && c1 == '[') {
+            // An image: left as it is (the picture is drawn elsewhere, if at all).
+            const size_t closeb = line.find("](", static_cast<size_t>(i) + 2);
+            const size_t closep = closeb == std::string::npos ? closeb : line.find(')', closeb + 2);
+            i = closep == std::string::npos ? i + 2 : static_cast<int>(closep) + 1;
+            continue;
+        }
+        if (c0 == '[') {
+            // (Not a footnote reference `[^1]`, nor a checkbox.)
+            const size_t closeb = line.find(']', static_cast<size_t>(i) + 1);
+            const char after = closeb != std::string::npos ? at(static_cast<int>(closeb) + 1) : '\0';
+            if (closeb != std::string::npos && (after == '(' || after == '[') && c1 != '^') {
+                const size_t closer = line.find(after == '(' ? ')' : ']', closeb + 2);
+                if (closer != std::string::npos && closeb > static_cast<size_t>(i) + 1) {
+                    spans.push_back({i, static_cast<int>(closer) + 1, i + 1, static_cast<int>(closeb), "link", false});
+                    i = static_cast<int>(closer) + 1;
+                    continue;
+                }
+            }
+            i++;
+            continue;
+        }
+        if (c0 == '<' && std::isalpha(static_cast<unsigned char>(c1))) {
+            size_t j = static_cast<size_t>(i) + 1;
+            while (j < line.size() && std::isalpha(static_cast<unsigned char>(line[j]))) ++j;
+            const std::string tag = line.substr(static_cast<size_t>(i) + 1, j - static_cast<size_t>(i) - 1);
+            auto it = kTags.find(tag);
+            if (it != kTags.end() && j < line.size() && line[j] == '>') {
+                const std::string closing = "</" + tag + ">";
+                const size_t close = line.find(closing, j + 1);
+                if (close != std::string::npos) {
+                    spans.push_back({i, static_cast<int>(close + closing.size()), static_cast<int>(j) + 1, static_cast<int>(close), it->second, true});
+                    i = static_cast<int>(j) + 1;  // scan on inside the tag
+                    continue;
+                }
+            }
+            i++;
+            continue;
+        }
+        i++;
     }
     return spans;
 }
-}  // namespace
 
-void Editor::MdConceal(int ns) {
-    int cur_row = 0, col = 0;
-    GetCursorForLua(&cur_row, &col);
-    bool in_fence = false;
-    const int n = Buf().LineCount();
-    for (int row = 0; row < n; row++) {
-        const std::string &line = Buf().lines[static_cast<size_t>(row)];
-        if (line.compare(0, 3, "```") == 0) {
-            in_fence = !in_fence;
-            continue;
-        }
-        if (in_fence || row == cur_row) continue;
-        for (const MdConcealSpan &sp : ScanMdConcealSpans(line)) {
-            Decoration d;
-            d.row = row;
-            d.col_start = sp.col_start;
-            d.col_end = sp.col_end;
-            d.virt_text = sp.text;
-            d.virt_text_hl = sp.hl;
-            d.virt_overlay = true;
-            d.priority = 10;
-            AddDecoration(ns, d);
+// A fenced code block's opener: up to three spaces, three or more backticks
+// or tildes, then an info string (a backtick fence's may not hold a
+// backtick). `*fence` is the fence run, `*info` what follows it.
+bool MdFenceOpen(const std::string &line, std::string *fence, std::string *info) {
+    size_t i = 0;
+    while (i < line.size() && i < 3 && line[i] == ' ') ++i;
+    if (i >= line.size() || (line[i] != '`' && line[i] != '~')) return false;
+    const char c = line[i];
+    size_t j = i;
+    while (j < line.size() && line[j] == c) ++j;
+    if (j - i < 3) return false;
+    const std::string rest = line.substr(j);
+    if (c == '`' && rest.find('`') != std::string::npos) return false;
+    *fence = line.substr(i, j - i);
+    *info = rest;
+    return true;
+}
+
+// ... and its closer: the same character, at least as many, nothing else.
+bool MdFenceClose(const std::string &line, const std::string &fence) {
+    size_t i = 0;
+    while (i < line.size() && i < 3 && line[i] == ' ') ++i;
+    size_t j = i;
+    while (j < line.size() && line[j] == fence[0]) ++j;
+    if (j - i < fence.size()) return false;
+    return line.find_first_not_of(" \t", j) == std::string::npos;
+}
+
+// A thematic break: three or more `-`, `*` or `_` (one kind, blanks
+// between allowed) and nothing else. `*from`/`*to` bound the marks.
+bool MdRuleLine(const std::string &line, int *from, int *to) {
+    size_t i = 0;
+    while (i < line.size() && i < 3 && line[i] == ' ') ++i;
+    if (i >= line.size()) return false;
+    const char c = line[i];
+    if (c != '-' && c != '*' && c != '_') return false;
+    int count = 0;
+    size_t last = i;
+    for (size_t j = i; j < line.size(); ++j) {
+        if (line[j] == c) {
+            ++count;
+            last = j;
+        } else if (line[j] != ' ' && line[j] != '\t') {
+            return false;
         }
     }
+    if (count < 3) return false;
+    *from = static_cast<int>(i);
+    *to = static_cast<int>(last) + 1;
+    return true;
+}
+
+}  // namespace
+
+// The language of a Markdown fence's info string: its first word, with a
+// mepml-style `{lang, opts}` or `{opts}` brace group read past.
+std::string MdFenceLang(const std::string &info) {
+    size_t i = 0;
+    while (i < info.size() && (info[i] == ' ' || info[i] == '\t' || info[i] == '{')) ++i;
+    size_t j = i;
+    while (j < info.size() && !std::isspace(static_cast<unsigned char>(info[j])) && info[j] != ',' && info[j] != '}' && info[j] != '{') ++j;
+    return info.substr(i, j - i);
+}
+
+bool MdFenceOpenLine(const std::string &line, std::string *fence, std::string *info) { return MdFenceOpen(line, fence, info); }
+
+// A Markdown table cell as it is drawn (the Markdown counterpart of
+// OrgTableCellDisplayText, for Editor::OrgTableWrapScan): with `conceal`,
+// its inline markup stood down to its text -- a link to its text, a code
+// span or emphasis to what is inside, an HTML tag pair to what it wraps
+// -- each span reported with the look `styles` gives its element.
+std::string MdTableCellDisplayText(const std::string &cell, bool conceal, std::vector<OrgTableCellLink> *links,
+                                   const std::map<std::string, OrgCellEmphasisStyle> *styles) {
+    if (links) links->clear();
+    if (!conceal) return cell;
+    const std::vector<MdInlineSpan> spans = ScanMdInlineSpans(cell);
+    if (spans.empty()) return cell;
+    // Bytes the drawn text leaves out (markers, tags, a link's target).
+    std::vector<std::pair<int, int>> removed;
+    for (const MdInlineSpan &sp : spans) {
+        removed.emplace_back(sp.start, sp.inner_start);
+        removed.emplace_back(sp.inner_end, sp.end);
+    }
+    std::sort(removed.begin(), removed.end());
+    auto out_pos = [&](int byte) {
+        int gone = 0;
+        for (const auto &r : removed) {
+            if (r.second <= byte) gone += r.second - r.first;
+            else if (r.first < byte) gone += byte - r.first;
+        }
+        return byte - gone;
+    };
+    std::string out;
+    int pos = 0;
+    for (const auto &r : removed) {
+        if (r.first < pos) continue;
+        out.append(cell, static_cast<size_t>(pos), static_cast<size_t>(r.first - pos));
+        pos = r.second;
+    }
+    out.append(cell, static_cast<size_t>(std::min<int>(pos, static_cast<int>(cell.size()))), std::string::npos);
+    if (links) {
+        for (const MdInlineSpan &sp : spans) {
+            OrgTableCellLink span;
+            span.start = out_pos(sp.inner_start);
+            span.end = out_pos(sp.inner_end);
+            span.concealed = true;
+            if (sp.element == "link") {
+                // `[text](url)` / `[text][ref]`: what follows the text, less its brackets.
+                const std::string tail = cell.substr(static_cast<size_t>(sp.inner_end), static_cast<size_t>(sp.end - sp.inner_end));
+                span.target = tail.size() > 3 ? tail.substr(2, tail.size() - 3) : std::string();
+                if (span.target.empty()) span.target = "#";
+            }
+            if (styles) {
+                auto it = styles->find(sp.element);
+                if (it != styles->end()) {
+                    span.hl = it->second.hl;
+                    span.bold = it->second.bold;
+                    span.italic = it->second.italic;
+                    span.underline = it->second.underline;
+                    span.strike = it->second.strike;
+                }
+            }
+            if (span.end > span.start) links->push_back(std::move(span));
+        }
+        std::sort(links->begin(), links->end(), [](const OrgTableCellLink &a, const OrgTableCellLink &b) { return a.start < b.start; });
+    }
+    return out;
+}
+bool MdFenceCloseLine(const std::string &line, const std::string &fence) { return MdFenceClose(line, fence); }
+
+void Editor::MdConceal(int ns) {
+    Buffer &buf = Buf();
+    if (!IsMarkdownFiletype(LspFiletype(buf.filename))) return;
+    int cur_row = 0, col = 0;
+    GetCursorForLua(&cur_row, &col);
+    // View mode (Buffer::mepml_view, :MarkdownViewToggle): no row is the
+    // cursor's, and concealment is on whatever the org toggle says.
+    if (buf.mepml_view) cur_row = -1;
+    const bool conceal_on = org_conceal_visible_ || buf.mepml_view;
+    const std::string media = "md";
+    const mepml::Element paragraph("paragraph");
+    // Headings: which rows are one (Editor::HeadingLevelForRow), and
+    // their size and look from the sheet (DocHeadingStyle).
+    buf.mepml_heading_rows.clear();
+    buf.mepml_heading_scale.clear();
+    buf.mepml_heading_look.clear();
+    std::string fence;
+    bool in_frontmatter = false;
+    const int n = buf.LineCount();
+    for (int row = 0; row < n; row++) {
+        const std::string &line = buf.lines[static_cast<size_t>(row)];
+        if (!fence.empty()) {
+            if (MdFenceClose(line, fence)) fence.clear();
+            continue;
+        }
+        if (row == 0 && line == "---") {
+            in_frontmatter = true;
+            continue;
+        }
+        if (in_frontmatter) {
+            if (line == "---" || line == "...") in_frontmatter = false;
+            continue;
+        }
+        std::string info;
+        if (MdFenceOpen(line, &fence, &info)) continue;
+        const int level = MdHeadingLevel(line);
+        if (level > 0) {
+            // (Drawn scaled by DrawPane, where a column-anchored overlay
+            // would land in the wrong place: its inline markup stays.)
+            buf.mepml_heading_rows[row] = level;
+            DocHeadingStyle(buf, row, level, media);
+            continue;
+        }
+        const bool conceal_row = conceal_on && row != cur_row;
+        int rule_from = 0, rule_to = 0;
+        if (MdRuleLine(line, &rule_from, &rule_to)) {
+            DocRuleDecorations(ns, row, rule_from, rule_to, conceal_row, media);
+            continue;
+        }
+        DocListMarkerArgs args;
+        args.conceal = conceal_row;
+        args.star_bullets = true;
+        args.media = media;
+        DocListMarkerDecorations(ns, row, line, args);
+        for (const MdInlineSpan &sp : ScanMdInlineSpans(line)) {
+            const mepml::Element element(sp.element);
+            const mepml::style::Computed &st = DocSheetStyle({paragraph, element}, media);
+            const std::string inner = line.substr(static_cast<size_t>(sp.inner_start), static_cast<size_t>(sp.inner_end - sp.inner_start));
+            const int start = sp.start, end = sp.end, inner_start = sp.inner_start, inner_end = sp.inner_end;
+            if (sp.tag) {
+                // The tags hide (pure concealment, no replacement text);
+                // the text between them is styled where it is, so what is
+                // nested inside it can be scanned on its own.
+                if (conceal_row) {
+                    for (const auto &m : {std::make_pair(start, inner_start), std::make_pair(inner_end, end)}) {
+                        Decoration d;
+                        d.row = row;
+                        d.col_start = m.first;
+                        d.col_end = m.second;
+                        d.virt_overlay = true;
+                        d.conceal = true;
+                        d.priority = 10;
+                        AddDecoration(ns, d);
+                    }
+                    AddStyledSource(this, ns, row, inner_start, inner_end, st, {}, st);
+                } else {
+                    const mepml::style::Computed &markup = DocSheetStyle({paragraph, element, element.Part("markup")}, media + ",source");
+                    AddStyledSource(this, ns, row, inner_start, inner_end, st, {{start, inner_start}, {inner_end, end}}, markup);
+                }
+                continue;
+            }
+            if (conceal_row) {
+                AddStyledOverlay(this, ns, row, start, end, inner, st);
+            } else {
+                const mepml::style::Computed &markup = DocSheetStyle({paragraph, element, element.Part("markup")}, media + ",source");
+                AddStyledSource(this, ns, row, inner_start, inner_end, st, {{start, inner_start}, {inner_end, end}}, markup);
+            }
+        }
+    }
+    doc_conceal_namespaces_[0] = ns;
+    DocConcealRunsRebuild();
+}
+
+// What each row of an Org or Markdown buffer conceals (Buffer::mepml_row_conceal),
+// from the overlays the document scans emitted (their namespaces are
+// remembered as they run): what Editor::WrapLenForRow soft-wraps a row by,
+// so a line whose markup collapsed wraps where it is drawn, not where its
+// source would -- as a mepml row does (Editor::MepmlScan).
+void Editor::DocConcealRunsRebuild() {
+    Buffer &buf = Buf();
+    if (LspFiletype(buf.filename) == "mepml") return;  // (its scan's own)
+    buf.mepml_row_conceal.clear();
+    for (int ns : doc_conceal_namespaces_) {
+        if (ns < 0) continue;
+        const auto found = buf.decorations.find(ns);
+        if (found == buf.decorations.end()) continue;
+        for (const Decoration &d : found->second) {
+            if (d.whole_line || !d.virt_overlay || (d.virt_text.empty() && !d.conceal) || d.virt_text_eol) continue;
+            if (d.col_end <= d.col_start) continue;
+            int cp = 0;
+            for (char c : d.virt_text) cp += (static_cast<unsigned char>(c) & 0xC0) != 0x80;
+            buf.mepml_row_conceal[d.row].push_back({d.col_start, d.col_end, cp});
+        }
+    }
+    for (auto &kv : buf.mepml_row_conceal) std::sort(kv.second.begin(), kv.second.end());
 }
 
 std::vector<std::string> Editor::CompletionScanBufferWords(const std::string &prefix) const {
@@ -32390,7 +33033,14 @@ void Editor::OrgLinkScan(int ns) {
     if (LspFiletype(CurrentBuffer().filename) != "org") return;
     int cur_row = 0, cur_col = 0;
     GetCursorForLua(&cur_row, &cur_col);
-    const bool conceal = org_conceal_visible_;
+    // View mode (Buffer::mepml_view, :OrgViewToggle): no row is the
+    // cursor's, and concealment is on.
+    if (Buf().mepml_view) cur_row = -1;
+    const bool conceal = org_conceal_visible_ || Buf().mepml_view;
+    // A link looks as the sheet's `link` says (the default: Blue,
+    // underlined), like a mepml link.
+    const mepml::style::Computed &ls = DocSheetStyle({mepml::Element("paragraph"), mepml::Element("link")}, "org");
+    const std::string link_hl = ls.has_color ? DocStyleHl(ls.color) : "Blue";
     const int n = Buf().LineCount();
     // `#+begin_.../#+end_...` interiors are literal text -- example
     // blocks in this repo's own help/*.org document `[[file:...]]` syntax
@@ -32421,25 +33071,35 @@ void Editor::OrgLinkScan(int ns) {
             d.row = row;
             d.col_start = sp.col_start;
             d.col_end = sp.col_end;
-            d.hl_group = "Blue";
+            d.priority = 10;
             if (conceal && sp.bracketed && row != cur_row) {
                 d.virt_text = sp.display;
-                d.virt_text_hl = "Blue";
+                d.virt_text_hl = link_hl;
                 d.virt_overlay = true;
-                d.underline = false;
+                d.bold = ls.bold;
+                d.italic = ls.italic;
+                d.underline = ls.underline;
+                d.strikethrough = ls.strike;
+                AddDecoration(ns, d);
             } else {
                 // Not concealed (a bare URL, the cursor's own row, or
-                // concealment off): underline the raw span in place. The
-                // underline is what makes a link look clickable, which it
-                // is either way -- OrgFollowLinkAt works off the registry,
-                // not off whether the markup happens to be hidden.
-                d.underline = true;
+                // concealment off): the raw span coloured and underlined
+                // in place. The underline is what makes a link look
+                // clickable, which it is either way -- OrgFollowLinkAt
+                // works off the registry, not off whether the markup
+                // happens to be hidden. (Two decorations: one carrying
+                // `underline` colours only the line.)
+                d.hl_group = link_hl;
+                AddDecoration(ns, d);
+                Decoration u = d;
+                u.underline = true;
+                AddDecoration(ns, u);
             }
-            d.priority = 10;
-            AddDecoration(ns, d);
         }
         Buf().org_link_spans[row] = std::move(spans);
     }
+    doc_conceal_namespaces_[1] = ns;
+    DocConcealRunsRebuild();
 }
 
 bool Editor::OrgFollowLinkTargetOn(int row, const std::string &target) {
@@ -32498,7 +33158,8 @@ const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
         if (it != mepml_table_grids_.end()) org_tables_ = it->second;
         return org_tables_;
     }
-    if (LspFiletype(buf.filename) != "org") return org_tables_;
+    const bool md = IsMarkdownFiletype(LspFiletype(buf.filename));
+    if (LspFiletype(buf.filename) != "org" && !md) return org_tables_;
     const int n = buf.LineCount();
     /**
      * @brief Reports whether a line is an org table row (a `|` after optional leading whitespace).
@@ -32508,6 +33169,24 @@ const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
     auto is_table_row = [&](int r) {
         return r >= 0 && r < n && ParseOrgTableRowImpl(buf.lines[static_cast<size_t>(r)]).is_row;
     };
+    // A Markdown (GFM) table's delimiter row: `| --- | :---: |`, every
+    // cell dashes with optional colons. Org's own `|---+---|` is read by
+    // ParseOrgTableRowImpl; a `|` then a blank then dashes is only a
+    // separator here.
+    auto is_md_sep_row = [&](int r) {
+        if (!md || r < 0 || r >= n) return false;
+        const std::string &line = buf.lines[static_cast<size_t>(r)];
+        size_t i = line.find_first_not_of(" \t");
+        if (i == std::string::npos || line[i] != '|') return false;
+        bool dashes = false;
+        for (size_t k = i + 1; k < line.size(); ++k) {
+            const char c = line[k];
+            if (c == '-') dashes = true;
+            else if (c != '|' && c != ':' && c != ' ' && c != '\t') return false;
+        }
+        return dashes;
+    };
+    auto is_sep_row = [&](const std::string &line, int r) { return ParseOrgTableRowImpl(line).is_sep || is_md_sep_row(r); };
     // What a row actually *draws* as, which is what the grid has to be
     // measured against: a row belonging to a table rendered wrapped
     // (Buffer::org_table_wrap_rows) draws the layout's own lines, not its
@@ -32528,19 +33207,35 @@ const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
     // code or sample text, not a table -- drawing a grid over an ASCII
     // diagram or a shell pipeline would be worse than drawing nothing.
     bool in_block = false;
+    std::string fence;
     for (int row = 0; row < n; row++) {
         const std::string &block_line = buf.lines[static_cast<size_t>(row)];
-        if (in_block) {
-            if (MatchesOrgBlockMarker(block_line, "end_")) in_block = false;
-            continue;
-        }
-        if (MatchesOrgBlockMarker(block_line, "begin_")) {
-            in_block = true;
-            continue;
+        if (md) {
+            // (A Markdown fence's interior is code, the same way.)
+            if (!fence.empty()) {
+                if (MdFenceCloseLine(block_line, fence)) fence.clear();
+                continue;
+            }
+            std::string info;
+            if (MdFenceOpenLine(block_line, &fence, &info)) continue;
+        } else {
+            if (in_block) {
+                if (MatchesOrgBlockMarker(block_line, "end_")) in_block = false;
+                continue;
+            }
+            if (MatchesOrgBlockMarker(block_line, "begin_")) {
+                in_block = true;
+                continue;
+            }
         }
         if (!is_table_row(row)) continue;
         int end = row;
         while (is_table_row(end + 1)) end++;
+        // A Markdown table is one only with its delimiter row under the header.
+        if (md && !is_md_sep_row(row + 1)) {
+            row = end;
+            continue;
+        }
         OrgTableGrid g;
         g.start_row = row;
         g.end_row = end;
@@ -32581,7 +33276,7 @@ const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
             const std::string &line = rendered_line(r);
             const bool raw = is_raw_row(r);
             if (raw) g.raw_rows.push_back(r);
-            if (ParseOrgTableRowImpl(line).is_sep) {
+            if (is_sep_row(line, r)) {
                 // Recorded even when it is the stepped-aside row, so the
                 // header block below is still found: the renderer skips
                 // every raw row's decoration anyway, so this can't put a
@@ -32632,6 +33327,8 @@ const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
         for (size_t c = 0; c < common.size(); c++) {
             if (common[c]) g.rule_cols.push_back(static_cast<int>(c));
         }
+        // Its colours are the sheet's `table` (as a mepml table's are).
+        DocTableLook(&g, md ? "md" : "org");
         if (!g.rule_cols.empty()) org_tables_.push_back(std::move(g));
         row = end;
     }
@@ -32805,7 +33502,8 @@ void Editor::OrgTableWrapScan(bool force) {
         buf.org_table_wrap_rows.clear();
         return;
     }
-    if (LspFiletype(buf.filename) != "org") {
+    const bool md_table = IsMarkdownFiletype(LspFiletype(buf.filename));
+    if (LspFiletype(buf.filename) != "org" && !md_table) {
         // (A mepml buffer's are its own scan's: Editor::MepmlTableLayout.)
         if (LspFiletype(buf.filename) != "mepml") buf.org_table_wrap_rows.clear();
         return;
@@ -32816,7 +33514,8 @@ void Editor::OrgTableWrapScan(bool force) {
         buf.org_table_wrap_rows.clear();
         return;
     }
-    const int cursor_row = CurPane().cursor.row;
+    // (In view mode -- Buffer::mepml_view -- no row steps aside for the cursor.)
+    const int cursor_row = buf.mepml_view ? -1 : CurPane().cursor.row;
     // The rows a Visual selection covers, which step the wrapping aside
     // the same way the cursor's own row does (see the insert loop below
     // for why).
@@ -32888,11 +33587,54 @@ void Editor::OrgTableWrapScan(bool force) {
             // one that doesn't (OrgTableCellDisplayText, org_doc.h).
             // Concealment's own toggle decides which it is, the same
             // switch OrgLinkScan renders the row itself by.
+            // ... and so does its emphasis: `~code~` in a cell is drawn as
+            // the sheet's `verbatim`, the way OrgHighlightEmphasis draws it
+            // on an ordinary row.
+            static const char *const kEmphasisElements[] = {"bold", "italic", "underline", "strike", "mono", "verbatim"};
+            OrgCellEmphasisStyle emphasis[6];
+            for (int e = 0; e < 6; ++e) {
+                const mepml::style::Computed &st =
+                    DocSheetStyle({mepml::Element("table"), mepml::Element("table-cell"), mepml::Element(kEmphasisElements[e])}, "org");
+                if (st.has_color) emphasis[e].hl = DocStyleHl(st.color);
+                emphasis[e].bold = st.bold;
+                emphasis[e].italic = st.italic;
+                emphasis[e].underline = st.underline;
+                emphasis[e].strike = st.strike;
+            }
+            // A Markdown cell: its own markup, the same elements.
+            std::map<std::string, OrgCellEmphasisStyle> md_styles;
+            if (md_table) {
+                for (const char *el : {"bold", "italic", "underline", "strike", "mono", "verbatim", "link", "superscript", "subscript",
+                                       "highlight", "insert", "delete", "small", "big"}) {
+                    const mepml::style::Computed &st =
+                        DocSheetStyle({mepml::Element("table"), mepml::Element("table-cell"), mepml::Element(el)}, "md");
+                    OrgCellEmphasisStyle &e = md_styles[el];
+                    if (st.has_color) e.hl = DocStyleHl(st.color);
+                    e.bold = st.bold;
+                    e.italic = st.italic;
+                    e.underline = st.underline;
+                    e.strike = st.strike;
+                }
+            }
+            const bool cell_conceal = org_conceal_visible_ || buf.mepml_view;
             cells.cells.reserve(pr.cells.size());
             cells.links.resize(pr.cells.size());
+            // A link in a cell looks as the sheet's `link` says (colour,
+            // underline), like one on an ordinary row.
+            const mepml::style::Computed &cell_link =
+                DocSheetStyle({mepml::Element("table"), mepml::Element("table-cell"), mepml::Element("link")}, md_table ? "md" : "org");
             for (size_t ci = 0; ci < pr.cells.size(); ci++) {
-                cells.cells.push_back(
-                    OrgTableCellDisplayText(pr.cells[ci], org_conceal_visible_, &cells.links[ci]));
+                cells.cells.push_back(md_table ? MdTableCellDisplayText(pr.cells[ci], cell_conceal, &cells.links[ci], &md_styles)
+                                               : OrgTableCellDisplayText(pr.cells[ci], cell_conceal, &cells.links[ci], emphasis));
+                if (md_table) continue;  // (its spans carry the sheet's look already)
+                for (OrgTableCellLink &lk : cells.links[ci]) {
+                    if (lk.target.empty() || !cell_conceal) continue;
+                    if (cell_link.has_color) lk.hl = DocStyleHl(cell_link.color);
+                    lk.bold = cell_link.bold;
+                    lk.italic = cell_link.italic;
+                    lk.underline = cell_link.underline;
+                    lk.strike = cell_link.strike;
+                }
             }
             parsed.push_back(std::move(cells));
             if (!have_indent) {

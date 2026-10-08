@@ -713,6 +713,97 @@ int main() {
         EXPECT(concealed_on(row) > 0, "and the document renders", "no conceal decoration on the cursor's row");
     }
 
+    // --------------------------------------------------------------- 23
+    // The same view mode for an Org and a Markdown document
+    // (:OrgViewToggle, :MarkdownViewToggle -- Buffer::mepml_view): their
+    // scans conceal the cursor's row too, and draw from the default sheet
+    // -- a heading's size, a bullet's glyph, an emphasis' weight -- as the
+    // mepml scan does, so a document and its exports look alike.
+    std::printf("\n== 23. org and markdown view modes render the cursor's own row from the sheet\n");
+    {
+        std::filesystem::create_directories(dir);
+        const std::string org_path = dir + "/t23.org", md_path = dir + "/t23.md";
+        {
+            std::ofstream out(org_path, std::ios::binary | std::ios::trunc);
+            out << "* Heading\n"
+                   "\n"
+                   "Some *bold* and ~code~ text here.\n"  // row 2
+                   "\n"
+                   "- an item\n";  // row 4
+        }
+        {
+            std::ofstream out(md_path, std::ios::binary | std::ios::trunc);
+            out << "# Heading\n"
+                   "\n"
+                   "Some **bold** and `code` text here.\n"  // row 2
+                   "\n"
+                   "- an item\n";  // row 4
+        }
+        auto overlays_on = [](const Editor &ed, int ns, int r) {
+            const Buffer &buf = ed.CurrentBuffer();
+            auto it = buf.decorations.find(ns);
+            if (it == buf.decorations.end()) return 0;
+            int n = 0;
+            for (const Decoration &d : it->second)
+                if (d.row == r && d.virt_overlay && !d.virt_text.empty()) n++;
+            return n;
+        };
+        auto bold_on = [](const Editor &ed, int ns, int r) {
+            const Buffer &buf = ed.CurrentBuffer();
+            auto it = buf.decorations.find(ns);
+            if (it == buf.decorations.end()) return false;
+            for (const Decoration &d : it->second)
+                if (d.row == r && d.bold) return true;
+            return false;
+        };
+        {
+            Editor ed;
+            ed.LoadFile(org_path);
+            const int ns = ed.CreateNamespace("fold-test-org");
+            ed.RunCommand("normal 3gg");  // the marked-up row, 2
+            ed.OrgHighlightEmphasis(ns);
+            EXPECT(overlays_on(ed, ns, 2) == 0, "org, editing: the cursor's row shows its markup",
+                   std::to_string(overlays_on(ed, ns, 2)) + " overlays on it");
+            EXPECT(overlays_on(ed, ns, 4) == 1, "org, editing: a bullet elsewhere is drawn as the sheet's marker",
+                   std::to_string(overlays_on(ed, ns, 4)) + " overlays on row 4");
+            EXPECT(ed.MepmlToggleView(), "org: the toggle enters view mode", "it returned false");
+            ed.ClearNamespace(ns);
+            ed.OrgHighlightEmphasis(ns);
+            EXPECT(overlays_on(ed, ns, 2) == 2, "org, view mode: the cursor's row conceals its *bold* and ~code~",
+                   std::to_string(overlays_on(ed, ns, 2)) + " overlays on it");
+            EXPECT(bold_on(ed, ns, 2), "org: `bold` is bold, as the default sheet says", "no bold decoration on row 2");
+            const Buffer &buf = ed.CurrentBuffer();
+            const auto scale = buf.mepml_heading_scale.find(0);
+            EXPECT(scale != buf.mepml_heading_scale.end() && scale->second > 1.59f && scale->second < 1.61f,
+                   "org: the headline's size is heading[level=1]'s (1.6)",
+                   scale == buf.mepml_heading_scale.end() ? "no size recorded" : std::to_string(scale->second));
+            EXPECT(!ed.MepmlToggleView(), "org: the toggle leaves view mode", "it returned true");
+        }
+        {
+            Editor ed;
+            ed.LoadFile(md_path);
+            const int ns = ed.CreateNamespace("fold-test-md");
+            ed.RunCommand("normal 3gg");  // the marked-up row, 2
+            ed.MdConceal(ns);
+            EXPECT(overlays_on(ed, ns, 2) == 0, "markdown, editing: the cursor's row shows its markup",
+                   std::to_string(overlays_on(ed, ns, 2)) + " overlays on it");
+            EXPECT(overlays_on(ed, ns, 4) == 1, "markdown, editing: a bullet elsewhere is drawn as the sheet's marker",
+                   std::to_string(overlays_on(ed, ns, 4)) + " overlays on row 4");
+            EXPECT(Editor::HeadingLevelForRow(ed.CurrentBuffer(), 0) == 1, "markdown: `# Heading` is a level-1 heading",
+                   std::to_string(Editor::HeadingLevelForRow(ed.CurrentBuffer(), 0)));
+            EXPECT(ed.MepmlToggleView(), "markdown: the toggle enters view mode", "it returned false");
+            ed.ClearNamespace(ns);
+            ed.MdConceal(ns);
+            EXPECT(overlays_on(ed, ns, 2) == 2, "markdown, view mode: the cursor's row conceals its **bold** and `code`",
+                   std::to_string(overlays_on(ed, ns, 2)) + " overlays on it");
+            EXPECT(bold_on(ed, ns, 2), "markdown: `bold` is bold, as the default sheet says", "no bold decoration on row 2");
+            const OrgHeadingStyle hs = Editor::HeadingStyleForRow(ed.CurrentBuffer(), 0);
+            EXPECT(hs.scale > 1.59f && hs.scale < 1.61f && hs.slots == 2, "markdown: the heading is drawn at 1.6 over two slots",
+                   std::to_string(hs.scale) + " x" + std::to_string(hs.slots));
+            EXPECT(!ed.MepmlToggleView(), "markdown: the toggle leaves view mode", "it returned true");
+        }
+    }
+
     std::printf("\n---- %d checks, %d failures ----\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

@@ -515,7 +515,7 @@ OrgOpenClock OrgFindOpenClock(const std::vector<std::string> &lines);
 struct OrgTableCellLink {
     int start = 0;
     int end = 0;
-    std::string target;
+    std::string target;  // "" for an emphasis span (below): styled, not followed
     // True when the span is a description standing in for hidden markup,
     // false when it is the link's own raw text (a bare URL, or a bracket
     // link with concealment off). Editor::OrgLinkScan underlines the
@@ -524,6 +524,11 @@ struct OrgTableCellLink {
     // make the same distinction or the two renderers disagree about what
     // the same link looks like.
     bool concealed = false;
+    // An emphasis span stood down to its text (OrgCellEmphasisStyle): how
+    // the renderer draws it. Empty / false for a link, which is drawn as
+    // links are.
+    std::string hl;
+    bool bold = false, italic = false, underline = false, strike = false;
 };
 
 // A table cell as it is drawn: every `[[target][description]]` on it
@@ -547,7 +552,20 @@ struct OrgTableCellLink {
  * @param links optional; set to each link's span in the returned text, in column order
  * @return the cell's display text (`cell` itself when it holds no links)
  */
-std::string OrgTableCellDisplayText(const std::string &cell, bool conceal, std::vector<OrgTableCellLink> *links);
+// How a cell's emphasis (`*bold*`, `/italic/`, `_underline_`, `+strike+`,
+// `=mono=`, `~code~`) is drawn once its markers are stood down: one entry
+// per marker, in the order `*/_+=~`. The editor fills these from its
+// style sheet (Editor::DocSheetStyle); the planner knows nothing of looks.
+struct OrgCellEmphasisStyle {
+    std::string hl;
+    bool bold = false, italic = false, underline = false, strike = false;
+};
+// `emphasis` (six entries, or nullptr for none): with `conceal`, every
+// emphasis span outside a link is stood down to its text too and reported
+// among `links` with its style, as Editor::OrgHighlightEmphasis conceals
+// the same markup on an ordinary row.
+std::string OrgTableCellDisplayText(const std::string &cell, bool conceal, std::vector<OrgTableCellLink> *links,
+                                    const OrgCellEmphasisStyle *emphasis = nullptr);
 
 // One table row as the planner sees it: either a `|---+---|` rule or a
 // row of trimmed cell texts.
@@ -568,8 +586,10 @@ struct OrgTableCells {
 struct OrgTableWrapLink {
     int col_start = 0;  // byte offset into the line's text
     int col_end = 0;
-    std::string target;
+    std::string target;      // "" for an emphasis span (OrgTableCellLink::hl and flags)
     bool concealed = false;  // see OrgTableCellLink::concealed
+    std::string hl;
+    bool bold = false, italic = false, underline = false, strike = false;
 };
 
 // One line a stored row draws as: its text, plus the links on it. A

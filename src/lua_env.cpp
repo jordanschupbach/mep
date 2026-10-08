@@ -3387,6 +3387,23 @@ int l_mepml_view(lua_State *L) {
     return 1;
 }
 
+// mep.html_view_toggle() -> bool | nil: the current .html/.htm buffer
+// flipped between its rendered browser view and its source text
+// (Editor::HtmlToggleView; :HtmlViewToggle). True when it is now rendered,
+// false when it now shows its source, nil when the buffer is not an HTML
+// file.
+/**
+ * @brief Implements mep.html_view_toggle(): flips the current HTML buffer between rendered and source views.
+ * @param L Lua state.
+ * @return Number of values pushed (1: true rendered, false source, nil not an HTML buffer).
+ */
+int l_html_view_toggle(lua_State *L) {
+    const int r = GetEditor(L)->HtmlToggleView();
+    if (r < 0) lua_pushnil(L);
+    else lua_pushboolean(L, r == 1);
+    return 1;
+}
+
 // mep.mepml_present(mode?) -> true | nil, err: presents the current mepml
 // document's slides (Editor::MepmlPresentStart), `mode` "fill" (the
 // default: the pane takes the editor area) or "full" (the window goes full
@@ -13534,6 +13551,10 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_raw_toggle", l_mepml_raw_toggle},
     {"mepml_raw", l_mepml_raw},
     {"mepml_view_toggle", l_mepml_view_toggle},
+    // (The same flag for every document format: Buffer::mepml_view.)
+    {"doc_view_toggle", l_mepml_view_toggle},
+    {"doc_view", l_mepml_view},
+    {"html_view_toggle", l_html_view_toggle},
     {"mepml_view", l_mepml_view},
     {"mepml_present", l_mepml_present},
     {"mepml_present_stop", l_mepml_present_stop},

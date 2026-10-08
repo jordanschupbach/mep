@@ -29,6 +29,7 @@ the features live.
 | =<leader>bf= | Open in browser | -- |
 | =<leader>bh= | Host (serve) this directory and browse it | [[file:local-server.html][Serving a directory]] |
 | =<leader>bo= | Browse | [[file:browser.html][The browser pane]] |
+| =<leader>bv= | browse: toggle HTML file between page and source | [[file:mepml.html][mepml]] |
 | =<leader>bs= | Scratch buffer | [[file:files.html][Files and buffers]] |
 | =<leader>ca= | LSP: code action | [[file:lsp.html][Language servers]] |
 | =<leader>db= | Debug: toggle breakpoint | [[file:debugging.html][Debugging]] |
@@ -80,7 +81,7 @@ the features live.
 | =<leader>kr= | mepml: toggle rendering (raw text / rendered) | [[file:mepml.html][mepml]] |
 | =<leader>ks= | mepml: stop the running block | [[file:mepml.html][mepml]] |
 | =<leader>kt= | mepml: type into the running block | [[file:mepml.html][mepml]] |
-| =<leader>kv= | mepml: toggle view mode (rendered on every line) | [[file:mepml.html][mepml]] |
+| =<leader>kv= | document: toggle view mode (rendered on every line) | [[file:mepml.html][mepml]] |
 | =<leader>kx= | mepml: run code block at cursor | [[file:mepml.html][mepml]] |
 | =<leader>li= | LSP: goto implementation | [[file:lsp.html][Language servers]] |
 | =<leader>lk= | LSP: signature help | [[file:c-lsp.html][The C language server]] |
@@ -129,6 +130,7 @@ the features live.
 | =<leader>oti= | Org: toggle inline images | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otl= | Toggle LaTeX/math preview (org/tex) | [[file:mepml.html][mepml]] |
 | =<leader>otm= | Org: toggle markup concealment | [[file:org-basics.html][Org files in mep]] |
+| =<leader>otv= | Org: toggle view mode (rendered on every line) | [[file:org-basics.html][Org files in mep]] |
 | =<leader>otp= | Toggle math preview popup while typing | [[file:mepml.html][mepml]] |
 | =<leader>otr= | Org: toggle plain text (no inline rendering) | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>ots= | Org: toggle src-block LSP status | [[file:org-visuals.html][Images, LaTeX and tables]] |

@@ -104,6 +104,7 @@ uses in a document:
 | --- | --- |
 | an editor's document view | `editor`, `screen` |
 | ... a line shown as its source (structure.md `::markup` visible) | `editor`, `screen`, `source` |
+| ... of an Org or Markdown document (mep draws those from the same sheet, their constructs as mepml's elements) | `editor`, `screen`, and `org` / `md` |
 | an editor's presentation view | `present`, `slides`, `screen` |
 | HTML | `html`, `screen` (+ `slides` for a deck) |
 | LaTeX / PDF | `pdf`, `tex`, `latex`, `print` (+ `beamer`, `slides`) |

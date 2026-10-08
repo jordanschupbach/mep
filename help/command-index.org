@@ -153,6 +153,10 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepmlStop= | [[file:mepml.html][mepml]] |
 | =:MepmlTerminal= | [[file:mepml.html][mepml]] |
 | =:MepmlViewToggle= | [[file:mepml.html][mepml]] |
+| =:DocViewToggle= | [[file:mepml.html][mepml]] |
+| =:OrgViewToggle= | [[file:org-basics.html][Org files in mep]] |
+| =:MarkdownViewToggle= | [[file:mepml.html][mepml]] |
+| =:HtmlViewToggle= | [[file:mepml.html][mepml]] |
 | =:MepNextSheet= | [[file:sheets.html][Spreadsheets]] |
 | =:MepNotifyClear= | [[file:notifications.html][Notifications]] |
 | =:MepNotifyDismiss= | [[file:notifications.html][Notifications]] |

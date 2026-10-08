@@ -12879,7 +12879,6 @@ const char *kBuiltinSyntax =
     "  if mep.ts_highlight(mep_syntax_ns, ft, table.concat(lines, '\\n'), mep.ts_capture_hl, 0) then\n"
     "    if ft == 'org' then\n"
     "      mep_syntax_highlight_org_src_blocks(mep_syntax_ns, lines)\n"
-    "      mep.org_highlight_emphasis(mep_syntax_ns)\n"
     "    end\n"
     "    return\n"
     "  end\n"
@@ -14296,7 +14295,27 @@ const char *kBuiltinMarkdown =
     "  mep.md_conceal_scan(mep_md_conceal_ns)\n"
     "end\n"
     "mep.command('MepMdConceal', mep.md_conceal)\n"
-    "mep.on_buffer_changed(function() if mep.md_conceal_auto then mep.md_conceal() end end)\n"
+    // View mode (Buffer::mepml_view, the flag mepml's <leader>kv sets):
+    // rendered on every line, the cursor's included -- the Markdown export
+    // of a document drawn as the document is, from the same default sheet.
+    "function mep.markdown_view_toggle_ui()\n"
+    "  local ft = mep_lsp_filetype(mep.filename())\n"
+    "  if ft ~= 'md' and ft ~= 'markdown' then mep.notify('Not a markdown buffer', 'warn') return end\n"
+    "  local view = mep.doc_view_toggle()\n"
+    "  mep.notify('Markdown view mode: ' .. (view and 'on (rendered on every line)' or 'off (the cursor line shows its source)'))\n"
+    "  mep.md_conceal()\n"
+    "  mep.org_table_wrap_scan(true)\n"
+    "  if mep.org_latex_scan then mep.org_latex_scan() end\n"
+    "end\n"
+    "mep.command('MarkdownViewToggle', mep.markdown_view_toggle_ui)\n"
+    // (A Markdown table wider than the pane is laid out wrapped, as an org
+    // table is: Editor::OrgTableWrapScan reads both.)
+    "mep.on_buffer_changed(function()\n"
+    "  if not mep.md_conceal_auto then return end\n"
+    "  mep.md_conceal()\n"
+    "  local ft = mep_lsp_filetype(mep.filename())\n"
+    "  if ft == 'md' or ft == 'markdown' then mep.org_table_wrap_scan(true) end\n"
+    "end)\n"
     "local mep_md_conceal_last_row, mep_md_conceal_last_file = nil, nil\n"
     // Frame-polled (same idiom as mep.syntax_auto's own file-switch
     // watcher just above kBuiltinMarkdown's load site): on_buffer_changed
@@ -14310,6 +14329,8 @@ const char *kBuiltinMarkdown =
     "  if fname ~= mep_md_conceal_last_file or row ~= mep_md_conceal_last_row then\n"
     "    mep_md_conceal_last_file, mep_md_conceal_last_row = fname, row\n"
     "    mep.md_conceal()\n"
+    "    local ft = mep_lsp_filetype(fname)\n"
+    "    if ft == 'md' or ft == 'markdown' then mep.org_table_wrap_scan() end\n"
     "  end\n"
     "end)\n";
 
@@ -15009,6 +15030,17 @@ const char *kBuiltinOrgLinks =
     "  mep.org_link_scan(mep_org_link_ns)\n"
     "end\n"
     "mep.command('MepOrgLinkScan', mep.org_link_highlight)\n"
+    // Emphasis, list markers, rules and heading looks
+    // (Editor::OrgHighlightEmphasis): its own namespace, run on the same
+    // two hooks as the links -- the cursor's row is the one left
+    // unconcealed, so it has to follow the cursor, which the syntax pass
+    // it used to ride on (mep.syntax_highlight) never did.
+    "local mep_org_emphasis_ns = nil\n"
+    "function mep.org_emphasis_highlight()\n"
+    "  if not mep_org_emphasis_ns then mep_org_emphasis_ns = mep.ns_create('org-emphasis') end\n"
+    "  mep.ns_clear(mep_org_emphasis_ns)\n"
+    "  mep.org_highlight_emphasis(mep_org_emphasis_ns)\n"
+    "end\n"
     // Two hooks, the same pair every other org rendering pass in this
     // file uses -- except that this one also has to re-run on plain
     // *cursor movement*, since the row the cursor sits on is the one row
@@ -15017,6 +15049,7 @@ const char *kBuiltinOrgLinks =
     "mep.on_buffer_changed(function()\n"
     "  if mep_lsp_filetype(mep.filename()) == 'org' then\n"
     "    mep.org_link_highlight()\n"
+    "    mep.org_emphasis_highlight()\n"
     // A table's own width is an edit-time property, so the wrapped
     // layout (Editor::OrgTableWrapScan) is rebuilt here as well as on
     // the cursor moves below -- typing into a cell is exactly what
@@ -15040,6 +15073,7 @@ const char *kBuiltinOrgLinks =
     "  if fname ~= mep_org_link_last_file or row ~= mep_org_link_last_row then\n"
     "    mep_org_link_last_file, mep_org_link_last_row = fname, row\n"
     "    mep.org_link_highlight()\n"
+    "    mep.org_emphasis_highlight()\n"
     // Cursor-driven for the same reason the link scan is: the table the
     // cursor is inside renders at its real stored widths, so entering or
     // leaving one has to re-plan. Gated on the row actually having
@@ -15069,10 +15103,28 @@ const char *kBuiltinOrgLinks =
     "  local visible = mep.org_conceal_toggle()\n"
     "  mep.notify('Org markup concealment: ' .. (visible and 'on' or 'off'))\n"
     "  mep.org_link_highlight()\n"
+    "  mep.org_emphasis_highlight()\n"
     "  mep.syntax_highlight()\n"
     "end\n"
     "mep.command('MepOrgConcealToggle', mep.org_conceal_toggle_ui)\n"
     "mep.leader_map('otm', 'Org: toggle markup concealment', mep.org_conceal_toggle_ui)\n"
+    // View mode (Buffer::mepml_view, the same flag mepml's <leader>kv
+    // sets): rendered on every line, the cursor's included, so what is
+    // drawn is a function of the document and the default sheet alone --
+    // the same ground truth mepml's view mode is, for the Org export of a
+    // document. Every org render pass runs again at once so the switch
+    // shows on this frame.
+    "function mep.org_view_toggle_ui()\n"
+    "  if mep_lsp_filetype(mep.filename()) ~= 'org' then mep.notify('Not an org buffer', 'warn') return end\n"
+    "  local view = mep.doc_view_toggle()\n"
+    "  mep.notify('Org view mode: ' .. (view and 'on (rendered on every line)' or 'off (the cursor line shows its source)'))\n"
+    "  mep.org_emphasis_highlight()\n"
+    "  mep.org_link_highlight()\n"
+    "  mep.org_table_wrap_scan(true)\n"
+    "  if mep.org_latex_scan then mep.org_latex_scan() end\n"
+    "end\n"
+    "mep.command('OrgViewToggle', mep.org_view_toggle_ui)\n"
+    "mep.leader_map('otv', 'Org: toggle view mode (rendered on every line)', mep.org_view_toggle_ui)\n"
     "function mep.org_heading_scale_toggle_ui()\n"
     "  local visible = mep.org_heading_scale_toggle()\n"
     "  mep.notify('Org heading sizes: ' .. (visible and 'on' or 'off'))\n"
@@ -15275,15 +15327,20 @@ const char *kBuiltinOrgImages =
     // watcher, the exact same two-hook shape mep.syntax_highlight uses in
     // kBuiltinSyntax for the identical "buffer-changed doesn't fire on a
     // plain :e/:bn/picker switch with no edit" reason.
+    // (Markdown too: a `![alt](path)` line is a picture, Editor::OrgImageScan.)
+    "local function mep_org_image_ft(fname)\n"
+    "  local ft = mep_lsp_filetype(fname or '')\n"
+    "  return ft == 'org' or ft == 'md' or ft == 'markdown'\n"
+    "end\n"
     "mep.on_buffer_changed(function()\n"
-    "  if mep_lsp_filetype(mep.filename()) == 'org' then mep.org_image_scan() end\n"
+    "  if mep_org_image_ft(mep.filename()) then mep.org_image_scan() end\n"
     "end)\n"
     "local mep_org_image_last_file = nil\n"
     "mep.on_frame(function()\n"
     "  local fname = mep.filename()\n"
     "  if fname ~= mep_org_image_last_file then\n"
     "    mep_org_image_last_file = fname\n"
-    "    if mep_lsp_filetype(fname) == 'org' then mep.org_image_scan() end\n"
+    "    if mep_org_image_ft(fname) then mep.org_image_scan() end\n"
     "  end\n"
     "end)\n"
     // Toggle: mep.org_images_toggle() (lua_env.cpp) flips Editor's own
@@ -25109,7 +25166,32 @@ const char *kBuiltinMepml =
     "  if mep.org_latex_scan then mep.org_latex_scan() end\n"
     "end\n"
     "mep.command('MepmlViewToggle', mep.mepml_view_toggle_ui)\n"
-    "mep.leader_map('kv', 'mepml: toggle view mode (rendered on every line)', mep.mepml_view_toggle_ui)\n"
+    // One view mode for every document format mep renders: the same flag
+    // (Buffer::mepml_view), one key. <leader>kv and the pane header's book
+    // button go through this, which hands the current buffer to its
+    // format's own toggle -- :MepmlViewToggle, :OrgViewToggle (kBuiltinOrg),
+    // :MarkdownViewToggle (kBuiltinMarkdown) or :HtmlViewToggle (below).
+    "function mep.doc_view_toggle_ui()\n"
+    "  local ft = mep_lsp_filetype(mep.filename() or '')\n"
+    "  if ft == 'mepml' then mep.mepml_view_toggle_ui()\n"
+    "  elseif ft == 'org' and mep.org_view_toggle_ui then mep.org_view_toggle_ui()\n"
+    "  elseif (ft == 'md' or ft == 'markdown') and mep.markdown_view_toggle_ui then mep.markdown_view_toggle_ui()\n"
+    "  elseif ft == 'html' or ft == 'htm' then mep.html_view_toggle_ui()\n"
+    "  else mep.notify('Not a document buffer (mepml, org, markdown or html)', 'warn') end\n"
+    "end\n"
+    "mep.command('DocViewToggle', mep.doc_view_toggle_ui)\n"
+    "mep.leader_map('kv', 'document: toggle view mode (rendered on every line)', mep.doc_view_toggle_ui)\n"
+    // An HTML file: its rendered page or its source text, in the same
+    // buffer (Editor::HtmlToggleView -- what Ctrl-E / Ctrl-V do from the
+    // keyboard). The HTML export of a mepml document opened this way is
+    // the page the browser pane draws from the same default sheet.
+    "function mep.html_view_toggle_ui()\n"
+    "  local rendered = mep.html_view_toggle()\n"
+    "  if rendered == nil then mep.notify('Not an HTML file', 'warn') return end\n"
+    "  mep.notify('HTML view: ' .. (rendered and 'rendered page' or 'source text'))\n"
+    "end\n"
+    "mep.command('HtmlViewToggle', mep.html_view_toggle_ui)\n"
+    "mep.leader_map('bv', 'browse: toggle HTML file between page and source', mep.html_view_toggle_ui)\n"
     "mep.leader_map('kf', 'mepml: toggle math preview popup while typing',\n"
     "  function() mep.org_latex_popup_toggle_ui() end)\n"
     "mep.leader_map('kA', 'mepml: toggle alt text popup on hover',\n"
@@ -46854,11 +46936,23 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     const float mepml_render_w = show_mepml_render_button ? MeasureUiText(mepml_render_label, font_size) : 0.0f;
     // View toggle: beside the eye. A book, lit while the document is in
     // view mode (Buffer::mepml_view: rendered on every row, the cursor's
-    // too); a click flips it (mep.mepml_view_toggle_ui, <leader>kv).
-    const bool show_mepml_view_button = show_mepml_render_button;
+    // too); a click flips it (mep.doc_view_toggle_ui, <leader>kv). On an
+    // Org or Markdown document too, which render from the same sheet
+    // (:OrgViewToggle, :MarkdownViewToggle).
+    const bool show_mepml_view_button = !term_sess && !img_sess && !pdf_sess && !video_sess && !music_sess &&
+                                        !office_sess && !sheet_sess && !html_sess && !kanban_sess && !gantt_sess &&
+                                        (LspFiletype(buf.filename) == "mepml" || LspFiletype(buf.filename) == "org" ||
+                                         IsMarkdownFiletype(LspFiletype(buf.filename)));
     const bool mepml_view = show_mepml_view_button && g_editor.MepmlView(pane.buffer_id);
     const std::string mepml_view_label = " " + Utf8FromCodepoint(0xf02d) + " ";  // nf-fa-book
     const float mepml_view_w = show_mepml_view_button ? MeasureUiText(mepml_view_label, font_size) : 0.0f;
+    // An HTML file's own view toggle (:HtmlViewToggle, <leader>bv): on its
+    // browser pane a code glyph that shows the source text, on its text
+    // buffer a globe that renders it again (Editor::HtmlToggleView).
+    const bool show_html_view_button = !term_sess && !img_sess && !pdf_sess && !video_sess && !music_sess &&
+                                       !office_sess && !sheet_sess && !kanban_sess && !gantt_sess && IsHtmlPath(buf.filename);
+    const std::string html_view_label = " " + Utf8FromCodepoint(html_sess ? 0xf121 : 0xf0ac) + " ";  // nf-fa-code / nf-fa-globe
+    const float html_view_w = show_html_view_button ? MeasureUiText(html_view_label, font_size) : 0.0f;
     // Present button: left of the eye, on a mepml document that is a
     // slide deck (`//? Type: presentation`, Buffer::mepml_presentation).
     // A click starts the presentation view filling the editor
@@ -46869,8 +46963,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     const float vsplit_w = MeasureUiText(vsplit_label, control_font_size);
     const float hsplit_w = MeasureUiText(hsplit_label, control_font_size);
     const float close_w = MeasureUiText(close_label, control_font_size);
-    const float controls_w = mepml_present_w + mepml_render_w + mepml_view_w + org_export_w + org_block_w + run_w + vsplit_w +
-                             hsplit_w + close_w;
+    const float controls_w = mepml_present_w + mepml_render_w + mepml_view_w + html_view_w + org_export_w + org_block_w + run_w +
+                             vsplit_w + hsplit_w + close_w;
     const gfx::Vector2 header_mouse = gfx::GetMousePosition();
     // Draws the three controls over `bg` filling controls_rect (each
     // brightened while hovered) and registers their click regions.
@@ -46935,7 +47029,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                            : "View mode: rendered on every line (<Space>kv)",
                 [pane_id] {
                     g_editor.FocusPaneById(pane_id);
-                    g_editor.RunCommand("MepmlViewToggle");
+                    g_editor.RunCommand("DocViewToggle");
+                },
+                nullptr, font_size, label_y);
+        }
+        if (show_html_view_button) {
+            button(
+                html_view_label, html_view_w, html_sess ? "Cyan" : "Comment",
+                html_sess ? "Show the page's source (<Space>bv)" : "Render the page (<Space>bv)",
+                [pane_id] {
+                    g_editor.FocusPaneById(pane_id);
+                    g_editor.RunCommand("HtmlViewToggle");
                 },
                 nullptr, font_size, label_y);
         }
@@ -50028,7 +50132,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // Editor::HeadingLevelForRow and friends, which know each language's
     // own heading syntax -- but none of org's block cards or table grid.
     const bool is_mepml_buffer = LspFiletype(buf.filename) == "mepml";
-    const bool is_heading_buffer = is_org_buffer || is_mepml_buffer;
+    // Markdown too (Editor::MdConceal): its `#` headings are scaled and
+    // their markup hidden, its fences are cards and its pipe tables grids,
+    // all from the same default sheet.
+    const bool is_md_buffer = IsMarkdownFiletype(LspFiletype(buf.filename));
+    const bool is_heading_buffer = is_org_buffer || is_mepml_buffer || is_md_buffer;
     // The cursor row every LaTeX-preview lookup below is resolved
     // against (Editor::OrgLatexRenderForRow): a fragment whose own
     // source rows the caret is inside reverts to that source, so it can
@@ -50062,7 +50170,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // The drawn table grid (wash, zebra banding, rounded outline, column
     // rules) is rendering too, so a plain pane leaves these maps empty
     // and every table draws as the pipes and dashes in the file.
-    if ((is_org_buffer || is_mepml_buffer) && !org_plain) {
+    if (is_heading_buffer && !org_plain) {
         for (const Editor::OrgTableGrid &t : g_editor.OrgTables(pane.buffer_id)) {
             // OrgTables' returned reference is into Editor's own scratch
             // vector, refilled on the next call -- taking addresses into
@@ -50079,7 +50187,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
     // mepml code blocks and their results draw as cards too
     // (Editor::MepmlBuildCards feeds OrgBlockCards).
-    if (show_org_cards && (is_org_buffer || is_mepml_buffer)) {
+    if (show_org_cards && is_heading_buffer) {
         // Row -> its first visual slot, and how many slots it claims,
         // walked exactly the way the draw loop below walks (a closed fold
         // collapses to one slot, an org image/LaTeX row claims its own
@@ -50414,14 +50522,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // A bare card (a mepml document header) has no title bar and
             // no floor: its rows are all content.
             if (!card.bare && row_bottom(card.begin_row, &header_bottom)) {
-                const bool cursor_in_header = is_active && pane.cursor.row >= card.meta_row && pane.cursor.row <= card.begin_row;
+                // (In view mode -- Buffer::mepml_view -- the cursor reveals nothing.)
+                const bool cursor_in_header =
+                    is_active && !buf.mepml_view && pane.cursor.row >= card.meta_row && pane.cursor.row <= card.begin_row;
                 const bool sel_in_header = sel_lo >= 0 && sel_lo <= card.begin_row && sel_hi >= card.meta_row;
                 box.header = gfx::Rectangle{box.rect.x, box.rect.y, box.rect.width, header_bottom - box.rect.y - 1.0f};
                 box.conceal_header = box.header.height > 1.0f && !cursor_in_header && !sel_in_header;
             }
             float footer_top = 0.0f, footer_bottom = 0.0f;
             if (!card.bare && card.end_row >= 0 && row_top(card.end_row, &footer_top) && row_bottom(card.end_row, &footer_bottom)) {
-                const bool cursor_on_end = is_active && pane.cursor.row == card.end_row;
+                const bool cursor_on_end = is_active && !buf.mepml_view && pane.cursor.row == card.end_row;
                 const bool sel_on_end = sel_lo >= 0 && sel_lo <= card.end_row && sel_hi >= card.end_row;
                 box.footer = gfx::Rectangle{box.rect.x, footer_top, box.rect.width, footer_bottom - footer_top - 1.0f};
                 box.conceal_footer = box.footer.height > 1.0f && !cursor_on_end && !sel_on_end;
@@ -50882,7 +50992,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // OrgPlainCursorLineVisible()'s own comment (editor.h) for why
         // those stay put.
         const bool plain_row =
-            is_org_buffer && g_editor.OrgPlainCursorLineVisible() && is_active && row == pane.cursor.row;
+            is_org_buffer && g_editor.OrgPlainCursorLineVisible() && is_active && row == pane.cursor.row && !buf.mepml_view;
         // The same reveal for this row's math previews -- inline spans
         // through Editor::OrgLatexInlineRevealed, whole-row fragments
         // through Editor::OrgLatexRenderForRow (each applies it across the
@@ -50927,7 +51037,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // same way an image/LaTeX row is.
         const Buffer::OrgTableWrapRow *tbl_wrap = nullptr;
         // (A mepml table wider than the pane is one too: Editor::MepmlTableLayout.)
-        if (!fold_here && (is_org_buffer || is_mepml_buffer) && show_org_table_wrap) {
+        if (!fold_here && is_heading_buffer && show_org_table_wrap) {
             tbl_wrap = g_editor.TableWrapRowFor(buf, row);
         }
         // A mepml row's layout says which bytes of the row each of its
@@ -52248,16 +52358,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // too. Identical to the stored line when concealment is off
             // or the caret is on this row.
             const std::string &hline = draw_line;
-            // Level colour comes from the same theme groups the org
-            // grammar's own headline captures use (OrgHeadlineLevel1..3),
-            // so a themed headline keeps its colour at any size.
-            const char *level_hl = org_head_level == 1   ? "OrgHeadlineLevel1"
-                                    : org_head_level == 2 ? "OrgHeadlineLevel2"
-                                                          : "OrgHeadlineLevel3";
-            // A mepml heading's weight, slant and alignment are its style
-            // sheets' (Buffer::mepml_heading_look); org's are plain.
+            // A heading's weight, slant, alignment and colour are its style
+            // sheets' (Buffer::mepml_heading_look -- filled for mepml, Org
+            // and Markdown headings alike). With no colour of its own the
+            // level's theme group, the one the org grammar's headline
+            // captures use (OrgHeadlineLevel1..3), so a themed headline
+            // keeps its colour at any size.
             Buffer::MepmlHeadingLook head_look;
             if (auto hit = buf.mepml_heading_look.find(row); hit != buf.mepml_heading_look.end()) head_look = hit->second;
+            const char *level_hl = !head_look.color_hl.empty() ? head_look.color_hl.c_str()
+                                   : org_head_level == 1        ? "OrgHeadlineLevel1"
+                                   : org_head_level == 2        ? "OrgHeadlineLevel2"
+                                                                : "OrgHeadlineLevel3";
             float head_x = text_x;
             if (head_look.align != 0) {
                 // (Of the text itself: the indent that stands for its depth is not centred.)
@@ -52387,18 +52499,31 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     const int col_b = ByteOffsetToColumn(twl.text, b);
                     const float lx = text_x + static_cast<float>(col_a) * g_char_width;
                     const float lw = static_cast<float>(col_b - col_a) * g_char_width;
-                    DrawLineFast(twl.text.substr(static_cast<size_t>(a), static_cast<size_t>(b - a)), lx, tly,
-                                 g_font_size, link_color);
+                    // A link, or an emphasis span the cell's markup stood
+                    // down to (OrgTableCellLink::hl and flags: the sheet's
+                    // look for it, as Editor::OrgHighlightEmphasis draws
+                    // the same markup on an ordinary row).
+                    const bool is_link = !lk.target.empty();
+                    const gfx::Color span_color = !lk.hl.empty() ? ResolveHlGroup(lk.hl) : is_link ? link_color : ResolveHlGroup("Normal");
+                    const std::string piece = twl.text.substr(static_cast<size_t>(a), static_cast<size_t>(b - a));
+                    if (lk.italic) DrawItalicColumns(piece, lx, tly, span_color);
+                    else DrawGridText(piece, lx, tly, span_color, lk.bold);
                     // Underlined only where the raw text is what draws --
                     // a bare URL, or a bracket link with concealment off.
                     // A description standing in for hidden markup gets
                     // the Blue face alone, which is exactly what
                     // Editor::OrgLinkScan's concealing overlay does.
-                    if (!lk.concealed) {
+                    // An emphasis span: its own `underline` / `strike`.
+                    if ((is_link && !lk.concealed) || lk.underline) {
                         gfx::DrawRectangle(static_cast<int>(lx),
                                            static_cast<int>(tly + static_cast<float>(line_height) - 2),
-                                           static_cast<int>(lw), 1, link_color);
+                                           static_cast<int>(lw), 1, span_color);
                     }
+                    if (lk.strike) {
+                        gfx::DrawRectangle(static_cast<int>(lx), static_cast<int>(tly + static_cast<float>(line_height) / 2),
+                                           static_cast<int>(lw), 1, span_color);
+                    }
+                    if (!is_link) continue;
                     // Followed by target rather than by column: the
                     // stored line's own columns are nowhere near these
                     // ones, so there is nothing to hand OrgFollowLinkAt.
@@ -53396,15 +53521,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // and a block caret would land on the wrong glyph. The row gets
         // the full-width outline a rendered fragment's row gets instead,
         // as tall as the row draws (its wrapped lines, at its pitch).
-        const bool cursor_view_band = is_mepml_buffer && buf.mepml_view && !cursor_on_image && !cursor_on_latex;
+        // (An Org or Markdown document in view mode too: the same flag.)
+        const bool cursor_view_band = is_heading_buffer && buf.mepml_view && !cursor_on_image && !cursor_on_latex;
         int cursor_view_slots = 1;
         if (cursor_view_band) {
             cursor_on_latex = true;
             const int cur_row_wrap = wrap_cols > 0 ? g_editor.MepmlRowCols(buf, pane.cursor.row, wrap_cols) : 0;
-            const int sublines =
+            int sublines =
                 cur_row_wrap > 0
                     ? std::max(1, (g_editor.WrapLenForRow(buf, pane.cursor.row, pane.cursor.row) + cur_row_wrap - 1) / cur_row_wrap)
                     : 1;
+            // (A row of an org or markdown table laid out wrapped is as
+            // tall as its layout's lines: Buffer::org_table_wrap_rows.)
+            if (auto tw = buf.org_table_wrap_rows.find(pane.cursor.row); tw != buf.org_table_wrap_rows.end() && !tw->second.lines.empty())
+                sublines = static_cast<int>(tw->second.lines.size());
             cursor_view_slots = sublines * std::max(1, g_editor.RowLinePitchSlots(buf, pane.cursor.row));
         }
         // A mepml \toc/\bibliography row is outlined as a whole band the
@@ -53450,7 +53580,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // is drawn there, and that glyph is the one punched back through.
         std::string cursor_tbl_glyph;
         bool cursor_in_tbl_layout = false;
-        if ((is_org_buffer || is_mepml_buffer) && show_org_table_wrap && !cursor_on_image && !cursor_on_latex) {
+        if (is_heading_buffer && show_org_table_wrap && !cursor_on_image && !cursor_on_latex) {
             const Buffer::OrgTableWrapRow *cursor_tw = g_editor.TableWrapRowFor(buf, pane.cursor.row);
             if (cursor_tw != nullptr && !cursor_tw->caret.empty()) {
                 const std::vector<OrgTableWrapPos> &caret = cursor_tw->caret;

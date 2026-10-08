@@ -11,15 +11,19 @@
 
 /* --- Headings ---------------------------------------------------------- */
 
-/* A heading is drawn at its font-size, and given the lines it needs. */
-heading          { color: theme(OrgHeadlineLevel3, #1f2328); }
-heading[level=1] { color: theme(OrgHeadlineLevel1, #1f2328); font-size: 1.6; }
-heading[level=2] { color: theme(OrgHeadlineLevel2, #1f2328); font-size: 1.32; }
+/* A heading is drawn at its font-size, and given the lines it needs. One
+   colour per depth -- the ladder org's and markdown's own headline
+   captures use, so a heading looks the same in a document, its Org export
+   and its Markdown export. (Purple, Blue and Cyan are groups every theme
+   has; the exports take the fallback.) */
+heading          { color: theme(Cyan, #1f2328); }
+heading[level=1] { color: theme(Purple, #1f2328); font-size: 1.6; }
+heading[level=2] { color: theme(Blue, #1f2328); font-size: 1.32; }
 heading[level=3] { font-size: 1.12; }
 
 /* --- The document header (`//? Key: value` lines) ----------------------- */
 
-meta[key=title]    { color: theme(OrgHeadlineLevel1, #1f2328); font-size: 2.2; font-weight: bold; }
+meta[key=title]    { color: theme(Purple, #1f2328); font-size: 2.2; font-weight: bold; }
 meta[key=subtitle] { color: theme(Comment, #59636e); font-size: 1.15; font-style: italic; }
 meta::key          { color: theme(Comment, #59636e); }
 meta[key=import]::value { color: theme(Blue, #0b5cad); }
@@ -68,7 +72,7 @@ caption[of=table]::label  { content: "Table %n"; }
 alt-text       { color: theme(Comment, #59636e); font-style: italic; font-size: 0.85; }
 /* The generated lists: their own title, then entries in the colours of
    what they list (a heading's, a citation's). */
-toc::title, bibliography::title { color: theme(OrgHeadlineLevel2, #1f2328); font-weight: bold; }
+toc::title, bibliography::title { color: theme(Blue, #1f2328); font-weight: bold; }
 toc, bibliography { background: fade(theme(Comment, #59636e), 0.08); border-color: fade(theme(Border, #d1d9e0), 0.7); }
 rule        { color: theme(Comment, #59636e); content: "─"; }
 
@@ -96,7 +100,7 @@ callout[kind=question], callout[kind=example]                   { --accent: them
 callout *                 { color: inherit; }
 callout::label            { content: " %k "; font-weight: bold; }
 
-abstract::label { content: "Abstract"; color: theme(OrgHeadlineLevel2, #1f2328); font-weight: bold; text-align: center; }
+abstract::label { content: "Abstract"; color: theme(Blue, #1f2328); font-weight: bold; text-align: center; }
 
 slide::label { content: "Slide %n"; color: theme(Cyan, #1b7f86); font-weight: bold; }
 slide::end   { color: theme(Comment, #59636e); }

@@ -82,13 +82,18 @@ never fails:
 
 ### What mep's exports honour
 
-An export keeps its own built-in look and applies what the document's
-sheets (the user's, then the `//? Style:` ones — not the default sheet)
-change in it, so a document with no sheet exports as it always has.
+The HTML export's look *is* the sheet's: the default sheet and then the
+document's are written as CSS over the page's own layout rules, so the
+page shows what the editor shows (the fallback colours, as the page's
+`--fg` / `--muted` / `--link` custom properties where they coincide, so
+a reader's dark theme still swaps them). Every other export keeps its
+built-in look and applies what the document's sheets (the user's, then
+the `//? Style:` ones) change in it, so a document with no sheet exports
+to those formats as it always has.
 
 | Export | From the sheets |
 | --- | --- |
-| HTML, HTML slideshow | every rule whose selector has markup on the page, as CSS appended to the page's own (`mepml::ExportSheetCss`): all text and box properties, `content` for list markers and a box's end mark; a box's `::label` text is written into the page |
+| HTML, HTML slideshow | every rule whose selector has markup on the page, as CSS appended to the page's own (`mepml::ExportSheetCss`), the default sheet included: all text and box properties, `content` for list markers and a box's end mark; a box's `::label` text is written into the page; a table's `background` becomes the tint of its header cells and alternate rows; a `::label` with a `background` is drawn as a chip |
 | LaTeX, PDF, Beamer | `color`, `font-weight`, `font-style` of headings, paragraphs and inline elements; a box's accent, paper, label and end mark |
 | DOCX, ODT | the same three properties of headings, paragraphs and inline elements, as character styles named for the change (so the text reads back as it was written); a class's look as its own character style; a box's label, accent and paper |
 | PPTX, ODP | the same three properties of inline elements, on the runs; a box's label and accent |
@@ -111,7 +116,21 @@ properties of style.md §6 marked for its medium come from the computed
 style of §1 — not from constants of its own. Its built-in look is a default
 sheet, replaceable rule by rule.
 
-## 7. Where mep's editor stops short
+## 7. One look for every format
+
+mep's editor draws an Org or Markdown document from the same default
+sheet as a mepml one: each construct is read as the mepml element it
+corresponds to (`*bold*` is `bold`, `# Title` is `heading[level=1]`, a
+bullet is `list-item::marker`, a fenced block is `code[lang=...]`, a
+pipe table is `table`), under the media tags `editor`, `screen` and
+`org` or `md`. So a document, its Org export and its Markdown export
+render alike, and the HTML export (§5) carries the same sheet as CSS.
+The view mode of each (`:MepmlViewToggle`, `:OrgViewToggle`,
+`:MarkdownViewToggle`; `:HtmlViewToggle` for the page) renders every
+line, the cursor's included: the rendering depends on the document and
+the sheets alone, and is what the exports are measured against.
+
+## 8. Where mep's editor stops short
 
 The editor sets text on a character grid, one source line to a row, and
 that bounds what it does with a sheet:

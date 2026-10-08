@@ -733,6 +733,17 @@ class ExportTextStyler {
 // nothing for are left out. "" without sheets.
 std::string ExportSheetCss(const Document &doc);
 
+// The look the sheets -- mep's default, then the document's -- give an
+// element, for an export whose format has a style table of its own (Word,
+// Writer): a heading's or the title's size, weight and colour, a link's
+// colour, so those tables say what the editor draws.
+struct ExportTextLook {
+    std::string color;  // "#rrggbb", "" for none
+    bool bold = false, italic = false, underline = false;
+    float font_size = 1.0f;  // × body text
+};
+ExportTextLook ExportLookFor(const Document &doc, const std::vector<Element> &chain);
+
 // ---------------------------------------------------------------------------
 // What the exports show of a code block, as org-babel's :exports says it:
 // `code`, `results`, `both` (the default) or `none`. The document's header

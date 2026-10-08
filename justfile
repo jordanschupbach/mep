@@ -218,11 +218,18 @@ help: build-native
         echo "  $src -> $out"
     done
 
-# README.org is exported from README.mepml (the file to edit): the Org
-# export starts with a comment saying so. GitHub renders the .org.
+# README.org, README.md and README.html are exported from README.mepml (the
+# file to edit): each text export starts with a comment saying so. GitHub
+# renders the .org (it would prefer a README.md, so that one is not
+# committed -- see .gitignore). All three render in mep from the one
+# default style sheet the .mepml does (assets/mepml/default.mepss):
+# :OrgViewToggle / :MarkdownViewToggle / :HtmlViewToggle show each as the
+# document, :MepmlViewToggle the source of truth.
 readme: build-native
     ./{{native_build_dir}}/mep-mepml convert README.mepml README.org
-    @echo "  README.mepml -> README.org"
+    ./{{native_build_dir}}/mep-mepml convert README.mepml README.md
+    ./{{native_build_dir}}/mep-mepml convert README.mepml README.html
+    @echo "  README.mepml -> README.org, README.md, README.html"
 
 # Check the built-in help workspace: that every help/*.html is exactly what
 # its .org source exports today (re-exported and compared, not an mtime

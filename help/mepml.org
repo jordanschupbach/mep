@@ -25,6 +25,19 @@ are no longer the file's. =<leader>kv= again returns to editing. Raw
 text (=<leader>kr=) still wins while it is on; entering view mode turns
 it off.
 
+The same default sheet draws every document format mep renders, and
+each has the same view mode: an Org file (=:OrgViewToggle=,
+=<leader>otv=) and a Markdown file (=:MarkdownViewToggle=) are rendered
+from it with their constructs read as mepml's elements -- =*bold*= and
+=**bold**= are =bold=, a =#+begin_src= block and a fenced block are
+=code[lang=...]=, a bullet is =list-item::marker= -- and an HTML file's
+page carries it as CSS (=:HtmlViewToggle=, =<leader>bv=, switches the
+file between its rendered page and its source). =<leader>kv= and the
+pane header's book button toggle whichever of these the buffer is
+(=:DocViewToggle=). So a document's Org, Markdown and HTML exports open
+in mep looking like the document, and =~/.config/mep/mepml.mepss=
+restyles all of them.
+
 * Keys and commands
 
 | Key / command         | Does                                                      |
@@ -46,7 +59,8 @@ it off.
 | =<leader>kl=          | follow the link under the cursor (clicking works too)     |
 | =<leader>km=          | toggle markup concealment                                 |
 | =<leader>kr=          | raw text or rendered (also the header's eye button)       |
-| =<leader>kv=          | view mode: rendered on every line, the cursor's too (also the header's book button) |
+| =<leader>kv=          | view mode: rendered on every line, the cursor's too (also the header's book button; an org or markdown buffer too) |
+| =<leader>bv=          | an HTML file: its rendered page or its source text         |
 | =<leader>kf=          | toggle the math preview popup shown while typing a formula |
 | =<leader>kA=          | toggle the alt text popup shown on hover (off by default) |
 | =<leader>kp=          | present the slides, filling the editor (also the header's screen button, on a presentation) |
@@ -70,6 +84,10 @@ it off.
 | =:MepmlAltPopupToggle= | toggle the alt text popup shown on hover                 |
 | =:MepmlRawToggle=     | toggle rendering (raw text / rendered document)           |
 | =:MepmlViewToggle=    | toggle view mode (rendered on every line, the cursor's too) |
+| =:DocViewToggle=      | the same for whatever document the buffer is: mepml, org, markdown or html |
+| =:OrgViewToggle=      | an org file's view mode, rendered from the same default sheet |
+| =:MarkdownViewToggle= | a markdown file's view mode, rendered from the same default sheet |
+| =:HtmlViewToggle=     | an HTML file: its rendered page or its source text         |
 | =:MepmlFoldsRecompute= | rebuild folds (=za=, =zc= and =zo= do this themselves)  |
 | =:MepmlPresent= [mode] | present the slides: =fill= (the default), =full=, =stop= |
 

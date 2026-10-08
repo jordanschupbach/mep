@@ -377,7 +377,7 @@ void TestElementPaths() {
             if (sp.line == line && col >= sp.col_start && col < sp.col_end) return styles[static_cast<size_t>(sp.path)];
         return Computed();
     };
-    CHECK(style_at(0, 3).color.group == "OrgHeadlineLevel1");
+    CHECK(style_at(0, 3).color.group == "Purple");
     CHECK(style_at(2, 13).bold && style_at(2, 13).italic);
     CHECK(style_at(2, 36).color.group == "Red");
     CHECK(style_at(5, 0).content == "Definition" && style_at(5, 0).color.group == "Blue" && style_at(5, 0).bold);
@@ -545,9 +545,19 @@ void TestExports() {
         }
         return true;
     };
-    // Without sheets nothing changes: the built-in look, and no CSS.
+    // Without sheets of its own a document exports in the built-in look --
+    // which, for HTML, is the default sheet written as CSS (headings,
+    // markers, cards and tables as the editor draws them), so the page and
+    // the editor's view of it agree.
     const mepml::Document plain = mepml::Parse(lines);
-    CHECK(plain.sheets.empty() && mepml::ExportSheetCss(plain).empty());
+    CHECK(plain.sheets.empty());
+    const std::string plain_css = mepml::ExportSheetCss(plain);
+    CHECK(plain_css.find(":root :is(h1:not(.title), h2.slide-title):not(.title-slide > h1) { color: var(--fg); font-size: 1.6em; }") != std::string::npos);
+    CHECK(plain_css.find(":root ul > li::marker { color: #9a6700; content: \"\xE2\x80\xA2 \"; text-decoration-line: none; }") != std::string::npos);
+    CHECK(plain_css.find(":root .mono { color: #1b7f86; }") != std::string::npos);
+    CHECK(plain_css.find(":root table th { background: rgba(11, 92, 173, 0.12); }") != std::string::npos);  // the table's hue, as tints
+    CHECK(plain_css.find("color-mix") == std::string::npos || plain_css.find("var(--accent)") != std::string::npos);  // literal fades are rgba()
+    CHECK(plain_css.find("markup") == std::string::npos);  // the editor's own: `::markup`, `@media source`
     const mepml::BoxLook builtin = mepml::ExportBoxLook(plain, "definition");
     CHECK(builtin.label == "Definition" && builtin.color == "#2c7fb8" && builtin.tint == "#eef5fb" && builtin.end.empty());
     CHECK(mepml::ExportBoxLook(plain, "proof").end == "\xE2\x88\x8E");
@@ -558,7 +568,9 @@ void TestExports() {
     const std::string css = mepml::ExportSheetCss(html_doc);
     CHECK(css.find(":root :is(h1:not(.title), h2.slide-title):not(.title-slide > h1) { color: #112233; font-size: 2em; }") != std::string::npos);
     CHECK(css.find(":root strong { color: #aa0000; font-style: italic; }") != std::string::npos);
-    CHECK(css.find("code") == std::string::npos);
+    // (`theme(Green)` with no fallback: the default sheet's colour stands, nothing of the document's is written.)
+    CHECK(css.find("code { color: #2f7d32") == std::string::npos && css.find(":root :not(pre) > code { color: var(--ins); }") != std::string::npos);
+    CHECK(css.rfind(":root :not(pre) > code {") == css.find(":root :not(pre) > code {"));
     CHECK(css.find(":root a:not(.cite) { text-decoration-line: none; }") != std::string::npos);
     CHECK(css.find(":root ul > li::marker { content: \"* \"; }") != std::string::npos);
     CHECK(css.find(":root .mbox-definition { --accent: #00aa00; --c: #00aa00; }") != std::string::npos);
@@ -635,7 +647,7 @@ void TestPresentationContext() {
     d.media = {"present", "slides", "screen"};
     const std::vector<Computed> ts = d.ComputeAll(tpaths);
     const Computed &t = ts[static_cast<size_t>(tnodes[0])], &sub = ts[static_cast<size_t>(tnodes[1])];
-    CHECK(t.font_size > 1.59f && t.font_size < 1.61f && !t.bold && t.color.group == "OrgHeadlineLevel1");
+    CHECK(t.font_size > 1.59f && t.font_size < 1.61f && !t.bold && t.color.group == "Purple");
     CHECK(sub.font_size == 1.0f && !sub.italic && !sub.has_color);
     // And a slide has no paper of its own there (it has, as a card, in the editor).
     CHECK(Style(d, {Element("document"), title.container}).background.kind == Color::None);

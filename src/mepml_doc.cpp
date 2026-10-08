@@ -4348,6 +4348,20 @@ ClassLook ExportClassLook(const Document &doc, const std::string &name) {
     return look;
 }
 
+ExportTextLook ExportLookFor(const Document &doc, const std::vector<Element> &chain) {
+    const ExportCascades cs(doc);
+    std::vector<Element> full = {Element("document")};
+    full.insert(full.end(), chain.begin(), chain.end());
+    const style::Computed st = ExportCascades::Of(cs.full, full);
+    ExportTextLook look;
+    if (st.has_color) look.color = ExportHex(st.color);
+    look.bold = st.bold;
+    look.italic = st.italic;
+    look.underline = st.underline;
+    look.font_size = st.font_size;
+    return look;
+}
+
 struct ExportTextStyler::Impl {
     ExportCascades cascades;
     std::vector<Element> chain;
@@ -4455,6 +4469,16 @@ bool CssColor(const std::string &value_in, std::string *out) {
         std::string colour;
         if (comma == std::string::npos || !CssColor(inside.substr(0, comma), &colour)) return false;
         const double a = std::clamp(std::atof(CssTrim(inside.substr(comma + 1)).c_str()), 0.0, 1.0);
+        // A literal colour fades to rgba(), which every CSS engine draws
+        // (mep's own browser pane included); a var() needs color-mix.
+        style::Color lit;
+        if (colour.size() == 7 && colour[0] == '#' && style::ParseColorValue(colour, &lit) && lit.kind == style::Color::Rgb) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "rgba(%u, %u, %u, %.3g)", static_cast<unsigned>((lit.rgb >> 16) & 0xffu),
+                          static_cast<unsigned>((lit.rgb >> 8) & 0xffu), static_cast<unsigned>(lit.rgb & 0xffu), a);
+            *out = buf;
+            return true;
+        }
         char pct[32];
         std::snprintf(pct, sizeof(pct), "%g", a * 100.0);
         *out = "color-mix(in srgb, " + colour + " " + pct + "%, transparent)";
@@ -4471,6 +4495,17 @@ bool CssColor(const std::string &value_in, std::string *out) {
     if (!style::ParseColorValue(value, &c) || c.kind != style::Color::Rgb) return false;
     if (c.alpha == 1.0f) {
         *out = HexOf(c.rgb);
+        // The page's own palette is custom properties, so a reader's dark
+        // theme (<html data-theme="dark">) can swap it: a sheet colour that
+        // is one of those (the default sheet's fallbacks are) is written
+        // as the property, and follows the theme too.
+        static const std::pair<const char *, const char *> kPalette[] = {
+            {"#1f2328", "var(--fg)"},   {"#59636e", "var(--muted)"},   {"#0b5cad", "var(--link)"},
+            {"#d1d9e0", "var(--rule)"}, {"#c62828", "var(--missing)"}, {"#2f7d32", "var(--ins)"},
+            {"#fff3a3", "var(--mark)"},
+        };
+        for (const auto &kv : kPalette)
+            if (*out == kv.first) *out = kv.second;
     } else {
         char buf[64];
         std::snprintf(buf, sizeof(buf), "rgba(%u, %u, %u, %.3g)", static_cast<unsigned>((c.rgb >> 16) & 0xffu),
@@ -4489,6 +4524,8 @@ struct CssTarget {
     bool marker = false;   // ... a list marker's
     bool box = false;      // the subject is a box (or a callout) itself
     bool rule = false;     // ... a rule, drawn as a border
+    bool table = false;    // ... a table: its `background` is the hue of its header and stripes
+    bool chip = false;     // ... a kind chip (a code block's language): a `background` makes it a chip
 };
 
 bool CssSelectorFor(const style::Selector &sel, CssTarget *out) {
@@ -4589,8 +4626,10 @@ bool CssSelectorFor(const style::Selector &sel, CssTarget *out) {
                 else return false;
             }
             if (part == "marker") tail = "::marker";
-        } else if (n == "table") one = "table";
-        else if (n == "table-cell") one = take("header", &v) ? "th" : "td";
+        } else if (n == "table") {
+            one = "table";
+            if (subject && part.empty()) out->table = true;
+        } else if (n == "table-cell") one = take("header", &v) ? "th" : "td";
         else if (n == "code") {
             one = "figure.code pre:not(.results)";
             if (take("lang", &v)) {
@@ -4600,6 +4639,7 @@ bool CssSelectorFor(const style::Selector &sel, CssTarget *out) {
             if (part == "label") {
                 one = "figure.code figcaption.lang";
                 tail = " ";  // (taken: the chip is its own element)
+                if (subject) out->chip = true;
             }
         } else if (n == "results") one = ".results";
         else if (n == "image") one = "img";
@@ -4666,6 +4706,14 @@ std::string CssDeclarationFor(const style::Declaration &d, const CssTarget &targ
         // colour is its line's.
         if (p == "border-color") return "border-top-color: " + v + "; border-right-color: " + v + "; border-bottom-color: " + v + ";";
         if (p == "color" && target.rule) return "color: " + v + "; border-color: " + v + ";";
+        // A table's `background` is what its header and stripes are shades
+        // of (rendering.md §7), not a fill: written as those tints, on its
+        // cells (see ExportSheetCss, which moves the rule onto them).
+        if (p == "background" && target.table) return "";
+        // A kind chip with a background is a chip: lettered in the page's
+        // paper colour, padded, rounded (as the editor draws it).
+        if (p == "background" && target.chip)
+            return "background: " + v + "; color: var(--bg); display: inline-block; padding: .05em .55em; border-radius: 3px;";
         return p + ": " + v + ";";
     }
     if (p == "font-weight" || p == "font-style" || p == "text-align" || p == "vertical-align") return p + ": " + low + ";";
@@ -4729,11 +4777,16 @@ std::string CssDeclarationFor(const style::Declaration &d, const CssTarget &targ
 }  // namespace
 
 std::string ExportSheetCss(const Document &doc) {
-    if (doc.sheets.empty()) return "";
     style::Cascade media;
     media.media = ExportMedia(doc);
+    // The default sheet first -- the page's look IS the sheet's, as the
+    // editor's is, so a document, its HTML export and the editor's view of
+    // that export agree -- then the document's sheets over it.
+    static const std::shared_ptr<const style::Sheet> builtin(&style::DefaultSheet(), [](const style::Sheet *) {});
+    std::vector<std::shared_ptr<const style::Sheet>> sheets = {builtin};
+    sheets.insert(sheets.end(), doc.sheets.begin(), doc.sheets.end());
     std::string css;
-    for (const auto &sheet : doc.sheets) {
+    for (const auto &sheet : sheets) {
         if (!sheet) continue;
         for (const style::Rule &rule : sheet->rules) {
             if (!media.MediaApplies(rule.media)) continue;
@@ -4742,16 +4795,31 @@ std::string ExportSheetCss(const Document &doc) {
             for (const style::Selector &sel : rule.selectors) {
                 CssTarget target;
                 if (!CssSelectorFor(sel, &target)) continue;
-                std::string body;
+                std::string body, cells;
                 for (const style::Declaration &d : rule.declarations) {
+                    if (target.table && d.property == "background") {
+                        // The hue of the table's header and stripes: the
+                        // header cells tinted with it, every other body row
+                        // more faintly (the editor's own two strengths).
+                        style::Color c;
+                        if (!style::ParseColorValue(CssTrim(d.value), &c) || ExportHex(c).empty()) continue;
+                        char th[96], td[96];
+                        const unsigned r = (c.rgb >> 16) & 0xffu, g = (c.rgb >> 8) & 0xffu, b = c.rgb & 0xffu;
+                        std::snprintf(th, sizeof(th), "%s th { background: rgba(%u, %u, %u, 0.12); }\n", target.selector.c_str(), r, g, b);
+                        std::snprintf(td, sizeof(td), "%s tbody tr:nth-child(even) > td { background: rgba(%u, %u, %u, 0.05); }\n",
+                                      target.selector.c_str(), r, g, b);
+                        cells += std::string(th) + td;
+                        continue;
+                    }
                     const std::string one = CssDeclarationFor(d, target);
                     if (!one.empty()) body += " " + one;
                 }
                 if (!body.empty()) css += target.selector + " {" + body + " }\n";
+                css += cells;
             }
         }
     }
-    return css.empty() ? css : "/* From the document's style sheets. */\n" + css;
+    return css.empty() ? css : "/* From the style sheets: mep's default look, then the document's own. */\n" + css;
 }
 
 }  // namespace mepml

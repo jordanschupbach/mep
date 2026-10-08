@@ -199,7 +199,81 @@ std::string Repeat(const char *glyph, int n) {
 
 }  // namespace
 
+std::string DocStyleHl(const mepml::style::Color &c) { return StyleHl(c); }
+
+OrgCardLook Editor::DocCardLook(const mepml::Element &element, const std::string &media) const {
+    // (The same reading of a block's computed style as MepmlBuildCards'
+    // look_of, from the default and user sheets alone.)
+    const mepml::style::Computed &own = DocSheetStyle({element}, media);
+    mepml::Element active = element;
+    active.With(":active");
+    const mepml::style::Computed &on = DocSheetStyle({active}, media);
+    const mepml::style::Computed &band = DocSheetStyle({element, element.Part("header")}, media);
+    const mepml::style::Computed &chip = DocSheetStyle({element, element.Part("label")}, media);
+    OrgCardLook look;
+    look.wash = CardColorOf(own.background);
+    look.border = CardColorOf(own.border_color);
+    look.border_active = CardColorOf(on.border_color);
+    look.stripe = CardColorOf(own.border_left_color);
+    look.band = CardColorOf(band.background);
+    look.chip = CardColorOf(chip.background.kind != mepml::style::Color::None ? chip.background
+                            : chip.has_color                                  ? chip.color
+                                                                              : mepml::style::Color());
+    if (chip.background.kind != mepml::style::Color::None && chip.has_color) look.chip_text = CardColorOf(chip.color);
+    const mepml::style::Computed &title = DocSheetStyle({element, element.Part("title")}, media);
+    if (title.has_color) look.title = CardColorOf(title.color);
+    const mepml::style::Computed &option = DocSheetStyle({element, element.Part("option")}, media);
+    if (option.has_color) look.option = CardColorOf(option.color);
+    const mepml::style::Computed &button = DocSheetStyle({element, element.Part("button")}, media);
+    if (button.has_color && button.color != own.color) look.button = CardColorOf(button.color);
+    if (band.has_color && band.color != own.color) look.header_text = CardColorOf(band.color);
+    return look;
+}
+
+void Editor::DocTableLook(OrgTableGrid *grid, const std::string &media) const {
+    const mepml::Element table("table");
+    const mepml::style::Computed &ts = DocSheetStyle({table}, media);
+    grid->look.wash = CardColorOf(ts.background);
+    grid->look.border = CardColorOf(ts.border_color);
+    mepml::Element active = table;
+    active.With(":active");
+    grid->look.border_active = CardColorOf(DocSheetStyle({active}, media).border_color);
+    const mepml::style::Computed &rs = DocSheetStyle({table, table.Part("rule")}, media);
+    if (rs.has_color) grid->rule = CardColorOf(rs.color);
+}
+
 bool Editor::IsMepmlBuffer() const { return LspFiletype(Buf().filename) == "mepml"; }
+
+bool IsMarkdownFiletype(const std::string &ft) { return ft == "md" || ft == "markdown"; }
+
+int MdHeadingLevel(const std::string &line) {
+    // An ATX heading: up to three spaces of indent, one to six `#`, then a
+    // space (or nothing: `##` alone is an empty heading in CommonMark, but
+    // mep draws only titled ones large).
+    size_t i = 0;
+    while (i < line.size() && i < 3 && line[i] == ' ') ++i;
+    int level = 0;
+    while (i < line.size() && line[i] == '#' && level < 7) {
+        ++level;
+        ++i;
+    }
+    if (level == 0 || level > 6) return 0;
+    if (i >= line.size() || (line[i] != ' ' && line[i] != '\t')) return 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    return i < line.size() ? level : 0;
+}
+
+int MdHeadingMarkupLen(const std::string &line) {
+    // The `#`s and the blanks after them, from the line's start: what the
+    // rendered heading hides (like an org headline's stars).
+    const int level = MdHeadingLevel(line);
+    if (level <= 0) return 0;
+    size_t i = 0;
+    while (i < line.size() && line[i] == ' ') ++i;
+    i += static_cast<size_t>(level);
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+    return static_cast<int>(i);
+}
 
 int Editor::HeadingLevelForRow(const Buffer &buf, int row) {
     if (row < 0 || row >= buf.LineCount()) return 0;
@@ -210,6 +284,14 @@ int Editor::HeadingLevelForRow(const Buffer &buf, int row) {
         auto it = buf.mepml_heading_rows.find(row);
         if (it == buf.mepml_heading_rows.end()) return 0;
         return mepml::LineHeadingLevel(line) == it->second ? it->second : 0;
+    }
+    // Markdown: an ATX heading outside a fenced block (Editor::MdConceal
+    // records which rows are headings, so a `# comment` in a code fence
+    // is not one).
+    if (IsMarkdownFiletype(ft)) {
+        auto it = buf.mepml_heading_rows.find(row);
+        if (it == buf.mepml_heading_rows.end()) return 0;
+        return MdHeadingLevel(line) == it->second ? it->second : 0;
     }
     return 0;
 }
@@ -243,6 +325,7 @@ int Editor::HeadingHideLenForRow(const Buffer &buf, int row) {
     const std::string ft = LspFiletype(buf.filename);
     if (ft == "org") return OrgHeadlineStarHideLen(line);
     if (ft == "mepml" && HeadingLevelForRow(buf, row) > 0) return mepml::LineHeadingMarkupLen(line);
+    if (IsMarkdownFiletype(ft) && HeadingLevelForRow(buf, row) > 0) return MdHeadingMarkupLen(line);
     return 0;
 }
 
@@ -251,8 +334,44 @@ int Editor::HeadingIndentColsForRow(const Buffer &buf, int row) {
     const std::string &line = buf.lines[static_cast<size_t>(row)];
     const std::string ft = LspFiletype(buf.filename);
     if (ft == "org") return OrgHeadlineStarIndentCols(line);
-    if (ft == "mepml") return std::max(0, HeadingLevelForRow(buf, row) - 1);
+    if (ft == "mepml" || IsMarkdownFiletype(ft)) return std::max(0, HeadingLevelForRow(buf, row) - 1);
     return 0;
+}
+
+const mepml::style::Computed &Editor::DocSheetStyle(const std::vector<mepml::Element> &chain, const std::string &media) const {
+    std::string signature;
+    std::vector<std::shared_ptr<const mepml::style::Sheet>> sheets = MepmlSheets(&signature);
+    if (signature != doc_sheet_styles_signature_) {
+        doc_sheet_styles_.clear();
+        doc_sheet_styles_signature_ = signature;
+    }
+    std::string key = media + "|";
+    for (const mepml::Element &e : chain) {
+        key += e.name + ":" + e.part;
+        for (const auto &kv : e.attrs) key += "[" + kv.first + "=" + kv.second + "]";
+        key += ">";
+    }
+    auto it = doc_sheet_styles_.find(key);
+    if (it != doc_sheet_styles_.end()) return it->second;
+    mepml::style::Cascade cascade;
+    cascade.sheets = std::move(sheets);
+    cascade.media = {"editor", "screen"};
+    // (`media` is one tag, or several joined by commas: "md,source".)
+    for (size_t at = 0; at < media.size();) {
+        const size_t comma = media.find(',', at);
+        const std::string tag = media.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+        if (!tag.empty()) cascade.media.push_back(tag);
+        if (comma == std::string::npos) break;
+        at = comma + 1;
+    }
+    const mepml::Element root("document");
+    std::vector<const mepml::Element *> path = {&root};
+    mepml::style::Computed st = cascade.Compute(path, mepml::style::Computed());
+    for (const mepml::Element &e : chain) {
+        path.push_back(&e);
+        st = cascade.Compute(path, st);
+    }
+    return doc_sheet_styles_.emplace(std::move(key), std::move(st)).first->second;
 }
 
 void Editor::MepmlColumnsPlace(const Pane &pane, const Buffer &buf, int wrap_cols) const {
@@ -429,7 +548,7 @@ int Editor::WrapLenForRow(const Buffer &buf, int row, int cursor_row) const {
     if (row == cursor_row && !buf.mepml_view) return raw;
     // DrawPane's collapse (its `conceal_runs`), from the same registries.
     std::vector<std::array<int, 3>> runs;
-    if (org_conceal_visible_) {
+    if (org_conceal_visible_ || buf.mepml_view) {
         const auto it = buf.mepml_row_conceal.find(row);
         if (it != buf.mepml_row_conceal.end()) runs = it->second;
     }
@@ -1654,7 +1773,11 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                     }
                 }
                 if ((s.style & mepml::kRule) && s.replace.empty()) {
-                    d.virt_text = Repeat(st.has_content && !st.content.empty() ? st.content.c_str() : "─", s.col_end - s.col_start);
+                    // Across the text width (never wider than the pane), as
+                    // a rule on paper runs across the page.
+                    const int pane_cols = TextColsForBuffer(CurrentBufferId());
+                    const int rule_width = std::max(s.col_end - s.col_start, (pane_cols > 0 ? std::min(TextWidth(), pane_cols - 1) : TextWidth()) - s.col_start);
+                    d.virt_text = Repeat(st.has_content && !st.content.empty() ? st.content.c_str() : "─", rule_width);
                 } else if (s.style & mepml::kTableRule) {
                     // `|` -> `│`, and the |---| separator row drawn as a rule
                     // -- same width, so the columns never move.

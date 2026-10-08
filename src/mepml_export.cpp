@@ -3,6 +3,7 @@
 // that walk the parsed mepml::Document) and mep's HTML-based exporters.
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -424,25 +425,37 @@ struct MdWriter {
                 case BlockKind::Image: blocks.push_back(captioned("![" + b.alt + "](" + b.value + ")")); break;
                 case BlockKind::Table: {
                     if (b.rows.empty()) break;
+                    // Columns padded to their widest cell, and the delimiter
+                    // row's dashes filling each column (GFM takes any number
+                    // of them), so every row's pipes line up: the table reads
+                    // as a table in the source, and an editor drawing a grid
+                    // over the pipes (mep's own) finds them in one place.
                     size_t cols = 0;
                     for (const auto &r : b.rows) cols = std::max(cols, r.size());
-                    auto row = [&](const std::vector<TableCell> &cells) {
-                        std::string o = "|";
+                    std::vector<std::vector<std::string>> cells;
+                    std::vector<size_t> width(cols, 3);
+                    for (const auto &r : b.rows) {
+                        cells.emplace_back();
                         for (size_t c = 0; c < cols; ++c) {
-                            std::string t = c < cells.size() ? Unwrap(Inl(cells[c].content)) : "";
-                            o += " " + t + " |";
+                            cells.back().push_back(c < r.size() ? Unwrap(Inl(r[c].content)) : "");
+                            width[c] = std::max(width[c], Utf8Width(cells.back().back()));
                         }
+                    }
+                    auto row = [&](const std::vector<std::string> &cs) {
+                        std::string o = "|";
+                        for (size_t c = 0; c < cols; ++c) o += " " + cs[c] + std::string(width[c] - Utf8Width(cs[c]), ' ') + " |";
                         return o;
                     };
                     std::vector<std::string> lines;
-                    lines.push_back(row(b.rows[0]));
+                    lines.push_back(row(cells[0]));
                     std::string sep = "|";
                     for (size_t c = 0; c < cols; ++c) {
                         const Align a = c < b.aligns.size() ? b.aligns[c] : Align::Default;
-                        sep += a == Align::Left ? " :--- |" : a == Align::Right ? " ---: |" : a == Align::Center ? " :---: |" : " --- |";
+                        const bool l = a == Align::Left || a == Align::Center, r = a == Align::Right || a == Align::Center;
+                        sep += std::string(l ? ":" : "-") + std::string(width[c], '-') + (r ? ":" : "-") + "|";
                     }
                     lines.push_back(sep);
-                    for (size_t r = 1; r < b.rows.size(); ++r) lines.push_back(row(b.rows[r]));
+                    for (size_t r = 1; r < cells.size(); ++r) lines.push_back(row(cells[r]));
                     blocks.push_back(captioned(Join(lines, "\n")));
                     break;
                 }
@@ -451,7 +464,22 @@ struct MdWriter {
                     for (const ListItem &it : b.items) {
                         std::string m = it.ordered ? std::to_string(it.number) + ". " : "- ";
                         if (it.checkbox >= 0) m += it.checkbox ? "[x] " : "[ ] ";
-                        lines.push_back(std::string(static_cast<size_t>(it.indent), ' ') + m + Unwrap(Inl(it.content)));
+                        // An item keeps the source's line breaks; its
+                        // continuation lines sit under its text (indented
+                        // by the marker, as CommonMark wants them), as the
+                        // Org export writes them -- so the Markdown reads
+                        // line for line like the document it came from.
+                        const std::string lead = std::string(static_cast<size_t>(it.indent), ' ');
+                        std::istringstream ss(Inl(it.content));
+                        std::string l;
+                        bool first = true;
+                        while (std::getline(ss, l)) {
+                            const std::string t = TrimStr(l);
+                            if (first) lines.push_back(lead + m + t);
+                            else if (!t.empty()) lines.push_back(lead + std::string(m.size(), ' ') + t);
+                            first = false;
+                        }
+                        if (first) lines.push_back(lead + m);
                     }
                     blocks.push_back(Join(lines, "\n"));
                     break;
@@ -1783,13 +1811,24 @@ struct DocxWriter {
             (DocumentLanguage(doc).empty() ? std::string() : "<w:lang w:val=\"" + DocumentLanguage(doc) + "\"/>") +
             "</w:rPr></w:rPrDefault>"
             "<w:pPrDefault><w:pPr><w:spacing w:after=\"160\" w:line=\"264\" w:lineRule=\"auto\"/></w:pPr></w:pPrDefault></w:docDefaults>"
-            "<w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/></w:style>"
-            "<w:style w:type=\"paragraph\" w:styleId=\"Title\"><w:name w:val=\"Title\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:jc w:val=\"center\"/><w:spacing w:after=\"320\"/></w:pPr><w:rPr><w:b/><w:sz w:val=\"48\"/></w:rPr></w:style>";
-        static const int kSize[] = {36, 30, 26, 24, 22, 22};
+            "<w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/></w:style>";
+        // The title's and the headings' size, weight and colour are the
+        // sheets' (the default's, then the document's: ExportLookFor), as
+        // the editor draws them -- over an 11pt body (22 half-points).
+        auto rpr = [](const ExportTextLook &look) {
+            std::string r = "<w:rPr>";
+            if (look.bold) r += "<w:b/>";
+            if (look.italic) r += "<w:i/>";
+            if (look.color.size() == 7) r += "<w:color w:val=\"" + look.color.substr(1) + "\"/>";
+            const long sz = std::max(16L, std::lround(static_cast<double>(look.font_size) * 22.0));
+            return r + "<w:sz w:val=\"" + std::to_string(sz) + "\"/></w:rPr>";
+        };
+        s += "<w:style w:type=\"paragraph\" w:styleId=\"Title\"><w:name w:val=\"Title\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:jc w:val=\"center\"/><w:spacing w:after=\"320\"/></w:pPr>" +
+             rpr(ExportLookFor(doc, {Element("header"), Element("meta", "key", "title")})) + "</w:style>";
         for (int i = 1; i <= 6; ++i) {
             s += "<w:style w:type=\"paragraph\" w:styleId=\"Heading" + std::to_string(i) + "\"><w:name w:val=\"heading " + std::to_string(i) +
                  "\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before=\"240\" w:after=\"80\"/><w:outlineLvl w:val=\"" +
-                 std::to_string(i - 1) + "\"/></w:pPr><w:rPr><w:b/><w:sz w:val=\"" + std::to_string(kSize[i - 1]) + "\"/></w:rPr></w:style>";
+                 std::to_string(i - 1) + "\"/></w:pPr>" + rpr(ExportLookFor(doc, {Element("heading", "level", std::to_string(i))})) + "</w:style>";
         }
         s += "<w:style w:type=\"paragraph\" w:styleId=\"SourceCode\"><w:name w:val=\"Source Code\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:spacing w:after=\"0\"/><w:ind w:left=\"360\"/><w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"F2F2F2\"/></w:pPr><w:rPr><w:rFonts w:ascii=\"Courier New\" w:hAnsi=\"Courier New\"/><w:sz w:val=\"19\"/></w:rPr></w:style>"
              "<w:style w:type=\"paragraph\" w:styleId=\"Caption\"><w:name w:val=\"caption\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:rPr><w:i/><w:sz w:val=\"20\"/></w:rPr></w:style>"
@@ -1833,7 +1872,13 @@ struct DocxWriter {
              "<w:style w:type=\"paragraph\" w:styleId=\"FootnoteText\"><w:name w:val=\"footnote text\"/><w:basedOn w:val=\"Normal\"/><w:rPr><w:sz w:val=\"18\"/></w:rPr></w:style>"
              "<w:style w:type=\"character\" w:styleId=\"FootnoteReference\"><w:name w:val=\"footnote reference\"/><w:rPr><w:vertAlign w:val=\"superscript\"/></w:rPr></w:style>"
              "<w:style w:type=\"character\" w:styleId=\"VerbatimChar\"><w:name w:val=\"Verbatim Char\"/><w:rPr><w:rFonts w:ascii=\"Courier New\" w:hAnsi=\"Courier New\"/></w:rPr></w:style>"
-             "<w:style w:type=\"character\" w:styleId=\"Hyperlink\"><w:name w:val=\"Hyperlink\"/><w:rPr><w:color w:val=\"1A5FB4\"/><w:u w:val=\"single\"/></w:rPr></w:style>"
+             "<w:style w:type=\"character\" w:styleId=\"Hyperlink\"><w:name w:val=\"Hyperlink\"/><w:rPr><w:color w:val=\"" +
+             [&] {
+                 // (A link's colour: the sheets' `link`.)
+                 const ExportTextLook link = ExportLookFor(doc, {Element("paragraph"), Element("link")});
+                 return link.color.size() == 7 ? link.color.substr(1) : std::string("1A5FB4");
+             }() +
+             "\"/><w:u w:val=\"single\"/></w:rPr></w:style>"
              "<w:style w:type=\"table\" w:styleId=\"TableGrid\"><w:name w:val=\"Table Grid\"/><w:tblPr><w:tblBorders>"
              "<w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>"
              "<w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/>"
@@ -2237,13 +2282,26 @@ std::string OdtStyles(const Document &doc, const std::map<std::string, SheetLook
                     "><office:font-face-decls><style:font-face style:name=\"Liberation Mono\" svg:font-family=\"'Liberation Mono'\" style:font-pitch=\"fixed\"/></office:font-face-decls><office:styles>"
                     "<style:default-style style:family=\"paragraph\"><style:paragraph-properties fo:margin-bottom=\"0.2cm\"/><style:text-properties fo:font-size=\"11pt\"/></style:default-style>"
                     "<style:style style:name=\"Standard\" style:family=\"paragraph\" style:class=\"text\"/>"
-                    "<style:style style:name=\"Title\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:text-align=\"center\" fo:margin-bottom=\"0.5cm\"/><style:text-properties fo:font-size=\"24pt\" fo:font-weight=\"bold\"/></style:style>";
-    static const int kPt[] = {18, 15, 13, 12, 11, 11};
+                    "";
+    // The title's and the headings' size, weight and colour are the
+    // sheets' (the default's, then the document's: ExportLookFor), as the
+    // editor draws them -- over the 11pt body above.
+    auto text_props = [](const ExportTextLook &look) {
+        char size[32];
+        std::snprintf(size, sizeof(size), "%.1fpt", std::max(8.0, static_cast<double>(look.font_size) * 11.0));
+        std::string p = "<style:text-properties fo:font-size=\"" + std::string(size) + "\"";
+        if (look.bold) p += " fo:font-weight=\"bold\"";
+        if (look.italic) p += " fo:font-style=\"italic\"";
+        if (look.color.size() == 7) p += " fo:color=\"" + look.color + "\"";
+        return p + "/>";
+    };
+    s += "<style:style style:name=\"Title\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:text-align=\"center\" fo:margin-bottom=\"0.5cm\"/>" +
+         text_props(ExportLookFor(doc, {Element("header"), Element("meta", "key", "title")})) + "</style:style>";
     for (int i = 1; i <= 6; ++i)
         s += "<style:style style:name=\"Heading_20_" + std::to_string(i) + "\" style:display-name=\"Heading " + std::to_string(i) +
              "\" style:family=\"paragraph\" style:parent-style-name=\"Standard\" style:default-outline-level=\"" + std::to_string(i) +
-             "\" style:class=\"text\"><style:paragraph-properties fo:margin-top=\"0.4cm\" fo:margin-bottom=\"0.2cm\" fo:keep-with-next=\"always\"/><style:text-properties fo:font-size=\"" +
-             std::to_string(kPt[i - 1]) + "pt\" fo:font-weight=\"bold\"/></style:style>";
+             "\" style:class=\"text\"><style:paragraph-properties fo:margin-top=\"0.4cm\" fo:margin-bottom=\"0.2cm\" fo:keep-with-next=\"always\"/>" +
+             text_props(ExportLookFor(doc, {Element("heading", "level", std::to_string(i))})) + "</style:style>";
     s += "<style:style style:name=\"Source_20_Text\" style:display-name=\"Source Text\" style:family=\"text\"><style:text-properties style:font-name=\"Liberation Mono\" fo:font-family=\"'Liberation Mono'\"/></style:style>";
     s += "<style:style style:name=\"Math\" style:family=\"text\"><style:text-properties fo:font-style=\"italic\"/></style:style>"
          "<style:style style:name=\"Math_20_Display\" style:display-name=\"Math Display\" style:family=\"paragraph\" style:parent-style-name=\"Standard\"><style:paragraph-properties fo:text-align=\"center\"/></style:style>";

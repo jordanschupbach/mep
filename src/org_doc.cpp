@@ -1392,7 +1392,7 @@ void AppendCellLinkSpans(const OrgCellLine &line, const OrgTableCellLink &link, 
         const int hi = std::min(link.end, ch.src + ch.len);
         if (hi <= lo) continue;
         into->push_back(OrgTableWrapLink{base + ch.out + (lo - ch.src), base + ch.out + (hi - ch.src), link.target,
-                                        link.concealed});
+                                        link.concealed, link.hl, link.bold, link.italic, link.underline, link.strike});
     }
 }
 
@@ -1415,8 +1415,9 @@ void MergeWrapLinks(std::vector<OrgTableWrapLink> *links) {
             // `+ 1` is the joining space the wrap put between two words
             // of the same description; anything further apart is a
             // genuine gap and stays one.
-            if (prev.target == cand.target && prev.concealed == cand.concealed &&
-                cand.col_start <= prev.col_end + 1) {
+            if (prev.target == cand.target && prev.concealed == cand.concealed && prev.hl == cand.hl &&
+                prev.bold == cand.bold && prev.italic == cand.italic && prev.underline == cand.underline &&
+                prev.strike == cand.strike && cand.col_start <= prev.col_end + 1) {
                 prev.col_end = std::max(prev.col_end, cand.col_end);
                 continue;
             }
@@ -1451,10 +1452,96 @@ std::vector<std::string> OrgTableWrapCell(const std::string &text, int width) {
     return out;
 }
 
-std::string OrgTableCellDisplayText(const std::string &cell, bool conceal, std::vector<OrgTableCellLink> *links) {
+namespace {
+
+// The second half of OrgTableCellDisplayText: `text` with its emphasis
+// markers stood down (outside the link spans already in `spans`, whose
+// positions are moved along), each span recorded with its style.
+std::string StandDownCellEmphasis(const std::string &text, const OrgCellEmphasisStyle *emphasis,
+                                  std::vector<OrgTableCellLink> *spans) {
+    static const char kMarkers[] = "*/_+=~";
+    auto in_link = [&](int i) {
+        if (!spans) return false;
+        for (const OrgTableCellLink &l : *spans)
+            if (i >= l.start && i < l.end) return true;
+        return false;
+    };
+    auto at = [&](int i) { return i >= 0 && i < static_cast<int>(text.size()) ? text[static_cast<size_t>(i)] : '\0'; };
+    std::string out;
+    std::vector<int> removed;  // byte positions of `text` that `out` leaves out
+    std::vector<OrgTableCellLink> found;
+    const int n = static_cast<int>(text.size());
+    int i = 0;
+    while (i < n) {
+        const char c = text[static_cast<size_t>(i)];
+        const char *m = c ? std::strchr(kMarkers, c) : nullptr;
+        if (!m || in_link(i)) {
+            out += c;
+            ++i;
+            continue;
+        }
+        // Org's own rules (the ones Editor::OrgHighlightEmphasis applies).
+        const char pre = at(i - 1), nxt = at(i + 1);
+        int close = -1;
+        if (OrgEmphasisPreOk(pre) && nxt != '\0' && !OrgEmphasisBorderBlank(nxt) && nxt != c) {
+            for (int j = i + 1; j < n; ++j) {
+                if (text[static_cast<size_t>(j)] != c) continue;
+                if (in_link(j)) break;
+                const char prev = at(j - 1), after = at(j + 1);
+                if (!OrgEmphasisBorderBlank(prev) && prev != c && OrgEmphasisPostOk(after)) {
+                    close = j;
+                    break;
+                }
+            }
+        }
+        // (A span may not straddle a link.)
+        for (int j = i + 1; close >= 0 && j < close; ++j)
+            if (in_link(j)) close = -1;
+        if (close < 0) {
+            out += c;
+            ++i;
+            continue;
+        }
+        OrgTableCellLink span;
+        span.start = static_cast<int>(out.size());
+        out.append(text, static_cast<size_t>(i) + 1, static_cast<size_t>(close - i - 1));
+        span.end = static_cast<int>(out.size());
+        span.concealed = true;
+        const OrgCellEmphasisStyle &st = emphasis[m - kMarkers];
+        span.hl = st.hl;
+        span.bold = st.bold;
+        span.italic = st.italic;
+        span.underline = st.underline;
+        span.strike = st.strike;
+        found.push_back(std::move(span));
+        removed.push_back(i);
+        removed.push_back(close);
+        i = close + 1;
+    }
+    if (spans) {
+        // The links' positions, less the markers stood down before them.
+        for (OrgTableCellLink &l : *spans) {
+            int before_start = 0, before_end = 0;
+            for (int r : removed) {
+                if (r < l.start) ++before_start;
+                if (r < l.end) ++before_end;
+            }
+            l.start -= before_start;
+            l.end -= before_end;
+        }
+        spans->insert(spans->end(), found.begin(), found.end());
+        std::sort(spans->begin(), spans->end(), [](const OrgTableCellLink &a, const OrgTableCellLink &b) { return a.start < b.start; });
+    }
+    return out;
+}
+
+}  // namespace
+
+std::string OrgTableCellDisplayText(const std::string &cell, bool conceal, std::vector<OrgTableCellLink> *links,
+                                    const OrgCellEmphasisStyle *emphasis) {
     if (links) links->clear();
     const std::vector<OrgLinkSpanInfo> spans = ScanOrgLinkSpans(cell);
-    if (spans.empty()) return cell;
+    if (spans.empty()) return conceal && emphasis ? StandDownCellEmphasis(cell, emphasis, links) : cell;
     std::string out;
     size_t pos = 0;
     for (const OrgLinkSpanInfo &sp : spans) {
@@ -1473,14 +1560,18 @@ std::string OrgTableCellDisplayText(const std::string &cell, bool conceal, std::
         const bool concealed = conceal && sp.bracketed;
         const std::string shown = concealed ? sp.display : cell.substr(a, b - a);
         if (links && !shown.empty()) {
-            links->push_back(OrgTableCellLink{static_cast<int>(out.size()),
-                                              static_cast<int>(out.size() + shown.size()), sp.target, concealed});
+            OrgTableCellLink link;
+            link.start = static_cast<int>(out.size());
+            link.end = static_cast<int>(out.size() + shown.size());
+            link.target = sp.target;
+            link.concealed = concealed;
+            links->push_back(std::move(link));
         }
         out += shown;
         pos = b;
     }
     out.append(cell, pos, std::string::npos);
-    return out;
+    return conceal && emphasis ? StandDownCellEmphasis(out, emphasis, links) : out;
 }
 
 std::vector<OrgTableWrapLine> LayoutOrgTableRow(const OrgTableCells &r, const std::vector<int> &widths, int indent,

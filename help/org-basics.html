@@ -46,6 +46,16 @@ construct you can see but not edit. <code>&lt;leader&gt;otm</code> turns conceal
 altogether, for every construct that uses it -- emphasis, links and table
 rules alike. See <a href="org-visuals.html">Org rendering</a> for what the
 closing-up does inside a table cell.</p>
+<p>The reveal is reveal-to-edit: what is drawn depends on where the caret is.
+<code>&lt;leader&gt;otv</code> (<code>:OrgViewToggle</code>, or the book button in the pane header) is
+<i>view mode</i>: every line stays rendered, the cursor's included, so the
+rendering is a function of the document alone -- the same view mode mepml
+has (<code>&lt;leader&gt;kv</code> works here too). What an org file renders as comes from
+the same default style sheet as a mepml document (<code>assets/mepml/default.mepss</code>):
+<code>*bold*</code> is mepml's <code>bold</code>, a headline <code>heading[level=N]</code>, a bullet
+<code>list-item::marker</code>, a <code>#+begin_src</code> block <code>code[lang</code>...]=, a table
+<code>table</code> -- so a mepml document and its Org export look alike, and a sheet
+in <code>~/.config/mep/mepml.mepss</code> restyles both.</p>
 <h1>Heading sizes</h1>
 <p>A heading's own leading stars are not drawn. What they say -- how deep the
 heading is -- the render already says with size and colour, so concealment

@@ -47,6 +47,17 @@ altogether, for every construct that uses it -- emphasis, links and table
 rules alike. See [[file:org-visuals.html][Org rendering]] for what the
 closing-up does inside a table cell.
 
+The reveal is reveal-to-edit: what is drawn depends on where the caret is.
+=<leader>otv= (=:OrgViewToggle=, or the book button in the pane header) is
+/view mode/: every line stays rendered, the cursor's included, so the
+rendering is a function of the document alone -- the same view mode mepml
+has (=<leader>kv= works here too). What an org file renders as comes from
+the same default style sheet as a mepml document (=assets/mepml/default.mepss=):
+=*bold*= is mepml's =bold=, a headline =heading[level=N]=, a bullet
+=list-item::marker=, a =#+begin_src= block =code[lang=...]=, a table
+=table= -- so a mepml document and its Org export look alike, and a sheet
+in =~/.config/mep/mepml.mepss= restyles both.
+
 * Heading sizes
 
 A heading's own leading stars are not drawn. What they say -- how deep the

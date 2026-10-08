@@ -519,3 +519,47 @@ same row heights the sheets' sizes go through.
   it is (`Fmt::sheet_tag`). `\color` text keeps the author's colour: that
   is the document's, not the sheet's.
 - rendering.md §7 now lists only what the character grid bounds.
+
+### 2026-10-07
+
+**One sheet, every format.** The default sheet is now the look of every
+document mep renders, not only a `.mepml`:
+- *Org and Markdown in the editor.* `Editor::OrgHighlightEmphasis`,
+  `OrgLinkScan` and `MdConceal` read their constructs as mepml's elements
+  (`*bold*` / `**bold**` → `bold`, `=x=` → `mono`, `~x~` and `` `x` `` →
+  `verbatim`, `# Title` → `heading[level=1]`, bullets → `list-item::marker`,
+  `-----` / `---` → `rule`) and take colour, weight, slant, lines, the
+  marker glyph and a heading's size from `Editor::DocSheetStyle` (the
+  default and user sheets, media `editor`, `screen`, `org` / `md`).
+  Markdown gained scaled headings, fenced-block cards (`code[lang]`,
+  `results` for `output` fences), pipe-table grids (laid out wrapped like
+  org's when too wide) and `![alt](path)` pictures. A wrapped org table's
+  cells stand their emphasis down too (`OrgTableCellDisplayText` takes the
+  sheet's `OrgCellEmphasisStyle`). The heading colours in the sheet are
+  now `theme(Purple / Blue / Cyan)`: the `OrgHeadlineLevelN` names were
+  tree-sitter capture links, not theme groups, so a mepml heading was
+  drawn in the plain text colour while an org one was purple.
+- *View mode for all of them.* `Buffer::mepml_view` is the one flag;
+  `:OrgViewToggle` (`<leader>otv`), `:MarkdownViewToggle`,
+  `:HtmlViewToggle` (`<leader>bv`: the page or its source) and
+  `:DocViewToggle` (`<leader>kv`, the header's book button) set it for the
+  buffer's own format.
+- *Exports.* `ExportSheetCss` writes the default sheet too, so the HTML
+  page is the sheet's look (fallback colours as the page's `--fg` /
+  `--muted` / `--link` properties where they coincide; a table's
+  `background` as header and stripe tints; a chip for a `::label` with a
+  background; `fade()` of a literal as `rgba()`, which mep's own browser
+  pane draws). Word and Writer take the title's, headings' and link's
+  size, weight and colour from `ExportLookFor`. The Markdown export keeps a
+  list item's line breaks and pads its tables, so it reads line for line
+  like the Org export.
+- `just readme` now writes README.org, README.md (gitignored: GitHub would
+  show it instead of the .org) and README.html.
+
+Known limits found on the way, all pre-existing: a decoration's columns
+are byte offsets used as display columns (DrawPane's `DispCol`), so a
+line with a multibyte character before its markup draws the rendering a
+column or two right of it, in every format; mep's browser pane has no
+`color-mix()` (a box's `fade(var(--accent))` paper is flat there) and did
+not show the README's relative-path pictures; `mep-mepml-convert-test`
+fails at HEAD on test.mepml's `gui` block (its test-gui PNG).

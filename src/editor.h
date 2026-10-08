@@ -1129,7 +1129,9 @@ struct Buffer {
     // sizes, results), and its maths is not rendered. Per buffer: every
     // pane showing the document agrees.
     bool mepml_raw = false;
-    // The mepml view toggle (<leader>kv, :MepmlViewToggle): the document
+    // The document view toggle (<leader>kv, :MepmlViewToggle; for an Org
+    // or Markdown document :OrgViewToggle / :MarkdownViewToggle, which
+    // read and set this same flag): the document
     // stays rendered on every row, the cursor's included. Rendering is
     // otherwise reveal-to-edit -- the cursor's row (and the caption, alt
     // text or formula it is in) shows its source -- so what is drawn
@@ -1142,7 +1144,10 @@ struct Buffer {
     // is drawn as an outline round its row rather than a block on a
     // glyph, since the row's columns are no longer the file's. Raw
     // (mepml_raw) still wins: raw shows nothing rendered at all. Per
-    // buffer, like mepml_raw.
+    // buffer, like mepml_raw. An Org or Markdown buffer uses the same
+    // flag (Editor::OrgHighlightEmphasis, OrgLinkScan, OrgTableWrapScan,
+    // MdConceal and DrawPane's card headers all ask it), so one view mode
+    // is the ground truth of every document format mep renders.
     bool mepml_view = false;
     // The document is a slide deck (`//? Type: presentation`, as of the
     // last Editor::MepmlScan): its pane header offers a present button.
@@ -1217,7 +1222,13 @@ struct Buffer {
         int align = 0;  // 0 left, 1 centre, 2 right
         bool underline = false, strike = false;
         std::string line_hl;  // the decoration's colour, "" for the text's
+        // The heading's own text colour (the sheets' `color`), "" for
+        // DrawPane's per-level default (OrgHeadlineLevel1..3).
+        std::string color_hl;
     };
+    // (Filled for an Org or Markdown heading too -- Editor::OrgHighlightEmphasis,
+    // Editor::MdConceal -- from the same default sheet, so every document
+    // format's headings are drawn alike.)
     std::unordered_map<int, MepmlHeadingLook> mepml_heading_look;
     // Rows of running text set centred (1) or flush right (2): their
     // block's text-align in the style sheets. DrawPane shifts such a row
@@ -3497,6 +3508,22 @@ using mep::diff::MyersDiffHunks;
  * @return The filetype string (typically the lowercased extension).
  */
 std::string LspFiletype(const std::string &fname);
+// Markdown by filetype ("md" or "markdown"), the two LspFiletype gives it.
+bool IsMarkdownFiletype(const std::string &ft);
+// A Markdown ATX heading's level (1-6), 0 for any other line; and the
+// columns its `#`s and the blanks after them take, which a rendered heading
+// hides (editor_mepml.cpp, beside their org and mepml counterparts).
+int MdHeadingLevel(const std::string &line);
+int MdHeadingMarkupLen(const std::string &line);
+// A Markdown fenced code block's opener (`*fence` the backtick or tilde
+// run, `*info` the info string after it), its closer, and the language an
+// info string names (editor.cpp, beside Editor::MdConceal).
+bool MdFenceOpenLine(const std::string &line, std::string *fence, std::string *info);
+bool MdFenceCloseLine(const std::string &line, const std::string &fence);
+std::string MdFenceLang(const std::string &info);
+// A sheet's colour as a highlight group's name: the theme group it names,
+// or the literal colour as "#rrggbb" (Editor::ResolveHighlight reads both).
+std::string DocStyleHl(const mepml::style::Color &c);
 /**
  * @brief Resolves a filename to an absolute path against the process's current working directory.
  * @param fname The filename or relative path to resolve.
@@ -8075,6 +8102,14 @@ public:
         std::shared_ptr<const mepml::style::Sheet> sheet;
     };
     mutable std::unordered_map<std::string, MepmlSheetFileEntry> mepml_sheet_files_;
+    // Editor::DocSheetStyle's cache: computed styles for the element chains
+    // the Org and Markdown scans ask about, keyed by chain and media, and
+    // dropped when the sheets' signature changes.
+    mutable std::unordered_map<std::string, mepml::style::Computed> doc_sheet_styles_;
+    mutable std::string doc_sheet_styles_signature_;
+    // The namespaces the Org / Markdown document scans last emitted into
+    // (emphasis-or-markdown, links), for DocConcealRunsRebuild.
+    int doc_conceal_namespaces_[2] = {-1, -1};
     mutable std::set<int> mepml_glyphs_;
     mutable unsigned long mepml_glyph_generation_ = 0;
     std::shared_ptr<const mepml::style::Sheet> MepmlSheetFile(const std::string &path, std::string *signature) const;
@@ -10414,6 +10449,49 @@ public:
      * @return The flag.
      */
     bool MepmlView(int buffer_id) const;
+    /**
+     * @brief The style the document sheets (mep's default, then the user's ~/.config/mep/mepml.mepss) compute for the last element of `chain`, each inside the one before, under media {"editor", "screen", `media`}. For an Org or Markdown buffer, whose constructs map onto mepml's element vocabulary (`bold`, `heading[level=2]`, `list-item::marker` ...) so one sheet defines every format's look. Cached per chain until a sheet changes.
+     * @param chain The elements from the outermost down (the document root is implied).
+     * @param media The buffer's own media tag ("org", "md"), "" for none.
+     * @return The computed style.
+     */
+    const mepml::style::Computed &DocSheetStyle(const std::vector<mepml::Element> &chain, const std::string &media) const;
+    // The pieces of an Org or Markdown document that are drawn from the
+    // sheet the way mepml's are (editor.cpp, beside Editor::OrgHighlightEmphasis).
+    struct DocListMarkerArgs {
+        bool conceal = false;      // replace the marker by the sheet's `content` (else colour it)
+        bool star_bullets = false; // `* ` at the margin is a bullet (Markdown), not a headline (Org)
+        std::string media;         // "org" / "md"
+    };
+    /**
+     * @brief Decorates the list marker of `line` (row `row`) as `list-item::marker` says: its content and colour, and a checked item's strike-through.
+     */
+    void DocListMarkerDecorations(int ns, int row, const std::string &line, const DocListMarkerArgs &a);
+    /**
+     * @brief Decorates a horizontal rule's markup at [col_start, col_end) as the sheet's `rule`: its content repeated across, in its colour.
+     */
+    void DocRuleDecorations(int ns, int row, int col_start, int col_end, bool conceal, const std::string &media);
+    /**
+     * @brief Records a heading's size and look from `heading[level=N]` (Buffer::mepml_heading_scale / mepml_heading_look) for the scaled row DrawPane draws.
+     */
+    void DocHeadingStyle(Buffer &buf, int row, int level, const std::string &media);
+    /**
+     * @brief A card's colours for a block of an Org or Markdown document, as the sheet gives `element` (`code[lang=python]`, `results`): its paper, outline, `:active` outline, `::header` band and `::label` chip -- what Editor::MepmlBuildCards computes for a mepml block.
+     */
+    OrgCardLook DocCardLook(const mepml::Element &element, const std::string &media) const;
+    /**
+     * @brief A table grid's colours for an Org or Markdown table, as the sheet gives `table` (its `background`, `border-color`, `:active` and `::rule`), written into `grid`.
+     */
+    void DocTableLook(OrgTableGrid *grid, const std::string &media) const;
+    /**
+     * @brief Rebuilds Buffer::mepml_row_conceal for the current Org or Markdown buffer from the overlays its scans emitted, so Editor::WrapLenForRow wraps a row at its drawn length.
+     */
+    void DocConcealRunsRebuild();
+    /**
+     * @brief Flips the current .html/.htm buffer between its rendered browser view and its source text (Editor::ConvertHtmlBufferToText / ConvertTextBufferToHtml), keeping the buffer id -- :HtmlViewToggle, <leader>bv.
+     * @return 1 now rendered, 0 now source text, -1 when the current buffer is not an HTML file.
+     */
+    int HtmlToggleView();
     /**
      * @brief Whether a buffer's mepml document is a presentation (Buffer::mepml_presentation); false for an unknown id.
      * @param buffer_id The buffer.

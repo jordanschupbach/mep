@@ -12,6 +12,9 @@ tmp_assets/
 .cache/
 *.pdf
 README.html
+# Exported from README.mepml too (`just readme`); not committed, since GitHub
+# would show it in place of README.org.
+README.md
 .scratch/
 
 # NAFEMS example films and stills: build output, written by

@@ -1,5 +1,7 @@
 import numpy as np
+
 import matplotlib.pyplot as plt
+
 
 # <leader>uu on this file opens the Python language UI mode; <leader>rr then
 # sources it into that console. Every top-level name lands in the Objects

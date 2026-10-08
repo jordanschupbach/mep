@@ -6634,12 +6634,25 @@ const char *kBuiltinDirenv =
     "local mep_direnv_applied = {}\n"
     "local mep_direnv_root = nil\n"
     "local mep_direnv_active = false\n"
+    // Every activate/deactivate bumps the generation; an export whose
+    // generation is no longer current when it exits is stale and dropped.
+    // Opening a project changes the workspace several times in a row
+    // (load, restore, default layout), and each change used to start its
+    // own export: the late ones then applied over -- or after a
+    // deactivation, in place of -- the env already in force. One started
+    // once DIRENV_* was set got only direnv's diff against it, so the
+    // chip said active with the project's vars missing (pkg-config in an
+    // org/mepml block then finding nothing).
+    "local mep_direnv_gen = 0\n"
+    "local mep_direnv_pending_root = nil\n"
     "local function mep_direnv_has_envrc(root)\n"
     "  local f = io.open(root .. '/.envrc', 'r')\n"
     "  if f then f:close() return true end\n"
     "  return false\n"
     "end\n"
     "local function mep_direnv_deactivate()\n"
+    "  mep_direnv_gen = mep_direnv_gen + 1\n"
+    "  mep_direnv_pending_root = nil\n"
     "  for k, old in pairs(mep_direnv_applied) do\n"
     "    if old == false then mep.unsetenv(k) else mep.setenv(k, old) end\n"
     "  end\n"
@@ -6648,30 +6661,55 @@ const char *kBuiltinDirenv =
     "  mep_direnv_root = nil\n"
     "  mep.direnv_set_active(false)\n"
     "end\n"
-    // `direnv export json`'s stdout is one compact JSON object -- job_start
-    // delivers it line-buffered (mep.job_start's own doc comment), so this
-    // accumulates every line with no separator rather than assuming
-    // exactly one, and only applies string-valued keys (a null-valued one,
-    // direnv asking to unset a var, can't reach here at all -- see this
-    // whole chunk's header comment).
+    // `direnv export json`'s stdout is one JSON object (pretty-printed
+    // over many lines) -- job_start delivers it line-buffered (mep.job_
+    // start's own doc comment), so this accumulates every line rather than
+    // assuming exactly one. String values are set; a null value is direnv
+    // asking to unset that var, which the decoder can't represent (see
+    // this whole chunk's header comment), so those keys are read off the
+    // raw text instead -- a key, not a string's contents: one follows `{`
+    // or `,` directly, where an escaped quote inside a value would not.
     "local function mep_direnv_activate(root)\n"
     "  if not mep_direnv_has_envrc(root) then\n"
+    "    mep_direnv_gen = mep_direnv_gen + 1\n"
+    "    mep_direnv_pending_root = nil\n"
     "    mep.direnv_set_active(false)\n"
     "    return\n"
     "  end\n"
-    "  local out = {}\n"
+    "  if mep_direnv_pending_root == root then return end\n"
+    "  mep_direnv_gen = mep_direnv_gen + 1\n"
+    "  local gen = mep_direnv_gen\n"
+    "  mep_direnv_pending_root = root\n"
+    "  local out, err = {}, {}\n"
     "  mep.job_start({'direnv', 'export', 'json'}, {\n"
     "    cwd = root,\n"
     "    on_stdout = function(line) out[#out + 1] = line end,\n"
+    "    on_stderr = function(line) err[#err + 1] = line end,\n"
     "    on_exit = function(code)\n"
-    "      if code ~= 0 then mep.direnv_set_active(false) return end\n"
-    "      local decoded = mep_ai_json_decode(table.concat(out)) or {}\n"
+    "      if gen ~= mep_direnv_gen then return end\n"
+    "      mep_direnv_pending_root = nil\n"
+    "      if code ~= 0 then\n"
+    "        mep.direnv_set_active(false)\n"
+    // 127: direnv isn't installed (job.cpp's exec-failed code) -- not
+    // worth a warning on every project switch.
+    "        if code ~= 127 then\n"
+    "          local why = (err[#err] or ''):gsub('\\27%[[%d;]*m', '')\n"
+    "          mep.notify('direnv: export failed (' .. tostring(code) .. ')' .. (why ~= '' and (': ' .. why) or ''), 'warn')\n"
+    "        end\n"
+    "        return\n"
+    "      end\n"
+    "      local text = table.concat(out, '\\n')\n"
+    "      local decoded = mep_ai_json_decode(text) or {}\n"
     "      local applied = {}\n"
     "      for k, v in pairs(decoded) do\n"
     "        if type(v) == 'string' then\n"
     "          applied[k] = os.getenv(k) or false\n"
     "          mep.setenv(k, v)\n"
     "        end\n"
+    "      end\n"
+    "      for k in text:gmatch('[{,]%s*\"([^\"\\\\]+)\"%s*:%s*null') do\n"
+    "        if applied[k] == nil then applied[k] = os.getenv(k) or false end\n"
+    "        mep.unsetenv(k)\n"
     "      end\n"
     "      mep_direnv_applied = applied\n"
     "      mep_direnv_active = true\n"

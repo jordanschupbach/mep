@@ -96,8 +96,10 @@ unseen too. So:</p>
 <tr><td>after <code>self.</code></td><td>the class's own methods and fields, and its bases'</td></tr>
 <tr><td>after <code>text.</code> where <code>text</code> is a string</td><td><code>str</code>'s methods</td></tr>
 <tr><td>after <code>c.</code> where <code>c = MyClass()</code></td><td>that class's members</td></tr>
-<tr><td>after <code>import</code></td><td>the standard library, plus the <code>.py</code> files beside this one</td></tr>
+<tr><td>after <code>import</code></td><td>the standard library, the <code>.py</code> files beside this one, then every other module the interpreter can import</td></tr>
+<tr><td>after <code>import numpy.</code></td><td>that package's submodules, from the interpreter</td></tr>
 <tr><td>after <code>from json import</code></td><td>that module's members</td></tr>
+<tr><td>after <code>from numpy import</code></td><td>its members and submodules, from the interpreter</td></tr>
 <tr><td>after <code>raise</code></td><td>the builtin exceptions</td></tr>
 <tr><td>after <code>def</code> in a class</td><td>the special methods, <code>__init__</code> first</td></tr>
 <tr><td>after <code>@</code></td><td><code>property</code>, <code>staticmethod</code>, <code>dataclass</code>, and what is in scope</td></tr>
@@ -114,7 +116,9 @@ interpreter hover uses (see below): it imports the module and lists what
 <code>dir()</code> finds, with each function's signature and the first line of its
 docstring. The first <code>np.</code> of a session costs that import (well under a
 second for numpy, longer for a cold matplotlib); after that the list is
-cached and instant. Private names wait until you type the <code>_</code>. With no
+cached and instant. Private names wait until you type the <code>_</code>. The module list after
+<code>import</code> comes from the same interpreter, by scanning its search path
+without importing anything. With no
 interpreter, or the package not installed, it falls back to the attribute
 names the file already uses on that receiver.</p>
 <h1>Hover, signatures, outline, jumps</h1>

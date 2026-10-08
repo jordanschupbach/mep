@@ -266,6 +266,33 @@ for name in sorted(dir(obj), key=lambda n: (n.startswith('_'), n.lower())):
 out.buffer.write('\n'.join(rows).encode('utf-8', 'replace'))
 )PY";
 
+// Lists importable modules in kMembersScript's row format (kind 9):
+// with argv[1] empty, every top-level module on sys.path -- found by
+// pkgutil scanning directories, so nothing is imported -- and otherwise
+// the submodules of that package, which does import the package itself.
+const char *const kModulesScript = R"PY(
+import sys, pkgutil, importlib, warnings
+warnings.simplefilter('ignore')
+out = sys.stdout
+sys.stdout = sys.stderr
+pkg = sys.argv[1] if len(sys.argv) > 1 else ''
+found = {}
+try:
+    if pkg:
+        for info in pkgutil.iter_modules(importlib.import_module(pkg).__path__):
+            found[info.name] = info.ispkg
+    else:
+        for name in sys.builtin_module_names:
+            found[name] = False
+        for info in pkgutil.iter_modules():
+            found.setdefault(info.name, info.ispkg)
+except BaseException:
+    sys.exit(1)
+rows = [n + '\t9\t' + ('package' if p else 'module') + '\t'
+        for n, p in sorted(found.items(), key=lambda kv: (kv[0].startswith('_'), kv[0].lower()))]
+out.buffer.write('\n'.join(rows).encode('utf-8', 'replace'))
+)PY";
+
 // A cold `import matplotlib.pyplot` can take a few seconds (font cache);
 // anything slower is treated as a hang and killed.
 constexpr int kIntrospectTimeoutMs = 10000;
@@ -342,7 +369,7 @@ std::string Base64(const std::string &in) {
 /**
  * @brief Runs one of the introspection scripts for one dotted path.
  * @param python the interpreter to run
- * @param script kIntrospectScript or kMembersScript
+ * @param script kIntrospectScript, kMembersScript or kModulesScript
  * @param cwd the document's directory, so sibling modules import ("" leaves the cwd alone)
  * @param qualified a dotted identifier path (PythonLspQualifiedName output, so never shell-special)
  * @return the hover text, or "" on any failure (not installed, import error, timeout)
@@ -499,6 +526,7 @@ public:
                 python_path_ = settings.get("pythonPath").as_string();
                 introspect_cache_.clear();
                 members_cache_.clear();
+                modules_cache_.clear();
             }
             return;
         }
@@ -576,6 +604,7 @@ private:
     mutable std::map<std::string, std::string> introspect_cache_;  // see IntrospectHover
     // see MembersOf; an empty vector records a failure, so it is not retried
     mutable std::map<std::string, std::vector<PythonLspExternalMember>> members_cache_;
+    mutable std::map<std::string, std::vector<PythonLspExternalMember>> modules_cache_;  // see ModulesIn
     bool running_ = true;
     bool shutting_down_ = false;
     int exit_code_ = 1;
@@ -765,12 +794,24 @@ private:
         return it->second.empty() ? nullptr : &it->second;
     }
 
+    /** @brief Importable modules: top-level ones for "", else a package's submodules (cached like MembersOf). */
+    const std::vector<PythonLspExternalMember> *ModulesIn(const std::string &doc_dir, const std::string &package) const {
+        const std::string python = FindPython(python_path_, doc_dir);
+        const std::string key = python + '\n' + doc_dir + '\n' + package;
+        auto it = modules_cache_.find(key);
+        if (it == modules_cache_.end()) {
+            it = modules_cache_.emplace(key, ParseMembers(Introspect(python, kModulesScript, doc_dir, package))).first;
+        }
+        return it->second.empty() ? nullptr : &it->second;
+    }
+
     /** @brief Answers `textDocument/completion`. */
     Json Completion(const Json &params) const {
         const Request req = ReadRequest(params);
         PythonLspOptions opts = OptionsFor(req.uri);
         const std::string doc_dir = opts.doc_dir;
         opts.external_members = [this, doc_dir](const std::string &qualified) { return MembersOf(doc_dir, qualified); };
+        opts.external_modules = [this, doc_dir](const std::string &package) { return ModulesIn(doc_dir, package); };
         const std::vector<PythonLspCompletionItem> items = PythonLspCompletions(Doc(req.uri), req.line, req.col, opts);
         Json arr = Json::Array();
         for (size_t i = 0; i < items.size(); i++) {

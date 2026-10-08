@@ -113,8 +113,10 @@ Completion is context-aware rather than a word list:
 | after =self.=          | the class's own methods and fields, and its bases' |
 | after =text.= where =text= is a string | =str='s methods                   |
 | after =c.= where =c = MyClass()= | that class's members                    |
-| after =import=         | the standard library, plus the =.py= files beside this one |
+| after =import=         | the standard library, the =.py= files beside this one, then every other module the interpreter can import |
+| after =import numpy.=  | that package's submodules, from the interpreter   |
 | after =from json import= | that module's members                           |
+| after =from numpy import= | its members and submodules, from the interpreter |
 | after =raise=          | the builtin exceptions                            |
 | after =def= in a class | the special methods, =__init__= first             |
 | after =@=              | =property=, =staticmethod=, =dataclass=, and what is in scope |
@@ -133,7 +135,9 @@ interpreter hover uses (see below): it imports the module and lists what
 =dir()= finds, with each function's signature and the first line of its
 docstring. The first =np.= of a session costs that import (well under a
 second for numpy, longer for a cold matplotlib); after that the list is
-cached and instant. Private names wait until you type the =_=. With no
+cached and instant. Private names wait until you type the =_=. The module list after
+=import= comes from the same interpreter, by scanning its search path
+without importing anything. With no
 interpreter, or the package not installed, it falls back to the attribute
 names the file already uses on that receiver.
 

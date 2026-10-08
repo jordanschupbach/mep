@@ -1876,6 +1876,8 @@ struct CompletionContext {
     bool after_dot = false;
     const PyNode *receiver = nullptr;  // the expression before the dot
     bool import_module = false;        // `import <here>` / `from <here>`
+    std::string import_package;        // `import a.b.<here>` / `from a.b.<here>`: "a.b"
+    bool import_alias = false;         // `import a as <here>`: a new name, nothing to offer
     std::string from_module;           // `from x import <here>`
     bool from_import = false;
     bool after_raise = false;
@@ -1913,6 +1915,17 @@ PythonLspKind KindOfBinding(const Binding &b) {
         case BindKind::Param: return PythonLspKind::Variable;
         case BindKind::TypeAlias: return PythonLspKind::TypeParameter;
         default: return PythonLspKind::Variable;
+    }
+}
+
+/** @brief Offers what an outside source listed (nullptr is nothing); private names only once a `_` is typed. */
+void OfferExternal(std::vector<PythonLspCompletionItem> *out, const CompletionContext &ctx,
+                   const std::vector<PythonLspExternalMember> *members) {
+    if (members == nullptr) return;
+    const bool want_private = !ctx.prefix.empty() && ctx.prefix[0] == '_';
+    for (const PythonLspExternalMember &m : *members) {
+        if (!want_private && !m.name.empty() && m.name[0] == '_') continue;
+        Offer(out, ctx, m.name, static_cast<PythonLspKind>(m.kind), m.detail, m.doc);
     }
 }
 
@@ -1959,12 +1972,7 @@ void OfferAttributes(const Analyzer &analyzer, const CompletionContext &ctx,
         if (!qualified.empty() && PythonLspModuleMembers(root) == nullptr) {
             const std::vector<PythonLspExternalMember> *members = analyzer.opts().external_members(qualified);
             if (members != nullptr && !members->empty()) {
-                // Private names only once the author has typed the `_`.
-                const bool want_private = !ctx.prefix.empty() && ctx.prefix[0] == '_';
-                for (const PythonLspExternalMember &m : *members) {
-                    if (!want_private && !m.name.empty() && m.name[0] == '_') continue;
-                    Offer(out, ctx, m.name, static_cast<PythonLspKind>(m.kind), m.detail, m.doc);
-                }
+                OfferExternal(out, ctx, members);
                 return;
             }
         }
@@ -2039,12 +2047,29 @@ CompletionContext BuildContext(const Analyzer &analyzer, int line, int col) {
         return head.substr(at, end - at);
     };
     const std::string first = word_at(0);
-    if (first == "import" && !ctx.after_dot) {
+    // The dotted path being typed after `import`/`from`, up to the prefix:
+    // "numpy." for `import numpy.li`, so the package is "numpy". A space
+    // inside it means the author has moved on to `as name`.
+    const auto set_package = [&ctx, &head](size_t from) {
+        const size_t comma = head.rfind(',');
+        if (comma != std::string::npos && comma >= from) from = comma + 1;
+        while (from < head.size() && head[from] == ' ') from++;
+        std::string path = head.substr(from, head.size() - from - ctx.prefix.size());
+        if (path.find(' ') != std::string::npos) {
+            ctx.import_alias = true;
+            return;
+        }
+        if (!path.empty() && path.back() == '.') path.pop_back();
+        ctx.import_package = path;
+    };
+    if (first == "import") {
         ctx.import_module = true;
+        set_package(6);
     } else if (first == "from") {
         const size_t import_at = head.find(" import ");
         if (import_at == std::string::npos) {
             ctx.import_module = true;
+            set_package(4);
         } else {
             ctx.from_import = true;
             size_t m = 4;
@@ -2081,8 +2106,18 @@ std::vector<PythonLspCompletionItem> PythonLspCompletions(const std::vector<std:
     if (InTextLiteral(analyzer, PyPos{line, col > 0 ? col - 1 : 0})) return out;
     const CompletionContext ctx = BuildContext(analyzer, line, col);
 
-    if (ctx.after_dot) {
+    if (ctx.import_alias) return out;
+    // `import numpy.` is a dot too, but it names a submodule, not an attribute.
+    if (ctx.after_dot && !ctx.import_module) {
         OfferAttributes(analyzer, ctx, &out);
+        return out;
+    }
+    if (ctx.import_module && !ctx.import_package.empty()) {
+        // `import numpy.<here>`: a package's submodules. Only an outside
+        // source can list them; the stdlib table has no package layout.
+        if (opts.external_modules && ctx.import_package[0] != '.') {
+            OfferExternal(&out, ctx, opts.external_modules(ctx.import_package));
+        }
         return out;
     }
     if (ctx.import_module) {
@@ -2105,6 +2140,9 @@ std::vector<PythonLspCompletionItem> PythonLspCompletions(const std::vector<std:
                 }
             }
         }
+        // Then everything else the interpreter can import: numpy,
+        // matplotlib, the project's own installed packages.
+        if (opts.external_modules) OfferExternal(&out, ctx, opts.external_modules(std::string()));
         return out;
     }
     if (ctx.from_import) {
@@ -2115,6 +2153,12 @@ std::vector<PythonLspCompletionItem> PythonLspCompletions(const std::vector<std:
                 Offer(&out, ctx, e.name, callable ? PythonLspKind::Function : PythonLspKind::Constant, e.detail,
                       e.doc);
             }
+        } else if (!ctx.from_module.empty() && ctx.from_module[0] != '.') {
+            // `from numpy import <here>`: its members, then the submodules
+            // that are not attributes until imported (`from matplotlib
+            // import pyplot`).
+            if (opts.external_members) OfferExternal(&out, ctx, opts.external_members(ctx.from_module));
+            if (opts.external_modules) OfferExternal(&out, ctx, opts.external_modules(ctx.from_module));
         }
         Offer(&out, ctx, "*", PythonLspKind::Text, "everything", "Import every public name (rarely a good idea)");
         return out;

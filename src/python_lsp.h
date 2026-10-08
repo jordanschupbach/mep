@@ -84,6 +84,11 @@ struct PythonLspOptions {
     // caller with no interpreter) keeps the "names this file already uses
     // on that receiver" fallback.
     std::function<const std::vector<PythonLspExternalMember> *(const std::string &qualified)> external_members;
+    // Module-name completion beyond the stdlib table and the document's
+    // own directory: `import <here>` asks with "" for every importable
+    // top-level module, `import numpy.<here>` / `from numpy.<here>` with
+    // "numpy" for that package's submodules. nullptr when it cannot say.
+    std::function<const std::vector<PythonLspExternalMember> *(const std::string &package)> external_modules;
 };
 
 // --- Diagnostics ------------------------------------------------------

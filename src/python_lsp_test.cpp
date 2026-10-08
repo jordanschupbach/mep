@@ -537,6 +537,35 @@ void TestCompletion() {
     CHECK(Offers(PythonLspCompletions({"import pandas as pd", "pd.read_csv('a')", "pd."}, 2, 3, external),
                  "read_csv"));
 
+    // Module names beyond the stdlib table come from external_modules:
+    // "" for top-level modules, the package for `import numpy.<here>`.
+    std::vector<std::string> packages;
+    const std::vector<PythonLspExternalMember> top_level = {{"numpy", 9, "package", ""},
+                                                            {"_distutils_hack", 9, "module", ""}};
+    const std::vector<PythonLspExternalMember> numpy_subs = {{"linalg", 9, "package", ""}};
+    external.external_modules = [&](const std::string &package) -> const std::vector<PythonLspExternalMember> * {
+        packages.push_back(package);
+        if (package.empty()) return &top_level;
+        return package == "numpy" ? &numpy_subs : nullptr;
+    };
+    const std::vector<PythonLspCompletionItem> import_items = PythonLspCompletions({"import "}, 0, 7, external);
+    CHECK(Offers(import_items, "numpy"));
+    CHECK(Offers(import_items, "itertools"));  // the stdlib table still answers
+    CHECK(!Offers(import_items, "_distutils_hack"));
+    CHECK(Offers(PythonLspCompletions({"import nu"}, 0, 9, external), "numpy"));
+    CHECK(Offers(PythonLspCompletions({"import numpy."}, 0, 13, external), "linalg"));
+    CHECK(packages.back() == "numpy");
+    CHECK(Offers(PythonLspCompletions({"import os, numpy.li"}, 0, 19, external), "linalg"));
+    CHECK(Offers(PythonLspCompletions({"from numpy.l"}, 0, 12, external), "linalg"));
+    CHECK(Offers(PythonLspCompletions({"from nu"}, 0, 7, external), "numpy"));
+    // `from numpy import <here>`: members and submodules both.
+    const std::vector<PythonLspCompletionItem> from_numpy =
+        PythonLspCompletions({"from numpy import "}, 0, 18, external);
+    CHECK(Offers(from_numpy, "array"));
+    CHECK(Offers(from_numpy, "linalg"));
+    // `import numpy as <here>` is naming an alias: nothing to offer.
+    CHECK(PythonLspCompletions({"import numpy as n"}, 0, 17, external).empty());
+
     const Lines from_import = {"from json import "};
     CHECK(Offers(Complete(from_import, 0, 17), "dumps"));
     const Lines import_line = {"import "};

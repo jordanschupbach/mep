@@ -155,6 +155,13 @@ inline void PollOnce(Editor &) {}
  */
 inline std::string SocketPath() { return ""; }
 
+// Field-for-field identical to the real AgentParticipant above -- it is
+// never populated here (AgentParticipants() always returns empty), but
+// Editor::Participants() reads every member unconditionally, so a field
+// added to one copy and not the other breaks this build and not the
+// Linux one. `terminal_buffer_id` was exactly that: added above when the
+// AI-agents sidebar started pairing agents with their terminal, and
+// missing here until the Windows port tried to compile it.
 struct AgentParticipant {
     std::string id;
     std::string name;
@@ -162,6 +169,7 @@ struct AgentParticipant {
     int row = 0, col = 0;
     bool has_location = false;
     std::string status;
+    int terminal_buffer_id = -1;
 };
 /**
  * @brief No-op stand-in for AgentParticipants() on platforms without the agent-control socket (wasm/Windows).

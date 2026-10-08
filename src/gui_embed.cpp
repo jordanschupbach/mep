@@ -2,9 +2,18 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <dirent.h>
+#if defined(__linux__)
+#include <dirent.h>  // ProcessTree's /proc walk, below -- Linux only
+#endif
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
+#endif
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <tlhelp32.h>  // ProcessTree's process-table snapshot
 #endif
 #include <fstream>
 #include <map>
@@ -121,6 +130,34 @@ std::vector<int> ProcessTree(int pid) {
             for (size_t k = 0; k < len / sizeof(kinfo_proc); ++k)
                 children.emplace(static_cast<int>(procs[k].kp_eproc.e_ppid), static_cast<int>(procs[k].kp_proc.p_pid));
         }
+    }
+    for (size_t k = 0; k < out.size(); ++k) {
+        auto range = children.equal_range(out[k]);
+        for (auto it = range.first; it != range.second; ++it)
+            if (it->second > 0 && std::find(out.begin(), out.end(), it->second) == out.end()) out.push_back(it->second);
+    }
+#elif defined(_WIN32)
+    // parent -> children, from a Toolhelp snapshot of the process table --
+    // the same shape as the two branches above, just a different source.
+    //
+    // Worth knowing: a Windows parent PID is not reclaimed-safe. The field
+    // keeps pointing at whatever PID created the process even after that
+    // process exits, and PIDs are reused, so an unrelated new process can
+    // appear to be a child of one of ours. The walk below is only ever
+    // used to clean up a tree mep itself started moments earlier, which
+    // makes the window for that narrow -- but it is not zero, and this is
+    // the reason the result should not be treated as authoritative.
+    std::multimap<int, int> children;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W entry{};
+        entry.dwSize = sizeof(entry);
+        if (Process32FirstW(snapshot, &entry)) {
+            do {
+                children.emplace(static_cast<int>(entry.th32ParentProcessID), static_cast<int>(entry.th32ProcessID));
+            } while (Process32NextW(snapshot, &entry));
+        }
+        CloseHandle(snapshot);
     }
     for (size_t k = 0; k < out.size(); ++k) {
         auto range = children.equal_range(out[k]);

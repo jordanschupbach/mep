@@ -3,6 +3,17 @@
 
 #include <sys/types.h>
 
+#if defined(_WIN32)
+// MSVC's <sys/types.h> declares dev_t/ino_t/off_t but not pid_t (verified
+// -- it is not merely hidden behind NO_OLDNAMES). Nothing on this
+// platform ever spawns a child anyway: job.cpp compiles its whole
+// fork/exec implementation out and the constructor fails gracefully, as
+// the class comment below describes. The member and Pid()'s return type
+// still have to name something, so it names what pid_t is everywhere
+// that does have it.
+using pid_t = int;
+#endif
+
 #include <atomic>
 #include <deque>
 #include <limits>

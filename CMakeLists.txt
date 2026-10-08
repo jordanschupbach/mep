@@ -311,9 +311,79 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         -Wlogical-op
     )
 endif()
-option(MEP_WARNINGS_AS_ERRORS "Treat mep's own strict compiler warnings as errors" ON)
+# MSVC understands none of the GNU spellings above (cl would report each
+# as an unknown option and carry on, so the warnings would silently not
+# be enabled at all). /W4 is the closest equivalent of -Wall -Wextra;
+# /permissive- turns on real two-phase name lookup, which is what makes
+# this GCC/Clang-developed template code mean the same thing here. The
+# four suppressions are categories MSVC reports that the GNU set above
+# does not, and that fire in the thousands across code written against
+# the GNU set rather than pointing at anything specific to fix.
+if(MSVC)
+    set(MEP_STRICT_FLAGS
+        /W4
+        /permissive-
+        # Unreferenced formal parameter -- the (void)x idiom this
+        # codebase uses for deliberately-unused parameters does not quiet
+        # it, unlike GCC's -Wunused-parameter.
+        /wd4100
+        # Conditional expression is constant: fires on every
+        # `if constexpr`-shaped runtime check and on do/while(0) macros.
+        /wd4127
+        # 'this' used in a base member initializer list -- the pattern
+        # NativeBackendSet and several document classes are built on.
+        /wd4355
+        # Decorated name length exceeded; purely informational, and
+        # unavoidable with this much nested standard-library templating.
+        /wd4503
+        # Source is UTF-8 and so is the execution charset. Without this
+        # MSVC reads the file in the system ANSI code page, which
+        # mangles the non-ASCII literals in the icon/emoji font tables
+        # and the box-drawing characters the terminal pane emits.
+        /utf-8
+        # This codebase has translation units well past the default
+        # object-section limit (main.cpp, editor.cpp, the font tables).
+        /bigobj
+    )
+endif()
+
+if(WIN32)
+    # Project-wide, because these are properties of <windows.h> rather
+    # than of any one file that includes it -- and several do, directly or
+    # through a system header.
+    #
+    #   NOMINMAX -- <windows.h> otherwise defines min() and max() as
+    #     function-like macros, which turns every `std::max(a, b)` in this
+    #     tree into `std::((a)>(b)?(a):(b))`. That is the single biggest
+    #     source of nonsense syntax errors in a Windows port, and it
+    #     strikes files that never mention Windows at all.
+    #   WIN32_LEAN_AND_MEAN -- drops the old winsock.h from <windows.h>.
+    #     Without it, any file that includes <windows.h> before
+    #     <winsock2.h> gets the Winsock 1.1 declarations first and then a
+    #     pile of redefinition errors from Winsock 2.
+    #   _CRT_SECURE_NO_WARNINGS -- MSVC deprecates the standard C library
+    #     in favour of its own _s variants. The warning fires on correct,
+    #     portable code and there is nothing to fix in response to it.
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+endif()
+# Default OFF under MSVC: this tree is developed against GCC/Clang with
+# the GNU warning set above, and /W4 flags a large, largely disjoint set
+# of its own (signed/unsigned mismatches in code that is clean under
+# -Wsign-conversion, unreachable-code findings from a different
+# inliner, ...). Erroring on all of those would mean the Windows build
+# only ever succeeding after a warning cleanup that has nothing to do
+# with the port. Still opt-in-able with -DMEP_WARNINGS_AS_ERRORS=ON.
+if(MSVC)
+    option(MEP_WARNINGS_AS_ERRORS "Treat mep's own strict compiler warnings as errors" OFF)
+else()
+    option(MEP_WARNINGS_AS_ERRORS "Treat mep's own strict compiler warnings as errors" ON)
+endif()
 if(MEP_WARNINGS_AS_ERRORS)
-    list(APPEND MEP_STRICT_FLAGS -Werror)
+    if(MSVC)
+        list(APPEND MEP_STRICT_FLAGS /WX)
+    else()
+        list(APPEND MEP_STRICT_FLAGS -Werror)
+    endif()
 endif()
 
 # Optional AddressSanitizer + UndefinedBehaviorSanitizer build: configure
@@ -443,6 +513,55 @@ file(WRITE "${CMAKE_BINARY_DIR}/generated/mepml_default_style.h.tmp"
 file(COPY_FILE "${CMAKE_BINARY_DIR}/generated/mepml_default_style.h.tmp"
      "${CMAKE_BINARY_DIR}/generated/mepml_default_style.h" ONLY_IF_DIFFERENT)
 
+# Collaboration's WebSocket handshake needs SHA-1. OpenSSL is the one
+# deliberate native-only dependency permitted for secure transport
+# support; the framing, session protocol, and relay remain mep's own C++
+# code.
+#
+# Detected here, well before the targets that consume it, because the
+# answer picks which of two transport translation units every one of them
+# compiles -- `mep` itself, mep-editor-fold-test, and the collab tests and
+# relay further down. MEP_COLLAB_WEBSOCKET_SOURCE is that choice.
+if(NOT EMSCRIPTEN)
+    # Homebrew's openssl@3 is keg-only (not in any default search prefix),
+    # so FindOpenSSL can't see it without a hint. Only consulted when the
+    # caller hasn't already pointed OPENSSL_ROOT_DIR somewhere.
+    if(APPLE AND NOT DEFINED OPENSSL_ROOT_DIR AND NOT DEFINED ENV{OPENSSL_ROOT_DIR})
+        execute_process(
+            COMMAND brew --prefix openssl@3
+            OUTPUT_VARIABLE MEP_BREW_OPENSSL_PREFIX
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+        if(MEP_BREW_OPENSSL_PREFIX AND EXISTS "${MEP_BREW_OPENSSL_PREFIX}")
+            set(OPENSSL_ROOT_DIR "${MEP_BREW_OPENSSL_PREFIX}")
+        endif()
+    endif()
+    # Required everywhere it is reliably present. On Windows there is no
+    # system OpenSSL and no package manager this build assumes, so a
+    # missing one degrades to the no-network stub
+    # (src/collab_websocket_stub.cpp) rather than failing the configure:
+    # collaboration is one optional feature, and making the whole Windows
+    # build depend on the user having installed OpenSSL first would be a
+    # steep entry price for it. An OpenSSL that *is* found (vcpkg, an
+    # installer, -DOPENSSL_ROOT_DIR=...) is used normally, so this is a
+    # fallback, not a Windows policy.
+    if(WIN32)
+        find_package(OpenSSL)
+    else()
+        find_package(OpenSSL REQUIRED)
+    endif()
+    if(OpenSSL_FOUND)
+        set(MEP_COLLAB_WEBSOCKET_SOURCE src/collab_websocket.cpp)
+    else()
+        set(MEP_COLLAB_WEBSOCKET_SOURCE src/collab_websocket_stub.cpp)
+        message(STATUS
+            "mep: OpenSSL not found -- building without collaboration transport. "
+            "The :collab command will report a connection failure. Install OpenSSL "
+            "(or pass -DOPENSSL_ROOT_DIR=...) and reconfigure to enable it.")
+    endif()
+endif()
+
 # The in-house OpenGL gfx:: backend: mep_core's rendering/windowing/input/
 # audio/model-import layer, and (below) four standalone smoke-test
 # executables that exercise it independently of the full app.
@@ -479,6 +598,15 @@ set(MEP_GFX_NATIVE_SOURCES
 )
 if(EMSCRIPTEN)
     list(APPEND MEP_GFX_NATIVE_SOURCES src/gfx/backend_native_emscripten_glfw.cpp)
+elseif(WIN32)
+    # The Win32/WGL implementor -- the Windows counterpart of
+    # backend_native.cpp's X11/GLX layer. OpenGL::GL is opengl32 here,
+    # which exports GL 1.1 directly and everything above it through
+    # wglGetProcAddress (see that file's LoadProcAddressWin32 for the
+    # fallback both halves need). No find_package for the windowing
+    # pieces: user32/gdi32 are core Win32 and are linked by name below.
+    list(APPEND MEP_GFX_NATIVE_SOURCES src/gfx/backend_native_win32.cpp)
+    find_package(OpenGL REQUIRED)
 elseif(APPLE)
     # The Cocoa/NSOpenGL implementor (Objective-C++) -- the macOS
     # counterpart of backend_native.cpp's X11/GLX layer. OpenGL::GL here
@@ -667,6 +795,10 @@ add_library(mep_core STATIC
     # implementor (compiled to nothing without MEP_GUI_EMBED_X11).
     src/gui_embed.cpp
     src/gui_embed_x11.cpp
+    # POSIX-shaped shims for the Windows build, and the few helpers whose
+    # correct implementation genuinely differs per platform (see the
+    # header's own scope note).
+    src/platform_compat.cpp
     src/spell.cpp
     src/indent.cpp
     src/r_format.cpp
@@ -756,6 +888,11 @@ if(NOT EMSCRIPTEN)
     if(APPLE)
         # Cocoa: gfx/backend_native_macos.mm's windowing/input layer.
         target_link_libraries(mep_core PUBLIC OpenGL::GL "-framework Cocoa")
+    elseif(WIN32)
+        # gfx/backend_native_win32.cpp's window/input/WGL-context layer:
+        # user32 for the window and message pump, gdi32 for the pixel
+        # format and SwapBuffers, opengl32 (OpenGL::GL) for WGL itself.
+        target_link_libraries(mep_core PUBLIC OpenGL::GL user32 gdi32)
     else()
         # X11::X11: gfx/backend_native.cpp's own X11/GLX window/input/context
         # implementation (GLFW_REMOVAL_PLAN.md) -- GLX itself is part of
@@ -842,6 +979,8 @@ function(mep_add_gfx_native_smoke name main_src)
         target_link_options(${name} PRIVATE ${MEP_SANITIZE_FLAGS})
         if(APPLE)
             target_link_libraries(${name} PRIVATE OpenGL::GL "-framework Cocoa" Threads::Threads)
+        elseif(WIN32)
+            target_link_libraries(${name} PRIVATE OpenGL::GL user32 gdi32)
         else()
             target_link_libraries(${name} PRIVATE OpenGL::GL X11::X11)
         endif()
@@ -2171,7 +2310,7 @@ add_dependencies(tests mep-fold-test)
 # re-extracted copy of the logic.
 if(NOT EMSCRIPTEN)
     add_executable(mep-editor-fold-test EXCLUDE_FROM_ALL src/editor_fold_test.cpp
-        src/collab_crdt.cpp src/collab_session.cpp src/collab_websocket.cpp)
+        src/collab_crdt.cpp src/collab_session.cpp ${MEP_COLLAB_WEBSOCKET_SOURCE})
     target_link_libraries(mep-editor-fold-test PRIVATE mep_core)
     target_include_directories(mep-editor-fold-test PRIVATE src)
     target_compile_options(mep-editor-fold-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
@@ -2180,9 +2319,13 @@ if(NOT EMSCRIPTEN)
     # module, and compiling it without the precompiled header mixes a
     # textual <algorithm> with the module's own BMI copy of it.
     target_precompile_headers(mep-editor-fold-test PRIVATE ${MEP_PCH_HEADERS})
-    target_link_libraries(mep-editor-fold-test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    if(OpenSSL_FOUND)
+        target_link_libraries(mep-editor-fold-test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
     if(NOT WIN32)
         target_link_libraries(mep-editor-fold-test PRIVATE Threads::Threads)
+    else()
+        target_link_libraries(mep-editor-fold-test PRIVATE ws2_32)
     endif()
     add_dependencies(tests mep-editor-fold-test)
 endif()
@@ -2230,6 +2373,8 @@ if(NOT EMSCRIPTEN)
     target_include_directories(mep-model3d-doc-test PRIVATE src)
     if(APPLE)
         target_link_libraries(mep-model3d-doc-test PRIVATE OpenGL::GL "-framework Cocoa" Threads::Threads)
+    elseif(WIN32)
+        target_link_libraries(mep-model3d-doc-test PRIVATE OpenGL::GL user32 gdi32)
     else()
         target_link_libraries(mep-model3d-doc-test PRIVATE OpenGL::GL X11::X11)
     endif()
@@ -2245,23 +2390,26 @@ endif()
 # deliberate native-only dependency permitted for secure transport support;
 # the framing, session protocol, and relay remain mep's own C++ code.
 if(NOT EMSCRIPTEN)
-    # Homebrew's openssl@3 is keg-only (not in any default search prefix),
-    # so FindOpenSSL can't see it without a hint. Only consulted when the
-    # caller hasn't already pointed OPENSSL_ROOT_DIR somewhere.
-    if(APPLE AND NOT DEFINED OPENSSL_ROOT_DIR AND NOT DEFINED ENV{OPENSSL_ROOT_DIR})
-        execute_process(
-            COMMAND brew --prefix openssl@3
-            OUTPUT_VARIABLE MEP_BREW_OPENSSL_PREFIX
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-            ERROR_QUIET
-        )
-        if(MEP_BREW_OPENSSL_PREFIX AND EXISTS "${MEP_BREW_OPENSSL_PREFIX}")
-            set(OPENSSL_ROOT_DIR "${MEP_BREW_OPENSSL_PREFIX}")
-        endif()
+    # OpenSSL itself is detected much earlier (see the MEP_COLLAB_WEBSOCKET_SOURCE
+    # block above mep_core): several test targets below `mep` need to know
+    # which of the two transport sources they are linking before this point
+    # in the file is reached.
+    target_sources(mep PRIVATE src/collab_crdt.cpp src/collab_session.cpp ${MEP_COLLAB_WEBSOCKET_SOURCE})
+    if(OpenSSL_FOUND)
+        target_link_libraries(mep PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     endif()
-    find_package(OpenSSL REQUIRED)
-    target_sources(mep PRIVATE src/collab_crdt.cpp src/collab_session.cpp src/collab_websocket.cpp)
-    target_link_libraries(mep PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    if(WIN32)
+        # collab_websocket.cpp's own winsock half (and the stub's absence
+        # of one) still leaves CollabSession needing the socket library
+        # on this platform.
+        target_link_libraries(mep PRIVATE ws2_32)
+    endif()
+endif()
+
+# The collaboration relay and its tests, which exist only when there is a
+# real transport to build them against -- unlike `mep` above, none of them
+# has a useful meaning linked against the stub.
+if(NOT EMSCRIPTEN AND OpenSSL_FOUND)
     add_executable(mep-collabd src/collab_relay.cpp src/collab_websocket.cpp)
     target_include_directories(mep-collabd PRIVATE src)
     target_compile_options(mep-collabd PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})

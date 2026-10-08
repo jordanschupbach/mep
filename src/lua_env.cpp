@@ -1,4 +1,5 @@
 #include "lua_env.h"
+#include "platform_compat.h"
 
 #include "cad_fem_api.h"
 #include "http_client.h"

@@ -48,7 +48,8 @@ servers and Tree-sitter grammars — already on =PATH=.
 
 ** Platforms
 
-Native mep targets *Linux/X11* and *macOS* (Cocoa/NSOpenGL). On macOS
+Native mep targets *Linux/X11*, *macOS* (Cocoa/NSOpenGL) and *Windows*
+(Win32/WGL). On macOS
 you need Homebrew's =cmake=, =ninja=, =just=, =llvm= (Apple's toolchain
 ships no =clang-scan-deps=, which CMake needs for this project's C++20
 modules) and =openssl@3=:
@@ -63,6 +64,59 @@ automatically on macOS. Not yet ported there: audio (ALSA; silent
 no-op), embedding other programs' windows (X11 reparenting), the
 agent API's synthetic mouse/keyboard input (XTest), and Retina
 rendering (the GL surface is 1x and upscaled for now).
+
+*** Windows
+
+Needs Visual Studio 2022 (or the standalone Build Tools) with the
+"Desktop development with C++" workload, and CMake ≥ 3.28. Ninja is
+required rather than the Visual Studio generator — this project's C++20
+modules need a generator that does module dependency scanning — and one
+ships inside the VS install, so there is usually nothing extra to get.
+
+From a repository checkout:
+
+#+begin_src bat
+scripts\windows-build.bat
+.\build\win\mep.exe
+#+end_src
+
+That script finds the VS install with =vswhere=, runs =vcvars64.bat= to
+put =cl.exe= and the SDK on =PATH=, puts the bundled Ninja on =PATH= if
+there is no system one, then configures and builds into =build\win=. To
+drive CMake yourself, run =vcvars64.bat= first and then the ordinary
+=cmake -S . -B build/win -G Ninja= — nothing about the configuration is
+specific to the script.
+
+Editing, every document type, the renderer, Tree-sitter highlighting,
+Lua scripting and the mouse/keyboard input path all work. Not yet
+ported, and *compiled out* rather than failing at runtime:
+
+- *Everything that spawns a child process.* The =:terminal= pane, LSP
+  servers, =:!= commands, the Jupyter/notebook kernels and the YouTube
+  pane's =yt-dlp=/=ffmpeg= all go through =job.cpp=, which is
+  =fork=/=forkpty= on POSIX. Windows has no =fork=; the equivalent is
+  =CreateProcess= plus ConPTY (=CreatePseudoConsole=) for the terminal.
+  This is the single largest remaining piece.
+- *Sockets.* The agent RPC API, the HTTP client/server, the LSP
+  transport and the collaboration relay are all behind the same
+  =!defined(_WIN32)= guard the wasm build already used. Winsock is close
+  enough to BSD sockets that this is mostly mechanical.
+- *Audio* — a silent no-op, as on macOS. WASAPI is the Windows
+  counterpart of the Linux ALSA backend.
+- *Generators and =async=/=await= in the embedded JS engine*, which run
+  each body on its own stack via =ucontext=. Windows fibers map onto
+  that directly; see =js_engine.cpp='s note.
+- *Embedding other programs' windows* (=exec-gui= blocks) and the agent
+  API's synthetic input — X11-specific, the same gap macOS has.
+- *Collaboration* needs OpenSSL for the WebSocket handshake. If CMake
+  does not find one the build substitutes a stub and says so; =:collab=
+  then reports a connection failure. Point =-DOPENSSL_ROOT_DIR= at an
+  install (vcpkg's works) to enable it.
+
+One known rough edge: the window does not redraw while a resize is being
+dragged, because Windows runs its own modal message loop for the
+duration and mep's frame loop does not get to run. The contents snap
+back on release.
 
 There is also a WebAssembly build
 (=just build-web=) that runs in a browser, and =just run-wasm= opens it

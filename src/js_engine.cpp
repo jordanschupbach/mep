@@ -1,6 +1,7 @@
 #include "js_engine.h"
 
 #include "url_util.h"
+#include "platform_compat.h"
 
 #include <algorithm>
 #include <cctype>
@@ -12,7 +13,23 @@
 #include <cstring>
 #include <ctime>
 #include <deque>
-#if !defined(__EMSCRIPTEN__)
+// Generators and async/await in the embedded JS engine run each body on
+// its own native stack (see the coroutine section further down for why a
+// tree-walking evaluator needs that). The mechanism is ucontext over an
+// mmap'd stack, which exists on neither of the two platforms excluded
+// here, so both build without it -- generators and async functions then
+// report that they are unsupported instead of running, exactly as the
+// wasm build has always done.
+//
+// Windows has a direct equivalent in fibers (CreateFiber/SwitchToFiber
+// replacing makecontext/swapcontext, with the system allocating the stack
+// instead of mmap), so this is a gap that can be closed in the same shape
+// the POSIX path already has rather than a limit of the platform. Not
+// done here: it is a self-contained change to the Coroutine struct and
+// its three call sites, and wiring it up blind -- without being able to
+// exercise async JS in the web pane -- is how you ship a stack switcher
+// that corrupts memory under a condition nobody tested.
+#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
 #include <sys/mman.h>
 #include <ucontext.h>
 #define MEP_JS_COROUTINES 1
@@ -4501,7 +4518,9 @@ bool DateMember(const ObjectPtr &date, const std::string &key, Value &out) {
             case 5: return Value::Num(tm.tm_min);
             case 6: return Value::Num(tm.tm_sec);
             case 7: return Value::Num(ms - std::floor(ms / 1000.0) * 1000.0);
-            case 8: return Value::Num(-static_cast<double>(tm.tm_gmtoff) / 60.0);
+            // tm_gmtoff is a POSIX extension MSVC's struct tm lacks; the
+            // helper reconstructs the same number there.
+            case 8: return Value::Num(-static_cast<double>(mep::compat::GmtOffsetSeconds(tm)) / 60.0);
             case 12: std::strftime(buf, sizeof(buf), "%a %b %d %Y", &tm); return Value::Str(buf);
             case 13: std::strftime(buf, sizeof(buf), "%H:%M:%S", &tm); return Value::Str(buf);
             default: std::strftime(buf, sizeof(buf), "%a %b %d %Y %H:%M:%S GMT%z", &tm); return Value::Str(buf);

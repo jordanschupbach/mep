@@ -306,7 +306,35 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicStructureQueryTable(
     };
     return table;
 }
+#if defined(_WIN32)
+// Windows has no <dlfcn.h>. The three calls this file makes map one-to-one
+// onto LoadLibrary/GetProcAddress/FreeLibrary, so they are adapted here
+// rather than threading an #ifdef through the loader below -- the
+// semantics that matter to the caller (null handle on failure, null symbol
+// when absent) are the same on both.
+//
+// RTLD_NOW/RTLD_LOCAL have no counterpart and no bearing here: a grammar
+// module exports one function and links nothing of its own, so eager vs.
+// lazy binding and symbol visibility are both moot.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+namespace {
+constexpr int RTLD_NOW = 0;
+constexpr int RTLD_LOCAL = 0;
+void *dlopen(const char *path, int /*flags*/) { return LoadLibraryA(path); }
+void *dlsym(void *handle, const char *symbol) {
+    // Function pointer to void*: outside strict ISO C++ the same way
+    // dlsym's own return type is, and the same conversion the POSIX path
+    // below relies on.
+    return reinterpret_cast<void *>(GetProcAddress(static_cast<HMODULE>(handle), symbol));
+}
+int dlclose(void *handle) { return FreeLibrary(static_cast<HMODULE>(handle)) ? 0 : 1; }
+}  // namespace
+#else
 #include <dlfcn.h>
+#endif
 
 // Search path for dynamically-loaded grammars, in priority order:
 //  1. $MEP_TS_PARSER_PATH (colon-separated, like $PATH) -- explicit,
@@ -395,11 +423,25 @@ const TSLanguage *LoadDynamicLanguage(const std::string &canonical_name) {
 
     const TSLanguage *result = nullptr;
     std::string symbol = "tree_sitter_" + canonical_name;
+    // A grammar module's name is whatever the tool that built it chose,
+    // so every known spelling is tried in turn. On Windows the extension
+    // is .dll, but the `lib`-prefixed spellings are kept: a grammar built
+    // under MSYS2/MinGW keeps the Unix naming convention even though the
+    // file is a DLL.
+#if defined(_WIN32)
+    std::vector<std::string> filenames = {
+        canonical_name + ".dll",
+        "lib" + canonical_name + ".dll",
+        "libtree-sitter-" + canonical_name + ".dll",
+        "tree-sitter-" + canonical_name + ".dll",
+    };
+#else
     std::vector<std::string> filenames = {
         canonical_name + ".so",
         "lib" + canonical_name + ".so",
         "libtree-sitter-" + canonical_name + ".so",
     };
+#endif
     for (const std::string &dir : DynamicSearchPaths()) {
         if (dir.empty()) continue;
         for (const std::string &fname : filenames) {

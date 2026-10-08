@@ -2360,7 +2360,15 @@ AccessibleNode BuildAccessibilityTree(const HtmlDoc &doc) {
                 out_children.push_back(build_one(child.get()));
             }
         };
-    auto append_children = [&](const DomNode *node, std::vector<AccessibleNode> &out_children, auto &&builder) {
+    // The `-> void` is load-bearing, not decoration. `build` below calls
+    // this, and this calls `build` back through `builder` -- so with a
+    // deduced return type the compiler has to know this lambda's type
+    // while it is still inside `build`'s own (not yet complete) body.
+    // GCC and Clang let that pass; MSVC rejects it ("a function that
+    // returns 'auto' cannot be used before it is defined"), and is right
+    // to. Stating the type removes the need to deduce anything.
+    auto append_children = [&](const DomNode *node, std::vector<AccessibleNode> &out_children,
+                               auto &&builder) -> void {
         append_children_impl(node, out_children,
                              [&](const DomNode *child) { return builder(child, builder); });
     };

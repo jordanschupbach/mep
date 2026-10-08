@@ -11,6 +11,7 @@
 #include "gfx/text.h"
 #include "gfx/vecmath.h"
 #include "editor.h"
+#include "platform_compat.h"
 #include "fem_movie.h"
 #include "formula.h"
 #include "html_doc.h"
@@ -81,6 +82,8 @@
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
+#elif defined(_WIN32)
+#include <process.h>  // _exit, for the fast quit at the end of main()
 #else
 #include <unistd.h>  // _exit, for the fast quit at the end of main()
 #if defined(__APPLE__)
@@ -58455,8 +58458,13 @@ int main(int argc, char **argv) {
     // signal ever needing to fire; nothing here relies on the SIGPIPE
     // default, so ignoring it is strictly a robustness fix, not a
     // behavior change.
-    std::signal(SIGPIPE, SIG_IGN);
+    //
+    // Windows has no SIGPIPE: a write to a broken pipe fails with
+    // ERROR_BROKEN_PIPE and nothing is raised, which is already the
+    // behaviour this line exists to produce.
 #if !defined(_WIN32)
+    std::signal(SIGPIPE, SIG_IGN);
+
     // Whatever launched mep (a desktop entry, a window-manager keybind, a
     // systemd unit, a login shell with `trap '' CHLD`, ...) may have done
     // so with SIGCHLD's disposition already set to SIG_IGN. exec()

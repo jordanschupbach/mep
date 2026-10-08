@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "platform_compat.h"
 #include "http_client.h"
 #include "agent_rpc.h"
 #include "indent.h"
@@ -13073,18 +13074,11 @@ namespace {
 // open time so a missing one is reported as a readable notification
 // rather than a silent spawn failure per attempt.
 bool YoutubeToolOnPath(const char *program) {
-    const char *path_env = std::getenv("PATH");
-    if (!path_env) return false;
-    std::string paths = path_env;
-    size_t start = 0;
-    while (start <= paths.size()) {
-        size_t colon = paths.find(':', start);
-        std::string dir = paths.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
-        if (!dir.empty() && access((dir + "/" + program).c_str(), X_OK) == 0) return true;
-        if (colon == std::string::npos) break;
-        start = colon + 1;
-    }
-    return false;
+    // The PATH walk this used to do inline lives in platform_compat now:
+    // the separator, what counts as executable, and whether the name needs
+    // an extension all differ on Windows, and none of that belongs in the
+    // YouTube pane. Behaviour on POSIX is unchanged.
+    return mep::compat::ProgramOnPath(program);
 }
 
 bool YoutubeLooksLikeUrl(const std::string &s) {
@@ -35757,19 +35751,19 @@ namespace {
 // whose interpreter isn't installed here from the dropdown.
 bool NotebookCommandAvailable(const std::string &program) {
     if (program.empty()) return false;
-    if (program.find('/') != std::string::npos) return access(program.c_str(), X_OK) == 0;
-    const char *path_env = getenv("PATH");
-    if (!path_env) return false;
-    std::string paths = path_env;
-    size_t start = 0;
-    while (start <= paths.size()) {
-        size_t colon = paths.find(':', start);
-        std::string dir = paths.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
-        if (!dir.empty() && access((dir + "/" + program).c_str(), X_OK) == 0) return true;
-        if (colon == std::string::npos) break;
-        start = colon + 1;
-    }
-    return false;
+    // A name carrying a path separator is a path, not something to look
+    // up -- checked directly. '\\' counts too on Windows, where it is the
+    // usual one.
+    const bool is_path = program.find('/') != std::string::npos
+#if defined(_WIN32)
+                         || program.find('\\') != std::string::npos
+#endif
+        ;
+    if (is_path) return mep::compat::IsExecutableFile(program);
+    // The PATH walk itself differs per platform (separator, executable
+    // extensions, how "executable" is even defined) -- see
+    // platform_compat.h.
+    return mep::compat::ProgramOnPath(program.c_str());
 }
 }  // namespace
 

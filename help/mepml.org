@@ -590,8 +590,21 @@ plot(1:10, (1:10)^2, type = "b")
 #+end_example
 
 R gets a plot device opened at that file, and Python gets matplotlib
-pointed at it (just plot; no =savefig= needed). Any other language is
-expected to write the file itself. After the run, the results hold an
+pointed at it (just plot; no =savefig= needed). Any other language just
+saves its picture, wherever it likes under the document's directory:
+mep notes the pictures there before the run, and the newest one the
+program wrote with the same extension as =file= is copied to it. So a C++
+block whose plotting library saves =plot.svg= can say =file="figs/fit.svg"=,
+with no path shared between the code and the header:
+
+#+begin_example
+```{cpp, file="figs/fit.svg", flags="..."}
+int main() { make_plot().save_svg("plot.svg"); }
+```
+#+end_example
+
+A program that would rather write the file itself finds its path in the
+=MEP_FILE= environment variable. After the run, the results hold an
 =\image(squares.png)= line: the editor draws the figure inside the output
 card, and the export shows it as an image. The block's =\caption= then
 captions the figure.

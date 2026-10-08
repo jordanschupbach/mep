@@ -1788,10 +1788,22 @@ int l_job_start(lua_State *L) {
     }
 
     std::string cwd;
+    std::vector<std::pair<std::string, std::string>> extra_env;
     int on_stdout_ref = LUA_NOREF, on_stderr_ref = LUA_NOREF, on_exit_ref = LUA_NOREF;
     if (lua_gettop(L) >= 2 && lua_istable(L, 2)) {
         lua_getfield(L, 2, "cwd");
         if (lua_isstring(L, -1)) cwd = lua_tostring(L, -1);
+        lua_pop(L, 1);
+        // env = {NAME = value, ...}: set in the child's environment only.
+        lua_getfield(L, 2, "env");
+        if (lua_istable(L, -1)) {
+            lua_pushnil(L);
+            while (lua_next(L, -2) != 0) {
+                if (lua_type(L, -2) == LUA_TSTRING && lua_isstring(L, -1))
+                    extra_env.emplace_back(lua_tostring(L, -2), lua_tostring(L, -1));
+                lua_pop(L, 1);
+            }
+        }
         lua_pop(L, 1);
         on_stdout_ref = RefField(L, 2, "on_stdout");
         on_stderr_ref = RefField(L, 2, "on_stderr");
@@ -1830,7 +1842,7 @@ int l_job_start(lua_State *L) {
         if (on_exit_ref != LUA_NOREF) env->UnrefFunction(on_exit_ref);
     };
 
-    int id = JobManager::Instance().Spawn(argv, cwd, std::move(cb));
+    int id = JobManager::Instance().Spawn(argv, cwd, std::move(cb), /*use_pty=*/false, std::move(extra_env));
     lua_pushinteger(L, id);
     return 1;
 }
@@ -6803,6 +6815,61 @@ int l_fs_copy(lua_State *L) {
     lua_pushboolean(L, !ec);
 #else
     lua_pushboolean(L, false);
+#endif
+    return 1;
+}
+
+// mep.fs_image_stamps(dir[, max_depth]): the picture files under `dir`, each with what
+// changes when it is written, so a caller can snapshot them before running
+// a program and see afterwards which pictures it drew -- whatever language
+// it is in and wherever under `dir` it chose to save them (a mepml block's
+// file= capture). Hidden and build-tool directories are skipped and the
+// walk is bounded (max_depth 6 by default; 0 is `dir` alone, no
+// subdirectories), so a document in a large tree costs little.
+/**
+ * @brief Implements mep.fs_image_stamps(dir): lists the image files under a directory with their write stamps.
+ * @param L Lua state; arg 1 is the directory to walk, optional arg 2 how many directory levels to descend.
+ * @return Number of values pushed (1: a table mapping each image's path relative to `dir` to
+ * {stamp = "<mtime>:<size>", mtime = <integer, file-clock ticks>}; empty under wasm or on error).
+ */
+int l_fs_image_stamps(lua_State *L) {
+    const char *dir = luaL_checkstring(L, 1);
+    const int max_depth = static_cast<int>(luaL_optinteger(L, 2, 6));
+    lua_newtable(L);
+#if !defined(__EMSCRIPTEN__)
+    namespace fs = std::filesystem;
+    static const char *const kExts[] = {".png", ".svg", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".pdf"};
+    static const char *const kSkip[] = {"node_modules", "_deps", "target", "__pycache__", "CMakeFiles"};
+    constexpr int kMaxEntries = 20000;
+    std::error_code ec;
+    fs::recursive_directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end;
+    int seen = 0;
+    for (; !ec && it != end && seen < kMaxEntries; it.increment(ec), ++seen) {
+        const fs::directory_entry &e = *it;
+        const std::string name = e.path().filename().string();
+        std::error_code sec;
+        if (e.is_directory(sec)) {
+            bool skip = name.empty() || name[0] == '.' || it.depth() >= max_depth;
+            for (const char *s : kSkip) skip = skip || name == s;
+            if (skip) it.disable_recursion_pending();
+            continue;
+        }
+        if (!e.is_regular_file(sec)) continue;
+        std::string ext = e.path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+        if (std::find_if(std::begin(kExts), std::end(kExts), [&](const char *x) { return ext == x; }) == std::end(kExts))
+            continue;
+        // (libc++'s file clock counts in a 128-bit integer)
+        const long long mtime = static_cast<long long>(e.last_write_time(sec).time_since_epoch().count());
+        const unsigned long long size = static_cast<unsigned long long>(e.file_size(sec));
+        if (sec) continue;
+        lua_newtable(L);
+        lua_pushstring(L, (std::to_string(mtime) + ":" + std::to_string(size)).c_str());
+        lua_setfield(L, -2, "stamp");
+        lua_pushinteger(L, static_cast<lua_Integer>(mtime));
+        lua_setfield(L, -2, "mtime");
+        lua_setfield(L, -2, e.path().lexically_relative(dir).generic_string().c_str());
+    }
 #endif
     return 1;
 }
@@ -14021,6 +14088,7 @@ const luaL_Reg kMepFuncs[] = {
     {"fs_rename", l_fs_rename},
     {"fs_delete", l_fs_delete},
     {"fs_copy", l_fs_copy},
+    {"fs_image_stamps", l_fs_image_stamps},
     {"project_list", l_project_list},
     {"project_add", l_project_add},
     {"project_remove", l_project_remove},

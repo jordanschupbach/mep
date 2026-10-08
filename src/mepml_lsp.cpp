@@ -714,7 +714,7 @@ const std::vector<Vocab> &MetaVocab() {
 
 const std::vector<Vocab> &CodeOptionVocab() {
     static const std::vector<Vocab> v = {
-        {"file", "file=path.png", "The block draws a figure into this file; after a run it is shown under the block, numbered and captioned."},
+        {"file", "file=path.png", "The block draws a figure into this file; after a run it is shown under the block, numbered and captioned. R and Python plots go there by themselves; any other program can save its picture anywhere under the document's directory (the newest one with this extension is copied here) or write the path in $MEP_FILE."},
         {"eval", "eval=false", "eval=false (or no, never) stops the block from running."},
         {"exports", "exports=results", "What the exports show of this block: code, results, both or none (the document's Exports: header by default)."},
         {"echo", "echo=false", "echo=false (knitr's name): the exports show the block's results but not its code."},

@@ -36,10 +36,20 @@ jobs.</p>
 <tr><td><code>&lt;leader&gt;pp</code></td><td><b>Loaded projects</b></td><td>the projects currently open in mep</td></tr>
 </table>
 <p><b>Projects</b> (<code>:MepProjects</code>, and the <code>p</code> action on the <a href="dashboard.html">start screen</a>) is a
-bookmark list: pick one to open it. It ends with <code>+ Add current directory</code>,
-<code>+ Add project by path...</code> and <code>- Remove a project...</code> for managing the list,
-and <code>:MepProjectAdd</code> adds the current directory without opening the picker.</p>
-<p><code>+ Add project by path...</code> (also <code>:MepProjectAddPath</code>) opens a picker whose
+bookmark list: pick one to open it. The list is nothing but projects --
+managing it is done with the Ctrl keys shown in the footer, so typing to
+filter never has action rows mixed in with the matches:</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>C-a</code></td><td>add the current directory as a project</td></tr>
+<tr><td><code>C-f</code></td><td>add a project by path (the picker below)</td></tr>
+<tr><td><code>C-t</code></td><td>new project (the project wizard)</td></tr>
+<tr><td><code>C-d</code></td><td>remove a project from the list</td></tr>
+</table>
+<p>(<code>C-n</code> and <code>C-p</code> are the picker's own next/prev everywhere, which is why
+"new" is <code>C-t</code> and "by path" is <code>C-f</code>.) <code>:MepProjectAdd</code> adds the current
+directory without opening the picker at all.</p>
+<p><code>C-f</code> (also <code>:MepProjectAddPath</code>) opens a picker whose
 prompt is the path itself, starting at the current directory. As you type it
 lists the matching subfolders; <code>Tab</code> completes like a shell (the highlighted
 folder, or the longest common prefix of the matches), <code>C-w</code> goes up a folder

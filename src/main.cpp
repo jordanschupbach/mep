@@ -4840,7 +4840,7 @@ const char *kBuiltinFileTree =
     "    if item then mep.project_remove(item); mep.notify('Removed project: ' .. item) end\n"
     "  end)\n"
     "end\n"
-    // --- New-project wizard (+ New project... in mep.projects) ---------------
+    // --- New-project wizard (C-t in mep.projects) ----------------------------
     // A curated catalog of dev packages, grouped by language, offered as
     // checkboxes on the wizard's second page. Each entry's `attr` is a real
     // nixpkgs attribute (verified against nixpkgs-unstable): python/r via
@@ -5183,7 +5183,7 @@ const char *kBuiltinFileTree =
     "    end\n"
     "  end)\n"
     "end\n"
-    // "+ Add project by path..." in mep.projects: a picker whose query *is*
+    // C-f in mep.projects: a picker whose query *is*
     // the path. Every keystroke re-lists the folder the query points into
     // (on_query_change + raw_results, so the fuzzy engine never re-filters
     // the rows): row 1 adds the typed folder, the rest are its subfolders
@@ -5348,11 +5348,17 @@ const char *kBuiltinFileTree =
     "    if not mep.fs_exists(p) then label = label .. '   (missing)' end\n"
     "    items[#items + 1] = {display = label, data = p}\n"
     "  end\n"
-    "  items[#items + 1] = '+ Add current directory'\n"
-    "  items[#items + 1] = '+ Add project by path...'\n"
-    "  items[#items + 1] = '+ New project...'\n"
-    "  items[#items + 1] = '- Remove a project...'\n"
     "  local project_count = #items\n"
+    // The list is nothing but projects now -- add/add-by-path/new/remove are
+    // Ctrl-key bindings (mep.picker_set_hint below) rather than four action
+    // rows mixed in among the real entries, which fuzzy-matched against the
+    // query and pushed the actual projects down the list. With no projects
+    // at all the list would be empty, so a single unselectable row says so
+    // and names the binding that fixes it (data '' -> on_select ignores it,
+    // preview_project clears the pane).
+    "  if project_count == 0 then\n"
+    "    items[1] = {display = '(no projects yet -- C-a adds the current directory)', data = ''}\n"
+    "  end\n"
     "  local function add_current()\n"
     "    mep.project_add('.')\n"
     "    mep.notify('Added current directory as a project')\n"
@@ -5361,9 +5367,9 @@ const char *kBuiltinFileTree =
     // mep.picker_preview_file usage, kBuiltinPickerSources): shows the
     // highlighted project's README, trying MEP_README_NAMES in order so
     // README.org (this editor's own convention) is picked over README.md
-    // etc. when a project happens to have more than one. The '+'/'-'
-    // action rows aren't project directories, so they just clear the pane
-    // instead.
+    // etc. when a project happens to have more than one. The empty-list
+    // placeholder row isn't a project directory, so it just clears the
+    // pane instead.
     //
     // Fixed in the Lua-to-C++ pass that moved mep_picker_preview_file to
     // C++ (LUA_TO_CPP_PLAN.md): the old call here referenced a Lua
@@ -5373,7 +5379,7 @@ const char *kBuiltinFileTree =
     // time, since the day this feature was written. mep.picker_preview_file
     // is a real mep.* global now, visible everywhere.
     "  local function preview_project(item)\n"
-    "    if item == '+ Add current directory' or item == '+ Add project by path...' or item == '+ New project...' or item == '- Remove a project...' then\n"
+    "    if not item or item == '' then\n"
     "      mep.picker_set_preview('')\n"
     "      return\n"
     "    end\n"
@@ -5385,25 +5391,31 @@ const char *kBuiltinFileTree =
     "    end\n"
     "  end\n"
     "  mep.picker_open('Projects', items, function(item)\n"
-    "    if not item then return end\n"
-    "    if item == '+ Add current directory' then\n"
-    "      add_current()\n"
-    "    elseif item == '+ Add project by path...' then\n"
-    "      mep.projects_add_path()\n"
-    "    elseif item == '+ New project...' then\n"
-    "      mep.new_project()\n"
-    "    elseif item == '- Remove a project...' then\n"
-    "      mep.projects_remove_picker()\n"
-    "    else\n"
-    "      mep.project_open_or_warn(item)\n"
-    "    end\n"
+    "    if not item or item == '' then return end\n"
+    "    mep.project_open_or_warn(item)\n"
+    // Enter opens the highlighted project; everything else is a Ctrl key.
+    // Each one closes this picker first -- unlike Enter/Esc (which close it
+    // in C++ before on_select even runs), a Ctrl key leaves it open, and
+    // three of these four actions open a picker of their own.
     "  end, nil, function(key)\n"
     "    if key == 'a' then\n"
-    "      add_current()\n"
     "      mep.picker_close()\n"
+    "      add_current()\n"
+    "    elseif key == 'f' then\n"
+    "      mep.picker_close()\n"
+    "      mep.projects_add_path()\n"
+    "    elseif key == 't' then\n"
+    "      mep.picker_close()\n"
+    "      mep.new_project()\n"
+    "    elseif key == 'd' then\n"
+    "      mep.picker_close()\n"
+    "      mep.projects_remove_picker()\n"
     "    end\n"
     "  end, preview_project)\n"
-    "  mep.picker_set_hint('C-a: add current dir')\n"
+    // C-n/C-p are the picker's own next/prev everywhere (see Editor::
+    // UpdatePicker), so "new project" takes C-t ("new tab"-style) and
+    // "add by path" C-f (folder) rather than the obvious initials.
+    "  mep.picker_set_hint('C-a: add current dir   C-f: add by path   C-t: new project   C-d: remove project')\n"
     // on_select_change (just wired above) only fires once the highlighted
     // row actually *changes*, so the picker would otherwise open on the
     // first project with an empty preview pane until the user pressed an

@@ -43,6 +43,10 @@ answers depends on where you are:</p>
 <li>otherwise, the LSP hover popup, the same one <code>K</code> opens.</li>
 </ul>
 <p><code>&lt;leader&gt;hs</code> and <code>:MepGoHelp</code> do the same thing.</p>
+<p><code>gh</code> is also the only one of the two routes into the Help tab that moves
+you there. Calling <code>help(x)</code> (or <code>?topic</code> in R) in the console brings the
+Help tab to the front of its pane but leaves the cursor exactly where it
+was, so a lookup never interrupts what you were typing.</p>
 <h1>Adding your own</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.language_ui_modes.js = {
   <span class="tok-blue">open</span> = <span class="tok-purple">function</span>()

@@ -35,6 +35,10 @@ been drawn, <code>h</code> and <code>l</code> step between them.</p>
 <p><code>gh</code> on a symbol opens R's own <code>help()</code> output in the Help tab, rather than
 an LSP hover. That is usually what you want in R, where the documentation is
 the reference.</p>
+<p><code>help(x)</code> and <code>?topic</code> typed in the console go to the same tab, which comes
+to the front of its pane on its own -- but the cursor stays in the console,
+so you can keep typing and read the page when you are ready. Only <code>gh</code> moves
+you into the tab.</p>
 <h1>Options</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.r_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'R'</span>, <span class="tok-green">'--no-save'</span>, <span class="tok-green">'--quiet'</span>}
 mep.opt.r_ui_info_share = <span class="tok-cyan">0.3</span>          <span class="tok-comment">-- the panel column's width</span>

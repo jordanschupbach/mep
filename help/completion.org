@@ -16,6 +16,28 @@ mep can offer into a single list:
 Duplicates offered by more than one source collapse into one entry, and the
 list is capped so a large buffer cannot flood it.
 
+* When it opens
+
+Two typed characters are enough for an ordinary word. Two contexts need no
+characters at all, because the list is worth seeing before you have typed
+anything:
+
+- after a =.=, where the popup shows that object's members -- and keeps
+  showing them, narrowing, as you type the one you want;
+- after a statement keyword that says what comes next. In Python that is
+  =import= and =from=: typing =import= and a space offers every module
+  mep's Python server knows plus the ones beside your file, and =from os
+  import= offers that module's own names.
+
+Only buffer words and snippet names need a prefix to filter against, so
+with nothing typed the list is purely the language server's.
+
+Which keywords count is per filetype, and init.lua can add its own:
+
+#+begin_src lua
+mep.set_completion_keyword_triggers('go', {'import'})
+#+end_src
+
 * Keys
 
 | Key       | Does                                   |
@@ -35,6 +57,12 @@ the work entirely when the prefix has not changed, and enforces a minimum
 interval between genuine prefix changes. Everything above rides that same
 throttle, so adding a source does not add latency.
 
+A language server answers asynchronously, after the keystroke that asked
+it. Its reply lifts the throttle for one frame (=mep.completion_invalidate=)
+so the list appears as soon as it arrives rather than waiting for the next
+keystroke -- which is what makes a bare =os.= show anything at all, having
+no buffer words to put up in the meantime.
+
 * Replacing the source
 
 There is one completion-source slot. Setting it replaces the built-in
@@ -50,7 +78,9 @@ end)
 =mep.set_completion_accept_hook= and =mep.set_completion_resolve_hook= hook
 acceptance and lazy detail-fetching. =mep.completion_scan_buffer_words=,
 =mep.completion_path_prefix= and =mep.completion_rank= are the pieces the
-default source is built from, so a replacement can reuse them.
+default source is built from, so a replacement can reuse them. An
+asynchronous one should call =mep.completion_invalidate()= when its
+answer lands.
 
 * See also
 

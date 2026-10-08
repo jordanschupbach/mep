@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (58)</h1>
+<h1>The bindings (60)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -25,6 +25,7 @@ that it does nothing.</p>
 <tr><td><code>mep.accept_inline_suggestion</code></td><td>bool. `what` is 'all' (default),</td></tr>
 <tr><td><code>mep.clear_inline_suggestion</code></td><td>--</td></tr>
 <tr><td><code>mep.colorize</code></td><td>re-runs syntax highlighting for the current buffer</td></tr>
+<tr><td><code>mep.completion_invalidate</code></td><td>drops the completion popup's "already queried this prefix" throttle</td></tr>
 <tr><td><code>mep.completion_path_prefix</code></td><td>detects a path fragment ending at the cursor for path completion</td></tr>
 <tr><td><code>mep.completion_rank</code></td><td>sorts completion items by text length then alphabetically, capped to a maximum count</td></tr>
 <tr><td><code>mep.completion_scan_buffer_words</code></td><td>scans the current buffer for words starting with a prefix</td></tr>
@@ -58,6 +59,7 @@ that it does nothing.</p>
 <tr><td><code>mep.lsp_symbols_flatten</code></td><td>flattens a nested LSP DocumentSymbol/SymbolInformation tree into a flat list of display rows</td></tr>
 <tr><td><code>mep.lsp_word_at_cursor</code></td><td>--</td></tr>
 <tr><td><code>mep.set_completion_accept_hook</code></td><td>registers fn as the hook invoked when a completion item is accepted (used for LSP insertTextFormatSnippet expansion)</td></tr>
+<tr><td><code>mep.set_completion_keyword_triggers</code></td><td>registers the statement keywords that trigger completion with no prefix</td></tr>
 <tr><td><code>mep.set_completion_resolve_hook</code></td><td>see SetCompletionResolveHookRef's</td></tr>
 <tr><td><code>mep.set_completion_source</code></td><td>registers fn(prefix) -&gt; array of candidate words as the buffer's completion source</td></tr>
 <tr><td><code>mep.set_inline_suggestion</code></td><td>show `text` dimmed at the</td></tr>

@@ -23,6 +23,18 @@ mep can offer into a single list:</p>
 </ul>
 <p>Duplicates offered by more than one source collapse into one entry, and the
 list is capped so a large buffer cannot flood it.</p>
+<h1>When it opens</h1>
+<p>Two typed characters are enough for an ordinary word. Two contexts need no
+characters at all, because the list is worth seeing before you have typed
+anything:</p>
+<ul>
+<li>after a <code>.</code>, where the popup shows that object's members -- and keeps showing them, narrowing, as you type the one you want;</li>
+<li>after a statement keyword that says what comes next. In Python that is <code>import</code> and <code>from</code>: typing <code>import</code> and a space offers every module mep's Python server knows plus the ones beside your file, and =from os import= offers that module's own names.</li>
+</ul>
+<p>Only buffer words and snippet names need a prefix to filter against, so
+with nothing typed the list is purely the language server's.</p>
+<p>Which keywords count is per filetype, and init.lua can add its own:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.<span class="tok-blue">set_completion_keyword_triggers</span>(<span class="tok-green">'go'</span>, {<span class="tok-green">'import'</span>})</code></pre></div>
 <h1>Keys</h1>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
@@ -38,6 +50,11 @@ use <code>Tab</code>, but only when the popup is closed, so the two never compet
 the work entirely when the prefix has not changed, and enforces a minimum
 interval between genuine prefix changes. Everything above rides that same
 throttle, so adding a source does not add latency.</p>
+<p>A language server answers asynchronously, after the keystroke that asked
+it. Its reply lifts the throttle for one frame (<code>mep.completion_invalidate</code>)
+so the list appears as soon as it arrives rather than waiting for the next
+keystroke -- which is what makes a bare <code>os.</code> show anything at all, having
+no buffer words to put up in the meantime.</p>
 <h1>Replacing the source</h1>
 <p>There is one completion-source slot. Setting it replaces the built-in
 merge entirely, so a custom source should call through to whatever it still
@@ -48,7 +65,9 @@ wants:</p>
 <p><code>mep.set_completion_accept_hook</code> and <code>mep.set_completion_resolve_hook</code> hook
 acceptance and lazy detail-fetching. <code>mep.completion_scan_buffer_words</code>,
 <code>mep.completion_path_prefix</code> and <code>mep.completion_rank</code> are the pieces the
-default source is built from, so a replacement can reuse them.</p>
+default source is built from, so a replacement can reuse them. An
+asynchronous one should call <code>mep.completion_invalidate()</code> when its
+answer lands.</p>
 <h1>See also</h1>
 <ul>
 <li><a href="snippets.html">Snippets</a> -- triggers appear in this list.</li>

@@ -213,6 +213,59 @@ if src and not inspect.ismodule(obj) and src != q.rsplit('.', 1)[0]:
 out.buffer.write(text.encode('utf-8', 'replace'))
 )PY";
 
+// Lists the attributes of the object at the dotted path in argv[1], one
+// per line as "name<TAB>kind<TAB>detail<TAB>doc" -- kind a
+// CompletionItemKind number, detail a signature, doc the docstring's first
+// line -- or exits non-zero when it cannot be imported. Same stdout swap
+// as above. `inspect.signature` on every member of numpy costs well under
+// a second, and the answer is cached for the session.
+const char *const kMembersScript = R"PY(
+import sys, os, importlib, inspect, warnings
+warnings.simplefilter('ignore')
+os.environ.setdefault('MPLBACKEND', 'Agg')
+out = sys.stdout
+sys.stdout = sys.stderr
+parts = sys.argv[1].split('.')
+try:
+    obj = importlib.import_module(parts[0])
+    for i in range(1, len(parts)):
+        try:
+            obj = getattr(obj, parts[i])
+        except AttributeError:
+            obj = importlib.import_module('.'.join(parts[:i + 1]))
+except BaseException:
+    sys.exit(1)
+def clean(s):
+    return ' '.join(str(s).split())
+rows = []
+for name in sorted(dir(obj), key=lambda n: (n.startswith('_'), n.lower())):
+    try:
+        val = getattr(obj, name)
+    except BaseException:
+        continue
+    if inspect.ismodule(val):
+        kind, detail = 9, 'module'
+    elif inspect.isclass(val):
+        kind, detail = 7, 'class'
+    elif callable(val):
+        kind = 2 if inspect.isclass(obj) else 3
+        try:
+            detail = str(inspect.signature(val))
+        except BaseException:
+            detail = '(...)'
+    else:
+        kind, detail = 21 if name.isupper() else 6, type(val).__name__
+    doc = ''
+    if kind != 6 and kind != 21:
+        try:
+            doc = (inspect.getdoc(val) or '').strip().split('\n\n')[0]
+        except BaseException:
+            pass
+    detail, doc = clean(detail)[:160], clean(doc)[:200]
+    rows.append(name + '\t' + str(kind) + '\t' + detail + '\t' + doc)
+out.buffer.write('\n'.join(rows).encode('utf-8', 'replace'))
+)PY";
+
 // A cold `import matplotlib.pyplot` can take a few seconds (font cache);
 // anything slower is treated as a hang and killed.
 constexpr int kIntrospectTimeoutMs = 10000;
@@ -287,18 +340,20 @@ std::string Base64(const std::string &in) {
 #endif
 
 /**
- * @brief Runs the introspection script for one dotted path.
+ * @brief Runs one of the introspection scripts for one dotted path.
  * @param python the interpreter to run
+ * @param script kIntrospectScript or kMembersScript
  * @param cwd the document's directory, so sibling modules import ("" leaves the cwd alone)
  * @param qualified a dotted identifier path (PythonLspQualifiedName output, so never shell-special)
  * @return the hover text, or "" on any failure (not installed, import error, timeout)
  */
-std::string Introspect(const std::string &python, const std::string &cwd, const std::string &qualified) {
+std::string Introspect(const std::string &python, const char *script, const std::string &cwd,
+                       const std::string &qualified) {
 #if defined(_WIN32)
     // No timeout on this path: _popen offers none. The script is passed
     // base64-encoded so no quoting rule can mangle it.
     std::string cmd = "cd /d \"" + cwd + "\" && \"" + python +
-                      "\" -c \"import base64;exec(base64.b64decode('" + Base64(kIntrospectScript) + "'))\" " +
+                      "\" -c \"import base64;exec(base64.b64decode('" + Base64(script) + "'))\" " +
                       qualified + " 2>NUL";
     if (cwd.empty()) cmd = cmd.substr(cmd.find("&& ") + 3);
     FILE *pipe = _popen(cmd.c_str(), "rb");
@@ -330,7 +385,7 @@ std::string Introspect(const std::string &python, const std::string &cwd, const 
         close(fds[0]);
         close(fds[1]);
         if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
-        execlp(python.c_str(), python.c_str(), "-c", kIntrospectScript, qualified.c_str(), static_cast<char *>(nullptr));
+        execlp(python.c_str(), python.c_str(), "-c", script, qualified.c_str(), static_cast<char *>(nullptr));
         _exit(127);
     }
     close(fds[1]);
@@ -365,6 +420,35 @@ std::string Introspect(const std::string &python, const std::string &cwd, const 
     if (timed_out || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return std::string();
     return out;
 #endif
+}
+
+/** @brief Parses kMembersScript's output into completion members. */
+std::vector<PythonLspExternalMember> ParseMembers(const std::string &text) {
+    std::vector<PythonLspExternalMember> members;
+    size_t start = 0;
+    while (start < text.size()) {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        const std::string row = text.substr(start, end - start);
+        start = end + 1;
+        std::string fields[4];
+        size_t at = 0;
+        for (int f = 0; f < 4; f++) {
+            const size_t tab = f < 3 ? row.find('\t', at) : std::string::npos;
+            fields[f] = row.substr(at, tab == std::string::npos ? std::string::npos : tab - at);
+            if (tab == std::string::npos) break;
+            at = tab + 1;
+        }
+        if (fields[0].empty()) continue;
+        PythonLspExternalMember m;
+        m.name = fields[0];
+        m.kind = std::atoi(fields[1].c_str());
+        if (m.kind <= 0) m.kind = static_cast<int>(PythonLspKind::Field);
+        m.detail = fields[2];
+        m.doc = fields[3];
+        members.push_back(std::move(m));
+    }
+    return members;
 }
 
 /** @brief The top-level package of a dotted path ("numpy" for "numpy.linalg.norm"). */
@@ -414,6 +498,7 @@ public:
             if (settings.is_object() && settings.contains("pythonPath")) {
                 python_path_ = settings.get("pythonPath").as_string();
                 introspect_cache_.clear();
+                members_cache_.clear();
             }
             return;
         }
@@ -489,6 +574,8 @@ private:
     std::map<std::string, std::vector<std::string>> docs_;
     std::string python_path_;  // initializationOptions / settings `pythonPath`, "" to search
     mutable std::map<std::string, std::string> introspect_cache_;  // see IntrospectHover
+    // see MembersOf; an empty vector records a failure, so it is not retried
+    mutable std::map<std::string, std::vector<PythonLspExternalMember>> members_cache_;
     bool running_ = true;
     bool shutting_down_ = false;
     int exit_code_ = 1;
@@ -659,11 +746,32 @@ private:
         return r;
     }
 
+    /**
+     * @brief The members of a third-party object (`numpy`, `matplotlib.pyplot`), as an interpreter lists them.
+     *
+     * The completion counterpart of IntrospectHover: one subprocess per
+     * dotted path per session, failures cached too, so `np.` costs an
+     * import once and is instant from then on.
+     */
+    const std::vector<PythonLspExternalMember> *MembersOf(const std::string &doc_dir,
+                                                          const std::string &qualified) const {
+        const std::string python = FindPython(python_path_, doc_dir);
+        const std::string key = python + '\n' + doc_dir + '\n' + qualified;
+        auto it = members_cache_.find(key);
+        if (it == members_cache_.end()) {
+            it = members_cache_.emplace(key, ParseMembers(Introspect(python, kMembersScript, doc_dir, qualified)))
+                     .first;
+        }
+        return it->second.empty() ? nullptr : &it->second;
+    }
+
     /** @brief Answers `textDocument/completion`. */
     Json Completion(const Json &params) const {
         const Request req = ReadRequest(params);
-        const std::vector<PythonLspCompletionItem> items =
-            PythonLspCompletions(Doc(req.uri), req.line, req.col, OptionsFor(req.uri));
+        PythonLspOptions opts = OptionsFor(req.uri);
+        const std::string doc_dir = opts.doc_dir;
+        opts.external_members = [this, doc_dir](const std::string &qualified) { return MembersOf(doc_dir, qualified); };
+        const std::vector<PythonLspCompletionItem> items = PythonLspCompletions(Doc(req.uri), req.line, req.col, opts);
         Json arr = Json::Array();
         for (size_t i = 0; i < items.size(); i++) {
             const PythonLspCompletionItem &it = items[i];
@@ -710,7 +818,7 @@ private:
         const std::string key = python + '\n' + opts.doc_dir + '\n' + qualified;
         auto it = introspect_cache_.find(key);
         if (it == introspect_cache_.end()) {
-            it = introspect_cache_.emplace(key, Introspect(python, opts.doc_dir, qualified)).first;
+            it = introspect_cache_.emplace(key, Introspect(python, kIntrospectScript, opts.doc_dir, qualified)).first;
         }
         if (it->second.empty()) return;
         // A failed built-in hover still carries the range of the name it

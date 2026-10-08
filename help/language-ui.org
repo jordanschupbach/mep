@@ -43,6 +43,11 @@ answers depends on where you are:
 
 =<leader>hs= and =:MepGoHelp= do the same thing.
 
+=gh= is also the only one of the two routes into the Help tab that moves
+you there. Calling =help(x)= (or =?topic= in R) in the console brings the
+Help tab to the front of its pane but leaves the cursor exactly where it
+was, so a lookup never interrupts what you were typing.
+
 * Adding your own
 
 #+begin_src lua

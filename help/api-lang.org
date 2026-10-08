@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (58)
+* The bindings (60)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -21,6 +21,7 @@ that it does nothing.
 | =mep.accept_inline_suggestion= | bool. `what` is 'all' (default), |
 | =mep.clear_inline_suggestion= | -- |
 | =mep.colorize= | re-runs syntax highlighting for the current buffer |
+| =mep.completion_invalidate= | drops the completion popup's "already queried this prefix" throttle |
 | =mep.completion_path_prefix= | detects a path fragment ending at the cursor for path completion |
 | =mep.completion_rank= | sorts completion items by text length then alphabetically, capped to a maximum count |
 | =mep.completion_scan_buffer_words= | scans the current buffer for words starting with a prefix |
@@ -54,6 +55,7 @@ that it does nothing.
 | =mep.lsp_symbols_flatten= | flattens a nested LSP DocumentSymbol/SymbolInformation tree into a flat list of display rows |
 | =mep.lsp_word_at_cursor= | -- |
 | =mep.set_completion_accept_hook= | registers fn as the hook invoked when a completion item is accepted (used for LSP insertTextFormatSnippet expansion) |
+| =mep.set_completion_keyword_triggers= | registers the statement keywords that trigger completion with no prefix |
 | =mep.set_completion_resolve_hook= | see SetCompletionResolveHookRef's |
 | =mep.set_completion_source= | registers fn(prefix) -> array of candidate words as the buffer's completion source |
 | =mep.set_inline_suggestion= | show `text` dimmed at the |

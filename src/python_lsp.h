@@ -1,6 +1,7 @@
 #ifndef MEP_PYTHON_LSP_H
 #define MEP_PYTHON_LSP_H
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,15 @@
 
 // --- Options ----------------------------------------------------------
 
+// One attribute of an object outside the built-in tables, as some outside
+// source (python_lsp_server.cpp asks a real interpreter) describes it.
+struct PythonLspExternalMember {
+    std::string name;
+    int kind = 0;        // a PythonLspKind value (declared below), as an int
+    std::string detail;  // signature or type, may be empty
+    std::string doc;     // one-line summary, may be empty
+};
+
 struct PythonLspOptions {
     // Directory the document lives in. `import sibling` and
     // `from .mod import x` resolve against it; empty disables both
@@ -67,6 +77,13 @@ struct PythonLspOptions {
     // Not a style opinion this server holds on its own -- it is off
     // unless a caller asks for it.
     int max_line_length = 0;
+    // Attribute completion after `np.` / `plt.` / `np.random.`, where the
+    // receiver traces back to an import the built-in tables do not cover:
+    // called with that dotted path ("numpy.random"), it returns the
+    // object's members, or nullptr when it cannot say. Unset (tests, or a
+    // caller with no interpreter) keeps the "names this file already uses
+    // on that receiver" fallback.
+    std::function<const std::vector<PythonLspExternalMember> *(const std::string &qualified)> external_members;
 };
 
 // --- Diagnostics ------------------------------------------------------

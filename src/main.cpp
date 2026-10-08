@@ -9060,19 +9060,23 @@ const char *kBuiltinLanguageUiR =
     "    end\n"
     "\n"
     "    if changed then mep_r_ui_render_all() end\n"
-    // Unlike the Plot pane (mep_r_ui_figure_goto's own comment on why it
-    // always focuses and immediately restores), a new help() result is
-    // something the user just explicitly asked to go look at -- so this
-    // actually leaves the cursor there, on whichever tab/pane holds
-    // help_buf right now (mep.jump_to_buffer, unlike mep.pane_focus_buffer,
-    // finds it even hidden in top_pane's own tab strip behind Data/
-    // Objects/Packages/History -- FindLeafHoldingBuffer checks every
-    // buffer_tabs entry, not just each pane's single visible buffer_id).
-    // Gated on a real content change for the same reason the Plot poll's
-    // own mtime check is: jumping unconditionally every tick would yank
-    // focus there once a second for as long as help.txt/help_choices.txt
-    // both happen to already be non-empty from an earlier lookup, not just
-    // the one time content actually arrives.\n"
+    // A new help() result is something the user just explicitly asked to
+    // go look at, so reveal the Help tab -- bringing it to the front of
+    // whichever pane holds it, even hidden in top_pane's own tab strip
+    // behind Data/Objects/Packages/History (mep.reveal_buffer, like
+    // mep.jump_to_buffer and unlike mep.pane_focus_buffer, checks every
+    // buffer_tabs entry and not just each pane's single visible
+    // buffer_id) -- without moving focus or the cursor off the console the
+    // lookup was typed into. Its `to_top` resets that pane's own cursor so
+    // the fresh text reads from line 1 rather than from wherever the
+    // previous, possibly much longer, topic was left scrolled to; gh
+    // (mep.r_ui_help_at_cursor) remains the deliberate "take me there"
+    // counterpart and still jumps. Gated on a real content change for the
+    // same reason the Plot poll's own mtime check is: revealing
+    // unconditionally every tick would keep flipping the tab strip back to
+    // Help once a second for as long as help.txt/help_choices.txt happen
+    // to already be non-empty from an earlier lookup, not just the one
+    // time content actually arrives.\n"
     // A resized/moved Help pane (or one just brought on screen from
     // behind another tab, where mep.buffer_text_cols is nil and the last
     // known width stands) gets its prose re-wrapped to the new width --
@@ -9082,7 +9086,7 @@ const char *kBuiltinLanguageUiR =
     "    if help_cols and help_cols ~= st.help_cols and not help_changed then mep_r_ui_render_help() end\n"
     "    if help_changed then\n"
     "      mep_r_ui_render_help()\n"
-    "      if st.help_buf and mep.jump_to_buffer(st.help_buf) then mep.set_cursor(1, 1) end\n"
+    "      if st.help_buf then mep.reveal_buffer(st.help_buf, true) end\n"
     "    end\n"
     "  end)\n"
     "end\n"
@@ -9837,10 +9841,15 @@ const char *kBuiltinLanguageUiPython =
     "    end\n"
     "    if changed then mep_py_ui_render_all() end\n"
     // A new help() result is something the user explicitly asked to go
-    // look at, so land the cursor on the Help tab (mep.jump_to_buffer
-    // finds it even hidden behind its sibling tabs) -- gated on a real
-    // content change so it's once per lookup, not once per tick.
-    "    if help_changed and st.help_buf then mep.jump_to_buffer(st.help_buf) end\n"
+    // look at, so bring the Help tab to the front of its pane
+    // (mep.reveal_buffer finds it even hidden behind its sibling tabs) --
+    // but *only* that: the lookup was typed into the console, so focus and
+    // the cursor stay right where the user left them instead of being
+    // yanked into the Help tab mid-session the way mep.jump_to_buffer did.
+    // gh (mep.py_ui_help_at_cursor) is the deliberate "take me there"
+    // counterpart and still jumps. Gated on a real content change so it's
+    // once per lookup, not once per tick.
+    "    if help_changed and st.help_buf then mep.reveal_buffer(st.help_buf, true) end\n"
     "  end)\n"
     "end\n";
 
@@ -10681,6 +10690,15 @@ const char *kBuiltinCompletion =
     "      end\n"
     "    end\n"
     "    mep_lsp_completion_cache = {items = items, row = row, start_col = start_col}\n"
+    // The response landed after the keystroke that asked for it, and
+    // UpdateCompletionPopup's throttle would otherwise hold the newly
+    // cached items back until the *next* keystroke changes the prefix.
+    // That was invisible for an ordinary word query (buffer words had
+    // already opened the popup, and the LSP items joined one character
+    // later), but fatal for the contexts where the server is the only
+    // source there is: a bare `np.` or `import ` showed nothing at all,
+    // because the prefix they query on never changes on its own.
+    "    mep.completion_invalidate()\n"
     "  end)\n"
     "end\n"
     "function mep.completion_buffer_words(prefix)\n"
@@ -10743,13 +10761,17 @@ const char *kBuiltinCompletion =
     // than passed in from C++, same as row/col above -- `prefix == ''`
     // alone isn't enough to detect it (an empty prefix could mean lots of
     // things); specifically checking for '.' is what distinguishes real
-    // member access. Buffer words and snippet triggers are skipped in this
-    // case -- with prefix '' every word in the whole buffer would
-    // otherwise match trivially (`#w > 0` is true for any word), flooding
-    // the popup with irrelevant identifiers instead of showing only the
-    // LSP's own member list.
+    // member access. Only used to tag the request as
+    // CompletionTriggerKind.TriggerCharacter below; whether the *popup*
+    // opens at all with nothing typed is UpdateCompletionPopup's call.
     "  local dot_trigger = prefix == '' and col > 1 and line:sub(col - 1, col - 1) == '.'\n"
-    "  if not dot_trigger then\n"
+    // Buffer words and snippet triggers need something typed to filter
+    // against: with prefix '' every word in the whole buffer matches
+    // trivially (`#w > #prefix` is true for any word), which would flood
+    // the popup with irrelevant identifiers instead of showing only what
+    // the context actually asks for -- the LSP's member list after a '.',
+    // its module list after `import` (Editor::SetCompletionKeywordTriggers).
+    "  if prefix ~= '' then\n"
     // Snippet trigger names for the current filetype (Phase 23) count as
     // completion candidates too -- accepting one inserts the trigger word
     // itself, same as any buffer word; expanding it into the full snippet
@@ -10804,6 +10826,23 @@ const char *kBuiltinCompletion =
     "  return mep_completion_rank(words)\n"
     "end\n"
     "mep.set_completion_source(mep.completion_buffer_words)\n"
+    // Statement forms whose completion list is worth showing before
+    // anything has been typed (Editor::SetCompletionKeywordTriggers):
+    // `import <here>` and `from <here>` want modules, `from os import
+    // <here>` wants that module's members, and all three are useless if
+    // the popup waits for two characters first. mep's Python server
+    // answers each of them from its own baked-in stdlib table plus a
+    // listing of the document's directory (PythonLspCompletions,
+    // python_lsp.cpp), so this works with no Python installed.
+    //
+    // Per filetype and deliberately short: a language whose server has no
+    // such "the statement says what comes next" form registers nothing
+    // and keeps the plain 2+-character rule. init.lua can add its own
+    // (`mep.set_completion_keyword_triggers('go', {'import'})`).
+    "mep.completion_keyword_triggers = {py = {'import', 'from'}, pyi = {'import', 'from'}}\n"
+    "for ft, words in pairs(mep.completion_keyword_triggers) do\n"
+    "  mep.set_completion_keyword_triggers(ft, words)\n"
+    "end\n"
     // Completion-resolve hook (NVIM_PARITY_PLAN.md Phase 22 follow-up):
     // DrawCompletionDetailPanel (main.cpp) calls this once per frame it's
     // showing the panel for an LSP item whose initial detail/doc came up

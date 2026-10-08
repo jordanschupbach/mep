@@ -4162,6 +4162,45 @@ int l_completion_rank(lua_State *L) {
     return 1;
 }
 
+// mep.set_completion_keyword_triggers(filetype, words): the statement-
+// leading keywords (`{'import', 'from'}` for Python) after which the
+// completion popup queries its source with no prefix typed yet -- see
+// Editor::SetCompletionKeywordTriggers. An empty/absent `words` clears
+// the filetype's entry, restoring the plain 2+-character rule.
+/**
+ * @brief Implements mep.set_completion_keyword_triggers(filetype, words): registers the statement keywords that trigger completion with no prefix.
+ * @param L Lua state; arg 1 is the filetype tag, arg 2 an array of keyword strings (absent or empty clears it).
+ * @return Number of values pushed (0).
+ */
+int l_set_completion_keyword_triggers(lua_State *L) {
+    const char *filetype = luaL_checkstring(L, 1);
+    std::vector<std::string> words;
+    if (lua_istable(L, 2)) {
+        lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 2));
+        for (lua_Integer i = 1; i <= n; i++) {
+            lua_rawgeti(L, 2, i);
+            if (lua_isstring(L, -1)) words.emplace_back(lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    }
+    GetEditor(L)->SetCompletionKeywordTriggers(filetype, std::move(words));
+    return 0;
+}
+
+// mep.completion_invalidate(): see Editor::InvalidateCompletionQuery --
+// what an async completion source calls once a response has landed, so
+// the popup asks again at an unchanged cursor instead of waiting for the
+// next keystroke.
+/**
+ * @brief Implements mep.completion_invalidate(): drops the completion popup's "already queried this prefix" throttle.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_completion_invalidate(lua_State *L) {
+    GetEditor(L)->InvalidateCompletionQuery();
+    return 0;
+}
+
 // mep.snippet_splice(row, before, after, body): see Editor::SnippetSplice.
 // `row` is mep.cursor()'s own 1-indexed convention (converted here);
 // `body` is a plain array of template-line strings.
@@ -6316,6 +6355,25 @@ int l_pane_focus_buffer(lua_State *L) {
 int l_jump_to_buffer(lua_State *L) {
     int id = static_cast<int>(luaL_checkinteger(L, 1));
     lua_pushboolean(L, GetEditor(L)->JumpToBuffer(id));
+    return 1;
+}
+
+// mep.reveal_buffer(id[, to_top]) -> bool: mep.jump_to_buffer's
+// "show it, don't go there" sibling (Editor::RevealBuffer) -- brings the
+// buffer to the front of whichever pane in the active tab holds it, hidden
+// buffer tabs included, and leaves focus/cursor/mode exactly where they
+// were. False when no pane in the active tab holds it (no current-pane
+// fallback, unlike jump_to_buffer). to_top also parks that pane's own
+// cursor on line 1, for a buffer whose text was just wholly replaced.
+/**
+ * @brief Implements mep.reveal_buffer(id[, to_top]): brings a buffer to the front of its own pane without moving focus.
+ * @param L Lua state; arg 1 is the buffer id, optional arg 2 resets that pane's cursor to the first line.
+ * @return Number of values pushed (1: true if a pane in the active tab holds that buffer).
+ */
+int l_reveal_buffer(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    bool to_top = lua_toboolean(L, 2) != 0;
+    lua_pushboolean(L, GetEditor(L)->RevealBuffer(id, to_top));
     return 1;
 }
 
@@ -13663,6 +13721,8 @@ const luaL_Reg kMepFuncs[] = {
     {"completion_scan_buffer_words", l_completion_scan_buffer_words},
     {"completion_path_prefix", l_completion_path_prefix},
     {"completion_rank", l_completion_rank},
+    {"completion_invalidate", l_completion_invalidate},
+    {"set_completion_keyword_triggers", l_set_completion_keyword_triggers},
     {"snippet_splice", l_snippet_splice},
     {"snippet_jump", l_snippet_jump},
     {"snippet_active", l_snippet_active},
@@ -13896,6 +13956,7 @@ const luaL_Reg kMepFuncs[] = {
     {"pane_buffers", l_pane_buffers},
     {"pane_focus_buffer", l_pane_focus_buffer},
     {"jump_to_buffer", l_jump_to_buffer},
+    {"reveal_buffer", l_reveal_buffer},
     {"buffer_workspace", l_buffer_workspace},
     {"terminal_info", l_terminal_info},
     {"buffer_cursor_row", l_buffer_cursor_row},

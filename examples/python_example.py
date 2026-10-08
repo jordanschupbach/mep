@@ -20,6 +20,7 @@ plt.hist(y, bins=40)
 plt.show()
 
 help(np.linspace)
+help(print)
 # mep_view(x)
 
 class MyClass:
@@ -38,5 +39,8 @@ plt.scatter(x, y, s=10, alpha=0.7)
 plt.xlabel("x")
 plt.ylabel("y")
 plt.show()
+
+import pydatamunge.datamunge as dm
+
 
 

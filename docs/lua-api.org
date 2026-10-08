@@ -114,6 +114,15 @@ Everything on the =mep.*= table, available to =:lua=, =:source= and
 - =mep.jump_to_buffer(buffer_id)= -> bool — switches workspace, tab and
   pane to land on a buffer wherever it lives (=mep.pane_focus_buffer=
   only searches the active tab).
+- =mep.reveal_buffer(buffer_id[, to_top])= -> bool — brings a buffer to
+  the front of whichever pane in the active tab already holds it, hidden
+  buffer tabs included, *without* moving focus, the cursor or the mode:
+  the "show it, don't go there" counterpart of =mep.jump_to_buffer=, for
+  a background update (the language UI modes' Help tab) that should
+  appear without interrupting whatever the user is typing. False when no
+  pane in the active tab holds it — there is no current-pane fallback.
+  =to_top= also parks that pane's own cursor and scroll on line 1, for a
+  buffer whose text was just wholly replaced.
 - =mep.menubar_toggle()= / =mep.menubar_visible()= ->  bool /
   =mep.menubar_set_visible(on)= — the top File/Edit/Window/Help bar,
   hidden by default and summoned by tapping =mod1= on its own. Hidden,

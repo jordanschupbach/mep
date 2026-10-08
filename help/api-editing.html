@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (206)</h1>
+<h1>The bindings (207)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -154,6 +154,7 @@ that it does nothing.</p>
 <tr><td><code>mep.pres_undo</code></td><td>--</td></tr>
 <tr><td><code>mep.read_disk_lines</code></td><td>array of lines, or nil</td></tr>
 <tr><td><code>mep.replace_lines</code></td><td>replaces a 1-indexed, end-exclusive line range with a new set of lines</td></tr>
+<tr><td><code>mep.reveal_buffer</code></td><td>brings a buffer to the front of its own pane without moving focus</td></tr>
 <tr><td><code>mep.set_cursor</code></td><td>moves the cursor to a 1-indexed position</td></tr>
 <tr><td><code>mep.set_line</code></td><td>replaces the content of a 1-indexed line</td></tr>
 <tr><td><code>mep.set_on_quit_unsaved</code></td><td>fn(scope) where scope is "all" (:qa/:wqa) or</td></tr>

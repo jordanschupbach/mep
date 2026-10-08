@@ -34,6 +34,11 @@ been drawn, =h= and =l= step between them.
 an LSP hover. That is usually what you want in R, where the documentation is
 the reference.
 
+=help(x)= and =?topic= typed in the console go to the same tab, which comes
+to the front of its pane on its own -- but the cursor stays in the console,
+so you can keep typing and read the page when you are ready. Only =gh= moves
+you into the tab.
+
 * Options
 
 #+begin_src lua

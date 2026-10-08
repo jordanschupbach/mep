@@ -24,6 +24,11 @@ module, a live interpreter, and panels tracking the session.
 anything in the standard library or an installed package, that is more
 complete than a hover.
 
+=help(x)= typed in the console goes to the same tab, which comes to the
+front of its pane on its own -- but the cursor stays in the console, so
+you can keep typing and read the page when you are ready. Only =gh=
+moves you into the tab.
+
 * Options
 
 #+begin_src lua

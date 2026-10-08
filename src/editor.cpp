@@ -6499,6 +6499,35 @@ bool Editor::JumpToBuffer(int buffer_id) {
     return true;
 }
 
+bool Editor::RevealBuffer(int buffer_id, bool to_top) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    int tab_index = -1;
+    SplitNode *leaf = FindLeafHoldingBuffer(ActiveTab().root.get(), buffer_id, &tab_index);
+    if (!leaf) return false;
+    Pane &p = leaf->pane;
+    // tab_index < 0 means it's already the pane's visible buffer -- nothing
+    // to bring forward, but `to_top` below still applies.
+    if (tab_index >= 0) {
+        p.buffer_tab_index = tab_index;
+        p.buffer_id = buffer_id;
+    }
+    // ClampCursor only ever works on CurPane(), and this pane deliberately
+    // isn't the focused one, so clamp its stored cursor here: whatever row
+    // it was left on belongs to a previous (possibly longer) buffer or an
+    // earlier revision of this one.
+    const int max_row = std::max(0, buffers_[static_cast<size_t>(buffer_id)].LineCount() - 1);
+    if (to_top) {
+        p.cursor.row = 0;
+        p.cursor.col = 0;
+        p.scroll_row = 0;
+    } else if (p.cursor.row > max_row) {
+        p.cursor.row = max_row;
+        p.cursor.col = 0;
+    }
+    if (p.scroll_row > max_row) p.scroll_row = max_row;
+    return true;
+}
+
 int Editor::CursorRowForBuffer(int buffer_id) const {
     const Tab &tab = ActiveTab();
     int pane_id = FindPaneIdForBuffer(tab.root.get(), buffer_id);
@@ -23048,6 +23077,22 @@ void Editor::HandleInsertInput() {
     if (completion_open_) {
         if (escape) {
             completion_open_ = false;
+            // Remember where it was waved away, so UpdateCompletionPopup
+            // leaves it shut here even if a late async response asks for
+            // a re-query (InvalidateCompletionQuery).
+            {
+                const CursorPos &at = CurPane().cursor;
+                const std::string &text = Buf().lines[static_cast<size_t>(at.row)];
+                int from = at.col;
+                while (from > 0 && (std::isalnum(static_cast<unsigned char>(text[static_cast<size_t>(from - 1)])) ||
+                                    text[static_cast<size_t>(from - 1)] == '_')) {
+                    from--;
+                }
+                completion_dismissed_ = true;
+                completion_dismissed_row_ = at.row;
+                completion_dismissed_start_ = from;
+                completion_dismissed_prefix_ = text.substr(static_cast<size_t>(from), static_cast<size_t>(at.col - from));
+            }
             return;
         }
         if (ctrl_n) {
@@ -27751,6 +27796,39 @@ bool Editor::QuickJumpPick(const std::string &label) {
 
 // --- Completion engine (NVIM_PARITY_PLAN.md Part V Phase 22) --------------
 
+void Editor::SetCompletionKeywordTriggers(const std::string &filetype, std::vector<std::string> words) {
+    if (filetype.empty()) return;
+    if (words.empty()) {
+        completion_keyword_triggers_.erase(filetype);
+        return;
+    }
+    completion_keyword_triggers_[filetype] = std::move(words);
+}
+
+bool Editor::CompletionKeywordTriggerActive(const std::string &line) const {
+    if (completion_keyword_triggers_.empty()) return false;
+    auto it = completion_keyword_triggers_.find(LspFiletype(Buf().filename));
+    if (it == completion_keyword_triggers_.end()) return false;
+    size_t begin = 0;
+    while (begin < line.size() && (line[begin] == ' ' || line[begin] == '\t')) begin++;
+    size_t end = begin;
+    while (end < line.size() &&
+           (std::isalnum(static_cast<unsigned char>(line[end])) || line[end] == '_')) {
+        end++;
+    }
+    if (end == begin) return false;
+    const std::string first = line.substr(begin, end - begin);
+    for (const std::string &word : it->second) {
+        if (first == word) return true;
+    }
+    return false;
+}
+
+void Editor::InvalidateCompletionQuery() {
+    completion_last_query_prefix_ = "\x01";
+    completion_last_query_time_ = -1e18;
+}
+
 void Editor::UpdateCompletionPopup() {
     if (completion_source_ref_ == 0 || !lua_) {
         completion_open_ = false;
@@ -27761,15 +27839,17 @@ void Editor::UpdateCompletionPopup() {
     int start = cursor.col;
     while (start > 0 && (std::isalnum(static_cast<unsigned char>(line[static_cast<size_t>(start - 1)])) || line[static_cast<size_t>(start - 1)] == '_')) start--;
     std::string prefix = line.substr(static_cast<size_t>(start), static_cast<size_t>(cursor.col - start));
-    // Member-access trigger: cursor sits right after a bare '.' with
-    // nothing typed since (prefix empty, since '.' isn't alnum/'_' so the
-    // backward scan above stops on it immediately) -- e.g. "np." for
-    // numpy's own exported names. Recognized the same way any other
-    // prefix is, just with an empty one, rather than requiring 2+ chars
-    // the way a plain identifier-word query does (NVIM_PARITY_PLAN.md
-    // Phase 22 gap: dotted/member completion never reached the
-    // completion source at all before this).
-    bool dot_trigger = prefix.empty() && start > 0 && line[static_cast<size_t>(start - 1)] == '.';
+    // Member-access trigger: the word being typed starts right after a
+    // '.' -- e.g. "np." for numpy's own exported names, or "np.ar" once a
+    // couple of characters have narrowed it. Recognized the same way any
+    // other prefix is, rather than requiring 2+ chars the way a plain
+    // identifier-word query does (NVIM_PARITY_PLAN.md Phase 22 gap:
+    // dotted/member completion never reached the completion source at
+    // all before this). Deliberately *not* limited to an empty prefix,
+    // which is how it was first written: a member list that vanishes the
+    // moment you type the first letter of the member you want, and comes
+    // back at the second, is worse than one that never appeared.
+    bool dot_trigger = start > 0 && line[static_cast<size_t>(start - 1)] == '.';
     // Backslash trigger: LaTeX command completion (kBuiltinCompletion's
     // mep.latex_commands source) wants candidates from the very first
     // keystroke after '\' -- unlike dot_trigger this stays live at ANY
@@ -27780,10 +27860,27 @@ void Editor::UpdateCompletionPopup() {
     // tex/sty/cls, so a '\n' inside a C string doesn't suddenly pop a
     // 1-char buffer-word query where none appeared before).
     bool backslash_trigger = start > 0 && line[static_cast<size_t>(start - 1)] == '\\';
-    if (prefix.size() < 2 && !dot_trigger && !backslash_trigger) {
+    // Statement-keyword trigger: `import <here>` wants the module list
+    // before a single character has been typed, and still wants it at
+    // `import o` -- see SetCompletionKeywordTriggers (editor.h) for why
+    // this looks at the line's first word, and kBuiltinCompletion
+    // (main.cpp) for which filetypes register what.
+    bool keyword_trigger = CompletionKeywordTriggerActive(line);
+    if (prefix.size() < 2 && !dot_trigger && !backslash_trigger && !keyword_trigger) {
         completion_open_ = false;
         completion_last_query_prefix_ = "\x01";
         return;
+    }
+    // Escape dismissed the popup at exactly this spot: stay shut until
+    // the cursor or the prefix moves on, so an async response landing a
+    // moment later (InvalidateCompletionQuery) can't reopen what the
+    // user just closed.
+    if (completion_dismissed_) {
+        if (completion_dismissed_row_ == cursor.row && completion_dismissed_start_ == start &&
+            completion_dismissed_prefix_ == prefix) {
+            return;
+        }
+        completion_dismissed_ = false;
     }
     // The completion source (mep.completion_buffer_words by default) is an
     // O(buffer size) Lua scan -- re-running it unconditionally every frame

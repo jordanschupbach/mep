@@ -109,6 +109,7 @@ Completion is context-aware rather than a word list:
 |------------------------+---------------------------------------------------|
 | anywhere in code       | every name in scope, then builtins, then keywords |
 | after =os.=            | that module's members, from the built-in table    |
+| after =np.= or =plt.=  | the members of numpy / matplotlib.pyplot (or any installed module), from a real interpreter |
 | after =self.=          | the class's own methods and fields, and its bases' |
 | after =text.= where =text= is a string | =str='s methods                   |
 | after =c.= where =c = MyClass()= | that class's members                    |
@@ -120,6 +121,21 @@ Completion is context-aware rather than a word list:
 
 Inside a comment or a string it offers nothing -- except inside an
 f-string's ={...}=, which is code and is treated as such.
+
+The three rows above that read as "the statement already said what comes
+next" -- after =.=, after =import=, after =from x import= -- pop the list
+with nothing typed yet, and keep it up as you narrow it down. See
+[[file:completion.html][Completion]] for when the popup opens generally.
+
+For a module the built-in table does not cover -- =np.= after =import
+numpy as np=, =plt.=, =np.random.= -- the member list comes from the same
+interpreter hover uses (see below): it imports the module and lists what
+=dir()= finds, with each function's signature and the first line of its
+docstring. The first =np.= of a session costs that import (well under a
+second for numpy, longer for a cold matplotlib); after that the list is
+cached and instant. Private names wait until you type the =_=. With no
+interpreter, or the package not installed, it falls back to the attribute
+names the file already uses on that receiver.
 
 * Hover, signatures, outline, jumps
 
@@ -134,7 +150,8 @@ Python interpreter: it imports the module, walks to the object and shows
 its signature and full docstring (scroll it in the hover popup). The
 first hover on a name costs one short subprocess; after that it is cached
 for the session. This does run the imported module's top-level code, the
-same code running the file would, and only when you press =K=. With no
+same code running the file would -- when you press =K=, or when attribute
+completion first needs that module's members. With no
 interpreter, or the package not installed, hover answers as before.
 
 The interpreter is the first of: =pythonPath= in the server's
@@ -183,8 +200,10 @@ colour table and how to change it.
 
 - *No type checking.* See the opening section.
 - *One file is the whole world.* An imported name is known to exist and
-  nothing more, except to hover (see above). Attribute completion on an object from another module
-  falls back to "attribute names this file already mentions".
+  nothing more, except to hover and to completion after a module path
+  (see above). Attribute completion on a /value/ from another module --
+  =a.= after =a = np.zeros(3)= -- falls back to "attribute names this
+  file already mentions".
 - *No project-wide rename or references.* Both stop at the file's edge,
   which is why a rename that cannot see the other users is refused
   rather than half-done.

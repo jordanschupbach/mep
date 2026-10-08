@@ -1832,6 +1832,38 @@ void FindAttributeEndingAt(const PyNode *n, PyPos dot, const PyNode **receiver) 
     }
 }
 
+/** @brief The absolute dotted path an import binding stands for ("" for any other binding). */
+std::string QualifiedNameOfBinding(const Binding &b) {
+    if (b.kind == BindKind::Import) {
+        // `import a.b as c` binds c to a.b; a bare `import a.b` binds a
+        // to a itself, which is exactly the bound name.
+        const bool aliased = b.node != nullptr && !b.node->str_value.empty();
+        return aliased ? b.import_module : b.name;
+    }
+    if (b.kind == BindKind::ImportFrom) {
+        // A relative import names a module only relative to a package
+        // this server would have to locate first; leave it alone.
+        if (b.import_module.empty() || b.import_module[0] == '.' || b.import_symbol.empty()) return std::string();
+        return b.import_module + "." + b.import_symbol;
+    }
+    return std::string();
+}
+
+/** @brief The dotted path of a Name/Attribute chain rooted in an import binding, else "". */
+std::string QualifiedNameOfExpr(const Analyzer &analyzer, const PyNode *expr, int scope, int depth = 0) {
+    if (expr == nullptr || depth > 32) return std::string();
+    if (expr->kind == PyNodeKind::Name) {
+        const int index = analyzer.ResolveFrom(scope, expr->name);
+        if (index < 0) return std::string();
+        return QualifiedNameOfBinding(analyzer.bindings()[static_cast<size_t>(index)]);
+    }
+    if (expr->kind == PyNodeKind::Attribute && !expr->kids.empty()) {
+        const std::string owner = QualifiedNameOfExpr(analyzer, expr->kids[0].get(), scope, depth + 1);
+        return owner.empty() ? std::string() : owner + "." + expr->name;
+    }
+    return std::string();
+}
+
 // --- Completion -------------------------------------------------------
 
 // What the cursor is completing, worked out from the line's text and the
@@ -1917,6 +1949,24 @@ void OfferAttributes(const Analyzer &analyzer, const CompletionContext &ctx,
                 Offer(out, ctx, e.name, PythonLspKind::Method, e.detail, e.doc);
             }
             return;
+        }
+    }
+    // A receiver that traces back to an import of a third-party module
+    // (`np.`, `plt.`, `np.random.`): ask whoever can actually import it.
+    if ((type.empty() || type.rfind("module:", 0) == 0) && analyzer.opts().external_members) {
+        const std::string qualified = QualifiedNameOfExpr(analyzer, ctx.receiver, ctx.scope);
+        const std::string root = qualified.substr(0, qualified.find('.'));
+        if (!qualified.empty() && PythonLspModuleMembers(root) == nullptr) {
+            const std::vector<PythonLspExternalMember> *members = analyzer.opts().external_members(qualified);
+            if (members != nullptr && !members->empty()) {
+                // Private names only once the author has typed the `_`.
+                const bool want_private = !ctx.prefix.empty() && ctx.prefix[0] == '_';
+                for (const PythonLspExternalMember &m : *members) {
+                    if (!want_private && !m.name.empty() && m.name[0] == '_') continue;
+                    Offer(out, ctx, m.name, static_cast<PythonLspKind>(m.kind), m.detail, m.doc);
+                }
+                return;
+            }
         }
     }
     // Nothing is known about the receiver, which is the common case for
@@ -2282,42 +2332,6 @@ PythonLspHoverInfo PythonLspHover(const std::vector<std::string> &lines, int lin
     }
     return info;
 }
-
-namespace {
-
-/** @brief The absolute dotted path an import binding stands for ("" for any other binding). */
-std::string QualifiedNameOfBinding(const Binding &b) {
-    if (b.kind == BindKind::Import) {
-        // `import a.b as c` binds c to a.b; a bare `import a.b` binds a
-        // to a itself, which is exactly the bound name.
-        const bool aliased = b.node != nullptr && !b.node->str_value.empty();
-        return aliased ? b.import_module : b.name;
-    }
-    if (b.kind == BindKind::ImportFrom) {
-        // A relative import names a module only relative to a package
-        // this server would have to locate first; leave it alone.
-        if (b.import_module.empty() || b.import_module[0] == '.' || b.import_symbol.empty()) return std::string();
-        return b.import_module + "." + b.import_symbol;
-    }
-    return std::string();
-}
-
-/** @brief The dotted path of a Name/Attribute chain rooted in an import binding, else "". */
-std::string QualifiedNameOfExpr(const Analyzer &analyzer, const PyNode *expr, int scope, int depth = 0) {
-    if (expr == nullptr || depth > 32) return std::string();
-    if (expr->kind == PyNodeKind::Name) {
-        const int index = analyzer.ResolveFrom(scope, expr->name);
-        if (index < 0) return std::string();
-        return QualifiedNameOfBinding(analyzer.bindings()[static_cast<size_t>(index)]);
-    }
-    if (expr->kind == PyNodeKind::Attribute && !expr->kids.empty()) {
-        const std::string owner = QualifiedNameOfExpr(analyzer, expr->kids[0].get(), scope, depth + 1);
-        return owner.empty() ? std::string() : owner + "." + expr->name;
-    }
-    return std::string();
-}
-
-}  // namespace
 
 std::string PythonLspQualifiedName(const std::vector<std::string> &lines, int line, int col) {
     PythonLspOptions opts;

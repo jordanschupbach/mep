@@ -508,6 +508,35 @@ void TestCompletion() {
     CHECK(!Offers(members, "print"));
     const Lines nested_dot = {"import os", "x = os.path."};
     CHECK(Offers(Complete(nested_dot, 1, 12), "join"));
+    // A third-party module's members come from the external_members hook
+    // (the server's interpreter), asked with the import's real dotted
+    // path; the stdlib table never asks it, and private names wait for `_`.
+    std::vector<std::string> asked;
+    const std::vector<PythonLspExternalMember> numpy_members = {
+        {"array", static_cast<int>(PythonLspKind::Function), "(object)", "Create an array."},
+        {"random", static_cast<int>(PythonLspKind::Module), "module", ""},
+        {"_private", static_cast<int>(PythonLspKind::Variable), "int", ""}};
+    PythonLspOptions external = NoFiles();
+    external.external_members = [&](const std::string &qualified) -> const std::vector<PythonLspExternalMember> * {
+        asked.push_back(qualified);
+        return qualified == "numpy" || qualified == "numpy.random" ? &numpy_members : nullptr;
+    };
+    const Lines np_dot = {"import numpy as np", "import os", "x = np."};
+    const std::vector<PythonLspCompletionItem> np_items = PythonLspCompletions(np_dot, 2, 7, external);
+    CHECK(Offers(np_items, "array"));
+    CHECK(Offers(np_items, "random"));
+    CHECK(!Offers(np_items, "_private"));
+    CHECK(asked.size() == 1 && asked[0] == "numpy");
+    CHECK(Offers(PythonLspCompletions({"import numpy as np", "x = np._"}, 1, 8, external), "_private"));
+    CHECK(Offers(PythonLspCompletions({"import numpy as np", "x = np.random."}, 1, 14, external), "array"));
+    CHECK(asked.back() == "numpy.random");
+    asked.clear();
+    CHECK(Offers(PythonLspCompletions({"import os", "x = os."}, 1, 7, external), "getcwd"));
+    CHECK(asked.empty());
+    // No answer from the hook keeps the "names this file already uses" fallback.
+    CHECK(Offers(PythonLspCompletions({"import pandas as pd", "pd.read_csv('a')", "pd."}, 2, 3, external),
+                 "read_csv"));
+
     const Lines from_import = {"from json import "};
     CHECK(Offers(Complete(from_import, 0, 17), "dumps"));
     const Lines import_line = {"import "};

@@ -92,6 +92,7 @@ unseen too. So:</p>
 <tr><th>Where you are</th><th>What you get</th></tr>
 <tr><td>anywhere in code</td><td>every name in scope, then builtins, then keywords</td></tr>
 <tr><td>after <code>os.</code></td><td>that module's members, from the built-in table</td></tr>
+<tr><td>after <code>np.</code> or <code>plt.</code></td><td>the members of numpy / matplotlib.pyplot (or any installed module), from a real interpreter</td></tr>
 <tr><td>after <code>self.</code></td><td>the class's own methods and fields, and its bases'</td></tr>
 <tr><td>after <code>text.</code> where <code>text</code> is a string</td><td><code>str</code>'s methods</td></tr>
 <tr><td>after <code>c.</code> where <code>c = MyClass()</code></td><td>that class's members</td></tr>
@@ -103,6 +104,19 @@ unseen too. So:</p>
 </table>
 <p>Inside a comment or a string it offers nothing -- except inside an
 f-string's <code>{...}</code>, which is code and is treated as such.</p>
+<p>The three rows above that read as "the statement already said what comes
+next" -- after <code>.</code>, after <code>import</code>, after <code>from x import</code> -- pop the list
+with nothing typed yet, and keep it up as you narrow it down. See
+<a href="completion.html">Completion</a> for when the popup opens generally.</p>
+<p>For a module the built-in table does not cover -- <code>np.</code> after =import
+numpy as np=, <code>plt.</code>, <code>np.random.</code> -- the member list comes from the same
+interpreter hover uses (see below): it imports the module and lists what
+<code>dir()</code> finds, with each function's signature and the first line of its
+docstring. The first <code>np.</code> of a session costs that import (well under a
+second for numpy, longer for a cold matplotlib); after that the list is
+cached and instant. Private names wait until you type the <code>_</code>. With no
+interpreter, or the package not installed, it falls back to the attribute
+names the file already uses on that receiver.</p>
 <h1>Hover, signatures, outline, jumps</h1>
 <p><code>K</code> over a name gives its definition line: a function's full signature and
 the first line of its docstring, a class and its bases, a parameter and
@@ -114,7 +128,8 @@ Python interpreter: it imports the module, walks to the object and shows
 its signature and full docstring (scroll it in the hover popup). The
 first hover on a name costs one short subprocess; after that it is cached
 for the session. This does run the imported module's top-level code, the
-same code running the file would, and only when you press <code>K</code>. With no
+same code running the file would -- when you press <code>K</code>, or when attribute
+completion first needs that module's members. With no
 interpreter, or the package not installed, hover answers as before.</p>
 <p>The interpreter is the first of: <code>pythonPath</code> in the server's
 <code>init_options</code>, <code>$MEP_PYTHON</code>, the active <code>$VIRTUAL_ENV</code>, the nearest
@@ -150,7 +165,7 @@ colour table and how to change it.</p>
 <h1>What it does not do</h1>
 <ul>
 <li><b>No type checking.</b> See the opening section.</li>
-<li><b>One file is the whole world.</b> An imported name is known to exist and nothing more, except to hover (see above). Attribute completion on an object from another module falls back to "attribute names this file already mentions".</li>
+<li><b>One file is the whole world.</b> An imported name is known to exist and nothing more, except to hover and to completion after a module path (see above). Attribute completion on a <i>value</i> from another module -- <code>a.</code> after <code>a = np.zeros(3)</code> -- falls back to "attribute names this file already mentions".</li>
 <li><b>No project-wide rename or references.</b> Both stop at the file's edge, which is why a rename that cannot see the other users is refused rather than half-done.</li>
 <li><b>No formatting.</b> <code>mep.lsp_format</code> falls through to the configured formatter for Python; the server does not claim the capability.</li>
 </ul>

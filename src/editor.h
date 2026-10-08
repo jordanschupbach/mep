@@ -4307,6 +4307,24 @@ public:
      * @return False only if the buffer id is invalid or its workspace can't be activated.
      */
     bool JumpToBuffer(int buffer_id);
+    // JumpToBuffer's "show it, don't go there" sibling: brings `buffer_id`
+    // to the front of whichever pane in the *active tab* holds it (as its
+    // visible buffer already, or as a hidden buffer tab behind siblings)
+    // without touching active_pane_id, the tab bar, the workspace or mode_
+    // -- so the user keeps typing exactly where they were. No current-pane
+    // fallback either: a buffer no pane holds simply isn't revealed (false)
+    // rather than displacing whatever the user is looking at. `to_top`
+    // additionally parks that pane's own cursor/scroll on line 1, for a
+    // buffer whose whole content was just replaced (the language UI modes'
+    // Help tab, where a stale cursor from the previous lookup would
+    // otherwise scroll the new text off screen).
+    /**
+     * @brief Reveals a buffer in the pane that already holds it in the active tab, without moving focus or the cursor.
+     * @param buffer_id The buffer id to bring to the front of its pane's buffer-tab strip.
+     * @param to_top True to also reset that pane's cursor and scroll to the first line.
+     * @return True if a pane in the active tab holds that buffer (it is now the visible one), false otherwise.
+     */
+    bool RevealBuffer(int buffer_id, bool to_top = false);
     /**
      * @brief Returns the workspace id a buffer belongs to (-1 for unscoped buffers or an invalid id).
      * @param buffer_id The buffer id.
@@ -12106,6 +12124,32 @@ public:
     // false leaves Tab a no-op, same as before this hook existed, since
     // Insert mode has no other built-in Tab behavior to fall back to.
     void SetInsertTabHookRef(int lua_ref) { insert_tab_hook_ref_ = lua_ref; }
+    // mep.set_completion_keyword_triggers(filetype, words): statement-
+    // leading keywords after which UpdateCompletionPopup queries the
+    // source no matter how little has been typed -- `import <here>` and
+    // `from os import <here>` want the module/member list with an empty
+    // prefix, where the ordinary 2+-character rule would never fire.
+    // Matched against the *first word of the cursor's line* rather than
+    // the token immediately before the cursor, which is what the Python
+    // server's own context detection does too (BuildContext,
+    // python_lsp.cpp): one rule then covers `import <here>`, `import o`,
+    // `import os, sy` and `from os.path import jo` alike.
+    //
+    // Per filetype, and empty for a filetype nothing registered, so this
+    // never loosens the trigger rule for a language whose server has no
+    // such statement form. The list lives in Lua (kBuiltinCompletion) so
+    // init.lua can extend it; nothing here hardcodes a language.
+    void SetCompletionKeywordTriggers(const std::string &filetype, std::vector<std::string> words);
+    // mep.completion_invalidate(): forget UpdateCompletionPopup's
+    // "already queried this prefix" throttle, so the next frame asks the
+    // source again at an unchanged cursor. What an async completion
+    // source calls when a response finally lands (kBuiltinCompletion's
+    // textDocument/completion handler): the throttle exists to stop a
+    // per-frame rescan, but it also meant a response arriving after the
+    // keystroke that requested it was only ever merged in on the *next*
+    // keystroke -- so a list with no local candidates to show in the
+    // meantime (a bare `np.`, or `import `) never appeared at all.
+    void InvalidateCompletionQuery();
 
     // --- Inline suggestion / "ghost text" (Copilot, kBuiltinCopilot) ---
     // A whole multi-line completion shown *in place*, dimmed, as if it
@@ -14525,6 +14569,25 @@ private:
     // UpdateCompletionPopup) marks "no query yet", distinct from either.
     std::string completion_last_query_prefix_ = "\x01";
     double completion_last_query_time_ = -1e18;
+    // Where Escape dismissed the popup, so InvalidateCompletionQuery's
+    // re-query can't immediately undo that dismissal when a late async
+    // response lands on the very word the user just waved away. Cleared
+    // the moment the query position or prefix changes -- dismissing one
+    // word must not suppress the next.
+    bool completion_dismissed_ = false;
+    std::string completion_dismissed_prefix_;
+    int completion_dismissed_row_ = -1;
+    int completion_dismissed_start_ = -1;
+    // Filetype (LspFiletype's tag: "py", "r", ...) -> statement-leading
+    // keywords after which a completion query is worth running before
+    // anything has been typed. See SetCompletionKeywordTriggers.
+    std::map<std::string, std::vector<std::string>> completion_keyword_triggers_;
+    /**
+     * @brief Reports whether `line` begins with a keyword that triggers completion for the current buffer's filetype.
+     * @param line The line the cursor is on.
+     * @return True when the popup should query regardless of how little has been typed.
+     */
+    bool CompletionKeywordTriggerActive(const std::string &line) const;
 
     bool cmdline_completion_open_ = false;
     std::vector<PickerItem> cmdline_completion_items_;

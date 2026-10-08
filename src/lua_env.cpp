@@ -3337,6 +3337,31 @@ int l_mepml_raw(lua_State *L) {
     return 1;
 }
 
+// mep.mepml_view_toggle() -> bool / mep.mepml_view() -> bool: the current
+// mepml buffer's view mode -- rendered on every line, the cursor's
+// included (Buffer::mepml_view). The toggle returns the new state, true =
+// view mode; entering it leaves raw text (Buffer::mepml_raw).
+/**
+ * @brief Implements mep.mepml_view_toggle(): flips the current mepml buffer's view mode.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the new state, true = view mode).
+ */
+int l_mepml_view_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->MepmlToggleView());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.mepml_view(): whether the current buffer is in mepml view mode.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the state).
+ */
+int l_mepml_view(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    lua_pushboolean(L, ed->MepmlView(ed->CurrentBufferId()));
+    return 1;
+}
+
 // mep.mepml_present(mode?) -> true | nil, err: presents the current mepml
 // document's slides (Editor::MepmlPresentStart), `mode` "fill" (the
 // default: the pane takes the editor area) or "full" (the window goes full
@@ -13483,6 +13508,8 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_header_toggle", l_mepml_header_toggle},
     {"mepml_raw_toggle", l_mepml_raw_toggle},
     {"mepml_raw", l_mepml_raw},
+    {"mepml_view_toggle", l_mepml_view_toggle},
+    {"mepml_view", l_mepml_view},
     {"mepml_present", l_mepml_present},
     {"mepml_present_stop", l_mepml_present_stop},
     {"mepml_present_goto", l_mepml_present_goto},

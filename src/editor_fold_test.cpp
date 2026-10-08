@@ -639,6 +639,80 @@ int main() {
                    "\" end=\"" + (f ? ed.GetLineForLua(f->end_row) : std::string()) + "\"");
     }
 
+    // --------------------------------------------------------------- 22
+    // mepml view mode (<leader>kv, Buffer::mepml_view): the cursor's row
+    // is rendered like every other -- its markup concealed, its wrap
+    // length the collapsed one -- rather than shown as its source; and
+    // entering it leaves raw text (Buffer::mepml_raw).
+    std::printf("\n== 22. mepml view mode renders the cursor's own row\n");
+    {
+        std::filesystem::create_directories(dir);
+        const std::string path = dir + "/t22.mepml";
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out << "//? Title: View\n"
+                   "\n"
+                   "> Heading\n"
+                   "\n"
+                   "Some *bold* and ~italic~ text here.\n"  // row 4
+                   "\n"
+                   "Another ~italic~ line.\n";  // row 6
+        }
+        Editor ed;
+        ed.LoadFile(path);
+        const int ns = ed.CreateNamespace("fold-test-mepml");
+        ed.RunCommand("normal 5gg");  // the marked-up row, 4
+        const int row = 4;
+        const std::string &raw_line = ed.GetLineForLua(row);
+        auto concealed_on = [&](int r) {
+            const Buffer &buf = ed.CurrentBuffer();
+            auto it = buf.decorations.find(ns);
+            if (it == buf.decorations.end()) return 0;
+            int n = 0;
+            for (const Decoration &d : it->second)
+                if (d.row == r && d.conceal) n++;
+            return n;
+        };
+        ed.MepmlScan(ns);
+        EXPECT(!ed.MepmlView(ed.CurrentBufferId()), "a document opens out of view mode", "it was in it");
+        EXPECT(concealed_on(row) == 0, "editing: the cursor's row shows its markup",
+               std::to_string(concealed_on(row)) + " conceal decorations on it");
+        EXPECT(concealed_on(6) > 0, "editing: another marked-up row conceals its markup",
+               "no conceal decoration on row 6");
+        EXPECT(ed.WrapLenForRow(ed.CurrentBuffer(), row, row) == static_cast<int>(raw_line.size()),
+               "editing: the cursor's row wraps at its raw length",
+               std::to_string(ed.WrapLenForRow(ed.CurrentBuffer(), row, row)));
+
+        EXPECT(ed.MepmlToggleView(), "the toggle enters view mode", "it returned false");
+        EXPECT(ed.MepmlView(ed.CurrentBufferId()), "the buffer reports view mode", "it did not");
+        ed.MepmlScan(ns);
+        EXPECT(concealed_on(row) > 0, "view mode: the cursor's row conceals its markup like any other",
+               "no conceal decoration on it");
+        const int collapsed = ed.WrapLenForRow(ed.CurrentBuffer(), row, row);
+        EXPECT(collapsed > 0 && collapsed < static_cast<int>(raw_line.size()),
+               "view mode: the cursor's row wraps at its collapsed length",
+               std::to_string(collapsed) + " vs raw " + std::to_string(raw_line.size()));
+        // Moving the cursor changes nothing drawn.
+        ed.RunCommand("normal 7gg");
+        ed.MepmlScan(ns);
+        EXPECT(concealed_on(row) > 0, "view mode: a row the cursor left stays rendered", "it lost its concealment");
+        EXPECT(concealed_on(6) > 0, "view mode: the row the cursor is now on is rendered too",
+               "no conceal decoration on row 6");
+
+        EXPECT(!ed.MepmlToggleView(), "the toggle leaves view mode", "it returned true");
+        ed.RunCommand("normal 5gg");
+        ed.MepmlScan(ns);
+        EXPECT(concealed_on(row) == 0, "editing again: the cursor's row shows its markup",
+               std::to_string(concealed_on(row)) + " conceal decorations on it");
+
+        // Raw text and view mode: entering the view leaves raw.
+        EXPECT(ed.MepmlToggleRaw(), "raw text on", "it returned false");
+        EXPECT(ed.MepmlToggleView(), "view mode on over raw", "it returned false");
+        EXPECT(!ed.MepmlRaw(ed.CurrentBufferId()), "entering view mode turned raw text off", "raw is still on");
+        ed.MepmlScan(ns);
+        EXPECT(concealed_on(row) > 0, "and the document renders", "no conceal decoration on the cursor's row");
+    }
+
     std::printf("\n---- %d checks, %d failures ----\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

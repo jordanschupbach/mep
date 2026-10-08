@@ -426,7 +426,7 @@ int Editor::WrapLenForRow(const Buffer &buf, int row, int cursor_row) const {
     if (tbl != buf.mepml_table_row_cols.end()) return tbl->second;
     const std::string &line = buf.lines[static_cast<size_t>(row)];
     const int raw = static_cast<int>(line.size());
-    if (row == cursor_row) return raw;
+    if (row == cursor_row && !buf.mepml_view) return raw;
     // DrawPane's collapse (its `conceal_runs`), from the same registries.
     std::vector<std::array<int, 3>> runs;
     if (org_conceal_visible_) {
@@ -441,7 +441,7 @@ int Editor::WrapLenForRow(const Buffer &buf, int row, int cursor_row) const {
         if (first_glyph != std::string::npos && line[first_glyph] == '|' && LspFiletype(buf.filename) != "mepml") return raw;
         std::ptrdiff_t marked = static_cast<std::ptrdiff_t>(runs.size());  // the markup's runs: the first `marked`
         for (const Buffer::OrgLatexInlineSpan &sp : maths->second) {
-            if (sp.col_end <= sp.col_start || OrgLatexInlineRevealed(sp, row, cursor_row)) continue;
+            if (sp.col_end <= sp.col_start || OrgLatexInlineRevealed(buf, sp, row, cursor_row)) continue;
             int drawn = 0;  // a fragment's continuation rows collapse to nothing
             if (!sp.path.empty()) {
                 if (sp.width <= 0) continue;  // unreadable: its source stays
@@ -535,7 +535,7 @@ const Buffer::MepmlFoldSummary *Editor::MepmlFoldSummaryForRow(const Buffer &buf
     if (!org_conceal_visible_ || row < 0 || row >= buf.LineCount()) return nullptr;
     auto it = buf.mepml_fold_summaries.find(row);
     if (it == buf.mepml_fold_summaries.end()) return nullptr;
-    if (row == cursor_row && !it->second.keep_under_cursor) return nullptr;
+    if (row == cursor_row && !it->second.keep_under_cursor && !buf.mepml_view) return nullptr;
     if (std::hash<std::string>{}(buf.lines[static_cast<size_t>(row)]) != it->second.text_hash) return nullptr;
     return &it->second;
 }
@@ -544,6 +544,20 @@ bool Editor::MepmlToggleRaw() {
     Buffer &buf = Buf();
     buf.mepml_raw = !buf.mepml_raw;
     return buf.mepml_raw;
+}
+
+bool Editor::MepmlToggleView() {
+    Buffer &buf = Buf();
+    buf.mepml_view = !buf.mepml_view;
+    // A view is of the rendered document: raw text (<leader>kr) would show
+    // none of it, so entering the view leaves raw.
+    if (buf.mepml_view) buf.mepml_raw = false;
+    return buf.mepml_view;
+}
+
+bool Editor::MepmlView(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    return buffers_[static_cast<size_t>(buffer_id)].mepml_view;
 }
 
 bool Editor::MepmlRaw(int buffer_id) const {
@@ -963,6 +977,9 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         RecomputeMepmlFolds();
     int cur_row = 0, cur_col = 0;
     GetCursorForLua(&cur_row, &cur_col);
+    // View mode (Buffer::mepml_view): no row is the cursor's, so nothing
+    // below puts source back for it -- the scan is of the document alone.
+    if (buf.mepml_view) cur_row = -1;
     const bool conceal = OrgConcealVisible();
 
     // The rows of a caption or alt text the cursor is in show their source,
@@ -1025,7 +1042,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                              state.images == images && state.text_width == text_width &&
                              state.pane_cols == scan_pane_cols && state.buffer_cols == scan_buffer_cols &&
                              state.table_math_gen == buf.mepml_table_math_gen &&
-                             state.sheet_signature == sheet_signature &&
+                             state.sheet_signature == sheet_signature && state.view == buf.mepml_view &&
                              buf.decorations.count(ns) && buf.decorations[ns].size() == state.deco_count &&
                              !buf.mepml_raw;
     bool patch = same_inputs && state.cur_row != cur_row;
@@ -2022,6 +2039,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     state.pane_cols = scan_pane_cols;
     state.buffer_cols = scan_buffer_cols;
     state.cur_row = cur_row;
+    state.view = buf.mepml_view;
     state.table_math_gen = buf.mepml_table_math_gen;
     state.sheet_signature = sheet_signature;
     state.deco_count = buf.decorations.count(ns) ? buf.decorations[ns].size() : 0;

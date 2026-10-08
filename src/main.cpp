@@ -18957,7 +18957,9 @@ const char *kBuiltinOrgLatex =
     "  if not mep.org_latex_visible() then return end\n"
     "  if not mep_latex_preview_ft(mep.filename()) then return end\n"
     "  local fragments = mep.org_latex_scan_fragments()\n"
-    "  local cur = mep.org_plain_cursor_line_visible() and mep.cursor() or nil\n"
+    // (A mepml buffer in view mode defers nothing: the cursor's own
+    // fragment is rendered like every other.)
+    "  local cur = mep.org_plain_cursor_line_visible() and not mep.mepml_view() and mep.cursor() or nil\n"
     "  local previewed = false\n"
     "  local function defer(first, last, col, body)\n"
     "    if not (cur and cur >= first and cur <= last) then return false end\n"
@@ -25093,6 +25095,21 @@ const char *kBuiltinMepml =
     "end\n"
     "mep.command('MepmlRawToggle', mep.mepml_raw_toggle_ui)\n"
     "mep.leader_map('kr', 'mepml: toggle rendering (raw text / rendered)', mep.mepml_raw_toggle_ui)\n"
+    // View mode (Buffer::mepml_view; also the pane header's book button):
+    // rendered on every line, the cursor's included, so the view is a
+    // function of the document and its style sheets alone -- the ground
+    // truth the exports are measured against. Both scans run again at
+    // once, as for the raw toggle: the maths scan registers the cursor's
+    // own fragment too (mep.org_latex_scan defers it otherwise).
+    "function mep.mepml_view_toggle_ui()\n"
+    "  if not mep_mepml_is(mep.filename()) then mep.notify('Not a mepml buffer', 'warn') return end\n"
+    "  local view = mep.mepml_view_toggle()\n"
+    "  mep.notify('mepml view mode: ' .. (view and 'on (rendered on every line)' or 'off (the cursor line shows its source)'))\n"
+    "  mep.mepml_render()\n"
+    "  if mep.org_latex_scan then mep.org_latex_scan() end\n"
+    "end\n"
+    "mep.command('MepmlViewToggle', mep.mepml_view_toggle_ui)\n"
+    "mep.leader_map('kv', 'mepml: toggle view mode (rendered on every line)', mep.mepml_view_toggle_ui)\n"
     "mep.leader_map('kf', 'mepml: toggle math preview popup while typing',\n"
     "  function() mep.org_latex_popup_toggle_ui() end)\n"
     "mep.leader_map('kA', 'mepml: toggle alt text popup on hover',\n"
@@ -46835,6 +46852,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     const bool mepml_raw = show_mepml_render_button && g_editor.MepmlRaw(pane.buffer_id);
     const std::string mepml_render_label = " " + Utf8FromCodepoint(mepml_raw ? 0xf070 : 0xf06e) + " ";  // nf-fa-eye(_slash)
     const float mepml_render_w = show_mepml_render_button ? MeasureUiText(mepml_render_label, font_size) : 0.0f;
+    // View toggle: beside the eye. A book, lit while the document is in
+    // view mode (Buffer::mepml_view: rendered on every row, the cursor's
+    // too); a click flips it (mep.mepml_view_toggle_ui, <leader>kv).
+    const bool show_mepml_view_button = show_mepml_render_button;
+    const bool mepml_view = show_mepml_view_button && g_editor.MepmlView(pane.buffer_id);
+    const std::string mepml_view_label = " " + Utf8FromCodepoint(0xf02d) + " ";  // nf-fa-book
+    const float mepml_view_w = show_mepml_view_button ? MeasureUiText(mepml_view_label, font_size) : 0.0f;
     // Present button: left of the eye, on a mepml document that is a
     // slide deck (`//? Type: presentation`, Buffer::mepml_presentation).
     // A click starts the presentation view filling the editor
@@ -46845,7 +46869,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     const float vsplit_w = MeasureUiText(vsplit_label, control_font_size);
     const float hsplit_w = MeasureUiText(hsplit_label, control_font_size);
     const float close_w = MeasureUiText(close_label, control_font_size);
-    const float controls_w = mepml_present_w + mepml_render_w + org_export_w + org_block_w + run_w + vsplit_w + hsplit_w + close_w;
+    const float controls_w = mepml_present_w + mepml_render_w + mepml_view_w + org_export_w + org_block_w + run_w + vsplit_w +
+                             hsplit_w + close_w;
     const gfx::Vector2 header_mouse = gfx::GetMousePosition();
     // Draws the three controls over `bg` filling controls_rect (each
     // brightened while hovered) and registers their click regions.
@@ -46899,6 +46924,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 [pane_id] {
                     g_editor.FocusPaneById(pane_id);
                     g_editor.RunCommand("MepmlRawToggle");
+                },
+                nullptr, font_size, label_y);
+        }
+        if (show_mepml_view_button) {
+            // Focuses this pane, then flips its document's view mode.
+            button(
+                mepml_view_label, mepml_view_w, mepml_view ? "Green" : "Comment",
+                mepml_view ? "Leave view mode: edit the line under the cursor (<Space>kv)"
+                           : "View mode: rendered on every line (<Space>kv)",
+                [pane_id] {
+                    g_editor.FocusPaneById(pane_id);
+                    g_editor.RunCommand("MepmlViewToggle");
                 },
                 nullptr, font_size, label_y);
         }
@@ -50572,7 +50609,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // `disp_line`: this branch runs before that is built, and a
         // folded row is one of a handful on screen.
         const int star_hide =
-            (is_heading_buffer && show_org_conceal && !(is_active && fold_row == pane.cursor.row))
+            (is_heading_buffer && show_org_conceal && !(is_active && fold_row == pane.cursor.row && !buf.mepml_view))
                 ? Editor::HeadingHideLenForRow(buf, fold_row)
                 : 0;
         // How far left the title slid: the stars and their space out,
@@ -51586,7 +51623,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // leave it two columns off the glyph it is on.
         const int head_star_hide =
             (is_heading_buffer && show_org_conceal && !plain_row && tbl_wrap == nullptr &&
-             !ghost_covers_row(row) && !(is_active && row == pane.cursor.row))
+             !ghost_covers_row(row) && !(is_active && row == pane.cursor.row && !buf.mepml_view))
                 ? Editor::HeadingHideLenForRow(buf, row)
                 : 0;
         if (head_star_hide > 0) {
@@ -51656,7 +51693,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (latex_inline_it != buf.org_latex_inline.end()) {
                     for (const Buffer::OrgLatexInlineSpan &span : latex_inline_it->second) {
                         if (span.col_end <= span.col_start) continue;
-                        if (g_editor.OrgLatexInlineRevealed(span, row, latex_reveal_cursor)) continue;
+                        if (g_editor.OrgLatexInlineRevealed(buf, span, row, latex_reveal_cursor)) continue;
                         int draw_cols = 0;
                         if (!span.path.empty()) {
                             const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
@@ -51820,8 +51857,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // (Buffer::mepml_row_align, its element's text-align): everything
         // drawn on the row from here on -- text, spans, selection -- moves
         // with it, by whole cells, within the text width. The caret's row
-        // stays where it is typed, and so does a soft-wrapped one.
-        if (!buf.mepml_row_align.empty() && row_wrap_slots == 1 && row != pane.cursor.row && !fold_here) {
+        // stays where it is typed (unless the document is in view mode,
+        // where no row is being typed on), and so does a soft-wrapped one.
+        if (!buf.mepml_row_align.empty() && row_wrap_slots == 1 && (row != pane.cursor.row || buf.mepml_view) &&
+            !fold_here) {
             if (auto al = buf.mepml_row_align.find(row); al != buf.mepml_row_align.end()) {
                 const size_t lead = draw_line.find_first_not_of(' ');
                 const size_t last = draw_line.find_last_not_of(' ');
@@ -52167,7 +52206,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // reconciled: its column->visual-sub-row mapping comes from
             // that same fixed grid. A headline short enough to fit on one
             // visual line has nothing to reconcile.
-            if ((is_active && row == pane.cursor.row) || row_selected || row_block_selected || row_wrap_slots > 1) {
+            // (In mepml view mode the caret is an outline round the row,
+            // not a block on a glyph, so a heading under it stays scaled.)
+            if ((is_active && row == pane.cursor.row && !buf.mepml_view) || row_selected || row_block_selected ||
+                row_wrap_slots > 1) {
                 org_head_level = 0;
             }
         }
@@ -53022,7 +53064,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             auto inline_it = buf.org_latex_inline.find(row);
             if (inline_it != buf.org_latex_inline.end()) {
                 for (const Buffer::OrgLatexInlineSpan &span : inline_it->second) {
-                    if (g_editor.OrgLatexInlineRevealed(span, row, latex_reveal_cursor)) continue;
+                    if (g_editor.OrgLatexInlineRevealed(buf, span, row, latex_reveal_cursor)) continue;
                     const gfx::Texture2D *tex = GetOrLoadOrgLatexTexture(span.path);
                     if (!tex) continue;
                     // Drawn columns (DispCol): this span's own collapse,
@@ -53349,6 +53391,22 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const Buffer::OrgLatexRender *cursor_latex =
             g_editor.OrgLatexRenderForRow(buf, pane.cursor.row, latex_cursor_row, org_plain);
         bool cursor_on_latex = cursor_latex != nullptr;
+        // mepml view mode (Buffer::mepml_view): the cursor's row is drawn
+        // rendered like every other, so its columns are not the file's
+        // and a block caret would land on the wrong glyph. The row gets
+        // the full-width outline a rendered fragment's row gets instead,
+        // as tall as the row draws (its wrapped lines, at its pitch).
+        const bool cursor_view_band = is_mepml_buffer && buf.mepml_view && !cursor_on_image && !cursor_on_latex;
+        int cursor_view_slots = 1;
+        if (cursor_view_band) {
+            cursor_on_latex = true;
+            const int cur_row_wrap = wrap_cols > 0 ? g_editor.MepmlRowCols(buf, pane.cursor.row, wrap_cols) : 0;
+            const int sublines =
+                cur_row_wrap > 0
+                    ? std::max(1, (g_editor.WrapLenForRow(buf, pane.cursor.row, pane.cursor.row) + cur_row_wrap - 1) / cur_row_wrap)
+                    : 1;
+            cursor_view_slots = sublines * std::max(1, g_editor.RowLinePitchSlots(buf, pane.cursor.row));
+        }
         // A mepml \toc/\bibliography row is outlined as a whole band the
         // same way (its text is the generated content, not the directive).
         const Buffer::MepmlVirtualBlock *cursor_vb = g_editor.MepmlVirtualBlockForRow(buf, pane.cursor.row, -1);
@@ -53425,9 +53483,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // also where the hover/completion popup is anchored below.
         const OrgImageLayout cursor_img_lay =
             cursor_on_image ? g_editor.OrgImageLayoutForRow(cursor_img_it->second, pane.text_cols) : OrgImageLayout{};
-        int cursor_slots = cursor_on_image ? cursor_img_lay.slots
-                           : cursor_latex  ? cursor_latex->slots
-                                           : 1;  // (a \toc/\bibliography: its selected line)
+        int cursor_slots = cursor_on_image                            ? cursor_img_lay.slots
+                           : cursor_latex                             ? cursor_latex->slots
+                           : (cursor_view_band && cursor_vb == nullptr) ? cursor_view_slots
+                                                                        : 1;  // (a \toc/\bibliography: its selected line)
         float row_extent = (cursor_on_image || cursor_on_latex) ? static_cast<float>(line_height) * static_cast<float>(cursor_slots)
                                                                   : static_cast<float>(line_height);
         // Buffer::row_cursor (kBuiltinFileTree's read-only tree): the row's
@@ -54311,8 +54370,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // (Buffer::org_latex_preview, rendered by kBuiltinOrgLatex's
     // mep_org_latex_preview), keeping the last render that compiled.
     // Drawn last (inside the pane's scissor) so it sits over the text.
+    // (Not in mepml view mode: the formula's render is already in place.)
     if (is_active && show_org_latex && g_editor.OrgPlainCursorLineVisible() && g_editor.OrgLatexPopupVisible() &&
-        !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row && pane.cursor.row < row) {
+        !buf.mepml_view && !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row &&
+        pane.cursor.row < row) {
         const int cr = pane.cursor.row;
         std::string preview_path;
         int first_row = -1, last_row = -1, anchor_col = 0;
@@ -54351,7 +54412,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const Buffer::OrgLatexInlineSpan *best = nullptr;
                 int best_dist = 0;
                 for (const Buffer::OrgLatexInlineSpan &span : it->second) {
-                    if (!g_editor.OrgLatexInlineRevealed(span, cr, cr)) continue;
+                    if (!g_editor.OrgLatexInlineRevealed(buf, span, cr, cr)) continue;
                     const int dist = ccol < span.col_start ? span.col_start - ccol
                                      : ccol >= span.col_end ? ccol - span.col_end + 1
                                                             : 0;

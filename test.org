@@ -1,0 +1,481 @@
+#+TITLE: A Test Document
+#+LANG: en
+#+STYLE: test.mepss
+#+MACRO: Let's worry about this one later...
+#+OPTION: asdf=1
+#+OPTION: fdsa=1.7
+#+OPTION: qwer="asdf"
+
+Some content here
+
+#+begin_abstract
+This document exercises *every* construct mepml has, from /inline markup/ and
+\(e^{i\pi} + 1 = 0\) to executable code blocks and the results they write back.
+
+An abstract can run over several paragraphs; a blank line separates them.
+#+end_abstract
+
+* Analysis
+
+# Allow for bibtex style entries
+
+#+TOC: headlines 3
+
+# This is a comment. The above options can be int, double, or string valued
+
+# Space between text (i.e. new line characters on their own line) indicates new paragraphs.
+
+# NOTE: this doesnt need to be a mepml file, but does need to be compatible.
+# also note, the above syntax for NOTE: is special, that allow for special
+# formatting of notes. There are others by default WARNING, ERROR, INFO, and
+# others that might make sense here
+
+* Heading level 1
+
+Here, we have some _underlined_ text and we have some *bold text* and we have
+some ~verbatim text~ and we have some [[https://yabla.com][my website]]. and here
+we have some /italic text/ and we have some ^{superscript} and we have some
+_{subscript} and we have some small text and we have some big text and we
+have some =monospaced text= and we have some highlighted text and we have some
++strikethrough text+ and we have some inserted text and we have some +deleted
+text+. Here's some Helvetica, font size 12 text and
+here's some font size 24 text. Here's some red text and
+here's some blue text . Here's some font size
+16 red text. Here's a [fn:1]. And here's a citation: [cite/t:@asdf1],
+and here's a parenthetical citation: [cite:@asdf1].
+
+Here's some latex math: here's inline \(E=mc^2\) and here's some display math:
+
+\[
+\int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
+\]
+
+Other syntax works too like this inline \(\frac{a}{b}\) and this display math
+
+\[
+\sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}
+\]
+
+Note that we can optionally include
+
+# Some comment about the code block to come
+
+#+begin_src bash :Option1 value1 :Option2 value2 :Option3 value3
+echo "Hello, world"
+#+end_src
+
+#+RESULTS:
+: Results will show here
+
+** Heading Level 2
+
+#+CAPTION: Caption here
+#+ATTR_HTML: :alt Alttext here
+[[file:./filepath/img1.png]]
+
+[[file:./filepath/img2.png]]
+
+# An empty alttext says the picture only decorates: a screen reader skips it.
+
+#+ATTR_HTML: :alt 
+[[file:./filepath/ornament.png]]
+
+*** Heading Level 3
+
+#+CAPTION: Here's my caption here
+| Col 1 | Col 2 |
+|---+---|
+| item1 | item2 |
+| item3 | item4 |
+| item5 | item6 |
+
+-----
+
+A dividing line is 3 or more horizontal characters (any one of - = _ ​*)
+
+-----
+
+* Additions beyond the original sketch
+
+# NOTE: everything below this heading was added while implementing the
+# parser; see help/mepml.org for the full reference.
+
+# INFO: subscript is `,,x,,` rather than `_x_` because `_x_` is already underline.
+
+# WARNING: a line starting with `>` and a space is always a heading, so
+# `>big<` text at the very start of a line must not have a space after the `>`.
+
+Lists use -, * or + for bullets and 1. or 1) for numbers; indent to nest:
+
+- first item with *bold* inside
+- second item
+  - a nested item
+  - [ ] an open task
+  - [X] a finished task
+1. numbered
+2. and another
+
+Commands are ~\name(arguments, text)~: the arguments end at the first commas,
+so the text may hold commas of its own, and an unmatched parenthesis in it
+takes a backslash, ). The older braced spelling still reads, as
+do the @image{...}, @caption{...} and other @name{...} directives; only the
+abstract must be written \abstract(...).
+
+Escape any marker with a backslash: ​*not bold*, $5 and $6, \. A lone
+dollar amount like $5 is never math. Inline text 
+
+Tables can align columns with colons in the separator row, and the pipes
+don't need to line up in the source (mep lines the columns up when drawing):
+
+#+CAPTION: An aligned table
+| Left | Centre | Right |
+|---+---+---|
+| a | b | 1 |
+| ~c~ | *d* | 2.50 |
+| a longer cell | big | 100 |
+
+GitHub-flavoured Markdown tables work as they are. After a header and a
+delimiter row, the outer pipes are optional, and | is a pipe inside a cell:
+
+#+CAPTION: A Markdown table
+| Species | Petal length | Petal width |
+|---+---+---|
+| /setosa/ | 1.46 | 0.25 |
+| versicolor | 4.26 | 1.33 |
+| virginica | 5.55 | 2.03 |
+
+Code blocks take options in the header or from ​//? lines right above them,
+and a ```lang header works too. Results are written back between the markers
+when the block is run (C-c C-c in mep):
+
+#+begin_src python :eval true
+print(sum(range(10)))
+#+end_src
+
+#+begin_src r
+x <- 1:10
+mean(x)
+#+end_src
+
+A block with a file= option draws a figure: R and Python have their plotting
+pointed at that file, and after a run the image is shown in the block's
+results, numbered and captioned like any other figure:
+
+#+begin_src r :file squares.png
+x <- 1:10
+plot(x, x^2, type = "b", main = "Squares")
+#+end_src
+
+A block with results=html prints HTML: its results keep that markup, and mep
+draws it in place of the text (move the cursor into it to see the markup).
+The exports embed it as HTML:
+
+#+begin_src python :results html
+rows = [("apple", 3), ("banana", 5), ("cherry", 12)]
+print("<p><b>Fruit</b> counted by <i>Python</i>:</p>")
+print("<table>")
+print("<tr><th>Fruit</th><th>Count</th></tr>")
+for name, n in rows:
+    print(f"<tr><td>{name}</td><td>{n}</td></tr>")
+print("</table>")
+#+end_src
+
+#+RESULTS:
+#+begin_export html
+<p><b>Fruit</b> counted by <i>Python</i>:</p>
+<table>
+<tr><th>Fruit</th><th>Count</th></tr>
+<tr><td>apple</td><td>3</td></tr>
+<tr><td>banana</td><td>5</td></tr>
+<tr><td>cherry</td><td>12</td></tr>
+</table>
+#+end_export
+
+A block with results=markdown prints Markdown, which is written out as it
+is and read as part of the document: a table it prints is a table, numbered
+and captioned like any other. (R's knitr::kable() prints one.)
+
+#+begin_src python :results markdown
+rows = [("apple", 7), ("banana", 5)]
+print("| Fruit | Count |")
+print("|:------|------:|")
+for name, n in rows:
+    print(f"| {name} | {n} |")
+#+end_src
+
+#+CAPTION: Fruit, counted by Python
+| Fruit | Count |
+|---+---|
+| apple | 7 |
+| banana | 5 |
+
+The exports show each block's code and its results. ~exports=~ (code,
+results, both or none) or knitr's ~echo=false~ (results only) changes that for
+one block, and an ~Exports:~ line in the header for every block. The editor
+always shows everything; this block appears in no export:
+
+An exec block runs a program in a terminal inside its results: C-c C-c starts
+it, Enter (or a click) types into it, Ctrl-\ Ctrl-N comes back to the text,
+and C-c C-k (or the stop button) stops it. When it ends, its last screen is
+kept as the results:
+
+#+begin_src exec :rows 8
+python3 -q
+#+end_src
+
+#+RESULTS:
+: >>> print(6*7, [c.upper() for c in "mep"])
+: 42 ['M', 'E', 'P']
+: >>>
+
+With results=exec, a block in any language is the program: it is compiled
+(when the language is) and then run in the same kind of terminal:
+
+#+begin_src c :results exec :rows 6
+#include <stdio.h>
+int main(void) {
+    char name[64];
+    printf("What is your name? ");
+    fflush(stdout);
+    if (fgets(name, sizeof name, stdin)) printf("Hello, %s", name);
+    return 0;
+}
+#+end_src
+
+#+RESULTS:
+: What is your name? Jordan
+: Hello, Jordan
+
+An exec-gui block runs a program with a window of its own, and shows that
+window inside the results: Enter or a click hands it the keyboard, Ctrl-\
+takes it back, and when it closes its last picture is kept. This one is
+xeyes, written in tkinter -- the pupils follow the mouse pointer:
+
+#+begin_src python :results exec-gui :rows 12
+import math
+import tkinter as tk
+
+root = tk.Tk()
+root.title("xeyes")
+canvas = tk.Canvas(root, bg="white", highlightthickness=0)
+canvas.pack(fill="both", expand=True)
+
+eyes = []  # (centre x, centre y, half width, half height, pupil item)
+
+
+def layout(event=None):
+    """Draw two eyes side by side, filling the window."""
+    global eyes
+    canvas.delete("all")
+    eyes = []
+    w, h = canvas.winfo_width(), canvas.winfo_height()
+    rx, ry = w * 0.23, h * 0.45  # an eye's half width and half height
+    line = max(3, min(w, h) * 0.04)
+    for cx in (w * 0.27, w * 0.73):
+        cy = h / 2
+        canvas.create_oval(cx - rx, cy - ry, cx + rx, cy + ry,
+                           fill="white", outline="black", width=line)
+        pupil = canvas.create_oval(0, 0, 0, 0, fill="black", outline="black")
+        eyes.append((cx, cy, rx, ry, pupil))
+    look()
+
+
+def look(event=None):
+    """Point each pupil at the mouse, keeping it inside its eye."""
+    px, py = root.winfo_pointerxy()
+    ox, oy = canvas.winfo_rootx(), canvas.winfo_rooty()
+    for cx, cy, rx, ry, pupil in eyes:
+        pr = min(rx, ry) * 0.3  # pupil radius
+        # Pupil centre moves inside an ellipse smaller than the eye by the
+        # pupil's radius and the eye's outline.
+        ax, ay = max(1.0, rx - pr * 1.6), max(1.0, ry - pr * 1.6)
+        dx, dy = px - ox - cx, py - oy - cy
+        d = math.hypot(dx / ax, dy / ay)
+        if d > 1:
+            dx, dy = dx / d, dy / d
+        x, y = cx + dx, cy + dy
+        canvas.coords(pupil, x - pr, y - pr, x + pr, y + pr)
+
+
+def watch():
+    look()
+    root.after(40, watch)
+
+
+canvas.bind("<Configure>", layout)
+watch()
+root.mainloop()
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :results exec-gui :rows 10
+import math
+import tkinter as tk
+
+root = tk.Tk()
+root.title("smile")
+canvas = tk.Canvas(root, bg="black", highlightthickness=0)
+canvas.pack(fill="both", expand=True)
+
+def draw(event=None):
+    canvas.delete("all")
+    w, h = canvas.winfo_width(), canvas.winfo_height()
+    a = min(w * 0.38, h * 1.6)  # half the smile's width
+    b = h * 0.4                 # how deep it curves
+    cx, cy = w / 2, h * 0.18
+    line = max(4, h * 0.03)
+
+    def lip(x):  # the smile's height at x
+        return cy + b * math.sqrt(max(0.0, 1 - ((x - cx) / a) ** 2))
+
+    # The tongue, out of the smile halfway to its right end, leaning that way.
+    tx = cx + a / 2
+    tw, tl = h * 0.24, h * 0.34
+    lean = tw * 0.35
+    left, right = tx - tw / 2, tx + tw / 2
+    pts = [left, lip(left), left, lip(left),
+           left + lean * 0.2, lip(tx) + tl * 0.7,
+           tx + lean * 0.6, lip(tx) + tl,
+           right + lean, lip(tx) + tl * 0.62,
+           right, lip(right), right, lip(right)]
+    canvas.create_polygon(pts, smooth=True, fill="white", outline="white")
+    canvas.create_line(tx + lean * 0.05, lip(tx) + line * 1.5, tx + lean * 0.35, lip(tx) + tl * 0.55,
+                       fill="black", width=max(2, line * 0.4), capstyle="round")
+    # The smile, drawn over the tongue's root.
+    canvas.create_arc(cx - a, cy - b, cx + a, cy + b, start=190, extent=160,
+                      style="arc", outline="white", width=line)
+
+canvas.bind("<Configure>", draw)
+root.mainloop()
+#+end_src
+
+#+RESULTS:
+[[file:test-gui-7481ee16.png]]
+: [stopped]
+
+Slides: ~\slide(~ on a line of its own, then the slide's content -- any
+blocks at all -- and a line holding just ~)~ to end it (~\slide{~ ... ~}~
+and ~@slide{~ ... ~}~ work too). A slide's first heading is its title.
+
+** A slide
+
+- Its points are ordinary blocks
+- *Formatting* works as it does anywhere else
+
+Two slides in a row, this one untitled.
+
+Boxes: ~\definition(Title,~ on a line of its own, then the box's content --
+any blocks -- and a line holding just ~)~ to close it. ~\theorem~, ~\lemma~,
+~\proposition~, ~\corollary~, ~\fact~, ~\example~, ~\remark~, ~\proof~,
+~\note~, ~\tip~, ~\warning~ and ~\important~ work the same way, each in its own colour. The title is everything before
+the first comma; text after it on the same line starts the box's first
+paragraph, and a box closed where its text ends needs no line of its own.
+
+#+begin_definition Orthogonal projection
+
+The point of a subspace \(S\) closest to \(\mathbf{y}\):
+
+\[
+\hat{\mathbf{y}} = P\mathbf{y}, \qquad P = X (X^\top X)^{-1} X^\top
+\]
+
+- \(P\) is *symmetric*
+- \(P^2 = P\)
+
+#+end_definition
+
+#+begin_theorem Pythagoras
+If \(\mathbf{a} \perp \mathbf{b}\), the squared lengths
+add up: \(\| \mathbf{a} + \mathbf{b} \|^2 = \| \mathbf{a} \|^2 + \| \mathbf{b} \|^2\).
+
+#+end_theorem
+
+#+begin_proof
+
+Expand the square; the cross term is \(2\, \mathbf{a}^\top \mathbf{b} = 0\).
+
+#+begin_remark Nested
+Boxes nest, each closing before the one around it.
+#+end_remark
+
+#+end_proof
+
+#+begin_example
+No comma means no title: this box is all text.
+#+end_example
+
+#+begin_note
+
+A note for the reader is a box. A comment with a keyword (a callout, like
+the NOTE and WARNING lines above) is a note to yourself: the editor draws
+it, and no export writes it.
+
+#+end_note
+
+#+begin_warning Read before running
+This block deletes its output directory.
+#+end_warning
+
+User commands: ~\define(name(params), template)~ makes a command of your
+own, and ~\name(args)~ calls it -- the template with ~#param~ replaced by
+the arguments. A template (or any text) can choose what each export gets
+with ~\when(formats, text)~ and ~\otherwise(text)~, and write an export's
+own markup with ~\raw(formats, text)~.
+
+*Definition (Literate programming).* Prose and code in one document, the code
+run and its results kept beside it.
+
+This paragraph was exported as anything
+but a web page.
+
+How all of this looks is not part of the document: the header's ~Style:~
+line names a style sheet, ~test.mepss~ beside this file, whose rules
+restyle what mep's default sheet draws -- here the level-3 headings, the
+bullets and the colour of a remark. See ~docs/mepml-spec/~.
+
+#+begin_remark A sheet is CSS in syntax
+
+~box[kind=remark] { --accent: theme(Purple, #6a51a3); }~ is the rule that
+colours this box.
+
+#+end_remark
+
+A sheet can be written here too, as a ~raw~ block for the format ~style~
+(no export has it, so the block is in none of them). It gives a look to
+two things that have none of their own: a box of a kind of this document's
+own, and text with a class.
+
+#+begin_box_axiom Extensionality
+
+Two sets with the same elements are the same set.
+
+#+end_box_axiom
+
+A bibtex-style entry works as well (so a .bib file can be @imported):
+
+Knuth coined the term literate programming [cite:@knuth84].
+
+# mepml:bibliography
+* References
+1. author1 (1999). /The title/.
+1. Donald E. Knuth (1984). /Literate Programming/, The Computer Journal.
+
+#+begin_comment
+mepml
+\citation(asdf1,
+  author = {author1},
+  title = {The title},
+  year = {1999}
+)
+\citation(knuth84,
+  author = {Donald E. Knuth},
+  title = {Literate Programming},
+  journal = {The Computer Journal},
+  year = {1984}
+)
+#+end_comment
+
+* Footnotes
+
+[fn:1] footnote here

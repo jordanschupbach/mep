@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 153 =<leader>= sequences registered at startup. Press
+All 154 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -80,6 +80,7 @@ the features live.
 | =<leader>kr= | mepml: toggle rendering (raw text / rendered) | [[file:mepml.html][mepml]] |
 | =<leader>ks= | mepml: stop the running block | [[file:mepml.html][mepml]] |
 | =<leader>kt= | mepml: type into the running block | [[file:mepml.html][mepml]] |
+| =<leader>kv= | mepml: toggle view mode (rendered on every line) | [[file:mepml.html][mepml]] |
 | =<leader>kx= | mepml: run code block at cursor | [[file:mepml.html][mepml]] |
 | =<leader>li= | LSP: goto implementation | [[file:lsp.html][Language servers]] |
 | =<leader>lk= | LSP: signature help | [[file:c-lsp.html][The C language server]] |

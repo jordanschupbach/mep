@@ -25248,6 +25248,9 @@ const Buffer::OrgLatexRender *Editor::OrgLatexRenderForRow(const Buffer &buf, in
     // each call site so the four slot walkers and DrawPane keep agreeing
     // about which rows are tall (see Pane::org_plain).
     if (pane_plain) return nullptr;
+    // mepml view mode (Buffer::mepml_view): nothing is revealed for the
+    // cursor, so a render stays drawn whatever row the caret is on.
+    if (buf.mepml_view) cursor_row = -1;
     // A mepml html result: drawn while concealing, its raw markup back
     // whenever the cursor is inside it (so it can be read and edited).
     if (org_conceal_visible_) {
@@ -25329,8 +25332,8 @@ void Editor::AddOrgLatexInlineSpan(int row, int col_start, int col_end, const st
     spans.push_back(std::move(span));
 }
 
-bool Editor::OrgLatexInlineRevealed(const Buffer::OrgLatexInlineSpan &span, int row, int cursor_row) const {
-    if (!org_plain_cursor_line_ || cursor_row < 0) return false;
+bool Editor::OrgLatexInlineRevealed(const Buffer &buf, const Buffer::OrgLatexInlineSpan &span, int row, int cursor_row) const {
+    if (!org_plain_cursor_line_ || cursor_row < 0 || buf.mepml_view) return false;
     const int first = span.first_row < 0 ? row : span.first_row;
     const int last = span.last_row < 0 ? row : span.last_row;
     return cursor_row >= first && cursor_row <= last;

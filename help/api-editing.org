@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (199)
+* The bindings (201)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -122,6 +122,8 @@ that it does nothing.
 | =mep.mepml_terminal_start= | runs a block's program in a terminal inside its results |
 | =mep.mepml_terminal_stop= | stops the mepml block running under the cursor |
 | =mep.mepml_ts_code_blocks= | the code-block bodies of a mepml text, from its tree-sitter tree |
+| =mep.mepml_view= | whether the current buffer is in mepml view mode |
+| =mep.mepml_view_toggle= | flips the current mepml buffer's view mode |
 | =mep.mod1_name= | returns the display name of whichever modifier is currently mod1 |
 | =mep.pres_add_shape= | selected |
 | =mep.pres_add_slide= | -- |

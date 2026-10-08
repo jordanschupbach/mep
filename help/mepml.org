@@ -13,6 +13,18 @@ on every line except the cursor's, headings are drawn large, maths is
 typeset, images are shown, and code blocks are highlighted in their own
 language.
 
+The cursor's line showing its source is reveal-to-edit: what is drawn
+depends on where the caret is. =<leader>kv= (=:MepmlViewToggle=, or the
+book button in the pane header) is /view mode/: every line stays
+rendered, the cursor's included, so moving through the document never
+puts markup back. What is drawn is then a function of the document and
+its style sheets alone (the =//? Style:= sheet in the header, over mep's
+default) -- the ground truth the exports are measured against. The
+caret is drawn as an outline round its line, since the rendered columns
+are no longer the file's. =<leader>kv= again returns to editing. Raw
+text (=<leader>kr=) still wins while it is on; entering view mode turns
+it off.
+
 * Keys and commands
 
 | Key / command         | Does                                                      |
@@ -34,6 +46,7 @@ language.
 | =<leader>kl=          | follow the link under the cursor (clicking works too)     |
 | =<leader>km=          | toggle markup concealment                                 |
 | =<leader>kr=          | raw text or rendered (also the header's eye button)       |
+| =<leader>kv=          | view mode: rendered on every line, the cursor's too (also the header's book button) |
 | =<leader>kf=          | toggle the math preview popup shown while typing a formula |
 | =<leader>kA=          | toggle the alt text popup shown on hover (off by default) |
 | =<leader>kp=          | present the slides, filling the editor (also the header's screen button, on a presentation) |
@@ -56,6 +69,7 @@ language.
 | =:MepmlRender=        | re-render the buffer now                                  |
 | =:MepmlAltPopupToggle= | toggle the alt text popup shown on hover                 |
 | =:MepmlRawToggle=     | toggle rendering (raw text / rendered document)           |
+| =:MepmlViewToggle=    | toggle view mode (rendered on every line, the cursor's too) |
 | =:MepmlFoldsRecompute= | rebuild folds (=za=, =zc= and =zo= do this themselves)  |
 | =:MepmlPresent= [mode] | present the slides: =fill= (the default), =full=, =stop= |
 

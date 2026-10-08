@@ -1129,6 +1129,21 @@ struct Buffer {
     // sizes, results), and its maths is not rendered. Per buffer: every
     // pane showing the document agrees.
     bool mepml_raw = false;
+    // The mepml view toggle (<leader>kv, :MepmlViewToggle): the document
+    // stays rendered on every row, the cursor's included. Rendering is
+    // otherwise reveal-to-edit -- the cursor's row (and the caption, alt
+    // text or formula it is in) shows its source -- so what is drawn
+    // depends on where the caret is. With this on it depends on the
+    // document and its style sheets alone: the ground truth the exports
+    // are measured against. Every site that puts source back for the
+    // cursor (Editor::MepmlScan's cursor row, OrgLatexRenderForRow,
+    // OrgLatexInlineRevealed, MepmlFoldSummaryForRow, WrapLenForRow and
+    // DrawPane's heading and alignment reveals) asks this flag; the caret
+    // is drawn as an outline round its row rather than a block on a
+    // glyph, since the row's columns are no longer the file's. Raw
+    // (mepml_raw) still wins: raw shows nothing rendered at all. Per
+    // buffer, like mepml_raw.
+    bool mepml_view = false;
     // The document is a slide deck (`//? Type: presentation`, as of the
     // last Editor::MepmlScan): its pane header offers a present button.
     bool mepml_presentation = false;
@@ -8079,6 +8094,7 @@ public:
         bool own_diagnostics = false, conceal = false, images = false;
         int text_width = 0, pane_cols = 0, buffer_cols = 0;
         int cur_row = -1;
+        bool view = false;  // Buffer::mepml_view at the scan (the toggle takes a full scan)
         std::string sheet_signature;  // MepmlSheets' at the scan
         unsigned long table_math_gen = 0;  // Buffer::mepml_table_math_gen laid out for
         size_t deco_count = 0;  // the namespace's size after the scan: anything else touching it forces a full one
@@ -10388,6 +10404,17 @@ public:
      */
     bool MepmlRaw(int buffer_id) const;
     /**
+     * @brief Flips the current mepml buffer's view mode (Buffer::mepml_view): rendered on every row, the cursor's included. Turning it on also turns raw text off.
+     * @return The new state: true when the buffer is now in view mode.
+     */
+    bool MepmlToggleView();
+    /**
+     * @brief Whether a buffer is in mepml view mode (Buffer::mepml_view); false for an unknown id.
+     * @param buffer_id The buffer.
+     * @return The flag.
+     */
+    bool MepmlView(int buffer_id) const;
+    /**
      * @brief Whether a buffer's mepml document is a presentation (Buffer::mepml_presentation); false for an unknown id.
      * @param buffer_id The buffer.
      * @return The flag.
@@ -10833,13 +10860,15 @@ public:
                                int last_row = -1);
     /**
      * @brief Whether an inline-math span shows its raw source rather than its render: the plain-cursor-line
-     * rule, applied across the fragment's whole row range so a multi-line fragment is revealed as a unit.
+     * rule, applied across the fragment's whole row range so a multi-line fragment is revealed as a unit. Never
+     * in mepml view mode (Buffer::mepml_view).
+     * @param buf The buffer the span is in.
      * @param span The span (on row `row`).
      * @param row The row the span is on.
      * @param cursor_row The active pane's cursor row, or -1 for an inactive pane.
      * @return True if the span's source is revealed.
      */
-    bool OrgLatexInlineRevealed(const Buffer::OrgLatexInlineSpan &span, int row, int cursor_row) const;
+    bool OrgLatexInlineRevealed(const Buffer &buf, const Buffer::OrgLatexInlineSpan &span, int row, int cursor_row) const;
     // Clears every entry -- called by mep.org_latex_scan() before
     // rescanning (and when the toggle turns off).
     /**

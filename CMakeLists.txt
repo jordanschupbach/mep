@@ -718,6 +718,10 @@ add_library(mep_core STATIC
     # (it only touches clean headers), so it stays in mep_core.
     src/music_decode.cpp
     src/svg_doc.cpp
+    # An .svg as an inline image: svg_doc's shapes filled on the CPU with
+    # gfx/rasterizer.cpp, its text drawn with gfx/truetype.cpp (both in
+    # MEP_GFX_NATIVE_SOURCES).
+    src/svg_raster.cpp
     src/pdf_doc.cpp
     # PDFIUM_REMOVAL_PLAN.md Phase 13: pdf_doc.cpp's own backend, swapped
     # from PDFium to this in-house parser/interpreter/rasterizer stack
@@ -1838,6 +1842,15 @@ target_include_directories(mep-html-doc-test PRIVATE src)
 target_compile_options(mep-html-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-html-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-html-doc-test)
+
+# An SVG drawn into pixels (svg_raster.cpp) -- the inline-image path for
+# .svg files -- checked pixel by pixel, without a window.
+add_executable(mep-svg-raster-test EXCLUDE_FROM_ALL src/svg_raster_test.cpp src/svg_raster.cpp src/svg_doc.cpp
+               src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/wav_doc.cpp src/gfx/rasterizer.cpp src/gfx/truetype.cpp)
+target_include_directories(mep-svg-raster-test PRIVATE src)
+target_compile_options(mep-svg-raster-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-svg-raster-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-svg-raster-test)
 
 # Org outline helpers (org_doc.cpp is dependency-free): the Todo-panel
 # <-> TODO.org sync (OrgTodoListItems/OrgTodoListApply), same windowless

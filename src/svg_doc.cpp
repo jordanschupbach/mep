@@ -154,9 +154,42 @@ struct SvgStyle {
     SvgPaint color{true, 0, 0, 0, 255};  // CSS `color`, the target of currentColor
 };
 
-// Presentation properties can come from attributes or from style="";
-// style="" wins, matching the CSS cascade's treatment of inline style.
-std::unordered_map<std::string, std::string> PresentationProps(const DomNode &node) {
+// One rule of a <style> sheet inside the SVG, for the simple selectors a
+// generated SVG uses: `tag`, `.class`, `tag.class` and `*` (a comma list
+// becomes one rule per selector). Anything more (descendants, ids,
+// attributes, pseudo-classes) is skipped rather than guessed at.
+struct SheetRule {
+    std::string tag;  // empty = any
+    std::string cls;  // empty = any
+    std::string decls;
+};
+
+void ParseDecls(const std::string &text, std::unordered_map<std::string, std::string> &props) {
+    std::istringstream decls(text);
+    std::string decl;
+    while (std::getline(decls, decl, ';')) {
+        size_t colon = decl.find(':');
+        if (colon == std::string::npos) continue;
+        props[Lower(Trim(decl.substr(0, colon)))] = Trim(decl.substr(colon + 1));
+    }
+}
+
+bool HasClass(const DomNode &node, const std::string &cls) {
+    auto it = node.attrs.find("class");
+    if (it == node.attrs.end()) return false;
+    std::istringstream names(it->second);
+    std::string name;
+    while (names >> name)
+        if (name == cls) return true;
+    return false;
+}
+
+// Presentation properties come from attributes, then the <style> sheet's
+// matching rules, then style="" -- each overriding the last, the CSS
+// cascade's order for SVG presentation attributes, author rules and
+// inline style.
+std::unordered_map<std::string, std::string> PresentationProps(const DomNode &node,
+                                                               const std::vector<SheetRule> *sheet = nullptr) {
     std::unordered_map<std::string, std::string> props;
     static const char *const kKeys[] = {"fill", "stroke", "stroke-width", "opacity", "fill-opacity", "stroke-opacity",
                                         "font-size", "text-anchor", "display", "visibility", "color", "transform"};
@@ -164,17 +197,57 @@ std::unordered_map<std::string, std::string> PresentationProps(const DomNode &no
         auto it = node.attrs.find(key);
         if (it != node.attrs.end()) props[key] = it->second;
     }
-    auto style_it = node.attrs.find("style");
-    if (style_it != node.attrs.end()) {
-        std::istringstream decls(style_it->second);
-        std::string decl;
-        while (std::getline(decls, decl, ';')) {
-            size_t colon = decl.find(':');
-            if (colon == std::string::npos) continue;
-            props[Lower(Trim(decl.substr(0, colon)))] = Trim(decl.substr(colon + 1));
-        }
+    if (sheet) {
+        // A class selector outranks a bare tag one, as its specificity does.
+        for (int pass = 0; pass < 2; ++pass)
+            for (const SheetRule &rule : *sheet) {
+                if ((pass == 1) != !rule.cls.empty()) continue;
+                if (!rule.tag.empty() && rule.tag != node.tag) continue;
+                if (!rule.cls.empty() && !HasClass(node, rule.cls)) continue;
+                ParseDecls(rule.decls, props);
+            }
     }
+    auto style_it = node.attrs.find("style");
+    if (style_it != node.attrs.end()) ParseDecls(style_it->second, props);
     return props;
+}
+
+void CollectSheet(const DomNode &node, std::vector<SheetRule> &sheet) {
+    if (node.type != DomNodeType::Element) return;
+    if (node.tag == "style") {
+        std::string css;
+        for (const auto &child : node.children)
+            if (child->type == DomNodeType::Text) css += child->text;
+        for (size_t c; (c = css.find("/*")) != std::string::npos;) {
+            size_t e = css.find("*/", c + 2);
+            css.erase(c, e == std::string::npos ? std::string::npos : e + 2 - c);
+        }
+        size_t pos = 0;
+        while (pos < css.size()) {
+            size_t open = css.find('{', pos);
+            if (open == std::string::npos) break;
+            size_t close = css.find('}', open);
+            if (close == std::string::npos) break;
+            const std::string decls = css.substr(open + 1, close - open - 1);
+            std::istringstream selectors(css.substr(pos, open - pos));
+            std::string sel;
+            while (std::getline(selectors, sel, ',')) {
+                sel = Trim(sel);
+                if (sel.empty() || sel.find_first_of(" >+~:[#") != std::string::npos) continue;
+                SheetRule rule;
+                size_t dot = sel.find('.');
+                rule.tag = Lower(sel.substr(0, dot));
+                if (rule.tag == "*") rule.tag.clear();
+                if (dot != std::string::npos) rule.cls = sel.substr(dot + 1);
+                if (rule.cls.find('.') != std::string::npos) continue;
+                rule.decls = decls;
+                sheet.push_back(std::move(rule));
+            }
+            pos = close + 1;
+        }
+        return;
+    }
+    for (const auto &child : node.children) CollectSheet(*child, sheet);
 }
 
 float ParseLength(const std::string &text, float fallback) {
@@ -510,6 +583,20 @@ namespace {
 struct Builder {
     const DomNode &root;
     SvgDisplayList out;
+    std::vector<SheetRule> sheet;
+    // The viewport in user units, what a percentage length is a share of.
+    float vw = 0.0f, vh = 0.0f;
+
+    // A length attribute: a number, or a percentage of the viewport's width
+    // (axis 0), height (1) or normalized diagonal (2, SVG's rule for radii).
+    float Len(const DomNode &node, const char *key, float fallback, int axis) const {
+        auto it = node.attrs.find(key);
+        if (it == node.attrs.end()) return fallback;
+        const std::string v = Trim(it->second);
+        if (v.empty() || v.back() != '%') return ParseLength(v, fallback);
+        const float ref = axis == 0 ? vw : axis == 1 ? vh : std::sqrt((vw * vw + vh * vh) / 2.0f);
+        return ParseLength(v.substr(0, v.size() - 1), 0.0f) / 100.0f * ref;
+    }
 
     const DomNode *FindById(const DomNode *node, const std::string &id) const {
         if (node->type == DomNodeType::Element && node->Id() == id) return node;
@@ -551,7 +638,7 @@ struct Builder {
 
     SvgStyle Inherit(const DomNode &node, const SvgStyle &parent, Matrix &matrix) const {
         SvgStyle style = parent;
-        auto props = PresentationProps(node);
+        auto props = PresentationProps(node, &sheet);
         if (props.count("color")) { SvgPaint c; if (ParseColor(props["color"], style.color, c) && c.present) style.color = c; }
         if (props.count("fill")) ApplyPaint(props["fill"], style.color, style.fill);
         if (props.count("stroke")) ApplyPaint(props["stroke"], style.color, style.stroke);
@@ -646,7 +733,7 @@ struct Builder {
                 for (const auto &child : target->children) Draw(*child, symbol_style, symbol_matrix, depth + 1);
             } else Draw(*target, style, placed, depth + 1);
         } else if (tag == "rect") {
-            float x = Attr(node, "x", 0.0f), y = Attr(node, "y", 0.0f), w = Attr(node, "width", 0.0f), h = Attr(node, "height", 0.0f);
+            float x = Len(node, "x", 0.0f, 0), y = Len(node, "y", 0.0f, 1), w = Len(node, "width", 0.0f, 0), h = Len(node, "height", 0.0f, 1);
             if (w <= 0.0f || h <= 0.0f) return;
             float rx = Attr(node, "rx", -1.0f), ry = Attr(node, "ry", -1.0f);
             if (rx < 0.0f && ry < 0.0f) rx = ry = 0.0f;
@@ -666,9 +753,9 @@ struct Builder {
             } else pts = {x, y, x + w, y, x + w, y + h, x, y + h};
             Emit(pts, true, style, m);
         } else if (tag == "circle" || tag == "ellipse") {
-            float cx = Attr(node, "cx", 0.0f), cy = Attr(node, "cy", 0.0f);
-            float rx = tag == "circle" ? Attr(node, "r", 0.0f) : Attr(node, "rx", 0.0f);
-            float ry = tag == "circle" ? rx : Attr(node, "ry", 0.0f);
+            float cx = Len(node, "cx", 0.0f, 0), cy = Len(node, "cy", 0.0f, 1);
+            float rx = tag == "circle" ? Len(node, "r", 0.0f, 2) : Len(node, "rx", 0.0f, 0);
+            float ry = tag == "circle" ? rx : Len(node, "ry", 0.0f, 1);
             if (rx <= 0.0f || ry <= 0.0f) return;
             // Segment count follows the on-screen radius so large circles
             // stay round and icon-sized ones stay cheap.
@@ -681,7 +768,7 @@ struct Builder {
             }
             Emit(pts, true, style, m);
         } else if (tag == "line") {
-            std::vector<float> pts = {Attr(node, "x1", 0.0f), Attr(node, "y1", 0.0f), Attr(node, "x2", 0.0f), Attr(node, "y2", 0.0f)};
+            std::vector<float> pts = {Len(node, "x1", 0.0f, 0), Len(node, "y1", 0.0f, 1), Len(node, "x2", 0.0f, 0), Len(node, "y2", 0.0f, 1)};
             EmitStrokeOnly(pts, style, m);
         } else if (tag == "polyline" || tag == "polygon") {
             auto it = node.attrs.find("points");
@@ -727,7 +814,7 @@ struct Builder {
 }  // namespace
 
 SvgDisplayList BuildSvgDisplayList(const DomNode &svg, float target_width, float target_height, SvgPaint current_color) {
-    Builder builder{svg, {}};
+    Builder builder{svg, {}, {}, 0.0f, 0.0f};
     builder.out.width = target_width;
     builder.out.height = target_height;
     if (target_width <= 0.0f || target_height <= 0.0f) return builder.out;
@@ -758,6 +845,14 @@ SvgDisplayList BuildSvgDisplayList(const DomNode &svg, float target_width, float
         float w = Attr(svg, "width", target_width), h = Attr(svg, "height", target_height);
         root = Matrix{target_width / std::max(1.0f, w), 0, 0, target_height / std::max(1.0f, h), 0, 0};
     }
+    if (view_box.size() == 4 && view_box[2] > 0.0f && view_box[3] > 0.0f) {
+        builder.vw = view_box[2];
+        builder.vh = view_box[3];
+    } else {
+        builder.vw = Attr(svg, "width", target_width);
+        builder.vh = Attr(svg, "height", target_height);
+    }
+    CollectSheet(svg, builder.sheet);
     SvgStyle base;
     base.fill = SvgPaint{true, 0, 0, 0, 255};
     base.color = current_color;

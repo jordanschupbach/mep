@@ -9,6 +9,7 @@
 #include "regex.h"
 #include "vterm.h"
 #include "image_codec.h"
+#include "svg_raster.h"
 #include "image_doc.h"
 #include "image_procgen.h"
 #include "jpeg_codec.h"
@@ -3326,7 +3327,7 @@ std::string Editor::OrgResolvePath(const std::string &path) const {
 
 namespace {
 /**
- * @brief Checks whether a path's extension identifies it as a supported image format (png/jpg/jpeg/bmp/gif).
+ * @brief Checks whether a path's extension identifies it as a supported image format (png/jpg/jpeg/bmp/gif/svg).
  * @param path The file path to check.
  * @return True if the path has a recognized image extension.
  */
@@ -3339,7 +3340,7 @@ bool IsOrgImageExtension(const std::string &path) {
     if (i != path.size() || i == start) return false;
     std::string ext = path.substr(start);
     for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "bmp" || ext == "gif";
+    return ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "bmp" || ext == "gif" || ext == "svg";
 }
 
 // kBuiltinOrgImages' own `'^([^%]]+)%]%[.+$'` port: strips a
@@ -25364,6 +25365,15 @@ void OrgImagePixelSize(const std::string &path, int *width, int *height) {
         if (image_codec::DimensionsFile(path.c_str(), &w, &h, &err)) {
             entry.width = w;
             entry.height = h;
+        } else {
+            // An SVG has no binary header: its size is its width/height
+            // (or viewBox), what svg_raster draws it at.
+            std::ifstream f(path, std::ios::binary);
+            const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            if (svg_raster::Dimensions(bytes.data(), bytes.size(), &w, &h)) {
+                entry.width = w;
+                entry.height = h;
+            }
         }
     }
     *width = entry.width;

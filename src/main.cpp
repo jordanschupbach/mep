@@ -17,6 +17,7 @@
 #include "html_doc.h"
 #include "url_util.h"
 #include "svg_doc.h"
+#include "svg_raster.h"
 #include "job.h"
 #include "cad_fem_api.h"
 #include "lua_env.h"
@@ -36419,12 +36420,22 @@ gfx::Texture2D *GetOrLoadOrgInlineImageTexture(const std::string &path) {
     if (entry.ok) gfx::UnloadTexture(entry.tex);  // replace a stale GPU handle rather than leak it
     entry.ok = !bytes.empty() && doc.LoadFromMemory(bytes.data(), bytes.size());
     entry.mtime = st.st_mtime;
+    // Not a PNG/JPEG/GIF/BMP: an SVG is drawn into pixels here (its text
+    // in the office pane's Liberation Sans, the usual stand-in for the
+    // Helvetica/Arial an SVG plot asks for).
+    std::vector<unsigned char> svg_pixels;
+    int svg_w = 0, svg_h = 0;
+    if (!entry.ok && svg_raster::LooksLikeSvg(bytes.data(), bytes.size())) {
+        std::string err;
+        entry.ok = svg_raster::Rasterize(bytes.data(), bytes.size(), &svg_pixels, &svg_w, &svg_h, &err,
+                                         kLiberationSansRegularTtf, kLiberationSansRegularTtfLen);
+    }
     if (!entry.ok) return nullptr;
 
     gfx::Image img{};
-    img.data = const_cast<unsigned char *>(doc.Pixels());
-    img.width = doc.Width();
-    img.height = doc.Height();
+    img.data = svg_pixels.empty() ? const_cast<unsigned char *>(doc.Pixels()) : svg_pixels.data();
+    img.width = svg_pixels.empty() ? doc.Width() : svg_w;
+    img.height = svg_pixels.empty() ? doc.Height() : svg_h;
     img.mipmaps = 1;
     img.format = gfx::kPixelFormatR8G8B8A8;
     entry.tex = gfx::LoadTextureFromImage(img);  // copies pixel data to the GPU; doc goes out of scope right after

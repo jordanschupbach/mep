@@ -447,7 +447,7 @@ std::vector<MepmlLspDiagnostic> MepmlLspDiagnostics(const std::vector<std::strin
     for (const Block &b : doc.blocks) {
         if (!b.origin.empty()) continue;
         auto line_len = [&](int line) { return line >= 0 && line < static_cast<int>(lines.size()) ? Len(lines[static_cast<size_t>(line)]) : 0; };
-        if (b.kind == BlockKind::Image && b.alt_line < 0)
+        if ((b.kind == BlockKind::Image || b.kind == BlockKind::Svg) && b.alt_line < 0)
             add(b.line_start, 0, line_len(b.line_start), MepmlLspSeverity::Hint, "a11y-figure-alt",
                 "figure has no \\alttext(...) for readers who cannot see it (\\alttext() if it only decorates)");
         if (b.kind == BlockKind::Code && !b.result_images.empty() && b.alt_line < 0)
@@ -1510,6 +1510,10 @@ std::vector<MepmlLspSymbol> MepmlLspSymbols(const std::vector<std::string> &line
             s.kind = MepmlLspSymbolKind::Object;
             s.name = b.caption.empty() ? b.value : b.caption;
             s.detail = label.empty() ? "figure" : label;
+        } else if (b.kind == BlockKind::Svg || b.kind == BlockKind::Html) {
+            s.kind = MepmlLspSymbolKind::Object;
+            s.name = b.caption.empty() ? "<" + b.keyword + ">" : b.caption;
+            s.detail = label.empty() ? (b.kind == BlockKind::Svg ? "svg" : "html") : label;
         } else if (b.kind == BlockKind::Table) {
             s.kind = MepmlLspSymbolKind::Array;
             s.name = b.caption.empty() ? "table" : b.caption;
@@ -1599,7 +1603,8 @@ std::vector<MepmlLspFold> MepmlLspFolds(const std::vector<std::string> &lines) {
             add(b.line_start, b.result_line_start - 1, "");
             add(b.result_line_start, b.result_line_end, "");
         } else if (b.kind == BlockKind::Code || b.kind == BlockKind::Citation || b.kind == BlockKind::MathBlock ||
-                 b.kind == BlockKind::Table || b.kind == BlockKind::List || b.kind == BlockKind::Abstract)
+                 b.kind == BlockKind::Table || b.kind == BlockKind::List || b.kind == BlockKind::Abstract ||
+                 b.kind == BlockKind::Svg || b.kind == BlockKind::Html)
             add(b.line_start, b.line_end, "");
     }
     std::sort(out.begin(), out.end(), [](const MepmlLspFold &a, const MepmlLspFold &b) {

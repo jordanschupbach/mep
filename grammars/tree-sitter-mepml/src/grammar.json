@@ -523,6 +523,14 @@
         },
         {
           "type": "SYMBOL",
+          "name": "svg_block"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "html_block"
+        },
+        {
+          "type": "SYMBOL",
           "name": "list"
         },
         {
@@ -1490,6 +1498,82 @@
       "content": {
         "type": "SYMBOL",
         "name": "_inline"
+      }
+    },
+    "svg_block": {
+      "type": "PREC_RIGHT",
+      "value": 0,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "ALIAS",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_svg_markup"
+            },
+            "named": true,
+            "value": "markup"
+          },
+          {
+            "type": "SYMBOL",
+            "name": "_newline"
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "REPEAT",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "_attribute"
+                }
+              },
+              {
+                "type": "SYMBOL",
+                "name": "_results_attributes"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "html_block": {
+      "type": "PREC_RIGHT",
+      "value": 0,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "ALIAS",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_html_markup"
+            },
+            "named": true,
+            "value": "markup"
+          },
+          {
+            "type": "SYMBOL",
+            "name": "_newline"
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "REPEAT",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "_attribute"
+                }
+              },
+              {
+                "type": "SYMBOL",
+                "name": "_results_attributes"
+              }
+            ]
+          }
+        ]
       }
     },
     "list": {
@@ -5181,6 +5265,14 @@
     {
       "type": "SYMBOL",
       "name": "_cmd_class"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_svg_markup"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "_html_markup"
     },
     {
       "type": "SYMBOL",

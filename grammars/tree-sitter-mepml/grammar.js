@@ -107,6 +107,8 @@ module.exports = grammar({
     $._box_break, // a line break inside a box's first paragraph
     $._box_end, // zero-width: the line closes the open box
     $._cmd_class, // `\class` before (name, text)
+    $._svg_markup, // `<svg ...>` at a line's start, through the line its `</svg>` closes on
+    $._html_markup, // an HTML block tag (`<div`, `<table` ...) at a line's start, likewise
     $._error_sentinel,
   ],
 
@@ -141,6 +143,8 @@ module.exports = grammar({
       $.code_block,
       $.display_math,
       $.table,
+      $.svg_block,
+      $.html_block,
       $.list,
       $.rule_line,
       $.import,
@@ -275,6 +279,19 @@ module.exports = grammar({
       $._newline,
     ),
     table_cell: $ => repeat1($._inline),
+
+    // --- SVG and HTML written into the document -----------------------------
+    // The markup is one token, from its opening tag to the end of the line
+    // its element closes on (mepml_doc.cpp's MarkupBlockEnd), blank lines and
+    // all; injections.scm highlights it as HTML.
+    svg_block: $ => prec.right(seq(
+      alias($._svg_markup, $.markup), $._newline,
+      choice(repeat($._attribute), $._results_attributes),
+    )),
+    html_block: $ => prec.right(seq(
+      alias($._html_markup, $.markup), $._newline,
+      choice(repeat($._attribute), $._results_attributes),
+    )),
 
     // --- lists --------------------------------------------------------------
     list: $ => prec.right(repeat1($.list_item)),

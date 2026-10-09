@@ -753,6 +753,103 @@ bool IsFence(const std::string &t) { return t.rfind("```", 0) == 0; }
 
 bool IsTableRow(const std::string &t) { return t.size() >= 2 && t.front() == '|' && t.back() == '|'; }
 
+// --- SVG and HTML written into the document (BlockKind::Svg / Html).
+
+bool IsTagNameChar(char c) { return IsAlpha(c) || IsDigit(c) || c == '-' || c == ':'; }
+
+// Elements that have no closing tag: their opening tag is the whole element.
+bool IsVoidTag(const std::string &tag) {
+    static const std::set<std::string> k = {"area", "base", "br",   "col",   "embed",  "hr",    "img",
+                                            "input", "link", "meta", "param", "source", "track", "wbr"};
+    return k.count(tag) > 0;
+}
+
+// The tag a line opens a markup block with: "svg", or an HTML element that
+// stands as a block of its own (CommonMark's HTML block tags, with the
+// media and raw-text elements) -- "div", "table", "details" ...; a doctype
+// opens an "html" one. "" for any other line, which leaves `<x>` (small
+// text) and inline tags in prose alone.
+std::string MarkupTagAt(const std::string &line) {
+    static const std::set<std::string> k = {
+        "address", "article",  "aside",    "audio",    "base",     "basefont", "blockquote", "body",    "canvas",
+        "caption", "center",   "col",      "colgroup", "dd",       "details",  "dialog",     "dir",     "div",
+        "dl",      "dt",       "embed",    "fieldset", "figcaption", "figure", "footer",     "form",    "frame",
+        "frameset", "h1",      "h2",       "h3",       "h4",       "h5",       "h6",         "head",    "header",
+        "hr",      "html",     "iframe",   "img",      "legend",   "li",       "link",       "main",    "menu",
+        "menuitem", "nav",     "noframes", "object",   "ol",       "optgroup", "option",     "p",       "param",
+        "picture", "pre",      "script",   "search",   "section",  "style",    "summary",    "table",   "tbody",
+        "td",      "textarea", "tfoot",    "th",       "thead",    "title",    "tr",         "track",   "ul",
+        "video",
+    };
+    const int at = Indent(line);
+    if (At(line, at) != '<') return "";
+    if (Lower(Sub(line, at, at + 9)) == "<!doctype") return "html";
+    int e = at + 1;
+    while (IsTagNameChar(At(line, e))) ++e;
+    const std::string tag = Lower(Sub(line, at + 1, e));
+    const char next = At(line, e);
+    if (next != '\0' && next != '>' && next != '/' && !IsSpace(next)) return "";
+    if (tag == "svg" || k.count(tag)) return tag;
+    return "";
+}
+
+// Where a markup block opened on lines[first] with `tag` ends: the line on
+// which its element closes -- its `</tag>` balancing every `<tag` inside it
+// (comments and quoted attribute values skipped), or its opening tag itself
+// for an `<x/>` or a void element. -1 when it never closes.
+int MarkupBlockEnd(const std::vector<std::string> &lines, int first, const std::string &tag) {
+    int depth = 0;
+    bool in_comment = false, in_tag = false, closing = false, counted = false;
+    char quote = 0, prev = 0;
+    for (int k = first; k < static_cast<int>(lines.size()); ++k) {
+        const std::string &s = lines[static_cast<size_t>(k)];
+        for (int p = 0; p < Len(s); ++p) {
+            const char c = s[static_cast<size_t>(p)];
+            if (in_comment) {
+                if (c == '>' && p >= 2 && s[static_cast<size_t>(p - 1)] == '-' && s[static_cast<size_t>(p - 2)] == '-')
+                    in_comment = false;
+                continue;
+            }
+            if (in_tag) {
+                // Inside one of our tags, up to its `>`.
+                if (quote) {
+                    if (c == quote) quote = 0;
+                } else if (c == '"' || c == '\'') {
+                    quote = c;
+                } else if (c == '>') {
+                    in_tag = false;
+                    if (closing) --depth;
+                    else if (prev != '/' && !IsVoidTag(tag)) ++depth;
+                    if (depth <= 0) return k;
+                }
+                if (!IsSpace(c)) prev = c;
+                continue;
+            }
+            if (c != '<') continue;
+            if (StartsAt(s, p, "<!--")) {
+                in_comment = true;
+                p += 3;
+                continue;
+            }
+            const bool close = At(s, p + 1) == '/';
+            int e = p + 1 + (close ? 1 : 0);
+            const int name_at = e;
+            while (IsTagNameChar(At(s, e))) ++e;
+            const char next = At(s, e);
+            if (Lower(Sub(s, name_at, e)) != tag || (next != '\0' && next != '>' && next != '/' && !IsSpace(next)))
+                continue;
+            // A stray `</tag>` before the element opens is not its end.
+            if (close && !counted) continue;
+            counted = true;
+            in_tag = true;
+            closing = close;
+            prev = 0;
+            p = e - 1;
+        }
+    }
+    return -1;
+}
+
 // A `|---|:--:|` row: at least one pipe, and every cell dashes (or `=`)
 // with optional alignment colons.
 bool IsDelimiterRow(const std::string &s, size_t *cells_out = nullptr) {
@@ -1132,7 +1229,7 @@ struct Parser {
         const int prev = markdown_result_ends.count(i - 1) ? i - 2 : i - 1;
         if (b.line_end != prev) return -1;
         if (b.kind != BlockKind::Image && b.kind != BlockKind::Table && b.kind != BlockKind::MathBlock &&
-            b.kind != BlockKind::Code)
+            b.kind != BlockKind::Code && b.kind != BlockKind::Svg && b.kind != BlockKind::Html)
             return -1;
         int col = Indent(L(i)) + 1 + Len(name);
         int after = -1;
@@ -1757,6 +1854,26 @@ struct Parser {
         return j;
     }
 
+    // `<svg ...>` or an HTML block tag at the start of line `i`: the markup
+    // up to where its element closes (see BlockKind::Svg).
+    int ParseMarkup(int i, const std::string &tag) {
+        int last = MarkupBlockEnd(lines, i, tag);
+        if (last < 0) {
+            last = i;
+            while (last + 1 < n && !Trim(L(last + 1)).empty() && !IsCloser(L(last + 1))) ++last;
+            const std::string &s = L(i);
+            Diag(Diagnostic::Warning, i, Indent(s), Len(s),
+                 "<" + tag + "> is never closed with </" + tag + ">: it ends at the blank line");
+        }
+        Block b = MakeBlock(tag == "svg" ? BlockKind::Svg : BlockKind::Html, i, last);
+        b.keyword = tag;
+        b.code = b.text;
+        b.code_line_start = i;
+        b.code_line_end = last;
+        doc.blocks.push_back(std::move(b));
+        return last + 1;
+    }
+
     int ParseList(int i) {
         int j = i;
         int base_indent = Indent(L(i));
@@ -1801,6 +1918,7 @@ struct Parser {
         std::string t = Trim(s);
         if (t.empty()) return true;
         if (HeadingLevel(s) || IsFence(t) || IsComment(s) || IsRule(t) || TableStartAt(j) || IsListItem(s)) return true;
+        if (!MarkupTagAt(s).empty()) return true;
         if (t.rfind("$$", 0) == 0 || t.rfind("\\[", 0) == 0) return true;
         if (SlideOpener(s) >= 0 || IsCloser(s) || BoxOpener(s) >= 0 || LayoutOpener(s) >= 0) return true;
         int paren = -1, last = -1, after = -1;
@@ -1873,6 +1991,8 @@ struct Parser {
             } else if (IsRule(t)) {
                 doc.blocks.push_back(MakeBlock(BlockKind::Rule, i, i));
                 ++i;
+            } else if (const std::string tag = MarkupTagAt(s); !tag.empty()) {
+                i = ParseMarkup(i, tag);
             } else if (TableStartAt(i)) {
                 i = ParseTable(i);
             } else if (IsListItem(s)) {
@@ -2370,6 +2490,18 @@ bool ResultImagePath(const std::string &text, std::string *path) {
     return !path->empty();
 }
 
+std::string MarkupBlockTag(const std::string &line) { return MarkupTagAt(line); }
+
+int MarkupBlockClose(const std::vector<std::string> &lines, int first) {
+    if (first < 0 || first >= static_cast<int>(lines.size())) return -1;
+    const std::string tag = MarkupTagAt(lines[static_cast<size_t>(first)]);
+    return tag.empty() ? -1 : MarkupBlockEnd(lines, first, tag);
+}
+
+bool IsFigure(const Block &b) {
+    return b.kind == BlockKind::Image || b.kind == BlockKind::Svg || (b.kind == BlockKind::Html && b.caption_line >= 0);
+}
+
 std::vector<std::string> BlockLabels(const Document &doc) {
     std::vector<std::string> out(doc.blocks.size());
     int figures = 0, tables = 0;
@@ -2381,7 +2513,7 @@ std::vector<std::string> BlockLabels(const Document &doc) {
         if (hidden[i]) continue;
         bool code = true, results = true;
         if (b.kind == BlockKind::Code) CodeExports(doc, b, &code, &results);
-        if (b.kind == BlockKind::Image || (b.kind == BlockKind::Code && !b.result_images.empty() && results))
+        if (IsFigure(b) || (b.kind == BlockKind::Code && !b.result_images.empty() && results))
             out[i] = "Figure " + std::to_string(++figures);
         else if (b.kind == BlockKind::Table)
             out[i] = "Table " + std::to_string(++tables);
@@ -2823,6 +2955,8 @@ std::vector<std::string> ExpandCommands(const std::vector<std::string> &lines,
                 break;  // gone from the export
             case BlockKind::Code:
             case BlockKind::MathBlock:
+            case BlockKind::Svg:  // (markup, not mepml text)
+            case BlockKind::Html:
             case BlockKind::Meta:
             case BlockKind::Comment:
             case BlockKind::Callout:
@@ -3366,7 +3500,7 @@ struct Emitter {
         const int brace = OpenerAt(s0, at);
         if (at < 0 || brace < 0 || last < first || close_col < 0) return;
         std::string of = "code";
-        if (blk.kind == BlockKind::Image || !blk.result_images.empty()) of = "figure";
+        if (IsFigure(blk) || !blk.result_images.empty()) of = "figure";
         else if (blk.kind == BlockKind::Table) of = "table";
         else if (blk.kind == BlockKind::MathBlock) of = "math";
         const int attr = Child(node, caption ? Element("caption", "of", of) : Element("alt-text"));
@@ -3469,6 +3603,8 @@ struct Emitter {
             case BlockKind::Image:
             case BlockKind::Table:
             case BlockKind::MathBlock:
+            case BlockKind::Svg:
+            case BlockKind::Html:
             case BlockKind::Code: {
                 int body_end = blk.line_end;
                 if (blk.caption_line >= 0) body_end = std::min(body_end, blk.caption_line - 1);
@@ -3482,6 +3618,12 @@ struct Emitter {
                     Lines(blk.line_start, body_end, m);
                 } else if (blk.kind == BlockKind::Table) {
                     TableSpans(blk, body_end);
+                } else if (blk.kind == BlockKind::Svg || blk.kind == BlockKind::Html) {
+                    // The markup is literal text (its look the element's), drawn
+                    // rendered by an editor wherever it does not show the source.
+                    Span m = At_(node);
+                    m.style = kCode;
+                    Lines(blk.code_line_start, blk.code_line_end, m);
                 } else {
                     CodeSpans(blk);
                 }
@@ -3820,6 +3962,8 @@ Element ElementForBlock(const Block &b) {
         case BlockKind::MathBlock: return Element("math-block");
         case BlockKind::Code: return Element("code", "lang", b.lang);
         case BlockKind::Image: return Element("image");
+        case BlockKind::Svg: return Element("svg");
+        case BlockKind::Html: return Element("html", "tag", b.keyword);
         case BlockKind::Table: return Element("table");
         case BlockKind::List: return Element("list");
         case BlockKind::Rule: return Element("rule");
@@ -3998,6 +4142,8 @@ std::string ElementTreeJson(const Document &doc) {
                 break;
             case BlockKind::Code:
             case BlockKind::MathBlock:
+            case BlockKind::Svg:
+            case BlockKind::Html:
             case BlockKind::Define:
             case BlockKind::Raw:
                 head += ",\"text\":" + JsonString(b.code);
@@ -4019,7 +4165,7 @@ std::string ElementTreeJson(const Document &doc) {
         }
         if (b.caption_line >= 0) {
             std::string of = "code";
-            if (b.kind == BlockKind::Image || !b.result_images.empty()) of = "figure";
+            if (IsFigure(b) || !b.result_images.empty()) of = "figure";
             else if (b.kind == BlockKind::Table) of = "table";
             else if (b.kind == BlockKind::MathBlock) of = "math";
             kid(JsonOpen(Element("caption", "of", of)) + ",\"children\":" + JsonInlines(doc, b.caption_inlines) + "}");
@@ -4050,8 +4196,8 @@ const std::vector<std::string> &ElementNames() {
     static const std::vector<std::string> k = {
         // Blocks.
         "document", "header", "meta", "heading", "paragraph", "comment", "callout", "abstract", "slide", "box", "columns", "column",
-        "list", "list-item", "table", "table-cell", "code", "results", "math-block", "image", "caption", "alt-text", "rule", "toc", "bibliography",
-        "import", "citation", "define", "raw", "command",
+        "list", "list-item", "table", "table-cell", "code", "results", "math-block", "image", "svg", "html", "caption", "alt-text", "rule", "toc",
+        "bibliography", "import", "citation", "define", "raw", "command",
         // Inlines (comment, raw and command are both).
         "bold", "italic", "underline", "superscript", "subscript", "small", "big", "mono", "highlight", "strike", "insert", "delete",
         "verbatim", "link", "footnote", "cite", "math", "font", "font-size", "color", "span",
@@ -4064,7 +4210,7 @@ bool IsBlockElement(const std::string &name) {
         "document", "header",   "meta",   "heading",    "paragraph", "comment",  "callout", "abstract",     "slide",  "box",
         "columns",  "column",
         "list",     "list-item", "table",  "table-cell", "code",      "results",  "math-block", "image",     "caption", "alt-text",
-        "rule",     "toc",      "bibliography", "import", "citation",  "define",
+        "rule",     "toc",      "bibliography", "import", "citation",  "define", "svg", "html",
     };
     return k.count(name) > 0;
 }
@@ -5163,6 +5309,26 @@ struct HtmlWriter {
                 if (!b.caption_inlines.empty())
                     out += "<figcaption>" + Esc(label) + ": " + Caption(b) + "</figcaption>";
                 out += "</figure>\n";
+                break;
+            }
+            case BlockKind::Svg:
+            case BlockKind::Html: {
+                // The markup as it is -- for HTML; an export on its way
+                // through HTML to another format drops it (Raw), and keeps
+                // the caption.
+                const std::string markup = Raw("html", b.code, "div");
+                // An SVG's \alttext is the picture's name for a reader who
+                // cannot see it (an empty one: decoration); HTML's describes it.
+                std::string aria;
+                if (b.alt_line >= 0 && b.kind == BlockKind::Svg)
+                    aria = b.alt.empty() ? " aria-hidden=\"true\"" : " role=\"img\" aria-label=\"" + Esc(b.alt) + "\"";
+                else if (!b.alt.empty())
+                    aria = " aria-description=\"" + Esc(b.alt) + "\"";
+                // (The wrapper's class is how an import finds the markup again.)
+                const std::string cls = b.kind == BlockKind::Svg ? "mepml-svg" : "mepml-html";
+                const std::string inner = "<div class=\"" + cls + "\"" + aria + ">\n" + markup + "\n</div>";
+                if (b.caption_inlines.empty()) out += inner + "\n";
+                else out += "<figure>" + inner + "<figcaption>" + Esc(label) + ": " + Caption(b) + "</figcaption></figure>\n";
                 break;
             }
             case BlockKind::Table: {

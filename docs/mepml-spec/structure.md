@@ -40,6 +40,8 @@ content or nothing.
 | `results` | `format` = `text` \| `html` \| `markdown` \| `terminal` \| `gui` | — (markdown: blocks) | `// result_begin:` ... `// result_end` |
 | `math-block` | | — | `$$ ... $$`, `\[ ... \]` |
 | `image` | | — | `\image(path)` |
+| `svg` | | — (its markup) | `<svg ...>` at the start of a line, up to the line its `</svg>` closes on |
+| `html` | `tag` (the opening tag, lowercase: `div`, `table`, `details` ...) | — (its markup) | a line starting with an HTML block tag, up to the line that element closes on |
 | `caption` | `of` = `figure` \| `table` \| `math` \| `code` | inlines | `\caption(...)` under a block |
 | `alt-text` | | — | `\alttext(...)` |
 | `rule` | | — | `---` |
@@ -60,6 +62,19 @@ selectors: a sheet styles kinds of thing, not one list item or one link.
 `header` is selected for its box (the card behind a run of `//?` lines);
 the `meta` lines in it are selected on their own (`meta[key=title]`), not
 through it.
+
+An `svg` or `html` block is markup written into the document as it is,
+as Markdown allows: a line whose first non-blank text is `<svg`, or an
+HTML block tag (CommonMark's list -- `div`, `table`, `p`, `details`,
+`figure`, `iframe` ... -- with `pre`, `script`, `style`, `textarea`, the
+media elements, `img` and a doctype), opens one, and it runs to the line
+on which that element closes: the `</tag>` balancing every `<tag` inside
+it, blank lines included (comments and quoted attribute values are
+skipped; an `<x/>` or a void element closes on its own line). One that
+never closes ends before the first blank line. Its markup is not mepml:
+nothing in it is parsed as markup, commands or maths. An `svg` is a
+figure (§4); an `html` block is one when it has a caption, which is then
+`caption[of=figure]`.
 
 `slide`, `box`, `columns` and `column` are the block containers a document
 author nests: `document > slide > box > paragraph` is a typical path, and
@@ -158,8 +173,8 @@ inside the author's.
 Counters are structure, not style: a renderer does not choose them.
 
 - `slide[number]`: 1-based, document order.
-- Figures (an `image`, or a `code` block that produced one) share one
-  sequence; tables have their own. Blocks an export leaves out are not
+- Figures (an `image`, an `svg`, a captioned `html` block, or a `code`
+  block that produced one) share one sequence; tables have their own. Blocks an export leaves out are not
   numbered.
 - `footnote[number]`: 1-based, document order.
 
@@ -183,15 +198,17 @@ every renderer and export carries it as far as its format can:
   screen reader announces first and picks its voice by.
 - **Alternative text.** An `alt-text` (`\alttext(...)`) stands for the
   block it is written under:
-  - under an `image`, or a `code` block that drew a figure, it is read in
-    the picture's place;
+  - under an `image` or an `svg`, or a `code` block that drew a figure, it
+    is read in the picture's place;
+  - under an `html` block, it describes it -- read before it, as for a
+    table;
   - under a `math-block`, or right after inline `math`, it is how the
     formula is said aloud (without one a renderer says the TeX itself,
     command by command: `\hat{\theta}_1 = \frac{a}{b}` is "theta hat 1
     equals a over b");
   - under a `table`, it says what the table shows -- a description, read
     before the cells, not instead of them.
-- **Decoration.** An empty `alt-text` (`\alttext()`) under an `image` says
+- **Decoration.** An empty `alt-text` (`\alttext()`) under an `image` or an `svg` says
   the picture only decorates the page: it is left out of what is read. This
   is different from no `alt-text` at all, which leaves the picture
   undescribed.

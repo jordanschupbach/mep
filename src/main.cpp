@@ -40314,7 +40314,13 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
         float svg_h = cs.height.set ? std::max(1.0f, ResolveCssLength(cs.height, font_size, available_w, eff_ctx.base_font_size)) : std::max(1.0f, intrinsic_h);
         if (cs.width.set && !cs.height.set && intrinsic_w > 0.0f) svg_h = svg_w * intrinsic_h / intrinsic_w;
         if (!cs.width.set && svg_w > box_ctx.layout_width - content_x) { float scale = (box_ctx.layout_width - content_x) / svg_w; svg_w *= scale; svg_h *= scale; }
-        out.svgs.push_back({content_x, cursor_y, svg_w, svg_h, node}); cursor_y += svg_h;
+        // Set like an inline replaced element: centred or flush right in
+        // its line by text-align, as a browser does.
+        float svg_x = content_x;
+        const float svg_room = std::max(0.0f, box_ctx.layout_width - content_x - svg_w);
+        if (box_ctx.text_align == HtmlTextAlign::Center) svg_x += svg_room / 2.0f;
+        else if (box_ctx.text_align == HtmlTextAlign::Right) svg_x += svg_room;
+        out.svgs.push_back({svg_x, cursor_y, svg_w, svg_h, node}); cursor_y += svg_h;
         enforce_height(); cursor_y += tail_inset; finish_bg(); finish_border();
         out.pending_margin_bottom = std::max(out.pending_margin_bottom, eff_margin_b);
         return;

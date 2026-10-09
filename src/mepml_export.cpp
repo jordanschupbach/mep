@@ -42,6 +42,66 @@ std::string LowerStr(std::string s) {
 // `//? Build:` and `//? Post:` say how the .mepml is built, not what the
 // document is: the exports leave them out (mepml_convert.h, BuildDir).
 bool IsBuildKey(const std::string &lower_key) { return lower_key == "build" || lower_key == "post"; }
+
+// The text an HTML block shows a reader: its tags, comments, scripts and
+// styles left out, runs of white space one space, the commonest entities
+// read.
+std::string MarkupText(const std::string &html) {
+    std::string out;
+    size_t i = 0;
+    auto skip_past = [&](const char *end) {
+        const size_t e = LowerStr(html.substr(i)).find(end);
+        i = e == std::string::npos ? html.size() : i + e + std::strlen(end);
+    };
+    while (i < html.size()) {
+        if (html.compare(i, 4, "<!--") == 0) {
+            skip_past("-->");
+            continue;
+        }
+        if (html[i] == '<') {
+            const std::string head = LowerStr(html.substr(i, 8));
+            const bool script = head.rfind("<script", 0) == 0, style = head.rfind("<style", 0) == 0;
+            skip_past(">");
+            if (script) skip_past("</script>");
+            if (style) skip_past("</style>");
+            out += ' ';
+            continue;
+        }
+        if (html[i] == '&') {
+            static const std::pair<const char *, const char *> kEntities[] = {
+                {"&amp;", "&"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&quot;", "\""}, {"&#39;", "'"}, {"&nbsp;", " "}};
+            bool done = false;
+            for (const auto &e : kEntities)
+                if (html.compare(i, std::strlen(e.first), e.first) == 0) {
+                    out += e.second;
+                    i += std::strlen(e.first);
+                    done = true;
+                    break;
+                }
+            if (done) continue;
+        }
+        out += html[i++];
+    }
+    std::string squeezed;
+    for (char c : out) {
+        const bool space = c == ' ' || c == '\t' || c == '\n' || c == '\r';
+        if (space && (squeezed.empty() || squeezed.back() == ' ')) continue;
+        squeezed += space ? ' ' : c;
+    }
+    while (!squeezed.empty() && squeezed.back() == ' ') squeezed.pop_back();
+    return squeezed;
+}
+
+// What a format with no place for SVG or HTML says of such a block: an
+// HTML block's text; an SVG's \alttext, in brackets ("[SVG]" for none).
+std::string MarkupStandIn(const Block &b) {
+    if (b.kind == BlockKind::Html) {
+        const std::string text = MarkupText(b.code);
+        if (!text.empty()) return text;
+    }
+    if (!b.alt.empty()) return "[" + b.alt + "]";
+    return b.kind == BlockKind::Svg ? "[SVG]" : "[HTML]";
+}
 }  // namespace
 
 Format FormatFromName(const std::string &name_in) {
@@ -427,6 +487,17 @@ struct MdWriter {
                     break;
                 }
                 case BlockKind::Image: blocks.push_back(captioned("![" + b.alt + "](" + b.value + ")")); break;
+                // Markdown keeps HTML as it is -- up to a blank line, which
+                // ends it there: so the markup's own blank lines go.
+                case BlockKind::Svg:
+                case BlockKind::Html: {
+                    std::string markup;
+                    std::istringstream in(b.code);
+                    for (std::string l; std::getline(in, l);)
+                        if (l.find_first_not_of(" \t\r") != std::string::npos) markup += (markup.empty() ? "" : "\n") + l;
+                    blocks.push_back(captioned(markup));
+                    break;
+                }
                 case BlockKind::Table: {
                     if (b.rows.empty()) break;
                     // Columns padded to their widest cell, and the delimiter
@@ -740,6 +811,8 @@ struct OrgWriter {
                 case BlockKind::Image:
                     blocks.push_back(cap + (b.alt_line >= 0 ? "#+ATTR_HTML: :alt " + b.alt + "\n" : "") + "[[file:" + b.value + "]]");
                     break;
+                case BlockKind::Svg:
+                case BlockKind::Html: blocks.push_back(cap + "#+begin_export html\n" + b.code + "\n#+end_export"); break;
                 case BlockKind::Table: {
                     // Columns are padded to their widest cell, the way
                     // org-mode aligns a table itself.
@@ -913,6 +986,12 @@ struct TextWriter {
                     break;
                 }
                 case BlockKind::Image: blocks.push_back("[figure: " + b.value + "]" + cap); break;
+                case BlockKind::Svg: blocks.push_back("[figure" + (b.alt.empty() ? std::string() : ": " + b.alt) + "]" + cap); break;
+                case BlockKind::Html: {
+                    const std::string text = MarkupStandIn(b) + cap;
+                    if (!text.empty()) blocks.push_back(text);
+                    break;
+                }
                 case BlockKind::Table: {
                     std::vector<std::vector<std::string>> cells;
                     std::vector<size_t> w;
@@ -1029,6 +1108,16 @@ std::vector<std::pair<std::string, std::string>> OfficeProps(const Document &doc
         // An html result is shown as its text in the package; its markup
         // rides along so an import gets the HTML itself back.
         if (b.result_format == "html") p.push_back({"mepml.result." + std::to_string(n), Join(b.result_lines, "\n")});
+    }
+    // SVG and HTML blocks, numbered in document order and marked by a
+    // bookmark "mepml_markup_N" on the paragraph standing in for each: the
+    // markup, and its \alttext where it has one.
+    n = 0;
+    for (size_t bi = 0; bi < doc.blocks.size(); ++bi) {
+        const Block &b = doc.blocks[bi];
+        if ((b.kind != BlockKind::Svg && b.kind != BlockKind::Html) || export_hidden[bi]) continue;
+        p.push_back({"mepml.markup." + std::to_string(++n), b.code});
+        if (b.alt_line >= 0) p.push_back({"mepml.markup-alt." + std::to_string(n), b.alt});
     }
     for (const auto &kv : doc.citations) {
         std::string v;
@@ -1188,7 +1277,7 @@ struct RtfWriter {
         return "{\\pard\\plain\\sa160\\fs22" + props + " " + body + "\\par}\n";
     }
 
-    int code_n = 0;
+    int code_n = 0, markup_n = 0;
     std::vector<bool> lists{};  // \lsN (N = index + 1) -> numbered?
     static std::string Bookmark(const std::string &name) { return "{\\*\\bkmkstart " + name + "}{\\*\\bkmkend " + name + "}"; }
 
@@ -1273,6 +1362,13 @@ struct RtfWriter {
                     break;
                 }
                 case BlockKind::Image: body += Picture(b.value, b.alt, Decorative(b)) + Caption(labels[bi], b.caption_inlines); break;
+                case BlockKind::Svg:
+                case BlockKind::Html: {
+                    // (Its markup rides along in the properties: OfficeProps.)
+                    body += Para("", Bookmark("mepml_markup_" + std::to_string(++markup_n)) + Esc(MarkupStandIn(b)));
+                    body += Caption(labels[bi], b.caption_inlines);
+                    break;
+                }
                 case BlockKind::Table: {
                     size_t cols = 0;
                     for (const auto &r : b.rows) cols = std::max(cols, r.size());
@@ -1465,7 +1561,7 @@ struct DocxWriter {
     std::vector<int> list_nums;          // numId -> abstractNum (0 bullet, 1 decimal)
     int next_rel = 10;
     int next_pic = 1;
-    int code_n = 0, mark_n = 0;
+    int code_n = 0, mark_n = 0, markup_n = 0;
     ExportTextStyler styler{doc};
     std::map<std::string, SheetLook> sheet_styles{};  // the "MepSheet-..." styles the body uses
 
@@ -1703,6 +1799,13 @@ struct DocxWriter {
                     break;
                 }
                 case BlockKind::Image: body += Picture(b.value, b.alt, Decorative(b)) + Caption(labels[bi], b.caption_inlines); break;
+                case BlockKind::Svg:
+                case BlockKind::Html: {
+                    // (Its markup rides along in the properties: OfficeProps.)
+                    body += P("", Bookmark("mepml_markup_" + std::to_string(++markup_n)) + Run(MarkupStandIn(b), none));
+                    body += Caption(labels[bi], b.caption_inlines);
+                    break;
+                }
                 case BlockKind::Table: {
                     size_t cols = 0;
                     for (const auto &r : b.rows) cols = std::max(cols, r.size());
@@ -1942,7 +2045,7 @@ struct OdtWriter {
     std::map<std::string, std::string> text_styles;  // OdtFmt::Key -> T<n>
     std::string auto_styles;
     std::vector<zip::EntryToWrite> pictures;
-    int note_n = 0, pic_n = 0, code_n = 0;
+    int note_n = 0, pic_n = 0, code_n = 0, markup_n = 0;
     ExportTextStyler styler{doc};
     std::map<std::string, SheetLook> sheet_styles{};  // the "MepSheet_..." styles the body uses
 
@@ -2160,6 +2263,13 @@ struct OdtWriter {
                     break;
                 }
                 case BlockKind::Image: body += Picture(b.value, b.alt, Decorative(b)) + Caption(labels[bi], b.caption_inlines); break;
+                case BlockKind::Svg:
+                case BlockKind::Html: {
+                    // (Its markup rides along in the properties: OfficeProps.)
+                    body += P("", "<text:bookmark text:name=\"mepml_markup_" + std::to_string(++markup_n) + "\"/>" + Run(MarkupStandIn(b), none));
+                    body += Caption(labels[bi], b.caption_inlines);
+                    break;
+                }
                 case BlockKind::Table: {
                     size_t cols = 0;
                     for (const auto &r : b.rows) cols = std::max(cols, r.size());

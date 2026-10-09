@@ -888,7 +888,7 @@ slide stops or restarts them.
 #+end_example
 
 =\caption= and =\alttext= are optional and go on the lines directly after
-the image, table, display maths or code block they describe. Either can
+the image, table, display maths, code block or SVG/HTML block they describe. Either can
 run over several lines, with its parentheses wherever suits, up to the next
 blank line; the line breaks read as spaces. Images are drawn in the buffer.
 
@@ -948,6 +948,53 @@ columns leave (at most half of it each), and the row gets taller to fit
 the tallest picture. When the cursor is on that row, the pictures stay
 above its raw text. The export puts an =<img>= in the cell. A cell with
 anything else next to the image is plain text.
+
+* SVG and HTML
+
+SVG and HTML can be written straight into a document, as Markdown allows.
+A line that starts with =<svg=, or with an HTML block tag -- =<div=,
+=<table=, =<details=, =<figure=, =<p=, =<pre=, =<iframe=, =<video=, a
+=<!doctype= and the rest of CommonMark's list -- opens markup that runs to
+the line on which that element closes: its =</svg>= or =</div>=, counting
+the elements of the same name inside it, blank lines and all.
+
+#+begin_example
+<svg width="240" height="80" viewBox="0 0 240 80" xmlns="http://www.w3.org/2000/svg">
+  <rect x="4" y="4" width="232" height="72" rx="12" fill="#0b5cad"/>
+  <text x="120" y="48" font-size="24" text-anchor="middle" fill="white">mepml</text>
+</svg>
+\caption(A badge drawn in *SVG*)
+\alttext(A blue rounded badge reading mepml)
+
+<details open>
+<summary>More</summary>
+<p>Anything HTML can say: <b>bold</b>, a <a href="https://example.com">link</a> ...</p>
+</details>
+#+end_example
+
+In the editor the markup is drawn in place by mep's own HTML engine, laid
+out to the text width; its source comes back while the cursor is inside
+it, as an html result's does. Relative paths in it (an =<img src>=, a
+stylesheet) start from the document's directory.
+
+An SVG is a figure: numbered, captioned and described by =\alttext= like
+an image (an empty =\alttext()= marks it as decoration). HTML is a figure
+when it has a =\caption=; its =\alttext= is a description, read before
+it.
+
+Only a line that /starts/ with one of those tags opens markup: =<x>= is
+still small text, and a tag in the middle of a line is prose. A paragraph
+line that begins with such a tag starts markup, so write =\<div= to keep
+it prose. Markup that never closes ends before the first blank line, with
+a warning.
+
+The HTML exports (and the slideshow) write the markup as it is, and
+Markdown and Org keep it as raw HTML. The formats that cannot hold it --
+RTF, DOCX, ODT, the slide decks, plain text -- write what it says
+instead (its alt text, or an HTML block's text) and its caption, and the
+office packages carry the markup itself in their document properties, so
+importing one gives the markup back. LaTeX and PDF leave it out, keeping
+the caption.
 
 * Accessibility
 

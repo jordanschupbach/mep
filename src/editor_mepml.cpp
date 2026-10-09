@@ -1440,7 +1440,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         // which is drawn centred itself; the alt text small. Their raw rows come back
         // while the cursor is in them (OrgLatexRenderForRow).
         if (conceal && (b.caption_line >= 0 || b.alt_line >= 0)) {
-            const bool centred = b.kind == mepml::BlockKind::Image ||
+            const bool centred = mepml::IsFigure(b) ||
                                  (b.kind == mepml::BlockKind::Code && !b.result_images.empty());
             int width = TextWidth();
             if (CurPane().text_cols > 8) width = std::min(width, CurPane().text_cols - 1);
@@ -1461,7 +1461,7 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             const int owner = idx < owner_nodes.size() ? owner_nodes[idx] : -1;
             if (b.caption_line >= 0) {
                 std::string of = "code";
-                if (b.kind == mepml::BlockKind::Image || !b.result_images.empty()) of = "figure";
+                if (mepml::IsFigure(b) || !b.result_images.empty()) of = "figure";
                 else if (b.kind == mepml::BlockKind::Table) of = "table";
                 else if (b.kind == mepml::BlockKind::MathBlock) of = "math";
                 const mepml::Element caption("caption", "of", of);
@@ -1555,6 +1555,22 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             std::string resolved = OrgResolvePath(b.value);
             std::error_code ec;
             if (std::filesystem::exists(resolved, ec)) SetOrgImageRow(b.line_start, resolved);
+        }
+        // SVG and HTML written in the document: its lines draw as the
+        // rendered markup, at the height it lays out to -- its source back
+        // while the cursor is in it (OrgLatexRenderForRow).
+        if ((b.kind == mepml::BlockKind::Svg || b.kind == mepml::BlockKind::Html) && html_measure_ &&
+            b.code_line_end >= b.code_line_start && b.code_line_end < n) {
+            Buffer::OrgLatexRender r;
+            // (An SVG is a figure: centred, as an image is, over its caption.)
+            r.html = b.kind == mepml::BlockKind::Svg ? "<div style=\"text-align:center\">" + b.code + "</div>" : b.code;
+            const std::string file = MepmlCurrentFile();
+            r.base_dir = file.empty() ? std::string(".") : std::filesystem::path(file).parent_path().string();
+            r.end_row = b.code_line_end;
+            r.html_cols = column_cols(b.code_line_start, TextWidth());
+            if (CurPane().text_cols > 8) r.html_cols = std::min(r.html_cols, CurPane().text_cols - 3);
+            r.slots = std::max(1, html_measure_(r.html, r.base_dir, r.html_cols));
+            buf.mepml_html_rows[b.code_line_start] = std::move(r);
         }
         // HTML a code block produced (`results=html`): its result lines
         // draw as the rendered markup, at the height it lays out to.
@@ -2261,7 +2277,7 @@ void Editor::RecomputeMepmlFolds() {
         if (b.kind == mepml::BlockKind::Citation ||
             b.kind == mepml::BlockKind::MathBlock || b.kind == mepml::BlockKind::Comment ||
             b.kind == mepml::BlockKind::Table || b.kind == mepml::BlockKind::List ||
-            b.kind == mepml::BlockKind::Abstract)
+            b.kind == mepml::BlockKind::Abstract || b.kind == mepml::BlockKind::Svg || b.kind == mepml::BlockKind::Html)
             add(b.line_start, b.line_end);
     }
 }

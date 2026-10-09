@@ -385,6 +385,20 @@ struct Builder {
                 break;
             }
             case BlockKind::Image: Picture(items, b.value, b.alt, Caption(b, label)); break;
+            case BlockKind::Svg:
+            case BlockKind::Html: {
+                // Markup a deck cannot hold: what it shows, in words -- its
+                // \alttext -- and its caption.
+                if (!b.alt.empty()) {
+                    Para p;
+                    p.kind = ParaKind::Caption;
+                    p.runs.push_back(Plain("[" + b.alt + "]"));
+                    TextItem(items).push_back(p);
+                }
+                std::vector<Run> cap = Caption(b, label);
+                if (!cap.empty()) TextItem(items).push_back(Para{ParaKind::Caption, cap});
+                break;
+            }
             case BlockKind::Table: {
                 Item t;
                 t.kind = ItemKind::Table;

@@ -140,6 +140,27 @@ versicolor | 4.26 | 1.33
 | virginica | 5.55 | 2.03 |
 \caption(A Markdown table)
 
+SVG and HTML can be written straight into the document, as Markdown allows:
+a line that starts with `<svg` or with an HTML block tag (`<div`, `<table`,
+`<details` ...) opens markup that runs to where its element closes, blank
+lines and all. mep draws it in place; the HTML exports write it as it is. An
+SVG is a figure, captioned and described like an image:
+
+<svg width="240" height="80" viewBox="0 0 240 80" xmlns="http://www.w3.org/2000/svg">
+  <rect x="4" y="4" width="232" height="72" rx="12" fill="#0b5cad"/>
+
+  <circle cx="44" cy="40" r="20" fill="#ffffff" opacity="0.85"/>
+  <text x="140" y="48" font-size="24" text-anchor="middle" fill="#ffffff">mepml</text>
+</svg>
+\caption(A badge drawn in *SVG*)
+\alttext(A blue rounded badge with a white circle and the word mepml)
+
+<details open>
+<summary>HTML, laid out in place</summary>
+<p>Markup the document's own syntax has no word for: <b>bold</b>, a
+<a href="https://example.com">link</a> and a <code>&lt;tag&gt;</code>.</p>
+</details>
+
 Code blocks take options in the header or from //? lines right above them,
 and a ```lang header works too. Results are written back between the markers
 when the block is run (C-c C-c in mep):

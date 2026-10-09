@@ -91,6 +91,8 @@ enum TokenType {
     BOX_BREAK,
     BOX_END,
     CMD_CLASS,
+    SVG_MARKUP,
+    HTML_MARKUP,
     ERROR_SENTINEL,
 };
 
@@ -361,6 +363,160 @@ static bool group_ends_line(TSLexer *lexer) { return group_ends_line_crossed(lex
 // paragraph otherwise -- a paragraph ends at a blank line or at a line that
 // starts some other block.
 
+static bool slide_closer_rest(TSLexer *lexer);
+
+// --- SVG and HTML written into the document (mepml_doc.cpp's MarkupTagAt
+// and MarkupBlockEnd: keep the three in step).
+
+static bool is_tag_char(int32_t c) { return is_alpha(c) || is_digit(c) || c == '-' || c == ':'; }
+static int32_t lower_char(int32_t c) { return is_upper(c) ? c - 'A' + 'a' : c; }
+
+static bool in_word_list(const char *const *list, const char *w) {
+    for (; *list; ++list)
+        if (strcmp(*list, w) == 0) return true;
+    return false;
+}
+
+// HTML elements that stand as blocks of their own.
+static bool is_html_block_tag(const char *t) {
+    static const char *const k[] = {
+        "address", "article", "aside", "audio", "base", "basefont", "blockquote", "body", "canvas", "caption", "center",
+        "col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "embed", "fieldset", "figcaption",
+        "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr",
+        "html", "iframe", "img", "legend", "li", "link", "main", "menu", "menuitem", "nav", "noframes", "object", "ol",
+        "optgroup", "option", "p", "param", "picture", "pre", "script", "search", "section", "style", "summary",
+        "table", "tbody", "td", "textarea", "tfoot", "th", "thead", "title", "tr", "track", "ul", "video", NULL,
+    };
+    return in_word_list(k, t);
+}
+
+static bool is_void_tag(const char *t) {
+    static const char *const k[] = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+                                    "param", "source", "track", "wbr", NULL};
+    return in_word_list(k, t);
+}
+
+// With the lexer on a line's first non-blank `<`: reads the tag a markup
+// block opens with into `tag` (lowercase; "html" for a doctype, with
+// *doctype set) and returns true, or returns false for any other line.
+static bool read_markup_tag(TSLexer *lexer, char tag[16], bool *doctype) {
+    *doctype = false;
+    if (la(lexer) != '<') return false;
+    adv(lexer);
+    if (la(lexer) == '!') {
+        adv(lexer);
+        static const char kDoctype[] = "doctype";
+        for (int i = 0; kDoctype[i]; ++i) {
+            if (lower_char(la(lexer)) != kDoctype[i]) return false;
+            adv(lexer);
+        }
+        strcpy(tag, "html");
+        *doctype = true;
+        return true;
+    }
+    int n = 0;
+    while (is_tag_char(la(lexer))) {
+        if (n >= 15) return false;
+        tag[n++] = (char)lower_char(la(lexer));
+        adv(lexer);
+    }
+    tag[n] = 0;
+    const int32_t next = la(lexer);
+    if (!(at_eol(lexer) || next == '>' || next == '/' || is_blank(next))) return false;
+    return n > 0 && (strcmp(tag, "svg") == 0 || is_html_block_tag(tag));
+}
+
+// The rest of a markup block, the lexer just past its opening `<tag` (or
+// its doctype): up to the end of the line its element closes on, every
+// `<tag` inside it balanced by a `</tag>`. One that never closes ends
+// before the first blank line (or the open box's or slide's closer).
+static bool scan_markup(Scanner *s, TSLexer *lexer, const char *tag, bool doctype, enum TokenType tok) {
+    int depth = 0;
+    bool in_comment = false, in_tag = !doctype, closing = false, counted = !doctype, blank_seen = false;
+    int32_t quote = 0, prev = 0, last = '>';
+    // `-->`: the last two characters, for the end of a comment.
+    int32_t back1 = 0, back2 = 0;
+    while (!lexer->eof(lexer)) {
+        int32_t c = la(lexer);
+        if (c == '\r' || c == '\n') {
+            if (!blank_seen) lexer->mark_end(lexer);  // (where it ends if it never closes)
+            if (c == '\r') adv(lexer);
+            if (la(lexer) == '\n') adv(lexer);
+            while (is_blank(la(lexer))) adv(lexer);
+            const int32_t first = la(lexer);
+            if (at_eol(lexer)) blank_seen = true;
+            if ((s->boxes && first == ')') || (s->slide && first == s->slide)) {
+                adv(lexer);
+                if (slide_closer_rest(lexer)) blank_seen = true;
+            }
+            back1 = back2 = 0;
+            continue;
+        }
+        adv(lexer);
+        if (!blank_seen && !is_blank(c)) last = c;
+        if (in_comment) {
+            if (c == '>' && back1 == '-' && back2 == '-') in_comment = false;
+            back2 = back1;
+            back1 = c;
+            continue;
+        }
+        if (in_tag) {
+            if (quote) {
+                if (c == quote) quote = 0;
+            } else if (c == '"' || c == '\'') {
+                quote = c;
+            } else if (c == '>') {
+                in_tag = false;
+                if (closing) depth--;
+                else if (prev != '/' && !is_void_tag(tag)) depth++;
+                if (depth <= 0) {
+                    while (!at_eol(lexer)) {
+                        if (!is_blank(la(lexer))) last = la(lexer);
+                        adv(lexer);
+                    }
+                    lexer->mark_end(lexer);
+                    return emit(s, lexer, tok, last);
+                }
+            }
+            if (!is_blank(c)) prev = c;
+            continue;
+        }
+        if (c != '<') continue;
+        if (la(lexer) == '!') {
+            adv(lexer);
+            if (la(lexer) == '-') {
+                adv(lexer);
+                if (la(lexer) == '-') {
+                    adv(lexer);
+                    in_comment = true;
+                    back1 = back2 = 0;
+                }
+            }
+            continue;
+        }
+        const bool close = la(lexer) == '/';
+        if (close) adv(lexer);
+        char name[16];
+        int n = 0;
+        bool too_long = false;
+        while (is_tag_char(la(lexer))) {
+            if (n < 15) name[n++] = (char)lower_char(la(lexer));
+            else too_long = true;
+            adv(lexer);
+        }
+        name[n] = 0;
+        const int32_t next = la(lexer);
+        if (too_long || strcmp(name, tag) != 0 || !(at_eol(lexer) || next == '>' || next == '/' || is_blank(next))) continue;
+        if (close && !counted) continue;  // a stray `</tag>` before the element opens
+        counted = true;
+        in_tag = true;
+        closing = close;
+        prev = 0;
+    }
+    if (!blank_seen) lexer->mark_end(lexer);
+    return emit(s, lexer, tok, last);
+}
+
 // The rest of a line, just past a bracket that could close the open
 // slide: blanks, then its end or a `// comment`.
 static bool slide_closer_rest(TSLexer *lexer) {
@@ -413,6 +569,11 @@ static bool line_starts_block(TSLexer *lexer, int32_t slide_close, bool box_open
         return group_ends_line(lexer);
     }
     if (c == '|' || c == '@') return true;  // (approximate: tables, directives)
+    if (c == '<') {
+        char tag[16];
+        bool doctype = false;
+        return read_markup_tag(lexer, tag, &doctype);
+    }
     if (c == '>') {
         while (la(lexer) == '>') adv(lexer);
         return is_blank(la(lexer)) || at_eol(lexer);
@@ -1739,6 +1900,20 @@ static bool scan_line_start(Scanner *s, TSLexer *lexer, const bool *valid) {
         return fallback_line(s, lexer, valid, indent > 0);
     }
 
+    // `<svg` or an HTML block tag: the markup, to where its element closes.
+    if (c == '<' && (valid[SVG_MARKUP] || valid[HTML_MARKUP])) {
+        char tag[16];
+        bool doctype = false;
+        if (read_markup_tag(lexer, tag, &doctype)) {
+            const enum TokenType tok = strcmp(tag, "svg") == 0 ? SVG_MARKUP : HTML_MARKUP;
+            if (valid[tok]) {
+                s->context = CTX_LINE;
+                return scan_markup(s, lexer, tag, doctype, tok);
+            }
+        }
+        return fallback_line(s, lexer, valid, indent > 0);
+    }
+
     return fallback_line_after(s, lexer, valid, indent > 0, kNothing);
 }
 
@@ -1936,7 +2111,7 @@ bool tree_sitter_mepml_external_scanner_scan(void *payload, TSLexer *lexer, cons
                            valid[RESULT_END_ATTACHED] || valid[RESULT_BEGIN_MARKDOWN] ||
                            valid[DIRECTIVE_START] || valid[ATTRIBUTE_START] || valid[FENCE_OPEN] ||
                            valid[SLIDE_START] || valid[SLIDE_END] || valid[COMMAND_BLOCK_START] || valid[BOX_START] ||
-                           valid[BOX_END];
+                           valid[BOX_END] || valid[SVG_MARKUP] || valid[HTML_MARKUP];
         if (block_valid && COL0()) {
             const bool ok = scan_line_start(s, lexer, valid);
             if (ok && lexer->result_symbol != TABLE_ROW_START && lexer->result_symbol != TABLE_DELIMITER_ROW)

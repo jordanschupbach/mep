@@ -166,6 +166,19 @@ enum class BlockKind {
     // `level` the depth among the open boxes and columns.
     LayoutBegin,
     LayoutEnd,
+    // Markup written into the document as it is: a line that starts with
+    // `<svg` opens an Svg block, one that starts with an HTML block tag
+    // (`<div`, `<table`, `<details`, `<figure`, a doctype ...) an Html
+    // block, and either runs to the line on which that element closes --
+    // its `</tag>` balancing the `<tag`s inside it, blank lines and all.
+    // One never closed ends before the first blank line after it. `keyword`
+    // is the opening tag ("svg", "div"), `code` the markup (its lines,
+    // code_line_start..code_line_end), and a \caption / \alttext under it
+    // attaches as to an image: an Svg is a figure, an Html one when it has
+    // a caption. The editor draws the markup in place; HTML exports write
+    // it as it is.
+    Svg,
+    Html,
 };
 
 enum class Align { Default, Left, Center, Right };
@@ -571,6 +584,19 @@ bool IsBlockElement(const std::string &name);
 // A results line (its `// ` prefix already stripped) that names a figure:
 // `\image(path)` (or `@image{path}`). Sets *path.
 bool ResultImagePath(const std::string &text, std::string *path);
+
+// SVG and HTML written into a document (BlockKind::Svg / Html): the tag
+// `line` opens a markup block with ("svg", "div", "table" ...), "" for a
+// line that opens none -- an importer escapes such a line of prose.
+std::string MarkupBlockTag(const std::string &line);
+// The line on which the markup block opened on lines[first] closes, -1
+// when it never does (or lines[first] opens none).
+int MarkupBlockClose(const std::vector<std::string> &lines, int first);
+
+// A block that is a picture of its own: an \image, an <svg>, or HTML
+// with a \caption. (A code block that drew a figure is one too, where
+// its results are shown: see BlockLabels.)
+bool IsFigure(const Block &b);
 
 // "Figure N" / "Table N" for every numbered block, "" for the rest,
 // parallel to doc.blocks. Images and code blocks that produced a figure

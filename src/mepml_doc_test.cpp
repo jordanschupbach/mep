@@ -465,6 +465,77 @@ int main() {
         CHECK(html.find("</li></ul><ol start=\"2\"><li>two") != std::string::npos);
     }
 
+    // --- SVG and HTML: markup at a line's start, up to where its element closes.
+    {
+        // An SVG runs to its </svg>, blank lines and all, and takes a
+        // caption and alt text like an image: a figure.
+        Document d = Parse({"Text before.", "<svg width=\"10\" height=\"10\">", "  <rect width=\"10\" height=\"10\"/>", "",
+                            "  <text>a > b</text>", "</svg>", "\\caption(A box)", "\\alttext(A square)", "", "After."});
+        CHECK(d.blocks.size() == 3);
+        CHECK(d.blocks[0].kind == BlockKind::Paragraph && d.blocks[0].line_end == 0);  // (the markup ends the paragraph)
+        const Block &svg = d.blocks[1];
+        CHECK(svg.kind == BlockKind::Svg && svg.keyword == "svg");
+        CHECK(svg.line_start == 1 && svg.code_line_end == 5 && svg.line_end == 7);
+        CHECK(svg.code.find("<rect") != std::string::npos && svg.code.rfind("</svg>") == svg.code.size() - 6);
+        CHECK(svg.caption == "A box" && svg.alt == "A square");
+        CHECK(IsFigure(svg) && BlockLabels(d)[1] == "Figure 1");
+        CHECK(d.diagnostics.empty());
+        const std::string html = ToHtml(d);
+        CHECK(html.find("<figure><div class=\"mepml-svg\" role=\"img\" aria-label=\"A square\">\n<svg") != std::string::npos);
+        CHECK(html.find("<figcaption>Figure 1: A box</figcaption>") != std::string::npos);
+        CHECK(ElementTreeJson(d).find("{\"name\":\"svg\"") != std::string::npos);
+
+        // Nested elements of the same name balance; comments and quoted
+        // attribute values are skipped. HTML names its tag.
+        d = Parse({"<div class=\"a\">", "<div title=\"</div>\">x</div>", "<!-- </div> -->", "", "</DIV> tail", "next"});
+        CHECK(d.blocks.size() == 2);
+        CHECK(d.blocks[0].kind == BlockKind::Html && d.blocks[0].keyword == "div" && d.blocks[0].line_end == 4);
+        CHECK(!IsFigure(d.blocks[0]));
+        CHECK(ElementTreeJson(d).find("{\"name\":\"html\",\"attrs\":{\"tag\":\"div\"}") != std::string::npos);
+        CHECK(d.blocks[1].kind == BlockKind::Paragraph && d.blocks[1].line_start == 5);
+
+        // Closed on its own line: an `<x/>`, a void element, an element
+        // opened and closed there; a doctype opens an html block.
+        CHECK(Parse({"<svg/>", "x"}).blocks[0].line_end == 0);
+        CHECK(Parse({"<hr>", "x"}).blocks[0].kind == BlockKind::Html);
+        CHECK(Parse({"<hr>", "x"}).blocks[0].line_end == 0);
+        CHECK(Parse({"<p>one</p>", "x"}).blocks[0].line_end == 0);
+        d = Parse({"<!DOCTYPE html>", "<html>", "<body>hi</body>", "</html>"});
+        CHECK(d.blocks.size() == 1 && d.blocks[0].kind == BlockKind::Html && d.blocks[0].keyword == "html" && d.blocks[0].line_end == 3);
+
+        // Never closed: it ends before the blank line, with a warning.
+        d = Parse({"<details>", "<summary>s</summary>", "", "Prose."});
+        CHECK(d.blocks.size() == 2 && d.blocks[0].kind == BlockKind::Html && d.blocks[0].line_end == 1);
+        CHECK(d.diagnostics.size() == 1 && d.diagnostics[0].message.find("never closed") != std::string::npos);
+
+        // Only a block tag at a line's start: `<x>` is small text, an
+        // inline tag is prose, and so is a tag after text, or an escaped one.
+        for (const char *prose : {"<small text> here", "<span>x</span>", "<b>bold</b>", "a <div>b</div>", "\\<div>x</div>",
+                                  "<divx>y", "<svgfoo>"})
+            CHECK(Parse({prose}).blocks[0].kind == BlockKind::Paragraph);
+        CHECK(MarkupBlockTag("  <TABLE border=1>") == "table" && MarkupBlockTag("<svg") == "svg" && MarkupBlockTag("<em>").empty());
+        CHECK(MarkupBlockClose({"<ul>", "<li>a</li>", "</ul>"}, 0) == 2 && MarkupBlockClose({"<ul>"}, 0) == -1);
+
+        // HTML with a caption is a figure, numbered with the others.
+        d = Parse({"\\image(a.png)", "", "<figure>", "<p>x</p>", "</figure>", "\\caption(Made in HTML)"});
+        CHECK(IsFigure(d.blocks[1]) && BlockLabels(d)[1] == "Figure 2");
+
+        // Its lines are code to the highlighter (no prose markup inside),
+        // as the `svg`/`html` element.
+        d = Parse({"<div>", "*not bold*", "</div>"});
+        ElementPaths paths;
+        bool any_bold = false, all_code = true;
+        for (const Span &sp : Highlight(d, &paths)) {
+            any_bold = any_bold || (sp.style & kBold);
+            all_code = all_code && (sp.style & kCode) && paths.nodes[static_cast<size_t>(sp.path)].element.name == "html";
+        }
+        CHECK(!any_bold && all_code);
+        // Markup is not mepml: commands in it are not expanded.
+        const Lines expanded = ExpandCommands({"<div>", "\\hi(x)", "</div>"}, {{"hi", UserCommand{"hi", {"n"}, "Hello", 0, ""}}}, {"html"});
+        CHECK(expanded[1] == "\\hi(x)");
+        CHECK(ExpandCommands({"\\hi(x)"}, {{"hi", UserCommand{"hi", {"n"}, "Hello", 0, ""}}}, {"html"})[0] == "Hello");
+    }
+
     // --- Pictures in table cells: a cell of nothing but `@image{path}`.
     {
         Lines src = {

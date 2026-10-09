@@ -590,6 +590,8 @@ std::string EscapeLineStart(const std::string &line) {
         block = j < t.size() && (t[j] == '.' || t[j] == ')') && j + 1 < t.size() && t[j + 1] == ' ';
     } else if (t.size() >= 3 && std::strchr("-=_*", t[0]) && t.find_first_not_of(t[0]) == std::string::npos) {
         block = true;
+    } else if (t[0] == '<' && !MarkupBlockTag(t).empty()) {
+        block = true;  // (it would open an HTML block)
     }
     return block ? line.substr(0, k) + "\\" + t : line;
 }
@@ -606,6 +608,24 @@ struct HtmlReader {
     std::vector<std::string> citations;            // \citation blocks from a bibliography's data-bib-*
     std::vector<std::string> html_result_sources;  // HtmlResultSources(), in document order
     size_t next_html_result = 0;
+    // The SVG and HTML blocks mepml's export wrote (`<div class="mepml-svg">`,
+    // `mepml-html`), from the source text in document order.
+    std::vector<std::string> markup_sources;
+    size_t next_markup = 0;
+
+    static bool IsMarkupDiv(const DomNode *n) {
+        return n->tag == "div" && (HasClass(n, "mepml-svg") || HasClass(n, "mepml-html"));
+    }
+    // Such a block: its markup as written, and what its wrapper says of it
+    // to a reader who cannot see it as its \alttext.
+    void Markup(const DomNode *n) {
+        if (next_markup >= markup_sources.size()) return;
+        out.Block(markup_sources[next_markup++], Out::kFigure);
+        const std::string label = Attr(n, "aria-label"), description = Attr(n, "aria-description");
+        if (!Trim(label).empty()) out.Attach("\\alttext(" + ParenEsc(Trim(label)) + ")");
+        else if (!Trim(description).empty()) out.Attach("\\alttext(" + ParenEsc(Trim(description)) + ")");
+        else if (Attr(n, "aria-hidden") == "true") out.Attach("\\alttext()");
+    }
 
     static std::string Attr(const DomNode *n, const char *name) {
         auto it = n->attrs.find(name);
@@ -897,18 +917,26 @@ struct HtmlReader {
             if (has_results) out.Results(results, html_results ? "html" : "");
             return;
         }
-        const DomNode *img = nullptr;
+        const DomNode *img = nullptr, *markup = nullptr;
         std::vector<Seg> caption;
         std::function<void(const DomNode *)> find = [&](const DomNode *t) {
             for (const auto &c : t->children) {
                 if (c->type != DomNodeType::Element) continue;
-                if (c->tag == "img" && !img) img = c.get();
-                else if (c->tag == "figcaption") caption = InlOf(c.get());
-                else find(c.get());
+                if (IsMarkupDiv(c.get())) {
+                    if (!markup && !img) markup = c.get();
+                } else if (c->tag == "img" && !img && !markup) {
+                    img = c.get();
+                } else if (c->tag == "figcaption") {
+                    caption = InlOf(c.get());
+                } else {
+                    find(c.get());
+                }
             }
         };
         find(n);
-        if (img) {
+        if (markup) {
+            Markup(markup);
+        } else if (img) {
             const std::string role = Attr(img, "role");
             out.Image(Attr(img, "src"), Attr(img, "alt"), img->attrs.count("alt") && (role == "presentation" || role == "none"));
         } else {
@@ -983,6 +1011,8 @@ struct HtmlReader {
                 Table(c);
             } else if (t == "figure") {
                 Figure(c);
+            } else if (IsMarkupDiv(c)) {
+                Markup(c);
             } else if (t == "img") {
                 out.Image(Attr(c, "src"), Attr(c, "alt"));
             } else if (t == "hr") {
@@ -1117,11 +1147,18 @@ namespace {
 // code block produced, as mepml's export writes it), in document order:
 // read from the source text itself, matching nested divs, so it comes back
 // exactly as written rather than re-serialized from the DOM.
-std::vector<std::string> HtmlResultSources(const std::string &html) {
+// (`classes`: the wrappers to look for, any of them.)
+std::vector<std::string> HtmlResultSources(const std::string &html,
+                                           const std::vector<std::string> &classes = {"results-html"}) {
     std::vector<std::string> out;
     const std::string lower = Lower(html);
     size_t at = 0;
-    while ((at = lower.find("results-html", at)) != std::string::npos) {
+    auto next = [&](size_t from) {
+        size_t best = std::string::npos;
+        for (const std::string &cls : classes) best = std::min(best, lower.find(cls, from));
+        return best;
+    };
+    while ((at = next(at)) != std::string::npos) {
         const size_t open = lower.rfind("<div", at);
         const size_t gt = lower.find('>', at);
         if (open == std::string::npos || gt == std::string::npos) break;
@@ -1157,6 +1194,7 @@ std::string FromHtml(const std::string &html_in) {
     ParseHtml(html, dom, /*full_document=*/true, /*compute_styles=*/false);
     HtmlReader r;
     r.html_result_sources = HtmlResultSources(html);
+    r.markup_sources = HtmlResultSources(html, {"mepml-svg", "mepml-html"});
     if (!dom.root) return "";
     r.CollectFootnotes(dom.root.get());
     r.Blocks(dom.root.get());
@@ -1949,6 +1987,19 @@ struct MdReader {
                 std::string html;
                 size_t k = i;
                 for (; k < lines.size() && !Trim(lines[k]).empty(); ++k) html += lines[k] + "\n";
+                // SVG, or HTML mepml reads as a block of its own, whose
+                // element closes where the Markdown block ends: kept as it is.
+                if (!MarkupBlockTag(t).empty()) {
+                    const std::vector<std::string> block(lines.begin() + static_cast<std::ptrdiff_t>(i),
+                                                         lines.begin() + static_cast<std::ptrdiff_t>(k));
+                    if (MarkupBlockClose(block, 0) == static_cast<int>(block.size()) - 1) {
+                        std::string markup;
+                        for (const std::string &bl : block) markup += (markup.empty() ? "" : "\n") + bl;
+                        out.Block(markup, Out::kFigure);
+                        i = k - 1;
+                        continue;
+                    }
+                }
                 i = k - 1;
                 const std::string converted = FromHtml(html);
                 for (const std::string &blk : [&] {
@@ -2477,6 +2528,13 @@ struct OrgReader {
                     std::string code;
                     for (const std::string &b : blk) code += b + "\n";
                     out.Code("", {}, code);
+                } else if (kind == "export" && Lower(Trim(value)) == "html" && !blk.empty() &&
+                           MarkupBlockClose(blk, 0) == static_cast<int>(blk.size()) - 1) {
+                    // SVG, or HTML mepml reads as a block of its own: kept as it is.
+                    std::string markup;
+                    for (const std::string &b : blk) markup += (markup.empty() ? "" : "\n") + b;
+                    out.Block(markup, Out::kFigure);
+                    TakeCaption();
                 } else if (kind == "export" || kind == "comment") {
                     // not document text
                 } else if (kind == "abstract") {
@@ -2928,6 +2986,15 @@ struct OfficeProps {
         }
         for (const auto &m : meta) out.meta.push_back("//? " + m.second);
     }
+    // SVG or HTML block N's markup (mepml.markup.N), and its alt text
+    // (*has_alt false when it has none).
+    std::string Markup(int n, std::string *alt, bool *has_alt) const {
+        auto it = props.find("mepml.markup." + std::to_string(n));
+        auto a = props.find("mepml.markup-alt." + std::to_string(n));
+        *has_alt = a != props.end();
+        *alt = *has_alt ? a->second : std::string();
+        return it == props.end() ? std::string() : it->second;
+    }
     // Code block N's html result (mepml.result.N), "" when it has none.
     std::string Result(int n) const {
         auto it = props.find("mepml.result." + std::to_string(n));
@@ -3161,6 +3228,13 @@ struct Assembler {
         held_caption = segs;
         hold = true;
     }
+    // An SVG or HTML block, from the properties: its paragraph in the
+    // package only stands in for it.
+    void Markup(const std::string &markup, const std::string &alt, bool has_alt) {
+        Flush();
+        out.Block(markup, Out::kFigure);
+        if (has_alt) out.Attach("\\alttext(" + ParenEsc(alt) + ")");
+    }
     // A heading carrying the mepml_bibliography bookmark.
     void Bibliography() {
         Flush();
@@ -3179,6 +3253,15 @@ bool Marks(const std::vector<std::string> &bookmarks, const OfficeProps &props, 
         if (b == "mepml_bibliography") {
             as.Bibliography();
             return true;
+        }
+        if (StartsWith(b, "mepml_markup_")) {
+            std::string alt;
+            bool has_alt = false;
+            const std::string markup = props.Markup(std::atoi(b.c_str() + 13), &alt, &has_alt);
+            if (!markup.empty()) {
+                as.Markup(markup, alt, has_alt);
+                return true;
+            }
         }
         if (StartsWith(b, "mepml_code_")) {
             std::string lang;

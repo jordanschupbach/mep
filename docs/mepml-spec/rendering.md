@@ -30,7 +30,8 @@ It does not control, and a sheet cannot change:
 - **behaviour** — in an editor: which line shows its source (mep: the
   cursor's), folding, running code blocks, following links, completion;
 - **content fetched or computed** — a formula's typesetting, an image's
-  pixels, a code block's results.
+  pixels, a code block's results, how an `svg` or `html` block's own
+  markup lays itself out (its own `style` and CSS, not the sheet's).
 
 ## 3. Showing source
 
@@ -100,6 +101,14 @@ to those formats as it always has.
 | RTF | a box's label, accent and paper; a class's name (RTF keeps a look on the run itself, where it would read back as the author's own markup) |
 | Markdown, text | a box's label |
 
+An `svg` or `html` block is written as it is by the HTML exports (in a
+`<div class="mepml-svg">` / `mepml-html`, inside a `<figure>` when it has a
+caption) and as raw HTML by Markdown and Org. A format that cannot hold
+markup writes what it says -- its `alt-text`, an `html` block's text -- and
+its caption; the office packages (DOCX, ODT, RTF) also keep the markup in a
+document property, so an import restores it. LaTeX and PDF keep only the
+caption.
+
 Not selectable in an export: `::markup`, any `:state`, `header`, `comment`
 and the other elements an export leaves out. Selectors on attributes the
 page does not carry (`cite[parenthetical]`, `results[format=...]`) are
@@ -143,6 +152,8 @@ that bounds what it does with a sheet:
   Tables, code and figures keep the placement the editor gives them;
 - a table's stripes: `table`'s `background` is the colour they are shades
   of, at the editor's own strengths for the header and alternate rows;
+- `svg` and `html` blocks are laid out by mep's own HTML engine (the one
+  its browser pane uses) to the text width, and their scripts do not run;
 - the glyphs `content` may use: any character of the editor's text face
   (JetBrains Mono) is drawn, loaded when a sheet first uses it, as are the
   dingbats and symbols of its symbol face; one that neither has shows

@@ -5,6 +5,8 @@
   (citation)
   (bibtex_entry)
   (table)
+  (svg_block)
+  (html_block)
   (list)
   (comment)
   (callout)

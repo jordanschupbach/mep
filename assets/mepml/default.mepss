@@ -63,6 +63,8 @@ link *, insert *, delete * { color: inherit; }
 /* --- Blocks ------------------------------------------------------------ */
 
 math-block  { color: theme(Purple, #6a51a3); }
+/* SVG and HTML: drawn rendered; their source, under the cursor, as raw text. */
+svg, html   { color: theme(Green, #2f7d32); }
 citation    { color: theme(Cyan, #1b7f86); }
 /* A caption: "Figure 1:" then its text. An alt text: small and muted. */
 caption        { color: initial; font-style: italic; }  /* (not its block's: a formula's TeX is coloured) */

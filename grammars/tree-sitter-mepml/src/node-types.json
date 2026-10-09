@@ -414,6 +414,10 @@
           "named": true
         },
         {
+          "type": "html_block",
+          "named": true
+        },
+        {
           "type": "image",
           "named": true
         },
@@ -451,6 +455,10 @@
         },
         {
           "type": "slide",
+          "named": true
+        },
+        {
+          "type": "svg_block",
           "named": true
         },
         {
@@ -1315,6 +1323,10 @@
           "named": true
         },
         {
+          "type": "html_block",
+          "named": true
+        },
+        {
           "type": "image",
           "named": true
         },
@@ -1352,6 +1364,10 @@
         },
         {
           "type": "slide",
+          "named": true
+        },
+        {
+          "type": "svg_block",
           "named": true
         },
         {
@@ -1676,6 +1692,33 @@
         },
         {
           "type": "verbatim",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "html_block",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "alttext",
+          "named": true
+        },
+        {
+          "type": "caption",
+          "named": true
+        },
+        {
+          "type": "markup",
+          "named": true
+        },
+        {
+          "type": "result_end",
           "named": true
         }
       ]
@@ -2778,6 +2821,10 @@
           "named": true
         },
         {
+          "type": "html_block",
+          "named": true
+        },
+        {
           "type": "image",
           "named": true
         },
@@ -2815,6 +2862,10 @@
         },
         {
           "type": "slide",
+          "named": true
+        },
+        {
+          "type": "svg_block",
           "named": true
         },
         {
@@ -2889,6 +2940,10 @@
           "named": true
         },
         {
+          "type": "html_block",
+          "named": true
+        },
+        {
           "type": "image",
           "named": true
         },
@@ -2934,6 +2989,10 @@
         },
         {
           "type": "slide_open",
+          "named": true
+        },
+        {
+          "type": "svg_block",
           "named": true
         },
         {
@@ -3448,6 +3507,33 @@
         },
         {
           "type": "verbatim",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "svg_block",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "alttext",
+          "named": true
+        },
+        {
+          "type": "caption",
+          "named": true
+        },
+        {
+          "type": "markup",
+          "named": true
+        },
+        {
+          "type": "result_end",
           "named": true
         }
       ]
@@ -4067,6 +4153,10 @@
   {
     "type": "manual",
     "named": false
+  },
+  {
+    "type": "markup",
+    "named": true
   },
   {
     "type": "mastersthesis",

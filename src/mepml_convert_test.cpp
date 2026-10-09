@@ -96,6 +96,10 @@ Lines Signature(const Document &doc, const Keeps &k) {
                 if (k.code_captions) s += "\ncaption " + Plain(b.caption_inlines);
                 break;
             }
+            case BlockKind::Svg:
+            case BlockKind::Html:
+                s = std::string(b.kind == BlockKind::Svg ? "S " : "X ") + Squash(b.code);
+                break;
             case BlockKind::Image:
                 s = "I";
                 if (k.captions) s += " caption=" + Plain(b.caption_inlines);
@@ -231,7 +235,8 @@ void TestEscaping() {
     }
     // A line of prose never becomes a block.
     const char *starts[] = {"> not a heading", "// not a comment", "- not a list", "1. not a list", "| not | a table |",
-                            "@image{x.png}", "```", "$$", "---", "//? Key: value", "\\[ x \\]", "@toc"};
+                            "@image{x.png}", "```", "$$", "---", "//? Key: value", "\\[ x \\]", "@toc",
+                            "<div class=x>not markup</div>", "<svg is a word here"};
     for (const char *s : starts) {
         const Document d = Parse({EscapeLineStart(EscapeInline(s))});
         CHECK(d.blocks.size() == 1);

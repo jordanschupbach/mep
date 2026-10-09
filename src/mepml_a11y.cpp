@@ -1,5 +1,6 @@
 #include "mepml_a11y.h"
 
+#include "a11y_html.h"
 #include "math_speech.h"
 
 #include <utility>
@@ -224,6 +225,24 @@ struct Builder {
                     Node f = Figure(b, -1);
                     Caption(b, labels[bi], &f);
                     out->push_back(std::move(f));
+                    break;
+                }
+                case BlockKind::Svg: {
+                    // A picture: read as its \alttext, like an image.
+                    Node f = Figure(b, -1);
+                    f.tag = "svg";
+                    Caption(b, labels[bi], &f);
+                    out->push_back(std::move(f));
+                    break;
+                }
+                case BlockKind::Html: {
+                    // What the markup says, as a reader meets it in a page;
+                    // its \alttext is a description, read before it.
+                    Node h = Leaf(Role::Group, "html", b);
+                    if (!b.alt.empty()) h.summary = b.alt;
+                    for (Node &c : a11y::FromHtml(b.code).root.children) h.children.push_back(std::move(c));
+                    Caption(b, labels[bi], &h);
+                    if (!h.children.empty()) out->push_back(std::move(h));
                     break;
                 }
                 case BlockKind::Code: {

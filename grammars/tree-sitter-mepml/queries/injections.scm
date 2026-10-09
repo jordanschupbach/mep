@@ -8,3 +8,7 @@
   (#set! injection.language "latex"))
 ((latex) @injection.content
   (#set! injection.language "latex"))
+
+; SVG and HTML written into the document are HTML.
+((markup) @injection.content
+  (#set! injection.language "html"))

@@ -102,6 +102,8 @@ bool Expected(const mepml::Block &b, Expect *e) {
             return true;
         case BlockKind::Image: e->type = "image"; return true;
         case BlockKind::Table: e->type = "table"; return true;
+        case BlockKind::Svg: e->type = "svg_block"; return true;
+        case BlockKind::Html: e->type = "html_block"; return true;
         case BlockKind::List: e->type = "list"; return true;
         case BlockKind::Rule: e->type = "rule_line"; return true;
         case BlockKind::Bibliography: e->type = "bibliography"; return true;

@@ -36,6 +36,7 @@
 (option name: (option_name) @property)
 (option value: (option_value) @string)
 (code_content) @markup.raw.block
+(markup) @markup.raw.block
 (results (result_begin) @comment)
 (results (result_end) @comment)
 (results (comment_marker) @comment)

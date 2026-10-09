@@ -36,6 +36,13 @@ It activates automatically when you open a project that has an =.envrc=, so
 terminals, language servers and anything else mep spawns inherit the same
 environment your shell would have in that directory.
 
+Each project keeps the environment it loaded: switching projects swaps one
+for the other, and coming back to a project restores its environment at
+once rather than exporting it again. Turning the chip off and on -- or
+=:MepDirenvReload= -- runs =direnv export= afresh, after a change to the
+flake or files the =.envrc= uses. (An edit to the =.envrc= itself is
+noticed on its own.)
+
 * The Pomodoro chip
 
 A work/break countdown: 25 minutes of work, then 5 of break. Click it to

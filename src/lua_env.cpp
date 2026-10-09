@@ -6417,6 +6417,16 @@ int l_buffer_text_cols(lua_State *L) {
  * @param L Lua state; arg 1 is the buffer id.
  * @return Number of values pushed (1: integer workspace id, or nil).
  */
+/**
+ * @brief Implements mep.buffer_valid(id): whether a buffer id still names an open (not deleted) buffer.
+ * @param L Lua state; arg 1 is the buffer id.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_buffer_valid(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->BufferIsLive(static_cast<int>(luaL_checkinteger(L, 1))));
+    return 1;
+}
+
 int l_buffer_workspace(lua_State *L) {
     int id = static_cast<int>(luaL_checkinteger(L, 1));
     int ws = GetEditor(L)->BufferWorkspaceId(id);
@@ -14025,6 +14035,7 @@ const luaL_Reg kMepFuncs[] = {
     {"jump_to_buffer", l_jump_to_buffer},
     {"reveal_buffer", l_reveal_buffer},
     {"buffer_workspace", l_buffer_workspace},
+    {"buffer_valid", l_buffer_valid},
     {"terminal_info", l_terminal_info},
     {"buffer_cursor_row", l_buffer_cursor_row},
     {"buffer_text_cols", l_buffer_text_cols},

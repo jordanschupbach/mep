@@ -4334,6 +4334,12 @@ public:
         if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return -1;
         return buffers_[static_cast<size_t>(buffer_id)].workspace_id;
     }
+    // Whether `buffer_id` names a buffer that is still open: in range and
+    // not soft-deleted (Buffer::deleted -- `:bd`, or its workspace being
+    // closed or cleared). mep.buffer_valid.
+    bool BufferIsLive(int buffer_id) const {
+        return buffer_id >= 0 && buffer_id < static_cast<int>(buffers_.size()) && !buffers_[static_cast<size_t>(buffer_id)].deleted;
+    }
     // Cursor row (0-indexed) of whichever pane in the active tab shows
     // buffer_id, without changing focus -- -1 if no pane shows it. Lets a
     // Lua consumer that keeps its own buffer id around (e.g.

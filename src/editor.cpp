@@ -19460,9 +19460,14 @@ int Editor::DirectoryPaneBuffer(const std::string &dir) {
     // tree pane beside the restored one, so the hook is run once here purely
     // to materialize the buffer, and RestoreWorkspaceLayout then places that
     // buffer in the pane the session file actually put it in.
+    // Each workspace has a tree of its own (kBuiltinFileTree keeps one per
+    // workspace), so only this workspace's counts: another workspace on the
+    // same root (a non-git `:wsnew`) must not lend it its tree.
+    const int ws = ActiveWorkspace().id;
     const auto find = [&]() {
         for (size_t i = 0; i < buffers_.size(); i++) {
             if (buffers_[i].deleted || buffers_[i].filename != dir) continue;
+            if (buffers_[i].workspace_id != ws && buffers_[i].workspace_id != -1) continue;
             return static_cast<int>(i);
         }
         return -1;
@@ -19480,10 +19485,10 @@ void Editor::ApplyPaneRestore(const PendingPaneRestore &pending, const std::stri
     if (pending.kind == "directory") {
         // Already materialized by RestoreWorkspaceLayout's first pass; all
         // that is left is to show it here instead of letting the hook decide
-        // where it goes. The tree buffer is a singleton the file tree keeps
-        // across workspaces (mep_tree_buf), so two saved tree panes restore
-        // to the same buffer -- which is what opening the tree twice does in
-        // a running mep anyway.
+        // where it goes. Each workspace has one tree buffer (kBuiltinFileTree),
+        // so two saved tree panes in one workspace restore to the same
+        // buffer -- which is what opening the tree twice does in a running
+        // mep anyway.
         const auto it = tree_buffers.find(AbsoluteFromRoot(pending.file, root));
         if (it != tree_buffers.end() && it->second >= 0) {
             Pane &tree_pane = CurPane();

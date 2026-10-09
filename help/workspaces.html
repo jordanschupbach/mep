@@ -67,7 +67,12 @@ That one fact explains most of the behaviour:</p>
 <li><code>&lt;leader&gt;ff</code>, live grep and <code>:e</code> resolve against that worktree.</li>
 <li>A language server is started per language <b>per workspace root</b>, so each branch gets its own.</li>
 <li><code>:terminal</code> opens there, with <code>$MEP_WORKSPACE_NAME</code> and <code>$MEP_PROJECT_NAME</code> exported.</li>
+<li>The file tree is the workspace's own: each workspace keeps its root, its expanded folders and its tree pane, so switching project or workspace shows that one's files. A workspace's first tree is rooted at the workspace.</li>
+<li>The direnv environment is the one for the workspace's <code>.envrc</code> (its own, or the nearest one above it, as direnv finds it). Each project keeps the environment it loaded, so switching back to one puts it back at once instead of running <code>direnv export</code> again; <code>:MepDirenvReload</code> exports it afresh after you change the <code>.envrc</code> or the flake it uses.</li>
 </ul>
+<p>A project's primary workspace is rooted at the project directory, so a
+project's own working directory is the project itself, and a worktree
+workspace inside it has its own.</p>
 <p>Buffers belong to the workspace they were opened in, so <code>:ls</code>, the buffer
 picker, <code>:bnext</code> and an agent's <code>buffer.list</code> show that workspace's buffers.
 The safety nets stay global, though: <code>:wa</code> writes every modified buffer

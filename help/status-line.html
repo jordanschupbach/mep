@@ -37,6 +37,12 @@ environment. Click it to toggle.</p>
 <p>It activates automatically when you open a project that has an <code>.envrc</code>, so
 terminals, language servers and anything else mep spawns inherit the same
 environment your shell would have in that directory.</p>
+<p>Each project keeps the environment it loaded: switching projects swaps one
+for the other, and coming back to a project restores its environment at
+once rather than exporting it again. Turning the chip off and on -- or
+<code>:MepDirenvReload</code> -- runs <code>direnv export</code> afresh, after a change to the
+flake or files the <code>.envrc</code> uses. (An edit to the <code>.envrc</code> itself is
+noticed on its own.)</p>
 <h1>The Pomodoro chip</h1>
 <p>A work/break countdown: 25 minutes of work, then 5 of break. Click it to
 start, pause or resume. It is idle until you click it.</p>

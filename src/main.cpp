@@ -4105,6 +4105,16 @@ const char *kBuiltinFileTree =
     // The recursive walk -- hidden/gitignore filtering, expand-driven
     // recursion, dirs-first-then-alpha order -- is Editor::BuildFileTreeRows/
     // mep.tree_build_rows.
+    // These are the *active workspace's* tree: every workspace has a tree
+    // of its own -- its own root, expanded directories, ignore set and
+    // buffer -- kept in mep_tree_states by workspace id and swapped into
+    // these locals by mep_tree_sync (below) at every way into the tree, so
+    // switching project or workspace shows that one's files. (The swap is
+    // asked for at each entry rather than on mep.on_workspace_changed,
+    // which only fires once a frame: opening a project switches through
+    // its workspaces and opens a tree in each within one call.)
+    "local mep_tree_states = {}\n"
+    "local mep_tree_ws = nil\n"
     "local mep_tree_root = nil\n"
     "local mep_tree_expanded = {}\n"
     "local mep_tree_show_hidden = false\n"
@@ -4212,15 +4222,22 @@ const char *kBuiltinFileTree =
     // while BuildFileTreeRows matches relpaths without one, so strip it --
     // left on, no ignored directory ever matched and the filter only ever
     // hid individually-ignored files.
+    // (The set is the tree's that asked: a scan finishing after a switch
+    // goes to its own workspace's saved state, not the one now showing.)
     "local function mep_tree_refresh_ignored()\n"
-    "  local found = {}\n"
+    "  if not mep_tree_root then return end\n"
+    "  local found, ws = {}, mep_tree_ws\n"
     "  mep.job_start({'git', '-C', mep_tree_root, 'status', '--ignored', '--porcelain'}, {\n"
     "    on_stdout = function(line)\n"
     "      if line:sub(1,3) == '!! ' then found[(line:sub(4):gsub('/+$', ''))] = true end\n"
     "    end,\n"
     "    on_exit = function()\n"
-    "      mep_tree_ignored = found\n"
-    "      mep.tree_refresh()\n"
+    "      if ws == mep_tree_ws then\n"
+    "        mep_tree_ignored = found\n"
+    "        mep.tree_refresh()\n"
+    "      elseif mep_tree_states[ws] then\n"
+    "        mep_tree_states[ws].ignored = found\n"
+    "      end\n"
     "    end,\n"
     "  })\n"
     "end\n"
@@ -4403,6 +4420,29 @@ const char *kBuiltinFileTree =
     "}\n"
     "local mep_tree_help_open = false\n"
     "local mep_tree_help_saved = {1, 1}\n"
+    // Makes the locals above the current workspace's tree: the one they
+    // hold is put away, the current one's taken out (empty -- no root, no
+    // buffer -- for a workspace that has not opened a tree yet). A buffer
+    // that has since been deleted (`:bd`, :projectclear) is dropped, so
+    // the next open makes a fresh one.
+    "local function mep_tree_sync()\n"
+    "  local cur = mep.workspace_current()\n"
+    "  local id = cur and cur.id or -1\n"
+    "  if id ~= mep_tree_ws then\n"
+    "    if mep_tree_ws then\n"
+    "      mep_tree_states[mep_tree_ws] = {root = mep_tree_root, expanded = mep_tree_expanded, ignored = mep_tree_ignored,\n"
+    "        buf = mep_tree_buf, rows = mep_tree_rows, help_open = mep_tree_help_open, help_saved = mep_tree_help_saved}\n"
+    "    end\n"
+    "    local st = mep_tree_states[id] or {}\n"
+    "    mep_tree_root, mep_tree_buf, mep_tree_rows = st.root, st.buf, st.rows\n"
+    "    mep_tree_expanded, mep_tree_ignored = st.expanded or {}, st.ignored or {}\n"
+    "    mep_tree_help_open, mep_tree_help_saved = st.help_open or false, st.help_saved or {1, 1}\n"
+    "    mep_tree_ws = id\n"
+    "  end\n"
+    "  if mep_tree_buf and not mep.buffer_valid(mep_tree_buf) then\n"
+    "    mep_tree_buf, mep_tree_rows, mep_tree_help_open = nil, nil, false\n"
+    "  end\n"
+    "end\n"
     "local function mep_tree_set_footer()\n"
     "  if not mep_tree_buf then return end\n"
     "  if mep_tree_help_open then mep.buffer_set_footer(mep_tree_buf, 'Esc: back to Files', 'Yellow')\n"
@@ -4470,6 +4510,7 @@ const char *kBuiltinFileTree =
     "local mep_tree_passthrough = {}\n"
     "for c in ('hjklgGwbWBE0^$HML/?nN*#zZ:\\'`m{}()%fFtT;,123456789Iy'):gmatch('.') do mep_tree_passthrough[c] = true end\n"
     "local function mep_tree_on_key(k)\n"
+    "  mep_tree_sync()\n"
     // While the help view shows, only movement/search passes through (not
     // I's image viewer); every tree action is swallowed.
     "  if mep_tree_help_open then\n"
@@ -4509,6 +4550,7 @@ const char *kBuiltinFileTree =
     "  return true\n"
     "end\n"
     "local function mep_tree_on_enter()\n"
+    "  mep_tree_sync()\n"
     "  if mep_tree_help_open then return end\n"
     "  local row = mep_tree_cursor_row()\n"
     "  if not row then return end\n"
@@ -4536,6 +4578,7 @@ const char *kBuiltinFileTree =
     "  end\n"
     "end\n"
     "function mep.tree_refresh()\n"
+    "  mep_tree_sync()\n"
     "  if not mep_tree_root then return end\n"
     "  local keep = mep_tree_cursor_path()\n"
     "  mep_tree_rows = mep_tree_build(mep_tree_root, mep_tree_expanded, mep_tree_ignored)\n"
@@ -4560,8 +4603,9 @@ const char *kBuiltinFileTree =
     "    --! :w on the (read-only) tree just re-syncs it with disk instead of\n"
     "    --! writing its text anywhere.\n"
     "    mep.buffer_set_on_write(mep_tree_buf, function() mep.tree_refresh() end)\n"
-    "    mep.buffer_set_on_image_toggle(mep_tree_buf, function() mep_tree_toggle_image_viewer(mep_tree_root, mep_tree_buf) end)\n"
+    "    mep.buffer_set_on_image_toggle(mep_tree_buf, function() mep_tree_sync() mep_tree_toggle_image_viewer(mep_tree_root, mep_tree_buf) end)\n"
     "    mep.buffer_set_drag_resolver(mep_tree_buf, function(row)\n"
+    "      mep_tree_sync()\n"
     "      local r = not mep_tree_help_open and mep_tree_rows and mep_tree_rows[row + 1]\n"
     "      return r and r.path or nil\n"
     "    end)\n"
@@ -4574,8 +4618,9 @@ const char *kBuiltinFileTree =
     "  mep_tree_restore_cursor(keep)\n"
     "end\n"
     "function mep.tree_open(dir)\n"
+    "  mep_tree_sync()\n"
     "  mep_tree_help_open = false\n"
-    "  mep_tree_root = dir or '.'\n"
+    "  mep_tree_root = dir or mep.workspace_root() or '.'\n"
     "  mep_tree_expanded[mep_tree_root] = true\n"
     "  mep.tree_refresh()\n"
     "  if not mep.pane_focus_buffer(mep_tree_buf) then\n"
@@ -4584,10 +4629,12 @@ const char *kBuiltinFileTree =
     "  mep_tree_refresh_ignored()\n"
     "end\n"
     "function mep.tree_toggle()\n"
+    "  mep_tree_sync()\n"
     "  if mep_tree_buf and mep.pane_focus_buffer(mep_tree_buf) then\n"
     "    mep.pane_close_buffer()\n"
     "  else\n"
-    "    mep.tree_open(mep_tree_root or '.')\n"
+    // (A workspace's first tree is rooted at the workspace.)
+    "    mep.tree_open(mep_tree_root or mep.workspace_root() or '.')\n"
     "  end\n"
     "end\n"
     // mep_tree_buf is a chunk-local upvalue, invisible from other
@@ -4597,6 +4644,7 @@ const char *kBuiltinFileTree =
     // bridge, nil until mep.tree_refresh has created the buffer at least
     // once.
     "function mep.tree_buffer_id()\n"
+    "  mep_tree_sync()\n"
     "  return mep_tree_buf\n"
     "end\n"
     // ---- auto-refresh -----------------------------------------------
@@ -4631,7 +4679,9 @@ const char *kBuiltinFileTree =
     "  return false\n"
     "end\n"
     "mep.on_frame(function()\n"
-    "  if not mep.tree_auto_refresh or not mep_tree_root or not mep_tree_buf then return end\n"
+    "  if not mep.tree_auto_refresh then return end\n"
+    "  mep_tree_sync()\n"
+    "  if not mep_tree_root or not mep_tree_buf then return end\n"
     // The help view owns the buffer's text while it's up; mep.tree_refresh
     // makes the same exception.
     "  if mep_tree_help_open or not mep.buffer_on_screen(mep_tree_buf) then return end\n"
@@ -6633,8 +6683,17 @@ const char *kBuiltinDirenv =
     // real key, so a var direnv wants *removed* would be indistinguishable
     // from one it never mentioned at all).
     "local mep_direnv_applied = {}\n"
+    // The directory of the .envrc whose environment is applied, nil for none.
     "local mep_direnv_root = nil\n"
     "local mep_direnv_active = false\n"
+    // Every project (every .envrc) keeps the environment it loaded:
+    // dir -> {vars = {name -> value}, unset = {name, ...}, envrc = the
+    // .envrc's text it was exported from}. Switching back to a project
+    // puts its environment back at once instead of running `direnv export`
+    // again -- seconds, for a nix flake -- and an export only runs for a
+    // .envrc not loaded yet, one whose text has changed since, or on
+    // :MepDirenvReload (or the chip turned off and on).
+    "local mep_direnv_cache = {}\n"
     // Every activate/deactivate bumps the generation; an export whose
     // generation is no longer current when it exits is stale and dropped.
     // Opening a project changes the workspace several times in a row
@@ -6643,13 +6702,32 @@ const char *kBuiltinDirenv =
     // deactivation, in place of -- the env already in force. One started
     // once DIRENV_* was set got only direnv's diff against it, so the
     // chip said active with the project's vars missing (pkg-config in an
-    // org/mepml block then finding nothing).
+    // org/mepml block then finding nothing). So an export only ever runs
+    // from the environment mep started with: every other one is reverted
+    // first.
     "local mep_direnv_gen = 0\n"
     "local mep_direnv_pending_root = nil\n"
-    "local function mep_direnv_has_envrc(root)\n"
-    "  local f = io.open(root .. '/.envrc', 'r')\n"
-    "  if f then f:close() return true end\n"
-    "  return false\n"
+    "local function mep_direnv_read(path)\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if not f then return nil end\n"
+    "  local text = f:read('*a')\n"
+    "  f:close()\n"
+    "  return text\n"
+    "end\n"
+    // The directory whose .envrc applies to `root`: its own, else the
+    // nearest one above it -- what direnv itself looks for, so a workspace
+    // in a subdirectory of its project gets the project's environment.
+    "local function mep_direnv_envrc_dir(root)\n"
+    "  local dir = root\n"
+    "  while dir and dir ~= '' do\n"
+    "    local f = io.open(dir .. '/.envrc', 'r')\n"
+    "    if f then f:close() return dir end\n"
+    "    if dir == '/' then return nil end\n"
+    "    local parent = dir:match('^(.*)/[^/]+/*$')\n"
+    "    if parent == nil then return nil end\n"
+    "    dir = parent == '' and '/' or parent\n"
+    "  end\n"
+    "  return nil\n"
     "end\n"
     "local function mep_direnv_deactivate()\n"
     "  mep_direnv_gen = mep_direnv_gen + 1\n"
@@ -6662,6 +6740,22 @@ const char *kBuiltinDirenv =
     "  mep_direnv_root = nil\n"
     "  mep.direnv_set_active(false)\n"
     "end\n"
+    // Puts a loaded environment in force, remembering what each var was.
+    "local function mep_direnv_apply(dir, entry)\n"
+    "  local applied = {}\n"
+    "  for k, v in pairs(entry.vars) do\n"
+    "    applied[k] = os.getenv(k) or false\n"
+    "    mep.setenv(k, v)\n"
+    "  end\n"
+    "  for _, k in ipairs(entry.unset) do\n"
+    "    if applied[k] == nil then applied[k] = os.getenv(k) or false end\n"
+    "    mep.unsetenv(k)\n"
+    "  end\n"
+    "  mep_direnv_applied = applied\n"
+    "  mep_direnv_active = true\n"
+    "  mep_direnv_root = dir\n"
+    "  mep.direnv_set_active(true)\n"
+    "end\n"
     // `direnv export json`'s stdout is one JSON object (pretty-printed
     // over many lines) -- job_start delivers it line-buffered (mep.job_
     // start's own doc comment), so this accumulates every line rather than
@@ -6670,20 +6764,30 @@ const char *kBuiltinDirenv =
     // this whole chunk's header comment), so those keys are read off the
     // raw text instead -- a key, not a string's contents: one follows `{`
     // or `,` directly, where an escaped quote inside a value would not.
-    "local function mep_direnv_activate(root)\n"
-    "  if not mep_direnv_has_envrc(root) then\n"
+    // `force`: export again even though this .envrc's environment is loaded.
+    "local function mep_direnv_activate(root, force)\n"
+    "  local dir = mep_direnv_envrc_dir(root)\n"
+    "  if not dir then\n"
     "    mep_direnv_gen = mep_direnv_gen + 1\n"
     "    mep_direnv_pending_root = nil\n"
     "    mep.direnv_set_active(false)\n"
     "    return\n"
     "  end\n"
-    "  if mep_direnv_pending_root == root then return end\n"
+    "  local envrc = mep_direnv_read(dir .. '/.envrc')\n"
+    "  local cached = mep_direnv_cache[dir]\n"
+    "  if cached and not force and cached.envrc == envrc then\n"
+    "    mep_direnv_gen = mep_direnv_gen + 1\n"
+    "    mep_direnv_pending_root = nil\n"
+    "    mep_direnv_apply(dir, cached)\n"
+    "    return\n"
+    "  end\n"
+    "  if mep_direnv_pending_root == dir and not force then return end\n"
     "  mep_direnv_gen = mep_direnv_gen + 1\n"
     "  local gen = mep_direnv_gen\n"
-    "  mep_direnv_pending_root = root\n"
+    "  mep_direnv_pending_root = dir\n"
     "  local out, err = {}, {}\n"
     "  mep.job_start({'direnv', 'export', 'json'}, {\n"
-    "    cwd = root,\n"
+    "    cwd = dir,\n"
     "    on_stdout = function(line) out[#out + 1] = line end,\n"
     "    on_stderr = function(line) err[#err + 1] = line end,\n"
     "    on_exit = function(code)\n"
@@ -6701,38 +6805,44 @@ const char *kBuiltinDirenv =
     "      end\n"
     "      local text = table.concat(out, '\\n')\n"
     "      local decoded = mep_ai_json_decode(text) or {}\n"
-    "      local applied = {}\n"
+    "      local entry = {vars = {}, unset = {}, envrc = envrc}\n"
     "      for k, v in pairs(decoded) do\n"
-    "        if type(v) == 'string' then\n"
-    "          applied[k] = os.getenv(k) or false\n"
-    "          mep.setenv(k, v)\n"
-    "        end\n"
+    "        if type(v) == 'string' then entry.vars[k] = v end\n"
     "      end\n"
     "      for k in text:gmatch('[{,]%s*\"([^\"\\\\]+)\"%s*:%s*null') do\n"
-    "        if applied[k] == nil then applied[k] = os.getenv(k) or false end\n"
-    "        mep.unsetenv(k)\n"
+    "        if entry.vars[k] == nil then entry.unset[#entry.unset + 1] = k end\n"
     "      end\n"
-    "      mep_direnv_applied = applied\n"
-    "      mep_direnv_active = true\n"
-    "      mep_direnv_root = root\n"
-    "      mep.direnv_set_active(true)\n"
+    "      mep_direnv_cache[dir] = entry\n"
+    "      mep_direnv_apply(dir, entry)\n"
     "    end,\n"
     "  })\n"
     "end\n"
+    // The chip: off reverts the environment; on exports it afresh (so it
+    // doubles as a reload after editing the flake the .envrc uses).
     "function mep.direnv_toggle()\n"
     "  local ws = mep.workspace_current()\n"
     "  if not ws then return end\n"
-    "  if mep_direnv_active then mep_direnv_deactivate() else mep_direnv_activate(ws.root) end\n"
+    "  if mep_direnv_active then mep_direnv_deactivate() else mep_direnv_activate(ws.root, true) end\n"
     "end\n"
+    // `:MepDirenvReload`: the current workspace's environment exported
+    // again (from mep's own, the old one reverted first).
+    "function mep.direnv_reload()\n"
+    "  local ws = mep.workspace_current()\n"
+    "  if not ws then return end\n"
+    "  mep_direnv_deactivate()\n"
+    "  mep_direnv_activate(ws.root, true)\n"
+    "end\n"
+    "mep.command('MepDirenvReload', function() mep.direnv_reload() end)\n"
     // Re-synced on every workspace/project switch: deactivates first if
-    // the *previous* activation was for a different root (so switching
+    // the *previous* activation was for a different .envrc (so switching
     // projects doesn't leak one project's env into another), then
-    // activates the new one if it has its own .envrc and isn't already
-    // active. Also called once directly below (not just registered as a
-    // hook) to cover the project already open when mep starts.
+    // activates the new one -- from its loaded environment if it has one --
+    // if it has a .envrc and isn't already active. Also called once
+    // directly below (not just registered as a hook) to cover the project
+    // already open when mep starts.
     "local function mep_direnv_sync(ws)\n"
     "  if not ws then return end\n"
-    "  if mep_direnv_active and mep_direnv_root ~= ws.root then mep_direnv_deactivate() end\n"
+    "  if mep_direnv_active and mep_direnv_root ~= mep_direnv_envrc_dir(ws.root) then mep_direnv_deactivate() end\n"
     "  if not mep_direnv_active then mep_direnv_activate(ws.root) end\n"
     "end\n"
     "mep.on_workspace_changed(mep_direnv_sync)\n"

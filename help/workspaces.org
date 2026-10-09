@@ -79,6 +79,19 @@ That one fact explains most of the behaviour:
   branch gets its own.
 - =:terminal= opens there, with =$MEP_WORKSPACE_NAME= and
   =$MEP_PROJECT_NAME= exported.
+- The file tree is the workspace's own: each workspace keeps its root,
+  its expanded folders and its tree pane, so switching project or
+  workspace shows that one's files. A workspace's first tree is rooted at
+  the workspace.
+- The direnv environment is the one for the workspace's =.envrc= (its
+  own, or the nearest one above it, as direnv finds it). Each project
+  keeps the environment it loaded, so switching back to one puts it back
+  at once instead of running =direnv export= again; =:MepDirenvReload=
+  exports it afresh after you change the =.envrc= or the flake it uses.
+
+A project's primary workspace is rooted at the project directory, so a
+project's own working directory is the project itself, and a worktree
+workspace inside it has its own.
 
 Buffers belong to the workspace they were opened in, so =:ls=, the buffer
 picker, =:bnext= and an agent's =buffer.list= show that workspace's buffers.
